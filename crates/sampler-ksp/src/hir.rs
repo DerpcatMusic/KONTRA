@@ -48,6 +48,7 @@ pub enum Home {
     Const(u32),
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Persistence {
     None,
@@ -70,6 +71,7 @@ pub struct Var {
 }
 
 /// Widget keyword of a UI declaration.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum WidgetKind {
     Button,

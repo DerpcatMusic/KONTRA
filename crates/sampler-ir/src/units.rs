@@ -2,6 +2,7 @@
 //! translator never guesses a native unit and a report can show the original.
 
 /// Amplitude.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Gain {
     Decibels(f64),
@@ -27,6 +28,7 @@ impl Default for Gain {
 }
 
 /// Pitch offset.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Pitch {
     Cents(f64),
@@ -54,6 +56,7 @@ impl Default for Pitch {
 }
 
 /// Duration independent of any sample rate.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Time {
     Seconds(f64),
@@ -77,6 +80,7 @@ impl Default for Time {
     }
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Frequency {
     Hertz(f64),
@@ -85,6 +89,7 @@ pub enum Frequency {
 }
 
 /// Filter emphasis at the cutoff.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Resonance {
     /// Peak gain above the flat response, as SFZ `resonance` authors it.
@@ -95,6 +100,7 @@ pub enum Resonance {
 }
 
 /// Stereo placement, -1.0 is left and 1.0 is right.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Pan {
     pub position: f64,
@@ -114,6 +120,7 @@ impl Default for Pan {
     }
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PanLaw {
     /// Attenuates the far channel only; center is unity on both.
@@ -128,6 +135,7 @@ pub type SourceFrames = u64;
 
 /// A length within an asset, as its source authored it: SFZ in seconds,
 /// Kontakt in frames of the asset's own rate.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Span {
     Time(Time),
