@@ -84,16 +84,15 @@ The shared scanner independently reports `loads=yes`, `ui=missing-images`,
 `controls_bound=107/113` across the visible views, and `plays_note=yes` for its
 bounded audition. Its main-view pixel hash is identical to this witness:
 `1de618412e4997cd4436556a4f9f77da5dead3c7b130d0a00c6c41a24dd13011`.
-The previous extension witness records **93.90%** declared cream background with its
+The final shared witness records **93.90%** declared cream background with its
 one-unit pixel tolerance; the supplemental **94.94%** above uses ±2. These are
 different measurement definitions, not a changed screenshot. The extension
-`e340c39a` witness reports 5,368.33 ms load admission and 230.87 MiB peak worker RSS.
+`abf248cd` witness reports 5,212.61 ms load admission and 229.69 MiB peak worker RSS.
 These whole-worker figures include playback/asset work absent from the render-only
 probe. That witness's v2 binary SHA-256:
-`742c24e295358a7631fd5ae4fb85d576e51d03ef669eaa2efbf7ed2dfa6030c4`;
-record `~/.cache/kontra-scan/results/v2/cache/8d50917a5a616f5bffbf5d207e427ad5e37612f814847b9def39bec6ed503135.json`.
-Older scanner witnesses reported 18,941.86 ms / 229.71 MiB and 17,338.28 ms /
-230.84 MiB under previous digests. These observations do not establish a controlled
+`d4534838916e008d32a6e0763541a8bd9285651d77f130bad18fe926d0975f5a`;
+record `~/.cache/kontra-scan/results/v2/cache/06cfd71d81310ddba20c5a1640431d9909985050fc4ec519c5f8a3629886189d.json`.
+Timing differences between scanner revisions do not establish a controlled
 performance improvement. This scanner still measures the frozen integration
 baseline's classic fallback, not W3's new NativeUI graph.
 Audible output and bound scalar controls do not prove gesture, callback or native
@@ -115,6 +114,32 @@ from zone coverage, is marked `matched-note-plan`, and explicitly records
 targets in `bound_typed`, separately from the 107/113 scalar binding criterion.
 `phantom_free_controls` is unknown; do not subtract guessed library-specific
 controls or treat typed readback as a successful text/array gesture.
+
+The final pinned-v1 pair is
+`~/.cache/kontra-scan/results/v1/cache/aff9c78de29075f5c197a8f7a8d0daefc8dff64ce75f1a85ff1bc9e1ae69683b.json`.
+Both records complete and audition the same MIDI 60 / velocity 64 without
+fallback. They retain the same prior render hashes and differing classic views;
+this is a paired scanner observation, not a native-graph fidelity or same-content
+render-speed acceptance result.
+
+| Final Conflux measurement | Pinned v1 `0cb7a8a0` | V2 baseline `7e82b152` |
+|---|---:|---:|
+| Raw slots: inline / empty / decode failed | 3 / 2 / 0 | 3 / 2 / 0 |
+| UI verdict | missing-images | missing-images |
+| Scalar bindings / typed targets | 78/78 / 5 | 107/113 / 6 |
+| Init / persistence callbacks completed | 3 / 1 | 3 / 2 |
+| Raw saved-entry histogram | unknown | decoded: `$223`, `%15`, `@6`, `!13` |
+| Production-admitted saved entries | `$223`, `%15`, `@6`, `!13` | `$223`, `%15`, `@6` |
+| First finite nonzero audio / first CPU paint | 146.11 / 354.09 ms | 5,257.57 / 5,262.49 ms |
+| Product cache state / peak worker RSS | cold / 88.96 MiB | cold / 229.69 MiB |
+| Retained sample mappings | 1,985 | 1,985 |
+
+V1 wire slot 2 maps to runtime slot 0 and its persistence callback is still
+`waiting` / `not_reached` at observation, not a reported fault. V1's raw saved-table
+format is unknown, independently of its correctly decoded source-slot partition;
+incomplete raw sigil totals must stay unknown. Neither version exposes
+`phantom_free_controls` here. V1 whole-editor background coverage is unknown;
+its 1180×900 image cannot serve as a native Conflux page golden.
 
 The causal chain is:
 
@@ -236,8 +261,8 @@ Do not replace the working authored presentation with a generic theme.
 | R12 preparation / diagnostics / cache | `src/ui/perf_view.rs:371` off-frame picture fetch with generation check, `:418` per-control dependency cache; `src/artwork.rs:259` categorized failures; `src/ui/fitted.rs:73,79,103,116` owner generation / resize / cut / window caches | Restore worker preparation, explicit errors and reusable render assets. Do not copy v1's cache-count ceiling as a decoded-byte budget; strengthen bounds/retry/resource identity through the shared v2 asset layer. |
 
 The shared scanner extension is published at
-`tools/kontra-scan@f7b2a8cdc6773ff569799c256ad9b0d638e3a824`. Its installed v2
-digest is `2c7c50d150ef168f46924dc4f90ea3edc2d96fa9350a299922858be2031237d0`.
+`tools/kontra-scan@abf248cd0b99d884b9f2456914362a7bd8e81869`. Its installed v2
+digest is `d4534838916e008d32a6e0763541a8bd9285651d77f130bad18fe926d0975f5a`.
 Canonical measurement uses
 `~/.cache/kontra-scan/bin/kontra-scan-v1` (pinned v1) and
 `kontra-scan-v2` (integration baseline), with their adjacent README and frozen
@@ -245,9 +270,9 @@ Kontakt manifest. Use existing census outputs and requested extra columns;
 do not build another collector. Preserve Original in both comparisons and
 record the scanner digests, installed-file identity, values and render dimensions.
 The matching Conflux v2 hash above comes from that published scanner.
-Pinned Kontakt v1 remains `0cb7a8a0`; adapter source is `11db26e7`, and its
+Pinned Kontakt v1 remains `0cb7a8a0`; adapter source is `44d03cec`, and its
 installed scanner digest is
-`bdbd24d642aaacf4511bdf8b717db14676d2ae46dc922ef13f24b9734c4a1438`.
+`870cea2140b5c9db5361831664966848302a2f57e82fcb6c7ed1b3534545ce5e`.
 The UVI sidecar is a distinct later-v1 baseline, source `1c198e60` on product
 base `4bffbb18`, digest
 `d565661afb3ae1cab3100d1e83b7f12c0f5b02c51b7593451a6fe77929af8ea1`.
@@ -258,12 +283,10 @@ until the owner stages its replacement.
 
 The adjacent `bin/kontra_scan.py:COLUMNS` defines **72** columns; its first nine
 remain stable. Published summaries are `~/.cache/kontra-scan/results/{v1,v2}.tsv`,
-with per-ID evidence in `{v1,v2}/cache`. The owner will reset summaries for section
-J and continue the paired sweep. At this read, both summaries still contain 378
-rows and symbol aggregates identify digest
-`f1105599c13b14410ed891b29a014b8af43596e238850bb8e4439596e96e013a`,
-not the newly installed section J digest. These publications are not section J
-coverage. The Conflux witness above remains explicitly tied to `e340c39a`.
+with per-ID evidence in `{v1,v2}/cache`. The owner reset publication to the final
+installed revision; each summary has 25 rows at this read. The final Conflux
+pair above is verified against both installed digests. The owner's serial
+235-second Kontakt sweep has restarted; section J UVI handoff remains pending.
 The full 1,494-ID paired sweep is pending. This partial snapshot cannot supply
 whole-corpus affected counts, regression totals or a paired Conflux rendering comparison.
 
@@ -313,6 +336,10 @@ uncontrolled. A newer product cache must expose its actual state before warm/col
 comparisons can use `cache_state`. Section J's strict native saved-table parser
 is connected; its safe raw/admitted sigils and actual phase records remain the
 source for restoration coverage.
+Source-slot decoding and saved-table integrity are independent: only actual
+record/parameter failures enter `decode_failed`; an unknown saved format retains
+its observed bypass/inline/link/empty source category. Incomplete raw sigil
+aggregates export unknown rather than a misleading partial total.
 
 ## Prior work to reuse, not reimplement
 
