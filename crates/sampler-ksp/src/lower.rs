@@ -987,6 +987,18 @@ impl Gen<'_, '_> {
 
     fn append(&mut self, e: &Expr, dst: TextRef, free: u16) -> Result<()> {
         let part = match &e.kind {
+            ExprKind::SysElem(array, index) if array.drop_kind().is_some() => {
+                self.value(index, free)?;
+                let scratch = self.scratch();
+                self.emit(I::Op(Op::ReadWidgetDropText {
+                    ui: self.ui_id.unwrap_or(0),
+                    kind: array.drop_kind().unwrap(),
+                    index: free,
+                    text: scratch,
+                }))?;
+                self.tdepth -= 1;
+                TextPart::Text(scratch)
+            }
             ExprKind::Str(s) => TextPart::Constant(self.constant(s)),
             ExprKind::Concat(parts) => {
                 for p in parts {
@@ -1515,6 +1527,16 @@ impl Gen<'_, '_> {
                 true
             }
             NumElements => {
+                if let Some(Arg::SysArray(array)) = args.first()
+                    && let Some(kind) = array.drop_kind()
+                {
+                    self.emit(I::Op(Op::ReadWidgetDropCount {
+                        ui: self.ui_id.unwrap_or(0),
+                        kind,
+                        local: dst,
+                    }))?;
+                    return Ok(());
+                }
                 let len = match args.first() {
                     Some(Arg::Var(v, _)) => self.var(*v).len.unwrap_or(1),
                     Some(Arg::SysArray(a)) => a.len(),

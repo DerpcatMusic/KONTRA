@@ -444,12 +444,50 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
                 })
             };
             if let Some(storage) = storage {
+                let drop = if w.kind == model::WidgetKind::MouseArea {
+                    let texts = u32::try_from(script.resources.texts.len())
+                        .map_err(|_| sampler_core::Error::Capacity)?;
+                    let counts = u32::try_from(script.cells.len())
+                        .map_err(|_| sampler_core::Error::Capacity)?;
+                    script.resources.texts.resize(
+                        script.resources.texts.len()
+                            + 3 * sampler_core::WIDGET_DROP_CAPACITY as usize,
+                        String::new(),
+                    );
+                    script.cells.resize(script.cells.len() + 3, 0);
+                    Some(sampler_core::WidgetDropStorage {
+                        texts,
+                        counts,
+                        accepts: [
+                            "$CONTROL_PAR_DND_ACCEPT_AUDIO",
+                            "$CONTROL_PAR_DND_ACCEPT_MIDI",
+                            "$CONTROL_PAR_DND_ACCEPT_ARRAY",
+                        ]
+                        .map(|name| {
+                            [
+                                w.ui_id,
+                                builtins::control_par(name).unwrap(),
+                                lower::PROPERTY_TAG,
+                                lower::PROPERTY_TAG,
+                            ]
+                        }),
+                        receive_drag: [
+                            w.ui_id,
+                            builtins::control_par("$CONTROL_PAR_RECEIVE_DRAG_EVENTS").unwrap(),
+                            lower::PROPERTY_TAG,
+                            lower::PROPERTY_TAG,
+                        ],
+                    })
+                } else {
+                    None
+                };
                 widgets.push(sampler_core::WidgetDefinition {
                     id: derived_control_id(script.slot, &w.name),
                     source_slot: script.slot,
                     ui_id: w.ui_id,
                     instance,
                     storage,
+                    drop,
                     program: script
                         .routed(EntryKind::UiControl(
                             (w.ui_id - builtins::FIRST_UI_ID) as usize,
