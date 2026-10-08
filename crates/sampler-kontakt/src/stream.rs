@@ -838,9 +838,11 @@ impl Streamed {
             path: "stream cache".into(),
             reason,
         };
+        let pool_span=crate::audit::Span::new("stream_page_pool");
         let (mut cache, worker) =
             StreamCache::new(report.pool_pages.max(1)).map_err(|e| invalid(e.to_string()))?;
         report.pool_bytes = cache.bytes();
+        drop(pool_span);
         let ranges = start_ranges(&loaded.instrument, &kept, rate, head, &policy);
         let (streamer, bytes) = Streamer::start(
             sources,
