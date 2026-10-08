@@ -1,9 +1,9 @@
 use std::io::Cursor;
 
 use crate::{
-    Error,
-    kontakt::{Chunk, KontaktError, StructuredObject, objects::Loop},
+    kontakt::{objects::Loop, Chunk, KontaktError, StructuredObject},
     read_bytes::ReadBytesExt,
+    Error,
 };
 
 /// Type:           Chunk
@@ -12,7 +12,6 @@ use crate::{
 /// KontaktIO:      LoopArray
 #[derive(Debug)]
 pub struct LoopArray {
-    pub mask: u8,
     pub items: Vec<Loop>,
 }
 
@@ -22,17 +21,11 @@ impl LoopArray {
         let mut items = Vec::new();
 
         for slot in 0..8 {
-            if mask & (1 << slot) == 0 {
-                continue;
-            }
+            if mask & (1 << slot) == 0 { continue; }
             let start = reader.stream_position()?;
             let structured = reader.read_bool()?;
             let version = reader.read_u16_le()?;
-            if version != 0x60 {
-                return Err(Error::Generic(format!(
-                    "Unsupported loop version {version:x}"
-                )));
-            }
+            if version != 0x60 { return Err(Error::Generic(format!("Unsupported loop version {version:x}"))); }
             if structured {
                 reader.seek(std::io::SeekFrom::Start(start))?;
                 let so = StructuredObject::read(&mut reader)?;
@@ -42,7 +35,7 @@ impl LoopArray {
             }
         }
 
-        Ok(Self { mask, items })
+        Ok(Self { items })
     }
 }
 

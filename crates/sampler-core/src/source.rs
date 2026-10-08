@@ -80,19 +80,6 @@ impl Loop {
     }
 }
 
-/// One physical native loop slot. Tuning applies to repeated traversals.
-#[derive(Clone, Copy, Debug)]
-pub struct LoopSlot {
-    pub range: Loop,
-    pub tuning: f64,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct LoopSlots {
-    slots: [Option<LoopSlot>; 8],
-    exits: [Option<u64>; 8],
-}
-
 /// Immutable source view. Transposition combines with the asset/output rate ratio.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Playback {
@@ -100,7 +87,6 @@ pub struct Playback {
     pub end: Option<usize>,
     pub direction: Direction,
     pub loop_range: Option<Loop>,
-    pub loop_slots: [Option<LoopSlot>; 8],
     pub transpose_semitones: f64,
 }
 
@@ -143,7 +129,6 @@ impl Playback {
             end,
             direction: self.direction,
             loop_range: self.loop_range,
-            loops: None,
             position: 0,
             fraction: 0.0,
             step,
@@ -170,49 +155,6 @@ impl Playback {
                     .ok_or(Error::InvalidInput)?,
             );
         }
-        if self.loop_slots.iter().any(Option::is_some) {
-            if self.loop_range.is_some() {
-                return Err(Error::InvalidInput);
-            }
-            let mut slots = self.loop_slots;
-            // Preserve physical slots in Playback; the cursor visits source order.
-            slots.sort_by_key(|slot| {
-                slot.map_or(u64::MAX, |slot| cursor.first_boundary(slot.range))
-            });
-            let mut exits = [None; 8];
-            let mut previous_end = 0;
-            for (i, slot) in slots
-                .iter()
-                .enumerate()
-                .filter_map(|(i, s)| s.map(|s| (i, s)))
-            {
-                let single = Playback {
-                    loop_range: Some(slot.range),
-                    loop_slots: [None; 8],
-                    ..self
-                }
-                .cursor(frames, source_rate, output_rate)?;
-                if !slot.tuning.is_finite()
-                    || !(MIN_STEP..=MAX_STEP).contains(&(step * slot.tuning))
-                {
-                    return Err(Error::InvalidInput);
-                }
-                let first = cursor.first_boundary(slot.range);
-                let begin = first - (slot.range.end - slot.range.start) as u64;
-                if begin < previous_end {
-                    return Err(Error::InvalidInput);
-                }
-                previous_end = first;
-                exits[i] = single.exit;
-            }
-            if slots.iter().flatten().count() == 1 && slots[0].unwrap().tuning == 1.0 {
-                // The existing fast cursor covers the overwhelmingly common one-slot case.
-                cursor.loop_range = Some(slots[0].unwrap().range);
-                cursor.exit = exits[0];
-            } else {
-                cursor.loops = Some(LoopSlots { slots, exits });
-            }
-        }
         Ok(cursor)
     }
 }
@@ -223,7 +165,6 @@ pub(super) struct Cursor {
     end: usize,
     direction: Direction,
     loop_range: Option<Loop>,
-    loops: Option<LoopSlots>,
     // Distance along the traversal, not an absolute floating-point PCM index.
     position: u64,
     fraction: f64,
@@ -261,20 +202,6 @@ impl Cursor {
             self.loop_range = None;
             self.exit = None;
         }
-        if let Some(mut loops) = self.loops {
-            for (i, slot) in loops
-                .slots
-                .iter()
-                .enumerate()
-                .filter_map(|(i, s)| s.map(|s| (i, s)))
-            {
-                let first = self.first_boundary(slot.range);
-                if self.position >= first {
-                    loops.exits[i] = Some(first);
-                }
-            }
-            self.loops = Some(loops);
-        }
         self
     }
 
@@ -289,77 +216,15 @@ impl Cursor {
             self.loop_range = None;
             self.exit = None;
         }
-        if let Some(mut loops) = self.loops {
-            for (i, slot) in loops
-                .slots
-                .iter()
-                .enumerate()
-                .filter_map(|(i, s)| s.map(|s| (i, s)))
-            {
-                let first = self.first_boundary(slot.range);
-                if self.position >= first {
-                    loops.exits[i] = Some(first);
-                }
-            }
-            self.loops = Some(loops);
-        }
         self
     }
 
     pub(super) fn unbounded_loop(&self) -> bool {
-        self.loops.is_some_and(|loops| {
-            loops
-                .slots
-                .iter()
-                .enumerate()
-                .any(|(i, slot)| slot.is_some() && loops.exits[i].is_none())
-        }) || self.loop_range.is_some() && self.exit.is_none()
+        self.loop_range.is_some() && self.exit.is_none()
     }
 
     pub(super) fn step(&self) -> f64 {
-        if let Some(loops) = self.loops {
-            let (local, position) = self.segment(i128::from(self.position));
-            if let Some(r) = local.loop_range
-                && position >= i128::from(local.first_boundary(r))
-                && local.exit.is_none_or(|exit| position < i128::from(exit))
-            {
-                let tuning = loops
-                    .slots
-                    .iter()
-                    .flatten()
-                    .find(|slot| slot.range.start == r.start && slot.range.end == r.end)
-                    .unwrap()
-                    .tuning;
-                return self.step * tuning;
-            }
-        }
         self.step
-    }
-
-    // Reuse the established single-loop address law for each serial segment.
-    // Each finite slot adds its repetitions to the traversal before the next.
-    fn segment(&self, position: i128) -> (Self, i128) {
-        let mut local = *self;
-        let loops = self.loops.unwrap();
-        local.loops = None;
-        local.loop_range = None;
-        local.exit = None;
-        let mut offset = position;
-        for (i, slot) in loops
-            .slots
-            .iter()
-            .enumerate()
-            .filter_map(|(i, s)| s.map(|s| (i, s)))
-        {
-            let first = self.first_boundary(slot.range);
-            if loops.exits[i].is_none_or(|exit| offset < i128::from(exit)) {
-                local.loop_range = Some(slot.range);
-                local.exit = loops.exits[i];
-                return (local, offset);
-            }
-            offset -= i128::from(loops.exits[i].unwrap() - first);
-        }
-        (local, offset)
     }
 
     // Prepared candidates and validated expression changes supply this rate.
@@ -377,29 +242,6 @@ impl Cursor {
     }
 
     pub(super) fn release(&mut self) {
-        if let Some(mut loops) = self.loops {
-            let mut offset = self.position;
-            for (i, slot) in loops
-                .slots
-                .iter()
-                .enumerate()
-                .filter_map(|(i, s)| s.map(|s| (i, s)))
-            {
-                let mut local = *self;
-                local.loops = None;
-                local.loop_range = Some(slot.range);
-                local.exit = loops.exits[i];
-                local.position = offset;
-                local.release();
-                loops.exits[i] = local.exit;
-                if let Some(exit) = local.exit {
-                    offset = offset.saturating_sub(exit - local.first_boundary(slot.range));
-                }
-            }
-            self.loops = Some(loops);
-            return;
-        }
-
         if let Some(r) = self.loop_range
             && r.mode == LoopMode::UntilRelease
             && self.exit.is_none_or(|exit| self.position < exit)
@@ -427,19 +269,6 @@ impl Cursor {
 
     fn limit(&self) -> Option<u64> {
         let length = (self.end - self.start) as u64;
-        if let Some(loops) = self.loops {
-            let mut limit = length;
-            for (i, slot) in loops
-                .slots
-                .iter()
-                .enumerate()
-                .filter_map(|(i, s)| s.map(|s| (i, s)))
-            {
-                limit = limit
-                    .checked_add(loops.exits[i]?.checked_sub(self.first_boundary(slot.range))?)?;
-            }
-            return Some(limit);
-        }
         self.loop_range.map_or(Some(length), |r| {
             self.exit
                 .map(|exit| exit.saturating_add(length - self.first_boundary(r)))
@@ -524,10 +353,6 @@ impl Cursor {
     /// Resolve an integer position on the traversal. Out-of-view guards are zero;
     /// loop guards follow the same repeated path as the cursor, in either direction.
     fn index(&self, position: i128) -> Option<usize> {
-        if self.loops.is_some() {
-            let (local, position) = self.segment(position);
-            return local.index(position);
-        }
         let mut offset = u64::try_from(position).ok()?;
         if let Some(r) = self.loop_range {
             let first = self.first_boundary(r);
@@ -551,10 +376,6 @@ impl Cursor {
 
     /// Resolve both source legs once for rendering and residency prediction.
     fn address(&self, position: i128) -> Option<ReadAddress> {
-        if self.loops.is_some() {
-            let (local, position) = self.segment(position);
-            return local.address(position);
-        }
         let index = self.index(position)?;
         let Some(r) = self.loop_range else {
             return Some(ReadAddress {
@@ -626,17 +447,16 @@ impl Cursor {
     }
 
     fn crossfaded(&self) -> bool {
-        self.loops.is_some()
-            || self.loop_range.is_some_and(|r| {
-                matches!(
-                    r.shape,
-                    LoopShape::Crossfade { .. } | LoopShape::EqualPowerCrossfade { .. }
-                )
-            })
+        self.loop_range.is_some_and(|r| {
+            matches!(
+                r.shape,
+                LoopShape::Crossfade { .. } | LoopShape::EqualPowerCrossfade { .. }
+            )
+        })
     }
 
     fn advance(&mut self) {
-        let phase = self.fraction + self.step();
+        let phase = self.fraction + self.step;
         // Truncation is floor here (phase >= 0) and, unlike f64::floor on the
         // SSE2 baseline, needs no libm call.
         let whole = (phase as i64) as f64;
@@ -703,7 +523,7 @@ impl Cursor {
             self.last = [0.; 2];
             return self.advance_silent(output.len(), envelope);
         }
-        if self.step() == 1.0 && self.fraction == 0.0 && self.fade_in == 0 && !self.crossfaded() {
+        if self.step == 1.0 && self.fraction == 0.0 && self.fade_in == 0 && !self.crossfaded() {
             let mut offset = 0;
             while offset < output.len() && !self.done() && !envelope.done() {
                 let (index, count, direction) = self.span();
@@ -745,8 +565,8 @@ impl Cursor {
     }
 
     fn advance_silent(&mut self, frames: usize, envelope: &mut EnvelopeState) -> usize {
-        if self.loops.is_none() && self.fraction == 0.0 && self.step().fract() == 0.0 {
-            let step = self.step() as u64;
+        if self.fraction == 0.0 && self.step.fract() == 0.0 {
+            let step = self.step as u64;
             let remaining = self
                 .limit()
                 .unwrap_or(u64::MAX)
@@ -787,15 +607,15 @@ impl Cursor {
     // 16x) never take this path; per-level loop traversal if that matters.
     fn sample_level(&self, pcm: &(impl ReadFrames + ?Sized), kernel: &Kernel) -> Option<Frame> {
         let levels = pcm.levels();
-        if levels.is_empty() || self.step() < 2.0 || self.crossfaded() {
+        if levels.is_empty() || self.step < 2.0 || self.crossfaded() {
             return None;
         }
-        let k = (self.step().log2().floor() as usize).min(levels.len());
+        let k = (self.step.log2().floor() as usize).min(levels.len());
         if k == 0 {
             return None;
         }
         let scale = 1_i64 << k;
-        let step = self.step() / scale as f64;
+        let step = self.step / scale as f64;
         let radius = kernel.window(step);
         let reach = DECIMATION_REACH * (scale - 1) + (radius + 2) * scale;
         let position = i128::from(self.position);
@@ -820,12 +640,12 @@ impl Cursor {
     /// One complete output frame at the cursor, or None if any tap is missing.
     fn sample(&self, pcm: &(impl ReadFrames + ?Sized), kernel: &Kernel) -> Option<Frame> {
         let position = i128::from(self.position);
-        if self.step() == 1.0 && self.fraction == 0.0 {
+        if self.step == 1.0 && self.fraction == 0.0 {
             self.read(pcm, position)
         } else if let Some(sample) = self.sample_level(pcm, kernel) {
             Some(sample)
         } else {
-            let radius = kernel.window(self.step());
+            let radius = kernel.window(self.step);
             let left = self.index(position - i128::from(radius));
             let right = self.index(position + i128::from(radius));
             let contiguous = if self.crossfaded() {
@@ -846,9 +666,9 @@ impl Cursor {
                 }
             };
             if let Some((span, false)) = contiguous {
-                Some(kernel.sample_window(self.fraction, self.step(), span))
+                Some(kernel.sample_window(self.fraction, self.step, span))
             } else if let Some((span, reverse)) = contiguous {
-                Some(kernel.sample(self.fraction, self.step(), |offset| {
+                Some(kernel.sample(self.fraction, self.step, |offset| {
                     span[(if reverse {
                         radius - offset
                     } else {
@@ -857,7 +677,7 @@ impl Cursor {
                 }))
             } else {
                 let mut ready = true;
-                let sample = kernel.sample(self.fraction, self.step(), |offset| {
+                let sample = kernel.sample(self.fraction, self.step, |offset| {
                     self.read(pcm, position + i128::from(offset))
                         .unwrap_or_else(|| {
                             ready = false;
@@ -883,15 +703,12 @@ impl Cursor {
         gains: [f32; 2],
         kernel: &Kernel,
     ) -> usize {
-        if self.loops.is_some() {
-            return 0;
-        }
-        if self.step() >= 2.0 && !pcm.levels().is_empty() {
+        if self.step >= 2.0 && !pcm.levels().is_empty() {
             return 0;
         }
         let mut count = output.len().min(envelope.remaining());
-        let radius = kernel.window(self.step());
-        let bank = kernel.polyphase(self.step());
+        let radius = kernel.window(self.step);
+        let bank = kernel.polyphase(self.step);
         let taps = 2 * radius as usize + 1;
         // Frames read per output frame: the bank reads whole chunks.
         let width = bank.map_or(taps, |bank| bank.width());
@@ -906,10 +723,10 @@ impl Cursor {
         };
         let margin = radius as usize + width - taps + fade + 2;
         if let Some(room) = contiguous.checked_sub(margin) {
-            count = count.min((room as f64 / self.step()) as usize);
+            count = count.min((room as f64 / self.step) as usize);
         }
         // Upper bound on the frames advanced by `count` steps.
-        let advance = (count as f64 * self.step()).ceil() as i64 + 1;
+        let advance = (count as f64 * self.step).ceil() as i64 + 1;
         let position = i128::from(self.position);
         let (Some(left), Some(right)) = (
             self.index(position - i128::from(radius)),
@@ -977,7 +794,7 @@ impl Cursor {
                 },
             ),
             None => {
-                let step = self.step();
+                let step = self.step;
                 self.run(span, width, output, envelope, gain, gains, |f, w| {
                     kernel.sample_window(f, step, w)
                 })
@@ -1000,7 +817,7 @@ impl Cursor {
         gains: [f32; 2],
         sample: impl Fn(f64, &[Frame]) -> Frame,
     ) {
-        let (mut fraction, step, mut offset, mut last) = (self.fraction, self.step(), 0, self.last);
+        let (mut fraction, step, mut offset, mut last) = (self.fraction, self.step, 0, self.last);
         for frame in output {
             let source = sample(fraction, &span[offset..offset + width]);
             last = if source.iter().all(|value| value.is_finite()) {
@@ -1535,82 +1352,5 @@ impl ReadFrames for PagedFrames<'_> {
             at = end;
         }
         true
-    }
-}
-
-#[cfg(test)]
-mod native_slot_tests {
-    use super::*;
-    #[test]
-    fn tuning_applies_on_repetitions_and_finite_exit_restores_the_base_rate() {
-        let mut slots = [None; 8];
-        slots[7] = Some(LoopSlot {
-            range: Loop {
-                start: 2,
-                end: 4,
-                mode: LoopMode::Continuous,
-                shape: LoopShape::Wrap,
-                passes: std::num::NonZeroU32::new(3),
-            },
-            tuning: 2.,
-        });
-        let mut c = Playback {
-            loop_slots: slots,
-            ..Default::default()
-        }
-        .cursor(8, 48000, 48000)
-        .unwrap();
-        let mut got = Vec::new();
-        while !c.done() {
-            got.push((c.index(i128::from(c.position)).unwrap(), c.step()));
-            c.advance();
-        }
-        assert_eq!(
-            got,
-            vec![
-                (0, 1.),
-                (1, 1.),
-                (2, 1.),
-                (3, 1.),
-                (2, 2.),
-                (2, 2.),
-                (4, 1.),
-                (5, 1.),
-                (6, 1.),
-                (7, 1.)
-            ]
-        );
-    }
-    #[test]
-    fn release_exits_the_current_slot_and_skips_future_until_release_slots() {
-        let mut slots = [None; 8];
-        for (slot, start) in [(1, 1), (7, 4)] {
-            slots[slot] = Some(LoopSlot {
-                range: Loop {
-                    start,
-                    end: start + 2,
-                    mode: LoopMode::UntilRelease,
-                    shape: LoopShape::Wrap,
-                    passes: None,
-                },
-                tuning: 1.,
-            });
-        }
-        let mut c = Playback {
-            loop_slots: slots,
-            ..Default::default()
-        }
-        .cursor(8, 48000, 48000)
-        .unwrap();
-        for _ in 0..4 {
-            c.advance();
-        }
-        c.release();
-        let mut got = Vec::new();
-        while !c.done() {
-            got.push(c.index(i128::from(c.position)).unwrap());
-            c.advance();
-        }
-        assert_eq!(got, [2, 3, 4, 5, 6, 7]);
     }
 }

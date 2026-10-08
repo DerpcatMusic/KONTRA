@@ -100,16 +100,6 @@ pub enum Instruction {
     ReadEventId {
         local: u16,
     },
-    ResetReleaseCounter {
-        event: u16,
-    },
-    ReadCallbackId {
-        local: u16,
-    },
-    StopWait {
-        callback: u16,
-        disable: u16,
-    },
     /// Key-up a source ID in this program's plan. Unknown/closed IDs are no-ops.
     /// None preserves a generated fixed duration; Some replaces it with a nonnegative
     /// frame delay, including zero. May run in a plan-owned control callback.
@@ -363,30 +353,20 @@ pub struct Program {
     pub(super) note_base: usize,
     pub(super) script_cells: usize,
     pub(super) script_instance: Option<super::ScriptInstanceId>,
-    pub(super) source_slot: i32,
     pub(super) wait_lifetime: WaitLifetime,
     pub(super) requires_note: bool,
     pub(super) requires_controller: bool,
     pub(super) requires_performance: bool,
     pub(super) texts: Box<[super::ops::Text]>,
-    pub(super) engine_symbols: Box<[(i32, u16)]>,
     pub(super) text_constants: usize,
     pub(super) script_texts: usize,
 }
 impl Program {
-    pub fn with_engine_symbols(mut self, symbols: Vec<(i32, u16)>) -> Self {
-        self.engine_symbols = symbols.into_boxed_slice();
-        self
-    }
-
     /// Whether it sets runtime effect slot parameters ([`Instruction::WriteSlot`]).
     pub fn writes_slots(&self) -> bool {
-        self.code.iter().any(|op| {
-            matches!(
-                op,
-                Instruction::WriteSlot { .. } | Instruction::WriteGroupBus { .. }
-            )
-        })
+        self.code
+            .iter()
+            .any(|op| matches!(op, Instruction::WriteSlot { .. } | Instruction::WriteGroupBus { .. }))
     }
 
     /// Text constants addressed by `TextPart::Constant`.
@@ -408,11 +388,6 @@ impl Program {
                 *program = program.saturating_add(base as u32);
             }
         }
-        self
-    }
-
-    pub fn with_source_slot(mut self, slot: u8) -> Self {
-        self.source_slot = i32::from(slot);
         self
     }
 
@@ -496,7 +471,6 @@ impl Program {
             | Instruction::ControllerToMidi7 { local }
             | Instruction::ControllerFromMidi7 { local }
             | Instruction::ReadEventId { local }
-            | Instruction::ReadCallbackId { local }
             | Instruction::ReadVelocity7 { local }
             | Instruction::WriteEventKey { local, .. }
             | Instruction::WriteEventVelocity7 { local, .. }
@@ -580,12 +554,6 @@ impl Program {
             | Instruction::ReadModValue { event, id, local } = *op
             {
                 locals = locals.max(usize::from(event.max(id).max(local)) + 1);
-            }
-            if let Instruction::ResetReleaseCounter { event } = *op {
-                locals = locals.max(usize::from(event) + 1);
-            }
-            if let Instruction::StopWait { callback, disable } = *op {
-                locals = locals.max(usize::from(callback.max(disable)) + 1);
             }
             if let Instruction::WriteEventGroup {
                 event,
@@ -707,10 +675,8 @@ impl Program {
             note_base: 0,
             script_cells,
             script_instance: None,
-            source_slot: -1,
             wait_lifetime: WaitLifetime::Gate,
             texts: Box::new([]),
-            engine_symbols: Box::new([]),
             text_constants,
             script_texts,
         })
@@ -791,9 +757,6 @@ pub(super) struct Continuation {
     pub yielded_at: Option<u64>,
     /// Frames the waits so far overshot their exact time by, in micro-frames (< 1_000_000).
     pub wait_carry: u32,
-    pub callback_id: i32,
-    pub waiting: bool,
-    pub disable_wait: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -858,15 +821,6 @@ impl Runtime {
             frames: Default::default(),
             yielded_at: None,
             wait_carry: 0,
-            callback_id: {
-                self.last_callback_id = self
-                    .last_callback_id
-                    .checked_add(1)
-                    .ok_or(Error::Capacity)?;
-                self.last_callback_id
-            },
-            waiting: false,
-            disable_wait: false,
         })?);
         n.work = work;
         let begin = id.0.index * self.behavior_stride;
@@ -939,15 +893,6 @@ impl Runtime {
             frames: Default::default(),
             yielded_at: None,
             wait_carry: 0,
-            callback_id: {
-                self.last_callback_id = self
-                    .last_callback_id
-                    .checked_add(1)
-                    .ok_or(Error::Capacity)?;
-                self.last_callback_id
-            },
-            waiting: false,
-            disable_wait: false,
         })?);
         generation.callbacks += 1;
         let begin = id.0.index * self.behavior_stride;
@@ -1021,9 +966,7 @@ impl Runtime {
         &mut self,
         mut accept: impl FnMut(BehaviorId, BehaviorOwner, Outcome, usize) -> bool,
     ) {
-        self.flush_behaviors_inner(&mut |id, owner, outcome, program| {
-            accept(id, owner, outcome, program)
-        });
+        self.flush_behaviors_inner(&mut |id, owner, outcome, program| accept(id, owner, outcome, program));
     }
 
     /// The latest callback fault (plan program, error), once. Allocation-free.
@@ -1106,9 +1049,6 @@ impl Runtime {
     }
 
     pub(super) fn resume_behavior(&mut self, id: BehaviorId) {
-        if let Some(c) = self.behaviors.get_mut(id.0) {
-            c.waiting = false;
-        }
         self.queue_behavior(id);
         self.drain_behavior();
     }
@@ -1579,55 +1519,7 @@ impl Runtime {
                             .map_err(|_| Error::InvalidInput)
                     })
                     .transpose()?;
-                let current = owner
-                    .note()
-                    .ok()
-                    .filter(|&note| self.note_events[note.0.index].source_id_is(event))
-                    .map(|note| {
-                        (
-                            note,
-                            self.behaviors.get(id.0).unwrap().note_stage.map_or(
-                                super::groups::GroupView::Note(self.behavior_stage(id).unwrap()),
-                                |s| s.groups(),
-                            ),
-                        )
-                    });
-                if let Some((note, view)) = current {
-                    let stage = self.behaviors.get(id.0).unwrap().note_stage;
-                    let forwarded = stage.map_or(
-                        self.notes.get(note.0).unwrap().attack == super::AttackStatus::Forwarded,
-                        |stage| {
-                            self.plans
-                                .get(plan.0)
-                                .unwrap()
-                                .projections
-                                .get(note.0.index, stage.index())
-                                .unwrap()
-                                .forwarded
-                        },
-                    );
-                    let editable = match stage {
-                        Some(NoteStage::Release(stage)) => {
-                            self.plans
-                                .get(plan.0)
-                                .unwrap()
-                                .projections
-                                .get(note.0.index, stage)
-                                .unwrap()
-                                .release
-                                == super::note_event::ReleaseStage::Pending
-                        }
-                        _ => !forwarded,
-                    };
-                    if editable {
-                        match self.set_group_view(note, view, group, allowed) {
-                            Err(Error::InvalidInput) => {}
-                            result => result?,
-                        }
-                    }
-                } else {
-                    self.write_event_group(plan, event, group, allowed)?;
-                }
+                self.write_event_group(plan, event, group, allowed)?;
             }
             Instruction::ReadGroupCount { local } => {
                 let plan = self.behavior_plan(owner)?;
@@ -1654,44 +1546,6 @@ impl Runtime {
                 let cell = self.local_cell_mut(id, local)?;
                 let value = i32::try_from(*cell).map_err(|_| Error::ArithmeticOverflow)?;
                 *cell = i64::from(operation.apply(value));
-            }
-            Instruction::ResetReleaseCounter { event } => {
-                let event = *self.local_cell_mut(id, event)?;
-                let plan = self.behavior_plan(owner)?;
-                if let Ok(event) = i32::try_from(event)
-                    && let Some(note) = self.resolve_source_event(plan, event)?
-                {
-                    self.reset_release_counter(note)?;
-                }
-            }
-            Instruction::ReadCallbackId { local } => {
-                *self.local_cell_mut(id, local)? =
-                    i64::from(self.behaviors.get(id.0).unwrap().callback_id);
-            }
-            Instruction::StopWait { callback, disable } => {
-                let callback = *self.local_cell_mut(id, callback)?;
-                let disable = *self.local_cell_mut(id, disable)? != 0;
-                let plan = self.behavior_plan(owner)?;
-                let target = self
-                    .behaviors
-                    .slots
-                    .iter()
-                    .enumerate()
-                    .find_map(|(index, slot)| {
-                        let c = slot.value?;
-                        (i64::from(c.callback_id) == callback
-                            && c.waiting
-                            && c.outcome.is_none()
-                            && self.behavior_plan(c.owner).ok() == Some(plan))
-                        .then(|| BehaviorId(self.behaviors.id(index)))
-                    });
-                if let Some(target) = target {
-                    self.commands.retain(|command| !matches!(command.action, Action::Resume(other) if other == target));
-                    let c = self.behaviors.get_mut(target.0).unwrap();
-                    c.waiting = false;
-                    c.disable_wait = disable;
-                    self.queue_behavior(target);
-                }
             }
             Instruction::ReadEventId { local } => {
                 let value = self.source_event_id(owner.note()?)?;
@@ -2003,11 +1857,7 @@ impl Runtime {
                 let group = *self.local_cell_mut(id, group)?;
                 let address = *self.local_cell_mut(id, address)?;
                 if let Ok(group) = usize::try_from(group) {
-                    self.plans
-                        .get_mut(plan.0)
-                        .ok_or(Error::StaleHandle)?
-                        .script
-                        .set_route(group, address);
+                    self.plans.get_mut(plan.0).ok_or(Error::StaleHandle)?.script.set_route(group, address);
                 }
             }
             Instruction::Jump { target } => {
@@ -2167,7 +2017,7 @@ impl Runtime {
     }
 
     fn wait_behavior(&mut self, id: BehaviorId, frames: u32) -> Result<bool, Error> {
-        if frames == 0 || self.behaviors.get(id.0).unwrap().disable_wait {
+        if frames == 0 {
             return Ok(false);
         }
         let at = self
@@ -2177,7 +2027,6 @@ impl Runtime {
         if self.available_commands() == 0 {
             return Err(Error::Capacity);
         }
-        self.behaviors.get_mut(id.0).unwrap().waiting = true;
         self.queue(at, Action::Resume(id));
         Ok(true)
     }

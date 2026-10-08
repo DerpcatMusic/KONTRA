@@ -131,15 +131,6 @@ impl Runtime {
         )
     }
 
-    pub(super) fn missing_pedal_channels(&self, scope: ChannelScope) -> Result<u16, Error> {
-        let existing = self.channels.slots.iter().filter_map(|slot| slot.value)
-            .filter(|channel| scope.contains(channel.address))
-            .fold(0u16, |mask, channel| mask | (1 << channel.address.channel));
-        let missing = scope.channels & !existing;
-        if missing.count_ones() as usize > self.channels.available() { return Err(Error::Capacity); }
-        Ok(missing)
-    }
-
     fn pedal_scope(
         &mut self,
         scope: ChannelScope,
@@ -152,7 +143,17 @@ impl Runtime {
         }
         self.apply_due();
         if down {
-            let mut missing = self.missing_pedal_channels(scope)?;
+            let existing = self
+                .channels
+                .slots
+                .iter()
+                .filter_map(|slot| slot.value)
+                .filter(|channel| scope.contains(channel.address))
+                .fold(0u16, |mask, channel| mask | (1 << channel.address.channel));
+            let mut missing = scope.channels & !existing;
+            if missing.count_ones() as usize > self.channels.available() {
+                return Err(Error::Capacity);
+            }
             while missing != 0 {
                 let channel = missing.trailing_zeros() as u8;
                 missing &= missing - 1;

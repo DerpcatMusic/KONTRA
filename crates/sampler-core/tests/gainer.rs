@@ -1,5 +1,5 @@
 //! Gainer kernel against its equation (DSP_SYSTEM_INVENTORY "Gainer" recurrence,
-//! KONTAKT_REFERENCE s.25: `(1-m) + m*g`, native float32 k = 1/1800):
+//! KONTAKT_REFERENCE s.25: `(1-m) + m*g`, one-pole in linear gain, tau 45 ms):
 //! out = x * (dry + cur), cur += (target - cur) * k, across odd block sizes.
 use sampler_core::*;
 mod support;
@@ -49,7 +49,7 @@ fn plan() -> Prepared {
 
 #[test]
 fn gain_steps_follow_a_one_pole_around_the_dry_mix() {
-    let k = f32::from_bits(0x3a11a2b4);
+    let k = 1. - (-1. / (0.045 * f64::from(RATE))).exp();
     for block in [1, 7, 64, 129] {
         let mut rt = Runtime::new(plan(), limits()).unwrap();
         let mut audio = vec![[0f32; 2]; FRAMES];
@@ -65,11 +65,9 @@ fn gain_steps_follow_a_one_pole_around_the_dry_mix() {
                 rt.render(chunk).unwrap();
             }
         });
-        let mut current = 1f32;
         for (j, f) in audio.iter().enumerate() {
-            let expected = DRY + f64::from(current);
+            let expected = DRY + (1. - k).powi(j as i32);
             assert!((f64::from(f[0]) - expected).abs() < 2e-6, "block {block} frame {j}: {} != {expected}", f[0]);
-            current += (0. - current) * k;
         }
     }
 }

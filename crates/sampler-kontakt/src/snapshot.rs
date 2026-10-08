@@ -94,25 +94,21 @@ pub fn read_snapshot(path: &Path) -> Result<SnapshotState, LoadError> {
 }
 
 /// Replace the instrument's saved script values with the snapshot's, slot by slot.
-pub fn apply_snapshot(kontakt: &mut Kontakt, snapshot: &SnapshotState) -> Result<(), crate::Error> {
-    // Validate all slots before changing any authored state.
-    let decoded: Vec<_> = snapshot
-        .persistent
-        .iter()
-        .map(|entries| crate::library::saved(entries))
-        .collect::<Result<_, _>>()?;
+pub fn apply_snapshot(kontakt: &mut Kontakt, snapshot: &SnapshotState) {
     for behavior in &mut kontakt.instrument.behaviors {
-        let Some(entries) = behavior.slot.and_then(|s| decoded.get(usize::from(s))) else {
+        let Some(entries) = behavior
+            .slot
+            .and_then(|s| snapshot.persistent.get(usize::from(s)))
+        else {
             continue;
         };
-        for (name, value) in entries.iter().cloned() {
+        for (name, value) in crate::library::saved(entries) {
             match behavior.state.iter_mut().find(|(n, _)| *n == name) {
                 Some(slot) => slot.1 = value,
                 None => behavior.state.push((name, value)),
             }
         }
     }
-    Ok(())
 }
 
 #[cfg(test)]
