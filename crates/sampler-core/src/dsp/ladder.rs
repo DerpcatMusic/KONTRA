@@ -37,6 +37,7 @@ impl LadderSettings {
             rate: rate as f32,
             parameters: [self.cutoff, self.resonance, self.gain].map(|p| p.compile(bindings)),
             record_version: self.record_version,
+            modulation_index: usize::MAX,
         }
     }
 }
@@ -47,6 +48,7 @@ pub(crate) struct Ladder {
     rate: f32,
     parameters: [PreparedParameter; 3],
     record_version: u16,
+    pub(crate) modulation_index: usize,
 }
 
 impl Ladder {
@@ -54,6 +56,7 @@ impl Ladder {
     pub(super) fn process(
         &self, state: &mut ProcessorState, cells: &mut [[f64; 2]],
         parameters: &[ControlRamp], block: &mut Planar, len: usize, at: u64,
+        modulation: [f64; 2],
     ) -> bool {
         if state.aux[0] == 0.0 {
             cells.fill([0.0; 2]);
@@ -61,7 +64,12 @@ impl Ladder {
         }
         let mut kernel = ladder_kernel::Ladder::restore(cells);
         kernel.record_version(self.record_version);
-        let values = |frame| self.parameters.map(|p| p.value(parameters, frame, None) as f32);
+        kernel.enabled_modulation(modulation[1] != 0.);
+        let values = |frame| {
+            let mut values = self.parameters.map(|p| p.value(parameters, frame, None) as f32);
+            values[0] = (values[0] + modulation[0] as f32).clamp(0., 1.);
+            values
+        };
         let first = values(at);
         let last = values(at + len.saturating_sub(1) as u64);
         let mut scratch: [[f32; BLOCK]; 2] = std::array::from_fn(|c| block[c].map(|v| v as f32));
@@ -112,14 +120,14 @@ mod tests {
             let mut cells = [[0.0; 2]; CELLS];
             let mut state = ProcessorState::default();
             let mut whole = source;
-            assert!(!prepared.process(&mut state, &mut cells, &[], &mut whole, BLOCK, 0));
+            assert!(!prepared.process(&mut state, &mut cells, &[], &mut whole, BLOCK, 0, [0.; 2]));
             assert_eq!(whole, expected.map(|ch| ch.map(f64::from)));
             state = ProcessorState::default(); // recycled voice, same reserved storage
             let mut split = source;
             for (start, end) in [(0, 1), (1, 23), (23, 32), (32, 64)] {
                 let mut fragment = [[0.0; BLOCK]; 2];
                 for c in 0..2 { fragment[c][..end-start].copy_from_slice(&source[c][start..end]); }
-                assert!(!prepared.process(&mut state, &mut cells, &[], &mut fragment, end-start, start as u64));
+                assert!(!prepared.process(&mut state, &mut cells, &[], &mut fragment, end-start, start as u64, [0.; 2]));
                 for c in 0..2 { split[c][start..end].copy_from_slice(&fragment[c][..end-start]); }
             }
             assert_eq!(split, whole);

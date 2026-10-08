@@ -1163,8 +1163,8 @@ impl Translation {
             );
             None
         };
-        // Filter cutoff of an insert slot: octaves, linear in the modulator,
-        // 10 octaves per 100 % (KONTAKT_REFERENCE.md section 17).
+        // Native Ladder/Daft use normalized knob addition (v1 filter.rs);
+        // the generic filter fallback retains its octave law.
         let cutoff = match (target.slot, target.param.as_str()) {
             (None, _) => None,
             (Some(slot), "filterCutoff") => filters.and_then(|(chain, slots)| {
@@ -1189,7 +1189,12 @@ impl Translation {
         let (route_target, depth) = match target.param.as_str() {
             _ if cutoff.is_some() => (
                 cutoff.unwrap_or(ir::Target::Amplitude),
-                ir::Depth::Pitch(ir::Pitch::Semitones(120.0 * i)),
+                if matches!(cutoff, Some(ir::Target::Processor { chain, index, .. })
+                    if self.ir.chains.get(chain.0).and_then(|c| c.pre_amplitude.iter()
+                        .chain(&c.post_amplitude).nth(index))
+                        .is_some_and(|p| matches!(p, ir::Processor::LadderLP4(_) | ir::Processor::Daft(_)))) {
+                    ir::Depth::Normalized(i)
+                } else { ir::Depth::Pitch(ir::Pitch::Semitones(120.0 * i)) },
             ),
             "volume" => (ir::Target::Amplitude, ir::Depth::Normalized(i)),
             "pitch" => (
@@ -2208,6 +2213,20 @@ mod modulation {
             t.route("g", source, true, &cutoff, Some((chain, &[])))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn native_filter_cutoff_modulation_adds_normalized_depth() {
+        for processor in [ir::Processor::LadderLP4(ir::LadderLP4 { address: None, gain: 0.,
+            cutoff: 0.5, resonance: 0., record_version: 0x92 }),
+            ir::Processor::Daft(ir::Daft { gain: 0., cutoff: 0.5, resonance: 0., highpass: false })] {
+            let mut t = translation();
+            t.ir.chains.push(ir::Chain { scope: ir::Scope::Voice, pre_amplitude: vec![processor], post_amplitude: vec![] });
+            let target = ModTarget { slot: Some(5), ..target("filterCutoff", -0.25) };
+            t.route("g", ir::ModulatorRef(0), true, &target, Some((ir::ChainRef(0), &[(5, 0)]))).unwrap();
+            assert_eq!(t.ir.routes[0].depth, ir::Depth::Normalized(-0.25));
+            assert_eq!(t.ir.routes[0].target, ir::Target::Processor { chain: ir::ChainRef(0), index: 0, parameter: ir::ProcessorParameter::Cutoff });
+        }
     }
 
     #[test]
