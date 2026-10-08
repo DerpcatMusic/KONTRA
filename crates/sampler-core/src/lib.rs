@@ -443,6 +443,8 @@ struct Voice {
     sample: usize,
     cursor: source::Cursor,
     base_step: f64,
+    /// v1 Voice::pitch: cache the exact modulation exponent and its ratio.
+    mod_pitch: (f64, f64),
     chain: Option<usize>,
     bus: Option<usize>,
     tail_remaining: Option<u32>,
@@ -1542,6 +1544,7 @@ impl Runtime {
             sample,
             cursor: if cold && !self.offline { cursor.cold() } else { cursor },
             base_step,
+            mod_pitch: (f64::NAN, 1.0),
             chain: None,
             bus: None,
             tail_remaining: None,

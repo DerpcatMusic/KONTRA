@@ -73,4 +73,19 @@ receipts are `wav/<item>/comparison.json`; all generated WAVs were deleted.
 Status: HOLD for quiet CPU acceptance. No READY or CPU acceptance claim. CPU acceptance must use unprofiled ci/default-feature binaries
 against the frozen v1 in a quiet A/B. No release or install.
 
-NEXT: unprofiled same-cell quiet CPU, then the next render hot stage.
+## Follow-up: unchanged pitch ratio
+
+Port `0cb7a8a0:src/engine/voice.rs::Voice::plan`'s `(pitch, ratio)` cache into
+private v2 Voice storage. Cache the existing exact `(from.pitch + to.pitch) / 24`
+exponent and its `exp2`, recomputing whenever that exponent changes. Expression
+ratio and base step still multiply on every preparation; source and control
+clocks still advance. Each voice onset resets the cache with a NaN key.
+No public interface or kernel-facing API changes. The new storage is 16 bytes
+per reserved voice; acceptance must include its CPU/memory tradeoff.
+
+Twenty-three envelope, expression and voice-modulation regression tests pass
+(one timing benchmark ignored), and root no-run passes. Matching ci pitch
+CPU/WAV binaries are recorded separately in `pitch-BUILD.json`; earlier scalar
+and cubic binaries remain frozen. Full-signal witnesses and CPU are pending.
+
+NEXT: follow-up signal witness and unprofiled same-cell quiet CPU.
