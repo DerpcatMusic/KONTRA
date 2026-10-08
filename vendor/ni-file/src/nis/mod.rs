@@ -3,10 +3,10 @@ mod error;
 mod properties;
 pub mod schema;
 
-// #[deprecated]
-// pub mod items;
-// #[deprecated]
-// pub mod schemas;
+pub mod items;
+pub mod schemas {
+    pub mod kontakt;
+}
 
 pub use container::*;
 pub use properties::*;
