@@ -405,7 +405,7 @@ impl Runtime {
         }
         if let Some(drop) = w.drop {
             let bank = &generation.scripts[usize::from(w.instance.0)];
-            if !matches!(edits[0].interaction.event, 2..=5)
+            if !matches!(edits[0].interaction.event, 0..=5)
                 || (matches!(edits[0].interaction.event, 2 | 4)
                     && bank.store.get(drop.receive_drag).unwrap_or(0) == 0)
             {

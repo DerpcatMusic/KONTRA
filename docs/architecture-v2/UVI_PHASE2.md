@@ -1,0 +1,16 @@
+# UVI phase 2 — W10
+
+Reuses UVI UI `24c70a25` exactly, with shared W3 painters/resource service and W5 addressed engine service. This checkpoint is incremental, not native Falcon certification.
+
+- Public parameter facts: 167 element types, 2,877 parameters, from the read-only RE catalog retrieved 2026-10-07 and linked to https://lua.uvi.net/_elements.html. Static `parameters.tsv` retains types, bounds, omitted defaults and units. Lua descriptors expose native `int`/`float`/`bool` identities and name/numeric lookup. Hz UI positions use logarithmic mapping where bounds are positive; engine values remain Hz. Reversed published bounds remain literal until measured.
+- Exhaustive catalog probe: 2,877/2,877 defaults, typed numeric definitions and exact ranges. This measures declarations, not live DSP support for every parameter.
+- Corrected authored suite from audit `0d76dad5`: 32/34 pass. Remaining failures are immediate voice edits and layer-selected fades. Historical 1/33 used one invalid state fixture; do not compare denominators without this qualification.
+- Initial custom JSON state calls onLoad before automatic widget restoration and onInit. Explicit UI-state restoration calls widget callbacks then onLoad, without onInit. Automatic ScriptData never becomes custom onLoad data. Tests cover nested data and callback order.
+- Generated/physical IDs are disjoint; postEvent keeps identity, spawn is FIFO without an originating note context, run retains that context, undefined globals remain nil, and bypassed processors do not replace active callbacks.
+- Original keygroup/oscillator nodes own distinct destinations. Layer gain/pan edits reach every matching group and preserve authored offsets. Processor lanes will use W5's common bindings; no independent lower implementation exists here.
+- Resource references retain require-module source directories, including returned builders. Bank lookup tries module/package roots with exact bank authority and ambiguity guards. Bartok's partial initialized UI improves from 0/101 to 99/101 resource lookups; an init nil-member fault still prevents its complete UI. This is not a full asset/paint success claim.
+- Falcon scene culling retains all UI IR widgets and omits geometry outside the authored page/ancestor viewport. The 7,000-widget offscreen fixture failed the old 4,096 node budget, then paints after culling. No shared painter or scale/part geometry was forked.
+
+Validation: normal sampler-uvi package tests pass; root `cargo test --features shots --no-run` passes; culling fixture passes. Private logs stay under `~/.cache/kontakto-w10/`, without library source, artwork or audio.
+
+Next gates: complete Bartok/AO200 and VWinds Original painting using W3 decoders; bind native catalog processor edits to W5 lanes and prove PCM/readback; publish typed init/runtime fault counters; consume the shared scanner's matched note plans for all 660 IDs. Frozen scanner digests are v2 `18fe63fe07e62ea3c012ce29fc2d01b08f518ea808459446478cc46aca924b6d`, Kontakt v1 `a4b3f8c76483ea06b36b9fef46911093d7e8df8021bd9e54e711018dbf700399`, UVI v1 `d565661afb3ae1cab3100d1e83b7f12c0f5b02c51b7593451a6fe77929af8ea1`. Full paired corpus acceptance is still pending.

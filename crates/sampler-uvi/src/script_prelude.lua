@@ -40,11 +40,7 @@ setmetatable(_G, {
       if v ~= nil then return v end
     end
     if type(name) ~= "string" then return nil end
-    if native.assigned(name) then return nil end
-    report("global " .. name, "")
-    local s = stub(name)
-    rawset(_G, name, s)
-    return s
+    return nil
   end,
 })
 
@@ -56,6 +52,8 @@ Event = {
   NoteOn = 1, NoteOff = 2, Controller = 3, PitchBend = 4, AfterTouch = 5,
   PolyAfterTouch = 6, ProgramChange = 7, Transport = 8,
 }
+Event.ControlChange = Event.Controller
+bit = bit32
 Unit = setmetatable({}, { __index = function(t, k) local v = k; rawset(t, k, v); return v end })
 Engine = setmetatable({}, { __index = function(t, k)
   report("Engine " .. tostring(k), "")
@@ -167,6 +165,9 @@ widget_mt.__index = function(w, k)
 end
 widget_mt.__newindex = function(w, k, v)
   local d = data(w)
+  if type(v) == 'string' and (k == 'font' or string.match(k, 'Image$') or k == 'image') then
+    v = native.resourcePath(v)
+  end
   if k == "value" or k == "selected" then
     if v ~= w.value then methods.setValue(w, v) end
     return
@@ -202,7 +203,7 @@ widget = function(kind, ...)
     d.meter_element,d.stereo,d.channel,d.vertical,d.value,d.persistent = value,args[3]~=false,args[4] or 0,args[5]~=false,0,false
   elseif kind == "XY" then
     d.paramX,d.paramY,d.value = name,value,0
-  elseif kind == "Image" or kind == "SVG" then d.image = name
+  elseif kind == "Image" or kind == "SVG" then d.image = native.resourcePath(name)
   end
   if string.sub(kind,1,5) == "Param" or kind == "ParameterValue" then
     d.element,d.parameter = name,value
@@ -210,7 +211,8 @@ widget = function(kind, ...)
     d.bound = rawtype(name) == "table" and rawget(name,"__id") ~= nil
     if d.bound then
       for _, def in ipairs(name.parameterDefinitions) do
-        if def.id == value then
+        if def.id == value or def.name == value then
+          d.parameter = def.name
           d.min,d.max,d.integer,d.unit,d.mapper = def.min or 0,def.max or 1,def.type=="int",def.unit or "Generic",def.mapper or "Linear"
           break
         end
@@ -271,44 +273,23 @@ function __ui_edit(id, component, value)
 end
 
 -- Elements -----------------------------------------------------------------
--- Parameters the shipped scripts look up by name on elements whose presets
--- often omit them (defaults).
-local known_params = {
-  Keygroup = { "Gain", "Pan" },
-  Layer = { "Gain", "Pan" },
-  SamplePlayer = { "Gain", "Pan", "Pitch" },
-  BusRouter = { "Gain" },
-  CombFilter = { "Freq", "Q", "Bypass", "Mode" },
-  MS20 = { "Freq", "Q", "Bypass" },
-  XpanderFilter = { "Freq", "Q", "Drive", "Mode", "Bypass" },
-  OnePole = { "Freq", "Bypass", "Mode" },
-  Flanger = { "Feedback", "Mix", "Speed", "Bypass" },
-  Phasor = { "Depth", "Feedback", "Speed", "Bypass" },
-  WaveShaper = { "Amount", "Mix", "Bypass" },
-  LFO = { "Depth", "Freq" },
-  MultiLFO = { "Depth", "Freq" },
-}
 local element = {}
 element.__index = function(t, k)
   local m = rawget(element, k)
   if m then return m end
   if k == "parameterDefinitions" then
-    -- `id` is what setParameter takes back: the parameter's name. Parameters
-    -- a preset leaves at their default are still defined.
-    local defs, seen = {}, {}
-    local function add(n)
-      if not seen[n] then
-        seen[n] = true
-        defs[#defs + 1] = { id = n, name = n, min = 0, max = 1, default = native.param(rawget(t, "__id"), n) or 0 }
-      end
-    end
-    for _, n in ipairs(native.paramNames(rawget(t, "__id"))) do add(n) end
-    for _, n in ipairs(known_params[rawget(t, "type")] or {}) do add(n) end
+    local defs = native.definitions(rawget(t, "__id"))
+    rawset(t, k, defs)
     return defs
   end
+  if k == "numParams" then return #t.parameterDefinitions end
   return nil
 end
 function element.getParameter(self, name)
+  if type(name) == "number" then
+    local d = self.parameterDefinitions[name]; if not d then error("invalid parameter id") end
+    name = d.name
+  end
   local overlay = rawget(self, "__set")
   if overlay and overlay[name] ~= nil then return overlay[name] end
   local v = native.param(rawget(self, "__id"), name)
@@ -318,9 +299,27 @@ function element.getParameter(self, name)
   end
   return v
 end
+function element.hasParameter(self, name)
+  return self.parameterDefinitions[name] ~= nil or native.param(rawget(self,'__id'), name) ~= nil
+end
 __touched = {}
 function element.setParameter(self, name, value)
   if name == nil then report("setParameter", "nil name"); return end
+  if type(name) == "number" then
+    local d = self.parameterDefinitions[name]; if not d then error("invalid parameter id") end
+    name = d.name
+  end
+  local def = self.parameterDefinitions[name]
+  if def then
+    if def.type == 'bool' then
+      if type(value) ~= 'boolean' then error('expected boolean parameter') end
+    else
+      if type(value) ~= 'number' or value ~= value or math.abs(value) == math.huge then error('expected finite parameter') end
+      -- Keep reversed documented bounds intact; native semantics need a measurement.
+      if def.min <= def.max then value = math.max(def.min, math.min(def.max, value)) end
+      if def.type == 'int' then value = math.floor(value + 0.5) end
+    end
+  end
   local overlay = rawget(self, "__set")
   if not overlay then
     overlay = {}; rawset(self, "__set", overlay)
@@ -330,17 +329,16 @@ function element.setParameter(self, name, value)
   if type(value) == "number" and native.setParam(rawget(self, "__id"), name, value) then return end
   report("setParameter " .. rawget(self, "type") .. "." .. tostring(name), "")
 end
--- Connections are not modeled: any index answers with one inert element.
-local inert, connections = {}, nil
-connections = setmetatable({}, { __index = function(_, k)
-  if type(k) == "number" then return inert end
-end })
-function inert.getParameterConnections() return connections end
-function inert.setParameter(_, n) report("setParameter", "connection." .. tostring(n)) end
-function inert.getParameter(_, n) report("getParameter", "connection." .. tostring(n)); return 0 end
 function element.getParameterConnections(self, name)
-  report("getParameterConnections " .. rawget(self, "type") .. "." .. tostring(name), "")
-  return connections
+  if type(name) == 'number' then
+    local d = self.parameterDefinitions[name]; if not d then error('invalid parameter id') end
+    name = d.name
+  end
+  local result = {}
+  for _, c in ipairs(self.connections or {}) do
+    if c:getParameter('Destination') == name then result[#result+1] = c end
+  end
+  return result
 end
 function element.sendScriptModulation(self, ...) report("sendScriptModulation", "") end
 element.__element = true
@@ -360,25 +358,26 @@ function waitForRelease() return coroutine.yield("release") end
 
 function postEvent(e, delta)
   if delta and delta > 0 then
-    local id = native.nextId()
+    local id = e.id or e.voiceId
+    if not id then id = native.nextId(); e.id = id end
     spawn(function() wait(delta); postEvent(e) end)
     return id
   end
   local t = e.type
   if t == Event.NoteOn then
-    return playNote(e)
+    return native.postNote(e)
   elseif t == Event.NoteOff then
     if e.id or e.voiceId then releaseVoice(e.id or e.voiceId) end
   elseif t == Event.Controller then
     controlChange(e.controller or e.number or 0, e.value or 0, e.channel)
   elseif t == Event.PitchBend then
-    pitchBend(e.value or 0, e.channel)
+    pitchBend(e.bend or e.value or 0, e.channel)
   elseif t == Event.AfterTouch then
     afterTouch(e.value or 0, e.channel)
   elseif t == Event.PolyAfterTouch then
     polyAfterTouch(e.value or 0, e.note or 0, e.channel)
   elseif t == Event.ProgramChange then
-    programChange(e.value or 0, e.channel)
+    programChange(e.program or e.value or 0, e.channel)
   else
     report("postEvent", tostring(t))
   end
@@ -460,7 +459,7 @@ function type(v)
 end
 
 -- What the interface export reads (see ScriptHost::interface).
-function setBackground(path) ui.background = path end
+function setBackground(path) ui.background = native.resourcePath(path) end
 function setSize(w, h) ui.width, ui.height = w, h end
 function setBackgroundColour(c) ui.backgroundColour = c end
 function setKeyColour(key, c) ui.keys[key+1] = c; ui.revision = ui.revision + 1 end
