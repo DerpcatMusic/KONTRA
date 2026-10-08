@@ -142,7 +142,6 @@ fn loop_audit_conflux() {
                 let t = Instant::now();
                 let el = ir_view::view(
                     &mut ui,
-                    "",
                     &face,
                     ir::PageRef(0),
                     &assets,
@@ -223,8 +222,7 @@ fn loop_audit_conflux() {
                     };
                     let el = ir_view::view(
                         &mut ui,
-                        "",
-                        &face,
+                            &face,
                         ir::PageRef(0),
                         &assets,
                         presentation,

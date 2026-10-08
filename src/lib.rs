@@ -2,6 +2,11 @@ pub mod sound;
 pub mod build_info;
 pub mod diagnostics;
 pub mod support;
+#[cfg(feature = "shots")]
+#[path = "../tools/kontra-scan/metrics.rs"]
+pub(crate) mod scan_metrics;
+#[cfg(feature = "shots")]
+pub use ui::scan::one as scan_one;
 #[cfg(feature="plugin")]
 mod artwork;
 #[cfg(feature="plugin")]
