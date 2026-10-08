@@ -609,6 +609,7 @@ impl Runtime {
                     let asset = &prepared.pcm[r.sample];
                     let cursor = r
                         .cursor
+                        .cursor(&prepared.cursor_loops)
                         .with_offset(offset_micros, asset.sample_rate())
                         .with_step(step);
                     self.check_source_ready(asset, cursor, r.envelope)?;
@@ -911,13 +912,14 @@ impl Runtime {
                 let start = prepared
                     .voice_modulation
                     .start_offset(candidate.region, &inputs, seed);
+                let cursor = r.cursor.cursor(&prepared.cursor_loops);
                 let cursor = if trigger == Trigger::Attack {
-                    r.cursor.with_offset(
+                    cursor.with_offset(
                         self.note_events[note.0.index].source_offset_micros,
                         prepared.pcm[r.sample].sample_rate(),
                     )
                 } else {
-                    r.cursor
+                    cursor
                 };
                 let cursor = if start != 0 {
                     cursor.skip(start)
