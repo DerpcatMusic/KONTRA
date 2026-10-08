@@ -766,7 +766,10 @@ impl Prepared {
                 .flat_map(|p| &p.routes)
                 .any(|r| match r.target {
                     super::ModTarget::ProcessorCutoff(i)
-                    | super::ModTarget::ProcessorResonance(i) => i as usize >= self.filters.len(),
+                    | super::ModTarget::ProcessorResonance(i) => !matches!(self.filters.get(i as usize),
+                        Some(super::dsp::svf::PreparedFilter::StateVariable(_))),
+                    super::ModTarget::ProcessorNativeCutoff(i) => !matches!(self.filters.get(i as usize),
+                        Some(super::dsp::svf::PreparedFilter::NativeControl)),
                     _ => false,
                 })
         {
