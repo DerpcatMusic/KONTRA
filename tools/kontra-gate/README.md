@@ -5,9 +5,15 @@ Install the entry point once (no dependencies):
 ```sh
 ln -s /home/derpcat/.t3/worktrees/KONTAKTO/fix-load/tools/kontra-gate/gate.py ~/.cache/kontra-gate
 ~/.cache/kontra-gate <integrate-sha>
+# Wait for other heavy units/processes before timed work:
+~/.cache/kontra-gate <integrate-sha> --require-quiet
 ```
 
 The entry point calls `kontakto-heavy` separately for the build and for each shared-scanner/probe shard. **Do not wrap the entire command in another heavy call**: holding an outer slot prevents fairness between shards. Scans use the shared driver with a 235-second budget. Resume an interrupted run with `--resume <run-dir>`; the requested SHA must match. Exit 2 means the release gate is FAIL or UNKNOWN, not that the collector failed. Operational exceptions leave a failed manifest and ledger row.
+
+Timed scanner, onset-probe and CPU/host workers retain `activity.jsonl` and `activity.json` beside their evidence. Samples at worker boundaries and every second record UTC/monotonic timestamps, active/activating user `kontakto-*` and census units, scanner/build/heavy processes (PID and fixed executable kind only), load averages and cumulative disk I/O counters. The current process family and its unit are recorded as owned and excluded from contention. Any external matching activity during a cell marks it **CONTENDED**; paired load/onset/RSS, CPU, underrun and deadline-miss comparisons retain the numbers but count as UNKNOWN for release. Missing or failed activity observations also stay UNKNOWN. Load averages and disk counters provide context; no invented utilization threshold certifies quiet. Periodic sampling may miss activity shorter than one second.
+
+`--require-quiet` waits outside heavy slots. Every timed worker checks again after admission; a race releases the slot and retries after quiet, and contention beginning during a worker still invalidates its result. Quiet mode does not stop or pause other units; they must become inactive. Cached unobserved/contended cells are remeasured in quiet mode. Gate scanner cache identities include the activity protocol, leaving historical records intact. The new `harness-contention-v1` snapshot preserves earlier harness copies; the manifest records the observer hash and quiet requirement. This instrumentation does not turn historical measurements into quiet evidence.
 
 Each run lives in `~/.cache/kontra-runs/<UTC>-<sha>/`: fixed 19-ID quick15-plus-witness manifest, clean exact-source scanner copy and hashes, integrity-checked immutable v1 references, cold, product-warm and OS-warm shared scanner rows/JSON, v1 fresh/existing-user-cache stage/onset probes, per-item UI audit and redacted plugin diagnostics, `metrics.json`, `summary.md`, `diff.md`. The ledger appends once under a file lock. The optional `--source` selects an existing owned clean checkout at the exact SHA; otherwise an owned detached `gate-<sha>` checkout is created. These are scanner builds with release optimization (`ci`, no cross-crate LTO), **never plugin release builds or installations**.
 
@@ -21,6 +27,7 @@ Checks:
 
 ```sh
 python3 tools/kontra-gate/check.py
+python3 tools/kontra-gate/check-contention.py
 python3 tools/kontra-scan/check.py
 ```
 
