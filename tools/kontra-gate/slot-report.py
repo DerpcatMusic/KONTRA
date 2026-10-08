@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 import sys
 from fidelity import SLOT_METRICS, slot_count
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "kontra-scan"))
+from grouped_diagnostics import aggregate
 
 
 def summarize(receipts):
@@ -36,8 +38,14 @@ def summarize(receipts):
     target_rows=[dict(parameter=p,reason=r,**c) for (p,r),c in targets.items()]
     rank=lambda r:(-r['enabled'],-r['bypassed'],r.get('parameter',r.get('kind','')),r.get('module') or '',r['reason'])
     return dict(items=len(receipts),complete=complete,target_complete=target_complete and complete,counts=counts,
-                rows=sorted(rows,key=lambda r:r['path']),slots=sorted(slot_rows,key=rank),targets=sorted(target_rows,key=rank))
+                rows=sorted(rows,key=lambda r:r['path']),slots=sorted(slot_rows,key=rank),targets=sorted(target_rows,key=rank),
+                diagnostic_groups=aggregate(receipts).report())
 
 
 if __name__=='__main__':
-    print(json.dumps(summarize([json.loads(p.read_text()) for p in sorted(Path(sys.argv[1]).glob('*.json'))]),indent=2))
+    receipts=[json.loads(p.read_text()) for p in sorted(Path(sys.argv[1]).glob('*.json'))]
+    result=summarize(receipts)
+    if len(sys.argv)>2:
+        sidecar=Path(sys.argv[2]); sidecar.write_text(json.dumps({'schema':'grouped-diagnostics-v1','locations':aggregate(receipts).sidecar()},separators=(',',':'))+'\n')
+        result['diagnostic_locations_sidecar']=str(sidecar)
+    print(json.dumps(result,indent=2))

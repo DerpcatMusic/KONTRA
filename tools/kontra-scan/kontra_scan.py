@@ -11,8 +11,11 @@ from pathlib import Path
 import signal
 import shutil
 import subprocess
+import sys
 import time
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from native_family import compare as family_compare
+from grouped_diagnostics import aggregate as grouped_diagnostics
 
 NOTE_ROOT = Path(os.environ.get('KONTRA_SCAN_NOTE_ROOT', Path.home()/'.cache/kontra-scan/notes'))
 SIDECAR = Path(os.environ.get('KONTRA_SCAN_SIDECAR', NOTE_ROOT.parent/'bin/kontra-scan-v1-uvi'))
@@ -66,6 +69,7 @@ def atomic(path, value):
 def extra_columns(r):
     """Unknown is distinct from zero, including old cache records and failed admissions."""
     programs = r.get('programs', [])
+    r['diagnostic_groups'] = grouped_diagnostics([r]).report() if r.get('path') else []
     family = [family_compare(p.get('family_native'),p.get('family_takes',[])) for p in programs]
     r['family_match'] = 'MISMATCH' if any(f['verdict']=='MISMATCH' for f in family) else 'MATCH' if family and all(f['verdict']=='MATCH' for f in family) else 'UNKNOWN'
     r['family_script_driven_count'] = sum(f['script_driven_count'] for f in family) if family else 'unknown'
@@ -229,6 +233,11 @@ def export(out, revision):
         for r in sorted(records, key=lambda r: r['path']):
             writer.writerow([str(r.get(k, '')).replace('\t', ' ').replace('\n', ' ') for k in COLUMNS])
     tmp.replace(out / 'results.tsv')
+    diagnostics = grouped_diagnostics(records)
+    atomic(out / 'diagnostics-locations.json', {'schema':'grouped-diagnostics-v1','locations':diagnostics.sidecar()})
+    atomic(out / 'diagnostics.json', {'schema':'grouped-diagnostics-v1','revision':revision,
+        'items':len(records),'native_inventory_items':sum(bool(r.get('programs')) and all(p.get('dsp_slots',{}).get('complete') is True for p in r['programs']) for r in records),
+        'groups':diagnostics.report(),'locations_sidecar':'diagnostics-locations.json'})
     return len(records)
 
 

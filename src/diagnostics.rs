@@ -17,6 +17,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+pub mod grouped;
 pub const SCHEMA_VERSION: u32 = 1;
 pub const HISTORY_LIMIT: usize = 2048;
 const HISTORY_BYTES: usize = 2 * 1024 * 1024;
@@ -930,8 +931,23 @@ fn session_metadata(path: &Path) -> std::io::Result<(SystemTime, u64)> {
         .modified()?;
     Ok((
         modified,
-        primary.map(|m| m.len()).unwrap_or(0) + previous.map(|m| m.len()).unwrap_or(0),
+        primary.map(|m| m.len()).unwrap_or(0) + previous.map(|m| m.len()).unwrap_or(0)
+            + sidecar_files(path)?.iter().map(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0)).sum::<u64>(),
     ))
+}
+fn sidecar_files(journal: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let directory = grouped::sidecar_directory(journal);
+    let entries = match std::fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    let mut paths = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        if entry.file_type()?.is_file() && entry.path().extension().is_some_and(|e| e == "json") { paths.push(entry.path()); }
+    }
+    paths.sort(); Ok(paths)
 }
 /// Crash logs become eligible as soon as the OS releases the session lock.
 fn retain_sessions(root: &Path, current: &Path) -> std::io::Result<()> {
@@ -969,6 +985,10 @@ fn retain_sessions(root: &Path, current: &Path) -> std::io::Result<()> {
             kept += bytes;
             continue;
         }
+        for sidecar in sidecar_files(&path)? { std::fs::remove_file(sidecar)?; }
+        let directory = grouped::sidecar_directory(&path);
+        // Durable publishers keep lock files beside their own snapshots.
+        if directory.is_dir() { std::fs::remove_dir_all(directory)?; }
         for target in [&path, &previous] {
             match std::fs::remove_file(target) {
                 Ok(()) => {}
@@ -1198,8 +1218,8 @@ fn export_bundle_with_cancel(
         let mut malformed = 0_u64;
         let mut journal_warnings: Vec<String> = Vec::new();
         let (paths, _guards, active_omitted) = export_journals(journal, &mut journal_warnings);
-        let mut source_sessions = Vec::new();
-        for (path, source_session) in paths {
+        let mut source_sessions: Vec<String> = Vec::new();
+        for (path, source_session) in &paths {
             let input = match File::open(&path) {
                 Ok(input) => input,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
@@ -1222,7 +1242,7 @@ fn export_bundle_with_cancel(
                 );
                 continue;
             }
-            if !source_sessions.contains(&source_session) {
+            if !source_sessions.contains(source_session) {
                 source_sessions.push(source_session.clone());
             }
             for line in BufReader::new(input).lines() {
@@ -1253,6 +1273,28 @@ fn export_bundle_with_cancel(
             }
         }
         output.sync_all()?;
+        let mut location_files = Vec::new();
+        for (source, _) in &paths {
+            let journal = if source.to_string_lossy().ends_with(".previous.jsonl") { source.with_extension("").with_extension("jsonl") } else { source.clone() };
+            for sidecar in sidecar_files(&journal)? {
+                #[derive(Deserialize)]
+                struct Locations { schema: String, locations: Vec<grouped::Located> }
+                let read = std::fs::read(&sidecar).and_then(|bytes| serde_json::from_slice::<Locations>(&bytes).map_err(std::io::Error::other));
+                let locations = match read {
+                    Ok(locations) if locations.schema == grouped::SCHEMA => locations,
+                    _ => { journal_warnings.push("Diagnostic location sidecar unavailable or invalid".into()); continue; }
+                };
+                let session = journal.file_stem().unwrap_or_default();
+                let folder = destination.join("diagnostic-locations").join(session);
+                std::fs::create_dir_all(&folder)?;
+                let target = folder.join(sidecar.file_name().unwrap_or_default());
+                if target.exists() { continue; } // Current and rotated journal share the same sidecars.
+                let mut value = json!({"schema":grouped::SCHEMA,"locations":locations.locations}); clean(&mut value, redact);
+                buffr_durable_file::publish_private(&target, &serde_json::to_vec(&value)?)?;
+                location_files.push(target.strip_prefix(destination).unwrap_or(&target).display().to_string());
+            }
+        }
+        report["diagnostic_location_sidecars"] = json!(location_files);
         let crash = crate::support::export_crash_evidence(destination, stopping)?;
         let crash_partial = crash.manifest["coverage"] != "complete_at_capture";
         journal_warnings.extend(crash.warnings);
@@ -1464,7 +1506,7 @@ pub struct LoadTrace {
     report: Value,
     journal_details: Value,
     detail_revision: u64,
-    seen: std::collections::HashSet<(&'static str, &'static str, String)>,
+    grouped: grouped::Collector,
     #[cfg(test)]
     test_session: Option<Arc<Session>>,
     started: Instant,
@@ -1484,7 +1526,7 @@ impl LoadTrace {
             report: json!({"load_id":id,"path":path,"program":program,"part":part,"version":env!("CARGO_PKG_VERSION"),"build_hash":env!("KONTRA_BUILD_HASH"),"import_hash":env!("KONTRA_IMPORT_HASH"),"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"status":"loading","stages_ms":{},"details":{},"issues":[]}),
             journal_details: json!({}),
             detail_revision: 0,
-            seen: Default::default(),
+            grouped: Default::default(),
             #[cfg(test)]
             test_session: None,
             started: Instant::now(),
@@ -1620,40 +1662,62 @@ impl LoadTrace {
         }
         self.issue_details("scripts", code, message, details);
     }
+    /// Translator diagnostics use typed keys; authored values and names never enter them.
+    pub fn missing(&mut self, missing: &crate::sound::report::Missing, instrument: Option<&sampler_ir::Instrument>) {
+        let key = grouped::missing(&missing.feature, &format!("{:?}", missing.reason), &missing.value);
+        let location = grouped::Location::new(self.report["path"].as_str().unwrap_or(""), self.report["program"].as_u64().unwrap_or(0) as u32, &missing.location);
+        // Existing unsupported records lack saved bypass metadata. Do not invent it.
+        let enabled = location.group.and_then(|group| instrument?.kontakt_objects.as_ref()?.groups.get(group).filter(|g| g.muted).map(|_| false));
+        self.grouped_issue(key, location, enabled, json!({"stage":"translate","code":"unsupported"}));
+    }
+    fn grouped_issue(&mut self, key: grouped::Key, location: grouped::Location, enabled: Option<bool>, mut issue: Value) {
+        if !self.grouped.add(key.clone(), location.clone(), enabled, 1) { return; }
+        issue["diagnostic_key"] = json!(key);
+        issue["location"] = json!(location);
+        issue["group"] = json!(self.grouped.groups().into_iter().find(|g| g.key == key));
+        if self.report["issues"].as_array().unwrap().len() < 1024 {
+            self.report["issues"].as_array_mut().unwrap().push(issue.clone());
+        } else {
+            let omitted = self.report["issues_omitted"].as_u64().unwrap_or(0) + 1;
+            self.report["issues_omitted"] = json!(omitted);
+        }
+        self.record("issue", issue);
+    }
     fn issue_details(&mut self, stage: &'static str, code: &'static str, mut message: String, mut issue: Value) {
         truncate(&mut message, 4096);
         issue["stage"] = json!(stage);
         issue["code"] = json!(code);
         issue["message"] = json!(message);
-        let key = (stage, code, message.clone());
-        if self.seen.contains(&key) {
-            return;
+        if matches!(code, "failed" | "initialization_failed") { self.report["last_error"] = issue.clone(); }
+        let mut location = grouped::Location::new(self.report["path"].as_str().unwrap_or(""), self.report["program"].as_u64().unwrap_or(0) as u32, &message);
+        let (slot, line) = script_location(&message);
+        if let Some(slot) = slot { location.slot = None; location.script_slot = Some(slot as usize); }
+        location.line = location.line.or(line.map(|n| n as usize));
+        self.grouped_issue(grouped::Key::new(stage, code, "UnknownSubject"), location, None, issue);
+    }
+    fn diagnostic_summary(&mut self) {
+        let groups = self.grouped.groups();
+        self.report["diagnostic_groups"] = json!(groups);
+        #[cfg(test)]
+        let path = self.test_session.as_ref().map(|s| s.path.clone()).unwrap_or_else(|| session().path.clone());
+        #[cfg(not(test))]
+        let path = session().path.clone();
+        let id = self.report["load_id"].as_str().unwrap_or("unknown");
+        match grouped::write_sidecar(&self.grouped, &path, id) {
+            Ok(path) => self.report["diagnostic_locations_sidecar"] = json!(path),
+            Err(error) => self.report["diagnostic_locations_error"] = json!(error.to_string()),
         }
-        if self.seen.len() >= 1024 {
-            let error = matches!(code, "failed" | "initialization_failed");
-            if error && self.report["last_error"] == issue {
-                return;
-            }
-            let omitted = self.report["issues_omitted"].as_u64().unwrap_or(0) + 1;
-            self.report["issues_omitted"] = json!(omitted);
-            if omitted == 1 {
-                self.record("issue", json!({"stage":stage,"code":"diagnostics_truncated","message":"Load report issues retain the first 1024 distinct examples; additional occurrences are counted in issues_omitted. Additional warnings and errors wait for bounded worker queue capacity; recorder drop/write counters report delivery failure. The latest error is retained as last_error"}));
-            }
-            if error {
-                self.report["last_error"] = issue.clone();
-            }
-            self.record("issue", issue);
-            return;
+        for group in groups {
+            self.record("diagnostic_summary", json!({"group":group,"locations_sidecar":self.report["diagnostic_locations_sidecar"],"locations_error":self.report["diagnostic_locations_error"]}));
         }
-        self.seen.insert(key);
-        self.report["issues"]
-            .as_array_mut()
-            .unwrap()
-            .push(issue.clone());
-        self.record("issue", issue);
+    }
+    #[cfg(feature = "plugin")]
+    pub(crate) fn runtime_log(&self) -> grouped::RuntimeLog {
+        grouped::RuntimeLog::new(self.report["load_id"].as_str().unwrap_or("unknown"), self.report["path"].as_str().unwrap_or(""), self.report["program"].as_u64().unwrap_or(0) as u32)
     }
     pub fn finish(mut self, status: &str) -> Arc<Value> {
         self.end_stage();
+        self.diagnostic_summary();
         self.report["elapsed_ms"] = json!(self.started.elapsed().as_secs_f64() * 1000.);
         self.report["status"] = json!(if status == "loaded"
             && !self.report["issues"].as_array().unwrap().is_empty()
@@ -1673,6 +1737,9 @@ impl LoadTrace {
                 "issues_retained":self.report["issues"].as_array().unwrap().len(),
                 "issues_omitted":self.report["issues_omitted"].as_u64().unwrap_or(0),
                 "last_error":self.report["last_error"],
+                "diagnostic_groups":self.grouped.groups().len(),
+                "diagnostic_locations_sidecar":self.report["diagnostic_locations_sidecar"],
+                "diagnostic_locations_error":self.report["diagnostic_locations_error"],
             }),
         );
         Arc::new(self.report.clone())
@@ -1681,6 +1748,7 @@ impl LoadTrace {
 impl Drop for LoadTrace {
     fn drop(&mut self) {
         if !self.finished {
+            self.diagnostic_summary();
             self.report["status"] = json!("incomplete");
             self.record(
                 "load_incomplete",
@@ -1921,66 +1989,51 @@ mod tests {
     }
 
     #[test]
-    fn load_warning_journal_retains_records_beyond_report_example_limit() {
-        let directory = std::env::temp_dir().join(format!("kontra-load-warning-contract-{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
-        let session = Session::start(directory.join("logs"));
+    fn session_retention_accounts_for_location_sidecars() {
+        let directory = tempfile::tempdir().unwrap();
+        let old = directory.path().join("session-old.jsonl");
+        let current = directory.path().join("session-current.jsonl");
+        std::fs::write(&old, b"{}\n").unwrap(); std::fs::write(&current, b"{}\n").unwrap();
+        let sidecar = grouped::write_sidecar(&grouped::Collector::default(), &old, "1-2-3").unwrap();
+        OpenOptions::new().write(true).open(&sidecar).unwrap().set_len(65*1024*1024).unwrap();
+        retain_sessions(directory.path(), &current).unwrap();
+        assert!(!old.exists()); assert!(!sidecar.exists()); assert!(current.exists());
+    }
+
+    #[test]
+    fn load_warnings_group_counts_and_keeps_full_location_sidecar() {
+        let directory = tempfile::tempdir().unwrap();
+        let session = Session::start(directory.path().join("logs"));
         let mut trace = LoadTrace::new(Path::new("Authored warning fixture.nki"), 0, None);
-        // An isolated real worker/journal avoids unrelated parallel producers
-        // changing this contract's queue pressure or rotating its history away.
         trace.test_session = Some(session.clone());
-        let flush = || {
-            let (reply, done) = mpsc::channel();
-            lock(&session.sender).as_ref().unwrap().send(Command::Flush(reply)).unwrap();
-            done.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
-        };
-        // Pause the real disk worker, fill its queue, then let the load worker
-        // continue through backpressure. No intermediate flush hides burst loss.
-        let (entered, paused) = mpsc::channel();
-        let (resume, resumed) = mpsc::channel();
-        lock(&session.sender).as_ref().unwrap().send(Command::Pause(entered, resumed)).unwrap();
-        paused.recv_timeout(Duration::from_secs(5)).unwrap();
-        let (filled, full) = mpsc::channel();
-        let producer = std::thread::spawn(move || {
-            for n in 0..4098 {
-                trace.issue("effects", "unsupported_group_effect", format!("Group {n}: authored unsupported effect"));
-                if n == QUEUE_LIMIT - 1 { filled.send(()).unwrap(); }
-            }
-            trace.issue("effects", "unsupported_group_effect", "Group 0: authored unsupported effect");
-            trace.finish("loaded")
-        });
-        full.recv_timeout(Duration::from_secs(5)).unwrap();
-        assert!(lock(&session.history).status.total_events <= (QUEUE_LIMIT + 2) as u64, "the load worker waits on the bounded queue");
-        resume.send(()).unwrap();
-        let report = producer.join().unwrap();
-        flush();
-        assert_eq!(report["issues"].as_array().unwrap().len(), 1024);
-        assert_eq!(report["issues_omitted"], 3074, "known duplicates are not omitted examples");
-        assert_eq!(report["status"], "partial");
-        let journal = std::fs::read_to_string(&session.path).unwrap();
-        let records: Vec<Value> = journal.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
-        let warnings: Vec<_> = records.iter().filter(|row| row["code"] == "unsupported_group_effect").collect();
-        assert_eq!(warnings.len(), 4098, "every distinct warning reaches the real journal after the report cap");
-        for n in [0, 1023, 1024, 4097] {
-            let message = format!("Group {n}: authored unsupported effect");
-            assert_eq!(warnings.iter().filter(|row| row["reason"] == message).count(), 1);
+        for n in 0..4098 {
+            trace.issue("effects", "unsupported_group_effect", format!("Group {n}: authored unsupported effect"));
         }
-        let history = lock(&session.history);
-        assert!(history.events.len() <= HISTORY_LIMIT);
-        assert_eq!((history.status.dropped_events, history.status.write_errors), (0, 0));
-        assert_eq!(history.status.journal_events_written, records.len() as u64);
-        assert!(history.status.history_evicted > 0);
-        let snapshot = DiagnosticSnapshot {
-            revision: revision(), events: history.events.iter().map(|(event, _)| event.clone()).collect(),
-            status: history.status.clone(), build: build_identity(),
-        };
-        drop(history);
-        let bundle = directory.join("bundle");
-        export_bundle(&bundle, &json!({"load":report.as_ref()}), &snapshot, &session.path, None).unwrap();
-        let exported = std::fs::read_to_string(bundle.join("journal.jsonl")).unwrap();
-        assert_eq!(exported.lines().filter(|line| serde_json::from_str::<Value>(line).unwrap()["code"] == "unsupported_group_effect").count(), 4098, "support export includes warnings omitted only from the load summary");
+        trace.issue("effects", "unsupported_group_effect", "Group 0: authored unsupported effect");
+        let report = trace.finish("loaded");
+        assert_eq!(report["issues"].as_array().unwrap().len(), 1, "location changes must not duplicate an error");
+        assert_eq!(report["status"], "partial");
+        let (reply, done) = mpsc::channel();
+        lock(&session.sender).as_ref().unwrap().send(Command::Flush(reply)).unwrap();
+        done.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+        let records: Vec<Value> = std::fs::read_to_string(&session.path).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+        assert_eq!(records.iter().filter(|row| row["code"] == "unsupported_group_effect").count(), 1);
+        let groups = report["diagnostic_groups"].as_array().unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0]["unknown"], 4099);
+        assert_eq!(groups[0]["locations"].as_array().unwrap().len(), 16);
+        let sidecar: Value = serde_json::from_slice(&std::fs::read(report["diagnostic_locations_sidecar"].as_str().unwrap()).unwrap()).unwrap();
+        assert_eq!(sidecar["locations"].as_array().unwrap().len(), 4098);
+        let snapshot = DiagnosticSnapshot { revision: revision(), events: Vec::new(), status: lock(&session.history).status.clone(), build: build_identity() };
+        let bundle = directory.path().join("bundle");
+        export_bundle(&bundle, &json!({"load":report.as_ref(),"redact_paths":true}), &snapshot, &session.path, None).unwrap();
+        let manifest: Value = serde_json::from_slice(&std::fs::read(bundle.join("report.json")).unwrap()).unwrap();
+        let copied = manifest["diagnostic_location_sidecars"].as_array().unwrap();
+        assert_eq!(copied.len(), 1);
+        let exported: Value = serde_json::from_slice(&std::fs::read(bundle.join(copied[0].as_str().unwrap())).unwrap()).unwrap();
+        assert_eq!(exported["locations"].as_array().unwrap().len(), 4098);
         let mut owner = Some(session.clone());
         stop(&mut owner).unwrap();
-        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -2304,11 +2357,11 @@ mod tests {
         trace.fail("Cannot finish sample headers");
         let report = trace.finish("failed");
         assert_eq!(
-            report["issues_omitted"], 3,
-            "known duplicates are not counted as lost examples"
+            report["issues_omitted"].as_u64().unwrap_or(0), 0,
+            "repeated locations increment grouped counts rather than consuming examples"
         );
         assert_eq!(report["failure"], "Cannot finish sample headers");
-        assert!(serde_json::to_vec(report.as_ref()).unwrap().len() > EVENT_BYTES);
+        assert!(serde_json::to_vec(report.as_ref()).unwrap().len() < EVENT_BYTES);
         let recent = snapshot();
         let events: Vec<_> = recent
             .events
@@ -2337,17 +2390,15 @@ mod tests {
             .find(|row| row.event == "load_finished")
             .unwrap();
         assert_eq!(summary.details["details"]["zones_total"], 95_624);
-        assert_eq!(summary.details["issues_retained"], 1024);
-        assert_eq!(summary.details["issues_omitted"], 3);
+        assert_eq!(summary.details["issues_retained"], 4);
+        assert_eq!(summary.details["issues_omitted"], 0);
         assert_eq!(
             summary.details["last_error"]["message"],
             "Cannot finish sample headers"
         );
         assert!(
-            events.iter().any(|row| row.script_slot == Some(3)
-                && row.line == Some(91)
-                && row.level == LogLevel::Error),
-            "partial initialization errors are journaled even after the example budget fills"
+            report["diagnostic_groups"].as_array().unwrap().iter().any(|group| group["locations"].as_array().unwrap().iter().any(|location| location["script_slot"] == 3 && location["line"] == 91)),
+            "later fault locations remain available without duplicate error records"
         );
         assert_eq!(
             summary.reason.as_deref(),

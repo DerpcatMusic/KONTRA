@@ -69,6 +69,7 @@ pub struct Part {
     /// DAW pairs some node plays to directly, as a bit set.
     direct: u32,
     problems: RuntimeProblems,
+    pub(crate) fault_inbox: Arc<super::report::FaultInbox>,
     /// Velocity, channel, CC or program selecting articulations, when not keys.
     articulator: Option<Articulator>,
     /// The part's switching for each driver, from its instrument, and which
@@ -206,6 +207,7 @@ impl Part {
             audible: vec![true; count].into_boxed_slice(),
             direct: 0,
             problems: RuntimeProblems::default(),
+            fault_inbox: Arc::new(super::report::FaultInbox::default()),
             articulator,
             drivers: Vec::new(),
             switching: 0,
@@ -1101,6 +1103,9 @@ impl Core for V2Core {
         for (index, part) in parts.iter_mut().enumerate() {
             let Some(part) = part else { continue };
             part.runtime.flush_behaviors_at(|_, _, outcome, program| {
+                if matches!(outcome, sampler_core::Outcome::Fault(_) | sampler_core::Outcome::FuelExhausted) {
+                    part.fault_inbox.record(program, outcome);
+                }
                 if let sampler_core::Outcome::Fault(error) = outcome {
                     part.problems.fault_program = program as u64 + 1;
                     part.problems.fault_error = sampler_core::Error::ALL.iter().position(|e| *e == error).unwrap_or(0) as u64;
