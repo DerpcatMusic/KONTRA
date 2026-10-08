@@ -368,7 +368,6 @@ struct EditorState {
     /// How far the rack is scrolled (where it glides to), a part to scroll
     /// to once it is laid out, and a part's height while its edge is dragged.
     rack_y: f64,
-    /// Child scroll offsets used to keep a consumed wheel out of the rack.
     rack_scrolls: HashMap<String, [f64; 2]>,
     /// Where the rack was scrolled to when last drawn.
     rack_drawn: f64,
