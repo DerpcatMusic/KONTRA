@@ -332,3 +332,22 @@ fn signal_trace_host_fader_rack_and_master_hooks_are_bounded_and_sample_clocked(
         assert!((row.output.rms[1] - right).abs() < 1e-7);
     }
 }
+
+#[test]
+fn signal_trace_amp_parameters_describe_the_live_envelope_not_its_authored_default() {
+    use sampler_core::{EngineParameterAddress, EngineParameterLaw, engine_parameter_id};
+    let plan = plan(false, 0).with_groups(1, vec![Some(0)]).unwrap()
+        .with_group_envelope_parameters(0, 88, 0, Envelope::default()).unwrap()
+        .with_signal_trace(4096).unwrap();
+    let mut rt = Runtime::new(plan, limits()).unwrap();
+    let reader = rt.signal_trace_reader().unwrap();
+    let address = EngineParameterAddress {parameter:engine_parameter_id("ENGINE_PAR_ATTACK").unwrap(),group:88,slot:0,generic:-1};
+    rt.set_engine_parameter(address, 449120).unwrap();
+    rt.trigger(input(), 60, 0.5).unwrap();
+    support::without_heap(|| {rt.render(&mut [[0.;2];64]).unwrap();});
+    let row=reader.drain().into_iter().find(|r|reader.graph.nodes[r.node].kind=="amplifier").unwrap();
+    let index=reader.graph.nodes[row.node].parameters.iter().position(|p|p.name=="attack_frames").unwrap();
+    let expected=EngineParameterLaw::ShiftedExponential {low:96.,high:15002.*48.,offset:96.}.decode(449120).round();
+    assert!((row.values[index]-expected).abs()<1.,"{} vs {}",row.values[index],expected);
+    assert_eq!(row.normalized[index],Some(EngineParameterLaw::ShiftedExponential {low:96.,high:15002.*48.,offset:96.}.encode(expected)));
+}

@@ -599,7 +599,7 @@ impl Runtime {
         let trace = if TRACE {
             plan.prepared.signal_trace.as_ref().zip(plan.dsp.trace.as_mut()).and_then(|(t, recorder)|
                 t.graph.voices.get(&v.source_zone).map(|nodes| crate::trace::VoiceTrace { recorder,
-                    graph: &t.graph, nodes, identity: crate::trace::TraceIdentity { zone: v.source_zone,
+                    graph: &t.graph, nodes, envelope_parameters:v.envelope.trace_parameters(), identity: crate::trace::TraceIdentity { zone: v.source_zone,
                         sample: v.sample, family: v.family.0.index, generation: v.family.0.generation,
                         ratio: v.cursor.step(), source_frame: v.cursor.trace_position(), sample_start: v.cursor.trace_start(), velocity: n.velocity, key:n.pitch.key(),
                         rr_sequence:plan.prepared.trace_region_take(nodes.region).map(|t|t.sequence),
