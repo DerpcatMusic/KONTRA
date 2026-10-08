@@ -20,6 +20,7 @@
 
 
 mod kontakt;
+mod cache;
 use moose::mui::mui::scene::Image;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -668,6 +669,10 @@ pub fn is_preset(path: &Path) -> bool {
 
 /// Presets in a library folder, its sample folders left unread.
 fn presets(dir: &Path, progress: &Progress) -> (Vec<PathBuf>, HashMap<PathBuf, Snapshots>) {
+    cached_presets(dir, progress, &mut cache::Cache::default())
+}
+
+fn cached_presets(dir: &Path, progress: &Progress, cache: &mut cache::Cache) -> (Vec<PathBuf>, HashMap<PathBuf, Snapshots>) {
     let mut trace = crate::diagnostics::LoadTrace::new(dir, 0, None);
     trace.detail("operation", "preset_catalog");
     trace.stage("catalog");
@@ -693,17 +698,18 @@ fn presets(dir: &Path, progress: &Progress) -> (Vec<PathBuf>, HashMap<PathBuf, S
         let path = e.path();
         if !e.file_type().is_file() { continue; }
         if path.extension().is_some_and(|s| s.eq_ignore_ascii_case("nksn")) {
-            match crate::sound::v2::snapshot_instrument(path) {
-                Ok(name) => snapshots.entry(name).or_default().push(e.into_path()),
-                Err(error) => trace.issue("catalog", "snapshot_metadata_failed", format!("{}: {error:#}", path.display())),
-            }
+            if let Some(cache::Metadata::Snapshot(name)) = cache.memo(path, || match crate::sound::v2::snapshot_instrument(path) {
+                Ok(name) => Some(cache::Metadata::Snapshot(name)),
+                Err(error) => { trace.issue("catalog", "snapshot_metadata_failed", format!("{}: {error:#}", path.display())); None }
+            }) { snapshots.entry(name).or_default().push(e.into_path()); }
         } else if is_preset(path) {
+            cache.observe(path);
             out.push(e.into_path());
         } else if path.extension().is_some_and(|x| x.eq_ignore_ascii_case("ufs")) {
-            match sampler_uvi::Bank::open(path) {
-                Ok(bank) => out.extend(bank.programs().into_iter().map(|member| path.join(member))),
-                Err(e) => trace.issue("catalog", "bank_unreadable", e.to_string()),
-            }
+            if let Some(cache::Metadata::Bank(members)) = cache.memo(path, || match sampler_uvi::Bank::open(path) {
+                Ok(bank) => Some(cache::Metadata::Bank(bank.programs())),
+                Err(e) => { trace.issue("catalog", "bank_unreadable", e.to_string()); None }
+            }) { out.extend(members.into_iter().map(|member| path.join(member))); }
         }
     }
     let mut matched = HashMap::new();
@@ -714,10 +720,10 @@ fn presets(dir: &Path, progress: &Progress) -> (Vec<PathBuf>, HashMap<PathBuf, S
         let mut bases: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
         for base in out.iter().filter(|p| p.extension().is_some_and(|s| s.eq_ignore_ascii_case("nki"))) {
             if progress.canceled() { break; }
-            match crate::sound::v2::snapshot_base_name(base) {
-                Ok(name) => bases.entry(name).or_default().push(base.clone()),
-                Err(error) => trace.issue("catalog", "snapshot_base_metadata_failed", format!("{}: {error:#}", base.display())),
-            }
+            if let Some(cache::Metadata::Instrument(name)) = cache.memo(base, || match crate::sound::v2::snapshot_base_name(base) {
+                Ok(name) => Some(cache::Metadata::Instrument(name)),
+                Err(error) => { trace.issue("catalog", "snapshot_base_metadata_failed", format!("{}: {error:#}", base.display())); None }
+            }) { bases.entry(name).or_default().push(base.clone()); }
         }
         for (name, bases) in bases {
             if let Some(paths) = snapshots.get(&name) {
@@ -738,6 +744,10 @@ fn presets(dir: &Path, progress: &Progress) -> (Vec<PathBuf>, HashMap<PathBuf, S
 
 /// Every library in `roots` and its presets; `None` once canceled.
 pub fn scan(roots: &[Root], progress: &Progress) -> Option<(Shelf, Vec<PathBuf>)> {
+    cached_scan(roots, progress, &mut cache::Cache::default())
+}
+
+fn cached_scan(roots: &[Root], progress: &Progress, cache: &mut cache::Cache) -> Option<(Shelf, Vec<PathBuf>)> {
     let mut libraries: Vec<Library> = Vec::new();
     let mut files = BTreeSet::new();
     let mut snapshots = HashMap::new();
@@ -753,7 +763,7 @@ pub fn scan(roots: &[Root], progress: &Progress) -> Option<(Shelf, Vec<PathBuf>)
             if !seen.insert(key) {
                 continue;
             }
-            let (found, matched) = presets(&c.dir, progress);
+            let (found, matched) = cached_presets(&c.dir, progress, cache);
             snapshots.extend(matched);
             if progress.canceled() {
                 trace.finish("canceled");
@@ -763,7 +773,10 @@ pub fn scan(roots: &[Root], progress: &Progress) -> Option<(Shelf, Vec<PathBuf>)
                 continue;
             }
             let (folder_name, bracket) = clean_name(&file_name(&c.dir));
-            let product = c.nicnt.as_deref().and_then(product);
+            let product = c.nicnt.as_deref().and_then(|path| cache.memo(path, || {
+                let (name, vendor) = product(path).unwrap_or_default();
+                Some(cache::Metadata::Product(name, vendor))
+            })).and_then(|m| match m { cache::Metadata::Product(name, vendor) => Some((name, vendor)), _ => None });
             let (name, company) = product.unwrap_or_default();
             let vendor = [company, bracket, c.vendor.unwrap_or_default()]
                 .into_iter()
@@ -1066,7 +1079,12 @@ impl Scanner {
                 if let Some(multis) = multis {
                     roots.push(Root { path: multis.to_string_lossy().into_owned(), single: true });
                 }
-                let scanned = scan(&roots, &progress).map(|(mut shelf, files)| {
+                let cache_path = cache::Cache::path();
+                let mut cache = cache::Cache::load(cache_path.as_deref());
+                let scanned = cached_scan(&roots, &progress, &mut cache).map(|(mut shelf, files)| {
+                    if let Err(error) = cache.save(cache_path.as_deref()) {
+                        crate::diagnostics::resource(cache_path.as_deref().unwrap_or(Path::new("library index")), "library index", &error.to_string());
+                    }
                     let artwork = crate::artwork::scan(&shelf.libraries);
                     for library in &mut shelf.libraries {
                         if !artwork.contains_key(&library.name) && !progress.canceled() {
@@ -1173,6 +1191,50 @@ mod tests {
         assert_eq!(files, [root.join("Instruments/Piano.nki")]);
         assert_eq!(shelf.libraries[0].instruments, 1);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn incremental_catalog_reuses_product_metadata_and_drops_removed_presets() {
+        let root = tree("incremental", &[("Product.nicnt", NICNT), ("Instruments/Piano.nki", "preset")]);
+        let roots = [Root { path: root.to_string_lossy().into_owned(), single: true }];
+        let index = root.join("index.json");
+        let mut cache = cache::Cache::default();
+        let (first, files) = cached_scan(&roots, &Progress::default(), &mut cache).unwrap();
+        assert_eq!(cache.stats.reads, 1);
+        cache.save(Some(&index)).unwrap();
+        let mut cache = cache::Cache::load(Some(&index));
+        let (second, next) = cached_scan(&roots, &Progress::default(), &mut cache).unwrap();
+        assert_eq!(files, next);
+        assert_eq!(first.libraries, second.libraries);
+        assert_eq!((cache.stats.changed, cache.stats.reads), (0, 0));
+        std::fs::remove_file(root.join("Instruments/Piano.nki")).unwrap();
+        std::fs::write(root.join("Instruments/Organ.nki"), b"new preset").unwrap();
+        let (_, changed) = cached_scan(&roots, &Progress::default(), &mut cache::Cache::load(Some(&index))).unwrap();
+        assert_eq!(changed, [root.join("Instruments/Organ.nki")]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "local metadata-only warm-start receipt; set KONTRA_CATALOG_RECEIPT"]
+    fn w14_real_catalog_second_start() {
+        let out = PathBuf::from(std::env::var_os("KONTRA_CATALOG_RECEIPT").expect("receipt"));
+        let roots: Vec<Root> = ["/mnt/MAIN_STORAGE/Libraries/Kontakt", "/mnt/MAIN_STORAGE/Libraries/UVI"].into_iter()
+            .map(|p| Root { path: p.into(), single: false }).collect();
+        assert!(roots.iter().all(|r| Path::new(&r.path).is_dir()));
+        let rep = std::env::var("KONTRA_CATALOG_REP").unwrap_or_else(|_| "0".into());
+        let index = out.join(format!("library-index-v2-{rep}.json"));
+        let mode = std::env::var("KONTRA_CATALOG_MODE").expect("before or after");
+        let start: usize = std::env::var("KONTRA_CATALOG_START").unwrap().parse().unwrap();
+        assert!(matches!(mode.as_str(), "before" | "after") && start < 2);
+        let begin = std::time::Instant::now();
+        let mut cache = if mode == "before" || start == 0 { cache::Cache::default() } else { cache::Cache::load(Some(&index)) };
+        let (shelf, files) = cached_scan(&roots, &Progress::default(), &mut cache).unwrap();
+        let ms = begin.elapsed().as_secs_f64() * 1000.;
+        if mode == "after" { cache.save(Some(&index)).unwrap(); }
+        eprintln!("CATALOG mode={mode} rep={rep} start={start} libraries={} roots={:?} presets={} elapsed_ms={ms:.3} changed={} metadata_reads={} reused={}",
+            shelf.libraries.len(), shelf.per_root, files.len(), cache.stats.changed, cache.stats.reads, cache.stats.reused);
+        if mode == "after" && start == 1 { assert_eq!((cache.stats.changed, cache.stats.reads), (0, 0)); }
+
     }
 
 
