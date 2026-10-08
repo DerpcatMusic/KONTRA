@@ -143,6 +143,7 @@ struct Builder<'p> {
     ui: ir::Interface,
     assets: HashMap<String, ir::AssetRef>,
     styles: HashMap<(i32, i32), ir::StyleRef>,
+    fonts: Vec<ir::AssetRef>,
     picture: &'p dyn Fn(&str) -> Option<ir::ImageMeta>,
 }
 
@@ -183,7 +184,7 @@ impl Builder<'_> {
             ];
             let factory = usize::try_from(font).ok().filter(|&f| f < COLORS.len());
             self.ui.styles.push(ir::TextStyle {
-                font: ir::Font::Stock(font),
+                font: font.checked_sub(26).and_then(|n| self.fonts.get(n as usize)).copied().map_or(ir::Font::Stock(font), ir::Font::Bitmap),
                 size: factory
                     .filter(|f| matches!(f, 1 | 5 | 7 | 16 | 17 | 20))
                     .map(|_| 13.),
@@ -242,8 +243,14 @@ pub fn interface(
         },
         assets: HashMap::new(),
         styles: HashMap::new(),
+        fonts: Vec::new(),
         picture,
     };
+    for name in &m.fonts {
+        let asset = ir::AssetRef(bld.ui.assets.len());
+        bld.ui.assets.push(ir::Asset { path: picture_path(name), kind: ir::AssetKind::BitmapFont });
+        bld.fonts.push(asset);
+    }
     let page = ir::PageRef(0);
     let mut background = ir::Background {
         offset_y: m.skin_offset.unwrap_or(0),

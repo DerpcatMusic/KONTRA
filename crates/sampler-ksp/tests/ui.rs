@@ -109,7 +109,7 @@ fn ksp_interface_maps_to_validated_ui_ir() {
     let Kind::Table { cells, .. } = &table.kind else {
         panic!()
     };
-    assert_eq!(cells[2], 7);
+    assert_eq!(cells[2], 7.);
     assert_eq!(
         button.placement,
         sampler_ui_ir::Placement::Grid { column: 2, row: 3 }
@@ -258,4 +258,21 @@ fn a_saved_menu_is_the_item_position_not_its_value() {
         "{:?}",
         widget.value
     );
+}
+
+#[test]
+fn custom_fonts_do_not_collide_with_factory_fonts() {
+    let source = r#"on init
+        declare ui_label $label(1,1)
+        declare $first
+        declare $second
+        $first := get_font_id("first")
+        $second := get_font_id("second")
+        set_control_par(get_ui_id($label),$CONTROL_PAR_FONT_TYPE,get_font_id("first"))
+        end on"#;
+    let script = sampler_ksp::compile(source, 48000, sampler_ksp::Limits { source_bytes: 4096, instructions: 256, variables: 16, array_cells: 16 }, &[]).unwrap();
+    let ui = script.ui(&|_| None).unwrap();
+    assert_eq!(script.model().interface.fonts, vec!["first", "second"]);
+    assert!(matches!(ui.styles[0].font, sampler_ui_ir::Font::Bitmap(_)));
+    assert_eq!(ui.assets[0].path, "Resources/pictures/first.png");
 }
