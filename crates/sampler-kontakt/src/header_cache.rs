@@ -119,6 +119,17 @@ fn encode(sources: &[Arc<Source>], pcm: &[Pcm]) -> Option<Vec<u8>> {
             next
         });
     }
+    let weight = (MAGIC.len() as u64)
+        .checked_add(16)?
+        .checked_add((sources.len() as u64).checked_mul(37)?)?
+        .checked_add(files.iter().try_fold(0u64, |sum, file| {
+            let len = file.to_str()?.len();
+            (len <= 32768).then_some(())?;
+            sum.checked_add(len as u64 + 32)
+        })?)?;
+    if weight > BUDGET {
+        return None;
+    }
     let mut bytes = MAGIC.to_vec();
     bytes.extend((files.len() as u64).to_le_bytes());
     for file in files {

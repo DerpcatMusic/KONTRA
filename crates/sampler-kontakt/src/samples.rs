@@ -269,7 +269,7 @@ impl Samples {
         }
         let workers = std::thread::available_parallelism()
             .map_or(1, |n| n.get())
-            .min(4);
+            .min(8);
         std::thread::scope(|scope| {
             let jobs: Vec<_> = locations
                 .chunks(locations.len().div_ceil(workers))
