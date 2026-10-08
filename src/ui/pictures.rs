@@ -32,33 +32,34 @@ impl Source {
     pub(crate) fn read(&mut self, path: &str) -> Option<Vec<u8>> {
         match &self.uvi {Some(uvi)=>uvi.read(path),None=>self.kontakt.read(path)}
     }
+    pub(super) fn native_names(&mut self)->Vec<String> {
+        let mut names=self.kontakt.names("resources/native_ui/");names.extend(self.kontakt.names("native_ui/"));names.sort();names.dedup();names
+    }
     pub fn font(&mut self, asset: &ir::Asset) -> Option<moose::mui::mui::prelude::Font> {
         moose::mui::mui::prelude::Font::new(self.read(&asset.path)?).ok()
     }
 
-    /// `asset` decoded and cut into its frames.
-    pub fn load(&mut self, asset: &ir::Asset) -> Option<Arc<Picture>> {
-        let bytes = self.read(&asset.path);
+    /// Compatibility probe: one frame, never an eagerly decoded strip.
+    pub fn load(&mut self, asset:&ir::Asset)->Option<Arc<Picture>> {self.load_frame(asset,0,[u32::MAX;2],None,||false)}
+    pub(super) fn load_frame(&mut self,asset:&ir::Asset,frame:usize,target:[u32;2],window:Option<[u32;4]>,canceled:impl Fn()->bool)->Option<Arc<Picture>> {
+        let bytes=self.read(&asset.path);
         #[cfg(feature = "shots")]
         { self.scan.lookups += 1; self.scan.lookup_ok += usize::from(bytes.is_some()); }
-        let image = crate::artwork::decode(&bytes?);
+        let bytes=bytes?;
+        let meta=match asset.kind {ir::AssetKind::Image(m)=>m,ir::AssetKind::BitmapFont=>ir::ImageMeta::default(),_=>return None};
+        let image=super::picture_decode::decode(&bytes,meta,frame,target,window,canceled);
         #[cfg(feature = "shots")]
         { self.scan.decodes += 1; self.scan.decode_ok += usize::from(image.is_some()); }
-        let image = image?;
+        let image=image?;
         if matches!(asset.kind, ir::AssetKind::BitmapFont) {
-            // Kontakt requires a sidecar and one font frame.
-            let sidecar = format!("{}.txt", asset.path.rsplit_once('.')?.0);
-            let text = self.read(&sidecar)?;
-            if sampler_ksp::ui::picture_meta(&String::from_utf8_lossy(&text)).frames != 1 { return None; }
-            return Some(Arc::new(Picture { frames: font_frames(&image)? }));
+            let sidecar=format!("{}.txt",asset.path.rsplit_once('.')?.0);
+            let text=self.read(&sidecar)?;
+            if sampler_ksp::ui::picture_meta(&String::from_utf8_lossy(&text)).frames!=1 {return None;}
+            return Some(Arc::new(Picture::new(font_frames(&image)?)));
         }
-        let ir::AssetKind::Image(meta) = &asset.kind else { return None };
-        let n = meta.frames.max(1);
-        let vertical = meta.axis == ir::Orientation::Vertical;
-        let (fw, fh) = if vertical { (image.width, image.height / n) } else { (image.width / n, image.height) };
-        let frames: Vec<_> = (0..n).map_while(|f| if vertical { crop(&image, 0, f * fh, fw, fh) } else { crop(&image, f * fw, 0, fw, fh) }).collect();
-        (!frames.is_empty()).then(|| Arc::new(Picture { frames }))
+        Some(Arc::new(Picture::prepared(Arc::new(image),frame,meta.frames.max(1) as usize,window)))
     }
+
 }
 
 pub(crate) fn crop(image: &Image, x: u32, y: u32, w: u32, h: u32) -> Option<Arc<Image>> {
@@ -105,22 +106,5 @@ pub(crate) fn font_glyph(c: char) -> usize {
 }
 
 
-/// Cuts are reused between frames; retained source Arcs prevent address reuse.
-/// The process-wide pixel budget also bounds nine-slice and wallpaper windows.
-pub(crate) fn cut(image: &Arc<Image>, area: [u32; 4]) -> Option<Arc<Image>> {
-    use std::{collections::HashMap, sync::{Mutex, OnceLock}};
-    type Cuts = HashMap<(usize, [u32;4]), (Arc<Image>, Arc<Image>)>;
-    static CACHE: OnceLock<Mutex<(Cuts, usize)>> = OnceLock::new();
-    let mut cache = CACHE.get_or_init(|| Mutex::new((HashMap::new(), 0))).lock().ok()?;
-    let key = (Arc::as_ptr(image) as usize, area);
-    if let Some((_, cut)) = cache.0.get(&key) { return Some(cut.clone()); }
-    let [x,y,w,h] = area;
-    let piece = crop(image,x,y,w,h)?;
-    let bytes = piece.rgba.len() + image.rgba.len();
-    if bytes <= 64 << 20 {
-        if cache.1 + bytes > 64 << 20 { cache.0.clear(); cache.1 = 0; }
-        cache.1 += bytes;
-        cache.0.insert(key,(image.clone(),piece.clone()));
-    }
-    Some(piece)
-}
+/// Wake signature for authored resource preparation, independent of Logs visibility.
+pub(crate) fn revision()->u64 {super::picture_worker::revision()}

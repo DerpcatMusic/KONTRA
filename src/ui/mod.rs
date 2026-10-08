@@ -33,10 +33,15 @@ mod mix_tree;
 mod ir_view;
 #[cfg(feature = "shots")]
 pub(crate) mod scan;
+mod generated;
 #[allow(dead_code)]
 mod load_report;
 mod bridge;
 mod pictures;
+mod picture_decode;
+mod picture_worker;
+mod native_runtime;
+mod native_ui;
 mod render_art;
 mod inside;
 mod part;
@@ -200,10 +205,12 @@ impl Watch {
             p.shared.voices.load(Ordering::Relaxed).hash(&mut h);
             p.shared.audible.load(Ordering::Relaxed).hash(&mut h);
             p.shared.dropouts.load(Ordering::Relaxed).hash(&mut h);
+            p.shared.with_parts(|parts| { for part in parts { part.scalar_revision.load(Ordering::Acquire).hash(&mut h); } });
             self.readouts = h.finish();
         }
         let mut h = DefaultHasher::new();
         self.readouts.hash(&mut h);
+        pictures::revision().hash(&mut h);
         if meters.logs_visible.load(Ordering::Relaxed) {
             crate::diagnostics::revision().hash(&mut h);
             logs::wake().hash(&mut h);
@@ -275,7 +282,7 @@ fn fingerprint(view: &View, h: &mut DefaultHasher) {
     (&view.status, &view.multi_status, view.scanned).hash(h);
     (Arc::as_ptr(&view.files) as usize, view.artwork.len()).hash(h);
     for v in &view.parts {
-        (v.loading, &v.status, v.program).hash(h);
+        (v.loading, &v.status, v.program, v.ui_revision, v.generation).hash(h);
         (at(&v.tree), at(&v.report), at(&v.trace), Arc::as_ptr(&v.interfaces) as *const () as usize).hash(h);
     }
 }
@@ -627,6 +634,7 @@ fn library_of(shelf: &crate::library::Shelf, path: &Path) -> String {
 fn replace_part(part: &mut Part, path: String) {
     part.path = path;
     part.program = 0;
+    part.view = 0;
     part.name.clear();
     // Another instrument has another output tree, switching and dynamics.
     part.nodes.clear();
@@ -1195,3 +1203,5 @@ impl Cx<'_> {
 
 #[cfg(feature = "shots")]
 pub use ir_view::uvi_ui_health;
+#[cfg(test)]
+mod loop_audit;

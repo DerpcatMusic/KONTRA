@@ -1202,7 +1202,10 @@ impl Gen<'_, '_> {
             if usize::from(count) == sampler_core::EFFECT_ARGS {
                 break;
             }
-            self.arg(args, i, reg(dst, count)?)?;
+            if i == 0 && matches!(builtin, Builtin::SetText | Builtin::AddTextLine | Builtin::SetKnobLabel | Builtin::SetKnobUnit | Builtin::SetKnobDefval | Builtin::SetControlHelp | Builtin::MoveControl | Builtin::MoveControlPx | Builtin::HidePart | Builtin::AddMenuItem | Builtin::SetTableStepsShown) {
+                if let Some(ui) = self.ui_index(args, 0) { self.set(reg(dst, count)?, i64::from(crate::builtins::FIRST_UI_ID + ui as i32))?; }
+                else { self.arg(args, i, reg(dst, count)?)?; }
+            } else { self.arg(args, i, reg(dst, count)?)?; }
             count += 1;
         }
         let service = self.u.service(builtin);
@@ -2043,6 +2046,8 @@ impl Gen<'_, '_> {
             | SetMenuItemVisibility
             | SetMenuItemValue
             | SetTableStepsShown
+            | SetSkinOffset
+            | SetUiColor
             | AttachZone
             | SetUiWfProperty
             | FsNavigate
@@ -2078,7 +2083,7 @@ impl Gen<'_, '_> {
                     IgnoreController => "outside on controller is ignored",
                     MakePersistent | MakeInstrPersistent | ReadPersistentVar | LoadNativeUi
                     | LoadPerformanceView | MakePerfview | ExposeControls | SetSnapshotType
-                    | ShowLibraryTab | SetSkinOffset | SetUiColor | SetUiHeight | SetUiHeightPx
+                    | ShowLibraryTab | SetUiHeight | SetUiHeightPx
                     | SetUiWidthPx | SetScriptTitle | GetFontId => "only takes effect in on init",
                     _ => "is not executed at runtime; result 0",
                 };
@@ -3077,6 +3082,8 @@ fn host_service(builtin: Builtin) -> Coverage {
         | SetMenuItemVisibility
         | SetMenuItemValue
         | SetTableStepsShown
+            | SetSkinOffset
+            | SetUiColor
         | SetUiWfProperty
         | AttachLevelMeter
         | FsNavigate

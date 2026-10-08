@@ -21,6 +21,17 @@ use std::sync::Arc;
 #[derive(Debug)]
 pub struct Picture {
     pub frames: Vec<Arc<Image>>,
+    indices: Vec<usize>,
+    count: usize,
+    /// Source rectangle represented by prepared pixels (wallpaper windows).
+    pub window: Option<[u32;4]>,
+}
+
+impl Picture {
+    pub fn new(frames:Vec<Arc<Image>>)->Self {let count=frames.len();Self{frames,indices:(0..count).collect(),count,window:None}}
+    pub(super) fn prepared(image:Arc<Image>,frame:usize,count:usize,window:Option<[u32;4]>)->Self {Self{frames:vec![image],indices:vec![frame],count,window}}
+    fn len(&self)->usize {self.count}
+    fn at(&self,n:usize)->Option<&Arc<Image>> {self.indices.iter().position(|&i|i==n.min(self.count.saturating_sub(1))).and_then(|i|self.frames.get(i)).or_else(||self.frames.first())}
 }
 
 /// The frame of `frames` a control at `value` in `min..=max` shows.
@@ -65,14 +76,26 @@ pub struct Assets {
     fonts: HashMap<usize, Option<Font>>,
     pub meter: Option<Arc<dyn Fn(Option<u32>,u8)->[f32;2] + Send + Sync>>,
     open_menu: std::cell::Cell<Option<usize>>,
+    identities: HashMap<usize, ir::Asset>,
+    preparation: Option<super::picture_worker::Preparation>,
 }
 
 impl Assets {
+    pub fn prepare(&mut self,path:&std::path::Path,face:&Interface,page:PageRef,presentation:Presentation,scale:f64,values:&Values) {
+        if self.preparation.as_ref().is_none_or(|p|p.path()!=path) {self.preparation=Some(super::picture_worker::Preparation::new(path));}
+        let prepared=self.preparation.as_mut().unwrap().prepare(face,page,presentation,scale,values);
+        self.loaded.clear();self.fonts.clear();
+        for (n,picture,font) in prepared {if picture.is_some(){self.loaded.insert(n,picture);}if font.is_some(){self.fonts.insert(n,font);}}
+    }
+    pub fn pending(&self)->usize {self.preparation.as_ref().map_or(0,|p|p.pending())}
+
     /// Loads what `presentation` draws and releases everything else.
     pub fn sync(&mut self, ui: &Interface, presentation: Presentation, mut load: impl FnMut(&ir::Asset) -> Option<Arc<Picture>>) {
         let need = ui.needed_assets(presentation);
         self.loaded.retain(|&k, _| need.get(k).copied().unwrap_or(false));
         for (k, _) in need.iter().enumerate().filter(|(_, n)| **n) {
+            if self.identities.get(&k) != Some(&ui.assets[k]) { self.loaded.remove(&k); }
+            self.identities.insert(k, ui.assets[k].clone());
             self.loaded.entry(k).or_insert_with(|| load(&ui.assets[k]));
         }
     }
@@ -92,6 +115,7 @@ impl Assets {
 
     /// Bytes of decoded pixels held, each image counted once.
     pub fn bytes(&self) -> usize {
+        if let Some(p)=&self.preparation {return p.bytes();}
         let mut seen = std::collections::HashSet::new();
         self.loaded
             .values()
@@ -111,7 +135,7 @@ fn colour(c: ir::Rgba) -> Color {
 }
 
 fn picture(p: &Picture, n: usize) -> Option<Fill> {
-    let f = p.frames.get(n.min(p.frames.len().saturating_sub(1)))?;
+    let f = p.at(n)?;
     Some(Fill::Image(f.clone(), Fit::Fill))
 }
 
@@ -128,7 +152,7 @@ fn light_under(face: &Interface, assets: &Assets, n: WidgetRef) -> bool {
         let i=(v as usize*img.width as usize+u as usize)*4;
         if let Some(c)=img.rgba.get(i..i+4) {blend(rgb,ir::Rgba{r:c[0],g:c[1],b:c[2],a:c[3]});}
     };
-    if let Some(img)=page.background.image.and_then(|a|assets.get(a)).and_then(|p|p.frames.first()) {sample(&mut rgb,img,x,y+page.background.offset_y as f64);}
+    if let Some(pic)=page.background.image.and_then(|a|assets.get(a)) && let Some(img)=pic.at(0) {let [wx,wy,sw,sh]=pic.window.unwrap_or([0,0,img.width,img.height]);sample(&mut rgb,img,(x-wx as f64)*img.width as f64/sw.max(1) as f64,(y+page.background.offset_y as f64-wy as f64)*img.height as f64/sh.max(1) as f64);}
     for at in face.draw_order(face.widgets[n.0].page) {
         if at==n {break;}
         if !face.visible(at) {continue;}
@@ -136,7 +160,7 @@ fn light_under(face: &Interface, assets: &Assets, n: WidgetRef) -> bool {
         if x<r.x as f64 || y<r.y as f64 || x>=(r.x as f64+r.width as f64) || y>=(r.y as f64+r.height as f64) {continue;}
         if let Some(c)=w.colors.background {blend(&mut rgb,c);}
         if w.hide.background {continue;}
-        if let Some(img)=w.images.iter().find(|i|i.role==Use::Background).and_then(|i|assets.get(i.asset).and_then(|p|p.frames.get(i.frame.unwrap_or(0).min(p.frames.len().saturating_sub(1) as u32) as usize))) {
+        if let Some(img)=w.images.iter().find(|i|i.role==Use::Background).and_then(|i|assets.get(i.asset).and_then(|p|p.at(i.frame.unwrap_or(0) as usize))) {
             sample(&mut rgb,img,(x-r.x as f64)/r.width.max(1) as f64*img.width as f64,(y-r.y as f64)/r.height.max(1) as f64*img.height as f64);
         }
     }
@@ -144,7 +168,7 @@ fn light_under(face: &Interface, assets: &Assets, n: WidgetRef) -> bool {
 }
 
 fn art(face:&Interface, asset:ir::AssetRef,p:&Picture,n:usize,w:f64,h:f64,scale:f64)->El {
-    let Some(image)=p.frames.get(n.min(p.frames.len().saturating_sub(1))) else {return block(w,h)};
+    let Some(image)=p.at(n) else {return block(w,h)};
     let meta=match face.assets[asset.0].kind {ir::AssetKind::Image(m)=>m,_=>ir::ImageMeta::default()};
     super::render_art::sliced(image,meta,w,h,scale)
 }
@@ -172,54 +196,47 @@ fn default_size(kind: &Kind) -> (u32, u32) {
 /// turned into pixels.
 pub fn resolved(face: &Interface) -> Interface {
     let mut face = face.clone();
+    let count = face.widgets.len();
+    resolve_changed(&mut face, 0..count);
+    face
+}
+
+/// Normalize only changed source widgets; publications retain all other widgets.
+pub fn resolve_changed(face: &mut Interface, indices: impl IntoIterator<Item = usize>) {
     for p in &mut face.pages {
-        if let Some(rows) = p.height_rows.take() {
-            p.size.height = rows * GRID_ROW_HEIGHT;
-        }
+        if let Some(rows) = p.height_rows.take() { p.size.height = rows * GRID_ROW_HEIGHT; }
     }
-    for w in &mut face.widgets {
+    for n in indices {
+        let Some(w) = face.widgets.get_mut(n) else { continue };
         if let ir::Placement::Grid { column, row } = w.placement {
             w.rect.x = (column as i32 - 1) * GRID.0 + GRID.2;
             w.rect.y = (row as i32 - 1) * GRID.1 + GRID.3;
             w.placement = ir::Placement::Pixels;
         }
-        if w.auto_size {
-            (w.rect.width, w.rect.height) = default_size(&w.kind);
-            w.auto_size = false;
-        }
-    }
-    // Kontakt sizes a control to its picture along any axis the picture does not stretch.
-    for n in 0..face.widgets.len() {
+        if w.auto_size { (w.rect.width, w.rect.height) = default_size(&w.kind); w.auto_size = false; }
         if face.source == ir::Source::FalconLua { continue }
-        let w = &face.widgets[n];
         let meta = w.images.iter().filter(|i| i.role != Use::Handle).find_map(|i| match &face.assets.get(i.asset.0)?.kind {
             ir::AssetKind::Image(m) => m.size.map(|s| (s, m.stretch)),
             ir::AssetKind::BitmapFont | ir::AssetKind::TrueTypeFont => None,
         });
         if let Some((size, stretch)) = meta {
-            let r = &mut face.widgets[n].rect;
-            if !stretch[0] {
-                r.width = size.width;
-            }
-            if !stretch[1] {
-                r.height = size.height;
-            }
+            if !stretch[0] { w.rect.width = size.width; }
+            if !stretch[1] { w.rect.height = size.height; }
         }
     }
-    face
 }
 
 /// `page` at `scale` points per source pixel; `face` already [`resolved`].
-pub fn view(ui: &mut Ui, face: &Interface, page: PageRef, assets: &Assets, presentation: Presentation, scale: f64, values: &mut Values) -> El {
+pub fn view(ui: &mut Ui, namespace: &str, face: &Interface, page: PageRef, assets: &Assets, presentation: Presentation, scale: f64, values: &mut Values) -> El {
     let Some(p) = face.pages.get(page.0) else { return caption("No interface").fill(secondary()) };
     let (w, h) = (f64::from(p.size.width) * scale, f64::from(height(face, page)) * scale);
     let mut layers = Vec::new();
     let ground = block(w, h).radius(0).fill(p.background.color.map_or(Fill::from(Role::Field), |c| Fill::from(colour(c))));
     layers.push(ground.at(0., 0.));
     // The wallpaper at its own size; the page shows it from `offset_y` down.
-    if let Some(img) = p.background.image.and_then(|a| assets.get(a)).and_then(|pic| pic.frames.first()) {
-        let (iw, ih) = (f64::from(img.width) * scale, f64::from(img.height) * scale);
-        layers.push(block(iw, ih).radius(0).fill(Fill::Image(img.clone(), Fit::Fill)).at(0., -f64::from(p.background.offset_y) * scale));
+    if let Some(pic)=p.background.image.and_then(|a|assets.get(a)) && let Some(img)=pic.at(0) {
+        let [x,y,sw,sh]=pic.window.unwrap_or([0,0,img.width,img.height]);
+        layers.push(block(sw as f64*scale,sh as f64*scale).radius(0).fill(Fill::Image(img.clone(),Fit::Fill)).at(x as f64*scale,(y as f64-p.background.offset_y as f64)*scale));
     }
     for n in face.draw_order(page) {
         if !face.visible(n) {
@@ -245,7 +262,7 @@ pub fn view(ui: &mut Ui, face: &Interface, page: PageRef, assets: &Assets, prese
             if clipped { continue; }
         }
         let (x, y, ww, hh) = (f64::from(r.x) * scale, f64::from(r.y) * scale, f64::from(r.width) * scale, f64::from(r.height) * scale);
-        let mut el = widget(ui, face, n, assets, presentation, scale, values, ww, hh);
+        let mut el = widget(ui, namespace, face, n, assets, presentation, scale, values, ww, hh);
         let (mut x,mut y)=(x,y);
         let mut parent=face.widgets[n.0].parent;
         while let Some(p)=parent {
@@ -259,11 +276,11 @@ pub fn view(ui: &mut Ui, face: &Interface, page: PageRef, assets: &Assets, prese
         }
         layers.push(el.at(x,y));
     }
-    let base=stack(layers).w(w).h(h).shrink(0).clip().a11y(A11y::Group).named("Instrument interface").id("ir-view");
+    let base=stack(layers).w(w).h(h).shrink(0).clip().a11y(A11y::Group).named("Instrument interface").id(format!("{namespace}ir-view"));
     let Some(index)=assets.open_menu.get() else {return base};
     let Some(wd)=face.widgets.get(index).filter(|w|w.enabled && !w.hidden) else {assets.open_menu.set(None);return base};
     let Kind::Menu{items}=&wd.kind else {assets.open_menu.set(None);return base};
-    let source=format!("ir-{index}");
+    let source=format!("{namespace}ir-{index}");
     if ui.dismissed(&["ir-menu",&source]) { assets.open_menu.set(None);return base }
     let r=face.page_rect(WidgetRef(index));
     let mut selected=None;
@@ -293,9 +310,36 @@ pub fn height(face: &Interface, page: PageRef) -> u32 {
     face.pages[page.0].size.height.max(bottom.unwrap_or(0))
 }
 
+/// Axis and full-range travel in drawn pixels, independent of bitmap fallback.
+fn gesture(w: &ir::Widget, scale: f64) -> (bool, f64) {
+    let vertical = match w.kind {
+        Kind::Knob { .. } | Kind::ValueEdit { .. } => true,
+        Kind::Slider { orientation, .. } => w.drag.map_or(
+            orientation == ir::Orientation::Vertical || w.rect.height > w.rect.width,
+            |d| d.axis == ir::Orientation::Vertical,
+        ),
+        _ => true,
+    };
+    let travel = match w.drag.filter(|d| d.sensitivity != 0) {
+        Some(d) => f64::from(if vertical { w.rect.height } else { w.rect.width }).max(1.) * 1000. / f64::from(d.sensitivity),
+        None if matches!(w.kind, Kind::Slider { .. }) => f64::from(if vertical { w.rect.height } else { w.rect.width }).max(1.),
+        None => 200.,
+    };
+    (vertical, travel * scale)
+}
+
+fn quantized(value: f64, range: &ir::Range) -> f64 {
+    let value = match range.step.filter(|s| s.is_finite() && *s > 0.) {
+        Some(step) => range.min + ((value - range.min) / step).round() * step,
+        None => value,
+    };
+    value.clamp(range.min.min(range.max), range.min.max(range.max))
+}
+
 #[allow(clippy::too_many_arguments)]
-fn widget(
+pub(super) fn widget(
     ui: &mut Ui,
+    namespace: &str,
     face: &Interface,
     n: WidgetRef,
     assets: &Assets,
@@ -306,7 +350,7 @@ fn widget(
     h: f64,
 ) -> El {
     let wd = &face.widgets[n.0];
-    let id = format!("ir-{}", n.0);
+    let id = format!("{namespace}ir-{}", n.0);
     let bitmap = presentation == Presentation::Bitmap;
     let strip = wd.image(Use::Strip).filter(|_| bitmap || wd.label_in_image()).and_then(|a| assets.get(a));
     let hovered=ui.state(id.as_str()).hover>0.;
@@ -352,15 +396,16 @@ fn widget(
 
     let face_el: El = match &wd.kind {
         Kind::Knob { range, .. } | Kind::Slider { range, .. } => {
-            let vertical = !matches!(wd.kind, Kind::Slider { orientation: ir::Orientation::Horizontal, .. });
-            let held = if can_edit {
-                drive_mapped(ui, &id, &mut v, range, wd.mapper.as_deref(), vertical)
-            } else {false};
-            if let Some(step)=range.step { v=(v/step).round()*step; }
+            let (vertical,travel)=gesture(wd,scale);
+            let held=if can_edit {
+                if wd.mapper.is_some() {drive_mapped(ui,&id,&mut v,range,wd.mapper.as_deref(),vertical)}
+                else {drive(ui,&id,&mut v,&(range.min..=range.max),travel,vertical,range.default)}
+            }else{false};
+            if can_edit && (ui.get(id.as_str()).dragged || ui.get(id.as_str()).wheel != Vec2::ZERO || !ui.keys(id.as_str()).is_empty()) {v=quantized(v,range);}
             let lift = ui.state(id.as_str()).hover.max(if held { 1. } else { 0. }) as f32;
             let unit = |x: f64| mapped(range,wd.mapper.as_deref(),x,true);
             match strip {
-                Some(p) => art(face,wd.image(Use::Strip).unwrap(),p,fixed.unwrap_or_else(||frame(unit(v),0.,1.,p.frames.len())),w,h,scale),
+                Some(p) => art(face,wd.image(Use::Strip).unwrap(),p,fixed.unwrap_or_else(||frame(unit(v),0.,1.,p.len())),w,h,scale),
                 // A slider about as tall as wide was drawn as a knob by its strip.
                 // Kontakt's stock knob: its name over the dial, the value under it.
                 None if matches!(wd.kind, Kind::Knob { .. }) => {
@@ -389,10 +434,10 @@ fn widget(
         }
         Kind::Button { momentary: true } => {
             // UVI Button is stateless: one callback per activation, including keyboard.
-            v = if can_edit && ui.get(id.as_str()).activated() { 1. } else { 0. };
+            if can_edit {v=if face.source==ir::Source::FalconLua {if ui.get(id.as_str()).activated(){1.}else{0.}}else{if ui.get(id.as_str()).held{1.}else{0.}};}
             let pressed = can_edit && ui.get(id.as_str()).held;
             match state_picture(pressed) {
-                Some(p) => block(w, h).radius(0).fill(picture(p, fixed.unwrap_or_else(|| switch_frame(v > 0.5, p.frames.len()))).unwrap_or(Fill::from(Role::Field))),
+                Some(p) => block(w, h).radius(0).fill(picture(p, fixed.unwrap_or_else(|| switch_frame(v > 0.5, p.len()))).unwrap_or(Fill::from(Role::Field))),
                 None => row![words(wd.text.clone())].align(Align::Center).justify(Justify::Center).radius(1).fill(Role::Ink.alpha(0.08 + 0.2 * v as f32)),
             }
             .focusable()
@@ -404,7 +449,7 @@ fn widget(
             }
             let on = v > 0.5;
             match state_picture(on) {
-                Some(p) => block(w, h).radius(0).fill(picture(p, fixed.unwrap_or_else(|| switch_frame(on, p.frames.len()))).unwrap_or(Fill::from(Role::Field))),
+                Some(p) => block(w, h).radius(0).fill(picture(p, fixed.unwrap_or_else(|| switch_frame(on, p.len()))).unwrap_or(Fill::from(Role::Field))),
                 None => row![words(wd.text.clone())]
                     .align(Align::Center)
                     .justify(Justify::Center)
@@ -418,11 +463,8 @@ fn widget(
         }
         Kind::Menu { items } => {
             let shown: Vec<&ir::MenuItem> = items.iter().filter(|i| i.visible).collect();
-            // A value no entry has shows the first, as Kontakt does.
+            // Drawing an unknown semantic value must not edit the script.
             let at = shown.iter().position(|i| f64::from(i.value) == v).or((!shown.is_empty()).then_some(0));
-            if let Some(a) = at {
-                v = f64::from(shown[a].value);
-            }
             if can_edit && ui.get(id.as_str()).activated() && !shown.is_empty() {
                 if wd.menu_cycle { v=f64::from(shown[at.map_or(0,|a|(a+1)%shown.len())].value); }
                 else { assets.open_menu.set(if assets.open_menu.get()==Some(n.0){None}else{Some(n.0)}); }
@@ -529,8 +571,11 @@ fn widget(
         && light_under(face, assets, n);
     let face_el = if let Some(c)=wd.colors.background {face_el.fill(colour(c))}else{face_el};
     let face_el = if plate { face_el.radius(2).fill(Color::oklch(0.2, 0., 0.).with_alpha(0.85)) } else { face_el };
-    let face_el = if can_edit {face_el}else{face_el.disabled()};
-    let mut el = face_el.w(w).h(h).shrink(0).opacity(opacity).id(id).named(wd.automation.name.clone().unwrap_or_else(|| wd.name.clone()));
+    let face_el=if can_edit{face_el}else{face_el.disabled()};
+    let interactive = matches!(wd.kind, Kind::Knob { .. } | Kind::Slider { .. } | Kind::Button { .. } | Kind::Switch | Kind::Menu { .. } | Kind::ValueEdit { .. });
+    // MUI reserves slash-prefixed IDs for non-target decoration.
+    let target = if interactive { id } else { format!("/{id}") };
+    let mut el = face_el.w(w).h(h).shrink(0).opacity(opacity).id(target).named(wd.automation.name.clone().unwrap_or_else(|| wd.name.clone()));
     if !wd.tooltip.is_empty() {
         el = el.tip(wd.tooltip.clone());
     }
@@ -571,7 +616,7 @@ pub fn uvi_ui_health(face: &Interface, path: &std::path::Path) -> serde_json::Va
         let mut ui = super::theme::ui();
         let face = resolved(face);
         for _ in 0..2 {
-            let root = view(&mut ui, &face, PageRef(0), &assets, Presentation::Bitmap, scale, &mut values);
+            let root = view(&mut ui, "probe-", &face, PageRef(0), &assets, Presentation::Bitmap, scale, &mut values);
             ui.frame(root, Some(Size::new(width.into(), height.into())), Input::default(), 1./60.)
                 .map_err(|e| e.to_string())?;
         }
