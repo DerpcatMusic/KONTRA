@@ -168,11 +168,24 @@ impl Part {
         let count = tree.nodes.len();
         let definitions = runtime.control_definitions(runtime.active_plan()).unwrap_or_default().to_vec();
         let plan = runtime.active_plan();
+        let widgets = runtime.widget_definitions(plan).unwrap_or_default().to_vec();
+        let widget_values = widgets.iter().filter(|w| !matches!(w.storage, sampler_core::WidgetStorage::Control(_))).filter_map(|w| widget_value(&runtime, plan, w).map(|value| (sampler_ui_ir::ControlId(w.id.0), value))).collect();
+        let mut captures=std::collections::VecDeque::new();
+        let mut capture=Vec::new();
+        for widget in &widgets {
+            let len=match widget.storage {sampler_core::WidgetStorage::Control(_)=>0,sampler_core::WidgetStorage::Cells{len,..}|sampler_core::WidgetStorage::Texts{len,..}=>len,sampler_core::WidgetStorage::FileSelection{..}=>1};
+            for index in 0..len {
+                capture.push(sampler_core::WidgetEdit{id:widget.id,index,value:sampler_core::WidgetValue::Integer(0),interaction:Default::default()});
+                if capture.len()==sampler_core::WIDGET_EDIT_CAPACITY {captures.push_back(std::mem::take(&mut capture));}
+            }
+        }
+        if !capture.is_empty() {captures.push_back(capture);}
+        let revision=runtime.control_revision(plan).unwrap_or(0);
         let context = ControlContext { performance: runtime.performance(0).map_err(core)?, origin: WIRE, channels: 1 };
-        let (runtime, client) = runtime.with_control_updates(256, 256).map_err(core)?;
+        let (runtime, client) = runtime.with_control_updates(256, sampler_core::WIDGET_EDIT_CAPACITY).map_err(core)?;
         Ok(Self {
             epoch: 0,
-            ui_controls: Some(ControlIngress { client, plan, context, definitions, pending: Default::default() }),
+            ui_controls: Some(ControlIngress { client, plan, context, definitions, widgets, widget_values, captures, capturing:false, revision, pending_widgets: Default::default(), pending: Default::default() }),
             runtime,
             mpe,
             tune: 0.0,
@@ -307,10 +320,47 @@ pub(crate) struct ControlIngress {
     plan: sampler_core::PlanId,
     context: ControlContext,
     definitions: Vec<ControlDefinition>,
+    widgets: Vec<sampler_core::WidgetDefinition>,
+    widget_values: std::collections::BTreeMap<sampler_ui_ir::ControlId, sampler_ui_ir::Value>,
+    pending_widgets: std::collections::BTreeMap<(sampler_ui_ir::ControlId, u32), (u64, sampler_ui_ir::Value)>,
     pending: std::collections::BTreeMap<sampler_ui_ir::ControlId, (u64, f64)>,
+    captures:std::collections::VecDeque<Vec<sampler_core::WidgetEdit>>,
+    capturing:bool,
+    revision:u64,
 }
 
 impl ControlIngress {
+    pub(crate) fn submit_host_parameter(&mut self, address: u16, value: f64) -> bool {
+        if address >= super::HOST_AUTOMATION_SLOTS || !value.is_finite() || !(0.0..=1.0).contains(&value) { return false; }
+        self.client.submit(sampler_core::ControlRequest { plan: self.plan, expected_revision: None,
+            operation: sampler_core::ControlOperation::HostParameter(self.context, address, value) }).is_ok()
+    }
+
+    pub(crate) fn submit_ui_widgets(&mut self, source_slot: u8, widget: &sampler_ui_ir::Widget, edits: Vec<(u32, sampler_ui_ir::Value)>, interaction: sampler_core::WidgetInteraction) -> bool {
+        let definition = self.widgets.iter().find(|w| w.source_slot == source_slot && Some(w.ui_id) == widget.source_id)
+            .or_else(|| self.widgets.iter().find(|w| matches!(widget.binding, sampler_ui_ir::Binding::Control(id) if matches!(w.storage, sampler_core::WidgetStorage::Control(control) if control.0 == id.0))));
+        let Some(definition) = definition else {
+            if let sampler_ui_ir::Binding::Control(id) = widget.binding && edits.len() == 1 && edits[0].0 == 0 {
+                return match edits[0].1 { sampler_ui_ir::Value::Integer(value) => self.submit(id, f64::from(value)), sampler_ui_ir::Value::Real(value) => self.submit(id, value), _ => false };
+            }
+            return false;
+        };
+        let mut native = Vec::with_capacity(edits.len());
+        for (index, value) in edits {
+            let value = match value {
+                sampler_ui_ir::Value::Integer(value) => sampler_core::WidgetValue::Integer(i64::from(value)),
+                sampler_ui_ir::Value::Real(value) if value.is_finite() => match definition.storage {
+                    sampler_core::WidgetStorage::Control(id) if self.definitions.iter().any(|d| d.id == id && matches!(d.domain, ControlDomain::Integer { .. } | ControlDomain::Toggle)) => sampler_core::WidgetValue::Integer(value.round() as i64),
+                    _ => sampler_core::WidgetValue::Real(value),
+                },
+                sampler_ui_ir::Value::Text(value) => { let text = sampler_core::Text::new(&value); if text.as_str() != value { return false; } sampler_core::WidgetValue::Text(text) },
+                _ => return false,
+            };
+            native.push(sampler_core::WidgetEdit { id: definition.id, index, value, interaction });
+        }
+        self.submit_widgets(native)
+    }
+
     pub(crate) fn submit(&mut self, id: sampler_ui_ir::ControlId, value: f64) -> bool {
         if !value.is_finite() { return false; }
         let Some(d) = self.definitions.iter().find(|d| d.id.0 == id.0) else { return false };
@@ -320,6 +370,13 @@ impl ControlIngress {
             ControlDomain::Toggle if value == 0. || value == 1. => ControlValue::Toggle(value == 1.),
             _ => return false,
         };
+        if let Some(widget) = self.widgets.iter().find(|w| matches!(w.storage, sampler_core::WidgetStorage::Control(control) if control == d.id)) {
+            return self.submit_widgets(vec![sampler_core::WidgetEdit { id: widget.id, index: 0, value: match value {
+                ControlValue::Integer(v) => sampler_core::WidgetValue::Integer(v),
+                ControlValue::Real(v) => sampler_core::WidgetValue::Real(v),
+                ControlValue::Toggle(v) => sampler_core::WidgetValue::Integer(i64::from(v)),
+            }, interaction: Default::default() }]);
+        }
         let command = sampler_core::ControlRequest { plan: self.plan, expected_revision: None,
             operation: sampler_core::ControlOperation::Invoke(self.context, ControlWrite { id: d.id, value }) };
         match self.client.submit(command) {
@@ -328,18 +385,106 @@ impl ControlIngress {
         }
     }
 
-    pub(crate) fn settle(&mut self) {
+    pub(crate) fn submit_widgets(&mut self, edits: Vec<sampler_core::WidgetEdit>) -> bool {
+        let Some(first) = edits.first() else { return false };
+        let Some(widget) = self.widgets.iter().find(|w| w.id == first.id) else { return false };
+        if edits.len() > sampler_core::WIDGET_EDIT_CAPACITY || edits.iter().any(|e| e.id != first.id || ui_value(e.value).is_none()) { return false; }
+        let id = sampler_ui_ir::ControlId(first.id.0);
+        let preview: Vec<_> = edits.iter().map(|e| (e.index, ui_value(e.value).unwrap())).collect();
+        let scalar = match widget.storage { sampler_core::WidgetStorage::Control(control) => Some(sampler_ui_ir::ControlId(control.0)), _ => None };
+        let command = sampler_core::ControlRequest { plan: self.plan, expected_revision: None,
+            operation: sampler_core::ControlOperation::InvokeWidget(self.context, edits) };
+        match self.client.submit(command) {
+            Ok(request) => {
+                for (index, value) in preview {
+                    if let Some(control) = scalar {
+                        let number = match value { sampler_ui_ir::Value::Integer(v) => f64::from(v), sampler_ui_ir::Value::Real(v) => v, _ => continue };
+                        self.pending.insert(control, (request, number));
+                    }
+                    self.pending_widgets.insert((id, index), (request, value));
+                }
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Existing 100 ms worker owns polling and recycles native capture buffers.
+    pub(crate) fn refresh(&mut self) -> bool {
+        let changed=self.settle();
+        if !self.capturing && let Some(output)=self.captures.pop_front() {
+            let request=sampler_core::ControlRequest {plan:self.plan,expected_revision:None,operation:sampler_core::ControlOperation::CaptureWidget(output)};
+            match self.client.submit(request) {
+                Ok(_)=>self.capturing=true,
+                Err(rejected)=>if let sampler_core::ControlOperation::CaptureWidget(output)=rejected.command.operation {self.captures.push_front(output);},
+            }
+        }
+        changed
+    }
+
+    pub(crate) fn settle(&mut self) -> bool {
+        let mut changed = false;
         while let Some(reply) = self.client.reply() {
-            if let sampler_core::ControlOperation::Invoke(_, write) = reply.command.operation {
+            if let Ok((_,revision))=reply.result {self.revision=revision;}
+            if let sampler_core::ControlOperation::Invoke(_, write) = &reply.command.operation {
                 let id = sampler_ui_ir::ControlId(write.id.0);
                 if self.pending.get(&id).is_some_and(|(request, _)| *request == reply.request) {
                     self.pending.remove(&id);
+                    changed = true;
                 }
+            }
+            if let sampler_core::ControlOperation::InvokeWidget(_, edits) = &reply.command.operation {
+                for edit in edits {
+                    let id = sampler_ui_ir::ControlId(edit.id.0);
+                    if self.pending_widgets.get(&(id, edit.index)).is_some_and(|(request, _)| *request == reply.request) { self.pending_widgets.remove(&(id, edit.index)); changed = true; }
+                    if let Some(widget) = self.widgets.iter().find(|w| w.id == edit.id)
+                        && let sampler_core::WidgetStorage::Control(control) = widget.storage {
+                        let control = sampler_ui_ir::ControlId(control.0);
+                        if self.pending.get(&control).is_some_and(|(request, _)| *request == reply.request) { self.pending.remove(&control); }
+                    }
+                    if reply.result.is_ok() { changed |= self.accept_value(edit); }
+                }
+            }
+            if let sampler_core::ControlOperation::CaptureWidget(output)=reply.command.operation {
+                self.capturing=false;
+                if let Ok((count,_))=reply.result {for edit in output.iter().take(count) {changed|=self.accept_value(edit);}}
+                self.captures.push_back(output);
             }
             if let Err(error) = reply.result {
                 crate::diagnostics::event(crate::diagnostics::LogLevel::Warning, "ui", "control_rejected", serde_json::json!({"request": reply.request, "reason": format!("{error:?}")}));
             }
         }
+        changed
+    }
+
+    fn accept_value(&mut self, edit: &sampler_core::WidgetEdit) -> bool {
+        let Some(value) = ui_value(edit.value) else { return false };
+        let Some(current) = self.widget_values.get_mut(&sampler_ui_ir::ControlId(edit.id.0)) else { return false };
+        match (current, value) {
+            (sampler_ui_ir::Value::Integers(values), sampler_ui_ir::Value::Integer(value)) => values.get_mut(edit.index as usize).is_some_and(|old| { let changed = *old != value; *old = value; changed }),
+            (sampler_ui_ir::Value::Reals(values), sampler_ui_ir::Value::Real(value)) => values.get_mut(edit.index as usize).is_some_and(|old| { let changed = *old != value; *old = value; changed }),
+            (current, value) if edit.index == 0 => { let changed = *current != value; *current = value; changed },
+            _ => false,
+        }
+    }
+
+    pub(crate) fn values(&self, face: &sampler_ui_ir::Interface) -> std::collections::HashMap<sampler_ui_ir::WidgetRef, sampler_ui_ir::Value> {
+        let mut values = std::collections::HashMap::new();
+        for (n, widget) in face.widgets.iter().enumerate() {
+            let sampler_ui_ir::Binding::Variable { script, name } = &widget.binding else { continue };
+            let id = sampler_ui_ir::ControlId(sampler_ksp::derived_control_id(*script, name).0);
+            let Some(mut current) = self.widget_values.get(&id).cloned() else { continue };
+            for (&(_, index), (_, value)) in self.pending_widgets.range((id, 0)..=(id, u32::MAX)) {
+                match (&mut current, value) {
+                    (sampler_ui_ir::Value::Integers(values), sampler_ui_ir::Value::Integer(value)) => { if let Some(old) = values.get_mut(index as usize) { *old = *value; } }
+                    (sampler_ui_ir::Value::Reals(values), sampler_ui_ir::Value::Real(value)) => { if let Some(old) = values.get_mut(index as usize) { *old = *value; } }
+                    (current, value) if index == 0 => current.clone_from(value),
+                    _ => {},
+                }
+            }
+            values.insert(sampler_ui_ir::WidgetRef(n), current);
+        }
+        values
     }
 
     pub(crate) fn overlay(&mut self, values: &mut Vec<(sampler_ui_ir::ControlId, f64)>) {
@@ -348,7 +493,38 @@ impl ControlIngress {
     }
 }
 
+fn ui_value(value: sampler_core::WidgetValue) -> Option<sampler_ui_ir::Value> {
+    Some(match value {
+        sampler_core::WidgetValue::Integer(value) => sampler_ui_ir::Value::Integer(value.try_into().ok()?),
+        sampler_core::WidgetValue::Real(value) if value.is_finite() => sampler_ui_ir::Value::Real(value),
+        sampler_core::WidgetValue::Text(value) => sampler_ui_ir::Value::Text(value.as_str().into()),
+        _ => return None,
+    })
+}
+
+fn widget_value(runtime: &Runtime, plan: sampler_core::PlanId, widget: &sampler_core::WidgetDefinition) -> Option<sampler_ui_ir::Value> {
+    use sampler_core::{WidgetStorage, WidgetValue};
+    Some(match widget.storage {
+        WidgetStorage::Control(_) | WidgetStorage::Texts { .. } | WidgetStorage::FileSelection{..} => ui_value(runtime.widget_value(plan, widget.id, 0).ok()?)?,
+        WidgetStorage::Cells { len, real: false, .. } => sampler_ui_ir::Value::Integers((0..len).map(|index| match runtime.widget_value(plan, widget.id, index).ok()? { WidgetValue::Integer(value) => value.try_into().ok(), _ => None }).collect::<Option<_>>()?),
+        WidgetStorage::Cells { len, real: true, .. } => sampler_ui_ir::Value::Reals((0..len).map(|index| match runtime.widget_value(plan, widget.id, index).ok()? { WidgetValue::Real(value) => Some(value), _ => None }).collect::<Option<_>>()?),
+    })
+}
+
 impl V2Core {
+    /// Called at the DAW event's sample boundary, on the runtime owner.
+    pub(crate) fn host_parameter(&mut self, address: u16, value: f64) -> bool {
+        if address >= super::HOST_AUTOMATION_SLOTS || !value.is_finite() || !(0.0..=1.0).contains(&value) { return false; }
+        let mut accepted = true;
+        for part in self.parts.iter_mut().flatten() {
+            let rt = &mut part.runtime;
+            let Ok(performance) = rt.performance(0) else { accepted = false; continue };
+            let context = ControlContext { performance, origin: WIRE, channels: 1 };
+            accepted &= rt.dispatch_host_parameter(context, address, value).is_ok();
+        }
+        accepted
+    }
+
     pub(crate) fn epoch(&self, slot: usize) -> u64 { self.parts.get(slot).and_then(Option::as_ref).map_or(0, |p| p.epoch) }
     pub(crate) fn ui_revision(&self, slot: usize) -> u64 {
         self.parts.get(slot).and_then(Option::as_ref).and_then(|p| p.runtime.control_revision(p.runtime.active_plan()).ok()).unwrap_or(0)
@@ -951,6 +1127,8 @@ impl Core for V2Core {
 
     fn set_control(&mut self, part: usize, control: sampler_ui_ir::ControlId, value: f64) -> bool {
         let Some(Some(p)) = self.parts.get_mut(part) else { return false };
+        if let Some(script) = &mut p.script
+            && script.ui().value(control).is_some() { return script.set_control(control, value) }
         let rt = &mut p.runtime;
         let (plan, id) = (rt.active_plan(), sampler_core::ControlId(control.0));
         let Ok(ControlDefinition { domain, .. }) = rt.control_definition(plan, id) else { return false };
@@ -965,7 +1143,9 @@ impl Core for V2Core {
     }
 
     fn control_value(&self, part: usize, control: sampler_ui_ir::ControlId) -> Option<f64> {
-        let rt = &self.parts.get(part)?.as_ref()?.runtime;
+        let p = self.parts.get(part)?.as_ref()?;
+        if let Some(v) = p.script.as_ref().and_then(|s| s.ui().value(control)) { return Some(v) }
+        let rt = &p.runtime;
         rt.control_value(rt.active_plan(), sampler_core::ControlId(control.0)).ok().map(number)
     }
 }
@@ -1233,7 +1413,7 @@ fn kontakt(
         interfaces: loaded.interfaces,
         controls: Vec::new(),
         instrument: Some(Arc::new(loaded.instrument)),
-        scripts: ScriptUi { views: loaded.scripts, resources: loaded.resources },
+        scripts: ScriptUi { views: loaded.scripts, resources: loaded.resources, ..Default::default() },
         stream: Some(Arc::new(Stream { streamer, assets, report: stream })),
     })
 }
@@ -1244,12 +1424,13 @@ fn uvi(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
     let load = |e: &dyn std::fmt::Display| CoreError::Load(LoadFailure::message(e));
     let mut t = sampler_uvi::translate_path(&request.path).map_err(|e| load(&*e))?;
     let rate = request.sample_rate as u32;
-    let attached = t.attach_script(rate, sampler_uvi::script::Config::realtime()).map_err(|e| load(&e))?;
+    let attached = t.attach_script_with_ui_state(rate, sampler_uvi::script::Config::realtime(), request.uvi_state.clone()).map_err(|e| load(&e))?;
     let mut report = LoadReport::of(&t.instrument, &request.path, t.locations.len());
     let tree = nest(&mut t.instrument);
     let streamed = sampler_uvi::assemble_translated_streamed(t, rate, &Default::default()).map_err(|e| load(&*e))?;
     let sampler_kontakt::Streamed { mut loaded, assets, cache, streamer, report: stream } = streamed;
     report.decoded.full_bytes = stream.full_bytes;
+    let uvi_ui = attached.as_ref().map(|a| a.driver.ui().clone());
     let driver = attached.map(|a| {
         // Loading reports a script it has no frontend for; this one runs.
         loaded.instrument.unsupported.retain(|u| !(u.feature == "script" && u.value.contains("no frontend")));
@@ -1265,9 +1446,9 @@ fn uvi(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
         tree,
         report,
         interfaces: loaded.interfaces,
-        controls: Vec::new(),
+        controls: uvi_ui.as_ref().map(|u| u.values()).unwrap_or_default(),
         instrument: Some(Arc::new(loaded.instrument)),
-        scripts: ScriptUi { views: loaded.scripts, resources: loaded.resources },
+        scripts: ScriptUi { uvi: uvi_ui, views: loaded.scripts, resources: loaded.resources, ..Default::default() },
         stream: Some(Arc::new(Stream { streamer, assets, report: stream })),
     })
 }
@@ -1367,11 +1548,22 @@ impl V2Loader {
             }
             report.decoded.mpe = super::report::mpe_summary(&defaults);
         }
-        let controls = prepared
+        for binding in prepared.automation_bindings() {
+            if let sampler_core::AutomationSource::HostParameter(address) = binding.source
+                && address >= super::HOST_AUTOMATION_SLOTS {
+                report.missing.push(super::report::Missing {
+                    location: format!("script slot {} UI {}", binding.source_slot, binding.ui_id),
+                    feature: "standalone-derived host automation capacity".into(), value: address.to_string(),
+                    reason: super::report::MissingReason::NotModeled,
+                });
+            }
+        }
+        let mut controls: Vec<_> = prepared
             .controls()
             .iter()
             .map(|c| (sampler_ui_ir::ControlId(c.id.0), number(c.default)))
             .collect();
+        if let Some(script) = &script { controls.extend(script.ui().values()); }
         let (limits, ceiling) = limits(&prepared);
         let per_voice = prepared.voice_state_bytes() + VOICE_OVERHEAD;
         report.decoded.script_callbacks = limits.behaviors;
@@ -1948,6 +2140,40 @@ mod tests {
     }
 
     #[test]
+    fn typed_capture_reads_callback_changes_and_rejected_edits_roll_back() {
+        let source="on init declare ui_knob $k(0,100,1) declare ui_table %t[4](1,1,100) declare ui_xy ?xy[2] declare ui_text_edit @text end on on ui_control($k) %t[1] := $k @text := \"live callback\" ?xy[0] := 0.25 end on";
+        let script=sampler_ksp::compile(source,48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
+        let face=script.ui(&|_|None).unwrap();
+        let plan=script.bind(Prepared::new(48000,vec![],vec![],1).unwrap()).unwrap();
+        let limits=limits(&plan).0;
+        let mut part=Part::new(Runtime::new(plan,limits).unwrap(),MixTree::instrument("typed")).unwrap();
+        let mut ingress=part.ui_controls.take().unwrap();
+        let knob=sampler_ui_ir::ControlId(sampler_ksp::derived_control_id(0,"$k").0);
+        assert!(ingress.submit(knob,25.));
+        while part.runtime.poll_control_update().unwrap().is_some() {}
+        part.runtime.render(&mut [[0.;2];16]).unwrap();
+        ingress.settle();
+        let revision=ingress.revision;
+        assert!(!ingress.refresh(),"poll only queues capture");
+        while part.runtime.poll_control_update().unwrap().is_some() {}
+        assert!(ingress.settle(),"typed callback changes wake the view");
+        assert!(ingress.revision>=revision);
+        let values=ingress.values(&face);
+        let find=|name:&str|sampler_ui_ir::WidgetRef(face.widgets.iter().position(|widget|widget.name==name).unwrap());
+        let table=find("%t"); let text=find("@text"); let xy=find("?xy");
+        assert_eq!(values[&table],sampler_ui_ir::Value::Integers(vec![0,25,0,0]));
+        assert_eq!(values[&text],sampler_ui_ir::Value::Text("live callback".into()));
+        assert!(matches!(&values[&xy],sampler_ui_ir::Value::Reals(values) if values[0]==0.25));
+        assert!(ingress.submit_ui_widgets(0,&face.widgets[table.0],vec![(1,sampler_ui_ir::Value::Integer(999))],Default::default()));
+        assert!(matches!(&ingress.values(&face)[&table],sampler_ui_ir::Value::Integers(values) if values[1]==999));
+        while part.runtime.poll_control_update().unwrap().is_some() {}
+        assert!(ingress.settle(),"rejected preview must wake rollback");
+        assert_eq!(ingress.values(&face)[&table],values[&table]);
+        assert!(!ingress.submit_ui_widgets(0,&face.widgets[text.0],vec![(0,sampler_ui_ir::Value::Text("x".repeat(8192)))],Default::default()));
+        assert_eq!(ingress.values(&face)[&text],values[&text]);
+    }
+
+    #[test]
     fn script_ui_effects_reach_the_interface() {
         let source = "on init\n declare ui_knob $k(0, 100, 1)\n declare ui_label $l(1, 1)\n\
                       set_key_type(36, $NI_KEY_TYPE_CONTROL)\nend on\n\
@@ -1955,7 +2181,7 @@ mod tests {
                       set_key_color(60, $KEY_COLOR_RED)\nend on\n";
         let script = sampler_ksp::compile(source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
         let k = script.controls().iter().find(|c| c.variable.ends_with("$k")).unwrap().definition.id.0;
-        let mut ui = ScriptUi { views: vec![script.view()], resources: None };
+        let mut ui = ScriptUi { views: vec![script.view()], resources: None, ..Default::default() };
         let before = ui.interfaces();
         assert!(ui.keys()[36].control && ui.keys()[60].color.is_none());
         let pcm = Pcm::new(48000, vec![[0.0; 2]; 512].into_boxed_slice()).unwrap();
@@ -1988,7 +2214,7 @@ mod tests {
                       set_knob_label($k, \"changed\")\nend on\n";
         let script = sampler_ksp::compile(source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
         let k = script.controls().iter().find(|c| c.variable.ends_with("$k")).unwrap().definition.id.0;
-        let mut ui = ScriptUi { views: vec![script.view()], resources: None };
+        let mut ui = ScriptUi { views: vec![script.view()], resources: None, ..Default::default() };
         let before = ui.interfaces();
         assert!(ui.keys()[36].control && ui.keys()[60].color.is_none());
         let pcm = Pcm::new(48000, vec![[0.0; 2]; 512].into_boxed_slice()).unwrap();
