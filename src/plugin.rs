@@ -80,6 +80,8 @@ pub struct Part {
     /// with bit 7 set once the player remapped; 0 keeps the instrument's own.
     pub switching: u8,
     pub articulation_overlay: crate::sound::articulation::Overlay,
+    /// Kontakt control identities and semantic values, independent of presentation.
+    pub control_values: Vec<SavedControl>,
 }
 
 impl Default for Part {
@@ -108,7 +110,25 @@ impl Default for Part {
             bend_range: 0,
             switching: 0,
             articulation_overlay: Default::default(),
+            control_values: Vec::new(),
         }
+    }
+}
+
+/// Split identity words stay exact in JSON and in the host's state codec.
+#[derive(State, Default, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SavedControl {
+    pub high: u64,
+    pub low: u64,
+    pub value: f64,
+}
+
+impl SavedControl {
+    fn new(id: sampler_ui_ir::ControlId, value: f64) -> Self {
+        Self { high: (id.0 >> 64) as u64, low: id.0 as u64, value }
+    }
+    fn id(&self) -> sampler_ui_ir::ControlId {
+        sampler_ui_ir::ControlId(u128::from(self.high) << 64 | u128::from(self.low))
     }
 }
 
@@ -236,7 +256,7 @@ impl Selection {
 }
 
 #[derive(Params)]
-#[params(output_port_name = "port_name", output_port_names_revision = "port_names_revision")]
+#[params(output_port_name = "port_name", output_port_names_revision = "port_names_revision", pre_save = "capture_ui_controls", post_load = "reload_ui_controls")]
 pub struct SamplerParams {
     #[param(name = "Volume", range = "linear(-60, 6)", default = 0.0, unit = "dB", smooth = "exp(5)")]
     pub volume: FloatParam,
@@ -251,6 +271,20 @@ pub struct SamplerParams {
 pub(crate) use SamplerParamsParamId as P;
 
 impl SamplerParams {
+    fn capture_ui_controls(&self) {
+        let mut selection = self.selection.read().unwrap().clone();
+        self.shared.capture_ui_controls(&mut selection);
+        let mut current = self.selection.write().unwrap();
+        for (part, captured) in current.parts.iter_mut().zip(selection.parts) {
+            if part.source() == captured.source() { part.control_values = captured.control_values; }
+        }
+    }
+
+    fn reload_ui_controls(&self) {
+        // Recall of the same source still needs fresh script initialization.
+        for part in &mut self.shared.view.lock().unwrap().parts { part.attempted = None; }
+    }
+
     /// Host output port `index`'s name, as last published (`routing.rs`).
     fn port_name(&self, index: u32) -> Option<String> {
         let names = self.shared.port_names.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -936,6 +970,18 @@ impl Shared {
         }
     }
 
+    /// Capture only the source actually loaded; a recalled or pending source
+    /// must not be overwritten with values from the previous instrument.
+    pub(crate) fn capture_ui_controls(&self, selection: &mut Selection) {
+        let sources: Vec<_> = self.view.lock().unwrap().parts.iter().map(|p| if p.loading { None } else { p.attempted.as_ref().map(|(path, program, ..)| (path.clone(), *program)) }).collect();
+        for (slot, part) in selection.parts.iter_mut().enumerate() {
+            if sources.get(slot).and_then(Option::as_ref) != Some(&part.source()) { continue; }
+            if let Some(atoms) = self.part(slot) {
+                part.control_values = atoms.control_values().into_iter().filter(|(_, value)| value.is_finite()).map(|(id, value)| SavedControl::new(id, value)).collect();
+            }
+        }
+    }
+
     /// Edit a control of the part in `slot` as its widget would; the
     /// script's `on ui_control` runs on the audio thread. False when the
     /// queue is full.
@@ -1239,6 +1285,7 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
         sample_rate: rate,
         mpe: part.mpe,
         dynamics_start: u8::try_from(part.dynamics).ok().filter(|v| *v < 128),
+        control_values: part.control_values.iter().map(|c| (c.id(), c.value)).collect(),
         threads: match shared.libraries.settings().threads {
             crate::library::ThreadSetting::Single => None,
             crate::library::ThreadSetting::Auto => Some(crate::sound::ThreadChoice::Auto),
