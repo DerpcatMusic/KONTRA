@@ -1588,7 +1588,7 @@ impl Gen<'_, '_> {
                 true
             }
             PlayNote => return self.play(args, dst),
-            IgnoreEvent | ChangeNote | ChangeVelo
+            ChangeNote | ChangeVelo
                 if self.selects_many(builtin, args, 0) =>
             {
                 return Ok(());
@@ -1614,14 +1614,12 @@ impl Gen<'_, '_> {
                 true
             }
             IgnoreEvent => {
-                // ponytail: another event is released rather than discarded.
                 self.arg(args, 0, dst)?;
-                self.emit(I::KeyUpEvent {
+                self.emit(I::DiscardEvent {
                     event: dst,
-                    delay: None,
+                    current_release: self.ctx == Context::Release,
                 })?;
-                self.cover(builtin, Coverage::Approximate);
-                return Ok(());
+                true
             }
             ChangeNote | ChangeVelo => {
                 self.event_write(builtin == ChangeNote, args, 0, 1, dst)?;

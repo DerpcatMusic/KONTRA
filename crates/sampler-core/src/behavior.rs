@@ -150,6 +150,11 @@ pub enum Instruction {
         event: u16,
         delay: Option<u16>,
     },
+    /// Discard another source without key-up; an aliased current ID still suppresses its callback event.
+    DiscardEvent {
+        event: u16,
+        current_release: bool,
+    },
     /// Quantize script-visible velocity to nearest MIDI 1 value without changing it.
     ReadVelocity7 {
         local: u16,
@@ -594,6 +599,9 @@ impl Program {
             }
             if let Instruction::KeyUpEvent { event, delay } = *op {
                 locals = locals.max(usize::from(event.max(delay.unwrap_or(event))) + 1);
+            }
+            if let Instruction::DiscardEvent { event, .. } = *op {
+                locals = locals.max(usize::from(event) + 1);
             }
             if let Instruction::WriteParam {
                 index,
@@ -1800,6 +1808,32 @@ impl Runtime {
             Instruction::ReadEventId { local } => {
                 let value = self.source_event_id(owner.note()?)?;
                 *self.local_cell_mut(id, local)? = i64::from(value);
+            }
+            Instruction::DiscardEvent { event, current_release } => {
+                let event = i32::try_from(*self.local_cell_mut(id, event)?)
+                    .map_err(|_| Error::InvalidInput)?;
+                let plan = self.behavior_plan(owner)?;
+                let many = event == 0x3fff_fffe || (event > 0 && event & 0x2000_0000 != 0);
+                let single = if many { None } else { self.resolve_source_event(plan, event)? };
+                let range = if many { 0..self.notes.slots.len() }
+                    else if let Some(note) = single { note.0.index..note.0.index + 1 }
+                    else { 0..0 };
+                for index in range {
+                    let Some(n) = self.notes.slots[index].value else { continue };
+                    let note = NoteId(self.notes.id(index));
+                    let selected = if many {
+                        n.plan == plan && (event == 0x3fff_fffe
+                            || self.note_events[index].marks & (event as u32 & 0x0fff_ffff) != 0)
+                    } else { single == Some(note) };
+                    if !selected { continue; }
+                    if owner.note().ok() == Some(note) {
+                        self.behavior_step(id, owner, if current_release {
+                            Instruction::SuppressRelease
+                        } else { Instruction::SuppressAttack })?;
+                    } else {
+                        self.discard_note(note)?;
+                    }
+                }
             }
             Instruction::KeyUpEvent { event, delay } => {
                 let event = i32::try_from(*self.local_cell_mut(id, event)?)
