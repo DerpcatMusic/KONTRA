@@ -11,6 +11,8 @@ use ni_file::kontakt::{
     objects::{BParFX, BParamArrayBParFX8, InsertBus, Program},
 };
 
+mod formant;
+
 pub(crate) const RACK: u16 = 0x3a;
 pub(crate) const BUS: u16 = 0x45;
 
@@ -226,6 +228,7 @@ pub(crate) fn apply_writes(
 pub(crate) enum Params {
     /// Linear gain.
     Gainer { gain: f32 },
+    LoFi { values: [f32; 4], flag: bool },
     /// `$ENGINE_PAR_STEREO` (offset from 100% width), `$ENGINE_PAR_STEREO_PAN`,
     /// `$ENGINE_PAR_STEREO_PSEUDO`.
     StereoModeller { spread: f32, pan: f32, pseudo: bool },
@@ -285,6 +288,11 @@ impl Slot {
         let mut r = Reader(&self.public);
         let params = match self.module {
             0x13 => Params::Gainer { gain: r.f32()? },
+            0x20 => {
+                let first = [r.f32()?, r.f32()?, r.f32()?];
+                let flag = r.flag()?;
+                Params::LoFi { values: [first[0], first[1], first[2], r.f32()?], flag }
+            },
             0x1f => Params::StereoModeller {
                 spread: r.f32()?,
                 pan: r.f32()?,
@@ -715,6 +723,33 @@ pub(crate) fn chain_with(
         let eq_gain = if eq_unset { IDENTITY } else { gain };
         let mut modelled = true;
         match &params {
+            Some(Params::Filter { kind: 90, cutoff, resonance, extra }) => {
+                flush(&mut combined, &mut filters, &mut out);
+                match extra.first().and_then(|&size| formant::sections([*cutoff, *resonance, size])) {
+                    Some(sections) => {
+                        out.processors.extend(sections);
+                        combined = product([[0.25, 0.], [0., 0.25]], product(gain, combined));
+                        notes.push(("Formant I vowel model".into(), "v1 three-band proxy; native coefficients unverified".into(), sampler_ir::Reason::UnknownLaw));
+                    }
+                    None => {
+                        notes.push(("Formant I parameters".into(), "missing Size or outside normalized range".into(), sampler_ir::Reason::InvalidValue));
+                        modelled = false;
+                    }
+                }
+            }
+            Some(Params::LoFi { values, flag }) => {
+                flush(&mut combined, &mut filters, &mut out);
+                if values.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)) {
+                    out.processors.push(sampler_ir::Processor::LoFi {
+                        bits: values[0], frequency: values[1], noise: values[2], color: values[3],
+                    });
+                    combined = product(gain, combined);
+                    if *flag { notes.push(("Lo-Fi fourth field flag".into(), "true".into(), sampler_ir::Reason::UnknownLaw)); }
+                } else {
+                    notes.push(("Lo-Fi parameters".into(), "non-finite or outside normalized range".into(), sampler_ir::Reason::InvalidValue));
+                    modelled = false;
+                }
+            }
             Some(Params::Eq { bands }) => {
                 filters.extend(bands.iter().filter_map(|band| eq_band(*band, &mut notes)));
                 combined = product(eq_gain, combined);
@@ -1614,6 +1649,30 @@ mod tests {
             dry_level: 1.0,
             output_set: true,
             public,
+        }
+    }
+
+    #[test]
+    fn authored_lofi_slot_is_an_executable_processor_in_both_scopes() {
+        let mut payload: Vec<u8> = [0.4f32, 0.2, 0.0]
+            .into_iter().flat_map(f32::to_le_bytes).collect();
+        payload.push(0); // typed fourth field, between NoiseLevel and NoiseColor
+        payload.extend(0.5f32.to_le_bytes());
+        for scope in [Scope::Voice, Scope::Bus] {
+            let out = chain(&[slot(0x20, payload.clone(), 1.)], scope);
+            assert!(out.notes.is_empty(), "{:?}", out.notes);
+            assert!(!out.processors.is_empty(), "Lo-Fi cannot disappear");
+        }
+    }
+
+    #[test]
+    fn v1_formant_slot_is_an_executable_processor_in_both_scopes() {
+        let mut payload = 90i32.to_le_bytes().repeat(2);
+        for value in [0.25f32, 0.5, 0.5] { payload.extend(value.to_le_bytes()); }
+        for scope in [Scope::Voice, Scope::Bus] {
+            let out = chain(&[slot(0x18, payload.clone(), 1.)], scope);
+            assert!(!out.processors.is_empty(), "v1 executes Formant I");
+            assert!(!out.notes.iter().any(|(_,_,_,reason)| *reason == sampler_ir::Reason::NotModeled));
         }
     }
 

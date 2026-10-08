@@ -1193,7 +1193,7 @@ impl Translation {
                 ir::Depth::Pitch(ir::Pitch::Semitones(12.0 * i)),
             ),
             "playPos" => (ir::Target::SampleStart, ir::Depth::Normalized(i)),
-            "pan" => return report(self, "pan modulation", ir::Reason::UnknownLaw),
+            "pan" => (ir::Target::Pan, ir::Depth::Normalized(i)),
             _ => return report(self, "modulation target", ir::Reason::NotModeled),
         };
         // The invert flag does not act through an enabled shaper: Vista Full
@@ -2161,6 +2161,20 @@ mod modulation {
     }
 
     #[test]
+    fn authored_pan_target_reaches_the_shared_voice_pan_route() {
+        for unipolar in [false, true] {
+            let mut t = translation();
+            let pan = ModTarget { lag_ms: 15, invert: true, ..target("pan", 0.5) };
+            t.route("g", ir::ModulatorRef(0), unipolar, &pan, None)
+                .expect("authored pan must execute");
+            assert_eq!(t.ir.routes[0].target, ir::Target::Pan);
+            assert_eq!(t.ir.routes[0].depth, ir::Depth::Normalized(0.5));
+            assert!(t.ir.routes[0].invert);
+            assert_eq!(t.ir.routes[0].smoothing, ir::Time::Milliseconds(15.));
+        }
+    }
+
+    #[test]
     fn filter_cutoff_modulation_is_ten_octaves_per_full_amount() {
         let mut t = translation();
         let source = ir::ModulatorRef(0);
@@ -2218,8 +2232,9 @@ mod modulation {
         t.route("g", source, true, &target("playPos", 1.0), None)
             .unwrap();
         assert_eq!(t.ir.routes[2].target, ir::Target::SampleStart);
+        t.route("g", source, true, &target("pan", 1.0), None).unwrap();
+        assert_eq!(t.ir.routes[3].target, ir::Target::Pan);
         for unknown in [
-            target("pan", 1.0),
             target("cutoff", 1.0),
             ModTarget {
                 slot: Some(0),
@@ -2228,12 +2243,11 @@ mod modulation {
         ] {
             assert!(t.route("g", source, true, &unknown, None).is_none());
         }
-        assert_eq!(t.ir.routes.len(), 3);
+        assert_eq!(t.ir.routes.len(), 4);
         let reasons: Vec<_> = t.ir.unsupported.iter().map(|u| u.reason).collect();
         assert_eq!(
             reasons,
             [
-                ir::Reason::UnknownLaw,
                 ir::Reason::NotModeled,
                 ir::Reason::NotModeled
             ]
