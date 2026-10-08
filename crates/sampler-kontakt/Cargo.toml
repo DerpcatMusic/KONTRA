@@ -14,6 +14,10 @@ library-access = ["dep:aes"]
 # The host consumes legacy .nui requests through its authored renderer.
 native-ui = []
 
+[[example]]
+name = "ksp_fault_kinds"
+required-features = ["scan"]
+
 [dependencies]
 anyhow = "1"
 symphonia = { version = "0.5", default-features = false, features = ["aiff", "wav", "pcm"] }
