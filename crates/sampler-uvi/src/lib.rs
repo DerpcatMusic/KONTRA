@@ -980,6 +980,8 @@ pub struct Translated {
 
 /// A program's scripts loaded on a script thread for a host that owns the runtime.
 pub struct AttachedScript {
+    /// Typed initial findings; runtime findings are published through the driver UI bridge.
+    pub findings: Vec<script::Finding>,
     pub driver: scripted::Driver<scripted::ScriptThread>,
     /// The script's widgets.
     pub interface: sampler_ui_ir::Interface,
@@ -998,10 +1000,11 @@ impl Translated {
         self.attach_script_with_ui_state(rate, config, None)
     }
 
-    pub fn attach_script_with_ui_state(&mut self, rate: u32, config: script::Config, state: Option<script::UiState>) -> Result<Option<AttachedScript>, sampler_kontakt::LoadError> {
+    pub fn attach_script_with_ui_state(&mut self, rate: u32, mut config: script::Config, state: Option<script::UiState>) -> Result<Option<AttachedScript>, sampler_kontakt::LoadError> {
         if self.instrument.behaviors.is_empty() {
             return Ok(None);
         }
+        config.rate = f64::from(rate);
         let (thread, loaded) =
             scripted::ScriptThread::spawn_with_ui_state(self.text.clone(), self.lua.clone(), config, state).map_err(
                 |reason| {
@@ -1014,16 +1017,17 @@ impl Translated {
             unsupported.retain(|u| !u.feature.starts_with("keygroup oscillators all play"));
         }
         unsupported.retain(|u| !(u.feature == "script" && u.value.contains("no frontend")));
-        for finding in loaded.findings {
+        for finding in &loaded.findings {
             unsupported.push(ir::Unsupported {
                 location: "script".into(),
-                feature: finding.feature,
-                value: format!("{} (x{})", finding.value, finding.count),
+                feature: finding.feature.clone(),
+                value: finding.value.clone(),
                 reason: ir::Reason::NotModeled,
             });
         }
         let groups = self.groups.clone();
         Ok(Some(AttachedScript {
+            findings: loaded.findings,
             driver: scripted::Driver::new(thread, groups, rate),
             interface: loaded.interface,
         }))
@@ -1420,7 +1424,7 @@ fn note_script(host: &script::ScriptHost, instrument: &mut ir::Instrument) {
         instrument.unsupported.push(ir::Unsupported {
             location: "script".into(),
             feature: finding.feature,
-            value: format!("{} (x{})", finding.value, finding.count),
+            value: finding.value,
             reason: ir::Reason::NotModeled,
         });
     }
