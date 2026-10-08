@@ -100,7 +100,7 @@ impl Cursor {
     /// traversal direction, and the virtual offset of the cursor's window
     /// start, to recover first-use deadlines.
     pub(crate) fn linear_reach(&self, frames: u32) -> Option<(Range<usize>, Direction, f64)> {
-        let radius = crate::resample::Kernel::radius(self.step) as f64;
+        let radius = if self.step == 1. && self.fraction == 0. { 0. } else { crate::resample::Kernel::radius(self.step) as f64 };
         let length = (self.end - self.start) as f64;
         let low = self.position as f64 - radius;
         let high =
@@ -140,7 +140,7 @@ impl Cursor {
             crate::LoopShape::Crossfade { frames }
             | crate::LoopShape::EqualPowerCrossfade { frames } => frames as u64,
         };
-        let radius = crate::resample::Kernel::radius(self.step) as f64;
+        let radius = if self.step == 1. && self.fraction == 0. { 0. } else { crate::resample::Kernel::radius(self.step) as f64 };
         let lead = self.position as f64 + self.fraction + radius;
         let low = (self.position as f64 - radius).max(0.) as u64;
         let high = (lead + f64::from(frames) * self.step + 1.).ceil() as u64;
@@ -178,6 +178,47 @@ impl Cursor {
                 Direction::Reverse => (self.end - to..self.end - from, at),
             })
         }))
+    }
+
+    /// Admission uses at most four geometric spans, never a per-frame walk.
+    /// Reflections/finite exits use a conservative bounded footprint; no heap.
+    pub(crate) fn reservation_pages(&self, frames: u32) -> usize {
+        use crate::PAGE_FRAMES;
+        if frames == 0 { return 0; }
+        // Reach helpers include the window at their endpoint; the final read
+        // of N output frames is at N-1, without a phantom next-frame guard.
+        let frames = frames - 1;
+        let pages = |r: Range<usize>| if r.is_empty() { 0 } else { (r.end - 1) / PAGE_FRAMES - r.start / PAGE_FRAMES + 1 };
+        if let Some((range, _, _)) = self.linear_reach(frames) { return pages(range); }
+        if let Some(reach) = self.loop_reach(frames) {
+            let mut ranges = [(usize::MAX, usize::MAX); 4];
+            for (i, (range, _)) in reach.into_iter().flatten().enumerate() {
+                ranges[i] = (range.start / PAGE_FRAMES, (range.end - 1) / PAGE_FRAMES + 1);
+            }
+            // Four-element insertion sort is fixed work, with no sorting scratch.
+            for i in 1..4 {
+                let mut j = i;
+                while j > 0 && ranges[j] < ranges[j - 1] { ranges.swap(j, j - 1); j -= 1; }
+            }
+            let (mut count, mut end) = (0usize, 0usize);
+            for (start, next) in ranges {
+                if start == usize::MAX { break; }
+                count += next.saturating_sub(start.max(end));
+                end = end.max(next);
+            }
+            return count;
+        }
+        let mut view = self.start..self.end;
+        if self.exit.is_none() && let Some(looped) = self.loop_range {
+            match self.direction {
+                Direction::Forward => view.end = looped.end,
+                Direction::Reverse => view.start = looped.start,
+            }
+        }
+        let span = ((f64::from(frames) * self.step).ceil() as usize)
+            .saturating_add(2 * crate::resample::Kernel::radius(self.step) as usize + 1);
+        let legs = if self.loop_range.is_some_and(|r| r.shape != crate::LoopShape::PingPong) { 2 } else { 1 };
+        pages(view).min(legs * (span.div_ceil(PAGE_FRAMES) + 1))
     }
 
     /// Output frames until a linear stretch (see `linear_reach`) first reads
@@ -269,6 +310,32 @@ fn extend(
 mod tests {
     use super::*;
     use crate::{Direction, Envelope, Loop, LoopMode, LoopShape, Playback};
+
+    #[test]
+    fn admission_footprints_cover_every_read_without_walking_the_horizon() {
+        use crate::{PAGE_FRAMES, Playback, Loop, LoopMode, LoopShape};
+        for direction in [Direction::Forward, Direction::Reverse] {
+            for shape in [LoopShape::Wrap, LoopShape::PingPong, LoopShape::Crossfade { frames: 64 }, LoopShape::EqualPowerCrossfade { frames: 64 }] {
+                for step in [0.0625, 0.73, 1., 1.37, 2., 16.] {
+                    for passes in [None, std::num::NonZeroU32::new(2)] {
+                        let cursor = Playback { start: 3, end: Some(PAGE_FRAMES * 8 - 3), direction,
+                            loop_range: Some(Loop { start: PAGE_FRAMES - 20, end: PAGE_FRAMES * 2 + 20, shape, mode: LoopMode::Continuous, passes }),
+                            ..Default::default()
+                        }.cursor(PAGE_FRAMES * 8, 48000, 48000).unwrap().with_step(step);
+                        for frames in [1, 64, 256, 4096] {
+                            let mut seen = [false; 8];
+                            cursor.visit_demand(frames, EnvelopeState::new(crate::Envelope::default()), |_, range| {
+                                for page in range.start / PAGE_FRAMES..=(range.end - 1) / PAGE_FRAMES { seen[page] = true; }
+                                true
+                            });
+                            let actual = seen.iter().filter(|&&v| v).count();
+                            assert!(cursor.reservation_pages(frames) >= actual, "{direction:?} {shape:?} {step} {passes:?} {frames}: {} < {actual}", cursor.reservation_pages(frames));
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn a_linear_reach_covers_every_read_no_later_than_its_first_use() {

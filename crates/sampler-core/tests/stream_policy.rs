@@ -150,6 +150,7 @@ fn storage_admission_precedes_stealing_and_counts_refusals() {
     let input = |id| Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: Some(id) };
     let first = rt.note_on(input(1), 60, 1.).unwrap();
     let live = rt.start(first, 0, 0, 1.).unwrap();
+    rt.service_streaming(64).unwrap();
     let mut job = worker.next_job().unwrap();
     job.frames_mut().fill([0.25; 2]);
     worker.complete(job, Ok(())).unwrap();
@@ -202,5 +203,81 @@ fn shared_storage_budget_allows_more_than_256_distinct_live_sources() {
         }
         assert_eq!(rt.voice_count(), 300);
         assert_eq!(rt.stats().stream_capacity_refusals, 0);
+    });
+}
+
+#[test]
+fn residency_reads_and_last_reader_release_never_touch_the_audio_heap() {
+    let snapshot = std::sync::Arc::new(sampler_pool::Snapshot::new(vec![[0.25; 2]; 64]));
+    let old = snapshot.read();
+    let control = snapshot.clone();
+    std::thread::spawn(move || control.replace(vec![[0.5; 2]; 64], |_| ())).join().unwrap();
+    support::without_heap(|| {
+        assert_eq!(&**snapshot.read(), &[[0.5; 2]; 64]);
+        assert_eq!(&**old, &[[0.25; 2]; 64]);
+        drop(old);
+    });
+    snapshot.collect();
+}
+
+#[test]
+fn starting_a_voice_reserves_capacity_without_page_walks_or_decoder_jobs() {
+    let pcm = Pcm::headed(48000, PAGE_FRAMES * 2, &[[0.25; 2]; 32]).unwrap();
+    let plan = Prepared::new(48000, vec![pcm], vec![], 0).unwrap();
+    let limits = Limits::for_plan(&plan, 8, 8);
+    let (cache, mut worker) = StreamCache::new(2).unwrap();
+    let mut rt = Runtime::new(plan, limits).unwrap().with_stream_cache(cache);
+    rt.set_stream_horizon(64).unwrap();
+    let note = rt.note_on(Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: Some(1) }, 60, 1.).unwrap();
+    support::without_heap(|| rt.start(note, 0, 0, 1.).map(|_| ()).unwrap());
+    assert!(worker.next_job().is_none(), "start must not run page service or wake decoders");
+    rt.service_streaming(64).unwrap();
+    assert!(worker.next_job().is_some(), "normal block service issues the page request");
+}
+
+#[test]
+fn advancing_a_live_cursor_updates_credits_before_the_next_start() {
+    let a = Pcm::headed(48000, PAGE_FRAMES * 3, &[[0.25; 2]; PAGE_FRAMES]).unwrap();
+    let b = Pcm::streamed(48000, PAGE_FRAMES * 3).unwrap();
+    let plan = Prepared::new(48000, vec![a, b], vec![], 0).unwrap();
+    let limits = Limits::for_plan(&plan, 8, 8);
+    let (cache, _worker) = StreamCache::new(2).unwrap();
+    let mut rt = Runtime::new(plan, limits).unwrap().with_stream_cache(cache);
+    rt.set_cold_starts(true);
+    rt.set_stream_horizon(64).unwrap();
+    let input = |id| Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: Some(id) };
+    let note = rt.note_on(input(1), 60, 1.).unwrap();
+    let live = rt.start(note, 0, 0, 1.).unwrap();
+    let second = rt.note_on(input(2), 60, 1.).unwrap();
+    support::without_heap(|| {
+        rt.render(&mut [[0.; 2]; PAGE_FRAMES - 32]).unwrap();
+        assert_eq!(rt.start(second, 1, rt.now(), 1.), Err(Error::Capacity), "live cursor now needs two pages, leaving no credit for a third");
+        assert!(rt.voice_active(live));
+        rt.stop_voice(live).unwrap();
+        rt.start(second, 1, rt.now(), 1.).unwrap();
+    });
+}
+
+#[test]
+fn a_pitch_edit_updates_live_credits_before_the_next_start() {
+    let a = Pcm::headed(48000, PAGE_FRAMES * 3, &[[0.25; 2]; 32]).unwrap();
+    let b = Pcm::streamed(48000, PAGE_FRAMES * 3).unwrap();
+    let plan = Prepared::new(48000, vec![a, b], vec![], 0).unwrap();
+    let limits = Limits::for_plan(&plan, 8, 8);
+    let (cache, _worker) = StreamCache::new(2).unwrap();
+    let mut rt = Runtime::new(plan, limits).unwrap().with_stream_cache(cache);
+    rt.set_cold_starts(true);
+    rt.set_stream_horizon(1024).unwrap();
+    let input = |id| Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: Some(id) };
+    let note = rt.note_on(input(1), 60, 1.).unwrap();
+    let live = rt.start(note, 0, 0, 1.).unwrap();
+    let expression = rt.expression_id(note).unwrap();
+    let second = rt.note_on(input(2), 60, 1.).unwrap();
+    support::without_heap(|| {
+        rt.set_expression(expression, Expression { pitch_semitones: 24., ..Default::default() }).unwrap();
+        assert_eq!(rt.start(second, 1, 0, 1.), Err(Error::Capacity));
+        assert!(rt.voice_active(live));
+        rt.stop_voice(live).unwrap();
+        rt.start(second, 1, 0, 1.).unwrap();
     });
 }
