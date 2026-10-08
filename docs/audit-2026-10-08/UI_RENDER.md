@@ -87,13 +87,15 @@ bounded audition. Its main-view pixel hash is identical to this witness:
 The installed extension records **93.90%** declared cream background with its
 one-unit pixel tolerance; the supplemental **94.94%** above uses ±2. These are
 different measurement definitions, not a changed screenshot. The extension
-snapshot reports 17,338.28 ms load admission and 230.84 MiB peak worker RSS.
+current-revision witness reports 5,368.33 ms load admission and 230.87 MiB peak worker RSS.
 These whole-worker figures include playback/asset work absent from the render-only
 probe. Shared v2 binary SHA-256:
-`18fe63fe07e62ea3c012ce29fc2d01b08f518ea808459446478cc46aca924b6d`;
-record `~/.cache/kontra-scan/results/v2/cache/70c67b9c5e48dfa082f09f49941b681d89ff920179ae6911a0d781c7dad8b8f2.json`.
-The prior scanner witness reported 18,941.86 ms / 229.71 MiB under its older
-digest; neither observation establishes a controlled performance improvement.
+`742c24e295358a7631fd5ae4fb85d576e51d03ef669eaa2efbf7ed2dfa6030c4`;
+record `~/.cache/kontra-scan/results/v2/cache/8d50917a5a616f5bffbf5d207e427ad5e37612f814847b9def39bec6ed503135.json`.
+Older scanner witnesses reported 18,941.86 ms / 229.71 MiB and 17,338.28 ms /
+230.84 MiB under previous digests. These observations do not establish a controlled
+performance improvement. This scanner still measures the frozen integration
+baseline's classic fallback, not W3's new NativeUI graph.
 Audible output and bound scalar controls do not prove gesture, callback or native
 UI fidelity.
 
@@ -108,7 +110,11 @@ sigils are `$:223`, `%:15`, `@:6`, `!:13`; production-admitted state excludes th
 The main page has one strip, nine frames and one margin-bearing picture. Asset
 failures distinguish one lookup miss from six unavailable font-service uses;
 custom bitmap-font uses remain zero. Its audition uses MIDI 60 / velocity 64
-from zone coverage and is marked `matched-note-plan`.
+from zone coverage, is marked `matched-note-plan`, and explicitly records
+`fallback_note=0`. It observes 1,985 surviving sample zones and six visible typed
+targets in `bound_typed`, separately from the 107/113 scalar binding criterion.
+`phantom_free_controls` is unknown; do not subtract guessed library-specific
+controls or treat typed readback as a successful text/array gesture.
 
 The causal chain is:
 
@@ -230,26 +236,29 @@ Do not replace the working authored presentation with a generic theme.
 | R12 preparation / diagnostics / cache | `src/ui/perf_view.rs:371` off-frame picture fetch with generation check, `:418` per-control dependency cache; `src/artwork.rs:259` categorized failures; `src/ui/fitted.rs:73,79,103,116` owner generation / resize / cut / window caches | Restore worker preparation, explicit errors and reusable render assets. Do not copy v1's cache-count ceiling as a decoded-byte budget; strengthen bounds/retry/resource identity through the shared v2 asset layer. |
 
 The shared scanner extension is published at
-`tools/kontra-scan@9dcf05e59cbc67e45c56872e1418817693150085`. Canonical measurement uses
+`tools/kontra-scan@e340c39a6666752866015b5ee8f06a3cc978c416`. Canonical measurement uses
 `~/.cache/kontra-scan/bin/kontra-scan-v1` (pinned v1) and
 `kontra-scan-v2` (integration baseline), with their adjacent README and frozen
 Kontakt manifest. Use existing census outputs and requested extra columns;
 do not build another collector. Preserve Original in both comparisons and
 record the scanner digests, installed-file identity, values and render dimensions.
 The matching Conflux v2 hash above comes from that published scanner.
-Pinned Kontakt v1 remains `0cb7a8a0`; its installed scanner digest is
-`a4b3f8c76483ea06b36b9fef46911093d7e8df8021bd9e54e711018dbf700399`.
+Pinned Kontakt v1 remains `0cb7a8a0`; adapter source is `788f41fa`, and its
+installed scanner digest is
+`ac5aed734bb7fca40d6d000ff1f3e89128436b8f38d9d674fd70466f90dcdf08`.
 The UVI sidecar is a distinct later-v1 baseline, source `1c198e60` on product
 base `4bffbb18`, digest
 `d565661afb3ae1cab3100d1e83b7f12c0f5b02c51b7593451a6fe77929af8ea1`.
 
 ### Shared schema and coverage update
 
-The adjacent `bin/kontra_scan.py:COLUMNS` defines **63** columns; its first nine
+The adjacent `bin/kontra_scan.py:COLUMNS` defines **69** columns; its first nine
 remain stable. Published summaries are `~/.cache/kontra-scan/results/{v1,v2}.tsv`,
-with per-ID evidence in `{v1,v2}/cache`. At this read, the summary files have no
-data rows and `v2/results.tsv` contains three smoke rows; v1 has none. The owner
-is running the serial paired sweep. This partial snapshot cannot supply
+with per-ID evidence in `{v1,v2}/cache`. Summaries were reset to the current
+revision and have no data rows at this read. One completed current-v2 Conflux
+cache record is available; current symbol aggregates report coverage of one ID.
+The owner is restarting the serial paired sweep, Conflux and exact Clarinet A
+first, then all 1,494 IDs. This partial snapshot cannot supply
 whole-corpus affected counts, regression totals or a paired Conflux rendering comparison.
 
 | Matrix evidence | Shared column / detailed JSON | Interpretation |
@@ -258,6 +267,7 @@ whole-corpus affected counts, regression totals or a paired Conflux rendering co
 | UI API and control-parameter source references | `ui_api_refs`; raw slots' `symbols` | `$CONTROL_PAR_*` keys share this dictionary; there is no separate `control_par_refs` TSV column. Union matching IDs across programs/slots for affected-file counts; do not sum token occurrences as files. |
 | Bypassed references and slot ownership | `bypassed_ui_api_refs`, `slots_*`; metadata slots' owner/program/wire/runtime identity | Exclude bypassed uses from active reach while retaining their separate evidence. Raw and compacted runtime slots are distinct. |
 | Actual execution and saved state | `compiled_script_slots`, `clean_compiled_slots`, `disabled_block_errors`, `init_callbacks_completed`, `persistence_changed_completed`, `load_fault_records`, raw/admitted saved sigils | Use phase records for completion/faults; successful admission is not successful persistence. Disabled callback errors do not establish preprocessor-inactive errors. |
+| Typed and origin-aware bindings | `bound_typed`, `phantom_free_controls` | Typed text/array validation is separate from scalar bindings; phantom-free counts stay unknown when origin/readback accessors are absent. |
 | Fonts, strips and slicing | `custom_font_uses`, `font_declared`, `font_success`, `picture_strips`, `picture_frames`, `picture_margins` | Preserve lookup/decode/font-service distinctions and declared versus resolved evidence. |
 | Asset failures and paint | `asset_lookup_*`, `asset_decode_*`, `resource_failure_reasons`, `paint_ok`, `paint_error` | A successful paint is not authored frontend or native-host fidelity. |
 | Pale or empty authored page | `page_background_rgba`, `plain_background_fraction`; renders' background method | Declared colour uses one-unit tolerance; modal colour is explicitly inferred. V1 page coverage remains unknown. |
@@ -266,6 +276,23 @@ whole-corpus affected counts, regression totals or a paired Conflux rendering co
 load path, sample residency/underruns and common note-plan evidence remain
 separate from renderer fidelity. No authored diagnostic text, names or payloads
 are needed for these matrix counts. No new collector or independent sweep is used.
+
+The generated whitelist now covers 246 known identifiers, including 29 omitted
+by the previous scanner revision. Consume the owner's
+`results/v2/symbol-aggregates.tsv`: it records identifier incidence by ID and
+program-owner scope, active/bypassed occurrences, NKI/NKM splits, initialized
+widget incidence, saved sigils, explicit coverage and scanner digest. Its 254
+rows are identifiers/sigils, not 254 measured instruments. UI regression output
+is `~/.cache/kontra-scan/v1ok-v2missing.tsv`; an empty partial file does not prove
+no regressions. Older cache records must not enter current-revision totals.
+
+`sample_zone_count` and `zero_zone_reason` describe surviving load-time mappings;
+reserved sample bytes are not proof of usable PCM. `fallback_note` and
+`keyswitch_picked` preserve the actual audition choice. No safe key means
+`plays_note=no` with a reason; fallback-note auditions and mismatched note plans
+are excluded from audio parity. The superseded null-pick audio observations are
+discarded for parity. Rendering witnesses above remain tied to their exact pixel
+hashes and scanner revision.
 
 ## Prior work to reuse, not reimplement
 
