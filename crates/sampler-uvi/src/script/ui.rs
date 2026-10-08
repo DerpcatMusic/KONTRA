@@ -89,10 +89,12 @@ impl ScriptHost {
     }
     /// Scalar, table-cell and XY-axis state, without integer conversion.
     pub fn control_values(&self) -> Vec<(ui::ControlId, f64)> {
-        let face = self.interface();
+        Self::control_values_from(&self.interface())
+    }
+    pub(crate) fn control_values_from(face: &ui::Interface) -> Vec<(ui::ControlId, f64)> {
         let mut out = Vec::new();
-        for (i, w) in widgets(self).iter().enumerate() {
-            match &face.widgets[i].kind {
+        for (i, w) in face.widgets.iter().enumerate() {
+            match &w.kind {
                 ui::Kind::Table { cells, .. } => out.extend(
                     cells
                         .iter()
@@ -100,8 +102,8 @@ impl ScriptHost {
                         .map(|(c, v)| (control_id(i + 1, c + 1), *v)),
                 ),
                 ui::Kind::Xy { .. } => {} // Axes share their original knobs' controls.
-                _ if matches!(face.widgets[i].binding, ui::Binding::Control(_)) => {
-                    out.push((control_id(i + 1, 0), num(w, "value").unwrap_or(0.0)));
+                _ if matches!(w.binding, ui::Binding::Control(_)) => {
+                    out.push((control_id(i + 1, 0), w.initial_value));
                 }
                 _ => {}
             }
@@ -132,6 +134,7 @@ impl ScriptHost {
     }
     /// Current declaration, with script-driven geometry, visibility and text.
     pub fn interface(&self) -> ui::Interface {
+        let _span = sampler_kontakt::audit::Span::new("uvi_lua_ui_snapshot");
         let mut out = ui::Interface {
             source: ui::Source::FalconLua,
             ..Default::default()
@@ -657,9 +660,14 @@ impl ScriptHost {
         self.restore_ui_custom(state)
     }
     pub fn save_ui_state(&self) -> Result<UiState, String> {
+        let _span = sampler_kontakt::audit::Span::new("uvi_lua_ui_save");
         self.shared.arm(self.shared.config.load);
         let mut out = UiState::default();
         let mut remaining = 65536;
+        if let Ok(Value::Function(f)) = self.lua.globals().raw_get::<Value>("onSave") {
+            let value = f.call::<Value>(()).map_err(super::lua_error)?;
+            out.custom = Some(save_value(value, &mut Vec::new(), &mut remaining)?);
+        }
         for (i, w) in widgets(self).iter().enumerate() {
             if !flag(w, "persistent", true) || text(w, "kind").as_deref() == Some("Button") {
                 continue;
@@ -677,10 +685,6 @@ impl ScriptHost {
                     save_value(v, &mut Vec::new(), &mut remaining)?,
                 ));
             }
-        }
-        if let Ok(Value::Function(f)) = self.lua.globals().raw_get::<Value>("onSave") {
-            let value = f.call::<Value>(()).map_err(super::lua_error)?;
-            out.custom = Some(save_value(value, &mut Vec::new(), &mut remaining)?);
         }
         if serde_json::to_vec(&out).map_err(|e| e.to_string())?.len() > 8 << 20 {
             return Err("UVI state exceeds 8 MiB".into());

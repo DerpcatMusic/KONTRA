@@ -306,13 +306,20 @@ element.__index = function(t, k)
     rawset(t, k, defs)
     return defs
   end
-  if k == "numParams" then return #t.parameterDefinitions end
+  if k == "numParams" then
+    local defs=rawget(t,'parameterDefinitions')
+    return defs and #defs or native.paramCount(rawget(t,'__id'))
+  end
   return nil
+end
+local function parameter_name(self,id)
+  local defs=rawget(self,'parameterDefinitions')
+  if defs then local def=defs[id]; return def and def.name end
+  return native.paramName(rawget(self,'__id'),id)
 end
 function element.getParameter(self, name)
   if type(name) == "number" then
-    local d = self.parameterDefinitions[name]; if not d then error("invalid parameter id") end
-    name = d.name
+    name = parameter_name(self,name); if not name then error("invalid parameter id") end
   end
   local overlay = rawget(self, "__set")
   if overlay and overlay[name] ~= nil then return overlay[name] end
@@ -324,30 +331,36 @@ function element.getParameter(self, name)
   return v
 end
 function element.hasParameter(self, name)
-  return self.parameterDefinitions[name] ~= nil or native.param(rawget(self,'__id'), name) ~= nil
+  if type(name)=='number' then return parameter_name(self,name) ~= nil end
+  local defs=rawget(self,'parameterDefinitions')
+  return (defs and defs[name] ~= nil) or native.hasParameter(rawget(self,'__id'),name)
 end
 __touched = {}
 function element.setParameter(self, name, value)
   if name == nil then report("setParameter", "nil name"); return end
   if type(name) == "number" then
-    local d = self.parameterDefinitions[name]; if not d then error("invalid parameter id") end
-    name = d.name
+    name = parameter_name(self,name); if not name then error("invalid parameter id") end
   end
-  local def = self.parameterDefinitions[name]
-  if def then
+  local defs = rawget(self, 'parameterDefinitions')
+  local expected, min, max
+  if defs then
+    local def = defs[name]
+    if def then expected,min,max=def.type,def.min,def.max end
+  else expected,min,max=native.definition(rawget(self,'__id'),name) end
+  if expected then
     -- v1/Workstation-observed, Falcon unverified: mismatched scalar writes
     -- are ignored. Only lossless int-to-float widening is accepted.
     local actual = type(value)
     if actual == 'boolean' then actual = 'bool'
     elseif actual == 'number' then actual = value == math.floor(value) and 'int' or 'float' end
-    if actual ~= def.type and not (def.type == 'float' and actual == 'int') then
-      native.setterMismatch(def.type,actual)
+    if actual ~= expected and not (expected == 'float' and actual == 'int') then
+      native.setterMismatch(expected,actual)
       return
     end
     if actual == 'int' or actual == 'float' then
       if value ~= value or math.abs(value) == math.huge then error('expected finite parameter') end
       -- Keep reversed documented bounds intact; native semantics need a measurement.
-      if def.min ~= nil and def.max ~= nil and def.min <= def.max then value = math.max(def.min, math.min(def.max, value)) end
+      if min ~= nil and max ~= nil and min <= max then value = math.max(min, math.min(max, value)) end
     end
   end
   local overlay = rawget(self, "__set")
@@ -361,8 +374,7 @@ function element.setParameter(self, name, value)
 end
 function element.getParameterConnections(self, name)
   if type(name) == 'number' then
-    local d = self.parameterDefinitions[name]; if not d then error('invalid parameter id') end
-    name = d.name
+    name = parameter_name(self,name); if not name then error('invalid parameter id') end
   end
   local result = {}
   for _, c in ipairs(self.connections or {}) do
