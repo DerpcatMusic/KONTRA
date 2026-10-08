@@ -6,7 +6,7 @@ Acceptance is **not met**. The shared once-init path and bounded startup are fix
 
 - Product before: `7e82b152` plus numeric probes only, frozen probe SHA-256 `a4572f6b08108616ac024554d5cfbf4ad2eb6d7ecc722bb413d1ee225cc5c493`. All 14 rows were rebuilt/repeated after the original audit binary was pruned; no failed probe row is used.
 - Intermediate after: `205b506e`, frozen probe SHA-256 `2b4e11e92bb45c2bc8eb081f0509213b49fd9548854e0183bffc1dcd9d5fa6b9`. These rows predate the v2 numeric header cache and are not the final cold/warm result.
-- Pinned Kontakt v1: `0cb7a8a0` with equivalent numeric stage instrumentation on `audit/w8-load-v1-stages-20261008@2f51deec`, frozen probe SHA-256 `761f9c8ebaa0847d281e4d665d7776b9fdb1119a31e542b53840701fac5e7d6f`. UVI requires the shared sidecar, not this older Kontakt-only build.
+- Pinned Kontakt v1: `0cb7a8a0` with equivalent numeric stage instrumentation on `audit/w8-load-v1-stages-20261008@2f51deec`, frozen probe SHA-256 `761f9c8ebaa0847d281e4d665d7776b9fdb1119a31e542b53840701fac5e7d6f`. UVI uses the exact sidecar product4bffbb18/source1c198e60 plus onset-only instrumentation3b4a47a5, detailed below.
 - Probes use 48 kHz, 64-frame blocks, C4 velocity100, CC1/11=127, first finite audio above1e-7. First sound is wall time from load request. A silent controller multi has no fabricated first-sound time. The shared scanner uses its own frozen identical per-ID note plan and threshold.
 - `tools/audit-load.py` runs the probe with library/cache resources read-only in bwrap, volatile temporary storage, and persists only numeric stage/PCM/RSS metadata. For v2 cold/warm the only writable namespace is a private `kontra/v2-headers` numeric cache. OS page cache and shared machine contention are uncontrolled; "cold" means empty product cache, not physically cold disks.
 
@@ -65,7 +65,7 @@ These fixed-C4 intermediate runs improve many original v2 rows but do not establ
 - Plugin sample preload is lazy with8 MiB of admitted head data; page pool24 MiB. Generic eager APIs preserve their prior policy. A first missing page holds onset for at most50 ms but resumes immediately when data arrives. This is not a mandatory50 ms delay; no claim of better onset than v1 is made until cold/warm measurements pass.
 - Header artwork uses async worker preparation,1024×512 downscale and8 MiB bounded cache. Authored strip/native pictures remain W3-owned; their Original fidelity and transient/resident RSS must be measured on the combined build.
 - Changes in other streams are limited to `sampler-core/src/source.rs` onset handling (W9), shared positional sample handles (W9 streaming), and a Kontakt destructure in `sampler-native/tests/pedals.rs`. There is no W5 service or W1 publication rewrite.
-- Scanner extension source9dcf05e is retained exactly, with a small once-init observation checkpoint adaptation. Frozen baseline binaries and identical note plans are required; previous scanner rows are invalid for these claims. The matched14-row shared scanner shard is complete; detailed results follow below.
+- The historical14-row scanner shard below uses extension9dcf05e and its explicitly frozen binaries/note plans. Current branch250318db merges canonical scanner2355155, retaining the once-init observation checkpoint. Shared driver/symbol checks, shots rootno-run, scanner pixel test and all KSP scan-feature tests pass. New acceptance measurements will use the refreshed source and installed binaries; the historical rows are not relabeled as new-schema results.
 
 ## Equal page-cache interleaved check
 
@@ -106,10 +106,10 @@ These14 after rows use frozen `4c7ea505` probe SHA-256 `ab806ef3e6124b1dd5b0cf7c
 |Vista-Harp|436.6|220.6|110.3|36.2|114.4/113.6|98.0/95.7|
 |Solo-Violin|877.5|1116.2|406.2|426.3|209.4/208.3|805.2/804.7|
 |Pacific-Cellos|591.0|298.3|119.4|70.4|135.4/134.8|177.3/175.0|
-|VWinds-Clarinet|1517.6|—|1553.2|—|159.9/159.8|—/—|
-|VWinds-Flute|14301.8|—|4957.6|—|171.0/170.7|—/—|
+|VWinds-Clarinet|1517.6|1838.5²|1553.2|3709.1²|159.9/159.8|—/—|
+|VWinds-Flute|14301.8|3608.6²|4957.6|11904.3²|171.0/170.7|—/—|
 
-Conflux cold283.5 vs3286.6 ms improves; warm180.1 vs111.0 ms still fails. Editor193.8/191.8 vs114.8/114.2 MiB still fails. Cold first sound regresses on Una Corda, Analog Strings, Vista and Pacific in this pass; therefore the every-preset target is not met. V1 UVI onset is unknown in these stage probes because0cb7a8a0 has no UVI; its shared sidecar comparison below proves admission/audio/RSS but the requested onset columns remain pending. Big Screen here is controller program0 only; the audible embedded-program failure is recorded separately.
+Conflux cold283.5 vs3286.6 ms improves; warm180.1 vs111.0 ms still fails. Editor193.8/191.8 vs114.8/114.2 MiB still fails. Cold first sound regresses on Una Corda, Analog Strings, Vista, Pacific and Alto Flute in these observations; therefore the every-preset target is not met. ² The supplemental UVI v1 stage probe below fills onset only; it does not measure editor RSS. UVI repeat times vary substantially without a product-cache implementation, so these independent passes do not establish a cache speedup. Augmented Orchestra v1 initialization fails, leaving onset unavailable. Big Screen here is controller program0 only; the audible embedded-program failure is recorded separately.
 
 ## Shared scanner: identical notes, Original, all14 fixtures
 
@@ -177,3 +177,19 @@ The original W8 header change bounded cached display pixels but still decoded a 
 Encoded reads are limited to32 MiB, PNG internal allocation to16 MiB, the display surface to2 MiB and display sums to16 MiB. Interlaced PNG reconstruction is capped at8 MiB; JPEG dimensions are capped at8192 and8M pixels before decode. Oversized interlaced/JPEG artwork returns unavailable rather than making an unbounded allocation. Standard non-interlaced PNG wallpapers can exceed the old full-frame ceiling because only rows survive. Existing authored full-image decode remains unchanged for W3. Eleven artwork tests pass, including all four expanded PNG colour types, fractional coverage/alpha within one byte of the old area average, and the original unbounded authored-filmstrip compatibility test. Root ci no-run passes.
 
 The only cross-owner test edit adds a7-line peak-allocation helper to `src/plugin.rs`'s existing test allocator. At W1's request, `Streamer::source(AssetId)` adds a cloned existing `Arc<dyn AssetSource>` accessor in `crates/sampler-kontakt/src/stream.rs`; it opens/decodes/preloads nothing. W1 owns generation-safe bounded waveform-worker reading; W9 was notified of this accessor-only change. The earlier14-preset tables retain their frozen4c product and scanner provenance; they are not silently relabeled as measurements of this follow-up.
+
+## Supplemental pinned v1 UVI onset
+
+Owned audit branch `audit/w8-load-v1-uvi-stages-20261008@3b4a47a5` starts at the exact frozen sidecar source1c198e60/product4bffbb18. Its opt-in scanner-only ignored probe reuses that adapter's production Worker, read-only official reader and pure access-state recovery. It delays panel snapshots/painting, then auditions C4 velocity100 with CC1/11=127, matching the14 stage probes. Onset is load-start to the first returned finite output above1e-7. V1's production worker packets are256 frames at48kHz; v2's stage probe blocks are64. This is disclosed rather than changing the pinned worker's packet contract. The probe emits no PCM, authored resources, script source or property values.
+
+Frozen binary `~/.cache/kontakto-fix-load/bin/v1-uvi-onset-probe` SHA-256 `5ae1465da2259ece268ec700a5cc5420d1a37390bdfd173d268fb8160b335a6d`. Root ci shots/uvi no-run passes; ldd has only system libraries. Cold disables product cache paths; second load restores read-only user paths. This UVI adapter implements no product metadata cache, so repeat is an OS/process observation. These measurements are stage probes, not replacements for the shared scanner census or Original editor measurements.
+
+| Fixture | v1 cold read/program ms | v1 cold ready ms | v1 cold first ms | v1 repeat read/program ms | v1 repeat ready ms | v1 repeat first ms | Peak output | Runtime errors |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+|Clarinet A|168.7|1779.3|1838.5|1283.0|3631.9|3709.1|0.08300|0|
+|Alto Flute 2|1028.2|3583.4|3608.6|6350.2|11829.3|11904.3|0.02296|0|
+|V Strings Bartok|18921.0|initialization failed|—|56673.8|initialization failed|—|—|—|
+
+Both Augmented Orchestra attempts reject initialization with the same diagnostic digest; their adapter0ms failed-load field is not an onset result. The repeat's slower read/program stages account for much of its slower total; it cannot be described as a warm-cache gain. Clarinet resident PCM is218,923,526B and Flute294,428,916B in both passes. No editor phase runs, so their peak process RSS420.43/413.14 and557.54/550.21 MiB respectively must not populate editor-RSS columns.
+
+After freezing and checking the binary, W8 deleted its owned `kontakto-fix-load-v1-uvi-base` target:1,730,752,112 logical bytes, net free space increase527,839,232B (503.39 MiB) during concurrent machine activity. Its source worktree and frozen probe remain. Own main incremental directory was empty and removed. Big Screen recheck is explicitly held until W5's READY service SHA; its exact program1/C4 command and0 versus0.0272883 controlled output levels were sent to W5 for the production-path test.
