@@ -500,6 +500,14 @@ impl Scheduler {
                     if let Some(row) = row {
                         self.art = row;
                         *key = SWITCH;
+                        if let In::HostOn(note, ..) = ev {
+                            self.host.push(HostHold {
+                                note,
+                                hold: 0,
+                                mono: false,
+                                held: false,
+                            });
+                        }
                         return None;
                     }
                 }
@@ -593,6 +601,11 @@ impl Scheduler {
                         self.held[c].fill(UP);
                         self.stop_due[c] = self.stop_due[c].max(due);
                     }
+                    for owner in &mut self.host {
+                        if channels & (1 << owner.note.channel) != 0 {
+                            owner.held = false;
+                        }
+                    }
                     self.down.fill(0);
                     for (c, row) in self.held.iter().enumerate() {
                         self.down[lane(c as u8)] += row
@@ -671,9 +684,9 @@ pub(crate) struct Align {
     pub empty: Holds,
 }
 impl Align {
-    pub fn with_slots(slots: usize) -> Self {
+    pub fn with_slots(slots: usize, plan: Arc<Plan>) -> Self {
         Self {
-            plan: Arc::default(),
+            plan,
             parts: (0..slots).map(|_| Scheduler::default()).collect(),
             clock: 0,
             empty: Holds::default(),
@@ -1008,12 +1021,16 @@ pub fn probe_note(i: &sampler_ir::Instrument, arts: &[sampler_ir::Articulation])
 /// Measurements never mutate the playing part or a library's source IR.
 pub fn measure_request(
     request: &LoadRequest,
+    edits: &crate::sound::edits::Edits,
     canceled: &(dyn Fn() -> bool + Sync),
 ) -> Result<Timing, crate::sound::CoreError> {
     let loaded = V2Loader.prepare(request, &mut |_| {}, canceled)?;
     let declared = declared(&loaded.interfaces, &loaded.controls);
     let instrument = loaded.instrument.clone();
     let mut core = V2Core::with_parts(1, request.sample_rate);
+    let mut mix = crate::sound::mix::Mix::default();
+    mix.editor_offsets = vec![edits.native()];
+    core.set_mix(&mix);
     core.install(0, loaded.part);
     let arts = instrument
         .as_ref()
@@ -1302,6 +1319,81 @@ mod tests {
         assert!((t - 150.).abs() <= 20., "{t}");
     }
     #[test]
+    fn v1_auto_align_consumed_switch_retains_exact_host_end_owner() {
+        let mut switching = sampler_core::Switching::default();
+        switching
+            .set_key_inputs(vec![(12, sampler_core::Switch::Tap(12))], 0)
+            .unwrap();
+        let r = Router {
+            switching: &switching,
+            keys: &[],
+            actions: &[Some(sampler_core::Switch::Tap(12))],
+            mpe: false,
+        };
+        let mut scheduler = Scheduler::default();
+        let note = HostNote {
+            port: 0,
+            channel: 0,
+            key: 12,
+            id: 19,
+            clap: true,
+        };
+        assert!(
+            scheduler
+                .arrive(
+                    Event::NoteOn {
+                        note,
+                        velocity: 0.8,
+                        tune: 0.
+                    },
+                    0,
+                    &holds(0., 0., 10.),
+                    RATE,
+                    &r
+                )
+                .is_none()
+        );
+        assert!(
+            scheduler.hosts().any(|n| n == note),
+            "a consumed keyswitch still needs one exact NOTE_END"
+        );
+        assert!(!scheduler.host_key_held(0, 12));
+        assert_eq!(scheduler.next_due(), None);
+    }
+    #[test]
+    fn v1_auto_align_cc_stop_releases_exact_failed_admission_owners() {
+        let switching = sampler_core::Switching::default();
+        let r = router(&switching);
+        let mut scheduler = Scheduler::default();
+        let note = HostNote {
+            port: 0,
+            channel: 0,
+            key: 60,
+            id: 8,
+            clap: true,
+        };
+        scheduler.arrive(
+            Event::NoteOn {
+                note,
+                velocity: 0.8,
+                tune: 0.,
+            },
+            0,
+            &holds(0., 0., 10.),
+            RATE,
+            &r,
+        );
+        scheduler.arrive(Event::midi1(0xb0, 123, 0), 1, &holds(0., 0., 10.), RATE, &r);
+        assert!(
+            !scheduler.host_key_held(0, 60),
+            "CC123 releases the scheduler owner as well as the key row"
+        );
+        assert!(
+            scheduler.hosts().any(|n| n == note),
+            "NOTE_END still owns its tuple until accepted"
+        );
+    }
+    #[test]
     fn v1_exact_stacked_owners_keep_their_own_delays_after_key_reuse() {
         let switching = sampler_core::Switching::default();
         let r = router(&switching);
@@ -1405,5 +1497,83 @@ mod tests {
         t.source = s;
         assert!(t.measured("patch.nki", 2, "snapshot.nksn"));
         assert!(!t.measured("patch.nki", 2, "another.nksn"));
+    }
+}
+
+// Port v1 0cb7a8a0:src/plugin.rs Measure/align job delivery. One retained
+// job per instance avoids simultaneous fresh-bank allocations; cancellation
+// and plugin teardown own the thread, rather than detaching it.
+#[derive(Default)]
+pub(crate) struct Measure {
+    worker: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
+    cancel: std::sync::Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>,
+    pub(crate) done:
+        Arc<std::sync::Mutex<Vec<(usize, u64, String, Option<Result<Timing, String>>)>>>,
+}
+impl Measure {
+    pub fn take(&self) -> Vec<(usize, u64, String, Option<Result<Timing, String>>)> {
+        let mut worker = self.worker.lock().unwrap();
+        if worker.as_ref().is_some_and(|w| w.is_finished()) {
+            let _ = worker.take().unwrap().join();
+        }
+        std::mem::take(&mut *self.done.lock().unwrap())
+    }
+    pub fn busy(&self) -> bool {
+        self.worker.lock().unwrap().is_some()
+    }
+    pub fn cancel(&self) {
+        if let Some(token) = self.cancel.lock().unwrap().as_ref() {
+            token.store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+    pub fn start(
+        &self,
+        slot: usize,
+        generation: u64,
+        request: LoadRequest,
+        edits: crate::sound::edits::Edits,
+        canceled: impl Fn() -> bool + Send + Sync + 'static,
+    ) -> Result<(), String> {
+        let mut worker = self.worker.lock().unwrap();
+        if worker.is_some() {
+            return Ok(());
+        }
+        let source = source(
+            &request.path.to_string_lossy(),
+            request.program,
+            &request
+                .snapshot
+                .as_deref()
+                .unwrap_or(std::path::Path::new(""))
+                .to_string_lossy(),
+        );
+        let token = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        *self.cancel.lock().unwrap() = Some(token.clone());
+        let done = self.done.clone();
+        let handle = std::thread::Builder::new()
+            .name("kontra-timing".into())
+            .spawn(move || {
+                let result = measure_request(&request, &edits, &|| {
+                    token.load(std::sync::atomic::Ordering::Acquire) || canceled()
+                });
+                let result = match result {
+                    Err(crate::sound::CoreError::Canceled) => None,
+                    r => Some(r.map_err(|e| e.to_string())),
+                };
+                done.lock()
+                    .unwrap()
+                    .push((slot, generation, source, result));
+            })
+            .map_err(|e| e.to_string())?;
+        *worker = Some(handle);
+        Ok(())
+    }
+}
+impl Drop for Measure {
+    fn drop(&mut self) {
+        self.cancel();
+        if let Some(worker) = self.worker.lock().unwrap().take() {
+            let _ = worker.join();
+        }
     }
 }

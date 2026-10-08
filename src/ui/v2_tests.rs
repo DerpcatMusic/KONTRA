@@ -1794,10 +1794,20 @@ fn v1_editor_zero_offset_keeps_exact_native_graph_and_reset() {
 fn v1_auto_align_settings_and_manual_part_timing_are_reachable() {
     let p=editor_fixture();let mut h=Harness::new(&p,1180.,780.);h.press("app-menu");
     let pick=|h:&mut Harness,label:&str| {
-        let id=h.ui.scene().unwrap().surfaces().find(|s|s.text_value.as_deref()==Some(label)).unwrap_or_else(||panic!("missing v1 setting {label}")).key.to_string();h.press(&id);
+        let scene = h.ui.scene().unwrap();
+        let text = scene.surfaces().find(|s| s.text_value.as_deref() == Some(label)).unwrap_or_else(|| panic!("missing v1 setting {label}")).frame;
+        let id = scene.surfaces().find(|s| s.key.to_string().starts_with("menu-item-") && s.frame.y <= text.y && s.frame.y + s.frame.size.height >= text.y + text.size.height).unwrap().key.to_string();
+        h.press(&id);
     };
     pick(&mut h,"Auto-align timing");assert!(p.selection.read().unwrap().auto_align);
     h.press("app-menu");pick(&mut h,"Only while the transport plays");assert!(p.selection.read().unwrap().align_transport_only);
+    h.press("more-0");pick(&mut h,"Play 10 ms earlier");assert_eq!(p.selection.read().unwrap().parts[0].timing.override_ms,Some(10.));
+    h.press("more-0");pick(&mut h,"Play 10 ms later");assert_eq!(p.selection.read().unwrap().parts[0].timing.override_ms,Some(0.));
+    h.press("more-0");pick(&mut h,"As measured");assert_eq!(p.selection.read().unwrap().parts[0].timing.override_ms,None);
+    h.press("more-0");pick(&mut h,"Exclude from alignment");assert!(p.selection.read().unwrap().parts[0].timing.exclude);
+    p.selection.write().unwrap().parts[0].timing.source="stale".into();
+    h.press("more-0");pick(&mut h,"Measure again");assert!(p.selection.read().unwrap().parts[0].timing.source.is_empty());
+    shoot(&h.ui,1180,780,"settings-timing.png");
 }
 
 #[test]
