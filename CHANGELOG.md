@@ -79,9 +79,8 @@ This source version uses the green integration checkpoint `67dafc61`.
   The final shared scanner quick15 has 15 loads, seven Original UIs OK, eight
   with missing images and 14 matched audible auditions, with no measured
   regressions. Afflatus has no safe test key and is not auditioned.
-- W7's Areia/selection changes and W5's runtime engine installation are held
-  for a later gated release. W2 widgets, W3 Conflux artwork, W8 load-speed and
-  later W1 transport/waveform work are not in this source checkpoint.
+- Historical 0.3.225 checkpoint excluded later worker changes. This alpha
+  includes the subsequently validated integration work listed above.
 - This is a normal local build using the host glibc. CI targets Ubuntu 22.04
   and checks a 2.35 maximum; actual CI artifact proof remains separate.
 
