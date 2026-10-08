@@ -15,6 +15,7 @@
 //! reported. `set_key_type(.., $NI_KEY_TYPE_CONTROL)`, `set_keyrange` and
 //! `set_key_name` are hints: they name keys, and alone they are reported.
 
+#[cfg(test)]
 use ni_file::kontakt::objects::StartCriteriaParams;
 use sampler_ir as ir;
 use std::collections::HashMap;
@@ -51,73 +52,115 @@ pub enum Detection {
 /// group's location and start criteria.
 pub(crate) fn translate(
     instrument: &mut ir::Instrument,
-    groups: &[(String, ir::GroupRef, Vec<StartCriteriaParams>)],
+    groups: &[(
+        String,
+        ir::GroupRef,
+        ni_file::kontakt::objects::StartCriteriaList,
+    )],
 ) {
-    let mut ranges: Vec<(u8, u8)> = Vec::new();
-    let mut tagged: HashMap<usize, usize> = HashMap::new();
-    for (at, group, items) in groups {
-        match items.as_slice() {
-            [] => {}
-            [c] if c.mode == START_ON_KEY
-                && (0..=c.key_max).contains(&c.key_min)
-                && c.key_max <= 127 =>
-            {
-                let range = (c.key_min as u8, c.key_max as u8);
-                let index = ranges.iter().position(|&r| r == range).unwrap_or_else(|| {
-                    ranges.push(range);
-                    ranges.len() - 1
+    // Keep physical rows; never compact a sparse start list into new source IDs.
+    let mut key_rows = Vec::new();
+    for (at, group, list) in groups {
+        let slots = (0..4).filter(|slot| list.mask & (1 << slot) != 0);
+        let mut rows = Vec::new();
+        for (slot, c) in slots.zip(&list.items) {
+            let test = match c.mode {
+                0 => continue, // Always is not a predicate.
+                START_ON_KEY if (0..=c.key_max).contains(&c.key_min) && c.key_max <= 127 => {
+                    key_rows.push((group.0, slot, c.key_min as u8, c.key_max as u8));
+                    ir::StartTest::Key {
+                        low: c.key_min as u8,
+                        high: c.key_max as u8,
+                    }
+                }
+                2 if (0..=127).contains(&c.controller)
+                    && (0..=c.cc_max).contains(&c.cc_min)
+                    && c.cc_max <= 127 =>
+                {
+                    ir::StartTest::Controller {
+                        controller: c.controller as u8,
+                        low: c.cc_min as u8,
+                        high: c.cc_max as u8,
+                    }
+                }
+                3 if c.cycle_class > 0 => ir::StartTest::RoundRobin(c.cycle_class as u32),
+                4 => ir::StartTest::Random,
+                _ => {
+                    instrument.unsupported.push(ir::Unsupported {
+                        location: at.clone(),
+                        feature: "group start mode or range".into(),
+                        value: format!("row {slot}: {c:?}"),
+                        reason: ir::Reason::NotModeled,
+                    });
+                    continue;
+                }
+            };
+            // Verified native reader/writer identity and menu IDs: AND=0, AND_NOT=1, OR=2.
+            // Mixed-operator precedence is pending native evaluator vectors.
+            let next = match c.next_criteria {
+                0 => ir::StartJoin::And,
+                1 => ir::StartJoin::AndNot,
+                2 => ir::StartJoin::Or,
+                other => {
+                    instrument.unsupported.push(ir::Unsupported {
+                        location: at.clone(),
+                        feature: "group start join".into(),
+                        value: other.to_string(),
+                        reason: ir::Reason::Unknown,
+                    });
+                    continue;
+                }
+            };
+            if c.sequencer_only {
+                instrument.unsupported.push(ir::Unsupported {
+                    location: at.clone(),
+                    feature: "sequencer-only group start".into(),
+                    value: format!("row {slot}"),
+                    reason: ir::Reason::NotModeled,
                 });
-                tagged.insert(group.0, index);
             }
-            _ => instrument.unsupported.push(ir::Unsupported {
-                location: at.clone(),
-                feature: "group start options (mode, next, cycle class)".into(),
-                value: format!(
-                    "{:?}",
-                    items
-                        .iter()
-                        .map(|c| (c.mode, c.next_criteria, c.cycle_class))
-                        .collect::<Vec<_>>()
-                ),
-                reason: ir::Reason::NotModeled,
-            }),
+            rows.push(ir::GroupStart { slot, test, next });
         }
+        instrument.groups[group.0].start = rows;
     }
-    let overlapping = ranges
-        .iter()
-        .enumerate()
-        .any(|(i, a)| ranges[..i].iter().any(|b| a.0 <= b.1 && b.0 <= a.1));
-    if overlapping {
-        instrument.unsupported.push(ir::Unsupported {
-            location: "groups".into(),
-            feature: "overlapping start-on-key ranges".into(),
-            value: format!("{ranges:?}"),
-            reason: ir::Reason::NotModeled,
-        });
-    } else if !ranges.is_empty() {
-        // Ordered by key so the first range is the default (the lowest switch).
-        let mut order: Vec<usize> = (0..ranges.len()).collect();
-        order.sort_by_key(|&i| ranges[i]);
-        let mut rank = vec![0; ranges.len()];
-        for (r, &i) in order.iter().enumerate() {
-            rank[i] = r;
-        }
-        instrument.articulations = order
+    // Partition overlapping ranges by their source membership. One key has one
+    // choice, but can activate any number of composed group predicates.
+    let membership = |key: u8| {
+        key_rows
             .iter()
-            .enumerate()
-            .map(|(r, &i)| ir::Articulation {
-                source: format!("group-switch:{}-{}", ranges[i].0, ranges[i].1),
-                name: key_name(ranges[i].0),
-                switch_keys: (ranges[i].0..=ranges[i].1).collect(),
-                default: r == 0,
-                ..Default::default()
-            })
-            .collect();
-        for zone in &mut instrument.zones {
-            if let Some(&i) = zone.group.and_then(|g| tagged.get(&g.0)) {
-                zone.articulation = Some(ir::ArticulationRef(rank[i]));
-            }
+            .filter(|(_, _, low, high)| (*low..=*high).contains(&key))
+            .map(|&(group, row, _, _)| (group, row))
+            .collect::<Vec<_>>()
+    };
+    let mut key = 0u16;
+    while key < 128 {
+        let members = membership(key as u8);
+        if members.is_empty() {
+            key += 1;
+            continue;
         }
+        let low = key as u8;
+        while key + 1 < 128 && membership((key + 1) as u8) == members {
+            key += 1;
+        }
+        let high = key as u8;
+        let ids = members
+            .iter()
+            .map(|(g, r)| format!("{g}:{r}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        instrument.articulations.push(ir::Articulation {
+            name: key_name(low),
+            source: format!("native:group-rows:{ids}:keys:{low}-{high}"),
+            switch_keys: (low..=high).collect(),
+            default: instrument
+                .default_keyswitch
+                .is_some_and(|key| (low..=high).contains(&key)),
+            ..Default::default()
+        });
+        key += 1;
+    }
+    if !instrument.articulations.is_empty() {
         instrument.switching.owner = ir::SwitchOwner::Native;
     }
     let mut owner: Option<String> = None;
@@ -159,10 +202,15 @@ pub(crate) fn translate(
                     .keys
                     .iter()
                     .map(|(key, name)| ir::Articulation {
-                        source: format!("script-switch:{}:{key}", behavior.name),
                         name: name.clone().unwrap_or_else(|| key_name(*key)),
                         switch_keys: vec![*key],
                         default: found.default == Some(*key),
+                        source: format!(
+                            "script:{}:key:{key}",
+                            behavior
+                                .slot
+                                .map_or_else(|| behavior.name.clone(), |slot| slot.to_string())
+                        ),
                         ..Default::default()
                     })
                     .collect();
@@ -929,11 +977,29 @@ end on
                 ..ir::Zone::new(ir::AssetRef(0))
             })
             .collect();
+        ir.default_keyswitch = Some(25);
+        let list = |items: Vec<StartCriteriaParams>| ni_file::kontakt::objects::StartCriteriaList {
+            mask: (1 << items.len()) - 1,
+            items,
+            ..Default::default()
+        };
         let groups = vec![
-            ("g0".into(), ir::GroupRef(0), vec![criteria(1, 25, 25)]),
-            ("g1".into(), ir::GroupRef(1), vec![criteria(1, 24, 24)]),
-            ("g2".into(), ir::GroupRef(2), vec![]),
-            ("g3".into(), ir::GroupRef(3), vec![criteria(3, 24, 24)]),
+            (
+                "g0".into(),
+                ir::GroupRef(0),
+                list(vec![criteria(1, 25, 25)]),
+            ),
+            (
+                "g1".into(),
+                ir::GroupRef(1),
+                list(vec![criteria(1, 24, 24)]),
+            ),
+            ("g2".into(), ir::GroupRef(2), list(vec![])),
+            (
+                "g3".into(),
+                ir::GroupRef(3),
+                list(vec![criteria(4, 24, 24)]),
+            ),
         ];
         translate(&mut ir, &groups);
         let tags: Vec<_> = ir
@@ -941,11 +1007,16 @@ end on
             .iter()
             .map(|z| z.articulation.map(|a| a.0))
             .collect();
-        assert_eq!(tags, [Some(1), Some(0), None, None]);
+        assert_eq!(tags, [None, None, None, None]);
+        assert_eq!(ir.groups[3].start[0].test, ir::StartTest::Random);
+        assert_eq!(
+            ir.articulations[0].source,
+            "native:group-rows:1:0:keys:24-24"
+        );
         assert_eq!(ir.articulations[0].switch_keys, [24]);
-        assert!(ir.articulations[0].default);
+        assert!(ir.articulations[1].default);
         assert_eq!(ir.articulations[1].alternatives.program, Some(1));
         assert_eq!(ir.switching.owner, ir::SwitchOwner::Native);
-        assert_eq!(ir.unsupported.len(), 1); // the round-robin group
+        assert_eq!(ir.unsupported.len(), 0);
     }
 }
