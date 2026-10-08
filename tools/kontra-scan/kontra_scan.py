@@ -314,9 +314,17 @@ def probe(engine, item, work, timeout, shots):
             r = json.loads((work / 'progress.json').read_text())
         except (ValueError, OSError):
             r = {}
-        r.update(loads='no', plays_note='no')
-        r.setdefault('ui', 'error')
-        r['reason'] = ('timeout' if timed_out else f'worker exit {child.returncode}') + ' at ' + r.get('stage', 'start')
+        if not timed_out:
+            r.update(loads='no', plays_note='no')
+            r.setdefault('ui', 'error')
+            r['reason'] = f'worker exit {child.returncode} at ' + r.get('stage', 'start')
+    if timed_out:
+        r['stage'] = r.get('stage', 'worker-start')
+        r.update(incomplete=True, ui='incomplete')
+        for key in ['loads', 'plays_note']:
+            if r.get(key) != 'yes': r[key] = 'incomplete'
+        r['operational_timeout'] = {'stage': r['stage'], 'timeout_seconds': timeout}
+        r['reason'] = 'incomplete: operational timeout at ' + r['stage']
     if cache_stats is not None:
         files = [p for p in cache.rglob('*') if p.is_file()]
         cache_stats.update(after_files=len(files), after_bytes=sum(p.stat().st_size for p in files))
