@@ -146,6 +146,7 @@ struct Builder<'p> {
     ui: ir::Interface,
     assets: HashMap<String, ir::AssetRef>,
     styles: HashMap<(i32, i32), ir::StyleRef>,
+    fonts: Vec<ir::AssetRef>,
     picture: &'p dyn Fn(&str) -> Option<ir::ImageMeta>,
 }
 
@@ -186,7 +187,7 @@ impl Builder<'_> {
             ];
             let factory = usize::try_from(font).ok().filter(|&f| f < COLORS.len());
             self.ui.styles.push(ir::TextStyle {
-                font: ir::Font::Stock(font),
+                font: font.checked_sub(26).and_then(|n| self.fonts.get(n as usize)).copied().map_or(ir::Font::Stock(font), ir::Font::Bitmap),
                 size: factory
                     .filter(|f| matches!(f, 1 | 5 | 7 | 16 | 17 | 20))
                     .map(|_| 13.),
@@ -245,8 +246,15 @@ pub fn interface(
         },
         assets: HashMap::new(),
         styles: HashMap::new(),
+        fonts: Vec::new(),
         picture,
     };
+    for name in &m.fonts {
+        let asset = ir::AssetRef(bld.ui.assets.len());
+        bld.ui.assets.push(ir::Asset { path: picture_path(name), kind: ir::AssetKind::BitmapFont });
+        bld.fonts.push(asset);
+    }
+    bld.ui.native_ui=model.requests.iter().rev().find(|r|r.command=="load_native_ui").and_then(|r|r.args.last()).and_then(|v|match v {Value::Text(entry) if !entry.is_empty()=>Some(ir::NativeUi{entry:entry.clone()}),_=>None});
     let page = ir::PageRef(0);
     let mut background = ir::Background {
         offset_y: m.skin_offset.unwrap_or(0),
@@ -385,7 +393,7 @@ pub fn interface(
                         step: Some(1.0),
                     },
                     bipolar: r < 0,
-                    cells,
+                    cells: cells.into_iter().map(f64::from).collect(),
                     steps_shown: int("table_steps_shown").and_then(|n| u32::try_from(n).ok()),
                 }
             }
@@ -444,7 +452,7 @@ pub fn interface(
             WidgetValue::Reals(v) => Some(ir::Value::Reals(v.clone())),
         };
         if let ir::Kind::Table { cells, .. } = &out.kind {
-            out.value = Some(ir::Value::Integers(cells.clone()));
+            out.value = Some(ir::Value::Integers(cells.iter().map(|n|n.round() as i32).collect()));
         }
         if matches!(w.kind, WidgetKind::Waveform | WidgetKind::Wavetable) {
             out.waveform = waveform(model, w.ui_id).or_else(|| int("$CONTROL_PAR_WT_ZONE").map(|zone| ir::Waveform {

@@ -19,6 +19,7 @@ pub enum Target {
     LibrarySort,
     /// A rack slot.
     Part(usize),
+    View(usize),
     /// A key on the keyboard.
     Key(u8),
     /// The editor's own menu in the top bar.
@@ -43,6 +44,7 @@ pub struct Menu {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
     Open(String),
+    View(usize, u8),
     OpenNew(String),
     Reveal(String),
     CopyPath(String),
@@ -160,6 +162,12 @@ pub fn open_under(ui: &Ui, cx: &mut Cx, target: Target, anchor: &str) {
 
 fn items(cx: &Cx, target: &Target) -> Vec<Item> {
     match target {
+        Target::View(slot) => {
+            let mode = super::part::mode(cx, *slot);
+            vec![check("Original", mode == crate::library::ViewMode::Original, Command::View(*slot, 1)),
+                 check("Vector", mode == crate::library::ViewMode::Vectorized, Command::View(*slot, 3)),
+                 check("KONTRA", mode == crate::library::ViewMode::Kontra, Command::View(*slot, 2))]
+        }
         Target::Library(name) => {
             let Some(library) = cx.view.shelf.named(name) else { return Vec::new() };
             let dir = library.dir.to_string_lossy().into_owned();
@@ -467,6 +475,12 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, window: Size) -> Option<El> {
 pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
     let shared = &cx.p.shared;
     match command {
+        Command::View(slot, mode) => {
+            if let Some(part) = cx.selection.parts.get_mut(slot) { part.view = mode; }
+            let chosen = super::part::mode(cx, slot);
+            let path = cx.selection.parts[slot].path.clone();
+            cx.p.shared.libraries.edit(|settings| { settings.instrument_views.insert(path, chosen); });
+        },
         Command::Open(path) => cx.open(Path::new(&path)),
         Command::OpenNew(path) => cx.add(path),
         Command::Reveal(path) => {
