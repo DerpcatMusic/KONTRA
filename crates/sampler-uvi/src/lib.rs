@@ -241,6 +241,8 @@ fn translate_full(text: &str, source: Source) -> Result<FullTranslation, Transla
         used: Vec::new(),
         #[cfg(feature="scan")]
         dropped_connections: Default::default(),
+        #[cfg(feature="scan")]
+        native_player_ids: program.descendants().filter(|n|n.has_tag_name("SamplePlayer")).enumerate().map(|(i,n)|(n.id(),i)).collect(),
         osc_groups: Vec::new(),
         insert_nodes: Vec::new(),
         split: None,
@@ -270,7 +272,7 @@ fn translate_full(text: &str, source: Source) -> Result<FullTranslation, Transla
     }
     engine_parameters::register(&mut out.ir, &doc, &out.insert_nodes);
     #[cfg(feature = "scan")]
-    { out.ir.dsp_slots = Some(coverage::slots(&out, program)); }
+    { out.ir.dsp_slots = Some(coverage::slots(&out, program)); out.ir.native_family = Some(coverage::native_family(program)); }
     out.ir
         .validate()
         .map_err(|e| Translate::Invalid(e.to_string()))?;
@@ -366,6 +368,8 @@ struct Translation {
     used: Vec<roxmltree::NodeId>,
     #[cfg(feature="scan")]
     dropped_connections: std::collections::HashSet<roxmltree::NodeId>,
+    #[cfg(feature="scan")]
+    native_player_ids: HashMap<roxmltree::NodeId, usize>,
     osc_groups: Vec<OscGroup>,
     /// Where each insert element's processors sit, for script writes.
     insert_nodes: Vec<InsertNode>,
@@ -399,6 +403,8 @@ impl Translation {
         for connection in connections(scope) {
             if number(connection, "Bypass", 0.0)? == 0.0 && number(connection, "Ratio", 1.0)? != 0.0
             {
+                #[cfg(feature="scan")]
+                self.dropped_connections.insert(connection.id());
                 self.unsupported(
                     &path(connection),
                     "program or layer modulation",
@@ -717,6 +723,11 @@ impl Translation {
                     "envelope gain route without an amplitude envelope (voice ends at note-off)",
                     "",
                 );
+            }
+            #[cfg(feature="scan")]
+            {
+                self.ir.source_indices.zones.resize(self.native_player_ids.len(), None);
+                self.ir.source_indices.zones[self.native_player_ids[&player.id()]] = Some(ir::ZoneRef(self.ir.zones.len()));
             }
             self.ir.zones.push(ir::Zone {
                 group: Some(group),
