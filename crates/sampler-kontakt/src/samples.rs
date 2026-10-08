@@ -188,7 +188,7 @@ impl Samples {
     }
 
     /// Frame count of a sample, reading only its header: the first 64 KiB
-    /// of a WAV or the 120-byte NCW header.
+    /// of a WAV, an AIFF metadata probe or the 120-byte NCW header.
     pub fn frames(&mut self, location: &Path) -> Result<u64, LoadError> {
         use std::io::{Read, Seek, SeekFrom};
         if let Some(&count) = self.frame_counts.get(location) {
@@ -229,7 +229,10 @@ impl Samples {
                     .map_err(|e| LoadError::io(location, e))?;
             }
         }
-        let count = frames(&head).ok_or_else(|| LoadError::Invalid {
+        let count = if head.starts_with(b"FORM") {
+            let source = self.source(location)?;
+            crate::SampleReader::open(&source).ok().map(|r| r.frames() as u64)
+        } else { frames(&head) }.ok_or_else(|| LoadError::Invalid {
             path: location.into(),
             reason: "unreadable sample header".into(),
         })?;
@@ -325,8 +328,15 @@ fn frames(head: &[u8]) -> Option<u64> {
     None
 }
 
-/// WAV (integer 8/16/24/32-bit or float 32-bit) or NCW bytes to stereo frames.
+/// WAV, AIFF or NCW bytes to stereo frames.
 pub fn decode(bytes: &[u8]) -> Result<Decoded, String> {
+    if bytes.starts_with(b"FORM") {
+        let mut reader = crate::pcm::Reader::open(Box::new(Cursor::new(bytes.to_vec()))).map_err(|e| format!("AIFF: {e:#}"))?;
+        let len = usize::try_from(reader.frames).map_err(|_| "AIFF too long")?;
+        let mut frames = vec![[0.; 2]; len];
+        reader.read(0, &mut frames).map_err(|e| format!("AIFF: {e:#}"))?;
+        return Ok(Decoded { rate: reader.rate, frames });
+    }
     if bytes.starts_with(b"RIFF") {
         return wav(bytes);
     }

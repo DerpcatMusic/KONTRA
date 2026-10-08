@@ -1002,6 +1002,11 @@ fn picked(cx: &mut Cx) {
         Some(picker::Picked::Revealed(result)) => {
             if let Err(error) = result { cx.state.notice = error; }
         }
+        Some(picker::Picked::Created(Ok(path))) => {
+            cx.p.shared.libraries.add_root(&path, true);
+            cx.state.notice = format!("Library created in {}", path.display());
+        }
+        Some(picker::Picked::Created(Err(e))) => cx.state.notice = format!("No library was created: {e}"),
         Some(picker::Picked::Folder(path, single)) => cx.p.shared.libraries.add_root(&path, single),
         Some(picker::Picked::Artwork { library, picture }) => {
             if let Err(e) = cx.p.shared.libraries.set_artwork(&library, &picture) {

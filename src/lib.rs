@@ -1,3 +1,4 @@
+pub mod creator;
 pub mod sound;
 pub mod build_info;
 pub mod diagnostics;
