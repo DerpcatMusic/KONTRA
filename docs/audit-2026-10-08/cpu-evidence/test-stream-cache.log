@@ -1,0 +1,25 @@
+   Compiling num-traits v0.2.19
+   Compiling strength_reduce v0.2.4
+   Compiling sampler-simd v0.1.0 (/home/derpcat/.t3/worktrees/KONTAKTO/audit-cpu/crates/sampler-simd)
+   Compiling rtrb v0.4.0
+   Compiling sampler-ir v0.1.0 (/home/derpcat/.t3/worktrees/KONTAKTO/audit-cpu/crates/sampler-ir)
+   Compiling sampler-pool v0.1.0 (/home/derpcat/.t3/worktrees/KONTAKTO/audit-cpu/crates/sampler-pool)
+   Compiling num-integer v0.1.47
+   Compiling num-complex v0.4.6
+   Compiling transpose v0.2.3
+   Compiling primal-check v0.3.4
+   Compiling rustfft v6.4.1
+   Compiling realfft v3.5.0
+   Compiling sampler-core v0.1.0 (/home/derpcat/.t3/worktrees/KONTAKTO/audit-cpu/crates/sampler-core)
+    Finished `corpus` profile [optimized] target(s) in 10.52s
+     Running tests/stream_cache.rs (/mnt/Windows11/DEV_WORKSPACE/Toolchains/User/cargo-target/kontakto-audit-cpu/corpus/deps/stream_cache-5228146f245ac98d)
+
+running 6 tests
+test decoded_pages_share_buffers_across_views_and_protected_pages_survive_eviction ... ok
+test failed_or_foreign_decodes_preserve_pool_ownership_and_never_publish_bad_samples ... ok
+test late_completion_cannot_overwrite_a_reused_slot_and_returns_its_buffer ... ok
+test worker_coalesces_priority_changes_and_launches_each_request_once ... ok
+test worker_disconnect_keeps_resident_data_but_rejects_unserviceable_requests ... ok
+test worker_thread_publishes_owned_pages_that_survive_endpoint_shutdown ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
