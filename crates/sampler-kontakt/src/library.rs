@@ -637,18 +637,19 @@ impl Translation {
                 });
                 crate::effects::apply_writes(&mut slots, &self.engine, index as i32, -1);
                 let dynamic = self.dynamic.then_some((index as i32, -1));
-                let c =
-                    crate::effects::chain_with(&slots, crate::effects::Scope::Voice, None, dynamic);
-                let processors = c.processors;
+                let (c, boundary) =
+                    crate::effects::voice_chain(&slots, v.fx_idx_amp_split_point, dynamic);
+                let mut processors = c.processors;
                 filter_slots = c.filter_slots;
                 for (slot, feature, value, reason) in c.notes {
                     self.unsupported(&format!("{at} insert slot {slot}"), &feature, value, reason);
                 }
                 if !processors.is_empty() {
+                    let post_amplitude = processors.split_off(boundary);
                     self.ir.chains.push(ir::Chain {
                         scope: ir::Scope::Voice,
                         pre_amplitude: processors,
-                        post_amplitude: Vec::new(),
+                        post_amplitude,
                     });
                     chain = Some(ir::ChainRef(self.ir.chains.len() - 1));
                 }
