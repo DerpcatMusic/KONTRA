@@ -94,7 +94,8 @@ def extra_columns(r):
     renders += [v['render'] for v in views if isinstance(v.get('render'),dict)]
     r['first_audio_ms']=r.get('first_audio_ms') if isinstance(r.get('first_audio_ms'),(int,float)) else 'unknown'
     first_frames=[x['ui_first_frame_ms'] for x in renders if isinstance(x.get('ui_first_frame_ms'),(int,float))]
-    r['ui_first_frame_ms']=min(first_frames) if first_frames else r.get('ui_first_frame_ms','unknown')
+    first_frame=min(first_frames) if first_frames else r.get('ui_first_frame_ms')
+    r['ui_first_frame_ms']=first_frame if isinstance(first_frame,(int,float)) else 'unknown'
     r['cache_state']=r.get('cache_state','unknown')
     for render in renders:
         if 'error_hash' in render: render.update(ok=False,reason=render.get('stage','paint failure'))
@@ -130,6 +131,11 @@ def extra_columns(r):
     if any(x.get('budget_hit') for x in errors): r['ui']='budget-hit'
     r['paint_ok']='no' if errors else 'yes' if renders or any(v.get('ok') is True for v in views) else 'no-ui' if r.get('ui')=='no-ui' else 'unknown'
     r['paint_error']=next((x.get('reason','paint error') for x in errors),'')
+    native_failures=[v for v in views if v.get('native_diagnostic') or (v.get('source_presentation')=='native-package' and v.get('font_declared') is None)]
+    if native_failures:
+        r['ui']='budget-hit' if r.get('ui')=='budget-hit' or any('budget' in str(v.get('native_diagnostic','')).lower() for v in native_failures) else 'error'
+        r['paint_ok']='no'
+        r['paint_error']='native-authored-frontend-unavailable' # successfully painting an error/loading label is not authored UI success
     slots=[x for p in ksp for x in p.get('slots',[])]
     inventory=r.get('metadata',{}).get('slots',[])
     raw_known=isinstance(r.get('metadata',{}).get('slots'),list)
@@ -175,6 +181,16 @@ def extra_columns(r):
     if r.get('script_phase_observation') == 'disabled-for-product-cache':
         for key in ['ksp_compile_ok', 'ksp_init_ok', 'compiled_script_slots', 'clean_compiled_slots', 'init_callbacks_completed', 'persistence_changed_completed', 'load_fault_records', 'disabled_block_errors']:
             r[key] = 'unknown'
+    # Explain failure with fixed categories/counts; never copy authored diagnostics into the reason.
+    base=r.get('reason','').split('; UI diagnosis:',1)[0]
+    if r.get('ui') in ['blank','missing-images','error','budget-hit']:
+        detail=r['ui']
+        failure_counts=combine(views,'asset_failure_reasons')
+        positive=[f'{k}={failure_counts[k]}' for k in ['lookup-not-found','decode-failed','font-service-unavailable'] if failure_counts.get(k,0)>0]
+        if positive:detail+=' ('+', '.join(positive)+')'
+        elif r['ui']=='missing-images':detail+=' (missing references='+str(sum(v.get('missing_images',0) for v in views))+')'
+        if native_failures:detail+='; native authored frontend unavailable'
+        r['reason']=base+'; UI diagnosis: '+detail
     return r
 
 
