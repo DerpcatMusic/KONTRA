@@ -79,6 +79,10 @@ name = "kontakto-standalone"
 path = "src/standalone.rs"
 required-features = ["standalone"]
 
+[[example]]
+name = "kontra_scan"
+required-features = ["shots"]
+
 # panic stays "unwind": a plugin must not abort the host, and the importer
 # catches parser panics. Fat LTO with one codegen unit measured no faster than
 # ThinLTO on the synthetic and real-library benches, at four times the build.
