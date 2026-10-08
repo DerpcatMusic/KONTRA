@@ -70,6 +70,12 @@ pub(crate) struct Compressor {
 const DB_PER_NEPER: f64 = 8.685_889_638_065_037;
 
 impl Compressor {
+    pub(crate) fn trace_parameters(&self) -> [(&'static str, f64); 6] {
+        [("threshold_db", self.threshold_db), ("ratio", 1. / (1. - self.slope)),
+            ("attack_coefficient", self.attack), ("release_coefficient", self.release),
+            ("makeup", self.makeup), ("link", f64::from(self.link))]
+    }
+
     /// Compress `len` planar frames in place. The smoothed reduction (dB) of
     /// each channel persists in `state.z[channel][0]`.
     pub(super) fn process(&self, state: &mut ProcessorState, block: &mut Planar, len: usize) {
