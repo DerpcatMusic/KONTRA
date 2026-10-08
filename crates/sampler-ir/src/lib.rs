@@ -523,6 +523,10 @@ pub struct AxisPick {
 /// A selectable articulation, switched by keys and/or an alternative driver.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Articulation {
+    /// Stable source axis/group/control identity, independent of display order.
+    pub source: String,
+    /// Optional authored selection control (stable engine control ID).
+    pub control: Option<u128>,
     pub name: String,
     /// The source's keyswitch keys. Under [`SwitchOwner::Behavior`] a behavior
     /// reads them, and the first is the key a driver taps to select this.
@@ -1311,4 +1315,14 @@ mod ranking_tests {
         assert_eq!(ranked[1], ("effect".to_string(), 2));
         assert_eq!(ranked[2], ("zero <path>".to_string(), 1));
     }
+}
+
+/// A Kontakt note name: MIDI 60 = C3, 0 = C-2. Strict bounds; no wrapping.
+pub fn parse_note(text: &str) -> Option<u8> {
+    let mut chars = text.trim().chars();
+    let base = match chars.next()?.to_ascii_uppercase() { 'C' => 0, 'D' => 2, 'E' => 4, 'F' => 5, 'G' => 7, 'A' => 9, 'B' => 11, _ => return None };
+    let rest = chars.as_str();
+    let (offset, octave) = match rest.as_bytes().first() { Some(b'#') => (1, &rest[1..]), Some(b'b' | b'B') => (-1, &rest[1..]), _ => (0, rest) };
+    let note = (i32::from(octave.parse::<i16>().ok()?) + 2) * 12 + base + offset;
+    u8::try_from(note).ok().filter(|n| *n < 128)
 }

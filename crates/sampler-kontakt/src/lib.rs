@@ -10,6 +10,7 @@ mod access;
 mod container;
 mod effects;
 pub mod keyswitch;
+mod keyswitch_ui;
 mod library;
 mod load;
 mod mapping;

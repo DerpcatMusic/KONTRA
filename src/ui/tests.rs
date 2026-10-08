@@ -72,7 +72,7 @@ impl Harness {
         h
     }
 
-    fn tick(&mut self, input: Input) {
+    pub(super) fn tick(&mut self, input: Input) {
         let root = (self.build)(&mut self.ui, &mut self.bridge);
         self.ui
             .frame(root, Some(self.size), input, 1. / 60.)
@@ -104,7 +104,7 @@ impl Harness {
         self.idle(3);
     }
 
-    fn drag(&mut self, from: &str, to: &str) {
+    pub(super) fn drag(&mut self, from: &str, to: &str) {
         let (from, to) = (center(&self.ui, from), center(&self.ui, to));
         for (pos, down) in [
             (from, true),
@@ -117,7 +117,7 @@ impl Harness {
         self.idle(2);
     }
 
-    fn type_into(&mut self, id: &str, text: &str) {
+    pub(super) fn type_into(&mut self, id: &str, text: &str) {
         self.ui.focus(id);
         self.tick(enter());
         self.idle(2);
