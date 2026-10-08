@@ -277,6 +277,7 @@ pub fn load_read_streamed_cancelable(
             )
         })
         .collect();
+    drop(samples);
     drop(span);
     let opened = crate::stream::Streamer::open(sources, options.rate, policy, 32, canceled)?;
     if canceled() {
