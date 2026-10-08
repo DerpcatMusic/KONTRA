@@ -166,7 +166,7 @@ impl ScriptHost {
             let range = ui::Range {
                 min: num(w, "min").unwrap_or(0.),
                 max: num(w, "max").unwrap_or(1.),
-                default: value,
+                default: num(w, "default").unwrap_or(value),
                 step: flag(w, "integer", false).then_some(1.),
             };
             let display = ui::Display {
@@ -397,6 +397,7 @@ impl ScriptHost {
                 "kind",
                 "name",
                 "value",
+                "default",
                 "min",
                 "max",
                 "integer",
