@@ -8,6 +8,8 @@ const LIMIT: u64 = 32 << 20;
 /// Message-free failures shared with the UI worker. Absence is `Ok(None)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResourceError {
+    /// Shared frontend diagnosis for an absent declared Kontakt container.
+    ContainerMissing,
     InvalidPath,
     Ambiguous,
     Corrupt,
@@ -18,6 +20,7 @@ pub enum ResourceError {
 impl std::fmt::Display for ResourceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
+            Self::ContainerMissing => "resource_container_missing",
             Self::InvalidPath => "invalid UVI resource path",
             Self::Ambiguous => "ambiguous UVI resource",
             Self::Corrupt => "corrupt UVI resource",

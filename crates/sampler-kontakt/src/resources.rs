@@ -1,5 +1,5 @@
 //! Bounded library-relative resources shared by KSP pictures, fonts and NativeUI.
-//! Loose files override NKR members, which override NICNT members. Never search siblings.
+//! Loose files override archives. Saved archive paths may be relocated within their library; never search siblings.
 use std::{collections::BTreeMap, io::Read, path::{Path, PathBuf}};
 use crate::{LoadError, ResourceContainer};
 const LIMIT: u64 = 32 << 20;
@@ -11,6 +11,7 @@ pub struct Resources {
     failures: Vec<String>,
     indexed: bool,
     root: PathBuf,
+    authority: Option<crate::Kind>,
 }
 fn entries(dir: &Path) -> Vec<PathBuf> {
     let mut files: Vec<_> = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).collect();
@@ -69,7 +70,55 @@ impl Resources {
         }
         containers.sort_by_key(|p| (p.extension().is_some_and(|e| e.eq_ignore_ascii_case("nicnt")), p.clone()));
         containers.dedup();
-        Self { files, containers, open: Vec::new(), failures: Vec::new(), indexed: false, root }
+        Self { files, containers, open: Vec::new(), failures: Vec::new(), indexed: false, root, authority: None }
+    }
+    /// Saved paths are authoring-machine hints; the containing library owns the resource namespace.
+    pub fn of_declared(instrument: &Path, declared: Option<&str>) -> Self {
+        let mut source = Self::of(instrument);
+        let Some(declared) = declared else { return source };
+        let name = declared.replace(['\\', '|'], "/");
+        let basename = name.rsplit('/').next().unwrap_or("");
+        let valid = !name.is_empty() && name.len() <= 4096 && !name.contains('\0')
+            && Path::new(basename).extension().is_some_and(|e| e.eq_ignore_ascii_case("nkr") || e.eq_ignore_ascii_case("nicnt"));
+        if !valid {
+            source.containers.clear();
+            source.authority = Some(crate::Kind::Invalid);
+            return source;
+        }
+        let candidates = [PathBuf::from(&name), source.root.join(&name), instrument.parent().unwrap_or(Path::new(".")).join(&name)];
+        let mut selected = None;
+        for candidate in candidates {
+            match candidate.canonicalize() {
+                Ok(path) if path.starts_with(&source.root) && path.is_file() => { selected = Some(path); source.authority = None; break; }
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => { source.authority = Some(crate::Kind::Io); }
+            }
+        }
+        if let Some(selected) = selected {
+            source.containers = vec![selected];
+        } else if !source.containers.is_empty() {
+            // A relocated multi may name a stale archive; all candidates here
+            // belong to its containing library, including its SNPID NICNT.
+            source.authority = None;
+            source.containers.sort_by_key(|p| (
+                !p.file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(basename)),
+                p.extension().is_some_and(|e| e.eq_ignore_ascii_case("nicnt")), p.clone()));
+        }
+        if source.containers.is_empty() && source.authority.is_none() {
+            source.authority = Some(crate::Kind::ResourceContainerMissing);
+        }
+        source
+    }
+    /// Fixed typed diagnosis; no authored path or private archive error is needed by the frontend.
+    pub fn container_status(&self) -> Result<(), LoadError> {
+        let error = match self.authority {
+            None => return Ok(()),
+            Some(crate::Kind::ResourceContainerMissing) => LoadError::ResourceContainerMissing,
+            Some(crate::Kind::Io) => LoadError::io(&self.root, std::io::Error::other("Declared resource container is inaccessible")),
+            _ => LoadError::Invalid { path: self.root.clone(), reason: "Invalid or ambiguous declared resource container".into() },
+        };
+        Err(error.at(crate::Stage::ResourceResolve))
     }
     pub fn root(&self) -> &Path { &self.root }
     fn index(&mut self) {
@@ -126,7 +175,8 @@ impl Resources {
         for container in &mut self.open {
             if let Some(bytes) = container.read(&path)? { return Ok(Some(bytes)); }
         }
-        if !self.failures.is_empty() { return Err(invalid("Resource container could not be indexed")); }
+        self.container_status()?;
+        if !self.failures.is_empty() { return Err(invalid("Resource container could not be indexed").at(crate::Stage::ResourceResolve)); }
         Ok(None)
     }
     /// Compatibility metadata probe; painting uses read_result for diagnostics.
