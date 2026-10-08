@@ -2813,6 +2813,15 @@
       ],
       "validation": "Owner focused checks passed; shipped in the combined alpha validation. Native capture and performance limits remain documented.",
       "accepted": true
+    },
+    {
+      "id": "rack-growth-articulation-routes",
+      "summary": "Preserve articulation route owners through rack growth and reload",
+      "source_commits": [
+        "876309f493a0253883d6129d2ced1c0c756e349a"
+      ],
+      "validation": "Owner failing-first growth/reload regression passed with zero audio heap calls; combined alpha validation includes it.",
+      "accepted": true
     }
   ]
 }
