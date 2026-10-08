@@ -512,6 +512,11 @@ impl Runtime {
 
     pub(super) fn end_voice(&mut self, id: VoiceId) {
         let v = *self.voices.get(id.0).unwrap();
+        if let Some(binding) = v.stream {
+            if let Some(rings) = self.stream_cache.as_mut().and_then(|c| c.voices.as_mut()) {
+                rings.stop(binding);
+            }
+        }
         if let Some(previous) = v.siblings.previous {
             self.voices.at_mut(previous).siblings.next = v.siblings.next;
         } else {

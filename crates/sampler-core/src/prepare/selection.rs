@@ -592,6 +592,7 @@ impl Runtime {
         let range = prepared.range(key, trigger);
         let groups = groups.map(|(index, view)| generation.groups.view(index, view));
         let mut required = ReleaseReserve::default();
+        let mut streamed = 0;
         let mut from = range.start;
         while from < range.end {
             let until = prepared.group_end(from, range.end);
@@ -607,6 +608,7 @@ impl Runtime {
                     let r = prepared.regions[c.region];
                     let step = pitch.apply(prepared.step(c, note_pitch))?;
                     let asset = &prepared.pcm[r.sample];
+                    streamed += usize::from(asset.resident_frames().is_none());
                     let cursor = r
                         .cursor
                         .with_offset(offset_micros, asset.sample_rate())
@@ -631,6 +633,8 @@ impl Runtime {
                 required.commands = required.families;
             }
         }
+        if self.stream_cache.as_ref().and_then(|c| c.voices.as_ref())
+            .is_some_and(|v| streamed > v.available_count()) { return Err(Error::Capacity); }
         Ok(required)
     }
 

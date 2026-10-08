@@ -28,11 +28,11 @@ fn player(plan: Prepared) -> Runtime {
 fn late_offset(note_off_before_data: bool) {
     let data: Vec<Frame> = (0..PAGE_FRAMES*5+137)
         .map(|i| [i as f32/32768.,-(i as f32)/32768.]).collect();
-    for direction in [Direction::Forward,Direction::Reverse] {
+    for (direction,rings) in [Direction::Forward,Direction::Reverse].into_iter().flat_map(|d| [false,true].map(|r|(d,r))) {
         let pcm = Pcm::streamed(48000,data.len()).unwrap();
         let start = if direction==Direction::Forward { 0 } else { data.len()-4048 };
         pcm.set_ranges(vec![(start,data[start..start+4048].to_vec().into_boxed_slice())]).unwrap();
-        let (cache,mut worker) = StreamCache::new(4).unwrap();
+        let (cache,mut worker) = if rings {StreamCache::voice_rings(4,1).unwrap()} else {StreamCache::new(4).unwrap()};
         let mut streamed = player(plan(pcm.clone(),direction)).with_stream_cache(cache);
         streamed.set_cold_starts(true);
         let mut resident = player(plan(Pcm::new(48000,data.clone().into_boxed_slice()).unwrap(),direction));
@@ -57,6 +57,10 @@ fn late_offset(note_off_before_data: bool) {
         while let Some(mut job) = worker.next_job() {
             let range = job.range(); job.frames_mut().copy_from_slice(&data[range]);
             worker.complete(job,Ok(())).unwrap();
+        }
+        while let Some(mut job) = worker.next_voice_job() {
+            job.fill(|index| Ok(data[index])).unwrap();
+            worker.complete_voice(job,Ok(()));
         }
         let mut actual = [[0.;2];64]; let mut expected = [[0.;2];64];
         support::without_heap(|| {

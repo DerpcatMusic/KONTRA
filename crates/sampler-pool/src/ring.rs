@@ -1,6 +1,6 @@
 #![allow(unsafe_code)]
 //! Port from v1 0cb7a8a0:src/engine/stream.rs: zeroed per-voice rings.
-//! The consumer lends published runs through a mutable borrow: it cannot move
+//! The consumer lends published runs through a borrow: it cannot move
 //! the read boundary or reconfigure while those runs remain borrowed.
 
 use std::{
@@ -49,7 +49,7 @@ impl Drop for Rings {
 }
 
 // SAFETY: frames are atomic; non-atomic published reads are protected by the
-// consumer's mutable borrow and the producer's checked overwrite boundary.
+// consumer's borrow and the producer's checked overwrite boundary.
 unsafe impl Send for Rings {}
 unsafe impl Sync for Rings {}
 
@@ -122,6 +122,9 @@ impl RingConsumer {
         Some(self.slot.written.load(Ordering::Acquire))
     }
 
+    pub fn read_boundary(&self) -> u64 { self.slot.read.load(Ordering::Acquire) }
+    pub fn start_boundary(&self) -> u64 { self.slot.from.load(Ordering::Acquire) }
+
     /// Cannot run while a RingRead still borrows this consumer.
     pub fn release_below(&mut self, frame: u64) -> Result<(), RingError> {
         if frame < self.slot.read.load(Ordering::Relaxed)
@@ -132,7 +135,7 @@ impl RingConsumer {
         Ok(())
     }
 
-    pub fn claim(&mut self, generation: u64, range: Range<u64>) -> Option<RingRead<'_>> {
+    pub fn claim(&self, generation: u64, range: Range<u64>) -> Option<RingRead<'_>> {
         if range.start > range.end || range.end - range.start > STREAM_RING_FRAMES as u64
             || range.start < self.slot.read.load(Ordering::Relaxed)
             || range.start < self.slot.from.load(Ordering::Relaxed)
@@ -146,6 +149,7 @@ impl Drop for RingConsumer {
 }
 
 impl RingProducer {
+    pub fn read_boundary(&self) -> u64 { self.slot.read.load(Ordering::Acquire) }
     /// Port v1 Slot::snapshot. A changed configuration resets the producer.
     pub fn synchronize(&mut self) -> Option<(u64, u64)> {
         let seq = self.slot.seq.load(Ordering::Acquire);
@@ -190,7 +194,7 @@ impl RingProducer {
 pub struct RingRead<'a> {
     slot: &'a Slot,
     range: Range<u64>,
-    borrow: PhantomData<&'a mut RingConsumer>,
+    borrow: PhantomData<&'a RingConsumer>,
 }
 
 impl RingRead<'_> {

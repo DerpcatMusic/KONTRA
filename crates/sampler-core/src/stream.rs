@@ -119,6 +119,7 @@ impl Entry {
 /// current demand before requesting replacements in an epoch, so voice order
 /// cannot evict another voice's required page. A cache miss never waits.
 pub struct StreamCache {
+    pub(crate) voices: Option<crate::voice_stream::VoiceStreams>,
     entries: Box<[Option<Entry>]>,
     index: Vec<(PageKey, usize)>,
     requests: Producer<Request>,
@@ -138,6 +139,7 @@ pub struct StreamCache {
 /// One coordinator serializes page requests/results around any worker executors.
 /// Jobs own buffers and can move to workers; this endpoint remains a single writer.
 pub struct StreamWorker {
+    voices: Option<crate::voice_stream::VoiceStreamWorker>,
     requests: Consumer<Request>,
     completed: Producer<Completed>,
     recycled: Consumer<Box<[Frame]>>,
@@ -147,9 +149,21 @@ pub struct StreamWorker {
     store: u64,
 }
 impl StreamCache {
+    pub(crate) fn traversal(&self, voice: &crate::Voice)
+        -> Option<(crate::source::Cursor, Option<sampler_pool::RingRead<'_>>)>
+    {
+        self.voices.as_ref().map(|rings| (voice.cursor, voice.stream.and_then(|b| rings.read(b))))
+    }
     /// Bytes of page buffers this cache owns once its worker has filled them.
     pub fn bytes(&self) -> usize {
-        self.entries.len() * PAGE_FRAMES * size_of::<Frame>()
+        self.voices.as_ref().map_or(self.entries.len() * PAGE_FRAMES * size_of::<Frame>(), |v| v.bytes())
+    }
+    /// Control-side v1 ring construction; idle PCM pages remain untouched.
+    pub fn voice_rings(slots: usize, decoders: usize) -> Result<(Self, StreamWorker), Error> {
+        let (mut cache, mut worker) = Self::new(1)?;
+        let (audio, work) = crate::voice_stream::VoiceStreams::new(slots, decoders)?;
+        cache.voices = Some(audio); worker.voices = Some(work);
+        Ok((cache, worker))
     }
     pub fn new(pages: usize) -> Result<(Self, StreamWorker), Error> {
         if pages == 0 {
@@ -181,6 +195,7 @@ impl StreamCache {
         let (recycled, returned) = RingBuffer::new(pages);
         Ok((
             Self {
+                voices: None,
                 entries: (0..pages).map(|_| None).collect(),
                 index: Vec::with_capacity(pages),
                 requests,
@@ -195,6 +210,7 @@ impl StreamCache {
                 hand: 0,
             },
             StreamWorker {
+                voices: None,
                 requests: incoming,
                 completed: outgoing,
                 recycled: returned,
@@ -511,6 +527,15 @@ impl<'a> PageReader<'a> {
 }
 
 impl StreamWorker {
+    pub fn voice_retry_delay(&self) -> Option<std::time::Duration> {
+        self.voices.as_ref()?.retry_delay()
+    }
+    pub fn next_voice_job(&mut self) -> Option<crate::VoiceStreamJob> {
+        self.voices.as_mut()?.next_job()
+    }
+    pub fn complete_voice(&mut self, job: crate::VoiceStreamJob, result: Result<(), DecodeFailure>) {
+        self.voices.as_mut().expect("voice ring worker").complete(job, result);
+    }
     /// Recycle returned buffers, coalesce superseded slot requests, then choose
     /// the earliest deadline. All worker storage is bounded by cache capacity.
     pub fn next_job(&mut self) -> Option<DecodeJob> {
@@ -583,6 +608,22 @@ impl StreamWorker {
 }
 
 impl crate::Runtime {
+    pub(crate) fn bind_voice_ring(&mut self, index: usize) -> Result<(), Error> {
+        let Some(cache) = self.stream_cache.as_mut() else { return Ok(()); };
+        let Some(rings) = cache.voices.as_mut() else { return Ok(()); };
+        let voice = self.voices.slots[index].value.as_mut().unwrap();
+        let note = self.notes.get(self.families.get(voice.family.0).unwrap().note.0).unwrap();
+        let asset = &self.plans.get(note.plan.0).unwrap().prepared.pcm[voice.sample];
+        if asset.resident_frames().is_some() { return Ok(()); }
+        let head = asset.try_head();
+        rings.update(&mut voice.stream, asset.asset_id(), voice.cursor,
+            head.as_deref().map_or(&[][..], |h| h)).map_err(|e| match e {
+                StreamError::Capacity => Error::Capacity,
+                _ => Error::NotReady,
+            })?;
+        cache.pushed = true;
+        Ok(())
+    }
     /// Setup/control-side ownership transfer. Construct and destroy runtime/cache
     /// on control; the audio path only moves page buffers through bounded queues.
     pub fn with_stream_cache(mut self, cache: StreamCache) -> Self {
@@ -637,7 +678,8 @@ impl crate::Runtime {
         let mut cache = self.stream_cache.take().ok_or(StreamError::NotConfigured)?;
         // Temporarily detach only the audio-owned cache to borrow the immutable
         // voice/plan snapshot. The visitor cannot execute callbacks or mutate it.
-        let result = self.service_cache(&mut cache, frames);
+        let result = if cache.voices.is_some() { self.service_voice_rings(&mut cache, frames) }
+            else { self.service_cache(&mut cache, frames) };
         if matches!(result, Err(StreamError::DecodeFailed(_) | StreamError::Disconnected)) {
             // A terminal source fault cannot leave a never-started onset held.
             for word in 0..self.voice_activity.len() {
@@ -653,13 +695,50 @@ impl crate::Runtime {
                         entry.request.key.asset == asset && matches!(entry.state,
                             State::Failed(error) if error != DecodeFailure::Unavailable || entry.retries == 3)
                     });
-                    if failed { self.end_voice(crate::VoiceId(self.voices.id(index))); }
+                    if failed {
+                        if let Some(binding) = voice.stream {
+                            if let Some(rings) = cache.voices.as_mut() { rings.stop(binding); }
+                        }
+                        self.end_voice(crate::VoiceId(self.voices.id(index)));
+                    }
                 }
             }
         }
         cache.wake();
         self.stream_cache = Some(cache);
         result
+    }
+
+    fn service_voice_rings(&mut self, cache: &mut StreamCache, frames: u32) -> Result<bool, StreamError> {
+        let rings = cache.voices.as_mut().unwrap();
+        let mut ready = true;
+        let fault = rings.fault();
+        for word in 0..self.voice_activity.len() {
+            let mut bits = self.voice_activity[word];
+            while bits != 0 {
+                let index = word * 64 + bits.trailing_zeros() as usize; bits &= bits - 1;
+                let Some(voice) = self.voices.slots[index].value.as_mut() else { continue; };
+                let note = self.notes.get(self.families.get(voice.family.0).unwrap().note.0).unwrap();
+                let asset = &self.plans.get(note.plan.0).unwrap().prepared.pcm[voice.sample];
+                if fault.is_some_and(|(_,id,_)| asset.asset_id() == id) && voice.cursor.holding_onset() {
+                    if let Some(binding) = voice.stream { rings.stop(binding); }
+                    self.end_voice(crate::VoiceId(self.voices.id(index)));
+                    continue;
+                }
+                if asset.resident_frames().is_some() { continue; }
+                let head = asset.try_head();
+                let head = head.as_deref().map_or(&[][..], |h| h);
+                rings.update(&mut voice.stream, asset.asset_id(), voice.cursor, head)?;
+                let binding = voice.stream.unwrap();
+                ready &= rings.ready(binding, voice.cursor, head, frames);
+                cache.pushed |= rings.needs_work(binding);
+            }
+        }
+        fault.map_or(Ok(ready), |(_,_,error)| Err(error))
+    }
+
+    pub(crate) fn using_voice_rings(&self) -> bool {
+        self.stream_cache.as_ref().is_some_and(|c| c.voices.is_some())
     }
 
     fn service_cache(&self, cache: &mut StreamCache, frames: u32) -> Result<bool, StreamError> {
@@ -803,6 +882,7 @@ impl crate::Runtime {
             return Ok(false);
         }
         let cache = self.stream_cache.as_ref().ok_or(Error::NotReady)?;
+        if cache.voices.as_ref().is_some_and(|v| !v.available()) { return Err(Error::Capacity); }
         let head = asset.try_head();
         let head = head.as_deref().map_or(&[][..], |h| h);
         let ready = cursor.visit_demand(1, crate::EnvelopeState::new(envelope), |_, range| {
