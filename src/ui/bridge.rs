@@ -3,7 +3,8 @@
 //! settings, and the load report from [`crate::sound::report::LoadReport`].
 
 use super::{Cx, load_report as lr, mix_tree as mt};
-use crate::plugin::SamplerParams;
+use crate::plugin::{SamplerParams, Bus, Meters};
+use crate::sound::BUSES;
 use crate::sound::tree::NodeMix;
 use std::sync::Arc;
 
@@ -30,6 +31,7 @@ pub fn tree(cx: &Cx) -> mt::Tree {
             if n == 0 {
                 (node.gain_db, node.pan, node.mute, node.solo) = (part.gain, part.pan, part.mute, part.solo);
                 (node.output, node.output_set) = (mt::Output::Pair(part.output), part.output_manual);
+                node.aux = Some((part.aux, part.aux_gain));
             } else {
                 let m = part.nodes.get(n - 1).copied().unwrap_or_default();
                 (node.gain_db, node.pan, node.mute, node.solo) = (m.gain, m.pan, m.mute, m.solo);
@@ -38,15 +40,39 @@ pub fn tree(cx: &Cx) -> mt::Tree {
             nodes.push(node);
         }
     }
+    // Port v1's used/touched stereo bus strips beside v2's source tree.
+    for n in 0..BUSES {
+        let used = cx.selection.parts.iter().any(|p| !p.path.is_empty() && (usize::from(p.output) == n || p.aux == n as i16 || p.nodes.iter().any(|m| m.output == mt::Output::Pair(n as u8))));
+        let bus = cx.selection.bus(n);
+        if !used && bus == Bus::default() { continue; }
+        let mut node = mt::Node::new(n as u64 + 1, crate::routing::label(&cx.selection, n), mt::Kind::Bus, None);
+        (node.gain_db, node.pan, node.mute, node.solo) = (bus.gain, bus.pan, bus.mute, bus.solo);
+        node.output = mt::Output::Pair(if bus.port < 0 { n as u8 } else { bus.port as u8 });
+        node.output_set = bus.port >= 0;
+        node.host = true;
+        nodes.push(node);
+    }
     mt::Tree { nodes }
 }
 
 /// Writes the tree's edits back to the rack.
 pub fn apply(cx: &mut Cx, tree: &mt::Tree) {
     for node in &tree.nodes {
+        if node.id >> 16 == 0 {
+            let Some(n) = (node.id as usize).checked_sub(1).filter(|&n| n < BUSES) else { continue };
+            let default = if node.renamed { let bus = cx.selection.bus_mut(n); bus.name.clear(); crate::routing::label(&cx.selection, n) } else { String::new() };
+            let bus = cx.selection.bus_mut(n);
+            if node.renamed { bus.name = if node.name == default { String::new() } else { node.name.clone() }; }
+            (bus.gain, bus.pan, bus.mute, bus.solo) = (node.gain_db, node.pan, node.mute, node.solo);
+            bus.port = match node.output { mt::Output::Pair(p) if node.output_set && p as usize != n => i16::from(p), _ => -1 };
+            continue;
+        }
         let (slot, n) = ((node.id >> 16) as usize - 1, (node.id & 0xffff) as usize);
+        let default = node.renamed.then(|| cx.instrument_name(slot).unwrap_or_else(|| super::header::stem(&cx.selection.parts[slot].path)));
         let Some(part) = cx.selection.parts.get_mut(slot) else { continue };
         if n == 0 {
+            if let Some(default) = default { part.name = if node.name == default { String::new() } else { node.name.clone() }; }
+            if let Some((aux, gain)) = node.aux { (part.aux, part.aux_gain) = (aux, gain); }
             (part.gain, part.pan, part.mute, part.solo) = (node.gain_db, node.pan, node.mute, node.solo);
             part.output_manual = node.output_set;
             if let mt::Output::Pair(p) = node.output {
@@ -63,13 +89,28 @@ pub fn apply(cx: &mut Cx, tree: &mt::Tree) {
     }
 }
 
+/// Port from v1 0cb7a8a0:src/ui/mixer.rs; routing and names stay.
+pub fn reset(cx: &mut Cx, id: u64) {
+    if id >> 16 == 0 {
+        if let Some(n) = (id as usize).checked_sub(1).filter(|&n| n < BUSES) {
+            let bus = cx.selection.bus_mut(n);
+            *bus = Bus { name: std::mem::take(&mut bus.name), port: bus.port, ..Bus::default() };
+        }
+    } else if id & 0xffff == 0 {
+        if let Some(part) = cx.selection.parts.get_mut((id >> 16) as usize - 1) {
+            part.gain = 0.; part.pan = 0.; part.mute = false; part.solo = false; part.aux = -1; part.aux_gain = 0.;
+        }
+    }
+}
+
 /// Post-fader levels of every strip: parts and their nodes.
 pub fn levels(p: &Arc<SamplerParams>, tree: &mt::Tree) -> mt::Levels {
-    let ids: Vec<Option<(usize, usize)>> =
-        tree.nodes.iter().map(|n| Some((((n.id >> 16) as usize).checked_sub(1)?, (n.id & 0xffff) as usize))).collect();
+    let ids: Vec<u64> = tree.nodes.iter().map(|n| n.id).collect();
     let p = p.clone();
     Arc::new(move |n| {
-        ids.get(n).copied().flatten().and_then(|(slot, node)| Some(p.shared.part(slot)?.node_level(node))).unwrap_or([0.; 2])
+        let Some(&id) = ids.get(n) else { return [0.; 2] };
+        if id >> 16 == 0 { return (id as usize).checked_sub(1).and_then(|bus| p.shared.meters.buses.get(bus)).map(Meters::read).unwrap_or([0.; 2]); }
+        p.shared.part((id >> 16) as usize - 1).map_or([0.; 2], |part| part.node_level((id & 0xffff) as usize))
     })
 }
 

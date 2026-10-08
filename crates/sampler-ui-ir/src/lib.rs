@@ -94,6 +94,10 @@ pub struct Background {
     pub image: Option<AssetRef>,
     /// Vertical source offset into the wallpaper, in pixels (KSP skin offset).
     pub offset_y: i32,
+    /// Source/profile header rows, independent of the script's skin offset.
+    pub origin_y: u32,
+    /// The selected wallpaper strip frame.
+    pub frame: u32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -112,7 +116,9 @@ pub struct Widget {
     /// The source did not size the widget; the renderer uses its default
     /// size for the kind and source.
     pub auto_size: bool,
-    /// Stacking among siblings; higher draws later.
+    /// Default width/height independently. Explicit zero stays zero.
+    pub default_axes: [bool; 2],
+    /// Higher draws later: global layers for KSP, sibling layers for Lua.
     pub z: i32,
     /// Hidden as a whole (`HIDE_WHOLE_CONTROL`, Lua `visible = false`).
     pub hidden: bool,
@@ -127,6 +133,7 @@ pub struct Widget {
     /// Vertical offset of the text inside the widget, in pixels (KSP
     /// `TEXTPOS_Y`); `None` centres it.
     pub text_y: Option<i32>,
+    pub value_y: Option<i32>,
     /// Shown instead of the formatted value (KSP knob `LABEL`).
     pub value_text: Option<String>,
     pub tooltip: String,
@@ -136,6 +143,8 @@ pub struct Widget {
     /// Colours the source sets on its stock drawing; unset ones are the renderer's.
     pub colors: Colors,
     pub style: Option<StyleRef>,
+    /// Off/on, off/on pressed, off/on hover; absent entries inherit `style`.
+    pub state_styles: [Option<StyleRef>; 6],
     /// Bitmaps the source draws this widget with, by role.
     pub images: Vec<ImageUse>,
     /// Table cell or XY axis controls, in component order.
@@ -150,6 +159,8 @@ pub struct Widget {
     pub mapper: Option<String>,
     /// MultiStateButton advances on click; Menu opens a choice list.
     pub menu_cycle: bool,
+    /// Even coordinate index of the manually selected XY cursor.
+    pub active_index: Option<i32>,
     /// Current source value for typed widgets; numeric controls use their service.
     pub value: Option<Value>,
     pub waveform: Option<Waveform>,
@@ -169,6 +180,7 @@ impl Widget {
             rect,
             placement: Placement::Pixels,
             auto_size: false,
+            default_axes: [false; 2],
             z: 0,
             hidden: false,
             hide: Parts::default(),
@@ -177,12 +189,14 @@ impl Widget {
             binding: Binding::None,
             text: String::new(),
             text_y: None,
+            value_y: None,
             value_text: None,
             tooltip: String::new(),
             automation: Automation::default(),
             drag: None,
             colors: Colors::default(),
             style: None,
+            state_styles: [None; 6],
             images: Vec::new(),
             components: Vec::new(),
             initial_value: 0.0,
@@ -191,6 +205,7 @@ impl Widget {
             viewport: None,
             mapper: None,
             menu_cycle: false,
+            active_index: None,
             value: None,
             waveform: None,
             meter: None,
@@ -248,7 +263,12 @@ pub enum Value {
     Text(String),
     Integers(Vec<i32>),
     Reals(Vec<f64>),
+    /// Transient OS drop payload; never published as a widget value snapshot.
+    DropPath { kind: DropKind, path: String },
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DropKind { Audio, Midi, Array }
 
 /// A physical meter tap, using the source's group, effect slot and bus identities.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -661,10 +681,16 @@ impl Interface {
         rect
     }
 
-    /// `page`'s widgets back to front: siblings by ([`Widget::z`], declaration
-    /// order), each panel's contents straight after the panel.
+    /// `page`'s widgets back to front by ([`Widget::z`], declaration order).
+    /// Kontakt uses global layers; native graphs order siblings and draw each
+    /// panel's contents straight after the panel.
     /// Requires a [validated](Self::validate) interface.
     pub fn draw_order(&self, page: PageRef) -> Vec<WidgetRef> {
+        if matches!(self.source, Source::Ksp { .. } | Source::PerformanceView) {
+            let mut out: Vec<_> = self.widgets.iter().enumerate().filter(|(_,w)| w.page == page).map(|(n,_)| WidgetRef(n)).collect();
+            out.sort_by_key(|n| (self.widgets[n.0].z, n.0));
+            return out;
+        }
         let mut children: Vec<Vec<WidgetRef>> = vec![Vec::new(); self.widgets.len() + 1];
         let root = self.widgets.len();
         for (n, w) in self.widgets.iter().enumerate() {
@@ -824,8 +850,21 @@ mod tests {
     }
 
     #[test]
-    fn panels_draw_before_children_and_by_z() {
-        let ui = sample();
+    fn ksp_child_z_layer_crosses_parent_boundaries() {
+        let mut ui = sample();
+        ui.widgets[1].z = 5;
+        ui.widgets[2].z = 2;
+        assert_eq!(ui.draw_order(PageRef(0)), [WidgetRef(0), WidgetRef(2), WidgetRef(1)]);
+        ui.widgets[1].z = 2;
+        assert_eq!(ui.draw_order(PageRef(0)), [WidgetRef(0), WidgetRef(1), WidgetRef(2)]);
+        ui.widgets[0].hidden = true;
+        assert!(!ui.visible(WidgetRef(1)), "global layers retain inherited hiding");
+    }
+
+    #[test]
+    fn lua_panels_draw_before_children_and_by_z() {
+        let mut ui = sample();
+        ui.source = Source::FalconLua;
         // Label (z 0) before the panel (z 1); the knob straight after its panel.
         assert_eq!(ui.draw_order(PageRef(0)), [WidgetRef(2), WidgetRef(0), WidgetRef(1)]);
         assert_eq!(ui.page_rect(WidgetRef(1)), Rect::new(15, 26, 40, 40));

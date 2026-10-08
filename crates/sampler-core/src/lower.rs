@@ -1799,7 +1799,10 @@ impl Lowering<'_> {
                     ir::Driver::Program => alt.program.map(|p| (0, p, p))?,
                 };
                 let switch = if behavior {
-                    Switch::Tap(*a.switch_keys.first()?)
+                    match a.switch_keys.first() {
+                        Some(&key) => Switch::Tap(key),
+                        None => Switch::Control { id: a.control?, articulation: id(i) },
+                    }
                 } else {
                     Switch::Articulation(id(i))
                 };

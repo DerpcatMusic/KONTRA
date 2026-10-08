@@ -8,7 +8,7 @@ use ni_file::kontakt::{
     StructuredObject,
     objects::{
         BParScript, ExternalModArray32, FNTableImpl, FileNameListPreK51, Group, GroupList,
-        InternalModArray16, LoopArray, ModSource, Modulator, Program,
+        InternalModArray16, LoopArray, ModSource, Modulator, Program, VoiceGroups, Zone,
     },
 };
 use sampler_ir as ir;
@@ -34,6 +34,7 @@ pub struct Kontakt {
     /// Each asset's resolved location, in asset order.
     pub locations: Vec<PathBuf>,
     pub samples: Samples,
+    pub(crate) initialized: Option<crate::load::ScriptInit>,
 }
 
 /// Translate the NKI at `path`. Zones whose sample is missing are left out
@@ -61,6 +62,7 @@ fn read_overlaid(
 ) -> Result<Kontakt, LoadError> {
     let path = path.canonicalize().map_err(|e| LoadError::io(path, e))?;
     let chunks = crate::read_chunks(&path).map_err(|e| e.at(crate::Stage::Container))?;
+    let span = crate::audit::Span::new("ni_objects_parse");
     let invalid = |reason: &str| LoadError::Invalid {
         path: path.clone(),
         reason: reason.into(),
@@ -86,6 +88,8 @@ fn read_overlaid(
             (t.sample_filetable, t.other_filetable)
         }
     };
+    drop(span);
+    let _span = crate::audit::Span::new("translate_resolve_ir");
     translate(path, program, table, others, snapshot).map_err(|e| e.at(crate::Stage::Translate))
 }
 
@@ -95,6 +99,7 @@ pub fn read_program(path: &Path, index: usize) -> Result<Kontakt, LoadError> {
     use ni_file::kontakt::objects::Bank;
     let path = path.canonicalize().map_err(|e| LoadError::io(path, e))?;
     let chunks = crate::read_chunks(&path).map_err(|e| e.at(crate::Stage::Container))?;
+    let span = crate::audit::Span::new("ni_objects_parse");
     let invalid = |reason: &str| LoadError::Invalid {
         path: path.clone(),
         reason: reason.into(),
@@ -139,6 +144,8 @@ pub fn read_program(path: &Path, index: usize) -> Result<Kontakt, LoadError> {
             Default::default(),
         ),
     };
+    drop(span);
+    let _span = crate::audit::Span::new("translate_resolve_ir");
     translate(path, program, table, others, None).map_err(|e| e.at(crate::Stage::Translate))
 }
 
@@ -179,6 +186,12 @@ fn translate(
             source: ir::SourceFormat::Kontakt {
                 version: program.version(),
             },
+            kontakt_objects: Some(Box::new(ir::kontakt::Objects {
+                program: crate::objects::program(program.version(), &params),
+                voice_groups: None,
+                groups: Vec::new(),
+                zones: Vec::new(),
+            })),
             host_volume: Some(ir::HostVolume {
                 controller: 7,
                 saved: f64::from(params.volume),
@@ -228,7 +241,7 @@ fn translate(
             .ok_or_else(|| invalid("missing group list"))?,
     )
     .map_err(|e| decode("group list", e))?;
-    let mut script_resources = crate::Resources::of(&path);
+    let mut resources = None;
     for (slot, chunk) in program
         .0
         .children
@@ -236,16 +249,25 @@ fn translate(
         .filter(|c| c.id == SCRIPT)
         .enumerate()
     {
-        let script = BParScript::try_from(chunk)
+        let mut script = BParScript::try_from(chunk)
             .and_then(|s| s.params())
             .map_err(|e| decode("script", e))?;
+        if !script.bypass {
+            if let Some(link) = script
+                .textfile_name
+                .as_deref()
+                .filter(|n| !n.trim().is_empty())
+            {
+                if let Some(text) = resources
+                    .get_or_insert_with(|| crate::Resources::of(&path))
+                    .script(link)
+                {
+                    script.text = Some(text);
+                }
+            }
+        }
         let location = format!("script slot {slot}");
-        let linked = script
-            .textfile_name
-            .as_deref()
-            .filter(|name| !name.is_empty())
-            .and_then(|name| script_resources.script(name));
-        match linked.or(script.text) {
+        match script.text {
             _ if script.bypass => {}
             Some(text) if !text.trim().is_empty() => {
                 let state = saved(&script.persistent).map_err(|e| {
@@ -291,45 +313,38 @@ fn translate(
         .map(|g| g.params().map(|p| p.name))
         .collect::<Result<_,_>>()
         .map_err(|e| decode("source group names",e))?;
-    let writes: Vec<_> = out
-        .ir
-        .behaviors
+    if let Some(snapshot) = snapshot {
+        for behavior in &mut out.ir.behaviors {
+            if let Some(entries) = behavior
+                .slot
+                .and_then(|slot| snapshot.persistent.get(usize::from(slot)))
+            {
+                for (name, value) in saved(entries).map_err(|e| invalid(&format!("snapshot persistent values: {:?} at {}", e.kind, e.offset)))? {
+                    match behavior.state.iter_mut().find(|(n, _)| *n == name) {
+                        Some(slot) => slot.1 = value,
+                        None => behavior.state.push((name, value)),
+                    }
+                }
+            }
+        }
+    }
+    let span = crate::audit::Span::new("translate_ksp_init");
+    let initialized = crate::load::initialize_scripts(&mut out.ir, Some(&path), group_names, &[]);
+    out.engine = initialized
+        .states
         .iter()
-        .enumerate()
-        .filter(|(_, b)| b.language == ir::Language::Ksp)
-        .filter_map(|(index, b)| {
-            let environment =
-                crate::load::script_environment(b, index, group_names.clone(), &out.ir.source_indices, Default::default());
-            #[cfg(feature="scan")]
-            sampler_ksp::scan::attempt("import-harvest");
-            sampler_ksp::init_engine_pars(&b.source, sampler_ksp::Limits::LIBRARY, &environment)
-                .ok()
-        })
         .flatten()
+        .filter_map(|s| s.as_ref().ok())
+        .flat_map(|s| s.engine_pars())
         .collect();
-    out.engine = writes;
-    // Scripts that set slot bypass or levels while playing get runtime blocks.
-    let dynamic = out
-        .ir
-        .behaviors
+    let dynamic = initialized
+        .states
         .iter()
-        .enumerate()
-        .filter(|(_, b)| b.language == ir::Language::Ksp)
-        .any(|(index, b)| {
-            let environment =
-                crate::load::script_environment(b, index, group_names.clone(), &out.ir.source_indices, Default::default());
-            #[cfg(feature="scan")]
-            sampler_ksp::scan::attempt("dynamic-rack");
-            sampler_ksp::compile_with(
-                &b.source,
-                48_000,
-                sampler_ksp::Limits::LIBRARY,
-                &[],
-                &environment,
-            )
-            .is_ok_and(|script| script.writes_effect_slots())
-        });
+        .flatten()
+        .filter_map(|s| s.as_ref().ok())
+        .any(|s| s.writes_effect_slots());
     out.dynamic = dynamic;
+    drop(span);
     let mut translated = Vec::new();
     for (index, group) in groups.groups.iter().enumerate() {
         let runtime = ir::GroupRef(out.ir.groups.len());
@@ -345,6 +360,7 @@ fn translate(
             out.ir.source_indices.slots[usize::from(slot)] = Some(runtime);
         }
     }
+    let span = crate::audit::Span::new("translate_resource_ir_dsp");
     let parent = path
         .parent()
         .ok_or_else(|| invalid("instrument has no folder"))?;
@@ -392,6 +408,8 @@ fn translate(
         }
         out.resolve_send_taps(&send_buses);
     }
+    drop(span);
+    let span = crate::audit::Span::new("translate_zones_sample_resolve");
     // Racks of buses no group feeds do nothing, so they are not reported.
     let mut resolved = HashMap::new();
     let data = &program
@@ -408,6 +426,9 @@ fn translate(
     for index in 0..count {
         let zone =
             raw_zone(&mut r).map_err(|reason| invalid(&format!("zone {index}: {reason}")))?;
+        if let Some(objects) = &mut out.ir.kontakt_objects {
+            objects.zones.push(zone.source.clone());
+        }
         let Some(group) = translated.get(zone.group).ok_or_else(|| {
             invalid(&format!(
                 "zone {index} refers to missing group {}",
@@ -452,6 +473,8 @@ fn translate(
             out.ir.source_indices.zones[index] = Some(ir::ZoneRef(before));
         }
     }
+    drop(span);
+    let _span = crate::audit::Span::new("translate_keys_validate");
     crate::keyswitch::translate(&mut out.ir, &out.start_criteria);
     out.ir.unsupported.dedup();
     out.ir.validate().map_err(|e| invalid(&e.to_string()))?;
@@ -459,6 +482,7 @@ fn translate(
         instrument: out.ir,
         locations: out.locations,
         samples,
+        initialized: Some(initialized),
     })
 }
 
@@ -501,28 +525,11 @@ struct Translation {
 
 const VOICE_GROUPS: u16 = 0x32;
 
-/// One `BVoiceLimit` (version 0x60): name, kill mode (Any, Oldest, Newest,
-/// Highest, Lowest), prefer released, max voices, fade ms, exclusion group.
-fn voice_limit(data: &mut &[u8]) -> Result<(ir::VoiceLimit, i32), ni_file::Error> {
-    fn take<const N: usize>(data: &mut &[u8]) -> Result<[u8; N], ni_file::Error> {
-        let (head, rest) = data
-            .split_first_chunk::<N>()
-            .ok_or_else(|| ni_file::Error::Generic("truncated voice limit".into()))?;
-        *data = rest;
-        Ok(*head)
-    }
-    let header = take::<3>(data)?;
-    if header != [0, 0x60, 0] {
-        return Err(ni_file::Error::Generic(format!(
-            "voice limit header {header:02x?}"
-        )));
-    }
-    let chars = u32::from_le_bytes(take(data)?) as usize;
-    if data.len() < chars * 2 {
-        return Err(ni_file::Error::Generic("truncated voice limit name".into()));
-    }
-    *data = &data[chars * 2..];
-    let kill = match i16::from_le_bytes(take(data)?) {
+/// Translate only established voice-limit semantics; retain signed saved values.
+fn voice_limit(
+    v: &ni_file::kontakt::objects::VoiceLimit,
+) -> Result<ir::VoiceLimit, ni_file::Error> {
+    let kill = match v.kill_mode {
         0 => ir::Kill::Any,
         1 => ir::Kill::Oldest,
         2 => ir::Kill::Newest,
@@ -530,19 +537,12 @@ fn voice_limit(data: &mut &[u8]) -> Result<(ir::VoiceLimit, i32), ni_file::Error
         4 => ir::Kill::Lowest,
         other => return Err(ni_file::Error::Generic(format!("voice kill mode {other}"))),
     };
-    let prefer_released = take::<1>(data)?[0] != 0;
-    let voices = i32::from_le_bytes(take(data)?).max(1) as u32;
-    let fade = i32::from_le_bytes(take(data)?).max(0);
-    let exclusion = i32::from_le_bytes(take(data)?);
-    Ok((
-        ir::VoiceLimit {
-            voices,
-            kill,
-            prefer_released,
-            fade: ir::Time::Milliseconds(f64::from(fade)),
-        },
-        exclusion,
-    ))
+    Ok(ir::VoiceLimit {
+        voices: v.max_num_voices.max(1) as u32,
+        kill,
+        prefer_released: v.prefer_released,
+        fade: ir::Time::Milliseconds(f64::from(v.ms_fade_time.max(0))),
+    })
 }
 
 /// Kontakt AHDSR stage laws as native `expm1(k·t)/expm1(k)` curves (decoded
@@ -593,33 +593,38 @@ impl Translation {
 
     /// The `VoiceGroups` chunk: the instrument's voice limit, a 128-bit set of
     /// defined voice groups, then one voice limit per defined group.
-    fn voice_groups(&mut self, mut data: &[u8]) -> Result<(), ni_file::Error> {
-        let (instrument, _) = voice_limit(&mut data)?;
-        self.ir.voice_limit = Some(instrument);
-        let (defined, mut data) = data
-            .split_first_chunk::<16>()
-            .ok_or_else(|| ni_file::Error::Generic("truncated voice groups".into()))?;
+    fn voice_groups(&mut self, data: &[u8]) -> Result<(), ni_file::Error> {
+        let mut reader = Cursor::new(data);
+        let groups = VoiceGroups::read(&mut reader)?;
+        if reader.position() != data.len() as u64 {
+            return Err(ni_file::Error::Static("Trailing VoiceGroups chunk data"));
+        }
+        self.ir.voice_limit = Some(voice_limit(&groups.voice_limit)?);
+        if let Some(objects) = &mut self.ir.kontakt_objects {
+            objects.voice_groups = Some(ir::kontakt::VoiceGroups {
+                program: crate::objects::voice(&groups.voice_limit),
+                groups: groups
+                    .groups
+                    .iter()
+                    .map(|v| v.as_ref().map(|v| crate::objects::voice(&v.voice_limit)))
+                    .collect(),
+            });
+        }
         self.voice_groups = vec![None; 128];
-        for g in 0..128 {
-            if defined[g / 8] & (1 << (g % 8)) != 0 {
-                let (limit, exclusion) = voice_limit(&mut data)?;
-                if exclusion >= 0 {
+        for (g, group) in groups.groups.iter().enumerate() {
+            if let Some(group) = group {
+                let limit = voice_limit(&group.voice_limit)?;
+                if group.voice_limit.exclusion_group >= 0 {
                     self.unsupported(
                         &format!("voice group {g}"),
                         "voice group exclusion group",
-                        exclusion,
+                        group.voice_limit.exclusion_group,
                         ir::Reason::NotModeled,
                     );
                 }
                 self.ir.voice_limits.push(limit);
                 self.voice_groups[g] = Some(self.ir.voice_limits.len() - 1);
             }
-        }
-        if !data.is_empty() {
-            return Err(ni_file::Error::Generic(format!(
-                "{} bytes after the voice groups",
-                data.len()
-            )));
         }
         Ok(())
     }
@@ -684,6 +689,18 @@ impl Translation {
     /// A group's settings, or `None` for a muted group.
     fn group(&mut self, index: usize, group: &Group) -> Result<Option<GroupInfo>, ni_file::Error> {
         let mut v = group.params()?;
+        if let Some(objects) = &mut self.ir.kontakt_objects {
+            let source = crate::objects::group(group, &v);
+            if let Some(error) = &source.source_error {
+                self.ir.unsupported.push(ir::Unsupported {
+                    location: format!("group {index}"),
+                    feature: "source parameters".into(),
+                    value: error.clone(),
+                    reason: ir::Reason::Unknown,
+                });
+            }
+            objects.groups.push(source);
+        }
         let saved = self.snapshot_groups.get(index).cloned();
         if let Some(state) = &saved {
             v.volume = state.volume;
@@ -1278,7 +1295,7 @@ impl Translation {
             return;
         }
         let mut slots = [None; 8];
-        for (slot, l) in z.loops.iter().filter(|(_, l)| l.mode != 0) {
+        for (slot, l) in z.loop_slots.iter().zip(&z.loops).filter(|(_, l)| l.mode != 0) {
             if l.loop_count < 0
                 || !l.loop_tuning.is_finite()
                 || l.loop_tuning <= 0.0
@@ -1396,7 +1413,9 @@ struct RawZone {
     pan: f32,
     tune: f32,
     file: i32,
-    loops: Vec<(u8, ni_file::kontakt::objects::Loop)>,
+    loops: Vec<ni_file::kontakt::objects::Loop>,
+    loop_slots: Vec<u8>,
+    source: ir::kontakt::Zone,
 }
 
 /// Layout from the v1 importer: the owning group, then a structured zone whose
@@ -1406,22 +1425,30 @@ struct RawZone {
 fn raw_zone(r: &mut Cursor<&[u8]>) -> Result<RawZone, String> {
     let group = u32le(r).map_err(|e| e.to_string())? as usize;
     let so = StructuredObject::read(&mut *r).map_err(|e| e.to_string())?;
-    let mut z = Cursor::new(so.public_data.as_slice());
-    let read = |z: &mut Cursor<&[u8]>| -> std::io::Result<_> {
-        // The third field is the sample-start modulation range, used only by playPos modulation.
-        let (start, end, start_mod) = (i32le(z)?, i32le(z)?, i32le(z)?);
-        let mut ranges = [0i16; 9];
-        for value in &mut ranges {
-            *value = i16le(z)?;
-        }
-        let (gain, pan, tune) = (f32le(z)?, f32le(z)?, f32le(z)?);
-        if so.version >= 0x9a {
-            z.read_exact(&mut [0; 6])?;
-        }
-        Ok((start, end, start_mod, ranges, gain, pan, tune, i32le(z)?))
-    };
-    let (start, end, start_mod, ranges, gain, pan, tune, file) =
-        read(&mut z).map_err(|e| e.to_string())?;
+    let source_zone = Zone(so);
+    let params = source_zone.params().map_err(|e| e.to_string())?;
+    let (start, end, start_mod) = (
+        params.sample_start,
+        params.sample_end,
+        params.sample_start_mod_range,
+    );
+    let ranges = [
+        params.low_velocity,
+        params.high_velocity,
+        params.low_key,
+        params.high_key,
+        params.fade_low_velocity,
+        params.fade_high_velocity,
+        params.fade_low_key,
+        params.fade_high_key,
+        params.root_key,
+    ];
+    let (gain, pan, tune, file) = (
+        params.zone_volume,
+        params.zone_pan,
+        params.zone_tune,
+        params.filename_id,
+    );
     let [lv, hv, lk, hk, f0, f1, f2, f3, root] = ranges;
     let midi = |value: i16, what| {
         u8::try_from(value)
@@ -1450,16 +1477,15 @@ fn raw_zone(r: &mut Cursor<&[u8]>) -> Result<RawZone, String> {
             "start {start}, end {end}, gain {gain}, pan {pan}, tune {tune}"
         ));
     }
-    let loops = match so.find_first(LOOPS) {
-        Some(chunk) => {
-            let list = LoopArray::try_from(chunk).map_err(|e| e.to_string())?;
-            (0..8)
-                .filter(|slot| list.mask & (1 << slot) != 0)
-                .zip(list.items)
-                .collect()
-        }
-        None => Vec::new(),
+    let loops = match source_zone.0.find_first(LOOPS) {
+        Some(chunk) => LoopArray::try_from(chunk).map_err(|e| e.to_string())?,
+        None => LoopArray {
+            mask: 0,
+            items: Vec::new(),
+            slots: Vec::new(),
+        },
     };
+    let source = crate::objects::zone(source_zone.0.version, group as u32, params, &loops);
     Ok(RawZone {
         group,
         start: start as u64,
@@ -1473,7 +1499,9 @@ fn raw_zone(r: &mut Cursor<&[u8]>) -> Result<RawZone, String> {
         pan,
         tune,
         file,
-        loops,
+        source,
+        loop_slots: loops.slots,
+        loops: loops.items,
     })
 }
 
@@ -1482,18 +1510,6 @@ fn u32le(r: &mut impl Read) -> std::io::Result<u32> {
     r.read_exact(&mut b)?;
     Ok(u32::from_le_bytes(b))
 }
-fn i32le(r: &mut impl Read) -> std::io::Result<i32> {
-    Ok(u32le(r)? as i32)
-}
-fn i16le(r: &mut impl Read) -> std::io::Result<i16> {
-    let mut b = [0; 2];
-    r.read_exact(&mut b)?;
-    Ok(i16::from_le_bytes(b))
-}
-fn f32le(r: &mut impl Read) -> std::io::Result<f32> {
-    Ok(f32::from_bits(u32le(r)?))
-}
-
 #[cfg(test)]
 mod survey {
     use super::*;
@@ -1658,6 +1674,62 @@ pub(crate) fn saved(entries: &[String]) -> Result<Vec<(String, ir::Saved)>, crat
 
 #[cfg(test)]
 mod saved_tests {
+    #[test]
+    fn translated_script_prefers_the_link_then_falls_back_to_saved_source() {
+        use ni_file::kontakt::{Chunk, StructuredObject, objects::Program};
+        let root =
+            std::env::temp_dir().join(format!("kontakt-linked-translation-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("Resources/scripts")).unwrap();
+        let linked = "on init\nmessage(\"linked\")\nend on";
+        let saved = "on init\nmessage(\"saved\")\nend on";
+        let file = root.join("Resources/scripts/Source.txt");
+        std::fs::write(&file, linked).unwrap();
+        for expected in [linked, saved] {
+            let mut public = (saved.len() as u32).to_le_bytes().to_vec();
+            public.extend(saved.as_bytes());
+            public.extend([0; 3]);
+            public.extend(0u32.to_le_bytes());
+            public.extend(u32::MAX.to_le_bytes());
+            let name = r"C:\old\source.TXT";
+            public.extend((name.len() as u32).to_le_bytes());
+            public.extend(name.as_bytes());
+            let mut script = vec![0, 0x50, 0];
+            script.extend(public);
+            let program = Program(StructuredObject {
+                version: 0xaf,
+                public_data: vec![0; 70],
+                private_data: Vec::new(),
+                children: vec![
+                    Chunk {
+                        id: 0x33,
+                        data: vec![0; 4],
+                    },
+                    Chunk {
+                        id: 0x34,
+                        data: vec![0; 4],
+                    },
+                    Chunk {
+                        id: 6,
+                        data: script,
+                    },
+                ],
+            });
+            let translated = super::translate(
+                root.join("Piano.nki"),
+                program,
+                Default::default(),
+                Default::default(),
+                None,
+            )
+            .unwrap();
+            assert_eq!(translated.instrument.behaviors[0].source, expected);
+            if expected == linked {
+                std::fs::remove_file(&file).unwrap();
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn malformed_saved_entry_is_a_fault() {
         assert!(super::saved(&["$bad x".into()]).is_err());

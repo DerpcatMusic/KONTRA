@@ -594,10 +594,10 @@ impl Instrument {
             if !needed {
                 return fail(&check.owner, "no value for the active driver");
             }
-            if switching.owner == SwitchOwner::Behavior && a.switch_keys.is_empty() {
+            if switching.owner == SwitchOwner::Behavior && a.switch_keys.is_empty() && a.control.is_none() {
                 return fail(
                     &check.owner,
-                    "behavior-owned articulation has no key to tap",
+                    "behavior-owned articulation has no key or selection control",
                 );
             }
             for b in &self.articulations[..i] {

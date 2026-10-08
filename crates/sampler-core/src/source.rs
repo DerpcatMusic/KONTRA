@@ -152,6 +152,7 @@ impl Playback {
             starvation: None,
             fade_in: 0,
             fade_frames: output_rate.div_ceil(1000),
+            cold_hold: 0,
         };
         if let Some(range) = self.loop_range
             && let Some(passes) = range.passes
@@ -237,6 +238,8 @@ pub(super) struct Cursor {
     // Remaining fade-in frames after a recovered miss.
     fade_in: u32,
     fade_frames: u32,
+    /// Bounded onset hold; later streaming misses still advance in source time.
+    cold_hold: u32,
 }
 
 struct ReadAddress {
@@ -462,6 +465,7 @@ impl Cursor {
     /// Start silent, waiting for its stream window (a cold start).
     pub(super) fn cold(mut self) -> Self {
         self.starvation = Some(0);
+        self.cold_hold = self.fade_frames.saturating_mul(50);
         self
     }
 
@@ -508,6 +512,27 @@ impl Cursor {
         gains: [f32; 2],
         kernel: &Kernel,
     ) -> usize {
+        if self.cold_hold > 0 {
+            if self.sample(pcm, kernel).is_some() {
+                self.cold_hold = 0;
+            } else {
+                let count = output.len().min(self.cold_hold as usize);
+                self.cold_hold -= count as u32;
+                // Hold both source and envelope: never skip the first transient.
+                if count == output.len() {
+                    return count;
+                }
+                return count
+                    + self.render_starved(
+                        pcm,
+                        &mut output[count..],
+                        envelope,
+                        gain,
+                        gains,
+                        kernel,
+                    );
+            }
+        }
         let count = if self.starvation != Some(0) {
             self.render_starvation(output, envelope, gain, gains)
         } else if self.done() || self.sample(pcm, kernel).is_none() {

@@ -27,18 +27,23 @@ fn face(kind: Kind) -> Interface {
     }
 }
 fn pixels(face: &Interface) -> Vec<u8> {
+    pixels_state(face, &mut InputState::default())
+}
+fn pixels_state(face: &Interface, input: &mut InputState) -> Vec<u8> {
     let mut ui = super::super::theme::ui();
     let mut values = Values::default();
     let assets = Assets::default();
     for _ in 0..3 {
-        let root = view(
+        let root = view_state(
             &mut ui,
+            "",
             face,
             PageRef(0),
             &assets,
             Presentation::Bitmap,
             1.,
             &mut values,
+            input,
         );
         ui.frame(
             root,
@@ -49,6 +54,34 @@ fn pixels(face: &Interface) -> Vec<u8> {
         .unwrap();
     }
     super::super::tests::pixels(&ui, 160, 120)
+}
+
+#[test]
+fn waveform_uses_current_envelope_duration_cursor_and_source_colour() {
+    let mut face = face(Kind::Waveform);
+    face.widgets[0].waveform = Some(ir::Waveform {
+        zone: 9,
+        flags: 0,
+        cursor_us: 0,
+        table: vec![],
+        highlighted: None,
+        midi_start_note: 60,
+    });
+    let mut input = InputState::default();
+    let empty = pixels_state(&face, &mut input);
+    input.peaks.insert(
+        WidgetRef(0),
+        Arc::from([(-0.1, 0.2), (-0.8, 0.7), (-0.3, 0.4)]),
+    );
+    input.wave_duration_us.insert(WidgetRef(0), 100_000);
+    let envelope = pixels_state(&face, &mut input);
+    assert_ne!(empty, envelope);
+    face.widgets[0].waveform.as_mut().unwrap().cursor_us = 50_000;
+    assert_ne!(envelope, pixels_state(&face, &mut input));
+    let cursor = pixels_state(&face, &mut input);
+    face.widgets[0].colors.wave = Some(ir::Rgba::rgb(0xff0000));
+    face.widgets[0].colors.wave_cursor = Some(ir::Rgba::rgb(0x00ff00));
+    assert_ne!(cursor, pixels_state(&face, &mut input));
 }
 #[test]
 fn solid_background_controls_fallback_contrast() {
@@ -95,4 +128,18 @@ fn table_cells_and_source_colours_change_pixels() {
     let values = pixels(&face);
     face.widgets[0].colors.bar = Some(ir::Rgba::rgb(0xff0000));
     assert_ne!(values, pixels(&face));
+}
+
+#[test]
+fn default_dimensions_and_wallpaper_origin_are_independent() {
+    let mut ui = face(Kind::Label);
+    ui.widgets[0].auto_size = true;
+    ui.widgets[0].default_axes = [false, true];
+    ui.widgets[0].rect.width = 137;
+    ui.widgets[0].rect.height = 0;
+    assert_eq!(resolved(&ui).widgets[0].rect.width, 137);
+    assert_eq!(resolved(&ui).widgets[0].rect.height, 18);
+    ui.widgets[0].default_axes = [true, false];
+    ui.widgets[0].rect.height = 41;
+    assert_eq!(resolved(&ui).widgets[0].rect.height, 41);
 }

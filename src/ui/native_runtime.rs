@@ -16,6 +16,7 @@ mod syntax;
 pub(super) struct Package {
     members: BTreeMap<String, Arc<[u8]>>,
     pub fonts: BTreeMap<String, Font>,
+    font_names: Vec<(String, u16, Font)>,
     pub images: Images,
 }
 struct ImageCache {
@@ -74,10 +75,23 @@ impl Images {
     }
 }
 impl Package {
+    pub fn font(&self, name: &str, bold: bool) -> Option<Font> {
+        let name = name.to_lowercase();
+        self.fonts.iter().find(|(path, _)| {
+            *path == &name || path.rsplit('/').next().is_some_and(|p|
+                p == name || p.strip_suffix(".ttf") == Some(name.as_str())
+                || p.strip_suffix(".otf") == Some(name.as_str()))
+        }).map(|(_, f)| f.clone()).or_else(|| {
+            self.font_names.iter().filter(|(family, _, _)|family.eq_ignore_ascii_case(&name))
+                .min_by_key(|(_, weight, _)|weight.abs_diff(if bold {700} else {400}))
+                .map(|(_, _, font)|font.clone())
+        })
+    }
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let mut source = Source::of(path);
         let mut members = BTreeMap::new();
         let mut fonts = BTreeMap::new();
+        let mut font_names = Vec::new();
         let mut total = 0;
         let mut resource_paths = BTreeMap::new();
         for name in source.native_names() {
@@ -104,9 +118,14 @@ impl Package {
             if relative.ends_with(".nui") {
                 members.insert(relative, Arc::from(bytes));
             } else {
+                let font = Font::new(bytes).map_err(|_| anyhow::anyhow!("NativeUI font invalid"))?;
+                let (names, weight) = font_metadata(&font);
+                total += names.iter().map(|n|n.len()+std::mem::size_of::<(String,u16,Font)>()).sum::<usize>();
+                anyhow::ensure!(total <= 16 << 20, "NativeUI sources and fonts exceed 16 MiB");
+                font_names.extend(names.into_iter().map(|name|(name,weight,font.clone())));
                 fonts.insert(
                     relative,
-                    Font::new(bytes).map_err(|_| anyhow::anyhow!("NativeUI font invalid"))?,
+                    font,
                 );
             }
         }
@@ -171,6 +190,7 @@ impl Package {
         Ok(Self {
             members,
             fonts,
+            font_names,
             images: Images { cache, request },
         })
     }
@@ -193,6 +213,55 @@ impl Package {
             .ok_or_else(|| anyhow::anyhow!("NativeUI module absent"))?;
         Ok(std::str::from_utf8(bytes)?)
     }
+}
+
+// Read names only from the already validated, bounded supplied font. This does
+// not discover system fonts or substitute a family absent from the package.
+fn font_metadata(font: &Font) -> (Vec<String>, u16) {
+    let bytes = font.as_ref();
+    let u16_at = |at:usize| -> Option<u16> {Some(u16::from_be_bytes(bytes.get(at..at.checked_add(2)?)?.try_into().ok()?))};
+    let u32_at = |at:usize| -> Option<usize> {Some(u32::from_be_bytes(bytes.get(at..at.checked_add(4)?)?.try_into().ok()?) as usize)};
+    let read = || -> Option<(Vec<String>,u16)> {
+        let base = if bytes.starts_with(b"ttcf") {u32_at(12 + font.index() as usize * 4)?} else {0};
+        let table = |tag:&[u8]| -> Option<(usize,usize)> {
+            for n in 0..usize::from(u16_at(base.checked_add(4)?)?) {
+                let at=base.checked_add(12)?.checked_add(n.checked_mul(16)?)?;
+                if bytes.get(at..at.checked_add(4)?)? == tag {
+                    let (start,len)=(u32_at(at+8)?,u32_at(at+12)?);
+                    bytes.get(start..start.checked_add(len)?)?;
+                    return Some((start,len));
+                }
+            }
+            None
+        };
+        let weight=table(b"OS/2").and_then(|(at,len)|(len>=6).then(||u16_at(at+4)).flatten()).unwrap_or(400);
+        let (at,len)=table(b"name")?;
+        if len<6 {return None;}
+        let count=usize::from(u16_at(at+2)?);
+        let strings=usize::from(u16_at(at+4)?);
+        if 6usize.checked_add(count.checked_mul(12)?)? > len {return None;}
+        let mut names=Vec::new();
+        for n in 0..count {
+            let record=at+6+n*12;
+            if !matches!(u16_at(record+6)?,1|4|6|16) {continue;}
+            let start=strings.checked_add(usize::from(u16_at(record+10)?))?;
+            let end=start.checked_add(usize::from(u16_at(record+8)?))?;
+            if end>len {return None;}
+            let data=bytes.get(at+start..at+end)?;
+            let name=match u16_at(record)? {
+                0|3 if data.len()%2==0 => String::from_utf16(&data.chunks_exact(2).map(|c|u16::from_be_bytes([c[0],c[1]])).collect::<Vec<_>>()).ok(),
+                1 if data.is_ascii()=>String::from_utf8(data.to_vec()).ok(),
+                _=>None,
+            };
+            if let Some(name)=name.filter(|s|!s.is_empty()&&s.len()<=1024) {
+                if !names.contains(&name) {names.push(name);}
+                // ponytail: 32 supplied aliases per face; no unbounded localized-name cache.
+                if names.len()==32 {break;}
+            }
+        }
+        names.sort();names.dedup();Some((names,weight))
+    };
+    read().unwrap_or_default()
 }
 
 #[derive(Clone, Debug)]
@@ -236,7 +305,7 @@ fn value(lua: &Lua, value: &ir::Value, index: Option<usize>) -> mlua::Result<Lua
     Ok(match value {
         ir::Value::Integer(n) => LuaValue::Integer(*n as i64),
         ir::Value::Real(n) => LuaValue::Number(*n),
-        ir::Value::Text(s) => LuaValue::String(lua.create_string(s)?),
+        ir::Value::Text(s) | ir::Value::DropPath {path:s,..} => LuaValue::String(lua.create_string(s)?),
         ir::Value::Integers(a) if index.is_some() => {
             LuaValue::Integer(a.get(index.unwrap()).copied().unwrap_or(0) as i64)
         }
@@ -250,6 +319,11 @@ fn value(lua: &Lua, value: &ir::Value, index: Option<usize>) -> mlua::Result<Lua
 impl UserData for Parameter {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("value", |lua, this, index: Option<usize>| {
+            #[cfg(test)]
+            if let Ok(trace) = lua.globals().get::<Function>("__audit_parameter") {
+                trace.call::<()>((this.identifier.clone(), this.binding as i64,
+                    lua.globals().get::<String>("__audit_path").unwrap_or_default()))?;
+            }
             let mut bridge = this.bridge.lock().unwrap();
             let Some(widget) = bridge.controls.get(this.binding) else {
                 if bridge.unavailable.len() < 128 {
@@ -464,12 +538,17 @@ impl Session {
         ));
         let hook_deadline = deadline.clone();
         let hook_fuel = fuel.clone();
-        lua.set_interrupt(move |_| {
+        lua.set_interrupt(move |lua| {
             if hook_fuel
                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
                 .is_err()
             {
-                return Err(mlua::Error::external("NativeUI interrupt budget exceeded"));
+                let site = lua.inspect_stack(0, |debug| {
+                    let source = debug.source();
+                    let source = source.source.as_deref().unwrap_or("");
+                    format!("{}:{}:{}:{}", usize::from(source == "NativeUI host"), debug.current_line().unwrap_or(0), &blake3::hash(source.as_bytes()).to_hex()[..16], lua.globals().get::<u32>("__native_nodes").unwrap_or(0))
+                }).unwrap_or_default();
+                return Err(mlua::Error::external(format!("NativeUI interrupt budget exceeded; site {site}")));
             }
             if hook_fuel.load(Ordering::Relaxed) % 256 == 0
                 && std::time::Instant::now() > *hook_deadline.lock().unwrap()
@@ -478,7 +557,14 @@ impl Session {
             }
             Ok(mlua::VmState::Continue)
         });
-        lua.load(include_str!("native_runtime/runtime.lua"))
+        #[cfg(test)]
+        let runtime = include_str!("native_runtime/runtime.lua")
+            .replace("local props=element.properties()", "_G.__audit_path=path; local props=element.properties()")
+            .replace("current_path,hook_index,current_context=old_path,old_index,old_context\n    return out",
+                "current_path,hook_index,current_context=old_path,old_index,old_context\n    _G.__audit_path=old_path; return out");
+        #[cfg(not(test))]
+        let runtime = include_str!("native_runtime/runtime.lua");
+        lua.load(runtime)
             .set_name("NativeUI host")
             .exec()?;
         let package_table: Table = lua.globals().get("package")?;
@@ -492,21 +578,22 @@ impl Session {
             edits: Vec::with_capacity(256),
             ..Default::default()
         }));
-        let names = bridge
-            .lock()
-            .unwrap()
-            .controls
-            .iter()
-            .enumerate()
-            .map(|(i, c)| {
-                (
-                    c.name
-                        .trim_start_matches(['$', '%', '@', '~', '?', '!'])
-                        .to_owned(),
-                    i,
-                )
-            })
-            .collect::<std::collections::HashMap<_, _>>();
+        // KSP expose_controls: duplicate identifiers use the first script slot,
+        // regardless of the order in which source interfaces are published.
+        let names = {
+            let bridge=bridge.lock().unwrap();
+            let mut names=HashMap::new();
+            let priority=|index:usize| match bridge.locations[index].0 {
+                ir::Source::Ksp{slot}=>(slot,index), _=>(u8::MAX,index),
+            };
+            for (index,control) in bridge.controls.iter().enumerate() {
+                names.entry(control.name.trim_start_matches(['$', '%', '@', '~', '?', '!']).to_owned())
+                    .and_modify(|previous|if priority(index)<priority(*previous) {*previous=index})
+                    .or_insert(index);
+            }
+            names
+        };
+        let meter_names=names.clone();
         let parameters = bridge.clone();
         let kontakt = lua.create_table()?;
         kontakt.set(
@@ -527,14 +614,7 @@ impl Session {
         kontakt.set(
             "connect_level_meter",
             lua.create_function(move |lua, identifier: String| {
-                let binding = meter_bridge
-                    .lock()
-                    .unwrap()
-                    .controls
-                    .iter()
-                    .position(|w| {
-                        w.name.trim_start_matches(['$', '%', '@', '~', '?', '!']) == identifier
-                    })
+                let binding = meter_names.get(&identifier).copied()
                     .ok_or_else(|| mlua::Error::external("NativeUI meter unavailable"))?;
                 let bridge = meter_bridge.clone();
                 let meter = lua.create_table()?;
@@ -635,7 +715,7 @@ impl Session {
         bridge.meters.extend(values);
     }
     pub fn render(&self) -> anyhow::Result<Table> {
-        self.fuel.store(100_000, Ordering::Relaxed);
+        self.fuel.store(1_000_000, Ordering::Relaxed);
         *self.deadline.lock().unwrap() =
             std::time::Instant::now() + std::time::Duration::from_millis(250);
         if let Ok(error) = self.lua.globals().get::<String>("__canvas_error") {
@@ -710,7 +790,16 @@ mod tests {
             return function()
                 p:set_value(0.75)
                 return @ui.ZStack { @ui.Text {text="Authored",}, @ui.Rectangle {color=ui.Color(12,24,48)}.frame(width=10,height=20) }.frame(width=80,height=60)
-            end"#.as_slice()))]),fonts:BTreeMap::new(),images:Images{request,cache:Arc::new(Mutex::new(ImageCache{loaded:HashMap::new(),pending:BTreeSet::new(),touch:HashMap::new(),tick:0,bytes:0,#[cfg(feature="shots")] scan:Default::default()}))}});
+            end"#.as_slice()))]),fonts:BTreeMap::new(),font_names:Vec::new(),images:Images{request,cache:Arc::new(Mutex::new(ImageCache{loaded:HashMap::new(),pending:BTreeSet::new(),touch:HashMap::new(),tick:0,bytes:0,#[cfg(feature="shots")] scan:Default::default()}))}});
+        let font=Font::new(super::super::theme::NOTO_SANS).unwrap();
+        let (names,weight)=font_metadata(&font);
+        assert!(names.iter().any(|n|n=="Noto Sans"));
+        let mut package=package;
+        let supplied=Arc::get_mut(&mut package).unwrap();
+        supplied.fonts.insert("unrelated-file.ttf".into(),font.clone());
+        supplied.font_names=names.into_iter().map(|n|(n,weight,font.clone())).collect();
+        assert_eq!(supplied.font("Noto Sans",false).unwrap().id(),font.id());
+        assert!(supplied.font("an absent authored family",false).is_none());
         let mut widget = ir::Widget::new(
             "$gain",
             ir::PageRef(0),
@@ -731,12 +820,14 @@ mod tests {
         let session = Session::new(
             package,
             "main",
-            vec![(ir::Source::Ksp { slot: 2 }, 0, widget)],
+            vec![(ir::Source::Ksp { slot: 4 }, 0, widget.clone()),
+                (ir::Source::Ksp { slot: 2 }, 0, widget.clone()),
+                (ir::Source::Ksp { slot: 3 }, 0, widget)],
         )
         .unwrap();
         let source = ir::Interface {
             source: ir::Source::Ksp { slot: 2 },
-            widgets: vec![session.bridge.lock().unwrap().controls[0].clone()],
+            widgets: vec![session.bridge.lock().unwrap().controls[1].clone()],
             ..Default::default()
         };
         session.update_view(
@@ -749,7 +840,7 @@ mod tests {
             &Default::default(),
         );
         assert_eq!(
-            session.bridge.lock().unwrap().controls[0].value,
+            session.bridge.lock().unwrap().controls[1].value,
             Some(ir::Value::Text("callback readback".into()))
         );
         session.update_view(
@@ -774,5 +865,25 @@ mod tests {
                 .unwrap()
                 .is_nil()
         );
+        // Context modifiers affect descendants without leaking into siblings.
+        let context_source = syntax::translate(r#"
+            local ui=require('native_ui')
+            local key=ui.create_context()
+            local child=function() local value=ui.use_context(key); return @ui.Text {text=value() or 'base'} end
+            return function() return @ui.ZStack {
+                @child {}.context(key=key,value='nested')
+                @child {}
+            } end
+        "#).unwrap();
+        let context_root: Function = session.lua().load(&context_source).eval().unwrap();
+        let render: Function = session.lua().globals().get("__render").unwrap();
+        let graph: Table = render.call(context_root).unwrap();
+        let children: Table = graph.get("children").unwrap();
+        let nested: Table = children.get::<Table>(1).unwrap().get::<Table>("children").unwrap().get(1).unwrap();
+        let sibling: Table = children.get(2).unwrap();
+        assert_eq!(nested.get::<Table>("props").unwrap().get::<String>("text").unwrap(), "nested");
+        assert_eq!(sibling.get::<Table>("props").unwrap().get::<String>("text").unwrap(), "base");
+        let forever: Function = session.lua().load("return function() while true do end end").eval().unwrap();
+        assert!(session.call(forever, ()).unwrap_err().to_string().contains("budget exceeded"));
     }
 }

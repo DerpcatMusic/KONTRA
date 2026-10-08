@@ -155,6 +155,7 @@ struct Eval<'h> {
     consumed: BTreeSet<VarId>,
     pending_menus: BTreeMap<usize, i32>,
     callback_type: i32,
+    profile: Option<HashMap<&'static str, (u64, u128)>>,
 }
 
 pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
@@ -180,9 +181,15 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
         consumed: BTreeSet::new(),
         pending_menus: BTreeMap::new(),
         callback_type: b::cb::INIT,
+        profile: std::env::var_os("KONTRA_AUDIT_KSP_PROFILE").map(|_| HashMap::new()),
     };
-    #[cfg(feature="scan")]
-    crate::scan::present(hir.callbacks.iter().any(|c|c.kind==CallbackKind::Init),hir.callbacks.iter().any(|c|c.kind==CallbackKind::PersistenceChanged));
+    #[cfg(feature = "scan")]
+    crate::scan::present(
+        hir.callbacks.iter().any(|c| c.kind == CallbackKind::Init),
+        hir.callbacks
+            .iter()
+            .any(|c| c.kind == CallbackKind::PersistenceChanged),
+    );
     // Kontakt's defaults: knobs/sliders start at their minimum when 0 is outside.
     for (index, ui) in hir.uis.iter().enumerate() {
         if let Some((lo, hi)) = declared_range(ui) {
@@ -190,11 +197,11 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
         }
     }
     if let Some(init) = hir.callbacks.iter().find(|c| c.kind == CallbackKind::Init) {
-        #[cfg(feature="scan")]
+        #[cfg(feature = "scan")]
         crate::scan::stage("init");
-        let r=e.block(&init.body);
-        #[cfg(feature="scan")]
-        crate::scan::phase("init",r.as_ref().err());
+        let r = e.block(&init.body);
+        #[cfg(feature = "scan")]
+        crate::scan::phase("init", r.as_ref().err());
         r?;
     }
     // On load Kontakt restores saved persistent values, then runs
@@ -228,9 +235,29 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
                     model::EvaluationFailure::InvalidValue
                 };
                 e.warn(f.span, "on persistence_changed did not complete".to_owned());
-                model::PersistenceCompletion::Failed {category, offset:f.span.start, builtin:f.builtin}
+                model::PersistenceCompletion::Failed {
+                    category,
+                    offset: f.span.start,
+                    builtin: f.builtin,
+                }
             }
         };
+    }
+    if let Some(profile) = &e.profile {
+        eprintln!(
+            "AUDIT {{\"stage\":\"ksp_eval_profile\",\"fuel_used\":{},\"widgets\":{},\"requests\":{},\"properties\":{},\"warnings\":{}}}",
+            INIT_FUEL - e.fuel,
+            hir.uis.len(),
+            e.st.model.requests.len(),
+            e.st.properties.len(),
+            e.st.warnings.len()
+        );
+        for (builtin, (calls, ns)) in profile {
+            eprintln!(
+                "AUDIT {{\"stage\":\"ksp_builtin_profile\",\"builtin\":\"{}\",\"calls\":{},\"ns\":{}}}",
+                builtin, calls, ns
+            );
+        }
     }
     Ok(e.st)
 }
@@ -261,7 +288,7 @@ impl Eval<'_> {
     fn block(&mut self, body: &[Stmt]) -> Result<Flow> {
         for s in body {
             if self.fuel == 0 {
-                #[cfg(feature="scan")]
+                #[cfg(feature = "scan")]
                 crate::scan::category("fuel-budget");
                 return fault(s.span, "on init exceeded its evaluation budget");
             }
@@ -297,9 +324,9 @@ impl Eval<'_> {
             StmtKind::While(cond, body) => {
                 while self.expr(cond)?.int() != 0 {
                     if self.fuel == 0 {
-                        #[cfg(feature="scan")]
-                crate::scan::category("fuel-budget");
-                return fault(s.span, "on init exceeded its evaluation budget");
+                        #[cfg(feature = "scan")]
+                        crate::scan::category("fuel-budget");
+                        return fault(s.span, "on init exceeded its evaluation budget");
                     }
                     self.fuel -= 1;
                     match self.block(body)? {
@@ -780,10 +807,21 @@ impl Eval<'_> {
         Ok(())
     }
 
-    fn builtin(&mut self,builtin:Builtin,args:&[Arg],span:Span)->Result<V> {
-        let result=self.builtin_inner(builtin,args,span);
-        #[cfg(feature="scan")]
-        crate::scan::builtin(result.as_ref().err().map(|_|builtin.name()));
+    fn builtin(&mut self, builtin: Builtin, args: &[Arg], span: Span) -> Result<V> {
+        let begin = self.profile.as_ref().map(|_| std::time::Instant::now());
+        let result = self.builtin_inner(builtin, args, span);
+        #[cfg(feature = "scan")]
+        crate::scan::builtin(result.as_ref().err().map(|_| builtin.name()));
+        if let Some(begin) = begin {
+            let entry = self
+                .profile
+                .as_mut()
+                .unwrap()
+                .entry(builtin.name())
+                .or_default();
+            entry.0 += 1;
+            entry.1 += begin.elapsed().as_nanos();
+        }
         result
     }
 

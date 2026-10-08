@@ -358,3 +358,39 @@ fn w1_two_parts_keep_same_widget_ordinal_focus_wheel_and_drag_separate() {
     assert_eq!(value(1),501.);
     assert!(h.ui.scene().unwrap().surface(&target(0)).is_some());
 }
+
+#[test]
+fn w1_os_file_drop_uses_epoch_admission_and_preserves_native_enter_leave() {
+    use crate::sound::Core;
+    let script=sampler_ksp::compile("on init make_perfview declare ui_mouse_area $area set_control_par(get_ui_id($area),$CONTROL_PAR_DND_ACCEPT_AUDIO,$NI_DND_ACCEPT_MULTIPLE) set_control_par(get_ui_id($area),$CONTROL_PAR_RECEIVE_DRAG_EVENTS,1) declare ui_knob $calls(0,1000,1) declare ui_knob $inside(0,1,1) end on on ui_control($area) inc($calls) $inside := $NI_MOUSE_OVER_CONTROL end on",48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
+    let mut face=script.ui(&|_|None).unwrap();
+    face.widgets[0].rect=sampler_ui_ir::Rect::new(0,0,100,100);
+    for widget in face.widgets.iter_mut().skip(1) {widget.rect.x=150;}
+    let id=|name:&str|sampler_ui_ir::ControlId(script.controls().iter().find(|c|c.variable.ends_with(name)).unwrap().definition.id.0);
+    let (calls,inside)=(id("$calls"),id("$inside"));
+    let prepared=script.bind(sampler_core::Prepared::new(48000,vec![],vec![],1).unwrap()).unwrap();
+    let limits=sampler_core::Limits::for_plan(&prepared,8,0);
+    let mut part=crate::sound::v2::Part::new(sampler_core::Runtime::new(prepared,limits).unwrap(),crate::sound::tree::MixTree::instrument("drop")).unwrap();
+    let p=Arc::new(SamplerParams::new());p.shared.ensure_parts(1);
+    let atoms=p.shared.part(0).unwrap();atoms.generation.store(1,Ordering::Release);
+    atoms.loop_audit_install_ingress(part.ui_controls.take());
+    let mut core=crate::sound::v2::V2Core::with_parts(1,48000.);core.install(0,Some(Box::new(part)));
+    {let mut view=p.shared.view.lock().unwrap();view.parts[0].generation=1;view.parts[0].interfaces=vec![face.clone()].into();}
+    let mut ui=theme::ui();let mut values=ir_view::Values::default();let mut input=ir_view::InputState::default();
+    let face=ir_view::resolved(&face);
+    let el=ir_view::view_state(&mut ui,"part-0-epoch-1-script-0",&face,sampler_ui_ir::PageRef(0),&Default::default(),sampler_ui_ir::Presentation::Vector,1.,&mut values,&mut input);
+    ui.frame(el,Some(Size::new(400.,200.)),Input::default(),1./60.).unwrap();
+    let at=center(&ui,"part-0-epoch-1-script-0-ir-0");let paths=vec![PathBuf::from("/tmp/owned.wav")];
+    let drag=std::sync::Mutex::new(None);let picker=picker::Picker::default();
+    assert!(native_files(&p,&picker,&drag,&ui,at,&paths,false));core.render(16);
+    assert_eq!((core.control_value(0,calls),core.control_value(0,inside)),(Some(1.),Some(1.)));
+    assert!(!native_files(&p,&picker,&drag,&ui,Point::new(-1.,-1.),&[],false));core.render(16);
+    assert_eq!((core.control_value(0,calls),core.control_value(0,inside)),(Some(2.),Some(0.)));
+    assert!(native_files(&p,&picker,&drag,&ui,at,&paths,true));core.render(16);
+    assert_eq!(core.control_value(0,calls),Some(3.));
+    assert!(!native_files(&p,&picker,&drag,&ui,at,&vec![PathBuf::from("/tmp/owned.wav");33],true));core.render(16);
+    assert_eq!(core.control_value(0,calls),Some(3.));
+    atoms.generation.store(2,Ordering::Release);
+    assert!(!native_files(&p,&picker,&drag,&ui,at,&paths,true));core.render(16);
+    assert_eq!(core.control_value(0,calls),Some(3.));
+}
