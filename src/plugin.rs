@@ -409,11 +409,11 @@ impl PartShared {
         values
     }
 
-    pub(crate) fn widget_values(&self) -> std::collections::BTreeMap<sampler_ui_ir::ControlId, sampler_ui_ir::Value> {
+    pub(crate) fn widget_values(&self, face: &sampler_ui_ir::Interface) -> std::collections::HashMap<sampler_ui_ir::WidgetRef, sampler_ui_ir::Value> {
         let mut ingress = self.ingress.lock().unwrap();
         let Some(ingress) = ingress.as_mut() else { return Default::default() };
         if ingress.settle() { self.scalar_revision.fetch_add(1, Ordering::Release); }
-        ingress.values()
+        ingress.values(face)
     }
 
     pub(crate) fn problems(&self) -> RuntimeProblems {
@@ -972,13 +972,6 @@ impl Shared {
         let mut ingress = part.ingress.lock().unwrap();
         if part.generation.load(Ordering::Acquire) != epoch || !value.is_finite() { return false; }
         ingress.as_mut().is_some_and(|client| client.submit(control, value))
-    }
-
-    pub(crate) fn set_widgets_at(&self, slot: usize, epoch: u64, edits: Vec<sampler_core::WidgetEdit>) -> bool {
-        let Some(part) = self.part(slot) else { return false };
-        let mut ingress = part.ingress.lock().unwrap();
-        if part.generation.load(Ordering::Acquire) != epoch { return false; }
-        ingress.as_mut().is_some_and(|ingress| ingress.submit_widgets(edits))
     }
 
     /// One authored gesture; XY axes and touched table cells stay one transaction.
