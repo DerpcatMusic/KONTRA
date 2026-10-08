@@ -1770,6 +1770,10 @@ pub(crate) mod tests {
     thread_local! {
         static COUNTING: Cell<bool> = const { Cell::new(false) };
         static CALLS: Cell<usize> = const { Cell::new(0) };
+        static ALLOCATED: Cell<usize> = const { Cell::new(0) };
+        static FREED: Cell<usize> = const { Cell::new(0) };
+        static LIVE: Cell<isize> = const { Cell::new(0) };
+        static PEAK: Cell<isize> = const { Cell::new(0) };
     }
     fn count() {
         if COUNTING.with(Cell::get) {
@@ -1780,10 +1784,19 @@ pub(crate) mod tests {
     unsafe impl GlobalAlloc for Counting {
         unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
             count();
-            unsafe { System.alloc(layout) }
+            let ptr = unsafe { System.alloc(layout) };
+            if !ptr.is_null() && COUNTING.with(Cell::get) {
+                ALLOCATED.with(|n| n.set(n.get() + layout.size()));
+                LIVE.with(|n| { n.set(n.get() + layout.size() as isize); PEAK.with(|peak| peak.set(peak.get().max(n.get()))); });
+            }
+            ptr
         }
         unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
             count();
+            if COUNTING.with(Cell::get) {
+                FREED.with(|n| n.set(n.get() + layout.size()));
+                LIVE.with(|n| n.set(n.get() - layout.size() as isize));
+            }
             unsafe { System.dealloc(ptr, layout) }
         }
     }
@@ -1919,6 +1932,38 @@ pub(crate) mod tests {
         assert_eq!(Play::Note(60, 0).event(), CoreEvent::midi1(0x80, 60, 0));
         assert_eq!(Play::Bend(8192).event(), CoreEvent::Ump([0x20e0_0040, 0]));
         assert_eq!(Play::Mod(64).event(), CoreEvent::midi1(0xb0, 1, 64));
+    }
+
+    /// Compare an installed script's empty and real control environments;
+    /// output only aggregate allocation/eval metrics and numeric widget geometry.
+    #[test]
+    #[ignore]
+    fn probe_ksp_init() {
+        let path = std::path::PathBuf::from(std::env::var("PROBE_PATH").expect("PROBE_PATH"));
+        let kontakt = sampler_kontakt::read(&path).unwrap();
+        let groups = kontakt.instrument.groups.iter().map(|g| g.name.clone()).collect::<Vec<_>>();
+        let mut resources = sampler_kontakt::Resources::of(&path);
+        for (slot, behavior) in kontakt.instrument.behaviors.iter().enumerate() {
+            if behavior.language != sampler_ir::Language::Ksp { continue; }
+            for real in [false, true] {
+                let view = if real {
+                    sampler_ksp::nckp::view_name(&behavior.source).and_then(|name| resources.read(&format!("Resources/performance_view/{name}.nckp")))
+                        .and_then(|bytes| sampler_ksp::nckp::parse(&bytes).ok()).map(|v| v.0).unwrap_or_default()
+                } else { Default::default() };
+                let environment = sampler_ksp::Environment { groups: groups.clone(), slot: slot as u8, performance_view: view, ..Default::default() };
+                for cell in [&CALLS, &ALLOCATED, &FREED] { cell.with(|n| n.set(0)); }
+                LIVE.with(|n| n.set(0)); PEAK.with(|n| n.set(0));
+                let begin = Instant::now();
+                COUNTING.with(|c| c.set(true));
+                let initialized = sampler_ksp::initialize(&behavior.source, sampler_ksp::Limits::LIBRARY, &environment).unwrap();
+                COUNTING.with(|c| c.set(false));
+                println!("AUDIT {}", serde_json::json!({"stage":"init_allocations", "slot":slot, "real_view":real, "ms":begin.elapsed().as_secs_f64()*1000., "calls":CALLS.with(Cell::get), "allocated_bytes":ALLOCATED.with(Cell::get), "freed_bytes":FREED.with(Cell::get), "live_bytes":LIVE.with(Cell::get), "peak_live_bytes":PEAK.with(Cell::get)}));
+                let script = sampler_ksp::compile_initialized(&behavior.source, 48000, sampler_ksp::Limits::LIBRARY, &[], initialized).unwrap();
+                for (index, widget) in script.model().interface.widgets.iter().enumerate().filter(|(i, _)| (378..=410).contains(i)) {
+                    println!("AUDIT {}", serde_json::json!({"stage":"widget_geometry", "slot":slot, "real_view":real, "index":index, "kind":widget.kind.control_type(), "ui_id":widget.ui_id, "x":widget.int("$CONTROL_PAR_POS_X"), "y":widget.int("$CONTROL_PAR_POS_Y"), "width":widget.int("$CONTROL_PAR_WIDTH"), "height":widget.int("$CONTROL_PAR_HEIGHT"), "range":widget.range}));
+                }
+            }
+        }
     }
 
     /// Numeric-only audit: real loader, publication, C4 audio, retained editor RSS.
