@@ -40,6 +40,7 @@ fn switch_frame(on: bool, frames: usize) -> usize {
 #[derive(Default)]
 pub struct Assets {
     loaded: HashMap<usize, Option<Arc<Picture>>>,
+    identities: HashMap<usize, ir::Asset>,
 }
 
 impl Assets {
@@ -48,6 +49,8 @@ impl Assets {
         let need = ui.needed_assets(presentation);
         self.loaded.retain(|&k, _| need.get(k).copied().unwrap_or(false));
         for (k, _) in need.iter().enumerate().filter(|(_, n)| **n) {
+            if self.identities.get(&k) != Some(&ui.assets[k]) { self.loaded.remove(&k); }
+            self.identities.insert(k, ui.assets[k].clone());
             self.loaded.entry(k).or_insert_with(|| load(&ui.assets[k]));
         }
     }
@@ -134,44 +137,37 @@ fn default_size(kind: &Kind) -> (u32, u32) {
 /// turned into pixels.
 pub fn resolved(face: &Interface) -> Interface {
     let mut face = face.clone();
+    let count = face.widgets.len();
+    resolve_changed(&mut face, 0..count);
+    face
+}
+
+/// Normalize only changed source widgets; publications retain all other widgets.
+pub fn resolve_changed(face: &mut Interface, indices: impl IntoIterator<Item = usize>) {
     for p in &mut face.pages {
-        if let Some(rows) = p.height_rows.take() {
-            p.size.height = rows * GRID_ROW_HEIGHT;
-        }
+        if let Some(rows) = p.height_rows.take() { p.size.height = rows * GRID_ROW_HEIGHT; }
     }
-    for w in &mut face.widgets {
+    for n in indices {
+        let Some(w) = face.widgets.get_mut(n) else { continue };
         if let ir::Placement::Grid { column, row } = w.placement {
             w.rect.x = (column as i32 - 1) * GRID.0 + GRID.2;
             w.rect.y = (row as i32 - 1) * GRID.1 + GRID.3;
             w.placement = ir::Placement::Pixels;
         }
-        if w.auto_size {
-            (w.rect.width, w.rect.height) = default_size(&w.kind);
-            w.auto_size = false;
-        }
-    }
-    // Kontakt sizes a control to its picture along any axis the picture does not stretch.
-    for n in 0..face.widgets.len() {
-        let w = &face.widgets[n];
+        if w.auto_size { (w.rect.width, w.rect.height) = default_size(&w.kind); w.auto_size = false; }
         let meta = w.images.iter().filter(|i| i.role != Use::Handle).find_map(|i| match &face.assets.get(i.asset.0)?.kind {
             ir::AssetKind::Image(m) => m.size.map(|s| (s, m.stretch)),
             ir::AssetKind::BitmapFont => None,
         });
         if let Some((size, stretch)) = meta {
-            let r = &mut face.widgets[n].rect;
-            if !stretch[0] {
-                r.width = size.width;
-            }
-            if !stretch[1] {
-                r.height = size.height;
-            }
+            if !stretch[0] { w.rect.width = size.width; }
+            if !stretch[1] { w.rect.height = size.height; }
         }
     }
-    face
 }
 
 /// `page` at `scale` points per source pixel; `face` already [`resolved`].
-pub fn view(ui: &mut Ui, face: &Interface, page: PageRef, assets: &Assets, presentation: Presentation, scale: f64, values: &mut Values) -> El {
+pub fn view(ui: &mut Ui, namespace: &str, face: &Interface, page: PageRef, assets: &Assets, presentation: Presentation, scale: f64, values: &mut Values) -> El {
     let Some(p) = face.pages.get(page.0) else { return caption("No interface").fill(secondary()) };
     let (w, h) = (f64::from(p.size.width) * scale, f64::from(height(face, page)) * scale);
     let mut layers = Vec::new();
@@ -188,9 +184,9 @@ pub fn view(ui: &mut Ui, face: &Interface, page: PageRef, assets: &Assets, prese
         }
         let r = face.page_rect(n);
         let (x, y, ww, hh) = (f64::from(r.x) * scale, f64::from(r.y) * scale, f64::from(r.width) * scale, f64::from(r.height) * scale);
-        layers.push(widget(ui, face, n, assets, presentation, scale, values, ww, hh).at(x, y));
+        layers.push(widget(ui, namespace, face, n, assets, presentation, scale, values, ww, hh).at(x, y));
     }
-    stack(layers).w(w).h(h).shrink(0).clip().a11y(A11y::Group).named("Instrument interface").id("ir-view")
+    stack(layers).w(w).h(h).shrink(0).clip().a11y(A11y::Group).named("Instrument interface").id(format!("{namespace}ir-view"))
 }
 
 /// The page's height, reaching down to its lowest visible control: a control
@@ -201,8 +197,9 @@ pub fn height(face: &Interface, page: PageRef) -> u32 {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn widget(
+pub(super) fn widget(
     ui: &mut Ui,
+    namespace: &str,
     face: &Interface,
     n: WidgetRef,
     assets: &Assets,
@@ -213,7 +210,7 @@ fn widget(
     h: f64,
 ) -> El {
     let wd = &face.widgets[n.0];
-    let id = format!("ir-{}", n.0);
+    let id = format!("{namespace}ir-{}", n.0);
     let bitmap = presentation == Presentation::Bitmap;
     let strip = wd.image(Use::Strip).filter(|_| bitmap || wd.label_in_image()).and_then(|a| assets.get(a));
     let fixed = wd.images.iter().find(|i| i.role == Use::Strip).and_then(|i| i.frame).map(|f| f as usize);

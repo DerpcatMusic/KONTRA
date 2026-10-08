@@ -2244,3 +2244,5 @@ fn library_rename_edits_only_the_display_name_and_filter_follows_it() {
     assert!(h.ui.scene().unwrap().surface("instrument-0").is_some(), "selection retains its canonical source");
     p.shared.libraries.edit(|s| s.rename_library(dir, ""));
 }
+
+include!("viewmodel_tests.rs");
