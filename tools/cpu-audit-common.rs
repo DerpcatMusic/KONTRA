@@ -90,6 +90,15 @@ fn main() {
         std::fs::write(path, std::process::id().to_string()).unwrap();
         std::thread::sleep(Duration::from_millis(300))
     }
+    if std::env::var_os("CPU_AUDIT_READY").is_some() {
+        info["profile_pace_unix_ns"] = json!(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+                .to_string()
+        );
+    }
     let pace = Instant::now();
     for begin in (0..192000).step_by(block) {
         let before = CALLS.get();
