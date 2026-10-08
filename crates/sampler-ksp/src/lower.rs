@@ -192,6 +192,48 @@ impl<'h> Unit<'h> {
             })
     }
 
+    /// The group volume, pan and tune writes `on init` left, as one program
+    /// run at plan start so the runtime layers begin where Kontakt's engine
+    /// does: `(target, group, engine value)`, group negative for the instrument.
+    pub fn engine_start(&mut self, writes: &[(ModTarget, i32, i32)]) -> Result<Program> {
+        let span = Span::default();
+        let mut g = Gen {
+            u: self,
+            ctx: Context::Plan,
+            callback_type: b::cb::INIT,
+            ui_id: None,
+            code: Vec::new(),
+            texts: Vec::new(),
+            group_table: None,
+            calls: Vec::new(),
+            starts: HashMap::new(),
+            loops: Vec::new(),
+            span,
+            tdepth: 0,
+            signal: None,
+        };
+        let (group, value) = (0, 1);
+        for &(target, index, v) in writes {
+            g.set(group, i64::from(index))?;
+            g.set(value, i64::from(v))?;
+            g.engine_units(target, value)?;
+            g.emit(I::WriteParam {
+                scope: ParamScope::Group,
+                index: group,
+                target,
+                local: value,
+                relative: false,
+            })?;
+        }
+        Program::new(g.code)
+            .map(|p| p.with_wait_lifetime(WaitLifetime::Callback))
+            .map_err(|e| Fault {
+                span,
+                builtin: None,
+                message: format!("invalid engine start: {e:?}"),
+            })
+    }
+
     /// A timer listener's driver: every period, start `body` (the listener
     /// program for `signal`); a zero period polls every 10 ms until set.
     // ponytail: $NI_SIGNAL_TIMER_BEAT assumes 120 BPM, like wait_ticks.
@@ -1956,6 +1998,52 @@ impl Gen<'_, '_> {
                 self.set(dst, 0)?;
                 self.store(args, [0, 1, 2, 3].map(Key::Arg), dst, false)?;
                 true
+            }
+            SetEnginePar
+                if self.const_int(args, 0).is_none()
+                    && self.const_int(args, 3) == Some(-1)
+                    && self.const_int(args, 4) == Some(-1) =>
+            {
+                // The parameter is a variable: dispatch at run time to the
+                // group volume, pan or tune the script names, else the mirror.
+                let (group, value, c, k) = (dst + 1, dst + 2, dst + 4, dst + 5);
+                self.arg(args, 2, group)?;
+                let mut done = Vec::new();
+                for (name, target) in [
+                    ("$ENGINE_PAR_VOLUME", ModTarget::Decibels),
+                    ("$ENGINE_PAR_PAN", ModTarget::Pan),
+                    ("$ENGINE_PAR_TUNE", ModTarget::Pitch),
+                ] {
+                    let Some(symbol) = self.u.hir.symbols.iter().position(|s| &**s == name) else {
+                        continue;
+                    };
+                    self.arg(args, 0, c)?;
+                    self.set(k, i64::from(crate::hir::OPAQUE_BASE + symbol as i32))?;
+                    self.emit(I::CompareLocal {
+                        lhs: c,
+                        rhs: k,
+                        comparison: Cmp::Equal,
+                    })?;
+                    let skip = self.jump_if_zero(c)?;
+                    self.arg(args, 1, value)?;
+                    self.engine_units(target, value)?;
+                    self.emit(I::WriteParam {
+                        scope: ParamScope::Group,
+                        index: group,
+                        target,
+                        local: value,
+                        relative: false,
+                    })?;
+                    done.push(self.jump()?);
+                    self.land(skip);
+                }
+                self.arg(args, 1, dst)?;
+                self.store(args, [0, 2, 3, 4].map(Key::Arg), dst, true)?;
+                self.effect(builtin, args, dst)?;
+                for jump in done {
+                    self.land(jump);
+                }
+                return self.set(dst, 0);
             }
             SetEnginePar => {
                 // Mirror for get_engine_par, then hand the edit to the host.
