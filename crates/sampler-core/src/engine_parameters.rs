@@ -13,6 +13,14 @@ pub struct EngineParameterAddress {
     pub generic: i32,
 }
 
+/// One normalized player edit, ported from v1 engine::overrides. Group -1
+/// applies to all bindings of this parameter/slot; a group edit adds to it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EngineParameterOffset {
+    pub address: EngineParameterAddress,
+    pub offset: f32,
+}
+
 /// Completion metadata for script service calls. Unsupported addresses stay
 /// observable without stopping later authored writes; no fault text is stored.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -433,6 +441,43 @@ impl Runtime {
             .map(|peak| peak[address.channel as usize])
             .ok_or(Error::InvalidInput)
     }
+    /// Replace the player's complete offset layer without allocating. Scripts
+    /// continue to read/write base values; DSP consumes the base plus offsets.
+    pub fn set_engine_offsets(&mut self, offsets: &[EngineParameterOffset]) -> Result<(), Error> {
+        if offsets.len() > 256 || offsets.iter().any(|o| !o.offset.is_finite()) {
+            return Err(Error::InvalidInput);
+        }
+        let generation = self.plans.get_mut(self.active_plan.0).ok_or(Error::StaleHandle)?;
+        let prepared = &generation.prepared;
+        let matches = |a: EngineParameterAddress, b: EngineParameterAddress| {
+            a.parameter == b.parameter && a.slot == b.slot && a.generic == b.generic
+                && (a.group == -1 || a.group == b.group)
+        };
+        // Missing controls are ignored, like v1 offsets for a group without that parameter.
+        let mut changed = false;
+        for binding in &prepared.engine_parameters {
+            let index = prepared.control_index(binding.control).unwrap();
+            let offset: f32 = offsets.iter().filter(|o| matches(o.address, binding.address)).map(|o| o.offset).sum();
+            if !offset.is_finite() { return Err(Error::InvalidInput); }
+            changed |= generation.controls.offsets[index] != offset;
+        }
+        if !changed { return Ok(()); }
+        let revision = generation.controls.revision.checked_add(1)
+            .filter(|r| r.checked_add(generation.controls.pending as u64).is_some()).ok_or(Error::Capacity)?;
+        for binding in &prepared.engine_parameters {
+            let index = prepared.control_index(binding.control).unwrap();
+            let offset: f32 = offsets.iter().filter(|o| matches(o.address, binding.address)).map(|o| o.offset).sum();
+            if generation.controls.offsets[index] != offset {
+                generation.controls.offsets[index] = offset;
+                let value = generation.controls.playing(prepared, index);
+                generation.controls.values[index] = value;
+                generation.dsp.edit_control(prepared, index, value, self.now);
+            }
+        }
+        generation.controls.revision = revision;
+        Ok(())
+    }
+
     pub fn set_engine_parameter(
         &mut self,
         address: EngineParameterAddress,
@@ -541,7 +586,9 @@ impl Runtime {
             .find(|b| b.address == address)
             .copied();
         if let Some(b) = b {
-            if let ControlValue::Real(v) = self.control_value(plan, b.control)? {
+            let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
+            let index = generation.prepared.control_index(b.control)?;
+            if let ControlValue::Real(v) = generation.controls.base[index] {
                 return Ok(b.law.encode(v));
             }
         }
