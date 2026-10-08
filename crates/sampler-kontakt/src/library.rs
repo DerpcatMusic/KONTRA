@@ -76,6 +76,7 @@ fn read_overlaid(
     control_values: &[(sampler_core::ControlId, i32)],
 ) -> Result<Kontakt, LoadError> {
     let path = path.canonicalize().map_err(|e| LoadError::io(path, e))?;
+    if snapshot.is_none() { if let Some(cached)=crate::cache::load(&path,0,control_values) {return Ok(cached);} }
     let chunks = crate::read_chunks(&path).map_err(|e| e.at(crate::Stage::Container))?;
     let span = crate::audit::Span::new("ni_objects_parse");
     let invalid = |reason: &str| LoadError::Invalid {
@@ -105,7 +106,7 @@ fn read_overlaid(
     };
     drop(span);
     let _span = crate::audit::Span::new("translate_resolve_ir");
-    translate(path, program, table, others, snapshot, control_values).map_err(|e| e.at(crate::Stage::Translate))
+    translate(path, program, table, others, snapshot, control_values, snapshot.is_none().then_some(0)).map_err(|e| e.at(crate::Stage::Translate))
 }
 
 /// Translate program `index` (0-based, in slot order) of the multi at `path`;
@@ -118,6 +119,7 @@ pub fn read_program(path: &Path, index: usize) -> Result<Kontakt, LoadError> {
 pub fn read_program_with_controls(path: &Path, index: usize, control_values: &[(sampler_core::ControlId, i32)]) -> Result<Kontakt, LoadError> {
     use ni_file::kontakt::objects::Bank;
     let path = path.canonicalize().map_err(|e| LoadError::io(path, e))?;
+    if let Ok(index)=u32::try_from(index) { if let Some(cached)=crate::cache::load(&path,index,control_values) {return Ok(cached);} }
     let chunks = crate::read_chunks(&path).map_err(|e| e.at(crate::Stage::Container))?;
     let span = crate::audit::Span::new("ni_objects_parse");
     let invalid = |reason: &str| LoadError::Invalid {
@@ -166,7 +168,7 @@ pub fn read_program_with_controls(path: &Path, index: usize, control_values: &[(
     };
     drop(span);
     let _span = crate::audit::Span::new("translate_resolve_ir");
-    translate(path, program, table, others, None, control_values).map_err(|e| e.at(crate::Stage::Translate))
+    translate(path, program, table, others, None, control_values, u32::try_from(index).ok()).map_err(|e| e.at(crate::Stage::Translate))
 }
 
 fn translate(
@@ -176,6 +178,7 @@ fn translate(
     others: HashMap<u32, String>,
     snapshot: Option<&crate::SnapshotState>,
     control_values: &[(sampler_core::ControlId, i32)],
+    cache_program: Option<u32>,
 ) -> Result<Kontakt, LoadError> {
     if let Some(snapshot) = snapshot {
         // The snapshot's racks and buses are the program's own, in the same order.
@@ -407,6 +410,8 @@ fn translate(
             bus.volume = volume;
         }
     }
+    let mut impulse_sources=HashMap::new();
+    let mut impulse_params=Vec::new();
     {
         // Convolution impulse responses are named by the other-files table.
         let mut load = |index: i32| -> Result<crate::effects::Decoded, String> {
@@ -418,11 +423,12 @@ fn translate(
                 .resolve(parent, name)
                 .map_err(|e| e.to_string())?
                 .ok_or_else(|| format!("{name} was not found"))?;
+            impulse_sources.insert(index,at.clone());
             let decoded = samples.decode(&at).map_err(|e| e.to_string())?;
             Ok((decoded.rate, decoded.frames))
         };
         for (at, (slot, feature, value, reason)) in
-            crate::effects::instrument_buses(&mut out.ir, &racks, &buses, dynamic, &mut load)
+            crate::effects::instrument_buses_with_recipes(&mut out.ir, &racks, &buses, dynamic, &mut load, Some(&mut impulse_params))
         {
             out.unsupported(&format!("{at} slot {slot}"), &feature, value, reason);
         }
@@ -497,12 +503,12 @@ fn translate(
     crate::keyswitch::translate(&mut out.ir, &out.start_criteria);
     out.ir.unsupported.dedup();
     out.ir.validate().map_err(|e| invalid(&e.to_string()))?;
-    Ok(Kontakt {
-        instrument: out.ir,
-        locations: out.locations,
-        samples,
-        initialized: Some(initialized),
-    })
+    let mut kontakt=Kontakt {
+        instrument:out.ir,locations:out.locations,samples,initialized:Some(initialized),
+    };
+    let recipes=impulse_params.into_iter().map(|params|Some(crate::cache::ImpulseRecipe {source:impulse_sources.get(&params.ir_index)?.clone(),params})).collect::<Option<Vec<_>>>();
+    if let (Some(program),Some(recipes))=(cache_program,recipes) { crate::cache::store(&path,program,&mut kontakt,&recipes); }
+    Ok(kontakt)
 }
 
 /// Group settings every zone of the group inherits.
@@ -1719,6 +1725,7 @@ mod saved_tests {
                 Default::default(),
                 None,
                 &[],
+                None,
             )
             .unwrap();
             assert_eq!(translated.instrument.behaviors[0].source, expected);
@@ -1764,7 +1771,7 @@ mod saved_tests {
         for saved in [4, -3, 0] {
             crate::load::take_script_init_runs();
             let controls = vec![(mode, saved)];
-            let translated = super::translate(std::env::temp_dir().join("restored-menu.nki"), menu_program(), Default::default(), Default::default(), None, &controls).unwrap();
+            let translated = super::translate(std::env::temp_dir().join("restored-menu.nki"), menu_program(), Default::default(), Default::default(), None, &controls, None).unwrap();
             let loaded = crate::load_read(translated, &crate::Options { control_values: controls, ..Default::default() }, |_| {}, || false).unwrap();
             assert_eq!(crate::load::take_script_init_runs(), 1, "restored translation must initialize once");
             for id in [mode, echo] {
@@ -1777,7 +1784,7 @@ mod saved_tests {
     fn late_host_override_reinitializes_instead_of_reusing_wrong_state() {
         let mode = sampler_ksp::derived_control_id(0, "$mode");
         crate::load::take_script_init_runs();
-        let translated = super::translate(std::env::temp_dir().join("late-menu.nki"), menu_program(), Default::default(), Default::default(), None, &[]).unwrap();
+        let translated = super::translate(std::env::temp_dir().join("late-menu.nki"), menu_program(), Default::default(), Default::default(), None, &[], None).unwrap();
         let loaded = crate::load_read(translated, &crate::Options { control_values: vec![(mode, -3)], ..Default::default() }, |_| {}, || false).unwrap();
         assert_eq!(crate::load::take_script_init_runs(), 2);
         assert_eq!(loaded.plan.controls().iter().find(|c| c.id == mode).unwrap().default, sampler_core::ControlValue::Integer(-3));
