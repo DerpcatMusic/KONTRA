@@ -53,32 +53,50 @@ fn main() {
     let args: Vec<_> = std::env::args().collect();
     let path = Path::new(&args[2]);
     if args[1] == "usage" {
+        use ni_file::kontakt::objects::{BParScript, Bank, Program};
         let mut used = BTreeSet::new();
         let multi = path
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("nkm"));
-        let programs = if multi {
-            sampler_kontakt::read_multi(path)
-                .expect("multi metadata")
-                .programs
-                .len()
+        let chunks = sampler_kontakt::read_chunks(path).expect("container metadata");
+        let programs: Vec<Program> = if multi {
+            let bank =
+                Bank::try_from(chunks.find_first(3).expect("multi bank")).expect("bank metadata");
+            let mut slots: Vec<_> = bank
+                .slot_list()
+                .expect("slot metadata")
+                .slots
+                .into_iter()
+                .collect();
+            slots.sort_by_key(|(slot, _)| *slot);
+            slots
+                .into_iter()
+                .flat_map(|(_, container)| {
+                    container.program_list().expect("program metadata").programs
+                })
+                .collect()
         } else {
-            1
+            vec![
+                Program::try_from(chunks.find_first(0x28).expect("instrument program"))
+                    .expect("program metadata"),
+            ]
         };
         let mut scripts = 0;
-        for program in 0..programs {
-            let read = if multi {
-                sampler_kontakt::read_program(path, program)
-            } else {
-                sampler_kontakt::read(path)
-            }
-            .expect("metadata read");
-            scripts += read.instrument.behaviors.len();
-            for b in &read.instrument.behaviors {
-                used.extend(identifiers(&b.source));
+        for program in &programs {
+            for chunk in program.0.children.iter().filter(|c| c.id == 6) {
+                let script = BParScript::try_from(chunk)
+                    .and_then(|s| s.params())
+                    .expect("script metadata");
+                if !script.bypass
+                    && let Some(text) = script.text
+                    && !text.trim().is_empty()
+                {
+                    scripts += 1;
+                    used.extend(identifiers(&text));
+                }
             }
         }
-        println!("scripts\t{scripts}\tprograms\t{programs}");
+        println!("scripts\t{scripts}\tprograms\t{}", programs.len());
         for token in used {
             if WIDGETS.contains(&token.as_str())
                 || token.starts_with("$CONTROL_PAR_")
@@ -111,7 +129,7 @@ fn main() {
         library: Some(path.into()),
         ..Default::default()
     };
-    let loaded = sampler_kontakt::load_read(read, &options, |_| {}, || false)
+    let mut loaded = sampler_kontakt::load_read(read, &options, |_| {}, || false)
         .expect("witness initialization");
     println!(
         "faces\t{}\tscripts\t{}\tplan_controls\t{}",
@@ -120,6 +138,69 @@ fn main() {
         loaded.plan.controls().len()
     );
     for (f, face) in loaded.interfaces.iter().enumerate() {
+        let slot = match face.source {
+            sampler_ui_ir::Source::Ksp { slot } => slot,
+            _ => continue,
+        };
+        let script = loaded.scripts.iter().find(|s| s.slot() == slot).unwrap();
+        let model = &script.model().interface;
+        let source = &loaded
+            .instrument
+            .behaviors
+            .iter()
+            .find(|b| b.slot == Some(slot))
+            .unwrap()
+            .source;
+        let descriptor = sampler_ksp::nckp::view_name(source).and_then(|name| {
+            loaded
+                .resources
+                .as_mut()?
+                .read(&format!("Resources/performance_view/{name}.nckp"))
+        });
+        let view = descriptor
+            .as_ref()
+            .and_then(|bytes| sampler_ksp::nckp::parse(bytes).ok());
+        if let Some((view, skipped)) = &view {
+            println!(
+                "performance_view\t{f}\tcontrols\t{}\tskipped\t{}",
+                view.controls.len(),
+                skipped.len()
+            );
+            println!(
+                "source_knob_declaration_token\t{f}\t{}",
+                identifiers(source).contains("ui_knob")
+            );
+        }
+        if let Some(bytes) = descriptor {
+            use std::io::Write;
+            let names: Vec<_> = model
+                .widgets
+                .iter()
+                .filter(|w| w.properties.is_empty())
+                .map(|w| w.name.as_str())
+                .collect();
+            let mut child = std::process::Command::new("python3")
+                .args(["tools/widget-audit.py", "--nckp-stdin"])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("raw resource counter");
+            {
+                let mut input = child.stdin.take().unwrap();
+                writeln!(input, "{}", names.len()).unwrap();
+                for name in names {
+                    writeln!(input, "{name}").unwrap();
+                }
+                input.write_all(&bytes).unwrap();
+            }
+            let output = child.wait_with_output().unwrap();
+            assert!(output.status.success(), "raw resource counter failed");
+            println!(
+                "raw_performance_view\t{f}\t{}",
+                String::from_utf8(output.stdout).unwrap().trim()
+            );
+        }
         println!(
             "face\t{f}\t{:?}\twidgets\t{}\tunsupported\t{}",
             face.source,
@@ -152,6 +233,33 @@ fn main() {
                 && matches!(w.kind, Kind::Knob { .. } | Kind::Slider { .. })
             {
                 let bound = matches!(w.binding, Binding::Control(id) if loaded.plan.controls().iter().any(|c| c.id.0 == id.0));
+                if face.page_rect(sampler_ui_ir::WidgetRef(n)).x == 0
+                    && face.page_rect(sampler_ui_ir::WidgetRef(n)).y == 0
+                {
+                    let raw = &model.widgets[n];
+                    let assumed = loaded.instrument.unsupported.iter().any(|u| {
+                        u.value.starts_with(&format!(
+                            "{} is not in the performance view description; assumed",
+                            w.name
+                        ))
+                    });
+                    let described = view.as_ref().is_some_and(|(v, _)| {
+                        v.controls
+                            .iter()
+                            .any(|c| c.name.eq_ignore_ascii_case(&w.name))
+                    });
+                    let suffix = view.as_ref().is_some_and(|(v, _)| {
+                        v.controls
+                            .iter()
+                            .any(|c| c.name[1..].ends_with(&w.name[1..]))
+                    });
+                    println!(
+                        "origin_control\t{f}\t{n}\tassumed\t{assumed}\tmodel_properties\t{}\tposition\t{:?}\thide\t{:?}\tdescribed\t{described}\tsuffix_match\t{suffix}",
+                        raw.properties.len(),
+                        raw.position(),
+                        raw.int("$CONTROL_PAR_HIDE")
+                    );
+                }
                 println!(
                     "continuous\t{f}\t{n}\t{kind}\t{:?}\tdrag\t{:?}\tbound\t{bound}\trect\t{:?}\tauto\t{}",
                     w.kind,
@@ -246,4 +354,22 @@ fn identifiers_keep_widget_and_parameter_names() {
         identifiers("{ ui_table } \"ui_menu\" ui_xy"),
         BTreeSet::from(["ui_xy".to_owned()])
     );
+}
+
+#[test]
+fn missing_performance_description_creates_visible_unsized_knob() {
+    let script = sampler_ksp::compile(
+        "on init\nload_performance_view(\"missing\")\n$ghost := 0\nend on",
+        48000,
+        sampler_ksp::Limits::LIBRARY,
+        &[],
+    )
+    .unwrap();
+    let model = script.model();
+    assert_eq!(model.interface.widgets.len(), 1);
+    assert!(model.interface.widgets[0].properties.is_empty());
+    let face = script.ui(&|_| None).unwrap();
+    assert!(face.visible(sampler_ui_ir::WidgetRef(0)));
+    assert_eq!(face.widgets[0].rect, sampler_ui_ir::Rect::new(0, 0, 0, 0));
+    assert!(face.widgets[0].auto_size);
 }
