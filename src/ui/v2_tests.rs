@@ -1082,7 +1082,7 @@ impl<'a> NativeGesture<'a> {
         }
         self.sync();
     }
-
+    fn settle(&mut self) {for _ in 0..4 {self.tick(Input::default());}}
     fn center(&self, n: usize) -> Point {
         let s=self.ui.scene().unwrap().surface(&format!("native-probe-ir-{n}")).unwrap();
         Point::new(s.frame.x+s.frame.size.width/2.,s.frame.y+s.frame.size.height/2.)
@@ -1281,7 +1281,12 @@ fn widget_file_drop_uses_hit_order_namespace_and_atomic_path_limits() {
 
 #[test]
 fn widget_xy_modes_preserve_active_cursor_and_relative_axis_scaling() {
-
+    fn tick(ui:&mut Ui,face:&ir::Interface,state:&mut ir_view::InputState,p:Point,down:bool) {
+        for _ in 0..2 {
+            let el=ir_view::view_state(ui,"xy-test",face,ir::PageRef(0),&ir_view::Assets::default(),ir::Presentation::Vector,1.,&mut ir_view::Values::default(),state);
+            ui.frame(el,Some(Size::new(400.,200.)),Input {pointer:PointerInput {pos:Some(p),buttons:if down {Buttons::PRIMARY}else{Buttons::default()},..Default::default()},..Default::default()},1./60.).unwrap();
+        }
+    }
     let script=sampler_ksp::compile("on init declare ui_xy ?pad[4] end on",48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
     let mut face=ir_view::resolved(&script.ui(&|_|None).unwrap());
     let values=vec![0.25,0.25,0.75,0.75];
