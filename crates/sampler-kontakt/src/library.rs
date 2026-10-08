@@ -58,6 +58,7 @@ fn read_overlaid(
 ) -> Result<Kontakt, LoadError> {
     let path = path.canonicalize().map_err(|e| LoadError::io(path, e))?;
     let chunks = crate::read_chunks(&path).map_err(|e| e.at(crate::Stage::Container))?;
+    let span = crate::audit::Span::new("ni_objects_parse");
     let invalid = |reason: &str| LoadError::Invalid {
         path: path.clone(),
         reason: reason.into(),
@@ -83,6 +84,8 @@ fn read_overlaid(
             (t.sample_filetable, t.other_filetable)
         }
     };
+    drop(span);
+    let _span = crate::audit::Span::new("translate_resolve_ir");
     translate(path, program, table, others, snapshot).map_err(|e| e.at(crate::Stage::Translate))
 }
 
@@ -92,6 +95,7 @@ pub fn read_program(path: &Path, index: usize) -> Result<Kontakt, LoadError> {
     use ni_file::kontakt::objects::Bank;
     let path = path.canonicalize().map_err(|e| LoadError::io(path, e))?;
     let chunks = crate::read_chunks(&path).map_err(|e| e.at(crate::Stage::Container))?;
+    let span = crate::audit::Span::new("ni_objects_parse");
     let invalid = |reason: &str| LoadError::Invalid {
         path: path.clone(),
         reason: reason.into(),
@@ -136,6 +140,8 @@ pub fn read_program(path: &Path, index: usize) -> Result<Kontakt, LoadError> {
             Default::default(),
         ),
     };
+    drop(span);
+    let _span = crate::audit::Span::new("translate_resolve_ir");
     translate(path, program, table, others, None).map_err(|e| e.at(crate::Stage::Translate))
 }
 
@@ -255,6 +261,7 @@ fn translate(
         .filter(|g| !g.muted)
         .map(|g| g.name)
         .collect();
+    let span = crate::audit::Span::new("translate_ksp_engine_init");
     let writes: Vec<_> = out
         .ir
         .behaviors
@@ -264,12 +271,17 @@ fn translate(
         .filter_map(|(index, b)| {
             let environment =
                 crate::load::script_environment(b, index, group_names.clone(), Default::default());
-            sampler_ksp::init_engine_pars(&b.source, sampler_ksp::Limits::LIBRARY, &environment)
-                .ok()
+            let result = sampler_ksp::init_engine_pars(&b.source, sampler_ksp::Limits::LIBRARY, &environment);
+            if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
+                if let Err(e) = &result { eprintln!("AUDIT {{\"stage\":\"translate_init_error\",\"line\":{},\"budget_exceeded\":{}}}", e.line, e.message.contains("budget")); }
+            }
+            result.ok()
         })
         .flatten()
         .collect();
     out.engine = writes;
+    drop(span);
+    let span = crate::audit::Span::new("translate_ksp_dynamic_compile");
     // Scripts that set slot bypass or levels while playing get runtime blocks.
     let dynamic = out
         .ir
@@ -290,10 +302,14 @@ fn translate(
             .is_ok_and(|script| script.writes_effect_slots())
         });
     out.dynamic = dynamic;
+    drop(span);
+    let span = crate::audit::Span::new("translate_group_dsp");
     let mut translated = Vec::new();
     for (index, group) in groups.groups.iter().enumerate() {
         translated.push(out.group(index, group).map_err(|e| decode("group", e))?);
     }
+    drop(span);
+    let span = crate::audit::Span::new("translate_resource_ir_dsp");
     let parent = path
         .parent()
         .ok_or_else(|| invalid("instrument has no folder"))?;
@@ -334,6 +350,8 @@ fn translate(
             out.unsupported(&format!("{at} slot {slot}"), &feature, value, reason);
         }
     }
+    drop(span);
+    let span = crate::audit::Span::new("translate_zones_sample_resolve");
     // Racks of buses no group feeds do nothing, so they are not reported.
     let mut resolved = HashMap::new();
     let data = &program
@@ -389,6 +407,8 @@ fn translate(
         };
         out.zone(index, zone, end, group, &params, location.clone());
     }
+    drop(span);
+    let _span = crate::audit::Span::new("translate_keys_validate");
     crate::keyswitch::translate(&mut out.ir, &out.start_criteria);
     out.ir.unsupported.dedup();
     out.ir.validate().map_err(|e| invalid(&e.to_string()))?;
