@@ -382,7 +382,7 @@ This reads existing shared evidence only; no renderer or collector was run.
 | Non-fallback matched note plans | 49/49 | 49/49 |
 | Lookup requested / resolved | unknown | 253 / 196 |
 | Decode requested / successful | unknown | 196 / 196 |
-| Fixed lookup misses / decode failures / font-service failures | unknown | 57 / 0 / 0 |
+| Reported lookup-not-found / decode failures / font-service failures | unknown | 57 / 0 / 0 |
 
 All 49 IDs have equal per-ID notes and equal audio statuses between versions;
 the four silent pairs do not establish a v2 sound regression. Both versions bind
@@ -399,9 +399,22 @@ and no custom bitmap-font uses. All declared font uses report success. Retained
 widget kinds include tables and the classic controls, but visible/declaration
 projections differ from v1; do not subtract histogram totals as missing controls.
 V1's detailed lookup/decode/font/strip columns remain unknown rather than zero.
-The remaining v2 failures are at lookup, not image decode; physical resource
-absence versus resolver namespace/path failure still needs the library's own
-resource index. No alias or replacement artwork is justified by this census.
+The remaining v2 failures are **reported** as lookup-not-found before image
+decode. `Source::read` currently calls the `Resources::read` compatibility
+`Option` path; Kontakt's `read_result` can distinguish invalid/ambiguous paths,
+inaccessible/oversized loose files, corrupt or unindexable containers and actual
+not-found, but `read().ok().flatten()` collapses those errors. This is a systemic
+diagnostics gap. The 57 category records do not establish 57 physically absent
+files or even 57 clean not-found results. No alias or replacement artwork is
+justified by this census.
+
+Existing supplemental Pacific metadata has 49 historical render records, with
+zero retained own-index observations. Asset fields contain BLAKE3 request-path
+digests, presence/decode flags and image metadata; they retain no request namespace,
+selected library root, index-candidate counts or resolver error category. Thus
+own-index/request namespace attribution remains unknown. These historical hashes
+are not a substitute for current signature-matched resolver provenance; no new
+library probe was run to recover it.
 
 Signature-matched evidence examples:
 `results/v1/cache/c0df35e8d71d5e2b91c780dfef5ff323d498b8b3e042f3744a4835f15f4dfdfd.json`,
