@@ -964,6 +964,12 @@ impl Cursor {
             None => return 0,
         };
         let output = &mut output[..count];
+        if kernel.uses_cubic(self.step()) && output.len() >= 4 {
+            sampler_simd::dispatch(#[inline(always)] || {
+                self.run_cubic(span, width, output, envelope, gain, gains, kernel)
+            });
+            return count;
+        }
         match bank {
             Some(bank) => sampler_simd::dispatch_fused(
                 (self, output, envelope),
@@ -1002,6 +1008,47 @@ impl Cursor {
             }
         }
         count
+    }
+
+    /// v1 voice.rs::mix_avx2 gathers several output frames before its polynomial.
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn run_cubic(
+        &mut self,
+        span: &[Frame],
+        width: usize,
+        output: &mut [Frame],
+        envelope: &mut EnvelopeState,
+        gain: f32,
+        gains: [f32; 2],
+        kernel: &Kernel,
+    ) {
+        let (mut fraction, step, mut offset, mut last) = (self.fraction, self.step(), 0, self.last);
+        let (chunks, tail) = output.as_chunks_mut::<4>();
+        for chunk in chunks {
+            let mut phases = [0.; 4];
+            let windows = std::array::from_fn(|i| {
+                phases[i] = fraction;
+                let window = &span[offset..offset + width];
+                let phase = fraction + step;
+                let whole = phase as i64;
+                fraction = phase - whole as f64;
+                offset += whole as usize;
+                window
+            });
+            let sources = crate::resample::cubic_four(windows, phases);
+            for (frame, source) in chunk.iter_mut().zip(sources) {
+                last = if source.iter().all(|value| value.is_finite()) { source } else { [0.; 2] };
+                let level = envelope.constant_level().unwrap_or_else(|| envelope.next());
+                for channel in 0..2 {
+                    frame[channel] += source[channel] * gain * gains[channel] * level;
+                }
+            }
+        }
+        self.fraction = fraction;
+        self.position += offset as u64;
+        self.last = last;
+        self.run(&span[offset..], width, tail, envelope, gain, gains, |f, w| kernel.sample_window(f, step, w));
     }
 
     /// The [`Self::render_run`] frame loop over one contiguous span, with the
@@ -1128,6 +1175,42 @@ fn mix<'a>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cubic_columns_preserve_scalar_output_cursor_and_envelope() {
+        use super::*;
+        use crate::{Envelope, EnvelopeCurve};
+        let kernel = Kernel::new(crate::ResampleQuality::Realtime);
+        let span: Vec<Frame> = (0..128).map(|i| {
+            let x = (i as f32 * 0.731).sin();
+            [x, -x * 0.321]
+        }).collect();
+        for step in [MIN_STEP, 0.25, 0.8, 44100.0 / 48000.0, 1.0] {
+            for fraction in [0.0, 0.123456789, 0.999999999] {
+                for len in 0..=65 {
+                    for shape in [Envelope::default(), Envelope::new(5, 2, 17, 0.1, 13).unwrap().with_curves(
+                        EnvelopeCurve::exponential(2.0).unwrap(), EnvelopeCurve::exponential(-3.0).unwrap(), EnvelopeCurve::default())] {
+                        let mut old = Playback::default().cursor(128, 48000, 48000).unwrap();
+                        old.step = step;
+                        old.fraction = fraction;
+                        let mut new = old;
+                        let mut old_env = EnvelopeState::new(shape);
+                        let mut new_env = old_env;
+                        let mut expected = vec![[0.123, -0.567]; len];
+                        let mut actual = expected.clone();
+                        old.run(&span, 5, &mut expected, &mut old_env, 0.731, [0.7, -0.2], |f,w| kernel.sample_window(f, step, w));
+                        sampler_simd::dispatch(#[inline(always)] || new.run_cubic(&span, 5, &mut actual, &mut new_env, 0.731, [0.7, -0.2], &kernel));
+                        for (a,b) in actual.iter().zip(&expected) { assert_eq!(a.map(f32::to_bits), b.map(f32::to_bits)); }
+                        assert_eq!(new.position, old.position);
+                        assert_eq!(new.fraction.to_bits(), old.fraction.to_bits());
+                        assert_eq!(new.last.map(f32::to_bits), old.last.map(f32::to_bits));
+                        assert_eq!(new_env.remaining(), old_env.remaining());
+                        for _ in 0..64 { assert_eq!(new_env.next().to_bits(), old_env.next().to_bits()); }
+                    }
+                }
+            }
+        }
+    }
+
     use super::*;
 
     #[test]
