@@ -225,11 +225,7 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
                     model::EvaluationFailure::InvalidValue
                 };
                 e.warn(f.span, "on persistence_changed did not complete".to_owned());
-                model::PersistenceCompletion::Failed {
-                    category,
-                    offset: f.span.start,
-                    builtin: f.builtin,
-                }
+                model::PersistenceCompletion::Failed {category, offset:f.span.start, builtin:f.builtin}
             }
         };
     }
