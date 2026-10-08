@@ -44,6 +44,7 @@ fn render(
     interfaces: &[ir::Interface],
     values: &mut ir_view::Values,
     typed_targets: &std::collections::BTreeSet<(u8,String)>,
+    load_started: Instant,
     out: &Path,
     prefix: &str,
 ) -> Value {
@@ -245,12 +246,14 @@ fn render(
                 ctx.flush();
                 let mut pix = vello::vello_cpu::Pixmap::new(w, h);
                 ctx.render(&mut pix, &mut resources);
+                let first_frame_ms=load_started.elapsed().as_secs_f64()*1000.;
                 let rgba: Vec<_> = pix
                     .take_unpremultiplied()
                     .iter()
                     .flat_map(|p| [p.r, p.g, p.b, p.a])
                     .collect();
                 let mut report = metrics::pixels(&rgba);
+                report["ui_first_frame_ms"]=json!(first_frame_ms);
                 let color = face.pages[p].background.color.map(|c| [c.r, c.g, c.b, c.a]);
                 report["background"] = metrics::background(&rgba, color);
                 if std::env::var_os("KONTRA_SCAN_SHOTS").is_some() {
@@ -320,6 +323,7 @@ fn render(
 }
 
 pub fn one(id: &str, out: &Path) -> Value {
+    let mut first_audio_ms=None;
     let (path, program_name) = id
         .split_once("::")
         .map_or((id, None), |(p, n)| (p, Some(n)));
@@ -329,10 +333,10 @@ pub fn one(id: &str, out: &Path) -> Value {
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("uvip"));
     let path = program_name.map_or(path.clone(), |n| path.join(n));
-    let mut result = json!({"loads":"no","ui":"error","controls_bound":"0/0","plays_note":"no","stage":"parse","programs":[]});
+    let mut result = json!({"loads":"no","ui":"error","controls_bound":"0/0","plays_note":"no","stage":"parse","programs":[],"cache_state":"cold","cache_state_basis":"frozen v2 baseline has no product metadata cache; OS page cache uncontrolled"});
     if !is_uvi {
         result["metadata"] = match sampler_kontakt::read_chunks(&path) {
-            Ok(chunks) => metrics::metadata::inspect(&chunks.0),
+            Ok(chunks) => metrics::metadata::inspect_with(&chunks.0,strict_table),
             Err(e) => metrics::error("script metadata parse", e),
         };
     }
@@ -366,6 +370,8 @@ pub fn one(id: &str, out: &Path) -> Value {
         mut budget_hit,
     ) = (true, 0, 0, false, false, false, false, false, false);
     let mut load_ms = 0.;
+    let load_started=Instant::now();
+    result["onset_basis"]=json!("monotonic from first production program import; shared collector paints Original and auditions concurrently; first output excludes lexical metadata prepass");
     for program in 0..count {
         let start = Instant::now();
         result["stage"] = json!(format!("load program {program}"));
@@ -447,31 +453,31 @@ pub fn one(id: &str, out: &Path) -> Value {
         result["stage"] = json!(format!("Original UI program {program}"));
         metrics::checkpoint(out, &result);
         let typed_targets=loaded.scripts.views.iter().flat_map(|view|view.model().interface.widgets.iter().filter(|w|matches!(w.value,sampler_ksp::model::WidgetValue::Text(_)|sampler_ksp::model::WidgetValue::Ints(_)|sampler_ksp::model::WidgetValue::Reals(_))).map(|w|(view.slot(),w.name.clone()))).collect();
+        let faces = loaded.interfaces.clone();
+        any_ui |= faces.iter().any(|face| !face.widgets.is_empty());
+        let paint_path = path.clone();
+        let paint_out = out.to_path_buf();
+        let paint = std::thread::Builder::new().stack_size(32 << 20).spawn(move || {
+
         let mut views = Vec::new();
-        for (slot, face) in loaded.interfaces.iter().enumerate() {
+        for (slot, face) in faces.iter().enumerate() {
             if face.widgets.is_empty() {
                 continue;
             }
-            any_ui = true;
             let view = render(
                 face,
-                &path,
-                &loaded.interfaces,
+                &paint_path,
+                &faces,
                 &mut values,
                 &typed_targets,
-                out,
+                load_started,
+                &paint_out,
                 &format!("program-{program}-slot-{slot}"),
             );
-            total_bound += view["bound"].as_u64().unwrap_or(0);
-            total_interactive += view["interactive"].as_u64().unwrap_or(0);
-            ui_missing |= view["missing_images"].as_u64().unwrap_or(0) > 0;
-            for r in view["renders"].as_array().unwrap() {
-                ui_error |= r["ok"] != true;
-                budget_hit |= r["budget_hit"] == true;
-                any_blank |= r["uniform"] == true && view["visible"].as_u64().unwrap_or(0) > 0;
-            }
             views.push(view);
         }
+        views
+        }).expect("paint worker start");
         // A scalar UI diagnostic does not mean the audio loader failed.
         let failed_script = script_errors.get("script").copied().unwrap_or(0) > 0
             || script_errors.get("script interface").copied().unwrap_or(0) > 0;
@@ -566,13 +572,15 @@ pub fn one(id: &str, out: &Path) -> Value {
             core.event(0, Event::midi1(0xb0, 11, 127));
             if let Some(switch)=keyswitch {
                 core.event(0, Event::midi1(0x90,switch,64));
-                let _=core.render(128);
+                let audio=core.render(128);
+                if first_audio_ms.is_none() && metrics::nonzero(audio.buses.iter().flat_map(|bus|bus.iter().flat_map(|channel|channel.iter().take(128).copied()))) {first_audio_ms=Some(load_started.elapsed().as_secs_f64()*1000.);}
                 core.event(0, Event::midi1(0x80,switch,0));
             }
             core.event(0, Event::midi1(0x90, key, velocity));
             for _ in 0..180 {
                 std::thread::sleep(Duration::from_millis(3));
                 let audio = core.render(128);
+                if first_audio_ms.is_none() && metrics::nonzero(audio.buses.iter().flat_map(|bus|bus.iter().flat_map(|channel|channel.iter().take(128).copied()))) {first_audio_ms=Some(load_started.elapsed().as_secs_f64()*1000.);}
                 if audio.buses.iter().any(|bus| {
                     bus.iter()
                         .flatten()
@@ -581,6 +589,19 @@ pub fn one(id: &str, out: &Path) -> Value {
                     heard = true;
                 }
                 runtime_faults.extend(core.scan_runtime_faults(0));
+            }
+        }
+        result["stage"]=json!(format!("Original paint join program {program}"));
+        metrics::checkpoint(out,&result);
+        let views=paint.join().unwrap_or_else(|_|vec![json!({"renders":[{"ok":false,"budget_hit":false,"reason":"paint worker panicked"}]})]);
+        for view in &views {
+            total_bound += view["bound"].as_u64().unwrap_or(0);
+            total_interactive += view["interactive"].as_u64().unwrap_or(0);
+            ui_missing |= view["missing_images"].as_u64().unwrap_or(0) > 0;
+            for r in view["renders"].as_array().unwrap() {
+                ui_error |= r["ok"] != true;
+                budget_hit |= r["budget_hit"] == true;
+                any_blank |= r["uniform"] == true && view["visible"].as_u64().unwrap_or(0) > 0;
             }
         }
         any_heard |= heard;
@@ -623,6 +644,7 @@ pub fn one(id: &str, out: &Path) -> Value {
         "no"
     });
     result["load_ms"] = json!(load_ms);
+    result["first_audio_ms"]=json!(first_audio_ms);
     result["reason"] = json!(format!(
         "{count} programs; Original only; bound {total_bound}/{total_interactive}; audio {}",
         if any_heard {
