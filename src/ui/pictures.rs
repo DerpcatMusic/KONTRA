@@ -24,6 +24,14 @@ pub struct Scan {
     pub decode_ok: usize,
     pub fonts: usize,
     pub font_ok: usize,
+    pub preparation_completed: usize,
+    pub preparation_completed_bytes: usize,
+    pub preparation_max_key_bytes: usize,
+    pub preparation_wanted_peak_bytes: usize,
+    pub preparation_oversized: usize,
+    pub preparation_key_budget: usize,
+    pub preparation_evicted: usize,
+    pub preparation_requeued: usize,
 
 }
 
