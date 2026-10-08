@@ -3,7 +3,7 @@ use moose::mui::mui::scene::Image;
 use std::{
     collections::{HashMap, VecDeque},
     fs::File,
-    io::{Cursor, Read},
+    io::Cursor,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
