@@ -95,6 +95,8 @@ pub struct Part {
     pub snapshot: String,
     /// Kontakt control identities and semantic values, independent of presentation.
     pub control_values: Vec<SavedControl>,
+    pub group: u32,
+    pub edits: crate::sound::edits::Edits,
 }
 
 impl Default for Part {
@@ -129,6 +131,8 @@ impl Default for Part {
             mpe_upper: false,
             snapshot: String::new(),
             control_values: Vec::new(),
+            group: 0,
+            edits: Default::default(),
         }
     }
 }
@@ -166,6 +170,9 @@ impl Part {
 
     pub(crate) fn select_snapshot(&mut self, path: String) {
         self.snapshot = path;
+        self.control_values.clear();
+        self.uvi_state.clear();
+        self.uvi_state_source.clear();
     }
 }
 
@@ -400,6 +407,8 @@ pub(crate) struct PartShared {
     /// The loaded part's controls; the audio thread refreshes their values.
     pub(crate) controls: Mutex<Arc<[ControlCell]>>,
     engine_meters: Mutex<Vec<EngineMeterCell>>,
+    pub(crate) editor_taps: [AtomicU64;16],
+    pub(crate) engine_bindings: Mutex<Arc<[sampler_core::EngineParameterBinding]>>,
     waveforms: Mutex<Option<crate::sound::waveform::Provider>>,
     /// Per node of the loaded part's tree, its level like [`Self::meter`]
     /// (node 0, the instrument, is the part's own meter).
@@ -427,6 +436,7 @@ pub(crate) struct ControlCell {
 }
 
 impl ControlCell {
+    pub(crate) fn new(id:sampler_ui_ir::ControlId,value:f64)->Self {Self{id,value:AtomicU64::new(value.to_bits())}}
     pub(crate) fn value(&self) -> f64 {
         f64::from_bits(self.value.load(Ordering::Relaxed))
     }
@@ -569,6 +579,7 @@ pub struct Shared {
     pending_ready: Mutex<std::collections::VecDeque<Ready>>,
     discard: ArrayQueue<Retired>,
     /// Host sample rate (`f64` bits) parts are prepared for.
+    pub(crate) editor_watch: AtomicUsize,
     pub(crate) rate: AtomicU64,
     pub(crate) key_owners: [AtomicU64; 128],
     /// The velocity each key sounds at, 0 when silent: `played` on screen
@@ -711,6 +722,7 @@ impl Default for Shared {
             ready: ArrayQueue::new(64),
             pending_ready: Mutex::default(),
             discard: ArrayQueue::new(64),
+            editor_watch: AtomicUsize::new(usize::MAX),
             rate: AtomicU64::new(48000f64.to_bits()),
             key_owners: std::array::from_fn(|_| AtomicU64::new(0)),
             played: std::array::from_fn(|_| AtomicU8::new(0)),
@@ -871,6 +883,7 @@ pub(crate) fn mix(selection: &Selection) -> Mix {
     Mix {
         parts: rack_controls(selection),
         articulation_routes: Vec::new(),
+        editor_offsets: selection.parts.iter().map(|p|p.edits.native()).collect(),
         buses: std::array::from_fn(|n| {
             let b = selection.bus(n);
             BusControls {
@@ -1637,6 +1650,7 @@ fn load_part(params: &SamplerParams, slot: usize, prepared: Option<crate::sound:
             v.interfaces = loaded.interfaces.into();
             if let Some(part) = loaded.part.as_mut() {
                 part.epoch = generation;
+                *atoms.engine_bindings.lock().unwrap() = part.engine_bindings.clone();
                 if !part.waveform_sources.is_empty() && let Some(ingress) = &part.ui_controls {
                     let wake = Arc::downgrade(&atoms);
                     *atoms.waveforms.lock().unwrap() = crate::sound::waveform::Provider::start(ingress.plan(), std::mem::take(&mut part.waveform_sources), move || {
@@ -1652,7 +1666,7 @@ fn load_part(params: &SamplerParams, slot: usize, prepared: Option<crate::sound:
             *atoms.controls.lock().unwrap() = loaded
                 .controls
                 .iter()
-                .map(|&(id, value)| ControlCell { id, value: AtomicU64::new(value.to_bits()) })
+                .map(|&(id, value)| ControlCell::new(id,value))
                 .collect();
             v.instrument = loaded.instrument;
             v.keys = loaded.scripts.keys();
@@ -2175,6 +2189,11 @@ impl PluginLogic for Sampler {
         for slot in 0..s.core.parts() {
             let epoch = s.core.epoch(slot);
             let atoms = part_atoms(&s.shared_parts, shared, slot).unwrap();
+            if shared.editor_watch.load(Ordering::Relaxed)==slot && atoms.generation.load(Ordering::Acquire)==epoch {
+                for (to,tap) in atoms.editor_taps.iter().zip(s.core.voice_taps(slot)) {
+                    to.store(tap.map_or(0,|t|crate::sound::edits::Tap::from_native(t).pack()),Ordering::Relaxed);
+                }
+            }
             let revision = s.core.ui_revision(slot);
             if atoms.generation.load(Ordering::Acquire) == epoch && revision != atoms.native_revision.load(Ordering::Relaxed) {
                 atoms.refresh_controls(|id| s.core.control_value(slot, id));

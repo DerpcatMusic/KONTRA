@@ -58,6 +58,8 @@ pub struct Part {
     pub(crate) epoch: u64,
     pub(crate) waveform_sources: std::collections::HashMap<u32, super::waveform::Source>,
     pub(crate) ui_controls: Option<ControlIngress>,
+    pub(crate) engine_bindings: Arc<[sampler_core::EngineParameterBinding]>,
+    editor_offsets: Option<Arc<[sampler_core::EngineParameterOffset]>>,
     mpe: Mpe,
     tune: f32,
     /// Per tree node, its runtime bus (none for the root).
@@ -176,6 +178,7 @@ impl Part {
         // Plans without articulations have nothing to drive.
         let articulator = runtime.performance(0).and_then(|p| Articulator::new(&runtime, p, WIRE.port)).ok();
         let count = tree.nodes.len();
+        let engine_bindings = runtime.engine_parameter_bindings(runtime.active_plan()).map_err(core)?.into();
         let definitions = runtime.control_definitions(runtime.active_plan()).unwrap_or_default().to_vec();
         let plan = runtime.active_plan();
         let widgets = runtime.widget_definitions(plan).unwrap_or_default().to_vec();
@@ -195,9 +198,11 @@ impl Part {
         let (runtime, client) = runtime.with_control_updates(256, sampler_core::WIDGET_EDIT_CAPACITY).map_err(core)?;
         Ok(Self {
             epoch: 0,
+            engine_bindings,
             waveform_sources: Default::default(),
             ui_controls: Some(ControlIngress { client, plan, context, definitions, widgets, widget_values, captures, capturing:false, revision, pending_widgets: Default::default(), pending: Default::default() }),
             runtime,
+            editor_offsets:None,
             mpe,
             tune: 0.0,
             buses: (0..count).map(|n| n.checked_sub(1)).collect(),
@@ -222,6 +227,14 @@ impl Part {
             grower: None,
             script: None,
         })
+    }
+
+    // Mix changes frequently while dragging faders. Reuse the worker's
+    // immutable sparse layer and rebind only when its contents actually change.
+    fn apply_editor_offsets(&mut self,offsets:&Arc<[sampler_core::EngineParameterOffset]>) {
+        if self.editor_offsets.as_deref()!=Some(offsets.as_ref()) && self.runtime.set_engine_offsets(offsets).is_ok() {
+            self.editor_offsets=Some(offsets.clone());
+        }
     }
 
     /// Follow the part's tuning, MPE and bend range settings.
@@ -312,6 +325,7 @@ pub struct V2Core {
     parts: Vec<Option<Box<Part>>>,
     rate: f64,
     mix: Mix,
+    empty_editor_offsets: Arc<[sampler_core::EngineParameterOffset]>,
     held: Vec<Held>,
     /// Notes the ownership table had no room for.
     overflow: u64,
@@ -781,12 +795,15 @@ impl V2Core {
         let mut mix = Mix::default();
         mix.parts.resize(parts.max(mix.parts.len()), Default::default());
         mix.articulation_routes.resize(parts.max(mix.parts.len()), None);
+        let empty_editor_offsets:Arc<[sampler_core::EngineParameterOffset]>=Arc::from([]);
+        mix.editor_offsets.resize(parts.max(mix.parts.len()),empty_editor_offsets.clone());
         let mut peaks = Peaks::default();
         peaks.parts.resize(parts.max(peaks.parts.len()), [0.0; 2]);
         Self {
             parts: (0..parts).map(|_| None).collect(),
             rate: sample_rate,
             mix,
+            empty_editor_offsets,
             held: Vec::with_capacity(HELD),
             overflow: 0,
             buses: Box::new([[[0.0; MAX_BLOCK]; 2]; BUSES]),
@@ -811,6 +828,8 @@ impl V2Core {
             *new = *old;
         }
         std::mem::swap(&mut self.mix.parts, &mut grown.mix.parts);
+        for (old,new) in self.mix.editor_offsets.iter().zip(&mut grown.mix.editor_offsets) {*new=old.clone();}
+        std::mem::swap(&mut self.mix.editor_offsets,&mut grown.mix.editor_offsets);
         std::mem::swap(&mut self.mix.articulation_routes, &mut grown.mix.articulation_routes);
         for (old, new) in self.peaks.parts.iter().zip(&mut grown.peaks.parts) {
             *new = *old;
@@ -871,6 +890,7 @@ impl Core for V2Core {
             held.part = ORPHAN;
         }
         if let (Some(p), Some(c)) = (prepared.as_mut(), self.mix.parts.get(part)) {
+            p.apply_editor_offsets(self.mix.editor_offsets.get(part).unwrap_or(&self.empty_editor_offsets));
             p.configure(c, self.mix.articulation_routes.get(part).and_then(Option::as_ref));
         }
         Retired(std::mem::replace(slot, prepared))
@@ -1123,9 +1143,11 @@ impl Core for V2Core {
             *to = *from;
         }
         self.mix.buses = mix.buses;
+        for (slot,to) in self.mix.editor_offsets.iter_mut().enumerate() {*to=mix.editor_offsets.get(slot).unwrap_or(&self.empty_editor_offsets).clone();}
         for (to, from) in self.mix.articulation_routes.iter_mut().zip(mix.articulation_routes.iter().chain(std::iter::repeat(&None))) { *to = from.clone(); }
         for (index, (p, c)) in self.parts.iter_mut().zip(&self.mix.parts).enumerate() {
             let Some(p) = p else { continue };
+            p.apply_editor_offsets(&self.mix.editor_offsets[index]);
             p.configure(c, mix.articulation_routes.get(index).and_then(Option::as_ref));
             p.mix_nodes(mix.nodes.get(index).map_or(&[], Vec::as_slice));
         }
@@ -1161,6 +1183,8 @@ impl Core for V2Core {
         let Some(Some(p)) = self.parts.get_mut(part) else { return };
         p.runtime.drain_effects(|e| e.instance.is_none_or(|i| each(usize::from(i.0), e)));
     }
+
+    fn voice_taps(&self, part:usize)->[Option<sampler_core::VoiceTap>;16] {self.parts.get(part).and_then(Option::as_ref).map_or([None;16],|p|p.runtime.voice_taps())}
 
     fn voices(&self) -> Voices {
         let active = self.parts.iter().flatten().map(|p| p.runtime.voice_count()).sum();
@@ -3057,4 +3081,28 @@ fn snapshot_binding_name<'a>(names: &'a (String, String), base: Option<&Path>) -
             "Generic snapshot requires base filename {:?}", names.1);
     }
     Ok(&names.1)
+}
+
+#[cfg(test)]
+mod editor_reload_tests {
+    use super::*;
+    use sampler_core::{EngineParameterAddress,EngineParameterLaw,EngineParameterBinding,EngineParameterOffset,ControlId};
+    #[test]
+    fn v1_editor_mix_before_load_and_reload_keeps_the_saved_offset() {
+        let address=EngineParameterAddress{parameter:sampler_core::engine_parameter_id("ENGINE_PAR_CUTOFF").unwrap(),group:0,slot:3,generic:-1};
+        let id=ControlId(10);let law=EngineParameterLaw::Exponential{low:10.,high:10000.};
+        let make=|| {
+            let plan=Prepared::new(48000,vec![],vec![],0).unwrap().with_controls(vec![ControlDefinition{id,domain:ControlDomain::Real{min:10.,max:10000.},default:ControlValue::Real(100.)}]).unwrap().with_engine_parameters(vec![EngineParameterBinding{address,control:id,law}],vec![]).unwrap();
+            let limits=Limits::for_plan(&plan,128,16);Part::new(Runtime::new(plan,limits).unwrap(),MixTree::instrument("Reload")).unwrap()
+        };
+        let mut c=V2Core::with_parts(1,48000.);let mut mix=Mix::default();
+        mix.editor_offsets=vec![Arc::from([EngineParameterOffset{address,offset:0.1}])];
+        c.set_mix(&mix);
+        for _ in 0..2 {
+            let _old=c.install(0,Some(Box::new(make())));
+            let rt=&c.parts[0].as_ref().unwrap().runtime;
+            assert_eq!(rt.control_base_value(rt.active_plan(),id).unwrap(),ControlValue::Real(100.));
+            assert_eq!(rt.control_value(rt.active_plan(),id).unwrap(),ControlValue::Real(law.decode(law.encode(100.)+100000)),"loading applies the already saved editor layer");
+        }
+    }
 }
