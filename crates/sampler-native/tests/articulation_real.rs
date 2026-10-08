@@ -1066,3 +1066,29 @@ fn una_solo_probe() {
         }
     }
 }
+
+/// Diagnostic: `KONTRA_SAVED=<nki>` prints a summary of each saved variable
+/// whose name contains `KONTRA_SAVED_FILTER` (default: all arrays).
+#[test]
+#[ignore = "probe"]
+fn saved_state_probe() {
+    let Some(path) = std::env::var_os("KONTRA_SAVED") else {
+        return;
+    };
+    let filter = std::env::var("KONTRA_SAVED_FILTER").unwrap_or_default();
+    let ir = sampler_kontakt::read(std::path::Path::new(&path)).unwrap().instrument;
+    for b in &ir.behaviors {
+        for (name, value) in &b.state {
+            if !name.contains(&filter) {
+                continue;
+            }
+            match value {
+                ir::Saved::Ints(v) => {
+                    let ones: Vec<usize> = v.iter().enumerate().filter(|(_, x)| **x != 0).map(|(i, _)| i).take(12).collect();
+                    println!("slot {:?} {name} ints len {} nonzero {} first {ones:?} last {:?}", b.slot, v.len(), v.iter().filter(|x| **x != 0).count(), v.last());
+                }
+                other => println!("slot {:?} {name} {:.80?}", b.slot, other),
+            }
+        }
+    }
+}
