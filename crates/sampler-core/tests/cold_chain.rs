@@ -59,6 +59,12 @@ fn player(envelope: Envelope, voices: usize) -> (Runtime, StreamWorker) {
         vec![Some(0)],
     )
     .unwrap();
+    let plan = plan.with_programs(vec![
+        Program::new(vec![Instruction::Wait(10000), Instruction::End]).unwrap(),
+        Program::new(vec![Instruction::Play { transpose:127,
+            velocity:Velocity::Scale(1.), inheritance:Inheritance::Linked,
+            duration:sampler_core::Duration::FramesOrGate(1) }]).unwrap(),
+    ], None).unwrap();
     let limits = Limits::for_plan(&plan, voices, voices);
     let (cache, worker) = StreamCache::new(voices.max(2)).unwrap();
     let mut rt = Runtime::new(plan, limits).unwrap().with_stream_cache(cache);
@@ -145,34 +151,87 @@ fn cold_chain_holds_short_finite_envelopes_and_uninitialized_smoothing() {
 }
 
 #[test]
-fn choked_cold_chain_preserves_its_tail_budget_through_partial_hold_expiry() {
-    let (mut rt, _worker) = player(Envelope::default(), 1);
+fn choked_cold_chain_ends_immediately_without_waiting_for_storage() {
+    let (mut rt, mut worker) = player(Envelope::default(), 1);
     let note = rt.live_notes().next().unwrap();
     let family = rt.note_families(note).unwrap().next().unwrap();
-    rt.choke_family(family, 16).unwrap();
-    let mut audio = [[0.; 2]; 2390];
+    support::without_heap(|| rt.choke_family(family, 16).unwrap());
+    assert_eq!(rt.voice_count(), 0, "an onset that never sounded has no fade tail");
+    publish(&mut rt, &mut worker);
+    let mut audio = [[0.; 2]; 2416];
     support::without_heap(|| rt.render(&mut audio).unwrap());
-    assert_eq!(rt.voice_count(), 1);
-    let mut boundary = [[0.; 2]; 20];
-    support::without_heap(|| rt.render(&mut boundary).unwrap());
-    assert_eq!(rt.voice_count(), 1, "only ten active fade frames elapsed");
-    support::without_heap(|| rt.render(&mut boundary[..6]).unwrap());
-    assert_eq!(rt.voice_count(), 0);
+    assert_eq!(audio, [[0.; 2]; 2416], "late completion must not resurrect a choke");
+    assert_eq!(rt.input_held(note), Ok(true), "choke preserves physical key ownership");
 }
 
 #[test]
-fn cold_chain_hold_expiry_inside_a_block_advances_only_its_suffix() {
-    let (mut rt, _worker) = player(Envelope::one_shot(16, 0, 0), 2);
+fn late_cold_chain_starts_its_finite_envelope_only_when_data_arrives() {
+    let (mut rt, mut worker) = player(Envelope::one_shot(16, 0, 0), 2);
     let mut audio = [[0.; 2]; 2390];
     support::without_heap(|| rt.render(&mut audio).unwrap());
-    assert_eq!(rt.voice_count(), 2);
     let mut boundary = [[0.; 2]; 20];
     support::without_heap(|| rt.render(&mut boundary).unwrap());
-    assert_eq!(
-        rt.voice_count(),
-        2,
-        "ten held frames leave six envelope frames"
-    );
-    support::without_heap(|| rt.render(&mut boundary[..6]).unwrap());
-    assert_eq!(rt.voice_count(), 0);
+    assert_eq!(rt.voice_count(), 2, "a storage wait consumes no envelope frames");
+    publish(&mut rt, &mut worker);
+    support::without_heap(|| rt.render(&mut boundary[..15]).unwrap());
+    assert_eq!(rt.voice_count(), 2, "fifteen active frames leave one envelope frame");
+    support::without_heap(|| rt.render(&mut boundary[..1]).unwrap());
+    assert_eq!(rt.voice_count(), 0, "finite envelope ends after sixteen active frames");
+}
+
+fn held_lifecycle(event: usize) {
+    // A long release and a DSP chain make silent-tail retention visible.
+    let (mut rt, mut worker) = player(Envelope::new(128,0,0,1.,10000).unwrap(), 2);
+    let note = rt.live_notes().next().unwrap();
+    let input = Input { protocol:Protocol::Native, port:0, group:0, channel:0, key:60, external_id:Some(0) };
+    let family = rt.note_families(note).unwrap().next().unwrap();
+    let mut audio = [[0.;2];128];
+    support::without_heap(|| rt.render(&mut audio).unwrap());
+    assert_eq!(rt.voice_count(),2);
+    support::without_heap(|| {
+        match event {
+            0 => rt.choke_family(family,10000).unwrap(),
+            1 => { rt.note_off(input,None).unwrap(); },
+            2 => {
+                let callback=rt.start_behavior(note,0).unwrap();
+                rt.cancel_behavior(callback).unwrap();
+                assert_eq!(rt.behavior_outcome(callback),Ok(Some(Outcome::Cancelled)));
+            },
+            3 => { rt.all_sound_off(input.channel_address()).unwrap(); },
+            4 => {
+                let callback=rt.start_behavior(note,1).unwrap();
+                assert_eq!(rt.behavior_outcome(callback),Ok(Some(Outcome::Fault(Error::InvalidInput))));
+                assert_eq!(rt.take_fault(),Some((1,Error::InvalidInput)));
+            },
+            _ => unreachable!(),
+        }
+    });
+    let expected=if event==3 {0} else {1};
+    assert_eq!(rt.voice_count(),expected,"held lifecycle event {event} must end immediately");
+    publish(&mut rt,&mut worker);
+    support::without_heap(|| rt.render(&mut audio).unwrap());
+    assert_eq!(rt.voice_count(),expected,"a late page must not resurrect event {event}");
+    support::without_heap(|| {
+        rt.all_sound_off(input.channel_address()).unwrap();
+        rt.flush_behaviors(|_,_,_|true);
+        rt.all_notes_off(input.channel_address()).unwrap();
+        rt.flush_ended(|_|true);
+    });
+    assert_eq!((rt.voice_count(),rt.note_count(),rt.pending_commands()),(0,0,0));
+}
+
+#[test] fn held_cold_choke_ends_before_storage_arrives() {held_lifecycle(0)}
+#[test] fn held_cold_note_off_ends_before_storage_arrives() {held_lifecycle(1)}
+#[test] fn held_cold_cancel_ends_before_storage_arrives() {held_lifecycle(2)}
+#[test] fn held_cold_all_sound_off_ends_before_storage_arrives() {held_lifecycle(3)}
+#[test] fn held_cold_callback_fault_ends_before_storage_arrives() {held_lifecycle(4)}
+
+#[test]
+fn held_cold_terminal_decode_fault_ends_before_storage_arrives() {
+    let (mut rt,mut worker)=player(Envelope::new(128,0,0,1.,10000).unwrap(),2);
+    let job=worker.next_job().unwrap();
+    worker.complete(job,Err(DecodeFailure::InvalidSamples)).unwrap();
+    support::without_heap(|| assert_eq!(rt.service_streaming(256),
+        Err(StreamError::DecodeFailed(DecodeFailure::InvalidSamples))));
+    assert_eq!(rt.voice_count(),0,"failed storage must not retain silent onsets");
 }
