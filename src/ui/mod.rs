@@ -31,6 +31,8 @@ mod menu;
 #[allow(dead_code)]
 mod mix_tree;
 mod ir_view;
+#[cfg(feature = "shots")]
+pub(crate) mod scan;
 #[allow(dead_code)]
 mod load_report;
 mod bridge;
@@ -1189,3 +1191,6 @@ impl Cx<'_> {
         self.state.analyser.update(&self.p.shared.scope, source, rate)
     }
 }
+
+#[cfg(test)]
+ pub(crate) fn audit_frames(p: &Arc<SamplerParams>) -> serde_json::Value { tests::audit_frames(p) }
