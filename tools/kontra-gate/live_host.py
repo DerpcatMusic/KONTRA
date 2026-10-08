@@ -80,12 +80,20 @@ def v1_state(template, path, program):
     at += 8 + extra
     length = struct.unpack_from('<Q', template, at)[0]
     assert at + 8 + length == len(template)
+    # Native keyed frames exist in frozen 0.3.152 (d097c363) and 0cb7a8a0.
     part = keyed({'path': sized(path.encode()), 'program': struct.pack('<I', program),
                   'port': b'\0', 'channel': struct.pack('<h', -1), 'output': b'\0',
                   'output_manual': b'\1', 'gain': struct.pack('<f', 0), 'aux': struct.pack('<h', -1)})
     selection = keyed({'parts': struct.pack('<I', 1) + sized(part), 'order': struct.pack('<II', 1, 0)})
     persist = struct.pack('<I', 1) + sized(b'selection') + sized(sized(selection))
     return template[:at] + struct.pack('<Q', len(persist)) + persist
+
+
+def private_settings(config):
+    # Prevent first-run Kontakt/Wine auto-import in both native host versions.
+    settings = config / 'kontra/settings.json'
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text(json.dumps({'imported': True, 'roots': []}))
 
 
 def log_rows(root):
@@ -98,6 +106,12 @@ def log_rows(root):
             except ValueError:
                 pass  # A writer may still be appending the final line.
     return rows
+
+
+def load_status(rows):
+    finished = [r.get('data', {}).get('status') for r in rows if r.get('event') == 'load_finished']
+    if any(state in ['loaded', 'partial'] for state in finished): return 'READY'
+    return 'FAILED' if 'failed' in finished else 'WAITING'
 
 
 def frozen_underruns(rows):
@@ -125,6 +139,7 @@ def observe(host, plugin, state, plan, block, seconds, folder, version):
         schedule = temp / 'events.tsv'
         schedule.write_text(''.join('\t'.join(map(str, e)) + '\n' for e in events(plan, seconds)))
         native = temp / 'session.state'; native.write_bytes(state)
+        private_settings(temp / 'config')
         env = dict(os.environ, XDG_CONFIG_HOME=str(temp / 'config'))
         capture = Capture(folder, env)
         activity = Activity(folder)
@@ -139,10 +154,12 @@ def observe(host, plugin, state, plan, block, seconds, folder, version):
                 while job.poll() is None:
                     if time.monotonic() - started > 145:
                         job.kill(); job.wait(); break
-                    if version == 'v1' and not ready.exists():
-                        finished = [r for r in log_rows(capture.root) if r.get('event') == 'load_finished']
-                        if any(r.get('data', {}).get('status') in ['loaded', 'partial'] for r in finished): ready.touch()
-                        elif any(r.get('data', {}).get('status') == 'failed' for r in finished): job.kill(); job.wait(); break
+                    if not ready.exists():
+                        loaded = load_status(log_rows(capture.root))
+                        if loaded == 'READY': ready.touch()
+                        elif loaded == 'FAILED':
+                            live['host_failure'] = 'plugin load reported failed'
+                            job.kill(); job.wait(); break
                     time.sleep(.05)
                 output.seek(0)
                 raw = output.read()
@@ -150,7 +167,7 @@ def observe(host, plugin, state, plan, block, seconds, folder, version):
                 for line in raw.splitlines():
                     try: records.append(json.loads(line))
                     except ValueError: pass
-                live = next((r for r in records if r.get('kind') == 'live_host'), {})
+                live.update(next((r for r in records if r.get('kind') == 'live_host'), {}))
                 views = [r for r in records if r.get('kind') == 'perf_view']
                 io = next((r for r in records if r.get('kind') == 'stream_io'), {})
                 rows = log_rows(capture.root)
@@ -184,9 +201,11 @@ def main():
     parser.add_argument('out', type=Path)
     parser.add_argument('--block', type=int, choices=[32, 64, 256], default=64)
     parser.add_argument('--seconds', type=float, default=6)
+    parser.add_argument('--version', choices=['v1', 'v2', 'both'], default='both')
     parser.add_argument('--start', type=int, default=0)
     parser.add_argument('--count', type=int, default=2)
     args = parser.parse_args()
+    driver_sha256 = sha(__file__)
     assert 2 <= args.seconds <= 30 and args.start >= 0 and 1 <= args.count <= 128
     assert os.environ.get('KONTRA_QUIET_OWNER') == '1', 'request a quiet window first'
     assert (Path.home() / '.cache/kontra-quiet-request').exists(), 'quiet request absent'
@@ -200,6 +219,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='kontra-live-state-', dir='/dev/shm') as tmp:
         tmp = Path(tmp)
         # Bootstrap only the native envelope with the existing frozen export command.
+        private_settings(tmp / 'config')
         first = next(path for path in items if path.lower().endswith('.nki'))
         state_env = dict(os.environ, XDG_CONFIG_HOME=str(tmp / 'config'), XDG_DATA_HOME=str(tmp / 'data'),
                          XDG_CACHE_HOME='/proc/self/kontra-gate-no-cache', KONTRA_DISABLE_NETWORK='1', KONTRA_LOG_DIR=str(tmp / 'logs'))
@@ -227,19 +247,21 @@ def main():
                                env=state_env, check=True)
                 for version, plugin, blob in [('v1', V1 / 'plugin/KONTRA.clap', v1_state(template.read_bytes(), path, int(program))),
                                               ('v2', args.v2_plugin, native.read_bytes())]:
+                    if args.version != 'both' and version != args.version: continue
                     cell = observe(args.host, plugin, blob, plan, args.block, args.seconds,
                                    args.out / f'{identity}-{program}-{args.block}-{version}', version)
                     cell.update(item_sha256=identity, program=int(program))
+                    (args.out / f'{identity}-{program}-{args.block}-{version}' / 'metrics.json').write_text(json.dumps(cell, indent=2) + '\n')
                     cells.append(cell)
                     print(json.dumps({k: v for k, v in cell.items() if k != 'perf_view'}), flush=True)
     receipt = {'scope': 'loaded-exported-CLAP-realtime-editor-closed', 'cells': cells,
                'v2_source_sha': build['source_sha'], 'v2_artifact': build,
                'gate_sha': json.loads((args.gate / 'manifest.json').read_text())['sha'],
                'host_source_sha256': sha(Path(__file__).parents[2] / 'vendor/moose-clap/tests/live_performance.cpp'),
-               'driver_sha256': sha(__file__), 'frozen_v1_perf_view': 'UNKNOWN: frozen binary has no numeric readback export',
+               'driver_sha256': driver_sha256, 'frozen_v1_perf_view': 'UNKNOWN: frozen binary has no numeric readback export',
                'streaming_scope': 'whole plugin process /proc/self/io delta during audition, logical rchar minus first probe read and physical read_bytes; load wait excluded; OS page cache uncontrolled; sampler stream-underruns and host process/wake deadlines reported separately',
                'ui_cpu_policy': 'same cumulative busy/span counters and 100ms half smoothing as Watch; headless numeric model, not a rendered DAW frame'}
-    (args.out / f'host-{args.start}-{args.count}-{args.block}.json').write_text(json.dumps(receipt, indent=2) + '\n')
+    (args.out / f'host-{args.start}-{args.count}-{args.block}-{args.version}.json').write_text(json.dumps(receipt, indent=2) + '\n')
 
 
 if __name__ == '__main__': main()

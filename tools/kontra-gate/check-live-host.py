@@ -1,6 +1,6 @@
 """Small trust-boundary and schedule checks before any real-library run."""
 import struct
-from live_host import events, keyed, v1_state, frozen_underruns, measured_status
+from live_host import events, v1_state, frozen_underruns, measured_status
 
 plan = events({'key': 60, 'velocity': 64, 'keyswitch': 12}, 6)
 assert plan[:3] == [(0, 0xb0, 1, 100), (0, 0xb0, 11, 127), (0, 0x90, 12, 64)]
@@ -12,7 +12,6 @@ for bad in [{'key': 128, 'velocity': 64}, {'key': 60, 'velocity': 0}, {'key': 60
     try: events(bad, 6)
     except AssertionError: pass
     else: raise AssertionError('invalid audition accepted')
-assert struct.unpack_from('<II', keyed({'path': b'x'})) == (0xffffff01, 1)
 template = b'OAST\x01\0\0\0' + b'\0' * 8 + struct.pack('<IQQ', 0, 0, 0)
 native = v1_state(template, '/generated/tone.nki', 3)
 assert native[:28] == template[:28] and len(native) > len(template)
@@ -41,3 +40,22 @@ with tempfile.TemporaryDirectory() as tmp:
     except AssertionError: pass
     else: raise AssertionError('stale provenance accepted')
 print('PASS: supplied artifact provenance follows the binary and rejects changed files')
+
+from live_host import private_settings
+with tempfile.TemporaryDirectory(dir='/dev/shm') as temp:
+    config = Path(temp) / 'config'
+    private_settings(config)
+    assert json.loads((config / 'kontra/settings.json').read_text()) == {'imported': True, 'roots': []}
+
+# 0.3.152 native Selection omits root; keyed fields avoid positional shifts.
+persist = native[36:]; at = 4 + 4 + len(b'selection')
+selection = persist[at+8:]
+assert struct.unpack_from('<I', selection)[0] == 0xffffff01
+print('PASS: native keyed frame supported by frozen 0.3.152 derive')
+
+from live_host import load_status
+assert load_status([]) == 'WAITING'
+assert load_status([{'event':'load_finished','data':{'status':'failed'}}]) == 'FAILED'
+for state in ['loaded','partial']:
+    assert load_status([{'event':'load_finished','data':{'status':state}}]) == 'READY'
+print('PASS: load diagnostics fail fast for both plugin versions')
