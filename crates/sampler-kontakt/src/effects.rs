@@ -587,6 +587,14 @@ pub(crate) struct Chain {
     /// Each translated SV filter slot and its index in `processors`, for
     /// modulation targets that name a module slot.
     pub filter_slots: Vec<(usize, usize)>,
+    pub send_taps: Vec<SendTap>,
+}
+
+pub(crate) struct SendTap {
+    pub slot: usize,
+    pub position: sampler_ir::VoiceSendPosition,
+    pub levels: Vec<f32>,
+    pub bypass: bool,
 }
 
 /// Keep the amplifier boundary at its physical slot, even when either side
@@ -606,6 +614,11 @@ pub(crate) fn voice_chain(
     let after = chain_with(&slots[cut..], Scope::Voice, None, dynamic);
     let boundary = before.processors.len();
     before.processors.extend(after.processors);
+    before.send_taps.extend(after.send_taps.into_iter().map(|mut tap| {
+        let sampler_ir::VoiceSendPosition::BeforeAmplitude(n) = tap.position else { unreachable!() };
+        tap.position = sampler_ir::VoiceSendPosition::AfterAmplitude(n);
+        tap
+    }));
     before.notes.extend(after.notes);
     before.filter_slots.extend(
         after
@@ -703,12 +716,23 @@ pub(crate) fn chain_with(
                 filters.extend(bands.iter().filter_map(|band| eq_band(*band, &mut notes)));
                 combined = product(eq_gain, combined);
             }
-            Some(Params::SendLevels { sends, .. }) if scope == Scope::Bus => {
-                if out.sends.is_empty() {
+            Some(Params::SendLevels { sends, .. }) => {
+                flush(&mut combined, &mut filters, &mut out);
+                let sends: Vec<_> = sends.iter().map(|&level| {
+                    if level.is_finite() && level >= 0.0 { level } else {
+                        notes.push(("send level".into(), "non-finite or negative".into(), sampler_ir::Reason::InvalidValue));
+                        0.0
+                    }
+                }).collect();
+                if scope == Scope::Bus && out.sends.is_empty() {
                     out.sends = sends.clone();
-                } else {
-                    modelled = false;
                 }
+                out.send_taps.push(SendTap {
+                    slot: fx.slot,
+                    position: sampler_ir::VoiceSendPosition::BeforeAmplitude(out.processors.len()),
+                    levels: sends,
+                    bypass: fx.bypass,
+                });
                 combined = product(gain, combined);
             }
             Some(Params::Filter {
@@ -1111,7 +1135,7 @@ pub(crate) fn instrument_buses(
     buses: &[BusPlan],
     dynamic: bool,
     load: &mut dyn FnMut(i32) -> Result<Decoded, String>,
-) -> Vec<(String, Note)> {
+) -> (Vec<(String, Note)>, Vec<(usize, sampler_ir::BusRef)>) {
     use sampler_ir::{BusRef, ChainRef, Output, Scope as IrScope, Send, SendPosition};
     let rack = |name: &str| {
         racks
@@ -1158,8 +1182,8 @@ pub(crate) fn instrument_buses(
         );
         take("instrument send", &c);
         let level = insert.sends.get(slot.slot).copied().unwrap_or(1.0);
-        if !c.processors.is_empty() && level > 0.0 {
-            sends.push((c.processors, f64::from(level)));
+        if !c.processors.is_empty() {
+            sends.push((slot.slot, c.processors, f64::from(level)));
         }
     }
     // Instrument buses: only the ones a group feeds and that do something.
@@ -1213,7 +1237,7 @@ pub(crate) fn instrument_buses(
     ir.impulses = store;
     let chained = !(insert.processors.is_empty() && sends.is_empty() && main.processors.is_empty());
     if !chained && instrument.is_empty() {
-        return report;
+        return (report, Vec::new());
     }
     // Bus order: insert, sends, main, then the instrument buses.
     let main_bus = (!main.processors.is_empty()).then_some(sends.len() + 1);
@@ -1242,21 +1266,46 @@ pub(crate) fn instrument_buses(
         });
     };
     let unity = sampler_ir::Gain::UNITY;
-    let feeds = sends
+    let feeds: Vec<_> = sends
         .iter()
         .enumerate()
-        .map(|(i, (_, level))| Send {
+        .map(|(i, (_, _, level))| Send {
             to: Output::Bus(BusRef(i + 1)),
             gain: sampler_ir::Gain::Linear(*level),
             position: SendPosition::PostChain,
         })
         .collect();
+    let send_buses: Vec<_> = sends.iter().enumerate().map(|(i, (slot, _, _))| (*slot, BusRef(i + 1))).collect();
     let entry = if chained {
-        add(ir, "insert".into(), insert.processors, feeds, target, unity);
-        for (i, (processors, _)) in sends.into_iter().enumerate() {
+        let mut segments = Vec::new();
+        let mut cursor = 0;
+        for tap in &insert.send_taps {
+            let sampler_ir::VoiceSendPosition::BeforeAmplitude(n) = tap.position else { unreachable!() };
+            let feeds = if tap.bypass { Vec::new() } else {
+                send_buses.iter().filter_map(|&(slot, bus)| tap.levels.get(slot).map(|&level| Send {
+                    to: Output::Bus(bus), gain: sampler_ir::Gain::Linear(f64::from(level)),
+                    position: SendPosition::PostChain,
+                })).collect()
+            };
+            segments.push((insert.processors[cursor..n].to_vec(), feeds));
+            cursor = n;
+        }
+        if segments.is_empty() {
+            segments.push((insert.processors, feeds));
+        } else if cursor < insert.processors.len() {
+            segments.push((insert.processors[cursor..].to_vec(), Vec::new()));
+        }
+        // Each continuation is another summed bus, so its history and send
+        // position use the existing preallocated bus DAG.
+        let continuation = sends.len() + 1 + usize::from(main_bus.is_some());
+        let mut segments = segments.into_iter().enumerate().peekable();
+        let (_, (processors, feeds)) = segments.next().expect("insert segment");
+        let next = if segments.peek().is_some() { Output::Bus(BusRef(continuation)) } else { target };
+        add(ir, "insert".into(), processors, feeds, next, unity);
+        for (slot, processors, _) in sends {
             add(
                 ir,
-                format!("send {i}"),
+                format!("send {slot}"),
                 processors,
                 Vec::new(),
                 target,
@@ -1272,6 +1321,10 @@ pub(crate) fn instrument_buses(
                 Output::Master,
                 unity,
             );
+        }
+        while let Some((i, (processors, feeds))) = segments.next() {
+            let next = if segments.peek().is_some() { Output::Bus(BusRef(continuation + i)) } else { target };
+            add(ir, format!("insert continuation {i}"), processors, feeds, next, unity);
         }
         for group in &mut ir.groups {
             group.output = Output::Bus(BusRef(0));
@@ -1299,7 +1352,7 @@ pub(crate) fn instrument_buses(
             ir.groups[group.0].output = Output::Bus(at);
         }
     }
-    report
+    (report, send_buses)
 }
 
 /// One EQ band (Hz, octaves, dB) as a peaking filter; flat bands vanish.
@@ -1862,6 +1915,20 @@ mod tests {
             [ir::Processor::Reverb(_)]
         ));
         instrument.validate().unwrap();
+        // A physical return at slot 3 remains addressable even when the
+        // instrument level is zero; a group tap can still feed that return.
+        let mut sparse = ir::Instrument::default();
+        let mut return_slot = slot(0x59, racks[1].1[0].public.clone(), 1.0);
+        return_slot.slot = 3;
+        let mut zero = 4u32.to_le_bytes().to_vec();
+        zero.extend([0.0f32; 4].iter().flat_map(|x| x.to_le_bytes()));
+        zero.extend(0u32.to_le_bytes());
+        let (_, returns) = instrument_buses(&mut sparse, &[
+            ("instrument insert".into(), vec![slot(0x17, zero, 1.0)]),
+            ("instrument send".into(), vec![return_slot]),
+        ], &[], false, &mut |_| Err("none".into()));
+        assert_eq!(returns, vec![(3, ir::BusRef(1))]);
+        assert_eq!(sparse.buses[0].sends[0].gain, ir::Gain::Linear(0.0));
         // Nothing to do: no buses.
         let mut plain = ir::Instrument::default();
         instrument_buses(&mut plain, &[], &[], false, &mut |_| Err("none".into()));
@@ -1891,5 +1958,53 @@ mod tests {
         assert_eq!(routed.buses[0].output, ir::Output::Master);
         assert_eq!(routed.groups[0].output, ir::Output::Bus(ir::BusRef(0)));
         routed.validate().unwrap();
+    }
+
+    #[test]
+    fn voice_send_levels_are_admitted_on_both_sides_of_the_amplifier() {
+        let mut levels = 1u32.to_le_bytes().to_vec();
+        levels.extend(0.5f32.to_le_bytes());
+        levels.extend(0u32.to_le_bytes());
+        let mut before = slot(0x17, levels.clone(), 1.0);
+        before.slot = 2;
+        let mut after = slot(0x17, levels, 1.0);
+        after.slot = 6;
+        let (chain, boundary) = voice_chain(&[before, after], 4, None);
+        assert!(chain.notes.is_empty(), "{:?}", chain.notes);
+        assert_eq!(boundary, 0);
+        assert_eq!(chain.send_taps.len(), 2);
+        assert_eq!(chain.send_taps[0].slot, 2);
+        assert_eq!(chain.send_taps[0].position, sampler_ir::VoiceSendPosition::BeforeAmplitude(0));
+        assert_eq!(chain.send_taps[1].slot, 6);
+        assert_eq!(chain.send_taps[1].position, sampler_ir::VoiceSendPosition::AfterAmplitude(0));
+    }
+
+    #[test]
+    fn instrument_send_tap_precedes_later_inserts_on_the_summed_bus() {
+        use sampler_ir as ir;
+        let mut before = slot(0x13, 2.0f32.to_le_bytes().to_vec(), 1.0);
+        before.dry_level = 0.0;
+        let mut levels = 1u32.to_le_bytes().to_vec();
+        levels.extend(0.5f32.to_le_bytes());
+        levels.extend(0u32.to_le_bytes());
+        let mut tap = slot(0x17, levels, 1.0);
+        tap.slot = 2;
+        let mut after = slot(0x13, 3.0f32.to_le_bytes().to_vec(), 1.0);
+        after.slot = 3;
+        after.dry_level = 0.0;
+        let mut ir = ir::Instrument::default();
+        instrument_buses(&mut ir, &[
+            ("instrument insert".into(), vec![before, tap, after]),
+            ("instrument send".into(), vec![slot(0x13, 0.5f32.to_le_bytes().to_vec(), 1.0)]),
+        ], &[], false, &mut |_| Err("none".into()));
+        assert_eq!(ir.buses.len(), 3);
+        assert_eq!(ir.buses[0].output, ir::Output::Bus(ir::BusRef(2)));
+        assert_eq!(ir.buses[0].sends[0].to, ir::Output::Bus(ir::BusRef(1)));
+        assert_eq!(ir.buses[0].sends[0].gain, ir::Gain::Linear(0.5));
+        for (bus, gain) in [(0, 2.0), (2, 3.0)] {
+            let stages = &ir.chains[ir.buses[bus].chain.unwrap().0].pre_amplitude;
+            assert!(matches!(stages[..], [ir::Processor::Gainer { gain: ir::Gain::Linear(g), dry: 0.0 }] if g == gain));
+        }
+        ir.validate().unwrap();
     }
 }
