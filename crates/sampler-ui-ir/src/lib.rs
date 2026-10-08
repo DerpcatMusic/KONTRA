@@ -112,7 +112,7 @@ pub struct Widget {
     /// The source did not size the widget; the renderer uses its default
     /// size for the kind and source.
     pub auto_size: bool,
-    /// Stacking among siblings; higher draws later.
+    /// Higher draws later: global layers for KSP, sibling layers for Lua.
     pub z: i32,
     /// Hidden as a whole (`HIDE_WHOLE_CONTROL`, Lua `visible = false`).
     pub hidden: bool,
@@ -661,10 +661,16 @@ impl Interface {
         rect
     }
 
-    /// `page`'s widgets back to front: siblings by ([`Widget::z`], declaration
-    /// order), each panel's contents straight after the panel.
+    /// `page`'s widgets back to front by ([`Widget::z`], declaration order).
+    /// Kontakt uses global layers; native graphs order siblings and draw each
+    /// panel's contents straight after the panel.
     /// Requires a [validated](Self::validate) interface.
     pub fn draw_order(&self, page: PageRef) -> Vec<WidgetRef> {
+        if matches!(self.source, Source::Ksp { .. } | Source::PerformanceView) {
+            let mut out: Vec<_> = self.widgets.iter().enumerate().filter(|(_,w)| w.page == page).map(|(n,_)| WidgetRef(n)).collect();
+            out.sort_by_key(|n| (self.widgets[n.0].z, n.0));
+            return out;
+        }
         let mut children: Vec<Vec<WidgetRef>> = vec![Vec::new(); self.widgets.len() + 1];
         let root = self.widgets.len();
         for (n, w) in self.widgets.iter().enumerate() {
@@ -824,8 +830,21 @@ mod tests {
     }
 
     #[test]
-    fn panels_draw_before_children_and_by_z() {
-        let ui = sample();
+    fn ksp_child_z_layer_crosses_parent_boundaries() {
+        let mut ui = sample();
+        ui.widgets[1].z = 5;
+        ui.widgets[2].z = 2;
+        assert_eq!(ui.draw_order(PageRef(0)), [WidgetRef(0), WidgetRef(2), WidgetRef(1)]);
+        ui.widgets[1].z = 2;
+        assert_eq!(ui.draw_order(PageRef(0)), [WidgetRef(0), WidgetRef(1), WidgetRef(2)]);
+        ui.widgets[0].hidden = true;
+        assert!(!ui.visible(WidgetRef(1)), "global layers retain inherited hiding");
+    }
+
+    #[test]
+    fn lua_panels_draw_before_children_and_by_z() {
+        let mut ui = sample();
+        ui.source = Source::FalconLua;
         // Label (z 0) before the panel (z 1); the knob straight after its panel.
         assert_eq!(ui.draw_order(PageRef(0)), [WidgetRef(2), WidgetRef(0), WidgetRef(1)]);
         assert_eq!(ui.page_rect(WidgetRef(1)), Rect::new(15, 26, 40, 40));
