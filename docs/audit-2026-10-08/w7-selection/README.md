@@ -232,3 +232,43 @@ gates remain **pending native vectors**, as stated by RE branch
 [`re/w7-vectors-20261008@d773d214`](https://github.com/DerpcatMusic/KONTRA/tree/d773d214/docs/research/w7-native-20261008).
 The Analog static compressor witness and unknown native full-grid switch
 state caveat above are unchanged.
+
+## Vista deferred-attack lifetime follow-up
+
+W6's diagnostic-only [`fab0d5cf`](https://github.com/DerpcatMusic/KONTRA/blob/fab0d5cf/docs/audit-2026-10-08/W6_VISTA_649.md)
+isolates retirement on product `64919587`: normal64-frame output peaks at
+0.002848012838512659 with no key59 replay; holding only note-end retirement
+restores replay at576frames and peak0.10827232152223587. All36 callbacks finish
+in both cases. Authored envelope restoration leaves the failing output unchanged.
+These are W6's reported diagnostic measurements, not a new W7 render.
+
+The shared ownership defect is an uncommitted generated attack in
+`Runtime::deferred`. `select` queued it without work ownership, and
+`Duration::UntilSilent` allowed `flush_ended` to retire it before the preempted
+callback reached a wait or its end. `flush_deferred` then silently lost the stale
+note instead of committing its source selection. In-memory Vista source inspection
+finds14 note-callback `play_note` calls with literal duration0, which lowers to
+UntilSilent; no ENGINE_UPTIME/KSP_TIMER references were found. No authored script
+or library payload was exported. The earlier idle-clock hypothesis is unsupported
+for this source.
+
+v1 `0cb7a8a0:src/ksp/runtime.rs::Events::alloc` only reclaims sample-length
+events after `at_engine` is true. Its protection of queued unmapped attacks is
+adapted to v2's existing work counters: a deferred attack owns one work pin until
+commit, and the existing abort cleanup returns that pin when discarding an
+uncommitted attack. The normal host NOTE_END drain stays enabled. No new queue,
+global retention policy, block-fuel change, KEY_DOWN change or DSP change is added.
+
+Failing-first receipt: `~/.cache/kontakto-w7/vista-deferred-before.log` loses the
+source alias at host retirement. The fixed regression retains the exact child,
+renders synthetic PCM0.25 in both channels on resume, and reclaims it after EOF.
+Cancel/panic tests reuse a three-note pool four times without sounding discarded
+attacks; a fault regression preserves the existing commit-before-fault behavior.
+All execute under the existing allocation/deallocation guard. `event_ids` passes
+12/12 (`vista-deferred-event-ids.log`). Area no-run receipt is
+`vista-deferred-core-no-run.log`.
+
+Vista production witness rerun and the unchanged original CPU matrix remain
+pending; CPU acceptance stays **HOLD**. The fix is a shared lifecycle repair,
+not a claim of native audio parity or CPU improvement. Do not merge W6's
+diagnostic branch as the production fix.
