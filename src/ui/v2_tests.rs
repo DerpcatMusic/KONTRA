@@ -640,3 +640,47 @@ fn v1_ram_and_disk_readouts_are_reachable() {
         assert!(h.ui.scene().unwrap().surface(id).is_some(), "v1 readout missing: {id}");
     }
 }
+
+#[test]
+fn v1_mixer_aux_and_host_bus_controls_are_reachable() {
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    {
+        let mut selection = p.selection.write().unwrap();
+        selection.parts = vec![crate::plugin::Part { path: "/synthetic/Piano.nki".into(), output: 1, aux: 0, ..Default::default() }];
+        selection.order = vec![0];
+    }
+    let mut h = Harness::new(&p, 1180., 780.); h.press("tab-mixer"); h.idle(4);
+    for id in ["mt-aux-65536", "mt-send-65536", "mt-strip-1", "mt-strip-2"] {
+        assert!(h.ui.scene().unwrap().surface(id).is_some(), "v1 mixer control missing: {id}");
+    }
+    h.press("mt-out-2"); h.press("mt-pick-2-3");
+    assert_eq!(p.selection.read().unwrap().bus(1).port, 3, "bus remaps to host 7/8");
+    h.press("mt-aux-65536"); h.press("menu-item-4");
+    assert_eq!(p.selection.read().unwrap().parts[0].aux, 2);
+    assert!(h.ui.scene().unwrap().surface("mt-strip-3").is_some(), "send destination has a strip");
+    let at = super::tests::center(&h.ui, "mt-name-2");
+    for buttons in [Buttons::default().set(Button::Secondary, true), Buttons::default()] {
+        h.tick(Input { pointer: PointerInput { pos: Some(at), buttons, ..Default::default() }, ..Default::default() });
+    }
+    h.idle(2); h.press("menu-item-0");
+    assert!(h.ui.scene().unwrap().surface("mt-rename-2").is_some());
+    h.tick(Input { keys: vec![KeyPress { key: Key::Char('a'), mods: Mods { ctrl: true, ..Default::default() } }], ..Default::default() });
+    h.tick(Input { text: "Piano dry".into(), ..Default::default() });
+    h.press("mt-rename-2");
+    assert_eq!(p.selection.read().unwrap().bus(1).name, "Piano dry");
+    p.selection.write().unwrap().bus_mut(1).gain = -9.; h.idle(2);
+    let at = super::tests::center(&h.ui, "mt-name-2");
+    for buttons in [Buttons::default().set(Button::Secondary, true), Buttons::default()] {
+        h.tick(Input { pointer: PointerInput { pos: Some(at), buttons, ..Default::default() }, ..Default::default() });
+    }
+    h.idle(2); h.press("menu-item-1");
+    let selection = p.selection.read().unwrap();
+    let bus = selection.bus(1);
+    assert_eq!((bus.gain, bus.port, bus.name.as_str()), (0., 3, "Piano dry"), "reset preserves name and host routing");
+    let mut bytes = Vec::new();
+    use moose::core::custom_state::{StateCursor, StateField};
+    selection.write_field(&mut bytes);
+    let restored = crate::plugin::Selection::read_field(&mut StateCursor::new(&bytes)).unwrap();
+    assert!(restored == *selection);
+    shoot(&h.ui, 1180, 780, "settings-routing.png");
+}
