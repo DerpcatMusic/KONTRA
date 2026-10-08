@@ -638,6 +638,25 @@ impl crate::Runtime {
         // Temporarily detach only the audio-owned cache to borrow the immutable
         // voice/plan snapshot. The visitor cannot execute callbacks or mutate it.
         let result = self.service_cache(&mut cache, frames);
+        if matches!(result, Err(StreamError::DecodeFailed(_) | StreamError::Disconnected)) {
+            // A terminal source fault cannot leave a never-started onset held.
+            for word in 0..self.voice_activity.len() {
+                let mut bits = self.voice_activity[word];
+                while bits != 0 {
+                    let index = word * 64 + bits.trailing_zeros() as usize;
+                    bits &= bits - 1;
+                    let Some(voice) = self.voices.slots[index].value else { continue; };
+                    if !voice.cursor.holding_onset() { continue; }
+                    let note = self.notes.get(self.families.get(voice.family.0).unwrap().note.0).unwrap();
+                    let asset = self.plans.get(note.plan.0).unwrap().prepared.pcm[voice.sample].asset_id();
+                    let failed = cache.requests.is_abandoned() || cache.entries.iter().flatten().any(|entry| {
+                        entry.request.key.asset == asset && matches!(entry.state,
+                            State::Failed(error) if error != DecodeFailure::Unavailable || entry.retries == 3)
+                    });
+                    if failed { self.end_voice(crate::VoiceId(self.voices.id(index))); }
+                }
+            }
+        }
         cache.wake();
         self.stream_cache = Some(cache);
         result
