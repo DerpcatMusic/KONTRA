@@ -418,6 +418,7 @@ struct Voice {
     sample: usize,
     cursor: source::Cursor,
     base_step: f64,
+    stream_pages: usize,
     chain: Option<usize>,
     bus: Option<usize>,
     tail_remaining: Option<u32>,
@@ -687,6 +688,7 @@ pub struct Runtime {
     stream_fault: Option<StreamError>,
     stream_horizon: u32,
     stream_admission_errors: [u64; 2],
+    stream_reserved: usize,
     voice_drops: u64,
     refused_starts: u64,
     /// Voice-pool growths adopted, and refused (see `grow`).
@@ -862,6 +864,7 @@ impl Runtime {
             stream_fault: None,
             stream_horizon: 1,
             stream_admission_errors: [0; 2],
+            stream_reserved: 0,
             voice_drops: 0,
             refused_starts: 0,
             voice_growths: 0,
@@ -1431,17 +1434,21 @@ impl Runtime {
         let cold = self.check_source_ready(asset, cursor, envelope)?;
         let streamed = asset.resident_frames().is_none();
         f.voices.checked_add(1).ok_or(Error::Capacity)?;
-        let plan = note.plan;
-        if streamed && self.stream_cache.is_some() {
-            if let Err(error) = self.admit_streaming(plan, sample, cursor, envelope, at) {
-                if matches!(error, StreamError::Capacity | StreamError::Disconnected) {
-                    let index = usize::from(error == StreamError::Disconnected);
-                    self.stream_admission_errors[index] = self.stream_admission_errors[index].saturating_add(1);
+        let stream_pages = if streamed && self.stream_cache.is_some() {
+            match self.admit_streaming(cursor, cold) {
+                Ok(pages) => pages,
+                Err(error) => {
+                    if matches!(error, StreamError::Capacity | StreamError::Disconnected) {
+                        let index = usize::from(error == StreamError::Disconnected);
+                        self.stream_admission_errors[index] = self.stream_admission_errors[index].saturating_add(1);
+                    }
+                    self.voice_drops = self.voice_drops.saturating_add(1);
+                    return Err(if error == StreamError::Capacity { Error::Capacity } else { Error::NotReady });
                 }
-                self.voice_drops = self.voice_drops.saturating_add(1);
-                return Err(if error == StreamError::Capacity { Error::Capacity } else { Error::NotReady });
             }
-        }
+        } else {
+            0
+        };
         self.steal_voices(1);
         if at > self.now && self.available_commands() == 0 {
             return Err(Error::Capacity);
@@ -1476,6 +1483,7 @@ impl Runtime {
             sample,
             cursor: if cold && !self.offline { cursor.cold() } else { cursor },
             base_step,
+            stream_pages,
             chain: None,
             bus: None,
             tail_remaining: None,
@@ -1499,6 +1507,7 @@ impl Runtime {
         if at > self.now {
             self.queue(at, Action::Start(id));
         }
+        self.stream_reserved += stream_pages;
         self.cold_started += u64::from(cold);
         self.voice_order += 1;
         Ok(id)

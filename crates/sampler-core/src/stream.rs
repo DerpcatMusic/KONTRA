@@ -147,11 +147,11 @@ pub struct StreamWorker {
     store: u64,
 }
 impl StreamCache {
-    /// Bytes of page buffers this cache owns once its worker has filled them.
     /// Nominal streaming polyphony; exact horizon admission also checks shared
     /// demand because pitch and crossfade windows can exceed three pages.
     pub fn voice_budget(&self) -> usize { (self.entries.len() / 3).max(1) }
 
+    /// Bytes of page buffers this cache owns once its worker has filled them.
     pub fn bytes(&self) -> usize {
         self.entries.len() * PAGE_FRAMES * size_of::<Frame>()
     }
@@ -603,6 +603,7 @@ impl crate::Runtime {
     pub fn set_stream_horizon(&mut self, frames: u32) -> Result<(), Error> {
         if frames == 0 { return Err(Error::InvalidInput); }
         self.stream_horizon = frames;
+        self.refresh_stream_reservations();
         Ok(())
     }
     pub fn stream_underruns(&self) -> u64 {
@@ -641,42 +642,42 @@ impl crate::Runtime {
         }
     }
 
-    /// Reserve an incoming cursor before DSP admission can steal a live voice.
-    /// Current demand is protected first; incoming pages then protect each other.
-    pub(crate) fn admit_streaming(&mut self, plan: crate::PlanId, sample: usize,
-        cursor: crate::source::Cursor, envelope: crate::Envelope, at: u64,
-    ) -> Result<(), StreamError> {
-        at.checked_add(u64::from(self.stream_horizon)).ok_or(StreamError::ClockOverflow)?;
-        let mut cache = self.stream_cache.take().ok_or(StreamError::NotConfigured)?;
-        let result = (|| {
-            match self.service_cache(&mut cache, self.stream_horizon) {
-                Ok(_) | Err(StreamError::DecodeFailed(_)) => {},
-                Err(error) => return Err(error),
-            }
-            let asset = &self.plans.get(plan.0).unwrap().prepared.pcm[sample];
-            let head = asset.try_head();
-            let head = head.as_deref().map_or(&[][..], |h| h);
-            let mut failure = None;
-            cursor.visit_demand(self.stream_horizon, crate::envelope::EnvelopeState::new(envelope), |offset, frames| {
-                crate::prepare::uncovered(head, frames, |frames| {
-                    for page in frames.start / PAGE_FRAMES..=(frames.end - 1) / PAGE_FRAMES {
-                        let start = page * PAGE_FRAMES;
-                        cache.protect(asset, start..(start + PAGE_FRAMES).min(asset.frame_count()))
-                            .expect("validated source demand");
-                        if let Err(error) = cache.request_retry(asset, page, at + u64::from(offset)) {
-                            failure = Some(error);
-                            return false;
-                        }
-                    }
-                    true
-                });
-                failure.is_none()
-            });
-            failure.map_or(Ok(()), Err)
-        })();
-        cache.wake();
-        self.stream_cache = Some(cache);
-        result
+    /// Constant-size geometry and a preallocated-storage counter, like v1's
+    /// free stream slots. Page jobs/wakes belong to block service, not each start.
+    pub(crate) fn admit_streaming(&self, cursor: crate::source::Cursor, cold: bool) -> Result<usize, StreamError> {
+        let cache = self.stream_cache.as_ref().ok_or(StreamError::NotConfigured)?;
+        if cold && cache.requests.is_abandoned() { return Err(StreamError::Disconnected); }
+        let pages = cursor.reservation_pages(self.stream_horizon).max(1);
+        if self.stream_reserved.checked_add(pages).is_none_or(|n| n > cache.entries.len()) {
+            return Err(StreamError::Capacity);
+        }
+        Ok(pages)
+    }
+
+    /// Called in the existing render completion loop, and after pitch edits.
+    /// Starts only read the total; they never walk the other voices.
+    pub(super) fn refresh_stream_reservation(&mut self, index: usize, step: f64) {
+        let voice = self.voices.slots[index].value.as_mut().unwrap();
+        if voice.stream_pages == 0 { return; }
+        let mut pages = voice.cursor.reservation_pages(self.stream_horizon).max(1);
+        if step != voice.cursor.step() {
+            pages = pages.max(voice.cursor.with_step(step).reservation_pages(self.stream_horizon));
+        }
+        self.stream_reserved = self.stream_reserved - voice.stream_pages + pages;
+        voice.stream_pages = pages;
+    }
+
+    pub(super) fn refresh_stream_reservations(&mut self) {
+        if self.stream_cache.is_none() { return; }
+        let mut next = self.voices.first;
+        while let Some(index) = next {
+            next = self.voices.slots[index].next;
+            let voice = self.voices.slots[index].value.as_ref().unwrap();
+            let family = self.families.get(voice.family.0).unwrap();
+            let note = self.notes.get(family.note.0).unwrap();
+            let ratio = self.expressions.get(note.expression.0).unwrap().rendered.ratio;
+            self.refresh_stream_reservation(index, voice.base_step * ratio);
+        }
     }
 
     pub fn service_streaming(&mut self, frames: u32) -> Result<bool, StreamError> {
@@ -729,7 +730,7 @@ impl crate::Runtime {
                 if asset.resident_frames().is_some() {
                     continue;
                 }
-                // A busy lock reads as nothing resident: pages are merely requested.
+                // Publication preserves the generation this demand pass borrows.
                 let head = asset.try_head();
                 let head = head.as_deref().map_or(&[][..], |h| h);
                 let mut failure = None;
@@ -768,7 +769,7 @@ impl crate::Runtime {
                     continue;
                 };
                 let cursor = demand.cursor;
-                if let Some((reach, direction, lead)) = cursor.linear_reach(demand.frames) {
+                if let Some((reach, direction, lead)) = cursor.linear_reach(demand.frames.saturating_sub(1)) {
                     // A plain stretch: whole pages in traversal order, without
                     // walking every output frame.
                     let deadline =
@@ -797,7 +798,7 @@ impl crate::Runtime {
                             break;
                         }
                     }
-                } else if let Some(reach) = cursor.loop_reach(demand.frames) {
+                } else if let Some(reach) = cursor.loop_reach(demand.frames.saturating_sub(1)) {
                     // A loop: its few ranges, each at its first deadline.
                     for (range, at) in reach.into_iter().flatten() {
                         if !visit(range, demand.at + u64::from(at)) {
@@ -854,6 +855,35 @@ impl crate::Runtime {
             Ok(true)
         } else {
             Err(Error::NotReady)
+        }
+    }
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use crate::*;
+
+    #[test]
+    fn failed_dsp_starts_do_not_leak_stream_credits_and_end_returns_them() {
+        let pcm = Pcm::headed(48000, PAGE_FRAMES * 2, &[[0.25; 2]; 32]).unwrap();
+        let plan = Prepared::new(48000, vec![pcm], vec![], 0).unwrap();
+        let limits = Limits::for_plan(&plan, 8, 1);
+        let (cache, _worker) = StreamCache::new(2).unwrap();
+        let mut rt = Runtime::new(plan, limits).unwrap().with_stream_cache(cache);
+        rt.set_stream_horizon(64).unwrap();
+        let input = |id| Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: Some(id) };
+        let first = rt.note_on(input(1), 60, 1.).unwrap();
+        let second = rt.note_on(input(2), 60, 1.).unwrap();
+        for _ in 0..1000 {
+            let voice = rt.start(first, 0, 0, 1.).unwrap();
+            assert_eq!(rt.stream_reserved, 1);
+            assert_eq!(rt.start(second, 0, 0, 1.), Err(Error::Capacity));
+            assert_eq!(rt.stream_reserved, 1);
+            rt.stop_voice(voice).unwrap();
+            assert_eq!(rt.stream_reserved, 0);
+            let voice = rt.start(second, 0, 0, 1.).unwrap();
+            rt.stop_voice(voice).unwrap();
+            assert_eq!(rt.stream_reserved, 0);
         }
     }
 }

@@ -1,0 +1,38 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 4K of event 'cycles:u'
+# Event count (approx.): 795728964
+#
+# Overhead  Command     Shared Object     Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      
+# ........  ..........  ................  ............................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+    18.47%  integrated  integrated        [.] <sampler_core::Runtime>::drain_behavior
+     9.74%  integrated  integrated        [.] sampler_core::dsp::process
+     6.53%  integrated  integrated        [.] <sampler_core::bus::BusState>::render
+     5.93%  integrated  integrated        [.] sampler_simd::dispatch::v3::<(), sampler_simd::dispatch::run_fused<(&mut sampler_core::source::Cursor, &mut [[f32; 2]], &mut sampler_core::envelope::EnvelopeState), (), <sampler_core::source::Cursor>::render_run<sampler_core::source::PagedFrames>::{closure#3}, <sampler_core::source::Cursor>::render_run<sampler_core::source::PagedFrames>::{closure#4}>::{closure#0}>
+     4.36%  integrated  integrated        [.] <sampler_core::Runtime>::service_streaming
+     4.21%  integrated  integrated        [.] <sampler_core::Runtime>::render_voice
+     3.43%  integrated  integrated        [.] sampler_simd::dispatch::v3::<(), sampler_core::dsp::convolution::mac::{closure#0}>
+     2.26%  integrated  integrated        [.] <sampler_core::voice_mod::VoiceModState>::evaluate
+     2.16%  integrated  integrated        [.] <sampler_core::stream::StreamCache>::protect
+     1.98%  integrated  integrated        [.] <sampler_core::stream::StreamCache>::request
+     1.98%  integrated  integrated        [.] <sampler_core::envelope::EnvelopeState>::level
+     1.78%  integrated  integrated        [.] <sampler_core::dsp::PreparedVoiceChain>::finish
+     1.77%  integrated  integrated        [.] sampler_core::render::render_source::<sampler_core::source::PagedFrames>
+     1.77%  integrated  integrated        [.] <sampler_core::stream::PageReader>::span
+     1.68%  integrated  integrated        [.] <sampler_core::stream::StreamCache>::request_retry
+     1.66%  integrated  integrated        [.] <sampler_core::envelope::EnvelopeState>::next
+     1.54%  integrated  libc.so.6         [.] 0x00000000001b7bdd
+     1.49%  integrated  integrated        [.] <sampler_core::voice_mod::VoiceModState>::mix
+     1.31%  integrated  integrated        [.] sampler_core::source::mix::<core::slice::iter::Iter<[f32; 2]>>
+     1.23%  integrated  integrated        [.] <sampler_core::voice_mod::VoiceModState>::advance
+     1.18%  integrated  integrated        [.] <sampler_core::Runtime>::prepare_voice
+     1.15%  integrated  integrated        [.] <sampler_core::Runtime>::render_split
+
+
+#
+# (Tip: To see how parallelism changes over time, try: perf report -F time,latency,parallelism --time-quantum=1s)
+#

@@ -5,7 +5,7 @@ use super::{Envelope, Error, Frame, NotePitch, Playback};
 pub use predicates::{AXIS_BASE, ControllerCondition, MAX_AXES, PREVIOUS_KEY};
 use predicates::Matching;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering::Relaxed};
-use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard};
+use sampler_pool::{Snapshot, SnapshotRead};
 
 /// Immutable decoded-asset metadata with optional resident PCM. Construct, clone and drop on the
 /// control side. Clones share the original sample buffer; rendering only borrows.
@@ -25,7 +25,7 @@ struct PcmData {
     rate: u32,
     frames: Option<Box<[Frame]>>,
     // Pre-decimated octave levels (level 1 first), built by `Pcm::mipmapped`
-    // or `service_mipmaps`. Audio only try-locks: a busy lock reads as none.
+    // or `service_mipmaps`. Audio borrows an immutable published generation.
     levels: Levels,
     // Deepest octave voices asked for, and the runtime clock of the last
     // render that read this asset.
@@ -33,7 +33,7 @@ struct PcmData {
     used: AtomicU64,
     // A streamed asset's resident ranges (where voices start); empty when purged.
     /// Readers (every render thread) share it; only a control-side swap writes.
-    head: RwLock<Ranges>,
+    head: Snapshot<Ranges>,
     // A start was refused because its pages were not resident.
     cold: AtomicBool,
     length: usize,
@@ -67,11 +67,7 @@ pub(crate) fn uncovered(
     }
     true
 }
-type Levels = Mutex<LevelData>;
-/// Control-side lock that survives an audio-thread panic.
-fn lock<T>(data: &Mutex<T>) -> MutexGuard<'_, T> {
-    data.lock().unwrap_or_else(|e| e.into_inner())
-}
+type Levels = Snapshot<LevelData>;
 impl Pcm {
     /// Validate once without copying the owned frame buffer. All public access is
     /// immutable, so subsequent prepared plans need not rescan sample contents.
@@ -91,7 +87,7 @@ impl Pcm {
     pub fn mipmapped(rate: u32, frames: Box<[Frame]>) -> Result<Self, Error> {
         let pcm = Self::new(rate, frames)?;
         let depth = crate::resample::OCTAVES;
-        *lock(&pcm.0.levels) = crate::resample::octaves(pcm.0.frames.as_deref().unwrap(), depth);
+        pcm.0.levels.replace(crate::resample::octaves(pcm.0.frames.as_deref().unwrap(), depth), |_| ());
         pcm.0.wanted.store(depth as u8, Relaxed);
         Ok(pcm)
     }
@@ -112,11 +108,11 @@ impl Pcm {
     /// Control side: replace a streamed asset's resident frame ranges,
     /// typically the first frames of each zone start, so starts need no cache
     /// page; empty purges them. Ranges ascend, disjoint and non-empty. Returns
-    /// the old ranges to drop here, off audio. A start that finds its frames
+    /// a borrowed old generation; only subsequent control-side collection frees it. A start that finds its frames
     /// missing fails `NotReady` and marks the asset cold (`take_cold`).
     /// Frames are kept packed ([`crate::Packed`]): 16/24-bit, mono when both
     /// channels match, whenever that reads back bit-exactly.
-    pub fn set_ranges(&self, ranges: Vec<(usize, Box<[Frame]>)>) -> Result<Ranges, Error> {
+    pub fn set_ranges(&self, ranges: Vec<(usize, Box<[Frame]>)>) -> Result<SnapshotRead<'_, Ranges>, Error> {
         let valid = self.0.frames.is_none()
             && ranges.windows(2).all(|w| w[0].0 + w[0].1.len() <= w[1].0)
             && ranges.iter().all(|(start, frames)| {
@@ -133,15 +129,18 @@ impl Pcm {
             .into_iter()
             .map(|(start, frames)| (start, crate::Packed::new(&frames)))
             .collect();
-        Ok(std::mem::replace(&mut *self.0.head.write().unwrap_or_else(|e| e.into_inner()), ranges))
+        self.0.head.collect();
+        Ok(self.0.head.swap(ranges))
     }
-    /// Frames in resident ranges.
+    /// Control side: frames in resident ranges, collecting retired generations.
     pub fn head_frames(&self) -> usize {
-        self.0.head.read().unwrap_or_else(|e| e.into_inner()).iter().map(|(_, f)| f.len()).sum()
+        self.0.head.collect();
+        self.0.head.read().iter().map(|(_, f)| f.len()).sum()
     }
-    /// Bytes resident ranges hold, packed.
+    /// Control side: packed bytes held by the current resident ranges.
     pub fn head_bytes(&self) -> usize {
-        self.0.head.read().unwrap_or_else(|e| e.into_inner()).iter().map(|(_, f)| f.bytes()).sum()
+        self.0.head.collect();
+        self.0.head.read().iter().map(|(_, f)| f.bytes()).sum()
     }
     /// Whether a start was refused for a missing head since the last call.
     pub fn take_cold(&self) -> bool {
@@ -152,9 +151,9 @@ impl Pcm {
     pub fn last_played(&self) -> u64 {
         self.0.used.load(Relaxed)
     }
-    /// Audio side: the resident ranges unless the control side is swapping them.
-    pub(crate) fn try_head(&self) -> Option<RwLockReadGuard<'_, Ranges>> {
-        self.0.head.try_read().ok()
+    /// Audio side: an immutable generation, never missing due to publication.
+    pub(crate) fn try_head(&self) -> Option<SnapshotRead<'_, Ranges>> {
+        Some(self.0.head.read())
     }
     pub fn mark_cold(&self) {
         self.0.cold.store(true, Relaxed);
@@ -176,7 +175,7 @@ impl Pcm {
             levels: Levels::default(),
             wanted: AtomicU8::new(0),
             used: AtomicU64::new(0),
-            head: RwLock::default(),
+            head: Snapshot::default(),
             cold: AtomicBool::new(false),
             length,
         })))
@@ -193,9 +192,9 @@ impl Pcm {
     pub fn resident_frames(&self) -> Option<&[Frame]> {
         self.0.frames.as_deref()
     }
-    /// Audio side: the levels unless the control side is swapping them.
-    pub(crate) fn try_levels(&self) -> Option<MutexGuard<'_, LevelData>> {
-        self.0.levels.try_lock().ok()
+    /// Audio side: an immutable octave generation, even during publication.
+    pub(crate) fn try_levels(&self) -> Option<SnapshotRead<'_, LevelData>> {
+        Some(self.0.levels.read())
     }
     /// Audio side: record that a voice reads this asset at `step` at `now`.
     pub(crate) fn want_levels(&self, step: f64, now: u64) {
@@ -206,10 +205,11 @@ impl Pcm {
         }
     }
     fn level_bytes(&self) -> usize {
-        let levels = lock(&self.0.levels);
+        self.0.levels.collect();
+        let levels = self.0.levels.read();
         levels.iter().map(|l| l.len()).sum::<usize>() * size_of::<Frame>()
     }
-    /// Bytes of resident frames, octave levels and any streamed head.
+    /// Control side: bytes of resident frames, octave levels and any streamed head.
     pub fn resident_bytes(&self) -> usize {
         (self.0.frames.as_ref().map_or(0, |f| f.len()) + self.head_frames()) * size_of::<Frame>()
             + self.level_bytes()
@@ -235,7 +235,7 @@ pub fn service_mipmaps(assets: &[Pcm], budget: usize, idle: u64) -> usize {
     let mut wanting: Vec<&Pcm> = assets
         .iter()
         .filter(|p| {
-            let depth = lock(&p.0.levels).len();
+            let depth = p.0.levels.read().len();
             usize::from(p.0.wanted.load(Relaxed)) > depth
         })
         .collect();
@@ -252,12 +252,11 @@ pub fn service_mipmaps(assets: &[Pcm], budget: usize, idle: u64) -> usize {
                 .min_by_key(|p| p.0.used.load(Relaxed));
             let Some(victim) = victim else { break };
             held -= victim.level_bytes();
-            drop(std::mem::take(&mut *lock(&victim.0.levels)));
+            victim.0.levels.replace(Box::new([]), |_| ());
         }
         if held + need <= budget {
             let built = crate::resample::octaves(frames, depth.into());
-            let old = std::mem::replace(&mut *lock(&pcm.0.levels), built);
-            drop(old);
+            pcm.0.levels.replace(built, |_| ());
             held += need;
         }
     }
@@ -269,7 +268,7 @@ pub fn service_mipmaps(assets: &[Pcm], budget: usize, idle: u64) -> usize {
             .min_by_key(|p| p.0.used.load(Relaxed))
             .expect("held bytes belong to some asset");
         held -= victim.level_bytes();
-        drop(std::mem::take(&mut *lock(&victim.0.levels)));
+        victim.0.levels.replace(Box::new([]), |_| ());
     }
     held
 }
@@ -1340,5 +1339,28 @@ mod fade_tests {
         assert_eq!(ramp(40, 1, 100, 0, 60), 1.0);
         assert_eq!(ramp(100, 1, 100, 0, 60), 1.0 / 61.0);
         assert_eq!(ramp(80, 1, 100, 0, 60), 21.0 / 61.0);
+    }
+}
+
+#[cfg(test)]
+mod publication_tests {
+    use super::*;
+
+    #[test]
+    fn publishing_residency_does_not_wait_for_an_audio_reader() {
+        let pcm = Pcm::headed(48000, 128, &[[0.25; 2]; 64]).unwrap();
+        let old = pcm.try_head().unwrap();
+        let control = pcm.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let publisher = std::thread::spawn(move || {
+            control.set_ranges(vec![(0, vec![[0.5; 2]; 64].into_boxed_slice())]).unwrap();
+            tx.send(()).unwrap();
+        });
+        let published = rx.recv_timeout(std::time::Duration::from_millis(100)).is_ok();
+        assert_eq!(old[0].1.frame(0), [0.25; 2]);
+        drop(old);
+        publisher.join().unwrap();
+        assert!(published, "publication must not block on the audio reader");
+        assert_eq!(pcm.try_head().unwrap()[0].1.frame(0), [0.5; 2]);
     }
 }

@@ -283,7 +283,9 @@ impl Runtime {
                 let v = self.voices.slots[i].value.as_ref().unwrap();
                 let bus = v.bus;
                 let f = self.families.get(v.family.0).unwrap();
-                let plan = self.notes.get(f.note.0).unwrap().plan.0;
+                let note = self.notes.get(f.note.0).unwrap();
+                let plan = note.plan.0;
+                let stream_step = v.base_step * self.expressions.get(note.expression.0).unwrap().rendered.ratio;
                 let generation = self.plans.get_mut(plan).unwrap();
                 let (dsp, modulation) = (&mut generation.dsp, &mut generation.modulation);
                 let target = match bus {
@@ -318,6 +320,9 @@ impl Runtime {
                 self.stream_underruns = self
                     .stream_underruns
                     .saturating_add(u64::from(outcome.underrun));
+                if !outcome.done {
+                    self.refresh_stream_reservation(i, stream_step);
+                }
             }
         }
         for run in &par.runs {
