@@ -998,6 +998,8 @@ pub enum Target {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProcessorParameter {
     Response,
+    Width,
+    Pan,
     Cutoff,
     Resonance,
     Gain,
@@ -1025,6 +1027,17 @@ pub struct Chain {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Processor {
     Gain(Gain),
+    /// Native smoothed gain with a dry input contribution.
+    Gainer {
+        gain: Gain,
+        dry: f64,
+    },
+    /// Native width 0..1 (.5 identity), balance -1..1 and optional pseudo stereo.
+    StereoModeller {
+        width: f64,
+        pan: f64,
+        pseudo: bool,
+    },
     Pan(Pan),
     Filter(Filter),
     Delay {

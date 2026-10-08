@@ -626,11 +626,17 @@ pub(crate) struct OpState {
     pub host: [i64; HOST_VALUES],
     pub random: u64,
     timer_origin: std::time::Instant,
+    engine_outcomes: std::collections::VecDeque<crate::EngineParameterOutcome>,
+    dropped_engine_outcomes: u64,
 }
 impl Default for OpState {
     fn default() -> Self {
         Self {
             timer_origin: std::time::Instant::now(),
+            engine_outcomes: std::collections::VecDeque::with_capacity(
+                crate::engine_parameters::ENGINE_OUTCOME_CAPACITY,
+            ),
+            dropped_engine_outcomes: 0,
             effects: std::collections::VecDeque::with_capacity(EFFECT_CAPACITY),
             dropped_effects: 0,
             truncated_texts: 0,
@@ -663,6 +669,34 @@ fn i32_of(value: i64) -> Result<i32, Error> {
 }
 
 impl Runtime {
+    pub fn take_engine_parameter_outcome(&mut self) -> Option<crate::EngineParameterOutcome> {
+        self.ops.engine_outcomes.pop_front()
+    }
+    pub fn dropped_engine_parameter_outcomes(&self) -> u64 {
+        self.ops.dropped_engine_outcomes
+    }
+    fn record_engine_outcome(
+        &mut self,
+        id: BehaviorId,
+        plan: crate::PlanId,
+        address: Option<crate::EngineParameterAddress>,
+        write: bool,
+        result: Result<(), Error>,
+    ) {
+        if self.ops.engine_outcomes.len() == crate::engine_parameters::ENGINE_OUTCOME_CAPACITY {
+            self.ops.dropped_engine_outcomes += 1;
+        } else {
+            self.ops
+                .engine_outcomes
+                .push_back(crate::EngineParameterOutcome {
+                    plan,
+                    program: self.behaviors.get(id.0).unwrap().program,
+                    address,
+                    write,
+                    result,
+                });
+        }
+    }
     /// Pending effects in emission order. Returning false stops and keeps the rest.
     pub fn drain_effects(&mut self, mut accept: impl FnMut(&Effect) -> bool) {
         while let Some(effect) = self.ops.effects.front() {
@@ -1029,15 +1063,41 @@ impl Runtime {
                 write,
             } => {
                 let plan = self.behavior_plan(owner)?;
-                if let Some(address) = self.engine_address(id, address)? {
+                let address = self.engine_address(id, address)?;
+                if let Some(address) = address {
                     if write {
-                        self.set_engine_parameter_in(plan, address, self.reg(id, local)? as i32)?;
+                        let result = self.set_engine_parameter_in(
+                            plan,
+                            address,
+                            self.reg(id, local)? as i32,
+                        );
+                        self.record_engine_outcome(id, plan, Some(address), true, result);
+                        if let Err(error) = result
+                            && error != Error::InvalidInput
+                        {
+                            return Err(error);
+                        }
                     } else {
-                        let value = self.engine_parameter_in(plan, address)?;
+                        let result = self.engine_parameter_in(plan, address);
+                        self.record_engine_outcome(
+                            id,
+                            plan,
+                            Some(address),
+                            false,
+                            result.map(|_| ()),
+                        );
+                        let value = match result {
+                            Ok(v) => v,
+                            Err(Error::InvalidInput) => 0,
+                            Err(error) => return Err(error),
+                        };
                         self.set_reg(id, local, value.into())?;
                     }
-                } else if !write {
-                    self.set_reg(id, local, 0)?;
+                } else {
+                    self.record_engine_outcome(id, plan, None, write, Err(Error::InvalidInput));
+                    if !write {
+                        self.set_reg(id, local, 0)?;
+                    }
                 }
             }
             Op::EngineDisplay {
@@ -1051,9 +1111,28 @@ impl Runtime {
                     let plan = self.behavior_plan(owner)?;
                     let value = match value {
                         Some(v) => self.reg(id, v)? as i32,
-                        None => self.engine_parameter_in(plan, address)?,
+                        None => {
+                            let read_result = self.engine_parameter_in(plan, address);
+                            self.record_engine_outcome(
+                                id,
+                                plan,
+                                Some(address),
+                                false,
+                                read_result.map(|_| ()),
+                            );
+                            match read_result {
+                                Ok(value) => value,
+                                Err(Error::InvalidInput) => {
+                                    result = Text::new("?");
+                                    0
+                                }
+                                Err(error) => return Err(error),
+                            }
+                        }
                     };
-                    crate::engine_parameters::display(address.parameter, value, &mut result);
+                    if result.as_str().is_empty() {
+                        crate::engine_parameters::display(address.parameter, value, &mut result);
+                    }
                 }
                 *self
                     .behavior_bank(id)?

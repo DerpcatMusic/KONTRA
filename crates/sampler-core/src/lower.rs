@@ -1063,6 +1063,8 @@ impl Lowering<'_> {
             (Processor::Daft(filter), Resonance) => filter.resonance = parameter,
             (Processor::Daft(filter), Response) => filter.response = parameter,
             (Processor::Gainer { gain, .. }, Gain) => *gain = parameter,
+            (Processor::StereoModeller(settings), Width) => settings.width = parameter,
+            (Processor::StereoModeller(settings), Pan) => settings.pan = parameter,
             _ => return Ok(false),
         }
         Ok(true)
@@ -1192,6 +1194,17 @@ impl Lowering<'_> {
     fn processor(&self, owner: &str, processor: ir::Processor) -> Result<Processor, LowerError> {
         Ok(match processor {
             ir::Processor::Gain(gain) => Processor::Gain(gain.linear()),
+            ir::Processor::Gainer { gain, dry } => Processor::Gainer {
+                gain: Parameter::Constant(gain.linear()),
+                dry,
+            },
+            ir::Processor::StereoModeller { width, pan, pseudo } => {
+                Processor::StereoModeller(crate::StereoSettings {
+                    width: Parameter::Constant(width),
+                    pan: Parameter::Constant(pan),
+                    pseudo,
+                })
+            }
             ir::Processor::Pan(pan) => Processor::StereoMatrix(stereo(pan)),
             ir::Processor::StereoMatrix(matrix) => Processor::StereoMatrix(matrix),
             ir::Processor::Reverb(r) => Processor::Reverb(ReverbSettings {
