@@ -400,6 +400,7 @@ impl Streamer {
         policy: &StreamPolicy,
         probe: usize,
     ) -> Result<Opened, LoadError> {
+        let _span = crate::audit::Span::new("sample_headers_latency_probe");
         let mut latencies = Vec::new();
         let mut page = vec![[0.0; 2]; PAGE_FRAMES];
         let mut assets = Vec::with_capacity(sources.len());
@@ -464,6 +465,7 @@ impl Streamer {
         worker: StreamWorker,
         decoders: usize,
     ) -> io::Result<(Self, usize)> {
+        let span = crate::audit::Span::new("sample_preload");
         let mut bytes = 0;
         let mut table = HashMap::with_capacity(assets.len());
         for (pcm, ranges) in assets.iter().zip(ranges) {
@@ -473,6 +475,7 @@ impl Streamer {
             }
             table.insert(pcm.asset_id(), ranges);
         }
+        drop(span);
         let sources = Arc::new(sources);
         let stop = Arc::new(AtomicBool::new(false));
         // Several decoders overlap reads, so one slow read does not hold up

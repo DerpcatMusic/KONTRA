@@ -1067,7 +1067,9 @@ fn translate_untagged(path: &Path) -> Result<Translated, Box<dyn std::error::Err
         .ancestors()
         .find(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("ufs")))
     {
+        let span = sampler_kontakt::audit::Span::new("uvi_bank_open");
         let bank = Bank::open(bank_path)?;
+        drop(span);
         let member = path
             .strip_prefix(bank_path)?
             .to_string_lossy()
@@ -1083,10 +1085,16 @@ fn translate_untagged(path: &Path) -> Result<Translated, Box<dyn std::error::Err
         } else {
             member
         };
+        let span = sampler_kontakt::audit::Span::new("uvi_program_read_decrypt");
         let (text, program_path) = bank.program(&member)?;
+        drop(span);
+        let span = sampler_kontakt::audit::Span::new("uvi_xml_translate_ir");
         let (instrument, locations, groups, inserts) = translate_full(&text, Source::Bank)
             .map_err(|e| describe(Path::new(&member), e))?;
+        drop(span);
+        let span = sampler_kontakt::audit::Span::new("uvi_script_resources");
         let lua = bank.scripts();
+        drop(span);
         return Ok(Translated {
             instrument,
             locations,
