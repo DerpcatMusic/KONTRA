@@ -555,7 +555,7 @@ impl Store {
     }
 }
 
-/// One script instance's mutable state, cloned into each plan generation.
+/// One script instance's mutable state, owned by its live plan generation.
 #[derive(Debug, Default)]
 pub(crate) struct ScriptBank {
     pub cells: Box<[i64]>,
@@ -566,17 +566,28 @@ pub(crate) struct ScriptBank {
     pub persistence_callback: Option<(BehaviorId, Option<crate::Outcome>)>,
 }
 
-impl Clone for ScriptBank {
-    fn clone(&self) -> Self {
-        let mut text_properties = Vec::with_capacity(self.text_properties.capacity());
-        text_properties.extend_from_slice(&self.text_properties);
-        Self {
+/// Immutable preparation keeps compact shared strings; only a live generation
+/// needs fixed-capacity mutable text buffers for allocation-free script writes.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ScriptInitial {
+    pub cells: Box<[i64]>,
+    pub texts: Box<[std::sync::Arc<str>]>,
+    pub store: Store,
+    pub controls: Box<[Option<ControlId>]>,
+    pub text_properties: Vec<([i32; STORE_KEY], std::sync::Arc<str>)>,
+}
+
+impl ScriptInitial {
+    pub fn bank(&self) -> ScriptBank {
+        let mut text_properties = Vec::with_capacity(self.store.capacity);
+        text_properties.extend(self.text_properties.iter().map(|(key, text)| (*key, Text::new(text))));
+        ScriptBank {
             cells: self.cells.clone(),
-            texts: self.texts.clone(),
+            texts: self.texts.iter().map(|text| Text::new(text)).collect(),
             store: self.store.clone(),
             controls: self.controls.clone(),
             text_properties,
-            persistence_callback: self.persistence_callback,
+            persistence_callback: None,
         }
     }
 }
@@ -593,15 +604,15 @@ pub struct ScriptResources {
     pub controls: Vec<Option<ControlId>>,
 }
 impl ScriptResources {
-    pub(crate) fn apply(self, bank: &mut ScriptBank) -> Result<(), Error> {
-        bank.texts = self.texts.iter().map(|t| Text::new(t)).collect();
+    pub(crate) fn apply(self, bank: &mut ScriptInitial) -> Result<(), Error> {
+        bank.texts = self.texts.into_iter().map(|text| std::sync::Arc::from(Text::new(&text).as_str())).collect();
         bank.store = Store::new(self.store, self.store_capacity)?;
         bank.controls = self.controls.into_boxed_slice();
-        bank.text_properties = Vec::with_capacity(self.store_capacity);
+        bank.text_properties = Vec::with_capacity(self.text_properties.len());
         bank.text_properties.extend(
             self.text_properties
                 .into_iter()
-                .map(|(key, text)| (key, Text::new(&text))),
+                .map(|(key, text)| (key, std::sync::Arc::from(Text::new(&text).as_str()))),
         );
         Ok(())
     }
@@ -1443,5 +1454,28 @@ impl Runtime {
             }
         }
         Ok(false)
+    }
+}
+
+#[cfg(test)]
+mod initial_text_tests {
+    use super::*;
+    #[test]
+    fn shared_initial_texts_make_independent_mutable_banks() {
+        let mut initial = ScriptInitial::default();
+        ScriptResources { texts: vec!["seed".into()],
+            text_properties: vec![([1, 0, 0, 0], "named".into())],
+            store_capacity: 4, ..Default::default() }.apply(&mut initial).unwrap();
+        let clone = initial.clone();
+        assert!(std::sync::Arc::ptr_eq(&initial.texts[0], &clone.texts[0]));
+        assert!(std::sync::Arc::ptr_eq(&initial.text_properties[0].1, &clone.text_properties[0].1));
+        let mut first = initial.bank();
+        let second = clone.bank();
+        first.texts[0].push(" changed");
+        first.text_properties[0].1.clear();
+        assert_eq!(second.texts[0].as_str(), "seed");
+        assert_eq!(second.text_properties[0].1.as_str(), "named");
+        assert!(first.text_properties.capacity() >= 4);
+        assert_eq!(&*initial.texts[0], "seed");
     }
 }
