@@ -1970,5 +1970,43 @@
     "schema_columns": 72,
     "raw_saved_sigils": "unknown when incomplete; separate from decoded source disposition",
     "status": "Rust binaries retained; driver superseded by01178ba4"
+  },
+  "partial_cached_sweep_1152_1175": {
+    "reported_by": "shared census owner",
+    "checked_at_utc": "2026-10-08T15:57:31.644597+00:00",
+    "owner_reported_counts": {
+      "v1_rows": 1152,
+      "v2_rows": 1175,
+      "v2_admitted": 1174,
+      "v2_timeouts": 1,
+      "v2_ui_all_formats": {
+        "original_ok": 733,
+        "missing_images": 389,
+        "error": 53,
+        "error_kontakt": 50,
+        "error_uvi": 3
+      }
+    },
+    "coverage": "partial; row counts not verified pair intersection",
+    "guard_gib": 18,
+    "retry": false,
+    "new_binary": false,
+    "uvi_timeout": {
+      "item": "Augmented Orchestra.ufs::Presets/08 Ambient/Coline MW.uvip",
+      "record": "/home/derpcat/.cache/kontra-scan/results/v2/cache/536a86bfd94693c778c68d8806f9f22379c5bdd9a5398efd622da6c175e17b05.json",
+      "revision_signature": "19e2f2c76771ceeb1f5db47956d404a290e16ef61dabb6e34909176b362b6751",
+      "timed_out": true,
+      "stage": "load program 0",
+      "loads": "no",
+      "ui": "error",
+      "cached_load_ms": 91126.2,
+      "cached_process_ms": 91126.2,
+      "timeout_bound_seconds": 90,
+      "classification": "bounded load timeout; root cause unknown; not intrinsic unsupported or silence",
+      "v1_same_item_cache_observed": false,
+      "audition": "not completed",
+      "timing_use": "elapsed watchdog receipt, not completed product load"
+    },
+    "own_work": "metadata cache read only; no probe/collector/retry"
   }
 }
