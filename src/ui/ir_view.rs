@@ -292,6 +292,32 @@ pub fn height(face: &Interface, page: PageRef) -> u32 {
     face.pages[page.0].size.height.max(bottom.unwrap_or(0))
 }
 
+/// Axis and full-range travel in drawn pixels, independent of bitmap fallback.
+fn gesture(w: &ir::Widget, scale: f64) -> (bool, f64) {
+    let vertical = match w.kind {
+        Kind::Knob { .. } | Kind::ValueEdit { .. } => true,
+        Kind::Slider { orientation, .. } => w.drag.map_or(
+            orientation == ir::Orientation::Vertical || w.rect.height > w.rect.width,
+            |d| d.axis == ir::Orientation::Vertical,
+        ),
+        _ => true,
+    };
+    let travel = match w.drag.filter(|d| d.sensitivity != 0) {
+        Some(d) => f64::from(if vertical { w.rect.height } else { w.rect.width }).max(1.) * 1000. / f64::from(d.sensitivity),
+        None if matches!(w.kind, Kind::Slider { .. }) => f64::from(if vertical { w.rect.height } else { w.rect.width }).max(1.),
+        None => 200.,
+    };
+    (vertical, travel * scale)
+}
+
+fn quantized(value: f64, range: &ir::Range) -> f64 {
+    let value = match range.step.filter(|s| s.is_finite() && *s > 0.) {
+        Some(step) => range.min + ((value - range.min) / step).round() * step,
+        None => value,
+    };
+    value.clamp(range.min.min(range.max), range.min.max(range.max))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn widget(
     ui: &mut Ui,
@@ -352,11 +378,12 @@ pub(super) fn widget(
 
     let face_el: El = match &wd.kind {
         Kind::Knob { range, .. } | Kind::Slider { range, .. } => {
-            let vertical = !matches!(wd.kind, Kind::Slider { orientation: ir::Orientation::Horizontal, .. });
-            let held = if can_edit {
-                drive_mapped(ui, &id, &mut v, range, wd.mapper.as_deref(), vertical)
-            } else {false};
-            if let Some(step)=range.step { v=(v/step).round()*step; }
+            let (vertical,travel)=gesture(wd,scale);
+            let held=if can_edit {
+                if wd.mapper.is_some() {drive_mapped(ui,&id,&mut v,range,wd.mapper.as_deref(),vertical)}
+                else {drive(ui,&id,&mut v,&(range.min..=range.max),travel,vertical,range.default)}
+            }else{false};
+            if can_edit && (ui.get(id.as_str()).dragged || ui.get(id.as_str()).wheel != Vec2::ZERO || !ui.keys(id.as_str()).is_empty()) {v=quantized(v,range);}
             let lift = ui.state(id.as_str()).hover.max(if held { 1. } else { 0. }) as f32;
             let unit = |x: f64| mapped(range,wd.mapper.as_deref(),x,true);
             match strip {
@@ -389,7 +416,7 @@ pub(super) fn widget(
         }
         Kind::Button { momentary: true } => {
             // UVI Button is stateless: one callback per activation, including keyboard.
-            v = if can_edit && ui.get(id.as_str()).activated() { 1. } else { 0. };
+            if can_edit {v=if face.source==ir::Source::FalconLua {f64::from(ui.get(id.as_str()).activated())}else{f64::from(ui.get(id.as_str()).held)};}
             let pressed = can_edit && ui.get(id.as_str()).held;
             match state_picture(pressed) {
                 Some(p) => block(w, h).radius(0).fill(picture(p, fixed.unwrap_or_else(|| switch_frame(v > 0.5, p.len()))).unwrap_or(Fill::from(Role::Field))),
@@ -418,11 +445,8 @@ pub(super) fn widget(
         }
         Kind::Menu { items } => {
             let shown: Vec<&ir::MenuItem> = items.iter().filter(|i| i.visible).collect();
-            // A value no entry has shows the first, as Kontakt does.
+            // Drawing an unknown semantic value must not edit the script.
             let at = shown.iter().position(|i| f64::from(i.value) == v).or((!shown.is_empty()).then_some(0));
-            if let Some(a) = at {
-                v = f64::from(shown[a].value);
-            }
             if can_edit && ui.get(id.as_str()).activated() && !shown.is_empty() {
                 if wd.menu_cycle { v=f64::from(shown[at.map_or(0,|a|(a+1)%shown.len())].value); }
                 else { assets.open_menu.set(if assets.open_menu.get()==Some(n.0){None}else{Some(n.0)}); }
@@ -529,8 +553,11 @@ pub(super) fn widget(
         && light_under(face, assets, n);
     let face_el = if let Some(c)=wd.colors.background {face_el.fill(colour(c))}else{face_el};
     let face_el = if plate { face_el.radius(2).fill(Color::oklch(0.2, 0., 0.).with_alpha(0.85)) } else { face_el };
-    let face_el = if can_edit {face_el}else{face_el.disabled()};
-    let mut el = face_el.w(w).h(h).shrink(0).opacity(opacity).id(id).named(wd.automation.name.clone().unwrap_or_else(|| wd.name.clone()));
+    let face_el=if can_edit{face_el}else{face_el.disabled()};
+    let interactive = matches!(wd.kind, Kind::Knob { .. } | Kind::Slider { .. } | Kind::Button { .. } | Kind::Switch | Kind::Menu { .. } | Kind::ValueEdit { .. });
+    // MUI reserves slash-prefixed IDs for non-target decoration.
+    let target = if interactive { id } else { format!("/{id}") };
+    let mut el = face_el.w(w).h(h).shrink(0).opacity(opacity).id(target).named(wd.automation.name.clone().unwrap_or_else(|| wd.name.clone()));
     if !wd.tooltip.is_empty() {
         el = el.tip(wd.tooltip.clone());
     }
