@@ -94,7 +94,9 @@ fn failure(error: &anyhow::Error, phase: &str) -> String {
     let category = error
         .downcast_ref::<mlua::Error>()
         .map(category)
-        .unwrap_or_else(|| "NativeUI package".into());
+        .unwrap_or_else(|| if error.to_string()=="NativeUI supplied font unavailable" {
+            "NativeUI font service unavailable".into()
+        } else {"NativeUI package".into()});
     format!("{phase}, {category}: {error}")
 }
 impl Drop for State {
@@ -488,7 +490,10 @@ fn draw(
             _ => {}
         }
     }
-    if let Some(name) = font_name { style.font = package.font(&name, style.bold); }
+    if let Some(name) = font_name {
+        style.font=Some(package.font(&name,style.bold)
+            .ok_or_else(||anyhow::anyhow!("NativeUI supplied font unavailable"))?);
+    }
     let child_nodes = tables(node, "children")?;
     let has_flexible_content = child_nodes.iter().any(|child| {
         let flex = flexibility(child);
@@ -1110,6 +1115,78 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "requires locally owned NativeUI library; graph and bindings stay in RAM"]
+    fn native_edit_selector_bindings_use_the_published_source() {
+        let path=std::path::PathBuf::from(std::env::var_os("KONTRA_AUDIT_WIDGET_PATCH").unwrap());
+        let mut source=sampler_kontakt::read(&path).unwrap().instrument;
+        source.zones.clear(); source.source_indices.zones.clear(); source.assets.clear();
+        let loaded=sampler_kontakt::prepare(source,vec![],&sampler_kontakt::Options {
+            library:Some(path.clone()),..Default::default()
+        }).unwrap();
+        let entry=loaded.interfaces.iter().find_map(|f|f.native_ui.as_ref()).unwrap().entry.clone();
+        let controls:Vec<_>=loaded.interfaces.iter().flat_map(|f|f.widgets.iter().enumerate()
+            .map(move |(n,w)|(f.source,n,w.clone()))).collect();
+        let package=Arc::new(Package::load(&path).unwrap());
+        let session=Session::new(package,&entry,controls.clone()).unwrap();
+        let reads=Arc::new(std::sync::Mutex::new(Vec::<(String,usize,String)>::new()));
+        let trace=reads.clone();
+        session.lua().globals().set("__audit_parameter",session.lua().create_function(
+            move |_,(name,binding,path):(String,i64,String)| {
+                if binding>=0 && (name.starts_with("Edit__Synth__Src__") || name.starts_with("Edit__Synth__Shp__")) {
+                    let mut trace=trace.lock().unwrap();
+                    if trace.len()<16384 {trace.push((name,binding as usize,path));}
+                }
+                Ok(())
+            }
+        ).unwrap()).unwrap();
+        fn tap(node:&Table,target:&str)->Option<Function> {
+            let mut contains=string(node,"kind")=="Text" &&
+                node.get::<Table>("props").ok().is_some_and(|p|string(&p,"text").eq_ignore_ascii_case(target));
+            for child in tables(node,"children").unwrap() {
+                if let Some(callback)=tap(&child,target) {return Some(callback);}
+                contains|=has_text(&child,target);
+            }
+            if contains {for modifier in tables(node,"modifiers").unwrap() {
+                if string(&modifier,"name")=="on_tap_gesture" &&
+                    let Ok(value)=modifier.get::<Table>("value") &&
+                    let Ok(callback)=value.get::<Function>("complete").or_else(|_|value.get("start")) {return Some(callback);}
+                if matches!(string(&modifier,"name").as_str(),"background"|"overlay") &&
+                    let Ok(child)=modifier.get::<Table>("value") &&
+                    let Some(callback)=tap(&child,target) {return Some(callback);}
+            }}
+            None
+        }
+        fn has_text(node:&Table,target:&str)->bool {
+            (string(node,"kind")=="Text" && node.get::<Table>("props").ok()
+                .is_some_and(|p|string(&p,"text").eq_ignore_ascii_case(target))) ||
+                tables(node,"children").unwrap().iter().any(|c|has_text(c,target))
+        }
+        let graph=session.render().unwrap_or_else(|e|panic!("{}",failure(&e,"graph").split_once(": ").unwrap().0));
+        let callback=tap(&graph,"EDIT").expect("authored Edit tab has a tap callback");
+        session.call(callback,session.event(0.,0.,0.,0.,0.,0.,false,false,false,false).unwrap()).unwrap();
+        reads.lock().unwrap().clear();
+        let graph=session.render().unwrap_or_else(|e|panic!("{}",failure(&e,"graph").split_once(": ").unwrap().0));
+        fn node_kinds(node:&Table,out:&mut HashMap<String,String>) {
+            out.insert(string(node,"path"),string(node,"kind"));
+            for child in tables(node,"children").unwrap() {node_kinds(&child,out);}
+            for modifier in tables(node,"modifiers").unwrap() {
+                if matches!(string(&modifier,"name").as_str(),"background"|"overlay") &&
+                    let Ok(child)=modifier.get::<Table>("value") {node_kinds(&child,out);}
+            }
+        }
+        let mut kinds=HashMap::new();node_kinds(&graph,&mut kinds);
+        let mut seen=std::collections::BTreeSet::new();
+        for (name,binding,path) in reads.lock().unwrap().iter() {
+            if !(name.starts_with("Edit__Synth__Src__") || name.starts_with("Edit__Synth__Shp__")) {continue;}
+            let kind=kinds.get(path).map(String::as_str).unwrap_or("Component");
+            if !seen.insert((name.clone(),kind.to_owned(),*binding)) {continue;}
+            let (source,_,widget)=controls.get(*binding).expect("binding addresses a published control");
+            println!("NATIVE_BINDING node={kind} parameter={name} source={source:?} ui_id={:?} binding={:?}",widget.source_id,widget.binding);
+        }
+        assert!(!seen.is_empty(),"Edit graph reads published selector parameters");
+    }
+
+    #[test]
     #[ignore = "requires locally owned NativeUI library; text stays in RAM"]
     fn native_saved_text_reaches_authored_field_without_host_insets() {
         let path = std::path::PathBuf::from(std::env::var_os("KONTRA_AUDIT_WIDGET_PATCH").unwrap());
@@ -1186,5 +1263,12 @@ mod tests {
             }
         }
         assert_eq!(matched,6);
+        let modifiers=graph.get::<Table>("modifiers").unwrap();
+        let missing=session.lua().create_table().unwrap();
+        missing.set("name","font_family").unwrap();
+        missing.set("value","unavailable-test-font").unwrap();
+        modifiers.push(missing).unwrap();
+        let error=draw(&mut ui,&graph,&package,&session,0,1.,Style::default(),&mut drafts).err().unwrap();
+        assert!(failure(&error,"graph").starts_with("graph, NativeUI font service unavailable:"));
     }
 }
