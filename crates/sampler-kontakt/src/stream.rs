@@ -327,7 +327,7 @@ pub struct StreamPolicy {
     pub voices: usize,
     /// Decode threads.
     pub decoders: usize,
-    /// Maximum resident start-range bytes; cold starts load only on demand.
+    /// Total voice-ring and resident start-range budget in bytes.
     pub head_budget: usize,
     /// Publish before heads are read. Runtime must enable cold-start holding.
     pub lazy: bool,
@@ -783,6 +783,7 @@ impl Streamed {
         };
         let (mut cache, worker) = StreamCache::voice_rings(policy.voices, policy.decoders)
             .map_err(|e| invalid(e.to_string()))?;
+        let head_budget = policy.head_budget.saturating_sub(cache.bytes());
         report.pool_bytes = cache.bytes();
         report.pool_pages = report.pool_bytes / (PAGE_FRAMES * size_of::<Frame>());
         let widths: HashMap<_, _> = assets
@@ -796,7 +797,7 @@ impl Streamed {
             &kept,
             &loaded.plan.preload_start_offsets(),
             &widths,
-            policy.head_budget.saturating_sub(cache.bytes()),
+            head_budget,
         );
         if let Some(room) = policy.resident_budget {
             keep_whole(&kept, &mut ranges, &widths, room);
@@ -819,7 +820,7 @@ impl Streamed {
             worker,
             policy.decoders,
             policy.lazy,
-            policy.head_budget,
+            head_budget,
         )
         .map_err(|e| invalid(e.to_string()))?;
         report.head_bytes = bytes;
@@ -893,6 +894,48 @@ mod tests {
         assert_eq!(rt.stream_underruns(),0);
         for (i,f) in output.into_iter().enumerate() {assert_eq!(f,[i as f32/32768.;2],"frame {i}");}
         drop(streamed.streamer);
+    }
+
+    #[test]
+    fn lazy_reload_reserves_the_voice_ring_bytes_in_the_total_budget() {
+        struct Head(Arc<std::sync::atomic::AtomicUsize>);
+        impl AssetSource for Head {
+            fn header(&self) -> Option<(u32, usize)> { Some((48000, 8192)) }
+            fn frame_bytes(&self) -> Option<usize> { Some(4) }
+            fn open(&self) -> io::Result<SampleReader> {
+                let reads = self.0.clone();
+                Ok(SampleReader::custom(48000, 8192, move |_, out| {
+                    reads.fetch_add(1, Ordering::Relaxed);
+                    out.fill([0.5; 2]);
+                    Ok(())
+                }))
+            }
+        }
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let instrument = ir::Instrument {
+            assets: vec![ir::Asset {
+                location: ir::AssetLocation::Path("budget".into()),
+                encoding: ir::Encoding::Unknown, root_key: None, loops: vec![],
+            }],
+            zones: vec![ir::Zone::new(ir::AssetRef(0))],
+            ..Default::default()
+        };
+        let streamed = crate::stream_instrument(
+            instrument, vec![Arc::new(Head(reads.clone()))], vec!["budget".into()],
+            &crate::Options::default(),
+            &StreamPolicy {
+                voices: 1, decoders: 1, lazy: true,
+                head_budget: 8192 * size_of::<Frame>() + 1,
+                ..Default::default()
+            },
+        ).unwrap();
+        assert_eq!(streamed.report.head_bytes, 0);
+        streamed.assets[0].mark_cold();
+        streamed.streamer.reload(&streamed.assets).unwrap();
+        // Join the background reloader too, so either consumer must honor the cap.
+        drop(streamed.streamer);
+        assert_eq!(reads.load(Ordering::Relaxed), 0);
+        assert_eq!(streamed.assets[0].head_bytes(), 0);
     }
 
     #[test]
