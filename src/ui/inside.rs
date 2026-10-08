@@ -111,6 +111,7 @@ pub fn bar(ui: &mut Ui, cx: &mut Cx, slot: usize) -> (View, Option<El>) {
         })
         .collect();
     cx.state.inside.entry(slot).or_default().view = Some(picked);
+    if picked == View::Sound && picked != view {cx.state.select(slot);}
     (picked, Some(segmented(tabs)))
 }
 
@@ -120,7 +121,12 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, view: View) -> Option<El> {
     let el = match (view, inst) {
         (View::Articulations, Some(i)) => articulations(ui, cx, slot, &i),
         (View::Mapping, Some(i)) => mapping(ui, cx, slot, &i),
-        (View::Sound, Some(_)) => super::editor::view(ui, cx, slot),
+        (View::Sound, Some(_)) if cx.state.selected == slot => super::editor::view(ui, cx, slot),
+        (View::Sound, Some(_)) => {
+            let (hit,button)=action(ui,format!("edit-open-{slot}"),"Edit sound",false);
+            if hit {cx.state.select(slot);}
+            col![caption("Select this part to edit its sound.").fill(secondary()),button].gap(SPACE)
+        },
         (View::Info, i) => info(cx, slot, i.as_deref()),
         _ => return None,
     };
