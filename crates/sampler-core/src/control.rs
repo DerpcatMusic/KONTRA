@@ -13,9 +13,22 @@ pub use transfer::{
 
 /// Persistent semantic identity assigned by the source frontend/composition root.
 /// Never derive this from a widget position, dense index or randomized hash.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "cache", serde(try_from = "String", into = "String"))]
 pub struct ControlId(pub u128);
+#[cfg(feature = "cache")]
+impl From<ControlId> for String { fn from(id: ControlId) -> Self { format!("{:032x}", id.0) } }
+#[cfg(feature = "cache")]
+impl TryFrom<String> for ControlId {
+    type Error = Error;
+    fn try_from(value: String) -> Result<Self, Error> {
+        if value.len()!=32 { return Err(Error::InvalidInput); }
+        u128::from_str_radix(&value,16).map(Self).map_err(|_|Error::InvalidInput)
+    }
+}
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ControlValue {
     Integer(i64),
