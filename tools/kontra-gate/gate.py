@@ -22,7 +22,7 @@ ROOT = Path.home() / '.cache/kontra-runs'
 V1 = Path.home() / '.cache/kontra-v1'
 HEAVY = Path.home() / '.cache/kontakto-heavy'
 DRIVER = HERE.parent / 'kontra-scan/kontra_scan.py'
-METRICS = ['load_ms', 'first_audio_ms', 'peak_rss_mb', 'underruns', 'nonfinite', 'family_match', 'widget_gesture_pass', 'fx_slots_dropped', 'filter_slots_dropped', 'mod_slots_dropped', 'signal_graph_trace']
+METRICS = ['load_ms', 'first_audio_ms', 'peak_rss_mb', 'underruns', 'nonfinite', 'family_match', 'widget_gesture_pass', 'fx_slots_dropped', 'filter_slots_dropped', 'mod_slots_dropped', 'signal_graph_trace', 'script_init_runs', 'expected_init_runs', 'restored_scalar_overrides']
 
 
 def utc():
@@ -94,7 +94,7 @@ def summarize(run, complete=False):
                 totals[version]['rows'] += bool(row)
                 totals[version]['original_ok'] += row.get('ui') == 'original-ok'
                 totals[version]['audible'] += row.get('plays_note') == 'yes'
-            ui = 'UNKNOWN' if not new else 'PASS' if new.get('ui') == 'original-ok' else 'FAIL'
+            ui = 'UNKNOWN' if not new or new.get('ui') in [None,'unknown',''] else 'PASS' if new.get('ui') == 'original-ok' else 'FAIL'
             audible = 'UNKNOWN' if not new or new.get('audition_status') in ['audition-mismatch', 'fallback-note', 'not-auditioned'] else 'PASS' if new.get('plays_note') == 'yes' else 'FAIL'
             axes['UI'] += [ui, gestures.get('status', 'UNKNOWN') if path.endswith('/Instruments/Conflux.nki') else 'UNKNOWN']  # gesture/persistence coverage is not scalar readback
             axes['DSP'] += [audible, 'UNKNOWN']  # native family and complete slot disposition not observed
@@ -102,6 +102,8 @@ def summarize(run, complete=False):
                 axes['UVI'] += [ui, audible, 'UNKNOWN']  # gate subset never certifies the entire corpus
             faults = [new.get(k) for k in ['load_fault_records', 'ksp_runtime_fault_records', 'lua_init_faults', 'lua_runtime_faults', 'lua_budget_hits']]
             known = [number(v) for v in faults if v != 'n/a']
+            if condition == 'restored-state':
+                axes['scripting'].append('PASS' if new.get('restored_state_status') == 'single-init' else 'FAIL' if new.get('restored_state_status') == 'duplicate-init' else 'UNKNOWN')
             axes['scripting'].append('FAIL' if any(v and v > 0 for v in known) else 'UNKNOWN' if not known or None in known else 'PASS')
             for metric in METRICS:
                 a, b = old.get(metric), new.get(metric)
@@ -146,7 +148,7 @@ def summarize(run, complete=False):
     data = {'adapters': {'cpu': cpu.get('reason', 'unwired'), 'gestures': gestures.get('status', 'UNKNOWN'), 'host': host.get('reason', 'unwired'), 'family': 'UNKNOWN until shared scanner exposes selected-family evidence'}, 'axes': results, 'verdict': full, 'complete': complete, 'totals': totals, 'metrics': observed}
     write_json(run / 'metrics.json', data)
     text = ['# KONTRA gate', '', f"Source: `{manifest['sha']}`. Run state: {'complete' if complete else 'running'}. Release verdict: **{full}** (UNKNOWN blocks release).", '',
-            'This is scanner/probe evidence, not a live CLAP/VST3 host run. No release or installation occurs. The fixed set has ' + str(len(paths)) + ' IDs; all programs in each multi are scanned.', '',
+            'This is scanner/probe evidence, not a live CLAP/VST3 host run. No release or installation occurs. Scope: ' + manifest.get('scope','fixed-acceptance-set') + '. The input set has ' + str(len(paths)) + ' IDs; all programs in each multi are scanned.', '',
             '| Axis | v1 | v2 | Delta | Verdict |', '| --- | --- | --- | --- | --- |']
     for axis in results:
         a, b = totals['v1'], totals['v2']
@@ -155,6 +157,7 @@ def summarize(run, complete=False):
         text.append(f'| {axis} | {detail} | {newdetail} | see metrics.json | {results[axis]} |')
     text += ['', 'Cache protocol: ' + manifest.get('cache_protocol', 'legacy-disabled-product-cache (baseline; not product-warm acceptance)'), '', 'Missing evidence: live plugin/DAW perf view; every widget gesture and persistence; native articulation/dynamic-family match (RR as a distribution); CPU p50/p99; complete FX/filter/modulator slot disposition; full Kontakt/UVI and scripting coverage; settings/features parity; product warm-cache acceptance.', '',
              'New protocol: cold has a fresh empty writable private RAM product cache per engine/item; product-warm is the next load with that cache retained. os-warm starts another empty product cache after earlier passes. OS page cache is uncontrolled. Cache file/byte counts before and after live in worker JSON; no cache content is retained. V1 cache-enabled scanner phase hooks are unavailable and marked unknown. Legacy runs retain their original method. Frozen v1 stage/onset probes use the same fresh/retained RAM-cache pairing.', '',
+             'Restored-state: Kontakt scalar values are captured from a seed load in memory, then passed into a timed production reload. Load/onset timers exclude the seed; whole-process peak RSS includes both lifecycles. Actual initializer counts must match script counts. Frozen v1 collectors and UVI have no restored-state adapter and stay UNKNOWN. A worker without this witness cannot report restored timings.', '',
              'Plugin logs, session/crash diagnostics and stderr are captured in RAM and retained as numeric fields and hashed text under each item/plugin-diagnostics.json. ui-audit.json contains shared scanner metadata only. Host-only perf/session capture may be absent; absence stays unknown.', '',
              '## Exact frozen references', '', '```json', json.dumps(manifest['binaries'], indent=2), '```', '',
              '## Per-item measurements', '', '| Item hash (12 chars) | Condition | Metric | v1 | v2 | Delta | Verdict |', '| --- | --- | --- | ---: | ---: | ---: | --- |']
@@ -251,7 +254,9 @@ def prepare(sha, run, source=None):
 
 
 def scans(run, engine, version, env):
-    for condition in ['cold', 'product-warm', 'os-warm']:
+    for condition in json.loads((run / 'manifest.json').read_text()).get('conditions', ['cold', 'product-warm', 'os-warm']):
+        if condition == 'restored-state' and version == 'v1':
+            continue  # Frozen collectors have no host-restore path; missing rows remain UNKNOWN.
         env = dict(env, KONTRA_GATE_CACHE_CONDITION=condition, KONTRA_GATE_VERSION=version)
         out = run / version / condition
         args = [sys.executable, run / 'harness/kontra-scan/kontra_scan.py', '--engine', engine, '--list', run / 'items.tsv', '--count', '100', '--out', out, '--budget-seconds', '235', '--timeout-seconds', '90']
@@ -294,6 +299,8 @@ def main():
     parser.add_argument('sha')
     parser.add_argument('--source', type=Path, help='existing owned clean checkout at exact SHA')
     parser.add_argument('--resume', type=Path)
+    parser.add_argument('--items', type=Path, help='targeted diagnostic manifest; default is the fixed acceptance set')
+    parser.add_argument('--conditions', nargs='+', choices=['cold','product-warm','os-warm','restored-state'], help='targeted diagnostic conditions; default runs all')
     parser.add_argument('--adapter', choices=['cpu', 'gestures', 'host', 'all'], help='run owner adapter(s) on an existing run without repeating scanner cells')
     args = parser.parse_args()
     sha = subprocess.check_output(['git', '-C', str(REPO), 'rev-parse', args.sha + '^{commit}'], text=True).strip()
@@ -308,7 +315,7 @@ def main():
         if args.adapter and not args.resume:
             parser.error('--adapter requires --resume')
         if not args.resume:
-            shutil.copyfile(HERE / 'items.tsv', run / 'items.tsv')
+            shutil.copyfile(args.items or HERE / 'items.tsv', run / 'items.tsv')
         rc = command(['sha256sum', '-c', 'SHA256SUMS'], run / 'v1-integrity.log', V1, heavy=False)
         if rc: raise RuntimeError('frozen v1 integrity check failed')
         if args.adapter:
@@ -330,7 +337,9 @@ def main():
             print(run / 'summary.md', flush=True)
             return 0 if result['verdict'] == 'PASS' else 2
         binaries = {str(p.relative_to(V1)): sha256(p) for p in V1.rglob('*') if p.is_file() and p.name not in ['README.md', 'SHA256SUMS']}
-        manifest = {'sha': sha, 'created_utc': utc(), 'state': 'running', 'binaries': binaries, 'driver_sha256': sha256(DRIVER), 'gate_sha256': sha256(__file__), 'items_sha256': sha256(run / 'items.tsv'), 'source_checkout': str(args.source) if args.source else None, 'evidence_sha256': sha256(HERE / 'evidence.py'), 'conditions': ['cold', 'product-warm', 'os-warm'], 'cache_protocol': 'empty-writable-tmpfs-then-enabled-reload', 'profile': 'ci (release optimization, no cross-crate LTO)', 'previous_run': str(previous) if previous else None, 'plugin_host_run': False, 'os_page_cache': 'uncontrolled', 'no_release_or_install': True}
+        manifest = {'sha': sha, 'created_utc': utc(), 'state': 'running', 'binaries': binaries, 'driver_sha256': sha256(DRIVER), 'gate_sha256': sha256(__file__), 'items_sha256': sha256(run / 'items.tsv'), 'source_checkout': str(args.source) if args.source else None, 'evidence_sha256': sha256(HERE / 'evidence.py'), 'conditions': args.conditions or ['cold', 'product-warm', 'os-warm', 'restored-state'], 'scope': 'targeted-diagnostic' if args.items or args.conditions else 'fixed-acceptance-set', 'restored_state_scope': 'Kontakt scalar controls; in-memory seed then timed production reload; v1 and UVI unsupported', 'cache_protocol': 'empty-writable-tmpfs-then-enabled-reload', 'profile': 'ci (release optimization, no cross-crate LTO)', 'previous_run': str(previous) if previous else None, 'plugin_host_run': False, 'os_page_cache': 'uncontrolled', 'no_release_or_install': True}
+        if args.resume:
+            manifest = json.loads((run / 'manifest.json').read_text())
         write_json(run / 'manifest.json', manifest); summarize(run)
         print(run / 'summary.md', flush=True)
         product_cache = tempfile.TemporaryDirectory(prefix='kontra-gate-cache-', dir='/dev/shm')
@@ -350,7 +359,7 @@ def main():
             env.update(KONTRA_GATE_PRODUCT_CACHE_ROOT=product_cache.name, KONTRA_GATE_CAPTURE='1', KONTRA_SCAN_NOTE_ROOT=str(run / 'notes'), KONTRA_SCAN_SIDECAR=str(V1 / 'scan/kontra-scan-v1-uvi'), KONTRA_SCAN_V2_ENGINE=str(engine), KONTRA_REPORT_DIR=str(run / 'reports'), KONTRA_DISABLE_NETWORK='1')
             scans(run, engine, 'v2', env)
             scans(run, V1 / 'scan/kontra-scan-v1', 'v1', env)
-            probes(run, env)
+            if any(c != 'restored-state' for c in manifest['conditions']): probes(run, env)
             import adapters
             source = Path(manifest['source_checkout']) if manifest.get('source_checkout') else Path.home() / '.t3/worktrees/KONTAKTO' / ('gate-' + sha[:12])
             for name in ['cpu', 'gestures', 'host']:
