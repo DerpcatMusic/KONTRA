@@ -1,6 +1,6 @@
 # v1 settings and feature parity
 
-Baseline: v1 **0cb7a8a0 (GAS)**; v2 **67dafc61**, `origin/integrate/core-v2` at the start of W4's resumed task. This is a source inventory of reachable product controls and behavior, not a performance certification. **Present** means the control and its backing path exist; **missing** means absent; **worse** means only a subset or read-only replacement exists. Runtime correctness still requires the unified release gate. No release build or install is authorized before that gate.
+Baseline: v1 **0cb7a8a0 (GAS)**; v2 **67dafc61**, `origin/integrate/core-v2` at the start of W4's resumed task. This is a source inventory of reachable product controls and behavior, not a performance certification. **Present** means the control and its backing path exist; **missing** means absent; **worse** means only a subset or read-only replacement exists. Runtime correctness still requires the unified release gate. The initial release hold is historical: the user's resumed alpha-release directive authorizes normal releases through W0 while parity work continues.
 
 The current implementation status is tracked below. Source references are relative to the named revision. CPU-relevant rows carry **W9**; this includes settings that affect load/RSS/disk work as well as render CPU. Authored library controls are data-driven and potentially unbounded: their entire supported widget/engine behavior is inventoried by kind, rather than treating one library's knobs as global settings.
 
@@ -240,3 +240,7 @@ The master-trace fixture now combines both 64-frame trace records by frame count
 `upper-mpe-keyboard-red.log` establishes that a keyboard bend addressed to channel 1 misses the upper zone's manager and fails to reach held member notes. The v1 `src/engine/mod.rs:service_channel` selection is ported to direct part keyboard input using the loaded MIDI adapter's existing manager. MIDI1 and MIDI2 channel-voice input use that manager; exact host-note tuples and external port routing retain their identities. The adapter exposes its existing zone manager through a five-line getter, without another MPE model.
 
 `upper-mpe-keyboard-green.log`: **2 passed**, including both keyboard bend formats reaching two upper-zone members and an external member bend remaining isolated. `upper-mpe-keyboard-no-run.log`: root `cargo test --profile ci --no-run` passed. This is functional routing evidence; no timed CPU or native-host parity gate is claimed.
+
+## Sound-editor probe lifetime (2026-10-08)
+
+`editor-probe-close-red.log` establishes that closing the actual editor leaves `editor_watch=0`, so the audio thread continues publishing the closed Sound editor's taps. The v1 `src/ui/mod.rs` visible-only probe policy is extended to the existing close/drop hook: clear the owner with the same sentinel used when no Sound view is drawn. `editor-probe-close-green.log`: **1 passed**, exercising close, drop without close and a subsequent visible frame restoring ownership. `editor-probe-close-no-run.log`: required root compile gate passed. W9: closed-editor measurements must use the cleared owner; this functional test does not quantify CPU savings.
