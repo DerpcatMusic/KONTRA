@@ -1756,3 +1756,46 @@ fn v1_editor_graph_drag_wheel_fine_and_typed_readout_work() {
         "typed input changes the same offset layer"
     );
 }
+
+#[test]
+fn v1_editor_has_one_selected_owner_across_rack_parts() {
+    let p=editor_fixture();let i=p.shared.view.lock().unwrap().parts[0].instrument.clone();
+    p.selection.write().unwrap().parts.push(crate::plugin::Part{path:"/generated/second.nki".into(),..Default::default()});
+    p.shared.view.lock().unwrap().parts[1].instrument=i;
+    let mut h=Harness::new(&p,1180.,1000.);h.press("view-0-Sound");h.press("view-1-Sound");
+    assert!(h.ui.scene().unwrap().surface("edit-open-0").is_some(),"the first part yields the single v1 editor");
+    assert!(h.ui.scene().unwrap().surface("edit-open-1").is_none());
+    h.press("edit-open-0");assert!(h.ui.scene().unwrap().surface("edit-open-1").is_some());
+    assert!(h.ui.scene().unwrap().surface("edit-envelope-value-Attack").is_some(),"returning to the first part restores its native values");
+}
+
+#[test]
+fn v1_editor_zero_offset_keeps_exact_native_graph_and_reset() {
+    use crate::sound::edits::{Edits, Override, Param};
+    let p=editor_fixture();let atoms=p.shared.part(0).unwrap();
+    let i=p.shared.view.lock().unwrap().parts[0].instrument.clone().unwrap();
+    let bindings=atoms.engine_bindings.lock().unwrap();let values=atoms.control_values();
+    let mut edits=Edits::default();
+    let original=super::editor_model::Model::new(&i,0,&edits,&bindings,&values,48000.);
+    let env=original.base.envelope.as_ref().unwrap();
+    assert_eq!(env.attack_shape,sampler_ir::Curve::Linear,"zero offset preserves the exact native linear curve");
+    assert_eq!(env.attack,0.01,"graph uses the native frame count without a normalized round trip");
+    assert!(env.trace(10)[0].iter().enumerate().all(|(n,v)|(*v-n as f32/10.).abs()<1e-6));
+    edits.set(Override{group:None,param:Param::Curve,offset:0.1});
+    let changed=super::editor_model::Model::new(&i,0,&edits,&bindings,&values,48000.);
+    assert!(changed.playing.envelope.as_ref().unwrap().attack_shape!=env.attack_shape);
+    assert_eq!(changed.base.envelope.as_ref().unwrap().attack_shape,env.attack_shape);
+    edits.reset(Param::Curve);
+    let reset=super::editor_model::Model::new(&i,0,&edits,&bindings,&values,48000.);
+    assert!(reset.playing.envelope==original.base.envelope);
+}
+
+#[test]
+fn v1_auto_align_settings_and_manual_part_timing_are_reachable() {
+    let p=editor_fixture();let mut h=Harness::new(&p,1180.,780.);h.press("app-menu");
+    let pick=|h:&mut Harness,label:&str| {
+        let id=h.ui.scene().unwrap().surfaces().find(|s|s.text_value.as_deref()==Some(label)).unwrap_or_else(||panic!("missing v1 setting {label}")).key.to_string();h.press(&id);
+    };
+    pick(&mut h,"Auto-align timing");assert!(p.selection.read().unwrap().auto_align);
+    h.press("app-menu");pick(&mut h,"Only while the transport plays");assert!(p.selection.read().unwrap().align_transport_only);
+}

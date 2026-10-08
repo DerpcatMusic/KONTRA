@@ -2928,3 +2928,47 @@ fn snapshot_binding_name<'a>(names: &'a (String, String), base: Option<&Path>) -
     }
     Ok(&names.1)
 }
+
+#[cfg(test)]
+mod timing_parity_tests {
+    use super::*;
+    #[test]
+    fn v1_auto_align_reports_real_hold_and_preserves_host_ownership() {
+        let pcm=Pcm::new(48000,vec![[0.25;2];48000].into_boxed_slice()).unwrap();
+        let plan=Prepared::new(48000,vec![pcm],vec![Region{sample:0,key_low:0,key_high:127,root_key:None,velocity_low:0.,velocity_high:1.,gain:1.,envelope:Envelope::default(),playback:Playback::default()}],128).unwrap();
+        let limits=Limits::for_plan(&plan,128,8);let rt=Runtime::new(plan,limits).unwrap();
+        let mut c=V2Core::with_parts(1,48000.);c.install(0,Some(Box::new(Part::new(rt,MixTree::instrument("Timing")).unwrap())));
+        let mut mix=Mix::default();mix.timing=Arc::new(crate::timing::Plan{on:true,latency_ms:10.,parts:vec![Arc::new(crate::timing::Holds::of(&crate::timing::Timing{override_ms:Some(0.),..Default::default()},&[],10.))],..Default::default()});
+        c.set_mix(&mix);c.begin_block(&BlockInfo{frames:128,offline:true,..Default::default()});
+        assert_eq!(c.latency(),480,"the actual hold is reported to the host");
+        let note=HostNote{port:0,channel:0,key:60,id:17,clap:true};c.event(0,Event::NoteOn{note,velocity:0.7654321,tune:0.123456789});
+        assert!(c.owns(note),"queued host notes already own their exact tuple");assert_eq!(c.voices().active,0);
+        for _ in 0..3{let r=c.render(128);assert!(r.buses[0][0][..128].iter().all(|v|*v==0.));}
+        let r=c.render(96);assert!(r.buses[0][0][..96].iter().all(|v|*v==0.));
+        let r=c.render(1);assert!(r.buses[0][0][0]>0.1,"audio starts exactly after 480 held frames");
+    }
+}
+
+#[cfg(test)]
+mod editor_reload_tests {
+    use super::*;
+    use sampler_core::{EngineParameterAddress,EngineParameterLaw,EngineParameterBinding,EngineParameterOffset,ControlId};
+    #[test]
+    fn v1_editor_mix_before_load_and_reload_keeps_the_saved_offset() {
+        let address=EngineParameterAddress{parameter:sampler_core::engine_parameter_id("ENGINE_PAR_CUTOFF").unwrap(),group:0,slot:3,generic:-1};
+        let id=ControlId(10);let law=EngineParameterLaw::Exponential{low:10.,high:10000.};
+        let make=|| {
+            let plan=Prepared::new(48000,vec![],vec![],0).unwrap().with_controls(vec![ControlDefinition{id,domain:ControlDomain::Real{min:10.,max:10000.},default:ControlValue::Real(100.)}]).unwrap().with_engine_parameters(vec![EngineParameterBinding{address,control:id,law}],vec![]).unwrap();
+            let limits=Limits::for_plan(&plan,128,16);Part::new(Runtime::new(plan,limits).unwrap(),MixTree::instrument("Reload")).unwrap()
+        };
+        let mut c=V2Core::with_parts(1,48000.);let mut mix=Mix::default();
+        mix.editor_offsets=vec![Arc::from([EngineParameterOffset{address,offset:0.1}])];
+        c.set_mix(&mix);
+        for _ in 0..2 {
+            let _old=c.install(0,Some(Box::new(make())));
+            let rt=&c.parts[0].as_ref().unwrap().runtime;
+            assert_eq!(rt.control_base_value(rt.active_plan(),id).unwrap(),ControlValue::Real(100.));
+            assert_eq!(rt.control_value(rt.active_plan(),id).unwrap(),ControlValue::Real(law.decode(law.encode(100.)+100000)),"loading applies the already saved editor layer");
+        }
+    }
+}

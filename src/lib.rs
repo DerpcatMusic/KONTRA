@@ -1,5 +1,6 @@
 pub mod creator;
 pub mod sound;
+pub mod timing;
 pub mod build_info;
 pub mod diagnostics;
 pub mod support;
