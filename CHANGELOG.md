@@ -39,7 +39,8 @@ features and follow-up commits do not increment the version separately.
 - W12's pre-port native census finds dropped enabled/bypassed FX 377/1521,
   filters 2109/4962 and modulators 20404/24478. W15 admits Pan, Formant I and LoFi;
   a post-port recount is pending. Formant/LoFi approximations retain native
-  fidelity gaps. Ladder/Daft, UVI MS20/Xpander, LFO/random sources and several
+  fidelity gaps. Filter subtype 30 (family unverified), Daft/AR type 106,
+  UVI MS20/Xpander, LFO/random sources and several
   modulation targets still lack full native modeling. See the W12 fidelity ledger.
 - 21/22 scripted sample-family cells need native captures; static Pacific matches
   do not prove scripted family parity. Native UI paint does not certify every
