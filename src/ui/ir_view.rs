@@ -30,6 +30,28 @@ fn frame(value: f64, min: f64, max: f64, frames: usize) -> usize {
     (t * frames.saturating_sub(1) as f64).round() as usize
 }
 
+/// UVI mappers operate on normalized positions, including drag and strip frames.
+fn mapped(range: &ir::Range, mapper: Option<&str>, value: f64, inverse: bool) -> f64 {
+    if range.max == range.min { return if inverse { 0. } else { range.min }; }
+    if mapper == Some("Exponential") && range.min > 0. && range.max > range.min {
+        return if inverse { (value.clamp(range.min,range.max)/range.min).ln()/(range.max/range.min).ln() }
+            else { range.min*(range.max/range.min).powf(value.clamp(0.,1.)) };
+    }
+    let power = match mapper {
+        Some("Quadratic")=>2.,Some("Cubic")=>3.,Some("Quartic")=>4.,Some("Quintic")=>5.,
+        Some("SquareRoot")=>0.5,Some("CubeRoot")=>1./3.,Some("QuarticRoot")=>0.25,Some("QuinticRoot")=>0.2,_=>1.,
+    };
+    if inverse { ((value-range.min)/(range.max-range.min)).clamp(0.,1.).powf(1./power) }
+    else { range.min+(range.max-range.min)*value.clamp(0.,1.).powf(power) }
+}
+fn drive_mapped(ui: &mut Ui, id: &str, value: &mut f64, range: &ir::Range, mapper: Option<&str>, vertical: bool) -> bool {
+    let mut position = mapped(range,mapper,*value,true);
+    let before = position;
+    let held = drive(ui,id,&mut position,&(0. ..=1.),TRAVEL,vertical,mapped(range,mapper,range.default,true));
+    if position != before { *value = mapped(range,mapper,position,false); }
+    held
+}
+
 /// The frame a switch or button shows: Kontakt's strips run off, on, then
 /// pressed and hovered states.
 fn switch_frame(on: bool, frames: usize) -> usize {
@@ -40,6 +62,9 @@ fn switch_frame(on: bool, frames: usize) -> usize {
 #[derive(Default)]
 pub struct Assets {
     loaded: HashMap<usize, Option<Arc<Picture>>>,
+    fonts: HashMap<usize, Option<Font>>,
+    pub meter: Option<Arc<dyn Fn(Option<u32>,u8)->[f32;2] + Send + Sync>>,
+    open_menu: std::cell::Cell<Option<usize>>,
 }
 
 impl Assets {
@@ -49,6 +74,13 @@ impl Assets {
         self.loaded.retain(|&k, _| need.get(k).copied().unwrap_or(false));
         for (k, _) in need.iter().enumerate().filter(|(_, n)| **n) {
             self.loaded.entry(k).or_insert_with(|| load(&ui.assets[k]));
+        }
+    }
+
+    pub fn sync_fonts(&mut self, face: &Interface, mut load: impl FnMut(&ir::Asset) -> Option<Font>) {
+        self.fonts.retain(|&i,_| face.assets.get(i).is_some_and(|a| matches!(a.kind,ir::AssetKind::TrueTypeFont)));
+        for (i,a) in face.assets.iter().enumerate().filter(|(_,a)| matches!(a.kind,ir::AssetKind::TrueTypeFont)) {
+            self.fonts.entry(i).or_insert_with(||load(a));
         }
     }
 
@@ -152,10 +184,11 @@ pub fn resolved(face: &Interface) -> Interface {
     }
     // Kontakt sizes a control to its picture along any axis the picture does not stretch.
     for n in 0..face.widgets.len() {
+        if face.source == ir::Source::FalconLua { continue }
         let w = &face.widgets[n];
         let meta = w.images.iter().filter(|i| i.role != Use::Handle).find_map(|i| match &face.assets.get(i.asset.0)?.kind {
             ir::AssetKind::Image(m) => m.size.map(|s| (s, m.stretch)),
-            ir::AssetKind::BitmapFont => None,
+            ir::AssetKind::BitmapFont | ir::AssetKind::TrueTypeFont => None,
         });
         if let Some((size, stretch)) = meta {
             let r = &mut face.widgets[n].rect;
@@ -188,9 +221,45 @@ pub fn view(ui: &mut Ui, face: &Interface, page: PageRef, assets: &Assets, prese
         }
         let r = face.page_rect(n);
         let (x, y, ww, hh) = (f64::from(r.x) * scale, f64::from(r.y) * scale, f64::from(r.width) * scale, f64::from(r.height) * scale);
-        layers.push(widget(ui, face, n, assets, presentation, scale, values, ww, hh).at(x, y));
+        let mut el = widget(ui, face, n, assets, presentation, scale, values, ww, hh);
+        let (mut x,mut y)=(x,y);
+        let mut parent=face.widgets[n.0].parent;
+        while let Some(p)=parent {
+            if face.widgets[p.0].viewport.is_some() {
+                let r=face.page_rect(p);
+                let (px,py)=(r.x as f64*scale,r.y as f64*scale);
+                el=stack![el.at(x-px,y-py)].w(r.width as f64*scale).h(r.height as f64*scale).clip();
+                (x,y)=(px,py);
+            }
+            parent=face.widgets[p.0].parent;
+        }
+        layers.push(el.at(x,y));
     }
-    stack(layers).w(w).h(h).shrink(0).clip().a11y(A11y::Group).named("Instrument interface").id("ir-view")
+    let base=stack(layers).w(w).h(h).shrink(0).clip().a11y(A11y::Group).named("Instrument interface").id("ir-view");
+    let Some(index)=assets.open_menu.get() else {return base};
+    let Some(wd)=face.widgets.get(index).filter(|w|w.enabled && !w.hidden) else {assets.open_menu.set(None);return base};
+    let Kind::Menu{items}=&wd.kind else {assets.open_menu.set(None);return base};
+    let source=format!("ir-{index}");
+    if ui.dismissed(&["ir-menu",&source]) { assets.open_menu.set(None);return base }
+    let r=face.page_rect(WidgetRef(index));
+    let mut selected=None;
+    let rows=items.iter().filter(|i|i.visible).map(|item| {
+        let key=format!("ir-menu-{index}-{}",item.value);
+        if ui.get(key.as_str()).activated() {selected=Some(item.value);}
+        caption(item.text.clone()).text_size(SMALL*scale).lines(1).pad((8.,4.)).min_h(24.).w(Len::Pct(100.)).focusable().a11y(A11y::Button).named(item.text.clone()).id(key)
+    }).collect::<Vec<_>>();
+    if let Some(value)=selected {
+        if let Binding::Control(id)=wd.binding {values.insert(id,value as f64);}
+        assets.open_menu.set(None);
+        ui.focus(&source);
+        return base
+    }
+    let mw=(r.width as f64*scale).max(180.).min(w);
+    let mh=(rows.len() as f64*24.).min(240.).min(h);
+    let x=(r.x as f64*scale).clamp(0.,(w-mw).max(0.));
+    let y=((r.y+r.height as i32) as f64*scale).min((h-mh).max(0.));
+    stack![base,col(rows).gap(0).w(mw).h(mh).scroll().fill(Role::Field).stroke(Role::Ink.alpha(0.25)).stroke_width(1.).id("ir-menu").at(x,y)].w(w).h(h)
+
 }
 
 /// The page's height, reaching down to its lowest visible control: a control
@@ -216,6 +285,12 @@ fn widget(
     let id = format!("ir-{}", n.0);
     let bitmap = presentation == Presentation::Bitmap;
     let strip = wd.image(Use::Strip).filter(|_| bitmap || wd.label_in_image()).and_then(|a| assets.get(a));
+    let hovered=ui.state(id.as_str()).hover>0.;
+    let state_picture=|on:bool| {
+        let hover=hovered;
+        let role=match (on,hover){(true,true)=>Use::HoverPressed,(true,false)=>Use::Pressed,(false,true)=>Use::Hover,_=>Use::Strip};
+        wd.image(role).and_then(|a|assets.get(a)).filter(|_|bitmap||wd.label_in_image()).or(strip)
+    };
     let fixed = wd.images.iter().find(|i| i.role == Use::Strip).and_then(|i| i.frame).map(|f| f as usize);
     let control = match wd.binding {
         Binding::Control(c) => Some(c),
@@ -223,8 +298,18 @@ fn widget(
     };
     let default = match &wd.kind {
         Kind::Knob { range, .. } | Kind::Slider { range, .. } | Kind::ValueEdit { range, .. } => range.default,
-        _ => 0.,
+        _ => wd.initial_value,
     };
+    let mut enabled = wd.enabled;
+    let mut opacity = wd.opacity;
+    let mut parent = wd.parent;
+    for _ in 0..face.widgets.len() {
+        let Some(p) = parent.and_then(|p| face.widgets.get(p.0)) else { break };
+        enabled &= p.enabled;
+        opacity *= p.opacity;
+        parent = p.parent;
+    }
+    let can_edit = enabled && wd.intercepts_mouse;
     let mut v = control.and_then(|c| values.get(&c).copied()).unwrap_or(default);
     let text_size = wd.style.and_then(|s| face.styles[s.0].size).map_or(SMALL, f64::from) * scale;
     // Text on our own (dark) control faces is ours; the source's colour is for
@@ -235,7 +320,11 @@ fn widget(
         Some(s) if !own_face && face.styles[s.0].color.a > 0 => Fill::from(colour(face.styles[s.0].color)),
         _ => Fill::from(Role::Ink),
     };
-    let words = |t: String| caption(t).text_size(text_size).fill(ink.clone()).lines(1);
+    let words = |t: String| {
+        let el=caption(t).text_size(text_size).fill(ink.clone()).lines(1);
+        let font=wd.style.and_then(|s|match face.styles[s.0].font { ir::Font::File(a)=>assets.fonts.get(&a.0)?.clone(),_=>None });
+        match font { Some(font)=>el.font(font), None=>el }
+    };
     let number = |x: f64, d: &ir::Display| {
         let x = x / if d.ratio == 0. { 1. } else { d.ratio };
         let x = if x.fract() == 0. { format!("{x}") } else { format!("{x:.2}") };
@@ -245,11 +334,14 @@ fn widget(
     let face_el: El = match &wd.kind {
         Kind::Knob { range, .. } | Kind::Slider { range, .. } => {
             let vertical = !matches!(wd.kind, Kind::Slider { orientation: ir::Orientation::Horizontal, .. });
-            let held = drive(ui, &id, &mut v, &(range.min..=range.max), TRAVEL, vertical, range.default);
+            let held = if can_edit {
+                drive_mapped(ui, &id, &mut v, range, wd.mapper.as_deref(), vertical)
+            } else {false};
+            if let Some(step)=range.step { v=(v/step).round()*step; }
             let lift = ui.state(id.as_str()).hover.max(if held { 1. } else { 0. }) as f32;
-            let unit = |x: f64| if range.max == range.min { 0. } else { ((x - range.min) / (range.max - range.min)).clamp(0., 1.) };
+            let unit = |x: f64| mapped(range,wd.mapper.as_deref(),x,true);
             match strip {
-                Some(p) => block(w, h).radius(0).fill(picture(p, fixed.unwrap_or_else(|| frame(v, range.min, range.max, p.frames.len()))).unwrap_or(Fill::from(Role::Field))),
+                Some(p) => block(w, h).radius(0).fill(picture(p, fixed.unwrap_or_else(|| frame(unit(v), 0., 1., p.frames.len()))).unwrap_or(Fill::from(Role::Field))),
                 // A slider about as tall as wide was drawn as a knob by its strip.
                 // Kontakt's stock knob: its name over the dial, the value under it.
                 None if matches!(wd.kind, Kind::Knob { .. }) => {
@@ -277,8 +369,10 @@ fn widget(
             .a11y(A11y::Slider { value: v, min: range.min, max: range.max })
         }
         Kind::Button { momentary: true } => {
-            v = if ui.get(id.as_str()).held { 1. } else { 0. };
-            match strip {
+            // UVI Button is stateless: one callback per activation, including keyboard.
+            v = if can_edit && ui.get(id.as_str()).activated() { 1. } else { 0. };
+            let pressed = can_edit && ui.get(id.as_str()).held;
+            match state_picture(pressed) {
                 Some(p) => block(w, h).radius(0).fill(picture(p, fixed.unwrap_or_else(|| switch_frame(v > 0.5, p.frames.len()))).unwrap_or(Fill::from(Role::Field))),
                 None => row![words(wd.text.clone())].align(Align::Center).justify(Justify::Center).radius(1).fill(Role::Ink.alpha(0.08 + 0.2 * v as f32)),
             }
@@ -286,17 +380,17 @@ fn widget(
             .a11y(A11y::Button)
         }
         Kind::Button { .. } | Kind::Switch => {
-            if ui.get(id.as_str()).activated() {
+            if can_edit && ui.get(id.as_str()).activated() {
                 v = if v > 0.5 { 0. } else { 1. };
             }
             let on = v > 0.5;
-            match strip {
+            match state_picture(on) {
                 Some(p) => block(w, h).radius(0).fill(picture(p, fixed.unwrap_or_else(|| switch_frame(on, p.frames.len()))).unwrap_or(Fill::from(Role::Field))),
                 None => row![words(wd.text.clone())]
                     .align(Align::Center)
                     .justify(Justify::Center)
                     .radius(1)
-                    .fill(if on { Fill::from(value_ink(0.).with_alpha(0.35)) } else { Role::Ink.alpha(0.08) })
+                    .fill(if on { wd.colors.on.map_or(Fill::from(value_ink(0.).with_alpha(0.35)),|c|Fill::from(colour(c))) } else { wd.colors.off.map_or(Role::Ink.alpha(0.08),|c|Fill::from(colour(c))) })
                     .stroke(Role::Ink.alpha(if on { 0.6 } else { 0.2 }))
                     .stroke_width(1),
             }
@@ -310,9 +404,9 @@ fn widget(
             if let Some(a) = at {
                 v = f64::from(shown[a].value);
             }
-            // ponytail: click steps to the next entry; a floating list belongs with the shared menu once it leaves v1 targets.
-            if ui.get(id.as_str()).activated() && !shown.is_empty() {
-                v = f64::from(shown[at.map_or(0, |a| (a + 1) % shown.len())].value);
+            if can_edit && ui.get(id.as_str()).activated() && !shown.is_empty() {
+                if wd.menu_cycle { v=f64::from(shown[at.map_or(0,|a|(a+1)%shown.len())].value); }
+                else { assets.open_menu.set(if assets.open_menu.get()==Some(n.0){None}else{Some(n.0)}); }
             }
             let label = at.map(|a| shown[a].text.clone()).unwrap_or_default();
             match strip {
@@ -326,7 +420,8 @@ fn widget(
             .a11y(A11y::Button)
         }
         Kind::ValueEdit { range, display, .. } => {
-            drive(ui, &id, &mut v, &(range.min..=range.max), TRAVEL, true, range.default);
+            if can_edit { drive_mapped(ui, &id, &mut v, range, wd.mapper.as_deref(), true); }
+            if let Some(step)=range.step { v=(v/step).round()*step; }
             // Kontakt's value edit: its name, then the value.
             let mut parts = Vec::new();
             if !wd.hide.title && !wd.text.is_empty() {
@@ -343,22 +438,61 @@ fn widget(
                 .focusable()
                 .a11y(A11y::Slider { value: v, min: range.min, max: range.max })
         }
-        Kind::Label => row![caption(wd.text.clone()).text_size(text_size).fill(ink.clone())].align(Align::Center),
-        Kind::LevelMeter { .. } => meter_v(|| [0.; 2]),
-        Kind::Table { columns, .. } => {
-            let columns = (*columns).max(1) as usize;
-            canvas(move |s| {
-                let bw = s.width / columns as f64;
-                (0..columns).map(|c| Draw::fill(rect(c as f64 * bw, s.height - 1., (bw - 1.).max(1.), 1.), Role::Ink.alpha(0.5))).collect()
-            })
-            .fill(Role::Ink.alpha(0.06))
+        Kind::Label => row![words(wd.text.clone())].align(Align::Center).justify(match wd.style.map(|s|face.styles[s.0].align) {
+            Some(ir::Align::Center)=>Justify::Center,Some(ir::Align::Right)=>Justify::End,_=>Justify::Start,
+        }),
+        Kind::LevelMeter { .. } => {
+            let source=assets.meter.clone();
+            let (bus,channel)=match wd.binding{Binding::Meter{bus,channel}=>(bus,channel),_=>(None,0)};
+            meter_v(move ||source.as_ref().map(|s|s(bus,channel)).unwrap_or([0.;2]))
+        },
+        Kind::Table { columns, range, cells, .. } => {
+            let bars=(0..*columns as usize).map(|c| {
+                let cid=wd.components.get(c).copied();
+                let mut value=cid.and_then(|id|values.get(&id).copied()).unwrap_or_else(||cells.get(c).copied().unwrap_or(0.));
+                let key=format!("{id}-cell-{c}");
+                if can_edit { drive(ui,&key,&mut value,&(range.min..=range.max),TRAVEL,true,range.default); }
+                if let Some(step)=range.step { value=(value/step).round()*step; }
+                if let Some(id)=cid {values.insert(id,value);}
+                let t=if range.max==range.min{0.}else{((value-range.min)/(range.max-range.min)).clamp(0.,1.)};
+                canvas(move |s| vec![Draw::fill(rect(0.,s.height*(1.-t),s.width.max(1.),s.height*t),Role::Ink.alpha(0.6))])
+                    .fill(Role::Ink.alpha(0.06)).flex(1).h(h).id(key).focusable()
+                    .named(format!("{} {}",wd.name,c+1)).a11y(A11y::Slider{value,min:range.min,max:range.max})
+            }).collect::<Vec<_>>();
+            row(bars).gap(1).w(w).h(h)
+        }
+        Kind::Xy { .. } if wd.components.len()==2 => {
+            let mut xy=[0.5;2];
+            let mut axes=Vec::new();
+            for axis in 0..2 {
+                let cid=wd.components[axis];
+                let target=face.widgets.iter().find(|w|w.binding==Binding::Control(cid));
+                let range=target.and_then(|w|match w.kind{Kind::Knob{range,..}|Kind::Slider{range,..}|Kind::ValueEdit{range,..}=>Some(range),_=>None}).unwrap_or(ir::Range{min:0.,max:1.,default:0.5,step:None});
+                let mut value=values.get(&cid).copied().unwrap_or(range.default);
+                let mapper=target.and_then(|w|w.mapper.as_deref());
+                let key=format!("{id}-axis-{axis}");
+                if can_edit {
+                    drive_mapped(ui,&key,&mut value,&range,mapper,false);
+                    if ui.get(id.as_str()).held && let Some(p)=ui.local(&id) {
+                        let t=if axis==0 {(p.x/w.max(1.)).clamp(0.,1.)}else{(1.-p.y/(h-18.).max(1.)).clamp(0.,1.)};
+                        value=mapped(&range,mapper,t,false);
+                    }
+                }
+                if let Some(step)=range.step {value=(value/step).round()*step;}
+                values.insert(cid,value);
+                xy[axis]=mapped(&range,mapper,value,true);
+                axes.push(fader_face(xy[axis],0.,None,false,0.,ui.focus_visible(&key)).h(16).flex(1).id(key).focusable().named(format!("{} {}",wd.name,if axis==0{"X"}else{"Y"})).a11y(A11y::Slider{value,min:range.min,max:range.max}));
+            }
+            let pad=canvas(move |s|vec![Draw::fill(rect(xy[0]*(s.width-6.),(1.-xy[1])*(s.height-6.),6.,6.),Role::Ink.alpha(0.8))]).fill(Role::Ink.alpha(0.06)).w(w).h((h-18.).max(1.)).id(id.clone());
+            col![pad,row(axes).gap(2).h(16)].gap(2)
         }
         Kind::Xy { .. } | Kind::Waveform | Kind::Wavetable { .. } | Kind::FileSelector { .. } | Kind::TextEdit => {
             row![words(wd.text.clone())].align(Align::Center).pad((TIGHT * scale, 0.)).fill(Role::Ink.alpha(0.06)).stroke(Role::Ink.alpha(0.15)).stroke_width(1)
         }
         Kind::Panel | Kind::Image | Kind::MouseArea => block(w, h),
     };
-    if let Some(c) = control {
+    if let Some(c) = control
+        && wd.components.is_empty() {
         values.insert(c, v);
     }
     // Our faces are light-on-dark: a control without its own picture sits on
@@ -367,8 +501,10 @@ fn widget(
     let plate = strip.is_none()
         && !matches!(wd.kind, Kind::Label | Kind::Panel | Kind::Image | Kind::MouseArea)
         && light_under(face, assets, n);
+    let face_el = if let Some(c)=wd.colors.background {face_el.fill(colour(c))}else{face_el};
     let face_el = if plate { face_el.radius(2).fill(Color::oklch(0.2, 0., 0.).with_alpha(0.85)) } else { face_el };
-    let mut el = face_el.w(w).h(h).shrink(0).id(id).named(wd.automation.name.clone().unwrap_or_else(|| wd.name.clone()));
+    let face_el = if can_edit {face_el}else{face_el.disabled()};
+    let mut el = face_el.w(w).h(h).shrink(0).opacity(opacity).id(id).named(wd.automation.name.clone().unwrap_or_else(|| wd.name.clone()));
     if !wd.tooltip.is_empty() {
         el = el.tip(wd.tooltip.clone());
     }
@@ -376,5 +512,66 @@ fn widget(
     match bg.and_then(|i| assets.get(i.asset).and_then(|p| picture(p, i.frame.unwrap_or(0) as usize))) {
         Some(bg) if !wd.hide.background => stack![block(w, h).radius(0).fill(bg), el].w(w).h(h).shrink(0),
         _ => el,
+    }
+}
+
+/// Exercise the production asset loader, layout and CPU painter without a window.
+#[cfg(feature = "shots")]
+pub fn uvi_ui_health(face: &Interface, path: &std::path::Path) -> serde_json::Value {
+    let mut source = super::pictures::Source::of(path);
+    let mut assets = Assets::default();
+    let (mut image_errors, mut font_errors) = (0, 0);
+    assets.sync(face, Presentation::Bitmap, |asset| {
+        if !matches!(asset.kind, ir::AssetKind::Image(_)) { return None; }
+        let picture = source.load(asset);
+        image_errors += usize::from(picture.is_none());
+        picture
+    });
+    assets.sync_fonts(face, |asset| {
+        let font = source.font(asset);
+        font_errors += usize::from(font.is_none());
+        font
+    });
+    let render = || -> Result<(), String> {
+        face.validate().map_err(|e| e.to_string())?;
+        let Some(page) = face.pages.first() else { return Err("no UI page".into()); };
+        let scale = (1100. / f64::from(page.size.width.max(1))).min(1.);
+        let (width, height) = ((f64::from(page.size.width) * scale).ceil().clamp(1., 1100.) as u16,
+            (f64::from(page.size.height) * scale).ceil().clamp(1., 4096.) as u16);
+        let mut values = Values::default();
+        let mut ui = super::theme::ui();
+        let face = resolved(face);
+        for _ in 0..2 {
+            let root = view(&mut ui, &face, PageRef(0), &assets, Presentation::Bitmap, scale, &mut values);
+            ui.frame(root, Some(Size::new(width.into(), height.into())), Input::default(), 1./60.)
+                .map_err(|e| e.to_string())?;
+        }
+        use moose::mui::mui::vello::{self, vello_cpu::{Pixmap, RenderContext, Resources}};
+        let mut ctx = RenderContext::new(width, height);
+        let mut resources = Resources::default();
+        vello::paint(&mut vello::Cpu { ctx: &mut ctx, resources: &mut resources, cache: &mut vello::Cache::default() },
+            ui.scene().ok_or("no scene")?, vello::kurbo::Affine::IDENTITY).map_err(|e| e.to_string())?;
+        ctx.flush();
+        ctx.render(&mut Pixmap::new(width, height), &mut resources);
+        Ok(())
+    };
+    // Never log a panic payload: library text/resources may be embedded in it.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(render));
+    let render_error = match result { Ok(Ok(())) => None, Ok(Err(e)) => Some(e), Err(_) => Some("render panic".into()) };
+    serde_json::json!({"image_errors":image_errors,"font_errors":font_errors,"render_error":render_error})
+}
+
+#[cfg(test)]
+mod mapper_tests {
+    use super::*;
+    #[test]
+    fn uvi_mapper_positions_round_trip_and_select_the_expected_strip_frame() {
+        let range=ir::Range{min:1.,max:10000.,default:100.,step:None};
+        assert!((mapped(&range,Some("Exponential"),0.5,false)-100.).abs()<1e-9);
+        assert_eq!(frame(mapped(&range,Some("Exponential"),100.,true),0.,1.,101),50);
+        for mapper in ["Linear","Exponential","Quadratic","Cubic","Quartic","Quintic","SquareRoot","CubeRoot","QuarticRoot","QuinticRoot"] {
+            let value=mapped(&range,Some(mapper),0.25,false);
+            assert!((mapped(&range,Some(mapper),value,true)-0.25).abs()<1e-9,"{mapper}");
+        }
     }
 }
