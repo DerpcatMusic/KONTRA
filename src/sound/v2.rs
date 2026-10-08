@@ -539,6 +539,27 @@ fn widget_value(runtime: &Runtime, plan: sampler_core::PlanId, widget: &sampler_
 }
 
 impl V2Core {
+    pub(crate) fn release_all_notes(&mut self) {
+        for (index, part) in self.parts.iter_mut().enumerate() {
+            let Some(part) = part else { continue };
+            // Lua note-off services use the same host identities as ordinary release.
+            for held in self.held.iter().filter(|h| h.part == index) {
+                if let Some(script) = part.script.as_mut() { let _ = script.note_off(&mut part.runtime, held.note.key); }
+            }
+            packet(part, index, &self.held, [0x20b0_4000, 0]); // MIDI 1 CC64 up
+            packet(part, index, &self.held, [0x20b0_4200, 0]); // MIDI 1 CC66 up
+            part.runtime.release_all_notes();
+        }
+    }
+    pub(crate) fn pressed_keys(&self, keys: &mut [u8; 128]) -> bool {
+        keys.fill(0);
+        let mut loaded = false;
+        for part in self.parts.iter().flatten() {
+            loaded = true;
+            part.runtime.pressed_keys(keys);
+        }
+        loaded
+    }
     /// Called at the DAW event's sample boundary, on the runtime owner.
     pub(crate) fn host_parameter(&mut self, address: u16, value: f64) -> bool {
         if address >= super::HOST_AUTOMATION_SLOTS || !value.is_finite() || !(0.0..=1.0).contains(&value) { return false; }

@@ -47,8 +47,8 @@ pub(super) fn center(ui: &Ui, id: &str) -> Point {
 
 type Build = Box<dyn FnMut(&mut Ui, &mut Bridge<SamplerParams>) -> El>;
 
-pub(super) struct Harness {
-    pub(super) ui: Ui,
+pub(crate) struct Harness {
+    pub(crate) ui: Ui,
     build: Build,
     bridge: Bridge<SamplerParams>,
     size: Size,
@@ -57,7 +57,7 @@ pub(super) struct Harness {
 }
 
 impl Harness {
-    pub(super) fn new(p: &Arc<SamplerParams>, width: f64, height: f64) -> Self {
+    pub(crate) fn new(p: &Arc<SamplerParams>, width: f64, height: f64) -> Self {
         let computer = Arc::<computer::Computer>::default();
         let art = Arc::<art::Art>::default();
         let mut h = Self {
@@ -72,7 +72,7 @@ impl Harness {
         h
     }
 
-    pub(super) fn tick(&mut self, input: Input) {
+    pub(crate) fn tick(&mut self, input: Input) {
         let root = (self.build)(&mut self.ui, &mut self.bridge);
         self.ui
             .frame(root, Some(self.size), input, 1. / 60.)
