@@ -633,13 +633,22 @@ impl Session {
         kontakt.set(
             "connect_level_meter",
             lua.create_function(move |lua, identifier: String| {
-                let binding = meter_names.get(&identifier).copied()
-                    .ok_or_else(|| mlua::Error::external("NativeUI meter unavailable"))?;
+                // Like parameters, unused optional meter handles may be retained by a module.
+                let binding = meter_names.get(&identifier).copied();
+                #[cfg(test)]
+                if let Ok(trace) = lua.globals().get::<Function>("__audit_meter") {
+                    trace.call::<()>((identifier.clone(), binding.is_some(), false))?;
+                }
                 let bridge = meter_bridge.clone();
                 let meter = lua.create_table()?;
                 meter.set(
                     "level_value",
-                    lua.create_function(move |_, _: LuaValue| {
+                    lua.create_function(move |_lua, _: LuaValue| {
+                        #[cfg(test)]
+                        if let Ok(trace) = _lua.globals().get::<Function>("__audit_meter") {
+                            trace.call::<()>((identifier.clone(), binding.is_some(), true))?;
+                        }
+                        let binding = binding.ok_or_else(|| mlua::Error::external("NativeUI meter unavailable"))?;
                         Ok(bridge
                             .lock()
                             .unwrap()
@@ -878,6 +887,13 @@ mod tests {
         assert_eq!(graph.get::<String>("kind").unwrap(), "ZStack");
         let meter:Table=graph.get::<Table>("children").unwrap().get(1).unwrap();
         assert_eq!(meter.get::<Table>("props").unwrap().get::<String>("text").unwrap(),"0.625");
+        let kontakt: Table = session.lua().globals().get::<Table>("package").unwrap()
+            .get::<Table>("loaded").unwrap().get("kontakt").unwrap();
+        let connect: Function = kontakt.get("connect_level_meter").unwrap();
+        let unused: Table = connect.call("unused-meter").expect("unused meter handles are lazy");
+        let read: Function = unused.get("level_value").unwrap();
+        assert!(read.call::<f64>(unused).unwrap_err().to_string().contains("NativeUI meter unavailable"),
+            "an actually read missing meter remains unavailable");
         let edits = session.take_edits();
         assert_eq!(edits.len(), 1);
         assert_eq!(edits[0].value, ir::Value::Integer(75));

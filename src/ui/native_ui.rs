@@ -1406,6 +1406,40 @@ mod tests {
     fn native_program_stack_watermark() {
         let path = std::path::PathBuf::from(std::env::var_os("KONTRA_AUDIT_WIDGET_PATCH").unwrap());
         let program = std::env::var("KONTRA_AUDIT_PROGRAM").ok().map_or(0, |n| n.parse().unwrap());
+        if path.extension().is_some_and(|e| e == "nkm") {
+            let chunks = sampler_kontakt::read_chunks(&path).unwrap();
+            let files = chunks.filename_tables().unwrap().unwrap().other_filetable;
+            let multi = sampler_kontakt::read_multi(&path).unwrap();
+            for (n, (_, raw_program)) in multi.programs.iter().enumerate() {
+                let record = raw_program.public_record().unwrap();
+                let resource = record.resource_container_filename_ref.and_then(|id| files.get(&(id as u32)));
+                let locations = sampler_kontakt::Resources::of(&path).locations();
+                let basename = resource.map(|p| p.replace(['\\', '|'], "/")).and_then(|p| p.rsplit('/').next().map(str::to_owned));
+                let inventory = std::process::Command::new("rg").args(["--files", "/mnt/MAIN_STORAGE/Libraries", "--iglob", "*.nkr"]).output().unwrap();
+                assert!(inventory.status.success(), "resource inventory failed");
+                let inventory = String::from_utf8(inventory.stdout).unwrap();
+                let matches: Vec<_> = inventory.lines().filter(|p| basename.as_ref().is_some_and(|n| p.rsplit('/').next().is_some_and(|f| f.eq_ignore_ascii_case(n)))).collect();
+                println!("NATIVE_DECLARED_CONTAINER program={n} path_bytes={} windows_drive={} unix_root={} parent_segments={} exact_file={} global_basename_matches={} pipe={} basename_bytes={}",
+                    resource.map_or(0, |s| s.len()), resource.is_some_and(|s| s.as_bytes().get(1)==Some(&b':')),
+                    resource.is_some_and(|s| s.starts_with('/')), resource.is_some_and(|s| s.contains("..")),
+                    resource.is_some_and(|s| std::path::Path::new(s).is_file()), matches.len(), resource.is_some_and(|s| s.contains('|')), basename.as_ref().map_or(0, |s| s.len()));
+                println!("NATIVE_PROGRAM_CONTAINER_MATCHES program={n} declared_in_current_index={}",
+                    locations.iter().filter(|p| basename.as_ref().is_some_and(|n| p.file_name().is_some_and(|f| f.to_string_lossy().eq_ignore_ascii_case(n)))).count());
+                if n == program {
+                    for (slot, script) in raw_program.0.children.iter().filter(|c| c.id == 6).enumerate() {
+                        let raw = ni_file::kontakt::objects::BParScript::try_from(script).unwrap().params().unwrap();
+                        println!("NATIVE_RAW_SCRIPT slot={slot} bypass={} linked={} inline_native={} inline_meters={}", raw.bypass,
+                            raw.textfile_name.as_ref().is_some_and(|n| !n.trim().is_empty()),
+                            raw.text.as_ref().is_some_and(|s| s.contains("load_native_ui")),
+                            raw.text.as_ref().map_or(0, |s| s.matches("declare ui_level_meter").count()));
+                    }
+                }
+                println!("NATIVE_PROGRAM_AUTHORITY program={n} library_id={} resource_ref={} resolved={} nkr={} own_container_basename={}",
+                    record.prefix.library_id, record.resource_container_filename_ref.is_some(), resource.is_some(),
+                    resource.is_some_and(|p| p.to_lowercase().ends_with(".nkr")),
+                    resource.is_some_and(|p| p.replace(['\\', '|'], "/").rsplit('/').next().is_some_and(|n| n.eq_ignore_ascii_case("Conflux.nkr"))));
+            }
+        }
         let mut source = if path.extension().is_some_and(|e| e == "nkm") {
             sampler_kontakt::read_program(&path, program).unwrap().instrument
         } else {
@@ -1417,12 +1451,50 @@ mod tests {
             library: Some(path.clone()), ..Default::default()
         }).unwrap();
         let entry = loaded.interfaces.iter().find_map(|f| f.native_ui.as_ref()).unwrap().entry.clone();
-        let controls = loaded.interfaces.iter().flat_map(|f| f.widgets.iter().enumerate()
+        let controls: Vec<_> = loaded.interfaces.iter().flat_map(|f| f.widgets.iter().enumerate()
             .map(move |(n, w)| (f.source, n, w.clone()))).collect();
+        let source_scripts: Vec<_> = loaded.instrument.behaviors.iter().map(|b| b.source.clone()).collect();
+        let model_names: Vec<_> = loaded.scripts.iter().flat_map(|s| s.model().interface.widgets.iter()
+            .map(|w| (w.name.clone(), w.unresolved, matches!(w.kind, sampler_ksp::model::WidgetKind::LevelMeter)))).collect();
+        println!("NATIVE_METER_SOURCE scripts={} model_widgets={} model_meters={} unresolved_meters={} attachments={} declarations={}",
+            loaded.scripts.len(), model_names.len(), model_names.iter().filter(|(_, _, m)| *m).count(),
+            model_names.iter().filter(|(_, u, m)| *u && *m).count(),
+            loaded.scripts.iter().flat_map(|s| s.model().requests.iter()).filter(|r| r.command == "attach_level_meter").count(),
+            source_scripts.iter().map(|s| s.matches("declare ui_level_meter").count()).sum::<usize>());
+        let meter_names: Vec<_> = controls.iter().map(|(_, _, w)| w.name.clone()).collect();
+        println!("NATIVE_METER_INVENTORY controls={} meter_kinds={} attached_meters={}", controls.len(),
+            controls.iter().filter(|(_, _, w)| matches!(w.kind, ir::Kind::LevelMeter { .. })).count(),
+            controls.iter().filter(|(_, _, w)| w.meter.is_some()).count());
         let package = Arc::new(Package::load(&path).unwrap());
         let watermark = stack_watermark();
-        let session = Session::new(package.clone(), &entry, controls).unwrap();
-        let graph = session.render().unwrap();
+        let session = Session::new(package.clone(), &entry, controls)
+            .unwrap_or_else(|error| panic!("{}", failure(&error, "Native initialization").split_once(": ").unwrap().0));
+        let meter_trace = Arc::new(std::sync::Mutex::new([0_usize; 4]));
+        let trace = meter_trace.clone();
+        session.lua().globals().set("__audit_meter", session.lua().create_function(
+            move |_, (identifier, available, reading): (String, bool, bool)| {
+                if !available {
+                    let stripped = identifier.trim_start_matches(['$', '%', '@', '~', '?', '!']);
+                    println!("NATIVE_METER_AUTHORITY model_matches={} unresolved_matches={} meter_matches={} declaration_matches={} source_refs={}",
+                        model_names.iter().filter(|(n, _, _)| n.trim_start_matches(['$', '%', '@', '~', '?', '!']) == stripped).count(),
+                        model_names.iter().filter(|(n, u, _)| *u && n.trim_start_matches(['$', '%', '@', '~', '?', '!']) == stripped).count(),
+                        model_names.iter().filter(|(n, _, m)| *m && n.trim_start_matches(['$', '%', '@', '~', '?', '!']) == stripped).count(),
+                        source_scripts.iter().filter(|s| s.contains(&format!("declare ui_level_meter ${stripped}"))).count(),
+                        source_scripts.iter().filter(|s| s.contains(&identifier)).count());
+                    println!("NATIVE_METER_MISSING reading={reading} raw_matches={} stripped_matches={} case_matches={} numeric={} leading_sigil={}",
+                        meter_names.iter().filter(|n| n.as_str() == identifier).count(),
+                        meter_names.iter().filter(|n| n.trim_start_matches(['$', '%', '@', '~', '?', '!']) == stripped).count(),
+                        meter_names.iter().filter(|n| n.trim_start_matches(['$', '%', '@', '~', '?', '!']).eq_ignore_ascii_case(stripped)).count(),
+                        identifier.parse::<u32>().is_ok(), identifier != stripped);
+                }
+                trace.lock().unwrap()[usize::from(available) * 2 + usize::from(reading)] += 1;
+                Ok(())
+            }).unwrap()).unwrap();
+        let graph = session.render().unwrap_or_else(|error| {
+            println!("NATIVE_METERS counts={:?}", *meter_trace.lock().unwrap());
+            panic!("{}", failure(&error, "Native graph").split_once(": ").unwrap().0)
+        });
+
         let mut ui = super::super::theme::ui();
         let mut drafts = HashMap::new();
         for _ in 0..4 {
@@ -1430,6 +1502,9 @@ mod tests {
             ui.frame(el, Some(authored_size(&graph)), Input::default(), 1. / 60.).unwrap();
         }
         let peak = stack_peak(watermark);
+        let meters = *meter_trace.lock().unwrap();
+        println!("NATIVE_METERS missing_connections={} missing_reads={} available_connections={} available_reads={}",
+            meters[0], meters[1], meters[2], meters[3]);
         assert!(peak < watermark.2 - watermark.0 - 4096, "stack watermark saturated");
         println!("NATIVE_STACK program={program} depth={} native_init_graph_draw_layout_peak_bytes={peak} unmarked_top_bytes={}",
             graph_depth(&graph).unwrap(), watermark.2 - watermark.1);
