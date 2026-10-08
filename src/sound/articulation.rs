@@ -16,6 +16,8 @@ pub struct Overlay {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Inputs {
+    /// v1 participation: original keys remain available in alternative modes.
+    pub enabled: Option<bool>,
     /// None inherits; an empty list explicitly clears the keys.
     pub keys: Option<Vec<u8>>,
     #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "present")]
@@ -103,11 +105,25 @@ impl Overlay {
         let alt = a.alternatives;
         match driver {
             ir::Driver::Keys => Input::Keys(custom.keys.unwrap_or_else(|| a.switch_keys.clone())),
-            ir::Driver::Velocity => Input::Velocity(custom.velocity.unwrap_or(alt.velocities.map(|v| (v.low, v.high)))),
-            ir::Driver::Channel => Input::Channel(custom.channel.unwrap_or(alt.channel)),
+            ir::Driver::Velocity => Input::Velocity(if custom.enabled == Some(false) { None } else { custom.velocity.unwrap_or(alt.velocities.map(|v| (v.low, v.high))) }),
+            ir::Driver::Channel => Input::Channel(if custom.enabled == Some(false) { None } else { custom.channel.unwrap_or(alt.channel) }),
             ir::Driver::Controller => Input::Controller(custom.controller.unwrap_or(alt.controller.map(|c| (c.controller, c.low, c.high)))),
             ir::Driver::Program => Input::Program(custom.program.unwrap_or(alt.program)),
         }
+    }
+
+    /// Port from v1 0cb7a8a0:src/articulate.rs; use stable IDs and display order.
+    pub fn split_velocities(&mut self, arts: &[ir::Articulation]) -> bool {
+        let ids = identities(arts);
+        let enabled: Vec<_> = self.display_order(arts).into_iter().filter(|&n| self.inputs.get(&ids[n]).is_none_or(|a| a.enabled != Some(false))).collect();
+        if enabled.len() > 127 { return false; }
+        let count = enabled.len().max(1);
+        for (n, a) in enabled.into_iter().enumerate() {
+            let low = (1 + n * 127 / count) as u8;
+            let high = ((n + 1) * 127 / count) as u8;
+            self.set(&ids[a], Input::Velocity(Some((low, high))));
+        }
+        true
     }
 
     pub fn set(&mut self, id: &str, input: Input) {
@@ -151,6 +167,7 @@ impl Overlay {
                 if let Some(v) = custom.channel { a.alternatives.channel = v; }
                 if let Some(v) = custom.controller { a.alternatives.controller = v.map(|(controller, low, high)| ir::ControllerRange { controller, low, high }); }
                 if let Some(v) = custom.program { a.alternatives.program = v; }
+                if custom.enabled == Some(false) { a.alternatives.channel = None; a.alternatives.velocities = None; }
             }
         }
         let mode = self.driver.map(driver).unwrap_or_else(|| if legacy & 0x80 != 0 { driver(legacy >> 1 & 7) } else { inst.switching.driver });
@@ -296,5 +313,34 @@ mod persistence_tests {
         assert!(restored == part);
         let legacy: crate::plugin::Part = serde_json::from_str("{}").unwrap();
         assert_eq!(legacy.articulation_overlay, Overlay::default());
+    }
+}
+
+#[cfg(test)]
+mod v1_parity_tests {
+    use super::*;
+    #[test]
+    fn v1_excluded_articulation_keeps_source_keys_but_leaves_alternative_modes() {
+        let art = ir::Articulation { source: "native:legato".into(), switch_keys: vec![24],
+            alternatives: ir::Alternatives { channel: Some(1), velocities: Some(ir::VelocityRange { low: 1, high: 127 }), ..Default::default() }, ..Default::default() };
+        let id = &identities(std::slice::from_ref(&art))[0];
+        let overlay: Overlay = serde_json::from_value(serde_json::json!({"inputs": {id: {"enabled": false}}})).unwrap();
+        assert_eq!(overlay.input(id, &art, ir::Driver::Keys), Input::Keys(vec![24]));
+        assert_eq!(overlay.input(id, &art, ir::Driver::Channel), Input::Channel(None));
+        assert_eq!(overlay.input(id, &art, ir::Driver::Velocity), Input::Velocity(None));
+    }
+    #[test]
+    fn v1_velocity_split_uses_only_participating_rows_in_display_order() {
+        let arts = [24, 25, 26].map(|key| ir::Articulation { switch_keys: vec![key], ..Default::default() });
+        let ids = identities(&arts);
+        let mut overlay = Overlay::default();
+        overlay.inputs.entry(ids[1].clone()).or_default().enabled = Some(false);
+        overlay.move_to(&arts, &ids[2], 0);
+        assert!(overlay.split_velocities(&arts));
+        assert_eq!(overlay.input(&ids[2], &arts[2], ir::Driver::Velocity), Input::Velocity(Some((1, 63))));
+        assert_eq!(overlay.input(&ids[0], &arts[0], ir::Driver::Velocity), Input::Velocity(Some((64, 127))));
+        assert_eq!(overlay.input(&ids[1], &arts[1], ir::Driver::Velocity), Input::Velocity(None));
+        assert!(overlay.valid());
+        assert_eq!(overlay, serde_json::from_str(&serde_json::to_string(&overlay).unwrap()).unwrap());
     }
 }

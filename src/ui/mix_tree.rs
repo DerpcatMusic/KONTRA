@@ -44,6 +44,11 @@ pub struct Node {
     pub output_set: bool,
     /// Insert effect names, in order.
     pub inserts: Vec<String>,
+    /// Only rack parts expose a user send; source nodes retain authored sends.
+    pub aux: Option<(i16, f32)>,
+    pub renamed: bool,
+    /// This strip maps a rack bus to a host port.
+    pub host: bool,
 }
 
 impl Node {
@@ -60,6 +65,9 @@ impl Node {
             output: Output::Parent,
             output_set: false,
             inserts: Vec::new(),
+            aux: None,
+            renamed: false,
+            host: false,
         }
     }
 }
@@ -120,6 +128,7 @@ pub struct State {
     pub folded: HashSet<u64>,
     /// The node whose output list is open.
     picking: Option<u64>,
+    pub renaming: Option<(u64, String)>,
 }
 
 /// A node's level meter, `[left, right]` linear peaks, by node index.
@@ -228,7 +237,28 @@ fn strip(
         head.push(interactive(el, false));
     }
     let node = &tree.nodes[n];
-    head.push(body(node.name.clone()).text_size(SMALL).text_weight(Weight::SEMIBOLD).lines(2).min_w(0));
+    let name_id = format!("mt-name-{key}");
+    let edit_id = format!("mt-rename-{key}");
+    // Port v1 mixer title editing, retaining the tree's stable strip identity.
+    if let Some((_, text)) = state.renaming.as_mut().filter(|(id, _)| *id == key) {
+        let existed = ui.scene().and_then(|s| s.surface(&edit_id)).is_some();
+        if !existed { ui.focus(edit_id.as_str()); }
+        let field = text_edit(ui, edit_id.as_str(), text, TextOpts::default());
+        let cancel = ui.keys(edit_id.as_str()).iter().any(|k| k.key == Key::Escape);
+        let done = field.changed.submitted || (existed && !ui.focused(edit_id.as_str()));
+        head.push(field.el.h(STRIP).min_w(0));
+        if cancel { state.renaming = None; }
+        else if done {
+            tree.nodes[n].name = state.renaming.take().map(|(_, t)| t.trim().to_owned()).unwrap_or_default();
+            tree.nodes[n].renamed = true;
+        }
+    } else {
+        if ui.get(name_id.as_str()).double_clicked && node.parent.is_none() {
+            state.renaming = Some((key, node.name.clone()));
+        }
+        head.push(body(node.name.clone()).text_size(SMALL).text_weight(Weight::SEMIBOLD).lines(2).min_w(0).id(name_id));
+    }
+    let node = &tree.nodes[n];
     let header = col![
         row(head).gap(2).align(Align::Start).min_w(0),
         caption(match node.inserts.len() {
@@ -259,7 +289,15 @@ fn strip(
         col(names.iter().take(3).map(|name| caption(name.clone()).text_size(SMALL).lines(1).fill(secondary())))
             .gap(0).h(SMALL * 3.).shrink(0).named("Inserts").id(format!("mt-inserts-{key}"))
     });
-    let mut controls = vec![header]; controls.extend(inserts); controls.extend([middle, row![switches].justify(Justify::Center).shrink(0), out]);
+    let send = tree.nodes[n].aux.map(|(aux, gain)| {
+        let to = if aux < 0 { "—".into() } else { format!("st.{}", aux + 1) };
+        let (_, el) = route(ui, format!("mt-aux-{key}"), Icon::AudioOut, &to, "st.16", "Send bus");
+        let mut db = f64::from(gain);
+        let level = send_level(ui, &format!("mt-send-{key}"), &mut db, aux >= 0);
+        tree.nodes[n].aux = Some((aux, db as f32));
+        col![el, level].gap(1).shrink(0)
+    });
+    let mut controls = vec![header]; controls.extend(inserts); controls.extend([middle, row![switches].justify(Justify::Center).shrink(0)]); controls.push(send.unwrap_or_else(|| block(Len::Pct(100.), STRIP + SMALL + 3.).shrink(0))); controls.push(out);
     let body = col(controls)
         .gap(TIGHT)
         .align(Align::Stretch)
@@ -313,6 +351,38 @@ fn level(ui: &mut Ui, tree: &mut Tree, n: usize, levels: &Levels) -> El {
     .min_h(0)
 }
 
+/// A send level as a thin bar; dim and inert when nothing is sent.
+fn send_level(ui: &mut Ui, id: &str, db: &mut f64, on: bool) -> El {
+    if on {
+        drive(ui, id, db, &DB, TRAVEL, false, 0.);
+    }
+    let unit = (*db - DB.start()) / (DB.end() - DB.start());
+    let text = format!("{} dB", db_short(*db));
+    let bar = canvas(move |s| {
+        let y = ((s.height - 4.) / 2.).round();
+        let mut d = vec![Draw::fill(rect(0., y, s.width, 4.), Role::Ink.alpha(0.1))];
+        if on {
+            d.push(Draw::fill(rect(0., y, s.width * unit, 4.), value_ink(0.)));
+        }
+        d
+    })
+    .flex(1)
+    .min_w(0)
+    .h(Len::Pct(100.));
+    let readout = caption(if on { db_short(*db) } else { String::new() }).fill(secondary()).lines(1).shrink(0).reserve("-00.0".to_owned());
+    row![bar, readout]
+        .gap(TIGHT)
+        .align(Align::Center)
+        .h(SMALL + 2.)
+        .shrink(0)
+    .cursor(if on { Cursor::ResizeH } else { Cursor::Arrow })
+    .a11y(A11y::Slider { value: *db, min: -60., max: 6. })
+    .named("Send level")
+    .tip(if on { format!("Send level {text}: drag, double-click for 0 dB") } else { "Pick a send bus first".into() })
+    .id(id.to_owned())
+}
+
+
 fn output_text(o: Output) -> String {
     match o {
         Output::Parent => "Up".into(),
@@ -325,7 +395,7 @@ fn output_button(ui: &mut Ui, tree: &Tree, state: &mut State, n: usize, colour: 
     let to = output_text(node.output);
     let name = match node.output {
         Output::Parent => "Output: into its parent".to_owned(),
-        Output::Pair(_) => format!("Output: host pair {to}{}", if node.output_set { "" } else { ", automatic" }),
+        Output::Pair(p) => format!("Output: {}{}", if node.host { format!("host pair {to}") } else { format!("st.{}", p + 1) }, if node.output_set { "" } else { ", automatic" }),
     };
     let (hit, el) = route(ui, format!("mt-out-{}", node.id), Icon::AudioOut, &to, "15/16", &name);
     if hit {
@@ -345,7 +415,7 @@ fn output_list(ui: &mut Ui, tree: &mut Tree, state: &mut State, n: usize, pairs:
     if tree.nodes[n].parent.is_some() {
         choices.push((Some(Output::Parent), "Into parent".into()));
     }
-    choices.extend((0..pairs).map(|p| (Some(Output::Pair(p)), format!("Host {}", port_text(usize::from(p))))));
+    choices.extend((0..pairs).map(|p| (Some(Output::Pair(p)), if tree.nodes[n].host { format!("Host {}", port_text(usize::from(p))) } else { format!("Bus st.{}", p + 1) })));
     if tree.nodes[n].parent.is_none() {
         choices.push((None, "Automatic".into()));
     }

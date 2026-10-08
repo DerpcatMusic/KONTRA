@@ -1220,6 +1220,16 @@ fn mixer_view(ui: &mut Ui, cx: &mut Cx) -> El {
     let height = ui.scene().and_then(|s| s.surface("mix-tree")).map_or(TEXT * 36., |s| s.frame.size.height - 2. * SPACE);
     let body = mix_tree::view(ui, &mut tree, &mut cx.state.mix_tree, crate::sound::BUSES as u8, height, levels);
     bridge::apply(cx, &tree);
+    for node in &tree.nodes {
+        let id = node.id;
+        if id >> 16 != 0 && id & 0xffff == 0 {
+            let anchor = format!("mt-aux-{id}");
+            if ui.get(anchor.as_str()).activated() { menu::open_under(ui, cx, menu::Target::Aux((id >> 16) as usize - 1), &anchor); }
+        }
+        if (id >> 16 == 0 || id & 0xffff == 0) && [format!("mt-strip-{id}"), format!("mt-name-{id}"), format!("mt-fader-{id}"), format!("mt-pan-{id}")].iter().any(|s| ui.get(s.as_str()).clicked_with(Button::Secondary)) {
+            menu::open(ui, cx, menu::Target::Mixer(id));
+        }
+    }
     cx.state.meters.animating.store(true, Ordering::Relaxed);
     let mut rows = vec![bar, rule(), body];
     if cx.state.mix_tree.spectrum != mix_tree::Spectrum::Off {

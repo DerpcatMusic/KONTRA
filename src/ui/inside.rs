@@ -160,7 +160,7 @@ pub fn row_id(slot: usize, source: &str) -> String {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum ArtAction { Reset, ResetRow(String), Clear(String), Keep, Learn(Option<String>), Move(String, i32), Driver(u8), Reassign }
+pub enum ArtAction { Reset, ResetRow(String), Clear(String), Keep, Learn(Option<String>), Move(String, i32), Driver(u8), Reassign, Include(String), Split }
 
 #[derive(Clone, Debug)]
 struct Edit {
@@ -217,6 +217,15 @@ pub fn action(ui: &mut Ui, cx: &mut Cx, slot: usize, action: ArtAction) {
         ArtAction::Clear(source) => {
             let input = match mode { ir::Driver::Keys => Input::Keys(Vec::new()), ir::Driver::Channel => Input::Channel(None), ir::Driver::Velocity => Input::Velocity(None), ir::Driver::Controller => Input::Controller(None), ir::Driver::Program => Input::Program(None) };
             cx.selection.parts[slot].articulation_overlay.set(&source, input);
+        }
+        ArtAction::Include(source) => {
+            let input = cx.selection.parts[slot].articulation_overlay.inputs.entry(source).or_default();
+            input.enabled = Some(input.enabled == Some(false));
+        }
+        ArtAction::Split => {
+            if !cx.selection.parts[slot].articulation_overlay.split_velocities(&inst.articulations) {
+                cx.state.notice = "Velocity splitting supports at most 127 participating rows.".into();
+            }
         }
         ArtAction::Reassign => {
             let overlay = &mut cx.selection.parts[slot].articulation_overlay;

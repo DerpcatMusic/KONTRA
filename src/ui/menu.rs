@@ -34,6 +34,8 @@ pub enum Target {
     Articulations(usize),
     Articulation(usize, String),
     ArtDriver(usize),
+    Aux(usize),
+    Mixer(u64),
 }
 
 #[derive(Clone, Debug)]
@@ -48,6 +50,9 @@ pub struct Menu {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
     Art(usize, super::inside::ArtAction),
+    Aux(usize, i16),
+    RenameStrip(u64),
+    ResetStrip(u64),
     Streaming(Streaming),
     PartStreaming(usize, Option<Streaming>),
     LoadSnapshot(usize),
@@ -217,7 +222,8 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 check("Keep original keys", cx.selection.parts[*slot].articulation_overlay.keep_originals, Command::Art(*slot, ArtAction::Keep)),
                 if learns { act("MIDI learn", "Learn a key for the active row", Command::Art(*slot, ArtAction::Learn(None))) } else { Item::Info("MIDI learn available in Keys mode".into()) },
                 Item::Rule,
-                act("Reassign triggers in this order", "Explicitly assign existing triggers in display order", Command::Art(*slot, ArtAction::Reassign))]
+                act("Reassign triggers in this order", "Explicitly assign existing triggers in display order", Command::Art(*slot, ArtAction::Reassign)),
+                act("Split velocities evenly", "Spread 1–127 over participating rows in display order", Command::Art(*slot, ArtAction::Split))]
         }
         Target::Articulation(slot, id) => {
             use super::inside::ArtAction;
@@ -236,8 +242,16 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                     if let crate::sound::articulation::Input::Keys(keys) = input { items.push(Item::Info(format!("Keys: {}", keys.into_iter().map(note_name).collect::<Vec<_>>().join(", ")))); }
                 }
             }
+            items.push(check("Use in channel/velocity modes", part.articulation_overlay.inputs.get(id).is_none_or(|a| a.enabled != Some(false)), Command::Art(*slot, ArtAction::Include(id.clone()))));
             items
         }
+        Target::Aux(slot) => {
+            let Some(part) = cx.selection.parts.get(*slot) else { return Vec::new() };
+            let mut items = vec![check("No send", part.aux < 0, Command::Aux(*slot, -1)), Item::Rule];
+            items.extend((0..BUSES).map(|n| check(bus_item(cx, n), part.aux == n as i16, Command::Aux(*slot, n as i16))));
+            items
+        }
+        Target::Mixer(id) => vec![act("Rename…", "", Command::RenameStrip(*id)), act("Reset strip", "Level, pan, switches and send; routing and name stay", Command::ResetStrip(*id))],
         Target::Library(name) => {
             let Some(library) = cx.view.shelf.named(name) else { return Vec::new() };
             let dir = library.dir.to_string_lossy().into_owned();
@@ -588,6 +602,11 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
             let path = cx.selection.parts[slot].path.clone();
             cx.p.shared.libraries.edit(|settings| { settings.instrument_views.insert(path, chosen); });
         },
+        Command::Aux(slot, n) => { if let Some(part) = cx.selection.parts.get_mut(slot) { part.aux = n; } }
+        Command::RenameStrip(id) => {
+            if let Some(node) = super::bridge::tree(cx).nodes.into_iter().find(|n| n.id == id) { cx.state.mix_tree.renaming = Some((id, node.name)); }
+        }
+        Command::ResetStrip(id) => super::bridge::reset(cx, id),
         Command::Art(slot, action) => super::inside::action(ui, cx, slot, action),
         Command::Open(path) => cx.open(Path::new(&path)),
         Command::OpenNew(path) => cx.add(path),

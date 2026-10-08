@@ -35,7 +35,7 @@ fn pointer(pos: Point, down: bool) -> Input {
     }
 }
 
-fn center(ui: &Ui, id: &str) -> Point {
+pub(super) fn center(ui: &Ui, id: &str) -> Point {
     let r = ui
         .scene()
         .unwrap()
