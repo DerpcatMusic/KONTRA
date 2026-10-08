@@ -521,7 +521,11 @@ impl Eval<'_> {
                 if !(0..array.len() as i32).contains(&i) {
                     self.warn(e.span, format!("array index {i} out of bounds"));
                 }
-                V::I(0)
+                if array.drop_kind().is_some() {
+                    V::S(String::new())
+                } else {
+                    V::I(0)
+                }
             }
             ExprKind::Neg(inner) => match self.expr(inner)? {
                 V::R(r) => V::R(-r),

@@ -748,7 +748,16 @@ impl Prepared {
         regions: Vec<Option<usize>>,
         start_ranges: Vec<u32>,
     ) -> Result<Self, Error> {
-        if regions.len() != self.regions.len() {
+        if regions.len() != self.regions.len()
+            || programs
+                .iter()
+                .flat_map(|p| &p.routes)
+                .any(|r| match r.target {
+                    super::ModTarget::ProcessorCutoff(i)
+                    | super::ModTarget::ProcessorResonance(i) => i as usize >= self.filters.len(),
+                    _ => false,
+                })
+        {
             return Err(Error::InvalidInput);
         }
         self.voice_modulation =
@@ -764,6 +773,10 @@ impl Prepared {
 
     pub fn sample_rate(&self) -> u32 {
         self.rate
+    }
+
+    pub(crate) fn region_chain(&self, region: usize) -> Option<usize> {
+        self.regions[region].chain
     }
 
     /// Required cells per logical note across all script-instance namespaces.

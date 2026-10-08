@@ -281,6 +281,7 @@ pub struct Edit {
     pub cursor: u32,
     /// W5 WidgetEventType: down=0, up=1, drag=2, drop=3.
     pub event: i32,
+    pub mouse_over: bool,
 }
 
 fn target(namespace: &str, n: WidgetRef) -> String {
@@ -1145,6 +1146,7 @@ pub(super) fn widget_state(
                         index: column as u32,
                         value,
                         mods: response.mods,
+                        mouse_over: response.hovered,
                         cursor: column as u32,
                         event: if response.dragged { 2 } else { 0 },
                     });
@@ -1263,6 +1265,7 @@ pub(super) fn widget_state(
                             index: index as u32,
                             value: ir::Value::Real(value),
                             mods: response.mods,
+                        mouse_over: response.hovered,
                             cursor: (cursor * 2) as u32,
                             event: if response.dragged { 2 } else { 0 },
                         });
@@ -1298,7 +1301,7 @@ pub(super) fn widget_state(
             let field=text_edit(ui,id.as_str(),draft,TextOpts {blur_on_submit:true,..Default::default()});
             if can_edit && field.changed.submitted {
                 let text=ir::Value::Text(draft.clone());
-                input.edits.push(Edit{widget:n,index:0,value:text.clone(),mods:ui.get(id.as_str()).mods,cursor:0,event:1});
+                input.edits.push(Edit{widget:n,index:0,value:text.clone(),mods:ui.get(id.as_str()).mods,mouse_over:false,cursor:0,event:1});
                 input.values.insert(n,text);
             }
             field.el
@@ -1341,6 +1344,7 @@ pub(super) fn widget_state(
                             index: 0,
                             value: value.clone(),
                             mods: ui.get(item.as_str()).mods,
+                            mouse_over: false,
                             cursor: 0,
                             event: 0,
                         });
@@ -1421,6 +1425,7 @@ pub(super) fn widget_state(
                 index: 0,
                 value,
                 mods,
+                mouse_over: false,
                 cursor: 0,
                 event: if response.dragged { 2 } else { 0 },
             });
@@ -1539,6 +1544,7 @@ pub(super) fn menu_popup(
                     index: 0,
                     value: ir::Value::Integer(item.value),
                     mods: Mods::default(),
+                    mouse_over: false,
                     cursor: 0,
                     event: 0,
                 });
@@ -1594,12 +1600,41 @@ pub(super) fn menu_popup(
     )
 }
 
-fn file_matches(path: &std::path::Path, files: ir::Files) -> bool {
-    let extension = path
-        .extension()
-        .and_then(|x| x.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
+/// One OS gesture, targeting the same painted surface as pointer input.
+/// The caller forwards these edits together through native widget admission.
+pub(super) fn file_drop(ui:&Ui,namespace:&str,face:&Interface,at:Point,paths:&[std::path::PathBuf],dropped:bool)->Option<(WidgetRef,Vec<Edit>)> {
+    if paths.is_empty() {return None;}
+    let mut hit=moose::mui::mui::input::Hit::default();
+    for surface in ui.scene()?.surfaces().filter(|s|(Id::is_named(&s.key)||s.pointer_states)&&!s.disabled) {
+        if surface.hits.is_empty() {hit.push_placed(surface.key.clone(),None,&surface.path,surface.offset,surface.clip,surface.clip_paths()).ok()?;}
+        for (tag,path) in &surface.hits {hit.push_placed(surface.key.clone(),Some(tag.clone()),path,surface.offset,surface.clip,surface.clip_paths()).ok()?;}
+    }
+    let winner=hit.at(at)?;
+    let n=face.widgets.iter().enumerate().find_map(|(n,w)| {
+        let n=WidgetRef(n);
+        (matches!(w.kind,Kind::MouseArea)&&face.visible(n)&&w.enabled&&w.opacity>0.&&w.intercepts_mouse&&target(namespace,n)==winner).then_some(n)
+    })?;
+    let mut counts=[0u32;3];
+    let mut edits=Vec::with_capacity(paths.len().min(96));
+    for (index,path) in paths.iter().enumerate() {
+        let extension=path.extension()?.to_str()?.to_ascii_lowercase();
+        let (kind,slot)=match extension.as_str() {
+            "wav"|"aif"|"aiff"|"ncw"=>(ir::DropKind::Audio,0),
+            "mid"|"midi"=>(ir::DropKind::Midi,1),
+            "nka"=>(ir::DropKind::Array,2),
+            _=>return None,
+        };
+        counts[slot]+=1;
+        if counts[slot]>sampler_core::WIDGET_DROP_CAPACITY {return None;}
+        let path=path.to_str()?;
+        if sampler_core::Text::try_new(path).is_err() {return None;}
+        edits.push(Edit {widget:n,index:index.try_into().ok()?,value:ir::Value::DropPath {kind,path:path.into()},mods:ui.pointer().mods,cursor:0,event:if dropped {5} else {4},mouse_over:true});
+    }
+    Some((n,edits))
+}
+
+fn file_matches(path:&std::path::Path,files:ir::Files)->bool {
+    let extension=path.extension().and_then(|x|x.to_str()).unwrap_or("").to_ascii_lowercase();
     match files {
         ir::Files::Any => true,
         ir::Files::Audio => matches!(

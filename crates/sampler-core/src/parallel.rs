@@ -373,9 +373,8 @@ impl View<'_> {
         let mut cells = plan.dsp.cells.claim(i);
         let mut delay = plan.dsp.delay_samples.claim(i);
         let mut bank = plan.dsp.filters.claim(lane);
-        if let Some(filter) = prelude.and_then(|p| p.filter) {
-            bank[0].modulation = filter;
-        }
+        bank[0].modulation = prelude.and_then(|p| p.filter).unwrap_or([1.0; 2]);
+        bank[0].set_addressed_modulation(&plan.prepared.voice_modulation, &plan.modulation, i);
         let mut scratch = self.scratch.claim(i);
         let segment = &mut scratch[0][..self.frames];
         segment.fill([0.; 2]);
