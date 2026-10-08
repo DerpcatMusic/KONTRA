@@ -15,7 +15,7 @@ use std::{
     time::{Duration, Instant},
 };
 pub fn one(id: &str, out: &Path) -> Value {
-    let mut r = json!({"loads":"no","ui":"error","plays_note":"no","controls_bound":"0/0","load_ms":0.,"stage":"bank access","reason":"UVI initialization failed"});
+    let mut r = json!({"loads":"no","ui":"error","plays_note":"no","controls_bound":"0/0","load_ms":0.,"first_audio_ms":null,"ui_first_frame_ms":null,"cache_state":"cold","stage":"bank access","reason":"UVI initialization failed"});
     metrics::checkpoint(out, &r);
     let t = Instant::now();
     let run = (|| -> anyhow::Result<()> {
@@ -158,7 +158,12 @@ pub fn one(id: &str, out: &Path) -> Value {
                                 .count();
                             blank |= shown == 0;
                             let paint =
-                                crate::ui::scan_uvi::paint(&snapshot, &mut assets, reply.stamp);
+                                crate::ui::scan_uvi::paint(&snapshot, &mut assets, reply.stamp, t);
+                            if r["ui_first_frame_ms"].is_null()
+                                && let Ok(frame) = &paint
+                            {
+                                r["ui_first_frame_ms"] = frame["ui_first_frame_ms"].clone();
+                            }
                             ui_error |= paint.is_err();
                             views.push(json!({"widgets":snapshot.widgets.len(),"visible":shown,"interactive":interactive,"bound":interactive,"render":paint.unwrap_or_else(|e|metrics::error("Original paint",e))}));
                             snapshots.push(snapshot);
@@ -194,6 +199,7 @@ pub fn one(id: &str, out: &Path) -> Value {
         r["pick"] = json!(pick);
         r["programs"] = json!([{"source":"uvi","program":0,"pick":pick,"pick_source":pick_source,
             "native_valid_keys":native_valid_keys,"native_preferred_note":native_preferred,
+            "first_audio_ms":null,"ui_first_frame_ms":r["ui_first_frame_ms"],"cache_state":"cold",
             "load_path":"v1 UVI production worker; full PCM"}]);
         let diag = assets.diagnostics();
         r["ui"] = json!(if ui_error {
@@ -221,6 +227,7 @@ pub fn one(id: &str, out: &Path) -> Value {
             .ok_or_else(|| anyhow::anyhow!("audio port unavailable"))?;
         let mut peak = 0f32;
         let mut nonfinite = 0;
+        let mut first_audio_ms = None;
         for block in 0..96 {
             let stamp = Stamp {
                 epoch: 1,
@@ -278,6 +285,8 @@ pub fn one(id: &str, out: &Path) -> Value {
                 }
                 std::thread::sleep(Duration::from_millis(1));
             };
+            // Observe received PCM before pacing sleep; never derive onset from load_ms.
+            observe_first_audio(&mut first_audio_ms, t, &packet.audio);
             if let Some(wait) =
                 Duration::from_secs_f64(256.0 / 48000.0).checked_sub(start.elapsed())
             {
@@ -303,7 +312,10 @@ pub fn one(id: &str, out: &Path) -> Value {
         r["peak"] = json!(peak);
         r["nonfinite"] = json!(nonfinite);
         r["pick"] = json!(pick);
-        r["plays_note"] = json!(if peak > 1e-5 && nonfinite == 0 {
+        let audible = peak > 1e-5 && nonfinite == 0;
+        r["first_audio_ms"] = json!(first_audio_ms.filter(|_| audible));
+        r["programs"][0]["first_audio_ms"] = r["first_audio_ms"].clone();
+        r["plays_note"] = json!(if audible {
             "yes"
         } else {
             "silent"
@@ -317,4 +329,26 @@ pub fn one(id: &str, out: &Path) -> Value {
         r["failure"] = metrics::error(r["stage"].as_str().unwrap_or("probe"), e);
     }
     r
+}
+
+fn observe_first_audio(first: &mut Option<f64>, load_start: Instant, audio: &[[f32; 2]]) {
+    if first.is_none() && audio.iter().flatten().any(|x| x.is_finite() && *x != 0.) {
+        *first = Some(load_start.elapsed().as_secs_f64() * 1000.);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn onset_requires_actual_finite_output_and_keeps_first_observation() {
+        let start = std::time::Instant::now();
+        let mut first = None;
+        super::observe_first_audio(&mut first, start, &[[0., -0.], [f32::NAN, f32::INFINITY]]);
+        assert_eq!(first, None);
+        super::observe_first_audio(&mut first, start, &[[0., 0.], [0., 0.1]]);
+        assert!(first.is_some_and(|ms| ms.is_finite() && ms >= 0.));
+        let observed = first;
+        super::observe_first_audio(&mut first, start, &[[0.2, 0.]]);
+        assert_eq!(first, observed);
+    }
 }
