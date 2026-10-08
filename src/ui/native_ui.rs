@@ -37,6 +37,8 @@ pub(super) struct State {
     entry: String,
     seed: Vec<(ir::Source, usize, ir::Widget)>,
     size: Size,
+    #[cfg(feature = "shots")]
+    graph_depth: Option<usize>,
 }
 fn failure(error: &anyhow::Error, phase: &str) -> String {
     fn category(error: &mlua::Error) -> String {
@@ -135,6 +137,8 @@ impl State {
             entry: entry.into(),
             seed: controls,
             size: Size::new(970., 600.),
+            #[cfg(feature = "shots")]
+            graph_depth: None,
         }
     }
     pub fn bytes(&self) -> usize {
@@ -193,6 +197,10 @@ impl State {
     #[cfg(feature = "shots")]
     pub fn font_success(&self) -> Option<usize> {
         self.package.as_ref().map(|p| p.fonts.len())
+    }
+    #[cfg(feature = "shots")]
+    pub fn graph_depth(&self) -> Option<usize> {
+        self.graph_depth
     }
     #[cfg(feature = "shots")]
     pub fn failures(&self) -> Vec<String> {
@@ -270,6 +278,8 @@ impl State {
                 events(ui, graph, session, slot, scale, &mut local.hovered)?;
             }
             let graph = session.render()?;
+            #[cfg(feature = "shots")]
+            { self.graph_depth = Some(self.graph_depth.unwrap_or(0).max(graph_depth(&graph)?)); }
             let authored = authored_size(&graph);
             self.size = authored;
             let el = draw(
@@ -303,6 +313,34 @@ impl State {
 }
 fn tables(t: &Table, key: &str) -> mlua::Result<Vec<Table>> {
     t.get::<Table>(key)?.sequence_values::<Table>().collect()
+}
+#[cfg(feature = "shots")]
+fn graph_depth(root: &Table) -> anyhow::Result<usize> {
+    let mut work = vec![(root.clone(), 0)];
+    let (mut nodes, mut maximum) = (0, 0);
+    while let Some((node, depth)) = work.pop() {
+        nodes += 1;
+        anyhow::ensure!(
+            nodes <= 16384 && depth <= 192,
+            "NativeUI graph budget exceeded"
+        );
+        maximum = maximum.max(depth);
+        work.extend(
+            tables(&node, "children")?
+                .into_iter()
+                .map(|child| (child, depth + 1)),
+        );
+        for modifier in tables(&node, "modifiers")? {
+            if let Value::Table(value) = val(&modifier, "value") {
+                match string(&modifier, "name").as_str() {
+                    "background" | "overlay" => work.push((value, depth + 1)),
+                    "popover" => work.push((value.get("content")?, depth + 1)),
+                    _ => {}
+                }
+            }
+        }
+    }
+    Ok(maximum)
 }
 fn number(t: &Table, key: &str) -> Option<f64> {
     match t.get::<Value>(key).ok()? {
@@ -459,6 +497,28 @@ fn expand(mut el: El, flex: (bool, bool)) -> El {
     }
     el
 }
+// Native graphs are bounded by the VM, but each unoptimized primitive frame
+// is large. Keep all parent continuations and completed children on the heap.
+struct DrawNode {
+    node: Table,
+    props: Table,
+    modifiers: Vec<Table>,
+    style: Style,
+    child_nodes: Vec<Table>,
+}
+struct DrawFrame {
+    node: Table,
+    props: Table,
+    style: Style,
+    modifiers: std::collections::VecDeque<Table>,
+    el: El,
+    flex: (bool, bool),
+    fixed: (bool, bool),
+}
+enum DrawProgress {
+    Complete(El),
+    Child(Box<DrawFrame>, Table),
+}
 fn draw(
     ui: &mut Ui,
     node: &Table,
@@ -466,14 +526,52 @@ fn draw(
     session: &Session,
     slot: usize,
     s: f64,
-    mut style: Style,
+    style: Style,
     drafts: &mut HashMap<String, String>,
 ) -> anyhow::Result<El> {
-    let props: Table = node.get("props")?;
-    let modifiers = tables(node, "modifiers")?;
-    let kind = string(node, "kind");
+    enum Work {
+        Enter(Table, Style, usize),
+        Build(DrawNode, usize),
+        Resume(Box<DrawFrame>, usize),
+    }
+    let mut work = vec![Work::Enter(node.clone(), style, 0)];
+    let mut results = Vec::new();
+    let mut nodes = 0;
+    while let Some(job) = work.pop() {
+        let (progress, depth) = match job {
+            Work::Enter(node, style, depth) => {
+                nodes += 1;
+                anyhow::ensure!(nodes <= 16384 && depth <= 192, "NativeUI graph budget exceeded");
+                let props = node.get("props")?;
+                let modifiers = tables(&node, "modifiers")?;
+                let style = draw_style(package, &modifiers, style)?;
+                let child_nodes = tables(&node, "children")?;
+                let children = child_nodes.clone();
+                work.push(Work::Build(DrawNode { node, props, modifiers, style: style.clone(), child_nodes }, depth));
+                work.extend(children.into_iter().rev().map(|child| Work::Enter(child, style.clone(), depth + 1)));
+                continue;
+            }
+            Work::Build(input, depth) => {
+                let children = results.split_off(results.len() - input.child_nodes.len());
+                let frame = draw_base(ui, package, session, slot, s, drafts, input, children)?;
+                (draw_modifiers(ui, slot, s, frame, None)?, depth)
+            }
+            Work::Resume(frame, depth) => (draw_modifiers(ui, slot, s, *frame, results.pop())?, depth),
+        };
+        match progress {
+            DrawProgress::Complete(el) => results.push(el),
+            DrawProgress::Child(frame, child) => {
+                let style = frame.style.clone();
+                work.push(Work::Resume(frame, depth));
+                work.push(Work::Enter(child, style, depth + 1));
+            }
+        }
+    }
+    Ok(results.pop().expect("the root produces one element"))
+}
+fn draw_style(package: &Package, modifiers: &[Table], mut style: Style) -> anyhow::Result<Style> {
     let mut font_name = None;
-    for m in &modifiers {
+    for m in modifiers {
         let v = val(m, "value");
         match string(m, "name").as_str() {
             "foreground_color" => {
@@ -499,7 +597,21 @@ fn draw(
         style.font=Some(package.font(&name,style.bold)
             .ok_or_else(||anyhow::anyhow!("NativeUI supplied font unavailable"))?);
     }
-    let child_nodes = tables(node, "children")?;
+    Ok(style)
+}
+fn draw_base(
+    ui: &mut Ui,
+    package: &Arc<Package>,
+    session: &Session,
+    slot: usize,
+    s: f64,
+    drafts: &mut HashMap<String, String>,
+    input: DrawNode,
+    rendered: Vec<El>,
+) -> anyhow::Result<DrawFrame> {
+    let DrawNode { node, props, modifiers, style, child_nodes } = input;
+    let kind = string(&node, "kind");
+    let node = &node;
     let has_flexible_content = child_nodes.iter().any(|child| {
         let flex = flexibility(child);
         string(child, "kind") != "Spacer"
@@ -507,8 +619,8 @@ fn draw(
     });
     let mut children = child_nodes
         .iter()
-        .map(|child| {
-            let mut el = draw(ui, child, package, session, slot, s, style.clone(), drafts)?;
+        .zip(rendered)
+        .map(|(child, mut el)| {
             let flexible = flexibility(child);
             if has_flexible_content && string(child, "kind") == "Spacer" {
                 // Explicit flexible content consumes the proposal first;
@@ -711,9 +823,19 @@ fn draw(
         flex = (true, true);
     }
     el = expand(el, flex);
+    Ok(DrawFrame { node: node.clone(), props, modifiers: modifiers.into(), style, el, flex, fixed: (false, false) })
+}
+fn draw_modifiers(
+    ui: &mut Ui,
+    slot: usize,
+    s: f64,
+    frame: DrawFrame,
+    mut subtree: Option<El>,
+) -> anyhow::Result<DrawProgress> {
+    let DrawFrame { node, props, style, mut modifiers, mut el, mut flex, mut fixed } = frame;
+    let kind = string(&node, "kind");
     let container = matches!(kind.as_str(), "HStack" | "VStack" | "ZStack");
-    let mut fixed = (false, false);
-    for m in modifiers {
+    while let Some(m) = modifiers.pop_front() {
         let name = string(&m, "name");
         let value = val(&m, "value");
         match name.as_str() {
@@ -841,8 +963,12 @@ fn draw(
             "background" | "overlay" => {
                 if let Value::Table(t) = value {
                     let (x, y) = align(&string(&m, "alignment"));
-                    let mut background =
-                        draw(ui, &t, package, session, slot, s, style.clone(), drafts)?;
+                    let Some(mut background) = subtree.take() else {
+                        modifiers.push_front(m);
+                        return Ok(DrawProgress::Child(Box::new(DrawFrame {
+                            node, props, style, modifiers, el, flex, fixed,
+                        }), t));
+                    };
                     if !string(&m, "alignment").is_empty() {
                         background = background.anchor(x, y);
                     }
@@ -874,8 +1000,8 @@ fn draw(
             "popover" => {
                 if let Value::Table(t) = value {
                     let content: Table = t.get("content")?;
-                    let popup_id = format!("nui-{slot}-{}-popup", string(node, "path"));
-                    let parent_id = format!("nui-{slot}-{}", string(node, "path"));
+                    let popup_id = format!("nui-{slot}-{}-popup", string(&node, "path"));
+                    let parent_id = format!("nui-{slot}-{}", string(&node, "path"));
                     let parent = ui
                         .scene()
                         .and_then(|scene| scene.surface(&parent_id))
@@ -902,17 +1028,13 @@ fn draw(
                         "right" => (parent.width + spacing, y),
                         _ => (x, parent.height + spacing),
                     };
-                    let popup = draw(
-                        ui,
-                        &content,
-                        package,
-                        session,
-                        slot,
-                        s,
-                        style.clone(),
-                        drafts,
-                    )?
-                    .id(popup_id)
+                    let Some(popup) = subtree.take() else {
+                        modifiers.push_front(m);
+                        return Ok(DrawProgress::Child(Box::new(DrawFrame {
+                            node, props, style, modifiers, el, flex, fixed,
+                        }), content));
+                    };
+                    let popup = popup.id(popup_id)
                     .tracks_pointer()
                     .float()
                     .at(x, y);
@@ -923,14 +1045,14 @@ fn draw(
             _ => {}
         }
     }
-    for m in tables(node, "modifiers")? {
+    for m in tables(&node, "modifiers")? {
         if string(&m, "name") == "align" {
             let (x, y) = align(&string(&m, "value"));
             el = el.anchor(x, y);
         }
     }
-    let path = string(node, "path");
-    let interactive = tables(node, "modifiers")?
+    let path = string(&node, "path");
+    let interactive = tables(&node, "modifiers")?
         .iter()
         .any(|m| string(m, "name").starts_with("on_") || string(m, "name") == "popover");
     if interactive {
@@ -945,7 +1067,7 @@ fn draw(
     if style.hidden {
         el = el.opacity(0.).disabled();
     }
-    Ok(el)
+    Ok(DrawProgress::Complete(el))
 }
 fn events(
     ui: &mut Ui,
@@ -1115,9 +1237,96 @@ fn canvas_draw(lua: &mlua::Lua, paint: &Function, size: Size, s: f64) -> mlua::R
     Ok(out)
 }
 
+#[cfg(all(target_os = "linux", any(test, feature = "shots")))]
+pub(super) fn stack_watermark() -> (usize, usize, usize) {
+    let mut attr = std::mem::MaybeUninit::<libc::pthread_attr_t>::uninit();
+    let (mut base, mut size) = (std::ptr::null_mut(), 0);
+    // Only unused storage on this test thread is painted; leave guard pages
+    // and 64 KiB below the active frame untouched.
+    unsafe {
+        assert_eq!(
+            libc::pthread_getattr_np(libc::pthread_self(), attr.as_mut_ptr()),
+            0
+        );
+        assert_eq!(
+            libc::pthread_attr_getstack(attr.as_ptr(), &mut base, &mut size),
+            0
+        );
+        assert_eq!(libc::pthread_attr_destroy(attr.as_mut_ptr()), 0);
+        let marker = 0_u8;
+        let end = (&marker as *const u8 as usize) - (64 << 10);
+        let start = (base as usize + 2 * libc::sysconf(libc::_SC_PAGESIZE) as usize)
+            .max(end.saturating_sub(2 << 20));
+        assert!(start < end && end < base as usize + size);
+        std::ptr::write_bytes(start as *mut u8, 0xa5, end - start);
+        (start, end, base as usize + size)
+    }
+}
+
+#[cfg(all(target_os = "linux", any(test, feature = "shots")))]
+pub(super) fn stack_peak((start, end, top): (usize, usize, usize)) -> usize {
+    // The marked range belongs to this thread and is below its live frames.
+    let bytes = unsafe { std::slice::from_raw_parts(start as *const u8, end - start) };
+    top - (start + bytes.iter().position(|&b| b != 0xa5).unwrap_or(bytes.len()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_graph_lowering_fits_a_plain_two_mib_thread() {
+        std::thread::Builder::new()
+            .stack_size(2 << 20)
+            .spawn(|| {
+                let dir = std::env::temp_dir()
+                    .join(format!("kontra-native-stack-{}", std::process::id()));
+                std::fs::create_dir_all(dir.join("Resources/native_ui")).unwrap();
+                std::fs::write(
+                    dir.join("Resources/native_ui/main.nui"),
+                    b"return function() return nil end",
+                )
+                .unwrap();
+                let package = Arc::new(Package::load(&dir.join("fixture.nki")).unwrap());
+                let session = Session::new(package.clone(), "main", vec![]).unwrap();
+                let lua = session.lua();
+                let node = |kind: &str, child: Option<Table>| {
+                    let node = lua.create_table().unwrap();
+                    node.set("kind", kind).unwrap();
+                    node.set("props", lua.create_table().unwrap()).unwrap();
+                    node.set("modifiers", lua.create_table().unwrap()).unwrap();
+                    let children = lua.create_table().unwrap();
+                    if let Some(child) = child {
+                        children.push(child).unwrap();
+                    }
+                    node.set("children", children).unwrap();
+                    node
+                };
+                let mut graph = node("Rectangle", None);
+                for _ in 0..64 {
+                    graph = node("Group", Some(graph));
+                }
+                let mut ui = super::super::theme::ui();
+                let el = draw(
+                    &mut ui,
+                    &graph,
+                    &package,
+                    &session,
+                    0,
+                    1.,
+                    Style::default(),
+                    &mut HashMap::new(),
+                )
+                .unwrap();
+                ui.frame(el, Some(Size::new(16., 16.)), Input::default(), 1. / 60.)
+                    .unwrap();
+                assert!(ui.scene().is_some());
+                std::fs::remove_dir_all(dir).unwrap();
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
 
     #[test]
     #[ignore = "requires locally owned NativeUI library; graph and bindings stay in RAM"]
@@ -1191,6 +1400,41 @@ mod tests {
         assert!(!seen.is_empty(),"Edit graph reads published selector parameters");
     }
 
+    #[cfg(all(target_os = "linux", feature = "shots"))]
+    #[test]
+    #[ignore = "requires locally owned NativeUI program; graph stays in RAM"]
+    fn native_program_stack_watermark() {
+        let path = std::path::PathBuf::from(std::env::var_os("KONTRA_AUDIT_WIDGET_PATCH").unwrap());
+        let program = std::env::var("KONTRA_AUDIT_PROGRAM").ok().map_or(0, |n| n.parse().unwrap());
+        let mut source = if path.extension().is_some_and(|e| e == "nkm") {
+            sampler_kontakt::read_program(&path, program).unwrap().instrument
+        } else {
+            sampler_kontakt::read(&path).unwrap().instrument
+        };
+        source.retain_zones(|_| false);
+        source.assets.clear();
+        let loaded = sampler_kontakt::prepare(source, vec![], &sampler_kontakt::Options {
+            library: Some(path.clone()), ..Default::default()
+        }).unwrap();
+        let entry = loaded.interfaces.iter().find_map(|f| f.native_ui.as_ref()).unwrap().entry.clone();
+        let controls = loaded.interfaces.iter().flat_map(|f| f.widgets.iter().enumerate()
+            .map(move |(n, w)| (f.source, n, w.clone()))).collect();
+        let package = Arc::new(Package::load(&path).unwrap());
+        let watermark = stack_watermark();
+        let session = Session::new(package.clone(), &entry, controls).unwrap();
+        let graph = session.render().unwrap();
+        let mut ui = super::super::theme::ui();
+        let mut drafts = HashMap::new();
+        for _ in 0..4 {
+            let el = draw(&mut ui, &graph, &package, &session, 0, 1., Style::default(), &mut drafts).unwrap();
+            ui.frame(el, Some(authored_size(&graph)), Input::default(), 1. / 60.).unwrap();
+        }
+        let peak = stack_peak(watermark);
+        assert!(peak < watermark.2 - watermark.0 - 4096, "stack watermark saturated");
+        println!("NATIVE_STACK program={program} depth={} native_init_graph_draw_layout_peak_bytes={peak} unmarked_top_bytes={}",
+            graph_depth(&graph).unwrap(), watermark.2 - watermark.1);
+    }
+
     #[test]
     #[ignore = "requires locally owned NativeUI library; text stays in RAM"]
     fn native_saved_text_reaches_authored_field_without_host_insets() {
@@ -1249,10 +1493,14 @@ mod tests {
         assert!(fields_found.len()>=6,"six complete saved strings reach native primitives");
         let mut ui=super::super::theme::ui();
         let mut drafts=HashMap::new();
+        #[cfg(target_os = "linux")]
+        let watermark=stack_watermark();
         for _ in 0..4 {
             let el=draw(&mut ui,&graph,&package,&session,0,1.,Style::default(),&mut drafts).unwrap();
             ui.frame(el,Some(authored_size(&graph)),Input::default(),1./60.).unwrap();
         }
+        #[cfg(target_os = "linux")]
+        println!("NATIVE_STACK draw_and_layout_peak_bytes={}",stack_peak(watermark));
         let scene=ui.scene().unwrap();
         let mut matched=0;
         for (path,n,len) in fields_found {
