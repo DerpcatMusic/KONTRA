@@ -2,7 +2,7 @@
 
 Compared frozen v1 source **0cb7a8a0** with **3f49a9a1**, plus W13 editor port **a6a5166d** plus the single-owner fix (targeted green). Frozen binaries are never rebuilt. This updates the older W4 start-of-task inventory; Present means reachable control and backing path exist, not gate certification. Authored widgets/FX are grouped by kind because libraries define an unbounded set of values.
 
-W1 **4f1abcc7** is already an ancestor of 3f49a9a1: no remainder. Reused W4 d05b1594/f335571d/468aad70/172ac0f4 for the editor; c4167fdf timing stays HOLD until native measurement is wired. Browser/cache/artwork belong to W14; no changes to its files or Settings schema.
+W1 **4f1abcc7** is already an ancestor of 3f49a9a1: no remainder. Reused W4 d05b1594/f335571d/468aad70/172ac0f4 for the editor; W4 timing continuation at local 8b2d80f3 now has a fresh measurement worker and 9/10 targeted green; it remains HOLD pending trace correction/root compile/push. No competing timing edits. Browser/cache/artwork belong to W14; no changes to its files or Settings schema.
 
 | Area | User-facing setting/feature | Frozen v1 source | Current v2 status | CPU impact |
 |---|---|---|---|---|
@@ -16,7 +16,7 @@ W1 **4f1abcc7** is already an ancestor of 3f49a9a1: no remainder. Reused W4 d05b
 | Global preferences and settings panel | New-part MIDI: next free / omni / fixed port A–D + channel 1–16 | 0cb7a8a0:src/ui/header.rs:308 | Present: ui/header.rs; ui/mod.rs:new_part | — |
 | Global preferences and settings panel | New-part output: automatic / fixed stereo bus 1–16 | 0cb7a8a0:src/ui/header.rs:333 | Present: ui/header.rs | — |
 | Global preferences and settings panel | Global samples: disk streaming Auto / load all into RAM | 0cb7a8a0:src/ui/menu.rs:554; plugin::Selection::streaming | Present: rack Auto/RAM and reload policy in plugin.rs/sound/v2.rs; overflow remains streaming fallback | W9 CPU/RSS/load/underruns |
-| Global preferences and settings panel | Global auto-align timing (experimental) | 0cb7a8a0:src/ui/menu.rs:561; timing.rs | Missing: Core::latency remains zero; W4 c4167fdf not connected to measurement worker | W9 CPU/load/latency |
+| Global preferences and settings panel | Global auto-align timing (experimental) | 0cb7a8a0:src/ui/menu.rs:561; timing.rs | Missing on 3f49: Core::latency remains zero; W4 8b2d80f3 now wires measurement but remains HOLD | W9 CPU/load/latency |
 | Global preferences and settings panel | Alignment only while transport plays; reported latency readout | 0cb7a8a0:src/ui/menu.rs:565 | Missing: transport-only scheduling/reporting requires calibrated timing integration | W9 render/latency |
 | Global preferences and settings panel | Browser and keyboard visibility toggles | 0cb7a8a0:src/ui/menu.rs:531 | Present: ui/menu.rs | W9 UI |
 | Global preferences and settings panel | Appearance Plain / library color / artwork | 0cb7a8a0:src/ui/menu.rs:573 | Present: ui/menu.rs | W9 UI assets |
@@ -107,7 +107,7 @@ User-impact queue: (1) functional Sound editor, (2) calibrated timing alignment,
 
 Validation: baseline **7bf6fa36** fails `ui::v2_tests::v1_sound_editor_controls_are_reachable` on absent `edit-group-prev`. Port first ran 20/22; single-editor selection failure fixed at `inside::bar`, malformed native-state test fixture gained required `name`. Second run **22/22 passed** (typed/drag/wheel/fine/reset/scopes/groups/state/reload included). `cargo test --profile ci --no-run` passed. Receipts: `~/.cache/kontakto-w13/editor-red.log`, `editor-green.log`, `editor-green2.log`, `no-run.log`.
 
-Native LP4 follow-up: the editor previously displayed normalized cutoff as Hz, clamped typed Hz to full cutoff, and omitted LP4 from its graph. Ported v1's native-cutoff/graph-octave conversion (`0cb7a8a0:src/ui/viz.rs`) onto the existing pinned playback kernel; base/live offset graphs and current native gain use the same service values. Regression covers Hz readout, typed 1 kHz, handle axis/drag law, small-signal rolloff, base/edited separation and gain lane. Arc retirement follow-up fba565c9 passed A→B equal-content ownership without revision bump plus invalid→valid retry.
+Native LP4 follow-up: the editor previously displayed normalized cutoff as Hz, clamped typed Hz to full cutoff, and omitted LP4 from its graph. Ported v1's native-cutoff/graph-octave conversion (`0cb7a8a0:src/ui/viz.rs`) onto the existing pinned playback kernel; base/live offset graphs and current native gain use the same service values. Regression covers Hz readout, typed 1 kHz, handle axis/drag law, small-signal rolloff, base/edited separation and gain lane. Native source audit (`sampler-kontakt/src/library.rs:834,843,1447`) also found inserts on shared zone voice chains. The adapter now collects those once plus group chains, and preserves processor-control indices across both. Source-shaped shared-zone and voice/group filter-owner cases reproduced red; targeted native checks passed 22/22 (3 ignored). Arc retirement follow-up fba565c9 passed A→B equal-content ownership without revision bump plus invalid→valid retry.
 
 Loaded host evidence is in [w13-live-host.md](w13-live-host.md): 28 QUIET cells, candidate CPU FAIL with explicit UNKNOWN gaps.
 
