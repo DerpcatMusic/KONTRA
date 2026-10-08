@@ -397,14 +397,41 @@ pub fn lower_with(
     }
     // Only source modulators that actually own an amplitude envelope get lanes.
     // Muted/unmodeled names remain findable without inventing a DSP consumer.
+    let mut envelopes = Vec::new();
     for source in &instrument.source_indices.modulators {
-        let Some(modulator) = source.runtime else { continue };
-        let runtime_group = instrument.source_indices.groups.get(source.group).copied().flatten().unwrap_or(ir::GroupRef(source.group));
-        if source.external || !instrument.zones.iter().any(|z|z.group == Some(runtime_group) && z.amplitude == Some(modulator)) { continue }
-        let ir::ModulationSource::Envelope(envelope) = &instrument.modulators[modulator.0].source else { continue };
-        let authored=lowering.adsr("source amplitude envelope",envelope,false)?;
-        plan=plan.with_group_envelope_parameters(runtime_group.0 as u32,source.group as i32,source.slot as i32,authored).map_err(core(Stage::Envelope,"source amplitude envelope"))?;
+        let Some(modulator) = source.runtime else {
+            continue;
+        };
+        let runtime_group = instrument
+            .source_indices
+            .groups
+            .get(source.group)
+            .copied()
+            .flatten()
+            .unwrap_or(ir::GroupRef(source.group));
+        if source.external
+            || !instrument
+                .zones
+                .iter()
+                .any(|z| z.group == Some(runtime_group) && z.amplitude == Some(modulator))
+        {
+            continue;
+        }
+        let ir::ModulationSource::Envelope(envelope) = &instrument.modulators[modulator.0].source
+        else {
+            continue;
+        };
+        let authored = lowering.adsr("source amplitude envelope", envelope, false)?;
+        envelopes.push((
+            runtime_group.0 as u32,
+            source.group as i32,
+            source.slot as i32,
+            authored,
+        ));
     }
+    plan = plan
+        .with_group_envelope_parameters_batch(envelopes)
+        .map_err(core(Stage::Envelope, "source amplitude envelope"))?;
     if instrument.voice_limit.is_some() || !instrument.voice_limits.is_empty() {
         let limit = |l: &ir::VoiceLimit| crate::VoiceLimit {
             voices: l.voices,
