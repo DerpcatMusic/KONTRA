@@ -14,6 +14,9 @@ pub(crate) use linux::Runtime;
 
 /// What the editor asks for.
 pub enum Ask {
+    /// Ported v1 sample-folder creator; filesystem work stays on the picker worker.
+    Samples { out: PathBuf },
+    Snapshot { slot: usize, source: (String, u32, String), from: PathBuf },
     /// Open a validated native folder/file path without a blocking UI call.
     Reveal(PathBuf),
     /// A library folder (`single`), or a folder of libraries, from `from`.
@@ -26,6 +29,8 @@ pub enum Ask {
 
 /// What came back.
 pub enum Picked {
+    Created(Result<PathBuf, String>),
+    Snapshot { slot: usize, source: (String, u32, String), path: PathBuf },
     DialogError(String),
     Revealed(Result<(), String>),
     Folder(PathBuf, bool),
@@ -127,6 +132,7 @@ impl Picker {
     pub fn take(&self) -> Option<Picked> {
         #[cfg(target_os = "linux")]
         self.linux.poll(&self.answer);
+        if self.answer.open.load(Ordering::Acquire) { return None; }
         super::lock(&self.answer.picked).take()
     }
 
@@ -134,13 +140,17 @@ impl Picker {
     pub fn ready(&self) -> bool {
         #[cfg(target_os = "linux")]
         self.linux.poll(&self.answer);
-        super::lock(&self.answer.picked).is_some()
+        !self.answer.open.load(Ordering::Acquire) && super::lock(&self.answer.picked).is_some()
     }
 }
 
 #[cfg(not(target_os = "linux"))]
 fn show(ask: Ask) -> Option<Picked> {
     match ask {
+        Ask::Samples { out } => {
+            let source = rfd::FileDialog::new().set_title("A folder of WAV or AIFF samples").pick_folder()?;
+            Some(created(source, out))
+        }
         Ask::Reveal(path) => Some(Picked::Revealed(super::menu::reveal(&path))),
         Ask::Folder { from, single } => rfd::FileDialog::new()
             .set_title(if single { "A Kontakt library folder" } else { "A folder of Kontakt libraries" })
@@ -153,6 +163,12 @@ fn show(ask: Ask) -> Option<Picked> {
             .add_filter("Pictures", &["png", "jpg", "jpeg"])
             .pick_file()
             .map(|picture| Picked::Artwork { library, picture }),
+        Ask::Snapshot { slot, source, from } => rfd::FileDialog::new()
+            .set_title("Load a snapshot for this instrument")
+            .set_directory(from)
+            .add_filter("Kontakt snapshot", &["nksn"])
+            .pick_file()
+            .map(|path| Picked::Snapshot { slot, source, path }),
         Ask::Multi { from, name } => {
             let _ = std::fs::create_dir_all(&from);
             rfd::FileDialog::new()
@@ -169,6 +185,20 @@ fn show(ask: Ask) -> Option<Picked> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn completion_is_not_observable_until_the_operation_is_closed() {
+        let picker = Picker::default();
+        // Both worker backends fill picked before releasing open. Readers may
+        // run between these stores, but cannot consume a still-active operation.
+        picker.answer.open.store(true, Ordering::Release);
+        *super::super::lock(&picker.answer.picked) = Some(Picked::Revealed(Ok(())));
+        assert!(!picker.ready());
+        assert!(picker.take().is_none());
+        picker.answer.open.store(false, Ordering::Release);
+        assert!(picker.ready());
+        assert!(matches!(picker.take(), Some(Picked::Revealed(Ok(())))));
+    }
+
     #[test]
     fn reveal_completion_is_owned_and_a_busy_request_is_not_silently_dropped() {
         let _lease = crate::diagnostics::acquire();
@@ -187,4 +217,10 @@ mod tests {
         assert!(error.contains(&missing.display().to_string()));
         drop(picker);
     }
+}
+
+/// Port from v1 picker::show: mapping and export run on the owned file worker.
+fn created(source: PathBuf, out: PathBuf) -> Picked {
+    let options = crate::creator::Options { source, name: String::new(), vendor: String::new(), out };
+    Picked::Created(crate::creator::create(&options, &|_| {}).map(|created| created.library).map_err(|e| format!("{e:#}")))
 }

@@ -3,16 +3,40 @@
 //! execute exactly is rejected with [`LowerError::Unsupported`], never
 //! approximated silently.
 use crate::{
-    Biquad, Breakpoint, Breakpoints, Bus, BusSend, ControlDefinition, ControlDomain, ControlRange,
-    CompressorSettings, DaftSettings, ControlValue, ControllerCondition, Direction, Driver, Envelope, EnvelopeCurve, Error,
-    FilterKind, GroupParams, Impulse, Keyswitch, Lfo, LfoRate, LfoShape, Loop, LoopMode, LoopShape,
-    ModProgram, ModRoute, ModScale, ModSource, ModTarget, Parameter, Pcm, Playback, Prepared,
-    Processor, Rectifier, Region, ReverbSettings, SelectionPolicy, Selector, Sequence, SequenceScope,
-    SlotKind, StateVariableFilter, SvfMode, Switch, SwitchKeys, Switching, Take, TakePolicy,
-    Trigger, VelocityCurve, VoiceChain, ZoneFades, slot_control,
+    Biquad, Breakpoint, Breakpoints, Bus, BusSend, CompressorSettings, ControlDefinition,
+    ControlDomain, ControlRange, ControlValue, ControllerCondition, DaftSettings, Direction,
+    Driver, Envelope, EnvelopeCurve, Error, FilterKind, GroupParams, Impulse, Keyswitch, Lfo,
+    LfoRate, LfoShape, Loop, LoopMode, LoopShape, ModProgram, ModRoute, ModScale, ModSource,
+    ModTarget, Parameter, Pcm, Playback, Prepared, Processor, Rectifier, Region, ReverbSettings,
+    SelectionPolicy, Selector, Sequence, SequenceScope, SlotKind, StateVariableFilter, SvfMode,
+    Switch, SwitchKeys, Switching, Take, TakePolicy, Trigger, VelocityCurve, VoiceChain, ZoneFades,
+    slot_control,
 };
 use sampler_ir as ir;
 use std::fmt;
+
+/// Retain native lookup identity independently of which DSP nodes were lowered.
+pub fn source_engine_lookups(source: &ir::SourceIndices) -> Vec<crate::EngineLookup> {
+    source.engine_lookups.iter().map(|lookup| crate::EngineLookup {
+        group: lookup.group, owner: lookup.owner, target: lookup.target,
+        name: lookup.name.clone(), index: lookup.index,
+    }).collect()
+}
+
+/// Defaults, lawful service conversions and DSP identities for native LP4 lanes.
+fn ladder_lanes(d: ir::LadderLP4) -> Vec<(ControlDefinition, crate::EngineParameterBinding)> {
+    let Some(slot) = d.address else { return Vec::new(); };
+    [("ENGINE_PAR_CUTOFF", d.cutoff, false), ("ENGINE_PAR_RESONANCE", d.resonance, false),
+        ("ENGINE_PAR_GAIN", d.gain, true)].into_iter().map(|(name, value, signed)| {
+        let address = crate::EngineParameterAddress { parameter: crate::engine_parameter_id(name).unwrap(),
+            group: slot.group, slot: slot.slot, generic: slot.generic };
+        let id = crate::engine_parameter_control(address);
+        (ControlDefinition { id, domain: ControlDomain::Real { min: if signed { -1. } else { 0. }, max: 1. },
+            default: ControlValue::Real(value) }, crate::EngineParameterBinding { address, control: id,
+                law: if signed { crate::EngineParameterLaw::SignedNormalized }
+                    else { crate::EngineParameterLaw::Linear { low: 0., high: 1. } } })
+    }).collect()
+}
 
 /// Seed for random sequences; fixed so renders are reproducible.
 const SEED: u64 = 0x5eed_1a7e;
@@ -31,6 +55,7 @@ pub enum Stage {
     Releases,
     Articulations,
     Controllers,
+    Controls,
     Modulation,
 }
 
@@ -231,6 +256,16 @@ impl Default for Options {
     }
 }
 
+/// Stable control identity from the frontend's authored key. This is an ID
+/// for a DSP value owner, never a synthesized group/modulator address.
+pub fn ir_control_id(key: &str) -> crate::ControlId {
+    let mut hash = 0x6c62272e07bb014262b821756295c58du128;
+    for byte in b"ir/".iter().copied().chain(key.bytes()) {
+        hash = (hash ^ u128::from(byte)).wrapping_mul(0x0000000001000000000000000000013b);
+    }
+    crate::ControlId(hash)
+}
+
 /// [`lower_with`] default [`Options`]: native MPE on every zone.
 pub fn lower(
     instrument: &ir::Instrument,
@@ -283,9 +318,6 @@ pub fn lower_with(
             supplied: pcm.len(),
         });
     }
-    if !instrument.controls.is_empty() {
-        return Err(unsupported("controls", Feature::Controls));
-    }
     let lowering = Lowering {
         ir: instrument,
         rate,
@@ -315,8 +347,20 @@ pub fn lower_with(
     }
     let mut plan = Prepared::new(rate, pcm.clone(), regions, candidates)
         .map_err(core(Stage::Regions, "zones"))?;
+    if !instrument.source_indices.zones.is_empty() {
+        let mut ids: Vec<u32> = (1..=instrument.zones.len() as u32).collect();
+        for (source, runtime) in instrument.source_indices.zones.iter().enumerate() {
+            if let Some(zone) = runtime {
+                ids[zone.0] = source as u32 + 1;
+            }
+        }
+        plan = plan
+            .with_source_zones(ids)
+            .map_err(core(Stage::Regions, "source zones"))?;
+    }
     // Before the voice chains, which validate the controls they bind.
-    let slots = lowering.slot_controls();
+    let mut slots = lowering.slot_controls();
+    slots.extend(lowering.controls()?);
     if !slots.is_empty() {
         plan = plan
             .with_controls(slots)
@@ -350,6 +394,16 @@ pub fn lower_with(
             .with_groups(count, members)
             .and_then(|p| p.with_group_params(params))
             .map_err(core(Stage::Regions, "groups"))?;
+    }
+    // Only source modulators that actually own an amplitude envelope get lanes.
+    // Muted/unmodeled names remain findable without inventing a DSP consumer.
+    for source in &instrument.source_indices.modulators {
+        let Some(modulator) = source.runtime else { continue };
+        let runtime_group = instrument.source_indices.groups.get(source.group).copied().flatten().unwrap_or(ir::GroupRef(source.group));
+        if source.external || !instrument.zones.iter().any(|z|z.group == Some(runtime_group) && z.amplitude == Some(modulator)) { continue }
+        let ir::ModulationSource::Envelope(envelope) = &instrument.modulators[modulator.0].source else { continue };
+        let authored=lowering.adsr("source amplitude envelope",envelope,false)?;
+        plan=plan.with_group_envelope_parameters(runtime_group.0 as u32,source.group as i32,source.slot as i32,authored).map_err(core(Stage::Envelope,"source amplitude envelope"))?;
     }
     if instrument.voice_limit.is_some() || !instrument.voice_limits.is_empty() {
         let limit = |l: &ir::VoiceLimit| crate::VoiceLimit {
@@ -430,6 +484,32 @@ pub fn lower_with(
     plan = lowering.variation(plan)?;
     plan = lowering.releases(plan)?;
     plan = lowering.articulations(plan)?;
+    if instrument.groups.iter().any(|g| !g.start.is_empty()) {
+        let default = instrument
+            .articulations
+            .iter()
+            .position(|a| a.default)
+            .unwrap_or(0);
+        let mut keys = vec![None; instrument.articulations.len()];
+        for (index, a) in instrument.articulations.iter().enumerate() {
+            let id = if index == default {
+                0
+            } else if index < default {
+                index + 1
+            } else {
+                index
+            };
+            keys[id] = a.switch_keys.first().copied();
+        }
+        plan = plan
+            .with_native_criteria(
+                instrument.groups.iter().map(|g| g.start.clone()).collect(),
+                keys,
+                instrument.default_keyswitch,
+            )
+            .map_err(core(Stage::Articulations, "native group starts"))?;
+    }
+
     plan = lowering.controllers(plan)?;
     plan = lowering.axes(plan)?;
     // The instrument's own bend depth (Kontakt's pitch-bend modulator) is the
@@ -451,6 +531,19 @@ pub fn lower_with(
             .with_bend_range(range)
             .map_err(core(Stage::Modulation, "pitch-bend range"))?;
     }
+    let mut engine_bindings = plan.engine_parameter_bindings().to_vec();
+    let mut native = std::collections::BTreeMap::new();
+    for chain in &instrument.chains {
+        for p in chain.pre_amplitude.iter().chain(&chain.post_amplitude) {
+            if let ir::Processor::LadderLP4(d) = p {
+                for (_, binding) in ladder_lanes(*d) { native.insert(binding.address, binding); }
+            }
+        }
+    }
+    engine_bindings.extend(native.into_values());
+    plan = plan
+        .with_engine_parameters(engine_bindings, source_engine_lookups(&instrument.source_indices))
+        .map_err(core(Stage::Controls, "source engine lookups"))?;
     if instrument.behaviors.is_empty() {
         Ok(plan)
     } else {
@@ -538,7 +631,10 @@ impl Lowering<'_> {
                 law: zone.pan.law,
             })));
         }
+        let mut taps = Vec::new();
+        let mut tail = 0u32;
         if let Some(chain) = zone.chain {
+            let source_chain = chain;
             let chain = &self.ir.chains[chain.0];
             if chain.scope != ir::Scope::Voice {
                 return Err(unsupported(owner, Feature::ChainScope(chain.scope)));
@@ -556,13 +652,92 @@ impl Lowering<'_> {
             {
                 return Err(unsupported(owner, Feature::VoiceReverb));
             }
-            pre.extend(self.lower_list(&owner, &chain.pre_amplitude.iter().collect::<Vec<_>>())?);
-            post.extend(self.lower_list(&owner, &chain.post_amplitude.iter().collect::<Vec<_>>())?);
+            pre.extend(self.lower_list(
+                &owner,
+                source_chain,
+                0,
+                &chain.pre_amplitude.iter().collect::<Vec<_>>(),
+            )?);
+            post.extend(self.lower_list(
+                &owner,
+                source_chain,
+                chain.pre_amplitude.len(),
+                &chain.post_amplitude.iter().collect::<Vec<_>>(),
+            )?);
+            for processor in chain.pre_amplitude.iter().chain(&chain.post_amplitude) {
+                tail = tail.saturating_add(match processor {
+                    ir::Processor::Delay {
+                        time,
+                        feedback: 0.0,
+                        ..
+                    } => self.frames(*time),
+                    ir::Processor::StereoModeller { pseudo: true, .. } => {
+                        (self.rate / 100).min(1023)
+                    }
+                    _ => 0,
+                });
+            }
+            for tap in self
+                .ir
+                .voice_send_taps
+                .iter()
+                .filter(|t| t.chain == source_chain)
+            {
+                let (side, native_len, position, before) = match tap.position {
+                    ir::VoiceSendPosition::BeforeAmplitude(n) => {
+                        (&chain.pre_amplitude, pre.len(), n, true)
+                    }
+                    ir::VoiceSendPosition::AfterAmplitude(n) => {
+                        (&chain.post_amplitude, post.len(), n, false)
+                    }
+                };
+                let mut authored_len = 0;
+                let mut after = 0;
+                for (index, processor) in side.iter().enumerate() {
+                    let count = self.processors(&owner, *processor)?.len();
+                    authored_len += count;
+                    if index < position {
+                        after += count;
+                    }
+                }
+                let after = native_len - authored_len + after;
+                let parameter = |control: Option<ir::ControlRef>,
+                                 value: f64|
+                 -> Result<Parameter, LowerError> {
+                    let Some(control) = control else {
+                        return Ok(Parameter::Constant(value));
+                    };
+                    let authored = &self.ir.controls[control.0];
+                    let ir::ControlValue::Continuous { min, max, .. } = authored.value else {
+                        return Err(unsupported(&owner, Feature::Controls));
+                    };
+                    Ok(Parameter::Control(ControlRange {
+                        control: ir_control_id(&authored.key),
+                        low: min,
+                        high: max,
+                        ramp_frames: self.frames(tap.ramp),
+                    }))
+                };
+                taps.push(crate::VoiceSendTap {
+                    position: if before {
+                        crate::VoiceSendPosition::BeforeAmplitude(after)
+                    } else {
+                        crate::VoiceSendPosition::AfterAmplitude(after)
+                    },
+                    bus: tap.bus.0,
+                    gain: parameter(tap.gain_control, tap.gain.linear())?,
+                    bypass: parameter(tap.bypass_control, f64::from(tap.bypass))?,
+                });
+            }
         }
-        let chain = if pre.is_empty() && post.is_empty() {
+        let chain = if pre.is_empty() && post.is_empty() && taps.is_empty() {
             None
         } else {
-            Some(VoiceChain::new(pre, post, 0).map_err(core(Stage::VoiceChains, owner.clone()))?)
+            Some(
+                VoiceChain::new(pre, post, tail)
+                    .and_then(|chain| chain.with_taps(taps))
+                    .map_err(core(Stage::VoiceChains, owner.clone()))?,
+            )
         };
         let loop_range = |range: ir::LoopRange, mode| {
             let crossfade = range.crossfade.frames(asset_rate) as usize;
@@ -589,9 +764,29 @@ impl Lowering<'_> {
                 Direction::Forward
             },
             loop_range: match zone.playback.looping {
-                ir::Looping::None | ir::Looping::OneShot => None,
+                ir::Looping::None | ir::Looping::OneShot | ir::Looping::Slots(_) => None,
                 ir::Looping::Continuous(range) => Some(loop_range(range, LoopMode::Continuous)),
                 ir::Looping::UntilRelease(range) => Some(loop_range(range, LoopMode::UntilRelease)),
+            },
+            loop_slots: match zone.playback.looping {
+                ir::Looping::Slots(slots) => slots.map(|slot| {
+                    slot.map(|slot| {
+                        let mut range = loop_range(
+                            slot.range,
+                            if slot.until_release {
+                                LoopMode::UntilRelease
+                            } else {
+                                LoopMode::Continuous
+                            },
+                        );
+                        range.passes = std::num::NonZeroU32::new(slot.count);
+                        crate::LoopSlot {
+                            range,
+                            tuning: slot.tuning,
+                        }
+                    })
+                }),
+                _ => [None; 8],
             },
             transpose_semitones: tune,
         };
@@ -675,13 +870,13 @@ impl Lowering<'_> {
                 bindings.push(None);
                 continue;
             }
-            let index = match known.get(&(&zone.routes, zone.chain)) {
+            let index = match known.get(&(&zone.routes, plan.region_chain(i))) {
                 Some(&index) => index,
                 None => {
-                    let program = self.program(&format!("zone {i}"), zone)?;
+                    let program = self.program(&format!("zone {i}"), i, zone, &plan)?;
                     let index = programs.len();
                     programs.push(program);
-                    known.insert((&zone.routes, zone.chain), index);
+                    known.insert((&zone.routes, plan.region_chain(i)), index);
                     index
                 }
             };
@@ -698,7 +893,13 @@ impl Lowering<'_> {
             .map_err(core(Stage::Modulation, "zones"))
     }
 
-    fn program(&self, owner: &str, zone: &ir::Zone) -> Result<ModProgram, LowerError> {
+    fn program(
+        &self,
+        owner: &str,
+        zone_index: usize,
+        zone: &ir::Zone,
+        plan: &Prepared,
+    ) -> Result<ModProgram, LowerError> {
         let mut program = ModProgram::default();
         let mut sources = std::collections::HashMap::new();
         let mut shapes = std::collections::HashMap::new();
@@ -706,6 +907,7 @@ impl Lowering<'_> {
             let route = &self.ir.routes[route_ref.0];
             let owner = format!("{owner} route {}", route_ref.0);
             let modulator = &self.ir.modulators[route.source.0];
+            let mut processor_targets = Vec::new();
             let target = match (route.target, route.depth) {
                 // Pitch bend to pitch is the note's native expression bend.
                 (ir::Target::Pitch, _) if modulator.source == ir::ModulationSource::PitchBend => {
@@ -725,14 +927,56 @@ impl Lowering<'_> {
                         parameter,
                     },
                     depth,
-                ) if Some(chain) == zone.chain && modulable_filter(self.ir, chain, index) => {
+                ) if Some(chain) == zone.chain => {
+                    let authored = &self.ir.chains[chain.0];
+                    let listed: Vec<_> = authored
+                        .pre_amplitude
+                        .iter()
+                        .chain(&authored.post_amplitude)
+                        .collect();
+                    let processor = listed.get(index).ok_or_else(|| {
+                        unsupported(owner.clone(), Feature::ModulationRoute(route.target))
+                    })?;
+                    let native_chain = plan.region_chain(zone_index).ok_or_else(|| {
+                        unsupported(owner.clone(), Feature::ModulationRoute(route.target))
+                    })?;
+                    let native = &plan.voice_chains[native_chain];
+                    let pre_count = authored.pre_amplitude.len();
+                    let (before, authored_side, native_start, native_len) = if index < pre_count {
+                        (
+                            &listed[..index],
+                            &listed[..pre_count],
+                            0,
+                            native.pre().len(),
+                        )
+                    } else {
+                        (
+                            &listed[pre_count..index],
+                            &listed[pre_count..],
+                            native.pre().len(),
+                            native.post().len(),
+                        )
+                    };
+                    let mut start = native_start + native_len;
+                    for p in authored_side {
+                        start -= self.processors(&owner, **p)?.len();
+                    }
+                    for p in before {
+                        start += self.processors(&owner, **p)?.len();
+                    }
+                    let end = start + self.processors(&owner, **processor)?.len();
+                    processor_targets = native.filter_indices(start..end);
+                    let first = *processor_targets.first().ok_or_else(|| {
+                        unsupported(owner.clone(), Feature::ModulationRoute(route.target))
+                    })?;
                     match (parameter, depth) {
                         (ir::ProcessorParameter::Cutoff, ir::Depth::Pitch(p)) => {
-                            (ModTarget::Cutoff, p.semitones())
+                            (ModTarget::ProcessorCutoff(first), p.semitones())
                         }
-                        (ir::ProcessorParameter::Resonance, ir::Depth::Gain(g)) => {
-                            (ModTarget::Resonance, 20.0 * g.linear().log10())
-                        }
+                        (ir::ProcessorParameter::Resonance, ir::Depth::Gain(g)) => (
+                            ModTarget::ProcessorResonance(first),
+                            20.0 * g.linear().log10(),
+                        ),
                         _ => {
                             return Err(unsupported(owner, Feature::ModulationRoute(route.target)));
                         }
@@ -785,7 +1029,7 @@ impl Lowering<'_> {
                     .map(|shape| shape_of(shape, &mut program)),
                 ..s
             });
-            program.routes.push(ModRoute {
+            let native = ModRoute {
                 source,
                 target: target.0,
                 depth: target.1,
@@ -793,7 +1037,16 @@ impl Lowering<'_> {
                 shape,
                 lag: self.frames(route.smoothing),
                 scale,
-            });
+            };
+            program.routes.push(native);
+            for index in processor_targets.into_iter().skip(1) {
+                let target = match native.target {
+                    ModTarget::ProcessorCutoff(_) => ModTarget::ProcessorCutoff(index),
+                    ModTarget::ProcessorResonance(_) => ModTarget::ProcessorResonance(index),
+                    _ => unreachable!(),
+                };
+                program.routes.push(ModRoute { target, ..native });
+            }
         }
         if let Some(mpe) = self.mpe {
             if mpe.pressure_db != 0.0 {
@@ -913,6 +1166,89 @@ impl Lowering<'_> {
         })
     }
 
+    fn controls(&self) -> Result<Vec<ControlDefinition>, LowerError> {
+        self.ir
+            .controls
+            .iter()
+            .map(|c| {
+                let (domain, default) = match &c.value {
+                    ir::ControlValue::Continuous {
+                        min, max, default, ..
+                    } => (
+                        ControlDomain::Real {
+                            min: *min,
+                            max: *max,
+                        },
+                        ControlValue::Real(*default),
+                    ),
+                    ir::ControlValue::Integer { min, max, default } => (
+                        ControlDomain::Integer {
+                            min: *min,
+                            max: *max,
+                        },
+                        ControlValue::Integer(*default),
+                    ),
+                    ir::ControlValue::Toggle { default } => {
+                        (ControlDomain::Toggle, ControlValue::Toggle(*default))
+                    }
+                    ir::ControlValue::Choice { options, default } => {
+                        if options.is_empty() {
+                            return Err(unsupported(&c.key, Feature::Controls));
+                        }
+                        (
+                            ControlDomain::Integer {
+                                min: 0,
+                                max: options.len() as i64 - 1,
+                            },
+                            ControlValue::Integer(*default as i64),
+                        )
+                    }
+                };
+                Ok(ControlDefinition {
+                    id: ir_control_id(&c.key),
+                    domain,
+                    default,
+                })
+            })
+            .collect()
+    }
+    fn bind_processor(
+        &self,
+        owner: &str,
+        processor: &mut Processor,
+        binding: &ir::ProcessorControl,
+    ) -> Result<bool, LowerError> {
+        let control = &self.ir.controls[binding.control.0];
+        let ir::ControlValue::Continuous { min, max, .. } = control.value else {
+            return Err(unsupported(owner, Feature::Controls));
+        };
+        let range = ControlRange {
+            control: ir_control_id(&control.key),
+            low: min,
+            high: max,
+            ramp_frames: self.frames(binding.ramp),
+        };
+        let parameter = Parameter::Control(range);
+        use ir::ProcessorParameter::*;
+        match (processor, binding.parameter) {
+            (p @ Processor::Gain(_), Gain) => *p = Processor::ControlGain(range),
+            (Processor::StateVariable(filter), Cutoff) => filter.cutoff_hz = parameter,
+            (Processor::StateVariable(filter), Resonance) => filter.q = parameter,
+            (Processor::Daft(filter), Gain) => filter.gain = parameter,
+            (Processor::Daft(filter), Cutoff) => filter.cutoff = parameter,
+            (Processor::Daft(filter), Resonance) => filter.resonance = parameter,
+            (Processor::Daft(filter), Response) => filter.response = parameter,
+            (Processor::LadderLP4(filter), Gain) => filter.gain = parameter,
+            (Processor::LadderLP4(filter), Cutoff) => filter.cutoff = parameter,
+            (Processor::LadderLP4(filter), Resonance) => filter.resonance = parameter,
+            (Processor::Gainer { gain, .. }, Gain) => *gain = parameter,
+            (Processor::StereoModeller(settings), Width) => settings.width = parameter,
+            (Processor::StereoModeller(settings), Pan) => settings.pan = parameter,
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+
     /// A slot control's binding: ramped over 10 ms like a script's gain edit.
     fn slot_range(&self, kind: SlotKind, address: ir::SlotAddress) -> ControlRange {
         let control = slot_control(kind, address.group, address.slot, address.generic);
@@ -929,6 +1265,9 @@ impl Lowering<'_> {
         let mut all = std::collections::BTreeMap::new();
         for chain in &self.ir.chains {
             for p in chain.pre_amplitude.iter().chain(&chain.post_amplitude) {
+                if let ir::Processor::LadderLP4(d) = *p {
+                    for (control, _) in ladder_lanes(d) { all.entry(control.id).or_insert(control); }
+                }
                 let ir::Processor::Mix {
                     address,
                     dry,
@@ -964,14 +1303,37 @@ impl Lowering<'_> {
     fn lower_list(
         &self,
         owner: &str,
+        chain: ir::ChainRef,
+        start: usize,
         listed: &[&ir::Processor],
     ) -> Result<Vec<Processor>, LowerError> {
         let mut processors = Vec::new();
         // Core index of each listed processor.
         let mut starts = Vec::with_capacity(listed.len() + 1);
-        for p in listed {
+        for (index, p) in listed.iter().enumerate() {
             starts.push(processors.len());
-            processors.extend(self.processors(owner, **p)?);
+            let mut stages = self.processors(owner, **p)?;
+            // A physical native owner already binds these fields to the shared
+            // service; replacing them would leave writes on an unused mirror.
+            if matches!(**p, ir::Processor::LadderLP4(d) if d.address.is_some())
+                && self.ir.processor_controls.iter().any(|b| b.chain == chain && b.index == start + index) {
+                return Err(unsupported(owner, Feature::Controls));
+            }
+            for binding in self
+                .ir
+                .processor_controls
+                .iter()
+                .filter(|b| b.chain == chain && b.index == start + index)
+            {
+                let mut found = false;
+                for stage in &mut stages {
+                    found |= self.bind_processor(owner, stage, binding)?;
+                }
+                if !found {
+                    return Err(unsupported(owner, Feature::Controls));
+                }
+            }
+            processors.extend(stages);
         }
         starts.push(processors.len());
         for (n, p) in listed.iter().enumerate() {
@@ -1020,6 +1382,17 @@ impl Lowering<'_> {
     fn processor(&self, owner: &str, processor: ir::Processor) -> Result<Processor, LowerError> {
         Ok(match processor {
             ir::Processor::Gain(gain) => Processor::Gain(gain.linear()),
+            ir::Processor::Gainer { gain, dry } => Processor::Gainer {
+                gain: Parameter::Constant(gain.linear()),
+                dry,
+            },
+            ir::Processor::StereoModeller { width, pan, pseudo } => {
+                Processor::StereoModeller(crate::StereoSettings {
+                    width: Parameter::Constant(width),
+                    pan: Parameter::Constant(pan),
+                    pseudo,
+                })
+            }
             ir::Processor::Pan(pan) => Processor::StereoMatrix(stereo(pan)),
             ir::Processor::StereoMatrix(matrix) => Processor::StereoMatrix(matrix),
             ir::Processor::Reverb(r) => Processor::Reverb(ReverbSettings {
@@ -1041,7 +1414,9 @@ impl Lowering<'_> {
                 makeup: c.makeup.linear(),
                 link: c.link,
             }),
-            ir::Processor::Branch { gain, first, last, .. } => Processor::Branch {
+            ir::Processor::Branch {
+                gain, first, last, ..
+            } => Processor::Branch {
                 count: 0,
                 gain: gain.linear(),
                 first,
@@ -1053,6 +1428,15 @@ impl Lowering<'_> {
                 resonance: Parameter::Constant(d.resonance),
                 response: Parameter::Constant(if d.highpass { 1.0 } else { 0.0 }),
             }),
+            ir::Processor::LadderLP4(d) => {
+                let lanes = ladder_lanes(d);
+                let parameter = |index: usize, value: f64| lanes.get(index).map_or(Parameter::Constant(value), |(c, _)| {
+                    let ControlDomain::Real { min, max } = c.domain else { unreachable!() };
+                    Parameter::Control(ControlRange { control: c.id, low: min, high: max, ramp_frames: 0 })
+                });
+                Processor::LadderLP4(crate::LadderSettings { cutoff: parameter(0, d.cutoff),
+                    resonance: parameter(1, d.resonance), gain: parameter(2, d.gain), record_version: d.record_version })
+            },
             ir::Processor::Rectify(mode) => Processor::Rectify(match mode {
                 ir::Rectifier::Full => Rectifier::Full,
                 ir::Rectifier::Half => Rectifier::Half,
@@ -1064,13 +1448,30 @@ impl Lowering<'_> {
                 wet: self.slot_range(SlotKind::Output, address),
                 bypass: self.slot_range(SlotKind::Bypass, address),
             },
+            ir::Processor::SendReturnGate { address } => Processor::ControlGain(ControlRange {
+                low: 1.0, high: 0.0,
+                ..self.slot_range(SlotKind::Bypass, address)
+            }),
             ir::Processor::Convolution { impulse, dry, wet } => Processor::Convolution {
                 impulse: impulse.0,
                 dry,
                 wet,
             },
             ir::Processor::Filter(filter) => self.filter(owner, filter)?,
-            ir::Processor::Delay { .. } => return Err(unsupported(owner, Feature::Delay)),
+            ir::Processor::Delay { time, .. } if self.frames(time) == 0 => Processor::Gain(1.),
+            ir::Processor::Delay {
+                time,
+                feedback,
+                mix,
+            } => Processor::Delay(
+                crate::Delay::new(
+                    self.frames(time),
+                    [[feedback, 0.], [0., feedback]],
+                    1. - mix,
+                    mix,
+                )
+                .map_err(core(Stage::VoiceChains, owner))?,
+            ),
         })
     }
 
@@ -1156,6 +1557,7 @@ impl Lowering<'_> {
             let owner = format!("bus {i}");
             let mut processors = Vec::new();
             if let Some(chain) = bus.chain {
+                let source_chain = chain;
                 let chain = &self.ir.chains[chain.0];
                 if chain.scope != ir::Scope::Bus(ir::BusRef(i)) {
                     return Err(unsupported(owner, Feature::ChainScope(chain.scope)));
@@ -1165,7 +1567,7 @@ impl Lowering<'_> {
                     .iter()
                     .chain(&chain.post_amplitude)
                     .collect();
-                processors = self.lower_list(&owner, &listed)?;
+                processors = self.lower_list(&owner, source_chain, 0, &listed)?;
             }
             let tapped = self
                 .ir
@@ -1397,7 +1799,10 @@ impl Lowering<'_> {
                     ir::Driver::Program => alt.program.map(|p| (0, p, p))?,
                 };
                 let switch = if behavior {
-                    Switch::Tap(*a.switch_keys.first()?)
+                    match a.switch_keys.first() {
+                        Some(&key) => Switch::Tap(key),
+                        None => Switch::Control { id: a.control?, articulation: id(i) },
+                    }
                 } else {
                     Switch::Articulation(id(i))
                 };
@@ -1469,7 +1874,9 @@ impl Lowering<'_> {
             .enumerate()
             .flat_map(|(axis, a)| {
                 a.choices.iter().enumerate().flat_map(move |(choice, c)| {
-                    c.switch_keys.iter().map(move |&key| (key, axis, choice as u32))
+                    c.switch_keys
+                        .iter()
+                        .map(move |&key| (key, axis, choice as u32))
                 })
             })
             .collect();
@@ -1481,12 +1888,9 @@ impl Lowering<'_> {
     }
 
     fn controllers(&self, plan: Prepared) -> Result<Prepared, LowerError> {
-        if self
-            .ir
-            .zones
-            .iter()
-            .all(|z| z.conditions.is_empty() && z.axes.is_empty() && previous_key(z.trigger).is_none())
-        {
+        if self.ir.zones.iter().all(|z| {
+            z.conditions.is_empty() && z.axes.is_empty() && previous_key(z.trigger).is_none()
+        }) {
             return Ok(plan);
         }
         // A 7-bit value covers every 32-bit value that scales down to it.
