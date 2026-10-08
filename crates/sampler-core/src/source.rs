@@ -238,7 +238,7 @@ pub(super) struct Cursor {
     // Remaining fade-in frames after a recovered miss.
     fade_in: u32,
     fade_frames: u32,
-    /// Bounded onset hold; later streaming misses still advance in source time.
+    /// Initial storage hold; lifecycle events still end an unsounded voice.
     cold_hold: bool,
 }
 
@@ -473,6 +473,8 @@ impl Cursor {
     pub(super) fn waiting(&self) -> bool {
         self.starvation == Some(0)
     }
+
+    pub(super) fn holding_onset(&self) -> bool { self.cold_hold }
 
     /// One millisecond of native fade from the last complete resampled frame.
     /// No incomplete resampler frame is published. The cursor keeps advancing in
