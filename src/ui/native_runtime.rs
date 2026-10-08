@@ -319,6 +319,11 @@ fn value(lua: &Lua, value: &ir::Value, index: Option<usize>) -> mlua::Result<Lua
 impl UserData for Parameter {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("value", |lua, this, index: Option<usize>| {
+            #[cfg(test)]
+            if let Ok(trace) = lua.globals().get::<Function>("__audit_parameter") {
+                trace.call::<()>((this.identifier.clone(), this.binding as i64,
+                    lua.globals().get::<String>("__audit_path").unwrap_or_default()))?;
+            }
             let mut bridge = this.bridge.lock().unwrap();
             let Some(widget) = bridge.controls.get(this.binding) else {
                 if bridge.unavailable.len() < 128 {
@@ -552,7 +557,14 @@ impl Session {
             }
             Ok(mlua::VmState::Continue)
         });
-        lua.load(include_str!("native_runtime/runtime.lua"))
+        #[cfg(test)]
+        let runtime = include_str!("native_runtime/runtime.lua")
+            .replace("local props=element.properties()", "_G.__audit_path=path; local props=element.properties()")
+            .replace("current_path,hook_index,current_context=old_path,old_index,old_context\n    return out",
+                "current_path,hook_index,current_context=old_path,old_index,old_context\n    _G.__audit_path=old_path; return out");
+        #[cfg(not(test))]
+        let runtime = include_str!("native_runtime/runtime.lua");
+        lua.load(runtime)
             .set_name("NativeUI host")
             .exec()?;
         let package_table: Table = lua.globals().get("package")?;
@@ -566,21 +578,22 @@ impl Session {
             edits: Vec::with_capacity(256),
             ..Default::default()
         }));
-        let names = bridge
-            .lock()
-            .unwrap()
-            .controls
-            .iter()
-            .enumerate()
-            .map(|(i, c)| {
-                (
-                    c.name
-                        .trim_start_matches(['$', '%', '@', '~', '?', '!'])
-                        .to_owned(),
-                    i,
-                )
-            })
-            .collect::<std::collections::HashMap<_, _>>();
+        // KSP expose_controls: duplicate identifiers use the first script slot,
+        // regardless of the order in which source interfaces are published.
+        let names = {
+            let bridge=bridge.lock().unwrap();
+            let mut names=HashMap::new();
+            let priority=|index:usize| match bridge.locations[index].0 {
+                ir::Source::Ksp{slot}=>(slot,index), _=>(u8::MAX,index),
+            };
+            for (index,control) in bridge.controls.iter().enumerate() {
+                names.entry(control.name.trim_start_matches(['$', '%', '@', '~', '?', '!']).to_owned())
+                    .and_modify(|previous|if priority(index)<priority(*previous) {*previous=index})
+                    .or_insert(index);
+            }
+            names
+        };
+        let meter_names=names.clone();
         let parameters = bridge.clone();
         let kontakt = lua.create_table()?;
         kontakt.set(
@@ -601,14 +614,7 @@ impl Session {
         kontakt.set(
             "connect_level_meter",
             lua.create_function(move |lua, identifier: String| {
-                let binding = meter_bridge
-                    .lock()
-                    .unwrap()
-                    .controls
-                    .iter()
-                    .position(|w| {
-                        w.name.trim_start_matches(['$', '%', '@', '~', '?', '!']) == identifier
-                    })
+                let binding = meter_names.get(&identifier).copied()
                     .ok_or_else(|| mlua::Error::external("NativeUI meter unavailable"))?;
                 let bridge = meter_bridge.clone();
                 let meter = lua.create_table()?;
@@ -814,12 +820,14 @@ mod tests {
         let session = Session::new(
             package,
             "main",
-            vec![(ir::Source::Ksp { slot: 2 }, 0, widget)],
+            vec![(ir::Source::Ksp { slot: 4 }, 0, widget.clone()),
+                (ir::Source::Ksp { slot: 2 }, 0, widget.clone()),
+                (ir::Source::Ksp { slot: 3 }, 0, widget)],
         )
         .unwrap();
         let source = ir::Interface {
             source: ir::Source::Ksp { slot: 2 },
-            widgets: vec![session.bridge.lock().unwrap().controls[0].clone()],
+            widgets: vec![session.bridge.lock().unwrap().controls[1].clone()],
             ..Default::default()
         };
         session.update_view(
@@ -832,7 +840,7 @@ mod tests {
             &Default::default(),
         );
         assert_eq!(
-            session.bridge.lock().unwrap().controls[0].value,
+            session.bridge.lock().unwrap().controls[1].value,
             Some(ir::Value::Text("callback readback".into()))
         );
         session.update_view(

@@ -6,7 +6,7 @@
 //! time.
 
 use super::{HostInput, Script};
-use crate::script::{Command, Config, Files, Finding, ScriptHost, UiState};
+use crate::script::{Command, Config, Files, Finding, FaultCounts, FaultCategory, ScriptHost, UiState};
 use sampler_ui_ir::{ControlId, Interface};
 use std::{
     sync::{
@@ -48,6 +48,7 @@ enum Message {
 
 /// What loading the scripts found, for the host's report and interface.
 pub struct Loaded {
+    pub insert_overrides: Vec<(usize, String, String)>,
     pub findings: Vec<Finding>,
     pub interface: sampler_ui_ir::Interface,
     pub ui: Arc<UiBridge>,
@@ -100,20 +101,20 @@ impl ScriptThread {
                 #[cfg(feature = "scan")]
                 let scan = scan.clone();
                 move || {
-                    let mut host =
-                        match ScriptHost::new_with_ui_state(&xml, files, config, state.as_ref()) {
-                            Ok(host) => host,
-                            Err(e) => {
+                    let mut host = match ScriptHost::new_with_ui_state(&xml, files, config, state.as_ref()) {
+                        Ok(host) => host,
+                        Err(e) => {
                             #[cfg(feature = "scan")]
                             crate::script::scan_failed_load(&e);
                             return drop(ready.send(Err(e)));
                         }
-                        };
+                    };
                     let handles = host.handles_notes();
                     let ui = Arc::new(UiBridge::new(&host, ui_send, std::thread::current()));
                     #[cfg(feature = "scan")]
                     { *scan.lock().unwrap() = host.scan_faults(); }
                     let report = Loaded {
+                        insert_overrides: host.insert_overrides(),
                         findings: host.findings(),
                         interface: host.interface(),
                         ui: ui.clone(),
@@ -122,6 +123,7 @@ impl ScriptThread {
                     drop(ready);
                     let mut backlog: Vec<Command> = Vec::new();
                     let mut revision = host.ui_revision();
+                    let mut finding_revision = host.finding_revision();
                     while !stop.load(Ordering::Acquire) {
                         while let Ok(message) = incoming.pop() {
                             match message {
@@ -155,6 +157,10 @@ impl ScriptThread {
                         if current != revision {
                             ui.publish(&host);
                             revision = current;
+                        }
+                        if host.finding_revision() != finding_revision {
+                            ui.publish_findings(&host);
+                            finding_revision = host.finding_revision();
                         }
                         #[cfg(feature = "scan")]
                         { *scan.lock().unwrap() = host.scan_faults(); }
@@ -297,6 +303,10 @@ pub struct UiBridge {
     face: Mutex<Arc<Interface>>,
     state: Mutex<Result<UiState, String>>,
     revision: AtomicU64,
+    findings: Mutex<Vec<Finding>>,
+    faults: Mutex<FaultCounts>,
+    runtime_faults: AtomicU64,
+    runtime_budgets: AtomicU64,
 }
 impl UiBridge {
     fn new(
@@ -316,7 +326,25 @@ impl UiBridge {
             face: Mutex::new(Arc::new(host.interface())),
             state: Mutex::new(host.save_ui_state()),
             revision: AtomicU64::new(1),
+            findings: Mutex::new(host.findings()),
+            faults: Mutex::new(host.fault_counts()),
+            runtime_faults: AtomicU64::new(0),
+            runtime_budgets: AtomicU64::new(0),
         }
+    }
+    fn publish_findings(&self, host: &ScriptHost) {
+        *self.findings.lock().unwrap() = host.findings();
+        let faults = host.fault_counts();
+        self.runtime_faults.store(faults.runtime.values().copied().fold(0u64,u64::saturating_add), Ordering::Release);
+        self.runtime_budgets.store(faults.runtime.get(&FaultCategory::Budget).copied().unwrap_or(0), Ordering::Release);
+        *self.faults.lock().unwrap() = faults;
+        self.revision.fetch_add(1, Ordering::Release);
+    }
+    pub fn findings(&self) -> Vec<Finding> { self.findings.lock().unwrap().clone() }
+    pub fn fault_counts(&self) -> FaultCounts { self.faults.lock().unwrap().clone() }
+    /// Lock-free counters for the audio host's cumulative runtime report.
+    pub fn runtime_faults(&self) -> (u64,u64) {
+        (self.runtime_faults.load(Ordering::Acquire), self.runtime_budgets.load(Ordering::Acquire))
     }
     fn publish(&self, host: &ScriptHost) {
         *self.state.lock().unwrap() = host.save_ui_state();

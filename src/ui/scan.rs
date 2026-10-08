@@ -326,7 +326,6 @@ fn render(
         "image_margins":face.assets.iter().filter(|a|matches!(&a.kind,ir::AssetKind::Image(m)if m.margins!=ir::Margins::default())).count(),
         "asset_failure_reasons":failures,"source_presentation":if native.is_some(){"native-package"}else{"legacy-authored"},"native_frontend_consumed":native.as_ref().map(|_|!renders.is_empty()),"native_paint_ok":native.as_ref().map(|_|renders.iter().any(|r|r["ok"]==true)),
         "native_diagnostic":native.as_ref().and_then(|n|n.diagnostic()),
-
         "widgets":face.widgets.len(),"visible":visible,"interactive":interactive,"bound":bound,
         "kinds":kinds,"placeholder_widgets":placeholders,"unsupported_params":properties,"geometry":geometry,
         "missing_images":missing.len(),"missing_image_hashes":missing,"assets":face.assets.len(),
@@ -621,10 +620,11 @@ pub fn one(id: &str, out: &Path) -> Value {
             if matches!(request.command,"load_native_ui"|"load_komplete_ui"|"load_performance_view") {add(&mut view_requests,request.command);}
         }}
         let native_requested=view_requests.contains_key("load_native_ui")||view_requests.contains_key("load_komplete_ui");
+        let native_consumed=native_requested.then(||views.iter().any(|v|v["native_frontend_consumed"]==true));
         let lua = core.scan_lua(0);
         let lua_report = lua.as_ref().map(|l| json!({"init_faults":l.init_count,"runtime_faults":l.runtime_count,
             "init_first":l.init_first.as_deref().map(metrics::message),"runtime_first":l.runtime_first.as_deref().map(metrics::message),"budget_hits":l.budget_hits}));
-        result["programs"].as_array_mut().unwrap().push(json!({"authored_view_requests":view_requests,"native_frontend_consumed":if native_requested{Some(views.iter().any(|v|v["native_frontend_consumed"]==true))}else{None},"ksp":ksp,"ksp_runtime_faults":runtime_faults.iter().map(|(program,outcome)|json!({"program":program,"callback":sampler_ksp::callback_of(&loaded.scripts.views,*program),"category":match outcome{sampler_core::Outcome::FuelExhausted=>"fuel-budget",_=>"runtime-fault"},"core_error":match outcome{sampler_core::Outcome::Fault(e)=>Some(format!("{e:?}")),_=>None}})).collect::<Vec<_>>(),"lua":lua_report,"admitted_saved_entries_by_sigil":admitted,
+        result["programs"].as_array_mut().unwrap().push(json!({"authored_view_requests":view_requests,"native_frontend_consumed":native_consumed,"ksp":ksp,"ksp_runtime_faults":runtime_faults.iter().map(|(program,outcome)|json!({"program":program,"callback":sampler_ksp::callback_of(&loaded.scripts.views,*program),"category":match outcome{sampler_core::Outcome::FuelExhausted=>"fuel-budget",_=>"runtime-fault"},"core_error":match outcome{sampler_core::Outcome::Fault(e)=>Some(format!("{e:?}")),_=>None}})).collect::<Vec<_>>(),"lua":lua_report,"admitted_saved_entries_by_sigil":admitted,
             "load_path":if is_uvi {if lua.is_some(){"scripted-worker"}else{"offline-loader"}}else{"kontakt-v2-loader"},
             "sample_zone_count":sample_zone_count,"decoded_zone_count":loaded.report.decoded.zones,"sample_count":loaded.report.decoded.samples,"sample_resident_bytes":sample_resident_bytes,"underruns":core.problems(0).underruns,
             "keyswitch":keyswitch,"fallback_note":pick_source=="fallback","zero_zone_reason":if sample_zone_count==Some(0) {Some("unknown")} else {None},"pick_source":pick_source,"native_valid_keys":native_valid,"native_key_conflicts":native.as_ref().map(|n|n.native_key_conflicts),"native_preferred_note":candidate.filter(|(k,_)|native_valid.contains(k)),

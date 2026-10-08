@@ -78,6 +78,10 @@ libc = "0.2"
 windows-sys = { version = "0.61.2", features = ["Wdk_System_SystemServices", "Win32_Foundation", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_System_LibraryLoader"] }
 
 [[bin]]
+name = "kontakto"
+path = "src/create_library.rs"
+
+[[bin]]
 name = "kontakto-standalone"
 path = "src/standalone.rs"
 required-features = ["standalone"]
