@@ -462,7 +462,13 @@ end
 function setBackground(path) ui.background = native.resourcePath(path) end
 function setSize(w, h) ui.width, ui.height = w, h end
 function setBackgroundColour(c) ui.backgroundColour = c end
-function setKeyColour(key, c) ui.keys[key+1] = c; ui.revision = ui.revision + 1 end
-function resetKeyColour(key) ui.keys[key+1] = nil; ui.revision = ui.revision + 1 end
+function setKeyColour(key, c)
+  ui.keys[key+1] = c; ui.revision = ui.revision + 1
+  if native.scanKey then native.scanKey("setKeyColour", {key, c}) end
+end
+function resetKeyColour(key)
+  ui.keys[key+1] = nil; ui.revision = ui.revision + 1
+  if native.scanKey then native.scanKey("resetKeyColour", {key}) end
+end
 function makePerformanceView() ui.performance = true end
 __ui = ui
