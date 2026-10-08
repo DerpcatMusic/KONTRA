@@ -72,6 +72,15 @@ pub enum Instruction {
         controller: u16,
         value: u16,
     },
+    /// Script units: pitch bend -8192..8191; other controllers 0..127.
+    ControllerToScript {
+        controller: u16,
+        local: u16,
+    },
+    ControllerFromScript {
+        controller: u16,
+        local: u16,
+    },
     ControllerToMidi7 {
         local: u16,
     },
@@ -561,7 +570,9 @@ impl Program {
             {
                 locals = locals.max(usize::from(lhs.max(rhs)) + 1);
             }
-            if let Instruction::ReadInputController { controller, local }
+            if let Instruction::ControllerToScript { controller, local }
+            | Instruction::ControllerFromScript { controller, local }
+            | Instruction::ReadInputController { controller, local }
             | Instruction::WriteController {
                 controller,
                 value: local,
@@ -1528,6 +1539,40 @@ impl Runtime {
                     .map_err(|_| Error::InvalidInput)?;
                 self.write_behavior_controller(id, number, value)?;
             }
+            Instruction::ControllerToScript { controller, local } => {
+                let number = *self.local_cell_mut(id, controller)?;
+                let cell = self.local_cell_mut(id, local)?;
+                let value = u32::try_from(*cell).map_err(|_| Error::InvalidInput)?;
+                *cell = if number == 128 {
+                    i64::from(value >> 18) - 8192
+                } else {
+                    ((u64::from(value) * 127 + u64::from(u32::MAX) / 2) / u64::from(u32::MAX))
+                        as i64
+                };
+            }
+            Instruction::ControllerFromScript { controller, local } => {
+                let number = *self.local_cell_mut(id, controller)?;
+                let cell = self.local_cell_mut(id, local)?;
+                if number == 128 {
+                    if !(-8192..=8191).contains(cell) {
+                        return Err(Error::InvalidInput);
+                    }
+                    let value = (*cell + 8192) as u32;
+                    // MIDI's min/centre/max 14-bit expansion, as used by ingress.
+                    let shifted = value << 18;
+                    let low = value & 8191;
+                    *cell = i64::from(if value <= 8192 {
+                        shifted
+                    } else {
+                        shifted | (low << 5) | (low >> 8)
+                    });
+                } else {
+                    if !(0..=127).contains(cell) {
+                        return Err(Error::InvalidInput);
+                    }
+                    *cell = (*cell * i64::from(u32::MAX)) / 127;
+                }
+            }
             Instruction::ControllerToMidi7 { local } => {
                 let cell = self.local_cell_mut(id, local)?;
                 let value = u32::try_from(*cell).map_err(|_| Error::InvalidInput)?;
@@ -1767,13 +1812,41 @@ impl Runtime {
                     .checked_add(u64::from(frames.unwrap_or(0)))
                     .ok_or(Error::ClockOverflow)?;
                 let plan = self.behavior_plan(owner)?;
-                if let Some(note) = self.resolve_source_event(plan, event)?
-                    && (frames.is_some() || !self.note_events[note.0.index].fixed_duration)
-                {
-                    if self.key_down(note)? {
-                        self.replace_script_key_up_at(note, at)?;
-                    } else if self.release_times[note.0.index].held {
-                        self.replace_release_forward_at(note, at)?;
+                // Port v1 src/ksp/runtime.rs::targets: plain ID, mark union or all.
+                // Release callbacks are queued until this instruction finishes, so
+                // the bounded slot scan cannot select their newly generated notes.
+                let many = event == 0x3fff_fffe || (event > 0 && event & 0x2000_0000 != 0);
+                let single = if many {
+                    None
+                } else {
+                    self.resolve_source_event(plan, event)?
+                };
+                let range = if many {
+                    0..self.notes.slots.len()
+                } else if let Some(note) = single {
+                    note.0.index..note.0.index + 1
+                } else {
+                    0..0
+                };
+                for index in range {
+                    let Some(n) = self.notes.slots[index].value else {
+                        continue;
+                    };
+                    let note = NoteId(self.notes.id(index));
+                    let selected = if many {
+                        n.plan == plan
+                            && (event == 0x3fff_fffe
+                                || self.note_events[index].marks & (event as u32 & 0x0fff_ffff)
+                                    != 0)
+                    } else {
+                        single == Some(note)
+                    };
+                    if selected && (frames.is_some() || !self.note_events[index].fixed_duration) {
+                        if self.key_down(note)? {
+                            self.replace_script_key_up_at(note, at)?;
+                        } else if self.release_times[index].held {
+                            self.replace_release_forward_at(note, at)?;
+                        }
                     }
                 }
             }
