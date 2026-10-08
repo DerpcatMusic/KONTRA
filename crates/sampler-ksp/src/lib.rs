@@ -855,6 +855,7 @@ fn compile_initialized_inner(
     let mut programs = Vec::new();
     let mut entries = Vec::new();
     let mut starts = Vec::new();
+    let profile_lower = std::env::var_os("KONTRA_AUDIT_LOWER").is_some();
     for callback in &hir.callbacks {
         use hir::CallbackKind as K;
         let (kind, context) = match callback.kind {
@@ -891,6 +892,8 @@ fn compile_initialized_inner(
             .map(|s| Some(*s))
             .chain(timers.is_empty().then_some(None))
         {
+            let started = profile_lower.then(std::time::Instant::now);
+            let remaining = unit.budget;
             let program = unit
                 .program(
                     &callback.body,
@@ -900,6 +903,13 @@ fn compile_initialized_inner(
                     signal,
                 )
                 .map_err(|f| f.locate(source))?;
+            if let Some(started) = started {
+                eprintln!(
+                    "AUDIT {{\"stage\":\"ksp_callback_program\",\"context\":\"{context:?}\",\"ms\":{},\"instructions\":{}}}",
+                    started.elapsed().as_secs_f64() * 1000.,
+                    remaining - unit.budget,
+                );
+            }
             entries.push(Entry {
                 kind,
                 program: programs.len(),

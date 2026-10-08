@@ -40,11 +40,16 @@ def main():
     repeat = repeat[0] if repeat else "1"
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + 235
     for line in Path(manifest).read_text().splitlines()[int(start):int(end)]:
         name, path, program = line.split("\t")
         output = out / f"{mode}-{name}-{repeat}.json"
         if output.exists():
             continue
+        # Resume the same slice after releasing the heavy slot. Never start a
+        # worker unless its entire timeout fits in this short shard.
+        if deadline - time.monotonic() < 130:
+            return 75
         env = os.environ.copy()
         env.update(PROBE_PATH=path, PROBE_PROGRAM=program, TMPDIR="/proc/self/no-audit-tmp",XDG_DATA_HOME="/tmp/audit-data", KONTRA_LOG_DIR="/proc/self/no-audit-log", KONTRA_DISABLE_NETWORK="1")
         env["XDG_CACHE_HOME"] = "/proc/self/no-audit-cache" if mode == "v1fresh" else str(Path.home() / ".cache")
@@ -86,4 +91,4 @@ if __name__ == "__main__":
         assert "source" not in json.dumps(result) and "secret" not in json.dumps(result)
         print("ok")
     else:
-        main()
+        sys.exit(main() or 0)
