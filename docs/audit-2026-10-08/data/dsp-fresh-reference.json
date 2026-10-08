@@ -1,0 +1,47 @@
+[
+  {
+    "name": "analog_strings",
+    "v2_baseline": "7e82b152",
+    "sample_rate": 48000,
+    "matched_grid_windows": 48,
+    "native_audible_v2_silent": 0,
+    "first_onset_delta_ms": -1042.9375,
+    "total_stereo_energy_db_ratio": 12.268833309710683,
+    "native_duration_seconds": 104.01066666666667,
+    "v2_duration_seconds": 98.5,
+    "steady_power_db_mean": 14.480600963851126,
+    "steady_power_db_max_abs": 15.46912259660369,
+    "relative_attack_db_mean_abs": 1.4922862892768551,
+    "sample_selection_not_isolated": true
+  },
+  {
+    "name": "una_pure",
+    "v2_baseline": "7e82b152",
+    "sample_rate": 48000,
+    "matched_grid_windows": 48,
+    "native_audible_v2_silent": 0,
+    "first_onset_delta_ms": -1013.0625,
+    "total_stereo_energy_db_ratio": 0.5569574518702946,
+    "native_duration_seconds": 103.97866666666667,
+    "v2_duration_seconds": 98.5,
+    "steady_power_db_mean": 0.30920268898558917,
+    "steady_power_db_max_abs": 0.801214947195345,
+    "relative_attack_db_mean_abs": 0.9278996977142397,
+    "sample_selection_not_isolated": true
+  },
+  {
+    "name": "vista_3cellos",
+    "v2_baseline": "7e82b152",
+    "sample_rate": 48000,
+    "matched_grid_windows": 48,
+    "native_audible_v2_silent": 0,
+    "first_onset_delta_ms": -1038.0625,
+    "total_stereo_energy_db_ratio": 2.8212405966652487,
+    "native_duration_seconds": 103.94666666666667,
+    "v2_duration_seconds": 98.5,
+    "steady_power_db_mean": 1.2692181320944538,
+    "steady_power_db_max_abs": 4.07000305617586,
+    "relative_attack_db_mean_abs": 2.2677904668257773,
+    "sample_selection_not_isolated": true
+  }
+]

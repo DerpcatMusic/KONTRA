@@ -1,0 +1,26 @@
+[
+  {
+    "name": "analog_strings",
+    "historical_unpinned_v2": true,
+    "matched_grid_windows": 48,
+    "steady_power_db_mean": 5.4814080951062225,
+    "steady_power_db_max_abs": 6.470116973908109,
+    "total_stereo_energy_db_ratio": 3.272872265817079
+  },
+  {
+    "name": "una_pure",
+    "historical_unpinned_v2": true,
+    "matched_grid_windows": 48,
+    "steady_power_db_mean": 0.30920268898558917,
+    "steady_power_db_max_abs": 0.801214947195345,
+    "total_stereo_energy_db_ratio": 0.5569574518702946
+  },
+  {
+    "name": "vista_3cellos",
+    "historical_unpinned_v2": true,
+    "matched_grid_windows": 48,
+    "steady_power_db_mean": 1.2692181320944538,
+    "steady_power_db_max_abs": 4.07000305617586,
+    "total_stereo_energy_db_ratio": 2.8212405966652487
+  }
+]

@@ -1,0 +1,17 @@
+{
+  "v2_baseline": "7e82b152",
+  "v1_reference": "0cb7a8a0",
+  "kontakt_census_branch": "v2/gpt-decipher-dsp@aa3430d6",
+  "manifest_sha256": "8469c259dc38a94c57d3e1db0a631b7e7c8abea0695fbed3e231e9fc214057e4",
+  "manifest_items": 1494,
+  "kontakt_containers": 834,
+  "uvi_programs": 660,
+  "native_ahdsr_cases": 45,
+  "v2_render_profile": "ci",
+  "v2_render_binary_sha256": "929556aeea180b60546e02af6ea3de52d2a20f1549a23fa4b79c6d4501023875",
+  "reference_audio_sha256": {
+    "una_pure": "cc8b58c61f6a42f6ef59c732e5bded56bac7287ef0f7566624ca0a65cc9105ec",
+    "analog_strings": "3020cc918a1566fbc180438a69fb6ed44e5362ed7f2c76de7886053eba802a16",
+    "vista_3cellos": "7885a72e5103a9a99d50c7e2d1eed330e2be511519f1aa3e274c6bb900e76628"
+  }
+}
