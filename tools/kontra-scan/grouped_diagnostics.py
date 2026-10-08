@@ -86,7 +86,7 @@ def aggregate(receipts):
     c=Collector()
     for r in sorted(receipts,key=lambda r:r['path']):
         # Stable numeric receipt identity distinguishes bank members without names.
-        item=int(hashlib.sha256(r['path'].encode()).hexdigest()[:16],16)
+        item=r.get('diagnostic_item_index',int(hashlib.sha256(r['path'].encode()).hexdigest()[:16],16))
         r=dict(r,diagnostic_item_index=item)
         for event in receipt_events(r):c.add(*event)
     return c
