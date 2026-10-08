@@ -13,6 +13,7 @@ pub mod audit;
 mod container;
 mod header_cache;
 mod cache;
+mod cache_zones;
 mod effects;
 #[cfg(feature = "scan")]
 mod coverage;
