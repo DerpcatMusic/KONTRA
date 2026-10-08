@@ -665,6 +665,18 @@ unsafe fn data_from_plugin<P: PluginExport>(
     unsafe { &*(*plugin).plugin_data.cast::<ClapPluginData<P>>() }
 }
 
+/// Read an instance's shared params on the host main thread without borrowing
+/// the audio-owned plugin. Used by numeric diagnostic probes.
+///
+/// # Safety
+/// `plugin` must be a live instance exported by this library for exactly `P`.
+pub unsafe fn with_plugin_params<P: PluginExport, T>(
+    plugin: *const clap_plugin,
+    read: impl FnOnce(&P::Params) -> T,
+) -> T {
+    read(&unsafe { data_from_plugin::<P>(plugin) }.params_arc)
+}
+
 // ---------------------------------------------------------------------------
 // Plugin callbacks
 //
