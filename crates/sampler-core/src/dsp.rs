@@ -132,10 +132,12 @@ pub enum Processor {
         last: bool,
     },
     /// Kontakt Gainer (DSP_SYSTEM_INVENTORY "Gainer", KONTAKT_REFERENCE s.25):
-    /// `x * (dry + g)` where `g` follows `gain` through a one-pole of time
-    /// constant [`GAINER_TAU`] seconds, starting at its first target. Constant
+    /// `x * (dry + g)` where `g` follows `gain` through a one-pole using the
+    /// native per-frame coefficient, starting at its first target. Constant
     /// or control targets only; per-voice scalar path.
     Gainer { dry: f64, gain: Parameter },
+    /// Native Stereo Modeller width/balance smoothing and optional right delay.
+    StereoModeller(StereoSettings),
     /// Kontakt Daft filter; per-voice scalar path.
     Daft(DaftSettings),
     /// WaveShaper rectification (stateless).
@@ -178,6 +180,7 @@ impl Processor {
             Processor::Compressor(settings) => settings.valid(),
             Processor::Decimate(decimator) => decimator.valid(),
             Processor::Daft(settings) => settings.valid(),
+            Processor::StereoModeller(settings) => settings.valid(),
             Processor::Branch { gain, .. } => gain.is_finite(),
             Processor::Rectify(_) => true,
             Processor::Gainer { dry, gain } => {
@@ -188,15 +191,13 @@ impl Processor {
     }
 }
 
-/// Gainer smoothing time constant (seconds): KONTAKT_REFERENCE s.25 fits 43-49 ms
-/// at two step sizes; the engine's per-sample k = 1/1800 is 41 ms at 44.1 kHz.
-pub const GAINER_TAU: f64 = 0.045;
-
 mod compressor;
 pub(super) mod control;
 mod convolution;
 mod daft;
 mod delay;
+mod stereo;
+pub use stereo::StereoSettings;
 pub(super) mod lanes;
 mod reverb;
 mod shaping;
@@ -233,6 +234,7 @@ pub(super) enum PreparedProcessor {
     },
     Decimate(Decimator),
     Daft(daft::Daft),
+    StereoModeller { stereo: stereo::Stereo, offset: usize },
     Branch {
         count: u16,
         gain: f64,
@@ -379,8 +381,18 @@ pub(super) fn compile_processors(
                 Processor::Gainer { dry, gain } => PreparedProcessor::Gainer {
                     dry,
                     gain: gain.compile(bindings),
-                    k: -(-1.0 / (GAINER_TAU * f64::from(rate))).exp_m1(),
+                    k: f64::from(f32::from_bits(0x3a11a2b4)),
                 },
+                Processor::StereoModeller(settings) => {
+                    let offset = *delay_frames;
+                    if settings.pseudo {
+                        *delay_frames = offset.checked_add(1024).ok_or(Error::Capacity)?;
+                    }
+                    PreparedProcessor::StereoModeller {
+                        stereo: settings.compile(rate, bindings),
+                        offset,
+                    }
+                }
                 Processor::Decimate(decimator) => PreparedProcessor::Decimate(decimator),
                 Processor::Reverb(settings) => {
                     let reverbs = reverbs.as_deref_mut().ok_or(Error::InvalidInput)?;
@@ -600,6 +612,7 @@ impl PreparedVoiceChain {
                         | PreparedProcessor::Compressor(_)
                         | PreparedProcessor::Decimate(_)
                         | PreparedProcessor::Gainer { .. }
+                        | PreparedProcessor::StereoModeller { .. }
                         | PreparedProcessor::Daft(_)
                         | PreparedProcessor::Branch { .. }
                 )
@@ -813,6 +826,9 @@ pub(super) fn process(
             PreparedProcessor::Compressor(compressor) => compressor.process(state, block, len),
             PreparedProcessor::Decimate(decimator) => decimator.process(state, block, len),
             PreparedProcessor::Daft(daft) => daft.process(state, parameters, block, len, at),
+            PreparedProcessor::StereoModeller { stereo, offset } => {
+                stereo.process(state, parameters, block, len, at, &mut delay_samples[*offset..]);
+            }
             PreparedProcessor::Rectify(mode) => {
                 for channel in block.iter_mut() {
                     channel[..len].iter_mut().for_each(|v| *v = mode.apply(*v));
@@ -822,18 +838,18 @@ pub(super) fn process(
                 // z[0][0] is the smoothed gain; aux[0] marks it initialised
                 // (a new state starts at the first target, not at zero).
                 let [left, right] = block;
-                let mut current = state.z[0][0];
+                let mut current = state.z[0][0] as f32;
                 for (i, (l, r)) in left[..len].iter_mut().zip(&mut right[..len]).enumerate() {
-                    let target = gain.value(parameters, at + i as u64, None);
+                    let target = gain.value(parameters, at + i as u64, None) as f32;
                     if state.aux[0] == 0. {
                         (current, state.aux[0]) = (target, 1.);
                     }
-                    let m = dry + current;
+                    let m = dry + f64::from(current);
                     *l *= m;
                     *r *= m;
-                    current += (target - current) * k;
+                    current += (target - current) * *k as f32;
                 }
-                state.z[0][0] = flush(current);
+                state.z[0][0] = f64::from(current);
             }
             PreparedProcessor::Gain(gain) => {
                 for channel in block.iter_mut() {
