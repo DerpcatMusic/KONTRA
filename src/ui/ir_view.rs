@@ -1105,18 +1105,7 @@ pub(super) fn widget_state(
                 if can_edit { drive(ui,&key,&mut value,&(range.min..=range.max),TRAVEL,true,range.default); }
                 if let Some(step)=range.step { value=(value/step).round()*step; }
                 if let Some(id)=cid {values.insert(id,value);}
-                let t=if range.max==range.min{0.}else{((value-range.min)/(range.max-range.min)).clamp(0.,1.)};
-                let zero=if *bipolar && range.max!=range.min {(-range.min/(range.max-range.min)).clamp(0.,1.)}else{0.};
-                let bar=wd.colors.bar.map_or(Role::Ink.alpha(0.6),|c|Fill::from(colour(c)));
-                let zero_ink=wd.colors.zero_line.map_or(Role::Ink.alpha(0.25),|c|Fill::from(colour(c)));
-                let steps=steps_shown.unwrap_or(0).min(128);
-                canvas(move |s| {
-                    let mut draws=vec![Draw::fill(rect(0.,s.height*(1.-t.max(zero)),s.width.max(1.),s.height*(t-zero).abs()),bar.clone())];
-                    draws.push(Draw::fill(rect(0.,s.height*(1.-zero),s.width,1.),zero_ink.clone()));
-                    for step in 1..steps {draws.push(Draw::fill(rect(0.,s.height*step as f64/steps as f64,s.width,1.),Role::Ink.alpha(0.1)));}
-                    draws
-                })
-                    .fill(Role::Ink.alpha(0.06)).flex(1).h(h).id(key).focusable()
+                super::render_art::table(vec![value],*range,*bipolar,*steps_shown,wd.colors).flex(1).h(h).id(key).focusable()
                     .named(format!("{} {}",wd.name,c+1)).a11y(A11y::Slider{value,min:range.min,max:range.max})
             }).collect::<Vec<_>>();
             row(bars).gap(1).w(w).h(h)
@@ -1302,32 +1291,15 @@ pub(super) fn widget_state(
             .focusable()
         }
         Kind::TextEdit => {
-            let draft = input.drafts.entry(n).or_insert_with(|| {
-                match input.values.get(&n).or(wd.value.as_ref()) {
-                    Some(ir::Value::Text(v)) => v.clone(),
-                    _ => String::new(),
-                }
-            });
-            let field = text_edit(
-                ui,
-                id.as_str(),
-                draft,
-                TextOpts {
-                    blur_on_submit: true,
-                    ..Default::default()
-                },
-            );
+            let draft=input.drafts.entry(n).or_insert_with(||match input.values.get(&n).or(wd.value.as_ref()) {Some(ir::Value::Text(v))=>v.clone(),_=>String::new()});
+            if !ui.focused(id.as_str()) {
+                if let Some(ir::Value::Text(value))=input.values.get(&n).or(wd.value.as_ref()) {draft.clone_from(value);}
+            }
+            let field=text_edit(ui,id.as_str(),draft,TextOpts {blur_on_submit:true,..Default::default()});
             if can_edit && field.changed.submitted {
-                let text = ir::Value::Text(draft.clone());
-                input.edits.push(Edit {
-                    widget: n,
-                    index: 0,
-                    value: text.clone(),
-                    mods: ui.get(id.as_str()).mods,
-                    cursor: 0,
-                    event: 1,
-                });
-                input.values.insert(n, text);
+                let text=ir::Value::Text(draft.clone());
+                input.edits.push(Edit{widget:n,index:0,value:text.clone(),mods:ui.get(id.as_str()).mods,cursor:0,event:1});
+                input.values.insert(n,text);
             }
             field.el
         }
