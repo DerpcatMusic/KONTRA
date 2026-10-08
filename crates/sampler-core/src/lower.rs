@@ -380,6 +380,16 @@ pub fn lower_with(
             .and_then(|p| p.with_group_params(params))
             .map_err(core(Stage::Regions, "groups"))?;
     }
+    // Only source modulators that actually own an amplitude envelope get lanes.
+    // Muted/unmodeled names remain findable without inventing a DSP consumer.
+    for source in &instrument.source_indices.modulators {
+        let Some(modulator) = source.runtime else { continue };
+        let runtime_group = instrument.source_indices.groups.get(source.group).copied().flatten().unwrap_or(ir::GroupRef(source.group));
+        if source.external || !instrument.zones.iter().any(|z|z.group == Some(runtime_group) && z.amplitude == Some(modulator)) { continue }
+        let ir::ModulationSource::Envelope(envelope) = &instrument.modulators[modulator.0].source else { continue };
+        let authored=lowering.adsr("source amplitude envelope",envelope,false)?;
+        plan=plan.with_group_envelope_parameters(runtime_group.0 as u32,source.group as i32,source.slot as i32,authored).map_err(core(Stage::Envelope,"source amplitude envelope"))?;
+    }
     if instrument.voice_limit.is_some() || !instrument.voice_limits.is_empty() {
         let limit = |l: &ir::VoiceLimit| crate::VoiceLimit {
             voices: l.voices,
@@ -506,8 +516,9 @@ pub fn lower_with(
             .with_bend_range(range)
             .map_err(core(Stage::Modulation, "pitch-bend range"))?;
     }
+    let engine_bindings = plan.engine_parameter_bindings().to_vec();
     plan = plan
-        .with_engine_parameters(Vec::new(), source_engine_lookups(&instrument.source_indices))
+        .with_engine_parameters(engine_bindings, source_engine_lookups(&instrument.source_indices))
         .map_err(core(Stage::Controls, "source engine lookups"))?;
     if instrument.behaviors.is_empty() {
         Ok(plan)

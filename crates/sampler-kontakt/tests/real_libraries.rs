@@ -310,6 +310,31 @@ fn conflux_admits_all_257_saved_values_including_13_string_arrays() {
 }
 
 #[test]
+fn streamed_real_instrument_installs_physical_engine_bindings_and_lookups() {
+    let Some(path) = find("Una Corda Library/Instruments/Una Corda Pure.nki") else { return };
+    let streamed = sampler_kontakt::load_streamed(&path, &sampler_kontakt::Options {
+        keys: 60..=60, mpe: None, ..Default::default()
+    }, &Default::default(), |_| {}).unwrap();
+    let loaded = streamed.loaded;
+    let bindings = loaded.plan.engine_parameter_bindings();
+    assert!(!bindings.is_empty(), "production preparation needs authored native lanes");
+    assert!(!loaded.plan.engine_lookups().is_empty(), "production needs physical names");
+    for binding in bindings {
+        assert!(loaded.instrument.source_indices.modulators.iter().any(|source|
+            source.group as i32 == binding.address.group && source.slot as i32 == binding.address.slot
+                && source.runtime.is_some() && !source.external));
+        assert!(loaded.plan.controls().iter().any(|control|control.id == binding.control));
+    }
+    let attack = bindings.iter().find(|b|sampler_core::engine_parameter_name(b.address.parameter)==Some("$ENGINE_PAR_ATTACK")).unwrap().address;
+    let plan=loaded.plan;
+    let limits=Limits::for_plan(&plan,16,16);
+    let mut runtime=Runtime::new(plan,limits).unwrap();
+    runtime.set_engine_parameter(attack,200809).unwrap();
+    assert!((runtime.engine_parameter(attack).unwrap()-200809).abs()<=1);
+    println!("PRODUCTION_ENGINE_BINDINGS controls={} lookups={}",runtime.control_definitions(runtime.active_plan()).unwrap().len(),loaded.instrument.source_indices.engine_lookups.len());
+}
+
+#[test]
 fn vista_cellos_render_from_loose_ncw_samples() {
     let Some((ir, out)) = render_frames(
         "Performance Samples Vista/Instruments/Vista - 3 Cellos.nki",

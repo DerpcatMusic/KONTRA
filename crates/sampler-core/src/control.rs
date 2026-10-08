@@ -132,6 +132,8 @@ impl Prepared {
         for binding in &self.control_programs {
             self.control_index(binding.control)?;
         }
+        for binding in &self.engine_parameters {self.control_index(binding.control)?;}
+        for control in self.envelope_controls.iter().flatten().flatten() {self.control_index(*control)?;}
         Ok(self)
     }
 
@@ -192,6 +194,23 @@ impl Prepared {
 }
 
 impl Runtime {
+    pub(crate) fn controlled_envelope(&self, plan: PlanId, group: Option<u32>, envelope: crate::Envelope) -> crate::Envelope {
+        let generation = self.plans.get(plan.0).unwrap();
+        let mut envelope = generation.script.envelope(group,envelope);
+        if let Some(controls) = group.and_then(|g|generation.prepared.envelope_controls.get(g as usize)) {
+            for (stage,id) in crate::engine_parameters::ENVELOPE_STAGES.into_iter().zip(controls) {
+                if let Some(id) = id {
+                    let index=generation.prepared.control_index(*id).unwrap();
+                    let value=generation.controls.values[index];
+                    if value != generation.prepared.controls[index].default {
+                        if let ControlValue::Real(value)=value {envelope=envelope.with_control(stage,value);}
+                    }
+                }
+            }
+        }
+        envelope
+    }
+
     /// Apply an interaction and start its prepared handler as one admission. Full
     /// callback capacity rejects before changing the value. Handler faults are
     /// retained outcomes; a committed edit is not rolled back after execution.
