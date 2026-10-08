@@ -431,7 +431,7 @@ pub fn one(id: &str, out: &Path) -> Value {
         };
         let init_runs = sampler_kontakt::take_script_init_runs();
         let expected_init_runs = loaded.instrument.as_ref().map(|i| i.behaviors.iter().filter(|b| b.language == sampler_ir::Language::Ksp).count());
-        let restored_state = restored.then(|| json!({"status":if request.control_values.is_empty(){"no-host-controls"}else if Some(init_runs)==expected_init_runs{"single-init"}else{"duplicate-init"},"scalar_overrides":request.control_values.len(),"init_runs":init_runs,"expected_init_runs":expected_init_runs,"timer_excludes_seed":true}));
+        let restored_state = restored.then(|| json!({"status":if request.control_values.is_empty(){"no-host-controls"}else if Some(init_runs)==expected_init_runs{"single-init"}else if expected_init_runs.is_some_and(|n|init_runs>n){"duplicate-init"}else{"count-mismatch"},"scalar_overrides":request.control_values.len(),"init_runs":init_runs,"expected_init_runs":expected_init_runs,"timer_excludes_seed":true}));
         let ksp = ksp_observations();
         load_ms += start.elapsed().as_secs_f64() * 1000.;
         let mut symbols = BTreeMap::<String, usize>::new();
