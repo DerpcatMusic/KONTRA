@@ -189,7 +189,7 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
     let view = if mode == crate::library::ViewMode::Kontra {
         super::generated::view(ui, &namespace, &face.face, face.page, &face.assets, scale, &mut face.values)
     } else {
-        ir_view::view(ui, &namespace, &face.face, face.page, &face.assets, face.presentation, scale, &mut face.values)
+        ir_view::view_scoped(ui, &namespace, &face.face, face.page, &face.assets, face.presentation, scale, &mut face.values)
     };
     for &(id, was) in &current {
         if let Some(&now) = face.values.get(&id)

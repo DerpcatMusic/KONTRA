@@ -167,7 +167,11 @@ pub fn resolve_changed(face: &mut Interface, indices: impl IntoIterator<Item = u
 }
 
 /// `page` at `scale` points per source pixel; `face` already [`resolved`].
-pub fn view(ui: &mut Ui, namespace: &str, face: &Interface, page: PageRef, assets: &Assets, presentation: Presentation, scale: f64, values: &mut Values) -> El {
+pub fn view(ui: &mut Ui, face: &Interface, page: PageRef, assets: &Assets, presentation: Presentation, scale: f64, values: &mut Values) -> El {
+    view_scoped(ui, "", face, page, assets, presentation, scale, values)
+}
+
+pub fn view_scoped(ui: &mut Ui, namespace: &str, face: &Interface, page: PageRef, assets: &Assets, presentation: Presentation, scale: f64, values: &mut Values) -> El {
     let Some(p) = face.pages.get(page.0) else { return caption("No interface").fill(secondary()) };
     let (w, h) = (f64::from(p.size.width) * scale, f64::from(height(face, page)) * scale);
     let mut layers = Vec::new();
