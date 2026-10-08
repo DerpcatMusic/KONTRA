@@ -1668,6 +1668,48 @@ mod tests {
     }
 
     #[test]
+    fn addressed_filter_factors_reset_and_sum_at_the_control_midpoint() {
+        let modulation = VoiceModulation::new(
+            vec![ModProgram {
+                sources: vec![ModSource::Velocity],
+                routes: vec![
+                    ModRoute::new(0, ModTarget::ProcessorCutoff(1), 1.0),
+                    ModRoute::new(0, ModTarget::ProcessorCutoff(1), 1.0),
+                    ModRoute::new(0, ModTarget::ProcessorResonance(1), 1.0),
+                    ModRoute::new(0, ModTarget::ProcessorResonance(2), 1.0),
+                    ModRoute::new(0, ModTarget::ProcessorResonance(2), 1.0),
+                ],
+                ..ModProgram::default()
+            }],
+            vec![Some(0)],
+            vec![0],
+        )
+        .unwrap();
+        let mut state = VoiceModState::new(&modulation, 1).unwrap();
+        state.program[0] = Some(0);
+        state
+            .previous_processor_values
+            .copy_from_slice(&[4., 2., 10., -20., 20.]);
+        state
+            .processor_values
+            .copy_from_slice(&[8., 10., 30., -40., 40.]);
+        let mut previous_program = None;
+        let mut factors = [[1., 1., 0., 0.]; 128];
+        state.fill_filter_factors(&modulation, 0, &mut factors, &mut previous_program, |_| false);
+        assert_eq!(factors[1], [2., 10., 0., 0.]);
+        assert!(
+            factors
+                .iter()
+                .enumerate()
+                .all(|(i, f)| i == 1 || *f == [1., 1., 0., 0.])
+        );
+        // A subsequent voice must not inherit the previous addressed factors.
+        state.stop(0);
+        state.fill_filter_factors(&modulation, 0, &mut factors, &mut previous_program, |_| false);
+        assert!(factors.iter().all(|f| *f == [1., 1., 0., 0.]));
+    }
+
+    #[test]
     fn waves_start_where_their_documented_shapes_do() {
         for (shape, values) in [
             (LfoShape::Sine, [0.0, 1.0, 0.0, -1.0]),
