@@ -12,6 +12,7 @@ pub use automation::{program_automation, AutomationRecord};
 pub mod audit;
 mod container;
 mod header_cache;
+mod cache;
 mod effects;
 #[cfg(feature = "scan")]
 mod coverage;
