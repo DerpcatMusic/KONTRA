@@ -49,6 +49,27 @@ pub(super) struct Channel {
 }
 
 impl Runtime {
+    /// Transport stop is musical key-up, including generated gates, followed by pedal-up.
+    pub fn release_all_notes(&mut self) {
+        self.apply_due();
+        for index in 0..self.notes.slots.len() {
+            if self.notes.slots[index].value.is_some_and(|n| n.input_down || n.key_down()) {
+                let note = NoteId(self.notes.id(index));
+                if let Some(input) = self.notes.get(note.0).and_then(|n| n.input) {
+                    self.input_keys &= !(1 << (input.key & 127));
+                }
+                let _ = self.key_up_now(note, None);
+            }
+        }
+        for index in 0..self.channels.slots.len() {
+            if self.channels.slots[index].value.is_some() {
+                let channel = ChannelId(self.channels.id(index));
+                self.pedal_now(channel, false, false);
+                self.pedal_now(channel, false, true);
+            }
+        }
+    }
+
     /// Register a controller domain before admitting its control traffic. Registration
     /// is idempotent and bounded; addresses remain stable for this runtime's lifetime.
     /// Panic resets values, not identity. No dynamic allocation occurs here.

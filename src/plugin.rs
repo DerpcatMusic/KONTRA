@@ -586,6 +586,7 @@ pub struct Shared {
     /// or from the computer keyboard, `heard` from the host's MIDI.
     pub(crate) played: [AtomicU8; 128],
     pub(crate) heard: [AtomicU8; 128],
+    pub(crate) engine_keys: AtomicBool,
     pub(crate) learn_target: AtomicU32,
     pub(crate) learned_note: AtomicU64,
     /// What the on-screen keyboard and wheels play, by rack slot.
@@ -727,6 +728,7 @@ impl Default for Shared {
             key_owners: std::array::from_fn(|_| AtomicU64::new(0)),
             played: std::array::from_fn(|_| AtomicU8::new(0)),
             heard: std::array::from_fn(|_| AtomicU8::new(0)),
+            engine_keys: AtomicBool::new(false),
             keyboard: ArrayQueue::new(256),
             bend: AtomicU32::new(8192),
             modulation: AtomicU32::new(0),
@@ -1927,6 +1929,7 @@ pub struct Dsp {
     shared_parts: Vec<Arc<PartShared>>,
     unsupported: u64,
     end_rejections: u64,
+    playing: bool,
 }
 
 impl Default for Dsp {
@@ -1940,6 +1943,7 @@ impl Default for Dsp {
             shared_parts: Vec::new(),
             unsupported: 0,
             end_rejections: 0,
+            playing: false,
         }
     }
 }
@@ -1990,6 +1994,7 @@ impl PluginLogic for Sampler {
         p.shared.rate.store(c.sample_rate.to_bits(), Ordering::Release);
         s.until_poll = 0;
         s.audition.fill((0, 0));
+        s.playing = false;
         p.shared.reset_midi();
     }
 
@@ -2066,9 +2071,15 @@ impl PluginLogic for Sampler {
                 signature: (cx.transport.time_sig_num, cx.transport.time_sig_den),
             },
         });
+        let stopped = s.playing && !cx.transport.playing;
+        s.playing = cx.transport.playing;
         if shared.panic.swap(false, Ordering::AcqRel) {
             shared.reset_midi();
             s.core.panic();
+            s.audition.fill((0, 0));
+        } else if stopped {
+            shared.reset_midi();
+            s.core.release_all_notes();
             s.audition.fill((0, 0));
         }
         while let Some((slot, articulation)) = shared.articulation_edits.pop() {
@@ -2204,6 +2215,10 @@ impl PluginLogic for Sampler {
         let offset = frames.saturating_sub(1) as u32;
         let refused = s.core.end_block(frames, &mut |note| end_host_note(cx, note, offset));
         s.end_rejections += refused;
+        let mut keys = [0; 128];
+        let loaded = s.core.pressed_keys(&mut keys);
+        for (cell, value) in shared.heard.iter().zip(keys) { cell.store(value, Ordering::Relaxed); }
+        shared.engine_keys.store(loaded, Ordering::Release);
         shared.blocks.fetch_add(1, Ordering::Relaxed);
         cx.set_meter(P::Level, peak[0].max(peak[1]).min(1.0));
         if frames > 0 && rate > 0. {
@@ -2605,6 +2620,8 @@ pub(crate) mod tests {
 
 #[cfg(test)]
 mod loop_audit;
+#[cfg(test)]
+mod pressed_tests;
 
 #[cfg(test)]
 mod settings_parity_tests {
