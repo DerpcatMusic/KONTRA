@@ -21,7 +21,7 @@ impl StereoSettings {
         Stereo { width: self.width.compile(bindings), pan: self.pan.compile(bindings), pseudo: self.pseudo, rate: rate as f32 }
     }
 }
-pub(super) struct Stereo {
+pub(crate) struct Stereo {
     width: PreparedParameter,
     pan: PreparedParameter,
     pseudo: bool,
