@@ -96,3 +96,71 @@ Standalone host bounds were subsequently verified by RE: BAO reader preserves fu
 RE provenance: [re/w7-vectors-20261008 at d773d214](https://github.com/DerpcatMusic/KONTRA/tree/d773d214/docs/research/w7-native-20261008). The checked translator uses exactly serialized0=AND,1=AND_NOT,2=OR. Reader vectors and host boundary vectors establish serialization/address behavior; they are not playback measurements. The edited native fixture was rejected before MIDI. All five criteria-precedence/count/tuning/ping-pong-crossfade/multiple-loop gates remain **pending native vectors**; no authored case was treated as a measured expected result.
 
 Local rerun of the unmodified d773d214 verifier passed32 pinned original PE ranges,12 original-reader vectors with stubbed I/O, and16 native address-bound vectors. Verification read the pinned executable and wrote no prefix state or audio. The bounded BAO reader now rejects mode enums outside0..2 while retaining host wire address65535; invalid enum errors report the exact public-field offset.
+
+## Event query and parameter follow-up
+
+The nine newly enabled named audit contracts first failed (existing eight lifecycle
+contracts passed): status0 instead of1, enumeration search-1 instead of0, mark0
+instead of1, group allow0 instead of1, custom15=0 instead of42, thirteenth
+modulator0 instead of42, affected-group size4096 instead of1, mode2 volume-9000
+instead of-3000 and pan0 instead of-1000. The fixes use generation-scoped source
+aliases and callback group projections, not a second event registry.
+
+Nonignored `selection_contract` now covers all requested names plus creator/current
+slot, distinct note/release callback IDs, stop/resume/disable-wait, release velocity
+and release-counter reset. Boundary checks exercise unknown/retired IDs, terminal
+acceptance and note-slot reuse, mark deletion, deferred generated-note group masks,
+release-stage group masks/tags, all1001 modulator IDs alongside all16 custom
+parameters, signed minimum values, invalid index separation, dynamic mode1 versus2,
+physical group holes, dynamic affected-group search and allocation-free callbacks.
+
+Custom indices0..3 alias `$EVENT_PAR_0..3`; storage holds the complete bounded native
+modulator/custom domain, replacing the twelve-entry silent-drop ceiling. Voice
+modulation borrows that state rather than copying it per chunk. Enumeration includes
+lazy IDs and appends one zero sentinel; `%GROUPS_AFFECTED` describes native mapping
+before script allow/disallow edits. Sources: [NI event commands](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/event-commands)
+and [NI built-in variables](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/built-in-variables-and-constants).
+
+Waveform asset seam: `Prepared::source_zone_region(zone_id:u32)->Option<usize>`
+resolves explicit positive source IDs used by `EventInfo::ZoneId`; holes,0 and
+absent source maps returnNone, with no runtime ordinal fallback. `Prepared::region_asset(region:usize)->Option<&Pcm>` returns the
+immutable prepared asset, including its `AssetId`, for the control-side peak worker.
+The importer retains physical zone order in `source_indices.zones`; lowering uses
+physical index+1 as the source ID. This is independent of UI display ordering.
+W2/W3 own provider/painter/worker wiring. A sparse3/9 source-ID regression passes.
+
+## Analog saved automation inventory
+
+The framed Program0xab private reader finds287 BAO0x71 records, all mode2 host
+parameters at addresses0..286, all soft takeoverfalse/range0..1; there are **zero
+mode1 MIDI-CC assignments**. The metadata-only `analog-automation.tsv` records every
+address/tag and222 resolved slider-only ordinals. The65 switch tags remain diagnosed
+as unmodeled; native switch ordinal decoding is not inferred from slider evidence.
+
+Compressor gain bindings: host122 → slot2 slider71/ui32956, layer1 saved396933;
+host128 → slider153/ui33136, layer2 saved396933; host173 → slider185/ui33198,
+global saved560434. Compressor switch tags occur at host117/123/168/174. These
+bindings run only when host automation arrives; saved MIDI learn does not explain
+an init/CC compressor change here. The normal script init/persistence engine writes
+are a separate W5 path; this inventory does not assign the observed+9dB difference
+a cause or propose a gain correction. Existing Areia40/48 and five **pending native
+vectors** gates remain unchanged; no new native audio parity measurement is claimed.
+
+Follow-up validation: KSP lib5, selection/event26, automation4 and typed widgets7;
+core lib62, lower17, controllers11, note stages8, release4, release selection18,
+script arrays3, source10 and voice modulation11 (one ignored). Root
+`cargo test --no-run` passed. Source-ID lookup and real-library metadata probes
+write no audio/sample data. Logs reside in `~/.cache/kontakto-w7-render/event-*`.
+
+Analog init metadata: all compiled slots2/3/4 report no `set_controller` writes.
+The normal slot2 init does emit gain/bypass engine requests, including
+`$ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN=560434` at group-1/slot1/generic1 and
+layer outputs396933 at group-1/slot1/generic1002 and1003. All108 selected
+GAIN/BYPASS requests are retained in `analog-init-engine-writes.tsv`; they are
+compile/init intentions, not measured runtime/native DSP outcomes. W5/W6 can compare
+these exact addresses against typed service admission and saved rack state.
+
+`Pcm::resident_frames()->Option<&[Frame]>` exposes read-only resident frames,
+`Frame=[f32;2]`, for bounded peaks in memory. `frame_count`, `sample_rate` and
+`asset_id` supply length/rate/identity. Streamed assets can returnNone; the asset
+worker must service them separately, never invent an ordinal or silent waveform.
