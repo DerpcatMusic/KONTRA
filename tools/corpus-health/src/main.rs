@@ -453,6 +453,7 @@ struct Ctx {
 fn stage_name(s: sampler_kontakt::Stage) -> &'static str {
     use sampler_kontakt::Stage::*;
     match s {
+        ResourceResolve => "resource_resolve",
         Container => "container/decrypt",
         Parse => "parse",
         Translate => "translate-to-IR",
