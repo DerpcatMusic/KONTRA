@@ -25,6 +25,24 @@ struct Local {
     drafts: HashMap<String, String>,
 }
 thread_local! {static LOCAL:std::cell::RefCell<HashMap<u64,Local>>=std::cell::RefCell::new(HashMap::new());}
+#[cfg(test)]
+thread_local! {static AUDIT_FAILURES: std::cell::RefCell<Vec<String>> = const {std::cell::RefCell::new(Vec::new())};}
+#[cfg(test)]
+pub(super) fn audit_failures() -> Vec<String> {AUDIT_FAILURES.with(|v|v.borrow().clone())}
+#[cfg(test)]
+fn audit_lua_error(error:&mlua::Error) {
+    let text=error.to_string();
+    for class in ["attempt to call a nil value", "attempt to call nil", "attempt to call a boolean value", "attempt to call a number value", "attempt to call missing method", "invalid argument", "bad argument", "out of bounds", "attempt to index number", "attempt to index nil", "attempt to index boolean", "attempt to index a number", "attempt to index a nil", "attempt to index a boolean", "attempt to get length of a number", "attempt to get length of a nil", "attempt to perform arithmetic", "attempt to compare", "number expected", "string expected", "table expected", "NativeUI time budget exceeded", "NativeUI interrupt budget exceeded"] {
+        if text.contains(class) {AUDIT_FAILURES.with(|v|v.borrow_mut().push(class.to_owned()));}
+    }
+    for line in text.lines() {
+        if let Some((_,tail))=line.split_once(".nui\"]:").or_else(||line.split_once(".nui:")) {
+            if let Some(n)=tail.split(':').next().and_then(|n|n.parse::<u32>().ok()) {
+                AUDIT_FAILURES.with(|v|v.borrow_mut().push(format!("module_line={n}")));
+            }
+        }
+    }
+}
 static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 pub(super) struct State {
     id: u64,
@@ -303,7 +321,11 @@ impl State {
             Ok(el) => el,
             Err(error) => {
                 self.failed = true;
+                #[cfg(test)]
+                if let Some(error)=error.downcast_ref::<mlua::Error>() {audit_lua_error(error);}
                 self.failure = Some(failure(&error, if self.started { "NativeUI graph" } else { "NativeUI module initialization" }));
+                #[cfg(test)]
+                AUDIT_FAILURES.with(|v|v.borrow_mut().push(self.failure.as_ref().unwrap().split(": ").next().unwrap().to_owned()));
                 caption("The authored native interface could not render.")
                     .lines(2)
                     .pad(12.)
@@ -796,12 +818,14 @@ fn draw_base(
             })
         }
         "Canvas" => {
-            let paint = session.paint_callback(props.get("paint")?)?;
+            let paint=session.paint_callback(props.get("paint")?)?;
             let vm = session.lua().clone();
             canvas(move |size| {
                 match canvas_draw(&vm, &paint, Size::new(size.width / s, size.height / s), s) {
                     Ok(draw) => draw,
                     Err(e) => {
+                        #[cfg(test)]
+                        { audit_lua_error(&e); AUDIT_FAILURES.with(|v|v.borrow_mut().push(failure(&e.clone().into(),"NativeUI canvas").split(": ").next().unwrap().to_owned())); }
                         let _ = vm.globals().set("__canvas_error", e.to_string());
                         Vec::new()
                     }
@@ -1295,6 +1319,36 @@ mod tests {
         let _=super::super::tests::pixels(&ui,16,16);
         assert!(session.lua().globals().get::<Value>("__canvas_error").unwrap().is_nil(),"deferred Canvas reused an expired graph budget");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires locally owned multi; fixed error categories only"]
+    fn own_native_graph_error_sites() {
+        let path=std::path::PathBuf::from(std::env::var_os("KONTRA_AUDIT_WIDGET_PATCH").unwrap());
+        for program in [0,1] {
+            let mut source=sampler_kontakt::read_program(&path,program).unwrap().instrument;
+            source.retain_zones(|_|false);source.assets.clear();
+            let loaded=sampler_kontakt::prepare(source,vec![],&sampler_kontakt::Options {library:Some(path.clone()),..Default::default()}).unwrap();
+            let entry=loaded.interfaces.iter().find_map(|f|f.native_ui.as_ref()).unwrap().entry.clone();
+            let controls=loaded.interfaces.iter().flat_map(|f|f.widgets.iter().enumerate().map(move |(n,w)|(f.source,n,w.clone()))).collect();
+            let package=Arc::new(Package::load(&path).unwrap());
+            let session=Session::new(package.clone(),&entry,controls).unwrap();
+            let properties=Arc::new(std::sync::Mutex::new(Vec::new()));
+            let trace=properties.clone();
+            session.lua().globals().set("__audit_property",session.lua().create_function(move |_,(unconnected,property):(bool,i32)| {trace.lock().unwrap().push((unconnected,property));Ok(())}).unwrap()).unwrap();
+            let graph=session.render();
+            AUDIT_FAILURES.with(|v|v.borrow_mut().clear());
+            if let Err(error)=&graph {
+                if let Some(error)=error.downcast_ref::<mlua::Error>() {
+                    audit_lua_error(error);
+                    let message=error.to_string();
+                    let words:Vec<_>=["attempt", "call", "nil", "value", "string", "number", "table", "boolean", "argument", "expected", "missing", "method", "index", "length", "invalid", "control", "property", "unsupported"].into_iter().filter(|word|message.contains(word)).collect();
+                    println!("\nOWN_NATIVE_ERROR_VOCAB program={program} classes={words:?}");
+                    println!("\nOWN_NATIVE_GRAPH program={program} operations={:?}",package.error_operations(error));
+                }
+            }
+            println!("\nOWN_NATIVE_GRAPH program={program} graph_ok={} fixed_errors={:?} property_reads={:?}",graph.is_ok(),audit_failures(),properties.lock().unwrap());
+        }
     }
 
     #[test]
