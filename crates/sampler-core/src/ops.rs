@@ -250,6 +250,17 @@ pub enum Op {
         format: u16,
         text: TextRef,
     },
+    ReadWidgetDropCount {
+        ui: i32,
+        kind: u8,
+        local: u16,
+    },
+    ReadWidgetDropText {
+        ui: i32,
+        kind: u8,
+        index: u16,
+        text: TextRef,
+    },
     ReadWidgetEventParameter {
         local: u16,
     },
@@ -327,11 +338,15 @@ impl Op {
             Self::RealUnary { local, .. }
             | Self::IntegerToReal { local }
             | Self::RealToInteger { local }
+            | Self::ReadWidgetDropCount { local, .. }
             | Self::ReadWidgetEventParameter { local }
             | Self::ReadWidgetInteraction { local, .. }
             | Self::ReadHost { local, .. }
             | Self::ReadClock { local, .. }
             | Self::ReadTimer { local } => usize::from(*local) + 1,
+            Self::ReadWidgetDropText { index, text, .. } => {
+                (usize::from(*index) + 1).max(reg(text))
+            }
             Self::FileName { ui, format, text } => {
                 (usize::from(*ui.max(format)) + 1).max(reg(text))
             }
@@ -404,7 +419,9 @@ impl Op {
             Self::TextFind {
                 text, base, count, ..
             } => (cell(text)?, usize::from(*base) + usize::from(*count)),
-            Self::TextIndex { text, .. }
+            Self::ReadWidgetDropText { text, .. }
+            | Self::FileName { text, .. }
+            | Self::TextIndex { text, .. }
             | Self::TextProperty { text, .. }
             | Self::EngineLookup { text, .. }
             | Self::EngineDisplay { text, .. } => (cell(text)?, 0),
@@ -1295,6 +1312,43 @@ impl Runtime {
                 let cell = self.text_cell(id, text)?;
                 self.behavior_bank(id)?.texts[cell] = result;
             }
+            Op::ReadWidgetDropCount { ui, kind, local } => {
+                if kind >= 3 {
+                    return Err(Error::InvalidInput);
+                }
+                let count = if let Some(drop) = self.callback_drop_storage(id, ui)? {
+                    self.behavior_bank(id)?.cells[drop.counts as usize + kind as usize]
+                } else {
+                    0
+                };
+                self.set_reg(id, local, count)?;
+            }
+            Op::ReadWidgetDropText {
+                ui,
+                kind,
+                index,
+                text,
+            } => {
+                if kind >= 3 {
+                    return Err(Error::InvalidInput);
+                }
+                let index =
+                    usize::try_from(self.reg(id, index)?).map_err(|_| Error::InvalidInput)?;
+                let path = if let Some(drop) = self.callback_drop_storage(id, ui)? {
+                    let bank = self.behavior_bank(id)?;
+                    if index >= bank.cells[drop.counts as usize + kind as usize] as usize {
+                        Text::default()
+                    } else {
+                        bank.texts[drop.texts as usize
+                            + kind as usize * crate::WIDGET_DROP_CAPACITY as usize
+                            + index]
+                    }
+                } else {
+                    Text::default()
+                };
+                let cell = self.text_cell(id, text)?;
+                self.behavior_bank(id)?.texts[cell] = path;
+            }
             Op::ReadWidgetEventParameter { local } => {
                 let index =
                     usize::try_from(self.reg(id, local)?).map_err(|_| Error::InvalidInput)?;
@@ -1318,6 +1372,7 @@ impl Runtime {
                     3 => i64::from(interaction.modifiers & 2 != 0),
                     4 => i64::from(interaction.modifiers & 4 != 0),
                     5 => i64::from(interaction.event),
+                    6 => i64::from(interaction.mouse_over),
                     _ => return Err(Error::InvalidInput),
                 };
                 self.set_reg(id, local, value)?;
