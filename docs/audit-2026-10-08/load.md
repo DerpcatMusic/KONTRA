@@ -16,7 +16,47 @@ Each row is a fresh process on the mounted NVMe/ntfs3 library volume with an unc
 
 **Memory:** MiB = 1,048,576 bytes. Peak is the maximum of process VmHWM and sampled VmRSS (approximate Linux counters can differ slightly); settled is VmRSS after four wall-clock seconds with the editor harness still alive. It includes engine/script/IR/sample/UI allocations and allocator retention. `rss0_mb` and pre-editor RSS remain in the numeric artifact. V1 retains a deferred preload bank rather than incorrectly dropping it; `extra.preload_deferred` records that condition. The probe does not perform the native plugin’s later zone-preload reconciliation or smart-head management loop, so these are worker/handoff/UI residency measurements, not a sustained host-memory benchmark. The trim experiment closes the editor and calls glibc `malloc_trim(0)` **after** all reported measurements; it distinguishes reclaimable allocations and is not open-editor RSS. Four wall seconds do not exercise v2’s 30 audio-clock seconds of eviction.
 
-The editor follows the baseline presentation decision, which can choose Vector; this is not an ORIGINAL-only/UI-fidelity certification. V1/v2 audio peaks and articulation states differ. Nonzero sound is a milestone, not native sonic parity. The shared census results were not available; this fixed manifest is a supplemental stage probe, not a new corpus scanner.
+The editor follows the baseline presentation decision, which can choose Vector; this is not an ORIGINAL-only/UI-fidelity certification. V1/v2 audio peaks and articulation states differ. Nonzero sound is a milestone, not native sonic parity. At the original survey, shared census results were not available. Both shared scanner binaries are now ready; the coordinator’s Conflux observations are reconciled below. This fixed manifest is a supplemental stage probe. Corpus-wide numbers must come from the shared census outputs, not this selected sample.
+
+## Conflux: explaining the shared-scanner gap
+
+The coordinator reports these **single-run shared-scanner** results: v1 **126 ms / 69.5 MiB peak RSS / 78 of 78 bindings**, versus v2 **4,860 ms / 230 MiB peak RSS / 107 of 113 bindings**. The scanner labels its field `peak_rss_mb`, but its CLI converts `/proc` KiB with division by 1,024, so these are MiB. That is **38.6× the load time**, **3.31× peak RSS**, and **160.5 MiB additional peak RSS**. These are scanner `load_ms` and isolated-worker peak measurements, not cached-v1 first-note times or editor-open settled RSS. Per the shared scanner README, v1's preset/header caches are disabled, v1's admission stops at its initial bare streaming bank, and Original UI rendering is measured separately from load time. Thus this gap exists even without v1's persistent cache advantage. V2's 107 bindings do not establish parity: six visible widgets are unbound, and the two total-widget counts differ.
+
+Our independent **round-4 v2 stage trace**, for the same Conflux NKI and frozen baseline, measures 4,682.6 ms total. It explains the stable roughly 4.7–4.9-second v2 wait; it is not a decomposition recorded inside the coordinator's exact 4,860 ms scanner run. Times below are nonoverlapping except the explicitly nested final `on init` observation.
+
+| Conflux v2 stage | Time, ms | What it establishes |
+|---|---:|---|
+| NI-file read + decrypt/expand + chunk/object parse | 5.1 | Reading/decrypting the preset is a negligible fraction of the wait. |
+| Early engine-write KSP initializer | 2,125.6 | Executes initialization with an empty authored performance-view environment. |
+| Early dynamic-effect discovery compile/init | 2,267.8 | Repeats expensive initialization; its nested `on init` alone takes 2,071.3 ms. |
+| Remaining IR translation/group/resource/zone work | 31.4 | The rest of the 4,424.9 ms translation span; exclude the two early passes when summing. |
+| Sample source resolution + header/latency opening | 45.4 | Opens 1,962 sources; important elsewhere, but not the principal Conflux delay. |
+| Resource index + final resource-aware KSP compile/init | 87.6 | Reads authored NCKP; the main final `on init` takes only 1.64 ms. |
+| UI metadata + plan lowering/binding | 9.6 | Builds the prepared UI/runtime descriptions. |
+| Sample head preload | 35.2 | Loads packed start ranges, not the whole 6.0 GiB decoded sample equivalent. |
+| Runtime allocation/init | 9.2 | Finishes prepared runtime construction. |
+| Remaining unlabelled assembly/report/publication work | 65.6 | Residual against measured worker total; no unsupported attribution to disk or KSP. |
+
+**The two early KSP passes consume 4,393.5 ms, or 93.8% of our v2 worker load.** Both succeed. Their empty performance-view environment differs from final resource-aware initialization (`library.rs:273`, `:294` versus `load.rs:587`); this is repeated work with different authored-control semantics, not evidence of fuel exhaustion. Findings 1 and 5 explain why v1 avoids that critical path: in the fresh-v1 Conflux trace, file/decrypt/chunk work takes 3.1 ms, object import/resolution 16.3 ms, and one KSP setup takes 63.2 ms while bare-bank preparation takes 12.4 ms concurrently. First sound arrives at 109.6 ms. Subsequent artwork/preload brings complete worker time to 170.3 ms, but the initial part already plays. The scanner's 126 ms admission is consistent with that initial-load scale; its semantics exclude our later full preload.
+
+**Peak memory localizes to early KSP translation, before UI construction.** Our stage samples show:
+
+| Conflux v2 milestone | Current RSS, MiB | Process high-water RSS, MiB |
+|---|---:|---:|
+| NI objects parsed, before early KSP | 19.1 | 19.7 |
+| Early engine initializer finished | 65.5 | 98.3 |
+| Early dynamic compile/init finished | 142.5 | 234.2 |
+| Final KSP/resource metadata finished | 142.8 | 234.2 |
+| Runtime allocation/init finished | 174.7 | 234.2 |
+| Editor open and settled | 199.2 | 234.2 |
+
+The roughly **230 MiB scanner peak is corroborated by our 234.2 MiB high-water mark during the second early KSP pass**. Intermediate interpreter/frontend/lowering/model allocations and heap retention are therefore the main measured location of the v2 peak; the later editor does not set Conflux's peak in this trace. The specific allocation owners and recoverable share of that early peak still need an allocation profile; these milestone samples cannot assign every byte to a particular KSP vector. This must not be confused with ANALOG STRINGS' separate large editor-image spike.
+
+Conflux's v2 sample footprint is only **5.8 MiB packed heads + 24 MiB page-pool storage**; its displayed 36.3 MiB sample-residency counter overstates the actual 29.8 MiB sum (finding 9). The fixed pool and runtime reservations add baseline cost (finding 8), but neither full-library residency nor the counter bug explains all of the scanner's additional 160.5 MiB. V1 streams its initial bare bank and, in the plugin path, prepares wider residency after publication. Our retained full-worker/editor v1 process settles at 114.9 MiB; that is a different lifecycle from the scanner's 69.5 MiB peak and must not replace or be subtracted from the scanner number. Similarly, closing/trimming our v2 editor leaves 190.0 MiB, which does not establish the size of transient peak allocations.
+
+**Fix order for this gap:** normalize the authored environment and retain one compilation/initialized model (finding 1); preserve safe progressive publication and independent mutable instance state (findings 5–6); then reduce measured runtime/page reservations and profile remaining live/retained allocations (findings 7–8). Conflux artwork/metadata optimizations alone cannot remove a 4.4-second early-script cost. Re-run both the shared Original-only scanner and the detailed stage probe after each change, verifying authored values, all visible bindings and audio against the native host.
+
+The coordinator's 126/4,860 ms observations are retained as supplied. During this follow-up, the live partial v2 sweep TSV contains another Conflux observation, **18,941.9 ms / 229.71 MiB / 107 of 113 bindings**, with `ui=missing-images`. That reinforces stable peak size but demonstrates large wall-time variation on the shared machine; it is not the coordinator's same run and has no stage trace. Do not assign its extra latency to a particular stage without profiling that run, or treat a partial sweep as corpus-wide statistics.
 
 ## Final whole-path measurements
 
@@ -246,7 +286,7 @@ V2 first-audio range across the earlier successful rounds 2/3 and final round 4.
 - `origin/v2/stream-storage@bd3b92efc682c363c2a55017e533036a5ed3ad18` is already an ancestor of frozen `7e82b152`; its disk-streaming implementation is present. It is incorrect to say v2 lacks streaming, or that merging this branch again will fix startup.
 - `origin/v2/gpt-kontakt-ui@0be9ed3f174d8925f1d8a142d3f709e5e26b840a` has four unmerged commits relative to this baseline. `UI_V1_PARITY.md` covers resource lookup boundaries/NICNT routing, scalar recall/redraw and passive rendering, plus unavailable Komplete UI detection. It explicitly lists synchronous first asset decode as still worse and Conflux measurements as pending. Merge its established fixes, then extend artwork loading; it is not a completed asynchronous-load optimization.
 - `origin/v2/gpt-uvi-ui@24c70a25031243d002e24c661c1afbb1408653aa` has two unmerged commits: bank-local images/fonts, widget/control services and retained UI state. Merge the existing UVI resource adapter rather than write another one. Its optimized census/matched performance measurements remain pending; it does not establish a load-time win.
-- The shared census directory had a v2 scanner but no published `results/{v1,v2}.tsv` when inspected during this audit. This fixed 14-preset numeric plugin probe is a supplemental stage/RSS benchmark, not a competing corpus collector. Reader/format fixes in the brief remain coordinator-owned integration work; this branch changes no decoding behavior.
+- Addendum 3 now provides both shared scanner binaries and their README under `~/.cache/kontra-scan/bin/`. They use the same frozen v1/v2 bases. The live sweep remains partial; use the census agent’s `results/v1.tsv` and `v2.tsv` for corpus-wide numbers when published. This fixed 14-preset probe supplies detailed stages, actual first sound and settled RSS; it does not replace the shared scanner. Reader/format integration remains coordinator-owned; this branch changes no decoding behavior.
 
 ## Reproduction and validation
 
