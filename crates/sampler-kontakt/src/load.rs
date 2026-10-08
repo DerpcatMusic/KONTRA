@@ -26,6 +26,8 @@ pub struct Options {
     /// the host has not sent them; `None` is Kontakt's power-on state (CC11
     /// full, the rest 0, so a CC1 instrument is near-silent until it moves).
     pub dynamics_start: Option<u8>,
+    /// Host-saved KSP scalar values by stable identity; menus use item values.
+    pub control_values: Vec<(sampler_core::ControlId, i32)>,
 }
 
 impl Default for Options {
@@ -37,6 +39,7 @@ impl Default for Options {
             library: None,
             mpe: Some(Default::default()),
             dynamics_start: None,
+            control_values: Vec::new(),
         }
     }
 }
@@ -532,8 +535,12 @@ pub(crate) fn script_environment(
     performance_view: sampler_ksp::model::PerformanceView,
 ) -> sampler_ksp::Environment {
     sampler_ksp::Environment {
+        evaluation_budget: None,
         groups,
+        engine_values: Default::default(),
+        engine_lookups: Vec::new(),
         slot: behavior.slot.unwrap_or(index.min(u8::MAX.into()) as u8),
+        control_values: Default::default(),
         persisted: behavior
             .state
             .iter()
@@ -554,6 +561,7 @@ pub(crate) fn script_environment(
                 let values = match saved {
                     ir::Saved::Ints(v) => v.iter().map(|n| Value::Int(*n as i32)).collect(),
                     ir::Saved::Reals(v) => v.iter().map(|r| Value::Real(*r)).collect(),
+                    ir::Saved::Texts(v) => v.iter().cloned().map(Value::Text).collect(),
                     _ => return None,
                 };
                 Some((name.clone(), values))
@@ -563,15 +571,18 @@ pub(crate) fn script_environment(
     }
 }
 
-fn prepare_inner(
-    mut instrument: ir::Instrument,
-    pcm: Vec<Pcm>,
+/// Compile the performance frontends without loading samples or constructing a
+/// voice plan. The playable loader and the UI survey use this same path.
+pub fn compile_ui(
+    instrument: &mut ir::Instrument,
     options: &Options,
-) -> Result<Loaded, LoadError> {
+) -> (
+    Vec<sampler_ksp::Script>,
+    Vec<sampler_ui_ir::Interface>,
+    Option<Resources>,
+) {
     let (rate, scripts) = (options.rate, options.scripts);
-    host_volume(&mut instrument);
     let resources = options.library.as_deref().map(Resources::of);
-    let lower_options = sampler_core::lower::Options { mpe: options.mpe };
     let limits = sampler_ksp::Limits::LIBRARY;
     let mut compiled = Vec::new();
     let mut names = Vec::new();
@@ -604,7 +615,13 @@ fn prepare_inner(
                 }),
             }
         }
-        let environment = script_environment(behavior, index, groups.clone(), performance_view);
+        let mut environment = script_environment(behavior, index, groups.clone(), performance_view);
+        environment.control_values.extend(
+            options
+                .control_values
+                .iter()
+                .map(|&(id, value)| (id, Value::Int(value))),
+        );
         let result = match behavior.language {
             _ if !scripts => Err("scripts disabled".to_string()),
             ir::Language::Ksp => {
@@ -653,6 +670,22 @@ fn prepare_inner(
             }),
         }
     }
+    (
+        compiled,
+        interfaces,
+        resources.map(std::cell::RefCell::into_inner),
+    )
+}
+
+fn prepare_inner(
+    mut instrument: ir::Instrument,
+    pcm: Vec<Pcm>,
+    options: &Options,
+) -> Result<Loaded, LoadError> {
+    let rate = options.rate;
+    host_volume(&mut instrument);
+    let lower_options = sampler_core::lower::Options { mpe: options.mpe };
+    let (compiled, interfaces, resources) = compile_ui(&mut instrument, options);
     // ponytail: lowering hands the closure every behavior but binding uses
     // only the compiled ones; failed scripts simply have no module.
     if compiled.is_empty() && !instrument.behaviors.is_empty() {
@@ -684,7 +717,7 @@ fn prepare_inner(
             instrument,
             interfaces,
             scripts: Vec::new(),
-            resources: resources.map(std::cell::RefCell::into_inner),
+            resources,
         });
     }
     let scripts = compiled.iter().map(sampler_ksp::Script::view).collect();
@@ -702,7 +735,7 @@ fn prepare_inner(
         instrument,
         interfaces,
         scripts,
-        resources: resources.map(std::cell::RefCell::into_inner),
+        resources,
     })
 }
 
