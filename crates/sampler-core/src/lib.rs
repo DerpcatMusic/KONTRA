@@ -43,7 +43,8 @@ mod control;
 pub use control::{
     BUS_VOLUME_SLOT, ControlCallback, ControlClient, ControlContext, ControlDefinition,
     ControlDomain, ControlId, ControlOperation, ControlQueueError, ControlReply, ControlRequest,
-    ControlValue, ControlWrite, RejectedControls, SlotKind, is_slot_control, slot_control,
+    ControlValue, ControlWrite, RejectedControls, ScriptStateAddress, ScriptStateBuffer,
+    ScriptStateCallback, ScriptStateEntry, ScriptStateValue, SlotKind, is_slot_control, slot_control,
 };
 mod controller_event;
 mod performance;
