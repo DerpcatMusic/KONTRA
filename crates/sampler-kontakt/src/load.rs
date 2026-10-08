@@ -738,10 +738,30 @@ fn prepare_inner(
             resources,
         });
     }
+    let mut automation = Vec::new();
+    for binding in &instrument.script_automation {
+        let target = compiled.iter().find(|script| script.view().slot() == binding.source_slot)
+            .and_then(|script| script.model().interface.widgets.iter()
+                .filter(|w| w.kind == sampler_ksp::model::WidgetKind::Slider)
+                .nth(binding.slider as usize));
+        if let Some(widget) = target {
+            automation.push(sampler_core::AutomationBinding {
+                source: match binding.source {
+                    ir::ScriptAutomationSource::Controller(cc) => sampler_core::AutomationSource::Controller(cc),
+                    ir::ScriptAutomationSource::HostParameter(address) => sampler_core::AutomationSource::HostParameter(address),
+                },
+                source_slot: binding.source_slot, ui_id: widget.ui_id,
+                low: binding.low, high: binding.high, soft_takeover: binding.soft_takeover,
+            });
+        } else {
+            instrument.unsupported.push(ir::Unsupported { location: format!("script slot {}",binding.source_slot),
+                feature: "saved automation slider".into(), value: binding.slider.to_string(), reason: ir::Reason::InvalidValue });
+        }
+    }
     let scripts = compiled.iter().map(sampler_ksp::Script::view).collect();
     let lowered =
         sampler_core::lower::lower_with(&instrument, rate, pcm, &lower_options, |_, plan| {
-            sampler_ksp::bind_modules(compiled, plan).map_err(|e| LowerError::Behavior {
+            sampler_ksp::bind_modules(compiled, plan).and_then(|plan| plan.with_automation_bindings(automation)).map_err(|e| LowerError::Behavior {
                 module: "KSP".into(),
                 message: e.to_string(),
             })
@@ -887,5 +907,31 @@ mod dynamics_tests {
         assert_eq!(power_on(&ir, None), vec![(1, 0.0)]);
         assert_eq!(power_on(&ir, Some(127)), vec![(1, 1.0)]);
         assert!(power_on(&ir, Some(64))[0].1 > 0.5);
+    }
+}
+
+#[cfg(test)]
+mod automation_tests {
+    use super::*;
+    #[test]
+    fn saved_target_counts_only_sliders_in_its_physical_slot() {
+        let mut instrument = ir::Instrument::default();
+        instrument.behaviors.push(ir::Behavior {
+            name: "learn".into(), language: ir::Language::Ksp, slot: Some(3), state: vec![], requires: vec![],
+            source: "on init declare ui_label $label(1,1) declare ui_slider $unused(0,127) declare ui_knob $knob(0,100,1) declare ui_slider $target(20,100) declare $observed end on on ui_control($target) $observed := $target end on".into(),
+        });
+        instrument.script_automation.push(ir::ScriptAutomation {
+            source: ir::ScriptAutomationSource::Controller(21), source_slot: 3, slider: 1,
+            low: 0., high: 1., soft_takeover: false,
+        });
+        let loaded = prepare(instrument, vec![], &Options::default()).unwrap();
+        let limits = sampler_core::Limits::for_plan(&loaded.plan, 4, 8);
+        let mut rt = sampler_core::Runtime::new(loaded.plan, limits).unwrap();
+        rt.dispatch_controller(rt.performance(0).unwrap(), sampler_core::ChannelAddress {
+            protocol: sampler_core::Protocol::Native, port: 0, group: 0, channel: 0,
+        }, 1, 21, (u64::from(u32::MAX)*64/127) as u32).unwrap();
+        let id = rt.widget_id(rt.active_plan(), 3, 32771).unwrap();
+        assert_eq!(rt.widget_value(rt.active_plan(),id,0),Ok(sampler_core::WidgetValue::Integer(60)));
+        assert_eq!(rt.script_cell(rt.active_plan(),sampler_core::ScriptInstanceId(0),1),Ok(60));
     }
 }

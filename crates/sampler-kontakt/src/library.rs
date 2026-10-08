@@ -193,6 +193,29 @@ fn translate(
         engine: Vec::new(),
         dynamic: false,
     };
+    match crate::program_automation(&program.0.private_data, program.version(), crate::Limits { bytes: 64 << 20, records: 65536 }) {
+        Ok(records) => for record in records {
+            let target = std::str::from_utf8(record.tag.data()).ok().and_then(|tag| {
+                let rest = tag.strip_prefix("pts_script_slider_")?;
+                let (slot, ordinal) = rest.split_once('_')?;
+                Some((slot.parse::<u8>().ok()?, ordinal.parse::<u32>().ok()?))
+            });
+            let source = match record.mode {
+                1 if record.address < 128 => Some(ir::ScriptAutomationSource::Controller(record.address as u8)),
+                2 => Some(ir::ScriptAutomationSource::HostParameter(record.address)),
+                _ => None,
+            };
+            if let (Some((source_slot, slider)), Some(source)) = (target, source)
+                && (0.0..=1.0).contains(&record.low) && (0.0..=1.0).contains(&record.high)
+            {
+                out.ir.script_automation.push(ir::ScriptAutomation { source, source_slot, slider,
+                    low: f64::from(record.low), high: f64::from(record.high), soft_takeover: record.soft_takeover });
+            } else {
+                out.unsupported("program private", "saved automation target", format!("record {} mode {} address {}", record.offset, record.mode, record.address), ir::Reason::NotModeled);
+            }
+        },
+        Err(error) => out.unsupported("program private", "saved automation layout", error, ir::Reason::NotModeled),
+    }
     if let Some(chunk) = program.0.find_first(VOICE_GROUPS) {
         out.voice_groups(&chunk.data)
             .map_err(|e| decode("voice groups", e))?;
