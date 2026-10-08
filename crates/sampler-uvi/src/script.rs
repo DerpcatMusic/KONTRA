@@ -1637,6 +1637,7 @@ impl ScriptHost {
     /// Move the clock to `now_ms`, resuming every thread whose wait ends by
     /// then, in time order. Commands carry the time they were issued.
     pub fn advance(&mut self, now_ms: f64) {
+        self.shared.arm(self.shared.config.callback, self.shared.config.callback_work);
         loop {
             let next = {
                 let mut waiting = self.shared.waiting.borrow_mut();
@@ -1650,7 +1651,10 @@ impl ScriptHost {
             };
             let Some(w) = next else { break };
             self.shared.now.set(w.due.max(self.shared.now.get()));
-            self.shared.arm(self.shared.config.callback, self.shared.config.callback_work);
+            if self.shared.consume_work().is_err() {
+                self.shared.find("lua error", "work budget exceeded");
+                break;
+            }
             resume(&self.shared, w.thread, MultiValue::new(), w.note);
             self.cycle();
         }
