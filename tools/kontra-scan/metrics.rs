@@ -156,6 +156,8 @@ mod tests {
     #[test]
     fn scanner_metrics_skip_source_text_and_detect_uniform_render() {
         assert_eq!(super::fallback_note(&Default::default()), Some((60,64)));
+        assert!(!super::nonzero([0.,-0.,f32::NAN,f32::INFINITY]));
+        assert!(super::nonzero([0.,1e-12]));
         assert_eq!(super::fallback_note(&[60].into()), Some((59,64)));
         assert_eq!(super::fallback_note(&(0..=127).collect()), None);
         let c = super::symbols(
@@ -240,3 +242,6 @@ mod tests {
         assert_eq!(host.scan_faults().native_invalid_keys, vec![40]);
     }
 }
+
+// Onset uses exact finite nonzero output; audible audition retains its separate 1e-5 threshold.
+pub fn nonzero(samples: impl IntoIterator<Item=f32>) -> bool {samples.into_iter().any(|x|x.is_finite() && x!=0.)}
