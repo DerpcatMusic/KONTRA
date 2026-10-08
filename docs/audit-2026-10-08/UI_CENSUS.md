@@ -1,6 +1,6 @@
 # Whole-corpus Original UI census
 
-Scope 5, 2026-10-08. Coverage: **PARTIAL — sweep still running**. Frozen installed corpus: **834 Kontakt paths (781 NKI + 53 NKM), 660 UVI programs; 1,494 item IDs**. One row per path/program ID; each Kontakt multi includes every embedded program observed by its production loader. Scope 5 adds scanner instrumentation and audit documentation; product fixes belong to the frozen integration checkpoint. Generated from the current cache at 2026-10-08T15:08:36+00:00.
+Scope 5, 2026-10-08. Coverage: **COMPLETE**. Frozen installed corpus: **834 Kontakt paths (781 NKI + 53 NKM), 660 UVI programs; 1,494 item IDs**. One row per path/program ID; each Kontakt multi includes every embedded program observed by its production loader. Scope 5 adds scanner instrumentation and audit documentation; product fixes belong to the frozen integration checkpoint. Generated from the current cache at 2026-10-08T18:37:47+00:00.
 
 **Load admission, authored UI painting and audible audition are separate results.** The plain per-instrument answer is in [v1.tsv](/home/derpcat/.cache/kontra-scan/results/v1.tsv) and [v2.tsv](/home/derpcat/.cache/kontra-scan/results/v2.tsv). `loads=yes` means the production importer and initial playable bank/plan returned successfully. A missing image, script callback fault or silent note can coexist with admitted loading. `loads=no` includes a bounded 90-second worker timeout; it is an observed failure under this probe, not proof of permanent incompatibility.
 
@@ -30,10 +30,10 @@ Counts below include only the current installed revision and manifest IDs. Categ
 
 | Build | Rows / 1494 | Kontakt / 834 | UVI / 660 | Loads yes | Loads no | Original OK | Missing images | Blank | No UI | Error | Budget hit | Audible | Silent |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| v1 | 1027 | 834 | 193 | 805 | 222 | 693 | 142 | 0 | 0 | 192 | 0 | 483 | 4 |
-| v2 | 1030 | 834 | 196 | 1030 | 0 | 733 | 247 | 0 | 0 | 50 | 0 | 617 | 65 |
+| v1 | 1494 | 834 | 660 | 844 | 650 | 732 | 142 | 0 | 0 | 620 | 0 | 522 | 4 |
+| v2 | 1494 | 834 | 660 | 1493 | 1 | 772 | 663 | 0 | 0 | 59 | 0 | 1078 | 67 |
 
-Paired coverage: **1027/1494**. V1 loads / v2 does not: **0** ([complete observed list](/home/derpcat/.cache/kontra-scan/results/v1-loads-v2-doesnt.tsv)). V2 loads / v1 does not: **222**. Fallback-note comparisons: **60**, excluded from parity. Both-loaded note mismatches: **0**, excluded from sound-regression claims. Counts are exhaustive only when the coverage marker is COMPLETE.
+Paired coverage: **1494/1494**. V1 loads / v2 does not: **0** ([complete observed list](/home/derpcat/.cache/kontra-scan/results/v1-loads-v2-doesnt.tsv)). V2 loads / v1 does not: **649**. Fallback-note comparisons: **62**, excluded from parity. Both-loaded note mismatches: **0**, excluded from sound-regression claims. Counts are exhaustive only when the coverage marker is COMPLETE.
 
 Same-note auditions among fully admitted, non-fallback pairs: **60 v1 audible / v2 silent**, and **0 v2 audible / v1 silent**. These are observed half-second probe differences, not native-host sound certification or permanent silence. Both versions used the same recorded note; resource residency, callback state and signal-graph stages require diagnosis before assigning a root cause. The per-item TSVs retain every note and result. No-safe-key programs remain unmeasured and are excluded.
 
@@ -51,17 +51,17 @@ Numeric timing fields observe actual output/paint from the first production prog
 | --- | --- | --- | --- | --- | --- | --- |
 | v2 | Kontakt | first_audio_ms | 458 | 376 | 1700.12 | 4316.91 |
 | v2 | Kontakt | ui_first_frame_ms | 834 | 0 | 479.95 | 3861.65 |
-| v2 | UVI | first_audio_ms | 195 | 1 | 8814.9 | 10788.07 |
-| v2 | UVI | ui_first_frame_ms | 196 | 0 | 10376.17 | 13509.94 |
-| v1 | Kontakt | first_audio_ms | 482 | 352 | 1438.77 | 5728.55 |
-| v1 | Kontakt | ui_first_frame_ms | 834 | 0 | 400.38 | 2239.53 |
-| v1 | UVI | first_audio_ms | 1 | 192 | 1457.82 | 1457.82 |
-| v1 | UVI | ui_first_frame_ms | 1 | 192 | 1460.87 | 1460.87 |
+| v2 | UVI | first_audio_ms | 656 | 4 | 8775.31 | 14724.49 |
+| v2 | UVI | ui_first_frame_ms | 651 | 9 | 10330.35 | 16619.17 |
+| v1 | Kontakt | first_audio_ms | 482 | 352 | 1445.53 | 5728.55 |
+| v1 | Kontakt | ui_first_frame_ms | 834 | 0 | 409.8 | 2239.53 |
+| v1 | UVI | first_audio_ms | 40 | 620 | 2108.99 | 4150.02 |
+| v1 | UVI | ui_first_frame_ms | 40 | 620 | 2116.92 | 4150.74 |
 
 | Build | Product cache state | Rows |
 | --- | --- | --- |
-| v2 | cold | 1030 |
-| v1 | cold | 1027 |
+| v2 | cold | 1494 |
+| v1 | cold | 1494 |
 
 load_ms is unchanged and includes pinned-v1 deferred initial sample-bank preload; it is not first sound. cache_state describes the product metadata/header cache, not metrics reuse or OS page cache. Pinned Kontakt v1 scanner disables those cache reads/writes; frozen v2 has no product metadata cache, so those adapters report cold. UVI sidecar uses Worker::start after its metadata/assets prepass, includes required pre-audition native snapshots, and observes concurrent paint/audio. Its load_ms retains its separate earlier legacy origin. The common driver forces persistent decoded PCM caching off; that observed product condition is cold. Unknown remains explicit. OS cache is uncontrolled. Future integration cache paths require actual cache-hit telemetry before warm/cold acceptance.
 
@@ -79,9 +79,11 @@ load_ms is unchanged and includes pinned-v1 deferred initial sample-bank preload
 | v1 | Pacific Ensemble Strings | 49 | 49 | 0 | 0 | 49 | 0 | 0 | 0 |
 | v1 | Performance Samples Vista | 7 | 7 | 0 | 0 | 7 | 0 | 0 | 0 |
 | v1 | Solo | 100 | 100 | 0 | 100 | 0 | 0 | 0 | 0 |
-| v1 | UVI - Augmented Orchestra v1.1.2-R2R | 192 | 0 | 192 | 0 | 0 | 0 | 192 | 0 |
+| v1 | UVI - Augmented Orchestra v1.1.2-R2R | 620 | 0 | 620 | 0 | 0 | 0 | 620 | 0 |
 | v1 | Una Corda Library | 3 | 3 | 0 | 3 | 0 | 0 | 0 | 0 |
-| v1 | VWinds - Clarinets | 1 | 1 | 0 | 1 | 0 | 0 | 0 | 0 |
+| v1 | VWinds - Clarinets | 16 | 16 | 0 | 16 | 0 | 0 | 0 | 0 |
+| v1 | VWinds - Double Reeds | 15 | 15 | 0 | 15 | 0 | 0 | 0 | 0 |
+| v1 | VWinds - Flutes | 9 | 9 | 0 | 9 | 0 | 0 | 0 | 0 |
 | v2 | ANALOG STRINGS | 1 | 1 | 0 | 1 | 0 | 0 | 0 | 0 |
 | v2 | Afflatus Chapter II Brass | 348 | 348 | 0 | 348 | 0 | 0 | 0 | 0 |
 | v2 | Areia 1.2.0 [Audio Imperia] | 155 | 155 | 0 | 155 | 0 | 0 | 0 | 0 |
@@ -92,9 +94,11 @@ load_ms is unchanged and includes pinned-v1 deferred initial sample-bank preload
 | v2 | Pacific Ensemble Strings | 49 | 49 | 0 | 4 | 45 | 0 | 0 | 0 |
 | v2 | Performance Samples Vista | 7 | 7 | 0 | 0 | 7 | 0 | 0 | 0 |
 | v2 | Solo | 100 | 100 | 0 | 100 | 0 | 0 | 0 | 0 |
-| v2 | UVI - Augmented Orchestra v1.1.2-R2R | 195 | 195 | 0 | 0 | 195 | 0 | 0 | 0 |
+| v2 | UVI - Augmented Orchestra v1.1.2-R2R | 620 | 619 | 1 | 0 | 611 | 0 | 9 | 0 |
 | v2 | Una Corda Library | 3 | 3 | 0 | 3 | 0 | 0 | 0 | 0 |
-| v2 | VWinds - Clarinets | 1 | 1 | 0 | 1 | 0 | 0 | 0 | 0 |
+| v2 | VWinds - Clarinets | 16 | 16 | 0 | 16 | 0 | 0 | 0 | 0 |
+| v2 | VWinds - Double Reeds | 15 | 15 | 0 | 15 | 0 | 0 | 0 | 0 |
+| v2 | VWinds - Flutes | 9 | 9 | 0 | 9 | 0 | 0 | 0 | 0 |
 
 ## Exhaustive measured failure mechanisms
 
@@ -104,18 +108,19 @@ An unsupported parameter can be nonvisual metadata. An outside-page or zero-size
 
 | Mechanism | v2 item incidence | v1 item incidence |
 | --- | --- | --- |
-| geometry: outside authored page candidate | 603 | 457 |
+| geometry: outside authored page candidate | 1066 | 457 |
+| custom font requested | 761 | 0 |
+| font declaration not resolved by service | 717 | 0 |
+| image lookup/decode failure | 664 | 142 |
+| UI missing-images | 663 | 142 |
+| unsupported_params: unsupported UI feature (private identifier omitted) | 659 | 0 |
+| placeholder_widgets: ui_level_meter | 621 | 0 |
+| passive paint changes semantic value | 616 | 0 |
 | no safe audition key; sound unmeasured | 348 | 348 |
-| custom font requested | 298 | 0 |
-| font declaration not resolved by service | 293 | 0 |
-| UI missing-images | 247 | 142 |
-| image lookup/decode failure | 247 | 142 |
-| placeholder_widgets: ui_level_meter | 197 | 0 |
-| unsupported_params: unsupported UI feature (private identifier omitted) | 196 | 0 |
-| passive paint changes semantic value | 195 | 0 |
-| selected-note audition silent in 0.5-second probe | 65 | 4 |
-| audition uses fallback note; parity excluded | 60 | 29 |
-| zero retained sample zones: unknown | 54 | 23 |
+| selected-note audition silent in 0.5-second probe | 67 | 4 |
+| audition uses fallback note; parity excluded | 62 | 29 |
+| UI error | 59 | 620 |
+| zero retained sample zones: unknown | 56 | 23 |
 | visible widget lacks scalar readback binding | 53 | 0 |
 | Native bridge candidate geometry: outside authored page candidate | 51 | 0 |
 | Native bridge candidate geometry: zero sized visible widget | 51 | 0 |
@@ -127,15 +132,16 @@ An unsupported parameter can be nonvisual metadata. An outside-page or zero-size
 | Native bridge candidate unsupported_params: $CONTROL_PAR_NKS_TYPE | 51 | 0 |
 | page >90% plain background candidate | 51 | 0 |
 | Native bridge candidate unsupported_params: $CONTROL_PAR_CUSTOM_ID | 50 | 0 |
-| UI error | 50 | 192 |
 | KSP compiler rejection | 30 | 0 |
 | KSP init not_started | 30 | 0 |
 | KSP persistence_changed not_started | 30 | 0 |
+| Lua init fault | 28 | 0 |
 | placeholder_widgets: ui_table | 22 | 0 |
 | unsupported_params: $CONTROL_PAR_CUSTOM_ID | 15 | 0 |
 | unsupported_params: $CONTROL_PAR_NKS_STYLE | 15 | 0 |
 | placeholder_widgets: ui_waveform | 3 | 0 |
 | geometry: zero sized visible widget | 2 | 0 |
+| bounded worker timeout | 1 | 0 |
 | unsupported_params: $CONTROL_PAR_AUTOMATION_ID[] | 1 | 0 |
 | unsupported_params: $CONTROL_PAR_CURSOR_PICTURE[] | 1 | 0 |
 | KSP persistence_changed waiting | 0 | 44 |
@@ -147,7 +153,7 @@ Raw slots are partitioned before compilation into decode_failed / bypassed / inl
 | Field | v2 sum / observed rows | v1 sum / observed rows |
 | --- | --- | --- |
 | bound_typed | 352 / 834 | 246 / 834 |
-| sample_zone_count | 14852258 / 1030 | 13419231 / 804 |
+| sample_zone_count | 17805342 / 1493 | 13419231 / 804 |
 | slots_seen | 4715 / 834 | 4715 / 834 |
 | slots_decode_failed | 0 / 834 | 0 / 834 |
 | slots_bypassed | 0 / 834 | 0 / 834 |
@@ -155,13 +161,13 @@ Raw slots are partitioned before compilation into decode_failed / bypassed / inl
 | slots_linked_only | 0 / 834 | 0 / 834 |
 | slots_empty | 3572 / 834 | 3572 / 834 |
 | active_script_slots | 1143 / 834 | 1143 / 834 |
-| compiled_script_slots | 1098 / 1030 | 1053 / 834 |
-| clean_compiled_slots | 1098 / 1030 | 1053 / 834 |
-| disabled_block_errors | 0 / 1030 | 0 / 834 |
-| init_callbacks_completed | 1098 / 1030 | 1053 / 834 |
-| persistence_changed_completed | 519 / 1030 | 460 / 834 |
-| load_fault_records | 0 / 1030 | 1719 / 834 |
-| ksp_runtime_fault_records | 0 / 1030 | 0 / 835 |
+| compiled_script_slots | 1098 / 1493 | 1053 / 834 |
+| clean_compiled_slots | 1098 / 1493 | 1053 / 834 |
+| disabled_block_errors | 0 / 1493 | 0 / 834 |
+| init_callbacks_completed | 1098 / 1493 | 1053 / 834 |
+| persistence_changed_completed | 519 / 1493 | 460 / 834 |
+| load_fault_records | 0 / 1493 | 1719 / 834 |
+| ksp_runtime_fault_records | 0 / 1493 | 0 / 874 |
 
 | Build | Observed callback phase | Status | Slot observations |
 | --- | --- | --- | --- |
@@ -247,16 +253,16 @@ Reach is an overlap-aware union of measured mechanism candidates or active sourc
 
 | Rank | Mechanism | Effort | Measured v2 candidate items | Fully unlocked | Root repair / v1 reference | Proof |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | Remaining authored resource resolution | M/L | 247 | Unknown | Repair existing source-family lookup/decoder paths for the remaining requested resources; retain successful Native package routing. | Same item/page/value/DPI resolves every requested asset and produces an improved matched Original render. |
-| 2 | Playable-range and same-note sound qualification | M | 413 | Unknown | Resolve unselected programs using authored key/state contracts; diagnose equal-note audible/silent differences with per-node signal-graph traces before assigning a DSP or streaming repair. Unselected sound remains unmeasured. | Declared-valid keys intersect non-purged/non-bypassed velocity64 coverage; both versions use the same recorded key and keyswitch. Trace the differing stages; no invented per-library notes. |
+| 1 | Remaining authored resource resolution | M/L | 664 | Unknown | Repair existing source-family lookup/decoder paths for the remaining requested resources; retain successful Native package routing. | Same item/page/value/DPI resolves every requested asset and produces an improved matched Original render. |
+| 2 | Playable-range and same-note sound qualification | M | 415 | Unknown | Resolve unselected programs using authored key/state contracts; diagnose equal-note audible/silent differences with per-node signal-graph traces before assigning a DSP or streaming repair. Unselected sound remains unmeasured. | Declared-valid keys intersect non-purged/non-bypassed velocity64 coverage; both versions use the same recorded key and keyswitch. Trace the differing stages; no invented per-library notes. |
 | 3 | KSP callback/compiler gaps remaining after integration | M | 30 | Unknown | Repair the measured static builtin/category at exact slot ownership; preserve actual init and persistence phase boundaries. | A failing-first fixture completes the repaired callback, then the same item loses its measured fault or compiler rejection. |
-| 4 | Lua initialization, runtime and budget faults | M | 0 | Unknown | Close the measured scripted-worker API/budget gap using the existing host; do not replace scripts with the offline loader. | Same authored scene/callback completes, with init/runtime fault counts separate and budget stops measured. |
-| 5 | Original paint and frontend completion | M/L | 50 | Unknown | Repair actual frontend/paint failures or bound incremental scene work; the successful Conflux Native path is already integrated. | Large and failure-prone scenes paint without budget/error placeholders; request, consumer entry and authored paint success are independently observed. |
+| 4 | Lua initialization, runtime and budget faults | M | 28 | Unknown | Close the measured scripted-worker API/budget gap using the existing host; do not replace scripts with the offline loader. | Same authored scene/callback completes, with init/runtime fault counts separate and budget stops measured. |
+| 5 | Original paint and frontend completion | M/L | 59 | Unknown | Repair actual frontend/paint failures or bound incremental scene work; the successful Conflux Native path is already integrated. | Large and failure-prone scenes paint without budget/error placeholders; request, consumer entry and authored paint success are independently observed. |
 | 6 | Remaining scalar/typed/service binding qualification | M/L | 0 | Unknown | Inspect only targets lacking both observed scalar and typed readback; separately qualify service-backed widgets and current callbacks. | Each actual widget edit reaches its owning target, reads back exact type/value and runs the correct callback. Passive paint alone cannot prove this. |
-| 7 | Legacy geometry, parenting and strip fidelity | M | 979 | Unknown | Confirm retained bridge candidates against authored layout before changing the shared geometry/frame path; hidden/outside widgets may be intentional. | Nested panels, axes, HiDPI, visibility and frame endpoints match at identical state. Native scene layout requires its own exposed inventory. |
-| 8 | Remaining font and background fidelity | M | 293 | Unknown | Repair actual unresolved fonts or proven contrast/style mismatches; Native package font inventory is separate from graph font usage. | Real authored fonts/styles and text/background regions match. A colour coverage candidate alone does not prove unreadability. |
+| 7 | Legacy geometry, parenting and strip fidelity | M | 1442 | Unknown | Confirm retained bridge candidates against authored layout before changing the shared geometry/frame path; hidden/outside widgets may be intentional. | Nested panels, axes, HiDPI, visibility and frame endpoints match at identical state. Native scene layout requires its own exposed inventory. |
+| 8 | Remaining font and background fidelity | M | 717 | Unknown | Repair actual unresolved fonts or proven contrast/style mismatches; Native package font inventory is separate from graph font usage. | Real authored fonts/styles and text/background regions match. A colour coverage candidate alone does not prove unreadability. |
 | 9 | Saved-state and snapshot qualification | M/L | 834 | Unknown | Qualify complete fixed-sigil restoration, menu semantic values, string-array empties and snapshot policies on the integrated path; unknown v1 raw histograms remain unknown. | State save/reopen and all four snapshot policies retain exact values before persistence_changed. The1494 manifest contains no standalone snapshots. |
-| 10 | Corpus interaction and automation qualification | M | 1030 | Unknown | Extend the existing real gesture/host gate beyond Conflux; current passive census does not establish drag, wheel, reset or automation failure. | Actual pointer/key/wheel/reset/host gestures work on each widget family, with exact typed readback and callback ownership across waits. |
+| 10 | Corpus interaction and automation qualification | M | 1493 | Unknown | Extend the existing real gesture/host gate beyond Conflux; current passive census does not establish drag, wheel, reset or automation failure. | Actual pointer/key/wheel/reset/host gestures work on each widget family, with exact typed readback and callback ownership across waits. |
 
 ## Exhaustive spec incidence and status matrix
 
@@ -519,20 +525,20 @@ Counts sum all observed retained bridge views/programs; Native scene-tree kinds 
 
 | Widget kind | v2 widgets | v1 widgets |
 | --- | --- | --- |
-| image | 25751 | 0 |
-| ui_button | 912844 | 6679 |
+| image | 81967 | 0 |
+| ui_button | 2854190 | 6679 |
 | ui_file_selector | 13 | 0 |
-| ui_knob | 150750 | 484 |
-| ui_label | 890798 | 18507 |
-| ui_level_meter | 1886 | 302 |
-| ui_menu | 24463 | 1186 |
-| ui_panel | 102090 | 0 |
-| ui_slider | 45793 | 10942 |
+| ui_knob | 453511 | 484 |
+| ui_label | 2547637 | 18507 |
+| ui_level_meter | 5278 | 302 |
+| ui_menu | 59887 | 1186 |
+| ui_panel | 317846 | 0 |
+| ui_slider | 77414 | 10942 |
 | ui_switch | 96992 | 7456 |
-| ui_table | 2936 | 226 |
+| ui_table | 6523 | 226 |
 | ui_text_edit | 1912 | 20 |
-| ui_value_edit | 48636 | 597 |
-| ui_waveform | 3 | 3 |
+| ui_value_edit | 86471 | 597 |
+| ui_waveform | 28 | 3 |
 | ui_wavetable | 1 | 0 |
 | ui_xy | 1 | 0 |
 
@@ -575,11 +581,11 @@ Images below are rendered output, never extracted library assets. The gallery is
 
 First nine stable fields: `path library loads ui controls_bound plays_note load_ms peak_rss_mb reason`. All columns below are exported by the ONE shared CLI; raw detailed metrics preserve independent slot/phase ownership. CONTROL_PAR refs are the `$CONTROL_PAR_*` subset of `ui_api_refs`, not a separate duplicated column.
 
-`lua_init_faults`, `lua_init_first`, `lua_runtime_faults`, `lua_runtime_first`, `lua_budget_hits`, `controls_declared`, `controls_bound_declared`, `asset_lookup_requested`, `asset_lookup_ok`, `asset_decode_requested`, `asset_decode_ok`, `font_declared`, `font_success`, `paint_ok`, `paint_error`, `load_path`, `sample_resident_bytes`, `underruns`, `ksp_compile_ok`, `ksp_init_ok`, `first_script_error`, `active_script_slots`, `compiled_script_slots`, `clean_compiled_slots`, `init_callbacks_completed`, `persistence_changed_completed`, `load_fault_records`, `disabled_block_errors`, `widget_kind_counts`, `ui_api_refs`, `bypassed_ui_api_refs`, `saved_entry_sigils`, `custom_font_uses`, `picture_strips`, `picture_frames`, `picture_margins`, `resource_failure_reasons`, `page_background_rgba`, `plain_background_fraction`, `note_picked`, `note_policy`, `audition_status`, `pick_source`, `native_valid_keys`, `native_key_conflicts`, `native_preferred_note`, `slots_seen`, `slots_decode_failed`, `slots_bypassed`, `slots_inline_nonempty`, `slots_linked_only`, `slots_empty`, `admitted_saved_entry_sigils`, `ksp_runtime_fault_records`, `sample_zone_count`, `zero_zone_reason`, `fallback_note`, `keyswitch_picked`, `bound_typed`, `phantom_free_controls`, `first_audio_ms`, `ui_first_frame_ms`, `cache_state`
+`lua_init_faults`, `lua_init_first`, `lua_runtime_faults`, `lua_runtime_first`, `lua_budget_hits`, `controls_declared`, `controls_bound_declared`, `asset_lookup_requested`, `asset_lookup_ok`, `asset_decode_requested`, `asset_decode_ok`, `font_declared`, `font_success`, `paint_ok`, `paint_error`, `load_path`, `sample_resident_bytes`, `underruns`, `ksp_compile_ok`, `ksp_init_ok`, `first_script_error`, `active_script_slots`, `compiled_script_slots`, `clean_compiled_slots`, `init_callbacks_completed`, `persistence_changed_completed`, `load_fault_records`, `disabled_block_errors`, `widget_kind_counts`, `ui_api_refs`, `bypassed_ui_api_refs`, `saved_entry_sigils`, `custom_font_uses`, `picture_strips`, `picture_frames`, `picture_margins`, `resource_failure_reasons`, `page_background_rgba`, `plain_background_fraction`, `note_picked`, `note_policy`, `audition_status`, `pick_source`, `native_valid_keys`, `native_key_conflicts`, `native_preferred_note`, `slots_seen`, `slots_decode_failed`, `slots_bypassed`, `slots_inline_nonempty`, `slots_linked_only`, `slots_empty`, `admitted_saved_entry_sigils`, `ksp_runtime_fault_records`, `sample_zone_count`, `zero_zone_reason`, `fallback_note`, `keyswitch_picked`, `bound_typed`, `phantom_free_controls`, `first_audio_ms`, `ui_first_frame_ms`, `cache_state`, `keyboard_reason_counts`
 
 Detailed JSON retains Lua init/runtime safe first diagnostic categories/digests, actual paint and budget status, widget kinds, lookup/decode/font success/failure categories, frames/strips/margins, declared/observed background RGBA and pixel fraction, load path, sample residency/underruns, runtime behavior outcomes, wire/runtime slots, compile admission/cleanliness, and independent init/persistence phase outcomes. Never serialize authored fault messages, identifiers, saved values, source text or resource bytes.
 
 
 ## KSP keyboard classifier correction
 
-The frozen census retains 348 no-safe-key observations caused by the scanner, not product silence. Corrected probes on the exact same IDs now produce audible audio in 348/348 pairs on both engines, using identical notes with no mismatches or fallback picks. See [the separate correction receipt](UI_CENSUS_KEYBOARD.md) for source versions, reason counts and complete signatures. The frozen full sweep resumes without replacing its binaries.
+The frozen census retains the original 348 no-safe-key observations. Corrected scanner-only probes on the exact same IDs are reported separately in [UI_CENSUS_KEYBOARD.md](UI_CENSUS_KEYBOARD.md). Those rows establish a collector classification bug, not product silence. The targeted receipt preserves both binary versions and identical-note checks; do not combine their timing observations as one frozen binary.
