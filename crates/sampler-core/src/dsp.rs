@@ -897,12 +897,21 @@ pub(super) fn process<const TRACE: bool>(
                             recorder: &mut *t.recorder, graph: t.graph, nodes: &t.nodes[inner.clone()], identity: t.identity }) } else { None },
                     );
                 }
+                if let [Some(d), Some(w), Some(b)] = [dry, wet, bypass].map(|r| r.settled(at)) {
+                    let gains = kernels::mix_gains(d, w, b);
+                    for c in 0..2 {
+                        for i in 0..len {
+                            block[c][i] = kernels::mix(dry_block[c][i], block[c][i], gains, off);
+                        }
+                    }
+                } else {
                 for c in 0..2 {
                     for i in 0..len {
                         let t = at + i as u64;
                         let b = bypass.value(t);
                         let gains = kernels::mix_gains(dry.value(t), wet.value(t), b);
                         block[c][i] = kernels::mix(dry_block[c][i], block[c][i], gains, off);
+                    }
                     }
                 }
             }
