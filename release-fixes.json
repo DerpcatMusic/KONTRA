@@ -3021,6 +3021,15 @@
       ],
       "validation": "Owner targeted failing-first checks green; combined serial workspace and quick corpus validation recorded with this release. Timing/native fidelity limits remain disclosed.",
       "accepted": true
+    },
+    {
+      "id": "v1-global-host-performance-controls",
+      "summary": "Restore fallback Attack and Release and the global Tone host controls with stable IDs",
+      "source_commits": [
+        "adbb1443b37a2febdaa338b38bdf5d2139f8e320"
+      ],
+      "validation": "Owner metadata/backend failing-first checks pass without audio allocation; combined targeted and release factory checks retained. Tone post-FX placement is disclosed.",
+      "accepted": true
     }
   ]
 }
