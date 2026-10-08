@@ -200,6 +200,32 @@ pub fn height(face: &Interface, page: PageRef) -> u32 {
     face.pages[page.0].size.height.max(bottom.unwrap_or(0))
 }
 
+/// Axis and full-range travel in drawn pixels, independent of bitmap fallback.
+fn gesture(w: &ir::Widget, scale: f64) -> (bool, f64) {
+    let vertical = match w.kind {
+        Kind::Knob { .. } | Kind::ValueEdit { .. } => true,
+        Kind::Slider { orientation, .. } => w.drag.map_or(
+            orientation == ir::Orientation::Vertical || w.rect.height > w.rect.width,
+            |d| d.axis == ir::Orientation::Vertical,
+        ),
+        _ => true,
+    };
+    let travel = match w.drag.filter(|d| d.sensitivity != 0) {
+        Some(d) => f64::from(if vertical { w.rect.height } else { w.rect.width }).max(1.) * 1000. / f64::from(d.sensitivity),
+        None if matches!(w.kind, Kind::Slider { .. }) => f64::from(if vertical { w.rect.height } else { w.rect.width }).max(1.),
+        None => 200.,
+    };
+    (vertical, travel * scale)
+}
+
+fn quantized(value: f64, range: &ir::Range) -> f64 {
+    let value = match range.step.filter(|s| s.is_finite() && *s > 0.) {
+        Some(step) => range.min + ((value - range.min) / step).round() * step,
+        None => value,
+    };
+    value.clamp(range.min.min(range.max), range.min.max(range.max))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn widget(
     ui: &mut Ui,
@@ -245,8 +271,11 @@ pub(super) fn widget(
 
     let face_el: El = match &wd.kind {
         Kind::Knob { range, .. } | Kind::Slider { range, .. } => {
-            let vertical = !matches!(wd.kind, Kind::Slider { orientation: ir::Orientation::Horizontal, .. });
-            let held = drive(ui, &id, &mut v, &(range.min..=range.max), TRAVEL, vertical, range.default);
+            let (vertical, travel) = gesture(wd, scale);
+            let held = wd.enabled && drive(ui, &id, &mut v, &(range.min..=range.max), travel, vertical, range.default);
+            if wd.enabled && (ui.get(id.as_str()).dragged || ui.get(id.as_str()).wheel != Vec2::ZERO || !ui.keys(id.as_str()).is_empty()) {
+                v = quantized(v, range);
+            }
             let lift = ui.state(id.as_str()).hover.max(if held { 1. } else { 0. }) as f32;
             let unit = |x: f64| if range.max == range.min { 0. } else { ((x - range.min) / (range.max - range.min)).clamp(0., 1.) };
             match strip {
@@ -278,7 +307,7 @@ pub(super) fn widget(
             .a11y(A11y::Slider { value: v, min: range.min, max: range.max })
         }
         Kind::Button { momentary: true } => {
-            v = if ui.get(id.as_str()).held { 1. } else { 0. };
+            if wd.enabled { v = if ui.get(id.as_str()).held { 1. } else { 0. }; }
             match strip {
                 Some(p) => block(w, h).radius(0).fill(picture(p, fixed.unwrap_or_else(|| switch_frame(v > 0.5, p.frames.len()))).unwrap_or(Fill::from(Role::Field))),
                 None => row![words(wd.text.clone())].align(Align::Center).justify(Justify::Center).radius(1).fill(Role::Ink.alpha(0.08 + 0.2 * v as f32)),
@@ -287,7 +316,7 @@ pub(super) fn widget(
             .a11y(A11y::Button)
         }
         Kind::Button { .. } | Kind::Switch => {
-            if ui.get(id.as_str()).activated() {
+            if wd.enabled && ui.get(id.as_str()).activated() {
                 v = if v > 0.5 { 0. } else { 1. };
             }
             let on = v > 0.5;
@@ -306,15 +335,8 @@ pub(super) fn widget(
         }
         Kind::Menu { items } => {
             let shown: Vec<&ir::MenuItem> = items.iter().filter(|i| i.visible).collect();
-            // A value no entry has shows the first, as Kontakt does.
+            // Drawing an unknown semantic value must not edit the script.
             let at = shown.iter().position(|i| f64::from(i.value) == v).or((!shown.is_empty()).then_some(0));
-            if let Some(a) = at {
-                v = f64::from(shown[a].value);
-            }
-            // ponytail: click steps to the next entry; a floating list belongs with the shared menu once it leaves v1 targets.
-            if ui.get(id.as_str()).activated() && !shown.is_empty() {
-                v = f64::from(shown[at.map_or(0, |a| (a + 1) % shown.len())].value);
-            }
             let label = at.map(|a| shown[a].text.clone()).unwrap_or_default();
             match strip {
                 Some(p) => stack![block(w, h).radius(0).fill(picture(p, 0).unwrap_or(Fill::from(Role::Field))), row![words(label)].align(Align::Center).pad((TIGHT * scale, 0.)).w(w).h(h)],
@@ -369,7 +391,10 @@ pub(super) fn widget(
         && !matches!(wd.kind, Kind::Label | Kind::Panel | Kind::Image | Kind::MouseArea)
         && light_under(face, assets, n);
     let face_el = if plate { face_el.radius(2).fill(Color::oklch(0.2, 0., 0.).with_alpha(0.85)) } else { face_el };
-    let mut el = face_el.w(w).h(h).shrink(0).id(id).named(wd.automation.name.clone().unwrap_or_else(|| wd.name.clone()));
+    let interactive = matches!(wd.kind, Kind::Knob { .. } | Kind::Slider { .. } | Kind::Button { .. } | Kind::Switch | Kind::Menu { .. } | Kind::ValueEdit { .. });
+    // MUI reserves slash-prefixed IDs for non-target decoration.
+    let target = if interactive { id } else { format!("/{id}") };
+    let mut el = face_el.w(w).h(h).shrink(0).id(target).when(!wd.enabled, |e| e.disabled()).named(wd.automation.name.clone().unwrap_or_else(|| wd.name.clone()));
     if !wd.tooltip.is_empty() {
         el = el.tip(wd.tooltip.clone());
     }

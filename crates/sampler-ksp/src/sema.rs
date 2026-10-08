@@ -414,13 +414,13 @@ impl<'a> Sema<'a, '_> {
         self.performance_loaded = true;
         for control in self.performance_view {
             if !self.folded.contains_key(&control.name.to_ascii_lowercase()) {
-                self.performance_widget(control, span)?;
+                self.performance_widget(control, span, false)?;
             }
         }
         Ok(())
     }
 
-    fn performance_widget(&mut self, c: &PerformanceControl, span: Span) -> Result<VarId> {
+    fn performance_widget(&mut self, c: &PerformanceControl, span: Span, unresolved: bool) -> Result<VarId> {
         let (ty, array) = prefix_type(&c.name);
         let expected = match c.kind {
             WidgetKind::Table => (Ty::Int, true),
@@ -439,7 +439,7 @@ impl<'a> Sema<'a, '_> {
             );
         }
         let home = match len {
-            _ if c.kind.has_control() => Home::Control(self.hir.uis.len() as u32),
+            _ if !unresolved && c.kind.has_control() => Home::Control(self.hir.uis.len() as u32),
             Some(len) => {
                 self.array_cells = self.add_cells(len as usize, span)?;
                 Home::Cells {
@@ -463,6 +463,7 @@ impl<'a> Sema<'a, '_> {
             },
         )?;
         self.hir.uis.push(Ui {
+            unresolved,
             kind: c.kind,
             var,
             params: c.params.clone(),
@@ -472,7 +473,7 @@ impl<'a> Sema<'a, '_> {
     }
 
     /// After `load_performance_view`, unknown `$`, `%` and `@` names are performance
-    /// view controls the host did not describe.
+    /// unbound handles when the loaded view does not describe them.
     fn resolve_or_declare(&mut self, sym: Sym, span: Span) -> Result<Option<VarId>> {
         if let Some(v) = self.resolve(sym) {
             return Ok(Some(v));
@@ -499,11 +500,10 @@ impl<'a> Sema<'a, '_> {
             span,
             builtin: None,
             message: format!(
-                "{name} is not in the performance view description; assumed {}",
-                kind.keyword()
+                "{name} is not in the performance view description; retained as an unbound handle"
             ),
         });
-        self.performance_widget(&control, span).map(Some)
+        self.performance_widget(&control, span, true).map(Some)
     }
 
     fn cells(&mut self, len: u32, text: bool, span: Span) -> Result<u32> {
@@ -657,6 +657,7 @@ impl<'a> Sema<'a, '_> {
         )?;
         if let Some((kind, params)) = ui {
             self.hir.uis.push(Ui {
+                unresolved: false,
                 kind,
                 var,
                 params,

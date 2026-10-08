@@ -25,7 +25,7 @@ pub struct Environment {
     pub engine_lookups: Vec<sampler_core::EngineLookup>,
     /// The Creator Tools performance view (`.nckp`, see [`crate::nckp`]) the
     /// script loads with `load_performance_view`. Names the script uses but
-    /// it lacks are assumed (see `PerformanceControl::assumed`), with a warning.
+    /// it lacks stay unbound script handles, with a diagnostic.
     pub performance_view: model::PerformanceView,
 }
 
@@ -733,9 +733,10 @@ impl Eval<'_> {
         for i in 0..args.len() {
             let v = match &args[i] {
                 Arg::Var(v, _) => V::S(self.hir.vars[v.0 as usize].name.to_string()),
-                // Engine parameters are recorded by name: hashed ids are unreadable.
-                _ if i == 0 && builtin == Builtin::SetEnginePar => {
-                    let id = self.int(args, 0)?;
+                // Record symbolic parameter keys by name; opaque ids cannot cross the IR.
+                _ if (i == 0 && builtin == Builtin::SetEnginePar)
+                    || (i == 1 && builtin == Builtin::SetUiWfProperty) => {
+                    let id = self.int(args, i)?;
                     symbol_name(self.hir, id).map_or(V::I(id), V::S)
                 }
                 _ => self.arg(args, i)?,
@@ -1403,6 +1404,7 @@ pub fn lookup_index(name: &str) -> i32 {
 
 fn placeholder() -> model::Widget {
     model::Widget {
+        unresolved: false,
         name: String::new(),
         kind: WidgetKind::Label,
         ui_id: 0,
