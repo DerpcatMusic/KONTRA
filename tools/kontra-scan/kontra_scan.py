@@ -136,6 +136,8 @@ def extra_columns(r):
         r['ui']='budget-hit' if r.get('ui')=='budget-hit' or any('budget' in str(v.get('native_diagnostic','')).lower() for v in native_failures) else 'error'
         r['paint_ok']='no'
         r['paint_error']='native-authored-frontend-unavailable' # successfully painting an error/loading label is not authored UI success
+        authored_frames=[x['ui_first_frame_ms'] for v in views if v not in native_failures for x in (v.get('renders',[]) or [v.get('render',{})]) if x.get('ok') is not False and isinstance(x.get('ui_first_frame_ms'),(int,float))]
+        r['ui_first_frame_ms']=min(authored_frames) if authored_frames else 'unknown'
     slots=[x for p in ksp for x in p.get('slots',[])]
     inventory=r.get('metadata',{}).get('slots',[])
     raw_known=isinstance(r.get('metadata',{}).get('slots'),list)
