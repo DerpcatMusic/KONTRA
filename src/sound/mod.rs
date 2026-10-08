@@ -332,6 +332,7 @@ pub trait Core: Send {
     /// Host input from MIDI/note port `port`, to every part listening there.
     fn event(&mut self, port: u8, event: event::Event);
     /// Input straight to one part, bypassing port and channel routing.
+    /// Part keyboard MIDI uses its MPE manager; exact host-note tuples stay intact.
     fn play(&mut self, part: usize, event: event::Event);
     /// Whether a host note on `channel` and `key` still sounds (keyboard display).
     fn key_held(&self, channel: u8, key: u8) -> bool;
