@@ -26,6 +26,9 @@ const MAPPED: &[&str] = &[
     "$CONTROL_PAR_Z_LAYER",
     "$CONTROL_PAR_PARENT_PANEL",
     "$CONTROL_PAR_VERTICAL",
+    "$CONTROL_PAR_RANGE_MIN",
+    "$CONTROL_PAR_RANGE_MAX",
+    "$CONTROL_PAR_WT_ZONE",
     "$CONTROL_PAR_TEXTPOS_Y",
     "$CONTROL_PAR_ALLOW_AUTOMATION",
     "$CONTROL_PAR_AUTOMATION_ID",
@@ -402,7 +405,7 @@ pub fn interface(
                     .map(|p| int(p).unwrap_or(0)),
             },
             WidgetKind::LevelMeter => ir::Kind::LevelMeter {
-                orientation: if int("$CONTROL_PAR_VERTICAL") == Some(0) {
+                orientation: if int("$CONTROL_PAR_VERTICAL") != Some(1) {
                     ir::Orientation::Horizontal
                 } else {
                     ir::Orientation::Vertical
@@ -433,6 +436,25 @@ pub fn interface(
         let mut out = ir::Widget::new(w.name.clone(), page, rect, kind);
         out.auto_size = width.is_none() || height.is_none();
         out.source_id = Some(w.ui_id);
+        out.value = match &w.value {
+            WidgetValue::None => None,
+            WidgetValue::Int(v) => Some(ir::Value::Integer(*v)),
+            WidgetValue::Text(v) => Some(ir::Value::Text(v.clone())),
+            WidgetValue::Ints(v) => Some(ir::Value::Integers(v.clone())),
+            WidgetValue::Reals(v) => Some(ir::Value::Reals(v.clone())),
+        };
+        if let ir::Kind::Table { cells, .. } = &out.kind {
+            out.value = Some(ir::Value::Integers(cells.clone()));
+        }
+        if matches!(w.kind, WidgetKind::Waveform | WidgetKind::Wavetable) {
+            out.waveform = waveform(model, w.ui_id).or_else(|| int("$CONTROL_PAR_WT_ZONE").map(|zone| ir::Waveform {
+                zone, flags: 0, cursor_us: 0, table: vec![], highlighted: None, midi_start_note: 60,
+            }));
+        }
+        if w.kind == WidgetKind::LevelMeter {
+            out.meter = meter_address(model, w.ui_id);
+            out.meter_range = Some([int("$CONTROL_PAR_RANGE_MIN").unwrap_or(0), int("$CONTROL_PAR_RANGE_MAX").unwrap_or(1_000_000)]);
+        }
         out.z = int("$CONTROL_PAR_Z_LAYER").unwrap_or(0);
         let hide = int("$CONTROL_PAR_HIDE").unwrap_or(0);
         out.hidden = hide & b::HIDE_WHOLE_CONTROL != 0;
@@ -599,4 +621,39 @@ fn meter(model: &model::Model, ui_id: i32) -> ir::Binding {
         bus: u32::try_from(int(4)).ok(),
         channel: int(3).clamp(0, 255) as u8,
     }
+}
+
+/// Keep all four dimensions of `attach_level_meter`, including group/effect taps.
+fn meter_address(model: &model::Model, ui_id: i32) -> Option<ir::MeterAddress> {
+    let request = model.requests.iter().rev().find(|r| r.command == "attach_level_meter" && r.args.first() == Some(&Value::Int(ui_id)))?;
+    let int = |at| match request.args.get(at) { Some(Value::Int(v)) => *v, _ => -1 };
+    Some(ir::MeterAddress { group: int(1), slot: int(2), channel: u8::try_from(int(3)).ok()?, bus: (int(4) >= 0).then(|| int(4)) })
+}
+
+fn waveform(model: &model::Model, ui_id: i32) -> Option<ir::Waveform> {
+    let mut wave = None;
+    let name = model.interface.widgets.iter().find(|w| w.ui_id == ui_id)?.name.as_str();
+    for request in &model.requests {
+        if !matches!(request.args.first(),Some(Value::Int(id)) if *id == ui_id)
+            && !matches!(request.args.first(),Some(Value::Text(v)) if v == name) { continue; }
+        let int = |at| match request.args.get(at) { Some(Value::Int(v)) => *v, _ => 0 };
+        match request.command {
+            "attach_zone" => wave = Some(ir::Waveform { zone: int(1), flags: int(2) as u32, cursor_us: 0, table: vec![], highlighted: None, midi_start_note: 60 }),
+            "set_ui_wf_property" => if let Some(w) = wave.as_mut() {
+                // Property names are interned symbols, not guessed numeric ordinals.
+                let property = match request.args.get(1) { Some(Value::Text(name)) => name.as_str(), _ => "" };
+                match property {
+                    "$UI_WF_PROP_PLAY_CURSOR" => w.cursor_us = i64::from(int(2)),
+                    "$UI_WF_PROP_FLAGS" => w.flags = int(2) as u32,
+                    // ponytail: bounded slice annotation snapshot; larger arrays need paged storage.
+                    "$UI_WF_PROP_TABLE_VAL" => if let Ok(index) = usize::try_from(int(3)) { if index < 65536 { w.table.resize(w.table.len().max(index + 1), 0); w.table[index] = int(2); } },
+                    "$UI_WF_PROP_TABLE_IDX_HIGHLIGHT" => w.highlighted = u32::try_from(int(2)).ok(),
+                    "$UI_WF_PROP_MIDI_DRAG_START_NOTE" => w.midi_start_note = int(2).clamp(0,127) as u8,
+                    _ => {},
+                }
+            },
+            _ => {},
+        }
+    }
+    wave
 }
