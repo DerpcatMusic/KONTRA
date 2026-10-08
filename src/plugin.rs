@@ -1230,6 +1230,10 @@ impl Shared {
         while let Some((slot, epoch, instance, effect)) = self.effects.pop() {
             let Some(part) = self.part(slot) else { continue };
             if part.generation.load(Ordering::Acquire) != epoch { continue; }
+            if effect.service==sampler_core::MIDI_SERVICE {
+                if let Some(ingress)=part.ingress.lock().unwrap().as_mut() {ingress.service_midi(&effect);}
+                continue;
+            }
             let mut scripts = part.scripts.lock().unwrap();
             let key_only = scripts.views.get(instance).and_then(|v| v.service(effect.service)).is_some_and(|s| s.starts_with("set_key_"));
             if scripts.apply(instance, &effect) {

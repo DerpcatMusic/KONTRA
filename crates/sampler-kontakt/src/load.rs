@@ -637,6 +637,7 @@ pub(crate) fn script_environment(
             })
             .collect(),
         performance_view,
+        midi_object: Default::default(),
     }
 }
 
@@ -653,6 +654,7 @@ pub(crate) fn initialize_scripts(
 ) -> ScriptInit {
     let resources = library.map(Resources::of).map(std::cell::RefCell::new);
     let mut views = Vec::new();
+    let mut midi_object = sampler_core::MidiObject::default();
     let states = instrument
         .behaviors
         .iter()
@@ -684,6 +686,7 @@ pub(crate) fn initialize_scripts(
                 }
             }
             let mut environment = script_environment(behavior, index, groups.clone(), &instrument.source_indices, performance_view);
+            environment.midi_object = midi_object.clone();
             environment.control_values.extend(control_values.iter().map(|&(id, value)| (id, Value::Int(value))));
             (behavior.language == ir::Language::Ksp).then(|| {
                 #[cfg(feature = "scan")]
@@ -693,6 +696,7 @@ pub(crate) fn initialize_scripts(
                     sampler_ksp::Limits::LIBRARY,
                     &environment,
                 )
+                .inspect(|initialized| midi_object = initialized.midi_object().clone())
                 .map_err(|e| e.to_string())
             })
         })
