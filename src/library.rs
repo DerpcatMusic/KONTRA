@@ -96,6 +96,10 @@ pub struct Settings {
     /// Voice-rendering threads for parts loaded from now on (`KONTRA_THREADS`
     /// overrides it).
     pub threads: ThreadSetting,
+    /// Settings this version does not know, such as KONTRA v1's `uvi_reader`:
+    /// both versions share the file, so a save must keep them.
+    #[serde(flatten)]
+    pub other: serde_json::Map<String, serde_json::Value>,
 }
 
 /// How many threads render a part's voices.
@@ -1084,6 +1088,18 @@ impl Scanner {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_save_keeps_settings_this_version_does_not_know() {
+        let path = std::env::temp_dir().join(format!("kontra-settings-{}.json", std::process::id()));
+        std::fs::write(&path, r#"{"uvi_reader":"/x/UVIWorkstationx64.exe","ui_scale":1.5}"#).unwrap();
+        let settings = super::Settings::load(&path).unwrap();
+        settings.save(&path).unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(saved["uvi_reader"], "/x/UVIWorkstationx64.exe");
+        assert_eq!(saved["ui_scale"], 1.5);
+    }
+
     use super::*;
 
     /// A fresh folder under the temp dir with `files` made in it.
