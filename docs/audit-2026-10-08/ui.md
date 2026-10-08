@@ -14,22 +14,24 @@ All times below are milliseconds. `v1 mean` for Vista/Areia is the sum of the fi
 
 | Real instrument, initial page / mode | v1 mean | v2 mean | v1 total median / p99 | v2 total median / p99 | Qualification |
 |---|---:|---:|---:|---:|---|
-| Conflux / Original | 6.333 | 36.430 | 6.193 / 9.289 | 35.994 / 53.436 | v1 content visibly degraded; not a same-quality comparison |
-| Conflux / Vector | 5.724 | 31.918 | 5.583 / 7.069 | 31.423 / 47.826 | v1 Original/Vector captures identical; shared-load timing |
+| Conflux / Original, confirmation | 6.333 | 6.729 | 6.193 / 9.289 | 6.716 / 7.062 | both captures degraded; not a same-quality comparison |
+| Conflux / Original, initial v2 trial | same v1 run | 36.430 | same v1 run | 35.994 / 53.436 | high trial variability; no content-equivalent speed claim |
+| Conflux / Vector, confirmation | 5.724 | 6.597 | 5.583 / 7.069 | 6.584 / 7.148 | v1 Original/Vector captures identical |
+| Conflux / Vector, initial v2 trial | same v1 run | 31.918 | same v1 run | 31.423 / 47.826 | shared-load timing; retain rather than discard |
 | Vista — 3 Cellos / Original | 4.943 | 5.152 | unavailable | 5.103 / 6.074 | 48 controls/widgets in each; approximately +4.2% mean, provisional |
 | Areia — 6 Celli Core Techniques / Original | 6.234 | 5.967 | unavailable | 5.959 / 6.208 | 847 controls/widgets; approximately −4.3% mean, reduced rendering fidelity |
 | Vista / Vector | not run in v1 harness | 9.364 | unavailable | 9.601 / 12.773 | v2 measurement only; no parity ratio |
 | Areia / Vector | not run in v1 harness | 6.920 | unavailable | 5.900 / 9.793 | v2 measurement only; no parity ratio |
 
-| Original warm stage mean | Conflux v1 / v2 | Vista v1 / v2 | Areia v1 / v2 |
+| Original warm stage mean | Conflux v1 / v2 confirmation | Vista v1 / v2 | Areia v1 / v2 |
 |---|---:|---:|---:|
-| build | 0.231 / 3.169 | 0.175 / 0.221 | 0.214 / 0.264 |
-| layout | 0.934 / 7.676 | 0.544 / 0.527 | 0.720 / 0.485 |
-| scene clone | 0.081 / 0.134 | 0.042 / 0.037 | 0.061 / 0.036 |
-| CPU paint | 1.592 / 9.821 | 0.996 / 1.035 | 1.260 / 0.925 |
-| CPU raster | 3.496 / 15.630 | 3.186 / 3.333 | 3.979 / 4.257 |
+| build | 0.231 / 0.286 | 0.175 / 0.221 | 0.214 / 0.264 |
+| layout | 0.934 / 0.858 | 0.544 / 0.527 | 0.720 / 0.485 |
+| scene clone | 0.081 / 0.060 | 0.042 / 0.037 | 0.061 / 0.036 |
+| CPU paint | 1.592 / 2.186 | 0.996 / 1.035 | 1.260 / 0.925 |
+| CPU raster | 3.496 / 3.339 | 3.186 / 3.333 | 3.979 / 4.257 |
 
-The measured Vista/Areia frame differences are small and do not establish a general v2 rendering-speed regression. Conflux v2's initial-page CPU workload is substantially larger, but the reference capture fails visual/interactive equivalence. Do not turn the roughly 5.75× mean ratio into a same-quality product claim. NKI parse/setup measurements are retained in logs but are intentionally not presented as library-load-speed comparisons: OS caches, frontend setup and no-PCM preparation differ.
+The measured Vista/Areia frame differences are small and do not establish a general v2 rendering-speed regression. The same v2 Conflux binary/probe measured 35.994 ms Original median initially and 6.716 ms on confirmation, with no source changes between trials. Scheduling/contention is a plausible explanation, not an isolated measured cause. Neither trial establishes a general UI speed regression, and both references fail native visual/interactive equivalence. Retain both trials; do not promote the initial roughly 5.75× mean ratio into a same-quality product claim. NKI parse/setup measurements are retained in logs but are intentionally not presented as library-load-speed comparisons: OS caches, frontend setup and no-PCM preparation differ.
 
 
 ### Method and limits
@@ -39,6 +41,7 @@ The measured Vista/Areia frame differences are small and do not establish a gene
 - v1 Vista/Areia use the existing pinned-tree `ui::audit::tests::real_instrument_frame_benchmark` and its prebuilt test executable at `.../cargo-target/kontakto-inv-load-speed-v1/ci/deps/kontakto-e2dc3eef5dfc58fd`. The read-only `inv-load-speed-v1` and `gpt-kontakt-ui-v1-bench` trees both point to `0cb7a8a0`; the benchmark is present in that commit. Those two binaries are prior builds. Conflux uses a fresh rebuild of pinned v1 in this audit's own `audit-ui-v1-probe` worktree, plus the 56-line idle-only test in [v1-frame-probe.patch](v1-frame-probe.patch). The original benchmark refused Conflux with `no_animated_knob_or_slider`; this is a skipped measurement, not zero frame time.
 - v2 uses the new `audit_ui_real_frames` probe against the baseline editor and translator. It reads the real NKI and prepares scripts with group names/saved state retained, but clears zones/assets before lowering to avoid audio PCM loads. The editor receives the original mapping metadata. This isolates UI rendering; it does **not** benchmark audio or scripts running concurrently. No decrypted source, resources or PCM are written to disk.
 - The pinned v1 Conflux capture is visibly degraded: 378 declared controls, 118 visible controls, **zero continuous controls**, two pictures, no wallpaper. Its Original and Vector screenshots are identical (SHA-256 checked). Therefore the numerical Conflux comparison is **unequal visual content** and cannot establish same-quality speed superiority; it also does not reproduce the user's earlier working Conflux UI. Capture location: `/home/derpcat/.cache/kontakto-audit-ui/shots/Conflux-v1-{1,3}.png`.
+- The v2 confirmation PNGs were visually inspected: both modes show the same flat pale authored background and faint text/native control faces, rather than a usable Conflux skin; the selected mode buttons differ. Picture memory displays 0.0 MB. This is evidence of degraded probe output, not proof that all resources are absent (the counter is rounded). Captures: `/home/derpcat/.cache/kontakto-audit-ui/shots/Conflux-{Original,Vector}.png`; all four screenshot fingerprints are in `ui-frames.json`. The confirmation includes screenshot capture **after** each timed mode, outside the warm timing loop.
 - v1 Vista/Areia also report changing-scalar frames; the matched comparison uses idle frames. v2 probe has no running audio engine/control mirror. It is unsuitable for claiming callback responsiveness, MIDI-to-screen latency, script-state fidelity or total load-speed parity. First compilation/asset decode is excluded from warm frame samples.
 - Shared-agent contention is substantial (observed load average 16.97 on 16 logical CPUs). Treat p99 and ratios as provisional; repeat interleaved trials on an otherwise idle machine before an acceptance target. These are CPU software-render times, **not GPU/DAW FPS**.
 - Logs are under `/home/derpcat/.cache/kontakto-audit-ui/`. Reproduce with `kontakto-heavy cargo test --profile ci --lib audit_ui_real_frames -- --ignored --nocapture --test-threads=1`, setting `KONTRA_AUDIT_UI_PATCH`. Optional `KONTRA_AUDIT_UI_SHOTS` writes rendered editor screenshots only.
@@ -95,7 +98,7 @@ V1 `panel.rs:643,758` extracted authored choice rows, including scrolled-hidden 
 
 ### 7. P1 — Conflux render success does not mean usable authored UI (L, split by owner)
 
-Baseline probe: three compiled scripts/interfaces, **434 widgets** overall. Pinned v1's initial capture here is itself degraded (118 visible, zero continuous controls, no wallpaper); native/user-installed working v1 reference remains necessary. Existing real-library health evidence at `/home/derpcat/.cache/kontakto-gpt-kontakt-ui/conflux-before.jsonl` reports main Creator Tools slot 2: **411 widgets, 134 visible**, six unbound text controls (`@Footer__Macro__Name__1…6`), missing `Resources/pictures/wallpaper.png`, level-meter and text-edit gaps. Slot 3 has 22 widgets/5 visible; slot 4 has one/0 visible. That record is prior-agent evidence, not a newly completed full-host callback test. NKS metadata warnings alone should not be counted as broken interaction.
+Baseline probe: three compiled scripts/interfaces, **434 widgets** overall. The freshly rendered v2 Original/Vector initial-page screenshots are themselves visibly degraded: pale flat background, faint labels, native fallback faces and no usable authored Conflux skin. The confirmation trial completed at 6.716 ms Original median, versus 35.994 ms initially; this variability and the fidelity mismatch preclude a speed-parity claim. Pinned v1's initial capture here is itself degraded (118 visible, zero continuous controls, no wallpaper); native/user-installed working v1 reference remains necessary. Existing real-library health evidence at `/home/derpcat/.cache/kontakto-gpt-kontakt-ui/conflux-before.jsonl` reports main Creator Tools slot 2: **411 widgets, 134 visible**, six unbound text controls (`@Footer__Macro__Name__1…6`), missing `Resources/pictures/wallpaper.png`, level-meter and text-edit gaps. Slot 3 has 22 widgets/5 visible; slot 4 has one/0 visible. That record is prior-agent evidence, not a newly completed full-host callback test. NKS metadata warnings alone should not be counted as broken interaction.
 
 The exact source flow is NKI read → `crates/sampler-kontakt/src/load.rs:581` resolves `.nckp` → `sampler_ksp::nckp` builds declared hierarchy → script compilation/binding → interface publication → `part::main_face` picks most widgets (`src/ui/part.rs:46`) → `ir_view::resolved/view/widget`. `src/ui/ir_view.rs:347` supplies a silent constant meter, line 356 paints text edit/XY/wave/file widgets as placeholders. `pictures::Source::load` rejects bitmap fonts (`src/ui/pictures.rs:19`). The missing wallpaper requires resource-owner/native evidence; do not invent an asset alias.
 
@@ -258,6 +261,6 @@ The shared scanner is authoritative for corpus-wide coverage. At this follow-up,
 
 - `kontakto-heavy cargo test --profile ci --no-run`: **passed**, including library and integration-test executables. Existing vendor/compiler warnings remain; no production fixes were made to suppress them.
 - `audit_ui_toggle_and_nested_wheel --nocapture --test-threads=1`: **passed**; reproduced view reversion and simultaneous child/parent wheel movement.
-- All six real-instrument version runs completed. The original v1 Conflux test **skipped timing**; the fresh pinned-tree idle probe completed and its screenshot was visually inspected. V1 Vista/Areia and v2 Conflux/Vista/Areia timing tests passed.
+- All six real-instrument version runs completed. The original v1 Conflux test **skipped timing**; the fresh pinned-tree idle probe completed and its screenshot was visually inspected. V1 Vista/Areia and v2 Conflux/Vista/Areia timing tests passed. The additional v2 Conflux confirmation also passed and both mode screenshots were visually inspected; its sharply lower timing is retained alongside the first trial.
 - `git diff --check`: passed. No dev servers were started. Measurements use one heavy job at a time through `kontakto-heavy`; there is no audio PCM/decrypted-source export. The supplemental v1 patch is audit-only and applies to `0cb7a8a0`.
 - Checkpoint: `8b539b4c`. The push commit contains the completed report, aggregate measurements, replayable v1 probe patch and v2 opt-in probes.
