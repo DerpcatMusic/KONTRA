@@ -88,7 +88,7 @@ pub struct LoopSlot {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct LoopSlots {
+pub(super) struct LoopSlots {
     slots: [Option<LoopSlot>; 8],
     exits: [Option<u64>; 8],
 }
@@ -215,6 +215,59 @@ impl Playback {
             }
         }
         Ok(cursor)
+    }
+}
+
+// port from v1 0cb7a8a0:src/engine/map.rs compact PlayMap geometry;
+// v2 multi-slot state is stored only for the regions that need it.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct CursorTemplate {
+    start: usize,
+    end: usize,
+    direction: Direction,
+    loop_range: Option<Loop>,
+    loops: Option<usize>,
+    step: f64,
+    exit: Option<u64>,
+    fade_frames: u32,
+}
+
+impl CursorTemplate {
+    pub(super) fn new(cursor: Cursor, loops: &mut Vec<LoopSlots>) -> Self {
+        let index = cursor.loops.map(|slots| {
+            let index = loops.len();
+            loops.push(slots);
+            index
+        });
+        Self {
+            start: cursor.start,
+            end: cursor.end,
+            direction: cursor.direction,
+            loop_range: cursor.loop_range,
+            loops: index,
+            step: cursor.step,
+            exit: cursor.exit,
+            fade_frames: cursor.fade_frames,
+        }
+    }
+
+    pub(super) fn cursor(self, loops: &[LoopSlots]) -> Cursor {
+        Cursor {
+            start: self.start,
+            end: self.end,
+            direction: self.direction,
+            loop_range: self.loop_range,
+            loops: self.loops.map(|i| loops[i]),
+            position: 0,
+            fraction: 0.0,
+            step: self.step,
+            exit: self.exit,
+            last: [0.; 2],
+            starvation: None,
+            fade_in: 0,
+            fade_frames: self.fade_frames,
+            cold_hold: false,
+        }
     }
 }
 
@@ -1129,6 +1182,68 @@ fn mix<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compact_templates_preserve_cursor_paths_and_independent_loop_release() {
+        assert!(size_of::<CursorTemplate>() * 3 < size_of::<Cursor>());
+        eprintln!(
+            "cursor_bytes={} template_bytes={} multi_loop_bytes={}",
+            size_of::<Cursor>(),
+            size_of::<CursorTemplate>(),
+            size_of::<LoopSlots>()
+        );
+        for direction in [Direction::Forward, Direction::Reverse] {
+            for passes in [None, std::num::NonZeroU32::new(3)] {
+                for count in 0..=8 {
+                    let slots = std::array::from_fn(|i| {
+                        (i < count).then(|| LoopSlot {
+                            range: Loop {
+                                start: 2 + i * 4,
+                                end: 4 + i * 4,
+                                mode: LoopMode::UntilRelease,
+                                shape: if i % 2 == 0 {
+                                    LoopShape::Wrap
+                                } else {
+                                    LoopShape::PingPong
+                                },
+                                passes,
+                            },
+                            tuning: if i % 2 == 0 { 1.0 } else { 1.25 },
+                        })
+                    });
+                    let original = Playback {
+                        direction,
+                        loop_slots: slots,
+                        ..Default::default()
+                    }
+                    .cursor(40, 44100, 48000)
+                    .unwrap();
+                    let mut loops = Vec::new();
+                    let template = CursorTemplate::new(original, &mut loops);
+                    assert_eq!(loops.len(), usize::from(original.loops.is_some()));
+                    let mut left = original.with_offset(125, 44100);
+                    let mut right = template.cursor(&loops).with_offset(125, 44100);
+                    for frame in 0..160 {
+                        assert_eq!(format!("{left:?}"), format!("{right:?}"));
+                        assert_eq!(
+                            left.index(i128::from(left.position)),
+                            right.index(i128::from(right.position))
+                        );
+                        if frame == 23 {
+                            left.release();
+                            right.release();
+                        }
+                        left.advance();
+                        right.advance();
+                    }
+                    assert_eq!(
+                        format!("{original:?}"),
+                        format!("{:?}", template.cursor(&loops))
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn offsets_preserve_source_time_and_bounds_without_advancing_loop_passes() {
