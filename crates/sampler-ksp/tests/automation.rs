@@ -1,4 +1,6 @@
 //! Saved automation enters the same typed widget callback path as the UI.
+#[path = "../../sampler-core/tests/support/mod.rs"]
+mod support;
 use sampler_core::*;
 use sampler_ksp::{Environment, Limits as KspLimits};
 
@@ -11,8 +13,9 @@ fn runtime(soft_takeover: bool) -> Runtime {
         $target := 90
         declare $observed := 0
         declare $note_value := 0
+        declare $seen_cc := 0
         end on
-        on ui_control ($target) $observed := $target end on
+        on ui_control ($target) $observed := $target $seen_cc := %CC[1] end on
         on note $note_value := $observed end on",
         48000,
         KspLimits::LIBRARY,
@@ -66,17 +69,19 @@ fn context(rt: &Runtime) -> ControlContext {
     }
 }
 fn cc(rt: &mut Runtime, value: u8) {
-    rt.dispatch_controller(
-        context(rt).performance,
-        input().channel_address(),
-        1,
-        1,
-        (u64::from(u32::MAX) * u64::from(value) / 127) as u32,
-    )
-    .unwrap();
+    support::without_heap(|| {
+        rt.dispatch_controller(
+            context(rt).performance,
+            input().channel_address(),
+            1,
+            1,
+            (u64::from(u32::MAX) * u64::from(value) / 127) as u32,
+        )
+        .unwrap();
+    });
 }
 fn observed(rt: &Runtime) -> i64 {
-    rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 0)
+    rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 1)
         .unwrap()
 }
 #[test]
@@ -84,9 +89,13 @@ fn cc_widget_callback_precedes_the_note_at_the_same_timestamp_and_host_uses_the_
     let mut rt = runtime(false);
     cc(&mut rt, 64);
     assert_eq!(observed(&rt), 60);
+    assert_eq!(
+        rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 3),
+        Ok(64)
+    );
     rt.trigger(input(), 60, 1.).unwrap();
     assert_eq!(
-        rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 1),
+        rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 2),
         Ok(60)
     );
     rt.dispatch_host_parameter(context(&rt), 10, 0.25).unwrap();
@@ -106,4 +115,38 @@ fn soft_takeover_requires_crossing_and_rearms_after_an_external_widget_edit() {
     assert_eq!(observed(&rt), 40);
     cc(&mut rt, 0); // crosses 40.
     assert_eq!(observed(&rt), 20);
+}
+
+#[test]
+fn full_callback_capacity_rejects_cc_before_any_widget_or_controller_write() {
+    let script = sampler_ksp::compile_with(
+        "on init declare ui_slider $target(0,127) $target := 90 end on on ui_control($target) wait(1000000) end on on controller wait(1000000) end on",
+        48000, KspLimits::LIBRARY, &[], &Environment::default(),
+    ).unwrap();
+    let plan = script
+        .bind(Prepared::new(48000, vec![], vec![], 0).unwrap())
+        .unwrap()
+        .with_automation_bindings(vec![AutomationBinding {
+            source: AutomationSource::Controller(1),
+            source_slot: 0,
+            ui_id: 32768,
+            low: 0.,
+            high: 1.,
+            soft_takeover: false,
+        }])
+        .unwrap();
+    let mut limits = Limits::for_plan(&plan, 4, 8);
+    limits.behaviors = 1;
+    let mut rt = Runtime::new(plan, limits).unwrap();
+    let c = context(&rt);
+    let id = rt.widget_id(rt.active_plan(), 0, 32768).unwrap();
+    assert_eq!(
+        rt.dispatch_controller(c.performance, c.origin, 1, 1, 0),
+        Err(Error::Capacity)
+    );
+    assert_eq!(
+        rt.widget_value(rt.active_plan(), id, 0),
+        Ok(WidgetValue::Integer(90))
+    );
+    assert_eq!(rt.input_controller(c.performance, 1), Ok(0));
 }

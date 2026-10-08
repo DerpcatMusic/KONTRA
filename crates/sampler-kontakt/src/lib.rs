@@ -7,6 +7,8 @@
 
 #[cfg(feature = "library-access")]
 mod access;
+mod automation;
+pub use automation::{program_automation, AutomationRecord};
 mod container;
 mod effects;
 pub mod keyswitch;

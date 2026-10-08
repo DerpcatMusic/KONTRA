@@ -28,7 +28,7 @@ Existing reference harness, Sustained NKI, keys 60/72/84, velocities
 `7c72ec986cdc840ad148d6aba6f09125d9eb1f6e8425146aa0a89b48e4aa3f42`.
 Reference calibration passed; GUI state was skipped for this instrument.
 
-| Comparison | Top source agreement | Identified |
+| Comparison | Articulation/dynamic family agreement | Identified |
 |---|---:|---:|
 | Native vs same native WAV | 48/48 | 48/48 each |
 | clean v1 `0cb7a8a0` vs native | 0/48 | 48/48 each |
@@ -37,7 +37,7 @@ Reference calibration passed; GUI state was skipped for this instrument.
 v1 uses the original compressed `v1.args` and detector `*0.5`, as required
 by the harness because v1 caps output at 60 seconds. An earlier full-spacing
 v1 run identified only 30/48 and is superseded. The table compares the first
-NCC candidate; it is not proof that every secondary greedy match sounded.
+NCC candidate after removing RR index and key suffix; it is not proof that every secondary greedy match sounded.
 TSVs include all matches; offset/direction is supplied only for the fitted
 primary source, and blank secondary values remain unresolved. Gain is the
 detector's fitted gain, not a proposed correction.
@@ -64,3 +64,15 @@ Own WAVs were written only in `~/.cache/kontakto-w7-render/` and removed as
 soon as their metric TSVs existed. No source samples/decrypted bytes are
 retained or committed. The retained baseline executable is in scratch;
 finished `kontakto-audit-kontakt` target was deleted on coordinator request.
+
+## Saved automation root cause and rerender
+
+Merged W5 `76fa0487` and `ecda68c9`. Before the automation fix, W5 persistence/init changes alone still scored **0/48** families. The saved Program-private table is the missing route: CC1 → slot0 slider ordinal40 (dynamics); CC16 → ordinal41 (dynamic range); CC11 → ordinal42 (expression); CC21 → ordinal43 (vibrato); CC17 → ordinal44 (sample start). These are slider-only declaration ordinals, resolving to UI IDs33371/33373/33375/33377/33379, respectively. All five records are mode1, soft takeover0, range0..1. Their private record headers are at77/129/181/233/285, but the production parser walks preceding arrays rather than hard-coding those offsets.
+
+The reference sends CC1=64 and CC11=127 before note0. Generic saved automation now invokes the original typed widget callback before the note. Dynamics is driven to64 and writes CC110 through its authored callback. Unsent CC16/21/17 are not invented or dispatched. No initial value or gain was patched. The rerender scores **40/48** families: key72 VSpt/Dyn2 and key84 Trml/Spt/Dyn3 match all16 notes each; key60 VFM/Dyn2 matches8/16, while native's other8 strongest fits are VFMp/Dyn2. Remaining prefix differences are failures, not RR penalties. No `Fault(InvalidInput)` was logged. Fitted gains remain diagnostic.
+
+Native-vs-native control remains48/48; clean v1 and baseline v2 remain0/48 under family scoring. Separate `*-rr.tsv` files report observed strongest-fit RR sets/counts. This grid fits RR1 throughout native and v2; it does not demonstrate native RR cycling or establish a distribution parity gate. An identical native WAV control validates detector repeatability, not independent source truth. Eight key60 mismatches may involve mix weighting or sample variation; they are not assigned a cause without more evidence.
+
+The new reader supports accepted Program versions0x91/0x92/0xa0..0xa8 with legacy min(inner,outer-capacity) semantics and0xa9..0xb5 with modern inner-count semantics. It walks raw0/version0x50 ArrayA/ArrayB elements, counts UTF-16 code units as2 bytes each, rejects ArrayB K>64, and reads BAO0x70/0x71. Older0x80/0x82/0x90 and unknown versions produce unsupported diagnostics. Raw private bytes and unrelated fields remain owned by the original reader.
+
+Failing-first runtime and decoder contracts preceded implementation. Passing regressions cover CC/host scaling, same-timestamp callback order, soft takeover/rearm, nonempty arrays (first BAO header at exact offset140), legacy/modern version gates, malformed headers, truncation, and slider-only resolution despite labels/knobs. A fixture offset was corrected for the preceding label: the observed script variable occupies cell1. V1's controller path only enqueued controller callbacks; its separate UI path clamped values and ran UI callbacks. V1 also explicitly warned that native group criteria were retained but not evaluated. The v2 fix reuses typed widget admission and does not import a second VM or invent missing automation defaults.
