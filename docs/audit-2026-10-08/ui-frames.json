@@ -548,6 +548,128 @@
           "p99_ms": 9.793
         }
       ]
+    },
+    {
+      "version": "v2",
+      "library": "conflux",
+      "trial": "confirmation",
+      "log": "v2-conflux-confirm.log",
+      "stages": [
+        {
+          "mode": "Original",
+          "stage": "build",
+          "n": "24",
+          "mean_ms": 0.286,
+          "median_ms": 0.285,
+          "p99_ms": 0.301
+        },
+        {
+          "mode": "Original",
+          "stage": "layout",
+          "n": "24",
+          "mean_ms": 0.858,
+          "median_ms": 0.856,
+          "p99_ms": 0.883
+        },
+        {
+          "mode": "Original",
+          "stage": "scene_clone",
+          "n": "24",
+          "mean_ms": 0.06,
+          "median_ms": 0.059,
+          "p99_ms": 0.078
+        },
+        {
+          "mode": "Original",
+          "stage": "cpu_paint",
+          "n": "24",
+          "mean_ms": 2.186,
+          "median_ms": 2.171,
+          "p99_ms": 2.485
+        },
+        {
+          "mode": "Original",
+          "stage": "cpu_raster",
+          "n": "24",
+          "mean_ms": 3.339,
+          "median_ms": 3.334,
+          "p99_ms": 3.462
+        },
+        {
+          "mode": "Original",
+          "stage": "total",
+          "n": "24",
+          "mean_ms": 6.729,
+          "median_ms": 6.716,
+          "p99_ms": 7.062
+        },
+        {
+          "mode": "Vector",
+          "stage": "build",
+          "n": "24",
+          "mean_ms": 0.286,
+          "median_ms": 0.286,
+          "p99_ms": 0.293
+        },
+        {
+          "mode": "Vector",
+          "stage": "layout",
+          "n": "24",
+          "mean_ms": 0.867,
+          "median_ms": 0.867,
+          "p99_ms": 0.877
+        },
+        {
+          "mode": "Vector",
+          "stage": "scene_clone",
+          "n": "24",
+          "mean_ms": 0.06,
+          "median_ms": 0.06,
+          "p99_ms": 0.064
+        },
+        {
+          "mode": "Vector",
+          "stage": "cpu_paint",
+          "n": "24",
+          "mean_ms": 2.21,
+          "median_ms": 2.192,
+          "p99_ms": 2.629
+        },
+        {
+          "mode": "Vector",
+          "stage": "cpu_raster",
+          "n": "24",
+          "mean_ms": 3.173,
+          "median_ms": 3.17,
+          "p99_ms": 3.308
+        },
+        {
+          "mode": "Vector",
+          "stage": "total",
+          "n": "24",
+          "mean_ms": 6.597,
+          "median_ms": 6.584,
+          "p99_ms": 7.148
+        }
+      ]
+    }
+  ],
+  "screenshots": [
+    {
+      "path": "/home/derpcat/.cache/kontakto-audit-ui/shots/Conflux-Original.png",
+      "sha256": "8f979fb1845f01e00c0ee0715133ce8753505c7c0e880e055e1ff94b5d47b8e5"
+    },
+    {
+      "path": "/home/derpcat/.cache/kontakto-audit-ui/shots/Conflux-Vector.png",
+      "sha256": "a9e5ef94649cbeb611fbfbf75461536499d18e10ae5c12f4660e5ee1dfb1108f"
+    },
+    {
+      "path": "/home/derpcat/.cache/kontakto-audit-ui/shots/Conflux-v1-1.png",
+      "sha256": "a485c1236f33fe4e208c9d52542703dd64bcf52e5340a3c389b43cb13667aef8"
+    },
+    {
+      "path": "/home/derpcat/.cache/kontakto-audit-ui/shots/Conflux-v1-3.png",
+      "sha256": "a485c1236f33fe4e208c9d52542703dd64bcf52e5340a3c389b43cb13667aef8"
     }
   ]
 }
