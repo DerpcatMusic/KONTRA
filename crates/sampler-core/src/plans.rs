@@ -43,13 +43,12 @@ pub struct PlanTransfer {
     script: super::script_params::EngineLayers,
 }
 
-pub(super) struct Generation {    pub request: u64,
+pub(super) struct Generation {
+    pub request: u64,
     pub prepared: Box<Prepared>,
     pub notes: usize,
     pub callbacks: usize,
     pub sequences: super::variation::SequenceState,
-    pub native_cycle: u64,
-    pub native_seed: u64,
     pub controls: super::control::ControlState,
     pub scripts: Box<[super::ops::ScriptBank]>,
     pub dsp: super::dsp::DspState,
@@ -369,8 +368,7 @@ impl Runtime {
                     self.plans.restore(
                         id,
                         Generation {
-                            native_cycle: 0,
-                            native_seed: 0,                            request: plan.request,
+                            request: plan.request,
                             prepared: plan.prepared,
                             sequences: plan.sequences,
                             controls: plan.controls,
@@ -416,8 +414,7 @@ impl Runtime {
         self.active_plan = PlanId(
             self.plans
                 .insert(Generation {
-                            native_cycle: 0,
-                            native_seed: 0,                    request,
+                    request,
                     prepared: plan.prepared,
                     sequences: plan.sequences,
                     controls: plan.controls,
@@ -434,7 +431,6 @@ impl Runtime {
                 .expect("reserved plan generation slot"),
         );
         self.collect_retired_plans();
-        self.start_plan_programs();
         if let Some(queues) = &self.plan_queues {
             queues
                 .installed

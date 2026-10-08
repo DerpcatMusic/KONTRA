@@ -10,23 +10,4 @@ Crossfaded alternating loops retain their metadata and an explicit warning; play
 
 The actual Una Corda Pure, Felt, and Cotton metadata each contains 31 active loops: 28 alternating and three forward, all until-end, infinite, untuned, and zero-crossfade. The ignored test `actual_una_corda_alternating_loops_are_preserved` checks this metadata without committing library content; set `KONTRA_UNA_CORDA_INSTRUMENTS` to the local Instruments directory to run it. The authored playback test compares an alternating loop to independently unrolled PCM at source steps 0.5, 1, 3.25, and 32, including release. The existing streamed/RAM comparison also exercises alternating loops in both directions.
 
-Historical report (not reproduced in the current checkout): combined build `80dbb6f` passed the map, cache, fractional/high-step PCM, streamed/RAM, and actual three-preset metadata checks. A separate probe linked against that exact production rlib selected one actual alternating sample per Una Corda preset: Pure zone 3725, Felt/Cotton zone 3726. Each sample has 475,512 frames at 48 kHz and a loop spanning 33,761..462,673. Rendering 3,036,139 stereo output frames per preset across three complete reflection periods matched independently unrolled real PCM bit for bit, with maximum absolute error zero and nonzero audio. Release output also matched bit for bit. This check preserves native zone gain, pan, tuning, start, and loop metadata while removing scripts and group effects/modulation to isolate the sample path; it is not a complete instrument or Kontakt reference comparison. The historical report named ignored `artifacts/combined-80dbb6f` as its receipt. That directory and probe source could not be found in the current RE or product checkouts or bounded scratch search. Commit `80dbb6fb` contains documentation/export changes, not a reproducible native proof. These historical numbers are not a current validation gate, and the comparison was against unrolled PCM, not native Kontakt.
-
-## v2 selection work (W7)
-
-The v2 IR now retains all eight physical loop slots, including holes, count,
-tuning, alternating direction and crossfade metadata. Lowering consumes finite
-counts through the existing cursor exit law. Serial loops use the same address
-and interpolation law in resident playback and streaming; the ordinary single,
-untuned slot uses the established fast cursor. Explicit release and reset tests
-cover the engine contract without claiming a measured Kontakt law.
-
-Native parity gates remain **pending native vectors** for mixed criteria
-precedence, loop count exhaustion, tuning onset, alternating crossfade, and
-multiple-loop ordering. Overlapping loop ranges currently reject preparation.
-Alternating crossfade retains its metadata and an `UnknownLaw` finding while
-using reflection; the exact transition must be replaced with the measured law.
-The fresh static seam verifies serialized criteria joins as AND=0, AND_NOT=1,
-OR=2, but does not yet establish mixed-operator precedence.
-
-The current reproducible ignored test `actual_una_corda_alternating_slots_match_independently_unrolled_pcm` passed on W7 `6ae82fa7`: Pure physical zone3725, Felt/Cotton3726;3,036,139 frames per preset; loop33761..462673; exact equality to independently unrolled PCM and nonzero peaks. Aggregate receipt is [una-loop-proof.tsv](audit-2026-10-08/w7-selection/una-loop-proof.tsv). Run with `KONTRA_KONTAKT_LIBRARIES=/path/to/libraries cargo test -p sampler-kontakt --test real_libraries actual_una_corda_alternating_slots_match_independently_unrolled_pcm -- --ignored --nocapture`. The check creates no output audio files. This proves the production lower/cursor path for these actual source loops; it does not establish native Kontakt interpolation, crossfade or count semantics.
+Combined build `80dbb6f` passed the map, cache, fractional/high-step PCM, streamed/RAM, and actual three-preset metadata checks. A separate probe linked against that exact production rlib selected one actual alternating sample per Una Corda preset: Pure zone 3725, Felt/Cotton zone 3726. Each sample has 475,512 frames at 48 kHz and a loop spanning 33,761..462,673. Rendering 3,036,139 stereo output frames per preset across three complete reflection periods matched independently unrolled real PCM bit for bit, with maximum absolute error zero and nonzero audio. Release output also matched bit for bit. This check preserves native zone gain, pan, tuning, start, and loop metadata while removing scripts and group effects/modulation to isolate the sample path; it is not a complete instrument or Kontakt reference comparison. Reproducible probe source, aggregate results, and hashes are retained in the ignored `artifacts/combined-80dbb6f` directory.

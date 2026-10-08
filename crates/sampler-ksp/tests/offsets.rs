@@ -101,7 +101,6 @@ fn source_offsets_match_elapsed_source_audio_without_shifting_the_event_clock() 
                                     passes: NonZeroU32::new(2),
                                 }),
                                 transpose_semitones: transpose,
-                                loop_slots: [None; 8],
                             };
                             let source = format!(
                                 "on init declare $offset := {offset} end on

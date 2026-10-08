@@ -48,10 +48,7 @@ pub fn read_with_snapshot(
     snapshot: &crate::SnapshotState,
 ) -> Result<Kontakt, LoadError> {
     let mut kontakt = read_overlaid(path, Some(snapshot))?;
-    crate::apply_snapshot(&mut kontakt, snapshot).map_err(|e| LoadError::Invalid {
-        path: path.into(),
-        reason: format!("snapshot persistent values: {:?} at {}", e.kind, e.offset),
-    })?;
+    crate::apply_snapshot(&mut kontakt, snapshot);
     Ok(kontakt)
 }
 
@@ -173,9 +170,6 @@ fn translate(
     let mut out = Translation {
         ir: ir::Instrument {
             name: params.name.clone(),
-            default_keyswitch: u8::try_from(params.default_key_switch)
-                .ok()
-                .filter(|&key| key <= 127),
             source: ir::SourceFormat::Kontakt {
                 version: program.version(),
             },
@@ -193,29 +187,6 @@ fn translate(
         engine: Vec::new(),
         dynamic: false,
     };
-    match crate::program_automation(&program.0.private_data, program.version(), crate::Limits { bytes: 64 << 20, records: 65536 }) {
-        Ok(records) => for record in records {
-            let target = std::str::from_utf8(record.tag.data()).ok().and_then(|tag| {
-                let rest = tag.strip_prefix("pts_script_slider_")?;
-                let (slot, ordinal) = rest.split_once('_')?;
-                Some((slot.parse::<u8>().ok()?, ordinal.parse::<u32>().ok()?))
-            });
-            let source = match record.mode {
-                1 if record.address < 128 => Some(ir::ScriptAutomationSource::Controller(record.address as u8)),
-                2 => Some(ir::ScriptAutomationSource::HostParameter(record.address)),
-                _ => None,
-            };
-            if let (Some((source_slot, slider)), Some(source)) = (target, source)
-                && (0.0..=1.0).contains(&record.low) && (0.0..=1.0).contains(&record.high)
-            {
-                out.ir.script_automation.push(ir::ScriptAutomation { source, source_slot, slider,
-                    low: f64::from(record.low), high: f64::from(record.high), soft_takeover: record.soft_takeover });
-            } else {
-                out.unsupported("program private", "saved automation target", format!("record {} mode {} address {}", record.offset, record.mode, record.address), ir::Reason::NotModeled);
-            }
-        },
-        Err(error) => out.unsupported("program private", "saved automation layout", error, ir::Reason::NotModeled),
-    }
     if let Some(chunk) = program.0.find_first(VOICE_GROUPS) {
         out.voice_groups(&chunk.data)
             .map_err(|e| decode("voice groups", e))?;
@@ -227,7 +198,6 @@ fn translate(
             .ok_or_else(|| invalid("missing group list"))?,
     )
     .map_err(|e| decode("group list", e))?;
-    let mut script_resources = crate::Resources::of(&path);
     for (slot, chunk) in program
         .0
         .children
@@ -239,20 +209,18 @@ fn translate(
             .and_then(|s| s.params())
             .map_err(|e| decode("script", e))?;
         let location = format!("script slot {slot}");
-        let linked = script
-            .textfile_name
-            .as_deref()
-            .filter(|name| !name.is_empty())
-            .and_then(|name| script_resources.script(name));
-        match linked.or(script.text) {
+        match script.text {
             _ if script.bypass => {}
             Some(text) if !text.trim().is_empty() => {
-                let state = saved(&script.persistent).map_err(|e| {
-                    invalid(&format!(
-                        "script persistent values: {:?} at {}",
-                        e.kind, e.offset
-                    ))
-                })?;
+                let state = saved(&script.persistent);
+                if state.len() < script.persistent.len() {
+                    out.unsupported(
+                        &location,
+                        "saved persistent text arrays",
+                        script.persistent.len() - state.len(),
+                        ir::Reason::NotModeled,
+                    );
+                }
                 out.ir.behaviors.push(ir::Behavior {
                     name: script
                         .description
@@ -328,18 +296,7 @@ fn translate(
     out.dynamic = dynamic;
     let mut translated = Vec::new();
     for (index, group) in groups.groups.iter().enumerate() {
-        let runtime = ir::GroupRef(out.ir.groups.len());
         translated.push(out.group(index, group).map_err(|e| decode("group", e))?);
-        out.ir.source_indices.groups.push(Some(runtime));
-    }
-    for (runtime, behavior) in out.ir.behaviors.iter().enumerate() {
-        if let Some(slot) = behavior.slot {
-            out.ir.source_indices.slots.resize(
-                out.ir.source_indices.slots.len().max(usize::from(slot) + 1),
-                None,
-            );
-            out.ir.source_indices.slots[usize::from(slot)] = Some(runtime);
-        }
     }
     let parent = path
         .parent()
@@ -399,7 +356,6 @@ fn translate(
     if count > data.len() / 8 {
         return Err(invalid("zone count exceeds the zone list"));
     }
-    out.ir.source_indices.zones.resize(count, None);
     for index in 0..count {
         let zone =
             raw_zone(&mut r).map_err(|reason| invalid(&format!("zone {index}: {reason}")))?;
@@ -441,11 +397,7 @@ fn translate(
                     .saturating_sub(u64::from(end.unsigned_abs())),
             ),
         };
-        let before = out.ir.zones.len();
         out.zone(index, zone, end, group, &params, location.clone());
-        if out.ir.zones.len() > before {
-            out.ir.source_indices.zones[index] = Some(ir::ZoneRef(before));
-        }
     }
     crate::keyswitch::translate(&mut out.ir, &out.start_criteria);
     out.ir.unsupported.dedup();
@@ -481,7 +433,7 @@ struct Translation {
     start_criteria: Vec<(
         String,
         ir::GroupRef,
-        ni_file::kontakt::objects::StartCriteriaList,
+        Vec<ni_file::kontakt::objects::StartCriteriaParams>,
     )>,
     /// Kontakt voice group index -> `ir.voice_limits` index.
     voice_groups: Vec<Option<usize>>,
@@ -620,38 +572,7 @@ impl Translation {
             v.reverse = state.reverse;
         }
         let at = format!("group {index} {:?}", v.name);
-        for (external, id) in [(false, INTERNAL_MODS), (true, EXTERNAL_MODS)] {
-            if let Some(chunk) = group.0.find_first(id) {
-                let names: Vec<_> = if external {
-                    ExternalModArray32::try_from(chunk)?
-                        .slots()?
-                        .into_iter()
-                        .map(|(slot, m)| m.params().map(|p| (slot, p.name)))
-                        .collect::<Result<_, _>>()?
-                } else {
-                    InternalModArray16::try_from(chunk)?
-                        .slots()?
-                        .into_iter()
-                        .map(|(slot, m)| m.params().map(|p| (slot, p.name)))
-                        .collect::<Result<_, _>>()?
-                };
-                for (slot, name) in names {
-                    self.ir.source_indices.modulators.push(ir::SourceModulator {
-                        group: index,
-                        slot: usize::from(slot),
-                        external,
-                        name,
-                        runtime: None,
-                    });
-                }
-            }
-        }
         if v.muted {
-            // Empty source groups retain their numeric address for KSP and DSP writes.
-            self.ir.groups.push(ir::Group {
-                name: v.name,
-                ..Default::default()
-            });
             return Ok(None);
         }
         let not_modeled = ir::Reason::NotModeled;
@@ -672,7 +593,7 @@ impl Translation {
         self.start_criteria.push((
             at.clone(),
             ir::GroupRef(self.ir.groups.len()),
-            v.start_criteria.clone(),
+            v.start_criteria.items.clone(),
         ));
         match group.source_identity() {
             // v1 plays every mode but wavetable (9) as a sampler; so does this.
@@ -926,15 +847,6 @@ impl Translation {
                     source,
                 });
                 let modulator = ir::ModulatorRef(self.ir.modulators.len() - 1);
-                if let Some(address) = self
-                    .ir
-                    .source_indices
-                    .modulators
-                    .iter_mut()
-                    .find(|m| m.group == index && m.slot == usize::from(slot) && m.external)
-                {
-                    address.runtime = Some(modulator);
-                }
                 for target in &params.targets {
                     routes.extend(self.route(
                         &at,
@@ -1194,6 +1106,7 @@ impl Translation {
         location: PathBuf,
     ) {
         let at = format!("zone {index} (group {})", group.index);
+        let not_modeled = ir::Reason::NotModeled;
         let asset = match self.assets.get(&location) {
             Some(&asset) => asset,
             None => {
@@ -1228,47 +1141,46 @@ impl Translation {
             );
             return;
         }
-        let mut slots = [None; 8];
-        for (slot, l) in z.loops.iter().filter(|(_, l)| l.mode != 0) {
-            if l.loop_count < 0
-                || !l.loop_tuning.is_finite()
-                || l.loop_tuning <= 0.0
-                || l.loop_start < 0
-                || l.loop_length <= 0
-                || l.x_fade_length < 0
-            {
+        let mut looping = ir::Looping::None;
+        for (slot, l) in z.loops.iter().enumerate().filter(|(_, l)| l.mode != 0) {
+            if looping != ir::Looping::None {
                 self.unsupported(
                     &at,
-                    "invalid loop",
+                    "additional loop",
                     format!("slot {slot}: {l:?}"),
-                    ir::Reason::InvalidValue,
+                    not_modeled,
                 );
                 continue;
             }
-            if !matches!(l.mode, 1 | 2) {
-                self.unsupported(&at, "loop mode", l.mode, ir::Reason::Unknown);
+            if l.loop_count != 0
+                || (l.loop_tuning - 1.0).abs() > 0.001
+                || l.loop_start < 0
+                || l.loop_length <= 0
+            {
+                self.unsupported(
+                    &at,
+                    "counted, tuned or invalid loop",
+                    format!("{l:?}"),
+                    not_modeled,
+                );
                 continue;
             }
-            if l.alternating_loop && l.x_fade_length > 0 {
-                self.unsupported(&at, "alternating loop crossfade law (metadata retained)", format!("slot {slot}, fade {}", l.x_fade_length), ir::Reason::UnknownLaw);
-            }
-            slots[usize::from(*slot)] = Some(ir::LoopSlot {
-                range: ir::LoopRange {
-                    start: l.loop_start as u64,
-                    end: l.loop_start as u64 + l.loop_length as u64,
-                    crossfade: ir::Span::Frames(l.x_fade_length as u64),
-                    alternating: l.alternating_loop,
-                },
-                count: l.loop_count as u32,
-                tuning: f64::from(l.loop_tuning),
-                until_release: l.mode == 2,
-            });
+            let range = ir::LoopRange {
+                start: l.loop_start as u64,
+                end: l.loop_start as u64 + l.loop_length as u64,
+                crossfade: ir::Span::Frames(l.x_fade_length.max(0) as u64),
+                alternating: l.alternating_loop,
+            };
+            // Mode 1 is the only mode in local libraries; 2 as "until release" is unverified.
+            looping = match l.mode {
+                1 => ir::Looping::Continuous(range),
+                2 => ir::Looping::UntilRelease(range),
+                mode => {
+                    self.unsupported(&at, "loop mode", mode, ir::Reason::Unknown);
+                    continue;
+                }
+            };
         }
-        let looping = if slots.iter().any(Option::is_some) {
-            ir::Looping::Slots(slots)
-        } else {
-            ir::Looping::None
-        };
         let semitones =
             12.0 * f64::from(z.tune * program.tune).log2() + f64::from(program.transpose);
         self.ir.zones.push(ir::Zone {
@@ -1347,7 +1259,7 @@ struct RawZone {
     pan: f32,
     tune: f32,
     file: i32,
-    loops: Vec<(u8, ni_file::kontakt::objects::Loop)>,
+    loops: Vec<ni_file::kontakt::objects::Loop>,
 }
 
 /// Layout from the v1 importer: the owning group, then a structured zone whose
@@ -1402,13 +1314,7 @@ fn raw_zone(r: &mut Cursor<&[u8]>) -> Result<RawZone, String> {
         ));
     }
     let loops = match so.find_first(LOOPS) {
-        Some(chunk) => {
-            let list = LoopArray::try_from(chunk).map_err(|e| e.to_string())?;
-            (0..8)
-                .filter(|slot| list.mask & (1 << slot) != 0)
-                .zip(list.items)
-                .collect()
-        }
+        Some(chunk) => LoopArray::try_from(chunk).map_err(|e| e.to_string())?.items,
         None => Vec::new(),
     };
     Ok(RawZone {
@@ -1576,33 +1482,31 @@ mod survey {
     }
 }
 
-/// Strict saved-entry reader. Numeric repeated tails are expanded by the KSP
-/// declaration, while LF string arrays preserve whitespace and empty cells.
-pub(crate) fn saved(entries: &[String]) -> Result<Vec<(String, ir::Saved)>, crate::Error> {
-    use crate::{SavedEntry, SavedValue};
+/// A script slot's saved persistent values, from Kontakt's `"<name> <value>"`
+/// entries: `$` integers, `~` reals, `@` strings. Arrays (`%`, `?`, `!`) are
+/// left out.
+pub(crate) fn saved(entries: &[String]) -> Vec<(String, ir::Saved)> {
     entries
         .iter()
-        .map(|raw| {
-            let entry = SavedEntry::parse(
-                raw.as_bytes(),
-                None,
-                crate::Limits {
-                    bytes: 16 * 1024 * 1024,
-                    records: 1_000_000,
-                },
-            )?;
-            let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
-            let value = match entry.value {
-                SavedValue::Int(v) | SavedValue::MenuIndex(v) => ir::Saved::Int(v.into()),
-                SavedValue::Real(v) => ir::Saved::Real(v),
-                SavedValue::Text(v) => ir::Saved::Text(text(v)),
-                SavedValue::Ints { values, .. } => {
-                    ir::Saved::Ints(values.iter().map(i64::from).collect())
-                }
-                SavedValue::Reals { values, .. } => ir::Saved::Reals(values.iter().collect()),
-                SavedValue::Texts(values) => ir::Saved::Texts(values.iter().map(text).collect()),
+        .filter_map(|entry| {
+            let (name, rest) = entry.split_once(' ').unwrap_or((entry, ""));
+            let value = match name.as_bytes().first()? {
+                b'$' => ir::Saved::Int(rest.trim().parse().ok()?),
+                b'~' => ir::Saved::Real(rest.trim().parse().ok()?),
+                b'@' => ir::Saved::Text(rest.to_owned()),
+                b'%' => ir::Saved::Ints(
+                    rest.split_whitespace()
+                        .map(|n| n.parse().ok())
+                        .collect::<Option<_>>()?,
+                ),
+                b'?' => ir::Saved::Reals(
+                    rest.split_whitespace()
+                        .map(|n| n.parse().ok())
+                        .collect::<Option<_>>()?,
+                ),
+                _ => return None,
             };
-            Ok((entry.name.to_owned(), value))
+            Some((name.to_owned(), value))
         })
         .collect()
 }
@@ -1610,20 +1514,16 @@ pub(crate) fn saved(entries: &[String]) -> Result<Vec<(String, ir::Saved)>, crat
 #[cfg(test)]
 mod saved_tests {
     #[test]
-    fn malformed_saved_entry_is_a_fault() {
-        assert!(super::saved(&["$bad x".into()]).is_err());
-    }
-    #[test]
     fn saved_values_keep_their_types_and_arrays() {
         let entries = [
             "$level 17",
             "~mix 0.5",
             "@label two words",
             "%table 1 2 3",
-            "!strings first line\n\nthird line\n",
+            "$bad x",
         ]
         .map(String::from);
-        let saved = super::saved(&entries).unwrap();
+        let saved = super::saved(&entries);
         assert_eq!(
             saved,
             [
@@ -1634,14 +1534,6 @@ mod saved_tests {
                     sampler_ir::Saved::Text("two words".into())
                 ),
                 ("%table".to_owned(), sampler_ir::Saved::Ints(vec![1, 2, 3])),
-                (
-                    "!strings".to_owned(),
-                    sampler_ir::Saved::Texts(vec![
-                        "first line".into(),
-                        "".into(),
-                        "third line".into()
-                    ])
-                ),
             ]
         );
     }

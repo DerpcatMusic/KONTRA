@@ -183,19 +183,6 @@ impl SequenceState {
         }
     }
 
-    pub fn reset(&mut self, prepared: &super::Prepared) {
-        self.positions.fill(None);
-        for sequence in &prepared.sequences {
-            if matches!(sequence.spec.policy, TakePolicy::Shuffle { .. }) {
-                let takes = sequence.spec.takes as usize;
-                for slot in 0..sequence.spec.capacity {
-                    let start = sequence.shuffle_offset + slot * takes;
-                    for (i, take) in self.bags[start..start + takes].iter_mut().enumerate() { *take = i as u32; }
-                }
-            }
-        }
-    }
-
     fn position(
         &self,
         prepared: &PreparedSequence,
