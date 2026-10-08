@@ -82,6 +82,16 @@ impl Resources {
             }
         }
     }
+
+    /// Resolve linked script source before the inline fallback. Resource bytes
+    /// remain in memory and are never written to a plaintext cache.
+    pub fn script(&mut self, name: &str) -> Option<String> {
+        let normalized = name.replace('\\', "/");
+        let bytes = self
+            .read(&normalized)
+            .or_else(|| self.read(&format!("Resources/scripts/{normalized}")))?;
+        Some(ni_file::kontakt::objects::BParScript::decode_source(bytes))
+    }
     /// Normalized namespace members. No bytes are extracted or persisted.
     pub fn names(&mut self, prefix: &str) -> Vec<String> {
         self.index();

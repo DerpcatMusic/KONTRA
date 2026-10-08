@@ -34,8 +34,8 @@ struct Siblings {
 
 mod widget;
 pub use widget::{
-    WIDGET_EDIT_CAPACITY, WidgetDefinition, WidgetEdit, WidgetInteraction, WidgetStorage,
-    WidgetValue,
+    WIDGET_EDIT_CAPACITY, WidgetDefinition, WidgetEdit, WidgetEventType, WidgetInteraction,
+    WidgetStorage, WidgetValue,
 };
 mod control;
 pub use control::{
@@ -74,7 +74,7 @@ mod dsp;
 pub use dsp::{
     Biquad, CompressorSettings, ControlRange, ConvolutionUpload, DaftSettings, Decimator, Delay,
     FilterKind, Impulse, MAX_IMPULSE_FRAMES, Parameter, Processor, Rectifier, ReverbSettings,
-    StateVariableFilter, SvfMode, VoiceChain,
+    StateVariableFilter, StereoSettings, SvfMode, VoiceChain,
 };
 mod envelope;
 use envelope::EnvelopeState;
@@ -88,7 +88,7 @@ mod script_params;
 pub use engine_parameter_names::ENGINE_PARAMETER_NAMES;
 pub use engine_parameters::{
     EngineLookup, EngineMeterAddress, EngineParameterAddress, EngineParameterBinding,
-    EngineParameterLaw, engine_parameter_id, engine_parameter_name,
+    EngineParameterLaw, EngineParameterOutcome, engine_parameter_id, engine_parameter_name,
 };
 mod steal;
 mod voice_mod;
@@ -805,7 +805,7 @@ impl Runtime {
             notes: 0,
             callbacks: 0,
         })?);
-        Ok(Self {
+        let mut runtime = Self {
             rate,
             tempo: 120.0,
             plans,
@@ -891,7 +891,11 @@ impl Runtime {
                 }
                 state
             },
-        })
+        };
+        // Authored init effects must reach the DSP before the first input or
+        // getter, including hosts that send MIDI before their first render.
+        runtime.start_plan_programs();
+        Ok(runtime)
     }
 
     pub fn sample_rate(&self) -> u32 {

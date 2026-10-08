@@ -13,6 +13,19 @@ pub struct EngineParameterAddress {
     pub generic: i32,
 }
 
+/// Completion metadata for script service calls. Unsupported addresses stay
+/// observable without stopping later authored writes; no fault text is stored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EngineParameterOutcome {
+    pub plan: PlanId,
+    pub program: usize,
+    pub address: Option<EngineParameterAddress>,
+    pub write: bool,
+    pub result: Result<(), Error>,
+}
+
+pub(crate) const ENGINE_OUTCOME_CAPACITY: usize = 64;
+
 /// Physical meter point. Channel is stereo 0/1; group/slot -1 means the
 /// instrument/post-rack point. Bus is the authored bus number, not DSP packing.
 /// Unsupported per-slot taps return InvalidInput rather than another level.
@@ -36,14 +49,49 @@ pub fn engine_parameter_name(id: u16) -> Option<&'static str> {
 /// Module owners bind the same controls the DSP reads. No private write mirror.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum EngineParameterLaw {
-    Linear { low: f64, high: f64 },
-    CubicGain { unity: f64 },
+    Linear {
+        low: f64,
+        high: f64,
+    },
+    /// Geometric native range, for frequency and time controls.
+    Exponential {
+        low: f64,
+        high: f64,
+    },
+    /// A fixed decibel range whose DSP lane holds linear amplitude.
+    DecibelGain {
+        low_db: f64,
+        high_db: f64,
+    },
+    CubicGain {
+        unity: f64,
+    },
 }
 impl EngineParameterLaw {
+    fn valid(self) -> bool {
+        match self {
+            Self::Linear { low, high } => low.is_finite() && high.is_finite() && high >= low,
+            Self::Exponential { low, high } => {
+                low.is_finite() && high.is_finite() && low > 0. && high >= low
+            }
+            Self::DecibelGain { low_db, high_db } => {
+                low_db.is_finite()
+                    && high_db.is_finite()
+                    && high_db >= low_db
+                    && 10f64.powf(high_db / 20.).is_finite()
+                    && 10f64.powf(low_db / 20.) > 0.
+            }
+            Self::CubicGain { unity } => unity.is_finite() && unity > 0.,
+        }
+    }
     fn decode(self, value: i32) -> f64 {
         let v = f64::from(value.clamp(0, 1_000_000));
         match self {
             Self::Linear { low, high } => low + (high - low) * v / 1e6,
+            Self::Exponential { low, high } => (low.ln() + (high.ln() - low.ln()) * v / 1e6).exp(),
+            Self::DecibelGain { low_db, high_db } => {
+                10f64.powf((low_db + (high_db - low_db) * v / 1e6) / 20.)
+            }
             Self::CubicGain { unity } => (v / unity).powi(3),
         }
     }
@@ -57,6 +105,20 @@ impl EngineParameterLaw {
                 }
             }
             Self::CubicGain { unity } => value.max(0.).cbrt() * unity,
+            Self::Exponential { low, high } => {
+                if low == high {
+                    0.
+                } else {
+                    (value.max(low).ln() - low.ln()) / (high.ln() - low.ln()) * 1e6
+                }
+            }
+            Self::DecibelGain { low_db, high_db } => {
+                if low_db == high_db {
+                    0.
+                } else {
+                    (20. * value.max(f64::MIN_POSITIVE).log10() - low_db) / (high_db - low_db) * 1e6
+                }
+            }
         })
         .round()
         .clamp(0., 1e6) as i32
@@ -89,7 +151,7 @@ impl Prepared {
         }
         for b in &bindings {
             self.control_index(b.control)?;
-            if engine_parameter_name(b.address.parameter).is_none() {
+            if engine_parameter_name(b.address.parameter).is_none() || !b.law.valid() {
                 return Err(Error::InvalidInput);
             }
         }
@@ -140,6 +202,44 @@ fn slot_parameter(name: &str) -> Option<SlotKind> {
         }
         "$ENGINE_PAR_SEND_EFFECT_DRY_LEVEL" => Some(SlotKind::Dry),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod law_tests {
+    use super::*;
+    #[test]
+    fn native_parameter_laws_are_invertible_and_reject_invalid_ranges() {
+        let laws = [
+            EngineParameterLaw::Linear { low: -2., high: 4. },
+            EngineParameterLaw::Exponential {
+                low: 20.,
+                high: 20_000.,
+            },
+            EngineParameterLaw::DecibelGain {
+                low_db: -24.,
+                high_db: 24.,
+            },
+            EngineParameterLaw::CubicGain { unity: 396851. },
+        ];
+        for law in laws {
+            assert!(law.valid());
+            for value in [0, 123456, 500000, 999999, 1000000] {
+                assert!((law.encode(law.decode(value)) - value).abs() <= 1);
+            }
+        }
+        assert!((laws[1].decode(500000) - (20f64 * 20_000.).sqrt()).abs() < 1e-8);
+        assert_eq!(laws[2].decode(500000), 1.);
+        for law in [
+            EngineParameterLaw::Exponential {
+                low: 0.,
+                high: 20_000.,
+            },
+            EngineParameterLaw::Linear { low: 2., high: 1. },
+            EngineParameterLaw::CubicGain { unity: f64::NAN },
+        ] {
+            assert!(!law.valid());
+        }
     }
 }
 
