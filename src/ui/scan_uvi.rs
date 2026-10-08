@@ -10,6 +10,7 @@ pub(crate) fn paint(
     snapshot: &UiSnapshot,
     assets: &mut UiAssets,
     stamp: Stamp,
+    load_start: std::time::Instant,
 ) -> anyhow::Result<serde_json::Value> {
     use moose::mui::mui::vello::{
         self,
@@ -58,10 +59,13 @@ pub(crate) fn paint(
     ctx.flush();
     let mut pix = Pixmap::new(width, height);
     ctx.render(&mut pix, &mut resources);
+    let ui_first_frame_ms = load_start.elapsed().as_secs_f64() * 1000.;
     let rgba: Vec<_> = pix
         .take_unpremultiplied()
         .iter()
         .flat_map(|p| [p.r, p.g, p.b, p.a])
         .collect();
-    Ok(metrics::pixels(&rgba))
+    let mut result = metrics::pixels(&rgba);
+    result["ui_first_frame_ms"] = serde_json::json!(ui_first_frame_ms);
+    Ok(result)
 }
