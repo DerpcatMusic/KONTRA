@@ -340,7 +340,7 @@ pub(crate) fn assemble(
             callback: entries
                 .iter()
                 .position(|e| e.kind == crate::EntryKind::UiControl(i)),
-            persistence: var.persistence,
+            persistence: init.persistence[ui.var.0 as usize],
             location: match var.home {
                 Home::Control(ui) => controls[ui as usize].map(Location::Control),
                 Home::Cell(c) => Some(Location::Cells { offset: c, len: 1 }),
@@ -359,8 +359,9 @@ pub(crate) fn assemble(
     model.persistent = hir
         .vars
         .iter()
-        .filter(|v| v.persistence != Persistence::None)
-        .filter_map(|v| {
+        .enumerate()
+        .filter(|(i, _)| init.persistence[*i] != Persistence::None)
+        .filter_map(|(i, v)| {
             let location = match v.home {
                 Home::Control(ui) => Location::Control(controls[ui as usize]?),
                 Home::Cell(c) => Location::Cells { offset: c, len: 1 },
@@ -371,7 +372,7 @@ pub(crate) fn assemble(
             };
             Some(Persistent {
                 name: v.name.to_string(),
-                kind: v.persistence,
+                kind: init.persistence[i],
                 location,
             })
         })
