@@ -753,10 +753,10 @@ impl Eval<'_> {
     }
 
     fn builtin(&mut self, builtin: Builtin, args: &[Arg], span: Span) -> Result<V> {
-        #[cfg(feature = "scan")]
-        crate::scan::builtin(Some(builtin.name()));
         let begin = self.profile.as_ref().map(|_| std::time::Instant::now());
         let result = self.builtin_inner(builtin, args, span);
+        #[cfg(feature = "scan")]
+        crate::scan::builtin(result.as_ref().err().map(|_| builtin.name()));
         if let Some(begin) = begin {
             let entry = self
                 .profile
