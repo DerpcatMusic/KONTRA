@@ -465,6 +465,7 @@ fn draw(
     let props: Table = node.get("props")?;
     let modifiers = tables(node, "modifiers")?;
     let kind = string(node, "kind");
+    let mut font_name = None;
     for m in &modifiers {
         let v = val(m, "value");
         match string(m, "name").as_str() {
@@ -479,19 +480,7 @@ fn draw(
                 }
             }
             "font" | "font_family" => {
-                let name = string(m, "value").to_lowercase();
-                style.font = package
-                    .fonts
-                    .iter()
-                    .find(|(path, _)| {
-                        *path == &name
-                            || path.rsplit('/').next().is_some_and(|p| {
-                                p == name
-                                    || p.strip_suffix(".ttf") == Some(name.as_str())
-                                    || p.strip_suffix(".otf") == Some(name.as_str())
-                            })
-                    })
-                    .map(|(_, f)| f.clone());
+                font_name = Some(string(m, "value"));
             }
             "bold" => style.bold = boolean(&v),
             "disabled" => style.disabled |= boolean(&v),
@@ -499,6 +488,7 @@ fn draw(
             _ => {}
         }
     }
+    if let Some(name) = font_name { style.font = package.font(&name, style.bold); }
     let child_nodes = tables(node, "children")?;
     let has_flexible_content = child_nodes.iter().any(|child| {
         let flex = flexibility(child);
@@ -590,6 +580,20 @@ fn draw(
             if !ui.focused(id.as_str()) {
                 *value = string(&props, "text");
             }
+            static FALLBACK: std::sync::OnceLock<Font> = std::sync::OnceLock::new();
+            let font=style.font.clone().unwrap_or_else(||FALLBACK.get_or_init(||Font::new(NOTO_SANS).unwrap()).clone());
+            let nominal=style.size*s;
+            // Reuse v1's bounded caption fit when the host default face is
+            // approximated. Authored fonts and focused editing keep their size.
+            let size=if style.font.is_none() && !ui.focused(id.as_str()) {
+                ui.scene().and_then(|scene|scene.surface(&id)).map_or(nominal,|surface| {
+                    let advance=mui_text::shape_run(std::slice::from_ref(&font),value,nominal,
+                        &[("wght",if style.bold {700.}else{400.})]).map_or(0.,|r|r.advance);
+                    if advance>0. && surface.frame.size.width>0. {
+                        nominal*(surface.frame.size.width/advance).clamp(0.75,1.)
+                    } else {nominal}
+                })
+            } else {nominal};
             let field = text_edit(ui, id, value, TextOpts::default());
             if field.changed.changed
                 && let Ok(f) = props.get::<Function>("on_change")
@@ -601,12 +605,23 @@ fn draw(
             {
                 session.call(f, value.clone())?;
             }
-            field
+            let mut el = field
                 .el
-                .text_size(style.size * s)
+                .text_size(size)
+                .font(font.clone())
+                .text_weight(if style.bold { mui_text::Weight::BOLD } else { mui_text::Weight::REGULAR })
                 .fill(Fill::None)
                 .pad(0)
-                .radius(0.)
+                .radius(0.);
+            // The generic editor has separate paint/hit-test insets; clearing
+            // layout padding alone still clips authored fields by 16 pixels.
+            if let Some(edit) = &mut el.payload_mut().extras_mut().editable_text {
+                edit.insets = [0., 0.];
+            }
+            let height=mui_text::shape_run(std::slice::from_ref(&font), "M", size,
+                &[("wght", if style.bold { 700. } else { 400. })])
+                .map_or(size*1.25,|run|run.line_height);
+            el.h(height)
         }
         "Rectangle" => block(Len::Auto, Len::Auto)
             .fill(color(&val(&props, "color")).unwrap_or(style.ink))
@@ -1088,4 +1103,88 @@ fn canvas_draw(lua: &mlua::Lua, paint: &Function, size: Size, s: f64) -> mlua::R
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires locally owned NativeUI library; text stays in RAM"]
+    fn native_saved_text_reaches_authored_field_without_host_insets() {
+        let path = std::path::PathBuf::from(std::env::var_os("KONTRA_AUDIT_WIDGET_PATCH").unwrap());
+        let mut source = sampler_kontakt::read(&path).unwrap().instrument;
+        source.zones.clear();
+        source.assets.clear();
+        let loaded = sampler_kontakt::prepare(source, vec![], &sampler_kontakt::Options {
+            library: Some(path.clone()), ..Default::default()
+        }).unwrap();
+        let entry = loaded.interfaces.iter().find_map(|f|f.native_ui.as_ref()).unwrap().entry.clone();
+        let controls: Vec<_> = loaded.interfaces.iter().flat_map(|f|f.widgets.iter().enumerate()
+            .map(move |(n,w)|(f.source,n,w.clone()))).collect();
+        let saved: Vec<_> = controls.iter().filter(|(_,_,w)|w.name.starts_with("@Footer__Macro__Name__"))
+            .map(|(_,_,w)|match &w.value {Some(ir::Value::Text(s))=>s.clone(),_=>panic!("published text missing")}).collect();
+        assert_eq!(saved.len(), 6);
+        let package = Arc::new(Package::load(&path).unwrap());
+        let session = Session::new(package.clone(), &entry, controls).unwrap();
+        let graph = session.render().unwrap();
+        fn font_usage(node:&Table,package:&Package,counts:&mut [usize;3]) {
+            for modifier in tables(node,"modifiers").unwrap() {
+                let kind=string(&modifier,"name");
+                if matches!(kind.as_str(),"font"|"font_family") {
+                    counts[0]+=1;
+                    let name=string(&modifier,"value");
+                    counts[1]+=usize::from(!name.is_empty());
+                    counts[2]+=usize::from(package.font(&name,false).is_some());
+                }
+                if matches!(kind.as_str(),"background"|"overlay") {
+                    if let Ok(child)=modifier.get::<Table>("value") {font_usage(&child,package,counts);}
+                }
+            }
+            for child in tables(node,"children").unwrap() {font_usage(&child,package,counts);}
+        }
+        let mut fonts=[0;3];font_usage(&graph,&package,&mut fonts);
+        println!("NATIVE_FONT declarations={} string_names={} supplied_matches={}",fonts[0],fonts[1],fonts[2]);
+        fn fields(node:&Table,saved:&[String],out:&mut Vec<(String,usize,usize)>) {
+            let kind = string(node,"kind");
+            if matches!(kind.as_str(),"Text"|"TextInput") {
+                let props=node.get::<Table>("props").unwrap();
+                let text = string(&props,"text");
+                if let Some(n)=saved.iter().position(|s|s==&text) {
+                    println!("NATIVE_TEXT_PROPS slot={n} font_size={:?} size={:?} family_declared={} font_table={} style_table={}",number(&props,"font_size"),number(&props,"size"),!string(&props,"font_family").is_empty(),matches!(val(&props,"font"),Value::Table(_)),matches!(val(&props,"style"),Value::Table(_)));
+                    out.push((string(node,"path"),n,text.chars().count()));
+                }
+            }
+            for child in tables(node,"children").unwrap() {fields(&child,saved,out);}
+            for modifier in tables(node,"modifiers").unwrap() {
+                if matches!(string(&modifier,"name").as_str(),"background"|"overlay") {
+                    if let Ok(child)=modifier.get::<Table>("value") {fields(&child,saved,out);}
+                }
+            }
+        }
+        let mut fields_found=Vec::new();
+        fields(&graph,&saved,&mut fields_found);
+        assert!(fields_found.len()>=6,"six complete saved strings reach native primitives");
+        let mut ui=super::super::theme::ui();
+        let mut drafts=HashMap::new();
+        for _ in 0..4 {
+            let el=draw(&mut ui,&graph,&package,&session,0,1.,Style::default(),&mut drafts).unwrap();
+            ui.frame(el,Some(authored_size(&graph)),Input::default(),1./60.).unwrap();
+        }
+        let scene=ui.scene().unwrap();
+        let mut matched=0;
+        for (path,n,len) in fields_found {
+            if let Some(surface)=scene.surface(&format!("nui-0-{path}-text")) {
+                let geometry=surface.text_geometry.as_ref().unwrap();
+                let advance=geometry.lines[0].carets.x(geometry.text.len());
+                println!("NATIVE_TEXT slot={n} chars={len} equals_saved={} frame_width={} viewport_width={} advance={} insets={:?}",
+                    geometry.text.as_ref()==saved[n],surface.frame.size.width,geometry.viewport.width,advance,geometry.state.insets);
+                assert!(geometry.text.as_ref()==saved[n],"full saved text reaches final field geometry");
+                assert_eq!(geometry.state.insets,[0.,0.],"authored text fields must not retain generic editor padding");
+                assert!(advance<=geometry.viewport.width+0.01,"fallback metrics fit the complete saved caption");
+                matched+=1;
+            }
+        }
+        assert_eq!(matched,6);
+    }
 }
