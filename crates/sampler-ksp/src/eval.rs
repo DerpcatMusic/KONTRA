@@ -29,6 +29,8 @@ pub struct Environment {
     /// script loads with `load_performance_view`. Names the script uses but
     /// it lacks stay unbound script handles, with a diagnostic.
     pub performance_view: model::PerformanceView,
+    /// The instrument's MIDI object, including earlier slots' init selection.
+    pub midi_object: sampler_core::MidiObject,
 }
 
 /// Steps one `on init` may take before evaluation is abandoned.
@@ -120,6 +122,7 @@ impl V {
 
 /// Initial state after `on init`.
 pub struct Initial {
+    pub midi_object: sampler_core::MidiObject,
     pub cells: Vec<i64>,
     pub texts: Vec<String>,
     /// Values of host-owned controls, by UI index.
@@ -155,6 +158,8 @@ struct Eval<'h> {
     consumed: BTreeSet<VarId>,
     pending_menus: BTreeMap<usize, i32>,
     callback_type: i32,
+    async_result:Option<(i32,i32)>,
+    async_depth: u8,
     profile: Option<HashMap<&'static str, (u64, u128)>>,
 }
 
@@ -165,6 +170,7 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
         hir,
         env,
         st: Initial {
+            midi_object: env.midi_object.clone(),
             cells: vec![0; hir.cells as usize],
             texts: vec![String::new(); hir.texts as usize],
             controls: vec![0; hir.uis.len()],
@@ -181,6 +187,8 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
         consumed: BTreeSet::new(),
         pending_menus: BTreeMap::new(),
         callback_type: b::cb::INIT,
+        async_result:None,
+        async_depth: 0,
         profile: std::env::var_os("KONTRA_AUDIT_KSP_PROFILE").map(|_| HashMap::new()),
     };
     #[cfg(feature = "scan")]
@@ -615,6 +623,8 @@ impl Eval<'_> {
         match sys {
             NumGroups => self.env.groups.len() as i32,
             CallbackType => self.callback_type,
+            AsyncId => self.async_result.map_or(0,|v|v.0),
+            AsyncExitStatus => self.async_result.map_or(0,|v|v.1),
             DurationQuarter => 500_000,
             DurationEighth => 250_000,
             DurationSixteenth => 125_000,
@@ -1350,6 +1360,102 @@ impl Eval<'_> {
                 self.st.model.listeners.insert(signal, value);
                 V::I(0)
             }
+            builtin @ (MfGetFirst | MfGetLast | MfGetNext | MfGetPrev | MfGetNextAt | MfGetPrevAt
+            | MfGetId | MfGetCommand | MfSetCommand | MfGetByteOne | MfSetByteOne
+            | MfGetByteTwo | MfSetByteTwo | MfGetChannel | MfSetChannel | MfGetPos
+            | MfSetPos | MfGetLength | MfSetLength | MfGetTrackIdx | MfSetTrackIdx
+            | MfGetEventPar | MfSetEventPar | MfGetNumTracks | MfGetBufferSize
+            | MfSetBufferSize | MfInsertEvent | MfRemoveEvent | MfGetMark | MfSetMark
+            | MfSetExportArea | MfSetNumExportAreas | MfCopyExportArea | MfReset
+            | MfInsertFile | LoadMidiFile | SaveMidiFile) => {
+                let action = builtin.midi().unwrap();
+                let has_text = matches!(
+                    action,
+                    sampler_core::MidiAction::ExportArea
+                        | sampler_core::MidiAction::InsertFile
+                        | sampler_core::MidiAction::SaveFile
+                );
+                let text = if has_text {
+                    Some(sampler_core::Text::new(&self.text(args, 0)?))
+                } else {
+                    None
+                };
+                let mut values = [0; 5];
+                for (index, value) in values.iter_mut().take(action.arguments()).enumerate() {
+                    *value = self.int(args, index + usize::from(has_text))?;
+                }
+                if matches!(
+                    action,
+                    sampler_core::MidiAction::SetBufferSize
+                        | sampler_core::MidiAction::ExportCount
+                        | sampler_core::MidiAction::ExportArea
+                ) {
+                    self.st.midi_object.prepare_live();
+                }
+                let synchronous = self.callback_type == b::cb::INIT
+                    && matches!(
+                        action,
+                        sampler_core::MidiAction::InsertFile | sampler_core::MidiAction::SetBufferSize
+                    );
+                let value = if action.asynchronous() && !synchronous {
+                    self.st
+                        .midi_object
+                        .queue_initial(self.env.slot, action, values, text)
+                        .map_err(|_| crate::diag::Fault {
+                            span,
+                            builtin: Some(builtin.name()),
+                            message: "MIDI async job capacity".into(),
+                        })?
+                } else if action == sampler_core::MidiAction::InsertFile {
+                    self.st
+                        .midi_object
+                        .insert_file(
+                            text.unwrap_or_default().as_str(),
+                            [values[0], values[1], values[2]],
+                        )
+                        .map_or(0, |_| 1)
+                } else {
+                    self.st
+                        .midi_object
+                        .apply(action, &values, text)
+                        .map_err(|_| crate::diag::Fault {
+                            span,
+                            builtin: Some(builtin.name()),
+                            message: "invalid MIDI object operation".into(),
+                        })?
+                };
+                V::I(value)
+            }
+            WaitAsync => {
+                let id = self.int(args, 0)?;
+                if let Some(status) = self.st.midi_object.finish_initial(self.env.slot, id) {
+                    // ponytail: cap nested init completions at eight; use an interpreter trampoline if deeper nesting is needed.
+                    if self.async_depth >= 8 {
+                        return fault(span, "async completion nesting limit");
+                    }
+                    self.async_depth += 1;
+                    let previous = (self.callback_type, self.async_result);
+                    self.callback_type = b::cb::ASYNC_COMPLETE;
+                    self.async_result = Some((id, status));
+                    let result = if let Some(cb) = self
+                        .hir
+                        .callbacks
+                        .iter()
+                        .find(|c| c.kind == CallbackKind::AsyncComplete)
+                    {
+                        self.block(&cb.body)
+                    } else {
+                        Ok(Flow::Next)
+                    };
+                    (self.callback_type, self.async_result) = previous;
+                    self.async_depth -= 1;
+                    result?;
+                }
+                V::I(0)
+            }
+            MfGetLastFilename => V::S(self.st.midi_object.last_filename().to_owned()),
+            ByTrack => V::I(self.int(args, 0)? | sampler_core::MIDI_TRACK_FLAG),
+            ByMarks => V::I(self.int(args, 0)? | sampler_core::MIDI_MARKS_FLAG),
             SetEnginePar => {
                 let key = [
                     self.int(args, 0)?,
@@ -1431,8 +1537,7 @@ impl Eval<'_> {
             OutputChannelName | GetFolder | FsGetFilename => V::S(String::new()),
             FindZone => V::I(b::NOT_FOUND),
             GetNumZones | GetZoneId | GetZonePar | GetPurgeState | GetVoiceLimit
-            | GetUiWfProperty | EventStatus | GetEventPar | GetEventParArr | GetEventMark
-            | ByMarks => V::I(0),
+            | GetUiWfProperty | EventStatus | GetEventPar | GetEventParArr | GetEventMark => V::I(0),
             // No host consumes zone writes (FindZone finds nothing at init), and
             // Conflux issues three million of them: logging each cost ~1 GB.
             SetZonePar => V::I(0),
@@ -1468,7 +1573,7 @@ impl Eval<'_> {
             | ChangeNote | FadeIn | FadeOut | SetEventPar | SetEventParArr | AllowGroup
             | DisallowGroup | SetEventMark | DeleteEventMark | GetEventIds | IgnoreController
             | SetNoteController | SetRpn | SetNrpn | ResetRlsTrigCounter | WillNeverTerminate
-            | RedirectOutput | Wait | WaitTicks | WaitAsync | StopWait => {
+            | RedirectOutput | Wait | WaitTicks | StopWait => {
                 self.warn(span, format!("{} has no effect in on init", builtin.name()));
                 V::I(0)
             }

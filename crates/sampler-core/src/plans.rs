@@ -35,6 +35,7 @@ pub struct PlanTransfer {
     sequences: super::variation::SequenceState,
     controls: super::control::ControlState,
     scripts: Box<[super::ops::ScriptBank]>,
+    midi_object: super::MidiObject,
     dsp: super::dsp::DspState,
     groups: super::groups::GroupState,
     controllers: super::controller_event::ControllerState,
@@ -52,6 +53,7 @@ pub(super) struct Generation {    pub request: u64,
     pub native_seed: u64,
     pub controls: super::control::ControlState,
     pub scripts: Box<[super::ops::ScriptBank]>,
+    pub midi_object: super::MidiObject,
     pub dsp: super::dsp::DspState,
     pub groups: super::groups::GroupState,
     pub controllers: super::controller_event::ControllerState,
@@ -236,6 +238,7 @@ impl PlanControl {
         let sequences = super::variation::SequenceState::new(&prepared);
         let controls = super::control::ControlState::new(&prepared);
         let scripts = prepared.script_initial.clone();
+        let midi_object = prepared.midi_object.clone();
         let dims = super::grow::Dims::of(request, &prepared);
         match self.pending.push(PlanTransfer {
             request,
@@ -243,6 +246,7 @@ impl PlanControl {
             sequences,
             controls,
             scripts,
+            midi_object,
             dsp,
             groups,
             controllers,
@@ -390,6 +394,7 @@ impl Runtime {
                 sequences: generation.sequences,
                 controls: generation.controls,
                 scripts: generation.scripts,
+                midi_object: generation.midi_object,
                 dsp: generation.dsp,
                 groups: generation.groups,
                 controllers: generation.controllers,
@@ -408,6 +413,7 @@ impl Runtime {
                             sequences: plan.sequences,
                             controls: plan.controls,
                             scripts: plan.scripts,
+                            midi_object: plan.midi_object,
                             dsp: plan.dsp,
                             groups: plan.groups,
                             controllers: plan.controllers,
@@ -457,6 +463,7 @@ impl Runtime {
                     sequences: plan.sequences,
                     controls: plan.controls,
                     scripts: plan.scripts,
+                    midi_object: plan.midi_object,
                     dsp: plan.dsp,
                     groups: plan.groups,
                     controllers: plan.controllers,
