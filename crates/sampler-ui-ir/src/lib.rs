@@ -248,7 +248,12 @@ pub enum Value {
     Text(String),
     Integers(Vec<i32>),
     Reals(Vec<f64>),
+    /// Transient OS drop payload; never published as a widget value snapshot.
+    DropPath { kind: DropKind, path: String },
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DropKind { Audio, Midi, Array }
 
 /// A physical meter tap, using the source's group, effect slot and bus identities.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
