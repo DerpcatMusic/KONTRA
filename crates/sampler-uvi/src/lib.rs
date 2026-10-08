@@ -630,15 +630,10 @@ impl Translation {
             chain
         });
         if let Some(chain) = chain {
-            let modulable = self.ir.chains[chain.0].pre_amplitude.iter().filter(|p| matches!(p, ir::Processor::Filter(ir::Filter { kind: ir::FilterKind::LowPass { poles: 1 | 2 } | ir::FilterKind::HighPass { poles: 1 | 2 } | ir::FilterKind::BandPass { poles: 2 } | ir::FilterKind::Notch { poles: 2 } | ir::FilterKind::AllPass, .. }))).count();
             for insert in keygroup.children().filter(|n| n.has_tag_name("Inserts")).flat_map(|n| n.descendants()).filter(|n| n.has_tag_name("OnePole")) {
                 if let Some(placed) = self.insert_nodes.iter().find(|p| p.node == insert.id().get_usize() && p.count > 0).copied() {
                     for connection in connections(insert) {
-                        if modulable == 1 {
-                            self.connect_frequency(connection, chain, placed.first, &mut shared)?;
-                        } else {
-                            self.unsupported(&path(connection), "per-stage OnePole frequency modulation", "shared lowering currently requires one filter");
-                        }
+                        self.connect_frequency(connection, chain, placed.first, &mut shared)?;
                     }
                 }
             }
