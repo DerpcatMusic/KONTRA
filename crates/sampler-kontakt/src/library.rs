@@ -678,7 +678,7 @@ impl Translation {
                 }
                 let retrigger = params.unknown_flags[2] != 0;
                 let volume = matches!(params.targets.as_slice(), [t]
-                    if t.param == "volume" && t.intensity == 1.0 && !t.invert
+                    if t.param == "volume" && t.signed_intensity() == 1.0 && !t.invert
                         && t.slot.is_none() && t.lag_ms == 0
                         && !t.shaper.as_ref().is_some_and(|s| s.enabled));
                 let source = match params.modulator {
@@ -802,7 +802,7 @@ impl Translation {
                 };
                 if let (ModSource::Velocity, [t]) = (&params.source, params.targets.as_slice())
                     && plain_volume(t)
-                    && t.intensity == 1.0
+                    && t.signed_intensity() == 1.0
                     && velocity == ir::VelocityResponse::None
                 {
                     // gain × velocity: the attenuate law at full intensity,
@@ -941,11 +941,11 @@ impl Translation {
         &mut self,
         at: &str,
         source: ir::ModulatorRef,
-        unipolar: bool,
+        _unipolar: bool,
         target: &ni_file::kontakt::objects::ModTarget,
         filters: Option<(ir::ChainRef, &[(usize, usize)])>,
     ) -> Option<ir::RouteRef> {
-        let i = f64::from(target.intensity);
+        let i = f64::from(target.signed_intensity());
         let report = |this: &mut Self, feature: &str, reason| {
             this.unsupported(
                 at,
@@ -977,11 +977,6 @@ impl Translation {
                 "modulation of a module parameter",
                 ir::Reason::NotModeled,
             );
-        }
-        // Flag 0x02 marks a signed (bipolar) target scaling; how a unipolar
-        // source maps onto it is not established.
-        if unipolar && target.unknown_flags & 0x02 != 0 {
-            return report(self, "signed modulation target", ir::Reason::UnknownLaw);
         }
         let (route_target, depth) = match target.param.as_str() {
             _ if cutoff.is_some() => (
@@ -1767,10 +1762,6 @@ mod modulation {
             target("pan", 1.0),
             target("cutoff", 1.0),
             ModTarget {
-                unknown_flags: 0x12,
-                ..target("pitch", 1.0)
-            },
-            ModTarget {
                 slot: Some(0),
                 ..target("cutoff", 1.0)
             },
@@ -1784,10 +1775,22 @@ mod modulation {
             [
                 ir::Reason::UnknownLaw,
                 ir::Reason::NotModeled,
-                ir::Reason::UnknownLaw,
                 ir::Reason::NotModeled
             ]
         );
+    }
+
+    #[test]
+    fn saved_depth_sign_is_independent_of_invert_and_source_polarity() {
+        for unipolar in [false, true] {
+            for invert in [false, true] {
+                let mut t = translation();
+                let signed = ModTarget { unknown_flags: 0x12, invert, ..target("pitch", 0.25) };
+                t.route("g", ir::ModulatorRef(0), unipolar, &signed, None).expect("signed pitch route");
+                assert_eq!(t.ir.routes[0].depth, ir::Depth::Pitch(ir::Pitch::Semitones(-3.0)));
+                assert_eq!(t.ir.routes[0].invert, invert);
+            }
+        }
     }
 
     #[test]
