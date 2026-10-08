@@ -114,7 +114,7 @@ enum Codec {
     Wav(crate::samples::Wav),
     Ncw(Box<ncw::NcwReader<Bytes>>),
     /// A reader supplied by another loader: fills frames from a start.
-    Custom(Reader),
+    Custom(Reader, usize),
 }
 
 /// Where an asset's frames are read from, reopened by each decode thread.
@@ -122,6 +122,10 @@ pub trait AssetSource: Send + Sync {
     fn open(&self) -> io::Result<SampleReader>;
     /// A validated persistent numeric header, when available.
     fn header(&self) -> Option<(u32, usize)> {
+        None
+    }
+    /// Maximum packed stereo bytes per source frame, for control-side preload planning.
+    fn frame_bytes(&self) -> Option<usize> {
         None
     }
     /// Playback/reload IO, counted separately from initial loading.
@@ -135,7 +139,12 @@ impl AssetSource for Source {
     fn header(&self) -> Option<(u32, usize)> {
         self.header
     }
-    fn open_stream(&self) -> io::Result<SampleReader> { SampleReader::open_counted(self, true) }
+    fn frame_bytes(&self) -> Option<usize> {
+        self.frame_bytes
+    }
+    fn open_stream(&self) -> io::Result<SampleReader> {
+        SampleReader::open_counted(self, true)
+    }
 }
 
 /// Random-access frames of one sample, converted exactly as a full decode.
@@ -182,7 +191,10 @@ impl SampleReader {
         if head.starts_with(b"FORM") {
             let mut reader = crate::pcm::Reader::open(Box::new(bytes)).map_err(|e| invalid(format!("AIFF: {e:#}")))?;
             let frames = usize::try_from(reader.frames).map_err(|_| invalid("AIFF too long".into()))?;
-            return Ok(Self::custom(reader.rate, frames, move |start, out| reader.read(start as u64, out).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))));
+            let width = reader.frame_bytes;
+            let mut sample = Self::custom(reader.rate, frames, move |start, out| reader.read(start as u64, out).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)));
+            if let Codec::Custom(_, native) = &mut sample.codec { *native = width; }
+            return Ok(sample);
         }
         let reader = ncw::NcwReader::read(bytes).map_err(|e| invalid(format!("NCW: {e}")))?;
         Ok(Self {
@@ -201,7 +213,7 @@ impl SampleReader {
         read: impl FnMut(usize, &mut [Frame]) -> io::Result<()> + Send + 'static,
     ) -> Self {
         Self {
-            codec: Codec::Custom(Box::new(read)),
+            codec: Codec::Custom(Box::new(read), 8),
             bytes: None,
             rate,
             frames,
@@ -215,6 +227,21 @@ impl SampleReader {
     pub fn frames(&self) -> usize {
         self.frames
     }
+    fn frame_bytes(&self) -> usize {
+        let bits = match &self.codec {
+            Codec::Wav(wav) => Some(wav.width * 8),
+            Codec::Ncw(ncw) if ncw.sample_format != ncw::SampleFormat::Float => {
+                Some(ncw.header.bits_per_sample as usize)
+            }
+            Codec::Custom(_, width) => return *width,
+            _ => None,
+        };
+        match bits {
+            Some(..=16) => 4,
+            Some(..=24) => 6,
+            _ => 8,
+        }
+    }
 
     /// Fill `out` with frames from `start`.
     pub fn read(&mut self, start: usize, out: &mut [Frame]) -> io::Result<()> {
@@ -223,7 +250,7 @@ impl SampleReader {
             return Err(io::ErrorKind::UnexpectedEof.into());
         }
         match &mut self.codec {
-            Codec::Custom(read) => read(start, out)?,
+            Codec::Custom(read, _) => read(start, out)?,
             Codec::Wav(wav) => {
                 let align = wav.width * wav.channels;
                 let bytes = self.bytes.as_mut().expect("WAV bytes");
@@ -338,16 +365,17 @@ pub(crate) fn head_frames(latency: Duration, rate: u32, policy: &StreamPolicy) -
 // Port from v1 0cb7a8a0:src/engine/bank.rs (Builder::keep_whole).
 /// Load samples whole instead of streaming them, smallest first, while
 /// they fit `room` bytes. Returns the bytes the rest would need.
-fn keep_whole(assets: &[Pcm], ranges: &mut [Vec<Range<usize>>], room: usize) -> usize {
-    let size = |i: usize| assets[i].frame_count().saturating_mul(8);
-    let resident = |list: &[Range<usize>]| list.iter().map(|r| r.end - r.start).sum::<usize>() * 8;
-    let mut streamed: Vec<_> = (0..ranges.len()).filter(|&i| !ranges[i].is_empty() && resident(&ranges[i]) < size(i)).collect();
+fn keep_whole(assets: &[Pcm], ranges: &mut [Vec<Range<usize>>], frame_bytes: &[usize], room: usize) -> usize {
+    assert_eq!(assets.len(), frame_bytes.len());
+    let size = |i: usize| assets[i].frame_count().saturating_mul(frame_bytes[i]);
+    let resident = |i: usize, list: &[Range<usize>]| list.iter().map(|r| r.end - r.start).sum::<usize>() * frame_bytes[i];
+    let mut streamed: Vec<_> = (0..ranges.len()).filter(|&i| !ranges[i].is_empty() && resident(i, &ranges[i]) < size(i)).collect();
     streamed.sort_by_key(|&i| size(i));
-    let bytes: usize = ranges.iter().map(|r| resident(r)).sum();
+    let bytes: usize = ranges.iter().enumerate().map(|(i,r)| resident(i,r)).sum();
     let mut room = room.saturating_sub(bytes);
     let mut needed = 0;
     for i in streamed {
-        let more = size(i).saturating_sub(resident(&ranges[i]));
+        let more = size(i).saturating_sub(resident(i, &ranges[i]));
         if more <= room {
             room -= more;
             ranges[i] = std::iter::once(0..assets[i].frame_count()).collect();
@@ -363,20 +391,26 @@ fn keep_whole(assets: &[Pcm], ranges: &mut [Vec<Range<usize>>], room: usize) -> 
 /// Streamed assets before their start ranges are read.
 pub(crate) struct Opened {
     pub assets: Vec<Pcm>,
+    pub frame_bytes: Vec<usize>,
     pub sources: HashMap<AssetId, Arc<dyn AssetSource>>,
     pub report: StreamReport,
     pub policy: StreamPolicy,
 }
 
 /// Read `ranges` of `pcm` from `reader` and make them resident; their bytes.
-fn load_ranges(pcm: &Pcm, reader: &mut SampleReader, ranges: &[Range<usize>]) -> io::Result<usize> {
+fn load_ranges(
+    pcm: &Pcm,
+    reader: &mut SampleReader,
+    ranges: &[Range<usize>],
+    compress: bool,
+) -> io::Result<usize> {
     let mut resident = Vec::with_capacity(ranges.len());
     for range in ranges {
         let mut frames = vec![[0.0; 2]; range.len()];
         reader.read(range.start, &mut frames)?;
         resident.push((range.start, frames.into_boxed_slice()));
     }
-    pcm.set_ranges(resident)
+    pcm.set_ranges_with_compression(resident, compress)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
     Ok(pcm.head_bytes())
 }
@@ -385,7 +419,7 @@ fn load_ranges(pcm: &Pcm, reader: &mut SampleReader, ranges: &[Range<usize>]) ->
 /// decode threads. Purge and reload start ranges here; the runtime owns voice rings.
 pub struct Streamer {
     sources: Arc<HashMap<AssetId, Arc<dyn AssetSource>>>,
-    ranges: Arc<HashMap<AssetId, Vec<Range<usize>>>>,
+    ranges: Arc<HashMap<AssetId, (Vec<Range<usize>>, bool)>>,
     stop: Arc<AtomicBool>,
     threads: Vec<JoinHandle<()>>,
     reloader: Option<JoinHandle<()>>,
@@ -427,14 +461,19 @@ impl Streamer {
                                     if canceled() {
                                         return Err(LoadError::Canceled);
                                     }
-                                    if let Some((rate, frames)) = source.header() {
+                                    if let (Some((rate, frames)), Some(width)) =
+                                        (source.header(), source.frame_bytes())
+                                    {
+                                        if !matches!(width, 4 | 6 | 8) {
+                                            return Err(LoadError::Invalid { path:(*path).into(), reason:"invalid native frame width".into() });
+                                        }
                                         let pcm = Pcm::streamed(rate, frames).map_err(|e| {
                                             LoadError::Invalid {
                                                 path: (*path).into(),
                                                 reason: e.to_string(),
                                             }
                                         })?;
-                                        return Ok((pcm, None));
+                                        return Ok((pcm, None, width));
                                     }
                                     let begin = Instant::now();
                                     let mut reader =
@@ -453,7 +492,7 @@ impl Streamer {
                                             path: (*path).into(),
                                             reason: e.to_string(),
                                         })?;
-                                    Ok((pcm, latency))
+                                    Ok((pcm, latency, reader.frame_bytes()))
                                 })();
                                 (i, result)
                             })
@@ -473,15 +512,17 @@ impl Streamer {
         })?;
         let mut latencies = Vec::new();
         let mut assets = Vec::with_capacity(sources.len());
+        let mut frame_bytes = Vec::with_capacity(sources.len());
         let mut registry = HashMap::with_capacity(sources.len());
         let mut full = 0;
-        for ((source, _), (pcm, latency)) in sources.into_iter().zip(opened) {
+        for ((source, _), (pcm, latency, width)) in sources.into_iter().zip(opened) {
             if let Some(latency) = latency {
                 latencies.push(latency);
             }
             full += pcm.frame_count() as u64 * size_of::<Frame>() as u64;
             registry.insert(pcm.asset_id(), source);
             assets.push(pcm);
+            frame_bytes.push(width);
         }
         latencies.sort_unstable();
         let at = |q: usize| {
@@ -506,6 +547,7 @@ impl Streamer {
         };
         Ok(Opened {
             assets,
+            frame_bytes,
             sources: registry,
             report,
             policy: *policy,
@@ -518,6 +560,7 @@ impl Streamer {
         sources: HashMap<AssetId, Arc<dyn AssetSource>>,
         assets: &[Pcm],
         ranges: Vec<Vec<Range<usize>>>,
+        compressed: Vec<bool>,
         worker: StreamWorker,
         decoders: usize,
         lazy: bool,
@@ -526,12 +569,12 @@ impl Streamer {
         let span = crate::audit::Span::new("sample_preload");
         let mut bytes = 0;
         let mut table = HashMap::with_capacity(assets.len());
-        for (pcm, ranges) in assets.iter().zip(ranges) {
+        for ((pcm, ranges), compress) in assets.iter().zip(ranges).zip(compressed) {
             if !lazy && !ranges.is_empty() {
                 let mut reader = sources[&pcm.asset_id()].open()?;
-                bytes += load_ranges(pcm, &mut reader, &ranges)?;
+                bytes += load_ranges(pcm, &mut reader, &ranges, compress)?;
             }
-            table.insert(pcm.asset_id(), ranges);
+            table.insert(pcm.asset_id(), (ranges, compress));
         }
         drop(span);
         let sources = Arc::new(sources);
@@ -622,7 +665,7 @@ impl Streamer {
 fn reload(
     assets: &[Pcm],
     sources: &HashMap<AssetId, Arc<dyn AssetSource>>,
-    ranges: &HashMap<AssetId, Vec<Range<usize>>>,
+    ranges: &HashMap<AssetId, (Vec<Range<usize>>, bool)>,
     budget: usize,
 ) -> io::Result<usize> {
     let mut count = 0;
@@ -631,7 +674,7 @@ fn reload(
             continue;
         }
         let id = pcm.asset_id();
-        let (Some(source), Some(ranges)) = (sources.get(&id), ranges.get(&id)) else {
+        let (Some(source), Some((ranges, compress))) = (sources.get(&id), ranges.get(&id)) else {
             continue;
         };
         // Starts get their onset from the prioritized page workers as well.
@@ -643,13 +686,22 @@ fn reload(
             .sum::<usize>();
         let held = assets.iter().map(Pcm::head_bytes).sum::<usize>();
         if held.saturating_add(estimate) <= budget {
-        if let Err(error) = source.open_stream().and_then(|mut reader| load_ranges(pcm, &mut reader, ranges)) {
-            if !matches!(error.kind(), io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof | io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied) {
-                pcm.mark_cold();
+            if let Err(error) = source
+                .open_stream()
+                .and_then(|mut reader| load_ranges(pcm, &mut reader, ranges, *compress))
+            {
+                if !matches!(
+                    error.kind(),
+                    io::ErrorKind::InvalidData
+                        | io::ErrorKind::UnexpectedEof
+                        | io::ErrorKind::NotFound
+                        | io::ErrorKind::PermissionDenied
+                ) {
+                    pcm.mark_cold();
+                }
+                return Err(error);
             }
-            return Err(error);
-        }
-        count += 1;
+            count += 1;
         }
     }
     Ok(count)
@@ -720,6 +772,7 @@ impl Streamed {
     ) -> Result<Self, LoadError> {
         let Opened {
             assets,
+            frame_bytes,
             sources,
             mut report,
             policy,
@@ -732,14 +785,37 @@ impl Streamed {
             .map_err(|e| invalid(e.to_string()))?;
         report.pool_bytes = cache.bytes();
         report.pool_pages = report.pool_bytes / (PAGE_FRAMES * size_of::<Frame>());
-        let (mut ranges, preload) = preload::plan(&loaded.instrument, &kept,
-            &loaded.plan.preload_start_offsets(), policy.head_budget);
-        if let Some(room) = policy.resident_budget { keep_whole(&kept, &mut ranges, room); }
+        let widths: HashMap<_, _> = assets
+            .iter()
+            .zip(frame_bytes)
+            .map(|(pcm, width)| (pcm.asset_id(), width))
+            .collect();
+        let widths: Vec<_> = kept.iter().map(|pcm| widths[&pcm.asset_id()]).collect();
+        let (mut ranges, preload) = preload::plan(
+            &loaded.instrument,
+            &kept,
+            &loaded.plan.preload_start_offsets(),
+            &widths,
+            policy.head_budget.saturating_sub(cache.bytes()),
+        );
+        if let Some(room) = policy.resident_budget {
+            keep_whole(&kept, &mut ranges, &widths, room);
+        }
         report.head_frames = preload;
+        let compressed = preload::compression(&loaded.instrument, &kept, &ranges, preload);
+        let planned_spans = ranges.iter().map(Vec::len).sum::<usize>();
+        let planned_frames = ranges.iter().flatten().map(Range::len).sum::<usize>();
+        let planned_bytes = ranges
+            .iter()
+            .zip(&widths)
+            .map(|(rs, width)| rs.iter().map(|r| r.len() * width).sum::<usize>())
+            .sum::<usize>();
+        let head_assets = ranges.iter().filter(|rs| !rs.is_empty()).count();
         let (streamer, bytes) = Streamer::start(
             sources,
             &kept,
             ranges,
+            compressed,
             worker,
             policy.decoders,
             policy.lazy,
@@ -747,6 +823,22 @@ impl Streamed {
         )
         .map_err(|e| invalid(e.to_string()))?;
         report.head_bytes = bytes;
+        if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
+            let (packed_spans, packed_frames) = kept
+                .iter()
+                .map(Pcm::head_compression)
+                .fold((0, 0), |(s, f), (a, b)| (s + a, f + b));
+            let widths = [
+                widths.iter().filter(|&&w| w == 4).count(),
+                widths.iter().filter(|&&w| w == 6).count(),
+                widths.iter().filter(|&&w| w == 8).count(),
+            ];
+            eprintln!(
+                "AUDIT {{\"stage\":\"stream_head_owners\",\"assets\":{},\"head_assets\":{head_assets},\"planned_spans\":{planned_spans},\"planned_frames\":{planned_frames},\"planned_native_bytes\":{planned_bytes},\"packed_spans\":{packed_spans},\"packed_frames\":{packed_frames},\"actual_head_bytes\":{bytes},\"ring_virtual_bytes\":{},\"preload\":{preload},\"source_width_counts\":{widths:?}}}",
+                kept.len(),
+                report.pool_bytes
+            );
+        }
         cache.set_wake(
             streamer
                 .threads
@@ -873,6 +965,7 @@ mod tests {
             sources,
             std::slice::from_ref(&pcm),
             vec![vec![0..4096]],
+            vec![true],
             worker,
             1,
             true,
@@ -892,12 +985,12 @@ mod tests {
     fn v1_ram_mode_fills_small_samples_first_and_streams_over_budget() {
         let assets: Vec<_> = [1000, 4000, 2000].into_iter().map(|n| Pcm::streamed(48000, n).unwrap()).collect();
         let mut heads = vec![vec![0..100]; 3];
-        let needed = keep_whole(&assets, &mut heads, 24000 + 800);
+        let needed = keep_whole(&assets, &mut heads, &[8;3], 24000 + 800);
         assert_eq!(heads[0], vec![0..1000]);
         assert_eq!(heads[2], vec![0..2000]);
         assert_eq!(heads[1], vec![0..100], "large sample falls back to streaming");
         assert_eq!(needed, (4000 - 100) * 8);
-        keep_whole(&assets, &mut heads, usize::MAX);
+        keep_whole(&assets, &mut heads, &[8;3], usize::MAX);
         assert_eq!(heads[1], vec![0..4000]);
     }
 
@@ -913,6 +1006,7 @@ mod tests {
             HashMap::new(),
             &assets,
             vec![vec![]; 3],
+            vec![true; 3],
             worker,
             1,
             false,
@@ -957,6 +1051,7 @@ mod tests {
             let before = DISK_READ.load(Ordering::Relaxed);
             let mut reader = SampleReader::open(&source).unwrap();
             assert_eq!((reader.frames(), reader.rate()), (40000, 44100));
+            assert_eq!(reader.frame_bytes(), 4);
             for range in [0..40000, 511..1025, 39999..40000, 1000..1000, 32000..33000] {
                 let mut out = vec![[0.0; 2]; range.len()];
                 reader.read(range.start, &mut out).unwrap();

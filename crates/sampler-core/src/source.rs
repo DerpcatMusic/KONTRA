@@ -1615,8 +1615,23 @@ impl ReadFrames for PagedFrames<'_> {
         self.cache.span(self.asset, range)
     }
     fn copy(&self, range: std::ops::Range<usize>, out: &mut [Frame]) -> bool {
-        if let Some((_,ring)) = &self.traversal {
+        if let Some((cursor,ring)) = &self.traversal {
             if ring.as_ref().is_some_and(|r| r.copy(range.start as u64..range.end as u64,out)) { return true; }
+            // Decode a predictive resident block once for the contiguous window.
+            if cursor.loops.is_none() && !range.is_empty()
+                && let (Some(first),Some(last)) = (cursor.address(range.start as i128), cursor.address((range.end-1) as i128))
+                && first.crossfade.is_none() && last.crossfade.is_none() {
+                let mut at = *cursor; at.position = range.start as u64;
+                let (_,count,direction) = at.span();
+                let (low,high) = (first.primary.min(last.primary), first.primary.max(last.primary));
+                if count >= range.len() && high-low+1 == range.len()
+                    && let Some((start,frames)) = self.range(low)
+                    && high-start < frames.len() {
+                    frames.copy(low-start, out);
+                    if direction == Direction::Reverse { out.reverse(); }
+                    return true;
+                }
+            }
             for (at,frame) in range.zip(out) {
                 let Some(value) = self.frame(at) else { return false; }; *frame=value;
             }
