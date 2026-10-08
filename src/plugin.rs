@@ -95,6 +95,8 @@ pub struct Part {
     pub snapshot: String,
     /// Kontakt control identities and semantic values, independent of presentation.
     pub control_values: Vec<SavedControl>,
+    pub script_state: String,
+    pub script_state_source: String,
 }
 
 impl Default for Part {
@@ -129,6 +131,8 @@ impl Default for Part {
             mpe_upper: false,
             snapshot: String::new(),
             control_values: Vec::new(),
+            script_state: String::new(),
+            script_state_source: String::new(),
         }
     }
 }
@@ -321,7 +325,11 @@ impl SamplerParams {
         self.shared.capture_ui_controls(&mut selection);
         let mut current = self.selection.write().unwrap();
         for (part, captured) in current.parts.iter_mut().zip(selection.parts) {
-            if part.source() == captured.source() { part.control_values = captured.control_values; }
+            if part.source() == captured.source() {
+                part.control_values = captured.control_values;
+                part.script_state = captured.script_state;
+                part.script_state_source = captured.script_state_source;
+            }
         }
     }
 
@@ -1099,6 +1107,11 @@ impl Shared {
             if sources.get(slot).and_then(Option::as_ref) != Some(&part.source()) { continue; }
             if let Some(atoms) = self.part(slot) {
                 part.control_values = atoms.control_values().into_iter().filter(|(_, value)| value.is_finite()).map(|(id, value)| SavedControl::new(id, value)).collect();
+                if let Some(state) = atoms.ingress.lock().unwrap().as_ref().and_then(|client|client.save_script_state()) {
+                    part.script_state_source = serde_json::to_string(&part.source()).unwrap();
+                    part.script_state = state;
+                }
+
             }
         }
     }
@@ -1609,7 +1622,16 @@ fn load_part(params: &SamplerParams, slot: usize, prepared: Option<crate::sound:
         },
     };
     let mut progress = |p: Progress| atoms.load_progress.store(u32::from(p.0), Ordering::Relaxed);
-    let result = state.and_then(|_| match prepared { Some(loaded) if !canceled() => Ok(loaded), Some(_) => Err(CoreError::Canceled), None => V2Loader.prepare(&request, &mut progress, &canceled) });
+    let result = state.and_then(|_| match prepared { Some(loaded) if !canceled() => Ok(loaded), Some(_) => Err(CoreError::Canceled), None => V2Loader.prepare(&request, &mut progress, &canceled) }).and_then(|mut loaded| {
+        if let Some(runtime) = loaded.part.as_mut() {
+            let saved = if part.script_state_source == serde_json::to_string(&source).unwrap() { part.script_state.as_str() } else { "" };
+            runtime.prepare_persistence(&loaded.scripts.views, saved)?;
+            for (id, value) in &mut loaded.controls {
+                if let Some(current) = runtime.persistent_control_value(*id) { *value = current; }
+            }
+        }
+        Ok(loaded)
+    });
     let mut view = shared.view.lock().unwrap();
     let v = &mut view.parts[slot];
     v.loading = false;
@@ -2590,6 +2612,8 @@ pub(crate) mod tests {
 mod loop_audit;
 #[cfg(test)]
 mod pressed_tests;
+#[cfg(test)]
+mod persistence_tests;
 
 #[cfg(test)]
 mod settings_parity_tests {
