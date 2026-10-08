@@ -340,6 +340,7 @@ impl Runtime {
             let n = self.notes.get(f.note.0).unwrap();
             let expression = self.expressions.get(n.expression.0).unwrap();
             gains[lane] = expression.rendered.gains;
+            v.last_gains = gains[lane].map(|g| g * v.gain);
             v.cursor = v.cursor.with_step(v.base_step * expression.rendered.ratio);
             let plan = self.plans.get(n.plan.0).unwrap();
             plan_id = Some(n.plan.0);
@@ -663,6 +664,7 @@ impl Runtime {
             let m = |c: usize| r.from.gains[c].abs().max(r.to.gains[c].abs());
             [gains[0] * m(0), gains[1] * m(1)]
         });
+        v.last_gains = applied.map(|g| g * v.gain);
         let done = done || stop || inaudible(v, produced, applied);
         self.nonfinite_frames = self.nonfinite_frames.saturating_add(faults);
         self.stream_underruns = self.stream_underruns.saturating_add(u64::from(underrun));
