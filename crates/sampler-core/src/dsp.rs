@@ -938,10 +938,10 @@ pub(super) fn process<const TRACE: bool>(
             PreparedProcessor::Decimate(decimator) => decimator.process(state, block, len),
             PreparedProcessor::LoFi(lofi) => lofi.process(state, block, len),
             PreparedProcessor::Daft(daft) => daft.process(state, parameters, block, len, at,
-                filters.bank.native_cutoff(daft.modulation_index)[0]),
+                filters.bank.native_knobs(daft.modulation_index)),
             PreparedProcessor::LadderLP4 { ladder, offset } => {
                 fault |= ladder.process(state, &mut delay_samples[*offset..*offset + ladder::CELLS], parameters, block, len, at,
-                    filters.bank.native_cutoff(ladder.modulation_index));
+                    filters.bank.native_knobs(ladder.modulation_index));
             }
             PreparedProcessor::StereoModeller { stereo, offset } => {
                 stereo.process(

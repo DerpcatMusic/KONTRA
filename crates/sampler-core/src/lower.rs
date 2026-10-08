@@ -997,9 +997,12 @@ impl Lowering<'_> {
                         unsupported(owner.clone(), Feature::ModulationRoute(route.target))
                     })?;
                     match (parameter, depth) {
-                        (ir::ProcessorParameter::Cutoff, ir::Depth::Normalized(d))
+                        (parameter, ir::Depth::Normalized(d))
                             if matches!(**processor, ir::Processor::LadderLP4(_) | ir::Processor::Daft(_)) => {
-                            (ModTarget::ProcessorNativeCutoff(first), d)
+                            (match parameter { ir::ProcessorParameter::Cutoff => ModTarget::ProcessorNativeCutoff(first),
+                                ir::ProcessorParameter::Resonance => ModTarget::ProcessorNativeResonance(first),
+                                ir::ProcessorParameter::Gain => ModTarget::ProcessorNativeGain(first),
+                                _ => return Err(unsupported(owner, Feature::ModulationRoute(route.target))), }, d)
                         }
                         (ir::ProcessorParameter::Cutoff, ir::Depth::Pitch(p)) => {
                             (ModTarget::ProcessorCutoff(first), p.semitones())
@@ -1075,6 +1078,8 @@ impl Lowering<'_> {
                     ModTarget::ProcessorCutoff(_) => ModTarget::ProcessorCutoff(index),
                     ModTarget::ProcessorResonance(_) => ModTarget::ProcessorResonance(index),
                     ModTarget::ProcessorNativeCutoff(_) => ModTarget::ProcessorNativeCutoff(index),
+                    ModTarget::ProcessorNativeResonance(_) => ModTarget::ProcessorNativeResonance(index),
+                    ModTarget::ProcessorNativeGain(_) => ModTarget::ProcessorNativeGain(index),
                     _ => unreachable!(),
                 };
                 program.routes.push(ModRoute { target, ..native });

@@ -768,7 +768,9 @@ impl Prepared {
                     super::ModTarget::ProcessorCutoff(i)
                     | super::ModTarget::ProcessorResonance(i) => !matches!(self.filters.get(i as usize),
                         Some(super::dsp::svf::PreparedFilter::StateVariable(_))),
-                    super::ModTarget::ProcessorNativeCutoff(i) => !matches!(self.filters.get(i as usize),
+                    super::ModTarget::ProcessorNativeCutoff(i)
+                    | super::ModTarget::ProcessorNativeResonance(i)
+                    | super::ModTarget::ProcessorNativeGain(i) => !matches!(self.filters.get(i as usize),
                         Some(super::dsp::svf::PreparedFilter::NativeControl)),
                     _ => false,
                 })
