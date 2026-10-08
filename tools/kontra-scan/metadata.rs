@@ -19,7 +19,8 @@ pub fn sigil(bytes: &[u8]) -> &'static str {
     }
 }
 // Bounded framing check: params() deliberately suppresses malformed saved tables.
-fn table(data: &[u8], _version: u16) -> (&'static str, BTreeMap<String, usize>) {
+fn table(data: &[u8], version: u16) -> (&'static str, BTreeMap<String, usize>) {
+    if version!=0x50 {return ("unknown",BTreeMap::new())}
     fn word(d: &mut &[u8]) -> Option<usize> {
         let (a, b) = d.split_at_checked(4)?;
         *d = b;
@@ -79,6 +80,11 @@ pub fn inspect_with(chunks: &[Chunk], validate: fn(&[u8],u16)->(&'static str,BTr
     json!({"slots":out,"symbol_whitelist_count":include_str!("ui-symbols.txt").lines().count(),"symbol_whitelist_hash":blake3::hash(include_str!("ui-symbols.txt").as_bytes()).to_hex().to_string()})
 }
 
+// Saved-table integrity is independent of successfully decoded source parameters.
+fn source_category(bypassed: bool, empty: bool, linked: bool) -> &'static str {
+    if bypassed {"bypassed"} else if !empty {"inline_nonempty"} else if linked {"linked_only"} else {"empty"}
+}
+
 fn children(chunks: &[Chunk], owner: &str, program: u32, next: &mut u32, out: &mut Vec<Value>, validate: fn(&[u8],u16)->(&'static str,BTreeMap<String,usize>)) {
     let mut slot = 0;
     for c in chunks {
@@ -93,7 +99,7 @@ fn children(chunks: &[Chunk], owner: &str, program: u32, next: &mut u32, out: &m
                     let source_state=match s.text.as_deref(){None=>"absent",Some("")=>"zero_bytes",Some(t)if t.trim().is_empty()=>"whitespace_only",_=>"nonempty"};
                     let empty=source_state!="nonempty";
                     let linked=s.textfile_name.as_ref().is_some_and(|n|!n.is_empty());
-                    let category=if matches!(integrity,"malformed"|"unknown"){"decode_failed"}else if s.bypass{"bypassed"}else if !empty{"inline_nonempty"}else if s.textfile_name.as_ref().is_some_and(|n|!n.trim().is_empty()){"linked_only"}else{"empty"};
+                    let category=source_category(s.bypass,empty,s.textfile_name.as_ref().is_some_and(|n|!n.trim().is_empty()));
                     let disposition=if s.bypass{"bypassed"}else if !empty{"embedded"}else if linked{"linked_unresolved"}else{"empty"};
                     let symbols=s.text.as_deref().map(super::symbols).unwrap_or_default();
                     out.push(json!({"owner":owner,"program_index":program,"slot":slot,"wire_slot":slot,"runtime_slot":null,"raw_category":category,"effective_source_kind":null,"bypassed":s.bypass,
@@ -154,6 +160,10 @@ fn walk(c: &Chunk, owner: &str, program: u32, next: &mut u32, out: &mut Vec<Valu
 mod tests {
     #[test]
     fn scanner_counts_fixed_sigils_and_saved_framing() {
+        assert_eq!(super::source_category(false,false,true), "inline_nonempty");
+        assert_eq!(super::source_category(true,false,true), "bypassed");
+        assert_eq!(super::source_category(false,true,true), "linked_only");
+        assert_eq!(super::source_category(false,true,false), "empty");
         let mut d = Vec::new();
         d.extend(u32::MAX.to_le_bytes());
         d.extend([0; 3]);
@@ -161,6 +171,7 @@ mod tests {
         d.extend(u32::MAX.to_le_bytes());
         d.extend(u32::MAX.to_le_bytes());
         assert_eq!(super::table(&d,0x50).0, "absent");
+        assert_eq!(super::table(&d,0x51).0, "unknown");
         d.extend(3u32.to_le_bytes());
         for e in [b"!private payload".as_slice(), b"$private 1", b" private"] {
             d.extend((e.len() as u32).to_le_bytes());
