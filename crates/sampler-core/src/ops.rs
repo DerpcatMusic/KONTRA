@@ -157,6 +157,9 @@ pub enum TextPart {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Op {
+    Midi { action: crate::MidiAction, args: u16, local: u16, text: Option<TextRef> },
+    MidiFilename { text: TextRef },
+    WaitMidi { local:u16 },
     /// lhs := lhs op rhs.
     Real {
         lhs: u16,
@@ -335,11 +338,15 @@ impl Op {
             TextRef::Element { index, .. } => usize::from(index) + 1,
         };
         match self {
+            Self::Midi { action, args, local, text } => (usize::from(*args) + action.arguments()).max(usize::from(*local)+1).max(text.as_ref().map_or(0,reg)),
+            Self::MidiFilename { text } => reg(text),
             Self::Real { lhs, rhs, .. }
             | Self::CompareReal { lhs, rhs, .. }
             | Self::Integer { lhs, rhs, .. }
             | Self::Random { lhs, rhs } => usize::from(*lhs.max(rhs)) + 1,
             Self::RealUnary { local, .. }
+
+            | Self::WaitMidi { local }
             | Self::IntegerToReal { local }
             | Self::RealToInteger { local }
             | Self::ReadWidgetDropCount { local, .. }
@@ -412,7 +419,7 @@ impl Op {
             TextRef::Element { array, .. } => array.end(),
         };
         Ok(match self {
-            Self::TextClear { text } => (cell(text)?, 0),
+            Self::Midi {text:Some(text),..} | Self::MidiFilename {text} | Self::TextClear { text } => (cell(text)?, 0),
             Self::TextAppend { text, part } => match part {
                 TextPart::Constant(c) => (cell(text)?, usize::from(*c) + 1),
                 TextPart::Text(r) => (cell(text)?.max(cell(r)?), 0),
@@ -842,7 +849,7 @@ impl Runtime {
             None => None,
         })
     }
-    fn text_cell(&self, id: BehaviorId, text: TextRef) -> Result<usize, Error> {
+    pub(super) fn text_cell(&self, id: BehaviorId, text: TextRef) -> Result<usize, Error> {
         Ok(match text {
             TextRef::Cell(cell) => cell as usize,
             TextRef::Element { array, index } => array.cell(self.reg(id, index)?)? as usize,
@@ -861,6 +868,28 @@ impl Runtime {
         op: Op,
     ) -> Result<bool, Error> {
         match op {
+            Op::Midi { action, args, local, text } => {
+                let mut values=[0;5];
+                for (index,value) in values.iter_mut().take(action.arguments()).enumerate() { *value=i32_of(self.reg(id,args+index as u16)?)?; }
+                let text=match text {Some(text)=>{let cell=self.text_cell(id,text)?;Some(*self.behavior_bank(id)?.texts.get(cell).ok_or(Error::InvalidInput)?)},None=>None};
+                let plan=self.behavior_plan(owner)?;
+                let value=if action.asynchronous() {self.request_midi(id,plan,action,values,text)?}
+                    else {self.plans.get_mut(plan.0).ok_or(Error::StaleHandle)?.midi_object.apply(action,&values,text)?};
+                self.set_reg(id,local,i64::from(value))?;
+            }
+            Op::WaitMidi {local} => {
+                let job=i32_of(self.reg(id,local)?)?;let plan=self.behavior_plan(owner)?;
+                if self.plans.get(plan.0).ok_or(Error::StaleHandle)?.midi_object.jobs.iter().any(|j|j.id==job) {
+                    let c=self.behaviors.get_mut(id.0).ok_or(Error::StaleHandle)?;
+                    if !c.disable_wait {c.waiting=true;c.async_wait=Some(job);return Ok(true);}
+                }
+            }
+            Op::MidiFilename { text } => {
+                let plan=self.behavior_plan(owner)?;
+                let value=self.plans.get(plan.0).ok_or(Error::StaleHandle)?.midi_object.filename;
+                let cell=self.text_cell(id,text)?;
+                self.behavior_bank(id)?.texts[cell].push(value.as_str());
+            }
             Op::Real {
                 lhs,
                 rhs,
@@ -1416,12 +1445,10 @@ impl Runtime {
                 self.set_reg(id, local, value)?;
             }
             Op::ReadHost { local, slot } => {
-                let value = *self
-                    .ops
-                    .host
-                    .get(usize::from(slot))
-                    .ok_or(Error::InvalidInput)?;
-                self.set_reg(id, local, value)?;
+                let result=self.behaviors.get(id.0).ok_or(Error::StaleHandle)?.async_result;
+                let value=match (slot,result) {(6,Some((job,_)))=>i64::from(job),(7,Some((_,status)))=>i64::from(status),
+                    _=>*self.ops.host.get(usize::from(slot)).ok_or(Error::InvalidInput)?};
+                self.set_reg(id,local,value)?;
             }
             Op::ReadClock { local, micros } => {
                 let elapsed = u128::from(self.now) * 1_000_000
