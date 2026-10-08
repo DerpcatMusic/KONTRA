@@ -207,6 +207,7 @@ struct Program {
     envelopes: Box<[Envelope]>,
     breakpoints: Box<[Breakpoints]>,
     routes: Box<[ModRoute]>,
+    addressed_filters: Box<[u32]>,
     shapes: Box<[Shape]>,
     /// Whether any route reaches each kind of output, so unused work is skipped.
     filter: bool,
@@ -353,6 +354,18 @@ impl VoiceModulation {
             }
             let reaches =
                 |targets: &[ModTarget]| program.routes.iter().any(|r| targets.contains(&r.target));
+            let mut addressed_filters: Vec<_> = program
+                .routes
+                .iter()
+                .filter_map(|route| match route.target {
+                    ModTarget::ProcessorCutoff(index) | ModTarget::ProcessorResonance(index) => {
+                        Some(index)
+                    }
+                    _ => None,
+                })
+                .collect();
+            addressed_filters.sort_unstable();
+            addressed_filters.dedup();
             compiled.push(Program {
                 bipolar: program.sources.iter().map(ModSource::bipolar).collect(),
                 sources,
@@ -361,6 +374,7 @@ impl VoiceModulation {
                 filter: reaches(&[ModTarget::Cutoff, ModTarget::Resonance]),
                 tone: reaches(&[ModTarget::Tone]),
                 start: reaches(&[ModTarget::SampleStart]),
+                addressed_filters: addressed_filters.into_boxed_slice(),
                 routes: program.routes.into_boxed_slice(),
                 shapes: shapes.into_boxed_slice(),
             });
@@ -773,23 +787,34 @@ impl VoiceModState {
         modulation: &VoiceModulation,
         voice: usize,
         factors: &mut [[f64; 2]],
-    ) {
-        factors.fill([0.0; 2]);
-        if let Some(program) = self.program(voice) {
-            let p = &modulation.programs[program as usize];
-            let offset = voice * self.routes;
-            for (i, route) in p.routes.iter().enumerate() {
-                let value = (self.processor_values[offset + i]
-                    + self.previous_processor_values[offset + i])
-                    * 0.5;
-                match route.target {
-                    ModTarget::ProcessorCutoff(index) => factors[index as usize][0] += value,
-                    ModTarget::ProcessorResonance(index) => factors[index as usize][1] += value,
-                    _ => {}
-                }
+        previous: Option<u32>,
+    ) -> Option<u32> {
+        if let Some(previous) = previous {
+            for &index in &modulation.programs[previous as usize].addressed_filters {
+                factors[index as usize] = [1.0; 2];
             }
         }
-        for factor in factors {
+        let program = self.program(voice)?;
+        let p = &modulation.programs[program as usize];
+        if p.addressed_filters.is_empty() {
+            return None;
+        }
+        for &index in &p.addressed_filters {
+            factors[index as usize] = [0.0; 2];
+        }
+        let offset = voice * self.routes;
+        for (i, route) in p.routes.iter().enumerate() {
+            let (index, component) = match route.target {
+                ModTarget::ProcessorCutoff(index) => (index, 0),
+                ModTarget::ProcessorResonance(index) => (index, 1),
+                _ => continue,
+            };
+            factors[index as usize][component] += (self.processor_values[offset + i]
+                + self.previous_processor_values[offset + i])
+                * 0.5;
+        }
+        for &index in &p.addressed_filters {
+            let factor = &mut factors[index as usize];
             // Most prepared filters have no route for this voice.
             *factor = [
                 if factor[0] == 0.0 {
@@ -804,6 +829,7 @@ impl VoiceModState {
                 },
             ];
         }
+        Some(program)
     }
 
     /// Bind a starting voice and compute its first control point, so the first
@@ -1150,8 +1176,8 @@ mod tests {
         state
             .processor_values
             .copy_from_slice(&[8., 10., 30., -40., 40.]);
-        let mut factors = [[9.; 2]; 128];
-        state.fill_filter_factors(&modulation, 0, &mut factors);
+        let mut factors = [[1.; 2]; 128];
+        let previous = state.fill_filter_factors(&modulation, 0, &mut factors, None);
         assert_eq!(factors[1], [2., 10.]);
         assert!(
             factors
@@ -1161,7 +1187,10 @@ mod tests {
         );
         // A subsequent voice must not inherit the previous addressed factors.
         state.stop(0);
-        state.fill_filter_factors(&modulation, 0, &mut factors);
+        assert_eq!(
+            state.fill_filter_factors(&modulation, 0, &mut factors, previous),
+            None
+        );
         assert!(factors.iter().all(|f| *f == [1.; 2]));
     }
 

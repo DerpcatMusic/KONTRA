@@ -73,6 +73,91 @@ fn render(rt: &mut Runtime, frames: usize, block: usize) -> Vec<Frame> {
 }
 
 #[test]
+fn addressed_filters_do_not_leak_into_other_voices_without_heap() {
+    let filtered = |hz| {
+        VoiceChain::new(
+            vec![],
+            vec![Processor::StateVariable(StateVariableFilter {
+                mode: SvfMode::LowPass,
+                cutoff_hz: Parameter::Constant(hz),
+                q: Parameter::Constant(0.7),
+            })],
+            0,
+        )
+        .unwrap()
+    };
+    let prepare = |addressed| {
+        let region = |key| Region {
+            sample: 0,
+            key_low: key,
+            key_high: key,
+            root_key: None,
+            velocity_low: 0.,
+            velocity_high: 1.,
+            gain: 1.,
+            envelope: Envelope::default(),
+            playback: Playback::default(),
+        };
+        let base = Prepared::new(
+            48000,
+            vec![
+                Pcm::new(
+                    48000,
+                    (0..512).map(|i| [(i as f32 * 0.17).sin(); 2]).collect(),
+                )
+                .unwrap(),
+            ],
+            vec![region(60), region(61)],
+            2,
+        )
+        .unwrap()
+        .with_velocity_curves(vec![VelocityCurve::Constant; 2])
+        .unwrap();
+        if addressed {
+            base.with_voice_chains(vec![filtered(1000.)], vec![Some(0); 2])
+                .unwrap()
+                .with_voice_modulation(
+                    vec![program(
+                        vec![ModSource::Velocity],
+                        vec![ModRoute::new(0, ModTarget::ProcessorCutoff(0), 12.)],
+                    )],
+                    vec![Some(0), None],
+                    vec![0; 2],
+                )
+                .unwrap()
+        } else {
+            base.with_voice_chains(
+                vec![filtered(2000.), filtered(1000.)],
+                vec![Some(0), Some(1)],
+            )
+            .unwrap()
+        }
+    };
+    for block in [1, 17, 64, 128] {
+        let mut actual = Runtime::new(prepare(true), limits()).unwrap();
+        let mut reference = Runtime::new(prepare(false), limits()).unwrap();
+        let first = actual.trigger(input(1), 60, 1.).unwrap();
+        let first_reference = reference.trigger(input(1), 60, 1.).unwrap();
+        actual.trigger(input(2), 61, 1.).unwrap();
+        reference.trigger(input(2), 61, 1.).unwrap();
+        for after_release in [false, true] {
+            if after_release {
+                actual.release(first).unwrap();
+                reference.release(first_reference).unwrap();
+            }
+            let actual = render(&mut actual, 128, block);
+            let reference = render(&mut reference, 128, block);
+            for (a, b) in actual.iter().zip(reference) {
+                assert!(
+                    (a[0] - b[0]).abs() < 1e-6,
+                    "block {block}, release {after_release}: {a:?} != {b:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn envelope_attenuation_ramps_exactly_under_any_partition_without_heap() {
     // A 64-frame linear attack read through Kontakt's attenuate law at depth 1.
     let attack = Envelope::new(64, 0, 0, 1., 0).unwrap();
