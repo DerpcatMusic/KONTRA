@@ -29,6 +29,7 @@ pub struct WidgetDefinition {
     pub ui_id: i32,
     pub instance: ScriptInstanceId,
     pub storage: WidgetStorage,
+    pub drop: Option<WidgetDropStorage>,
     pub program: Option<usize>,
     pub stage: usize,
 }
@@ -37,7 +38,33 @@ pub enum WidgetValue {
     Integer(i64),
     Real(f64),
     Text(Text),
+    /// Owned bounded UTF-8 path. `index` remains the ordinal within this gesture;
+    /// it is never a string handle or an encoded scalar value.
+    DropPath {
+        kind: WidgetDropKind,
+        path: Text,
+    },
 }
+/// Maximum paths per file type in one gesture. Oversize gestures reject before
+/// any state/callback change; producers must not split one mouse move/drop.
+pub const WIDGET_DROP_CAPACITY: u32 = 32;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum WidgetDropKind {
+    Audio = 0,
+    Midi = 1,
+    Array = 2,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WidgetDropStorage {
+    pub texts: u32,
+    pub counts: u32,
+    /// Native script property keys; admission reads live properties, including
+    /// changes made after init. 0 rejects, 1 admits one, 2 admits multiple.
+    pub accepts: [[i32; crate::STORE_KEY]; 3],
+    pub receive_drag: [i32; crate::STORE_KEY],
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WidgetEdit {
     pub id: ControlId,
@@ -80,6 +107,9 @@ pub struct WidgetInteraction {
     pub modifiers: u8,
     pub event: i32,
     pub event_par: [i32; 4],
+    /// Native NI_MOUSE_OVER_CONTROL for drag enter/leave; coordinates/buttons
+    /// have no implicit slots in event_par (those are script custom cells).
+    pub mouse_over: bool,
 }
 /// Maximum cells in one mouse move/paste. One accepted transaction fires one
 /// ui_control callback, even when it crosses many columns. An oversized batch
@@ -141,6 +171,19 @@ impl Prepared {
                     }
                 }
             }
+            if let Some(drop) = w.drop {
+                if drop
+                    .texts
+                    .checked_add(3 * WIDGET_DROP_CAPACITY)
+                    .is_none_or(|n| n as usize > bank.texts.len())
+                    || drop
+                        .counts
+                        .checked_add(3)
+                        .is_none_or(|n| n as usize > bank.cells.len())
+                {
+                    return Err(Error::InvalidInput);
+                }
+            }
             if let Some(p) = w.program {
                 let p = self.programs.get(p).ok_or(Error::InvalidInput)?;
                 if p.requires_note
@@ -157,6 +200,21 @@ impl Prepared {
     }
 }
 impl Runtime {
+    pub(super) fn callback_drop_storage(
+        &self,
+        id: BehaviorId,
+        ui: i32,
+    ) -> Result<Option<WidgetDropStorage>, Error> {
+        let callback = self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
+        let plan = self.behavior_plan(callback.owner)?;
+        let prepared = &self.plans.get(plan.0).unwrap().prepared;
+        let instance = prepared.programs[callback.program].script_instance;
+        Ok(prepared
+            .widgets
+            .iter()
+            .find(|w| Some(w.instance) == instance && w.ui_id == ui)
+            .and_then(|w| w.drop))
+    }
     pub fn widget_definitions(&self, plan: PlanId) -> Result<&[WidgetDefinition], Error> {
         Ok(&self
             .plans
@@ -204,12 +262,10 @@ impl Runtime {
         index: u32,
     ) -> Result<WidgetValue, Error> {
         let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
-        let w = generation
-            .prepared
-            .widgets
-            .iter()
-            .find(|w| w.id == id)
-            .ok_or(Error::InvalidInput)?;
+        let widgets = &generation.prepared.widgets;
+        let w = &widgets[widgets
+            .binary_search_by_key(&id, |w| w.id)
+            .map_err(|_| Error::InvalidInput)?];
         let bank = &generation.scripts[usize::from(w.instance.0)];
         Ok(match w.storage {
             WidgetStorage::Control(control) if index == 0 => {
@@ -257,12 +313,10 @@ impl Runtime {
         let performance = self.performance_index(context.performance)?;
         self.apply_due();
         let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
-        let w = *generation
-            .prepared
-            .widgets
-            .iter()
-            .find(|w| w.id == edits[0].id)
-            .ok_or(Error::InvalidInput)?;
+        let widgets = &generation.prepared.widgets;
+        let w = widgets[widgets
+            .binary_search_by_key(&edits[0].id, |w| w.id)
+            .map_err(|_| Error::InvalidInput)?];
         let revision = self.control_revision(plan)?;
         if expected_revision.is_some_and(|r| r != revision) {
             return Err(Error::RevisionConflict);
@@ -278,8 +332,26 @@ impl Runtime {
             return Err(Error::InvalidInput);
         }
         let mut scalar = None;
+        let mut drop_counts = [0u32; 3];
+        let dropping = matches!(edits[0].value, WidgetValue::DropPath { .. });
         for e in edits {
             if e.interaction != edits[0].interaction {
+                return Err(Error::InvalidInput);
+            }
+            if let WidgetValue::DropPath { kind, .. } = e.value {
+                let count = &mut drop_counts[kind as usize];
+                *count += 1;
+                if w.drop.is_none()
+                    || !dropping
+                    || *count > WIDGET_DROP_CAPACITY
+                    || e.index as usize >= edits.len()
+                    || !matches!(e.interaction.event, 2..=5)
+                {
+                    return Err(Error::InvalidInput);
+                }
+                continue;
+            }
+            if dropping {
                 return Err(Error::InvalidInput);
             }
             match (w.storage, e.value) {
@@ -331,6 +403,25 @@ impl Runtime {
                 _ => return Err(Error::InvalidInput),
             }
         }
+        if let Some(drop) = w.drop {
+            let bank = &generation.scripts[usize::from(w.instance.0)];
+            if !matches!(edits[0].interaction.event, 2..=5)
+                || (matches!(edits[0].interaction.event, 2 | 4)
+                    && bank.store.get(drop.receive_drag).unwrap_or(0) == 0)
+            {
+                return Err(Error::InvalidInput);
+            }
+            for (kind, count) in drop_counts.into_iter().enumerate() {
+                let limit = match bank.store.get(drop.accepts[kind]).unwrap_or(0) {
+                    1 => 1,
+                    2 => WIDGET_DROP_CAPACITY,
+                    _ => 0,
+                };
+                if count > limit {
+                    return Err(Error::InvalidInput);
+                }
+            }
+        }
         let event = crate::behavior::PlanContext::Control(crate::control::ControlEvent {
             performance,
             origin: context.origin,
@@ -346,11 +437,27 @@ impl Runtime {
         }
         if let Some(write) = scalar {
             self.edit_controls_now(plan, expected_revision, &[write])?;
+            if let Some(drop) = w.drop {
+                self.plans.get_mut(plan.0).unwrap().scripts[usize::from(w.instance.0)].cells
+                    [drop.counts as usize..drop.counts as usize + 3]
+                    .fill(0);
+            }
         } else {
             let generation = self.plans.get_mut(plan.0).unwrap();
             let next = revision.checked_add(1).ok_or(Error::Capacity)?;
             let bank = &mut generation.scripts[usize::from(w.instance.0)];
+            if let Some(drop) = w.drop {
+                bank.cells[drop.counts as usize..drop.counts as usize + 3].fill(0);
+            }
             for e in edits {
+                if let WidgetValue::DropPath { kind, path } = e.value {
+                    let drop = w.drop.unwrap();
+                    let count = &mut bank.cells[drop.counts as usize + kind as usize];
+                    bank.texts[(drop.texts + kind as u32 * WIDGET_DROP_CAPACITY) as usize
+                        + *count as usize] = path;
+                    *count += 1;
+                    continue;
+                }
                 match (w.storage, e.value) {
                     (WidgetStorage::Cells { offset, .. }, WidgetValue::Integer(v)) => {
                         bank.cells[(offset + e.index) as usize] = v

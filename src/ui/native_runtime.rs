@@ -236,7 +236,7 @@ fn value(lua: &Lua, value: &ir::Value, index: Option<usize>) -> mlua::Result<Lua
     Ok(match value {
         ir::Value::Integer(n) => LuaValue::Integer(*n as i64),
         ir::Value::Real(n) => LuaValue::Number(*n),
-        ir::Value::Text(s) => LuaValue::String(lua.create_string(s)?),
+        ir::Value::Text(s) | ir::Value::DropPath {path:s,..} => LuaValue::String(lua.create_string(s)?),
         ir::Value::Integers(a) if index.is_some() => {
             LuaValue::Integer(a.get(index.unwrap()).copied().unwrap_or(0) as i64)
         }
