@@ -8,6 +8,15 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ## Unreleased
 
+### Follow-up to 0.3.306
+
+- Native script host recall now restores callback context, text and arrays; UVI host saves retain immediate scalar and custom state.
+- Native UI uses deterministic work limits and reports asset/process watchdog expiry as incomplete. Picture cache rejects oversized wanted sets without endless requeues.
+- Bank-volume samples reach their existing UVI resolver. Browser artwork, chrome, versioned Settings, upper-zone MPE and editor telemetry ownership are corrected.
+- Native Ladder/Daft cutoff, Q and Gain routes are retained, authored zero-weight Multi LFOs stay bipolar Zero, and settled modulation results are reused without changing PCM.
+- Correction: Contrabassoon's 748 ms onRelease sample ends at 2,248 ms. Its voice at the old 2,000 ms check was legitimate. Quick checks now wait for zero voices, with a five-second maximum release drain; empty script-note gate cleanup remains separate work.
+- CPU/RSS and native-law parity remain incomplete. W9 streaming and W8 chain sharing remain excluded pending acceptance. Existing KSP compile and DSP gaps are retained in the fidelity ledger.
+
 ### Fixed after 0.3.224
 
 The user explicitly authorized shipping this alpha now. The former all-axis v1

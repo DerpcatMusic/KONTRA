@@ -54,6 +54,7 @@ fn faults() -> (u64, u64) {
 
 const HOLD_SECONDS: f64 = 1.5;
 const TAIL_SECONDS: f64 = 0.5;
+const MAX_TAIL_SECONDS: f64 = 5.0;
 const VELOCITY: u8 = 64;
 
 #[derive(Clone, Debug)]
@@ -893,7 +894,10 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
     };
     let frame = |seconds: f64| (seconds * f64::from(rate)).round() as usize;
     let release_at = frame(HOLD_SECONDS);
-    let total = release_at + frame(TAIL_SECONDS);
+    let minimum = release_at + frame(TAIL_SECONDS);
+    let total = release_at + frame(MAX_TAIL_SECONDS);
+    let mut tail_blocks = std::collections::VecDeque::with_capacity(frame(0.25).div_ceil(64) + 1);
+    let mut rendered_frames = 0;
     let key = pick.key;
     let on = [0x2090_0000 | u32::from(key) << 8 | u32::from(pick.velocity)];
     let off = [0x2080_0000 | u32::from(key) << 8];
@@ -1082,15 +1086,19 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
             });
             rt.flush_ended(|_| true);
         }
+        let mut block_peak = 0.0f32;
         for x in buffer[..len].iter().flatten() {
             finite &= x.is_finite();
             peak = peak.max(x.abs());
-            // The last quarter second of the tail.
-            if begin + len > total - frame(0.25) {
-                tail_peak = tail_peak.max(x.abs());
-            }
+            block_peak = block_peak.max(x.abs());
         }
+        tail_blocks.push_back(block_peak);
+        if tail_blocks.len() > frame(0.25).div_ceil(buffer.len()) { tail_blocks.pop_front(); }
+        rendered_frames = begin + len;
+        let voices = match &rig { Rig::Midi { rt, .. } | Rig::Scripted { rt, .. } => rt.voice_count() };
+        if rendered_frames >= minimum && voices == 0 { break; }
     }
+    tail_peak = tail_blocks.into_iter().fold(tail_peak, f32::max);
     block_times.sort_by(f64::total_cmp);
     let q = |f: f64| block_times[((block_times.len() - 1) as f64 * f) as usize];
     let mut why_silent = None;
@@ -1108,6 +1116,8 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
     let st = rt.stats();
     let perf = json!({
         "block_frames": buffer.len(),
+        "release_drain_seconds": (rendered_frames - release_at) as f64 / f64::from(rate),
+        "release_drain_max_seconds": MAX_TAIL_SECONDS,
         "deadline_ms": deadline * 1e3,
         "block_p50_ms": q(0.5) * 1e3,
         "block_p99_ms": q(0.99) * 1e3,
