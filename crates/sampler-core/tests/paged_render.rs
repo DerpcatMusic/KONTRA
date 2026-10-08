@@ -69,6 +69,40 @@ fn load(
 }
 
 #[test]
+fn idle_pages_return_in_bounded_batches_and_reactivation_preserves_pcm_without_heap() {
+    let asset = Pcm::streamed(48000, PAGE_FRAMES * 33).unwrap();
+    let data = vec![[0.25, -0.5]; asset.frame_count()];
+    let (mut cache, mut worker) = StreamCache::new(33).unwrap();
+    for page in 0..33 { load(&mut cache, &mut worker, &asset, &data, page); }
+    let mut rt = runtime(vec![asset.clone()], vec![]).with_stream_cache(cache);
+    let mut idle = vec![[0.; 2]; 48000 * 5 - 1];
+    support::without_heap(|| {
+        rt.render(&mut idle).unwrap();
+        assert_eq!(rt.service_streaming(64), Ok(true));
+        assert_eq!(rt.stream_cache_mut().unwrap().frame(asset.asset_id(), 0), Some(data[0]));
+        rt.render(&mut [[0.; 2]; 1]).unwrap();
+        for (remaining, removed) in [(17, 16), (1, 32), (0, 33)] {
+            assert_eq!(rt.service_streaming(64), Ok(true));
+            let cache = rt.stream_cache_mut().unwrap();
+            assert_eq!((0..33).filter(|&page| cache.frame(asset.asset_id(), page * PAGE_FRAMES).is_some()).count(), remaining);
+            assert_eq!(cache.frame(asset.asset_id(), (removed - 1) * PAGE_FRAMES), None);
+        }
+        // No buffer is freed by audio, including when the return queue is full.
+        assert_eq!(rt.service_streaming(64), Ok(true));
+        assert!(worker.next_job().is_none());
+        load(rt.stream_cache_mut().unwrap(), &mut worker, &asset, &data, 0);
+        let note = rt.note_on(input(), 60, 1.).unwrap();
+        let voice = rt.start(note, 0, rt.now(), 1.).unwrap();
+        assert_eq!(rt.service_streaming(64), Ok(true));
+        let mut out = [[0.; 2]; 64];
+        rt.render(&mut out).unwrap();
+        assert_eq!(out, [data[0]; 64]);
+        assert_eq!(rt.stream_underruns(), 0);
+        rt.stop_voice(voice).unwrap();
+    });
+}
+
+#[test]
 fn paged_audio_matches_resident_across_rates_boundaries_loops_release_and_partitions() {
     let data: Box<[Frame]> = (0..PAGE_FRAMES * 2 + 137)
         .map(|i| [(i as f32 * 0.071).sin(), (i as f32 * 0.013).cos()])

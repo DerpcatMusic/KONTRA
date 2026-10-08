@@ -9,6 +9,7 @@ use std::{
 };
 
 pub const PAGE_FRAMES: usize = 4096;
+const RECLAIM_AFTER: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PageKey {
@@ -160,6 +161,8 @@ pub struct StreamWorker {
     launched: Box<[u64]>,
     free: Vec<Box<[Frame]>>,
     store: u64,
+    last_job: std::time::Instant,
+    reclaimed: bool,
 }
 impl StreamCache {
     /// Nominal streaming polyphony; exact horizon admission also checks shared
@@ -189,7 +192,9 @@ impl StreamCache {
                 .try_reserve_exact(PAGE_FRAMES)
                 .map_err(|_| Error::Capacity)?;
             frames.resize(PAGE_FRAMES, [0.; 2]);
-            free.push(frames.into_boxed_slice());
+            let mut frames = frames.into_boxed_slice();
+            sampler_pool::discard_f32(frames.as_flattened_mut());
+            free.push(frames);
         }
         static NEXT_STORE: AtomicU64 = AtomicU64::new(1);
         #[allow(deprecated, reason = "fetch_update supports the Rust 1.92 minimum")]
@@ -227,6 +232,8 @@ impl StreamCache {
                 launched: vec![0; pages].into_boxed_slice(),
                 free,
                 store,
+                last_job: std::time::Instant::now(),
+                reclaimed: true,
             },
         ))
     }
@@ -501,6 +508,14 @@ impl StreamCache {
         Ok(true)
     }
 
+    fn return_idle(&mut self, limit: usize) {
+        for _ in 0..limit {
+            let Some(first) = self.idle.first else { break; };
+            let key = self.entries[first.get()].as_ref().unwrap().request.key;
+            if self.invalidate(key).is_err() { break; }
+        }
+    }
+
     /// Admit at most one completion. Stale results return their buffer to the
     /// worker; they cannot replace a reused slot or destroy storage on audio.
     pub fn poll(&mut self) -> Option<PageUpdate> {
@@ -614,6 +629,7 @@ impl StreamWorker {
     pub fn next_job(&mut self) -> Option<DecodeJob> {
         while let Ok(samples) = self.recycled.pop() {
             self.free.push(samples);
+            self.reclaimed = false;
         }
         while let Ok(request) = self.requests.pop() {
             let slot = request.slot;
@@ -637,13 +653,22 @@ impl StreamWorker {
             return None;
         }
         let slot = loop {
-            let Reverse((deadline, slot, serial)) = self.ready.pop()?;
+            let Some(Reverse((deadline, slot, serial))) = self.ready.pop() else {
+                if !self.reclaimed && self.last_job.elapsed() >= RECLAIM_AFTER {
+                    for samples in &mut self.free {
+                        sampler_pool::discard_f32(samples.as_flattened_mut());
+                    }
+                    self.reclaimed = true;
+                }
+                return None;
+            };
             if self.pending[slot].is_some_and(|r| r.serial == serial && r.deadline == deadline) {
                 break slot;
             }
         };
         let request = self.pending[slot].take().unwrap();
         self.launched[slot] = request.serial;
+        self.last_job = std::time::Instant::now();
         let mut samples = self.free.pop().unwrap();
         samples[..request.len].fill([0.; 2]);
         Some(DecodeJob { request, samples })
@@ -791,6 +816,11 @@ impl crate::Runtime {
         // Temporarily detach only the audio-owned cache to borrow the immutable
         // voice/plan snapshot. The visitor cannot execute callbacks or mutate it.
         let result = self.service_cache(&mut cache, frames);
+        if self.voice_count() != 0 {
+            self.stream_last_active = self.now;
+        } else if result.is_ok() && self.now.saturating_sub(self.stream_last_active) >= u64::from(self.sample_rate()) * RECLAIM_AFTER.as_secs() {
+            cache.return_idle(16);
+        }
         cache.wake();
         self.stream_cache = Some(cache);
         result
@@ -965,6 +995,72 @@ impl crate::Runtime {
 #[cfg(test)]
 mod admission_tests {
     use crate::*;
+
+    #[test]
+    fn idle_return_preserves_protected_pages_and_discards_late_completions() {
+        let pcm = Pcm::streamed(48000, PAGE_FRAMES * 3).unwrap();
+        let (mut cache, mut worker) = StreamCache::new(3).unwrap();
+        for page in 0..3 { cache.request(&pcm, page, 0).unwrap(); }
+        let mut first = worker.next_job().unwrap();
+        first.frames_mut().fill([0.5; 2]);
+        worker.complete(first, Ok(())).unwrap();
+        let late = worker.next_job().unwrap();
+        let mut third = worker.next_job().unwrap();
+        third.frames_mut().fill([0.75; 2]);
+        worker.complete(third, Ok(())).unwrap();
+        cache.poll().unwrap(); cache.poll().unwrap();
+        cache.begin_epoch().unwrap();
+        cache.protect(&pcm, 0..PAGE_FRAMES).unwrap();
+        cache.return_idle(1);
+        assert_eq!(cache.status(PageKey { asset: pcm.asset_id(), index: 1 }), PageStatus::Missing);
+        assert_eq!(cache.frame(pcm.asset_id(), PAGE_FRAMES * 2), Some([0.75; 2]));
+        cache.return_idle(16);
+        assert_eq!(cache.frame(pcm.asset_id(), 0), Some([0.5; 2]));
+        assert_eq!(cache.frame(pcm.asset_id(), PAGE_FRAMES * 2), None);
+        worker.complete(late, Ok(())).unwrap();
+        assert!(matches!(cache.poll(), Some(PageUpdate::Discarded(_))));
+        assert!(worker.next_job().is_none());
+        assert_eq!(worker.free.len(), 2);
+        assert!(!worker.reclaimed);
+        worker.last_job -= super::RECLAIM_AFTER;
+        assert!(worker.next_job().is_none());
+        assert!(worker.reclaimed);
+        cache.request(&pcm, 1, 0).unwrap();
+        let mut again = worker.next_job().unwrap();
+        assert!(again.frames_mut().iter().all(|&frame| frame == [0.; 2]));
+        again.frames_mut().fill([0.125; 2]);
+        worker.complete(again, Ok(())).unwrap();
+        cache.poll().unwrap();
+        assert_eq!(cache.frame(pcm.asset_id(), PAGE_FRAMES), Some([0.125; 2]));
+    }
+
+    #[test]
+    fn live_voices_prevent_idle_page_return_even_after_five_seconds() {
+        let pcm = Pcm::streamed(48000, PAGE_FRAMES * 2).unwrap();
+        let (mut cache, mut worker) = StreamCache::new(3).unwrap();
+        for page in 0..2 {
+            cache.request(&pcm, page, 0).unwrap();
+            let mut job = worker.next_job().unwrap();
+            job.frames_mut().fill([0.5; 2]);
+            worker.complete(job, Ok(())).unwrap();
+            cache.poll().unwrap();
+        }
+        let plan = Prepared::new(48000, vec![pcm.clone()], vec![], 0).unwrap();
+        let limits = Limits::for_plan(&plan, 4, 4);
+        let mut rt = Runtime::new(plan, limits).unwrap().with_stream_cache(cache);
+        let note = rt.note_on(Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: None }, 60, 1.).unwrap();
+        let voice = rt.start(note, 0, 0, 1.).unwrap();
+        rt.now = 48000 * 6;
+        assert_eq!(rt.service_streaming(64), Ok(true));
+        assert_eq!(rt.stream_cache_mut().unwrap().frame(pcm.asset_id(), PAGE_FRAMES), Some([0.5; 2]));
+        rt.stop_voice(voice).unwrap();
+        rt.now += 48000 * 5 - 1;
+        rt.service_streaming(64).unwrap();
+        assert_eq!(rt.stream_cache_mut().unwrap().frame(pcm.asset_id(), 0), Some([0.5; 2]));
+        rt.now += 1;
+        rt.service_streaming(64).unwrap();
+        assert_eq!(rt.stream_cache_mut().unwrap().frame(pcm.asset_id(), 0), None);
+    }
 
     #[test]
     fn worker_priorities_stay_bounded_while_all_buffers_are_in_flight() {
