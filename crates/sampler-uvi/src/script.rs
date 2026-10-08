@@ -250,6 +250,17 @@ pub struct Finding {
     pub count: usize,
 }
 
+/// Public fault categories; messages remain in the in-memory findings only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+pub enum FaultCategory { Lua, Budget }
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FaultCounts {
+    pub first: Option<FaultCategory>,
+    pub init: BTreeMap<FaultCategory, u64>,
+    pub runtime: BTreeMap<FaultCategory, u64>,
+}
+
 /// Scanner-only diagnostics. Raw messages stay in memory; the scanner sanitizes them.
 #[cfg(feature = "scan")]
 #[derive(Clone, Debug, Default)]
@@ -282,8 +293,9 @@ struct Waiting {
 struct Shared {
     #[cfg(feature = "scan")]
     scan: RefCell<ScanFaults>,
-    #[cfg(feature = "scan")]
     initializing: Cell<bool>,
+    faults: RefCell<FaultCounts>,
+    finding_revision: Cell<u64>,
     #[cfg(feature="scan")]
     key_declarations: RefCell<BTreeMap<u8,u8>>,
     now: Cell<f64>,
@@ -322,6 +334,15 @@ struct Shared {
 
 impl Shared {
     fn find(&self, feature: &str, value: &str) {
+        self.finding_revision.set(self.finding_revision.get().saturating_add(1));
+        if feature == "lua error" {
+            let category = if value.contains("time budget exceeded") { FaultCategory::Budget } else { FaultCategory::Lua };
+            let mut faults = self.faults.borrow_mut();
+            faults.first.get_or_insert(category);
+            let counts = if self.initializing.get() { &mut faults.init } else { &mut faults.runtime };
+            let count = counts.entry(category).or_default();
+            *count = count.saturating_add(1);
+        }
         #[cfg(feature = "scan")]
         if feature == "lua error" {
             let mut scan = self.scan.borrow_mut();
@@ -336,7 +357,7 @@ impl Shared {
         }
         let mut findings = self.findings.borrow_mut();
         match findings.get_mut(feature) {
-            Some(f) => f.count += 1,
+            Some(f) => f.count = f.count.saturating_add(1),
             None => {
                 if findings.len() < 2000 {
                     findings.insert(
@@ -575,8 +596,9 @@ impl ScriptHost {
         let shared = Rc::new(Shared {
             #[cfg(feature = "scan")]
             scan: RefCell::new(ScanFaults::default()),
-            #[cfg(feature = "scan")]
             initializing: Cell::new(true),
+            faults: RefCell::new(FaultCounts::default()),
+            finding_revision: Cell::new(0),
             #[cfg(feature="scan")]
             key_declarations: RefCell::new(BTreeMap::new()),
             now: Cell::new(0.0),
@@ -609,7 +631,6 @@ impl ScriptHost {
         host.install().map_err(lua_error)?;
         host.build_program(&doc).map_err(lua_error)?;
         host.load_scripts(&doc, state)?;
-        #[cfg(feature = "scan")]
         host.shared.initializing.set(false);
         Ok(host)
     }
@@ -1424,6 +1445,9 @@ impl ScriptHost {
             .map(|w| w.due)
             .min_by(f64::total_cmp)
     }
+
+    pub fn fault_counts(&self) -> FaultCounts { self.shared.faults.borrow().clone() }
+    pub fn finding_revision(&self) -> u64 { self.shared.finding_revision.get() }
 
     /// Everything inert or failed so far.
     pub fn findings(&self) -> Vec<Finding> {

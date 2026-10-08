@@ -57,3 +57,22 @@ fn returned_module_builders_keep_the_resource_source_directory() {
     let h = ScriptHost::new("<UVI4><Program><EventProcessors><ScriptProcessor><script>local build = require('UI/panel'); build()</script></ScriptProcessor></EventProcessors></Program></UVI4>", scripts, Config::default()).unwrap();
     assert_eq!(h.interface().assets[0].path, "/scripts/ui/../Textures/face.png");
 }
+
+#[test]
+fn lua_faults_keep_the_first_message_and_count_each_phase_and_category() {
+    use sampler_uvi::script::FaultCategory;
+    let xml=r#"<UVI4><Program><EventProcessors><ScriptProcessor><script>
+      function onInit() error('first init fault') end
+      function onNote(e) if e.velocity>80 then while true do end else error('later runtime fault') end end
+    </script></ScriptProcessor></EventProcessors></Program></UVI4>"#;
+    let mut h=ScriptHost::new(xml,(),Config {callback:std::time::Duration::from_millis(1),..Config::default()}).unwrap();
+    h.note_on(1,60,64,0); h.note_on(2,60,64,0); h.note_on(3,60,100,0);
+    let counts=h.fault_counts();
+    assert_eq!(counts.first,Some(FaultCategory::Lua));
+    assert_eq!(counts.init[&FaultCategory::Lua],1);
+    assert_eq!(counts.runtime[&FaultCategory::Lua],2);
+    assert_eq!(counts.runtime[&FaultCategory::Budget],1);
+    let f=h.findings().into_iter().find(|f|f.feature=="lua error").unwrap();
+    assert_eq!(f.count,4);
+    assert!(f.value.contains("first init fault"));
+}
