@@ -31,12 +31,18 @@ mod menu;
 #[allow(dead_code)]
 mod mix_tree;
 mod ir_view;
+mod generated;
 #[cfg(feature = "shots")]
 pub(crate) mod scan;
 #[allow(dead_code)]
 mod load_report;
 mod bridge;
 mod pictures;
+mod picture_decode;
+mod picture_worker;
+mod native_runtime;
+mod native_ui;
+mod render_art;
 mod inside;
 mod part;
 pub(crate) mod picker;
@@ -70,6 +76,9 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
     let art = Arc::new(art::Art::default());
     let build = build(&params, meters.clone(), computer.clone(), picker.clone(), art.clone());
     let (drop_params, drop_picker) = (params.clone(), picker.clone());
+    let file_drag = Arc::new(std::sync::Mutex::new(None));
+    let cancel_drag = file_drag.clone();
+    let cancel_picker = picker.clone();
     let (cancel_params, cancel_computer) = (params.clone(), computer.clone());
     let (key_params, key_computer) = (params.clone(), computer.clone());
     let watch_params = params.clone();
@@ -93,8 +102,11 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
                 let _ = crate::diagnostics::flush(std::time::Duration::from_millis(100));
             }
         })
-        .on_files(move |ui, at, paths, dropped| native_files(&drop_params, &drop_picker, ui, at, paths, dropped))
-        .on_cancel(move |_| let_go(&cancel_params, &cancel_computer))
+        .on_files(move |ui, at, paths, dropped| native_files(&drop_params, &drop_picker, &file_drag, ui, at, paths, dropped))
+        .on_cancel(move |ui| {
+            let_go(&cancel_params, &cancel_computer);
+            native_files(&cancel_params, &cancel_picker, &cancel_drag, ui, Point::new(-1., -1.), &[], false);
+        })
         .on_key(move |ui, event| key_computer.key(ui, &key_params, event))
         .hide_pointer(theme::pointer_hidden)
         .native_timing(crate::diagnostics::native_timing_hook())
@@ -199,10 +211,12 @@ impl Watch {
             p.shared.voices.load(Ordering::Relaxed).hash(&mut h);
             p.shared.audible.load(Ordering::Relaxed).hash(&mut h);
             p.shared.dropouts.load(Ordering::Relaxed).hash(&mut h);
+            p.shared.with_parts(|parts| { for part in parts { part.scalar_revision.load(Ordering::Acquire).hash(&mut h); part.native_revision.load(Ordering::Acquire).hash(&mut h); } });
             self.readouts = h.finish();
         }
         let mut h = DefaultHasher::new();
         self.readouts.hash(&mut h);
+        pictures::revision().hash(&mut h);
         if meters.logs_visible.load(Ordering::Relaxed) {
             crate::diagnostics::revision().hash(&mut h);
             logs::wake().hash(&mut h);
@@ -211,6 +225,7 @@ impl Watch {
         // The wheels follow incoming MIDI as it moves them.
         p.shared.bend.load(Ordering::Relaxed).hash(&mut h);
         p.shared.modulation.load(Ordering::Relaxed).hash(&mut h);
+        p.shared.learned_note.load(Ordering::Relaxed).hash(&mut h);
         // Lit keys, and what the computer keyboard plays.
         for lit in p.shared.played.iter().chain(&p.shared.heard) {
             lit.load(Ordering::Relaxed).hash(&mut h);
@@ -274,7 +289,7 @@ fn fingerprint(view: &View, h: &mut DefaultHasher) {
     (&view.status, &view.multi_status, view.scanned).hash(h);
     (Arc::as_ptr(&view.files) as usize, view.artwork.len()).hash(h);
     for v in &view.parts {
-        (v.loading, &v.status, v.program).hash(h);
+        (v.loading, &v.status, v.program, v.ui_revision, v.generation).hash(h);
         (at(&v.tree), at(&v.report), at(&v.trace), Arc::as_ptr(&v.interfaces) as *const () as usize).hash(h);
     }
 }
@@ -360,6 +375,7 @@ struct EditorState {
     /// How far the rack is scrolled (where it glides to), a part to scroll
     /// to once it is laid out, and a part's height while its edge is dragged.
     rack_y: f64,
+    rack_scrolls: HashMap<String, [f64; 2]>,
     /// Where the rack was scrolled to when last drawn.
     rack_drawn: f64,
     reveal: Option<usize>,
@@ -626,10 +642,12 @@ fn library_of(shelf: &crate::library::Shelf, path: &Path) -> String {
 fn replace_part(part: &mut Part, path: String) {
     part.path = path;
     part.program = 0;
+    part.view = 0;
     part.name.clear();
     // Another instrument has another output tree, switching and dynamics.
     part.nodes.clear();
     part.switching = 0;
+    part.articulation_overlay = Default::default();
     part.dynamics = -1;
 }
 
@@ -726,9 +744,50 @@ fn sanitize(selection: &mut Selection) {
     }
 }
 
-/// Files dragged in from the desktop: instruments into the slot under the
-/// pointer or free slots, one saved multi replaces the rack. Returns whether they are accepted.
-fn native_files(p: &SamplerParams, picker: &picker::Picker, ui: &Ui, at: Point, paths: &[PathBuf], dropped: bool) -> bool {
+/// The bounded current OS gesture; source epoch still guards admission.
+struct FileDrag {
+    slot: usize, epoch: u64, source_slot: u8, widget: sampler_ui_ir::Widget,
+    paths: Vec<(u32, sampler_ui_ir::Value)>,
+}
+
+fn widget_files(p: &SamplerParams, drag: &std::sync::Mutex<Option<FileDrag>>, ui: &Ui, at: Point, paths: &[PathBuf], dropped: bool) -> Option<bool> {
+    let view = shown(&p.shared.view);
+    let mut target = None;
+    let mut rejected = false;
+    for (slot, published) in view.parts.iter().enumerate() {
+        for (shown, base) in published.interfaces.iter().enumerate() {
+            let mut face = base.clone();
+            if let Some(patch) = published.updates.get(shown) { patch.apply(base, &Default::default(), &mut face); }
+            let namespace = format!("part-{slot}-epoch-{}-script-{shown}", published.generation);
+            if ir_view::file_drop_target(ui, &namespace, &face, at).is_none() { continue; }
+            let Some((n, edits)) = ir_view::file_drop(ui, &namespace, &face, at, paths, dropped) else { rejected = true; break };
+            let interaction = part::interaction(&edits[0]);
+            let source_slot = match face.source { sampler_ui_ir::Source::Ksp { slot } => slot, _ => 0 };
+            let paths = edits.into_iter().map(|e| (e.index, e.value)).collect();
+            target = Some((FileDrag { slot, epoch: published.generation, source_slot, widget: face.widgets[n.0].clone(), paths }, interaction));
+            break;
+        }
+        if target.is_some() || rejected { break; }
+    }
+    let mut last = lock(drag);
+    if let Some(previous) = last.take() {
+        let same = target.as_ref().is_some_and(|(next, _)| next.slot == previous.slot && next.epoch == previous.epoch
+            && next.source_slot == previous.source_slot && next.widget.source_id == previous.widget.source_id);
+        if !same {
+            p.shared.set_widget_batch_at(previous.slot, previous.epoch, previous.source_slot, &previous.widget, previous.paths,
+                sampler_core::WidgetInteraction { event: 4, mouse_over: false, ..Default::default() });
+        }
+    }
+    let Some((target, interaction)) = target else { return rejected.then_some(false) };
+    let accepted = p.shared.set_widget_batch_at(target.slot, target.epoch, target.source_slot, &target.widget, target.paths.clone(), interaction);
+    if accepted && !dropped { *last = Some(target); }
+    Some(accepted)
+}
+
+/// Desktop files first target authored MouseAreas, then library/rack actions.
+fn native_files(p: &SamplerParams, picker: &picker::Picker, drag: &std::sync::Mutex<Option<FileDrag>>, ui: &Ui, at: Point, paths: &[PathBuf], dropped: bool) -> bool {
+    if let Some(accepted) = widget_files(p, drag, ui, at, paths, dropped) { return accepted; }
+
     let inside = |id: &str| {
         ui.scene().and_then(|s| s.surface(id)).is_some_and(|s| {
             let r = s.frame;
@@ -838,6 +897,7 @@ fn build(
         art,
         libraries: Default::default(),
         rack_y: 0.,
+        rack_scrolls: Default::default(),
         rack_drawn: 0.,
         reveal: None,
         resizing: None,
@@ -998,7 +1058,7 @@ fn shortcuts(ui: &mut Ui, cx: &mut Cx) {
             // The browser shut: Ctrl+F opens it on its filter.
             Key::Char('f' | 'F') if ctrl && !cx.state.browser => (cx.state.browser, cx.state.browse.find) = (true, true),
             Key::Char(' ') if free && loaded && !k.mods.shift => cx.p.shared.audition(None),
-            Key::Escape if cx.state.menu.is_none() && cx.state.renaming.is_none() && !cx.state.browse.typing() => cx.state.selected_none(),
+            Key::Escape if cx.state.menu.is_none() && cx.state.renaming.is_none() && !cx.state.inside.values().any(inside::State::editing) && !cx.state.browse.typing() => cx.state.selected_none(),
             _ => {}
         }
     }
@@ -1192,5 +1252,9 @@ impl Cx<'_> {
     }
 }
 
+#[cfg(feature = "shots")]
+pub use ir_view::uvi_ui_health;
+#[cfg(test)]
+mod loop_audit;
 #[cfg(test)]
  pub(crate) fn audit_frames(p: &Arc<SamplerParams>) -> serde_json::Value { tests::audit_frames(p) }

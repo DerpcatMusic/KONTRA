@@ -60,6 +60,29 @@ fn modules_with(
         .unwrap()
         .with_groups(2, vec![Some(0), Some(1)])
         .and_then(|p| p.with_group_params(vec![group0, GroupParams::default()]))
+        .and_then(|p| p.with_group_envelope_parameters(0, 0, 5, Envelope::default()))
+        .and_then(|p| {
+            let bindings = p.engine_parameter_bindings().to_vec();
+            p.with_engine_parameters(
+                bindings,
+                vec![
+                    sampler_core::EngineLookup {
+                        group: 0,
+                        owner: -1,
+                        target: false,
+                        name: "ENV_AHDSR".into(),
+                        index: 5,
+                    },
+                    sampler_core::EngineLookup {
+                        group: 1,
+                        owner: -1,
+                        target: false,
+                        name: "ENV_FILTER".into(),
+                        index: 8,
+                    },
+                ],
+            )
+        })
         .and_then(shape)
         .unwrap();
     let plan = sampler_ksp::bind_modules(scripts, prepared).unwrap();
@@ -146,8 +169,8 @@ fn engine_volume_and_purge_address_one_group() {
          end on",
     );
     rt.trigger(input(60), 60, 1.).unwrap();
-    // on init's write is not a runtime callback; group 0 plays at 0 dB.
-    assert!(close(level(&mut rt), [0.5; 2]));
+    // on init's write stands: group 0 starts at the volume floor.
+    assert!(close(level(&mut rt), [0.0; 2]));
     rt.trigger(input(61), 61, 1.).unwrap();
     // 500000 is -6.02 dB for group 0 (both of its notes); group 1 is purged.
     assert!(close(level(&mut rt), [0.2506; 2]), "{:?}", level(&mut rt));
@@ -395,11 +418,13 @@ fn effect_slot_writes_drive_a_bus_mix_block() {
         )],
         GroupParams::default(),
         |p| {
-            p.with_controls(vec![
+            let mut controls=p.controls().to_vec();
+            controls.extend([
                 definition(SlotKind::Dry, 0.),
                 definition(SlotKind::Output, 1.),
                 definition(SlotKind::Bypass, 0.),
-            ])?
+            ]);
+            p.with_controls(controls)?
             .with_buses(
                 vec![Bus {
                     processors: vec![

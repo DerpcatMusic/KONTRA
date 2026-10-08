@@ -1,0 +1,26 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 94  of event 'cycles:u'
+# Event count (approx.): 21776388
+#
+# Overhead  Command       Shared Object     Symbol
+# ........  ............  ................  ..............................................................................................................................................................................................................................................................................................................................................................................................
+#
+    23.74%  cpu-audit-v1  cpu-audit-v1      [.] <kontakto::engine::Engine>::render
+    21.96%  cpu-audit-v1  cpu-audit-v1      [.] <kontakto::engine::Player>::render_block
+     9.40%  cpu-audit-v1  cpu-audit-v1      [.] <kontakto::engine::filter::LaneFilter>::end
+     8.83%  cpu-audit-v1  cpu-audit-v1      [.] <kontakto::engine::filter::LaneFilter>::dots_out_avx2
+     8.44%  cpu-audit-v1  cpu-audit-v1      [.] <kontakto::engine::filter::LaneFilter>::dots_avx2
+     5.79%  cpu-audit-v1  cpu-audit-v1      [.] <kontakto::engine::filter::LaneFilter>::kernel_avx2
+     5.54%  cpu-audit-v1  cpu-audit-v1      [.] <kontakto::engine::voice::Voice>::accumulate
+     5.51%  cpu-audit-v1  libc.so.6         [.] 0x00000000001b838f
+     5.37%  cpu-audit-v1  cpu-audit-v1      [.] core::slice::sort::shared::smallsort::insertion_sort_shift_left::<(u64, u16), <(u64, u16) as core::cmp::PartialOrd>::lt>
+     5.26%  cpu-audit-v1  cpu-audit-v1      [.] <kontakto::fx::convolution::Partitioned>::process
+
+
+#
+# (Tip: For tracepoint events, try: perf report -s trace_fields)
+#

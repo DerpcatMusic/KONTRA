@@ -607,3 +607,23 @@ fn app_gpu_error_observation_preserves_other_observers_and_resets_on_rebuild() {
     assert!(observe(&mut core_cursor).is_some(), "the app must not consume Host's error record");
     assert!(observe_generation_error(&mut generation, &mut app_cursor, 5, observe).is_some(), "a new device may reuse the same error sequence");
 }
+
+#[test]
+fn native_drag_leave_delivers_an_empty_file_gesture_to_the_owner() {
+    struct DropSpy(Vec<(usize, bool)>);
+    impl View for DropSpy {
+        fn build(&mut self, _: &mut Ui, _: &Input) -> El { mui::prelude::block(100.,100.) }
+        fn changed(&mut self) -> bool { false }
+        fn request_resize(&mut self, _: u32, _: u32) -> bool { false }
+        fn drop_files(&mut self, _: &Ui, _: mui::prelude::Point, paths: &[std::path::PathBuf], dropped: bool) -> bool {
+            self.0.push((paths.len(),dropped));true
+        }
+    }
+    let shared=Arc::new(Mutex::new(Shared {ui:Ui::default(),view:DropSpy(vec![])}));
+    let mut h=Handler::new(shared.clone(),Arc::default(),(400,300),1.);
+    let enter=Event::Mouse(MouseEvent::DragEntered {position:PhysicalPosition::new(50.,50.),modifiers:Modifiers::default(),data:DropData::Files(vec!["/tmp/owned.wav".into()])});
+    h.on_event_inner(&enter);
+    h.on_event_inner(&Event::Mouse(MouseEvent::DragLeft));
+    assert_eq!(lock(&shared).view.0,[(1,false),(0,false)],"the owner must observe leave and clear native mouse-over");
+    assert!(h.driver.pointer().pos.is_none());
+}

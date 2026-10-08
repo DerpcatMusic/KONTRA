@@ -64,6 +64,7 @@ impl BusControls {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Mix {
     pub parts: Vec<PartControls>,
+    pub articulation_routes: Vec<Option<std::sync::Arc<super::articulation::Routing>>>,
     pub buses: [BusControls; BUSES],
     /// Per part, its tree's nodes after the root ([`super::tree`]).
     pub nodes: Vec<Vec<NodeMix>>,
@@ -73,6 +74,7 @@ impl Default for Mix {
     fn default() -> Self {
         Self {
             parts: vec![PartControls::default(); RACK_SLOTS],
+            articulation_routes: Vec::new(),
             buses: std::array::from_fn(|n| BusControls::on(n as u8)),
             nodes: vec![Vec::new(); RACK_SLOTS],
         }

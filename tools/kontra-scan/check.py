@@ -65,4 +65,7 @@ with tempfile.TemporaryDirectory() as tmp:
     assert row['programs'][0]['adapter_pick_source']=='shared-note-plan'
     row=scanner.extra_columns({'path':item,'ui':'no-ui','programs':[{'source':'uvi','program':0,'pick':[40,64],'pick_source':'shared-note-plan'}]})
     assert json.loads(row['pick_source'])=={'0':'unknown'} # unequal notes never inherit native-valid provenance
+timing=scanner.extra_columns({'loads':'yes','ui':'original-ok','first_audio_ms':12.5,'cache_state':'cold','programs':[{'source':'kontakt','views':[{'renders':[{'ok':True,'ui_first_frame_ms':20.},{'ok':True,'ui_first_frame_ms':18.}]}]}]})
+assert timing['first_audio_ms']==12.5 and timing['ui_first_frame_ms']==18. and timing['cache_state']=='cold'
+assert fallback['first_audio_ms']=='unknown' and fallback['ui_first_frame_ms']=='unknown'
 print('shared scanner checks passed')

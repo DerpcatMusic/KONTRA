@@ -4,23 +4,30 @@ use crate::builtins::{self as b, Builtin};
 use crate::diag::{Fault, Result, Span, fault};
 use crate::hir::*;
 use crate::model::{self, Key, KeyRange, MenuItem, Request, Value};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// Instrument facts the script may query while initializing.
 #[derive(Clone, Debug, Default)]
 pub struct Environment {
+    /// Optional control-thread evaluation budget; default is the library profile.
+    pub evaluation_budget: Option<u64>,
     /// Group names in instrument order (`$NUM_GROUPS`, `group_name`, `find_group`).
     pub groups: Vec<String>,
     /// Saved values by variable name, applied by `read_persistent_var`.
     pub persisted: BTreeMap<String, Value>,
+    /// Host-saved semantic control values. Unlike Kontakt's menu persistence,
+    /// these are values, never menu-item positions.
+    pub control_values: BTreeMap<sampler_core::ControlId, Value>,
     /// Saved array contents by variable name (`%a`, `?r`); a longer save is
     /// cut to the declared length, a shorter one restores a prefix.
     pub persisted_arrays: BTreeMap<String, Vec<Value>>,
     /// Script slot (`$CURRENT_SCRIPT_SLOT`); also namespaces derived control ids.
     pub slot: u8,
+    pub engine_values: BTreeMap<[i32; 4], i32>,
+    pub engine_lookups: Vec<sampler_core::EngineLookup>,
     /// The Creator Tools performance view (`.nckp`, see [`crate::nckp`]) the
     /// script loads with `load_performance_view`. Names the script uses but
-    /// it lacks are assumed (see `PerformanceControl::assumed`), with a warning.
+    /// it lacks stay unbound script handles, with a diagnostic.
     pub performance_view: model::PerformanceView,
 }
 
@@ -117,6 +124,8 @@ pub struct Initial {
     pub texts: Vec<String>,
     /// Values of host-owned controls, by UI index.
     pub controls: Vec<i32>,
+    /// Effective persistence, including declarations reached through init functions.
+    pub persistence: Vec<Persistence>,
     pub model: model::Model,
     /// Positioned non-fatal problems (Kontakt reports these and continues).
     pub warnings: Vec<Fault>,
@@ -143,6 +152,9 @@ struct Eval<'h> {
     st: Initial,
     fuel: u64,
     depth: usize,
+    consumed: BTreeSet<VarId>,
+    pending_menus: BTreeMap<usize, i32>,
+    callback_type: i32,
     profile: Option<HashMap<&'static str, (u64, u128)>>,
 }
 
@@ -156,6 +168,7 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
             cells: vec![0; hir.cells as usize],
             texts: vec![String::new(); hir.texts as usize],
             controls: vec![0; hir.uis.len()],
+            persistence: hir.vars.iter().map(|v| v.persistence).collect(),
             model,
             warnings: Vec::new(),
             engine: HashMap::new(),
@@ -163,8 +176,11 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
             text_properties: HashMap::new(),
             indexed_properties: BTreeMap::new(),
         },
-        fuel: INIT_FUEL,
+        fuel: env.evaluation_budget.unwrap_or(INIT_FUEL),
         depth: 0,
+        consumed: BTreeSet::new(),
+        pending_menus: BTreeMap::new(),
+        callback_type: b::cb::INIT,
         profile: std::env::var_os("KONTRA_AUDIT_KSP_PROFILE").map(|_| HashMap::new()),
     };
     #[cfg(feature = "scan")]
@@ -191,26 +207,37 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
     // On load Kontakt restores saved persistent values, then runs
     // `on persistence_changed`, before the interface is shown.
     for (i, var) in hir.vars.iter().enumerate() {
-        if var.persistence != Persistence::None {
+        if !e.consumed.contains(&VarId(i as u32))
+            && (e.st.persistence[i] != Persistence::None
+                || matches!(var.home, Home::Control(_))
+                    && e.env
+                        .control_values
+                        .contains_key(&crate::derived_control_id(e.env.slot, &var.name)))
+        {
             e.restore(VarId(i as u32));
         }
     }
+    e.callback_type = b::cb::PERSISTENCE_CHANGED;
     if let Some(cb) = hir
         .callbacks
         .iter()
         .find(|c| c.kind == CallbackKind::PersistenceChanged)
     {
-        #[cfg(feature = "scan")]
-        crate::scan::stage("persistence_changed");
-        let r = e.block(&cb.body);
-        #[cfg(feature = "scan")]
-        crate::scan::phase("persistence_changed", r.as_ref().err());
-        if let Err(f) = r {
-            e.warn(
-                f.span,
-                format!("on persistence_changed at load: {}", f.message),
-            );
-        }
+        #[cfg(feature="scan")] crate::scan::stage("persistence_changed");
+        let result=e.block(&cb.body);
+        #[cfg(feature="scan")] crate::scan::phase("persistence_changed",result.as_ref().err());
+        e.st.model.persistence_completion = match result {
+            Ok(_) => model::PersistenceCompletion::Completed,
+            Err(f) => {
+                let category = if e.fuel == 0 {
+                    model::EvaluationFailure::Budget
+                } else {
+                    model::EvaluationFailure::InvalidValue
+                };
+                e.warn(f.span, "on persistence_changed did not complete".to_owned());
+                model::PersistenceCompletion::Failed {category, offset:f.span.start, builtin:f.builtin}
+            }
+        };
     }
     if let Some(profile) = &e.profile {
         eprintln!(
@@ -383,18 +410,37 @@ impl Eval<'_> {
             Value::Text(s) => V::S(s.clone()),
         };
         if v.len.is_none() {
-            if let Some(saved) = self.env.persisted.get(&*v.name) {
+            let host = matches!(v.home, Home::Control(_))
+                .then(|| {
+                    self.env
+                        .control_values
+                        .get(&crate::derived_control_id(self.env.slot, &v.name))
+                })
+                .flatten();
+            if let Some(saved) = host.or_else(|| self.env.persisted.get(&*v.name)) {
                 let mut value = conv(saved);
                 // A menu is saved as its selected item's position; the
                 // variable holds that item's value (Una Corda's velocity
                 // menu stores 5 for "Linear", whose value is 0).
-                if let Home::Control(ui) = v.home
+                if host.is_none()
+                    && let Home::Control(ui) = v.home
                     && self.hir.uis[ui as usize].kind == WidgetKind::Menu
-                    && let Some(item) = usize::try_from(value.int())
-                        .ok()
-                        .and_then(|i| self.menu(ui as usize).get(i).cloned())
                 {
-                    value = V::I(item.value);
+                    let ui = ui as usize;
+                    let index = value.int();
+                    let items = self.menu(ui);
+                    if items.is_empty() {
+                        self.pending_menus.insert(ui, index);
+                        value = V::I(0);
+                    } else {
+                        value = V::I(
+                            usize::try_from(index)
+                                .ok()
+                                .and_then(|i| items.get(i))
+                                .or_else(|| items.first())
+                                .map_or(0, |item| item.value),
+                        );
+                    }
                 }
                 self.write_var(var, value);
             }
@@ -501,7 +547,11 @@ impl Eval<'_> {
                 if !(0..array.len() as i32).contains(&i) {
                     self.warn(e.span, format!("array index {i} out of bounds"));
                 }
-                V::I(0)
+                if array.drop_kind().is_some() {
+                    V::S(String::new())
+                } else {
+                    V::I(0)
+                }
             }
             ExprKind::Neg(inner) => match self.expr(inner)? {
                 V::R(r) => V::R(-r),
@@ -560,7 +610,7 @@ impl Eval<'_> {
         use b::SysVar::*;
         match sys {
             NumGroups => self.env.groups.len() as i32,
-            CallbackType => b::cb::INIT,
+            CallbackType => self.callback_type,
             DurationQuarter => 500_000,
             DurationEighth => 250_000,
             DurationSixteenth => 125_000,
@@ -570,7 +620,7 @@ impl Eval<'_> {
             DurationBar => 2_000_000,
             SignatureNum | SignatureDenom => 4,
             Tempo => 120,
-            CurrentScriptSlot => 0,
+            CurrentScriptSlot => i32::from(self.env.slot),
             _ => 0,
         }
     }
@@ -736,9 +786,10 @@ impl Eval<'_> {
         for i in 0..args.len() {
             let v = match &args[i] {
                 Arg::Var(v, _) => V::S(self.hir.vars[v.0 as usize].name.to_string()),
-                // Engine parameters are recorded by name: hashed ids are unreadable.
-                _ if i == 0 && builtin == Builtin::SetEnginePar => {
-                    let id = self.int(args, 0)?;
+                // Record symbolic parameter keys by name; opaque ids cannot cross the IR.
+                _ if (i == 0 && builtin == Builtin::SetEnginePar)
+                    || (i == 1 && builtin == Builtin::SetUiWfProperty) => {
+                    let id = self.int(args, i)?;
                     symbol_name(self.hir, id).map_or(V::I(id), V::S)
                 }
                 _ => self.arg(args, i)?,
@@ -951,6 +1002,11 @@ impl Eval<'_> {
                 // Text lines past 64 Ki are never shown; Conflux fills nine
                 // controls with a million lines each (~700 MB of model).
                 if !(builtin == SetControlParStrArr && index >= MAX_TEXT_LINES) {
+                    if par == b::CONTROL_PAR_VALUE
+                        && let Some(ui) = self.ui_index(id)
+                    {
+                        self.write_elem(self.hir.uis[ui].var, index, value.clone(), span);
+                    }
                     self.st
                         .indexed_properties
                         .insert((id, par, index), value.value());
@@ -1040,6 +1096,15 @@ impl Eval<'_> {
                         value,
                         visible: true,
                     });
+                    if let Some(&index) = self.pending_menus.get(&ui) {
+                        let items = self.menu(ui);
+                        let selected = usize::try_from(index)
+                            .ok()
+                            .and_then(|i| items.get(i))
+                            .or_else(|| items.first())
+                            .map_or(0, |item| item.value);
+                        self.write_var(Self::var(args, 0), V::I(selected));
+                    }
                 }
                 V::I(0)
             }
@@ -1111,7 +1176,7 @@ impl Eval<'_> {
                     fonts.push(name);
                     fonts.len() - 1
                 });
-                V::I(index as i32)
+                V::I(26 + index as i32)
             }
             SetKeyColor | SetKeyType | SetKeyPressed | SetKeyName => {
                 let key = self.int(args, 0)?;
@@ -1179,17 +1244,36 @@ impl Eval<'_> {
                 }
                 V::I(0)
             }
+            SetSnapshotType => {
+                let value = self.int(args, 0)?;
+                self.st.model.snapshot_mode =
+                    model::SnapshotMode::from_native(value).ok_or_else(|| Fault {
+                        span,
+                        builtin: Some("set_snapshot_type"),
+                        message: "invalid snapshot mode".into(),
+                    })?;
+                V::I(0)
+            }
             DisableLogging | WatchVar | WatchArrayIdx | ExposeControls | ShowLibraryTab
-            | SetSnapshotType | SetUiColor | ResetKspTimer => {
-                if matches!(builtin, SetSnapshotType | SetUiColor) {
+            | SetUiColor | ResetKspTimer => {
+                if builtin == SetUiColor {
                     self.request(builtin, args)?;
                 }
                 V::I(0)
             }
-            MakePersistent | MakeInstrPersistent => V::I(0),
+            MakePersistent | MakeInstrPersistent => {
+                let var = Self::var(args, 0);
+                self.st.persistence[var.0 as usize] = if builtin == MakeInstrPersistent {
+                    Persistence::Instrument
+                } else {
+                    Persistence::Snapshot
+                };
+                V::I(0)
+            }
             ReadPersistentVar => {
                 let var = Self::var(args, 0);
                 self.restore(var);
+                self.consumed.insert(var);
                 V::I(0)
             }
             PgsCreateKey => {
@@ -1281,7 +1365,31 @@ impl Eval<'_> {
                     self.int(args, 2)?,
                     self.int(args, 3)?,
                 ];
-                V::I(self.st.engine.get(&key).copied().unwrap_or(0))
+                // Unwritten group volume, pan and tune read their neutral value.
+                let neutral = match (key[2], key[3], symbol_name(self.hir, key[0])) {
+                    (-1, -1, Some(n)) => match n.trim_start_matches('$') {
+                        "ENGINE_PAR_VOLUME" => 630_957,
+                        "ENGINE_PAR_PAN" | "ENGINE_PAR_TUNE" => 500_000,
+                        _ => 0,
+                    },
+                    _ => 0,
+                };
+                let authored = symbol_name(self.hir, key[0])
+                    .and_then(|name| sampler_core::engine_parameter_id(&name))
+                    .and_then(|parameter| {
+                        self.env
+                            .engine_values
+                            .get(&[parameter.into(), key[1], key[2], key[3]])
+                            .copied()
+                    });
+                V::I(
+                    self.st
+                        .engine
+                        .get(&key)
+                        .copied()
+                        .or(authored)
+                        .unwrap_or(neutral),
+                )
             }
             GetEngineParDisp | GetEngineParDispExt => V::S(String::new()),
             GroupName => {
@@ -1299,11 +1407,22 @@ impl Eval<'_> {
                 )
             }
             FindMod | GetModIdx | FindTarget | GetTargetIdx => {
-                // ponytail: no module tables in the environment yet; a stable
-                // opaque index per (owner, name) keeps engine requests consistent.
-                self.request(builtin, args)?;
                 let name = self.text(args, args.len() - 1)?;
-                V::I(lookup_index(&name))
+                let group = self.int(args, 0)?;
+                let target = matches!(builtin, FindTarget | GetTargetIdx);
+                let owner = if target { self.int(args, 1)? } else { -1 };
+                V::I(
+                    self.env
+                        .engine_lookups
+                        .iter()
+                        .find(|l| {
+                            l.group == group
+                                && l.owner == owner
+                                && l.target == target
+                                && l.name.eq_ignore_ascii_case(&name)
+                        })
+                        .map_or(-1, |l| l.index),
+                )
             }
             OutputChannelName | GetFolder | FsGetFilename => V::S(String::new()),
             FindZone => V::I(b::NOT_FOUND),
@@ -1313,7 +1432,19 @@ impl Eval<'_> {
             // No host consumes zone writes (FindZone finds nothing at init), and
             // Conflux issues three million of them: logging each cost ~1 GB.
             SetZonePar => V::I(0),
-            PurgeGroup | SetVoiceLimit | LoadIrSample | LoadArray | SaveArray | LoadArrayStr
+            LoadArray => {
+                // NI load/save contract: load_array in init implicitly persists
+                // its target; saved state is restored after the init callback.
+                let var = Self::var(args, 0);
+                if self.callback_type == b::cb::INIT
+                    && self.st.persistence[var.0 as usize] == Persistence::None
+                {
+                    self.st.persistence[var.0 as usize] = Persistence::Snapshot;
+                }
+                self.request(builtin, args)?;
+                V::I(0)
+            }
+            PurgeGroup | SetVoiceLimit | LoadIrSample | SaveArray | LoadArrayStr
             | SaveArrayStr | AttachLevelMeter | AttachZone | SetUiWfProperty | FsNavigate
             | LoadNativeUi | SetNksNavName | SetNksNavPar | ResetNksNav => {
                 self.request(builtin, args)?;
@@ -1374,6 +1505,7 @@ pub fn lookup_index(name: &str) -> i32 {
 
 fn placeholder() -> model::Widget {
     model::Widget {
+        unresolved: false,
         name: String::new(),
         kind: WidgetKind::Label,
         ui_id: 0,
@@ -1386,5 +1518,6 @@ fn placeholder() -> model::Widget {
         menu: Vec::new(),
         callback: None,
         persistence: Persistence::None,
+        location: None,
     }
 }
