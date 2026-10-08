@@ -26,3 +26,18 @@ assert measured_status(complete) == 'MEASURED'
 for change in [{'contention':'CONTENDED'}, {'contention':'UNKNOWN'}, {'peak':0}, {'nonfinite':1}, {'returncode':1}, {'events_dispatched':11}]:
     assert measured_status(dict(complete, **change)) == 'UNKNOWN'
 print('PASS: silent, incomplete and contended runs cannot certify live playback')
+
+from pathlib import Path
+import json, tempfile
+from live_host import artifact_receipt, sha
+with tempfile.TemporaryDirectory() as tmp:
+    folder=Path(tmp); plugin=folder/'KONTRA.clap'; cli=folder/'kontakto'; host=folder/'host'
+    for file in [plugin,cli,host]: file.write_bytes(file.name.encode())
+    record={'source_sha':'a'*40,'profile':'ci','path':str(plugin),'sha256':sha(plugin),'cli_sha256':sha(cli),'host_sha256':sha(host)}
+    (folder/'BUILD.json').write_text(json.dumps(record))
+    assert artifact_receipt(plugin,cli,host)['source_sha']=='a'*40
+    plugin.write_bytes(b'changed')
+    try: artifact_receipt(plugin,cli,host)
+    except AssertionError: pass
+    else: raise AssertionError('stale provenance accepted')
+print('PASS: supplied artifact provenance follows the binary and rejects changed files')
