@@ -26,7 +26,7 @@ mod modulation;
 mod no_access;
 pub mod script;
 mod resources;
-pub use resources::Resources;
+pub use resources::{Resources, ResourceError};
 pub mod scripted;
 mod stream;
 #[cfg(feature = "library-access")]
