@@ -502,3 +502,18 @@ fn uvi_momentary_buttons_callback_once_per_click_or_keyboard_activation() {
     tick(&mut ui,&face,&mut values,&mut host,Input::default());
     assert!(ui.scene().unwrap().surface("ir-1").is_some());
 }
+#[test]
+fn uvi_scene_culls_offscreen_controls_without_dropping_the_model() {
+    use sampler_ui_ir::{self as ir, Interface, Widget, Rect, Page, PageRef, Kind};
+    let mut face = Interface { source: ir::Source::FalconLua, ..Default::default() };
+    face.pages.push(Page {size: ir::Size {width:200,height:100}, ..Default::default()});
+    for i in 0..7000 {
+        face.widgets.push(Widget::new(format!("w{i}"), PageRef(0), Rect::new(0,if i==0 {0} else {10000},20,20), Kind::Label));
+    }
+    let mut ui = theme::ui();
+    let root = ir_view::view(&mut ui, &face, PageRef(0), &ir_view::Assets::default(), ir::Presentation::Bitmap, 1., &mut ir_view::Values::default());
+    ui.frame(root, Some(Size::new(200.,100.)), Input::default(), 1./60.).unwrap();
+    assert_eq!(face.widgets.len(),7000);
+    assert!(ui.scene().unwrap().surface("ir-0").is_some());
+    assert!(ui.scene().unwrap().surface("ir-1").is_none());
+}
