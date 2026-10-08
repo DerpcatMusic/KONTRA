@@ -198,7 +198,8 @@ fn render(
                 let mut settled = 0;
                 while settled < 2 {
                     if Instant::now() > deadline {
-                        return Err("authored image preparation time budget exceeded".into());
+                        return Ok(json!({"incomplete":true,"stage":"asset-preparation",
+                            "pending":native.as_ref().map_or_else(||assets.pending(),|n|n.pending())}));
                     }
                     let el = if let Some(native) = &mut native {
                         native.view(&mut ui, 0, scale, &face, values, &input)
@@ -276,7 +277,7 @@ fn render(
             }));
         renders.push(match result {
             Ok(Ok(mut r)) => {
-                r["ok"] = json!(true);
+                r["ok"] = json!(r["incomplete"] != true);
                 r["ms"] = json!(start.elapsed().as_secs_f64() * 1000.);
                 r
             }
@@ -383,12 +384,13 @@ pub fn one(id: &str, out: &Path) -> Value {
         mut total_interactive,
         mut any_heard,
         mut ui_error,
+        mut ui_incomplete,
         mut ui_missing,
         mut ui_missing_font,
         mut any_ui,
         mut any_blank,
         mut budget_hit,
-    ) = (true, 0, 0, false, false, false, false, false, false, false);
+    ) = (true, 0, 0, false, false, false, false, false, false, false, false);
     let mut load_ms = 0.;
     let load_started=Instant::now();
     result["onset_basis"]=json!("monotonic from first production program import; shared collector paints Original and auditions concurrently; first output excludes lexical metadata prepass");
@@ -620,7 +622,8 @@ pub fn one(id: &str, out: &Path) -> Value {
             ui_missing |= view["missing_images"].as_u64().unwrap_or(0) > 0;
             ui_missing_font |= view["missing_fonts"].as_u64().unwrap_or(0) > 0;
             for r in view["renders"].as_array().unwrap() {
-                ui_error |= r["ok"] != true;
+                ui_incomplete |= r["incomplete"] == true;
+                ui_error |= r["ok"] != true && r["incomplete"] != true;
                 budget_hit |= r["budget_hit"] == true;
                 any_blank |= r["uniform"] == true && view["visible"].as_u64().unwrap_or(0) > 0;
             }
@@ -648,6 +651,8 @@ pub fn one(id: &str, out: &Path) -> Value {
         "budget-hit"
     } else if ui_error {
         "error"
+    } else if ui_incomplete {
+        "incomplete"
     } else if any_blank {
         "blank"
     } else if ui_missing_font {
@@ -659,6 +664,7 @@ pub fn one(id: &str, out: &Path) -> Value {
     } else {
         "original-ok"
     });
+    if ui_incomplete { result["incomplete"] = json!(true); }
     result["controls_bound"] = json!(format!("{total_bound}/{total_interactive}"));
     result["plays_note"] = json!(if any_heard {
         "yes"
