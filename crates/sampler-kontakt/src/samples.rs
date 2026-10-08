@@ -28,6 +28,7 @@ pub struct Source {
     pub(crate) key: Option<Arc<dyn LibraryKey>>,
     pub(crate) handle: Option<Arc<File>>,
     pub(crate) header: Option<(u32, usize)>,
+    pub(crate) frame_bytes: Option<usize>,
 }
 
 /// Resolves and decodes the samples of one library, opening each archive's
@@ -164,6 +165,7 @@ impl Samples {
                 key: None,
                 handle: None,
                 header: None,
+                frame_bytes: None,
             });
         };
         self.archive(&archive)?;
@@ -207,6 +209,7 @@ impl Samples {
             key,
             handle: Some(handle),
             header: None,
+            frame_bytes: None,
         })
     }
 
@@ -218,6 +221,7 @@ impl Samples {
         size: u64,
         keyed: bool,
         header: (u32, usize),
+        frame_bytes: usize,
     ) -> Option<Source> {
         let holding =
             archive_member_where(location, |p| self.archives.contains_key(p) || p.is_file())
@@ -254,6 +258,7 @@ impl Samples {
             key,
             handle,
             header: Some(header),
+            frame_bytes: Some(frame_bytes),
         })
     }
 

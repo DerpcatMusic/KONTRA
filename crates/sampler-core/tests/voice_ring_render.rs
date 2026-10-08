@@ -39,7 +39,8 @@ fn fill(worker: &mut StreamWorker, data: &[Frame]) {
 #[test]
 fn rings_match_resident_resampling_direction_serial_loops_release_and_parallel_render() {
     let data: Box<[Frame]> = (0..20000)
-        .map(|i| [(i as f32 * 0.071).sin(), (i as f32 * 0.013).cos()])
+        .map(|i| [(i as f32 * 0.071).sin(), (i as f32 * 0.013).cos()]
+            .map(|x| (x * 0.9 * 32768.).round() / 32768.))
         .collect();
     for threads in [1, 2] {
         for step in [0.5_f64, 1., 3.25, 16.] {
@@ -77,11 +78,12 @@ fn rings_match_resident_resampling_direction_serial_loops_release_and_parallel_r
                 } else {
                     data.len() - 4048
                 };
-                pcm.set_ranges(vec![(
-                    head,
-                    data[head..head + 4048].to_vec().into_boxed_slice(),
-                )])
+                pcm.set_ranges_with_compression(
+                    vec![(head, data[head..head + 4048].to_vec().into_boxed_slice())],
+                    true,
+                )
                 .unwrap();
+                assert!(pcm.head_compression().0 > 0);
                 let (cache, mut worker) = StreamCache::voice_rings(64, 1).unwrap();
                 let mut layer = region(0, playback);
                 layer.gain = 1. / 64.;

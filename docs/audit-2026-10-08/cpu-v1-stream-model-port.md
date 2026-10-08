@@ -14,7 +14,7 @@ Kontakt assembly uses the ring transport and the preload planner. The host Auto 
 
 ## Targeted validation
 
-Latest validation: **56 targeted tests PASS**, plus root `cargo test --no-run` PASS.
+Validation at `d826303f`: **56 targeted tests PASS**, plus root `cargo test --no-run` PASS.
 
 | Area | Tests |
 |---|---:|
@@ -33,4 +33,15 @@ The first draft's parallel fixture used an undersized candidate bound, and the f
 
 Areia Full Ensemble and ANALOG STRINGS at 32/64/256 frames, cold and warm. Three rotations compare candidate, exact 52438 twice (A/A), and frozen v1. Record median/p99 per block, deadlines, storage underruns, capacity errors, loaded/final RSS and per-run unit/cgroup activity. Only QUIET observations count. Candidate must have zero underruns and capacity errors; RSS must not exceed 52438 beyond its measured A/A noise floor. CPU/deadline changes and v1 gaps remain explicit.
 
-No original-instrument numbers have been collected for this wiring. No streaming SHA is READY for integration. Release/install remains held.
+The first attempt stopped on external cargo/rustc contention at 21:04:58 UTC and removed its request. Exact 52438 A/A Areia32 cold rows were QUIET: 24 underruns each, 932/933 capacity errors, loaded RSS 379.30/379.02 MiB. The candidate row had zero underruns/capacity errors but was CONTENDED: loaded RSS 688.01 MiB, and its unit recorded 553 MiB swap. This is a memory failure warning, not an accepted timing comparison. Attempt receipts remain under `~/.cache/kontakto-fix-cpu/stream-model-matrix`. No streaming SHA is READY for integration. Release/install remains held.
+
+
+## Complete v1 head memory model — instrument acceptance pending
+
+The `d826303f` head owner reports 800,308,908 bytes (763.23 MiB). Rings reserve 67,108,864 bytes virtually (64 MiB; idle pages remain untouched), matching v1's f32 ring representation. Four decoder caches can hold 8 MiB of physical frames; the 64 readers per worker have 4 MiB total byte buffers, plus codec metadata. These cache figures are maximum capacities, not attributed resident measurements. Frozen v1 Full Ensemble scanner RSS was 307.10 MiB cold and 305.12 MiB os-warm in the d75 gate receipt.
+
+The follow-up ports `0cb7a8a0:src/audio.rs` predictive 64-frame blocks, with safe scalar reads at the core boundary; short or whole resident loops keep raw native PCM. Native 4/6/8-byte planning and cache metadata replace the eight-byte estimate. The 1 GiB v1 budget includes the ring reservation before the preload/offset-coverage fallback. The existing numeric header cache version advances because the old entries did not retain native width. Warm valid entries still skip codec opens.
+
+Numeric `stream_head_owners` diagnostics count distinct assets, head assets/spans, planned source frames/native bytes, predictive spans/frames and actual stored bytes. RSS/swap and original-instrument timing are pending. A smooth stereo i24 fixture failed before the codec port (`head-packed-red.log`, status101); 48 targeted checks PASS: packing3, compressed ring render3, Kontakt stream/preload12, header cache1, AIFF1, cold-chain10, cold-offset2, paged render16. Root `cargo test --no-run` PASS. Logs are `head-model-check-3.log` and `head-model-neighbors.log`, both status0. The previous exact raw-size assertion now verifies both compression-disabled raw sizing and the smaller predictive representation; a noisy fixture that correctly fell back to native PCM was replaced with a smooth nonzero-residual fixture to exercise the predictor. Next is ordinary-wrapper ownership/RSS/swap measurement, followed by quiet A/B only if RSS fits the exact 52438 baseline.
+
+The v1 full-bank UI probe (`0cb7a8a0:src/ui/audit.rs:737`) uses 512 MiB, while the frozen CPU adapter uses the product `MEMORY_LIMIT` of 1 GiB. Scanner and CPU-adapter RSS must retain that provenance; the candidate still must meet the exact 52438 RSS ceiling and zero swap. The upcoming ownership probe records the CPU adapter’s actual head bytes, sample count and chosen preload alongside v2’s detailed counts.
