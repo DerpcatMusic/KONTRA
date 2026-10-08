@@ -2,7 +2,10 @@
 //! measured read latency, and the decode worker thread behind the core's
 //! page cache. Only heads and a bounded page pool are resident.
 
-use crate::{LoadError, samples::Source};
+use crate::{
+    LoadError,
+    samples::{FileAt, Source},
+};
 use sampler_core::{AssetId, DecodeFailure, PAGE_FRAMES, Pcm, StreamCache, StreamWorker};
 use sampler_ir as ir;
 use std::{
@@ -28,7 +31,7 @@ pub static DISK_READ: AtomicU64 = AtomicU64::new(0);
 
 struct Bytes {
     counted: bool,
-    file: File,
+    file: Arc<File>,
     source: Source,
     position: u64,
     /// Decrypted bytes from member offset `at`.
@@ -43,7 +46,10 @@ impl Bytes {
     fn open(source: &Source, counted: bool) -> io::Result<Self> {
         Ok(Self {
             counted,
-            file: File::open(&source.path)?,
+            file: match &source.handle {
+                Some(handle) => handle.clone(),
+                None => Arc::new(File::open(&source.path)?),
+            },
             source: source.clone(),
             position: 0,
             buffer: Vec::with_capacity(BUFFER),
@@ -58,12 +64,14 @@ impl Read for Bytes {
         if self.position < self.at || self.position >= end {
             let left = self.source.size.saturating_sub(self.position);
             let len = BUFFER.min(usize::try_from(left).unwrap_or(usize::MAX));
-            self.file
-                .seek(SeekFrom::Start(self.source.offset + self.position))?;
+            let mut file = FileAt {
+                file: &self.file,
+                pos: self.source.offset + self.position,
+            };
             self.buffer.resize(len, 0);
             let mut filled = 0;
             while filled < len {
-                match self.file.read(&mut self.buffer[filled..])? {
+                match file.read(&mut self.buffer[filled..])? {
                     0 => break,
                     n => { filled += n; if self.counted { DISK_READ.fetch_add(n as u64, Ordering::Relaxed); } },
                 }
@@ -112,6 +120,10 @@ enum Codec {
 /// Where an asset's frames are read from, reopened by each decode thread.
 pub trait AssetSource: Send + Sync {
     fn open(&self) -> io::Result<SampleReader>;
+    /// A validated persistent numeric header, when available.
+    fn header(&self) -> Option<(u32, usize)> {
+        None
+    }
     /// Playback/reload IO, counted separately from initial loading.
     fn open_stream(&self) -> io::Result<SampleReader> { self.open() }
 }
@@ -119,6 +131,9 @@ pub trait AssetSource: Send + Sync {
 impl AssetSource for Source {
     fn open(&self) -> io::Result<SampleReader> {
         SampleReader::open(self)
+    }
+    fn header(&self) -> Option<(u32, usize)> {
+        self.header
     }
     fn open_stream(&self) -> io::Result<SampleReader> { SampleReader::open_counted(self, true) }
 }
@@ -286,6 +301,10 @@ pub struct StreamPolicy {
     pub voices: usize,
     /// Decode threads.
     pub decoders: usize,
+    /// Maximum resident start-range bytes; cold starts load only on demand.
+    pub head_budget: usize,
+    /// Publish before heads are read. Runtime must enable cold-start holding.
+    pub lazy: bool,
     /// RAM-only: keep whole samples smallest first within this safe byte budget.
     pub resident_budget: Option<usize>,
 }
@@ -299,6 +318,8 @@ impl Default for StreamPolicy {
             block_frames: 64,
             voices: 256,
             decoders: 4,
+            head_budget: usize::MAX,
+            lazy: false,
             resident_budget: None,
         }
     }
@@ -439,6 +460,7 @@ pub struct Streamer {
     stop: Arc<AtomicBool>,
     threads: Vec<JoinHandle<()>>,
     reloader: Option<JoinHandle<()>>,
+    head_budget: usize,
 }
 
 impl Streamer {
@@ -455,28 +477,80 @@ impl Streamer {
         rate: u32,
         policy: &StreamPolicy,
         probe: usize,
+        canceled: &(dyn Fn() -> bool + Sync),
     ) -> Result<Opened, LoadError> {
+        let _span = crate::audit::Span::new("sample_headers_latency_probe");
+        let opened = std::thread::scope(|scope| {
+            let sources = &sources;
+            let count = std::thread::available_parallelism()
+                .map_or(1, |n| n.get())
+                .min(8)
+                .min(sources.len());
+            let workers: Vec<_> = (0..count)
+                .map(|worker| {
+                    scope.spawn(move || {
+                        let mut page = vec![[0.0; 2]; PAGE_FRAMES];
+                        (worker..sources.len())
+                            .step_by(count)
+                            .map(|i| {
+                                let (source, path) = &sources[i];
+                                let result = (|| {
+                                    if canceled() {
+                                        return Err(LoadError::Canceled);
+                                    }
+                                    if let Some((rate, frames)) = source.header() {
+                                        let pcm = Pcm::streamed(rate, frames).map_err(|e| {
+                                            LoadError::Invalid {
+                                                path: (*path).into(),
+                                                reason: e.to_string(),
+                                            }
+                                        })?;
+                                        return Ok((pcm, None));
+                                    }
+                                    let begin = Instant::now();
+                                    let mut reader =
+                                        source.open().map_err(|e| LoadError::io(path, e))?;
+                                    let latency = if i < probe {
+                                        let n = reader.frames().min(PAGE_FRAMES);
+                                        reader
+                                            .read(0, &mut page[..n])
+                                            .map_err(|e| LoadError::io(path, e))?;
+                                        Some(begin.elapsed())
+                                    } else {
+                                        None
+                                    };
+                                    let pcm = Pcm::streamed(reader.rate(), reader.frames())
+                                        .map_err(|e| LoadError::Invalid {
+                                            path: (*path).into(),
+                                            reason: e.to_string(),
+                                        })?;
+                                    Ok((pcm, latency))
+                                })();
+                                (i, result)
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect();
+            let mut opened: Vec<_> = workers
+                .into_iter()
+                .flat_map(|w| w.join().expect("sample header worker"))
+                .collect();
+            opened.sort_unstable_by_key(|(i, _)| *i);
+            opened
+                .into_iter()
+                .map(|(_, result)| result)
+                .collect::<Result<Vec<_>, LoadError>>()
+        })?;
         let mut latencies = Vec::new();
-        let mut page = vec![[0.0; 2]; PAGE_FRAMES];
         let mut assets = Vec::with_capacity(sources.len());
         let mut registry = HashMap::with_capacity(sources.len());
         let mut full = 0;
-        for (i, (source, path)) in sources.into_iter().enumerate() {
-            let begin = Instant::now();
-            let mut reader = source.open().map_err(|e| LoadError::io(path, e))?;
-            if i < probe {
-                let n = reader.frames().min(PAGE_FRAMES);
-                reader
-                    .read(0, &mut page[..n])
-                    .map_err(|e| LoadError::io(path, e))?;
-                latencies.push(begin.elapsed());
+        for ((source, _), (pcm, latency)) in sources.into_iter().zip(opened) {
+            if let Some(latency) = latency {
+                latencies.push(latency);
             }
-            full += reader.frames() as u64 * size_of::<Frame>() as u64;
-            let pcm =
-                Pcm::streamed(reader.rate(), reader.frames()).map_err(|e| LoadError::Invalid {
-                    path: path.into(),
-                    reason: e.to_string(),
-                })?;
+            full += pcm.frame_count() as u64 * size_of::<Frame>() as u64;
             registry.insert(pcm.asset_id(), source);
             assets.push(pcm);
         }
@@ -519,16 +593,20 @@ impl Streamer {
         ranges: Vec<Vec<Range<usize>>>,
         worker: StreamWorker,
         decoders: usize,
+        lazy: bool,
+        head_budget: usize,
     ) -> io::Result<(Self, usize)> {
+        let span = crate::audit::Span::new("sample_preload");
         let mut bytes = 0;
         let mut table = HashMap::with_capacity(assets.len());
         for (pcm, ranges) in assets.iter().zip(ranges) {
-            if !ranges.is_empty() {
+            if !lazy && !ranges.is_empty() {
                 let mut reader = sources[&pcm.asset_id()].open()?;
                 bytes += load_ranges(pcm, &mut reader, &ranges)?;
             }
             table.insert(pcm.asset_id(), ranges);
         }
+        drop(span);
         let sources = Arc::new(sources);
         let stop = Arc::new(AtomicBool::new(false));
         // Several decoders overlap reads, so one slow read does not hold up
@@ -540,6 +618,7 @@ impl Streamer {
             stop,
             threads: Vec::new(),
             reloader: None,
+            head_budget,
         };
         for _ in 0..decoders.max(1) {
             let thread = std::thread::Builder::new()
@@ -563,7 +642,7 @@ impl Streamer {
                     // Woken by the audio side (`StreamCache::set_wake`) when a
                     // start finds an asset cold, and by Drop.
                     while !stop.load(Ordering::Relaxed) {
-                        if reload(&assets, &sources, &ranges).is_err() {
+                        if reload(&assets, &sources, &ranges, head_budget).is_err() {
                             std::thread::park_timeout(Duration::from_millis(100));
                         } else {
                             std::thread::park();
@@ -609,7 +688,7 @@ impl Streamer {
     /// Returns how many were reloaded.
     /// A background thread already does this when a start finds one cold.
     pub fn reload(&self, assets: &[Pcm]) -> io::Result<usize> {
-        reload(assets, &self.sources, &self.ranges)
+        reload(assets, &self.sources, &self.ranges, self.head_budget)
     }
 }
 
@@ -617,6 +696,7 @@ fn reload(
     assets: &[Pcm],
     sources: &HashMap<AssetId, Arc<dyn AssetSource>>,
     ranges: &HashMap<AssetId, Vec<Range<usize>>>,
+    budget: usize,
 ) -> io::Result<usize> {
     let mut count = 0;
     for pcm in assets {
@@ -627,6 +707,15 @@ fn reload(
         let (Some(source), Some(ranges)) = (sources.get(&id), ranges.get(&id)) else {
             continue;
         };
+        // Starts get their onset from the prioritized page workers as well.
+        // Cache complete start ranges only within the fixed admission budget;
+        // a large/offset-heavy source keeps streaming rather than growing RSS.
+        let estimate = ranges
+            .iter()
+            .map(|r| r.len().saturating_mul(size_of::<Frame>()))
+            .sum::<usize>();
+        let held = assets.iter().map(Pcm::head_bytes).sum::<usize>();
+        if held.saturating_add(estimate) <= budget {
         if let Err(error) = source.open_stream().and_then(|mut reader| load_ranges(pcm, &mut reader, ranges)) {
             if !matches!(error.kind(), io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof | io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied) {
                 pcm.mark_cold();
@@ -634,6 +723,7 @@ fn reload(
             return Err(error);
         }
         count += 1;
+        }
     }
     Ok(count)
 }
@@ -752,8 +842,16 @@ impl Streamed {
             StreamCache::new(report.pool_pages.max(1)).map_err(|e| invalid(e.to_string()))?;
         report.pool_bytes = cache.bytes();
         let ranges = start_ranges(&loaded.instrument, &kept, rate, head, &policy);
-        let (streamer, bytes) = Streamer::start(sources, &kept, ranges, worker, policy.decoders)
-            .map_err(|e| invalid(e.to_string()))?;
+        let (streamer, bytes) = Streamer::start(
+            sources,
+            &kept,
+            ranges,
+            worker,
+            policy.decoders,
+            policy.lazy,
+            policy.head_budget,
+        )
+        .map_err(|e| invalid(e.to_string()))?;
         report.head_bytes = bytes;
         cache.set_wake(
             streamer
@@ -779,6 +877,91 @@ mod tests {
     use super::*;
 
     #[test]
+    fn headers_open_in_bounded_parallel_workers_and_keep_asset_order() {
+        struct Header {
+            frames: usize,
+            active: Arc<std::sync::atomic::AtomicUsize>,
+            peak: Arc<std::sync::atomic::AtomicUsize>,
+        }
+        impl AssetSource for Header {
+            fn open(&self) -> io::Result<SampleReader> {
+                let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+                self.peak.fetch_max(active, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(5));
+                self.active.fetch_sub(1, Ordering::SeqCst);
+                Ok(SampleReader::custom(48000, self.frames, |_, out| {
+                    out.fill([0.5; 2]);
+                    Ok(())
+                }))
+            }
+        }
+        let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let peak = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sources = (1..=8)
+            .map(|frames| {
+                (
+                    Arc::new(Header {
+                        frames,
+                        active: active.clone(),
+                        peak: peak.clone(),
+                    }) as Arc<dyn AssetSource>,
+                    std::path::Path::new("test"),
+                )
+            })
+            .collect();
+        let opened =
+            Streamer::open(sources, 48000, &StreamPolicy::default(), 0, &|| false).unwrap();
+        assert_eq!(
+            opened
+                .assets
+                .iter()
+                .map(Pcm::frame_count)
+                .collect::<Vec<_>>(),
+            (1..=8).collect::<Vec<_>>()
+        );
+        assert!((1..=8).contains(&peak.load(Ordering::SeqCst)));
+    }
+
+    #[test]
+    fn lazy_heads_are_not_read_until_requested_and_respect_the_budget() {
+        struct Head(Arc<std::sync::atomic::AtomicUsize>);
+        impl AssetSource for Head {
+            fn open(&self) -> io::Result<SampleReader> {
+                let reads = self.0.clone();
+                Ok(SampleReader::custom(48000, 8192, move |_, out| {
+                    reads.fetch_add(1, Ordering::Relaxed);
+                    out.fill([0.5; 2]);
+                    Ok(())
+                }))
+            }
+        }
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let pcm = Pcm::streamed(48000, 8192).unwrap();
+        let sources = HashMap::from([(
+            pcm.asset_id(),
+            Arc::new(Head(reads.clone())) as Arc<dyn AssetSource>,
+        )]);
+        let (_, worker) = StreamCache::new(1).unwrap();
+        let (streamer, bytes) = Streamer::start(
+            sources,
+            std::slice::from_ref(&pcm),
+            vec![vec![0..4096]],
+            worker,
+            1,
+            true,
+            1,
+        )
+        .unwrap();
+        assert_eq!(
+            (bytes, reads.load(Ordering::Relaxed), pcm.head_bytes()),
+            (0, 0, 0)
+        );
+        // No on-demand reload can exceed a budget smaller than this head.
+        assert_eq!(streamer.reload(std::slice::from_ref(&pcm)).unwrap(), 0);
+        assert_eq!(pcm.head_bytes(), 0);
+    }
+
+    #[test]
     fn v1_ram_mode_fills_small_samples_first_and_streams_over_budget() {
         let assets: Vec<_> = [1000, 4000, 2000].into_iter().map(|n| Pcm::streamed(48000, n).unwrap()).collect();
         let mut heads = vec![vec![0..100]; 3];
@@ -799,8 +982,16 @@ mod tests {
             .map(|_| Pcm::headed(48000, 8000, &head).unwrap())
             .collect();
         let (_, worker) = StreamCache::new(1).unwrap();
-        let (streamer, _) =
-            Streamer::start(HashMap::new(), &assets, vec![vec![]; 3], worker, 1).unwrap();
+        let (streamer, _) = Streamer::start(
+            HashMap::new(),
+            &assets,
+            vec![vec![]; 3],
+            worker,
+            1,
+            false,
+            usize::MAX,
+        )
+        .unwrap();
         // Packed: 16-bit mono.
         let size = assets[0].head_bytes();
         assert_eq!(size, 1000 * 2);

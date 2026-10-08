@@ -504,3 +504,124 @@ fn one_pole_connections_address_each_stage_in_a_shared_voice_chain() {
     assert_eq!(stages, vec![0, 1]);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn typed_one_pole_catalog_controls_reach_distinct_live_processors() {
+    let xml = insert_program(None).replace("<Oscillators>", r#"<Inserts><OnePole Freq="500"/><OnePole Freq="8000"/></Inserts><Oscillators>"#);
+    let instrument = sampler_uvi::translate(&xml, std::path::Path::new(".")).unwrap().instrument;
+    assert_eq!(instrument.processor_controls.len(), 2, "catalog controls must bind actual processor lanes");
+    assert_ne!(instrument.processor_controls[0].index, instrument.processor_controls[1].index);
+    for control in &instrument.controls {
+        assert!(matches!(control.value, ir::ControlValue::Continuous { min:20., max:20000., unit:ir::ControlUnit::Hertz, .. }));
+    }
+}
+
+
+#[test]
+fn initialized_controller_and_widget_cutoff_writes_change_production_pcm() {
+    use sampler_core::{EngineParameterAddress, EngineParameterLaw, ControlValue};
+    use sampler_uvi::{script::Config, scripted::HostInput};
+    let dir = std::env::temp_dir().join(format!("sampler-uvi-live-catalog-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("samples")).unwrap();
+    let sine: Vec<i16> = (0..48000).map(|i| ((i as f64 * 5000. * std::f64::consts::TAU / 48000.).sin() * 16000.) as i16).collect();
+    std::fs::write(dir.join("samples/sine.wav"), wav(48000, &sine)).unwrap();
+    let xml = insert_program(None)
+        .replace("<Oscillators>", r#"<Inserts><OnePole Freq="500"/><OnePole Freq="8000"/></Inserts><Oscillators>"#)
+        .replace("<Layers>", r#"<EventProcessors><ScriptProcessor><script>
+          local filter=Program.layers[1].keygroups[1].inserts[1]
+          local knob=Knob('Cutoff',1000,20,20000)
+          function knob:changed() filter:setParameter('Freq',self.value) end
+          function onInit() filter:setParameter('Freq',1000) end
+          function onController(e) filter:setParameter('Freq',10000) end
+        </script></ScriptProcessor></EventProcessors><Layers>"#);
+    let path = dir.join("Live.uvip");
+    std::fs::write(&path, xml).unwrap();
+    let mut translated = sampler_uvi::translate_path(&path).unwrap();
+    let mut attached = translated.attach_script(48000,Config::default()).unwrap().unwrap();
+    assert!(attached.findings.is_empty(), "{:?}", attached.findings);
+    let ids:Vec<_> = translated.inserts.iter().map(|i| i.node).collect();
+    let control = sampler_core::lower::ir_control_id(&translated.instrument.controls[0].key);
+    let loaded = sampler_uvi::assemble_translated(translated,48000).unwrap();
+    let limits = Limits::for_plan(&loaded.plan,4,4);
+    let mut rt = Runtime::new(loaded.plan,limits).unwrap();
+    // onInit is installed before the first script pump or note.
+    assert_eq!(rt.control_value(rt.active_plan(),control).unwrap(), ControlValue::Real(1000.));
+    let address = |node| EngineParameterAddress { parameter:sampler_core::engine_parameter_id("ENGINE_PAR_CUTOFF").unwrap(),group:-1,slot:-1,generic:node as i32 };
+    let law = EngineParameterLaw::Exponential {low:20.,high:20000.};
+    let wait = |driver:&mut sampler_uvi::scripted::Driver<sampler_uvi::scripted::ScriptThread>, rt:&mut Runtime, native| {
+        let deadline = std::time::Instant::now()+std::time::Duration::from_secs(5);
+        loop {
+            driver.wake(rt).unwrap();
+            if rt.engine_parameter(address(ids[0])).unwrap()==law.normalized_value(native).unwrap() { break; }
+            assert!(std::time::Instant::now()<deadline,"live cutoff command did not reach the DSP control");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(rt.engine_parameter(address(ids[1])).unwrap(),law.normalized_value(8000.).unwrap());
+    };
+    wait(&mut attached.driver,&mut rt,1000.);
+    let input=Input { protocol:Protocol::Native,port:0,group:0,channel:0,key:60,external_id:None };
+    rt.trigger(input,60,1.).unwrap();
+    let mut closed=vec![[0.;2];2048];
+    rt.render(&mut closed).unwrap();
+    attached.driver.input(&rt,HostInput::Controller {cc:1,value:127,channel:0});
+    wait(&mut attached.driver,&mut rt,10000.);
+    let mut open=vec![[0.;2];2048];
+    rt.render(&mut open).unwrap();
+    let power=|audio:&[[f32;2]]| audio[1024..].iter().flatten().map(|x| x*x).sum::<f32>();
+    assert!(power(&open)>power(&closed)*9.,"controller write must change actual PCM");
+    let ui=attached.driver.ui();
+    let knob=ui.values()[0].0;
+    assert!(ui.edit(knob,100.));
+    wait(&mut attached.driver,&mut rt,100.);
+    let mut widget=vec![[0.;2];2048];
+    rt.render(&mut widget).unwrap();
+    assert!(power(&widget)<power(&closed)*0.1,"widget write must change actual PCM");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+
+#[test]
+fn streamed_bus_gain_has_live_catalog_defaults_and_controller_readback() {
+    use sampler_core::{EngineParameterAddress, EngineParameterLaw, ControlValue};
+    use sampler_uvi::{script::Config, scripted::HostInput};
+    let dir=std::env::temp_dir().join(format!("sampler-uvi-streamed-catalog-{}",std::process::id()));
+    std::fs::create_dir_all(dir.join("samples")).unwrap();
+    std::fs::write(dir.join("samples/sine.wav"),wav(48000,&vec![16000;48000])).unwrap();
+    let xml=insert_program(None).replace("<Layers>",r#"<Inserts><Gain Volume="1"/></Inserts><EventProcessors><ScriptProcessor><script>
+      local gain=Program.inserts[1]
+      function onInit() gain:setParameter('Volume',0.25) end
+      function onController(e) gain:setParameter('Volume',0.5) end
+    </script></ScriptProcessor></EventProcessors><Layers>"#);
+    let path=dir.join("Bus.uvip");
+    std::fs::write(&path,xml).unwrap();
+    let mut translated=sampler_uvi::translate_path(&path).unwrap();
+    let mut attached=translated.attach_script(48000,Config::default()).unwrap().unwrap();
+    assert!(attached.findings.is_empty(),"{:?}",attached.findings);
+    let node=translated.inserts[0].node;
+    let control=sampler_core::lower::ir_control_id(&translated.instrument.controls[0].key);
+    let streamed=sampler_uvi::assemble_translated_streamed(translated,48000,&Default::default()).unwrap();
+    let limits=Limits::for_plan(&streamed.loaded.plan,4,4);
+    let mut rt=Runtime::new(streamed.loaded.plan,limits).unwrap().with_stream_cache(streamed.cache);
+    assert_eq!(rt.control_value(rt.active_plan(),control).unwrap(),ControlValue::Real(0.25));
+    let address=EngineParameterAddress {parameter:sampler_core::engine_parameter_id("ENGINE_PAR_VOLUME").unwrap(),group:-1,slot:-1,generic:node as i32};
+    let law=EngineParameterLaw::Linear {low:0.,high:3.981};
+    attached.driver.wake(&mut rt).unwrap();
+    rt.trigger(Input {protocol:Protocol::Native,port:0,group:0,channel:0,key:60,external_id:None},60,1.).unwrap();
+    let mut quiet=vec![[0.;2];128];
+    rt.render(&mut quiet).unwrap();
+    attached.driver.input(&rt,HostInput::Controller {cc:1,value:127,channel:0});
+    let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);
+    loop {
+        attached.driver.wake(&mut rt).unwrap();
+        if rt.engine_parameter(address).unwrap()==law.normalized_value(0.5).unwrap() {break;}
+        assert!(std::time::Instant::now()<deadline);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let mut loud=vec![[0.;2];128];
+    rt.render(&mut loud).unwrap();
+    assert!(quiet[100][0]>0.01);
+    assert!((loud[100][0]/quiet[100][0]-2.).abs()<0.01,"summed bus gain must change actual PCM");
+    drop(rt);
+    drop(streamed.streamer);
+    std::fs::remove_dir_all(dir).unwrap();
+}

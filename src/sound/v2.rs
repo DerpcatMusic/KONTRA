@@ -1115,7 +1115,10 @@ impl Core for V2Core {
     fn problems(&self, part: usize) -> RuntimeProblems {
         let Some(Some(p)) = self.parts.get(part) else { return RuntimeProblems::default() };
         let stats = p.runtime.stats();
+        let (lua_faults,lua_budgets) = p.script.as_ref().map_or((0,0), |s|s.ui().runtime_faults());
         RuntimeProblems {
+            lua_faults,
+            script_overruns: p.problems.script_overruns.saturating_add(lua_budgets),
             nonfinite: stats.nonfinite_frames,
             underruns: stats.stream_underruns,
             capacity_drops: p.problems.capacity_drops + stats.voice_drops,
@@ -1214,7 +1217,14 @@ fn stream_policy(request: &LoadRequest) -> sampler_kontakt::StreamPolicy {
         // ponytail: v1's /proc/meminfo probe; other systems keep its 8 GiB ceiling.
         ram_free().map_or(8 << 30, |(free, total)| free.saturating_sub((1 << 30) + total / 8))
     });
-    sampler_kontakt::StreamPolicy { resident_budget, ..Default::default() }
+    sampler_kontakt::StreamPolicy {
+        resident_budget,
+        lazy: request.streaming == super::Streaming::Auto,
+        head_budget: resident_budget.unwrap_or(8 << 20),
+        block_frames: super::MAX_BLOCK,
+        max_step: 16.0,
+        ..Default::default()
+    }
 }
 
 /// Voice-rendering threads per part: `KONTRA_THREADS` (`auto` or a count)
@@ -1297,6 +1307,8 @@ fn insert_names(instrument: &ir::Instrument, chain: Option<ir::ChainRef>) -> Vec
             ir::Processor::Compressor(_) => "Compressor",
             ir::Processor::Rectify(_) => "Rectify",
             ir::Processor::Daft(_) => "Daft",
+            ir::Processor::LadderLP4(_) => "Ladder LP4",
+            ir::Processor::SendReturnGate { .. } => "Send return gate",
             ir::Processor::Branch { .. } => "Branch",
             ir::Processor::Convolution { .. } => "Convolution",
             ir::Processor::Filter(_) => "Filter",
@@ -1460,7 +1472,7 @@ fn kontakt(
         return Err(CoreError::Canceled);
     }
     let policy = stream_policy(request);
-    let streamed = sampler_kontakt::load_read_streamed(source, &options, &policy, progress).map_err(load)?;
+    let streamed = sampler_kontakt::load_read_streamed_cancelable(source, &options, &policy, progress, canceled).map_err(load)?;
     let sampler_kontakt::Streamed { loaded, assets, cache, streamer, report: stream } = streamed;
     report.decoded.full_bytes = stream.full_bytes;
     report.decoded.dynamics = loaded.dynamics().iter().map(|&(cc, v)| (cc, (v * 127.).round().clamp(0., 127.) as u8)).collect();
@@ -1486,10 +1498,15 @@ fn kontakt(
 /// stream from the bank or file; its Lua scripts run on their own thread.
 fn uvi(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
     let load = |e: &dyn std::fmt::Display| CoreError::Load(LoadFailure::message(e));
+    let span = sampler_kontakt::audit::Span::new("uvi_read_translate");
     let mut t = sampler_uvi::translate_path(&request.path).map_err(|e| load(&*e))?;
+    drop(span);
+    let span = sampler_kontakt::audit::Span::new("uvi_lua_init");
     let rate = request.sample_rate as u32;
     let attached = t.attach_script_with_ui_state(rate, sampler_uvi::script::Config::realtime(), request.uvi_state.clone()).map_err(|e| load(&e))?;
+    drop(span);
     let mut report = LoadReport::of(&t.instrument, &request.path, t.locations.len());
+    if let Some(a) = &attached { report.uvi_faults = a.driver.ui().fault_counts(); }
     let tree = nest(&mut t.instrument);
     let streamed = sampler_uvi::assemble_translated_streamed(t, rate, &stream_policy(request)).map_err(|e| load(&*e))?;
     let sampler_kontakt::Streamed { mut loaded, assets, cache, streamer, report: stream } = streamed;
@@ -1601,6 +1618,7 @@ impl V2Loader {
         if canceled() {
             return Err(CoreError::Canceled);
         }
+        let _span = sampler_kontakt::audit::Span::new("runtime_alloc_init");
         let mut timbre = None;
         if request.mpe {
             let defaults = match &instrument {
@@ -1671,10 +1689,10 @@ impl V2Loader {
         let grower = Grower::start(&mut runtime, control, ceiling, per_voice)
             .map_err(|e| CoreError::Invalid(e.to_string()))?;
         let mut part = Part::new(runtime, tree.clone())?;
+        part.waveform_sources = waveform_sources;
         if request.mpe_upper {
             part.mpe = Mpe::new(&part.runtime, WIRE.port, WIRE.group, Zone::Upper, 15, NOTES).map_err(core)?;
         }
-        part.waveform_sources = waveform_sources;
         part.mpe.set_timbre_controller(timbre);
         part.grower = Some(grower);
         part.script = script.map(Box::new);
