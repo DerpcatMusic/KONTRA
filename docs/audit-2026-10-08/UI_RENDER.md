@@ -6,6 +6,10 @@ Branch: `audit/ui-render-20261008`. This phase changes probes and documentation 
 ## Verdict and evidence boundary
 
 **Worse than the pinned v1 rendering implementation; incomplete Kontakt support.**
+The user reports that v1 rendered most original library UIs correctly, including
+Conflux. Treat that as the product baseline. For every failing mechanism, inspect
+and reuse the render path at `0cb7a8a0` first; then extend only the missing source
+semantics. The per-mechanism v1 map below makes that order explicit.
 V2 retains typed presentation data, but drops bitmap fonts, text layout, sliced
 resizing, several image states and actual table/meter/waveform painting. Conflux's
 authored frontend is absent. Passing a CPU render means that our fallback drew;
@@ -147,8 +151,9 @@ and publication resets need those owners' end-to-end input traces.
 V1 qualification: pinned `0cb7a8a0` has font/slicing/text/wallpaper machinery,
 but the prior measured Conflux capture itself had 118 visible controls, zero
 continuous controls and no wallpaper. Its 6.333 ms vs v2 36.430 ms warm CPU means
-are **unequal content**, not a same-quality speed ratio. The user's working
-installed v1 needs its own authored-page reference. See the read-only
+are **unequal content**, not a same-quality speed ratio. That narrow probe does not overturn the user's observation that installed v1
+rendered most original UIs correctly. Capture the installed v1 page to explain
+the difference between that working build and this specific pinned-fixture probe. See the read-only
 `audit-ui/docs/audit-2026-10-08/ui.md:39` and `ui-frames.json`.
 
 ## Systemic mechanisms, fixes and acceptance tests
@@ -179,6 +184,40 @@ per-parent `(z,declaration)` ordering are implemented in `sampler-ui-ir/lib.rs:5
 metrics and fractional pixel placement still need reference-host fixtures. They
 are partial/unverified, not counted as known wrong solely because they differ
 from another UI framework. `Widget.enabled` is currently not used by this painter.
+
+## V1-first reference for every failing mechanism
+
+All paths in this table refer to read-only commit
+`0cb7a8a0b4d43086596a64c77320caa1b26d6d98`, worktree
+`/home/derpcat/.t3/worktrees/KONTAKTO/gpt-kontakt-ui-v1-bench`.
+Use its executable checks and behavior as the first implementation reference.
+Where the pinned path is also incomplete, preserve its working parts and name
+that limit; a new frontend or native fixture closes the remaining obligation.
+Do not replace the working authored presentation with a generic theme.
+
+| Mechanism | First v1 path/check to use | What v2 must recover; remaining limit |
+|---|---|---|
+| R0 default / retained selection | `src/library.rs:99` defaults `ViewMode` to Original; `src/ui/perf_view.rs:268` `mode`, `:282` `code`, `:1556` selection persistence check | Preserve Original / Vectorized / Kontra as independent per-part choices; do not infer a default from unsupported metadata or reset it on UI publication. |
+| R1 frontend routing | `src/ksp/performance_view.rs:18` imports exported source properties; `src/ui/perf_view.rs:443` paints the resulting authored view; `src/ksp/compile.rs:1554` explicitly diagnoses unavailable native execution | First preserve the working exported-view route. This pinned renderer does **not** execute `load_native_ui` either; adapt the separate legacy NativeUI candidate through v2 services for the readable package rather than fabricate classic artwork. The installed-v1 Conflux capture resolves the build/page discrepancy. |
+| R2 effective background / contrast | `src/ui/perf_view.rs:492` computes solid-background luma, `:505` uses it when pictured layers provide none; `:863` `luma_under` walks opaque drawn layers in reverse; `:854` selects contrasting fallback ink | Restore the solid-colour fallback and actual draw-order context that v2 dropped. Keep explicit source font colour; translucent compositing beyond the pinned threshold still needs a native fixture. |
+| R3 resources / lookup diagnostics | `src/resources.rs:77` source discovery and `:134` `Result<Option<bytes>,error>`; `src/artwork.rs:122` named wallpaper, `:155` accepted names/extensions, `:259` picture failure report | Recover named-resource selection and distinct absence/access/decode errors. Pinned v1 discovery also remains shallow and NKR-based; use the pushed bounded NKR/NICNT/root-boundary work for those shared gaps. |
+| R4 custom fonts | `src/ksp/calls.rs:1555` reserves IDs `26 + index`; `src/artwork.rs:218` font resource key, `:230` 256 glyph markers, `:247` character mapping; `src/ui/perf_view.rs:769` bitmap glyph painter; `:1615` glyph/ID test | Restore distinct custom identity, glyph pixels, variable advances and alpha. Validate native encoding/profile rather than assert all Unicode or factory metrics are exact. |
+| R5 text / fonts / offsets / hide parts | `src/ui/perf_view.rs:591` `caption_of`, `:634` responsive `font_id`, `:666` factory weight/colour approximation, `:741` aligned/multiline `words`, `:1019` caption layering; checks `:1582`, `:1655` | Recover state-font inheritance, alignment, text offset, current TextEdit string, file caption, title/value masks and separate script captions over pictures. Exact factory glyphs and missing value-offset/scroll semantics still require source fixtures. |
+| R6 sliced resizing / alpha | `src/ui/perf_view.rs:821` `sliced`; `src/ui/perf_view.rs:1472` edge-preservation check; `src/artwork.rs:458` alpha-weighted resampling and `:798` fractional-edge check | Recover preserved ends and device-aware resized pieces. V1 cuts symmetric ends around the centre; it does not parse arbitrary Fixed Top/Bottom/Left/Right margins. Extend to explicit sidecar margins without regressing working v1 skins. |
+| R7 picture/state dispatch | `src/artwork.rs:322` metadata parser / `:349` frame cutting; `src/ui/perf_view.rs:163` value frame, `:805` per-kind/fixed `picture_frame`; `:1320` endpoint/bipolar/reversed-range checks | Restore fixed frames for menus/value backgrounds and source-role dispatch. V1 switches also use only off/on frames; full hover/pressed strips and independent cursor handles remain an extension, not an already-proven v1 feature. |
+| R8 geometry / z / scaling | `src/ui/perf_view.rs:190` both-axis `scale_to_fit`, `:202` parent-relative placement/hide, `:224` layout using each extent, `:456` device-pixel placement and `:539` declared page clip; checks `:1486`, `:1496`, `:1522` | Recover independent extents, declared viewport, both-axis fit, user zoom and consistent device snapping. Native stock defaults, panel clipping and cross-parent z laws still need confirmation; v1 global stable z sorting differs from v2's tree ordering. |
+| R9 wallpaper origin / atlas window | `src/artwork.rs:183` state plus independent pixel offset; `src/ui/perf_view.rs:31` header origin, `:458` visible-window preparation; `src/ui/fitted.rs:116` cached window; `src/artwork.rs:753` atlas-state check | Recover v1 classic-header origin, state and bounded visible-window use. Keep NativeUI geometry separate and validate version-specific origin rules. |
+| R10 table / service-backed widgets | `src/ui/perf_view.rs:1100` typed table values, `:1201` real bipolar bars, `:1221` waveform peaks/cursor, `:1263` zone attachment; `:606,610` current text/file caption and `:958` file picker route | Port the working table, waveform and caption behavior first. Pinned v1 meters remain silent; XY/wavetable and broader file/string interaction are not fully implemented there, so acceptance requires real services rather than a cosmetic port. |
+| R11 source colours / alpha / hide | `src/ui/perf_view.rs:1113` hide-background / ARGB handling, `:1125` meter background/off and wave/cursor colours; `:597` value hide and `:1045` knob title/value masks | Restore the source colours/parts that v1 actually paints. Bar/peak/overload/zero-line/gradient and independent alpha coverage remain incomplete in the pinned path and require the parameter/native fixtures. |
+| R12 preparation / diagnostics / cache | `src/ui/perf_view.rs:371` off-frame picture fetch with generation check, `:418` per-control dependency cache; `src/artwork.rs:259` categorized failures; `src/ui/fitted.rs:73,79,103,116` owner generation / resize / cut / window caches | Restore worker preparation, explicit errors and reusable render assets. Do not copy v1's cache-count ceiling as a decoded-byte budget; strengthen bounds/retry/resource identity through the shared v2 asset layer. |
+
+The shared scanner is already published. Canonical measurement uses
+`~/.cache/kontra-scan/bin/kontra-scan-v1` (pinned v1) and
+`kontra-scan-v2` (integration baseline), with their adjacent README and frozen
+Kontakt manifest. Use existing census outputs and requested extra columns;
+do not build another collector. Preserve Original in both comparisons and
+record the scanner digests, installed-file identity, values and render dimensions.
+The matching Conflux v2 hash above comes from that published scanner.
 
 ## Prior work to reuse, not reimplement
 
