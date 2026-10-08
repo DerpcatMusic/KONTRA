@@ -501,15 +501,11 @@ pub fn one(id: &str, out: &Path) -> Value {
             .as_ref()
             .map(|n| n.native_invalid_keys.iter().copied().collect())
             .unwrap_or_default();
-        for view in &loaded.scripts.views {
-            for (key, k) in view.model().interface.keys.iter().enumerate() {
-                if matches!(k.kind, Some(1 | 2)) || k.color == Some(17) {
-                    native_invalid.insert(key as u8);
-                } else if matches!(k.color, Some(18 | 19)) {
-                    native_valid.insert(key as u8);
-                }
-            }
-        }
+        let (ksp_valid, ksp_invalid, keyboard_reason_counts) = metrics::ksp_keyboard(
+            loaded.scripts.views.iter().flat_map(|view| view.model().interface.keys.iter()
+                .enumerate().map(|(key,k)|(key as u8,k.kind,k.color))));
+        native_valid.extend(ksp_valid);
+        native_invalid.extend(ksp_invalid.iter().copied());
         let candidate = (|| {
             loaded.instrument.as_ref().and_then(|i| {
                 let switch: std::collections::BTreeSet<_> = i
@@ -517,25 +513,8 @@ pub fn one(id: &str, out: &Path) -> Value {
                     .iter()
                     .flat_map(|a| a.switch_keys.iter().copied())
                     .collect();
-                let mut valid: std::collections::BTreeSet<_> = native
-                    .as_ref()
-                    .map(|n| n.native_valid_keys.iter().copied().collect())
-                    .unwrap_or_default();
-                let mut invalid: std::collections::BTreeSet<_> = native
-                    .as_ref()
-                    .map(|n| n.native_invalid_keys.iter().copied().collect())
-                    .unwrap_or_default();
-                for view in &loaded.scripts.views {
-                    for (key, k) in view.model().interface.keys.iter().enumerate() {
-                        if matches!(k.kind, Some(1 | 2)) || k.color == Some(17) {
-                            invalid.insert(key as u8);
-                        } else if matches!(k.color, Some(18 | 19)) {
-                            valid.insert(key as u8);
-                        }
-                    }
-                }
                 let best = (0..=127u8)
-                    .filter(|k| !switch.contains(k) && !invalid.contains(k))
+                    .filter(|k| !switch.contains(k) && !native_invalid.contains(k))
                     .map(|k| {
                         let n = i
                             .zones
@@ -547,7 +526,7 @@ pub fn one(id: &str, out: &Path) -> Value {
                             .count();
                         (
                             n > 0,
-                            valid.contains(&k),
+                            native_valid.contains(&k),
                             std::cmp::Reverse(k.abs_diff(60)),
                             n,
                             k,
@@ -561,7 +540,7 @@ pub fn one(id: &str, out: &Path) -> Value {
         })();
         let mut excluded = native_invalid.clone();
         if let Some(i)=&loaded.instrument { excluded.extend(i.articulations.iter().flat_map(|a|a.switch_keys.iter().copied())); }
-        let pick = metrics::note(program as u32).or(candidate).or_else(||metrics::fallback_note(&excluded));
+        let pick = metrics::note(program as u32).filter(|(key,_)|!excluded.contains(key)).or(candidate).or_else(||metrics::fallback_note(&excluded));
         let pick_source = match pick {
             Some((key, 64)) if candidate==pick && native_valid.contains(&key) && !native_invalid.contains(&key) => {
                 "native_declared"
@@ -570,7 +549,7 @@ pub fn one(id: &str, out: &Path) -> Value {
             _ => "fallback",
         };
         let declared_switch=loaded.instrument.as_ref().and_then(|i|i.articulations.iter().flat_map(|a|a.switch_keys.iter().copied()).min())
-            .or_else(||loaded.scripts.views.iter().flat_map(|v|v.model().interface.keys.iter().enumerate()).find(|(_,k)|k.kind==Some(1)&&k.color!=Some(17)).map(|(key,_)|key as u8));
+            .or_else(||ksp_invalid.iter().copied().next());
         let keyswitch=metrics::planned_keyswitch(program as u32).unwrap_or(declared_switch);
         let sample_zone_count=loaded.instrument.as_ref().map(|i|i.zones.len());
         let mut runtime_faults = Vec::new();
@@ -627,7 +606,7 @@ pub fn one(id: &str, out: &Path) -> Value {
         result["programs"].as_array_mut().unwrap().push(json!({"authored_view_requests":view_requests,"native_frontend_consumed":native_consumed,"ksp":ksp,"ksp_runtime_faults":runtime_faults.iter().map(|(program,outcome)|json!({"program":program,"callback":sampler_ksp::callback_of(&loaded.scripts.views,*program),"category":match outcome{sampler_core::Outcome::FuelExhausted=>"fuel-budget",_=>"runtime-fault"},"core_error":match outcome{sampler_core::Outcome::Fault(e)=>Some(format!("{e:?}")),_=>None}})).collect::<Vec<_>>(),"lua":lua_report,"admitted_saved_entries_by_sigil":admitted,
             "load_path":if is_uvi {if lua.is_some(){"scripted-worker"}else{"offline-loader"}}else{"kontakt-v2-loader"},
             "sample_zone_count":sample_zone_count,"decoded_zone_count":loaded.report.decoded.zones,"sample_count":loaded.report.decoded.samples,"sample_resident_bytes":sample_resident_bytes,"underruns":core.problems(0).underruns,
-            "keyswitch":keyswitch,"fallback_note":pick_source=="fallback","zero_zone_reason":if sample_zone_count==Some(0) {Some("unknown")} else {None},"pick_source":pick_source,"native_valid_keys":native_valid,"native_key_conflicts":native.as_ref().map(|n|n.native_key_conflicts),"native_preferred_note":candidate.filter(|(k,_)|native_valid.contains(k)),
+            "keyboard_reason_counts":if is_uvi {serde_json::Value::Null}else{keyboard_reason_counts},"keyswitch":keyswitch,"fallback_note":pick_source=="fallback","zero_zone_reason":if sample_zone_count==Some(0) {Some("unknown")} else {None},"pick_source":pick_source,"native_valid_keys":native_valid,"native_key_conflicts":native.as_ref().map(|n|n.native_key_conflicts),"native_preferred_note":candidate.filter(|(k,_)|native_valid.contains(k)),
             "program":program,"loaded":true,"source":if is_uvi {"uvi"}else{"kontakt"},"script_errors":script_errors,"symbols":symbols,"views":views,"plays_note":if heard {"yes"}else{"silent"},"pick":pick,"load_ms":start.elapsed().as_secs_f64()*1000.}));
         // Keep the streaming owner alive throughout the note probe.
         loaded.stream.take();

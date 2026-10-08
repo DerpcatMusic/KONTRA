@@ -81,4 +81,7 @@ partial=scanner.extra_columns({'loads':'no','ui':'missing-images','reason':'audi
 assert 'admission: 1/2 embedded programs failed import/plan construction' in partial['reason']
 before=partial['reason'];scanner.extra_columns(partial);assert partial['reason']==before
 assert 'opaque' not in partial['reason']
+counts=scanner.extra_columns({'programs':[{'program':0,'keyboard_reason_counts':{'excluded':{'explicit-control':4},'reset-exclusions':0}}]})
+assert json.loads(counts['keyboard_reason_counts'])['0']['excluded']['explicit-control']==4
+assert json.loads(scanner.extra_columns({'programs':[{}]})['keyboard_reason_counts'])=={'0':None}
 print('shared scanner checks passed')
