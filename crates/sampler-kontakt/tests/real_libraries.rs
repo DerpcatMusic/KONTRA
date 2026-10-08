@@ -881,6 +881,8 @@ fn w15_authored_pan_offline_ab_changes_channel_balance() {
 
 fn w15_render_one_authored_zone(mut library: sampler_kontakt::Kontakt, mut zone: sampler_ir::Zone) -> Vec<[f32; 2]> {
     use sampler_ir as ir;
+    let native_filter = zone.chain.is_some_and(|c| library.instrument.chains[c.0].pre_amplitude.iter()
+        .chain(&library.instrument.chains[c.0].post_amplitude).any(|p| matches!(p, ir::Processor::LadderLP4(_) | ir::Processor::Daft(_))));
     let key = 60u8.clamp(zone.keys.low, zone.keys.high);
     zone.selection = None;
     zone.articulation = None;
@@ -929,10 +931,28 @@ fn w15_render_one_authored_zone(mut library: sampler_kontakt::Kontakt, mut zone:
     let loaded = sampler_kontakt::load_read(library, &sampler_kontakt::Options {
         keys: key..=key, scripts: false, mpe: None, ..Default::default()
     }, |_| {}, || false).unwrap();
-    let mut rt = Runtime::new(loaded.plan, limits()).unwrap();
+    assert!(loaded.plan.region_count() > 0, "authored gate zone was dropped before rendering: {:?}", loaded.instrument.unsupported);
+    let fitted = loaded.instrument.zones[0].keys;
+    let key = key.clamp(fitted.low, fitted.high);
+    let plan = if native_filter { loaded.plan.with_signal_trace(8192).unwrap() } else { loaded.plan };
+    let mut rt = Runtime::new(plan, limits()).unwrap();
     rt.trigger(input(key), key, 1.).unwrap();
+    if native_filter {
+        assert!(rt.voice_count() > 0, "native witness not admitted: {:?}, fitted_keys={fitted:?} key={key}", rt.take_silent_note());
+    }
     let mut out = vec![[0.; 2]; 24_000];
     rt.render(&mut out).unwrap();
+    if native_filter && out.iter().flatten().all(|v| *v == 0.) {
+        let reader = rt.signal_trace_reader().unwrap();
+        let rows = reader.drain();
+        println!("W15 silent witness graph_nodes={} rows={} voices={}", reader.graph.nodes.len(), rows.len(), rt.voice_count());
+        let mut seen = std::collections::BTreeSet::new();
+        for row in rows.into_iter().filter(|r| seen.insert(r.node)) {
+            let node = &reader.graph.nodes[row.node];
+            println!("W15 silent witness node={} processor={} input_rms={:?} output_rms={:?} gain={:?} region_gain={} envelope={}",
+                node.kind, node.processor, row.input.rms, row.output.rms, row.gain, row.identity.region_gain, row.identity.envelope_level);
+        }
+    }
     out
 }
 
@@ -1004,4 +1024,52 @@ fn w15_authored_lofi_offline_ab_measures_reduction_on_the_gate_sample() {
     assert!(dry_levels.max_peak() > -80.);
     assert!(residual_db.is_finite() && residual_db > -40., "Bits must change the authored gate sample");
     assert!(wet.iter().flatten().all(|v| v.is_finite()));
+}
+
+#[test]
+#[ignore = "requires installed Conflux and Analog Strings; run through kontakto-heavy"]
+fn w15_authored_native_cutoff_offline_ab_reaches_ladder_and_daft() {
+    use sampler_ir as ir;
+    for ladder in [true, false] {
+        let path = find(if ladder { "Conflux 1.1.0 [Native Instruments]/Instruments/Conflux.nki" }
+            else { "ANALOG STRINGS/Instruments/ANALOG STRINGS.nki" }).expect("installed gate item");
+        let render = |enabled| {
+            let mut library = sampler_kontakt::read(&path).unwrap();
+            let (mut zone, route, processor) = library.instrument.zones.iter().find_map(|z| {
+                z.routes.iter().find_map(|r| {
+                    let route = library.instrument.routes[r.0];
+                    let ir::Target::Processor { chain, index, parameter: ir::ProcessorParameter::Cutoff } = route.target else { return None; };
+                    let c = &library.instrument.chains[chain.0];
+                    let p = *c.pre_amplitude.iter().chain(&c.post_amplitude).nth(index)?;
+                    let native = if ladder { matches!(p, ir::Processor::LadderLP4(_)) } else { matches!(p, ir::Processor::Daft(_)) };
+                    let source = &library.instrument.modulators[route.source.0].source;
+                    let executable = if ladder { matches!(source, ir::ModulationSource::Envelope(_)) }
+                        else { matches!(source, ir::ModulationSource::Constant) };
+                    (native && executable && matches!(route.depth, ir::Depth::Normalized(_))).then(|| (z.clone(), *r, p))
+                })
+            }).expect("gate must retain an authored native cutoff route");
+            let saved = match processor { ir::Processor::LadderLP4(p) => p.cutoff, ir::Processor::Daft(p) => p.cutoff, _ => unreachable!() };
+            let r = &mut library.instrument.routes[route.0];
+            r.target = ir::Target::Processor { chain: ir::ChainRef(0), index: 0, parameter: ir::ProcessorParameter::Cutoff };
+            // Exercise the authored route's amount; zero saved amounts remain enabled.
+            r.depth = ir::Depth::Normalized(if enabled { if saved > 0.6 { -0.25 } else { 0.25 } } else { 0. });
+            zone.routes = vec![route];
+            zone.chain = Some(ir::ChainRef(library.instrument.chains.len()));
+            library.instrument.chains.push(ir::Chain { scope: ir::Scope::Voice,
+                pre_amplitude: vec![processor], post_amplitude: vec![] });
+            w15_render_one_authored_zone(library, zone)
+        };
+        let dry = render(false);
+        let wet = render(true);
+        let energy = |x: &[[f32; 2]]| x.iter().flatten().map(|v| f64::from(*v).powi(2)).sum::<f64>();
+        let derivative = |x: &[[f32; 2]]| x.windows(2).flat_map(|w| (0..2).map(move |c| f64::from(w[1][c] - w[0][c]).powi(2))).sum::<f64>();
+        let residual = dry.iter().zip(&wet).flat_map(|(a,b)| (0..2).map(move |c| f64::from(a[c] - b[c]).powi(2))).sum::<f64>();
+        let residual_db = 10. * (residual / energy(&dry).max(1e-30)).log10();
+        let hf_delta_db = 10. * ((derivative(&wet) / energy(&wet)) / (derivative(&dry) / energy(&dry))).log10();
+        println!("W15 native_cutoff ladder={ladder} dry_rms={:?} wet_rms={:?} residual_db={residual_db} hf_delta_db={hf_delta_db}",
+            reference::levels(&dry, 0.1, 0.45).rms, reference::levels(&wet, 0.1, 0.45).rms);
+        assert!(energy(&dry) > 1e-8 && energy(&wet) > 1e-8);
+        assert!(wet.iter().flatten().all(|v| v.is_finite()));
+        assert!(residual_db > -40., "authored normalized cutoff route must change audio");
+    }
 }
