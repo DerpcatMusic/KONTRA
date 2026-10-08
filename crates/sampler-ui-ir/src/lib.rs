@@ -661,8 +661,9 @@ impl Interface {
         rect
     }
 
-    /// `page`'s widgets back to front: siblings by ([`Widget::z`], declaration
-    /// order), each panel's contents straight after the panel.
+    /// `page`'s widgets back to front by ([`Widget::z`], declaration order).
+    /// Kontakt uses global layers; native graphs order siblings and draw each
+    /// panel's contents straight after the panel.
     /// Requires a [validated](Self::validate) interface.
     pub fn draw_order(&self, page: PageRef) -> Vec<WidgetRef> {
         if matches!(self.source, Source::Ksp { .. } | Source::PerformanceView) {
