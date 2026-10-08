@@ -267,6 +267,10 @@ pub enum Op {
         local: u16,
         micros: u32,
     },
+    ReadTimer {
+        local: u16,
+    },
+    ResetTimer,
     /// Address registers are parameter, physical group, slot and generic.
     TextProperty {
         key: u16,
@@ -326,7 +330,8 @@ impl Op {
             | Self::ReadWidgetEventParameter { local }
             | Self::ReadWidgetInteraction { local, .. }
             | Self::ReadHost { local, .. }
-            | Self::ReadClock { local, .. } => usize::from(*local) + 1,
+            | Self::ReadClock { local, .. }
+            | Self::ReadTimer { local } => usize::from(*local) + 1,
             Self::FileName { ui, format, text } => {
                 (usize::from(*ui.max(format)) + 1).max(reg(text))
             }
@@ -350,7 +355,7 @@ impl Op {
                 ..
             } => usize::from(*group.max(owner).max(local)) + 1 + reg(text),
             Self::Purge { group, local, .. } => usize::from(*group.max(local)) + 1,
-            Self::Call { .. } | Self::Return => 0,
+            Self::Call { .. } | Self::Return | Self::ResetTimer => 0,
             Self::TextClear { text } => reg(text),
             Self::TextAppend { text: t, part } => reg(t).max(match part {
                 TextPart::Constant(_) => 0,
@@ -620,10 +625,12 @@ pub(crate) struct OpState {
     pub truncated_texts: u64,
     pub host: [i64; HOST_VALUES],
     pub random: u64,
+    timer_origin: std::time::Instant,
 }
 impl Default for OpState {
     fn default() -> Self {
         Self {
+            timer_origin: std::time::Instant::now(),
             effects: std::collections::VecDeque::with_capacity(EFFECT_CAPACITY),
             dropped_effects: 0,
             truncated_texts: 0,
@@ -1250,6 +1257,14 @@ impl Runtime {
                     / u128::from(micros.max(1));
                 self.set_reg(id, local, i64::from(elapsed as u32 as i32))?;
             }
+            Op::ReadTimer { local } => {
+                self.set_reg(
+                    id,
+                    local,
+                    i64::from(self.ops.timer_origin.elapsed().as_micros() as u32 as i32),
+                )?;
+            }
+            Op::ResetTimer => self.ops.timer_origin = std::time::Instant::now(),
             Op::Emit {
                 service,
                 args,
