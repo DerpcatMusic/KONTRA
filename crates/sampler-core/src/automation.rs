@@ -122,7 +122,9 @@ impl Runtime {
         if !self.behavior_room(reserved) {
             return Err(Error::Capacity);
         }
-        if let AutomationSource::Controller(number) = source {
+        if let AutomationSource::Controller(number) = source
+            && needed != 0
+        {
             self.performance_state.input_controllers[performance][usize::from(number)] =
                 (input * f64::from(u32::MAX)).round() as u32;
         }
