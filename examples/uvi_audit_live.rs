@@ -34,13 +34,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .report
                     .missing
                     .iter()
-                    .filter(|m| m.feature.contains("error"))
+                    .filter(|m| m.feature == "lua error")
                     .count();
                 let budget_findings = loaded
                     .report
                     .missing
                     .iter()
-                    .filter(|m| m.feature.contains("budget"))
+                    .filter(|m| m.feature == "lua error" && m.value.contains("time budget exceeded"))
                     .count();
                 let resident = loaded.stream.as_ref().map(|s| s.resident_bytes());
                 let mut mids: Vec<_> = loaded

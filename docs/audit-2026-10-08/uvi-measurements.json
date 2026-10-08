@@ -1254,6 +1254,10 @@
       "result": "pass",
       "seconds": 21.15,
       "log": "/home/derpcat/.cache/kontakto-audit-uvi/root-sidecar-update-no-run.log"
+    },
+    "latest_budget_filter": {
+      "targeted_runaway_test": "1 passed",
+      "root_no_run": "passed;13.24s"
     }
   },
   "branch_single_program_resource_scene": {
@@ -1580,5 +1584,104 @@
       ],
       "zones": 368
     }
+  },
+  "shared_clarinet_pair": {
+    "item": "VWinds-AClarinet.ufs::Presets/Clarinet A.uvip",
+    "cache_record_sha256": "b91ae989f7ce8e1b1ea33b83a6deee58ee3b8830adfc723c2d3d9f4c90c2b6f6",
+    "same_native_valid_keys": true,
+    "native_valid_keys": [
+      50,
+      52,
+      53,
+      55,
+      57,
+      59,
+      60,
+      62,
+      64,
+      65,
+      67,
+      69,
+      71,
+      72,
+      74,
+      76,
+      77,
+      79,
+      81,
+      83,
+      84,
+      86,
+      88,
+      89,
+      91,
+      93
+    ],
+    "same_native_preferred_note": [
+      60,
+      64
+    ],
+    "plan_origin": "native_declared",
+    "audition_status": "matched-note-plan",
+    "caveats": [
+      "one warm/cache-affected paired smoke",
+      "load timers cover different stages",
+      "not native PCM parity",
+      "v1 phase diagnostics and budget-hit accessor unknown"
+    ],
+    "v1": {
+      "ui": "original-ok",
+      "controls_bound": "21/21",
+      "load_ms": 1912.9389589999998,
+      "process_ms": 2707.75,
+      "peak_rss_mb": 418.6,
+      "sample_resident_bytes": 218923526,
+      "plays_note": "yes",
+      "lua_init_faults": "unknown",
+      "lua_runtime_faults": "unknown",
+      "lua_budget_hits": "unknown",
+      "asset_lookup_requested": "unknown",
+      "asset_lookup_ok": "unknown",
+      "asset_decode_requested": "unknown",
+      "asset_decode_ok": "unknown",
+      "font_declared": "unknown",
+      "font_success": "unknown",
+      "local_pick_source": "shared-note-plan"
+    },
+    "v2": {
+      "ui": "missing-images",
+      "controls_bound": "0/21",
+      "load_ms": 704.507032,
+      "process_ms": 1402.75,
+      "peak_rss_mb": 140.36,
+      "sample_resident_bytes": 26175632,
+      "plays_note": "yes",
+      "lua_init_faults": 0,
+      "lua_runtime_faults": 0,
+      "lua_budget_hits": 0,
+      "asset_lookup_requested": 40,
+      "asset_lookup_ok": 0,
+      "asset_decode_requested": 0,
+      "asset_decode_ok": 0,
+      "font_declared": 0,
+      "font_success": 0,
+      "local_pick_source": "native_declared"
+    }
+  },
+  "shared_scanner_extension": {
+    "source": "9dcf05e59cbc67e45c56872e1418817693150085",
+    "v2_sha256": "18fe63fe07e62ea3c012ce29fc2d01b08f518ea808459446478cc46aca924b6d",
+    "v1_dispatcher_sha256": "a4b3f8c76483ea06b36b9fef46911093d7e8df8021bd9e54e711018dbf700399",
+    "v1_uvi_sha256": "d565661afb3ae1cab3100d1e83b7f12c0f5b02c51b7593451a6fe77929af8ea1",
+    "canonical_results": "~/.cache/kontra-scan/results/{v1,v2}/cache",
+    "paired_sweep_owner": "shared census",
+    "own_duplicate_runner": "stopped before collecting rows",
+    "coverage": "partial; do not extrapolate"
+  },
+  "budget_measurement_boundary": {
+    "historical_production_budget_findings_zero": "invalid filter; not absence evidence",
+    "ui_branch_whole_editor": "200/200 AO scenes actual layout budget errors",
+    "frozen_authored_page_scanner": "successful AO paints with missing182 resources; different root tree",
+    "v1_sidecar_budget_hit": "unknown"
   }
 }
