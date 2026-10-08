@@ -40,7 +40,12 @@ pub struct Kontakt {
 /// Translate the NKI at `path`. Zones whose sample is missing are left out
 /// and reported; a malformed container or zone table is an error.
 pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
-    read_overlaid(path, None)
+    read_with_controls(path, &[])
+}
+
+/// [`read`] with host-saved scalar values applied before script initialization.
+pub fn read_with_controls(path: &Path, control_values: &[(sampler_core::ControlId, i32)]) -> Result<Kontakt, LoadError> {
+    read_overlaid(path, None, control_values)
 }
 
 /// [`read`] with a snapshot's saved native and script state applied.
@@ -48,7 +53,16 @@ pub fn read_with_snapshot(
     path: &Path,
     snapshot: &crate::SnapshotState,
 ) -> Result<Kontakt, LoadError> {
-    let mut kontakt = read_overlaid(path, Some(snapshot))?;
+    read_with_snapshot_and_controls(path, snapshot, &[])
+}
+
+/// Snapshot state with host overrides applied before script initialization.
+pub fn read_with_snapshot_and_controls(
+    path: &Path,
+    snapshot: &crate::SnapshotState,
+    control_values: &[(sampler_core::ControlId, i32)],
+) -> Result<Kontakt, LoadError> {
+    let mut kontakt = read_overlaid(path, Some(snapshot), control_values)?;
     crate::apply_snapshot(&mut kontakt, snapshot).map_err(|e| LoadError::Invalid {
         path: path.into(),
         reason: format!("snapshot persistent values: {:?} at {}", e.kind, e.offset),
@@ -59,6 +73,7 @@ pub fn read_with_snapshot(
 fn read_overlaid(
     path: &Path,
     snapshot: Option<&crate::SnapshotState>,
+    control_values: &[(sampler_core::ControlId, i32)],
 ) -> Result<Kontakt, LoadError> {
     let path = path.canonicalize().map_err(|e| LoadError::io(path, e))?;
     let chunks = crate::read_chunks(&path).map_err(|e| e.at(crate::Stage::Container))?;
@@ -90,12 +105,17 @@ fn read_overlaid(
     };
     drop(span);
     let _span = crate::audit::Span::new("translate_resolve_ir");
-    translate(path, program, table, others, snapshot).map_err(|e| e.at(crate::Stage::Translate))
+    translate(path, program, table, others, snapshot, control_values).map_err(|e| e.at(crate::Stage::Translate))
 }
 
 /// Translate program `index` (0-based, in slot order) of the multi at `path`;
 /// the programs of a `.nkm` are the instruments of a rack.
 pub fn read_program(path: &Path, index: usize) -> Result<Kontakt, LoadError> {
+    read_program_with_controls(path, index, &[])
+}
+
+/// [`read_program`] with host overrides applied before script initialization.
+pub fn read_program_with_controls(path: &Path, index: usize, control_values: &[(sampler_core::ControlId, i32)]) -> Result<Kontakt, LoadError> {
     use ni_file::kontakt::objects::Bank;
     let path = path.canonicalize().map_err(|e| LoadError::io(path, e))?;
     let chunks = crate::read_chunks(&path).map_err(|e| e.at(crate::Stage::Container))?;
@@ -146,7 +166,7 @@ pub fn read_program(path: &Path, index: usize) -> Result<Kontakt, LoadError> {
     };
     drop(span);
     let _span = crate::audit::Span::new("translate_resolve_ir");
-    translate(path, program, table, others, None).map_err(|e| e.at(crate::Stage::Translate))
+    translate(path, program, table, others, None, control_values).map_err(|e| e.at(crate::Stage::Translate))
 }
 
 fn translate(
@@ -155,6 +175,7 @@ fn translate(
     table: HashMap<u32, String>,
     others: HashMap<u32, String>,
     snapshot: Option<&crate::SnapshotState>,
+    control_values: &[(sampler_core::ControlId, i32)],
 ) -> Result<Kontakt, LoadError> {
     if let Some(snapshot) = snapshot {
         // The snapshot's racks and buses are the program's own, in the same order.
@@ -332,7 +353,7 @@ fn translate(
         }
     }
     let span = crate::audit::Span::new("translate_ksp_init");
-    let initialized = crate::load::initialize_scripts(&mut out.ir, Some(&path), group_names, &[]);
+    let initialized = crate::load::initialize_scripts(&mut out.ir, Some(&path), group_names, control_values);
     out.engine = initialized
         .states
         .iter()
@@ -2102,6 +2123,7 @@ mod saved_tests {
                 Default::default(),
                 Default::default(),
                 None,
+                &[],
             )
             .unwrap();
             assert_eq!(translated.instrument.behaviors[0].source, expected);
@@ -2110,6 +2132,60 @@ mod saved_tests {
             }
         }
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn menu_program() -> ni_file::kontakt::objects::Program {
+        use ni_file::kontakt::{Chunk, StructuredObject, objects::Program};
+        let source = r#"on init
+            make_perfview
+            declare ui_menu $mode
+            add_menu_item($mode, "Soft", 4)
+            add_menu_item($mode, "Linear", -3)
+            add_menu_item($mode, "Hard", 0)
+            make_persistent($mode)
+            read_persistent_var($mode)
+            declare ui_knob $echo(-100,100,1)
+        end on
+        on persistence_changed
+            $echo := $mode
+        end on"#;
+        let mut script = vec![0, 0x50, 0];
+        script.extend((source.len() as u32).to_le_bytes());
+        script.extend(source.as_bytes());
+        script.extend([0; 3]);
+        script.extend(0u32.to_le_bytes());
+        script.extend(u32::MAX.to_le_bytes());
+        script.extend(0u32.to_le_bytes());
+        Program(StructuredObject {
+            version: 0xaf, public_data: vec![0; 70], private_data: vec![],
+            children: vec![Chunk { id: 0x33, data: vec![0; 4] }, Chunk { id: 0x34, data: vec![0; 4] }, Chunk { id: 6, data: script }],
+        })
+    }
+
+    #[test]
+    fn restored_translation_initializes_once_with_host_menu_values() {
+        let mode = sampler_ksp::derived_control_id(0, "$mode");
+        let echo = sampler_ksp::derived_control_id(0, "$echo");
+        for saved in [4, -3, 0] {
+            crate::load::take_script_init_runs();
+            let controls = vec![(mode, saved)];
+            let translated = super::translate(std::env::temp_dir().join("restored-menu.nki"), menu_program(), Default::default(), Default::default(), None, &controls).unwrap();
+            let loaded = crate::load_read(translated, &crate::Options { control_values: controls, ..Default::default() }, |_| {}, || false).unwrap();
+            assert_eq!(crate::load::take_script_init_runs(), 1, "restored translation must initialize once");
+            for id in [mode, echo] {
+                assert_eq!(loaded.plan.controls().iter().find(|c| c.id == id).unwrap().default, sampler_core::ControlValue::Integer(i64::from(saved)), "host menu item values reach persistence_changed");
+            }
+        }
+    }
+
+    #[test]
+    fn late_host_override_reinitializes_instead_of_reusing_wrong_state() {
+        let mode = sampler_ksp::derived_control_id(0, "$mode");
+        crate::load::take_script_init_runs();
+        let translated = super::translate(std::env::temp_dir().join("late-menu.nki"), menu_program(), Default::default(), Default::default(), None, &[]).unwrap();
+        let loaded = crate::load_read(translated, &crate::Options { control_values: vec![(mode, -3)], ..Default::default() }, |_| {}, || false).unwrap();
+        assert_eq!(crate::load::take_script_init_runs(), 2);
+        assert_eq!(loaded.plan.controls().iter().find(|c| c.id == mode).unwrap().default, sampler_core::ControlValue::Integer(-3));
     }
 
     #[test]
