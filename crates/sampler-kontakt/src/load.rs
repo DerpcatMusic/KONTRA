@@ -653,6 +653,8 @@ pub(crate) fn initialize_scripts(
             }
             let environment = script_environment(behavior, index, groups.clone(), performance_view);
             (behavior.language == ir::Language::Ksp).then(|| {
+                #[cfg(feature = "scan")]
+                sampler_ksp::scan::attempt("runtime-preparation");
                 sampler_ksp::initialize(
                     &behavior.source,
                     sampler_ksp::Limits::LIBRARY,

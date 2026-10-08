@@ -167,6 +167,13 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
         depth: 0,
         profile: std::env::var_os("KONTRA_AUDIT_KSP_PROFILE").map(|_| HashMap::new()),
     };
+    #[cfg(feature = "scan")]
+    crate::scan::present(
+        hir.callbacks.iter().any(|c| c.kind == CallbackKind::Init),
+        hir.callbacks
+            .iter()
+            .any(|c| c.kind == CallbackKind::PersistenceChanged),
+    );
     // Kontakt's defaults: knobs/sliders start at their minimum when 0 is outside.
     for (index, ui) in hir.uis.iter().enumerate() {
         if let Some((lo, hi)) = declared_range(ui) {
@@ -174,7 +181,12 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
         }
     }
     if let Some(init) = hir.callbacks.iter().find(|c| c.kind == CallbackKind::Init) {
-        e.block(&init.body)?;
+        #[cfg(feature = "scan")]
+        crate::scan::stage("init");
+        let r = e.block(&init.body);
+        #[cfg(feature = "scan")]
+        crate::scan::phase("init", r.as_ref().err());
+        r?;
     }
     // On load Kontakt restores saved persistent values, then runs
     // `on persistence_changed`, before the interface is shown.
@@ -187,12 +199,18 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
         .callbacks
         .iter()
         .find(|c| c.kind == CallbackKind::PersistenceChanged)
-        && let Err(f) = e.block(&cb.body)
     {
-        e.warn(
-            f.span,
-            format!("on persistence_changed at load: {}", f.message),
-        );
+        #[cfg(feature = "scan")]
+        crate::scan::stage("persistence_changed");
+        let r = e.block(&cb.body);
+        #[cfg(feature = "scan")]
+        crate::scan::phase("persistence_changed", r.as_ref().err());
+        if let Err(f) = r {
+            e.warn(
+                f.span,
+                format!("on persistence_changed at load: {}", f.message),
+            );
+        }
     }
     if let Some(profile) = &e.profile {
         eprintln!(
@@ -239,6 +257,8 @@ impl Eval<'_> {
     fn block(&mut self, body: &[Stmt]) -> Result<Flow> {
         for s in body {
             if self.fuel == 0 {
+                #[cfg(feature = "scan")]
+                crate::scan::category("fuel-budget");
                 return fault(s.span, "on init exceeded its evaluation budget");
             }
             self.fuel -= 1;
@@ -273,6 +293,8 @@ impl Eval<'_> {
             StmtKind::While(cond, body) => {
                 while self.expr(cond)?.int() != 0 {
                     if self.fuel == 0 {
+                        #[cfg(feature = "scan")]
+                        crate::scan::category("fuel-budget");
                         return fault(s.span, "on init exceeded its evaluation budget");
                     }
                     self.fuel -= 1;
@@ -731,6 +753,8 @@ impl Eval<'_> {
     }
 
     fn builtin(&mut self, builtin: Builtin, args: &[Arg], span: Span) -> Result<V> {
+        #[cfg(feature = "scan")]
+        crate::scan::builtin(Some(builtin.name()));
         let begin = self.profile.as_ref().map(|_| std::time::Instant::now());
         let result = self.builtin_inner(builtin, args, span);
         if let Some(begin) = begin {
