@@ -223,6 +223,18 @@ impl Prepared {
 }
 
 impl Runtime {
+    /// One cross-format host Tone, independent of authored voice/filter controls.
+    pub fn set_part_tone_cutoff(&mut self, cutoff: f64) -> Result<(), Error> {
+        if !(20.0..=20_000.).contains(&cutoff) { return Err(Error::InvalidInput); }
+        self.part_tone_cutoff = cutoff;
+        Ok(())
+    }
+
+    /// A mixed marked/unmarked generation set uses the adapter's single output fallback.
+    pub fn has_input_tone(&self) -> bool {
+        self.plans.slots.iter().filter_map(|s| s.value.as_ref()).all(|g| g.prepared.buses.input.is_some())
+    }
+
     /// v1 engine defaults: captured by new fallback voices, never authored envelopes.
     pub fn set_fallback_envelope(&mut self, attack: f64, release: f64) -> Result<(), Error> {
         if !(0.0001..=5.).contains(&attack) || !(0.001..=10.).contains(&release) {

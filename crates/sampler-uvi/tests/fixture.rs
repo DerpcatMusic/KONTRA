@@ -625,3 +625,12 @@ fn streamed_bus_gain_has_live_catalog_defaults_and_controller_readback() {
     drop(streamed.streamer);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn input_tone_marker_names_program_entry_after_aux_buses() {
+    let xml=insert_program(Some(r#"<Gain Volume="1"/>"#)).replace("<Layers>",r#"<Inserts><Gain Volume="1"/></Inserts><Layers>"#);
+    let i=sampler_uvi::translate(&xml,std::path::Path::new(".")).unwrap().instrument;
+    assert_eq!(i.input_bus,Some(ir::BusRef(1)),"aux0 precedes actual program inserts");
+    assert_eq!(i.buses[0].output,ir::Output::Bus(i.input_bus.unwrap()));
+    i.validate().unwrap();
+}
