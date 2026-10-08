@@ -8,7 +8,7 @@ Per-target losses use exact native parameter names and typed route/source/bypass
 
 Full stable numerical ledger: `/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w12-fidelity/target-summary.json`. Per-item gate values: `native-slot-metrics.json` beside it. Raw metadata receipts: `baseline-targets/`; binary hashes and build-label caveat: `fidelity-artifacts.json`. Slot topology is condition-independent; this is not timed or warm-cache execution evidence.
 
-Tier1 independently evaluates native key/velocity ranges, key/CC/cycle criteria, final executed source IDs, offsets, directions, loops and at least32 repeats. Pacific cold **MATCH32**, gate plan60/64: both zones17+35, forward frame5760, no loops. Product-warm and os-warm remain pending; no persistent cache files were created.
+Tier1 independently evaluates native key/velocity ranges, key/CC/cycle criteria, final executed source IDs, offsets, directions, loops and at least32 repeats. Pacific cold/product-warm/os-warm **MATCH32 each**, gate plan60/64: both zones17+35, forward frame5760, no loops. All three distinct conditions are complete; no persistent cache files were created. Condition rows are in `native-family-metrics.json`.
 
 Tier2 remains UNKNOWN for21/22 items:63/66 cells, 22/23 programs (66/69 program-conditions). Native captures are required for SCRIPT_DRIVEN selection; no static-data guess substitutes for them.
 
@@ -16,4 +16,4 @@ Validation: Kontakt/UVI coverage8/8; executed cursor2/2; root projection/lexer2/
 
 ResourceUnavailable means our translation failed to resolve the resource; it does not prove missing user data. Native Conflux containers are present. Missing DSP/target ranking handed to W15; recount only affected items after each READY SHA and block witness.
 
-NEXT: Pacific product-warm/os-warm after W5 quiet, then W15 READY affected-item re-count.
+NEXT: W15 alpha-port affected-item re-count after W0 release-build priority, then native Always compound-rule red→green.
