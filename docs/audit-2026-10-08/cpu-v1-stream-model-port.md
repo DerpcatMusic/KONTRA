@@ -14,11 +14,11 @@ Kontakt assembly uses the ring transport and the preload planner. The host Auto 
 
 ## Targeted validation
 
-Latest validation: **55 targeted tests PASS**, plus root `cargo test --no-run` PASS.
+Latest validation: **56 targeted tests PASS**, plus root `cargo test --no-run` PASS.
 
 | Area | Tests |
 |---|---:|
-| Worker fairness, EOF tail, stale completion/fault, fault pressure, queued admission, retry/idle parking | 6 |
+| Worker fairness, EOF tail, stale completion/fault, fault pressure, queued admission, retry/idle parking and resident-prefix purge backfill | 7 |
 | Ring/resident rates/directions/native loops/release/actual 64-voice parallel path, mixed admission, terminal held-source fault | 3 |
 | Cold lifecycle | 10 |
 | Late source offsets and pre-onset note-off, both directions and both backends | 2 |
@@ -27,7 +27,7 @@ Latest validation: **55 targeted tests PASS**, plus root `cargo test --no-run` P
 | Kontakt decoder, retry, preload planning, RAM policy, lazy budget compatibility, random reads and complete-source offline factory render | 11 |
 | Initialized-controller/nonmonotonic/conservative offset reach | 2 |
 
-The first draft's parallel fixture used an undersized candidate bound, and the first offline fixture omitted its IR asset entry. Both setup mistakes were corrected before the above green runs. Logs: `~/.cache/kontakto-fix-cpu/v1-ring-wired-check2.log` and `v1-ring-wired-check3.log`; latest status is zero. Audio event/render/adoption checks allocate and free no heap memory. Per-part workers retain the existing v2 ownership boundary; process-wide shared-bank scheduling is still pending a multi-part probe.
+The first draft's parallel fixture used an undersized candidate bound, and the first offline fixture omitted its IR asset entry. Both setup mistakes were corrected before the above green runs. Logs: `~/.cache/kontakto-fix-cpu/v1-ring-wired-check2.log` and `v1-ring-wired-check3.log`; latest status is zero. A separate failing-first resident-head purge regression reproduced an unfilled virtual prefix; ring reuse now requires that prefix to remain resident. `ring-purge-red.log` records the failure and `ring-purge-green.log` records the correction plus neighboring ring render checks and root compile validation. Audio event/render/adoption checks allocate and free no heap memory. Per-part workers retain the existing v2 ownership boundary; process-wide shared-bank scheduling is still pending a multi-part probe.
 
 ## Original-instrument acceptance — pending
 

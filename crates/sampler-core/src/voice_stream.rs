@@ -158,6 +158,8 @@ impl VoiceStreams {
                 s.binding.generation == b.generation
                     && s.asset == asset
                     && s.cursor.same_stream_path(&cursor)
+                    && (read >= slot.ring.start_boundary()
+                        || cursor.resident_stream_end(head, read) >= slot.ring.start_boundary())
             }) {
                 slot.ring
                     .release_below(read)
@@ -543,5 +545,41 @@ mod tests {
         }
         assert!(worker.retry_delay().is_none());
         assert_eq!(audio.read(b.unwrap()).unwrap().frame(0), Some([0.; 2]));
+    }
+
+    #[test]
+    fn purged_resident_prefix_is_backfilled_without_leaving_a_ring_hole() {
+        let (mut audio, mut worker) = VoiceStreams::new(1, 1).unwrap();
+        let pcm = Pcm::streamed(48000, 20000).unwrap();
+        pcm.set_ranges(vec![(0, vec![[0.5; 2]; 4048].into_boxed_slice())])
+            .unwrap();
+        let mut b = None;
+        audio
+            .update(
+                &mut b,
+                pcm.asset_id(),
+                cursor(20000),
+                &pcm.try_head().unwrap(),
+            )
+            .unwrap();
+        let original = b;
+        while let Some(mut job) = worker.next_job() {
+            job.fill(|at| Ok([at as f32; 2])).unwrap();
+            worker.complete(job, Ok(()));
+        }
+        pcm.set_ranges(vec![]).unwrap();
+        audio
+            .update(&mut b, pcm.asset_id(), cursor(20000), &[])
+            .unwrap();
+        assert_ne!(
+            b, original,
+            "missing resident prefix must reconfigure the ring"
+        );
+        let mut job = worker.next_job().unwrap();
+        assert_eq!(job.from, 0);
+        job.fill(|at| Ok([at as f32; 2])).unwrap();
+        worker.complete(job, Ok(()));
+        assert_eq!(audio.read(b.unwrap()).unwrap().frame(0), Some([0.; 2]));
+        assert!(audio.ready(b.unwrap(), cursor(20000), &[], 128));
     }
 }
