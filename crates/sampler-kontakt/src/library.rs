@@ -505,6 +505,7 @@ fn translate(
     crate::keyswitch::translate(&mut out.ir, &out.start_criteria);
     out.ir.unsupported.dedup();
     out.ir.validate().map_err(|e| invalid(&e.to_string()))?;
+    drop(_span);
     let mut kontakt=Kontakt {
         instrument:out.ir,locations:out.locations,samples,initialized:Some(initialized),
     };
