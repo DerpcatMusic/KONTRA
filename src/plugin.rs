@@ -1935,7 +1935,7 @@ pub(crate) mod tests {
     }
 
     /// Compare an installed script's empty and real control environments;
-    /// output only aggregate allocation/eval metrics and numeric widget geometry.
+    /// output only aggregate allocation/eval metrics.
     #[test]
     #[ignore]
     fn probe_ksp_init() {
@@ -1958,10 +1958,7 @@ pub(crate) mod tests {
                 let initialized = sampler_ksp::initialize(&behavior.source, sampler_ksp::Limits::LIBRARY, &environment).unwrap();
                 COUNTING.with(|c| c.set(false));
                 println!("AUDIT {}", serde_json::json!({"stage":"init_allocations", "slot":slot, "real_view":real, "ms":begin.elapsed().as_secs_f64()*1000., "calls":CALLS.with(Cell::get), "allocated_bytes":ALLOCATED.with(Cell::get), "freed_bytes":FREED.with(Cell::get), "live_bytes":LIVE.with(Cell::get), "peak_live_bytes":PEAK.with(Cell::get)}));
-                let script = sampler_ksp::compile_initialized(&behavior.source, 48000, sampler_ksp::Limits::LIBRARY, &[], initialized).unwrap();
-                for (index, widget) in script.model().interface.widgets.iter().enumerate().filter(|(i, _)| (378..=410).contains(i)) {
-                    println!("AUDIT {}", serde_json::json!({"stage":"widget_geometry", "slot":slot, "real_view":real, "index":index, "kind":widget.kind.control_type(), "ui_id":widget.ui_id, "x":widget.int("$CONTROL_PAR_POS_X"), "y":widget.int("$CONTROL_PAR_POS_Y"), "width":widget.int("$CONTROL_PAR_WIDTH"), "height":widget.int("$CONTROL_PAR_HEIGHT"), "range":widget.range}));
-                }
+
             }
         }
     }

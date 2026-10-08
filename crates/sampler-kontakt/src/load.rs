@@ -251,7 +251,7 @@ pub fn load_read_streamed_cancelable(
     let Kontakt {
         mut instrument,
         locations,
-        mut samples,
+        samples,
         initialized,
     } = kontakt;
     let (low, high) = (*options.keys.start(), *options.keys.end());
@@ -261,21 +261,22 @@ pub fn load_read_streamed_cancelable(
         assets: kept.len(),
     });
     let span = crate::audit::Span::new("sample_source_resolve");
-    let mut sources = Vec::with_capacity(kept.len());
-    for &asset in &kept {
-        if canceled() {
-            return Err(LoadError::Canceled);
-        }
-        let location = &locations[asset];
-        sources.push((
-            std::sync::Arc::new(
-                samples
-                    .source(location)
-                    .map_err(|e| e.at(crate::Stage::SampleResolve))?,
-            ) as std::sync::Arc<dyn crate::AssetSource>,
-            location.as_path(),
-        ));
-    }
+    let listed: Vec<_> = kept
+        .iter()
+        .map(|&asset| locations[asset].as_path())
+        .collect();
+    let sources = samples
+        .sources(&listed, canceled)
+        .map_err(|e| e.at(crate::Stage::SampleResolve))?
+        .into_iter()
+        .zip(listed)
+        .map(|(source, location)| {
+            (
+                std::sync::Arc::new(source) as std::sync::Arc<dyn crate::AssetSource>,
+                location,
+            )
+        })
+        .collect();
     drop(span);
     let opened = crate::stream::Streamer::open(sources, options.rate, policy, 32, canceled)?;
     if canceled() {

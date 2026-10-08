@@ -628,8 +628,8 @@ fn reload(
         let held = assets.iter().map(Pcm::head_bytes).sum::<usize>();
         if held.saturating_add(estimate) <= budget {
             load_ranges(pcm, &mut source.open()?, ranges)?;
+            count += 1;
         }
-        count += 1;
     }
     Ok(count)
 }

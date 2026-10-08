@@ -32,7 +32,7 @@ pub struct Source {
 /// directory and each library key once.
 pub struct Samples {
     root: PathBuf,
-    archives: HashMap<PathBuf, Archive>,
+    archives: HashMap<PathBuf, Arc<Archive>>,
     keys: HashMap<PathBuf, Arc<dyn LibraryKey>>,
     /// Numeric headers only; repeated zone trims need no additional disk reads.
     frame_counts: HashMap<PathBuf, u64>,
@@ -158,10 +158,6 @@ impl Samples {
                 key: None,
             });
         };
-        let key = match self.keys.get(&archive) {
-            Some(key) => Some(key.clone()),
-            None => self.encrypted(&archive, &member)?,
-        };
         let file = File::open(&archive).map_err(|e| LoadError::io(&archive, e))?;
         let entry = self
             .archive(&archive)?
@@ -172,18 +168,74 @@ impl Samples {
                 path: location.into(),
                 reason: "invalid archive member".into(),
             })?;
-        let key = key.filter(|_| entry.encoded && entry.key_index != 0xff);
         if entry.encoded && entry.key_index != 0xff && entry.key_index != 0x100 {
             return Err(LoadError::Invalid {
                 path: location.into(),
                 reason: "unsupported legacy NKX cipher".into(),
             });
         }
+        let key = if entry.encoded && entry.key_index == 0x100 {
+            if !self.keys.contains_key(&archive) {
+                let key = crate::library_key(&archive).map_err(|reason| LoadError::Access {
+                    path: archive.clone(),
+                    reason,
+                })?;
+                self.keys.insert(archive.clone(), key);
+            }
+            self.keys.get(&archive).cloned()
+        } else {
+            None
+        };
         Ok(Source {
             path: archive,
             offset: entry.offset,
             size: entry.size,
             key,
+        })
+    }
+
+    /// Resolve byte ranges concurrently using the already indexed archives.
+    /// Results and errors retain the caller's asset order.
+    pub(crate) fn sources(
+        &self,
+        locations: &[&Path],
+        canceled: &(dyn Fn() -> bool + Sync),
+    ) -> Result<Vec<Source>, LoadError> {
+        if locations.is_empty() {
+            return Ok(Vec::new());
+        }
+        let workers = std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .min(4);
+        std::thread::scope(|scope| {
+            let jobs: Vec<_> = locations
+                .chunks(locations.len().div_ceil(workers))
+                .map(|chunk| {
+                    let mut samples = Self {
+                        root: self.root.clone(),
+                        archives: self.archives.clone(),
+                        keys: self.keys.clone(),
+                        frame_counts: HashMap::new(),
+                        loose: None,
+                    };
+                    scope.spawn(move || {
+                        chunk
+                            .iter()
+                            .map(|location| {
+                                if canceled() {
+                                    return Err(LoadError::Canceled);
+                                }
+                                samples.source(location)
+                            })
+                            .collect::<Result<Vec<_>, _>>()
+                    })
+                })
+                .collect();
+            let mut sources = Vec::with_capacity(locations.len());
+            for job in jobs {
+                sources.extend(job.join().expect("sample source worker")?);
+            }
+            Ok(sources)
         })
     }
 
@@ -264,7 +316,7 @@ impl Samples {
             let file = File::open(path).map_err(|e| LoadError::io(path, e))?;
             let index = Archive::read_index(file)
                 .map_err(|e| LoadError::decode(path, "archive directory", e))?;
-            self.archives.insert(path.into(), index);
+            self.archives.insert(path.into(), Arc::new(index));
         }
         Ok(&self.archives[path])
     }
@@ -563,6 +615,25 @@ mod tests {
                 [[0.5, 0.5]]
             );
         }
+        let locations: Vec<_> = names
+            .into_iter()
+            .rev()
+            .map(|name| archive.join(name))
+            .collect();
+        let listed: Vec<_> = locations.iter().map(PathBuf::as_path).collect();
+        let sources = samples.sources(&listed, &|| false).unwrap();
+        for source in sources {
+            let mut reader = crate::SampleReader::open(&source).unwrap();
+            let mut frames = [[0.; 2]];
+            reader.read(0, &mut frames).unwrap();
+            assert_eq!(frames, [[0.5, 0.5]]);
+        }
+        assert!(matches!(
+            samples.sources(&listed, &|| true),
+            Err(LoadError::Canceled)
+        ));
+        let missing = root.join("absent.ncw");
+        assert!(samples.sources(&[missing.as_path()], &|| false).is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 }

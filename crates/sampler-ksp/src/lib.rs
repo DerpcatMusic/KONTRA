@@ -592,15 +592,46 @@ impl Initialized {
     /// Conservatively retain addressable effect slots when runtime code writes
     /// engine parameters. No initializer or callback lowering is run to query it.
     pub fn writes_effect_slots(&self) -> bool {
+        fn arg(a: &hir::Arg) -> bool {
+            match a {
+                hir::Arg::Expr(e) => expr(e),
+                hir::Arg::Place(hir::Place::Elem(_, e)) => expr(e),
+                _ => false,
+            }
+        }
+        fn expr(e: &hir::Expr) -> bool {
+            use hir::ExprKind as E;
+            match &e.kind {
+                E::Builtin(builtin, args) => {
+                    *builtin == builtins::Builtin::SetEnginePar || args.iter().any(arg)
+                }
+                E::Neg(e)
+                | E::BitNot(e)
+                | E::Not(e)
+                | E::Cast(e)
+                | E::LoadElem(_, e)
+                | E::SysElem(_, e) => expr(e),
+                E::Arith(_, a, b) | E::Compare(_, a, b) | E::Logic(_, a, b) => expr(a) || expr(b),
+                E::Concat(es) => es.iter().any(expr),
+                _ => false,
+            }
+        }
         fn writes(body: &[hir::Stmt]) -> bool {
             body.iter().any(|s| match &s.kind {
-                hir::StmtKind::Builtin(builtins::Builtin::SetEnginePar, _) => true,
-                hir::StmtKind::If(_, yes, no) => writes(yes) || writes(no),
-                hir::StmtKind::While(_, body) => writes(body),
-                hir::StmtKind::Select(_, cases) => cases.iter().any(|c| writes(&c.body)),
+                hir::StmtKind::Builtin(builtin, args) => {
+                    *builtin == builtins::Builtin::SetEnginePar || args.iter().any(arg)
+                }
+                hir::StmtKind::Assign(place, value) => {
+                    expr(value) || matches!(place, hir::Place::Elem(_, e) if expr(e))
+                }
+                hir::StmtKind::Fill(_, values) => values.iter().any(expr),
+                hir::StmtKind::If(e, yes, no) => expr(e) || writes(yes) || writes(no),
+                hir::StmtKind::While(e, body) => expr(e) || writes(body),
+                hir::StmtKind::Select(e, cases) => expr(e) || cases.iter().any(|c| writes(&c.body)),
                 _ => false,
             })
         }
+        // ponytail: conservatively retain slots; precise function reachability if RAM matters.
         // Functions can be called by runtime callbacks. Conservative admission
         // avoids dropping a slot reached indirectly or through a variable.
         self.hir
