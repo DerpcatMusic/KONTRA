@@ -66,6 +66,7 @@ def extra_columns(r):
         if p.get('loaded') is True and 'pick' in p and p['pick'] is None:p['plays_note']='no'
     if r.get('loads')=='yes' and programs and all('pick' in p and p['pick'] is None for p in programs):
         r['plays_note']='no'
+        r['reason']=r.get('reason','').replace('audio not audible in 0.5s probe','audio not auditioned')
         if '; no safe audition key' not in r.get('reason',''):r['reason']=r.get('reason','')+'; no safe audition key'
     # A sidecar's override label is not the origin of the common audition pick.
     common = {}
