@@ -25,6 +25,7 @@ pub(super) struct NoteEvent {
     pub source_offset_micros: u32,
     /// Physical source script slot; -1 for host input.
     pub creator_slot: i32,
+    pub marks: u32,
     source_id: Option<i32>,
 }
 
@@ -47,6 +48,7 @@ impl NoteEvent {
             fixed_duration: false,
             source_offset_micros: 0,
             creator_slot: -1,
+            marks: 0,
             source_id: None,
         }
     }
