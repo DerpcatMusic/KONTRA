@@ -1,3 +1,4 @@
+mod support;
 use sampler_core::lower::{Feature, LowerError, lower};
 use sampler_core::{Input, Limits, Pcm, Protocol, Runtime};
 use sampler_ir as ir;
@@ -1048,4 +1049,279 @@ fn authored_delay_runs_existing_dsp_at_the_requested_time() {
     rt.render(&mut output).unwrap();
     assert!(output[0][0] > 0.);
     assert!(output[1..].iter().all(|sample| sample[0] == 0.));
+}
+
+#[test]
+fn processor_modulation_keeps_filter_identity_in_multiple_chains_and_cascades() {
+    let render = |poles: u8, routed: bool, target: usize| {
+        let filter = |hz| {
+            ir::Processor::Filter(ir::Filter {
+                kind: ir::FilterKind::LowPass { poles },
+                cutoff: ir::Frequency::Hertz(hz),
+                resonance: ir::Resonance::Decibels(0.0),
+            })
+        };
+        let mut ir = ir::Instrument {
+            assets: vec![asset("probe")],
+            chains: vec![ir::Chain {
+                scope: ir::Scope::Voice,
+                pre_amplitude: vec![filter(if !routed && target == 0 {
+                    2000.0
+                } else {
+                    500.0
+                })],
+                post_amplitude: vec![filter(if !routed && target == 1 {
+                    8000.0
+                } else {
+                    2000.0
+                })],
+            }],
+            modulators: vec![ir::Modulator {
+                scope: ir::Scope::Voice,
+                source: ir::ModulationSource::Constant,
+            }],
+            ..Default::default()
+        };
+        // Separate lowered chains share the same authored chain. Routes must
+        // address each compiled chain, not reuse the first zone's filter IDs.
+        for key in [60, 61] {
+            ir.zones.push(ir::Zone {
+                keys: ir::KeyRange {
+                    low: key,
+                    high: key,
+                },
+                velocity: ir::VelocityResponse::None,
+                pitch: ir::KeyTracking::Fixed,
+                chain: Some(ir::ChainRef(0)),
+                gain: ir::Gain::Decibels(6.0),
+                pan: ir::Pan {
+                    position: 0.25,
+                    law: ir::PanLaw::Balance,
+                },
+                routes: if routed {
+                    vec![ir::RouteRef(0)]
+                } else {
+                    vec![]
+                },
+                ..ir::Zone::new(ir::AssetRef(0))
+            });
+        }
+        ir.routes.push(ir::Route {
+            source: ir::ModulatorRef(0),
+            target: ir::Target::Processor {
+                chain: ir::ChainRef(0),
+                index: target,
+                parameter: ir::ProcessorParameter::Cutoff,
+            },
+            depth: ir::Depth::Pitch(ir::Pitch::Semitones(24.0)),
+            invert: false,
+            shape: None,
+            smoothing: ir::Time::Seconds(0.0),
+            scale: None,
+        });
+        let wave = (0..4096)
+            .map(|i| [(std::f32::consts::TAU * 3000.0 * i as f32 / 48000.0).sin() * 0.5; 2])
+            .collect::<Vec<_>>();
+        let plan = sampler_core::lower::lower_with(
+            &ir,
+            48000,
+            vec![Pcm::new(48000, wave.into_boxed_slice()).unwrap()],
+            &sampler_core::lower::Options { mpe: None },
+            no_behaviors,
+        )
+        .unwrap();
+        let mut rt = Runtime::new(plan, limits()).unwrap();
+        let mut out = [[0.0; 2]; 2048];
+        support::without_heap(|| {
+            rt.trigger(input(60), 60, 1.0).unwrap();
+            rt.trigger(input(61), 61, 1.0).unwrap();
+            rt.render(&mut out).unwrap();
+        });
+        out
+    };
+    for poles in [1, 2, 4] {
+        for target in [0, 1] {
+            let expected = render(poles, false, target);
+            let actual = render(poles, true, target);
+            for (a, b) in actual[512..].iter().zip(&expected[512..]) {
+                assert!(
+                    (a[0] - b[0]).abs() < 1e-5,
+                    "poles={poles}, target={target}: {a:?} vs {b:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn authored_voice_taps_reach_summed_buses_and_real_engine_controls() {
+    use sampler_core::{EngineParameterAddress, EngineParameterBinding, EngineParameterLaw};
+    let mut instrument = ir::Instrument {
+        assets: vec![asset("send probe")],
+        zones: vec![ir::Zone {
+            keys: ir::KeyRange { low: 60, high: 60 },
+            velocity: ir::VelocityResponse::None,
+            pitch: ir::KeyTracking::Fixed,
+            amplitude: Some(ir::ModulatorRef(0)),
+            chain: Some(ir::ChainRef(0)),
+            ..ir::Zone::new(ir::AssetRef(0))
+        }],
+        modulators: vec![ir::Modulator {
+            scope: ir::Scope::Voice,
+            source: ir::ModulationSource::Envelope(ir::Envelope {
+                sustain: 0.25,
+                ..Default::default()
+            }),
+        }],
+        chains: vec![ir::Chain {
+            scope: ir::Scope::Voice,
+            pre_amplitude: vec![ir::Processor::Gain(ir::Gain::Linear(2.0))],
+            post_amplitude: vec![
+                ir::Processor::Gain(ir::Gain::Linear(3.0)),
+                ir::Processor::Gain(ir::Gain::Linear(0.0)),
+            ],
+        }],
+        buses: vec![ir::Bus {
+            name: "return".into(),
+            chain: None,
+            gain: ir::Gain::Linear(2.0),
+            output: ir::Output::Master,
+            sends: vec![],
+        }],
+        controls: vec![ir::Control {
+            key: "original/send/gain".into(),
+            label: "send".into(),
+            value: ir::ControlValue::Continuous {
+                min: 0.0,
+                max: 1.0,
+                default: 0.5,
+                unit: ir::ControlUnit::None,
+            },
+            automation: ir::Automation::default(),
+        }],
+        voice_send_taps: vec![ir::VoiceSendTap {
+            chain: ir::ChainRef(0),
+            position: ir::VoiceSendPosition::BeforeAmplitude(1),
+            bus: ir::BusRef(0),
+            gain: ir::Gain::Linear(0.5),
+            bypass: false,
+            gain_control: Some(ir::ControlRef(0)),
+            bypass_control: None,
+            ramp: ir::Time::Seconds(0.0),
+        }],
+        ..Default::default()
+    };
+    let render = |instrument: &ir::Instrument| {
+        let plan = lower(instrument, 48000, vec![constant(1.0)], no_behaviors).unwrap();
+        let address = EngineParameterAddress {
+            parameter: sampler_core::engine_parameter_id("ENGINE_PAR_SENDLEVEL_0").unwrap(),
+            group: 0,
+            slot: 3,
+            generic: 0,
+        };
+        let plan = plan
+            .with_engine_parameters(
+                vec![EngineParameterBinding {
+                    address,
+                    control: sampler_core::lower::ir_control_id("original/send/gain"),
+                    law: EngineParameterLaw::Linear {
+                        low: 0.0,
+                        high: 1.0,
+                    },
+                }],
+                vec![],
+            )
+            .unwrap();
+        let mut rt = Runtime::new(plan, limits()).unwrap();
+        let mut out = [[0.0; 2]; 64];
+        support::without_heap(|| {
+            rt.trigger(input(60), 60, 1.0).unwrap();
+            rt.render(&mut out).unwrap();
+        });
+        let before = out[32];
+        support::without_heap(|| {
+            rt.set_engine_parameter(address, 0).unwrap();
+            rt.render(&mut out).unwrap();
+        });
+        assert_eq!(out[32], [0.0; 2]);
+        before
+    };
+    assert_eq!(render(&instrument), [2.0; 2]);
+    instrument.voice_send_taps[0].position = ir::VoiceSendPosition::AfterAmplitude(1);
+    assert_eq!(render(&instrument), [1.5; 2]);
+    instrument.voice_send_taps[0].position = ir::VoiceSendPosition::BeforeAmplitude(2);
+    assert!(matches!(
+        lower(&instrument, 48000, vec![constant(1.0)], no_behaviors),
+        Err(LowerError::Invalid(_))
+    ));
+}
+
+#[test]
+fn lower_retains_pure_delay_and_pseudo_stereo_after_source_end() {
+    for processor in [
+        ir::Processor::Delay {
+            time: ir::Time::Seconds(3.0 / 48000.0),
+            feedback: 0.0,
+            mix: 1.0,
+        },
+        ir::Processor::StereoModeller {
+            width: 0.5,
+            pan: 0.0,
+            pseudo: true,
+        },
+    ] {
+        let instrument = ir::Instrument {
+            assets: vec![asset("tail probe")],
+            zones: vec![ir::Zone {
+                velocity: ir::VelocityResponse::None,
+                pitch: ir::KeyTracking::Fixed,
+                chain: Some(ir::ChainRef(0)),
+                ..ir::Zone::new(ir::AssetRef(0))
+            }],
+            chains: vec![ir::Chain {
+                scope: ir::Scope::Voice,
+                pre_amplitude: vec![],
+                post_amplitude: vec![processor],
+            }],
+            ..Default::default()
+        };
+        let plan = lower(
+            &instrument,
+            48000,
+            vec![Pcm::new(48000, vec![[1.0; 2]].into_boxed_slice()).unwrap()],
+            no_behaviors,
+        )
+        .unwrap();
+        let mut rt = Runtime::new(plan, limits()).unwrap();
+        let mut out = [[0.0; 2]; 128];
+        support::without_heap(|| {
+            rt.trigger(input(60), 60, 1.0).unwrap();
+            rt.render(&mut out).unwrap();
+        });
+        let (index, channel) = if matches!(processor, ir::Processor::Delay { .. }) {
+            (3, 0)
+        } else {
+            (60, 1)
+        };
+        assert_eq!(out[index][channel], 1.0);
+    }
+}
+
+#[test]
+fn stale_physical_zone_maps_return_invalid_instead_of_panicking() {
+    for runtime in [0, usize::MAX] {
+        let mut instrument = instrument();
+        instrument.source_indices.zones = vec![None, Some(ir::ZoneRef(runtime))];
+        instrument.zones.clear();
+        instrument.assets.clear();
+        assert!(matches!(
+            rejected(&instrument, vec![]),
+            LowerError::Invalid(ir::ValidationError::Dangling { owner, .. })
+                if owner == "source zone 1"
+        ));
+    }
+    let mut holes = ir::Instrument::default();
+    holes.source_indices.zones = vec![None, None];
+    assert!(lower(&holes, 48000, vec![], no_behaviors).is_ok());
+
 }

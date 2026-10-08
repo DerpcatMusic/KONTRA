@@ -436,3 +436,71 @@ fn wave_shaper_rectifies_and_comp_exp_compresses() {
     );
     assert!(peak(&squashed) < peak(&plain) * 0.2, "{} vs {}", peak(&squashed), peak(&plain));
 }
+
+#[test]
+fn track_delay_moves_the_impulse_without_feedback() {
+    let plain = through(r#"<Gain Volume="1"/>"#, "delay-plain");
+    let delayed = through(r#"<TrackDelay DelayTime="0.01"/>"#, "track-delay");
+    assert!(delayed[..480].iter().flatten().all(|x| x.abs() < 1e-7));
+    for (actual, expected) in delayed[480..].iter().zip(&plain) {
+        for c in 0..2 {
+            assert!((actual[c] - expected[c]).abs() < 2e-6);
+        }
+    }
+}
+
+#[test]
+fn program_and_layer_inserts_are_distinct_summed_scopes() {
+    let xml = insert_program(None)
+        .replace("<Layers>", r#"<Inserts><GainMatrix Gain_1_1="0" Gain_2_1="1" Gain_1_2="0" Gain_2_2="0"/></Inserts><Layers>"#)
+        .replace("<Keygroups>", r#"<Inserts><GainMatrix Gain_1_1="0" Gain_2_1="0" Gain_1_2="1" Gain_2_2="0"/></Inserts><Keygroups>"#);
+    let instrument = sampler_uvi::translate(&xml, std::path::Path::new(".")).unwrap().instrument;
+    let layer = instrument.groups[0].output;
+    let ir::Output::Bus(layer) = layer else { panic!("missing layer bus") };
+    let ir::Output::Bus(program) = instrument.buses[layer.0].output else { panic!("missing program bus") };
+    assert_ne!(layer, program);
+    let chain = |bus: ir::BusRef| &instrument.chains[instrument.buses[bus.0].chain.unwrap().0];
+    assert!(matches!(chain(layer).pre_amplitude[0], ir::Processor::StereoMatrix([[0., 0.], [1., 0.]])));
+    assert!(matches!(chain(program).pre_amplitude[0], ir::Processor::StereoMatrix([[0., 1.], [0., 0.]])));
+}
+
+#[test]
+fn three_band_shelves_uniform_gain_is_a_level_change() {
+    let plain = through(r#"<Gain Volume="1"/>"#, "shelves-plain");
+    let raised = through(r#"<ThreeBandShelves GainLow="6" GainMid="6" GainHigh="6"/>"#, "shelves-level");
+    let ratio = 10f32.powf(6.0 / 20.0);
+    for (actual, expected) in raised.iter().zip(&plain) {
+        for c in 0..2 {
+            assert!((actual[c] - ratio * expected[c]).abs() < 2e-6);
+        }
+    }
+}
+
+#[test]
+fn one_pole_frequency_connections_keep_the_native_three_decade_law() {
+    let dir = std::env::temp_dir().join(format!("sampler-uvi-cutoff-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("samples")).unwrap();
+    std::fs::write(dir.join("samples/sine.wav"), wav(48000, &[0; 64])).unwrap();
+    let xml = insert_program(None).replace("<Oscillators>", r#"<Inserts><OnePole Name="Tone" Freq="1000"><Connections><SignalConnection Source="@MIDI CC 1" Destination="Freq" Ratio="0.5"/></Connections></OnePole></Inserts><Oscillators>"#);
+    let ir = sampler_uvi::translate(&xml, &dir).unwrap().instrument;
+    let (index, route) = ir.routes.iter().enumerate().find(|(_, r)| matches!(r.target, sampler_ir::Target::Processor { parameter: sampler_ir::ProcessorParameter::Cutoff, .. })).expect("missing OnePole cutoff route");
+    let sampler_ir::Depth::Pitch(depth) = route.depth else { panic!("cutoff depth must be exponential"); };
+    assert!((depth.semitones() - 6.0 * 1000f64.log2()).abs() < 1e-10);
+    assert!(ir.zones.iter().any(|zone| zone.routes.contains(&sampler_ir::RouteRef(index))));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn one_pole_connections_address_each_stage_in_a_shared_voice_chain() {
+    let dir = std::env::temp_dir().join(format!("sampler-uvi-cutoff-stages-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("samples")).unwrap();
+    std::fs::write(dir.join("samples/sine.wav"), wav(48000, &[0; 64])).unwrap();
+    let xml = insert_program(None).replace("<Oscillators>", r#"<Inserts><OnePole Name="Low" Freq="1000"><Connections><SignalConnection Source="@MIDI CC 1" Destination="Freq" Ratio="0.5"/></Connections></OnePole><OnePole Name="High" Freq="2000" Mode="1"><Connections><SignalConnection Source="@MIDI CC 2" Destination="Freq" Ratio="0.25"/></Connections></OnePole></Inserts><Oscillators>"#);
+    let ir = sampler_uvi::translate(&xml, &dir).unwrap().instrument;
+    let stages: Vec<_> = ir.routes.iter().filter_map(|r| match r.target {
+        ir::Target::Processor { index, parameter: ir::ProcessorParameter::Cutoff, .. } => Some(index),
+        _ => None,
+    }).collect();
+    assert_eq!(stages, vec![0, 1]);
+    std::fs::remove_dir_all(dir).unwrap();
+}

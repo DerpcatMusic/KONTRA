@@ -705,6 +705,64 @@ impl Runtime {
         }
     }
 
+    /// Eligible groups at this callback's selection view. Do not advance RR or random state.
+    pub(crate) fn affected_group(
+        &self,
+        note: NoteId,
+        view: crate::groups::GroupView,
+        index: Option<i64>,
+    ) -> i64 {
+        let n = self.notes.get(note.0).unwrap();
+        let generation = self.plans.get(n.plan.0).unwrap();
+        let prepared = &generation.prepared;
+        let stage = match view {
+            crate::groups::GroupView::Note(s) | crate::groups::GroupView::Release(s) => s,
+            crate::groups::GroupView::Committed => self.note_events[note.0.index].entry,
+        };
+        let properties = generation
+            .projections
+            .get(note.0.index, stage)
+            .ok()
+            .and_then(|p| p.properties)
+            .unwrap_or(self.note_events[note.0.index].initial);
+        let snapshot = self.selections[note.0.index].snapshot;
+        let state = &self.performance_state.states[snapshot];
+        let trigger = match view {
+            crate::groups::GroupView::Release(_) => Trigger::KeyRelease,
+            _ => Trigger::Attack,
+        };
+        let range = prepared.range(properties.pitch.key(), trigger);
+        // GROUPS_AFFECTED describes native mapping before script allow/disallow edits.
+        let mask = None;
+        let mut count = 0;
+        // ponytail: bounded group/candidate scan; cache a group index if query profiling warrants it.
+        for group in 0..prepared.group_count {
+            let mut from = range.start;
+            let mut found = false;
+            while from < range.end && !found {
+                let until = prepared.group_end(from, range.end);
+                let ranges = prepared.active_ranges(from..until, state.articulation);
+                let mut matching = super::Matching::new(ranges);
+                while let Some(c) =
+                    matching.next_in_groups(prepared, state, properties.velocity, mask)
+                {
+                    if prepared.region_groups[c.region] == Some(group) {
+                        found = true;
+                        break;
+                    }
+                }
+                from = until;
+            }
+            if found {
+                if index == Some(count) {
+                    return i64::from(group);
+                }
+                count += 1;
+            }
+        }
+        if index.is_none() { count } else { -1 }
+    }
+
     /// Verdict for every region mapped to the note's key, then the round-robin take.
     fn diagnose(
         &self,
@@ -845,7 +903,7 @@ impl Runtime {
                     self.expressions.get(n.expression.0).unwrap().value,
                     &state.controllers,
                     held,
-                    self.note_params[note.0.index].mods,
+                    &self.note_params[note.0.index].mods,
                 );
                 let start = prepared
                     .voice_modulation
@@ -870,12 +928,7 @@ impl Runtime {
                     self.families.get_mut(family.0).unwrap().decision = decision;
                     family
                 });
-                let envelope = self
-                    .plans
-                    .get(plan.0)
-                    .unwrap()
-                    .script
-                    .envelope(group, r.envelope);
+                let envelope = self.controlled_envelope(plan, group, r.envelope);
                 let admitted = self.admit_voice(
                     family,
                     r.sample,
@@ -919,7 +972,7 @@ impl Runtime {
                     self.expressions.get(n.expression.0).unwrap().value,
                     controllers,
                     held,
-                    self.note_params[note.0.index].mods,
+                    &self.note_params[note.0.index].mods,
                 );
                 let clock = crate::voice_mod::Clock {
                     rate: f64::from(self.rate),
