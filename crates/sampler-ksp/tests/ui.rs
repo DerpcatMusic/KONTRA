@@ -185,7 +185,7 @@ fn saved_state_and_new_widget_fields_reach_the_ir() {
         }
     );
     let env = sampler_ksp::Environment {
-        persisted: [("$Bg".into(), sampler_ksp::model::Value::Int(1))].into(),
+        persisted: [("$Bg".into(), sampler_ksp::model::Value::Int(2))].into(),
         ..Default::default()
     };
     let (saved, _) = wallpaper(&env);

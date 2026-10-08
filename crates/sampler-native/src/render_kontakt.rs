@@ -193,52 +193,11 @@ pub fn run(
         scripts,
         ..Default::default()
     };
-    let progress = |progress: sampler_kontakt::Progress| {
+    let loaded = sampler_kontakt::load(instrument, &options, |progress| {
         if let sampler_kontakt::Progress::Translated { zones, assets } = progress {
             eprintln!("translated: {zones} zones over {assets} samples in the played key range");
         }
-    };
-    // KONTRA_PLAY_KEYS=1: load only zones covering a played key, not the whole
-    // range between the lowest and highest (probe grids span octaves).
-    let loaded = if std::env::var_os("KONTRA_PLAY_KEYS").is_some() {
-        let options = sampler_kontakt::Options {
-            keys: 0..=127,
-            library: Some(instrument.into()),
-            ..options
-        };
-        let mut kontakt =
-            sampler_kontakt::read(instrument).map_err(|e| io::Error::other(e.to_string()))?;
-        // Reference diagnostics only: override saved scalar inputs before init.
-        // This does not alter library files or production loader defaults.
-        if let Ok(value) = std::env::var("KONTRA_PROBE_SAVED_INTS") {
-            let values: std::collections::BTreeMap<String, i32> = serde_json::from_str(&value)
-                .map_err(|e| io::Error::other(format!("probe saved integers: {e}")))?;
-            for (name, value) in values {
-                let mut found = false;
-                for behavior in &mut kontakt.instrument.behaviors {
-                    for (key, saved) in &mut behavior.state {
-                        if *key == name && matches!(saved, sampler_ir::Saved::Int(_)) {
-                            *saved = sampler_ir::Saved::Int(i64::from(value));
-                            found = true;
-                        }
-                    }
-                }
-                if !found {
-                    return Err(io::Error::other(format!(
-                        "probe saved integer not found: {name}"
-                    )));
-                }
-                eprintln!("probe saved integer {name}={value}");
-            }
-        }
-        let kept = kontakt
-            .instrument
-            .retain_zones(|z| keys.iter().any(|&k| z.keys.low <= k && k <= z.keys.high));
-        kontakt.locations = kept.iter().map(|&a| kontakt.locations[a].clone()).collect();
-        sampler_kontakt::load_read(kontakt, &options, progress, || false)
-    } else {
-        sampler_kontakt::load(instrument, &options, progress)
-    }
+    })
     .map_err(|e| io::Error::other(e.to_string()))?;
     render(loaded, output, messages)
 }
