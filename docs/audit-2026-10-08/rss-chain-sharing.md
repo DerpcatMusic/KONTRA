@@ -1,8 +1,8 @@
 # Shared immutable voice chains
 
 Base: `c39fd7b0fc3245b3087c5da7408028a9831ffbfd` (includes W15 pan routing).
-Status: **HOLD** until the complete 22-item PCM comparison and Pacific Legato
-smoke discrepancy are resolved. No load-time acceptance claim yet.
+Status: **HOLD** pending the seeded/synchronized UVI audit protocol and the
+queued quiet load receipt. Pacific Legato smoke trace is resolved below.
 
 ## Change and v1 source
 
@@ -40,8 +40,27 @@ Offline witness uses the production V2Loader/V2Core at 48 kHz, block64, four
 seconds, note-plan key/program/keyswitch, velocity64, CC1=110, CC11=127 and
 sustain127. It writes only BLAKE3 hashes and numeric runtime counters. This is
 a paired audio correctness check on the gate items, not the scanner's realtime
-protocol (which uses CC1=100). First eleven gate items: identical nonzero PCM
-and complete runtime counters. Remaining items are pending.
+protocol (which uses CC1=100). The full 22-item matrix has 23 program records: all load/render, and all 23
+runtime-counter records match. Seventeen audible PCM records match (15 Kontakt
+programs plus UVI indices 19/20). NKM index17/program0 is identically silent on
+both builds and remains UNKNOWN for audible parity. UVI indices11/12/13/14/21
+have different digests and remain UNKNOWN. There is no all-22 PASS claim.
+
+The unchanged baseline also produces different PCM on repeat UVI12/13 runs,
+with zero counters and nonzero audio. W10 confirmed the production threaded Lua
+path lacks an offline script barrier and starts Luau math RNG without a fixed
+audit seed. W10 owns the explicit audit-only seed/clock-barrier follow-up; the
+normal product randomness and realtime path remain its responsibility.
+Numeric receipts: `c39-chain-pcm-summary.json` and
+`c39-chain-aa-pcm-{12,13}.json` in the same owned cache.
+
+UVI12 graph prefixes show the baseline A/A first difference at frame8192: source
+ratio 0.867491744330555 versus 0.8659148502993635. Before/after differs upstream
+at frame0, ratio0.7895661428745404 versus0.788853833822799. Graphs agree. Existing
+PCM witness exits before the trace writer flushes; these UVI exports lack valid
+JSON footers. Prefix records support this diagnostic observation only; complete
+coverage and dropped-record counts remain UNKNOWN. No trace was repaired.
+See `c39-chain-uvi12-first-divergence.json` and `c39-chain-uvi12-trace-summary.json`.
 
 ## RSS and load receipts
 
@@ -59,8 +78,19 @@ load/onset timing is **UNKNOWN**, since no quiet window was held.
 Pool bytes stay 25,165,824 and eager head bytes stay zero. No unaccepted W9
 streaming trial is included. Pacific smoke peak differs (0.06596755 before,
 0.05550770 after); gate Pacific FX PCM agrees but is a different item. Analog
-smoke first-audio frames differ (192 before, 256 after). Both observations are
-retained, pending trace/quiet checks; neither is being dismissed as contention.
+smoke first-audio frames differ (192 before, 256 after). Both original observations are retained. Two baseline Pacific traces and the
+candidate trace now have identical graphs and all 52,245 records, complete with
+zero dropped records. Peak is 0.05550770089030266 and first audio192 in the
+parsed baseline repeat/candidate. Sample source, amplifier, filters, buses and
+master records all match. This clears the candidate-specific Pacific smoke
+concern without attributing the original untraced variation to a cause.
+`c39-chain-pacific-trace-comparison.json` records the equality; the trace JSON/SVG
+files live beside the frozen binaries. Analog onset still awaits quiet evidence.
+
+An additional four-second Pacific offline gate render completed (nonzero), but
+its remaining unrequested piano/A/A repeats were canceled to prioritize the
+exact smoke trace. The unpaired digest is UNKNOWN and retained in
+`c39-chain-pacific-extra-cancelled.json`; it is not used as a parity result.
 
 Frozen binaries and BUILD.json live under
 `/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w8-rss-20261008/`:
