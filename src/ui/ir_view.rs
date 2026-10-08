@@ -1570,7 +1570,8 @@ pub(super) fn menu_popup(
     )
 }
 
-/// The painted winning MouseArea, independent of whether the payload is valid.
+/// Detect the owning target before validating a payload, so an invalid batch
+/// cannot fall through into a rack/instrument drop.
 pub(super) fn file_drop_target(ui:&Ui,namespace:&str,face:&Interface,at:Point)->Option<WidgetRef> {
     let mut hit=moose::mui::mui::input::Hit::default();
     for surface in ui.scene()?.surfaces().filter(|s|(Id::is_named(&s.key)||s.pointer_states)&&!s.disabled) {
@@ -1584,8 +1585,7 @@ pub(super) fn file_drop_target(ui:&Ui,namespace:&str,face:&Interface,at:Point)->
     })
 }
 
-/// One OS gesture, targeting the same painted surface as pointer input.
-/// The caller forwards these edits together through native widget admission.
+/// One OS gesture; forward all returned edits in one admission transaction.
 pub(super) fn file_drop(ui:&Ui,namespace:&str,face:&Interface,at:Point,paths:&[std::path::PathBuf],dropped:bool)->Option<(WidgetRef,Vec<Edit>)> {
     if paths.is_empty() {return None;}
     let n=file_drop_target(ui,namespace,face,at)?;
