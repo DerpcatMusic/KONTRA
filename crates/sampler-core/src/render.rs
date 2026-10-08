@@ -604,7 +604,7 @@ impl Runtime {
                         ratio: v.cursor.step(), source_frame: v.cursor.trace_position(), sample_start: v.cursor.trace_start(), velocity: n.velocity, key:n.pitch.key(),
                         rr_sequence:plan.prepared.trace_region_take(nodes.region).map(|t|t.sequence),
                         rr_take:plan.prepared.trace_region_take(nodes.region).map(|t|t.index),
-                        group:v.group, layer:v.bus, cc1:controllers[0], cc7:controllers[1], cc11:controllers[2], voice_gain:f64::from(v.gain),
+                        group:v.group, layer:v.bus, routed_to:v.bus.map(|b|t.graph.buses[b].input).or(Some(t.graph.master)), cc1:controllers[0], cc7:controllers[1], cc11:controllers[2], voice_gain:f64::from(v.gain),
                         region_gain:plan.prepared.trace_region_gains(nodes.region,n.pitch.key(),n.velocity)[0],
                         velocity_gain:plan.prepared.trace_region_gains(nodes.region,n.pitch.key(),n.velocity)[1],
                         xfade_weight:plan.prepared.trace_region_gains(nodes.region,n.pitch.key(),n.velocity)[2],
