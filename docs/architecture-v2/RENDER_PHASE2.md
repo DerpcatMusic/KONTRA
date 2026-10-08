@@ -298,3 +298,45 @@ Evidence: `~/.cache/kontakto-w3/stack-safety/{manifest,evidence}.json`,
 The shared collector CLI/metrics and driver stayed unchanged. The scanner was
 built at 74718ad7; later commits add tests/reporting only, with unchanged
 production lowering and scanner code.
+
+## Program resource authority and absent-container fallback (W3)
+
+The first Big Screen program's F0 reference names a different resource archive
+from the second program. `library.rs::translate` previously discarded that word,
+so all programs discovered resources beside the multi. Program 0 consequently
+ran program 1's Conflux NativeUI module, which reads meters that program 0 never
+declares. The missing meter is an authority error, not a missing level to invent.
+The verified F0 suffix word is retained in the instrument and published UI IR.
+Linked scripts, picture metadata, image/font preparation and NativeUI all use
+that declaration through `Resources::of_declared`. Undeclared instruments retain
+ordinary discovery. Declared instruments never substitute another archive;
+loose Resources remain available. Reads and indexing stay off the GUI thread.
+
+A declared archive absent from the instrument's resource namespace is reported
+as typed `Kind::ResourceContainerMissing` at `Stage::ResourceResolve`, exported
+as `resource_container_missing` / `resource_resolve`. Invalid, ambiguous,
+inaccessible and corrupt containers retain separate failure behavior. When
+NativeUI cannot start because its declared container is missing, Original draws
+the program's own KSP performance widgets using its own available loose art.
+The missing native scene remains unavailable, with unknown graph depth; the
+scanner does not claim successful NativeUI paint merely because KSP fallback
+paint succeeded. No meter value is fabricated.
+
+**Kontakt-observed behavior: UNVERIFIED.** No reference recorder was active for
+this change. The conservative KSP/loose-resource policy was explicitly authorized
+by the coordinator. Morning reference check: “Big Screen.nkm program 0 with its
+container absent: what does Kontakt show?” The evidence JSON and each scanner
+resource diagnostic retain this UNVERIFIED status.
+
+Pinned v1 `0cb7a8a0` has no NativeUI consumer. Its KSP meter renderer paints the
+unlit authored background/off frame, and its meter-attachment stub reports
+unavailability. It offers no better live NativeUI meter implementation to port.
+The root fix preserves the existing typed live meter service for valid graphs.
+
+Focused validation and the 50-ID authority/depth survey are recorded under
+`~/.cache/kontakto-w3/resource-authority/`; final counts and parity receipt follow
+once the coordinator's quiet-machine gate window ends. Changes outside W3's
+renderer include the minimal Kontakt translator/load provenance seam, the two
+IR provenance fields, W1's `src/ui/part.rs` fallback selection, a shared diagnostic
+enum variant in `sampler-uvi` (no UVI resolver behavior change), and the
+`corpus-health` stage-name mapping.
