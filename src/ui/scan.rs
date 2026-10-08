@@ -316,7 +316,13 @@ fn render(
     let missing_font_hashes:Vec<_>=missing.iter().filter(|h|font_hashes.contains(*h)).cloned().collect();
     missing.retain(|h| !font_hashes.contains(h));
     let missing_fonts=scan.fonts.saturating_sub(scan.font_ok).max(missing_font_hashes.len());
+    let preparation = native.is_none().then(|| json!({"completed":scan.preparation_completed,"completed_bytes":scan.preparation_completed_bytes,
+        "max_key_bytes":scan.preparation_max_key_bytes,"wanted_peak_bytes":scan.preparation_wanted_peak_bytes,
+        "oversized":scan.preparation_oversized,"key_budget":scan.preparation_key_budget,
+        "evicted":scan.preparation_evicted,"requeued":scan.preparation_requeued,
+        "completed_key_bytes":assets.completed_key_bytes()}));
     json!({"bound_typed":if matches!(face.source,ir::Source::FalconLua){None}else{Some(typed_bound)},"typed_binding_refs":typed_refs,"typed_binding_basis":"installed script model target; live typed edit/readback unmeasured","phantom_free_controls":null,"controls_declared":declared,"controls_bound_declared":declared_bound,
+        "image_preparation":preparation,
         "asset_lookup_requested":scan.lookups,"asset_lookup_ok":scan.lookup_ok,
         "asset_decode_requested":scan.decodes,"asset_decode_ok":scan.decode_ok,
         "font_declared":fonts_declared,"font_success":font_success,"font_unresolved_styles":fonts_declared.saturating_sub(font_success),
@@ -325,7 +331,7 @@ fn render(
         "image_strips":face.assets.iter().filter(|a|matches!(&a.kind,ir::AssetKind::Image(m)if m.frames>1)).count(),
         "image_frames":face.assets.iter().filter_map(|a|if let ir::AssetKind::Image(m)=&a.kind{Some(m.frames.max(1))}else{None}).sum::<u32>(),
         "image_margins":face.assets.iter().filter(|a|matches!(&a.kind,ir::AssetKind::Image(m)if m.margins!=ir::Margins::default())).count(),
-        "asset_failure_reasons":{"lookup-not-found":(scan.lookups)-(scan.lookup_ok),
+        "asset_failure_reasons":{"preparation-limit":scan.preparation_oversized+scan.preparation_key_budget,"lookup-not-found":(scan.lookups)-(scan.lookup_ok),
             "decode-failed":(scan.decodes)-(scan.decode_ok),"font-service-unavailable":missing_fonts},
         "native_diagnostic":native.as_ref().and_then(|n|n.diagnostic()),
         "native_frontend_consumed":native.as_ref().map(|_|renders.iter().any(|r|r["ok"]==true)),
