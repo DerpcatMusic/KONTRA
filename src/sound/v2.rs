@@ -1279,6 +1279,11 @@ fn stream_policy(request: &LoadRequest) -> sampler_kontakt::StreamPolicy {
     }
 }
 
+// v1 0cb7a8a0:src/engine/stream.rs keeps RING=8192 frames ahead at unity pitch.
+fn stream_horizon(head: usize) -> u32 {
+    (head.max(8192) + MAX_BLOCK) as u32
+}
+
 /// Voice-rendering threads per part: `KONTRA_THREADS` (`auto` or a count)
 /// wins, then the player's setting; one (the audio thread alone) otherwise.
 fn render_threads(request: &LoadRequest) -> Threads {
@@ -1758,7 +1763,7 @@ impl V2Loader {
             .map(|i| i.articulations.iter().map(|a| a.switch_keys.first().copied()).collect());
         if streams && let Some(stream) = &stream {
             // Heads bound only starts; running voices request a page ahead.
-            part.horizon = Some((stream.report.head_frames.max(PAGE_FRAMES) + MAX_BLOCK) as u32);
+            part.horizon = Some(stream_horizon(stream.report.head_frames));
             part._stream = Some(stream.clone());
         }
         progress(Progress::DONE);
@@ -1877,6 +1882,38 @@ mod tests {
         assert_eq!(output.identity.output_channels,Some(1));
         assert!((output.output.rms[0]-0.05625).abs()<1e-6);
         assert_eq!(output.output.rms[1],0.);
+    }
+
+    #[test]
+    fn host_prefetch_requests_two_pages_before_consuming_the_resident_head_without_heap_work() {
+        let pcm = Pcm::headed(48000, PAGE_FRAMES * 3, &[[0.25; 2]; PAGE_FRAMES]).unwrap();
+        let plan = Prepared::new(48000, vec![pcm], vec![Region {
+            sample: 0, key_low: 0, key_high: 127, root_key: None,
+            velocity_low: 0., velocity_high: 1., gain: 1.,
+            envelope: Envelope::default(), playback: Playback::default(),
+        }], 128).unwrap();
+        let (cache, mut worker) = StreamCache::new(3).unwrap();
+        let limits = Limits::for_plan(&plan, 8, 8);
+        let runtime = Runtime::new(plan, limits).unwrap().with_stream_cache(cache);
+        let mut part = Part::new(runtime, MixTree::instrument("prefetch")).unwrap();
+        part.horizon = Some(stream_horizon(628));
+        let mut core = V2Core::with_parts(1, 48000.);
+        core.install(0, Some(Box::new(part)));
+        core.event(0, on(HostNote { port: 0, channel: 0, key: 60, id: 1, clap: true }));
+        let calls = crate::plugin::tests::allocations(|| { assert!(loud(&core.render(64), 0, 64)); });
+        assert_eq!(calls, 0);
+        for page in [1, 2] {
+            let mut job = worker.next_job().expect("both future pages must be queued before the resident head is consumed");
+            assert_eq!(job.key().index, page);
+            job.frames_mut().fill([0.25; 2]);
+            worker.complete(job, Ok(())).unwrap();
+        }
+        assert!(worker.next_job().is_none());
+        let calls = crate::plugin::tests::allocations(|| {
+            for _ in 0..PAGE_FRAMES * 3 / 64 { core.render(64); }
+        });
+        assert_eq!(calls, 0, "completion admission and both page crossings must not allocate or free");
+        assert_eq!(core.problems(0).underruns, 0);
     }
 
     #[test]
