@@ -260,10 +260,10 @@ Do not replace the working authored presentation with a generic theme.
 | R11 source colours / alpha / hide | `src/ui/perf_view.rs:1113` hide-background / ARGB handling, `:1125` meter background/off and wave/cursor colours; `:597` value hide and `:1045` knob title/value masks | Restore the source colours/parts that v1 actually paints. Bar/peak/overload/zero-line/gradient and independent alpha coverage remain incomplete in the pinned path and require the parameter/native fixtures. |
 | R12 preparation / diagnostics / cache | `src/ui/perf_view.rs:371` off-frame picture fetch with generation check, `:418` per-control dependency cache; `src/artwork.rs:259` categorized failures; `src/ui/fitted.rs:73,79,103,116` owner generation / resize / cut / window caches | Restore worker preparation, explicit errors and reusable render assets. Do not copy v1's cache-count ceiling as a decoded-byte budget; strengthen bounds/retry/resource identity through the shared v2 asset layer. |
 
-The shared scanner extension is published at
-`tools/kontra-scan@01178ba443e2b409c23282509f57d35a60753c36`. Its installed v2
+The historical `7e82b152` shared scanner extension is published at
+`tools/kontra-scan@01178ba443e2b409c23282509f57d35a60753c36`. Its recorded v2
 digest is `d4534838916e008d32a6e0763541a8bd9285651d77f130bad18fe926d0975f5a`.
-Canonical measurement uses
+That witness used
 `~/.cache/kontra-scan/bin/kontra-scan-v1` (pinned v1) and
 `kontra-scan-v2` (integration baseline), with their adjacent README and frozen
 Kontakt manifest. Use existing census outputs and requested extra columns;
@@ -282,16 +282,28 @@ and alias `kontra-scan-v1uvi` hashes were checked and are identical. Historical
 `1c198e60` / `d565661a` is retained separately under `~/.cache/kontra-scan/frozen`.
 The common driver/README update leaves verified `abf248cd` Rust binaries unchanged;
 the latest pinned-v1 driver snapshot is `59c6cbbb`, with Rust adapter `44d03cec`.
+The current frozen census uses product checkpoint
+`9993db691a5f69d31980357694a678e358785e5e`, scanner Rust source
+`tools/kontra-scan-native-9993-20261008@ef88dcb6bd5e50ff12ad8317bdb73da92fcd415f`,
+and v2 binary digest
+`19e2f2c76771ceeb1f5db47956d404a290e16ef61dabb6e34909176b362b6751`.
+Exporter source is `7452da10bc4989a4e93f131bf9492e0e2fca1e27`, adjacent driver
+digest `a979c6a56359f717e1e5cba39b403dde8a1b3d8c26e2ee06ecdd51e938936cd5`.
+Pinned Kontakt v1 and the section J UVI sidecar digests above remain unchanged.
+Current Native consumer/paint attempts and decoded package font-file counts are
+observed separately; legacy bridge widget/geometry/strip counts do not describe
+the Native scene tree. Native fallback/loading captions do not establish authored
+paint and are excluded from authored first-frame timing.
 
 ### Shared schema and coverage update
 
 The adjacent `bin/kontra_scan.py:COLUMNS` defines **72** columns; its first nine
 remain stable. Published summaries are `~/.cache/kontra-scan/results/{v1,v2}.tsv`,
-with per-ID evidence in `{v1,v2}/cache`. The owner reset publication to the final
-installed revision; each summary had 25 rows at the final Conflux snapshot. The final Conflux
-pair above is verified against both installed digests. The owner's serial
-235-second Kontakt sweep has restarted; the installed UVI sidecar now permits
-the subsequent 660-ID paired pass with common notes.
+with per-ID evidence in `{v1,v2}/cache`. The current frozen `9993db69` snapshot has
+**678/1,494 rows in each version**. The historical `7e82b152` Conflux pair above
+remains tied to its recorded digests; current checkpoint counts are not substituted
+as baseline failure counts. The owner continues serial 235-second shards and
+will assert complete ID/signature coverage after the paired Kontakt/UVI passes.
 The full 1,494-ID paired sweep is pending. This partial snapshot cannot supply
 whole-corpus affected counts, regression totals or a paired Conflux rendering comparison.
 
@@ -354,6 +366,50 @@ driver forces `KONTRA_UVI_STATIC_PCM_CACHE=0`; `cache_state=cold` refers to this
 disabled persistent PCM cache, not the OS cache. The owner's finite-onset,
 missing-onset/null and common MIDI 60/64 Clarinet smoke proofs passed; these
 selected checks do not establish full UVI corpus coverage or native UI fidelity.
+
+### Pacific Ensemble Strings: current partial witness
+
+The two common TSVs contain the same **49** Pacific IDs. Every row was matched
+to its cache using the shared driver's `signature()` and installed binary digest;
+all 98 JSON records agree with their TSV UI/load/audio/binding/note fields.
+This reads existing shared evidence only; no renderer or collector was run.
+
+| Measured Pacific subset | Pinned v1 | V2 checkpoint `9993db69` |
+|---|---:|---:|
+| Loads admitted | 49/49 | 49/49 |
+| Missing-images / original-ok | 49 / 0 | 45 / 4 |
+| Audible / silent | 45 / 4 | 45 / 4 |
+| Non-fallback matched note plans | 49/49 | 49/49 |
+| Lookup requested / resolved | unknown | 253 / 196 |
+| Decode requested / successful | unknown | 196 / 196 |
+| Fixed lookup misses / decode failures / font-service failures | unknown | 57 / 0 / 0 |
+
+All 49 IDs have equal per-ID notes and equal audio statuses between versions;
+the four silent pairs do not establish a v2 sound regression. Both versions bind
+every visible scalar target (18–23 per instrument); typed bindings are zero.
+V2 records `source_presentation=legacy-authored` for every Pacific view, not a
+Native graph. Its 33 instruments with one miss and 12 with two misses account
+for all 57 unresolved image references; four other instruments have no misses.
+The four `original-ok` rows are the Cluster Risers instruments for 10 Cellos,
+12 Violas, 16 Violins and 8 Basses. Original-ok is render/resource admission,
+not proof of native typography, gestures or complete UI fidelity.
+
+V2 observes one strip per instrument, 73–75 declared picture frames, no margins
+and no custom bitmap-font uses. All declared font uses report success. Retained
+widget kinds include tables and the classic controls, but visible/declaration
+projections differ from v1; do not subtract histogram totals as missing controls.
+V1's detailed lookup/decode/font/strip columns remain unknown rather than zero.
+The remaining v2 failures are at lookup, not image decode; physical resource
+absence versus resolver namespace/path failure still needs the library's own
+resource index. No alias or replacement artwork is justified by this census.
+
+Signature-matched evidence examples:
+`results/v1/cache/c0df35e8d71d5e2b91c780dfef5ff323d498b8b3e042f3744a4835f15f4dfdfd.json`,
+`results/v2/cache/83ccbee49c56c44df5030dfedfaa1528880d25f9b7ad692ef5a590c788933978.json`
+(lookup miss), and
+`results/v2/cache/e772d0fa37d03dbe305660979a15440fc0f24a23599f86272ef78847a9a4fb70.json`
+(original-ok), relative to `~/.cache/kontra-scan`. The 678-row paired snapshot and
+this 49-ID subset are partial; whole-corpus matrix counts remain pending.
 
 ## Prior work to reuse, not reimplement
 
