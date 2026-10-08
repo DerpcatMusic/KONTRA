@@ -2664,7 +2664,7 @@ mod tests {
         };
         let pcm = sampler_core::Pcm::new(rate, vec![[0.25; 2]; frames].into_boxed_slice()).unwrap();
         let loaded = sampler_kontakt::prepare(instrument, vec![pcm], &Default::default()).unwrap();
-        let sound = play(Subject::Plan(Box::new(loaded)), Pick { key: 60, velocity: 64, switch: None }, true, &[]).unwrap();
+        let sound = play(Subject::Plan(Box::new(loaded)), Pick { key: 60, velocity: 64, switch: None }, false, &[]).unwrap();
         assert!(sound.peak > 0.);
         assert_eq!(sound.stuck_voices, 0);
         let drain = sound.perf["release_drain_seconds"].as_f64().unwrap();
