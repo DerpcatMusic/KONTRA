@@ -84,8 +84,12 @@ No public interface or kernel-facing API changes. The new storage is 16 bytes
 per reserved voice; acceptance must include its CPU/memory tradeoff.
 
 Twenty-three envelope, expression and voice-modulation regression tests pass
-(one timing benchmark ignored), and root no-run passes. Matching ci pitch
+(one timing benchmark ignored). A separate no-allocation test compares changing
+and held CC pitch with independently applied note expression, bit-for-bit across
+transition cells; it also passes. Root no-run passes after the test addition. Matching ci pitch
 CPU/WAV binaries are recorded separately in `pitch-BUILD.json`; earlier scalar
-and cubic binaries remain frozen. Full-signal witnesses and CPU are pending.
+and cubic binaries remain frozen. Cotton, Analog Strings and Areia pitch-cache PCM hashes all match the original
+scalar baseline exactly (zero sample error); generated WAVs were deleted.
+Quiet CPU acceptance remains pending.
 
 NEXT: follow-up signal witness and unprofiled same-cell quiet CPU.
