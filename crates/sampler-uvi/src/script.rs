@@ -331,6 +331,10 @@ struct Shared {
     seq: Cell<u64>,
     /// When the running callback is aborted.
     deadline: Cell<Option<Instant>>,
+    vm_checkpoints: Cell<u64>,
+    graph_nodes: Cell<usize>,
+    graph_depth: Cell<usize>,
+    script_bytes: Cell<usize>,
     current: Cell<Option<u64>>,
     commands: RefCell<Vec<Command>>,
     findings: RefCell<BTreeMap<(String,Option<SetterTypes>), Finding>>,
@@ -515,14 +519,17 @@ fn element(
     node: roxmltree::Node,
     parent: Option<&Table>,
     insert: bool,
-    deadline: Instant,
+    shared: &Shared,
+    depth: usize,
     class: &Table,
     list_class: &Table,
 ) -> mlua::Result<Table> {
-    if Instant::now() >= deadline {
+    if shared.deadline.get().is_some_and(|d| Instant::now() >= d) {
         return Err(mlua::Error::runtime(INIT_BUDGET));
     }
     let table = lua.create_table()?;
+    shared.graph_nodes.set(shared.graph_nodes.get() + 1);
+    shared.graph_depth.set(shared.graph_depth.get().max(depth));
     let id = tree.params.len();
     tree.params.push(
         node.attributes()
@@ -569,7 +576,7 @@ fn element(
         let list = lua.create_table()?;
         list.set_metatable(Some(list_class.clone()))?;
         for child in container.children().filter(|n| n.is_element()) {
-            list.raw_push(element(lua, tree, child, Some(&table), field == "inserts", deadline, class, list_class)?)?;
+            list.raw_push(element(lua, tree, child, Some(&table), field == "inserts", shared, depth + 1, class, list_class)?)?;
         }
         table.raw_set(field, list.clone())?;
         lists[fields.iter().position(|f| *f == field).unwrap()] = Some(list);
@@ -596,6 +603,7 @@ impl Shared {
     /// Remember the names a script assigns at the start of a line (`name = ...`,
     /// `function name`), a cheap stand-in for a parse.
     fn note_assigned(&self, source: &str) {
+        self.script_bytes.set(self.script_bytes.get().saturating_add(source.len()));
         self.note_called(source);
         let mut names = self.assigned.borrow_mut();
         for line in source.lines() {
@@ -685,6 +693,10 @@ impl ScriptHost {
             ids: Cell::new(1 << 32),
             seq: Cell::new(0),
             deadline: Cell::new(Some(Instant::now() + config.load)),
+            vm_checkpoints: Cell::new(0),
+            graph_nodes: Cell::new(0),
+            graph_depth: Cell::new(0),
+            script_bytes: Cell::new(PRELUDE.len()),
             current: Cell::new(None),
             commands: RefCell::new(Vec::new()),
             findings: RefCell::new(BTreeMap::new()),
@@ -715,6 +727,15 @@ impl ScriptHost {
         #[cfg(feature = "scan")]
         for (name, (calls, elapsed)) in host.shared.init_api.borrow().iter() {
             eprintln!("AUDIT {{\"stage\":\"{name}\",\"ms\":{},\"calls\":{calls}}}", elapsed.as_secs_f64() * 1000.);
+        }
+        if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
+            eprintln!("AUDIT {}", serde_json::json!({"stage":"uvi_lua_work",
+                "xml_bytes":xml.len(),"script_bytes":host.shared.script_bytes.get(),
+                "graph_nodes":host.shared.graph_nodes.get(),"graph_depth":host.shared.graph_depth.get(),
+                "vm_checkpoints":host.shared.vm_checkpoints.get(),"memory_bytes":host.lua.used_memory(),
+                "wall_limit_ms":config.load.as_millis(),
+                "wall_expired":host.shared.deadline.get().is_some_and(|d| Instant::now() >= d),
+                "initialized":initialized.is_ok()}));
         }
         if host.shared.deadline.get().is_some_and(|d| Instant::now() >= d) {
             return Err(INIT_BUDGET.into());
@@ -749,7 +770,7 @@ impl ScriptHost {
         // Port v1 host.rs's shared metatable handles outside the object loop.
         let class: Table = self.lua.globals().raw_get("__element_mt")?;
         let list_class: Table = self.lua.globals().raw_get("__list_mt")?;
-        let root = element(&self.lua, &mut tree, program, None, false, self.shared.deadline.get().unwrap(), &class, &list_class)?;
+        let root = element(&self.lua, &mut tree, program, None, false, &self.shared, 1, &class, &list_class)?;
         // The part the program sits in (MidiChannel, MidiInput...): inert.
         let part = self.lua.create_table()?;
         part.raw_set("__id", tree.params.len())?;
@@ -782,6 +803,7 @@ impl ScriptHost {
         // that outlives its time budget is aborted.
         let budget = shared.clone();
         lua.set_interrupt(move |_| {
+            budget.vm_checkpoints.set(budget.vm_checkpoints.get().saturating_add(1));
             if budget.deadline.get().is_some_and(|d| Instant::now() > d) {
                 return Err(mlua::Error::runtime("time budget exceeded"));
             }
@@ -1773,6 +1795,17 @@ fn parse_play(shared: &Shared, args: &[Value]) -> Play {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn finite_initialization_records_deterministic_work() {
+        let xml = "<UVI4><Program><EventProcessors><ScriptProcessor><script>function onInit() for n=1,100 do assert(n&gt;0) end end</script></ScriptProcessor></EventProcessors></Program></UVI4>";
+        let first = super::ScriptHost::new(xml, (), super::Config::default()).unwrap();
+        let second = super::ScriptHost::new(xml, (), super::Config::default()).unwrap();
+        assert!(first.shared.vm_checkpoints.get() > 100);
+        assert_eq!(first.shared.vm_checkpoints.get(), second.shared.vm_checkpoints.get());
+        assert_eq!(first.shared.graph_nodes.get(), second.shared.graph_nodes.get());
+        assert_eq!(first.shared.script_bytes.get(), second.shared.script_bytes.get());
+    }
+
     #[test]
     fn initialization_phases_cannot_renew_an_expired_deadline() {
         let h = super::ScriptHost::new("<UVI4><Program/></UVI4>", (), super::Config::default()).unwrap();
