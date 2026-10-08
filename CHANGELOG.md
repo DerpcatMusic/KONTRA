@@ -11,7 +11,7 @@ below record reviewed source checkpoints; they are not claims about pending work
 ### Accepted 0.3.225 — keyswitch panel and Program Change accounting
 
 One reviewed logical defect advances the accepted counter from 0.3.224.
-This local release uses the green integration source checkpoint `67dafc61`.
+This source version uses the green integration checkpoint `67dafc61`.
 
 ### Added after 0.3.224
 
@@ -26,6 +26,9 @@ This local release uses the green integration source checkpoint `67dafc61`.
 
 ### Known limits for 0.3.225
 
+- Packaging and installation are held by the user. One logged gate must prove
+  complete UI, DSP, Falcon/UVI and scripting support, and improvement over v1
+  on every required metric and its settings/features before a release ships.
 - The full integration shards, reader checks, keyswitch and App-menu tests pass.
   The final shared scanner quick15 has 15 loads, seven Original UIs OK, eight
   with missing images and 14 matched audible auditions, with no measured
