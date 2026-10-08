@@ -404,16 +404,7 @@ impl Translation {
     }
 
     fn program(&mut self, program: Node) -> Result<(), String> {
-        let mut gain = number(program, "Gain", 1.0)?;
-        for insert in program
-            .children()
-            .filter(|n| n.has_tag_name("Inserts"))
-            .flat_map(|i| i.children().filter(|n| n.has_tag_name("Gain")))
-            .filter(|n| number(*n, "Bypass", 0.0).is_ok_and(|b| b == 0.0))
-        {
-            gain *= number(insert, "Volume", 1.0)?;
-            self.used.push(insert.id());
-        }
+        let gain = number(program, "Gain", 1.0)?;
         for processor in program
             .descendants()
             .filter(|n| n.has_tag_name("ScriptProcessor"))
@@ -470,6 +461,10 @@ impl Translation {
             });
             auxes.push((name, bus));
         }
+        let program_output = self.insert_bus(program, ir::Output::Master)?;
+        for (_, bus) in &auxes {
+            self.ir.buses[bus.0].output = program_output;
+        }
         for (ordinal, layer) in program
             .descendants()
             .filter(|n| n.has_tag_name("Layer"))
@@ -479,6 +474,7 @@ impl Translation {
                 continue;
             }
             self.scope_connections(layer)?;
+            let output = self.insert_bus(layer, program_output)?;
             let pan = number(layer, "Pan", 0.0)?;
             let mut base = ir::Group {
                 name: layer.attribute("Name").unwrap_or_default().into(),
@@ -487,6 +483,7 @@ impl Translation {
                     position: pan.clamp(-1.0, 1.0),
                     law: ir::PanLaw::Balance,
                 },
+                output,
                 ..Default::default()
             };
             // The layer's sends to aux buses, either side of its fader.
@@ -632,6 +629,20 @@ impl Translation {
             self.place(chain, placed);
             chain
         });
+        if let Some(chain) = chain {
+            let modulable = self.ir.chains[chain.0].pre_amplitude.iter().filter(|p| matches!(p, ir::Processor::Filter(ir::Filter { kind: ir::FilterKind::LowPass { poles: 1 | 2 } | ir::FilterKind::HighPass { poles: 1 | 2 } | ir::FilterKind::BandPass { poles: 2 } | ir::FilterKind::Notch { poles: 2 } | ir::FilterKind::AllPass, .. }))).count();
+            for insert in keygroup.children().filter(|n| n.has_tag_name("Inserts")).flat_map(|n| n.descendants()).filter(|n| n.has_tag_name("OnePole")) {
+                if let Some(placed) = self.insert_nodes.iter().find(|p| p.node == insert.id().get_usize() && p.count > 0).copied() {
+                    for connection in connections(insert) {
+                        if modulable == 1 {
+                            self.connect_frequency(connection, chain, placed.first, &mut shared)?;
+                        } else {
+                            self.unsupported(&path(connection), "per-stage OnePole frequency modulation", "shared lowering currently requires one filter");
+                        }
+                    }
+                }
+            }
+        }
         for (oscillator, player) in keygroup
             .descendants()
             .filter(|n| n.has_tag_name("SamplePlayer"))
