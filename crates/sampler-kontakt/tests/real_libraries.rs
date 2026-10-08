@@ -969,3 +969,39 @@ fn w15_authored_formant_offline_ab_changes_the_gate_spectrum() {
     assert!(energy(&dry) > 1e-8 && energy(&wet) > 1e-8);
     assert!(shape_delta_db.is_finite() && shape_delta_db.abs() > 0.05, "Formant must change spectral shape, independent of level");
 }
+
+#[test]
+#[ignore = "requires installed Analog Strings; run through kontakto-heavy"]
+fn w15_authored_lofi_offline_ab_measures_reduction_on_the_gate_sample() {
+    use sampler_ir as ir;
+    let Some(path) = find("ANALOG STRINGS/Instruments/ANALOG STRINGS.nki") else { return; };
+    let render = |enabled| {
+        let mut library = sampler_kontakt::read(&path).unwrap();
+        let (mut zone, mut effect) = library.instrument.zones.iter().find_map(|z| {
+            let chain = &library.instrument.chains[z.chain?.0];
+            chain.pre_amplitude.iter().chain(&chain.post_amplitude)
+                .find(|p| matches!(p, ir::Processor::LoFi { .. }))
+                .map(|p| (z.clone(), p.clone()))
+        }).expect("gate item must retain its authored Lo-Fi slot");
+        // Saved defaults are pristine; exercise the same authored slot's Bits control.
+        let ir::Processor::LoFi { ref mut bits, ref mut frequency, .. } = effect else { unreachable!() };
+        *bits = 0.1;
+        *frequency = 1.;
+        zone.routes.clear();
+        zone.chain = Some(ir::ChainRef(library.instrument.chains.len()));
+        library.instrument.chains.push(ir::Chain { scope: ir::Scope::Voice,
+            pre_amplitude: if enabled { vec![effect] } else { vec![] }, post_amplitude: vec![] });
+        w15_render_one_authored_zone(library, zone)
+    };
+    let dry = render(false);
+    let wet = render(true);
+    let dry_levels = reference::levels(&dry, 0.1, 0.45);
+    let wet_levels = reference::levels(&wet, 0.1, 0.45);
+    let energy = |frames: &[[f32; 2]]| frames.iter().flatten().map(|v| f64::from(*v).powi(2)).sum::<f64>();
+    let residual = dry.iter().zip(&wet).map(|(a,b)| (0..2).map(|c| f64::from(a[c]-b[c]).powi(2)).sum::<f64>()).sum::<f64>();
+    let residual_db = 10. * (residual / energy(&dry).max(1e-30)).log10();
+    println!("W15 lofi dry_rms={:?} wet_rms={:?} residual_relative_db={residual_db}", dry_levels.rms, wet_levels.rms);
+    assert!(dry_levels.max_peak() > -80.);
+    assert!(residual_db.is_finite() && residual_db > -40., "Bits must change the authored gate sample");
+    assert!(wet.iter().flatten().all(|v| v.is_finite()));
+}

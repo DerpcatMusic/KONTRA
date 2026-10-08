@@ -122,6 +122,7 @@ pub enum Processor {
     Delay(Delay),
     /// Stereo compressor; the smoothed reduction lives in the stage's state.
     Compressor(CompressorSettings),
+    LoFi(LoFiSettings),
     /// One parallel branch of an effect rack: the next `count` processors run
     /// on the signal that entered the first branch, and `gain` times their
     /// output joins the sum. The last branch leaves the sum as the signal.
@@ -185,6 +186,7 @@ impl Processor {
             } => dry.valid() && wet.valid() && bypass.valid(),
             Processor::Compressor(settings) => settings.valid(),
             Processor::Decimate(decimator) => decimator.valid(),
+            Processor::LoFi(settings) => settings.valid(),
             Processor::Daft(settings) => settings.valid(),
             Processor::LadderLP4(settings) => settings.valid(),
             Processor::StereoModeller(settings) => settings.valid(),
@@ -203,6 +205,8 @@ pub(super) mod control;
 mod convolution;
 mod daft;
 mod ladder_kernel;
+mod lofi;
+pub use lofi::LoFiSettings;
 mod ladder;
 pub use ladder::LadderSettings;
 mod delay;
@@ -245,6 +249,7 @@ pub(super) enum PreparedProcessor {
         k: f64,
     },
     Decimate(Decimator),
+    LoFi(lofi::LoFi),
     Daft(daft::Daft),
     LadderLP4 { ladder: ladder::Ladder, offset: usize },
     StereoModeller {
@@ -406,6 +411,7 @@ pub(super) fn compile_processors(
                     first,
                     last,
                 },
+                Processor::LoFi(settings) => PreparedProcessor::LoFi(settings.compile(rate)),
                 Processor::Daft(settings) => {
                     PreparedProcessor::Daft(settings.compile(rate, bindings))
                 }
@@ -681,6 +687,7 @@ impl PreparedVoiceChain {
                     PreparedProcessor::Delay { .. }
                         | PreparedProcessor::Compressor(_)
                         | PreparedProcessor::Decimate(_)
+                        | PreparedProcessor::LoFi(_)
                         | PreparedProcessor::Daft(_)
                         | PreparedProcessor::LadderLP4 { .. }
                         | PreparedProcessor::Branch { .. }
@@ -911,6 +918,7 @@ pub(super) fn process<const TRACE: bool>(
             }
             PreparedProcessor::Compressor(compressor) => compressor.process(state, block, len),
             PreparedProcessor::Decimate(decimator) => decimator.process(state, block, len),
+            PreparedProcessor::LoFi(lofi) => lofi.process(state, block, len),
             PreparedProcessor::Daft(daft) => daft.process(state, parameters, block, len, at),
             PreparedProcessor::LadderLP4 { ladder, offset } => {
                 fault |= ladder.process(state, &mut delay_samples[*offset..*offset + ladder::CELLS], parameters, block, len, at);
