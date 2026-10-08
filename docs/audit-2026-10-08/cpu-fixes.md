@@ -223,3 +223,28 @@ Final frozen candidate SHA256 `30f9aa2ab224c50c9fecac731f6b89f985c6118ffcadae4a3
 **This candidate fails the library CPU gate and remains held.** Median-of-run median/p99: cold piano 27.341 / 56.001 → 27.860 / 57.491; cold FX 81.102 / 167.453 → 82.432 / 168.643; warm piano 27.100 / 52.041 → 25.990 / 61.821; warm FX 79.522 / 167.133 → 83.192 / 183.993. Total underruns are zero on both sides. The historical absolute integrated cold64 baseline (piano 23.380 / 43.701, FX 64.221 / 113.413) and v1 targets are unmet. Piano repeat 3 regresses strongly. The structural O(1) result does not prove that the library tails are noise. The remaining 32/256/Vista cells and final scanner gate have not been measured for this candidate.
 
 The between-page credit-cache experiment was rejected and removed before this candidate. Its cold median-of-run median/p99 was piano 25.291 / 48.061 → 25.381 / 55.071 and FX 78.291 / 163.583 → 111.842 / 261.875, all cold underruns zero. Its horizon negative control reproduced stale credits, but its additional fields and helpers did not meet the CPU gate. Frozen binary `0c2b496e…` and source snapshot `refs/wip/v2/fix-cpu/20261008T102704Z` retain provenance outside production. The fixed-index-only series is also retained: piano cold median 28.510 / 61.841 → 39.010 / 71.302; one baseline cold FX timeout (124) invalidates that pair, and warm FX repeat 2 has one after underrun and a 2534.787 µs p99. No failed pair is treated as a pass.
+
+## Worker priority queue and returned-buffer wake (still held)
+
+Increasing the page pool also amplified the off-audio worker's full pending-array scan. Empty `next_job` calls cost 0.340 / 0.460 µs at 768 slots and 3.360 / 4.041 µs at 6,144 slots. A preallocated bounded deadline heap selects pending work, coalesces serial/priority updates and discards stale entries; a worker-only rebuild bounds duplicate priorities at twice the pool size. Empty calls now cost 0.020 / 0.020 and 0.020 / 0.030 µs respectively. All synthetic transfer/admission calls remain heap free. Ordinary page batches wake decoders separately from the head reloader; cold starts retain their reloader wake.
+
+A failing-first test reproduced a queued decoder sleeping after its only stale buffer was returned: exit 101, then green after returned buffers request a wake. Tests cover bounded priority updates with all storage in flight, unchanged allocation capacity, oldest serial rejection, deadline order, no duplicate launches and zero allocations/frees through repeated priority rebuilds. Six internal admission tests and seven stream-cache integration tests pass; Kontakt and default root no-run pass for this source. Source cold-hold behavior, DSP lanes and amp routing are untouched.
+
+Candidate SHA256 `81646c56086c00fd4953006dd5ba68ce06d3cfc7f9668d80c45cbde665cd96b0`; before is frozen integrated `94448100…`. Each consecutive pair has one bounded heavy slot; repeat 2 reverses order. All cold evictions verify zero remaining Linux file pages, and all event/render heap counts are zero. Times are steady median / p99 in µs.
+
+| Cell | Repeat | Integrated before | Worker queue after | Underruns before / after |
+|---|---:|---:|---:|---:|
+| piano/64 cold | 1 | 39.900 / 1201.592 | 39.271 / 157.393 | 0 / 0 |
+| piano/64 cold | 2 | 42.520 / 144.803 | 39.920 / 74.771 | 0 / 0 |
+| piano/64 cold | 3 | 25.000 / 47.960 | 21.650 / 39.350 | 0 / 0 |
+| piano/64 warm | 1 | 26.541 / 59.241 | 26.371 / 47.051 | 0 / 0 |
+| piano/64 warm | 2 | 22.870 / 43.741 | 31.480 / 60.301 | 0 / 0 |
+| piano/64 warm | 3 | 24.531 / 46.581 | 23.650 / 41.900 | 0 / 0 |
+| fx/64 cold | 1 | 119.873 / 491.220 | 81.211 / 158.533 | 0 / 0 |
+| fx/64 cold | 2 | 77.371 / 141.162 | 77.281 / 160.753 | 0 / 0 |
+| fx/64 cold | 3 | 72.972 / 129.263 | 85.431 / 172.353 | 0 / 8 |
+| fx/64 warm | 1 | 79.532 / 164.723 | 101.992 / 209.664 | 0 / 0 |
+| fx/64 warm | 2 | 77.691 / 162.433 | 69.191 / 129.432 | 0 / 0 |
+| fx/64 warm | 3 | 79.932 / 171.844 | 74.722 / 149.953 | 0 / 0 |
+
+**FAIL/HOLD:** cold piano median-of-run median/p99 improves 39.900 / 144.803 → 39.271 / 74.771; cold FX worsens 77.371 / 141.162 → 81.211 / 160.753 and underruns 0 → 8. Warm piano 24.531 / 46.581 → 26.371 / 47.051; warm FX 79.532 / 164.723 → 74.722 / 149.953, underruns zero. Cold piano repeat 3 reaches 21.650 / 39.350, below the historical integrated target, but the repeated aggregate does not. The historical cold64 targets (piano 23.380 / 43.701, FX 64.221 / 113.413) and v1 target remain unmet. No noise-only conclusion follows. The after FX cold run with eight underruns also took 59.378 s to load; before warm FX repeat 3 took 81.270 s. These stalls are retained, not excluded or used to excuse failed streaming. Remaining 32/256/Vista cells and final scanner gate are unmeasured for this held checkpoint.
