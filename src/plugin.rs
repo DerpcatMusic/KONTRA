@@ -664,6 +664,8 @@ pub(crate) struct PartView {
     pub(crate) keys: Arc<[crate::sound::KeyLook]>,
     /// The load's log record ([`crate::diagnostics::LoadTrace`]).
     pub(crate) trace: Option<Arc<serde_json::Value>>,
+    pub(crate) fault_inbox: Option<Arc<crate::sound::report::FaultInbox>>,
+    pub(crate) runtime_log: Option<crate::diagnostics::grouped::RuntimeLog>,
 }
 
 impl PartView {
@@ -1616,9 +1618,15 @@ fn load_part(params: &SamplerParams, slot: usize, prepared: Option<crate::sound:
             if loaded.scripts.uvi.is_some() {
                 loaded.scripts.uvi_source = Some(source.clone());
             }
-            for line in loaded.report.lines().skip(1) {
-                trace.issue("translate", crate::diagnostics::code(&line), line);
+            for missing in &loaded.report.missing {
+                trace.missing(missing, loaded.instrument.as_deref());
             }
+            v.fault_inbox = loaded.part.as_ref().map(|p| p.fault_inbox.clone());
+            let mut runtime_log = trace.runtime_log();
+            if runtime_log.lua(&loaded.report.uvi_faults) {
+                trace.detail("runtime_diagnostics", runtime_log.summary());
+            }
+            v.runtime_log = Some(runtime_log);
             let d = &loaded.report.decoded;
             trace.detail("zones", d.zones);
             trace.detail("groups", d.groups);
@@ -1675,6 +1683,8 @@ fn load_part(params: &SamplerParams, slot: usize, prepared: Option<crate::sound:
         }
         Err(e) => {
             v.status = format!("Load failed: {e}");
+            v.fault_inbox = None;
+            v.runtime_log = None;
             trace.fail(e.to_string());
             v.trace = Some(trace.finish("failed"));
             drop(view);
@@ -1701,12 +1711,25 @@ fn refresh_problems(shared: &Shared) {
                     }
                     None => Vec::new(),
                 };
-                (p.problems(), faults)
+                let lua = p.scripts.lock().unwrap().uvi.as_ref().map(|ui| ui.fault_counts());
+                (p.problems(), faults, lua)
             })
             .collect::<Vec<_>>()
     });
     let mut view = shared.view.lock().unwrap();
-    for (v, (problems, faults)) in view.parts.iter_mut().zip(problems) {
+    for (v, (problems, faults, lua)) in view.parts.iter_mut().zip(problems) {
+        if let Some(log) = v.runtime_log.as_mut() {
+            let mut changed = log.counters(problems);
+            if let Some(inbox) = &v.fault_inbox {
+                while let Some((callback, outcome)) = inbox.queue.pop() { log.fault(callback, outcome); changed = true; }
+                let dropped = inbox.take_dropped();
+                if dropped > 0 { log.lost(dropped); changed = true; }
+            }
+            if let Some(lua) = &lua { changed |= log.lua(lua); }
+            if changed && let Some(trace) = &mut v.trace {
+                Arc::make_mut(trace)["runtime_diagnostics"] = log.summary();
+            }
+        }
         if let Some(report) = v.report.as_mut().filter(|r| r.runtime != problems) {
             let report = Arc::make_mut(report);
             report.runtime = problems;
