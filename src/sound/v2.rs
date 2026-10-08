@@ -289,6 +289,7 @@ pub struct V2Core {
     overflow: u64,
     buses: Box<[Block; BUSES]>,
     written: [bool; BUSES],
+    signal_trace_active: bool,
     scratch: Box<[Frame; MAX_BLOCK]>,
     /// Nodes routed straight to a DAW pair, per pair.
     direct: Box<[[Frame; MAX_BLOCK]; BUSES]>,
@@ -727,6 +728,7 @@ impl V2Core {
             overflow: 0,
             buses: Box::new([[[0.0; MAX_BLOCK]; 2]; BUSES]),
             written: [false; BUSES],
+            signal_trace_active: false,
             scratch: Box::new([[0.0; 2]; MAX_BLOCK]),
             direct: Box::new([[[0.0; 2]; MAX_BLOCK]; BUSES]),
             tap: None,
@@ -826,6 +828,7 @@ impl Core for V2Core {
             bus[1][..n].fill(0.0);
         }
         self.written = [false; BUSES];
+        self.signal_trace_active = false;
         self.tapped[..n].fill(0.0);
         let solo = self.mix.parts.iter().take(self.parts.len()).any(|c| c.solo);
         for (index, part) in self.parts.iter_mut().enumerate() {
@@ -877,6 +880,10 @@ impl Core for V2Core {
                 part.problems.silent = silent.pack();
             }
             let c = self.mix.parts[index];
+            if part.runtime.signal_trace_enabled() {
+                self.signal_trace_active = true;
+                part.runtime.trace_host_frames(sampler_core::trace::HostStage::PartFader, out, balance(c.gain, c.pan), !(c.mute || solo && !c.solo), usize::from(c.output).min(BUSES - 1));
+            }
             if c.mute || solo && !c.solo {
                 continue;
             }
@@ -920,6 +927,20 @@ impl Core for V2Core {
         let solo = self.mix.buses.iter().any(|c| c.solo);
         for (bus, c) in self.mix.buses.iter().enumerate().filter(|(bus, _)| self.written[*bus]) {
             let gains = if c.mute || solo && !c.solo { [0.0; 2] } else { balance(c.gain, c.pan) };
+            if self.signal_trace_active {
+                for (index, part) in self.parts.iter_mut().enumerate() {
+                    let Some(part) = part else { continue };
+                    let settings = self.mix.parts[index];
+                    let routed = usize::from(settings.output).min(BUSES - 1) == bus
+                        || usize::from(settings.aux) == bus && settings.aux_gain != 0.
+                        || part.direct & (1 << bus) != 0;
+                    if part.runtime.signal_trace_enabled() && routed {
+                        part.runtime.trace_host_planar(sampler_core::trace::HostStage::RackBus(bus),
+                            &self.buses[bus][0][..n], &self.buses[bus][1][..n], gains, None,
+                            !(c.mute || solo && !c.solo), usize::from(c.port));
+                    }
+                }
+            }
             let meter = &mut self.peaks.buses[bus];
             for ((signal, g), m) in self.buses[bus].iter_mut().zip(gains).zip(meter.iter_mut()) {
                 if g != 1.0 {
@@ -929,6 +950,25 @@ impl Core for V2Core {
             }
         }
         Rendered { buses: &self.buses, live: self.written }
+    }
+
+    fn trace_master(&mut self, gains: &[f32]) {
+        if !self.signal_trace_active { return }
+        for (index, part) in self.parts.iter_mut().enumerate() {
+            let Some(part) = part else { continue };
+            if !part.runtime.signal_trace_enabled() { continue }
+            let settings = self.mix.parts[index];
+            for bus in 0..BUSES {
+                let routed = usize::from(settings.output).min(BUSES - 1) == bus
+                    || usize::from(settings.aux) == bus && settings.aux_gain != 0.
+                    || part.direct & (1 << bus) != 0;
+                if self.written[bus] && routed {
+                    part.runtime.trace_host_planar(sampler_core::trace::HostStage::Master(bus),
+                        &self.buses[bus][0][..gains.len()], &self.buses[bus][1][..gains.len()],
+                        [1.; 2], Some(gains), true, usize::from(self.mix.buses[bus].port));
+                }
+            }
+        }
     }
 
     fn owns(&self, note: HostNote) -> bool {

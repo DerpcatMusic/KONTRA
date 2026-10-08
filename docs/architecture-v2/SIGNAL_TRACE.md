@@ -6,7 +6,7 @@ The report worker writes `signal-trace.json` and `signal-trace.svg` under the ru
 
 Schema 1 contains:
 
-- `graph`: sample rate, fixed node table, parent/child edges and a topological node order. Labels are public processor kinds; identities are numeric. Nodes cover raw resampled sources, pre-amplifier FX, envelope/velocity gain, post-amplifier FX, zone output, bus sums, ordered bus FX, faders, sends and the runtime master.
+- `graph`: sample rate, fixed node table, parent/child edges and a topological node order. Labels are public processor kinds; identities are numeric. Nodes cover raw resampled sources, pre-amplifier FX, envelope/velocity gain, post-amplifier FX, zone output, bus sums, ordered bus FX, faders, sends and the runtime master. Plugin adapters also record the part fader, rack bus fader and per-frame master gain.
 - `records`: absolute frame offset, block length, input/output stereo peak, RMS and DC, applied multiplier, algorithmic latency, enable/bypass state, live parameter values and native readbacks when the parameter has an address/law.
 - `contribution: true`: a single voice at the zone-to-layer boundary. Its numeric identity includes zone, group, layer bus, sample, family/generation, RR sequence/take, pitch ratio, source/start frame, note velocity, CC1/7/11, region/velocity/crossfade gains, script/note gains, envelope level and actual amplifier control gain. Other records are coherent per-node sums. Do not add contribution rows to those sums a second time.
 - `dropped`: bounded-buffer overflow count. A nonzero count invalidates a complete time-series comparison. `complete` becomes true after the render writer is retired and drained.
@@ -25,4 +25,6 @@ The insert EQ changes that sum by +0.059 dB. The compressor kernel changes it by
 
 At CC1 0/64/127 with 0.5 s settling, group-volume readbacks for the two active groups remain 680578/629888. Their decoded amplitude routes use CC7, not CC1. No CC1 volume/output-gain writes were observed. Unsupported INTMOD/LFO writes remain diagnosed. This saved state does not support the hypothesis of two equal full-level layers replacing a CC1 crossfade. The native session uses CC1=0 while GRID uses 64, and RR choice is not deterministic; compare distributions rather than matching a sample identity.
 
-The root of the upstream excess remains under investigation. Host/rack mixing outside the shared runtime and native internal-stage taps are not yet part of this first report.
+The root of the upstream excess remains under investigation. The first Analog report predates the plugin mixer extension. Native internal-stage taps remain unavailable.
+
+Plugin rack/master rows observe the coherent shared rack signal, including other parts on that rack. Candidate routing edges are qualified by each row’s numeric `routed_to` and `external_port` identity. The master row measures the stereo rack after global gain, before host channel mapping; mono downmix and multiple racks mapped onto one host pair are not represented as a final physical-channel sum. Auxiliary host routing is included in the observed rack sum; its level is not yet a separate node.

@@ -66,6 +66,8 @@ pub struct TraceGraph {
     pub(crate) buses: Vec<BusNodes>,
     #[serde(skip)]
     pub(crate) master: usize,
+    #[serde(skip)]
+    pub(crate) host: Vec<usize>,
 }
 #[derive(Clone, Copy, Debug, Default, Serialize)]
 pub struct TraceIdentity {
@@ -82,6 +84,8 @@ pub struct TraceIdentity {
     pub rr_take: Option<u32>,
     pub group: Option<u32>,
     pub layer: Option<usize>,
+    pub external_port: Option<usize>,
+    pub routed_to: Option<usize>,
     pub cc1: u8,
     pub cc7: u8,
     pub cc11: u8,
@@ -448,8 +452,56 @@ impl TraceGraph {
             voices: Default::default(),
             buses: Vec::new(),
             master: 0,
+            host: Vec::new(),
         };
         graph.master = graph.node("master", "sum", None, None, None, Vec::new(), 0);
+        let part = graph.node(
+            "host_part_fader",
+            "fader_pan",
+            None,
+            None,
+            None,
+            vec![
+                TraceParameter::constant("left_gain", 1.),
+                TraceParameter::constant("right_gain", 1.),
+            ],
+            0,
+        );
+        graph.host.push(part);
+        graph.edge(graph.master, part, "host_part");
+        for port in 0..HOST_PORTS {
+            let id = graph.node(
+                "host_rack_bus",
+                "sum_fader_pan",
+                None,
+                None,
+                Some(port),
+                vec![],
+                0,
+            );
+            graph.host.push(id);
+            graph.edge(part, id, "possible_host_route");
+        }
+        for port in 0..HOST_PORTS {
+            let id = graph.node(
+                "host_master",
+                "master_gain",
+                None,
+                None,
+                Some(port),
+                vec![],
+                0,
+            );
+            graph.host.push(id);
+            graph.edge(graph.host[1 + port], id, "host_master");
+        }
+
+        for &id in &graph.host {
+            graph.nodes[id].parameters = vec![
+                TraceParameter::constant("left_gain", 1.),
+                TraceParameter::constant("right_gain", 1.),
+            ];
+        }
         graph
     }
     pub(crate) fn node(
@@ -581,8 +633,10 @@ impl TraceGraph {
                 let control = bindings[lane].control;
                 let native = plan.engine_parameters.iter().find(|b| b.control == control);
                 let slot = crate::is_slot_control(control);
+                let physical_slot =
+                    slot && (control.0 >> 32) as u32 as i32 != crate::BUS_VOLUME_SLOT;
                 let address = native.map(|b| b.address).or_else(|| {
-                    slot.then(|| EngineParameterAddress {
+                    physical_slot.then(|| EngineParameterAddress {
                         parameter: crate::engine_parameter_id(match (control.0 >> 96) as u8 {
                             0 => {
                                 if control.0 as u32 as i32 == 0 {
@@ -607,7 +661,7 @@ impl TraceGraph {
                     })
                 });
                 let law = native.map(|b| b.law).or_else(|| {
-                    slot.then(|| {
+                    physical_slot.then(|| {
                         if (control.0 >> 96) as u8 == 0 {
                             EngineParameterLaw::Linear { low: 0., high: 1. }
                         } else {
@@ -772,5 +826,149 @@ impl TraceGraph {
             ),
         };
         self.node(kind, name, zone, group, bus, parameters, latency)
+    }
+}
+
+/// Numeric mixer stages supplied by a host adapter after the instrument runtime.
+#[derive(Clone, Copy)]
+pub enum HostStage {
+    PartFader,
+    RackBus(usize),
+    Master(usize),
+}
+pub const HOST_PORTS: usize = 16;
+impl crate::Runtime {
+    pub fn signal_trace_enabled(&self) -> bool {
+        self.signal_trace
+    }
+    /// Adapter hook. The inputs are observed only while tracing; no allocation,
+    /// locking or file work occurs here. `master` supports per-frame host gain.
+    pub fn trace_host_frames(
+        &mut self,
+        stage: HostStage,
+        frames: &[Frame],
+        gain: [f32; 2],
+        enabled: bool,
+        port: usize,
+    ) {
+        if !self.signal_trace {
+            return;
+        }
+        for (n, chunk) in frames.chunks(BLOCK).enumerate() {
+            let input = planar(chunk);
+            self.trace_host_block(
+                stage,
+                &input,
+                chunk.len(),
+                gain,
+                None,
+                enabled,
+                port,
+                self.now.saturating_sub(frames.len() as u64) + (n * BLOCK) as u64,
+            );
+        }
+    }
+    pub fn trace_host_planar(
+        &mut self,
+        stage: HostStage,
+        left: &[f32],
+        right: &[f32],
+        gain: [f32; 2],
+        master: Option<&[f32]>,
+        enabled: bool,
+        port: usize,
+    ) {
+        if !self.signal_trace {
+            return;
+        }
+        let len = left.len().min(right.len());
+        if master.is_some_and(|m| m.len() < len) {
+            return;
+        }
+        for first in (0..len).step_by(BLOCK) {
+            let count = BLOCK.min(len - first);
+            let mut input = [[0.; BLOCK]; 2];
+            for i in 0..count {
+                input[0][i] = f64::from(left[first + i]);
+                input[1][i] = f64::from(right[first + i]);
+            }
+            self.trace_host_block(
+                stage,
+                &input,
+                count,
+                gain,
+                master.map(|m| &m[first..first + count]),
+                enabled,
+                port,
+                self.now.saturating_sub(len as u64) + first as u64,
+            );
+        }
+    }
+    fn trace_host_block(
+        &mut self,
+        stage: HostStage,
+        input: &Planar,
+        len: usize,
+        gain: [f32; 2],
+        master: Option<&[f32]>,
+        enabled: bool,
+        port: usize,
+        at: u64,
+    ) {
+        let Some(plan) = self.plans.get_mut(self.active_plan.0) else {
+            return;
+        };
+        let Some((trace, recorder)) = plan
+            .prepared
+            .signal_trace
+            .as_ref()
+            .zip(plan.dsp.trace.as_mut())
+        else {
+            return;
+        };
+        let id = match stage {
+            HostStage::PartFader => trace.graph.host[0],
+            HostStage::RackBus(n) if n < HOST_PORTS => trace.graph.host[1 + n],
+            HostStage::Master(n) if n < HOST_PORTS => trace.graph.host[1 + HOST_PORTS + n],
+            _ => return,
+        };
+        let mut output = *input;
+        let mut applied = [0.; 2];
+        for c in 0..2 {
+            for i in 0..len {
+                let g = if enabled {
+                    gain[c] * master.map_or(1., |m| m[i])
+                } else {
+                    0.
+                };
+                output[c][i] = f64::from(input[c][i] as f32 * g);
+                applied[c] += f64::from(g) / len.max(1) as f64;
+            }
+        }
+        recorder.begin(at, len);
+        recorder.record(
+            id,
+            input,
+            &output,
+            len,
+            applied,
+            enabled,
+            TraceIdentity {
+                external_port: Some(port),
+                routed_to: match stage {
+                    HostStage::PartFader if port < HOST_PORTS => Some(trace.graph.host[1 + port]),
+                    HostStage::RackBus(p) if p < HOST_PORTS => {
+                        Some(trace.graph.host[1 + HOST_PORTS + p])
+                    }
+                    _ => None,
+                },
+                ..Default::default()
+            },
+            &[],
+            &trace.graph.nodes[id],
+        );
+        recorder.scratch[id].record.values[0] = applied[0];
+        recorder.scratch[id].record.values[1] = applied[1];
+        recorder.end();
     }
 }

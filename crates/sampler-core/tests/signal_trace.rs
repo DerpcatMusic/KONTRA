@@ -282,3 +282,53 @@ fn signal_trace_reports_live_bypass_and_its_physical_native_boolean() {
     assert!(!gain.enabled);
     assert_eq!(gain.input.rms, gain.output.rms);
 }
+
+#[test]
+fn signal_trace_host_fader_rack_and_master_hooks_are_bounded_and_sample_clocked() {
+    use sampler_core::trace::HostStage;
+    let mut rt = Runtime::new(plan(true, 4096), limits()).unwrap();
+    let reader = rt.signal_trace_reader().unwrap();
+    rt.trigger(input(), 60, 0.5).unwrap();
+    let mut output = [[0.; 2]; 64];
+    rt.render(&mut output).unwrap();
+    let left = [0.1f32; 64];
+    let right = [0.2f32; 64];
+    let master = [0.25f32; 64];
+    support::without_heap(|| {
+        rt.trace_host_frames(HostStage::PartFader, &output, [0.5, 0.75], true, 2);
+        rt.trace_host_planar(
+            HostStage::RackBus(2),
+            &left,
+            &right,
+            [0.5, 0.75],
+            None,
+            true,
+            2,
+        );
+        rt.trace_host_planar(
+            HostStage::Master(2),
+            &left,
+            &right,
+            [1.; 2],
+            Some(&master),
+            true,
+            2,
+        );
+    });
+    let rows = reader.drain();
+    for (kind, left, right) in [
+        ("host_part_fader", 0.01875, 0.028125),
+        ("host_rack_bus", 0.05, 0.15),
+        ("host_master", 0.025, 0.05),
+    ] {
+        let row = rows
+            .iter()
+            .find(|r| reader.graph.nodes[r.node].kind == kind)
+            .unwrap();
+        assert_eq!(row.at, 0);
+        assert_eq!(row.frames, 64);
+        assert_eq!(row.identity.external_port, Some(2));
+        assert!((row.output.rms[0] - left).abs() < 1e-7);
+        assert!((row.output.rms[1] - right).abs() < 1e-7);
+    }
+}

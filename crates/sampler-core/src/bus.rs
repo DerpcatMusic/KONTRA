@@ -425,7 +425,7 @@ impl BusState {
                     let input = crate::trace::planar(&samples[..produced]);
                     let mut sent = input; for channel in &mut sent { for value in &mut channel[..produced] { *value *= gain; } }
                     let id = g.buses[index].sends[n];
-                    r.record(id, &input, &sent, produced, [gain; 2], gain != 0., Default::default(), &self.parameters, &g.nodes[id]);
+                    r.record(id, &input, &sent, produced, [gain; 2], gain != 0., crate::trace::TraceIdentity {external_port:direct,routed_to:direct.filter(|&p|p<crate::trace::HOST_PORTS).map(|p|g.host[1+p]).or_else(||send.bus.map(|b|g.buses[b].input)).or(Some(g.master)),..Default::default()}, &self.parameters, &g.nodes[id]);
                     if send.bus.is_none() && direct.is_none() {
                         r.record(g.master, &sent, &sent, produced, [1.; 2], true, Default::default(), &self.parameters, &g.nodes[g.master]);
                     }
@@ -473,6 +473,11 @@ impl PreparedBuses {
                 let id = graph.buses[bus].sends[n];
                 graph.edge(graph.buses[bus].output, id, "tap");
                 graph.edge(id, send.bus.map_or(graph.master, |b| graph.buses[b].input), "send");
+                if n == 0 {
+                    for port in 0..crate::trace::HOST_PORTS {
+                        graph.edge(id, graph.host[1 + port], "possible_direct_route");
+                    }
+                }
             }
         }
     }
