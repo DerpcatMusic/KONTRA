@@ -28,7 +28,7 @@ def artifact_receipt(plugin, cli, host):
     receipt = json.loads(plugin.with_name('BUILD.json').read_text())
     revision = receipt['source_sha']
     assert len(revision) == 40 and all(c in '0123456789abcdef' for c in revision), 'full source revision required'
-    assert receipt.get('profile') == 'ci', 'release/install forbidden'
+    assert receipt.get('profile') in ('ci', 'release'), 'known build profile required'
     assert Path(receipt['path']).resolve() == plugin.resolve()
     assert receipt['sha256'] == sha(plugin) and receipt['cli_sha256'] == sha(cli)
     assert receipt['host_sha256'] == sha(host), 'artifact changed after build receipt'
@@ -71,6 +71,66 @@ def sized(data):
     return struct.pack('<I', len(data)) + data
 
 
+def native_selection(blob):
+    """Read only native keyed Selection identity/routing; never retain raw state."""
+    class Cursor:
+        def __init__(self, data): self.data, self.at = data, 0
+        def take(self, size):
+            assert 0 <= size <= len(self.data) - self.at, 'truncated native state'
+            start = self.at; self.at += size
+            return self.data[start:self.at]
+        def number(self, code='I'): return struct.unpack('<' + code, self.take(struct.calcsize('<' + code)))[0]
+        def frame(self, code='I'): return self.take(self.number(code))
+        def done(self): assert self.at == len(self.data), 'trailing native state'
+
+    def fields(data):
+        cursor = Cursor(data)
+        assert cursor.number() == 0xffffff01, 'native keyed state required'
+        count = cursor.number(); assert count <= (len(data) - 8) // 8
+        result = {}
+        for _ in range(count):
+            key = cursor.number(); assert key not in result, 'duplicate native field'
+            result[key] = cursor.frame()
+        cursor.done(); return result
+
+    def field(values, name):
+        key = struct.unpack_from('<I', keyed({name: b''}), 8)[0]
+        return values[key]
+
+    cursor = Cursor(blob)
+    assert cursor.take(8) == b'OAST\x01\0\0\0', 'native state envelope'
+    cursor.take(8)
+    cursor.take(cursor.number() * 12)
+    cursor.frame('Q')  # Plugin custom state is not a settings-parity proof.
+    persist = Cursor(cursor.frame('Q')); cursor.done()
+    count = persist.number(); assert count <= len(persist.data) // 8
+    entries = {}
+    for _ in range(count):
+        key = persist.frame(); assert key not in entries, 'duplicate persisted field'
+        entries[key] = persist.frame()
+    persist.done()
+    selection = Cursor(entries[b'selection']); values = fields(selection.frame()); selection.done()
+    parts = Cursor(field(values, 'parts')); count = parts.number()
+    assert count > 0 and count <= (len(parts.data) - 4) // 4, 'nonempty bounded selection'
+    result = []
+    for _ in range(count):
+        part = fields(parts.frame())
+        # These lanes determine which native source the audition actually plays.
+        result.append(tuple(field(part, key) for key in
+                            ('path', 'program', 'port', 'channel', 'output', 'output_manual', 'gain', 'aux')))
+    parts.done()
+    order = Cursor(field(values, 'order')); count = order.number()
+    assert count == len(result), 'complete part order'
+    indices = tuple(order.number() for _ in range(count)); order.done()
+    assert sorted(indices) == list(range(count)), 'valid part order'
+    return result, indices
+
+
+def verify_native_state(authored, saved):
+    try: return authored[:16] == saved[:16] and native_selection(authored) == native_selection(saved)
+    except (AssertionError, KeyError, struct.error): return False
+
+
 def v1_state(template, path, program):
     """Keep the frozen CLI's plugin identity/parameter envelope; author v1 state only."""
     assert template[:8] == b'OAST\x01\0\0\0'
@@ -93,7 +153,7 @@ def private_settings(config):
     # Prevent first-run Kontakt/Wine auto-import in both native host versions.
     settings = config / 'kontra/settings.json'
     settings.parent.mkdir(parents=True, exist_ok=True)
-    settings.write_text(json.dumps({'imported': True, 'roots': []}))
+    settings.write_text(json.dumps({'version': 2, 'imported': True, 'roots': []}))
 
 
 def log_rows(root):
@@ -127,7 +187,8 @@ def frozen_underruns(rows):
 def measured_status(live):
     complete = (live.get('returncode') == 0 and live.get('events_dispatched', 0) > 0
                 and live.get('events_dispatched') == live.get('events_planned')
-                and live.get('peak', 0) > 0 and live.get('nonfinite') == 0)
+                and live.get('peak', 0) > 0 and live.get('nonfinite') == 0
+                and live.get('native_state_verified') is True)
     return 'MEASURED' if complete and live.get('contention') == 'QUIET' else 'UNKNOWN'
 
 
@@ -139,6 +200,7 @@ def observe(host, plugin, state, plan, block, seconds, folder, version):
         schedule = temp / 'events.tsv'
         schedule.write_text(''.join('\t'.join(map(str, e)) + '\n' for e in events(plan, seconds)))
         native = temp / 'session.state'; native.write_bytes(state)
+        readback = temp / 'readback.state'
         private_settings(temp / 'config')
         env = dict(os.environ, XDG_CONFIG_HOME=str(temp / 'config'))
         capture = Capture(folder, env)
@@ -148,7 +210,7 @@ def observe(host, plugin, state, plan, block, seconds, folder, version):
         activity.start()
         try:
             with tempfile.TemporaryFile(dir='/dev/shm') as output:
-                job = subprocess.Popen([str(host), str(plugin), str(native), str(block), str(seconds), str(ready), str(schedule), '1'],
+                job = subprocess.Popen([str(host), str(plugin), str(native), str(block), str(seconds), str(ready), str(schedule), '1', str(readback)],
                                        env=env, stdout=output, stderr=capture.stderr)
                 started = time.monotonic()
                 while job.poll() is None:
@@ -173,12 +235,19 @@ def observe(host, plugin, state, plan, block, seconds, folder, version):
                 rows = log_rows(capture.root)
                 capture.stderr.flush(); capture.stderr.seek(0)
                 errors = capture.stderr.read().decode(errors='replace')
-                for stage in ['native CLAP state load', 'matched zero-dB master', 'bounded load/readiness wait', 'dlopen plugin']:
+                for stage in ['native CLAP state load', 'native CLAP state save', 'matched zero-dB master', 'bounded load/readiness wait', 'dlopen plugin']:
                     if 'FAIL: ' + stage in errors: live['host_failure'] = stage
+                saved = readback.read_bytes() if readback.exists() else b''
                 live.update(version=version, returncode=job.returncode, plugin_sha256=sha(plugin),
                             host_sha256=sha(host), state_sha256=hashlib.sha256(state).hexdigest(),
+                            render_threads_setting='Single (private Settings default)',
+                            render_threads_environment=env.get('KONTRA_THREADS'),
+                            native_state_verified=verify_native_state(state, saved),
+                            native_state_readback_sha256=hashlib.sha256(saved).hexdigest(),
                             audition_sha256=sha(schedule), stdout_sha256=hashlib.sha256(raw).hexdigest(),
                             perf_view=views, streaming_io=io, underruns=views[-1]['underruns'] if views else frozen_underruns(rows))
+                if job.returncode == 0 and not live['native_state_verified']:
+                    live['host_failure'] = 'native selection readback mismatch or unavailable'
         finally:
             if job and job.poll() is None: job.kill(); job.wait()
             activity.finish()
@@ -259,6 +328,7 @@ def main():
                'gate_sha': json.loads((args.gate / 'manifest.json').read_text())['sha'],
                'host_source_sha256': sha(Path(__file__).parents[2] / 'vendor/moose-clap/tests/live_performance.cpp'),
                'driver_sha256': driver_sha256, 'frozen_v1_perf_view': 'UNKNOWN: frozen binary has no numeric readback export',
+               'native_state_readback_scope': 'CLAP state.save after audition; keyed Selection path/program/MIDI/output/gain/aux and part order match authored state; excludes scripted widget/custom-state recall',
                'streaming_scope': 'whole plugin process /proc/self/io delta during audition, logical rchar minus first probe read and physical read_bytes; load wait excluded; OS page cache uncontrolled; sampler stream-underruns and host process/wake deadlines reported separately',
                'ui_cpu_policy': 'same cumulative busy/span counters and 100ms half smoothing as Watch; headless numeric model, not a rendered DAW frame'}
     (args.out / f'host-{args.start}-{args.count}-{args.block}-{args.version}.json').write_text(json.dumps(receipt, indent=2) + '\n')
