@@ -406,6 +406,11 @@ impl VoiceModulation {
         self.regions.get(region).copied().flatten()
     }
 
+    pub(crate) fn batches(&self, program: u32) -> bool {
+        let p = &self.programs[program as usize];
+        !p.filter && !p.tone && p.addressed_filters.is_empty()
+    }
+
     /// Start offset in source frames for a voice of `region` starting now.
     pub fn start_offset(&self, region: usize, inputs: &Inputs<'_>, seed: u64) -> u32 {
         let Some(program) = self.program(region) else {
