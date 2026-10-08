@@ -234,3 +234,9 @@ The master-trace fixture now combines both 64-frame trace records by frame count
 ## Rack-growth routing preservation (2026-10-08)
 
 `growth-route-red.log` reproduces a remapped trigger selecting saved default articulation 1 instead of articulation 0 after growing the rack and reloading the part. The direct v1 `src/plugin.rs:PreparedGrowth::preserve!(routers)` loop now preserves existing per-part routes in the larger worker-prepared vector before swapping storage. `growth-route-green.log`: **1 passed**, covering both native and script-owned switching, source reload, a later slot's new remap and zero allocations/frees during audio adoption. `growth-route-no-run.log`: root compile gate passed. W9: adoption swaps route storage without allocation or clone churn; no timed performance claim is made. Source IR and authored articulation identity stay unchanged.
+
+## Upper-MPE keyboard manager routing (2026-10-08)
+
+`upper-mpe-keyboard-red.log` establishes that a keyboard bend addressed to channel 1 misses the upper zone's manager and fails to reach held member notes. The v1 `src/engine/mod.rs:service_channel` selection is ported to direct part keyboard input using the loaded MIDI adapter's existing manager. MIDI1 and MIDI2 channel-voice input use that manager; exact host-note tuples and external port routing retain their identities. The adapter exposes its existing zone manager through a five-line getter, without another MPE model.
+
+`upper-mpe-keyboard-green.log`: **2 passed**, including both keyboard bend formats reaching two upper-zone members and an external member bend remaining isolated. `upper-mpe-keyboard-no-run.log`: root `cargo test --profile ci --no-run` passed. This is functional routing evidence; no timed CPU or native-host parity gate is claimed.

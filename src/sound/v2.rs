@@ -1113,7 +1113,14 @@ impl Core for V2Core {
         }
     }
 
-    fn play(&mut self, part: usize, event: Event) {
+    fn play(&mut self, part: usize, mut event: Event) {
+        // Port v1 service_channel: the part's keyboard controls its MPE manager.
+        if let Event::Ump(words)=&mut event
+            && matches!(words[0]>>28,2|4)
+            && let Some(Some(p))=self.parts.get(part)
+            && p.mpe_zone {
+            words[0]=(words[0]&!0x000f_0000)|u32::from(p.mpe.manager_channel())<<16;
+        }
         self.deliver(part, event);
     }
 
@@ -2218,6 +2225,36 @@ mod tests {
             let expression = part.runtime.expression_id(held.id).unwrap();
             assert!(part.runtime.expression(expression).unwrap().pitch_semitones > 1.0, "upper manager bends every member");
         }
+    }
+
+    #[test]
+    fn v1_upper_mpe_keyboard_controls_reach_every_member() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("upper.wav"); sine(&path);
+        let request = LoadRequest { path, sample_rate: 48000.0, mpe: true, mpe_upper: true, ..Default::default() };
+        let loaded = V2Loader.prepare(&request, &mut |_| {}, &|| false).unwrap();
+        let mut core = V2Core::with_parts(1, 48000.0);
+        let mut mix = Mix::default(); mix.parts[0].mpe = true; mix.parts[0].bend_range = 12;
+        core.set_mix(&mix); core.install(0, loaded.part);
+        for (channel, key) in [(1, 60), (2, 64)] {
+            core.event(0, on(HostNote { port: 0, channel, key, id: i32::from(key), clap: true }));
+        }
+        for event in [Event::midi1(0xe0, 127, 127), Event::Ump([0x40e0_0000, u32::MAX])] {
+            core.play(0, event);
+            let part = core.parts[0].as_ref().unwrap();
+            for held in &core.held[..2] {
+                let expression = part.runtime.expression_id(held.id).unwrap();
+                assert!(part.runtime.expression(expression).unwrap().pitch_semitones > 1.0,
+                    "the keyboard bend uses the upper manager, as v1 service_channel did");
+            }
+            core.play(0, Event::midi1(0xe0, 0, 64));
+        }
+        core.event(0, Event::midi1(0xe1, 127, 127));
+        let part = core.parts[0].as_ref().unwrap();
+        let pitches:Vec<_>=core.held[..2].iter().map(|h| {
+            part.runtime.expression(part.runtime.expression_id(h.id).unwrap()).unwrap().pitch_semitones
+        }).collect();
+        assert!(pitches[0]>1.0);assert_eq!(pitches[1],0.,"external member bend still affects only its own note");
     }
 
     #[test]
