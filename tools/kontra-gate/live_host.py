@@ -24,6 +24,17 @@ def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def artifact_receipt(plugin, cli, host):
+    receipt = json.loads(plugin.with_name('BUILD.json').read_text())
+    revision = receipt['source_sha']
+    assert len(revision) == 40 and all(c in '0123456789abcdef' for c in revision), 'full source revision required'
+    assert receipt.get('profile') == 'ci', 'release/install forbidden'
+    assert Path(receipt['path']).resolve() == plugin.resolve()
+    assert receipt['sha256'] == sha(plugin) and receipt['cli_sha256'] == sha(cli)
+    assert receipt['host_sha256'] == sha(host), 'artifact changed after build receipt'
+    return receipt
+
+
 def events(program, seconds):
     """Gate CC/key/velocity/keyswitch choices, repeated at exact sample positions."""
     key, velocity = program['key'], program['velocity']
@@ -141,11 +152,16 @@ def observe(host, plugin, state, plan, block, seconds, folder, version):
                     except ValueError: pass
                 live = next((r for r in records if r.get('kind') == 'live_host'), {})
                 views = [r for r in records if r.get('kind') == 'perf_view']
+                io = next((r for r in records if r.get('kind') == 'stream_io'), {})
                 rows = log_rows(capture.root)
+                capture.stderr.flush(); capture.stderr.seek(0)
+                errors = capture.stderr.read().decode(errors='replace')
+                for stage in ['native CLAP state load', 'matched zero-dB master', 'bounded load/readiness wait', 'dlopen plugin']:
+                    if 'FAIL: ' + stage in errors: live['host_failure'] = stage
                 live.update(version=version, returncode=job.returncode, plugin_sha256=sha(plugin),
                             host_sha256=sha(host), state_sha256=hashlib.sha256(state).hexdigest(),
                             audition_sha256=sha(schedule), stdout_sha256=hashlib.sha256(raw).hexdigest(),
-                            perf_view=views, underruns=views[-1]['underruns'] if views else frozen_underruns(rows))
+                            perf_view=views, streaming_io=io, underruns=views[-1]['underruns'] if views else frozen_underruns(rows))
         finally:
             if job and job.poll() is None: job.kill(); job.wait()
             activity.finish()
@@ -177,6 +193,7 @@ def main():
     assert (Path.home() / '.cache/kontra-quiet-granted').exists(), 'quiet grant absent'
     os.environ['KONTRA_GATE_REQUIRE_QUIET'] = '1'
     subprocess.run(['sha256sum', '-c', 'SHA256SUMS'], cwd=V1, check=True, stdout=subprocess.DEVNULL)
+    build = artifact_receipt(args.v2_plugin, args.v2_cli, args.host)
     args.out.mkdir(parents=True, exist_ok=True)
     items = [line.split('\t', 1)[1] for line in (args.gate / 'items.tsv').read_text().splitlines()]
     cells = []
@@ -216,10 +233,11 @@ def main():
                     cells.append(cell)
                     print(json.dumps({k: v for k, v in cell.items() if k != 'perf_view'}), flush=True)
     receipt = {'scope': 'loaded-exported-CLAP-realtime-editor-closed', 'cells': cells,
-               'v2_source_sha': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=Path(__file__).parents[2], text=True).strip(),
+               'v2_source_sha': build['source_sha'], 'v2_artifact': build,
                'gate_sha': json.loads((args.gate / 'manifest.json').read_text())['sha'],
                'host_source_sha256': sha(Path(__file__).parents[2] / 'vendor/moose-clap/tests/live_performance.cpp'),
                'driver_sha256': sha(__file__), 'frozen_v1_perf_view': 'UNKNOWN: frozen binary has no numeric readback export',
+               'streaming_scope': 'whole plugin process /proc/self/io delta during audition, logical rchar minus first probe read and physical read_bytes; load wait excluded; OS page cache uncontrolled; sampler stream-underruns and host process/wake deadlines reported separately',
                'ui_cpu_policy': 'same cumulative busy/span counters and 100ms half smoothing as Watch; headless numeric model, not a rendered DAW frame'}
     (args.out / f'host-{args.start}-{args.count}-{args.block}.json').write_text(json.dumps(receipt, indent=2) + '\n')
 
