@@ -691,6 +691,8 @@ impl Streamer {
             }
             let old = pcm.set_ranges(Vec::new()).expect("no ranges are valid");
             let n = old.iter().map(|(_, f)| f.bytes()).sum::<usize>();
+            drop(old);
+            pcm.head_bytes();
             (held, freed) = (held - n, freed + n);
         }
         freed
