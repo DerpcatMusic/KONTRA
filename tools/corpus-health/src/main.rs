@@ -2652,6 +2652,7 @@ mod tests {
         let rate = 48000;
         let frames = (f64::from(rate) * 0.748) as usize;
         let mut zone = sampler_ir::Zone::new(sampler_ir::AssetRef(0));
+        zone.keys = sampler_ir::KeyRange { low: 60, high: 60 };
         zone.trigger = sampler_ir::Trigger::KeyRelease;
         zone.playback.looping = sampler_ir::Looping::OneShot;
         let instrument = sampler_ir::Instrument {
