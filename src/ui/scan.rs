@@ -355,6 +355,7 @@ fn render(
         "asset_failure_reasons":failures,"source_presentation":if native.is_some(){"native-package"}else{"legacy-authored"},"native_frontend_consumed":native.as_ref().map(|_|!renders.is_empty()),"native_paint_ok":native.as_ref().map(|_|renders.iter().any(|r|r["ok"]==true)),
         "native_diagnostic":native.as_ref().and_then(|n|n.diagnostic()),
         "native_graph_depth":native.as_ref().and_then(|n|n.graph_depth()),
+        "native_graph_work":native.as_ref().and_then(|n|n.graph_work()).map(|(nodes,checkpoints)|json!({"nodes":nodes,"checkpoints":checkpoints,"node_budget":16384,"checkpoint_budget":1000000})),
         "widgets":face.widgets.len(),"visible":visible,"interactive":interactive,"bound":bound,
         "kinds":kinds,"placeholder_widgets":placeholders,"unsupported_params":properties,"geometry":geometry,
         "missing_images":missing.len(),"missing_image_hashes":missing,"missing_fonts":missing_fonts,"missing_font_hashes":missing_font_hashes,"assets":face.assets.len(),
