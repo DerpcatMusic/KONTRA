@@ -33,9 +33,7 @@ fn exhausted_initialization() {
 #[test]
 #[ignore = "installed AO bank required; run through kontakto-heavy with a process timeout"]
 fn ambient_program_load_finishes_inside_scanner_budget() {
-    let bank = PathBuf::from(
-        "/mnt/MAIN_STORAGE/Libraries/UVI/UVI - Augmented Orchestra v1.1.2-R2R/Augmented Orchestra.ufs",
-    );
+    let bank = PathBuf::from(std::env::var("UVI_LOAD_BANK").unwrap_or_else(|_| "/mnt/MAIN_STORAGE/Libraries/UVI/UVI - Augmented Orchestra v1.1.2-R2R/Augmented Orchestra.ufs".into()));
     let member = std::env::var("UVI_LOAD_PRESET")
         .unwrap_or_else(|_| "Presets/08 Ambient/Coline MW.uvip".into());
     let started = Instant::now();
@@ -62,4 +60,19 @@ fn ambient_program_load_finishes_inside_scanner_budget() {
     assert!(started.elapsed() < Duration::from_secs(90));
     drop(attached);
     eprintln!("ADMISSION loaded {} ms", started.elapsed().as_millis());
+}
+
+#[test]
+#[ignore = "largest installed AO graph; simulate slow resource preload through kontakto-heavy"]
+fn large_program_slow_preload_does_not_spend_lua_init_budget() {
+    let path = PathBuf::from("/mnt/MAIN_STORAGE/Libraries/UVI/UVI - Augmented Orchestra v1.1.2-R2R/Augmented Orchestra.ufs/Presets/00 Orchestra/01 Strings/V Strings Bartok.uvip");
+    let mut translated = sampler_uvi::translate_path(&path).unwrap();
+    // Production has read the XML and module bytes before arming the Lua deadline.
+    std::thread::sleep(Duration::from_secs(21));
+    let started = Instant::now();
+    let attached = translated.attach_script(48000, sampler_uvi::script::Config::realtime())
+        .unwrap().expect("installed preset has a script");
+    assert!(started.elapsed() < Duration::from_secs(20));
+    assert!(attached.interface.widgets.len() > 5000);
+    eprintln!("SLOW_PRELOAD init_ready_ms={} zones={} widgets={}", started.elapsed().as_millis(), translated.instrument.zones.len(), attached.interface.widgets.len());
 }
