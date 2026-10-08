@@ -18,7 +18,7 @@ impl Source {
         Self {kontakt:sampler_kontakt::Resources::of(instrument),uvi}
     }
 
-    fn read(&mut self, path: &str) -> Option<Vec<u8>> {
+    pub(crate) fn read(&mut self, path: &str) -> Option<Vec<u8>> {
         match &self.uvi {Some(uvi)=>uvi.read(path),None=>self.kontakt.read(path)}
     }
     pub fn font(&mut self, asset: &ir::Asset) -> Option<moose::mui::mui::prelude::Font> {
@@ -27,8 +27,15 @@ impl Source {
 
     /// `asset` decoded and cut into its frames.
     pub fn load(&mut self, asset: &ir::Asset) -> Option<Arc<Picture>> {
-        let ir::AssetKind::Image(meta) = &asset.kind else { return None };
         let image = crate::artwork::decode(&self.read(&asset.path)?)?;
+        if matches!(asset.kind, ir::AssetKind::BitmapFont) {
+            // Kontakt requires a sidecar and one font frame.
+            let sidecar = format!("{}.txt", asset.path.rsplit_once('.')?.0);
+            let text = self.read(&sidecar)?;
+            if sampler_ksp::ui::picture_meta(&String::from_utf8_lossy(&text)).frames != 1 { return None; }
+            return Some(Arc::new(Picture { frames: font_frames(&image)? }));
+        }
+        let ir::AssetKind::Image(meta) = &asset.kind else { return None };
         let n = meta.frames.max(1);
         let vertical = meta.axis == ir::Orientation::Vertical;
         let (fw, fh) = if vertical { (image.width, image.height / n) } else { (image.width / n, image.height) };
@@ -37,7 +44,7 @@ impl Source {
     }
 }
 
-fn crop(image: &Image, x: u32, y: u32, w: u32, h: u32) -> Option<Arc<Image>> {
+pub(crate) fn crop(image: &Image, x: u32, y: u32, w: u32, h: u32) -> Option<Arc<Image>> {
     if w == 0 || h == 0 || x.checked_add(w)? > image.width || y.checked_add(h)? > image.height {
         return None;
     }
@@ -51,4 +58,52 @@ fn crop(image: &Image, x: u32, y: u32, w: u32, h: u32) -> Option<Arc<Image>> {
         rgba.extend_from_slice(&image.rgba[at..at + w as usize * 4]);
     }
     Image::rgba(w, h, rgba).map(Arc::new)
+}
+
+pub(crate) fn font_frames(image: &Image) -> Option<Vec<Arc<Image>>> {
+    if image.height < 2 { return None; }
+    let starts: Vec<u32> = (0..image.width).filter(|&x| {
+        let at = x as usize * 4;
+        image.rgba[at..at + 3] == [255, 0, 0]
+    }).collect();
+    if starts.len() != 256 || starts[0] != 0 {
+        return None;
+    }
+    starts.iter().enumerate().map(|(n, &x)| {
+        crop(image, x, 1, starts.get(n + 1).copied().unwrap_or(image.width) - x, image.height - 1)
+    }).collect()
+}
+
+/// Unicode text is indexed by the font's documented Windows-1252 byte order.
+/// Characters outside that alphabet use its authored question-mark glyph.
+pub(crate) fn font_glyph(c: char) -> usize {
+    const EXTENDED: [char; 32] = [
+        '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8d}', 'Ž', '\u{8f}',
+        '\u{90}', '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '\u{9d}', 'ž', 'Ÿ',
+    ];
+    match c as u32 {
+        0..=127 | 160..=255 => c as usize,
+        _ => EXTENDED.iter().position(|&glyph| glyph == c).map_or(b'?' as usize, |n| n + 128),
+    }
+}
+
+
+/// Cuts are reused between frames; retained source Arcs prevent address reuse.
+/// The process-wide pixel budget also bounds nine-slice and wallpaper windows.
+pub(crate) fn cut(image: &Arc<Image>, area: [u32; 4]) -> Option<Arc<Image>> {
+    use std::{collections::HashMap, sync::{Mutex, OnceLock}};
+    type Cuts = HashMap<(usize, [u32;4]), (Arc<Image>, Arc<Image>)>;
+    static CACHE: OnceLock<Mutex<(Cuts, usize)>> = OnceLock::new();
+    let mut cache = CACHE.get_or_init(|| Mutex::new((HashMap::new(), 0))).lock().ok()?;
+    let key = (Arc::as_ptr(image) as usize, area);
+    if let Some((_, cut)) = cache.0.get(&key) { return Some(cut.clone()); }
+    let [x,y,w,h] = area;
+    let piece = crop(image,x,y,w,h)?;
+    let bytes = piece.rgba.len() + image.rgba.len();
+    if bytes <= 64 << 20 {
+        if cache.1 + bytes > 64 << 20 { cache.0.clear(); cache.1 = 0; }
+        cache.1 += bytes;
+        cache.0.insert(key,(image.clone(),piece.clone()));
+    }
+    Some(piece)
 }
