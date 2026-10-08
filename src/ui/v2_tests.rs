@@ -1013,6 +1013,7 @@ fn widget_file_drop_uses_hit_order_namespace_and_atomic_path_limits() {
     assert_eq!(ir_view::file_drop(&ui,"part-a",&face,at,&paths,false).unwrap().1[0].event,4);
     assert!(ir_view::file_drop(&ui,"part-b",&face,at,&paths,true).is_none());
     assert!(ir_view::file_drop(&ui,"part-a",&face,at,&vec!["/tmp/a.wav".into();33],true).is_none());
+    assert_eq!(ir_view::file_drop_target(&ui,"part-a",&face,at),Some(ir::WidgetRef(0)),"invalid batch still targets a widget and must veto rack fallback");
     assert!(ir_view::file_drop(&ui,"part-a",&face,at,&["/tmp/unknown.exe".into()],true).is_none());
     let long=std::path::PathBuf::from(format!("/tmp/{}.wav","x".repeat(sampler_core::TEXT_CAPACITY)));
     assert!(ir_view::file_drop(&ui,"part-a",&face,at,&[long],true).is_none());
