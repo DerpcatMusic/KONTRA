@@ -3,7 +3,7 @@
 //! authored or with our controls) or, without one, what its load decoded and
 //! could not translate.
 
-use super::{Cx, inside, ir_view, pictures, theme::*};
+use super::{Cx, inside, ir_view, theme::*};
 use moose::mui::mui::prelude::*;
 use sampler_ui_ir::{self as ir, Presentation};
 use std::sync::Arc;
@@ -20,7 +20,6 @@ pub struct Face {
     /// Which of them is shown.
     pub shown: usize,
     face: ir::Interface,
-    source: pictures::Source,
     assets: ir_view::Assets,
     pub presentation: Presentation,
     values: ir_view::Values,
@@ -28,9 +27,8 @@ pub struct Face {
 
 impl Face {
     fn new(path: &std::path::Path, generation: u64, from: Arc<[ir::Interface]>, shown: usize, presentation: Presentation) -> Self {
-        let source = pictures::Source::of(path);
         let face = ir_view::resolved(&from[shown]);
-        let mut out = Self { from, path: path.into(), generation, revision: u64::MAX, patch: Default::default(), page: ir::PageRef(0), shown, face, source, assets: Default::default(), presentation, values: Default::default() };
+        let mut out = Self { from, path: path.into(), generation, revision: u64::MAX, patch: Default::default(), page: ir::PageRef(0), shown, face, assets: Default::default(), presentation, values: Default::default() };
         out.sync();
         out
     }
@@ -54,9 +52,7 @@ impl Face {
     }
 
     fn sync(&mut self) {
-        let source = &mut self.source;
-        self.assets.sync(&self.face, self.presentation, |a| source.load(a));
-        self.assets.sync_fonts(&self.face, |a| source.font(a));
+        self.assets.prepare(&self.path,&self.face,self.page,self.presentation,1.,&self.values);
     }
 }
 
@@ -104,7 +100,6 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
     let presentation = if mode == crate::library::ViewMode::Original { Presentation::Bitmap } else { Presentation::Vector };
     let stale = cx.state.faces.get(&slot).is_none_or(|f| f.path != path || f.generation != generation);
     if stale {
-        // ponytail: first decode is synchronous; W3 owns moving preparation to the asset worker.
         cx.state.faces.insert(slot, Face::new(&path, generation, from.clone(), main, presentation));
     }
     let face = cx.state.faces.get_mut(&slot)?;
@@ -190,6 +185,7 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
     }) as Arc<dyn Fn(Option<u32>,u8)->[f32;2]+Send+Sync>);
     let current: Vec<_> = shared.as_ref().map(|p| p.display_values()).unwrap_or_default();
     face.values.extend(current.iter().copied());
+    face.assets.prepare(&face.path,&face.face,face.page,face.presentation,scale,&face.values);
     let namespace = format!("part-{slot}-epoch-{generation}-script-{}-", face.shown);
     let view = if mode == crate::library::ViewMode::Kontra {
         super::generated::view(ui, &namespace, &face.face, face.page, &face.assets, scale, &mut face.values)

@@ -52,8 +52,13 @@ pub struct Interface {
     pub icon: Option<AssetRef>,
     /// The source hides the instrument icon (KSP `$INST_ICON_ID` `HIDE`).
     pub icon_hidden: bool,
+    /// A legacy authored NativeUI entry point, consumed by the editor frontend.
+    pub native_ui: Option<NativeUi>,
     pub unsupported: Vec<Unsupported>,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeUi { pub entry: String }
 
 /// Which frontend produced the interface.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

@@ -251,6 +251,7 @@ pub fn interface(
         bld.ui.assets.push(ir::Asset { path: picture_path(name), kind: ir::AssetKind::BitmapFont });
         bld.fonts.push(asset);
     }
+    bld.ui.native_ui=model.requests.iter().rev().find(|r|r.command=="load_native_ui").and_then(|r|r.args.last()).and_then(|v|match v {Value::Text(entry) if !entry.is_empty()=>Some(ir::NativeUi{entry:entry.clone()}),_=>None});
     let page = ir::PageRef(0);
     let mut background = ir::Background {
         offset_y: m.skin_offset.unwrap_or(0),
