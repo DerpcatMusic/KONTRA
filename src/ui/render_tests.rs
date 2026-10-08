@@ -96,3 +96,17 @@ fn table_cells_and_source_colours_change_pixels() {
     face.widgets[0].colors.bar = Some(ir::Rgba::rgb(0xff0000));
     assert_ne!(values, pixels(&face));
 }
+
+#[test]
+fn default_dimensions_and_wallpaper_origin_are_independent() {
+    let mut ui = face(Kind::Label);
+    ui.widgets[0].auto_size = true;
+    ui.widgets[0].default_axes = [false, true];
+    ui.widgets[0].rect.width = 137;
+    ui.widgets[0].rect.height = 0;
+    assert_eq!(resolved(&ui).widgets[0].rect.width, 137);
+    assert_eq!(resolved(&ui).widgets[0].rect.height, 18);
+    ui.widgets[0].default_axes = [true, false];
+    ui.widgets[0].rect.height = 41;
+    assert_eq!(resolved(&ui).widgets[0].rect.height, 41);
+}
