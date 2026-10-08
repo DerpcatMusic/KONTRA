@@ -117,6 +117,14 @@ impl Pcm {
     /// Frames are kept packed ([`crate::Packed`]): 16/24-bit, mono when both
     /// channels match, whenever that reads back bit-exactly.
     pub fn set_ranges(&self, ranges: Vec<(usize, Box<[Frame]>)>) -> Result<Ranges, Error> {
+        self.set_ranges_with_compression(ranges, false)
+    }
+    /// Control-side preload policy: looping resident spans avoid predictive decode.
+    pub fn set_ranges_with_compression(
+        &self,
+        ranges: Vec<(usize, Box<[Frame]>)>,
+        compress: bool,
+    ) -> Result<Ranges, Error> {
         let valid = self.0.frames.is_none()
             && ranges.windows(2).all(|w| w[0].0 + w[0].1.len() <= w[1].0)
             && ranges.iter().all(|(start, frames)| {
@@ -131,7 +139,7 @@ impl Pcm {
         }
         let ranges = ranges
             .into_iter()
-            .map(|(start, frames)| (start, crate::Packed::new(&frames)))
+            .map(|(start, frames)| (start, crate::Packed::with_compression(&frames, compress)))
             .collect();
         Ok(std::mem::replace(
             &mut *self.0.head.write().unwrap_or_else(|e| e.into_inner()),
@@ -157,6 +165,18 @@ impl Pcm {
             .iter()
             .map(|(_, f)| f.bytes())
             .sum()
+    }
+    /// Control-side count of predictive preload ranges and the frames they hold.
+    pub fn head_compression(&self) -> (usize, usize) {
+        self.0
+            .head
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|(_, frames)| frames.predictive())
+            .fold((0, 0), |(ranges, total), (_, frames)| {
+                (ranges + 1, total + frames.len())
+            })
     }
     /// Whether a start was refused for a missing head since the last call.
     pub fn take_cold(&self) -> bool {
