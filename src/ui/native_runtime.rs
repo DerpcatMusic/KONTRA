@@ -223,6 +223,21 @@ impl Package {
             .ok_or_else(|| anyhow::anyhow!("NativeUI module absent"))?;
         Ok(std::str::from_utf8(bytes)?)
     }
+    #[cfg(test)]
+    pub(super) fn error_operations(&self,error:&mlua::Error) -> Vec<String> {
+        let mut out=Vec::new();
+        for line in error.to_string().lines() {
+            let Some((prefix,tail))=line.split_once(".nui") else {continue};
+            let module=prefix.rsplit(['"',' ', '\t']).next().unwrap_or(prefix);
+            let tail=tail.trim_start_matches(['"',']',':']);
+            let Some(n)=tail.split(':').next().and_then(|n|n.parse::<usize>().ok()) else {continue};
+            let Ok(source)=self.source(module).and_then(|s|syntax::translate(s).map_err(Into::into)) else {continue};
+            let Some(source)=source.lines().nth(n.saturating_sub(1)) else {continue};
+            let operations:Vec<_>=["value()", " or ", "#", "string.", "table.", "[", "ipairs", "pairs", "connected", "text", "data", "binding", "parameter", "value", "ksp_control_property", "math", "floor", "min", "max", "range", "length", "nil", "function", "error(", "assert(", "type(", "string", "number", "table", "boolean", "~=", "==", "return", "if"].into_iter().filter(|op|source.contains(op)).collect();
+            out.push(format!("site={}:{} operations={operations:?}",&blake3::hash(module.as_bytes()).to_hex()[..16],n));
+        }
+        out
+    }
 }
 
 // Read names only from the already validated, bounded supplied font. This does
@@ -450,9 +465,16 @@ impl UserData for Parameter {
             |lua, this, (property, index): (i32, Option<usize>)| {
                 #[cfg(test)]
                 trace_parameter(lua,this,"property")?;
+                #[cfg(test)]
+                if let Ok(trace)=lua.globals().get::<Function>("__audit_property") {trace.call::<()>((this.binding==usize::MAX,property))?;}
                 let bridge = this.bridge.lock().unwrap();
                 let Some(w) = bridge.controls.get(this.binding) else {
-                    return Ok(LuaValue::Nil);
+                    return Ok(match property {
+                        0 | 1 | 14 | 18 => LuaValue::String(lua.create_string("")?),
+                        17 => LuaValue::Integer(0),
+                        20 => LuaValue::Boolean(false),
+                        _ => LuaValue::Nil,
+                    });
                 };
                 let range = bounds(w);
                 Ok(match property {
@@ -902,6 +924,11 @@ mod tests {
             assert(missing.connected==false and missing_bool.connected==false)
             assert(meter.connected==false and meter:level_value()==0)
             assert(missing:value()==0 and missing_bool:value()==false)
+            for _,property in ipairs({0,1,14,18}) do
+                assert(missing:ksp_control_property(property)=='')
+            end
+            assert('caption:'..missing:ksp_control_property(0)=='caption:')
+            assert(missing:ksp_control_property(17)==0 and missing:ksp_control_property(20)==false)
             missing:set_value(0.75)
             missing:update_touch()
             assert(missing:is_touch_active()==false)
