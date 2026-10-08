@@ -94,6 +94,41 @@ pub struct Instrument {
     /// Source meaning this description does not carry. Lowering never reads it;
     /// it exists so a caller can show or reject what was not translated.
     pub unsupported: Vec<Unsupported>,
+    /// Complete authored DSP slot inventory, collected only by diagnostic builds.
+    pub dsp_slots: Option<Vec<DspSlot>>,
+}
+
+/// One occupied native slot; addresses never compact around holes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DspSlot {
+    pub kind: DspSlotKind,
+    pub scope: String,
+    pub slot: usize,
+    pub module: String,
+    pub enabled: bool,
+    pub disposition: DspDisposition,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DspSlotKind { Fx, Filter, Mod }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DspDisposition {
+    Implemented,
+    Approximated(DspSlotReason),
+    Dropped(DspSlotReason),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DspSlotReason {
+    NotModeled,
+    Malformed,
+    NativeLawUnverified,
+    TargetsDropped,
+    SourceNotExecuted,
+    ResourceUnavailable,
+    SavedBypassNotInstantiated,
+    MutedScopeNotInstantiated,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]

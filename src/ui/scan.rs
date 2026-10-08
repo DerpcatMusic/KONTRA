@@ -17,6 +17,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[path = "scan_coverage.rs"]
+mod coverage;
+
 fn add(counts: &mut BTreeMap<String, usize>, key: impl Into<String>) {
     *counts.entry(key.into()).or_default() += 1;
 }
@@ -451,6 +454,7 @@ pub fn one(id: &str, out: &Path) -> Value {
                 continue;
             }
         };
+        let dsp_slots = loaded.instrument.as_ref().map(|i|coverage::slots(i)).unwrap_or(json!({"complete":false}));
         let ksp = ksp_observations();
         load_ms += start.elapsed().as_secs_f64() * 1000.;
         let mut symbols = BTreeMap::<String, usize>::new();
@@ -605,6 +609,9 @@ pub fn one(id: &str, out: &Path) -> Value {
         let sample_zone_count=loaded.instrument.as_ref().map(|i|i.zones.len());
         let mut runtime_faults = Vec::new();
         let mut heard = false;
+        // Diagnostic repeats stay opt-in so gate load/onset timings keep their protocol.
+        let family_repeats = std::env::var("KONTRA_SCAN_FAMILY_REPEATS").ok().and_then(|v|v.parse::<usize>().ok()).unwrap_or(0).min(128);
+        let mut family_takes = Vec::new();
         result["stage"] = json!(format!("play program {program}"));
         metrics::checkpoint(out, &result);
         if let Some((key, velocity)) = pick {
@@ -631,6 +638,29 @@ pub fn one(id: &str, out: &Path) -> Value {
                 runtime_faults.extend(core.scan_runtime_faults(0));
             }
         }
+        if let Some((key, velocity)) = pick {
+            if family_repeats > 0 {
+                core.event(0, Event::midi1(0x80, key, 0));
+                core.scan_record_selections(0, true);
+                for repeat in 0..family_repeats {
+                    core.event(0, Event::midi1(0x90, key, velocity));
+                    for _ in 0..24 {
+                        std::thread::sleep(Duration::from_millis(3));
+                        core.render(128);
+                        runtime_faults.extend(core.scan_runtime_faults(0));
+                    }
+                    let attack = coverage::selections(core.scan_selections(0));
+                    core.event(0, Event::midi1(0x80, key, 0));
+                    for _ in 0..24 {
+                        std::thread::sleep(Duration::from_millis(3));
+                        core.render(128);
+                        runtime_faults.extend(core.scan_runtime_faults(0));
+                    }
+                    family_takes.push(json!({"repeat":repeat,"attack":attack,"release":coverage::selections(core.scan_selections(0))}));
+                }
+                core.scan_record_selections(0, false);
+            }
+        }
         result["stage"]=json!(format!("Original paint join program {program}"));
         metrics::checkpoint(out,&result);
         let views=paint.join().unwrap_or_else(|_|vec![json!({"renders":[{"ok":false,"budget_hit":false,"reason":"paint worker panicked"}]})]);
@@ -655,7 +685,7 @@ pub fn one(id: &str, out: &Path) -> Value {
         let lua = core.scan_lua(0);
         let lua_report = lua.as_ref().map(|l| json!({"init_faults":l.init_count,"runtime_faults":l.runtime_count,
             "init_first":l.init_first.as_deref().map(metrics::message),"runtime_first":l.runtime_first.as_deref().map(metrics::message),"budget_hits":l.budget_hits}));
-        result["programs"].as_array_mut().unwrap().push(json!({"authored_view_requests":view_requests,"native_frontend_consumed":native_consumed,"ksp":ksp,"ksp_runtime_faults":runtime_faults.iter().map(|(program,outcome)|json!({"program":program,"callback":sampler_ksp::callback_of(&loaded.scripts.views,*program),"category":match outcome{sampler_core::Outcome::FuelExhausted=>"fuel-budget",_=>"runtime-fault"},"core_error":match outcome{sampler_core::Outcome::Fault(e)=>Some(format!("{e:?}")),_=>None}})).collect::<Vec<_>>(),"lua":lua_report,"admitted_saved_entries_by_sigil":admitted,
+        result["programs"].as_array_mut().unwrap().push(json!({"family_takes":family_takes,"dsp_slots":dsp_slots,"authored_view_requests":view_requests,"native_frontend_consumed":native_consumed,"ksp":ksp,"ksp_runtime_faults":runtime_faults.iter().map(|(program,outcome)|json!({"program":program,"callback":sampler_ksp::callback_of(&loaded.scripts.views,*program),"category":match outcome{sampler_core::Outcome::FuelExhausted=>"fuel-budget",_=>"runtime-fault"},"core_error":match outcome{sampler_core::Outcome::Fault(e)=>Some(format!("{e:?}")),_=>None}})).collect::<Vec<_>>(),"lua":lua_report,"admitted_saved_entries_by_sigil":admitted,
             "load_path":if is_uvi {if lua.is_some(){"scripted-worker"}else{"offline-loader"}}else{"kontakt-v2-loader"},
             "sample_zone_count":sample_zone_count,"decoded_zone_count":loaded.report.decoded.zones,"sample_count":loaded.report.decoded.samples,"sample_resident_bytes":sample_resident_bytes,"underruns":core.problems(0).underruns,
             "keyswitch":keyswitch,"fallback_note":pick_source=="fallback","zero_zone_reason":if sample_zone_count==Some(0) {Some("unknown")} else {None},"pick_source":pick_source,"native_valid_keys":native_valid,"native_key_conflicts":native.as_ref().map(|n|n.native_key_conflicts),"native_preferred_note":candidate.filter(|(k,_)|native_valid.contains(k)),
