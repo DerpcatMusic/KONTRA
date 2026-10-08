@@ -1085,6 +1085,8 @@ pub enum Processor {
     Compressor(Compressor),
     /// Memoryless rectification of both channels.
     Rectify(Rectifier),
+    /// Pinned v1 Lo-Fi approximation; saved normalized controls.
+    LoFi { bits: f32, frequency: f32, noise: f32, color: f32 },
     /// Kontakt's Daft filter: normalized controls, laws in the engine.
     Daft(Daft),
     /// Native Ladder LP4. Values are normalized; the engine owns the laws.
