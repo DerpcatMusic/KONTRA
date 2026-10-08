@@ -10,6 +10,7 @@ pub struct InterfacePatch {
     pub assets: Option<Vec<Asset>>,
     pub styles: Option<Vec<TextStyle>>,
     pub icon: Option<(Option<AssetRef>, bool)>,
+    pub native_ui: Option<Option<NativeUi>>,
     pub unsupported: Option<Vec<Unsupported>>,
 }
 
@@ -31,6 +32,7 @@ impl InterfacePatch {
             styles: (base.styles != current.styles).then(|| current.styles.clone()),
             icon: ((base.icon, base.icon_hidden) != (current.icon, current.icon_hidden))
                 .then_some((current.icon, current.icon_hidden)),
+            native_ui: (base.native_ui != current.native_ui).then(||current.native_ui.clone()),
             unsupported: (base.unsupported != current.unsupported)
                 .then(|| current.unsupported.clone()),
         }
@@ -53,6 +55,9 @@ impl InterfacePatch {
         if self.styles != previous.styles {
             view.styles
                 .clone_from(self.styles.as_ref().unwrap_or(&base.styles));
+        }
+        if self.native_ui != previous.native_ui {
+            view.native_ui.clone_from(self.native_ui.as_ref().unwrap_or(&base.native_ui));
         }
         if self.unsupported != previous.unsupported {
             view.unsupported

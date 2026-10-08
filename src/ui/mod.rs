@@ -39,6 +39,7 @@ mod load_report;
 mod bridge;
 mod pictures;
 mod picture_decode;
+mod picture_worker;
 mod render_art;
 mod inside;
 mod part;
@@ -207,6 +208,7 @@ impl Watch {
         }
         let mut h = DefaultHasher::new();
         self.readouts.hash(&mut h);
+        pictures::revision().hash(&mut h);
         if meters.logs_visible.load(Ordering::Relaxed) {
             crate::diagnostics::revision().hash(&mut h);
             logs::wake().hash(&mut h);

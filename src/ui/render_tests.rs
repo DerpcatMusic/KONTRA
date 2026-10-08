@@ -16,7 +16,7 @@ fn pixels(face: &Interface) -> Vec<u8> {
     let mut values = Values::default();
     let assets = Assets::default();
     for _ in 0..3 {
-        let root = view(&mut ui, face, PageRef(0), &assets, Presentation::Bitmap, 1., &mut values);
+        let root = view(&mut ui, "", face, PageRef(0), &assets, Presentation::Bitmap, 1., &mut values);
         ui.frame(root, Some(Size::new(160., 120.)), Input::default(), 1./60.).unwrap();
     }
     super::super::tests::pixels(&ui, 160, 120)

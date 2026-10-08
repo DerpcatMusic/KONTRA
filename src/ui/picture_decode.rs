@@ -60,3 +60,23 @@ mod tests {
         assert!(png(&bytes,Default::default(),0,[3,6],None,||true).is_none());
     }
 }
+
+pub(super) fn decode(bytes:&[u8],meta:ir::ImageMeta,frame:usize,target:[u32;2],window:Option<[u32;4]>,canceled:impl Fn()->bool)->Option<Image> {
+    if bytes.starts_with(b"\x89PNG") {return png(bytes,meta,frame,target,window,canceled);}
+    if canceled() {return None;}
+    if bytes.starts_with(&[0xff,0xd8]) {
+        use zune_jpeg::zune_core::{bytestream::ZCursor,colorspace::ColorSpace,options::DecoderOptions};
+        let options=DecoderOptions::default().jpeg_set_out_colorspace(ColorSpace::RGBA).set_max_width(8192).set_max_height(8192);
+        let mut decoder=zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(bytes),options);
+        decoder.decode_headers().ok()?;let info=decoder.info()?;
+        if info.width as usize*info.height as usize>PIXELS {return None;}
+        let image=Image::rgba(info.width.into(),info.height.into(),decoder.decode().ok()?)?;
+        let n=meta.frames.max(1);let frame=frame.min(n as usize-1) as u32;
+        let (w,h)=if meta.axis==ir::Orientation::Vertical {(image.width,image.height/n)}else{(image.width/n,image.height)};
+        let [mut x,mut y,w,h]=window.unwrap_or([0,0,w,h]);
+        if meta.axis==ir::Orientation::Vertical {y+=frame*(image.height/n);}else{x+=frame*(image.width/n);}
+        let image=super::pictures::crop(&image,x,y,w,h)?;
+        return Some((*image).clone());
+    }
+    None
+}
