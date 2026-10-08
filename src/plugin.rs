@@ -8,6 +8,8 @@
 //! audio thread replaces goes back to the loader to be dropped.
 
 mod automation;
+mod host_probe;
+pub(crate) use host_probe::export_multi_state;
 pub(crate) mod automation_ids;
 
 use crate::sound::{
