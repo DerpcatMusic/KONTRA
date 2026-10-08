@@ -378,11 +378,19 @@ fn public_controlchange_event_constant_exists() {
 }
 
 #[test]
-#[ignore = "audit: saved custom ScriptData must invoke onLoad"]
-fn custom_scriptdata_invokes_onload() {
-    let xml = "<UVI4><Program><EventProcessors><ScriptProcessor><ScriptData counter='42'/><script>loaded = false; function onLoad(data) loaded = true end</script></ScriptProcessor></EventProcessors></Program></UVI4>";
+#[ignore = "audit: custom JSON <state> must invoke onLoad"]
+fn custom_saved_state_invokes_onload() {
+    let xml = r#"<UVI4><Program><EventProcessors><ScriptProcessor><state>{"counter":42}</state><script>loaded = false; function onLoad(data) assert(data.counter == 42); loaded = true end</script></ScriptProcessor></EventProcessors></Program></UVI4>"#;
     let h = ScriptHost::new(xml, (), Config::default()).unwrap();
     assert_eq!(h.global_text("loaded"), "true");
+}
+
+#[test]
+#[ignore = "audit: automatic ScriptData is not custom onLoad data"]
+fn automatic_scriptdata_does_not_invoke_onload() {
+    let xml = "<UVI4><Program><EventProcessors><ScriptProcessor><ScriptData counter='42'/><script>loaded = false; function onLoad(data) loaded = true end</script></ScriptProcessor></EventProcessors></Program></UVI4>";
+    let h = ScriptHost::new(xml, (), Config::default()).unwrap();
+    assert_eq!(h.global_text("loaded"), "false");
 }
 
 #[test]

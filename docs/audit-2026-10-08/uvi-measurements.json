@@ -1228,6 +1228,32 @@
       "correct_defaults": 1269,
       "typed_numeric_definitions": 0,
       "correct_ranges": 12
+    },
+    "state_contract_correction": {
+      "old_test": "custom_scriptdata_invokes_onload",
+      "old_fixture_valid": false,
+      "custom_saved_state_invokes_onload": "expected failure on frozen v2",
+      "automatic_scriptdata_does_not_invoke_onload": "pass",
+      "targeted_result": {
+        "passed": 1,
+        "failed": 1
+      },
+      "log": "/home/derpcat/.cache/kontakto-audit-uvi/corrected-state-contract.log",
+      "custom_payload_population": "unknown; ScriptData counts are automatic widget stores"
+    },
+    "v1_sidecar": {
+      "no_run": "pass",
+      "no_run_seconds": 133,
+      "keyboard_merge_and_reset": {
+        "passed": 2,
+        "failed": 0
+      },
+      "note_plan_worker_witness": "pass"
+    },
+    "handoff_root_no_run": {
+      "result": "pass",
+      "seconds": 21.15,
+      "log": "/home/derpcat/.cache/kontakto-audit-uvi/root-sidecar-update-no-run.log"
     }
   },
   "branch_single_program_resource_scene": {
@@ -1316,9 +1342,243 @@
   },
   "v1_adapter": {
     "base": "4bffbb18b867b0a8e84b435d11684784b237693c",
-    "patch_sha256": "65abece176c2434cb4df5903ae3a7989c050043d86e64bfea5981cbf0056d83e",
-    "binary_sha256": "9463ebd6b77d2a7c0137ee27b9540cba1b55decff429c0fff45173e832fbcda5",
+    "patch_sha256": "aab3862db2065d793d7be982b019e3665d930c5ce4a3d8e173d6b15456aa4326",
+    "binary_sha256": "d565661afb3ae1cab3100d1e83b7f12c0f5b02c51b7593451a6fe77929af8ea1",
     "shared_cli": "/home/derpcat/.cache/kontra-scan/bin/kontra_scan.py",
-    "results": "/home/derpcat/.cache/kontakto-audit-uvi/v1-scan/results.tsv"
+    "results": "/home/derpcat/.cache/kontakto-audit-uvi/v1-scan/results.tsv",
+    "note_plan_contract": {
+      "env": "KONTRA_SCAN_NOTE_PLAN",
+      "program": 0,
+      "policy": "native-valid-keys-v1",
+      "precedence": "shared plan before native preferred before zone fallback",
+      "native_metadata_in_baseline_v2": false
+    },
+    "source_commit": "1c198e60ff7b7018c54efb2986e3b6ae83a5abcb",
+    "source_branch": "audit/uvi-v1-scanner-20261008",
+    "installed_shared_binary_changed_by_auditor": false,
+    "prior_binary_sha256": "9463ebd6b77d2a7c0137ee27b9540cba1b55decff429c0fff45173e832fbcda5",
+    "executable": "/mnt/Windows11/DEV_WORKSPACE/Toolchains/User/cargo-target/kontakto-audit-uvi-v1-bench/release/examples/kontra_scan"
+  },
+  "integration_head_checked": {
+    "sha": "be4c5c21928b462d7a604f4e07b05eac13931616",
+    "audited_uvi_paths_changed_since_frozen": false,
+    "shared_scanner_glue_changed": true
+  },
+  "v1_covered_key_witness": {
+    "asset_failures": 0,
+    "asset_limit": 0,
+    "controls_bound": "21/21",
+    "font_failures": 0,
+    "load_ms": 1558.1086229999999,
+    "loads": "yes",
+    "nonfinite": 0,
+    "peak": 0.06482087820768356,
+    "pick": [
+      60,
+      64
+    ],
+    "plays_note": "yes",
+    "preflight_kinds": {},
+    "preflight_rejections": 0,
+    "program_read": true,
+    "reason": "v1 UVI production worker; Original panel; 0.5s audition; no native comparison",
+    "render_cpu_ns": 317345010,
+    "render_deadline_misses": 2,
+    "render_ns": 318019000,
+    "runtime_errors": 0,
+    "sample_resident_bytes": 218923526,
+    "stage": "complete",
+    "ui": "original-ok",
+    "ui_resident_bytes": 50159568,
+    "views": [
+      {
+        "bound": 21,
+        "interactive": 21,
+        "render": {
+          "blake3": "d7cd11178b478d8184dc3f8ba417bd381393d0c9b7bcb8c67f8bf5e3344e0016",
+          "colors": 12477,
+          "dominant_fraction": 0.03902488425925926,
+          "pixels": 345600,
+          "uniform": false,
+          "white_fraction": 0.004178240740740741
+        },
+        "visible": 24,
+        "widgets": 273
+      }
+    ],
+    "zones": 368,
+    "peak_rss_mb": 419.81,
+    "process_ms": 2203.73,
+    "timed_out": false,
+    "path": "/mnt/MAIN_STORAGE/Libraries/UVI/VWinds - Clarinets/VWinds-AClarinet.ufs::Presets/Clarinet A.uvip",
+    "library": "VWinds - Clarinets",
+    "revision": "9463ebd6b77d2a7c0137ee27b9540cba1b55decff429c0fff45173e832fbcda5"
+  },
+  "v1_stopped_partial": {
+    "attempted": 80,
+    "manifest": 660,
+    "program_reads": 80,
+    "ready": 0,
+    "timeouts": 0,
+    "graph_rejections": 80,
+    "population": "AO only",
+    "revision": "9463ebd6b77d2a7c0137ee27b9540cba1b55decff429c0fff45173e832fbcda5",
+    "matched_v2_offline_ids": 80,
+    "matched_v2_offline_loaded": 80,
+    "note_matched": false,
+    "full_census": false,
+    "cause": "worker.rs:1828 rejects graph preflight before Ready"
+  },
+  "v1_shared_note_plan_witness": {
+    "binary_sha256": "d565661afb3ae1cab3100d1e83b7f12c0f5b02c51b7593451a6fe77929af8ea1",
+    "source_commit": "1c198e60ff7b7018c54efb2986e3b6ae83a5abcb",
+    "shared_plan": {
+      "programs": {
+        "0": {
+          "key": 62,
+          "velocity": 64
+        }
+      },
+      "policy": "native-valid-keys-v1"
+    },
+    "result": {
+      "asset_failures": 0,
+      "asset_limit": 0,
+      "controls_bound": "21/21",
+      "font_failures": 0,
+      "load_ms": 1593.587071,
+      "loads": "yes",
+      "native_key_conflicts": 0,
+      "native_preferred_note": [
+        60,
+        64
+      ],
+      "native_valid_keys": [
+        50,
+        52,
+        53,
+        55,
+        57,
+        59,
+        60,
+        62,
+        64,
+        65,
+        67,
+        69,
+        71,
+        72,
+        74,
+        76,
+        77,
+        79,
+        81,
+        83,
+        84,
+        86,
+        88,
+        89,
+        91,
+        93
+      ],
+      "nonfinite": 0,
+      "peak": 0.054095685482025146,
+      "pick": [
+        62,
+        64
+      ],
+      "pick_source": "shared-note-plan",
+      "plays_note": "yes",
+      "preflight_kinds": {},
+      "preflight_rejections": 0,
+      "program_read": true,
+      "programs": [
+        {
+          "load_path": "v1 UVI production worker; full PCM",
+          "native_preferred_note": [
+            60,
+            64
+          ],
+          "native_valid_keys": [
+            50,
+            52,
+            53,
+            55,
+            57,
+            59,
+            60,
+            62,
+            64,
+            65,
+            67,
+            69,
+            71,
+            72,
+            74,
+            76,
+            77,
+            79,
+            81,
+            83,
+            84,
+            86,
+            88,
+            89,
+            91,
+            93
+          ],
+          "pick": [
+            62,
+            64
+          ],
+          "pick_source": "shared-note-plan",
+          "program": 0,
+          "sample_resident_bytes": 218923526,
+          "source": "uvi",
+          "views": [
+            {
+              "bound": 21,
+              "interactive": 21,
+              "render": {
+                "blake3": "d7cd11178b478d8184dc3f8ba417bd381393d0c9b7bcb8c67f8bf5e3344e0016",
+                "colors": 12477,
+                "dominant_fraction": 0.03902488425925926,
+                "pixels": 345600,
+                "uniform": false,
+                "white_fraction": 0.004178240740740741
+              },
+              "visible": 24,
+              "widgets": 273
+            }
+          ]
+        }
+      ],
+      "reason": "v1 UVI production worker; Original panel; 0.5s audition; no native comparison",
+      "render_cpu_ns": 373597238,
+      "render_deadline_misses": 3,
+      "render_ns": 374653504,
+      "runtime_errors": 0,
+      "sample_resident_bytes": 218923526,
+      "stage": "complete",
+      "ui": "original-ok",
+      "ui_resident_bytes": 50159568,
+      "views": [
+        {
+          "bound": 21,
+          "interactive": 21,
+          "render": {
+            "blake3": "d7cd11178b478d8184dc3f8ba417bd381393d0c9b7bcb8c67f8bf5e3344e0016",
+            "colors": 12477,
+            "dominant_fraction": 0.03902488425925926,
+            "pixels": 345600,
+            "uniform": false,
+            "white_fraction": 0.004178240740740741
+          },
+          "visible": 24,
+          "widgets": 273
+        }
+      ],
+      "zones": 368
+    }
   }
 }
