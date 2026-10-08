@@ -332,7 +332,7 @@ static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
 pub(crate) struct PartShared {
     pub(crate) generation: AtomicU64,
     pub(crate) scalar_revision: AtomicU64,
-    native_revision: AtomicU64,
+    pub(crate) native_revision: AtomicU64,
     ingress: Mutex<Option<crate::sound::v2::ControlIngress>>,
     /// Out of [`Progress::DONE`], rising within each load.
     pub(crate) load_progress: AtomicU32,
@@ -407,6 +407,13 @@ impl PartShared {
         let mut values = self.control_values();
         if let Some(ingress) = self.ingress.lock().unwrap().as_mut() { ingress.overlay(&mut values); }
         values
+    }
+
+    pub(crate) fn widget_values(&self) -> std::collections::BTreeMap<sampler_ui_ir::ControlId, sampler_ui_ir::Value> {
+        let mut ingress = self.ingress.lock().unwrap();
+        let Some(ingress) = ingress.as_mut() else { return Default::default() };
+        if ingress.settle() { self.scalar_revision.fetch_add(1, Ordering::Release); }
+        ingress.values()
     }
 
     pub(crate) fn problems(&self) -> RuntimeProblems {
@@ -967,6 +974,31 @@ impl Shared {
         ingress.as_mut().is_some_and(|client| client.submit(control, value))
     }
 
+    pub(crate) fn set_widgets_at(&self, slot: usize, epoch: u64, edits: Vec<sampler_core::WidgetEdit>) -> bool {
+        let Some(part) = self.part(slot) else { return false };
+        let mut ingress = part.ingress.lock().unwrap();
+        if part.generation.load(Ordering::Acquire) != epoch { return false; }
+        ingress.as_mut().is_some_and(|ingress| ingress.submit_widgets(edits))
+    }
+
+    /// One authored gesture; XY axes and touched table cells stay one transaction.
+    pub(crate) fn set_widget_batch_at(&self, slot: usize, epoch: u64, source_slot: u8, widget: &sampler_ui_ir::Widget, edits: Vec<(u32, sampler_ui_ir::Value)>, interaction: sampler_core::WidgetInteraction) -> bool {
+        let Some(part) = self.part(slot) else { return false };
+        let mut ingress = part.ingress.lock().unwrap();
+        if part.generation.load(Ordering::Acquire) != epoch { return false; }
+        ingress.as_mut().is_some_and(|ingress| ingress.submit_ui_widgets(source_slot, widget, edits, interaction))
+    }
+
+    pub(crate) fn set_widget_at(&self, slot: usize, epoch: u64, source_slot: u8, widget: &sampler_ui_ir::Widget, index: Option<usize>, value: sampler_ui_ir::Value) -> bool {
+        let Some(index) = u32::try_from(index.unwrap_or(0)).ok() else { return false };
+        let edits = match value {
+            sampler_ui_ir::Value::Integers(values) => values.into_iter().enumerate().map(|(n, value)| u32::try_from(n).ok().and_then(|n| index.checked_add(n)).map(|n| (n, sampler_ui_ir::Value::Integer(value)))).collect::<Option<Vec<_>>>(),
+            sampler_ui_ir::Value::Reals(values) => values.into_iter().enumerate().map(|(n, value)| u32::try_from(n).ok().and_then(|n| index.checked_add(n)).map(|n| (n, sampler_ui_ir::Value::Real(value)))).collect::<Option<Vec<_>>>(),
+            value => Some(vec![(index, value)]),
+        };
+        edits.is_some_and(|edits| self.set_widget_batch_at(slot, epoch, source_slot, widget, edits, Default::default()))
+    }
+
     /// Apply the script effects the audio thread queued to their parts'
     /// interface models, and publish the interfaces that changed.
     fn apply_effects(&self) {
@@ -1115,6 +1147,11 @@ impl BackgroundTask for Load {
         let shared = &params.shared;
         shared.flush_ready();
         shared.apply_effects();
+        shared.with_parts(|parts| { for part in parts {
+            if let Some(ingress) = part.ingress.lock().unwrap().as_mut() && ingress.settle() {
+                part.scalar_revision.fetch_add(1, Ordering::Release);
+            }
+        } });
         shared.trim_streams(params.selection.read().unwrap().memory_budget_mb);
         // Dropping what the audio thread replaced is this thread's job.
         while shared.discard.pop().is_some() {}
