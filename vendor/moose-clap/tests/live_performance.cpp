@@ -12,6 +12,7 @@
 #include <cstring>
 #include <fstream>
 #include <thread>
+#include <sstream>
 #include <vector>
 
 using Clock = std::chrono::steady_clock;
@@ -71,6 +72,20 @@ struct Host {
 struct Perf {
     uint64_t busy_ns, span_ns, voices, audible, dropouts, memory, freed, disk_read, underruns, loaded_parts, blocks;
 };
+struct Io { uint64_t chars = 0, disk = 0, probe_bytes = 0; bool valid = false; };
+static Io parse_io(const std::string& text) {
+    Io io; io.probe_bytes = text.size(); bool chars = false, disk = false;
+    std::istringstream stream(text); std::string key; uint64_t value;
+    while (stream >> key >> value) {
+        if (key == "rchar:") { io.chars = value; chars = true; }
+        if (key == "read_bytes:") { io.disk = value; disk = true; }
+    }
+    io.valid = chars && disk; return io;
+}
+static Io read_io() {
+    std::ifstream file("/proc/self/io");
+    return parse_io(std::string{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()});
+}
 using ReadPerf = bool (*)(const clap_plugin_t*, Perf*);
 
 static double quantile(const std::vector<double>& sorted, double q) {
@@ -83,7 +98,9 @@ int main(int argc, char** argv) {
         Events events; events.add({0, 0x90, 60, 100}, 17);
         require(events.in.size(&events.in) == 1 && events.in.get(&events.in, 0)->time == 17
             && events.in.get(&events.in, 1) == nullptr, "sample-exact bounded host events");
-        std::puts("PASS: percentiles and timestamped event input"); return 0;
+        const auto io = parse_io("rchar: 1200\nread_bytes: 4096\nwchar: 8\n");
+        require(io.valid && io.chars == 1200 && io.disk == 4096 && !parse_io("rchar: 1\n").valid, "stream I/O counters and absent field");
+        std::puts("PASS: percentiles, timestamped event input and stream I/O"); return 0;
     }
     require(argc == 8, "PLUGIN STATE BLOCK SECONDS READY_FLAG EVENT_TSV EXPECTED_PARTS");
     const unsigned block = std::strtoul(argv[3], nullptr, 10);
@@ -138,6 +155,7 @@ int main(int argc, char** argv) {
     std::atomic<bool> ready{false}, finished{false};
     std::vector<double> wall, cpu; const uint64_t frames = uint64_t(seconds * 48000);
     wall.reserve(frames / block + 1); cpu.reserve(wall.capacity());
+    Io io_start{}, io_end{};
     uint64_t misses = 0, wake_misses = 0, nonfinite = 0, dispatched = 0; double peak = 0;
     auto audio = std::thread([&] {
         on_audio_thread = true; require(p->start_processing(p), "start processing");
@@ -147,7 +165,7 @@ int main(int argc, char** argv) {
             const auto period = std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(block / 48000.));
             std::this_thread::sleep_until(deadline);
             if (!measuring && ready.load(std::memory_order_acquire)) {
-                warm += block; if (warm >= 4800) { measuring = true; deadline = Clock::now(); }
+                warm += block; if (warm >= 4800) { measuring = true; io_start = read_io(); deadline = Clock::now(); }
             }
             events.count = 0;
             if (measuring) while (next < plan.size() && plan[next].frame < at + block) {
@@ -172,6 +190,7 @@ int main(int argc, char** argv) {
             deadline += period; // Absolute deadlines: a slow block does not stretch the audition timeline.
             require(Clock::now() - started < std::chrono::seconds(150), "bounded load/readiness wait");
         }
+        io_end = read_io();
         p->stop_processing(p); finished.store(true, std::memory_order_release);
     });
     Perf previous{}; double ui_cpu = 0, ui_disk = 0; auto sample_at = Clock::now();
@@ -201,6 +220,11 @@ int main(int argc, char** argv) {
     std::printf("{\"kind\":\"live_host\",\"block\":%u,\"seconds\":%.3f,\"blocks\":%zu,\"cpu_p50_us\":%.3f,\"cpu_p99_us\":%.3f,\"thread_cpu_p50_us\":%.3f,\"thread_cpu_p99_us\":%.3f,\"deadline_misses\":%llu,\"wake_deadline_misses\":%llu,\"peak\":%.9g,\"nonfinite\":%llu,\"events_dispatched\":%llu,\"events_planned\":%zu,\"perf_view_available\":%s}\n",
         block, seconds, wall.size(), quantile(wall, .5), quantile(wall, .99), quantile(cpu, .5), quantile(cpu, .99),
         (unsigned long long)misses, (unsigned long long)wake_misses, peak, (unsigned long long)nonfinite, (unsigned long long)dispatched, plan.size(), perf ? "true" : "false");
+    const uint64_t reads = io_end.chars >= io_start.chars + io_start.probe_bytes ? io_end.chars - io_start.chars - io_start.probe_bytes : 0;
+    std::printf("{\"kind\":\"stream_io\",\"available\":%s,\"logical_read_bytes\":%llu,\"physical_read_bytes\":%llu,\"logical_mb_s\":%.6f,\"physical_mb_s\":%.6f}\n",
+        io_start.valid && io_end.valid ? "true" : "false", (unsigned long long)reads,
+        (unsigned long long)(io_end.disk >= io_start.disk ? io_end.disk - io_start.disk : 0), reads / 1048576. / seconds,
+        (io_end.disk >= io_start.disk ? io_end.disk - io_start.disk : 0) / 1048576. / seconds);
     p->deactivate(p); p->destroy(p); entry->deinit(); dlclose(module);
     require(dispatched == plan.size() && nonfinite == 0, "complete finite audition");
 }
