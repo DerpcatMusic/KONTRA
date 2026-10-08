@@ -251,7 +251,7 @@ pub fn load_read_streamed_cancelable(
     let Kontakt {
         mut instrument,
         locations,
-        samples,
+        mut samples,
         initialized,
     } = kontakt;
     let (low, high) = (*options.keys.start(), *options.keys.end());
@@ -265,21 +265,39 @@ pub fn load_read_streamed_cancelable(
         .iter()
         .map(|&asset| locations[asset].as_path())
         .collect();
-    let sources = samples
-        .sources(&listed, canceled)
-        .map_err(|e| e.at(crate::Stage::SampleResolve))?
-        .into_iter()
-        .zip(listed)
-        .map(|(source, location)| {
-            (
-                std::sync::Arc::new(source) as std::sync::Arc<dyn crate::AssetSource>,
-                location,
-            )
-        })
+    let cached = options
+        .library
+        .as_deref()
+        .and_then(|preset| crate::header_cache::load(preset, &listed, &mut samples));
+    let hit = cached.is_some();
+    let resolved = match cached {
+        Some(sources) => sources,
+        None => samples
+            .sources(&listed, canceled)
+            .map_err(|e| e.at(crate::Stage::SampleResolve))?,
+    };
+    let sources: Vec<_> = resolved.into_iter().map(std::sync::Arc::new).collect();
+    let registry = sources
+        .iter()
+        .cloned()
+        .zip(listed.iter().copied())
+        .map(|(source, path)| (source as std::sync::Arc<dyn crate::AssetSource>, path))
         .collect();
     drop(samples);
+    if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
+        eprintln!(
+            "AUDIT {{\"stage\":\"sample_header_cache\",\"hit\":{}}}",
+            hit
+        );
+    }
     drop(span);
-    let opened = crate::stream::Streamer::open(sources, options.rate, policy, 32, canceled)?;
+    let opened = crate::stream::Streamer::open(registry, options.rate, policy, 32, canceled)?;
+    if !hit && !canceled() {
+        if let Some(preset) = options.library.as_deref() {
+            crate::header_cache::store(preset, &listed, &sources, &opened.assets);
+        }
+    }
+    drop(sources);
     if canceled() {
         return Err(LoadError::Canceled);
     }

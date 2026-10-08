@@ -49,10 +49,19 @@ def main():
         env.update(PROBE_PATH=path, PROBE_PROGRAM=program, TMPDIR="/proc/self/no-audit-tmp",XDG_DATA_HOME="/tmp/audit-data", KONTRA_LOG_DIR="/proc/self/no-audit-log", KONTRA_DISABLE_NETWORK="1")
         env["XDG_CACHE_HOME"] = "/proc/self/no-audit-cache" if mode == "v1fresh" else str(Path.home() / ".cache")
         env["KONTRA_AUDIT_LOAD"] = "1"
-        # The root/caches are read-only; TMPDIR and LOG_DIR cannot be created.
+        # Only the v2-owned numeric metadata namespace may be writable.
+        cache_home = env.get("PROBE_CACHE_HOME") if mode == "v2" else None
+        if cache_home:
+            cache_home = Path(cache_home).resolve()
+            numeric = cache_home / "kontra" / "v2-headers"
+            numeric.mkdir(parents=True, exist_ok=True)
+            env["XDG_CACHE_HOME"] = str(cache_home)
+        # Everything else stays read-only; TMPDIR and LOG_DIR cannot be created.
         # Capture output in memory and persist only the sanitized probe metadata.
         cmd = ["bwrap", "--die-with-parent", "--ro-bind", "/", "/", "--proc", "/proc", "--dev-bind", "/dev", "/dev",
                "--tmpfs", "/tmp", str(Path(binary).resolve()), "--ignored", "--exact", env.get("PROBE_TEST", "plugin::tests::probe_load"), "--nocapture"]
+        if cache_home:
+            cmd[5:5] = ["--bind", str(numeric), str(numeric)]
         stages, result = [], {}
         begin = time.monotonic()
         try:

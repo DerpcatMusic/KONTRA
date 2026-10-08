@@ -2,7 +2,10 @@
 //! measured read latency, and the decode worker thread behind the core's
 //! page cache. Only heads and a bounded page pool are resident.
 
-use crate::{LoadError, samples::Source};
+use crate::{
+    LoadError,
+    samples::{FileAt, Source},
+};
 use sampler_core::{AssetId, DecodeFailure, PAGE_FRAMES, Pcm, StreamCache, StreamWorker};
 use sampler_ir as ir;
 use std::{
@@ -23,7 +26,7 @@ type Frame = [f32; 2];
 /// A sample's bytes as a seekable stream, decrypted on the fly. Reads go
 /// through one buffer: decoders read a few bytes at a time.
 struct Bytes {
-    file: File,
+    file: Arc<File>,
     source: Source,
     position: u64,
     /// Decrypted bytes from member offset `at`.
@@ -37,7 +40,10 @@ const BUFFER: usize = 16 << 10;
 impl Bytes {
     fn open(source: &Source) -> io::Result<Self> {
         Ok(Self {
-            file: File::open(&source.path)?,
+            file: match &source.handle {
+                Some(handle) => handle.clone(),
+                None => Arc::new(File::open(&source.path)?),
+            },
             source: source.clone(),
             position: 0,
             buffer: Vec::with_capacity(BUFFER),
@@ -52,12 +58,14 @@ impl Read for Bytes {
         if self.position < self.at || self.position >= end {
             let left = self.source.size.saturating_sub(self.position);
             let len = BUFFER.min(usize::try_from(left).unwrap_or(usize::MAX));
-            self.file
-                .seek(SeekFrom::Start(self.source.offset + self.position))?;
+            let mut file = FileAt {
+                file: &self.file,
+                pos: self.source.offset + self.position,
+            };
             self.buffer.resize(len, 0);
             let mut filled = 0;
             while filled < len {
-                match self.file.read(&mut self.buffer[filled..])? {
+                match file.read(&mut self.buffer[filled..])? {
                     0 => break,
                     n => filled += n,
                 }
@@ -101,11 +109,18 @@ enum Codec {
 /// Where an asset's frames are read from, reopened by each decode thread.
 pub trait AssetSource: Send + Sync {
     fn open(&self) -> io::Result<SampleReader>;
+    /// A validated persistent numeric header, when available.
+    fn header(&self) -> Option<(u32, usize)> {
+        None
+    }
 }
 
 impl AssetSource for Source {
     fn open(&self) -> io::Result<SampleReader> {
         SampleReader::open(self)
+    }
+    fn header(&self) -> Option<(u32, usize)> {
+        self.header
     }
 }
 
@@ -420,7 +435,18 @@ impl Streamer {
                             .map(|i| {
                                 let (source, path) = &sources[i];
                                 let result = (|| {
-                                    if canceled() { return Err(LoadError::Canceled); }
+                                    if canceled() {
+                                        return Err(LoadError::Canceled);
+                                    }
+                                    if let Some((rate, frames)) = source.header() {
+                                        let pcm = Pcm::streamed(rate, frames).map_err(|e| {
+                                            LoadError::Invalid {
+                                                path: (*path).into(),
+                                                reason: e.to_string(),
+                                            }
+                                        })?;
+                                        return Ok((pcm, None));
+                                    }
                                     let begin = Instant::now();
                                     let mut reader =
                                         source.open().map_err(|e| LoadError::io(path, e))?;

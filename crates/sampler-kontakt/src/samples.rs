@@ -7,7 +7,7 @@ use ni_file::{nis::LibraryKey, nkr::Archive};
 use std::{
     collections::HashMap,
     fs::File,
-    io::Cursor,
+    io::{self, Cursor, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -26,6 +26,8 @@ pub struct Source {
     pub(crate) offset: u64,
     pub(crate) size: u64,
     pub(crate) key: Option<Arc<dyn LibraryKey>>,
+    pub(crate) handle: Option<Arc<File>>,
+    pub(crate) header: Option<(u32, usize)>,
 }
 
 /// Resolves and decodes the samples of one library, opening each archive's
@@ -34,6 +36,7 @@ pub struct Samples {
     root: PathBuf,
     archives: HashMap<PathBuf, Arc<Archive>>,
     keys: HashMap<PathBuf, Arc<dyn LibraryKey>>,
+    handles: HashMap<PathBuf, Arc<File>>,
     /// Numeric headers only; repeated zone trims need no additional disk reads.
     frame_counts: HashMap<PathBuf, u64>,
     /// Lower-case basename to loose files under `root`, built on first miss.
@@ -47,6 +50,7 @@ impl Samples {
             root: root.canonicalize().unwrap_or_else(|_| root.into()),
             archives: HashMap::new(),
             keys: HashMap::new(),
+            handles: HashMap::new(),
             frame_counts: HashMap::new(),
             loose: None,
         }
@@ -147,7 +151,9 @@ impl Samples {
 
     /// Where a resolved sample's bytes live, for random-access streaming.
     pub fn source(&mut self, location: &Path) -> Result<Source, LoadError> {
-        let Some((archive, member)) = archive_member(location) else {
+        let Some((archive, member)) =
+            archive_member_where(location, |p| self.archives.contains_key(p) || p.is_file())
+        else {
             let size = std::fs::metadata(location)
                 .map_err(|e| LoadError::io(location, e))?
                 .len();
@@ -156,12 +162,20 @@ impl Samples {
                 offset: 0,
                 size,
                 key: None,
+                handle: None,
+                header: None,
             });
         };
-        let file = File::open(&archive).map_err(|e| LoadError::io(&archive, e))?;
-        let entry = self
-            .archive(&archive)?
-            .member(file, &member)
+        self.archive(&archive)?;
+        let handle = self.handles[&archive].clone();
+        let entry = self.archives[&archive]
+            .member(
+                FileAt {
+                    file: &handle,
+                    pos: 0,
+                },
+                &member,
+            )
             .map_err(|e| LoadError::decode(&archive, "archive member header", e))?
             .filter(|e| e.valid)
             .ok_or_else(|| LoadError::Invalid {
@@ -191,6 +205,55 @@ impl Samples {
             offset: entry.offset,
             size: entry.size,
             key,
+            handle: Some(handle),
+            header: None,
+        })
+    }
+
+    pub(crate) fn cached_source(
+        &mut self,
+        location: &Path,
+        file: &Path,
+        offset: u64,
+        size: u64,
+        keyed: bool,
+        header: (u32, usize),
+    ) -> Option<Source> {
+        let holding =
+            archive_member_where(location, |p| self.archives.contains_key(p) || p.is_file())
+                .map_or_else(|| location.to_path_buf(), |(archive, _)| archive);
+        if holding != file || !file.starts_with(&self.root) {
+            return None;
+        }
+        let archive = holding != location;
+        let handle = if archive {
+            if !self.handles.contains_key(file) {
+                self.handles
+                    .insert(file.into(), Arc::new(File::open(file).ok()?));
+            }
+            Some(self.handles[file].clone())
+        } else {
+            None
+        };
+        let key = if keyed {
+            if !archive {
+                return None;
+            }
+            if !self.keys.contains_key(file) {
+                self.keys
+                    .insert(file.into(), crate::library_key(file).ok()?);
+            }
+            Some(self.keys[file].clone())
+        } else {
+            None
+        };
+        Some(Source {
+            path: file.into(),
+            offset,
+            size,
+            key,
+            handle,
+            header: Some(header),
         })
     }
 
@@ -215,6 +278,7 @@ impl Samples {
                         root: self.root.clone(),
                         archives: self.archives.clone(),
                         keys: self.keys.clone(),
+                        handles: self.handles.clone(),
                         frame_counts: HashMap::new(),
                         loose: None,
                     };
@@ -313,17 +377,49 @@ impl Samples {
 
     fn archive(&mut self, path: &Path) -> Result<&Archive, LoadError> {
         if !self.archives.contains_key(path) {
-            let file = File::open(path).map_err(|e| LoadError::io(path, e))?;
-            let index = Archive::read_index(file)
+            let mut file = File::open(path).map_err(|e| LoadError::io(path, e))?;
+            let index = Archive::read_index(&mut file)
                 .map_err(|e| LoadError::decode(path, "archive directory", e))?;
+            self.handles.insert(path.into(), Arc::new(file));
             self.archives.insert(path.into(), Arc::new(index));
         }
         Ok(&self.archives[path])
     }
 }
 
+/// Private cursor over a shared archive handle. Positional reads keep workers
+/// independent without reopening the archive or racing its seek position.
+pub(crate) struct FileAt<'a> {
+    pub(crate) file: &'a File,
+    pub(crate) pos: u64,
+}
+impl Read for FileAt<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        #[cfg(unix)]
+        let n = std::os::unix::fs::FileExt::read_at(self.file, buf, self.pos)?;
+        #[cfg(windows)]
+        let n = std::os::windows::fs::FileExt::seek_read(self.file, buf, self.pos)?;
+        self.pos += n as u64;
+        Ok(n)
+    }
+}
+impl Seek for FileAt<'_> {
+    fn seek(&mut self, to: SeekFrom) -> io::Result<u64> {
+        self.pos = match to {
+            SeekFrom::Start(n) => Some(n),
+            SeekFrom::Current(n) => self.pos.checked_add_signed(n),
+            SeekFrom::End(n) => self.file.metadata()?.len().checked_add_signed(n),
+        }
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+        Ok(self.pos)
+    }
+}
+
 /// `(archive, member)` when an ancestor of `path` is an NKX/NKR file.
 fn archive_member(path: &Path) -> Option<(PathBuf, String)> {
+    archive_member_where(path, Path::is_file)
+}
+fn archive_member_where(path: &Path, exists: impl Fn(&Path) -> bool) -> Option<(PathBuf, String)> {
     path.ancestors().skip(1).find_map(|parent| {
         let archive = parent
             .extension()
@@ -333,7 +429,7 @@ fn archive_member(path: &Path) -> Option<(PathBuf, String)> {
             .ok()?
             .to_string_lossy()
             .replace('\\', "/");
-        (archive && parent.is_file()).then(|| (parent.into(), member))
+        (archive && exists(parent)).then(|| (parent.into(), member))
     })
 }
 
@@ -622,12 +718,22 @@ mod tests {
             .collect();
         let listed: Vec<_> = locations.iter().map(PathBuf::as_path).collect();
         let sources = samples.sources(&listed, &|| false).unwrap();
-        for source in sources {
-            let mut reader = crate::SampleReader::open(&source).unwrap();
-            let mut frames = [[0.; 2]];
-            reader.read(0, &mut frames).unwrap();
-            assert_eq!(frames, [[0.5, 0.5]]);
-        }
+        assert!(Arc::ptr_eq(
+            sources[0].handle.as_ref().unwrap(),
+            sources[1].handle.as_ref().unwrap()
+        ));
+        std::thread::scope(|scope| {
+            for source in sources {
+                scope.spawn(move || {
+                    for _ in 0..100 {
+                        let mut reader = crate::SampleReader::open(&source).unwrap();
+                        let mut frames = [[0.; 2]];
+                        reader.read(0, &mut frames).unwrap();
+                        assert_eq!(frames, [[0.5, 0.5]]);
+                    }
+                });
+            }
+        });
         assert!(matches!(
             samples.sources(&listed, &|| true),
             Err(LoadError::Canceled)

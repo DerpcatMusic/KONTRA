@@ -9,6 +9,7 @@
 mod access;
 pub mod audit;
 mod container;
+mod header_cache;
 mod effects;
 pub mod keyswitch;
 mod library;
