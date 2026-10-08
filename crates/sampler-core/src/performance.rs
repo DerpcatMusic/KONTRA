@@ -94,6 +94,9 @@ impl Runtime {
 #[derive(Clone, Copy)]
 pub(super) struct State {
     pub articulation: u32,
+    pub native_key: Option<u8>,
+    pub native_tick: u64,
+    pub native_seed: u64,
     pub controllers: [u32; 128],
     /// The virtual controller [`crate::PREVIOUS_KEY`]: see [`previous_key_value`].
     pub previous: u32,
@@ -142,6 +145,9 @@ impl PerformanceState {
         let mut states = vec![
             State {
                 articulation: 0,
+                native_key: None,
+                native_tick: 0,
+                native_seed: 0,
                 controllers: RESET_CONTROLLERS,
                 previous: 0,
                 axes: [0; crate::MAX_AXES],
@@ -241,8 +247,11 @@ impl Runtime {
             if self.performance_state.current(performance).axes[axis] != choice {
                 self.performance_state.edit(performance).axes[axis] = choice;
             }
-        } else if self.performance_state.current(performance).articulation != value {
-            self.performance_state.edit(performance).articulation = value;
+        } else {
+            let key = self.plans.get(self.active_plan.0).unwrap().prepared.native_articulation_keys.get(value as usize).copied().flatten();
+            let state = self.performance_state.edit(performance);
+            state.articulation = value;
+            if key.is_some() { state.native_key = key; }
         }
     }
 }

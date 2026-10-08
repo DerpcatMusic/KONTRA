@@ -156,6 +156,7 @@ pub(crate) fn process(
             | PreparedProcessor::Compressor(_)
             | PreparedProcessor::Decimate(_)
             | PreparedProcessor::Gainer { .. }
+            | PreparedProcessor::StereoModeller { .. }
             | PreparedProcessor::Daft(_)
             | PreparedProcessor::Branch { .. } => {
                 unreachable!("delay, compressor and decimator chains render per voice")

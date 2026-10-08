@@ -110,6 +110,15 @@ impl Resources {
         None
     }
 
+    /// Resolve linked script source before the inline fallback. Resource bytes
+    /// remain in memory and are never written to a plaintext cache.
+    pub fn script(&mut self, name: &str) -> Option<String> {
+        let normalized = name.replace('\\', "/");
+        let bytes = self
+            .read(&normalized)
+            .or_else(|| self.read(&format!("Resources/scripts/{normalized}")))?;
+        Some(ni_file::kontakt::objects::BParScript::decode_source(bytes))
+    }
     /// The layout of the picture at `path` (`.png`): its `.txt` and its
     /// frame size from the image header, whichever the library has.
     pub fn picture(&mut self, path: &str) -> Option<sampler_ui_ir::ImageMeta> {
