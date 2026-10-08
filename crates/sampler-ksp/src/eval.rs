@@ -1140,7 +1140,7 @@ impl Eval<'_> {
                     fonts.push(name);
                     fonts.len() - 1
                 });
-                V::I(index as i32)
+                V::I(26 + index as i32)
             }
             SetKeyColor | SetKeyType | SetKeyPressed | SetKeyName => {
                 let key = self.int(args, 0)?;
