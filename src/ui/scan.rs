@@ -21,10 +21,28 @@ fn add(counts: &mut BTreeMap<String, usize>, key: impl Into<String>) {
     *counts.entry(key.into()).or_default() += 1;
 }
 
+// Validate the legacy reader's public bytes with the existing strict script parser.
+pub(crate) fn strict_table(data: &[u8], version: u16) -> (&'static str,BTreeMap<String,usize>) {
+    let mut body=vec![0];body.extend(version.to_le_bytes());body.extend(data);
+    let mut wire=6u16.to_le_bytes().to_vec();
+    let Ok(len)=u32::try_from(body.len()) else{return ("unknown",BTreeMap::new())};
+    wire.extend(len.to_le_bytes());wire.extend(body);
+    let limits=sampler_kontakt::Limits{bytes:wire.len(),records:data.len()/4+1};
+    let parsed=sampler_kontakt::Chunks::parse(&wire,limits).and_then(|c|sampler_kontakt::Script::parse(c.iter().next().unwrap(),limits));
+    match parsed {
+        Ok(script)=>match script.persistent {
+            None=>("absent",BTreeMap::new()),
+            Some(entries)=>{let mut tags=BTreeMap::new();for e in entries.iter(){add(&mut tags,metrics::metadata::sigil(e.data()));}("decoded",tags)}
+        },
+        Err(_)=>("malformed",BTreeMap::new()),
+    }
+}
+
 fn render(
     face: &ir::Interface,
     source: &mut pictures::Source,
     values: &mut ir_view::Values,
+    typed_targets: &std::collections::BTreeSet<(u8,String)>,
     out: &Path,
     prefix: &str,
 ) -> Value {
@@ -46,7 +64,10 @@ fn render(
         BTreeMap::new(),
     );
     for u in &face.unsupported {
-        add(&mut properties, u.feature.clone());
+        let token=u.feature.strip_suffix("[]").unwrap_or(&u.feature);
+        if include_str!("../../tools/kontra-scan/ui-symbols.txt").lines().any(|name|name==token) {
+            add(&mut properties,u.feature.clone());
+        } else { add(&mut properties,"unsupported UI feature (private identifier omitted)"); }
     }
     let (mut visible, mut interactive, mut bound, mut declared, mut declared_bound) =
         (0, 0, 0, 0, 0);
@@ -141,6 +162,8 @@ fn render(
             add(&mut geometry, "outside authored page candidate");
         }
     }
+    let typed_refs=face.widgets.iter().enumerate().filter(|(n,w)|face.visible(ir::WidgetRef(*n)) && matches!(w.binding,ir::Binding::Variable{..})).count();
+    let typed_bound=face.widgets.iter().enumerate().filter(|(n,w)|face.visible(ir::WidgetRef(*n)) && matches!(&w.binding,ir::Binding::Variable{script,name} if typed_targets.contains(&(*script,name.clone())))).count();
     let mut renders = Vec::new();
     let initial = values.clone();
     for p in 0..face.pages.len() {
@@ -228,7 +251,7 @@ fn render(
         .iter()
         .filter(|s| !matches!(s.font, ir::Font::Default))
         .count();
-    json!({"controls_declared":declared,"controls_bound_declared":declared_bound,
+    json!({"bound_typed":if matches!(face.source,ir::Source::FalconLua){None}else{Some(typed_bound)},"typed_binding_refs":typed_refs,"typed_binding_basis":"installed script model target; live typed edit/readback unmeasured","phantom_free_controls":null,"controls_declared":declared,"controls_bound_declared":declared_bound,
         "asset_lookup_requested":source.scan.lookups-before.lookups,"asset_lookup_ok":source.scan.lookup_ok-before.lookup_ok,
         "asset_decode_requested":source.scan.decodes-before.decodes,"asset_decode_ok":source.scan.decode_ok-before.decode_ok,
         "font_declared":fonts_declared,"font_success":0,
@@ -371,6 +394,7 @@ pub fn one(id: &str, out: &Path) -> Value {
         }
         result["stage"] = json!(format!("Original UI program {program}"));
         metrics::checkpoint(out, &result);
+        let typed_targets=loaded.scripts.views.iter().flat_map(|view|view.model().interface.widgets.iter().filter(|w|matches!(w.value,sampler_ksp::model::WidgetValue::Text(_)|sampler_ksp::model::WidgetValue::Ints(_)|sampler_ksp::model::WidgetValue::Reals(_))).map(|w|(view.slot(),w.name.clone()))).collect();
         let mut source = pictures::Source::of(&path);
         let mut views = Vec::new();
         for (slot, face) in loaded.interfaces.iter().enumerate() {
@@ -382,6 +406,7 @@ pub fn one(id: &str, out: &Path) -> Value {
                 face,
                 &mut source,
                 &mut values,
+                &typed_targets,
                 out,
                 &format!("program-{program}-slot-{slot}"),
             );
@@ -463,28 +488,23 @@ pub fn one(id: &str, out: &Path) -> Value {
                     .max()
                     .filter(|(mapped, ..)| *mapped)
                     .map(|(.., k)| (k, 64));
-                best.or_else(|| {
-                    i.zones
-                        .iter()
-                        .find(|z| !switch.contains(&z.keys.low) && !invalid.contains(&z.keys.low))
-                        .map(|z| {
-                            (
-                                z.keys.low,
-                                ((u16::from(z.velocities.low) + u16::from(z.velocities.high)) / 2)
-                                    .max(1) as u8,
-                            )
-                        })
-                })
+                best
             })
         })();
-        let pick = metrics::note(program as u32).or(candidate);
+        let mut excluded = native_invalid.clone();
+        if let Some(i)=&loaded.instrument { excluded.extend(i.articulations.iter().flat_map(|a|a.switch_keys.iter().copied())); }
+        let pick = metrics::note(program as u32).or(candidate).or_else(||metrics::fallback_note(&excluded));
         let pick_source = match pick {
-            Some((key, 64)) if native_valid.contains(&key) && !native_invalid.contains(&key) => {
+            Some((key, 64)) if candidate==pick && native_valid.contains(&key) && !native_invalid.contains(&key) => {
                 "native_declared"
             }
-            Some((_, 64)) => "zone_coverage",
+            Some((_, 64)) if candidate==pick => "zone_coverage",
             _ => "fallback",
         };
+        let declared_switch=loaded.instrument.as_ref().and_then(|i|i.articulations.iter().flat_map(|a|a.switch_keys.iter().copied()).min())
+            .or_else(||loaded.scripts.views.iter().flat_map(|v|v.model().interface.keys.iter().enumerate()).find(|(_,k)|k.kind==Some(1)&&k.color!=Some(17)).map(|(key,_)|key as u8));
+        let keyswitch=metrics::planned_keyswitch(program as u32).unwrap_or(declared_switch);
+        let sample_zone_count=loaded.instrument.as_ref().map(|i|i.zones.len());
         let mut runtime_faults = Vec::new();
         let mut heard = false;
         result["stage"] = json!(format!("play program {program}"));
@@ -492,6 +512,11 @@ pub fn one(id: &str, out: &Path) -> Value {
         if let Some((key, velocity)) = pick {
             core.event(0, Event::midi1(0xb0, 1, 100));
             core.event(0, Event::midi1(0xb0, 11, 127));
+            if let Some(switch)=keyswitch {
+                core.event(0, Event::midi1(0x90,switch,64));
+                let _=core.render(128);
+                core.event(0, Event::midi1(0x80,switch,0));
+            }
             core.event(0, Event::midi1(0x90, key, velocity));
             for _ in 0..180 {
                 std::thread::sleep(Duration::from_millis(3));
@@ -507,13 +532,18 @@ pub fn one(id: &str, out: &Path) -> Value {
             }
         }
         any_heard |= heard;
+        let mut view_requests=BTreeMap::new();
+        for view in &loaded.scripts.views { for request in &view.model().requests {
+            if matches!(request.command,"load_native_ui"|"load_komplete_ui"|"load_performance_view") {add(&mut view_requests,request.command);}
+        }}
+        let native_requested=view_requests.contains_key("load_native_ui")||view_requests.contains_key("load_komplete_ui");
         let lua = core.scan_lua(0);
         let lua_report = lua.as_ref().map(|l| json!({"init_faults":l.init_count,"runtime_faults":l.runtime_count,
             "init_first":l.init_first.as_deref().map(metrics::message),"runtime_first":l.runtime_first.as_deref().map(metrics::message),"budget_hits":l.budget_hits}));
-        result["programs"].as_array_mut().unwrap().push(json!({"ksp":ksp,"ksp_runtime_faults":runtime_faults.iter().map(|(program,outcome)|json!({"program":program,"callback":sampler_ksp::callback_of(&loaded.scripts.views,*program),"category":match outcome{sampler_core::Outcome::FuelExhausted=>"fuel-budget",_=>"runtime-fault"},"core_error":match outcome{sampler_core::Outcome::Fault(e)=>Some(format!("{e:?}")),_=>None}})).collect::<Vec<_>>(),"lua":lua_report,"admitted_saved_entries_by_sigil":admitted,
+        result["programs"].as_array_mut().unwrap().push(json!({"authored_view_requests":view_requests,"native_frontend_consumed":if native_requested{Some(false)}else{None},"ksp":ksp,"ksp_runtime_faults":runtime_faults.iter().map(|(program,outcome)|json!({"program":program,"callback":sampler_ksp::callback_of(&loaded.scripts.views,*program),"category":match outcome{sampler_core::Outcome::FuelExhausted=>"fuel-budget",_=>"runtime-fault"},"core_error":match outcome{sampler_core::Outcome::Fault(e)=>Some(format!("{e:?}")),_=>None}})).collect::<Vec<_>>(),"lua":lua_report,"admitted_saved_entries_by_sigil":admitted,
             "load_path":if is_uvi {if lua.is_some(){"scripted-worker"}else{"offline-loader"}}else{"kontakt-v2-loader"},
-            "sample_resident_bytes":sample_resident_bytes,"underruns":core.problems(0).underruns,
-            "pick_source":pick_source,"native_valid_keys":native_valid,"native_key_conflicts":native.as_ref().map(|n|n.native_key_conflicts),"native_preferred_note":candidate.filter(|(k,_)|native_valid.contains(k)),
+            "sample_zone_count":sample_zone_count,"decoded_zone_count":loaded.report.decoded.zones,"sample_count":loaded.report.decoded.samples,"sample_resident_bytes":sample_resident_bytes,"underruns":core.problems(0).underruns,
+            "keyswitch":keyswitch,"fallback_note":pick_source=="fallback","zero_zone_reason":if sample_zone_count==Some(0) {Some("unknown")} else {None},"pick_source":pick_source,"native_valid_keys":native_valid,"native_key_conflicts":native.as_ref().map(|n|n.native_key_conflicts),"native_preferred_note":candidate.filter(|(k,_)|native_valid.contains(k)),
             "program":program,"loaded":true,"source":if is_uvi {"uvi"}else{"kontakt"},"script_errors":script_errors,"symbols":symbols,"views":views,"plays_note":if heard {"yes"}else{"silent"},"pick":pick,"load_ms":start.elapsed().as_secs_f64()*1000.}));
         // Keep the streaming owner alive throughout the note probe.
         loaded.stream.take();
