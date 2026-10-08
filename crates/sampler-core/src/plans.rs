@@ -234,7 +234,7 @@ impl PlanControl {
         let script = super::script_params::EngineLayers::new(&prepared);
         let sequences = super::variation::SequenceState::new(&prepared);
         let controls = super::control::ControlState::new(&prepared);
-        let scripts = prepared.script_initial.clone();
+        let scripts = prepared.script_initial.iter().map(super::ops::ScriptInitial::bank).collect();
         let dims = super::grow::Dims::of(request, &prepared);
         match self.pending.push(PlanTransfer {
             request,
