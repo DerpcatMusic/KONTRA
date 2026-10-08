@@ -282,6 +282,16 @@ impl Default for V2Core {
     }
 }
 
+#[cfg(feature = "shots")]
+impl V2Core {
+    pub fn scan_runtime_faults(&mut self,part:usize)->Vec<(usize,sampler_core::Outcome)> {
+        let mut out=Vec::new();if let Some(Some(p))=self.parts.get_mut(part){p.runtime.flush_behaviors_at(|_,_,outcome,program|{if matches!(outcome,sampler_core::Outcome::Fault(_)|sampler_core::Outcome::FuelExhausted){out.push((program,outcome));}true});}out
+    }
+    pub fn scan_lua(&self, part: usize) -> Option<sampler_uvi::script::ScanFaults> {
+        self.parts.get(part)?.as_ref()?.script.as_ref().map(|s| s.scan_faults())
+    }
+}
+
 fn wire(key: u8, external_id: Option<i32>) -> Input {
     Input { protocol: WIRE.protocol, port: WIRE.port, group: WIRE.group, channel: WIRE.channel, key, external_id }
 }
@@ -806,6 +816,8 @@ impl Core for V2Core {
 
     fn set_control(&mut self, part: usize, control: sampler_ui_ir::ControlId, value: f64) -> bool {
         let Some(Some(p)) = self.parts.get_mut(part) else { return false };
+        if let Some(script) = &mut p.script
+            && script.ui().value(control).is_some() { return script.set_control(control, value) }
         let rt = &mut p.runtime;
         let (plan, id) = (rt.active_plan(), sampler_core::ControlId(control.0));
         let Ok(ControlDefinition { domain, .. }) = rt.control_definition(plan, id) else { return false };
@@ -820,7 +832,9 @@ impl Core for V2Core {
     }
 
     fn control_value(&self, part: usize, control: sampler_ui_ir::ControlId) -> Option<f64> {
-        let rt = &self.parts.get(part)?.as_ref()?.runtime;
+        let p = self.parts.get(part)?.as_ref()?;
+        if let Some(v) = p.script.as_ref().and_then(|s| s.ui().value(control)) { return Some(v) }
+        let rt = &p.runtime;
         rt.control_value(rt.active_plan(), sampler_core::ControlId(control.0)).ok().map(number)
     }
 }
@@ -1088,7 +1102,7 @@ fn kontakt(
         interfaces: loaded.interfaces,
         controls: Vec::new(),
         instrument: Some(Arc::new(loaded.instrument)),
-        scripts: ScriptUi { views: loaded.scripts, resources: loaded.resources },
+        scripts: ScriptUi { views: loaded.scripts, resources: loaded.resources, ..Default::default() },
         stream: Some(Arc::new(Stream { streamer, assets, report: stream })),
     })
 }
@@ -1099,12 +1113,13 @@ fn uvi(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
     let load = |e: &dyn std::fmt::Display| CoreError::Load(LoadFailure::message(e));
     let mut t = sampler_uvi::translate_path(&request.path).map_err(|e| load(&*e))?;
     let rate = request.sample_rate as u32;
-    let attached = t.attach_script(rate, sampler_uvi::script::Config::realtime()).map_err(|e| load(&e))?;
+    let attached = t.attach_script_with_ui_state(rate, sampler_uvi::script::Config::realtime(), request.uvi_state.clone()).map_err(|e| load(&e))?;
     let mut report = LoadReport::of(&t.instrument, &request.path, t.locations.len());
     let tree = nest(&mut t.instrument);
     let streamed = sampler_uvi::assemble_translated_streamed(t, rate, &Default::default()).map_err(|e| load(&*e))?;
     let sampler_kontakt::Streamed { mut loaded, assets, cache, streamer, report: stream } = streamed;
     report.decoded.full_bytes = stream.full_bytes;
+    let uvi_ui = attached.as_ref().map(|a| a.driver.ui().clone());
     let driver = attached.map(|a| {
         // Loading reports a script it has no frontend for; this one runs.
         loaded.instrument.unsupported.retain(|u| !(u.feature == "script" && u.value.contains("no frontend")));
@@ -1120,9 +1135,9 @@ fn uvi(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
         tree,
         report,
         interfaces: loaded.interfaces,
-        controls: Vec::new(),
+        controls: uvi_ui.as_ref().map(|u| u.values()).unwrap_or_default(),
         instrument: Some(Arc::new(loaded.instrument)),
-        scripts: ScriptUi { views: loaded.scripts, resources: loaded.resources },
+        scripts: ScriptUi { uvi: uvi_ui, views: loaded.scripts, resources: loaded.resources, ..Default::default() },
         stream: Some(Arc::new(Stream { streamer, assets, report: stream })),
     })
 }
@@ -1222,11 +1237,12 @@ impl V2Loader {
             }
             report.decoded.mpe = super::report::mpe_summary(&defaults);
         }
-        let controls = prepared
+        let mut controls: Vec<_> = prepared
             .controls()
             .iter()
             .map(|c| (sampler_ui_ir::ControlId(c.id.0), number(c.default)))
             .collect();
+        if let Some(script) = &script { controls.extend(script.ui().values()); }
         let (limits, ceiling) = limits(&prepared);
         let per_voice = prepared.voice_state_bytes() + VOICE_OVERHEAD;
         report.decoded.script_callbacks = limits.behaviors;
@@ -1737,7 +1753,7 @@ mod tests {
                       set_key_color(60, $KEY_COLOR_RED)\nend on\n";
         let script = sampler_ksp::compile(source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
         let k = script.controls().iter().find(|c| c.variable.ends_with("$k")).unwrap().definition.id.0;
-        let mut ui = ScriptUi { views: vec![script.view()], resources: None };
+        let mut ui = ScriptUi { views: vec![script.view()], resources: None, ..Default::default() };
         let before = ui.interfaces();
         assert!(ui.keys()[36].control && ui.keys()[60].color.is_none());
         let pcm = Pcm::new(48000, vec![[0.0; 2]; 512].into_boxed_slice()).unwrap();

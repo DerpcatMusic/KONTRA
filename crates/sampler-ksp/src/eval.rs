@@ -178,6 +178,8 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
         pending_menus: BTreeMap::new(),
         callback_type: b::cb::INIT,
     };
+    #[cfg(feature="scan")]
+    crate::scan::present(hir.callbacks.iter().any(|c|c.kind==CallbackKind::Init),hir.callbacks.iter().any(|c|c.kind==CallbackKind::PersistenceChanged));
     // Kontakt's defaults: knobs/sliders start at their minimum when 0 is outside.
     for (index, ui) in hir.uis.iter().enumerate() {
         if let Some((lo, hi)) = declared_range(ui) {
@@ -185,7 +187,12 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
         }
     }
     if let Some(init) = hir.callbacks.iter().find(|c| c.kind == CallbackKind::Init) {
-        e.block(&init.body)?;
+        #[cfg(feature="scan")]
+        crate::scan::stage("init");
+        let r=e.block(&init.body);
+        #[cfg(feature="scan")]
+        crate::scan::phase("init",r.as_ref().err());
+        r?;
     }
     // On load Kontakt restores saved persistent values, then runs
     // `on persistence_changed`, before the interface is shown.
@@ -201,12 +208,13 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
         }
     }
     e.callback_type = b::cb::PERSISTENCE_CHANGED;
-    if let Some(cb) = hir
-        .callbacks
-        .iter()
-        .find(|c| c.kind == CallbackKind::PersistenceChanged)
-    {
-        e.st.model.persistence_completion = match e.block(&cb.body) {
+    if let Some(cb) = hir.callbacks.iter().find(|c| c.kind == CallbackKind::PersistenceChanged) {
+        #[cfg(feature="scan")]
+        crate::scan::stage("persistence_changed");
+        let result = e.block(&cb.body);
+        #[cfg(feature="scan")]
+        crate::scan::phase("persistence_changed", result.as_ref().err());
+        e.st.model.persistence_completion = match result {
             Ok(_) => model::PersistenceCompletion::Completed,
             Err(f) => {
                 let category = if e.fuel == 0 {
@@ -215,13 +223,10 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
                     model::EvaluationFailure::InvalidValue
                 };
                 e.warn(f.span, "on persistence_changed did not complete".to_owned());
-                model::PersistenceCompletion::Failed {
-                    category,
-                    offset: f.span.start,
-                    builtin: f.builtin,
-                }
+                model::PersistenceCompletion::Failed {category, offset:f.span.start, builtin:f.builtin}
             }
         };
+
     }
     Ok(e.st)
 }
@@ -252,6 +257,8 @@ impl Eval<'_> {
     fn block(&mut self, body: &[Stmt]) -> Result<Flow> {
         for s in body {
             if self.fuel == 0 {
+                #[cfg(feature="scan")]
+                crate::scan::category("fuel-budget");
                 return fault(s.span, "on init exceeded its evaluation budget");
             }
             self.fuel -= 1;
@@ -286,7 +293,9 @@ impl Eval<'_> {
             StmtKind::While(cond, body) => {
                 while self.expr(cond)?.int() != 0 {
                     if self.fuel == 0 {
-                        return fault(s.span, "on init exceeded its evaluation budget");
+                        #[cfg(feature="scan")]
+                crate::scan::category("fuel-budget");
+                return fault(s.span, "on init exceeded its evaluation budget");
                     }
                     self.fuel -= 1;
                     match self.block(body)? {
@@ -766,7 +775,14 @@ impl Eval<'_> {
         Ok(())
     }
 
-    fn builtin(&mut self, builtin: Builtin, args: &[Arg], span: Span) -> Result<V> {
+    fn builtin(&mut self,builtin:Builtin,args:&[Arg],span:Span)->Result<V> {
+        let result=self.builtin_inner(builtin,args,span);
+        #[cfg(feature="scan")]
+        crate::scan::builtin(result.as_ref().err().map(|_|builtin.name()));
+        result
+    }
+
+    fn builtin_inner(&mut self, builtin: Builtin, args: &[Arg], span: Span) -> Result<V> {
         use Builtin::*;
         if let Some(Arg::SysArray(array)) = args.first() {
             // Runtime-maintained arrays are all zero while initializing.
