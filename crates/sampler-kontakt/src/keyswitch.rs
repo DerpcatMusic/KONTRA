@@ -106,6 +106,7 @@ pub(crate) fn translate(
             .iter()
             .enumerate()
             .map(|(r, &i)| ir::Articulation {
+                source: format!("group-switch:{}-{}", ranges[i].0, ranges[i].1),
                 name: key_name(ranges[i].0),
                 switch_keys: (ranges[i].0..=ranges[i].1).collect(),
                 default: r == 0,
@@ -158,6 +159,7 @@ pub(crate) fn translate(
                     .keys
                     .iter()
                     .map(|(key, name)| ir::Articulation {
+                        source: format!("script-switch:{}:{key}", behavior.name),
                         name: name.clone().unwrap_or_else(|| key_name(*key)),
                         switch_keys: vec![*key],
                         default: found.default == Some(*key),
