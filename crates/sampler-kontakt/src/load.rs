@@ -247,6 +247,7 @@ pub fn load_read_streamed(
         zones: instrument.zones.len(),
         assets: kept.len(),
     });
+    let span = crate::audit::Span::new("sample_source_resolve");
     let mut sources = Vec::with_capacity(kept.len());
     for &asset in &kept {
         let location = &locations[asset];
@@ -259,6 +260,7 @@ pub fn load_read_streamed(
             location.as_path(),
         ));
     }
+    drop(span);
     let opened = crate::stream::Streamer::open(sources, options.rate, policy, 32)?;
     let pcm = opened.assets.clone();
     progress(Progress::Lowering);
@@ -570,7 +572,10 @@ fn prepare_inner(
 ) -> Result<Loaded, LoadError> {
     let (rate, scripts) = (options.rate, options.scripts);
     host_volume(&mut instrument);
+    let span = crate::audit::Span::new("resource_index");
     let resources = options.library.as_deref().map(Resources::of);
+    drop(span);
+    let span = crate::audit::Span::new("ksp_compile_init");
     let lower_options = sampler_core::lower::Options { mpe: options.mpe };
     let limits = sampler_ksp::Limits::LIBRARY;
     let mut compiled = Vec::new();
@@ -637,6 +642,8 @@ fn prepare_inner(
             }),
         }
     }
+    drop(span);
+    let span = crate::audit::Span::new("ui_ir_resource_metadata");
     instrument.unsupported.append(&mut views);
     let picture = |path: &str| resources.as_ref()?.borrow_mut().picture(path);
     let mut interfaces = Vec::new();
@@ -651,6 +658,8 @@ fn prepare_inner(
             }),
         }
     }
+    drop(span);
+    let _span = crate::audit::Span::new("lower_plan_bind");
     // ponytail: lowering hands the closure every behavior but binding uses
     // only the compiled ones; failed scripts simply have no module.
     if compiled.is_empty() && !instrument.behaviors.is_empty() {
