@@ -32,15 +32,22 @@ struct Siblings {
     next: Option<Index>,
 }
 
+mod widget;
+pub use widget::{
+    WIDGET_EDIT_CAPACITY, WidgetDefinition, WidgetEdit, WidgetInteraction, WidgetStorage,
+    WidgetValue,
+};
 mod control;
 pub use control::{
-    ControlCallback, ControlClient, ControlContext, ControlDefinition, ControlDomain, ControlId,
-    ControlOperation, ControlQueueError, ControlReply, ControlRequest, ControlValue, ControlWrite,
-    BUS_VOLUME_SLOT, RejectedControls, SlotKind, is_slot_control, slot_control,
+    BUS_VOLUME_SLOT, ControlCallback, ControlClient, ControlContext, ControlDefinition,
+    ControlDomain, ControlId, ControlOperation, ControlQueueError, ControlReply, ControlRequest,
+    ControlValue, ControlWrite, RejectedControls, SlotKind, is_slot_control, slot_control,
 };
 mod controller_event;
 mod performance;
-pub use performance::{AXIS_SWITCH, Keyswitch, previous_key_value, PerformanceId, SelectionPolicy, SelectionSnapshot};
+pub use performance::{
+    AXIS_SWITCH, Keyswitch, PerformanceId, SelectionPolicy, SelectionSnapshot, previous_key_value,
+};
 mod switching;
 pub use switching::{Driver, Selector, Switch, SwitchKeys, Switching};
 mod behavior;
@@ -65,16 +72,24 @@ pub use bus::{Bus, BusMix, BusSend, GroupFader};
 pub use resample::{ResampleQuality, read_radius};
 mod dsp;
 pub use dsp::{
-    Biquad, CompressorSettings, ControlRange, ConvolutionUpload, DaftSettings, Decimator, Delay, FilterKind, Impulse, MAX_IMPULSE_FRAMES, Parameter, Processor,
-    Rectifier, ReverbSettings, StateVariableFilter, SvfMode, VoiceChain,
+    Biquad, CompressorSettings, ControlRange, ConvolutionUpload, DaftSettings, Decimator, Delay,
+    FilterKind, Impulse, MAX_IMPULSE_FRAMES, Parameter, Processor, Rectifier, ReverbSettings,
+    StateVariableFilter, SvfMode, VoiceChain,
 };
 mod envelope;
 use envelope::EnvelopeState;
 pub use envelope::{Envelope, EnvelopeCurve};
+mod engine_parameter_names;
+mod engine_parameters;
 mod gate;
 mod modulation;
 mod plan_programs;
 mod script_params;
+pub use engine_parameter_names::ENGINE_PARAMETER_NAMES;
+pub use engine_parameters::{
+    EngineLookup, EngineMeterAddress, EngineParameterAddress, EngineParameterBinding,
+    EngineParameterLaw, engine_parameter_id, engine_parameter_name,
+};
 mod steal;
 mod voice_mod;
 pub use plan_programs::{PlanProgram, SignalProgram};
@@ -110,8 +125,8 @@ mod resample;
 use plans::{Generation, PlanQueues};
 pub use plans::{PlanControl, PlanError, PlanId, PlanTransfer, RejectedPlan};
 pub use prepare::{
-    AssetId, AXIS_BASE, ControllerCondition, MAX_AXES, PREVIOUS_KEY, Pcm, Prepared, Ranges, Region, Tuning, VelocityCurve, ZoneFades,
-    service_mipmaps,
+    AXIS_BASE, AssetId, ControllerCondition, MAX_AXES, PREVIOUS_KEY, Pcm, Prepared, Ranges, Region,
+    Tuning, VelocityCurve, ZoneFades, service_mipmaps,
 };
 mod integer;
 pub mod lower;

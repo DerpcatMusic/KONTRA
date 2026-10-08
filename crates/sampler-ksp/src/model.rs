@@ -110,6 +110,7 @@ pub struct Widget {
     /// Entry point of `on ui_control`, an index into `Script::entries`.
     pub callback: Option<usize>,
     pub persistence: Persistence,
+    pub location: Option<Location>,
 }
 impl Widget {
     pub fn int(&self, property: &str) -> Option<i32> {
@@ -294,6 +295,14 @@ pub(crate) fn assemble(
                 .iter()
                 .position(|e| e.kind == crate::EntryKind::UiControl(i)),
             persistence: var.persistence,
+            location: match var.home {
+                Home::Control(ui) => controls[ui as usize].map(Location::Control),
+                Home::Cell(c) => Some(Location::Cells { offset: c, len: 1 }),
+                Home::Cells { offset, len } => Some(Location::Cells { offset, len }),
+                Home::Text(c) => Some(Location::Texts { offset: c, len: 1 }),
+                Home::Texts { offset, len } => Some(Location::Texts { offset, len }),
+                _ => None,
+            },
         });
     }
     model.interface.widgets = widgets;

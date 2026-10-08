@@ -55,6 +55,8 @@ pub struct Loaded {
 
 /// The audio side of a script thread.
 pub struct ScriptThread {
+    #[cfg(feature = "scan")]
+    scan: Arc<std::sync::Mutex<crate::script::ScanFaults>>,
     events: rtrb::Producer<Message>,
     ui: Arc<UiBridge>,
     commands: rtrb::Consumer<Command>,
@@ -89,18 +91,28 @@ impl ScriptThread {
         let clock = Arc::new(AtomicU64::new(0f64.to_bits()));
         let stop = Arc::new(AtomicBool::new(false));
         let (ready, loaded) = mpsc::channel();
+        #[cfg(feature = "scan")]
+        let scan = Arc::new(std::sync::Mutex::new(crate::script::ScanFaults::default()));
         let thread = Builder::new()
             .name("uvi-script".into())
             .spawn({
                 let (clock, stop) = (clock.clone(), stop.clone());
+                #[cfg(feature = "scan")]
+                let scan = scan.clone();
                 move || {
                     let mut host =
                         match ScriptHost::new_with_ui_state(&xml, files, config, state.as_ref()) {
                             Ok(host) => host,
-                            Err(e) => return drop(ready.send(Err(e))),
+                            Err(e) => {
+                            #[cfg(feature = "scan")]
+                            crate::script::scan_failed_load(&e);
+                            return drop(ready.send(Err(e)));
+                        }
                         };
                     let handles = host.handles_notes();
                     let ui = Arc::new(UiBridge::new(&host, ui_send, std::thread::current()));
+                    #[cfg(feature = "scan")]
+                    { *scan.lock().unwrap() = host.scan_faults(); }
                     let report = Loaded {
                         findings: host.findings(),
                         interface: host.interface(),
@@ -144,6 +156,8 @@ impl ScriptThread {
                             ui.publish(&host);
                             revision = current;
                         }
+                        #[cfg(feature = "scan")]
+                        { *scan.lock().unwrap() = host.scan_faults(); }
                         backlog.extend(host.take_commands());
                         for command in backlog.drain(..) {
                             // A full queue only delays: the audio side drains it every block.
@@ -175,6 +189,8 @@ impl ScriptThread {
             .map_err(|_| "the script thread stopped while loading".to_string())??;
         Ok((
             Self {
+                #[cfg(feature = "scan")]
+                scan,
                 events,
                 ui: report.ui.clone(),
                 commands,
@@ -202,6 +218,8 @@ impl ScriptThread {
         }
         ok
     }
+    #[cfg(feature = "scan")]
+    pub fn scan_faults(&self) -> crate::script::ScanFaults { self.scan.lock().unwrap().clone() }
 
     fn wake(&self) {
         if let Some(thread) = &self.thread {
