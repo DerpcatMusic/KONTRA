@@ -264,6 +264,8 @@ fn translate(
         .filter_map(|(index, b)| {
             let environment =
                 crate::load::script_environment(b, index, group_names.clone(), Default::default());
+            #[cfg(feature="scan")]
+            sampler_ksp::scan::attempt("import-harvest");
             sampler_ksp::init_engine_pars(&b.source, sampler_ksp::Limits::LIBRARY, &environment)
                 .ok()
         })
@@ -280,6 +282,8 @@ fn translate(
         .any(|(index, b)| {
             let environment =
                 crate::load::script_environment(b, index, group_names.clone(), Default::default());
+            #[cfg(feature="scan")]
+            sampler_ksp::scan::attempt("dynamic-rack");
             sampler_ksp::compile_with(
                 &b.source,
                 48_000,
