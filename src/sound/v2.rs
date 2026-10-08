@@ -1139,11 +1139,13 @@ impl Core for V2Core {
             }
             at+=until;self.align.clock=self.align.clock.saturating_add(until as u64);
         }
+        self.written=live;
         Rendered{buses:&self.aligned_buses,live}
     }
 
     fn trace_master(&mut self, gains: &[f32]) -> bool {
         if !self.signal_trace_active { return false }
+        let buses=if self.holding {&self.aligned_buses} else {&self.buses};
         for (index, part) in self.parts.iter_mut().enumerate() {
             let Some(part) = part else { continue };
             if !part.runtime.signal_trace_enabled() { continue }
@@ -1154,7 +1156,7 @@ impl Core for V2Core {
                     || part.direct & (1 << bus) != 0;
                 if self.written[bus] && routed {
                     part.runtime.trace_host_planar(sampler_core::trace::HostStage::Master(bus),
-                        &self.buses[bus][0][..gains.len()], &self.buses[bus][1][..gains.len()],
+                        &buses[bus][0][..gains.len()], &buses[bus][1][..gains.len()],
                         [1.; 2], Some(gains), true, usize::from(self.mix.buses[bus].port));
                 }
             }
@@ -2213,6 +2215,27 @@ mod tests {
         for held in &core.held[..2] {
             let expression = part.runtime.expression_id(held.id).unwrap();
             assert!(part.runtime.expression(expression).unwrap().pitch_semitones > 1.0, "upper manager bends every member");
+        }
+    }
+
+    #[test]
+    fn v1_upper_mpe_keyboard_controls_reach_every_member() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("upper.wav"); sine(&path);
+        let request = LoadRequest { path, sample_rate: 48000.0, mpe: true, mpe_upper: true, ..Default::default() };
+        let loaded = V2Loader.prepare(&request, &mut |_| {}, &|| false).unwrap();
+        let mut core = V2Core::with_parts(1, 48000.0);
+        let mut mix = Mix::default(); mix.parts[0].mpe = true; mix.parts[0].bend_range = 12;
+        core.set_mix(&mix); core.install(0, loaded.part);
+        for (channel, key) in [(1, 60), (2, 64)] {
+            core.event(0, on(HostNote { port: 0, channel, key, id: i32::from(key), clap: true }));
+        }
+        core.play(0, Event::midi1(0xe0, 127, 127));
+        let part = core.parts[0].as_ref().unwrap();
+        for held in &core.held[..2] {
+            let expression = part.runtime.expression_id(held.id).unwrap();
+            assert!(part.runtime.expression(expression).unwrap().pitch_semitones > 1.0,
+                "the keyboard bend uses the upper manager, as v1 service_channel did");
         }
     }
 

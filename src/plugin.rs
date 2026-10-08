@@ -2726,7 +2726,7 @@ fn align(params:&SamplerParams) {
         (None,_)=>true,
         (Some(s),_)if told(s)==told(&plan)=>true,
         (_,Some((ms,since)))if *ms==told(&plan)=>now.duration_since(*since)>=LATENCY_SETTLE,
-        _=>{*waiting=Some((told(&plan),now));false;}
+        _=>{*waiting=Some((told(&plan),now));false}
     };
     if settled {*sent=Some(Arc::new(plan));*waiting=None;shared.reported.store(told(sent.as_ref().unwrap()).to_bits(),Ordering::Relaxed);}
 }
