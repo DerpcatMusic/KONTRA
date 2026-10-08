@@ -461,6 +461,9 @@ impl Runtime {
         for (lane, &i) in voices.iter().enumerate() {
             if done[lane] {
                 self.end_voice(VoiceId(self.voices.id(i)));
+            } else {
+                let step = self.voices.slots[i].value.as_ref().unwrap().cursor.step();
+                self.refresh_stream_reservation(i, step);
             }
         }
     }
@@ -568,6 +571,7 @@ impl Runtime {
         let n = self.notes.get(f.note.0).unwrap();
         let expression = self.expressions.get(n.expression.0).unwrap();
         let gains = expression.rendered.gains;
+        let stream_step = v.base_step * expression.rendered.ratio;
         // Prepared playback bounds and the cursor's contiguous spans stay
         // within immutable PCM; looping never changes asset ownership.
         let plan = self.plans.get_mut(n.plan.0).unwrap();
@@ -649,6 +653,8 @@ impl Runtime {
         }
         if done {
             self.end_voice(VoiceId(self.voices.id(i)));
+        } else {
+            self.refresh_stream_reservation(i, stream_step);
         }
     }
 }

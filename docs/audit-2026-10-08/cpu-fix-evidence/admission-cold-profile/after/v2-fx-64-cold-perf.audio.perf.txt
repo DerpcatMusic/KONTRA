@@ -1,0 +1,38 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 3K of event 'cycles:u'
+# Event count (approx.): 840452450
+#
+# Overhead  Command    Shared Object     Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      
+# ........  .........  ................  ............................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+    20.05%  admission  admission         [.] <sampler_core::Runtime>::drain_behavior
+     8.05%  admission  admission         [.] sampler_core::dsp::process
+     7.58%  admission  admission         [.] <sampler_core::bus::BusState>::render
+     5.98%  admission  admission         [.] sampler_simd::dispatch::v3::<(), sampler_simd::dispatch::run_fused<(&mut sampler_core::source::Cursor, &mut [[f32; 2]], &mut sampler_core::envelope::EnvelopeState), (), <sampler_core::source::Cursor>::render_run<sampler_core::source::PagedFrames>::{closure#3}, <sampler_core::source::Cursor>::render_run<sampler_core::source::PagedFrames>::{closure#4}>::{closure#0}>
+     3.99%  admission  admission         [.] <sampler_core::Runtime>::render_voice
+     3.45%  admission  admission         [.] <sampler_core::Runtime>::service_cache
+     3.24%  admission  admission         [.] sampler_simd::dispatch::v3::<(), sampler_core::dsp::convolution::mac::{closure#0}>
+     2.92%  admission  admission         [.] <sampler_core::stream::StreamCache>::protect
+     2.69%  admission  admission         [.] <sampler_core::stream::StreamCache>::request
+     2.44%  admission  admission         [.] <sampler_core::stream::StreamCache>::request_retry
+     2.03%  admission  admission         [.] sampler_core::source::mix::<core::slice::iter::Iter<[f32; 2]>>
+     1.94%  admission  admission         [.] sampler_core::render::render_source::<sampler_core::source::PagedFrames>
+     1.89%  admission  admission         [.] <sampler_core::Runtime>::render_voices
+     1.80%  admission  admission         [.] <sampler_core::envelope::EnvelopeState>::level
+     1.74%  admission  libc.so.6         [.] 0x00000000001b7bdd
+     1.57%  admission  admission         [.] <sampler_core::envelope::EnvelopeState>::next
+     1.53%  admission  admission         [.] <sampler_core::stream::PageReader>::span
+     1.46%  admission  admission         [.] <sampler_core::voice_mod::VoiceModState>::evaluate
+     1.44%  admission  admission         [.] <sampler_core::voice_mod::VoiceModState>::mix
+     1.19%  admission  admission         [.] <sampler_core::Runtime>::prepare_voice
+     1.15%  admission  libc.so.6         [.] 0x00000000001b83b5
+     1.01%  admission  admission         [.] <sampler_core::dsp::PreparedVoiceChain>::finish
+
+
+#
+# (Tip: To see list of saved events and attributes: perf evlist -v)
+#

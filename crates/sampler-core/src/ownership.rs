@@ -151,6 +151,7 @@ impl Runtime {
             owner.value = value;
         }
         self.follow_expression();
+        if pitch_changed { self.refresh_stream_reservations(); }
         Ok(())
     }
 
@@ -206,6 +207,7 @@ impl Runtime {
             }
         }
         self.follow_expression();
+        if pitch_changed { self.refresh_stream_reservations(); }
         Ok(changed)
     }
 
@@ -219,9 +221,11 @@ impl Runtime {
         }
         let rendered = self.validate_expression_change(id, value)?;
         let owner = self.expressions.get_mut(id.0).unwrap();
+        let pitch_changed = owner.rendered.ratio != rendered.ratio;
         owner.value = value;
         owner.rendered = rendered;
         self.follow_expression();
+        if pitch_changed { self.refresh_stream_reservations(); }
         Ok(())
     }
 
@@ -231,6 +235,7 @@ impl Runtime {
         if !self.expression_followers {
             return;
         }
+        let mut pitch_changed = false;
         for index in 0..self.expressions.slots.len() {
             let Some(owner) = self.expressions.slots[index].value else {
                 continue;
@@ -249,11 +254,13 @@ impl Runtime {
                 continue;
             }
             if let Ok(rendered) = self.project_expression(owner.program, value, Some(&owner)) {
+                pitch_changed |= owner.rendered.ratio != rendered.ratio;
                 let owner = self.expressions.slots[index].value.as_mut().unwrap();
                 owner.value = value;
                 owner.rendered = rendered;
             }
         }
+        if pitch_changed { self.refresh_stream_reservations(); }
     }
 
     /// Freeze a shared note at its current expression. Capacity failure leaves its
@@ -510,6 +517,7 @@ impl Runtime {
             .modulation
             .stop(id.0.index);
         self.stolen -= usize::from(v.stolen);
+        self.stream_reserved -= v.stream_pages;
         self.voices.remove(id.0);
         self.voice_activity[id.0.index / 64] &= !(1 << (id.0.index % 64));
         self.families.get_mut(v.family.0).unwrap().voices -= 1;
