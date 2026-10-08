@@ -3,13 +3,14 @@
 //! execute exactly is rejected with [`LowerError::Unsupported`], never
 //! approximated silently.
 use crate::{
-    Biquad, Breakpoint, Breakpoints, Bus, BusSend, ControlDefinition, ControlDomain, ControlRange,
-    CompressorSettings, DaftSettings, ControlValue, ControllerCondition, Direction, Driver, Envelope, EnvelopeCurve, Error,
-    FilterKind, GroupParams, Impulse, Keyswitch, Lfo, LfoRate, LfoShape, Loop, LoopMode, LoopShape,
-    ModProgram, ModRoute, ModScale, ModSource, ModTarget, Parameter, Pcm, Playback, Prepared,
-    Processor, Rectifier, Region, ReverbSettings, SelectionPolicy, Selector, Sequence, SequenceScope,
-    SlotKind, StateVariableFilter, SvfMode, Switch, SwitchKeys, Switching, Take, TakePolicy,
-    Trigger, VelocityCurve, VoiceChain, ZoneFades, slot_control,
+    Biquad, Breakpoint, Breakpoints, Bus, BusSend, CompressorSettings, ControlDefinition,
+    ControlDomain, ControlRange, ControlValue, ControllerCondition, DaftSettings, Direction,
+    Driver, Envelope, EnvelopeCurve, Error, FilterKind, GroupParams, Impulse, Keyswitch, Lfo,
+    LfoRate, LfoShape, Loop, LoopMode, LoopShape, ModProgram, ModRoute, ModScale, ModSource,
+    ModTarget, Parameter, Pcm, Playback, Prepared, Processor, Rectifier, Region, ReverbSettings,
+    SelectionPolicy, Selector, Sequence, SequenceScope, SlotKind, StateVariableFilter, SvfMode,
+    Switch, SwitchKeys, Switching, Take, TakePolicy, Trigger, VelocityCurve, VoiceChain, ZoneFades,
+    slot_control,
 };
 use sampler_ir as ir;
 use std::fmt;
@@ -318,9 +319,13 @@ pub fn lower_with(
     if !instrument.source_indices.zones.is_empty() {
         let mut ids: Vec<u32> = (1..=instrument.zones.len() as u32).collect();
         for (source, runtime) in instrument.source_indices.zones.iter().enumerate() {
-            if let Some(zone) = runtime { ids[zone.0] = source as u32 + 1; }
+            if let Some(zone) = runtime {
+                ids[zone.0] = source as u32 + 1;
+            }
         }
-        plan = plan.with_source_zones(ids).map_err(core(Stage::Regions, "source zones"))?;
+        plan = plan
+            .with_source_zones(ids)
+            .map_err(core(Stage::Regions, "source zones"))?;
     }
     // Before the voice chains, which validate the controls they bind.
     let slots = lowering.slot_controls();
@@ -437,6 +442,32 @@ pub fn lower_with(
     plan = lowering.variation(plan)?;
     plan = lowering.releases(plan)?;
     plan = lowering.articulations(plan)?;
+    if instrument.groups.iter().any(|g| !g.start.is_empty()) {
+        let default = instrument
+            .articulations
+            .iter()
+            .position(|a| a.default)
+            .unwrap_or(0);
+        let mut keys = vec![None; instrument.articulations.len()];
+        for (index, a) in instrument.articulations.iter().enumerate() {
+            let id = if index == default {
+                0
+            } else if index < default {
+                index + 1
+            } else {
+                index
+            };
+            keys[id] = a.switch_keys.first().copied();
+        }
+        plan = plan
+            .with_native_criteria(
+                instrument.groups.iter().map(|g| g.start.clone()).collect(),
+                keys,
+                instrument.default_keyswitch,
+            )
+            .map_err(core(Stage::Articulations, "native group starts"))?;
+    }
+
     plan = lowering.controllers(plan)?;
     plan = lowering.axes(plan)?;
     // The instrument's own bend depth (Kontakt's pitch-bend modulator) is the
@@ -596,9 +627,29 @@ impl Lowering<'_> {
                 Direction::Forward
             },
             loop_range: match zone.playback.looping {
-                ir::Looping::None | ir::Looping::OneShot => None,
+                ir::Looping::None | ir::Looping::OneShot | ir::Looping::Slots(_) => None,
                 ir::Looping::Continuous(range) => Some(loop_range(range, LoopMode::Continuous)),
                 ir::Looping::UntilRelease(range) => Some(loop_range(range, LoopMode::UntilRelease)),
+            },
+            loop_slots: match zone.playback.looping {
+                ir::Looping::Slots(slots) => slots.map(|slot| {
+                    slot.map(|slot| {
+                        let mut range = loop_range(
+                            slot.range,
+                            if slot.until_release {
+                                LoopMode::UntilRelease
+                            } else {
+                                LoopMode::Continuous
+                            },
+                        );
+                        range.passes = std::num::NonZeroU32::new(slot.count);
+                        crate::LoopSlot {
+                            range,
+                            tuning: slot.tuning,
+                        }
+                    })
+                }),
+                _ => [None; 8],
             },
             transpose_semitones: tune,
         };
@@ -1048,7 +1099,9 @@ impl Lowering<'_> {
                 makeup: c.makeup.linear(),
                 link: c.link,
             }),
-            ir::Processor::Branch { gain, first, last, .. } => Processor::Branch {
+            ir::Processor::Branch {
+                gain, first, last, ..
+            } => Processor::Branch {
                 count: 0,
                 gain: gain.linear(),
                 first,
@@ -1476,7 +1529,9 @@ impl Lowering<'_> {
             .enumerate()
             .flat_map(|(axis, a)| {
                 a.choices.iter().enumerate().flat_map(move |(choice, c)| {
-                    c.switch_keys.iter().map(move |&key| (key, axis, choice as u32))
+                    c.switch_keys
+                        .iter()
+                        .map(move |&key| (key, axis, choice as u32))
                 })
             })
             .collect();
@@ -1488,12 +1543,9 @@ impl Lowering<'_> {
     }
 
     fn controllers(&self, plan: Prepared) -> Result<Prepared, LowerError> {
-        if self
-            .ir
-            .zones
-            .iter()
-            .all(|z| z.conditions.is_empty() && z.axes.is_empty() && previous_key(z.trigger).is_none())
-        {
+        if self.ir.zones.iter().all(|z| {
+            z.conditions.is_empty() && z.axes.is_empty() && previous_key(z.trigger).is_none()
+        }) {
             return Ok(plan);
         }
         // A 7-bit value covers every 32-bit value that scales down to it.

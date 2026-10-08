@@ -100,7 +100,9 @@ pub enum Instruction {
     ReadEventId {
         local: u16,
     },
-    ResetReleaseCounter { event: u16 },
+    ResetReleaseCounter {
+        event: u16,
+    },
     ReadCallbackId {
         local: u16,
     },
@@ -1595,7 +1597,20 @@ impl Runtime {
                                 .forwarded
                         },
                     );
-                    if !forwarded || matches!(stage, Some(NoteStage::Release(_))) {
+                    let editable = match stage {
+                        Some(NoteStage::Release(stage)) => {
+                            self.plans
+                                .get(plan.0)
+                                .unwrap()
+                                .projections
+                                .get(note.0.index, stage)
+                                .unwrap()
+                                .release
+                                == super::note_event::ReleaseStage::Pending
+                        }
+                        _ => !forwarded,
+                    };
+                    if editable {
                         match self.set_group_view(note, view, group, allowed) {
                             Err(Error::InvalidInput) => {}
                             result => result?,
@@ -1634,7 +1649,9 @@ impl Runtime {
             Instruction::ResetReleaseCounter { event } => {
                 let event = *self.local_cell_mut(id, event)?;
                 let plan = self.behavior_plan(owner)?;
-                if let Ok(event) = i32::try_from(event) && let Some(note) = self.resolve_source_event(plan, event)? {
+                if let Ok(event) = i32::try_from(event)
+                    && let Some(note) = self.resolve_source_event(plan, event)?
+                {
                     self.reset_release_counter(note)?;
                 }
             }
