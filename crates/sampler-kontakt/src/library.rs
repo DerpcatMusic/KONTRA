@@ -34,6 +34,7 @@ pub struct Kontakt {
     /// Each asset's resolved location, in asset order.
     pub locations: Vec<PathBuf>,
     pub samples: Samples,
+    pub(crate) initialized: Option<crate::load::ScriptInit>,
 }
 
 /// Translate the NKI at `path`. Zones whose sample is missing are left out
@@ -61,6 +62,7 @@ fn read_overlaid(
 ) -> Result<Kontakt, LoadError> {
     let path = path.canonicalize().map_err(|e| LoadError::io(path, e))?;
     let chunks = crate::read_chunks(&path).map_err(|e| e.at(crate::Stage::Container))?;
+    let span = crate::audit::Span::new("ni_objects_parse");
     let invalid = |reason: &str| LoadError::Invalid {
         path: path.clone(),
         reason: reason.into(),
@@ -86,6 +88,8 @@ fn read_overlaid(
             (t.sample_filetable, t.other_filetable)
         }
     };
+    drop(span);
+    let _span = crate::audit::Span::new("translate_resolve_ir");
     translate(path, program, table, others, snapshot).map_err(|e| e.at(crate::Stage::Translate))
 }
 
@@ -95,6 +99,7 @@ pub fn read_program(path: &Path, index: usize) -> Result<Kontakt, LoadError> {
     use ni_file::kontakt::objects::Bank;
     let path = path.canonicalize().map_err(|e| LoadError::io(path, e))?;
     let chunks = crate::read_chunks(&path).map_err(|e| e.at(crate::Stage::Container))?;
+    let span = crate::audit::Span::new("ni_objects_parse");
     let invalid = |reason: &str| LoadError::Invalid {
         path: path.clone(),
         reason: reason.into(),
@@ -139,6 +144,8 @@ pub fn read_program(path: &Path, index: usize) -> Result<Kontakt, LoadError> {
             Default::default(),
         ),
     };
+    drop(span);
+    let _span = crate::audit::Span::new("translate_resolve_ir");
     translate(path, program, table, others, None).map_err(|e| e.at(crate::Stage::Translate))
 }
 
@@ -198,6 +205,7 @@ fn translate(
         snapshot_groups: snapshot.map(|s| s.groups.clone()).unwrap_or_default(),
         engine: Vec::new(),
         dynamic: false,
+        send_taps: Vec::new(),
     };
     match crate::program_automation(&program.0.private_data, program.version(), crate::Limits { bytes: 64 << 20, records: 65536 }) {
         Ok(records) => for record in records {
@@ -305,45 +313,38 @@ fn translate(
         .map(|g| g.params().map(|p| p.name))
         .collect::<Result<_,_>>()
         .map_err(|e| decode("source group names",e))?;
-    let writes: Vec<_> = out
-        .ir
-        .behaviors
+    if let Some(snapshot) = snapshot {
+        for behavior in &mut out.ir.behaviors {
+            if let Some(entries) = behavior
+                .slot
+                .and_then(|slot| snapshot.persistent.get(usize::from(slot)))
+            {
+                for (name, value) in saved(entries).map_err(|e| invalid(&format!("snapshot persistent values: {:?} at {}", e.kind, e.offset)))? {
+                    match behavior.state.iter_mut().find(|(n, _)| *n == name) {
+                        Some(slot) => slot.1 = value,
+                        None => behavior.state.push((name, value)),
+                    }
+                }
+            }
+        }
+    }
+    let span = crate::audit::Span::new("translate_ksp_init");
+    let initialized = crate::load::initialize_scripts(&mut out.ir, Some(&path), group_names, &[]);
+    out.engine = initialized
+        .states
         .iter()
-        .enumerate()
-        .filter(|(_, b)| b.language == ir::Language::Ksp)
-        .filter_map(|(index, b)| {
-            let environment =
-                crate::load::script_environment(b, index, group_names.clone(), &out.ir.source_indices, Default::default());
-            #[cfg(feature="scan")]
-            sampler_ksp::scan::attempt("import-harvest");
-            sampler_ksp::init_engine_pars(&b.source, sampler_ksp::Limits::LIBRARY, &environment)
-                .ok()
-        })
         .flatten()
+        .filter_map(|s| s.as_ref().ok())
+        .flat_map(|s| s.engine_pars())
         .collect();
-    out.engine = writes;
-    // Scripts that set slot bypass or levels while playing get runtime blocks.
-    let dynamic = out
-        .ir
-        .behaviors
+    let dynamic = initialized
+        .states
         .iter()
-        .enumerate()
-        .filter(|(_, b)| b.language == ir::Language::Ksp)
-        .any(|(index, b)| {
-            let environment =
-                crate::load::script_environment(b, index, group_names.clone(), &out.ir.source_indices, Default::default());
-            #[cfg(feature="scan")]
-            sampler_ksp::scan::attempt("dynamic-rack");
-            sampler_ksp::compile_with(
-                &b.source,
-                48_000,
-                sampler_ksp::Limits::LIBRARY,
-                &[],
-                &environment,
-            )
-            .is_ok_and(|script| script.writes_effect_slots())
-        });
+        .flatten()
+        .filter_map(|s| s.as_ref().ok())
+        .any(|s| s.writes_effect_slots());
     out.dynamic = dynamic;
+    drop(span);
     let mut translated = Vec::new();
     for (index, group) in groups.groups.iter().enumerate() {
         let runtime = ir::GroupRef(out.ir.groups.len());
@@ -359,6 +360,7 @@ fn translate(
             out.ir.source_indices.slots[usize::from(slot)] = Some(runtime);
         }
     }
+    let span = crate::audit::Span::new("translate_resource_ir_dsp");
     let parent = path
         .parent()
         .ok_or_else(|| invalid("instrument has no folder"))?;
@@ -399,12 +401,15 @@ fn translate(
             let decoded = samples.decode(&at).map_err(|e| e.to_string())?;
             Ok((decoded.rate, decoded.frames))
         };
-        for (at, (slot, feature, value, reason)) in
-            crate::effects::instrument_buses(&mut out.ir, &racks, &buses, dynamic, &mut load)
-        {
+        let (notes, send_buses) =
+            crate::effects::instrument_buses(&mut out.ir, &racks, &buses, dynamic, &mut load);
+        for (at, (slot, feature, value, reason)) in notes {
             out.unsupported(&format!("{at} slot {slot}"), &feature, value, reason);
         }
+        out.resolve_send_taps(&send_buses);
     }
+    drop(span);
+    let span = crate::audit::Span::new("translate_zones_sample_resolve");
     // Racks of buses no group feeds do nothing, so they are not reported.
     let mut resolved = HashMap::new();
     let data = &program
@@ -468,6 +473,8 @@ fn translate(
             out.ir.source_indices.zones[index] = Some(ir::ZoneRef(before));
         }
     }
+    drop(span);
+    let _span = crate::audit::Span::new("translate_keys_validate");
     crate::keyswitch::translate(&mut out.ir, &out.start_criteria);
     out.ir.unsupported.dedup();
     out.ir.validate().map_err(|e| invalid(&e.to_string()))?;
@@ -475,6 +482,7 @@ fn translate(
         instrument: out.ir,
         locations: out.locations,
         samples,
+        initialized: Some(initialized),
     })
 }
 
@@ -512,6 +520,7 @@ struct Translation {
     engine: Vec<sampler_ksp::EnginePar>,
     /// A script writes effect slots while playing.
     dynamic: bool,
+    send_taps: Vec<(ir::ChainRef, crate::effects::SendTap)>,
 }
 
 const VOICE_GROUPS: u16 = 0x32;
@@ -558,6 +567,30 @@ fn ahdsr_curves(curve: f32) -> (ir::Curve, ir::Curve) {
 }
 
 impl Translation {
+    fn resolve_send_taps(&mut self, buses: &[(usize, ir::BusRef)]) {
+        for (chain, tap) in std::mem::take(&mut self.send_taps) {
+            for (send, level) in tap.levels.into_iter().enumerate() {
+                if !level.is_finite() || level < 0.0 {
+                    self.unsupported(&format!("voice chain {} slot {}", chain.0, tap.slot),
+                        "send level", send.to_string(), ir::Reason::InvalidValue);
+                    continue;
+                }
+                let Some(&(_, bus)) = buses.iter().find(|(slot, _)| *slot == send) else {
+                    if level != 0.0 && !tap.bypass {
+                        self.unsupported(&format!("voice chain {} slot {}", chain.0, tap.slot),
+                            "send return", send.to_string(), ir::Reason::NotModeled);
+                    }
+                    continue;
+                };
+                self.ir.voice_send_taps.push(ir::VoiceSendTap {
+                    chain, position: tap.position, bus,
+                    gain: ir::Gain::Linear(f64::from(level)), bypass: tap.bypass,
+                    gain_control: None, bypass_control: None, ramp: ir::Time::Seconds(0.0),
+                });
+            }
+        }
+    }
+
     /// The `VoiceGroups` chunk: the instrument's voice limit, a 128-bit set of
     /// defined voice groups, then one voice limit per defined group.
     fn voice_groups(&mut self, data: &[u8]) -> Result<(), ni_file::Error> {
@@ -746,13 +779,13 @@ impl Translation {
                 crate::effects::apply_writes(&mut slots, &self.engine, index as i32, -1);
                 let dynamic = self.dynamic.then_some((index as i32, -1));
                 let (c, boundary) =
-                    crate::effects::voice_chain(&slots, v.fx_idx_amp_split_point, dynamic);
+                    crate::effects::voice_chain(&slots, v.fx_idx_amp_split_point, dynamic, index as i32);
                 let mut processors = c.processors;
                 filter_slots = c.filter_slots;
                 for (slot, feature, value, reason) in c.notes {
                     self.unsupported(&format!("{at} insert slot {slot}"), &feature, value, reason);
                 }
-                if !processors.is_empty() {
+                if !processors.is_empty() || !c.send_taps.is_empty() {
                     let post_amplitude = processors.split_off(boundary);
                     self.ir.chains.push(ir::Chain {
                         scope: ir::Scope::Voice,
@@ -760,6 +793,7 @@ impl Translation {
                         post_amplitude,
                     });
                     chain = Some(ir::ChainRef(self.ir.chains.len() - 1));
+                    self.send_taps.extend(c.send_taps.into_iter().map(|tap| (chain.unwrap(), tap)));
                 }
             }
             Err(error) => self.unsupported(
@@ -782,7 +816,7 @@ impl Translation {
                 }
                 let retrigger = params.unknown_flags[2] != 0;
                 let volume = matches!(params.targets.as_slice(), [t]
-                    if t.param == "volume" && t.intensity == 1.0 && !t.invert
+                    if t.param == "volume" && t.signed_intensity() == 1.0 && !t.invert
                         && t.slot.is_none() && t.lag_ms == 0
                         && !t.shaper.as_ref().is_some_and(|s| s.enabled));
                 let source = match params.modulator {
@@ -909,7 +943,7 @@ impl Translation {
                 };
                 if let (ModSource::Velocity, [t]) = (&params.source, params.targets.as_slice())
                     && plain_volume(t)
-                    && t.intensity == 1.0
+                    && t.signed_intensity() == 1.0
                     && velocity == ir::VelocityResponse::None
                 {
                     // gain × velocity: the attenuate law at full intensity,
@@ -1059,11 +1093,11 @@ impl Translation {
         &mut self,
         at: &str,
         source: ir::ModulatorRef,
-        unipolar: bool,
+        _unipolar: bool,
         target: &ni_file::kontakt::objects::ModTarget,
         filters: Option<(ir::ChainRef, &[(usize, usize)])>,
     ) -> Option<ir::RouteRef> {
-        let i = f64::from(target.intensity);
+        let i = f64::from(target.signed_intensity());
         let report = |this: &mut Self, feature: &str, reason| {
             this.unsupported(
                 at,
@@ -1095,11 +1129,6 @@ impl Translation {
                 "modulation of a module parameter",
                 ir::Reason::NotModeled,
             );
-        }
-        // Flag 0x02 marks a signed (bipolar) target scaling; how a unipolar
-        // source maps onto it is not established.
-        if unipolar && target.unknown_flags & 0x02 != 0 {
-            return report(self, "signed modulation target", ir::Reason::UnknownLaw);
         }
         let (route_target, depth) = match target.param.as_str() {
             _ if cutoff.is_some() => (
@@ -1777,7 +1806,26 @@ mod modulation {
             snapshot_groups: Vec::new(),
             engine: Vec::new(),
             dynamic: false,
+            send_taps: Vec::new(),
         }
+    }
+
+    #[test]
+    fn group_send_taps_keep_physical_return_identity_and_amplifier_side() {
+        let mut out = translation();
+        out.ir.chains.push(ir::Chain { scope: ir::Scope::Voice,
+            pre_amplitude: Vec::new(), post_amplitude: Vec::new() });
+        out.send_taps.push((ir::ChainRef(0), crate::effects::SendTap {
+            slot: 5, position: ir::VoiceSendPosition::AfterAmplitude(0),
+            levels: vec![0.0, 0.0, 0.0, 0.5], bypass: false,
+        }));
+        out.resolve_send_taps(&[(3, ir::BusRef(1))]);
+        assert_eq!(out.ir.voice_send_taps, vec![ir::VoiceSendTap {
+            chain: ir::ChainRef(0), position: ir::VoiceSendPosition::AfterAmplitude(0),
+            bus: ir::BusRef(1), gain: ir::Gain::Linear(0.5), bypass: false,
+            gain_control: None, bypass_control: None, ramp: ir::Time::Seconds(0.0),
+        }]);
+        assert!(out.ir.unsupported.is_empty());
     }
 
     #[test]
@@ -1974,10 +2022,6 @@ mod modulation {
             target("pan", 1.0),
             target("cutoff", 1.0),
             ModTarget {
-                unknown_flags: 0x12,
-                ..target("pitch", 1.0)
-            },
-            ModTarget {
                 slot: Some(0),
                 ..target("cutoff", 1.0)
             },
@@ -1991,10 +2035,22 @@ mod modulation {
             [
                 ir::Reason::UnknownLaw,
                 ir::Reason::NotModeled,
-                ir::Reason::UnknownLaw,
                 ir::Reason::NotModeled
             ]
         );
+    }
+
+    #[test]
+    fn saved_depth_sign_is_independent_of_invert_and_source_polarity() {
+        for unipolar in [false, true] {
+            for invert in [false, true] {
+                let mut t = translation();
+                let signed = ModTarget { unknown_flags: 0x12, invert, ..target("pitch", 0.25) };
+                t.route("g", ir::ModulatorRef(0), unipolar, &signed, None).expect("signed pitch route");
+                assert_eq!(t.ir.routes[0].depth, ir::Depth::Pitch(ir::Pitch::Semitones(-3.0)));
+                assert_eq!(t.ir.routes[0].invert, invert);
+            }
+        }
     }
 
     #[test]
