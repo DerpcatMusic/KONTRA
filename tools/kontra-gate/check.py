@@ -3,6 +3,8 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent / "kontra-scan"))
 
 spec = importlib.util.spec_from_file_location('gate', Path(__file__).with_name('gate.py'))
 gate = importlib.util.module_from_spec(spec)
