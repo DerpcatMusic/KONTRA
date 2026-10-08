@@ -25,6 +25,9 @@ c=aggregate(bank)
 assert c.report()[0]['locations_total']==2
 assert all('::' not in row['location']['path'] for row in c.sidecar())
 assert 'PRIVATE_' not in json.dumps(c.sidecar())
+# Already-sanitized census records retain their independent member IDs.
+san=[dict(path='/Libraries/UVI/A.ufs',diagnostic_item_index=i,programs=r['programs']) for i in (1,2)]
+assert aggregate(san).report()[0]['locations_total']==2, 'sanitized member identities must remain distinct'
 # Unsafe target identifiers collapse to a typed unknown, rather than exposing text.
 c.add('ModTarget','TargetsDropped','secret authored text',True,dict(path='/Libraries/UVI/A.ufs',program=0))
 assert any(g['key']['subject']=='UnknownSubject' for g in c.report())
