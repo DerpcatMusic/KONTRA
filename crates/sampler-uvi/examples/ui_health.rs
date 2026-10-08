@@ -64,11 +64,15 @@ fn run(
             let id = format!("{path}::{program}");
             let record = match bank
                 .as_ref()
-                .ok()
-                .and_then(|bank| bank.program(&program).ok().map(|(xml, _)| (bank, xml)))
+                .map_err(|error| error.to_string())
+                .and_then(|bank| {
+                    bank.program(&program)
+                        .map(|(xml, _)| (bank, xml))
+                        .map_err(|error| error.to_string())
+                })
             {
-                None => json!({"id":id, "loaded":false, "failure":"bank/program read"}),
-                Some((bank, xml)) => match ScriptHost::new(&xml, bank.scripts(), Config::default())
+                Err(error) => json!({"id":id, "loaded":false, "failure":error}),
+                Ok((bank, xml)) => match ScriptHost::new(&xml, bank.scripts(), Config::default())
                 {
                     Err(_) => json!({"id": format!("{path}::{program}"), "loaded":false}),
                     Ok(host) => {
@@ -125,7 +129,7 @@ fn run(
                         }
                         json!({"id":format!("{path}::{program}"), "loaded":true, "widgets":face.widgets.len(), "controls":controls,
                         "unbound":unbound, "assets":face.assets.len(), "missing_assets":missing, "fonts":fonts, "missing_fonts":missing_fonts,
-                        "ui_loaded":!face.widgets.is_empty() && !features.contains_key("lua error"), "properties":host.ui_properties(),
+                        "ui_loaded":!face.widgets.is_empty() && !features.keys().any(|key| key.ends_with("lua error")), "properties":host.ui_properties(),
                         "xml_ui":xml_ui, "rendered":rendered, "unsupported":face.unsupported.iter().map(|u| &u.feature).collect::<Vec<_>>(),
                         "validation_error":face.validate().err().map(|e| e.to_string()), "findings":features})
                     }

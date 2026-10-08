@@ -30,6 +30,28 @@ fn frame(value: f64, min: f64, max: f64, frames: usize) -> usize {
     (t * frames.saturating_sub(1) as f64).round() as usize
 }
 
+/// UVI mappers operate on normalized positions, including drag and strip frames.
+fn mapped(range: &ir::Range, mapper: Option<&str>, value: f64, inverse: bool) -> f64 {
+    if range.max == range.min { return if inverse { 0. } else { range.min }; }
+    if mapper == Some("Exponential") && range.min > 0. && range.max > range.min {
+        return if inverse { (value.clamp(range.min,range.max)/range.min).ln()/(range.max/range.min).ln() }
+            else { range.min*(range.max/range.min).powf(value.clamp(0.,1.)) };
+    }
+    let power = match mapper {
+        Some("Quadratic")=>2.,Some("Cubic")=>3.,Some("Quartic")=>4.,Some("Quintic")=>5.,
+        Some("SquareRoot")=>0.5,Some("CubeRoot")=>1./3.,Some("QuarticRoot")=>0.25,Some("QuinticRoot")=>0.2,_=>1.,
+    };
+    if inverse { ((value-range.min)/(range.max-range.min)).clamp(0.,1.).powf(1./power) }
+    else { range.min+(range.max-range.min)*value.clamp(0.,1.).powf(power) }
+}
+fn drive_mapped(ui: &mut Ui, id: &str, value: &mut f64, range: &ir::Range, mapper: Option<&str>, vertical: bool) -> bool {
+    let mut position = mapped(range,mapper,*value,true);
+    let before = position;
+    let held = drive(ui,id,&mut position,&(0. ..=1.),TRAVEL,vertical,mapped(range,mapper,range.default,true));
+    if position != before { *value = mapped(range,mapper,position,false); }
+    held
+}
+
 /// The frame a switch or button shows: Kontakt's strips run off, on, then
 /// pressed and hovered states.
 fn switch_frame(on: bool, frames: usize) -> usize {
@@ -313,13 +335,13 @@ fn widget(
         Kind::Knob { range, .. } | Kind::Slider { range, .. } => {
             let vertical = !matches!(wd.kind, Kind::Slider { orientation: ir::Orientation::Horizontal, .. });
             let held = if can_edit {
-                drive(ui, &id, &mut v, &(range.min..=range.max), TRAVEL, vertical, range.default)
+                drive_mapped(ui, &id, &mut v, range, wd.mapper.as_deref(), vertical)
             } else {false};
             if let Some(step)=range.step { v=(v/step).round()*step; }
             let lift = ui.state(id.as_str()).hover.max(if held { 1. } else { 0. }) as f32;
-            let unit = |x: f64| if range.max == range.min { 0. } else { ((x - range.min) / (range.max - range.min)).clamp(0., 1.) };
+            let unit = |x: f64| mapped(range,wd.mapper.as_deref(),x,true);
             match strip {
-                Some(p) => block(w, h).radius(0).fill(picture(p, fixed.unwrap_or_else(|| frame(v, range.min, range.max, p.frames.len()))).unwrap_or(Fill::from(Role::Field))),
+                Some(p) => block(w, h).radius(0).fill(picture(p, fixed.unwrap_or_else(|| frame(unit(v), 0., 1., p.frames.len()))).unwrap_or(Fill::from(Role::Field))),
                 // A slider about as tall as wide was drawn as a knob by its strip.
                 // Kontakt's stock knob: its name over the dial, the value under it.
                 None if matches!(wd.kind, Kind::Knob { .. }) => {
@@ -398,7 +420,7 @@ fn widget(
             .a11y(A11y::Button)
         }
         Kind::ValueEdit { range, display, .. } => {
-            if can_edit { drive(ui, &id, &mut v, &(range.min..=range.max), TRAVEL, true, range.default); }
+            if can_edit { drive_mapped(ui, &id, &mut v, range, wd.mapper.as_deref(), true); }
             if let Some(step)=range.step { v=(v/step).round()*step; }
             // Kontakt's value edit: its name, then the value.
             let mut parts = Vec::new();
@@ -416,7 +438,9 @@ fn widget(
                 .focusable()
                 .a11y(A11y::Slider { value: v, min: range.min, max: range.max })
         }
-        Kind::Label => row![words(wd.text.clone())].align(Align::Center),
+        Kind::Label => row![words(wd.text.clone())].align(Align::Center).justify(match wd.style.map(|s|face.styles[s.0].align) {
+            Some(ir::Align::Center)=>Justify::Center,Some(ir::Align::Right)=>Justify::End,_=>Justify::Start,
+        }),
         Kind::LevelMeter { .. } => {
             let source=assets.meter.clone();
             let (bus,channel)=match wd.binding{Binding::Meter{bus,channel}=>(bus,channel),_=>(None,0)};
@@ -445,17 +469,18 @@ fn widget(
                 let target=face.widgets.iter().find(|w|w.binding==Binding::Control(cid));
                 let range=target.and_then(|w|match w.kind{Kind::Knob{range,..}|Kind::Slider{range,..}|Kind::ValueEdit{range,..}=>Some(range),_=>None}).unwrap_or(ir::Range{min:0.,max:1.,default:0.5,step:None});
                 let mut value=values.get(&cid).copied().unwrap_or(range.default);
+                let mapper=target.and_then(|w|w.mapper.as_deref());
                 let key=format!("{id}-axis-{axis}");
                 if can_edit {
-                    drive(ui,&key,&mut value,&(range.min..=range.max),TRAVEL,false,range.default);
+                    drive_mapped(ui,&key,&mut value,&range,mapper,false);
                     if ui.get(id.as_str()).held && let Some(p)=ui.local(&id) {
                         let t=if axis==0 {(p.x/w.max(1.)).clamp(0.,1.)}else{(1.-p.y/(h-18.).max(1.)).clamp(0.,1.)};
-                        value=range.min+t*(range.max-range.min);
+                        value=mapped(&range,mapper,t,false);
                     }
                 }
                 if let Some(step)=range.step {value=(value/step).round()*step;}
                 values.insert(cid,value);
-                xy[axis]=if range.max==range.min{0.}else{((value-range.min)/(range.max-range.min)).clamp(0.,1.)};
+                xy[axis]=mapped(&range,mapper,value,true);
                 axes.push(fader_face(xy[axis],0.,None,false,0.,ui.focus_visible(&key)).h(16).flex(1).id(key).focusable().named(format!("{} {}",wd.name,if axis==0{"X"}else{"Y"})).a11y(A11y::Slider{value,min:range.min,max:range.max}));
             }
             let pad=canvas(move |s|vec![Draw::fill(rect(xy[0]*(s.width-6.),(1.-xy[1])*(s.height-6.),6.,6.),Role::Ink.alpha(0.8))]).fill(Role::Ink.alpha(0.06)).w(w).h((h-18.).max(1.)).id(id.clone());
@@ -534,4 +559,19 @@ pub fn uvi_ui_health(face: &Interface, path: &std::path::Path) -> serde_json::Va
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(render));
     let render_error = match result { Ok(Ok(())) => None, Ok(Err(e)) => Some(e), Err(_) => Some("render panic".into()) };
     serde_json::json!({"image_errors":image_errors,"font_errors":font_errors,"render_error":render_error})
+}
+
+#[cfg(test)]
+mod mapper_tests {
+    use super::*;
+    #[test]
+    fn uvi_mapper_positions_round_trip_and_select_the_expected_strip_frame() {
+        let range=ir::Range{min:1.,max:10000.,default:100.,step:None};
+        assert!((mapped(&range,Some("Exponential"),0.5,false)-100.).abs()<1e-9);
+        assert_eq!(frame(mapped(&range,Some("Exponential"),100.,true),0.,1.,101),50);
+        for mapper in ["Linear","Exponential","Quadratic","Cubic","Quartic","Quintic","SquareRoot","CubeRoot","QuarticRoot","QuinticRoot"] {
+            let value=mapped(&range,Some(mapper),0.25,false);
+            assert!((mapped(&range,Some(mapper),value,true)-0.25).abs()<1e-9,"{mapper}");
+        }
+    }
 }

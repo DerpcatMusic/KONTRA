@@ -8,8 +8,9 @@ verified parameter behavior. None alone establishes Falcon compatibility.
 ## Baseline recovered after the server restart
 
 The interrupted baseline completed **239/660 programs (36.21%)**. All 239 hosts
-loaded and exported UI IR; the baseline collector did not independently check
-Lua errors or paint scenes. Do not extrapolate these results to the remaining
+loaded and exported UI IR. Retrospective findings show 12 initialization-error
+events in four programs: 235/239 (98.33%) initialized without a recorded error.
+The baseline collector did not paint scenes. Do not extrapolate these results to the remaining
 421 programs.
 
 | Failure, ranked by occurrences | Programs affected | Occurrences |
@@ -56,12 +57,20 @@ keys are neither cached nor committed.
 UVI and UI-IR `cargo test --no-run` passed before formatting cleanup. The first
 six authored UI tests found a shared Lua multi-return bug in numeric restoration;
 `tonumber((string.gsub(...)))` fixes it. The final root `cargo test --no-run` passed after fixing the meter adapter type.
-The focused authored tests, optimized census, matched before/after measurements
-and ranked residual failures are pending. This is a progress report, not a completion claim.
+All six authored UVI UI tests pass. The native renderer test also passes for
+mouse hold/release and keyboard activation, with one momentary callback per
+activation. Native mapper round trips and strip selection pass for all ten
+documented mapper types; normalized Lua edits include QuinticRoot. Constructor
+defaults remain separate from current values for reset. The optimized census, matched before/after measurements and ranked
+residual failures are pending. This is a progress report, not a completion claim.
 
 Run builds and every census shard through `~/.cache/kontakto-heavy` from this
 worktree. Use the wrapper's per-worktree target, without setting target variables
-or slot counts. Compile the native render collector with:
+or slot counts. The cached verified reader must be selected with
+`KONTRA_UVI_READER=~/.codex/cache/kontakto-uvi-official-reader/app/UVIWorkstationx64.exe`.
+Its SHA-256 is the loader-verified official Workstation 4.0.9 hash. An initial
+40-item after run without this selection had only reader-access failures and is
+excluded from UI coverage. Compile the native render collector with:
 
 ```sh
 ~/.cache/kontakto-heavy cargo build --profile ci --example uvi_ui_health --features shots
