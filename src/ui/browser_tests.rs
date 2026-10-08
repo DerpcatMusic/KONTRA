@@ -165,7 +165,9 @@ fn w14_library_artwork_fills_the_browser_width() {
         let viewport = scene.surface("browser-sources-false").unwrap().frame;
         assert!(card.y >= viewport.y - 0.5 && card.y + card.size.height <= viewport.y + viewport.size.height + 0.5,
             "the chosen library panel is fully visible at {width}: {card:?}, {viewport:?}");
-        let image = scene.surface("library-0-art").unwrap().frame;
+        let artwork = scene.surface("library-0-art").unwrap();
+        assert!(artwork.disabled, "decorative artwork leaves pointer gestures to its library card");
+        let image = artwork.frame;
         assert!(image.size.width > 250.);
         assert!((image.size.width / image.size.height - 4.).abs() < 0.01, "the full artwork keeps its aspect ratio");
     }

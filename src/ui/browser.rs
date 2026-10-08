@@ -400,7 +400,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
                 let art = match image {
                     Some(image) => block(Len::Pct(100.), height).fill(Fill::Image(image, Fit::Contain)),
                     None => stack![glyph(Icon::Sidebar, TEXT, secondary()).centered()].w(Len::Pct(100.)).h(height).fill(Role::Raised),
-                }.id(format!("{id}-art")).shrink(0);
+                }.id(format!("{id}-art")).disabled().shrink(0);
                 (catalog.named(name).map_or_else(|| library_label(name), |l| settings.library_name(l)),
                     grouped[name].len(), art, height + SOURCE_ROW + 2. * TIGHT, true)
             },
