@@ -899,7 +899,12 @@ impl Core for V2Core {
 
     fn voices(&self) -> Voices {
         let active = self.parts.iter().flatten().map(|p| p.runtime.voice_count()).sum();
-        Voices { active, audible: active, dropouts: self.overflow }
+        // Port from v1 0cb7a8a0:src/plugin.rs: rendered voices and IO/command loss.
+        let audible = self.parts.iter().flatten().map(|p| p.runtime.audible_voice_count()).sum();
+        let dropouts = self.parts.iter().flatten().fold(self.overflow, |n, p| {
+            n.saturating_add(p.runtime.stats().stream_underruns).saturating_add(p.problems.capacity_drops)
+        });
+        Voices { active, audible, dropouts }
     }
 
     fn problems(&self, part: usize) -> RuntimeProblems {
@@ -1888,6 +1893,71 @@ mod tests {
             seen.insert(index);
         }
         assert!(seen.len() >= 2, "velocity reached articulations {seen:?}");
+    }
+
+    #[test]
+    fn v1_voice_telemetry_distinguishes_running_and_muted_voices() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.wav");
+        sine(&path);
+        let mut core = V2Core::with_parts(1, 48000.0);
+        core.install(0, load(&path));
+        let note = HostNote { port: 0, channel: 0, key: 60, id: 1, clap: true };
+        let pattern = HostPattern { port: 0, channel: 0, key: 60, id: 1, clap: true };
+        core.event(0, on(note));
+        core.render(128);
+        assert_eq!((core.voices().active, core.voices().audible), (1, 1));
+        core.event(0, Event::Expression(pattern, NoteExpression::Gain(0.0)));
+        core.render(128);
+        assert_eq!((core.voices().active, core.voices().audible), (1, 0));
+        core.event(0, Event::Expression(pattern, NoteExpression::Gain(1.0)));
+        core.render(128);
+        assert_eq!((core.voices().active, core.voices().audible), (1, 1));
+        let part = core.parts[0].as_mut().unwrap();
+        part.runtime.set_group_param(-1, sampler_core::ModTarget::Decibels, -1000.0, false).unwrap();
+        core.render(128);
+        assert_eq!((core.voices().active, core.voices().audible), (1, 0), "script-muted layer still runs");
+        core.parts[0].as_mut().unwrap().runtime.set_group_param(-1, sampler_core::ModTarget::Decibels, 0.0, false).unwrap();
+        core.render(128);
+        assert_eq!((core.voices().active, core.voices().audible), (1, 1));
+    }
+
+    #[test]
+    fn v1_voice_telemetry_counts_script_mutes_when_group_gain_lives_on_a_bus() {
+        let mut instrument = ir::Instrument::default();
+        instrument.groups.push(ir::Group::default());
+        let mut zone = ir::Zone::new(ir::AssetRef(0));
+        zone.group = Some(ir::GroupRef(0));
+        zone.keys = ir::KeyRange { low: 60, high: 60 };
+        zone.pitch = ir::KeyTracking::Tracked { root: 60 };
+        instrument.zones.push(zone);
+        instrument.assets.push(ir::Asset { location: ir::AssetLocation::Path("generated.wav".into()),
+            encoding: ir::Encoding::Wav, root_key: None, loops: vec![] });
+        let tree = nest(&mut instrument);
+        let pcm = vec![Pcm::new(48000, vec![[0.5; 2]; 48000].into_boxed_slice()).unwrap()];
+        let plan = sampler_kontakt::prepare(instrument, pcm, &Default::default()).unwrap().plan;
+        let limits = limits(&plan).0;
+        let part = Part::new(Runtime::new(plan, limits).unwrap(), tree).unwrap();
+        let mut core = V2Core::with_parts(1, 48000.0);
+        core.install(0, Some(Box::new(part)));
+        core.event(0, on(HostNote { port: 0, channel: 0, key: 60, id: 1, clap: true }));
+        core.render(128);
+        assert_eq!((core.voices().active, core.voices().audible), (1, 1));
+        core.parts[0].as_mut().unwrap().runtime.set_group_param(0, sampler_core::ModTarget::Decibels, -1000.0, false).unwrap();
+        core.render(128);
+        assert_eq!((core.voices().active, core.voices().audible), (1, 0));
+    }
+
+    #[test]
+    fn v1_dropout_telemetry_includes_stream_and_lost_command_counts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.wav");
+        sine(&path);
+        let mut core = V2Core::with_parts(1, 48000.0);
+        core.install(0, load(&path));
+        core.overflow = 2;
+        core.parts[0].as_mut().unwrap().problems.capacity_drops = 3;
+        assert_eq!(core.voices().dropouts, 5, "v1 sums lost commands and stream underruns");
     }
 
     #[test]

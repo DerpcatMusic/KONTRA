@@ -317,6 +317,12 @@ impl EngineLayers {
             })
     }
 
+    /// Script group gain can live on a bus instead of each voice. Include that
+    /// zero in v1's audible-voice predicate without counting post-FX signal.
+    pub fn fader_muted(&self, group: Option<u32>) -> bool {
+        group.and_then(|g| self.fader(g as usize)).is_some_and(|(_, gain)| gain as f32 == 0.0)
+    }
+
     /// The bus fader level (linear) group `group`'s script volume sets, if
     /// its volume lives on a bus fader.
     fn fader(&self, group: usize) -> Option<(usize, f64)> {
