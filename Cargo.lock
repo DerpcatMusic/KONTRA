@@ -3816,6 +3816,7 @@ dependencies = [
  "sampler-kontakt",
  "sampler-midi",
  "sampler-ui-ir",
+ "serde",
  "serde_json",
  "sha2",
  "symphonia",

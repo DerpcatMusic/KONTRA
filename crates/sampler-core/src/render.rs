@@ -555,6 +555,12 @@ impl Runtime {
         let plan = self.plans.get_mut(n.plan.0).unwrap();
         // Modulated voices render at most one BLOCK chunk per call (render_segment
         // chunks whenever a plan has programs) into scratch, then mix with ramps.
+        let chain = v.chain.map(|index| &plan.prepared.voice_chains[index]);
+        if let Some(chain) = chain {
+            for &bus in &chain.tap_buses {
+                plan.dsp.feeds[bus].samples = [[0.0; super::dsp::BLOCK]; 2];
+            }
+        }
         let mut scratch = [[0.0; 2]; super::dsp::BLOCK];
         let bank = &mut plan.dsp.filters.as_mut_slice()[0];
         bank.modulation = filter.unwrap_or([1.0; 2]);
@@ -571,7 +577,6 @@ impl Runtime {
         } else {
             (target, None)
         };
-        let chain = v.chain.map(|index| &plan.prepared.voice_chains[index]);
         let mut claimed = plan.dsp.cells.claim(i);
         let states = &mut claimed[..chain.map_or(0, |c| c.stages())];
         let mut delay = plan.dsp.delay_samples.claim(i);
@@ -586,6 +591,7 @@ impl Runtime {
                 convolutions: &mut [],
             },
             at,
+            feeds: &mut plan.dsp.feeds,
         };
         let (produced, done, faults, underrun) = if let Some(frames) = asset.resident_frames() {
             asset.want_levels(v.cursor.step(), at);
@@ -617,6 +623,20 @@ impl Runtime {
                     .mix(i, segment, target, ramp, at, f64::from(self.rate));
             } else {
                 ramp_mix(segment, target, ramp, at);
+            }
+        }
+        if faults == 0 {
+            if let Some(chain) = chain {
+                for &bus in &chain.tap_buses {
+                    let feed = &plan.dsp.feeds[bus].samples;
+                    let target = plan.dsp.buses.input(bus, produced);
+                    for (i, sample) in target.iter_mut().enumerate() {
+                        for c in 0..2 {
+                            sample[c] += (feed[c][i] * f64::from(gains[c])) as f32;
+                        }
+                    }
+                    plan.dsp.buses.fed(bus, produced);
+                }
             }
         }
         let applied = points.map_or(gains, |r| {

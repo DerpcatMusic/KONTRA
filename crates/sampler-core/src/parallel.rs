@@ -250,6 +250,11 @@ impl Runtime {
                     .plans
                     .get(self.notes.get(f.note.0).unwrap().plan.0)
                     .unwrap();
+                if v.chain
+                    .is_some_and(|index| !plan.prepared.voice_chains[index].tap_buses.is_empty())
+                {
+                    return false;
+                }
                 // A plan adopted before the thread count rose may lack lane caches.
                 if plan.dsp.filters.len() < lanes {
                     return false;
@@ -389,6 +394,7 @@ impl View<'_> {
                 convolutions: &mut [],
             },
             at: self.at,
+            feeds: &mut [],
         };
         let applied = prelude
             .and_then(|p| p.points)
