@@ -5,16 +5,46 @@ use sampler_midi::{Ingress, Packets, TimedPacket, Version};
 use std::path::Path;
 
 fn main() {
-    let path = std::env::args().nth(1).expect("NKI path");
+    std::panic::set_hook(Box::new(|info| {
+        if let Some(location) = info.location() {
+            eprintln!("probe failure at authored code line {}", location.line());
+        }
+    }));
+    let mut args = std::env::args().skip(1);
+    let path = args.next().expect("NKI path");
+    let static_address = args.next().map(|group| sampler_ir::SlotAddress {
+        group: group.parse().unwrap(), slot: args.next().unwrap().parse().unwrap(),
+        generic: args.next().unwrap().parse().unwrap(),
+    });
     let mut results = Vec::new();
     for bypass in [false, true] {
-        let loaded = sampler_kontakt::load(
-            Path::new(&path),
-            &sampler_kontakt::Options {
+        let mut kontakt = sampler_kontakt::read(Path::new(&path)).expect("read");
+        if let Some(address) = static_address {
+            // Explicit metadata-verified physical address: expose a static
+            // compressor's existing output trim through the production Mix
+            // lowering so the probe can bypass both, without changing defaults.
+            let mut found = 0;
+            for chain in &mut kontakt.instrument.chains {
+                for stages in [&mut chain.pre_amplitude, &mut chain.post_amplitude] {
+                    if let Some(i) = stages.iter().position(|p| matches!(p, Processor::Compressor(_))) {
+                        let Processor::StereoMatrix(m) = stages[i + 1] else { panic!("no output trim") };
+                        assert!(m[0][1] == 0.0 && m[1][0] == 0.0 && m[0][0] == m[1][1]);
+                        stages.remove(i + 1);
+                        stages.insert(i, Processor::Mix { count: 1, address,
+                            dry: 0.0, wet: m[0][0], bypass: false });
+                        found += 1;
+                    }
+                }
+            }
+            assert_eq!(found, 1);
+        }
+        let loaded = sampler_kontakt::load_read(
+            kontakt, &sampler_kontakt::Options {
                 keys: 60..=60,
+                library: Some(Path::new(&path).into()),
                 ..Default::default()
             },
-            |_| {},
+            |_| {}, || false,
         )
         .expect("load");
         let mut addresses = Vec::new();
@@ -39,7 +69,14 @@ fn main() {
         }
         addresses.sort();
         addresses.dedup();
-        assert!(!addresses.is_empty(), "no addressed compressors");
+        if addresses.is_empty() {
+            let static_compressors = loaded.instrument.chains.iter()
+                .flat_map(|c| c.pre_amplitude.iter().chain(&c.post_amplitude))
+                .filter(|p| matches!(p, Processor::Compressor(_))).count();
+            results.push(serde_json::json!({"status":"no-addressed-compressors",
+                "static_compressors":static_compressors}));
+            break;
+        }
         let plan = loaded.plan;
         let rate = plan.sample_rate();
         let limits = Limits {
