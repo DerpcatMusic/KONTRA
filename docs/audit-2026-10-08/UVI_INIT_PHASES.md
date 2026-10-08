@@ -114,3 +114,35 @@ No full suite,660 sweep, native-host fidelity certification, product release
 or install was run. W0's next batch owns the shared scanner/regression gate.
 Graph construction remains the next large Lua cost; v1's faster successful
 Flute Lua-init aggregate is still an open performance gap.
+
+## Follow-up: v1 leaf collection construction
+
+Ported `4bffbb18:src/uvi/host.rs`'s omission of unused leaf collections and
+shared metatable handles into the Luau graph builder. Requested empty lists
+are materialized once, per element; public indexing, parent links, canonical
+child order and `mods` identity remain intact. Raw enumeration no longer finds
+an unused list before its first access. Authored collections remain eager.
+Aggregation uses the already constructed collections instead of nine Lua
+lookups per element. Synthesis lists are eager on synthesis owners and lazy
+on other leaves; unusual authored synthesis children remain present.
+
+Same optimized profiling artifact configuration, Alto Flute 2, consecutive
+OS-warm reads (not cache-flushed cold reads), milliseconds:
+
+| Phase | baccabfc | v1 graph port |
+| --- | ---: | ---: |
+| XML | 9.59 | 9.51 |
+| VM + host install | 5.80 | 5.63 |
+| Graph | 97.05 | 42.66 |
+| Scripts, including nested compilation | 63.82 | 64.54 |
+| Nested module compile (included above) | 56.96 | 57.53 |
+| Name discovery (included in module compile) | not separated | 1.08 |
+| Ready interface | 15.72 | 15.89 |
+| Combined Lua + ready | 193.46 | 139.58 |
+
+V1's frozen successful Flute combined Lua stage remains 80.89 ms. This port
+reduces but does not close that gap. Eager native Luau compilation remains
+unchanged, as instructed; v1's Lua 5.1 interpreter is not ported. The new name
+discovery subphase rules out host name scanning as the main compilation cost.
+The synthetic regression failed before the port, and all 13 host parameter
+checks pass afterward. The sampler-uvi scan-feature area compile passes.

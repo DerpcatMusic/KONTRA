@@ -298,6 +298,8 @@ end
 
 -- Elements -----------------------------------------------------------------
 local element = {}
+local collections = {layers=true,keygroups=true,oscillators=true,inserts=true,auxs=true,
+  sends=true,modulations=true,eventProcessors=true,connections=true}
 element.__index = function(t, k)
   local m = rawget(element, k)
   if m then return m end
@@ -309,6 +311,13 @@ element.__index = function(t, k)
   if k == "numParams" then
     local defs=rawget(t,'parameterDefinitions')
     return defs and #defs or native.paramCount(rawget(t,'__id'))
+  end
+  if k == 'mods' then
+    local list = t.modulations; rawset(t,k,list); return list
+  end
+  if collections[k] or k == 'synthChildren' then
+    local list = {}; if collections[k] then setmetatable(list,__list_mt) end
+    rawset(t,k,list); return list
   end
   return nil
 end

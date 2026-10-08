@@ -211,3 +211,18 @@ fn mismatched_parameter_scalar_types_are_ignored_without_aborting_lua() {
     assert!(findings.iter().all(|f|f.count==1));
     assert!(h.findings().iter().filter(|f|f.setter_type_mismatch.is_some()).all(|f|f.value.is_empty()));
 }
+
+#[test]
+fn unused_leaf_collections_are_lazy_and_keep_identity_when_requested() {
+    let xml=r#"<UVI4><Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer/></Oscillators></Keygroup></Keygroups></Layer></Layers><EventProcessors><ScriptProcessor><script>
+      local leaf=Program.layers[1].keygroups[1].oscillators[1]
+      assert(rawget(leaf,'inserts')==nil)
+      assert(#leaf.inserts==0 and leaf.inserts==leaf.inserts)
+      assert(leaf.mods==leaf.modulations and #leaf.mods==0)
+      assert(leaf.inserts~=leaf.parent.inserts)
+      assert(Program.layers[1].parent==Program and leaf.parent==Program.layers[1].keygroups[1])
+      assert(Program.children[1]==Program.layers[1] and Program.synthChildren[1]==Program.layers[1])
+    </script></ScriptProcessor></EventProcessors></Program></UVI4>"#;
+    let h=ScriptHost::new(xml,(),Config::default()).unwrap();
+    assert!(h.fault_counts().init.is_empty(),"{:?}",h.fault_counts());
+}
