@@ -731,7 +731,7 @@ pub struct Runtime {
     growth: Option<grow::GrowthQueues>,
     /// Set on the audio side when the pool runs three quarters full.
     voice_pressure: grow::Pressure,
-    note_pressure: grow::Pressure,
+    note_pressure: grow::NotePressure,
     steal_releases: bool,
     cold_starts: bool,
     cold_started: u64,
