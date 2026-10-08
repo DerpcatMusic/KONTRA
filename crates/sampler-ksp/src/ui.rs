@@ -452,7 +452,7 @@ pub fn interface(
             WidgetValue::Reals(v) => Some(ir::Value::Reals(v.clone())),
         };
         if let ir::Kind::Table { cells, .. } = &out.kind {
-            out.value = Some(ir::Value::Integers(cells.clone()));
+            out.value = Some(ir::Value::Integers(cells.iter().map(|n|n.round() as i32).collect()));
         }
         if matches!(w.kind, WidgetKind::Waveform | WidgetKind::Wavetable) {
             out.waveform = waveform(model, w.ui_id).or_else(|| int("$CONTROL_PAR_WT_ZONE").map(|zone| ir::Waveform {

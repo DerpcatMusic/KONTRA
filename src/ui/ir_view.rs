@@ -416,7 +416,7 @@ pub(super) fn widget(
         }
         Kind::Button { momentary: true } => {
             // UVI Button is stateless: one callback per activation, including keyboard.
-            if can_edit {v=if face.source==ir::Source::FalconLua {f64::from(ui.get(id.as_str()).activated())}else{f64::from(ui.get(id.as_str()).held)};}
+            if can_edit {v=if face.source==ir::Source::FalconLua {if ui.get(id.as_str()).activated(){1.}else{0.}}else{if ui.get(id.as_str()).held{1.}else{0.}};}
             let pressed = can_edit && ui.get(id.as_str()).held;
             match state_picture(pressed) {
                 Some(p) => block(w, h).radius(0).fill(picture(p, fixed.unwrap_or_else(|| switch_frame(v > 0.5, p.len()))).unwrap_or(Fill::from(Role::Field))),
