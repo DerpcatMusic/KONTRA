@@ -790,7 +790,19 @@ impl VoiceModState {
             }
         }
         for factor in factors {
-            *factor = [(factor[0] / 12.0).exp2(), 10f64.powf(factor[1] / 20.0)];
+            // Most prepared filters have no route for this voice.
+            *factor = [
+                if factor[0] == 0.0 {
+                    1.0
+                } else {
+                    (factor[0] / 12.0).exp2()
+                },
+                if factor[1] == 0.0 {
+                    1.0
+                } else {
+                    10f64.powf(factor[1] / 20.0)
+                },
+            ];
         }
     }
 
@@ -1111,6 +1123,47 @@ impl crate::Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn addressed_filter_factors_reset_and_sum_at_the_control_midpoint() {
+        let modulation = VoiceModulation::new(
+            vec![ModProgram {
+                sources: vec![ModSource::Velocity],
+                routes: vec![
+                    ModRoute::new(0, ModTarget::ProcessorCutoff(1), 1.0),
+                    ModRoute::new(0, ModTarget::ProcessorCutoff(1), 1.0),
+                    ModRoute::new(0, ModTarget::ProcessorResonance(1), 1.0),
+                    ModRoute::new(0, ModTarget::ProcessorResonance(2), 1.0),
+                    ModRoute::new(0, ModTarget::ProcessorResonance(2), 1.0),
+                ],
+                ..ModProgram::default()
+            }],
+            vec![Some(0)],
+            vec![0],
+        )
+        .unwrap();
+        let mut state = VoiceModState::new(&modulation, 1).unwrap();
+        state.program[0] = Some(0);
+        state
+            .previous_processor_values
+            .copy_from_slice(&[4., 2., 10., -20., 20.]);
+        state
+            .processor_values
+            .copy_from_slice(&[8., 10., 30., -40., 40.]);
+        let mut factors = [[9.; 2]; 128];
+        state.fill_filter_factors(&modulation, 0, &mut factors);
+        assert_eq!(factors[1], [2., 10.]);
+        assert!(
+            factors
+                .iter()
+                .enumerate()
+                .all(|(i, f)| i == 1 || *f == [1.; 2])
+        );
+        // A subsequent voice must not inherit the previous addressed factors.
+        state.stop(0);
+        state.fill_filter_factors(&modulation, 0, &mut factors);
+        assert!(factors.iter().all(|f| *f == [1.; 2]));
+    }
 
     #[test]
     fn waves_start_where_their_documented_shapes_do() {
