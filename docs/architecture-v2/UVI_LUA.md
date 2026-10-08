@@ -107,3 +107,23 @@ checkpoint counts; receipts are in the W10 `w10-uvi-deadlines-20261009` run.
 Finite initialization with an already-expired elapsed threshold fails before
 and passes after this change. No quiet CPU or whole-census acceptance follows
 from these diagnostic timings.
+
+
+### Seeded audit protocol (2026-10-09)
+
+Only scan/shot builds expose `Config.audit_seed` and
+`KONTRA_UVI_AUDIT_SEED`/scanner `--audit-seed`. An explicit seed initializes Luau
+math and runtime random/native-cycle state per load. The threaded audit driver
+acknowledges after prior events and due coroutines at the virtual clock have
+completed and their commands have drained. It closes the event/request queue
+race and handles queue backpressure. Unseeded rendering keeps asynchronous
+processing and normal math seeding; no user setting or persistence field exists.
+Take-sequence seeds and modulation hashes already start deterministically from
+the loaded plan and virtual note/frame sequence.
+
+Four-second production-loader renders at block 64, key 60/velocity 64 and seed 42
+repeat bit-for-bit on two loads: Clarinet `97ad41a1…`, Flute `e8e09e24…`.
+Both remain varied with the seed unset on the same binary. All eight renders are
+nonzero with zero problem counters. Numeric-only receipts live in
+`~/.cache/kontakto-w10/audit-seed/`; no authored PCM is retained. This is A/A
+repeatability, not acceptance of W8's chain-sharing A/B or a CPU/RSS comparison.
