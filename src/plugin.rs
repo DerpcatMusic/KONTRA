@@ -352,6 +352,7 @@ pub(crate) struct PartShared {
     problems: [AtomicU64; 14],
     /// The loaded part's controls; the audio thread refreshes their values.
     pub(crate) controls: Mutex<Arc<[ControlCell]>>,
+    engine_meters: Mutex<Vec<EngineMeterCell>>,
     /// Per node of the loaded part's tree, its level like [`Self::meter`]
     /// (node 0, the instrument, is the part's own meter).
     pub(crate) node_meters: Mutex<Arc<[[AtomicU32; 2]]>>,
@@ -386,6 +387,8 @@ impl ControlCell {
     }
 }
 
+struct EngineMeterCell { address: sampler_core::EngineMeterAddress, value: AtomicU32 }
+
 impl PartShared {
     /// Tree node `node`'s level, silent when the part has no such node.
     pub(crate) fn node_level(&self, node: usize) -> [f32; 2] {
@@ -417,6 +420,36 @@ impl PartShared {
         let mut values = self.control_values();
         if let Some(ingress) = self.ingress.lock().unwrap().as_mut() { ingress.overlay(&mut values); }
         values
+    }
+
+    pub(crate) fn widget_meters(&self, face: &sampler_ui_ir::Interface, epoch: u64) -> std::collections::HashMap<sampler_ui_ir::WidgetRef, f64> {
+        let mut meters = self.engine_meters.lock().unwrap();
+        if self.generation.load(Ordering::Acquire) != epoch { return Default::default(); }
+        // Only addresses in the current IR face stay registered; GUI prunes them.
+        meters.retain(|m| face.widgets.iter().filter_map(|w| w.meter).any(|a|
+            (a.group, a.slot, a.channel, a.bus) == (m.address.group, m.address.slot, m.address.channel, m.address.bus)));
+        face.widgets.iter().enumerate().filter_map(|(n, widget)| {
+            let address = widget.meter?;
+            let address = sampler_core::EngineMeterAddress { group: address.group, slot: address.slot,
+                channel: address.channel, bus: address.bus };
+            let index = meters.iter().position(|m| m.address == address).unwrap_or_else(|| {
+                meters.push(EngineMeterCell { address, value: AtomicU32::new(0) }); meters.len() - 1
+            });
+            Some((sampler_ui_ir::WidgetRef(n), f64::from(f32::from_bits(meters[index].value.load(Ordering::Relaxed)))))
+        }).collect()
+    }
+
+    fn refresh_widget_meters(&self, epoch: u64, read: impl Fn(sampler_core::EngineMeterAddress) -> Option<f32>) {
+        if let Ok(meters) = self.engine_meters.try_lock() {
+            if self.generation.load(Ordering::Acquire) != epoch { return; }
+            let mut changed = false;
+            for meter in meters.iter() {
+                let value = read(meter.address).unwrap_or(0.);
+                let value = if value.is_finite() { value.max(0.) } else { 0. };
+                changed |= meter.value.swap(value.to_bits(), Ordering::Relaxed) != value.to_bits();
+            }
+            if changed { self.scalar_revision.fetch_add(1, Ordering::Release); }
+        }
     }
 
     pub(crate) fn widget_values(&self, face: &sampler_ui_ir::Interface) -> std::collections::HashMap<sampler_ui_ir::WidgetRef, sampler_ui_ir::Value> {
@@ -1306,6 +1339,7 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
         let mut ingress = atoms.ingress.lock().unwrap();
         let epoch = atoms.generation.fetch_add(1, Ordering::AcqRel) + 1;
         *ingress = None;
+        atoms.engine_meters.lock().unwrap().clear();
         epoch
     };
     if part.path.is_empty() {
@@ -1747,6 +1781,7 @@ impl PluginLogic for Sampler {
                 atoms.articulation.store(playing, Ordering::Relaxed);
                 if s.core.epoch(slot) == atoms.generation.load(Ordering::Acquire) {
                     atoms.refresh_controls(|id| s.core.control_value(slot, id));
+                    atoms.refresh_widget_meters(s.core.epoch(slot), |address| s.core.widget_meter(slot, address));
                 }
             }
             s.until_poll = (rate * 0.1) as usize;
