@@ -328,6 +328,7 @@ pub fn lower_with(
     };
     let mut regions = Vec::with_capacity(instrument.zones.len());
     let mut chains = Vec::new();
+    let mut known_chains = std::collections::HashMap::new();
     let mut chain_of = Vec::with_capacity(instrument.zones.len());
     let mut candidates = 0usize;
     for (i, zone) in instrument.zones.iter().enumerate() {
@@ -341,8 +342,21 @@ pub fn lower_with(
         candidates += usize::from(zone.keys.high - zone.keys.low) + 1;
         regions.push(region);
         chain_of.push(chain.map(|chain| {
-            chains.push(chain);
-            chains.len() - 1
+            let group = lowering.group(zone);
+            let gain = zone.gain.linear() * group.map_or(1.0, |g| g.gain.linear());
+            let pan = zone.pan.position + group.map_or(0.0, |g| g.pan.position);
+            // V1 keeps settings per group; attenuation still belongs to each region.
+            let key = (
+                zone.group,
+                zone.chain,
+                gain.max(1.0).to_bits(),
+                pan.clamp(-1.0, 1.0).to_bits(),
+                zone.pan.law as u8,
+            );
+            *known_chains.entry(key).or_insert_with(|| {
+                chains.push(chain);
+                chains.len() - 1
+            })
         }));
     }
     let mut plan = Prepared::new(rate, pcm.clone(), regions, candidates)
@@ -2037,4 +2051,62 @@ pub(crate) fn resample(x: &[f32], from: u32, to: u32) -> Vec<f32> {
             sum as f32
         })
         .collect()
+}
+
+#[cfg(test)]
+mod chain_sharing_tests {
+    use super::*;
+
+    #[test]
+    fn repeated_chains_share_without_merging_authored_owners_or_pan_gain() {
+        let mut instrument = ir::Instrument {
+            assets: vec![ir::Asset {
+                location: ir::AssetLocation::Path("synthetic.wav".into()),
+                encoding: ir::Encoding::Wav,
+                root_key: None,
+                loops: vec![],
+            }],
+            groups: vec![ir::Group::default()],
+            chains: (0..2)
+                .map(|_| ir::Chain {
+                    scope: ir::Scope::Voice,
+                    pre_amplitude: vec![ir::Processor::Gain(ir::Gain::Linear(0.5))],
+                    post_amplitude: vec![],
+                })
+                .collect(),
+            zones: (0..7)
+                .map(|_| ir::Zone {
+                    chain: Some(ir::ChainRef(0)),
+                    pitch: ir::KeyTracking::Fixed,
+                    ..ir::Zone::new(ir::AssetRef(0))
+                })
+                .collect(),
+            ..Default::default()
+        };
+        instrument.zones[2].chain = Some(ir::ChainRef(1));
+        instrument.zones[3].pan.position = 0.5;
+        instrument.zones[4].gain = ir::Gain::Linear(2.0);
+        instrument.zones[5].gain = ir::Gain::Linear(0.4);
+        instrument.zones[6].group = Some(ir::GroupRef(0));
+        let plan = lower(
+            &instrument,
+            48000,
+            vec![Pcm::new(48000, vec![[0.1; 2]; 64].into_boxed_slice()).unwrap()],
+            |_, plan| Ok(plan),
+        )
+        .unwrap();
+        assert_eq!(plan.voice_chains.len(), 5);
+        assert_eq!(
+            (0..7).map(|i| plan.region_chain(i)).collect::<Vec<_>>(),
+            vec![
+                Some(0),
+                Some(0),
+                Some(1),
+                Some(2),
+                Some(3),
+                Some(0),
+                Some(4)
+            ]
+        );
+    }
 }
