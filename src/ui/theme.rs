@@ -728,22 +728,39 @@ pub fn drive(
     vertical: bool,
     reset: f64,
 ) -> bool {
+    drive_widget(ui,id,value,range,travel,vertical,reset,None,true)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn drive_widget(ui:&mut Ui,id:&str,value:&mut f64,range:&RangeInclusive<f64>,travel:f64,vertical:bool,reset:f64,step:Option<f64>,double_reset:bool)->bool {
     let (lo, hi) = (*range.start(), *range.end());
+    let bound = |v:f64| v.clamp(lo.min(hi),lo.max(hi));
+    let step = step.filter(|s|s.is_finite() && *s>0.);
     let r = ui.get(id);
     drag(ui, id, value, range, travel, vertical);
     if let Some(wheel) = ui.wheel(id) {
         WHEELED.with(|w| w.set(true));
-        let step = (hi - lo) / if r.mods.shift { 500. } else { 50. };
+        let step = step.unwrap_or_else(|| (hi-lo).abs()/if r.mods.shift {500.} else {50.});
         let dir = if wheel.y.abs() >= wheel.x.abs() {
             -wheel.y
         } else {
             wheel.x
         };
-        *value = (*value + dir.signum() * step).clamp(lo, hi);
+        *value = bound(*value + dir.signum() * step);
     }
-    stepped(ui, id, value, range);
-    if r.double_clicked || r.pressed && (r.mods.ctrl || r.mods.cmd) {
-        *value = reset;
+    if let Some(step) = step {
+        for key in ui.keys(id) {
+            *value = bound(match key.key {
+                Key::Up|Key::Right => *value+step,
+                Key::Down|Key::Left => *value-step,
+                Key::PageUp => *value+step*10., Key::PageDown => *value-step*10.,
+                Key::Home => lo, Key::End => hi, _=>continue,
+            });
+        }
+    } else { stepped(ui, id, value, range); }
+    if double_reset && r.double_clicked || r.pressed && (r.mods.ctrl || r.mods.cmd) {
+        *value = bound(reset);
+        GRIPPED.with(|g|g.borrow_mut().1.clear());
     }
     r.held
 }
