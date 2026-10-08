@@ -41,6 +41,17 @@ with tempfile.TemporaryDirectory() as tmp:
     assert len((root/'out/results.tsv').read_text().splitlines())==3 # stale signature never duplicates a row
     assert scanner.items(str(manifest)) == [str(good), str(hung)]
 assert scanner.extra_columns({'loads':'yes','plays_note':'silent','ui':'no-ui','programs':[{'pick':None}]})['plays_note']=='no'
+# An incomplete watchdog observation is neither paint failure nor paint success.
+incomplete=scanner.extra_columns({'loads':'yes','ui':'original-ok','programs':[{'views':[{
+ 'source_presentation':'native-package','font_declared':None,
+ 'image_preparation':{'completed':2,'completed_bytes':1024},
+ 'renders':[{'ok':False,'incomplete':True,'stage':'asset-preparation','pending':3}]}]}]})
+assert incomplete['ui']=='incomplete' and incomplete['paint_ok']=='unknown' and incomplete['paint_error']==''
+assert incomplete['programs'][0]['views'][0]['image_preparation']['completed']==2
+mixed=scanner.extra_columns({'ui':'error','programs':[{'views':[{'renders':[
+ {'ok':False,'incomplete':True,'stage':'asset-preparation'},
+ {'ok':False,'reason':'paint failed'}]}]}]})
+assert mixed['ui']=='error' and mixed['paint_ok']=='no' and mixed['paint_error']=='paint failed'
 # Phase failures, MUI budgets, slot partitions and fixed dictionaries share one exporter.
 r=scanner.extra_columns({'ui':'error','programs':[{'source':'kontakt','program':0,'pick':[62,64],
  'ksp':{'compile_ok':'yes','init_ok':'yes','slots':[{'compile_ok':True,'compile_clean':False,'disabled_block_errors':2,'init':{'completion':'completed'},'persistence_changed':{'completion':'failed','fault':{'category':'fuel-budget'}}}]},
