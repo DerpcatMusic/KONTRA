@@ -410,3 +410,12 @@ Receipts are under `~/.cache/kontakto-w3/native-budget/`. The immutable W10
 Winds witness is reused, not rerun: both rows are Original-OK with wanted peaks
 below 3 MiB and zero cache rejection/eviction/requeue counts. This does not
 attribute their historical deadlines to the cache guard.
+
+The scanner's existing 15-second asset-preparation watchdog now returns an
+incomplete render observation with its stage and pending count. Completed bytes,
+queue/cache counters and graph work stay in the parent view record. The shared
+exporter reports `ui=incomplete`, `paint_ok=unknown` and no paint error; a proven
+paint or Native runtime fault still wins. This changes scanner classification,
+not the asynchronous product worker or its deterministic limits. A failing-first
+pipeline check covers pending Native metrics and preservation of a real paint
+error alongside incomplete work.
