@@ -146,6 +146,7 @@ fn write<T>(l: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
 struct Meters {
     /// Audio thread load, 0..1.
     cpu: AtomicU32,
+    disk: AtomicU32,
     /// A view moves on its own (a spectrum or a peak hold falling): the
     /// last frame built says so, and frames keep coming until one does not.
     animating: AtomicBool,
@@ -163,6 +164,9 @@ struct Watch {
     /// they are looked at ten times a second, not every tick.
     readouts: u64,
     cpu: f32,
+    disk: f32,
+    disk_read: u64,
+    disk_counter: Option<&'static AtomicU64>,
     /// The audio thread's render and rendered time when last sampled.
     busy: (u64, u64),
     /// When the readouts were last sampled.
@@ -182,6 +186,7 @@ impl Watch {
             at.is_none_or(|t| now - t >= Duration::from_millis(every))
         };
         if due(self.cpu_at, READOUT_MS) {
+            let since = self.cpu_at.map_or(0., |t| (now - t).as_secs_f32());
             self.cpu_at = Some(now);
             // Mean load since the last look, as Kontakt shows it. The peak
             // block's wall time read 20-80% at idle: one preempted block in
@@ -195,8 +200,24 @@ impl Watch {
                 self.cpu = 0.;
             }
             meters.cpu.store(self.cpu.to_bits(), Ordering::Relaxed);
+            // Disk throughput since the last look, eased; idle settles on 0.
+            let counter = self.disk_counter.unwrap_or(&sampler_kontakt::DISK_READ);
+            let read = counter.load(Ordering::Relaxed);
+            let rate = if since > 0. {
+                read.saturating_sub(self.disk_read) as f32 / 1_048_576. / since
+            } else {
+                0.
+            };
+            self.disk_read = read;
+            self.disk = self.disk * 0.5 + rate * 0.5;
+            if self.disk < 0.05 {
+                self.disk = 0.;
+            }
+            meters.disk.store(self.disk.to_bits(), Ordering::Relaxed);
             let mut h = DefaultHasher::new();
             ((self.cpu * 100.).round() as u32).hash(&mut h);
+            ((self.disk * 10.).round() as u32).hash(&mut h);
+            p.shared.memory_snapshot().hash(&mut h);
             p.shared.voices.load(Ordering::Relaxed).hash(&mut h);
             p.shared.audible.load(Ordering::Relaxed).hash(&mut h);
             p.shared.dropouts.load(Ordering::Relaxed).hash(&mut h);
