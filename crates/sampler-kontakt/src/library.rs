@@ -569,6 +569,8 @@ impl Translation {
         }
         let at = format!("group {index} {:?}", v.name);
         if v.muted {
+            // Empty source groups retain their numeric address for KSP and DSP writes.
+            self.ir.groups.push(ir::Group { name: v.name, ..Default::default() });
             return Ok(None);
         }
         let not_modeled = ir::Reason::NotModeled;

@@ -184,7 +184,10 @@ impl<'h> Unit<'h> {
         let texts: Vec<&str> = g.texts.iter().map(String::as_str).collect();
         Program::new(g.code)
             .and_then(|p| p.with_texts(&texts))
-            .map(|p| p.with_wait_lifetime(WaitLifetime::Callback))
+            .map(|p| {
+                p.with_wait_lifetime(WaitLifetime::Callback)
+                    .with_source_slot(g.u.slot)
+            })
             .map_err(|e| Fault {
                 span,
                 builtin: None,
@@ -248,7 +251,10 @@ impl<'h> Unit<'h> {
         g.emit(I::Wait(480))?;
         g.emit(I::Jump { target: top })?;
         Program::new(g.code)
-            .map(|p| p.with_wait_lifetime(WaitLifetime::Callback))
+            .map(|p| {
+                p.with_wait_lifetime(WaitLifetime::Callback)
+                    .with_source_slot(g.u.slot)
+            })
             .map_err(|e| Fault {
                 span,
                 builtin: None,
@@ -820,7 +826,8 @@ impl Gen<'_, '_> {
     fn sys(&mut self, s: SysVar, dst: u16) -> Result<()> {
         let note = self.note_context();
         let op = match s {
-            SysVar::EventId | SysVar::CallbackId if note => I::ReadEventId { local: dst },
+            SysVar::EventId if note => I::ReadEventId { local: dst },
+            SysVar::CallbackId => I::ReadCallbackId { local: dst },
             SysVar::EventNote if note => I::ReadKey { local: dst },
             SysVar::EventVelocity if note => I::ReadVelocity7 { local: dst },
             SysVar::NoteHeld if note => I::ReadKeyDown { local: dst },
@@ -1524,20 +1531,12 @@ impl Gen<'_, '_> {
                 if self.const_int(args, 1) == Some(b::event_par::SOURCE)
                     && !self.selects_many(builtin, args, 0) =>
             {
-                // -1 for a host event, else the creating script's slot (ponytail:
-                // the reading script's own slot; notes carry no creator slot).
                 self.arg(args, 0, dst)?;
                 self.emit(I::ReadEventInfo {
                     event: dst,
                     info: sampler_core::EventInfo::Source,
                     local: dst,
                 })?;
-                let host = self.jump_if_zero(dst)?;
-                self.set(dst, i64::from(self.u.slot))?;
-                let end = self.jump()?;
-                self.land(host);
-                self.set(dst, -1)?;
-                self.land(end);
                 true
             }
             GetEventPar
@@ -1548,6 +1547,7 @@ impl Gen<'_, '_> {
                             | b::event_par::MIDI_CHANNEL
                             | b::event_par::NOTE
                             | b::event_par::VELOCITY
+                            | b::event_par::REL_VELOCITY
                     )
                 ) && !self.selects_many(builtin, args, 0) =>
             {
@@ -1555,6 +1555,7 @@ impl Gen<'_, '_> {
                     Some(b::event_par::ZONE_ID) => sampler_core::EventInfo::ZoneId,
                     Some(b::event_par::NOTE) => sampler_core::EventInfo::Key,
                     Some(b::event_par::VELOCITY) => sampler_core::EventInfo::Velocity,
+                    Some(b::event_par::REL_VELOCITY) => sampler_core::EventInfo::ReleaseVelocity,
                     _ => sampler_core::EventInfo::MidiChannel,
                 };
                 self.arg(args, 0, dst)?;
@@ -1982,6 +1983,17 @@ impl Gen<'_, '_> {
                 self.set(dst, i64::from(id))?;
                 true
             }
+            StopWait => {
+                let disable = reg(dst, 1)?;
+                self.arg(args, 0, dst)?;
+                self.arg(args, 1, disable)?;
+                self.emit(I::StopWait {
+                    callback: dst,
+                    disable,
+                })?;
+                self.cover(builtin, Coverage::Native);
+                return self.set(dst, 0);
+            }
             SetControlPar | SetControlParReal | SetControlParArr | SetControlParRealArr => {
                 return self.set_control_par(builtin, args, dst);
             }
@@ -2035,7 +2047,6 @@ impl Gen<'_, '_> {
             | ResetRlsTrigCounter
             | WillNeverTerminate
             | RedirectOutput
-            | StopWait
             | ResetKspTimer
             | SetZonePar
             | SetVoiceLimit

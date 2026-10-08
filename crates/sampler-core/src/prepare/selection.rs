@@ -259,6 +259,10 @@ impl Runtime {
         };
         let event = &mut self.note_events[note.0.index];
         event.source_offset_micros = offset_micros;
+        event.creator_slot = defer.map_or(-1, |id| {
+            let c = self.behaviors.get(id.0).unwrap();
+            self.plans.get(plan.0).unwrap().prepared.programs[c.program].source_slot
+        });
         let origin_stage = source_stage.map_or(0, |stage| stage.index());
         event.entry = origin_stage;
         let generation = self.plans.get_mut(plan.0).unwrap();
@@ -369,7 +373,11 @@ impl Runtime {
         }
         n.attack = crate::AttackStatus::Suppressed;
         let key = n.pitch.key();
-        self.silent = Some(crate::SilentNote { key, suppressed: true, ..Default::default() });
+        self.silent = Some(crate::SilentNote {
+            key,
+            suppressed: true,
+            ..Default::default()
+        });
         if let Some(log) = &mut self.selection_log {
             log.push(crate::SelectionRecord {
                 at: self.now,
@@ -675,9 +683,15 @@ impl Runtime {
         let generation = self.plans.get(plan.0).unwrap();
         let prepared = &generation.prepared;
         let mut candidates = Vec::new();
-        self.each_verdict(note, trigger, velocity, snapshot, |index, group, verdict| {
-            candidates.push((index, prepared.candidates[index], group, verdict));
-        });
+        self.each_verdict(
+            note,
+            trigger,
+            velocity,
+            snapshot,
+            |index, group, verdict| {
+                candidates.push((index, prepared.candidates[index], group, verdict));
+            },
+        );
         // The take actually chosen per sequence is the first survivor's; others
         // of the same sequence lose to the round robin.
         let mut chosen = std::collections::BTreeMap::new();
@@ -721,7 +735,10 @@ impl Runtime {
         let (begin, end) = (range.start, range.end);
         if trigger == Trigger::Attack {
             // Always on and allocation-free: the plugin's "why silent" line.
-            let mut silent = crate::SilentNote { key, ..Default::default() };
+            let mut silent = crate::SilentNote {
+                key,
+                ..Default::default()
+            };
             let mut accepted = false;
             self.each_verdict(note, trigger, velocity, snapshot, |_, _, v| match v {
                 Some(r) => silent.counts[crate::SilentNote::slot(r)] += 1,
