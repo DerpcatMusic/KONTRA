@@ -67,7 +67,9 @@ fn main() {
         return;
     }
     let mut library = sampler_kontakt::read(Path::new(&arg)).unwrap();
-    if std::env::args().nth(2).as_deref() == Some("--widgets") {
+    let automation = std::env::args().nth(2).as_deref() == Some("--automation");
+    if automation || std::env::args().nth(2).as_deref() == Some("--widgets") {
+        let bindings = library.instrument.script_automation.clone();
         let (scripts, _, _) = sampler_kontakt::compile_ui(
             &mut library.instrument,
             &sampler_kontakt::Options {
@@ -77,6 +79,32 @@ fn main() {
         );
         for script in scripts {
             let slot = script.view().slot();
+            if automation {
+                println!(
+                    "init_controllers slot={slot} values={:?}",
+                    script.model().controllers
+                );
+                for request in &script.model().requests {
+                    if request.command != "set_engine_par" {
+                        continue;
+                    }
+                    let name = match request.args.first() {
+                        Some(sampler_ksp::model::Value::Text(name)) => Some(name.clone()),
+                        Some(sampler_ksp::model::Value::Int(parameter)) => {
+                            script.view().symbol(*parameter)
+                        }
+                        _ => None,
+                    };
+                    if let Some(name) = name
+                        && (name.contains("GAIN") || name.contains("BYPASS"))
+                    {
+                        println!(
+                            "init_engine_write slot={slot} parameter={name} args={:?}",
+                            &request.args[1..]
+                        );
+                    }
+                }
+            }
             let mut slider = 0;
             for widget in &script.model().interface.widgets {
                 let ordinal = (widget.kind == sampler_ksp::model::WidgetKind::Slider).then(|| {
@@ -84,6 +112,24 @@ fn main() {
                     slider += 1;
                     i
                 });
+                if automation {
+                    for binding in bindings
+                        .iter()
+                        .filter(|b| b.source_slot == slot && Some(b.slider) == ordinal)
+                    {
+                        println!(
+                            "binding source={:?} slot={slot} slider={:?} ui_id={} name={} range={:?} saved_value={:?} soft_takeover={}",
+                            binding.source,
+                            ordinal,
+                            widget.ui_id,
+                            widget.name,
+                            widget.range,
+                            widget.value,
+                            binding.soft_takeover
+                        );
+                    }
+                    continue;
+                }
                 if (32808..=32812).contains(&widget.ui_id)
                     || ordinal.is_some_and(|i| (40..=44).contains(&i))
                     || widget.name.contains("controller_dynamics")
