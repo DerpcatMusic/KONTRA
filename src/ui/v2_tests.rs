@@ -800,6 +800,7 @@ impl<'a> NativeGesture<'a> {
                 sampler_core::WidgetValue::Integer(v)=>ir::Value::Integer(v as i32),
                 sampler_core::WidgetValue::Real(v)=>ir::Value::Real(v),
                 sampler_core::WidgetValue::Text(v)=>ir::Value::Text(v.as_str().to_owned()),
+                sampler_core::WidgetValue::DropPath{..}=>panic!("drop payload is not a readback value"),
             };
             if let ir::Binding::Control(c)=w.binding {
                 let scalar=match value {ir::Value::Integer(v)=>f64::from(v),ir::Value::Real(v)=>v,_=>continue};
@@ -856,8 +857,8 @@ impl<'a> NativeGesture<'a> {
     }
     fn key(&mut self, key: Key, mods: Mods) {self.tick(Input {keys:vec![KeyPress {key,mods}],..Default::default()}); self.tick(Input::default());}
     fn restore(&mut self, n: usize, value: sampler_core::WidgetValue) {
-        let value=match value {sampler_core::WidgetValue::Integer(v)=>ir::Value::Integer(v as i32),sampler_core::WidgetValue::Real(v)=>ir::Value::Real(v),sampler_core::WidgetValue::Text(v)=>ir::Value::Text(v.as_str().to_owned())};
-        self.state.edits.push(ir_view::Edit {widget:ir::WidgetRef(n),index:0,value,mods:Mods::default(),cursor:0,event:0});
+        let value=match value {sampler_core::WidgetValue::Integer(v)=>ir::Value::Integer(v as i32),sampler_core::WidgetValue::Real(v)=>ir::Value::Real(v),sampler_core::WidgetValue::Text(v)=>ir::Value::Text(v.as_str().to_owned()),sampler_core::WidgetValue::DropPath{..}=>panic!("drop payload cannot be restored as state")};
+        self.state.edits.push(ir_view::Edit {widget:ir::WidgetRef(n),index:0,value,mods:Mods::default(),mouse_over:false,cursor:0,event:0});
         self.settle();
     }
     fn changed_and_retained(&mut self, n: usize, before: sampler_core::WidgetValue, family: &str) {
@@ -984,4 +985,34 @@ fn widget_text_draft_preserves_focus_and_refreshes_native_readback() {
     tick(&mut ui,&mut state,&mut values,enter());
     for _ in 0..3 {tick(&mut ui,&mut state,&mut values,Input::default());}
     assert_eq!(state.edits.last().unwrap().value,ir::Value::Text("callback".into()),"unfocused draft must refresh after callback or rejected admission");
+}
+
+#[test]
+fn widget_file_drop_uses_hit_order_namespace_and_atomic_path_limits() {
+    let script=sampler_ksp::compile("on init declare ui_mouse_area $drop end on",48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
+    let mut face=ir_view::resolved(&script.ui(&|_|None).unwrap());
+    face.widgets[0].rect=ir::Rect::new(0,0,100,100);
+    let assets=ir_view::Assets::default();let mut values=ir_view::Values::default();let mut state=ir_view::InputState::default();let mut ui=theme::ui();
+    let mut frame=|ui:&mut Ui,face:&ir::Interface| {let el=ir_view::view_state(ui,"part-a",face,ir::PageRef(0),&assets,ir::Presentation::Vector,1.,&mut values,&mut state);ui.frame(el,Some(Size::new(400.,200.)),Input::default(),1./60.).unwrap();};
+    frame(&mut ui,&face);
+    let at=Point::new(50.,50.);let paths=vec!["/tmp/a.WAV".into(),"/tmp/a.mid".into(),"/tmp/a.nka".into()];
+    let (widget,edits)=ir_view::file_drop(&ui,"part-a",&face,at,&paths,true).expect("MouseArea takes OS drop");
+    assert_eq!(widget,ir::WidgetRef(0));assert_eq!(edits.len(),3);
+    for (index,edit) in edits.iter().enumerate() {assert_eq!(edit.index,index as u32);assert_eq!(edit.event,5);assert!(edit.mouse_over);}
+    assert!(matches!(&edits[0].value,ir::Value::DropPath {kind:ir::DropKind::Audio,path} if path=="/tmp/a.WAV"));
+    assert!(matches!(edits[1].value,ir::Value::DropPath {kind:ir::DropKind::Midi,..}));
+    assert!(matches!(edits[2].value,ir::Value::DropPath {kind:ir::DropKind::Array,..}));
+    assert_eq!(ir_view::file_drop(&ui,"part-a",&face,at,&paths,false).unwrap().1[0].event,4);
+    assert!(ir_view::file_drop(&ui,"part-b",&face,at,&paths,true).is_none());
+    assert!(ir_view::file_drop(&ui,"part-a",&face,at,&vec!["/tmp/a.wav".into();33],true).is_none());
+    assert!(ir_view::file_drop(&ui,"part-a",&face,at,&["/tmp/unknown.exe".into()],true).is_none());
+    let long=std::path::PathBuf::from(format!("/tmp/{}.wav","x".repeat(sampler_core::TEXT_CAPACITY)));
+    assert!(ir_view::file_drop(&ui,"part-a",&face,at,&[long],true).is_none());
+    let mut passive=ir::Widget::new("label",ir::PageRef(0),ir::Rect::new(0,0,100,100),ir::Kind::Label);passive.z=10;
+    face.widgets.push(passive);frame(&mut ui,&face);
+    assert!(ir_view::file_drop(&ui,"part-a",&face,at,&paths,true).is_some());
+    face.widgets[1].kind=ir::Kind::Button {momentary:false};frame(&mut ui,&face);
+    assert!(ir_view::file_drop(&ui,"part-a",&face,at,&paths,true).is_none());
+    face.widgets.pop();face.widgets[0].enabled=false;frame(&mut ui,&face);
+    assert!(ir_view::file_drop(&ui,"part-a",&face,at,&paths,true).is_none());
 }
