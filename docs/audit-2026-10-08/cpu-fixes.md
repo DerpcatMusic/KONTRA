@@ -419,3 +419,30 @@ Port from v1 0cb7a8a0:src/fx/processor.rs Slot::process: evaluate fixed wet/dry 
 New independent blend-equation fixture checks settled/ramping/retargeted/fully-bypassed states on bus and scalar/lane voice paths, block sizes1/7/64, with heap guards. It and49 area integration tests pass(one unrelated ignored; the signal-trace test's filtered child is included in the outer count), including97-voice exactPCM resident/streamed and parallel rendering. Default root cargo test --no-run passes. Frozen candidate admission-mix-settled SHA2564e7139880c3ba2ac822a55706e431801c1475a2eb027ded581ed38c03a1d321a. Before is frozen admission-cold-hold765a7db7. Original-cell A/B measurements are pending; no acceptance claim.
 
 Own idle incremental cleanup removed1,032,077,312 allocated bytes after hash-verifying all27 frozen ELFs; no other artifacts changed.
+
+Completed24 original-audit64 alternating pairs, before765a→settled candidate64919587. All runs exit0, event/render heap0, all coldpages_after0, all underruns0.
+
+| Cell | Repeat | Before median / p99 µs | After median / p99 µs | Underruns before / after |
+|---|---:|---:|---:|---:|
+| piano-64-cold | 1 | 33.590 / 59.471 | 27.630 / 46.701 | 0 / 0 |
+| piano-64-cold | 2 | 26.020 / 47.151 | 24.200 / 50.071 | 0 / 0 |
+| piano-64-cold | 3 | 29.530 / 56.221 | 24.230 / 45.081 | 0 / 0 |
+| piano-64-warm | 1 | 30.081 / 55.791 | 24.971 / 52.161 | 0 / 0 |
+| piano-64-warm | 2 | 29.240 / 58.861 | 23.060 / 43.470 | 0 / 0 |
+| piano-64-warm | 3 | 28.060 / 50.171 | 23.790 / 45.271 | 0 / 0 |
+| fx-64-cold | 1 | 54.771 / 118.432 | 49.661 / 114.272 | 0 / 0 |
+| fx-64-cold | 2 | 54.171 / 119.652 | 51.711 / 125.972 | 0 / 0 |
+| fx-64-cold | 3 | 54.841 / 124.822 | 52.981 / 119.502 | 0 / 0 |
+| fx-64-warm | 1 | 52.381 / 126.512 | 52.831 / 119.543 | 0 / 0 |
+| fx-64-warm | 2 | 57.402 / 129.962 | 49.911 / 114.522 | 0 / 0 |
+| fx-64-warm | 3 | 51.631 / 111.462 | 54.801 / 121.302 | 0 / 0 |
+
+**HOLD.** Median-of-run aggregates: piano cold29.530/56.221→24.230/46.701, warm29.240/55.791→23.790/45.271; FX cold54.771/119.652→51.711/119.502, warm52.381/126.512→52.831/119.543 (median worse). Piano improves but remains above1ed23.380/43.701; FX cold p99 remains above113.413. Zero underruns on both sides does not establish previous rare misses resolved. Evidence:~/.cache/kontakto-fix-cpu/mix-settled-pairs/. Updated audio-TID profiles follow before the next root optimization.
+
+Updated explanatory audio-TID profiles of settled candidate: piano25.551/49.191µs, underruns0; DSP6.00%, bus12.01%, streamed filtered source10.43% and resample window8.89%, stream service4.24%. FX52.551/126.482µs, underruns0; DSP4.89%, bus8.58%, fused source7.70%, convolution6.36%, stream service4.14%. No lost samples. These are not matched before/after profile acceptance or operator-specific attribution. Evidence:~/.cache/kontakto-fix-cpu/mix-settled-profile/.
+
+## Finding10: restored blob ownership
+
+The actual existing wrapper handoff alias, with8192 params,256KiB extra and1MiB persist, fails a semantic heap guard: three frees on the audio consumer, expected zero. Receipt state-retirement-red.log (exit101). CLAP and VST3 now use the same latest-wins pending queue plus two bounded retirement slots. Audio applies by reference and retires ownership even on authored panic; host/editor writers, inactive drains and main callbacks collect it. CLAP requests its main callback, VST3 reuses the existing main restart drain/wake without changing the C++ ABI. Full retirement capacity defers pending application rather than destroying audio-owned data. The realtime section begins before restore application.
+
+Five targeted fixtures pass in each wrapper: large-state heap guard, a recall published during application, panic retirement, concurrent recalls, newest-wins. All70 wrapper-area tests pass, and default root cargo test --no-run passes. No native DAW large-rack recall or C++ allocator claim. Hosts without a main-thread pump can retain up to two consumed blobs until the next recall/deactivate; arbitrary authored load_state allocation is now visible to the guard, not automatically made realtime-safe. Frozen sound-seam candidate admission-state-retirement SHA2562f9bf6c7ab5be4beacc529dc19569eb697d6ba37bb59ad5bb4aa3c0e836c1c15; paired original-cell measurements follow. The original sound seam does not perform wrapper state recalls, so its timings cannot certify this allocation fix.
