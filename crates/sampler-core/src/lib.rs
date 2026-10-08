@@ -34,8 +34,8 @@ struct Siblings {
 
 mod widget;
 pub use widget::{
-    WIDGET_EDIT_CAPACITY, WidgetDefinition, WidgetEdit, WidgetEventType, WidgetInteraction,
-    WidgetStorage, WidgetValue,
+    WIDGET_EDIT_CAPACITY, WIDGET_DROP_CAPACITY, WidgetDefinition, WidgetDropKind, WidgetDropStorage,
+    WidgetEdit, WidgetEventType, WidgetInteraction, WidgetStorage, WidgetValue,
 };
 mod control;
 pub use control::{
@@ -437,6 +437,7 @@ struct Voice {
     bus: Option<usize>,
     tail_remaining: Option<u32>,
     dsp_fade: Option<(u32, f32)>,
+    script_fade: Option<script_params::Fade>,
     envelope: EnvelopeState,
     gain: f32,
     started: bool,
@@ -1438,6 +1439,7 @@ impl Runtime {
             bus: None,
             tail_remaining: None,
             dsp_fade: None,
+            script_fade: None,
             envelope: EnvelopeState::new(envelope),
             gain,
             started: at == self.now,

@@ -1039,7 +1039,11 @@ impl<'a> Sema<'a, '_> {
             let i = self.expr(i)?;
             let i = self.coerce(i, Ty::Int)?;
             return Ok(Expr {
-                ty: Ty::Int,
+                ty: if array.drop_kind().is_some() {
+                    Ty::Str
+                } else {
+                    Ty::Int
+                },
                 span,
                 kind: ExprKind::SysElem(array, Box::new(i)),
             });
@@ -1292,7 +1296,7 @@ pub fn fold(hir: &Hir, e: &Expr) -> Option<Const> {
                 },
                 Builtin::NumElements => match args.first()? {
                     Arg::Var(v, _) => Int(hir.vars[v.0 as usize].len? as i32),
-                    Arg::SysArray(a) => Int(a.len() as i32),
+                    Arg::SysArray(a) if a.drop_kind().is_none() => Int(a.len() as i32),
                     _ => return None,
                 },
                 Builtin::GetUiId => {

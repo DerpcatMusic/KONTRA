@@ -695,13 +695,13 @@ impl Lowering<'_> {
                 bindings.push(None);
                 continue;
             }
-            let index = match known.get(&(&zone.routes, zone.chain)) {
+            let index = match known.get(&(&zone.routes, plan.region_chain(i))) {
                 Some(&index) => index,
                 None => {
-                    let program = self.program(&format!("zone {i}"), zone)?;
+                    let program = self.program(&format!("zone {i}"), i, zone, &plan)?;
                     let index = programs.len();
                     programs.push(program);
-                    known.insert((&zone.routes, zone.chain), index);
+                    known.insert((&zone.routes, plan.region_chain(i)), index);
                     index
                 }
             };
@@ -718,7 +718,13 @@ impl Lowering<'_> {
             .map_err(core(Stage::Modulation, "zones"))
     }
 
-    fn program(&self, owner: &str, zone: &ir::Zone) -> Result<ModProgram, LowerError> {
+    fn program(
+        &self,
+        owner: &str,
+        zone_index: usize,
+        zone: &ir::Zone,
+        plan: &Prepared,
+    ) -> Result<ModProgram, LowerError> {
         let mut program = ModProgram::default();
         let mut sources = std::collections::HashMap::new();
         let mut shapes = std::collections::HashMap::new();
@@ -726,6 +732,7 @@ impl Lowering<'_> {
             let route = &self.ir.routes[route_ref.0];
             let owner = format!("{owner} route {}", route_ref.0);
             let modulator = &self.ir.modulators[route.source.0];
+            let mut processor_targets = Vec::new();
             let target = match (route.target, route.depth) {
                 // Pitch bend to pitch is the note's native expression bend.
                 (ir::Target::Pitch, _) if modulator.source == ir::ModulationSource::PitchBend => {
@@ -745,14 +752,56 @@ impl Lowering<'_> {
                         parameter,
                     },
                     depth,
-                ) if Some(chain) == zone.chain && modulable_filter(self.ir, chain, index) => {
+                ) if Some(chain) == zone.chain => {
+                    let authored = &self.ir.chains[chain.0];
+                    let listed: Vec<_> = authored
+                        .pre_amplitude
+                        .iter()
+                        .chain(&authored.post_amplitude)
+                        .collect();
+                    let processor = listed.get(index).ok_or_else(|| {
+                        unsupported(owner.clone(), Feature::ModulationRoute(route.target))
+                    })?;
+                    let native_chain = plan.region_chain(zone_index).ok_or_else(|| {
+                        unsupported(owner.clone(), Feature::ModulationRoute(route.target))
+                    })?;
+                    let native = &plan.voice_chains[native_chain];
+                    let pre_count = authored.pre_amplitude.len();
+                    let (before, authored_side, native_start, native_len) = if index < pre_count {
+                        (
+                            &listed[..index],
+                            &listed[..pre_count],
+                            0,
+                            native.pre().len(),
+                        )
+                    } else {
+                        (
+                            &listed[pre_count..index],
+                            &listed[pre_count..],
+                            native.pre().len(),
+                            native.post().len(),
+                        )
+                    };
+                    let mut start = native_start + native_len;
+                    for p in authored_side {
+                        start -= self.processors(&owner, **p)?.len();
+                    }
+                    for p in before {
+                        start += self.processors(&owner, **p)?.len();
+                    }
+                    let end = start + self.processors(&owner, **processor)?.len();
+                    processor_targets = native.filter_indices(start..end);
+                    let first = *processor_targets.first().ok_or_else(|| {
+                        unsupported(owner.clone(), Feature::ModulationRoute(route.target))
+                    })?;
                     match (parameter, depth) {
                         (ir::ProcessorParameter::Cutoff, ir::Depth::Pitch(p)) => {
-                            (ModTarget::Cutoff, p.semitones())
+                            (ModTarget::ProcessorCutoff(first), p.semitones())
                         }
-                        (ir::ProcessorParameter::Resonance, ir::Depth::Gain(g)) => {
-                            (ModTarget::Resonance, 20.0 * g.linear().log10())
-                        }
+                        (ir::ProcessorParameter::Resonance, ir::Depth::Gain(g)) => (
+                            ModTarget::ProcessorResonance(first),
+                            20.0 * g.linear().log10(),
+                        ),
                         _ => {
                             return Err(unsupported(owner, Feature::ModulationRoute(route.target)));
                         }
@@ -805,7 +854,7 @@ impl Lowering<'_> {
                     .map(|shape| shape_of(shape, &mut program)),
                 ..s
             });
-            program.routes.push(ModRoute {
+            let native = ModRoute {
                 source,
                 target: target.0,
                 depth: target.1,
@@ -813,7 +862,16 @@ impl Lowering<'_> {
                 shape,
                 lag: self.frames(route.smoothing),
                 scale,
-            });
+            };
+            program.routes.push(native);
+            for index in processor_targets.into_iter().skip(1) {
+                let target = match native.target {
+                    ModTarget::ProcessorCutoff(_) => ModTarget::ProcessorCutoff(index),
+                    ModTarget::ProcessorResonance(_) => ModTarget::ProcessorResonance(index),
+                    _ => unreachable!(),
+                };
+                program.routes.push(ModRoute { target, ..native });
+            }
         }
         if let Some(mpe) = self.mpe {
             if mpe.pressure_db != 0.0 {
