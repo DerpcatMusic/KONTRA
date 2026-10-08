@@ -33,3 +33,21 @@ Times below are steady block median / p99 in microseconds. Baseline values are t
 | strings-32 | 2.730 / 7.430 | 56.352 / 73.021 | 34.641 / 76.432 | 0 / 0 |
 | strings-64-cold | 3.530 / 8.750 | 69.520 / 101.142 | 35.271 / 64.192 | 0 / 0 |
 | strings-64 | 3.500 / 8.400 | 69.092 / 108.333 | 36.431 / 72.122 | 0 / 0 |
+
+## Interleaved cold256 lifecycle comparison
+
+Three repeats per cell, fresh output directories, frozen original audit binary versus `ffd858c4` lifecycle binary. Each individual run evicts the library file cache using the original audit runner; order is before/after, after/before, before/after. Runs alternate within the same window; competing machine work was not disabled. Values are steady per-block median / p99 in microseconds; each cell has 141 steady blocks. All 18 runs report zero event/render heap calls.
+
+| Cell | Repeat | Before median / p99 | After median / p99 | Underruns before / after |
+|---|---:|---:|---:|---:|
+| piano | 1 | 120.962 / 149.682 | 93.932 / 153.853 | 0 / 0 |
+| piano | 2 | 247.213 / 1430.872 | 113.292 / 163.473 | 0 / 0 |
+| piano | 3 | 322.885 / 494.627 | 140.582 / 701.970 | 0 / 0 |
+| strings | 1 | 225.554 / 396.396 | 199.023 / 273.394 | 0 / 0 |
+| strings | 2 | 166.942 / 252.354 | 226.994 / 525.678 | 0 / 0 |
+| strings | 3 | 305.754 / 566.699 | 130.674 / 175.086 | 0 / 0 |
+| fx | 1 | 214.014 / 308.654 | 250.654 / 444.476 | 5 / 2 |
+| fx | 2 | 209.703 / 301.934 | 170.523 / 248.664 | 4 / 5 |
+| fx | 3 | 201.676 / 272.418 | 176.185 / 266.159 | 5 / 4 |
+
+This does **not** establish that every cold256 regression was noise. Median-of-run medians and median-of-run p99s improve for all three cells, but Vista repeat 2 and ANALOG STRINGS repeat 1 regress. ANALOG STRINGS also has 14 versus 11 total underruns. Do not infer sonic or streaming parity from CPU medians.
