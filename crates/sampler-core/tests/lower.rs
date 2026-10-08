@@ -1049,3 +1049,21 @@ fn authored_delay_runs_existing_dsp_at_the_requested_time() {
     assert!(output[0][0] > 0.);
     assert!(output[1..].iter().all(|sample| sample[0] == 0.));
 }
+
+#[test]
+fn stale_physical_zone_maps_return_invalid_instead_of_panicking() {
+    for runtime in [0, usize::MAX] {
+        let mut instrument = instrument();
+        instrument.source_indices.zones = vec![None, Some(ir::ZoneRef(runtime))];
+        instrument.zones.clear();
+        instrument.assets.clear();
+        assert!(matches!(
+            rejected(&instrument, vec![]),
+            LowerError::Invalid(ir::ValidationError::Dangling { owner, .. })
+                if owner == "source zone 1"
+        ));
+    }
+    let mut holes = ir::Instrument::default();
+    holes.source_indices.zones = vec![None, None];
+    assert!(lower(&holes, 48000, vec![], no_behaviors).is_ok());
+}
