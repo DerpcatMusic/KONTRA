@@ -549,8 +549,8 @@ impl Gen<'_, '_> {
 
     fn assign(&mut self, place: &Place, value: &Expr) -> Result<()> {
         let v = place.var();
-        let var = self.var(v).clone();
-        match (place, var.home) {
+        let home = self.var(v).home;
+        match (place, home) {
             (Place::Var(_), Home::Text(cell)) => self.text_into(value, TextRef::Cell(cell), 0),
             (Place::Elem(_, index), Home::Texts { offset, len }) => {
                 self.value(index, 0)?;
@@ -567,8 +567,8 @@ impl Gen<'_, '_> {
                 })
             }
             (Place::Var(_), _) => {
-                if let (Home::Control(ui), Some(Const::Int(n))) =
-                    (var.home, fold(self.u.hir, value))
+                if let Home::Control(ui) = home
+                    && let Some(Const::Int(n)) = fold(self.u.hir, value)
                 {
                     let (lo, hi) = self.range(ui);
                     self.set(0, i64::from(n.clamp(lo, hi)))?;
@@ -946,7 +946,7 @@ impl Gen<'_, '_> {
             ExprKind::Load(v) if e.ty == Ty::Str => match self.var(*v).home {
                 Home::Text(cell) => TextPart::Text(TextRef::Cell(cell)),
                 Home::Const(k) => match &self.u.hir.consts[k as usize] {
-                    Const::Str(s) => TextPart::Constant(self.constant(&s.clone())),
+                    Const::Str(s) => TextPart::Constant(self.constant(&s)),
                     _ => return Ok(()),
                 },
                 _ => return Ok(()),
