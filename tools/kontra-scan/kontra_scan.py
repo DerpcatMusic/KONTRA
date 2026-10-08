@@ -130,6 +130,9 @@ def extra_columns(r):
     # v1's retained full-editor render is itself the render record.
     errors += [v for v in views if v.get('ok') is False]
     if any(x.get('budget_hit') for x in errors): r['ui']='budget-hit'
+    font_failures=count(views,'missing_fonts')
+    if not errors and r.get('ui') in {'original-ok','missing-images','missing_font'} and isinstance(font_failures,(int,float)) and font_failures>0:
+        r['ui']='missing_font'
     r['paint_ok']='no' if errors else 'yes' if renders or any(v.get('ok') is True for v in views) else 'no-ui' if r.get('ui')=='no-ui' else 'unknown'
     r['paint_error']=next((x.get('reason','paint error') for x in errors),'')
     native_failures=[v for v in views if v.get('native_diagnostic') or (v.get('source_presentation')=='native-package' and v.get('font_declared') is None)]

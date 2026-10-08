@@ -81,4 +81,18 @@ partial=scanner.extra_columns({'loads':'no','ui':'missing-images','reason':'audi
 assert 'admission: 1/2 embedded programs failed import/plan construction' in partial['reason']
 before=partial['reason'];scanner.extra_columns(partial);assert partial['reason']==before
 assert 'opaque' not in partial['reason']
+
+# Actual requested font failures are separate from unrequested style inventory.
+for status in ['original-ok','missing-images']:
+    font_only=scanner.extra_columns({'ui':status,'programs':[{'views':[{'font_declared':3,'font_success':2,'missing_fonts':1,'missing_images':0,'renders':[{'ok':True}]}]}]})
+    assert font_only['ui']=='missing_font'
+for status in ['error','blank','budget-hit','missing-images']:
+    unchanged=scanner.extra_columns({'ui':status,'programs':[{'views':[{'font_declared':2,'font_success':2,'renders':[{'ok':True}]}]}]})
+    assert unchanged['ui']==status
+failed_paint=scanner.extra_columns({'ui':'error','programs':[{'views':[{'font_declared':3,'font_success':2,'renders':[{'ok':False}]}]}]})
+assert failed_paint['ui']=='error'
+
+unrequested=scanner.extra_columns({'ui':'original-ok','programs':[{'views':[{'font_declared':3,'font_success':2,'missing_fonts':0,'renders':[{'ok':True}]}]}]})
+assert unrequested['ui']=='original-ok'
+
 print('shared scanner checks passed')
