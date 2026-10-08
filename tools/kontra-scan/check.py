@@ -70,4 +70,11 @@ with tempfile.TemporaryDirectory() as tmp:
 timing=scanner.extra_columns({'loads':'yes','ui':'original-ok','first_audio_ms':12.5,'cache_state':'cold','programs':[{'source':'kontakt','views':[{'renders':[{'ok':True,'ui_first_frame_ms':20.},{'ok':True,'ui_first_frame_ms':18.}]}]}]})
 assert timing['first_audio_ms']==12.5 and timing['ui_first_frame_ms']==18. and timing['cache_state']=='cold'
 assert fallback['first_audio_ms']=='unknown' and fallback['ui_first_frame_ms']=='unknown'
+missing=scanner.extra_columns({'loads':'yes','ui':'missing-images','reason':'loaded','programs':[{'views':[{'missing_images':2,'asset_failure_reasons':{'lookup-not-found':2},'renders':[{'ok':True}]}]}]})
+assert 'lookup-not-found=2' in missing['reason']
+assert scanner.extra_columns(missing)['reason']==missing['reason']
+pending=scanner.extra_columns({'loads':'yes','ui':'original-ok','ui_first_frame_ms':None,'programs':[{'views':[{'source_presentation':'native-package','font_declared':None,'renders':[{'ok':True}]}]}]})
+assert pending['ui']=='error' and pending['paint_ok']=='no' and pending['ui_first_frame_ms']=='unknown'
+native=scanner.extra_columns({'ui':'original-ok','programs':[{'views':[{'source_presentation':'native-package','font_declared':0,'native_diagnostic':'Native runtime; time-budget#safe','renders':[{'ok':True}]}]}]})
+assert native['ui']=='budget-hit' and 'time-budget#safe' not in native['reason']
 print('shared scanner checks passed')
