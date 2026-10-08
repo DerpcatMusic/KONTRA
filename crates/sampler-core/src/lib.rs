@@ -74,7 +74,7 @@ mod dsp;
 pub use dsp::{
     Biquad, CompressorSettings, ControlRange, ConvolutionUpload, DaftSettings, Decimator, Delay,
     FilterKind, Impulse, MAX_IMPULSE_FRAMES, Parameter, Processor, Rectifier, ReverbSettings,
-    StateVariableFilter, SvfMode, VoiceChain,
+    StateVariableFilter, StereoSettings, SvfMode, VoiceChain,
 };
 mod envelope;
 use envelope::EnvelopeState;
@@ -88,7 +88,7 @@ mod script_params;
 pub use engine_parameter_names::ENGINE_PARAMETER_NAMES;
 pub use engine_parameters::{
     EngineLookup, EngineMeterAddress, EngineParameterAddress, EngineParameterBinding,
-    EngineParameterLaw, engine_parameter_id, engine_parameter_name,
+    EngineParameterLaw, EngineParameterOutcome, engine_parameter_id, engine_parameter_name,
 };
 mod steal;
 mod voice_mod;
