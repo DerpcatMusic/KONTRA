@@ -20,9 +20,9 @@ assert frozen_underruns([{'event': 'host_audio_config'}]) == 0
 assert frozen_underruns([{'event': 'host_audio_config'}, {'code': 'playback_drops', 'data': {'state': {'underruns': 4}}}]) == 4
 print('PASS: event plan, native v1-only envelope, unavailable diagnostics')
 
-complete = {'returncode':0, 'events_dispatched':12, 'events_planned':12, 'peak':.5, 'nonfinite':0, 'contention':'QUIET'}
+complete = {'returncode':0, 'events_dispatched':12, 'events_planned':12, 'peak':.5, 'nonfinite':0, 'contention':'QUIET', 'native_state_verified':True}
 assert measured_status(complete) == 'MEASURED'
-for change in [{'contention':'CONTENDED'}, {'contention':'UNKNOWN'}, {'peak':0}, {'nonfinite':1}, {'returncode':1}, {'events_dispatched':11}]:
+for change in [{'contention':'CONTENDED'}, {'contention':'UNKNOWN'}, {'peak':0}, {'nonfinite':1}, {'returncode':1}, {'events_dispatched':11}, {'native_state_verified':False}, {'native_state_verified':None}]:
     assert measured_status(dict(complete, **change)) == 'UNKNOWN'
 print('PASS: silent, incomplete and contended runs cannot certify live playback')
 
@@ -35,6 +35,16 @@ with tempfile.TemporaryDirectory() as tmp:
     record={'source_sha':'a'*40,'profile':'ci','path':str(plugin),'sha256':sha(plugin),'cli_sha256':sha(cli),'host_sha256':sha(host)}
     (folder/'BUILD.json').write_text(json.dumps(record))
     assert artifact_receipt(plugin,cli,host)['source_sha']=='a'*40
+    record['profile'] = 'release'
+    (folder/'BUILD.json').write_text(json.dumps(record))
+    assert artifact_receipt(plugin,cli,host)['profile'] == 'release'
+    record['profile'] = 'unknown'
+    (folder/'BUILD.json').write_text(json.dumps(record))
+    try: artifact_receipt(plugin,cli,host)
+    except AssertionError: pass
+    else: raise AssertionError('unknown artifact profile accepted')
+    record['profile'] = 'ci'
+    (folder/'BUILD.json').write_text(json.dumps(record))
     plugin.write_bytes(b'changed')
     try: artifact_receipt(plugin,cli,host)
     except AssertionError: pass
@@ -45,13 +55,38 @@ from live_host import private_settings
 with tempfile.TemporaryDirectory(dir='/dev/shm') as temp:
     config = Path(temp) / 'config'
     private_settings(config)
-    assert json.loads((config / 'kontra/settings.json').read_text()) == {'imported': True, 'roots': []}
+    assert json.loads((config / 'kontra/settings.json').read_text()) == {'version': 2, 'imported': True, 'roots': []}
 
 # 0.3.152 native Selection omits root; keyed fields avoid positional shifts.
 persist = native[36:]; at = 4 + 4 + len(b'selection')
 selection = persist[at+8:]
 assert struct.unpack_from('<I', selection)[0] == 0xffffff01
 print('PASS: native keyed frame supported by frozen 0.3.152 derive')
+
+from live_host import native_selection, verify_native_state
+assert native_selection(native)[1] == (0,)
+assert verify_native_state(native, native)
+for saved in [template, native[:-1], native + b'\0', v1_state(template, '/generated/other.nki', 3),
+              v1_state(template, '/generated/tone.nki', 0), native[:8] + b'changed!' + native[16:]]:
+    assert not verify_native_state(native, saved)
+# Additional native defaults may be saved; keyed field order is not identity.
+from live_host import keyed, sized
+import live_host
+original = live_host.keyed
+try:
+    live_host.keyed = lambda fields: original(dict(reversed(list(fields.items()))))
+    reordered = v1_state(template, '/generated/tone.nki', 3)
+finally:
+    live_host.keyed = original
+assert verify_native_state(native, reordered)
+for key, value in [('port', b'\1'), ('output', b'\1'), ('gain', struct.pack('<f', -6.))]:
+    try:
+        live_host.keyed = lambda fields: original(dict(fields, **({key: value} if key in fields else {})))
+        changed = v1_state(template, '/generated/tone.nki', 3)
+    finally:
+        live_host.keyed = original
+    assert not verify_native_state(native, changed)
+print('PASS: saved native selection rejects default, wrong source/program and malformed frames')
 
 from live_host import load_status
 assert load_status([]) == 'WAITING'

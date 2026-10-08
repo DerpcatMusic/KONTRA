@@ -31,4 +31,8 @@ Probe correction: a temporary positional prefix failed because frozen 0.3.152's 
 
 Validation: native C++ self-check; Python schedule, invalid/silent/contended receipts, artifact provenance, private first-run prefs and failed-load handling checks. Cargo targeted perf/state tests and `--no-run` passed through kontakto-heavy outside the quiet window. Host additions are separate from editor ownership commit fba565c9.
 
-NEXT: integrate the headless harness, rerun against the combined UVI-enabled candidate when appropriate, and fix the gate-index-8 CPU regression.
+Resumed native readback follow-up (2026-10-08 22:38 UTC): native `state.load` success alone does not prove the intended selection. The admission regression reproduced red on unverified readback. The host now saves CLAP state on the main thread after audition, outside measured process calls/stream deltas, into private tmpfs. The driver compares native envelope identity and keyed Selection path/program/MIDI/output/gain/aux/part order; default, wrong-source/program/routing/gain, malformed and unavailable states cannot be MEASURED. Additional keyed defaults/order changes are tolerated. This excludes script widget/custom-state recall. Historical 735535a8 receipts lack this new readback proof and remain specific to their original artifact/protocol.
+
+Native C++ compiled through `kontakto-heavy` with `-O2 -std=c++17 -Wall -Wextra -Werror`; its percentile/event/I/O/bounded-save self-check passed. All six Python self-check groups passed, including red→green version-2 private settings at the same `kontra/settings.json` path. The probe accepts hash-bound `ci` and authorized `release` artifacts, records thread-setting/environment policy, and does not build/install a plugin. No new timed cells or production ABI changes are claimed.
+
+NEXT: exact released artifact live-host cells after W0 exits the wrapper, in the W13→W9 quiet order.
