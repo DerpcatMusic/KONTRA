@@ -681,7 +681,7 @@ impl<V: View> Handler<V> {
                     }
                 }
                 Err(e) => {
-                    log(&self.shared, &format!("mui-baseview: {e}; using CPU rendering"));
+                    log(&self.shared, &format!("mui-baseview: GPU render failed ({e}); using CPU rendering"));
                     // Drop the GPU surface before another presenter takes the window.
                     self.gpu = None;
                     self.software_only = true;
