@@ -1,0 +1,5897 @@
+{
+  "audited_revision": "7e82b152",
+  "input_sha256": {
+    "quick-0": "c3da778031792ceee7b24c5e5f1234da61a0b480e1f649fd2cda9f39c6e56f2a",
+    "quick-1": "e126c01ee9a4a141c0a9e2fa71fb13e3be258f45246b8e84aa43033874393fae",
+    "targets": "5056dbae6da0b1c5707461fa2cf9b3d21a9ec6292a19ea6df659f54a966a3534",
+    "regressions": "7a7fe02b6def6d93260be38799cb12cfaa6175d5370c01d94a7ce9694a08a2bf",
+    "historical_full3": "862d5fbd22a4961d4d7d3719830b2d4f20f254f370f8bd4b3a3d288b67c79618"
+  },
+  "fresh": {
+    "quick-0": {
+      "count": 53,
+      "stages": {
+        "ok": 48,
+        "note-on/selection": 3,
+        "needs-controller": 2
+      },
+      "items": [
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Horns/2 Horns Marcato.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 69,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 56
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -20.035954075078504,
+            "stuck_voices": 4,
+            "script_faults": [],
+            "selection": {
+              "patch": "2 Horns Marcato",
+              "articulation": "",
+              "suspect": [
+                "name says short, voices from long groups: BRASS_Long_Marcato_Close, BRASS_Long_Marcato_Decca, BRASS_Long_Marcato_Hall, BRASS_Long_Marcato_MidHall"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 1,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Horns/Mutes/2 Horns Mutes Tenuto.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 38,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 32
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -20.37005659216865,
+            "stuck_voices": 4,
+            "script_faults": [],
+            "selection": {
+              "patch": "2 Horns Mutes Tenuto",
+              "articulation": "",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 1,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Tubas/2 Tubas Repetitions.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 67,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 88
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -6.5965848837495855,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "2 Tubas Repetitions",
+              "articulation": "",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 4,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/3 Trombones/Mutes/3 Trombones Mutes AccSusCresc.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 38,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 20
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -10.931005521808284,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "3 Trombones Mutes AccSusCresc",
+              "articulation": "Acc Sus + Crescendo",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 1,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/3 Trumpets/3 Trumpets SusToFlutter.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 193,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 376
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -29.884929978594123,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "3 Trumpets SusToFlutter",
+              "articulation": "",
+              "suspect": [
+                "sample start offset 5000 (+0 modulated) in group BRASS_Dyn4_Sus_Hall of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 2,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/4 Horns/4 Horns Repetitions.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 69,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 88
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -21.338158687463846,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "4 Horns Repetitions",
+              "articulation": "",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 4,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/4 Horns/Mutes/4 Horns Mutes Trills.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 41,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 40
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -33.60957732443131,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "4 Horns Mutes Trills",
+              "articulation": "Half Tone Trill",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 1,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/Bass Trombone Cimbasso Tuba/Bass Trombone Cimbasso Tuba Staccatissimo.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 63,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 88
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -25.47919571766815,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Bass Trombone Cimbasso Tuba Staccatissimo",
+              "articulation": "",
+              "suspect": [
+                "sample start offset 520 (+0 modulated) in group BRASS_Staccatiss_02_Hall of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 4,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/2. Solos/Multi Instruments/Solo French Horn KS.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 473,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 864
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -21.810280234452293,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Solo French Horn KS",
+              "articulation": "Sustain + Legato",
+              "suspect": [
+                "sample start offset 2709 (+5120 modulated) in group BRASS_Dyn1_Sus_Hall of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 2,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/2. Solos/Single Instruments/Solo Bass Trombone/Solo Mutes/Solo Bass Trombone Metal Mute Legato.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 119,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 136
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -38.60255231816892,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Solo Bass Trombone Metal Mute Legato",
+              "articulation": "",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 2,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/2. Solos/Single Instruments/Solo Cimbasso/Solo Cimbasso AccSusCresc.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 32,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 20
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -9.412704742467383,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Solo Cimbasso AccSusCresc",
+              "articulation": "Acc Sus + Crescendo",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 1,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/ANALOG STRINGS/Instruments/ANALOG STRINGS.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 1809,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 1624
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": 4.087988705995139,
+            "stuck_voices": 1,
+            "script_faults": [],
+            "selection": {
+              "patch": "ANALOG STRINGS",
+              "articulation": "",
+              "suspect": [
+                "different articulations across round-robin repeats"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 8,
+              "distinct_group_sets": 2,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": false
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/2. Solos/Single Instruments/Solo Cimbasso/Solo Mutes/Solo Cimbasso Mute SusToFlutter.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 118,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 136
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -37.510046741306724,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Solo Cimbasso Mute SusToFlutter",
+              "articulation": "",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 2,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/2. Solos/Single Instruments/Solo French Horn/Solo Mutes/Solo French Horn Mute Marcato.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 46,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 32
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -13.229026454193704,
+            "stuck_voices": 4,
+            "script_faults": [],
+            "selection": {
+              "patch": "Solo French Horn Mute Marcato",
+              "articulation": "",
+              "suspect": [
+                "name says short, voices from long groups: BRASS_Long_Marcato_Close, BRASS_Long_Marcato_Decca, BRASS_Long_Marcato_Hall, BRASS_Long_Marcato_MidHall",
+                "sample start offset 2706 (+0 modulated) in group BRASS_Long_Marcato_Hall of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 1,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/2. Solos/Single Instruments/Solo French Horn/Solo Stopped/Solo French Horn Stopped Trills.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 47,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 40
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -31.79909825670626,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Solo French Horn Stopped Trills",
+              "articulation": "Half Tone Trill",
+              "suspect": [
+                "sample start offset 2728 (+0 modulated) in group BRASS_Dyn1_Trills_Hall of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 1,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/2. Solos/Single Instruments/Solo Trumpet/Solo Mutes/Solo Trumpet Carbon Mute Marcato.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 42,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 32
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -29.82628828137851,
+            "stuck_voices": 4,
+            "script_faults": [],
+            "selection": {
+              "patch": "Solo Trumpet Carbon Mute Marcato",
+              "articulation": "",
+              "suspect": [
+                "name says short, voices from long groups: BRASS_Long_Marcato_Close, BRASS_Long_Marcato_Decca, BRASS_Long_Marcato_Hall, BRASS_Long_Marcato_MidHall",
+                "sample start offset 95 (+0 modulated) in group BRASS_Long_Marcato_Hall of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 1,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/2. Solos/Single Instruments/Solo Tenor Trombone/Solo Mutes/Solo Tenor Trombone Metal Mute Staccato.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 71,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 68
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -18.569637793758517,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Solo Tenor Trombone Metal Mute Staccato",
+              "articulation": "",
+              "suspect": [
+                "sample start offset 2200 (+0 modulated) in group BRASS_Stacc_02_Hall of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 4,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/2. Solos/Single Instruments/Solo Tuba/Solo Mutes/Solo Tuba Mute Tenuto.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 45,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 32
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -27.720460632679142,
+            "stuck_voices": 4,
+            "script_faults": [],
+            "selection": {
+              "patch": "Solo Tuba Mute Tenuto",
+              "articulation": "",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 1,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/2. Solos/Single Instruments/Solo Trumpet/Solo Trumpet Flutter.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 34,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 40
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -25.275160405365078,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Solo Trumpet Flutter",
+              "articulation": "",
+              "suspect": [
+                "sample start offset 1488 (+0 modulated) in group BRASS_Dyn1_Flutter_Hall of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 1,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/3. Curated Ensembles/Mountain Hotel.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 70,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 128
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -17.348562183827067,
+            "stuck_voices": 4,
+            "script_faults": [],
+            "selection": {
+              "patch": "Mountain Hotel",
+              "articulation": "Marcato",
+              "suspect": [
+                "sample start offset 3202 (+0 modulated) in group BRASS_Marcato_02_Hall of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 4,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/5. Performance Instruments/Solo Performance Instruments/Solo Cimbasso Mute Performance.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 93,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 176
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -37.502757116097285,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Solo Cimbasso Mute Performance",
+              "articulation": "",
+              "suspect": [
+                "sample start offset 4680 (+0 modulated) in group BRASS_Stacc_02_Hall of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 2,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/5. Performance Instruments/Curated Performance Instruments/Phantom Brass Performance.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 242,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 392
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -14.080036447241307,
+            "stuck_voices": 4,
+            "script_faults": [],
+            "selection": {
+              "patch": "Phantom Brass Performance",
+              "articulation": "",
+              "suspect": [
+                "sample start offset 204 (+5120 modulated) in group BRASS_Dyn1_Sus_Hall of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 2,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Areia 1.2.0 [Audio Imperia]/Instruments/02 Legato Technique Patches/Areia - 03 6 Celli - Performance Legato.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 2246,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 1782
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -2.1994161334250415,
+            "stuck_voices": 36,
+            "script_faults": [],
+            "selection": {
+              "patch": "Areia - 03 6 Celli - Performance Legato",
+              "articulation": "C-1",
+              "suspect": [
+                "different articulations across round-robin repeats"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 8,
+              "distinct_group_sets": 2,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Areia 1.2.0 [Audio Imperia]/Instruments/03 Single Patches/01 Core Techniques/01 16 Violins/Areia - 15 16 Violins - Bartok Pizzicato.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 2182,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 1122
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -8.889112629211835,
+            "stuck_voices": 1,
+            "script_faults": [],
+            "selection": {
+              "patch": "Areia - 15 16 Violins - Bartok Pizzicato",
+              "articulation": "D0",
+              "suspect": [
+                "sample start offset 714 (+11286 modulated) in group 16VlnsBrtkPzzctDccDyn1RR4 of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 4,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Areia 1.2.0 [Audio Imperia]/Instruments/01 Core Technique Patches/04 Areia - 4 Double Basses - Core Techniques.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "note-on/selection",
+          "load_ms": 1985,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 1122
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": null,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": null,
+              "articulation": null,
+              "suspect": null,
+              "silent": null,
+              "verdict": null,
+              "records": 0,
+              "distinct_group_sets": 0,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Areia 1.2.0 [Audio Imperia]/Instruments/03 Single Patches/01 Core Techniques/02 10 Violas/Areia - 15 10 Violas - Bartok Pizzicato.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 2126,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 1122
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -10.05177657335186,
+            "stuck_voices": 1,
+            "script_faults": [],
+            "selection": {
+              "patch": "Areia - 15 10 Violas - Bartok Pizzicato",
+              "articulation": "D0",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 4,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Areia 1.2.0 [Audio Imperia]/Instruments/03 Single Patches/01 Core Techniques/03 6 Celli/Areia - 15 6 Celli - Bartok Pizzicato.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 1997,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 1122
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -7.746748984807354,
+            "stuck_voices": 1,
+            "script_faults": [],
+            "selection": {
+              "patch": "Areia - 15 6 Celli - Bartok Pizzicato",
+              "articulation": "D0",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 4,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Areia 1.2.0 [Audio Imperia]/Instruments/03 Single Patches/01 Core Techniques/05 16Vlns + 10Vls 8va/Areia - 15 16Vlns + 10Vls 8va - Bartok Pizzicato.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 2658,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 2352
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -7.990819747808931,
+            "stuck_voices": 2,
+            "script_faults": [],
+            "selection": {
+              "patch": "Areia - 15 16Vlns + 10Vls 8va - Bartok Pizzicato",
+              "articulation": "D0",
+              "suspect": [
+                "sample start offset 714 (+11286 modulated) in group 16Vlns+10Vls8vaBrtkPzzctDccDyn1RR4 of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 4,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Areia 1.2.0 [Audio Imperia]/Instruments/03 Single Patches/01 Core Techniques/06 6Cll + 4DblBsss 8va/Areia - 15 6Cll + 4DblBsss 8va - Bartok Pizzicato.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 3957,
+          "load": {
+            "key": 48,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 2244
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": 1.1154840440332046,
+            "stuck_voices": 2,
+            "script_faults": [],
+            "selection": {
+              "patch": "Areia - 15 6Cll + 4DblBsss 8va - Bartok Pizzicato",
+              "articulation": "D5",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 4,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Areia 1.2.0 [Audio Imperia]/Instruments/03 Single Patches/01 Core Techniques/04 4 Double Basses/Areia - 15 4 Double Basses - Bartok Pizzicato.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "note-on/selection",
+          "load_ms": 1804,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 1122
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": null,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": null,
+              "articulation": null,
+              "suspect": null,
+              "silent": null,
+              "verdict": null,
+              "records": 0,
+              "distinct_group_sets": 0,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Areia 1.2.0 [Audio Imperia]/Instruments/04 Perf Patches/Areia - 03 6 Celli - Perf.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 2015,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 234
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -8.549653196084087,
+            "stuck_voices": 1,
+            "script_faults": [],
+            "selection": {
+              "patch": "Areia - 03 6 Celli - Perf",
+              "articulation": "C#-1",
+              "suspect": [
+                "different articulations across round-robin repeats"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 8,
+              "distinct_group_sets": 5,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Areia 1.2.0 [Audio Imperia]/Instruments/03 Single Patches/01 Core Techniques/07 Full Ens/Areia - 15 Full Ens - Bartok Pizzicato.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 3478,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 1122
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -4.613789268976816,
+            "stuck_voices": 1,
+            "script_faults": [],
+            "selection": {
+              "patch": "Areia - 15 Full Ens - Bartok Pizzicato",
+              "articulation": "D-1",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 4,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Audio Imperia CHORUS/Instruments/02 Single Patches/02 Women - Traditional Articulations/Chorus - 06 Women - Sustained Mmh.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "needs-controller",
+          "load_ms": 1663,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 1540
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -370.33857372813094,
+            "stuck_voices": 14,
+            "script_faults": [],
+            "selection": {
+              "patch": null,
+              "articulation": null,
+              "suspect": null,
+              "silent": null,
+              "verdict": null,
+              "records": 0,
+              "distinct_group_sets": 0,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Audio Imperia CHORUS/Instruments/01 Multi Patches/09 Chorus - Ensemble - Traditional Articulations.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "needs-controller",
+          "load_ms": 2503,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 3080
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -370.33857372813094,
+            "stuck_voices": 42,
+            "script_faults": [],
+            "selection": {
+              "patch": null,
+              "articulation": null,
+              "suspect": null,
+              "silent": null,
+              "verdict": null,
+              "records": 0,
+              "distinct_group_sets": 0,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Audio Imperia Dolce/Instruments/02 5 2nd Violins/Dolce - 02 5 2nd Violins - Sustained.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 2561,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 1392
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -15.918226680466748,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Dolce - 02 5 2nd Violins - Sustained",
+              "articulation": "C#-1",
+              "suspect": [
+                "sample start offset 58428 (+0 modulated) in group cl sus dyn1 of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 8,
+              "distinct_group_sets": 2,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Audio Imperia Dolce/Instruments/03 4 Violas/Dolce - 03 4 Violas - Sustained Con Sordino.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 1171,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 84
+          },
+          "stored_release_s": 0.12000003814697266,
+          "sound": {
+            "finite": true,
+            "peak_db": -18.46592347409,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Dolce - 03 4 Violas - Sustained Con Sordino",
+              "articulation": "",
+              "suspect": [
+                "sample start offset 4800 (+0 modulated) in group cl sus dyn1 of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 8,
+              "distinct_group_sets": 2,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Audio Imperia CHORUS/Multis/11 Chorus - Ensemble - Energetic Syllables.nkm",
+          "kind": "kontakt-multi",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 5774,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "programs": 3,
+            "velocity": 29,
+            "warning": "played at vel 29 (no zone at 64)",
+            "zones": 3276
+          },
+          "stored_release_s": 0.202,
+          "sound": {
+            "finite": true,
+            "peak_db": 3.3586732174674023,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "07 Chorus - Men - Energetic Syllables",
+              "articulation": "",
+              "suspect": [
+                "sample start offset 8160 (+0 modulated) in group Cls Atk Dyn1 80 of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 8,
+              "distinct_group_sets": 2,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Audio Imperia Dolce/Instruments/04 3 Celli/Dolce - 07 3 Celli - Staccato.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 1281,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 288
+          },
+          "stored_release_s": 0.0,
+          "sound": {
+            "finite": true,
+            "peak_db": -29.25498180818574,
+            "stuck_voices": 12,
+            "script_faults": [],
+            "selection": {
+              "patch": "Dolce - 07 3 Celli - Staccato",
+              "articulation": "",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 4,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Audio Imperia Dolce/Instruments/05 3 Basses/Dolce - 10 3 Basses - Tremolo Sul Pont.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 1145,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 48
+          },
+          "stored_release_s": 0.12000003814697266,
+          "sound": {
+            "finite": true,
+            "peak_db": -12.196137896996017,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Dolce - 10 3 Basses - Tremolo Sul Pont",
+              "articulation": "",
+              "suspect": [
+                "sample start offset 4800 (+0 modulated) in group cl sus dyn1 of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 8,
+              "distinct_group_sets": 2,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/Into The Fields.nkm",
+          "kind": "kontakt-multi",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 4058,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "programs": 2,
+            "velocity": 64,
+            "warning": null,
+            "zones": 94
+          },
+          "stored_release_s": 3.4714365234375,
+          "sound": {
+            "finite": true,
+            "peak_db": -23.26617021783843,
+            "stuck_voices": 1,
+            "script_faults": [],
+            "selection": {
+              "patch": "Conflux",
+              "articulation": "",
+              "suspect": [
+                "sample start offset 772 (+0 modulated) in group Fiddle of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 1,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": false
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/A Forgotten Romance.nkm",
+          "kind": "kontakt-multi",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 4868,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "programs": 2,
+            "velocity": 64,
+            "warning": null,
+            "zones": 94
+          },
+          "stored_release_s": 3.4714365234375,
+          "sound": {
+            "finite": true,
+            "peak_db": -13.396513484578389,
+            "stuck_voices": 1,
+            "script_faults": [],
+            "selection": {
+              "patch": "Conflux",
+              "articulation": "",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 1,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": false
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/Ray Line.nkm",
+          "kind": "kontakt-multi",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 11900,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "programs": 2,
+            "velocity": 64,
+            "warning": null,
+            "zones": 94
+          },
+          "stored_release_s": 20.000033203125,
+          "sound": {
+            "finite": true,
+            "peak_db": -4.465092578408188,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Conflux",
+              "articulation": "",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 1,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": false
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Pacific Ensemble Strings/Instruments/12 Violas/Pacific - Ens Strings - 12 Violas - Marcatos.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 549,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 70
+          },
+          "stored_release_s": 0.2,
+          "sound": {
+            "finite": true,
+            "peak_db": -21.261767288173484,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Pacific - Ens Strings - 12 Violas - Marcatos",
+              "articulation": "",
+              "suspect": [
+                "sample start offset 5568 (+384 modulated) in group cl atk dyn1 of a patch not named for it",
+                "different articulations across round-robin repeats"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 8,
+              "distinct_group_sets": 2,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": false
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Pacific Ensemble Strings/Instruments/16 Violins/Pacific - Ens Strings - 16 Violins - Whisper Sustains.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 148,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 24
+          },
+          "stored_release_s": 0.24,
+          "sound": {
+            "finite": true,
+            "peak_db": -54.57369836650897,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Pacific - Ens Strings - 16 Violins - Whisper Sustains",
+              "articulation": "",
+              "suspect": [
+                "sample start offset 2880 (+0 modulated) in group cl sus dyn1 of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 1,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Pacific Ensemble Strings/Instruments/Bonus Content/Lite Full Strings Patches/Pacific - Ens Strings - Lite Full Str - Trills.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "note-on/selection",
+          "load_ms": 489,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 72
+          },
+          "stored_release_s": 0.22,
+          "sound": {
+            "finite": true,
+            "peak_db": null,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": null,
+              "articulation": null,
+              "suspect": null,
+              "silent": null,
+              "verdict": null,
+              "records": 0,
+              "distinct_group_sets": 0,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Solo/Instruments/01 Multi Patches/Solo - 06 Solo Descant Horn.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 1537,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 462
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -10.839929831997047,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Solo - 06 Solo Descant Horn",
+              "articulation": "C-1",
+              "suspect": [
+                "sample start offset 714 (+11286 modulated) in group 1DscntHrnSstndDccDyn1RR1 of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 11,
+              "distinct_group_sets": 2,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/Wind Scape.nkm",
+          "kind": "kontakt-multi",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 15058,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "programs": 2,
+            "velocity": 64,
+            "warning": null,
+            "zones": 94
+          },
+          "stored_release_s": 20.000033203125,
+          "sound": {
+            "finite": true,
+            "peak_db": -14.028018898757084,
+            "stuck_voices": 2,
+            "script_faults": [],
+            "selection": {
+              "patch": "Conflux",
+              "articulation": "",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 1,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": false
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Solo/Instruments/02 Single Patches/01 Solo Violin/Solo - 09 Solo Violin - Trill Whole Tone.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 1976,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 693
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -2.996288242327619,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Solo - 09 Solo Violin - Trill Whole Tone",
+              "articulation": "G-1",
+              "suspect": [
+                "sample start offset 714 (+11286 modulated) in group 1VlnTrllWTDccDyn1RR1 of a patch not named for it",
+                "different articulations across round-robin repeats"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 11,
+              "distinct_group_sets": 3,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Solo/Instruments/02 Single Patches/03 Solo Cello/Solo - 07 Solo Cello - Tremolo.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 2063,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 693
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -2.90808078924144,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Solo - 07 Solo Cello - Tremolo",
+              "articulation": "F-1",
+              "suspect": [
+                "different articulations across round-robin repeats"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 11,
+              "distinct_group_sets": 3,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Solo/Instruments/02 Single Patches/06 Solo Descant Horn/Solo - 04 Solo Descant Horn - Sustained.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 1075,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 462
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -10.842843705604201,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Solo - 04 Solo Descant Horn - Sustained",
+              "articulation": "D-1",
+              "suspect": [
+                "sample start offset 714 (+11286 modulated) in group 1DscntHrnSstndDccDyn1RR1 of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 11,
+              "distinct_group_sets": 2,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Solo/Instruments/02 Single Patches/09 Solo Oboe/Solo - 01 Solo Oboe - Legato Combined.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 1654,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 518
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -4.057283950476628,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Solo - 01 Solo Oboe - Legato Combined",
+              "articulation": "C-1",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 11,
+              "distinct_group_sets": 2,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Una Corda Library/Instruments/Una Corda Felt.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 443,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 53
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -26.18209495682834,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Una Corda Felt",
+              "articulation": "",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 8,
+              "distinct_group_sets": 1,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Solo/Instruments/02 Single Patches/11 Solo Bassoon/Solo - 03 Solo Bassoon - Legato Retongued.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 1633,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 518
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -3.220752550652744,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Solo - 03 Solo Bassoon - Legato Retongued",
+              "articulation": "C#-1",
+              "suspect": [
+                "different articulations across round-robin repeats"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 13,
+              "distinct_group_sets": 3,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        }
+      ]
+    },
+    "quick-1": {
+      "count": 53,
+      "stages": {
+        "ok": 50,
+        "note-on/selection": 3
+      },
+      "items": [
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Horns/2 Horns Repetitions.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 76,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 88
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -19.38552781779991,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "2 Horns Repetitions",
+              "articulation": "",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 4,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Horns/Mutes/2 Horns Mutes Trills.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 36,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 40
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -29.938110233926857,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "2 Horns Mutes Trills",
+              "articulation": "Half Tone Trill",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 1,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Tubas/2 Tubas Slides.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 33,
+          "load": {
+            "key": 43,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 32
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -24.658800097714895,
+            "stuck_voices": 4,
+            "script_faults": [],
+            "selection": {
+              "patch": "2 Tubas Slides",
+              "articulation": "SlideUp Slow",
+              "suspect": [
+                "sample start offset 3306 (+0 modulated) in group BRASS_SlideUp_Slow_Hall of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 1,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/3 Trombones/Mutes/3 Trombones Mutes Flutter.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 33,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 24
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -27.577141713058737,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "3 Trombones Mutes Flutter",
+              "articulation": "",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 1,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Multi Instruments/2 Horns KS.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 444,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 884
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -23.394429988700026,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "2 Horns KS",
+              "articulation": "Sustain + Legato",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 2,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/3 Trumpets/3 Trumpets Tenuto.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 42,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 56
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -19.868259467734973,
+            "stuck_voices": 4,
+            "script_faults": [],
+            "selection": {
+              "patch": "3 Trumpets Tenuto",
+              "articulation": "",
+              "suspect": [
+                "sample start offset 3000 (+0 modulated) in group BRASS_Long_Tenuto_Hall of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 1,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/4 Horns/Stopped/4 Horns Stopped AccSusCresc.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 35,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 20
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -18.26796321902559,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "4 Horns Stopped AccSusCresc",
+              "articulation": "Acc Sus + Crescendo",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 1,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/4 Horns/4 Horns Rips.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 37,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 24
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -4.891377786489758,
+            "stuck_voices": 8,
+            "script_faults": [],
+            "selection": {
+              "patch": "4 Horns Rips",
+              "articulation": "Rip Slow",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 1,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/Bass Trombone Cimbasso Tuba/Bass Trombone Cimbasso Tuba Staccato.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 64,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 88
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -18.949677192486842,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Bass Trombone Cimbasso Tuba Staccato",
+              "articulation": "",
+              "suspect": [
+                "sample start offset 1024 (+0 modulated) in group BRASS_Stacc_02_Hall of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 4,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/2. Solos/Single Instruments/Solo Bass Trombone/Solo Mutes/Solo Bass Trombone Metal Mute Marcato.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 40,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 32
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -28.00439663014689,
+            "stuck_voices": 4,
+            "script_faults": [],
+            "selection": {
+              "patch": "Solo Bass Trombone Metal Mute Marcato",
+              "articulation": "",
+              "suspect": [
+                "name says short, voices from long groups: BRASS_Long_Marcato_Close, BRASS_Long_Marcato_Decca, BRASS_Long_Marcato_Hall, BRASS_Long_Marcato_MidHall"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 1,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/2. Solos/Single Instruments/Solo Cimbasso/Solo Cimbasso Flutter.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 35,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 40
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -34.248009100966705,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Solo Cimbasso Flutter",
+              "articulation": "",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 1,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/2. Solos/Single Instruments/Solo Cimbasso/Solo Mutes/Solo Cimbasso Mute Tenuto.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 37,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 32
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -18.518489311552848,
+            "stuck_voices": 4,
+            "script_faults": [],
+            "selection": {
+              "patch": "Solo Cimbasso Mute Tenuto",
+              "articulation": "",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 1,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/2. Solos/Single Instruments/Solo French Horn/Solo Mutes/Solo French Horn Mute Rips.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 33,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 16
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -9.495398489958667,
+            "stuck_voices": 4,
+            "script_faults": [],
+            "selection": {
+              "patch": "Solo French Horn Mute Rips",
+              "articulation": "Rip Slow",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 1,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/2. Solos/Single Instruments/Solo Tenor Trombone/Solo Mutes/Solo Tenor Trombone Carbon Mute AccSusCresc.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 44,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 20
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -19.25616305267163,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Solo Tenor Trombone Carbon Mute AccSusCresc",
+              "articulation": "Acc Sus + Crescendo",
+              "suspect": [
+                "sample start offset 924 (+0 modulated) in group BRASS_Acc_Sus_Cresc_Hall of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 1,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/2. Solos/Multi Instruments/Solo Tenor Trombone KS.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 428,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 823
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -34.41841237939854,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Solo Tenor Trombone KS",
+              "articulation": "Sustain + Legato",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 2,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/2. Solos/Single Instruments/Solo Trumpet/Solo Mutes/Solo Trumpet Carbon Mute Staccatissimo.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 53,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 48
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -27.316395951754885,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Solo Trumpet Carbon Mute Staccatissimo",
+              "articulation": "",
+              "suspect": [
+                "sample start offset 2290 (+0 modulated) in group BRASS_Staccatiss_02_Hall of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 4,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/2. Solos/Single Instruments/Solo Tenor Trombone/Solo Mutes/Solo Tenor Trombone Metal Mute SusToFlutter.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 215,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 332
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -33.550472449167266,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Solo Tenor Trombone Metal Mute SusToFlutter",
+              "articulation": "",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 2,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/2. Solos/Single Instruments/Solo Tuba/Solo Tuba AccSusCresc.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 31,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 20
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -8.332822452963677,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Solo Tuba AccSusCresc",
+              "articulation": "Acc Sus + Crescendo",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 1,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/3. Curated Ensembles/Noir Brass.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 76,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 152
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -36.30242037112619,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Noir Brass",
+              "articulation": "Sustain",
+              "suspect": [
+                "sample start offset 1120 (+0 modulated) in group BRASS_Dyn1_Sus_Hall of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 1,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/2. Solos/Single Instruments/Solo Trumpet/Solo Trumpet Legato.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 226,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 376
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -29.64340648382164,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Solo Trumpet Legato",
+              "articulation": "",
+              "suspect": [
+                "sample start offset 675 (+0 modulated) in group BRASS_Dyn1_Sus_Hall of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 2,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/5. Performance Instruments/Ensemble Performance Instruments/2 Horns Mutes Performance.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 145,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 264
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -26.81078783603567,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "2 Horns Mutes Performance",
+              "articulation": "",
+              "suspect": [
+                "sample start offset 3370 (+0 modulated) in group BRASS_Stacc_02_Hall of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 2,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/5. Performance Instruments/Solo Performance Instruments/Solo Cimbasso Performance.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 248,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 344
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -35.527848897397305,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Solo Cimbasso Performance",
+              "articulation": "",
+              "suspect": [
+                "sample start offset 2310 (+0 modulated) in group BRASS_Stacc_02_Hall of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 2,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Areia 1.2.0 [Audio Imperia]/Instruments/01 Core Technique Patches/05 Areia - 16Vlns + 10Vls 8va - Core Techniques.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 2816,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 2352
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -5.077076085271416,
+            "stuck_voices": 72,
+            "script_faults": [],
+            "selection": {
+              "patch": "05 Areia - 16Vlns + 10Vls 8va - Core Techniques",
+              "articulation": "C-1",
+              "suspect": [
+                "sample start offset 714 (+11286 modulated) in group 16Vlns+10Vls8vaSstndNVDccDyn1RR1 of a patch not named for it",
+                "different articulations across round-robin repeats"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 8,
+              "distinct_group_sets": 2,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Areia 1.2.0 [Audio Imperia]/Instruments/03 Single Patches/01 Core Techniques/01 16 Violins/Areia - 16 16 Violins - Col Legno.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 2187,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 1122
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -31.084832343251318,
+            "stuck_voices": 1,
+            "script_faults": [],
+            "selection": {
+              "patch": "Areia - 16 16 Violins - Col Legno",
+              "articulation": "D#0",
+              "suspect": [
+                "sample start offset 714 (+11286 modulated) in group 16VlnsClLgnDccDyn1RR4 of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 4,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Areia 1.2.0 [Audio Imperia]/Instruments/02 Legato Technique Patches/Areia - 04 4 Double Basses - Performance Legato.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "note-on/selection",
+          "load_ms": 2074,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 1782
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": null,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": null,
+              "articulation": null,
+              "suspect": null,
+              "silent": null,
+              "verdict": null,
+              "records": 0,
+              "distinct_group_sets": 0,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Areia 1.2.0 [Audio Imperia]/Instruments/03 Single Patches/01 Core Techniques/02 10 Violas/Areia - 16 10 Violas - Col Legno.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 1948,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 1122
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -30.464249232449415,
+            "stuck_voices": 1,
+            "script_faults": [],
+            "selection": {
+              "patch": "Areia - 16 10 Violas - Col Legno",
+              "articulation": "D#0",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 4,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Areia 1.2.0 [Audio Imperia]/Instruments/03 Single Patches/01 Core Techniques/03 6 Celli/Areia - 16 6 Celli - Col Legno.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 2133,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 1122
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -29.574220580609165,
+            "stuck_voices": 1,
+            "script_faults": [],
+            "selection": {
+              "patch": "Areia - 16 6 Celli - Col Legno",
+              "articulation": "D#0",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 4,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Areia 1.2.0 [Audio Imperia]/Instruments/03 Single Patches/01 Core Techniques/05 16Vlns + 10Vls 8va/Areia - 16 16Vlns + 10Vls 8va - Col Legno.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 2433,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 2352
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -29.162339872446616,
+            "stuck_voices": 2,
+            "script_faults": [],
+            "selection": {
+              "patch": "Areia - 16 16Vlns + 10Vls 8va - Col Legno",
+              "articulation": "D#0",
+              "suspect": [
+                "sample start offset 714 (+11286 modulated) in group 16Vlns+10Vls8vaClLgnDccDyn1RR4 of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 4,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Areia 1.2.0 [Audio Imperia]/Instruments/03 Single Patches/01 Core Techniques/06 6Cll + 4DblBsss 8va/Areia - 16 6Cll + 4DblBsss 8va - Col Legno.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 2308,
+          "load": {
+            "key": 48,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 2244
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -23.5377008547799,
+            "stuck_voices": 2,
+            "script_faults": [],
+            "selection": {
+              "patch": "Areia - 16 6Cll + 4DblBsss 8va - Col Legno",
+              "articulation": "D#5",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 4,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Areia 1.2.0 [Audio Imperia]/Instruments/03 Single Patches/01 Core Techniques/04 4 Double Basses/Areia - 16 4 Double Basses - Col Legno.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "note-on/selection",
+          "load_ms": 1980,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 1122
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": null,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": null,
+              "articulation": null,
+              "suspect": null,
+              "silent": null,
+              "verdict": null,
+              "records": 0,
+              "distinct_group_sets": 0,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Areia 1.2.0 [Audio Imperia]/Instruments/04 Perf Patches/Areia - 04 4 Double Basses - Perf.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 1430,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 234
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -9.364014109219665,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Areia - 04 4 Double Basses - Perf",
+              "articulation": "C#-1",
+              "suspect": [
+                "different articulations across round-robin repeats"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 8,
+              "distinct_group_sets": 5,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Areia 1.2.0 [Audio Imperia]/Instruments/03 Single Patches/01 Core Techniques/07 Full Ens/Areia - 16 Full Ens - Col Legno.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 2463,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 1122
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -24.233321047442345,
+            "stuck_voices": 1,
+            "script_faults": [],
+            "selection": {
+              "patch": "Areia - 16 Full Ens - Col Legno",
+              "articulation": "D#-1",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 4,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Audio Imperia CHORUS/Instruments/02 Single Patches/01 Men - Traditional Articulations/Chorus - 01 Men - Legato Ah.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 1697,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 1540
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -0.7665832180957427,
+            "stuck_voices": 21,
+            "script_faults": [],
+            "selection": {
+              "patch": "Chorus - 01 Men - Legato Ah",
+              "articulation": "C-1",
+              "suspect": [
+                "different articulations across round-robin repeats"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 8,
+              "distinct_group_sets": 2,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Audio Imperia CHORUS/Instruments/02 Single Patches/02 Women - Traditional Articulations/Chorus - 07 Women - Sustained Eh.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 1507,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 1540
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -13.521715140352429,
+            "stuck_voices": 21,
+            "script_faults": [],
+            "selection": {
+              "patch": "Chorus - 07 Women - Sustained Eh",
+              "articulation": "F#-1",
+              "suspect": [
+                "different articulations across round-robin repeats"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 8,
+              "distinct_group_sets": 2,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Audio Imperia Dolce/Instruments/02 5 2nd Violins/Dolce - 03 5 2nd Violins - Sustained Con Sordino.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 1168,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 102
+          },
+          "stored_release_s": 0.1250002670288086,
+          "sound": {
+            "finite": true,
+            "peak_db": -11.569936730745107,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Dolce - 03 5 2nd Violins - Sustained Con Sordino",
+              "articulation": "",
+              "suspect": [
+                "sample start offset 4800 (+0 modulated) in group cl sus dyn1 of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 8,
+              "distinct_group_sets": 2,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Audio Imperia CHORUS/Multis/12 Chorus - Ensemble - Slow Syllables.nkm",
+          "kind": "kontakt-multi",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 3245,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "programs": 3,
+            "velocity": 29,
+            "warning": "played at vel 29 (no zone at 64)",
+            "zones": 1365
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -7.554836131480105,
+            "stuck_voices": 21,
+            "script_faults": [],
+            "selection": {
+              "patch": "08 Chorus - Men - Slow Syllables",
+              "articulation": "",
+              "suspect": [
+                "different articulations across round-robin repeats"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 8,
+              "distinct_group_sets": 2,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Audio Imperia Dolce/Instruments/04 3 Celli/Dolce - 08 3 Celli - Marcato.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 1265,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 210
+          },
+          "stored_release_s": 0.2,
+          "sound": {
+            "finite": true,
+            "peak_db": -18.073072106891793,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Dolce - 08 3 Celli - Marcato",
+              "articulation": "",
+              "suspect": [
+                "sample start offset 4800 (+0 modulated) in group cl atk dyn1 of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 8,
+              "distinct_group_sets": 2,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Audio Imperia Dolce/Instruments/03 4 Violas/Dolce - 04 4 Violas - Harmonics.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "note-on/selection",
+          "load_ms": 1156,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 36
+          },
+          "stored_release_s": 0.12000003814697266,
+          "sound": {
+            "finite": true,
+            "peak_db": null,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": null,
+              "articulation": null,
+              "suspect": null,
+              "silent": null,
+              "verdict": null,
+              "records": 0,
+              "distinct_group_sets": 0,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Audio Imperia Dolce/Instruments/05 3 Basses/Dolce - 11 3 Basses - Trill HT.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 1166,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 96
+          },
+          "stored_release_s": 0.12000003814697266,
+          "sound": {
+            "finite": true,
+            "peak_db": -13.253666816841925,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Dolce - 11 3 Basses - Trill HT",
+              "articulation": "C-1",
+              "suspect": [
+                "sample start offset 4800 (+0 modulated) in group cl trillhtsus dyn1 of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 8,
+              "distinct_group_sets": 2,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/Adios Horner.nkm",
+          "kind": "kontakt-multi",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 4858,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "programs": 2,
+            "velocity": 64,
+            "warning": null,
+            "zones": 94
+          },
+          "stored_release_s": 9.023611328125,
+          "sound": {
+            "finite": true,
+            "peak_db": -11.67291417654269,
+            "stuck_voices": 1,
+            "script_faults": [],
+            "selection": {
+              "patch": "Conflux",
+              "articulation": "",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 1,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": false
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/Royal Ride.nkm",
+          "kind": "kontakt-multi",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 4603,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "programs": 2,
+            "velocity": 64,
+            "warning": null,
+            "zones": 94
+          },
+          "stored_release_s": 20.000033203125,
+          "sound": {
+            "finite": true,
+            "peak_db": -8.004442819698925,
+            "stuck_voices": 1,
+            "script_faults": [],
+            "selection": {
+              "patch": "Conflux",
+              "articulation": "",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 1,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": false
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/Yield Mono.nkm",
+          "kind": "kontakt-multi",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 4743,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "programs": 2,
+            "velocity": 64,
+            "warning": null,
+            "zones": 94
+          },
+          "stored_release_s": 9.023611328125,
+          "sound": {
+            "finite": true,
+            "peak_db": -40.639502466123204,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Conflux",
+              "articulation": "",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 1,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": false
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Pacific Ensemble Strings/Instruments/12 Violas/Pacific - Ens Strings - 12 Violas - Pizzicatos.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 80,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 112
+          },
+          "stored_release_s": 0.0,
+          "sound": {
+            "finite": true,
+            "peak_db": -34.1243946722123,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Pacific - Ens Strings - 12 Violas - Pizzicatos",
+              "articulation": "",
+              "suspect": [
+                "sample start offset 4800 (+4800 modulated) in group cl rr2 dyn3 of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 4,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": false
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Pacific Ensemble Strings/Instruments/8 Basses/Pacific - Ens Strings - 8 Basses - FX - Cluster Risers.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 15,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 2
+          },
+          "stored_release_s": 0.80247265625,
+          "sound": {
+            "finite": true,
+            "peak_db": -13.940411429761069,
+            "stuck_voices": 2,
+            "script_faults": [],
+            "selection": {
+              "patch": "Pacific - Ens Strings - 8 Basses - FX - Cluster Risers",
+              "articulation": "",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 1,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": false
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Pacific Ensemble Strings/Instruments/Bonus Content/Lite Full Strings Patches/Pacific - Ens Strings - Lite Full Str - Whisper Sustains.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 29,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 36
+          },
+          "stored_release_s": 0.32,
+          "sound": {
+            "finite": true,
+            "peak_db": -53.50358452345219,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Pacific - Ens Strings - Lite Full Str - Whisper Sustains",
+              "articulation": "",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 1,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Solo/Instruments/01 Multi Patches/Solo - 07 Solo Flute.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 701,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 518
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -13.789463293818493,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Solo - 07 Solo Flute",
+              "articulation": "C-1",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 11,
+              "distinct_group_sets": 2,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Solo/Instruments/02 Single Patches/02 Solo Viola/Solo - 01 Solo Viola - Legato Combined.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 808,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 693
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -6.001810470717883,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Solo - 01 Solo Viola - Legato Combined",
+              "articulation": "",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 11,
+              "distinct_group_sets": 2,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/Ivory Down.nkm",
+          "kind": "kontakt-multi",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 4999,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "programs": 2,
+            "velocity": 64,
+            "warning": null,
+            "zones": 94
+          },
+          "stored_release_s": 0.4367373352050781,
+          "sound": {
+            "finite": true,
+            "peak_db": null,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": null,
+              "articulation": null,
+              "suspect": null,
+              "silent": null,
+              "verdict": null,
+              "records": 0,
+              "distinct_group_sets": 0,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": false
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Solo/Instruments/02 Single Patches/06 Solo Descant Horn/Solo - 05 Solo Descant Horn - Staccatissimo.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 693,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 462
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -3.785853589364328,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Solo - 05 Solo Descant Horn - Staccatissimo",
+              "articulation": "D#-1",
+              "suspect": [
+                "sample start offset 714 (+11286 modulated) in group 1DscntHrnStcctssmDccDyn2RR3 of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 4,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Solo/Instruments/02 Single Patches/03 Solo Cello/Solo - 08 Solo Cello - Trill Half Tone.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 819,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 693
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -5.63767303561149,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Solo - 08 Solo Cello - Trill Half Tone",
+              "articulation": "F#-1",
+              "suspect": [
+                "different articulations across round-robin repeats"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 11,
+              "distinct_group_sets": 3,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Solo/Instruments/02 Single Patches/09 Solo Oboe/Solo - 02 Solo Oboe - Legato Fingered.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 686,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 518
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -4.056799951855308,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Solo - 02 Solo Oboe - Legato Fingered",
+              "articulation": "C-1",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 11,
+              "distinct_group_sets": 2,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Solo/Instruments/02 Single Patches/11 Solo Bassoon/Solo - 04 Solo Bassoon - Sustained.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 721,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 518
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -3.2230324713198844,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Solo - 04 Solo Bassoon - Sustained",
+              "articulation": "D-1",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 11,
+              "distinct_group_sets": 2,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Una Corda Library/Instruments/Una Corda Pure.nki",
+          "kind": "kontakt",
+          "tier": "quick",
+          "stage": "ok",
+          "load_ms": 146,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 53
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -26.195737229067696,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Una Corda Pure",
+              "articulation": "",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 8,
+              "distinct_group_sets": 1,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        }
+      ]
+    },
+    "targets": {
+      "count": 7,
+      "stages": {
+        "ok": 7
+      },
+      "items": [
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/ANALOG STRINGS/Instruments/ANALOG STRINGS.nki",
+          "kind": "kontakt",
+          "tier": "full",
+          "stage": "ok",
+          "load_ms": 2667,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 1624
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": 4.088022982772537,
+            "stuck_voices": 1,
+            "script_faults": [],
+            "selection": {
+              "patch": "ANALOG STRINGS",
+              "articulation": "",
+              "suspect": [
+                "different articulations across round-robin repeats"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 8,
+              "distinct_group_sets": 2,
+              "first_group_sets": [
+                [
+                  "S33 L1 cls"
+                ],
+                [
+                  "S50 L2 "
+                ]
+              ]
+            }
+          },
+          "needs_controller": false
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/3. Curated Ensembles/Barbarian Brass.nki",
+          "kind": "kontakt",
+          "tier": "full",
+          "stage": "ok",
+          "load_ms": 329,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 380
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -24.4515925586391,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Barbarian Brass",
+              "articulation": "Sustain + Legato",
+              "suspect": [
+                "sample start offset 3347 (+5120 modulated) in group BRASS_Dyn1_Sus_Hall of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 2,
+              "first_group_sets": [
+                [
+                  "BRASS_Dyn1_Sus_Close",
+                  "BRASS_Dyn1_Sus_Decca",
+                  "BRASS_Dyn1_Sus_Hall",
+                  "BRASS_Dyn1_Sus_MidHall",
+                  "BRASS_Dyn2_Sus_Close",
+                  "BRASS_Dyn2_Sus_Decca",
+                  "BRASS_Dyn2_Sus_Hall",
+                  "BRASS_Dyn2_Sus_MidHall",
+                  "BRASS_Dyn3_Sus_Close",
+                  "BRASS_Dyn3_Sus_Decca",
+                  "BRASS_Dyn3_Sus_Hall",
+                  "BRASS_Dyn3_Sus_MidHall"
+                ],
+                [
+                  "BRASS_Dyn1_Leg_Close",
+                  "BRASS_Dyn1_Leg_Decca",
+                  "BRASS_Dyn1_Leg_Hall",
+                  "BRASS_Dyn1_Leg_MidHall",
+                  "BRASS_Dyn1_Sus_Close",
+                  "BRASS_Dyn1_Sus_Decca",
+                  "BRASS_Dyn1_Sus_Hall",
+                  "BRASS_Dyn1_Sus_MidHall",
+                  "BRASS_Dyn2_Leg_Close",
+                  "BRASS_Dyn2_Leg_Decca",
+                  "BRASS_Dyn2_Leg_Hall",
+                  "BRASS_Dyn2_Leg_MidHall",
+                  "BRASS_Dyn2_Sus_Close",
+                  "BRASS_Dyn2_Sus_Decca",
+                  "BRASS_Dyn2_Sus_Hall",
+                  "BRASS_Dyn2_Sus_MidHall",
+                  "BRASS_Dyn3_Leg_Close",
+                  "BRASS_Dyn3_Leg_Decca",
+                  "BRASS_Dyn3_Leg_Hall",
+                  "BRASS_Dyn3_Leg_MidHall",
+                  "BRASS_Dyn3_Sus_Close",
+                  "BRASS_Dyn3_Sus_Decca",
+                  "BRASS_Dyn3_Sus_Hall",
+                  "BRASS_Dyn3_Sus_MidHall"
+                ]
+              ]
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/5. Performance Instruments/Curated Performance Instruments/Barbarian Brass Performance.nki",
+          "kind": "kontakt",
+          "tier": "full",
+          "stage": "ok",
+          "load_ms": 158,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 260
+          },
+          "stored_release_s": 6.0000009765625,
+          "sound": {
+            "finite": true,
+            "peak_db": -16.115943921173116,
+            "stuck_voices": 4,
+            "script_faults": [],
+            "selection": {
+              "patch": "Barbarian Brass Performance",
+              "articulation": "",
+              "suspect": [
+                "sample start offset 3347 (+5120 modulated) in group BRASS_Dyn1_Sus_Hall of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 2,
+              "first_group_sets": [
+                [
+                  "BRASS_Dyn1_Sus_Close",
+                  "BRASS_Dyn1_Sus_Decca",
+                  "BRASS_Dyn1_Sus_Hall",
+                  "BRASS_Dyn1_Sus_MidHall",
+                  "BRASS_Dyn2_Sus_Close",
+                  "BRASS_Dyn2_Sus_Decca",
+                  "BRASS_Dyn2_Sus_Hall",
+                  "BRASS_Dyn2_Sus_MidHall",
+                  "BRASS_Dyn3_Sus_Close",
+                  "BRASS_Dyn3_Sus_Decca",
+                  "BRASS_Dyn3_Sus_Hall",
+                  "BRASS_Dyn3_Sus_MidHall",
+                  "BRASS_Stacc_02_Close",
+                  "BRASS_Stacc_02_Decca",
+                  "BRASS_Stacc_02_Hall",
+                  "BRASS_Stacc_02_MidHall"
+                ],
+                [
+                  "BRASS_Dyn1_Leg_Close",
+                  "BRASS_Dyn1_Leg_Decca",
+                  "BRASS_Dyn1_Leg_Hall",
+                  "BRASS_Dyn1_Leg_MidHall",
+                  "BRASS_Dyn1_Sus_Close",
+                  "BRASS_Dyn1_Sus_Decca",
+                  "BRASS_Dyn1_Sus_Hall",
+                  "BRASS_Dyn1_Sus_MidHall",
+                  "BRASS_Dyn2_Leg_Close",
+                  "BRASS_Dyn2_Leg_Decca",
+                  "BRASS_Dyn2_Leg_Hall",
+                  "BRASS_Dyn2_Leg_MidHall",
+                  "BRASS_Dyn2_Sus_Close",
+                  "BRASS_Dyn2_Sus_Decca",
+                  "BRASS_Dyn2_Sus_Hall",
+                  "BRASS_Dyn2_Sus_MidHall",
+                  "BRASS_Dyn3_Leg_Close",
+                  "BRASS_Dyn3_Leg_Decca",
+                  "BRASS_Dyn3_Leg_Hall",
+                  "BRASS_Dyn3_Leg_MidHall",
+                  "BRASS_Dyn3_Sus_Close",
+                  "BRASS_Dyn3_Sus_Decca",
+                  "BRASS_Dyn3_Sus_Hall",
+                  "BRASS_Dyn3_Sus_MidHall"
+                ]
+              ]
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Areia 1.2.0 [Audio Imperia]/Instruments/03 Single Patches/01 Core Techniques/01 16 Violins/Areia - 01 16 Violins - Sustained.nki",
+          "kind": "kontakt",
+          "tier": "full",
+          "stage": "ok",
+          "load_ms": 4077,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 1122
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -4.123285389107344,
+            "stuck_voices": 36,
+            "script_faults": [],
+            "selection": {
+              "patch": "Areia - 01 16 Violins - Sustained",
+              "articulation": "C-1",
+              "suspect": [
+                "sample start offset 714 (+11286 modulated) in group 16VlnsSstndNVDccDyn1RR1 of a patch not named for it",
+                "different articulations across round-robin repeats"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 8,
+              "distinct_group_sets": 2,
+              "first_group_sets": [
+                [
+                  "16VlnsSstndNVDccDyn1RR1",
+                  "16VlnsSstndNVDccDyn2RR1",
+                  "16VlnsSstndNVDccDyn3RR1",
+                  "16VlnsSstndNVFMDyn1RR1",
+                  "16VlnsSstndNVFMDyn2RR1",
+                  "16VlnsSstndNVFMDyn3RR1",
+                  "16VlnsSstndNVFMpDyn1RR1",
+                  "16VlnsSstndNVFMpDyn2RR1",
+                  "16VlnsSstndNVFMpDyn3RR1",
+                  "16VlnsSstndNVFrDyn1RR1",
+                  "16VlnsSstndNVFrDyn2RR1",
+                  "16VlnsSstndNVFrDyn3RR1",
+                  "16VlnsSstndNVSptDyn1RR1",
+                  "16VlnsSstndNVSptDyn2RR1",
+                  "16VlnsSstndNVSptDyn3RR1",
+                  "16VlnsSstndNVWdDyn1RR1",
+                  "16VlnsSstndNVWdDyn2RR1",
+                  "16VlnsSstndNVWdDyn3RR1",
+                  "16VlnsSstndVDccDyn1RR1",
+                  "16VlnsSstndVDccDyn2RR1",
+                  "16VlnsSstndVDccDyn3RR1",
+                  "16VlnsSstndVFMDyn1RR1",
+                  "16VlnsSstndVFMDyn2RR1",
+                  "16VlnsSstndVFMDyn3RR1",
+                  "16VlnsSstndVFMpDyn1RR1",
+                  "16VlnsSstndVFMpDyn2RR1",
+                  "16VlnsSstndVFMpDyn3RR1",
+                  "16VlnsSstndVFrDyn1RR1",
+                  "16VlnsSstndVFrDyn2RR1",
+                  "16VlnsSstndVFrDyn3RR1",
+                  "16VlnsSstndVSptDyn1RR1",
+                  "16VlnsSstndVSptDyn2RR1",
+                  "16VlnsSstndVSptDyn3RR1",
+                  "16VlnsSstndVWdDyn1RR1",
+                  "16VlnsSstndVWdDyn2RR1",
+                  "16VlnsSstndVWdDyn3RR1"
+                ],
+                [
+                  "16VlnsSstndNVRlsDccDyn1RR1",
+                  "16VlnsSstndNVRlsDccDyn2RR1",
+                  "16VlnsSstndNVRlsDccDyn3RR1",
+                  "16VlnsSstndNVRlsFMDyn1RR1",
+                  "16VlnsSstndNVRlsFMDyn2RR1",
+                  "16VlnsSstndNVRlsFMDyn3RR1",
+                  "16VlnsSstndNVRlsFMpDyn1RR1",
+                  "16VlnsSstndNVRlsFMpDyn2RR1",
+                  "16VlnsSstndNVRlsFMpDyn3RR1",
+                  "16VlnsSstndNVRlsFrDyn1RR1",
+                  "16VlnsSstndNVRlsFrDyn2RR1",
+                  "16VlnsSstndNVRlsFrDyn3RR1",
+                  "16VlnsSstndNVRlsSptDyn1RR1",
+                  "16VlnsSstndNVRlsSptDyn2RR1",
+                  "16VlnsSstndNVRlsSptDyn3RR1",
+                  "16VlnsSstndNVRlsWdDyn1RR1",
+                  "16VlnsSstndNVRlsWdDyn2RR1",
+                  "16VlnsSstndNVRlsWdDyn3RR1",
+                  "16VlnsSstndVRlsDccDyn1RR1",
+                  "16VlnsSstndVRlsDccDyn2RR1",
+                  "16VlnsSstndVRlsDccDyn3RR1",
+                  "16VlnsSstndVRlsFMDyn1RR1",
+                  "16VlnsSstndVRlsFMDyn2RR1",
+                  "16VlnsSstndVRlsFMDyn3RR1",
+                  "16VlnsSstndVRlsFMpDyn1RR1",
+                  "16VlnsSstndVRlsFMpDyn2RR1",
+                  "16VlnsSstndVRlsFMpDyn3RR1",
+                  "16VlnsSstndVRlsFrDyn1RR1",
+                  "16VlnsSstndVRlsFrDyn2RR1",
+                  "16VlnsSstndVRlsFrDyn3RR1",
+                  "16VlnsSstndVRlsSptDyn1RR1",
+                  "16VlnsSstndVRlsSptDyn2RR1",
+                  "16VlnsSstndVRlsSptDyn3RR1",
+                  "16VlnsSstndVRlsWdDyn1RR1",
+                  "16VlnsSstndVRlsWdDyn2RR1",
+                  "16VlnsSstndVRlsWdDyn3RR1"
+                ]
+              ]
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Instruments/Conflux.nki",
+          "kind": "kontakt",
+          "tier": "full",
+          "stage": "ok",
+          "load_ms": 5366,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 94
+          },
+          "stored_release_s": 0.004999969482421875,
+          "sound": {
+            "finite": true,
+            "peak_db": -15.937851588112302,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Conflux",
+              "articulation": "",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 4,
+              "distinct_group_sets": 1,
+              "first_group_sets": [
+                [
+                  "String Ensemble"
+                ],
+                [
+                  "String Ensemble"
+                ]
+              ]
+            }
+          },
+          "needs_controller": false
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Performance Samples Vista/Instruments/Vista - 3 Cellos.nki",
+          "kind": "kontakt",
+          "tier": "full",
+          "stage": "ok",
+          "load_ms": 225,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 528
+          },
+          "stored_release_s": 0.185313232421875,
+          "sound": {
+            "finite": true,
+            "peak_db": -43.30057237524124,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Vista - 3 Cellos",
+              "articulation": "C#-1",
+              "suspect": [
+                "different articulations across round-robin repeats"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 8,
+              "distinct_group_sets": 2,
+              "first_group_sets": [
+                [
+                  "cl atkdyn1",
+                  "cl atkdyn2",
+                  "cl atkdyn3",
+                  "cl atkdyn4",
+                  "dc atkdyn1",
+                  "dc atkdyn2",
+                  "dc atkdyn3",
+                  "dc atkdyn4"
+                ],
+                [
+                  "cl susdyn1",
+                  "cl susdyn2",
+                  "cl susdyn3",
+                  "cl susdyn4",
+                  "dc susdyn1",
+                  "dc susdyn2",
+                  "dc susdyn3",
+                  "dc susdyn4"
+                ]
+              ]
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Una Corda Library/Instruments/Una Corda Cotton.nki",
+          "kind": "kontakt",
+          "tier": "full",
+          "stage": "ok",
+          "load_ms": 149,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 53
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -24.67538826457813,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Una Corda Cotton",
+              "articulation": "",
+              "suspect": [],
+              "silent": null,
+              "verdict": null,
+              "records": 8,
+              "distinct_group_sets": 1,
+              "first_group_sets": [
+                [
+                  "DRY_C3"
+                ],
+                [
+                  "DRY_C3"
+                ]
+              ]
+            }
+          },
+          "needs_controller": true
+        }
+      ]
+    },
+    "regressions": {
+      "count": 3,
+      "stages": {
+        "ok": 2,
+        "note-on/selection": 1
+      },
+      "items": [
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Audio Imperia Dolce/Instruments/01 7 1st Violins/Dolce - 01 7 1st Violins - Legato.nki",
+          "kind": "kontakt",
+          "tier": "full",
+          "stage": "ok",
+          "load_ms": 1579,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 1392
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -16.518395015639747,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Dolce - 01 7 1st Violins - Legato",
+              "articulation": "C-1",
+              "suspect": [
+                "sample start offset 58428 (+0 modulated) in group cl sus dyn1 of a patch not named for it"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 8,
+              "distinct_group_sets": 2,
+              "first_group_sets": [
+                [
+                  "ab atk dyn1",
+                  "ab atk dyn2",
+                  "ab atk dyn3",
+                  "ab atk dyn4",
+                  "ab sus dyn1",
+                  "ab sus dyn2",
+                  "ab sus dyn3",
+                  "ab sus dyn4",
+                  "am atk dyn1",
+                  "am atk dyn2",
+                  "am atk dyn3",
+                  "am atk dyn4",
+                  "am sus dyn1",
+                  "am sus dyn2",
+                  "am sus dyn3",
+                  "am sus dyn4",
+                  "cl atk dyn1",
+                  "cl atk dyn2",
+                  "cl atk dyn3",
+                  "cl atk dyn4",
+                  "cl sus dyn1",
+                  "cl sus dyn2",
+                  "cl sus dyn3",
+                  "cl sus dyn4",
+                  "mx1 atk dyn1",
+                  "mx1 atk dyn2",
+                  "mx1 atk dyn3",
+                  "mx1 atk dyn4",
+                  "mx1 sus dyn1",
+                  "mx1 sus dyn2",
+                  "mx1 sus dyn3",
+                  "mx1 sus dyn4",
+                  "mx2 atk dyn1",
+                  "mx2 atk dyn2",
+                  "mx2 atk dyn3",
+                  "mx2 atk dyn4",
+                  "mx2 sus dyn1",
+                  "mx2 sus dyn2",
+                  "mx2 sus dyn3",
+                  "mx2 sus dyn4",
+                  "wd atk dyn1",
+                  "wd atk dyn2",
+                  "wd atk dyn3",
+                  "wd atk dyn4",
+                  "wd sus dyn1",
+                  "wd sus dyn2",
+                  "wd sus dyn3",
+                  "wd sus dyn4"
+                ],
+                []
+              ]
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Pacific Ensemble Strings/Instruments/Bonus Content/Lite Full Strings Patches/Pacific - Ens Strings - Lite Full Str - Trills.nki",
+          "kind": "kontakt",
+          "tier": "full",
+          "stage": "note-on/selection",
+          "load_ms": 47,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 72
+          },
+          "stored_release_s": 0.22,
+          "sound": {
+            "finite": true,
+            "peak_db": null,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": null,
+              "articulation": null,
+              "suspect": null,
+              "silent": null,
+              "verdict": null,
+              "records": 0,
+              "distinct_group_sets": 0,
+              "first_group_sets": []
+            }
+          },
+          "needs_controller": true
+        },
+        {
+          "id": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Solo/Instruments/02 Single Patches/03 Solo Cello/Solo - 07 Solo Cello - Tremolo.nki",
+          "kind": "kontakt",
+          "tier": "full",
+          "stage": "ok",
+          "load_ms": 658,
+          "load": {
+            "key": 60,
+            "ok": true,
+            "velocity": 64,
+            "warning": null,
+            "zones": 693
+          },
+          "stored_release_s": 25.00004296875,
+          "sound": {
+            "finite": true,
+            "peak_db": -1.3407213313594273,
+            "stuck_voices": 0,
+            "script_faults": [],
+            "selection": {
+              "patch": "Solo - 07 Solo Cello - Tremolo",
+              "articulation": "F-1",
+              "suspect": [
+                "different articulations across round-robin repeats"
+              ],
+              "silent": null,
+              "verdict": null,
+              "records": 11,
+              "distinct_group_sets": 3,
+              "first_group_sets": [
+                [
+                  "1CllTrmlDccDyn1RR1",
+                  "1CllTrmlDccDyn2RR1",
+                  "1CllTrmlDccDyn3RR1",
+                  "1CllTrmlFMDyn1RR1",
+                  "1CllTrmlFMDyn2RR1",
+                  "1CllTrmlFMDyn3RR1",
+                  "1CllTrmlFMpDyn1RR1",
+                  "1CllTrmlFMpDyn2RR1",
+                  "1CllTrmlFMpDyn3RR1",
+                  "1CllTrmlFrDyn1RR1",
+                  "1CllTrmlFrDyn2RR1",
+                  "1CllTrmlFrDyn3RR1",
+                  "1CllTrmlOtrggrDyn1RR1",
+                  "1CllTrmlOtrggrDyn2RR1",
+                  "1CllTrmlOtrggrDyn3RR1",
+                  "1CllTrmlSpt1Dyn1RR1",
+                  "1CllTrmlSpt1Dyn2RR1",
+                  "1CllTrmlSpt1Dyn3RR1",
+                  "1CllTrmlSpt2Dyn1RR1",
+                  "1CllTrmlSpt2Dyn2RR1",
+                  "1CllTrmlSpt2Dyn3RR1"
+                ],
+                []
+              ]
+            }
+          },
+          "needs_controller": true
+        }
+      ]
+    }
+  },
+  "historical_reference": {
+    "una_cotton": {
+      "instrument": "una_cotton",
+      "name": "Una Corda Cotton",
+      "notes": 48,
+      "kontakt": {
+        "identified": 48,
+        "silent": 0,
+        "distinct_samples": 14,
+        "articulations": [
+          "-"
+        ]
+      },
+      "engines": {
+        "kontra": {
+          "identified": 48,
+          "silent_notes": 0,
+          "kontakt_audible_engine_silent": 0,
+          "same_direction_pct": 100.0,
+          "same_start_offset_pct": 84.1,
+          "attack_db_error_mean": 0.6,
+          "onset_ms_diff_mean": -0.8,
+          "same_sample_pct": 91.7,
+          "same_velocity_layer_pct": 91.7,
+          "rr_groups": 12,
+          "rr_sequence_equal": 8,
+          "rr_same_set": 8,
+          "level_db_mean": 0.06,
+          "level_db_worst": 0.76,
+          "articulations": [
+            "-"
+          ]
+        },
+        "v1": {
+          "identified": 48,
+          "silent_notes": 0,
+          "kontakt_audible_engine_silent": 0,
+          "same_direction_pct": 100.0,
+          "same_start_offset_pct": 81.8,
+          "attack_db_error_mean": 1.1,
+          "onset_ms_diff_mean": -2.0,
+          "same_sample_pct": 91.7,
+          "same_velocity_layer_pct": 91.7,
+          "rr_groups": 12,
+          "rr_sequence_equal": 8,
+          "rr_same_set": 8,
+          "level_db_mean": -6.0,
+          "level_db_worst": -6.08,
+          "articulations": [
+            "-"
+          ]
+        }
+      }
+    },
+    "areia_vln_sus": {
+      "instrument": "areia_vln_sus",
+      "name": "Areia - 01 16 Violins - Sustained",
+      "notes": 48,
+      "kontakt": {
+        "identified": 48,
+        "silent": 0,
+        "distinct_samples": 4,
+        "articulations": [
+          "-"
+        ]
+      },
+      "engines": {
+        "kontra": {
+          "identified": 6,
+          "silent_notes": 0,
+          "kontakt_audible_engine_silent": 0,
+          "same_direction_pct": 100.0,
+          "same_start_offset_pct": 0.0,
+          "attack_db_error_mean": 22.9,
+          "onset_ms_diff_mean": 106.0,
+          "same_sample_pct": 0.0,
+          "same_velocity_layer_pct": 2.1,
+          "rr_groups": 12,
+          "rr_sequence_equal": 0,
+          "rr_same_set": 0,
+          "level_db_mean": 26.95,
+          "level_db_worst": 30.97,
+          "articulations": [
+            "-"
+          ]
+        },
+        "v1": {
+          "identified": 48,
+          "silent_notes": 0,
+          "kontakt_audible_engine_silent": 0,
+          "same_direction_pct": 100.0,
+          "same_start_offset_pct": 0.0,
+          "attack_db_error_mean": 14.3,
+          "onset_ms_diff_mean": 47.0,
+          "same_sample_pct": 0.0,
+          "same_velocity_layer_pct": 100.0,
+          "rr_groups": 12,
+          "rr_sequence_equal": 0,
+          "rr_same_set": 0,
+          "level_db_mean": 4.55,
+          "level_db_worst": 8.91,
+          "articulations": [
+            "-"
+          ]
+        }
+      }
+    },
+    "analog_strings": {
+      "instrument": "analog_strings",
+      "name": "ANALOG STRINGS",
+      "notes": 48,
+      "kontakt": {
+        "identified": 29,
+        "silent": 0,
+        "distinct_samples": 4,
+        "articulations": [
+          "-"
+        ]
+      },
+      "engines": {
+        "kontra": {
+          "identified": 19,
+          "silent_notes": 0,
+          "kontakt_audible_engine_silent": 0,
+          "same_direction_pct": 100.0,
+          "same_start_offset_pct": 100.0,
+          "attack_db_error_mean": 3.0,
+          "onset_ms_diff_mean": 10.0,
+          "same_sample_pct": 34.5,
+          "same_velocity_layer_pct": 62.1,
+          "rr_groups": 3,
+          "rr_sequence_equal": 1,
+          "rr_same_set": 1,
+          "level_db_mean": 4.27,
+          "level_db_worst": 5.72,
+          "articulations": [
+            "-"
+          ]
+        },
+        "v1": {
+          "identified": 7,
+          "silent_notes": 0,
+          "kontakt_audible_engine_silent": 0,
+          "same_direction_pct": 100.0,
+          "same_start_offset_pct": 14.3,
+          "attack_db_error_mean": 1.7,
+          "onset_ms_diff_mean": 5.0,
+          "same_sample_pct": 24.1,
+          "same_velocity_layer_pct": 24.1,
+          "rr_groups": 3,
+          "rr_sequence_equal": 1,
+          "rr_same_set": 1,
+          "level_db_mean": -3.05,
+          "level_db_worst": -4.3,
+          "articulations": [
+            "-"
+          ]
+        }
+      }
+    },
+    "barbarian": {
+      "instrument": "barbarian",
+      "name": "Barbarian Brass",
+      "notes": 48,
+      "kontakt": {
+        "identified": 32,
+        "silent": 15,
+        "distinct_samples": 2,
+        "articulations": [
+          "-"
+        ]
+      },
+      "engines": {
+        "kontra": {
+          "identified": 32,
+          "silent_notes": 15,
+          "kontakt_audible_engine_silent": 0,
+          "same_direction_pct": 100.0,
+          "same_start_offset_pct": 100.0,
+          "attack_db_error_mean": 3.1,
+          "onset_ms_diff_mean": -5.9,
+          "same_sample_pct": 50.0,
+          "same_velocity_layer_pct": 50.0,
+          "rr_groups": 8,
+          "rr_sequence_equal": 4,
+          "rr_same_set": 4,
+          "level_db_mean": 2.13,
+          "level_db_worst": 2.33,
+          "articulations": [
+            "-"
+          ]
+        },
+        "v1": {
+          "identified": 32,
+          "silent_notes": 15,
+          "kontakt_audible_engine_silent": 0,
+          "same_direction_pct": 100.0,
+          "same_start_offset_pct": 100.0,
+          "attack_db_error_mean": 3.4,
+          "onset_ms_diff_mean": -5.8,
+          "same_sample_pct": 50.0,
+          "same_velocity_layer_pct": 50.0,
+          "rr_groups": 8,
+          "rr_sequence_equal": 4,
+          "rr_same_set": 4,
+          "level_db_mean": -9.3,
+          "level_db_worst": -12.81,
+          "articulations": [
+            "-"
+          ]
+        }
+      }
+    },
+    "vista_3cellos": {
+      "instrument": "vista_3cellos",
+      "name": "Vista - 3 Cellos",
+      "notes": 48,
+      "kontakt": {
+        "identified": 13,
+        "silent": 0,
+        "distinct_samples": 2,
+        "articulations": [
+          "-"
+        ]
+      },
+      "engines": {
+        "kontra": {
+          "identified": 36,
+          "silent_notes": 0,
+          "kontakt_audible_engine_silent": 0,
+          "same_direction_pct": 100.0,
+          "same_start_offset_pct": 100.0,
+          "attack_db_error_mean": 3.2,
+          "onset_ms_diff_mean": 36.3,
+          "same_sample_pct": 92.3,
+          "same_velocity_layer_pct": 92.3,
+          "rr_groups": 3,
+          "rr_sequence_equal": 3,
+          "rr_same_set": 3,
+          "level_db_mean": 0.89,
+          "level_db_worst": 2.84,
+          "articulations": [
+            "-"
+          ]
+        },
+        "v1": {
+          "identified": 0,
+          "silent_notes": 0,
+          "kontakt_audible_engine_silent": 0,
+          "same_direction_pct": 0.0,
+          "same_start_offset_pct": 0.0,
+          "attack_db_error_mean": 7.8,
+          "onset_ms_diff_mean": 78.7,
+          "same_sample_pct": 0.0,
+          "same_velocity_layer_pct": 0.0,
+          "rr_groups": 3,
+          "rr_sequence_equal": 0,
+          "rr_same_set": 0,
+          "level_db_mean": -12.29,
+          "level_db_worst": -16.85,
+          "articulations": []
+        }
+      }
+    }
+  },
+  "v1": [
+    {
+      "build": {
+        "build_hash": "8d4a60d753a6d851",
+        "built_at_utc": "2026-10-07T22:06:09Z",
+        "dirty": false,
+        "features": [
+          "clap",
+          "default",
+          "library-access",
+          "plugin",
+          "vst3"
+        ],
+        "import_hash": "e5923baf64b09b21",
+        "profile": "release",
+        "revision": "0cb7a8a0b4d43086596a64c77320caa1b26d6d98",
+        "source_date_epoch": 1791410769,
+        "source_revision": "0cb7a8a0b4d43086596a64c77320caa1b26d6d98",
+        "target": "x86_64-unknown-linux-gnu",
+        "version": "0.3.148"
+      },
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Areia 1.2.0 [Audio Imperia]/Instruments/01 Core Technique Patches/04 Areia - 4 Double Basses - Core Techniques.nki",
+      "name": "04 Areia - 4 Double Basses - Core Techniques",
+      "note": 60,
+      "load_ms": 2234.7588140000003,
+      "samples": 14586,
+      "streamed_samples": 14586,
+      "skipped_zones": 0,
+      "tail_observation_seconds": 35.333390625,
+      "script_error_count": 0,
+      "cases": [
+        {
+          "case": "notes-pedals-stops",
+          "peak": 0.0,
+          "rms": 0.0,
+          "nonfinite_samples": 0,
+          "underruns": 0,
+          "dropped_commands": 0,
+          "diagnostic_count": 0,
+          "stages": [
+            {
+              "phase": "same-pitch-first",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.0
+            },
+            {
+              "phase": "sostenuto-later-key",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.0
+            },
+            {
+              "phase": "natural-release-observation",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.0
+            },
+            {
+              "phase": "panic-after-declick",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.0
+            },
+            {
+              "phase": "post-panic-fresh-note",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.0
+            }
+          ]
+        },
+        {
+          "case": "channel-articulations",
+          "peak": 0.0,
+          "rms": 0.0,
+          "nonfinite_samples": 0,
+          "underruns": 0,
+          "dropped_commands": 0,
+          "diagnostic_count": 0,
+          "stages": [
+            {
+              "phase": "natural-release-observation",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.0
+            },
+            {
+              "phase": "panic-after-declick",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.0
+            },
+            {
+              "phase": "post-panic-fresh-note",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.0
+            }
+          ]
+        },
+        {
+          "case": "mpe-lower",
+          "peak": 0.0,
+          "rms": 0.0,
+          "nonfinite_samples": 0,
+          "underruns": 0,
+          "dropped_commands": 0,
+          "diagnostic_count": 0,
+          "stages": [
+            {
+              "phase": "natural-release-observation",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.0
+            },
+            {
+              "phase": "panic-after-declick",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.0
+            },
+            {
+              "phase": "post-panic-fresh-note",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.0
+            }
+          ]
+        },
+        {
+          "case": "mpe-upper",
+          "peak": 0.0,
+          "rms": 0.0,
+          "nonfinite_samples": 0,
+          "underruns": 0,
+          "dropped_commands": 0,
+          "diagnostic_count": 0,
+          "stages": [
+            {
+              "phase": "natural-release-observation",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.0
+            },
+            {
+              "phase": "panic-after-declick",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.0
+            },
+            {
+              "phase": "post-panic-fresh-note",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "build": {
+        "build_hash": "8d4a60d753a6d851",
+        "built_at_utc": "2026-10-07T22:06:09Z",
+        "dirty": false,
+        "features": [
+          "clap",
+          "default",
+          "library-access",
+          "plugin",
+          "vst3"
+        ],
+        "import_hash": "e5923baf64b09b21",
+        "profile": "release",
+        "revision": "0cb7a8a0b4d43086596a64c77320caa1b26d6d98",
+        "source_date_epoch": 1791410769,
+        "source_revision": "0cb7a8a0b4d43086596a64c77320caa1b26d6d98",
+        "target": "x86_64-unknown-linux-gnu",
+        "version": "0.3.148"
+      },
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Pacific Ensemble Strings/Instruments/Bonus Content/Lite Full Strings Patches/Pacific - Ens Strings - Lite Full Str - Trills.nki",
+      "name": "Pacific - Ens Strings - Lite Full Str - Trills",
+      "note": 60,
+      "load_ms": 258.04934099999997,
+      "samples": 1656,
+      "streamed_samples": 1656,
+      "skipped_zones": 0,
+      "tail_observation_seconds": 35.333390625,
+      "script_error_count": 0,
+      "cases": [
+        {
+          "case": "notes-pedals-stops",
+          "peak": 0.16193963587284088,
+          "rms": 0.0027474023954046547,
+          "nonfinite_samples": 0,
+          "underruns": 0,
+          "dropped_commands": 0,
+          "diagnostic_count": 1,
+          "stages": [
+            {
+              "phase": "same-pitch-first",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.0
+            },
+            {
+              "phase": "sostenuto-later-key",
+              "voices": 18,
+              "unreleased_attack_voices": 18,
+              "release_trigger_voices": 0,
+              "rms": 0.007835397617855547
+            },
+            {
+              "phase": "natural-release-observation",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.0
+            },
+            {
+              "phase": "panic-after-declick",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.0
+            },
+            {
+              "phase": "post-panic-fresh-note",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.0
+            }
+          ]
+        },
+        {
+          "case": "channel-articulations",
+          "peak": 0.0,
+          "rms": 0.0,
+          "nonfinite_samples": 0,
+          "underruns": 0,
+          "dropped_commands": 0,
+          "diagnostic_count": 1,
+          "stages": [
+            {
+              "phase": "natural-release-observation",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.0
+            },
+            {
+              "phase": "panic-after-declick",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.0
+            },
+            {
+              "phase": "post-panic-fresh-note",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.0
+            }
+          ]
+        },
+        {
+          "case": "mpe-lower",
+          "peak": 0.0,
+          "rms": 0.0,
+          "nonfinite_samples": 0,
+          "underruns": 0,
+          "dropped_commands": 0,
+          "diagnostic_count": 1,
+          "stages": [
+            {
+              "phase": "natural-release-observation",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.0
+            },
+            {
+              "phase": "panic-after-declick",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.0
+            },
+            {
+              "phase": "post-panic-fresh-note",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.0
+            }
+          ]
+        },
+        {
+          "case": "mpe-upper",
+          "peak": 0.0,
+          "rms": 0.0,
+          "nonfinite_samples": 0,
+          "underruns": 0,
+          "dropped_commands": 0,
+          "diagnostic_count": 1,
+          "stages": [
+            {
+              "phase": "natural-release-observation",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.0
+            },
+            {
+              "phase": "panic-after-declick",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.0
+            },
+            {
+              "phase": "post-panic-fresh-note",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "build": {
+        "build_hash": "8d4a60d753a6d851",
+        "built_at_utc": "2026-10-07T22:06:09Z",
+        "dirty": false,
+        "features": [
+          "clap",
+          "default",
+          "library-access",
+          "plugin",
+          "vst3"
+        ],
+        "import_hash": "e5923baf64b09b21",
+        "profile": "release",
+        "revision": "0cb7a8a0b4d43086596a64c77320caa1b26d6d98",
+        "source_date_epoch": 1791410769,
+        "source_revision": "0cb7a8a0b4d43086596a64c77320caa1b26d6d98",
+        "target": "x86_64-unknown-linux-gnu",
+        "version": "0.3.148"
+      },
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Audio Imperia Dolce/Instruments/01 7 1st Violins/Dolce - 01 7 1st Violins - Legato.nki",
+      "name": "Dolce - 01 7 1st Violins - Legato",
+      "note": 60,
+      "load_ms": 355.324906,
+      "samples": 14784,
+      "streamed_samples": 14784,
+      "skipped_zones": 0,
+      "tail_observation_seconds": 35.333390625,
+      "script_error_count": 0,
+      "cases": [
+        {
+          "case": "notes-pedals-stops",
+          "peak": 0.4946732819080353,
+          "rms": 0.011576839731814047,
+          "nonfinite_samples": 0,
+          "underruns": 0,
+          "dropped_commands": 0,
+          "diagnostic_count": 199,
+          "stages": [
+            {
+              "phase": "same-pitch-first",
+              "voices": 48,
+              "unreleased_attack_voices": 48,
+              "release_trigger_voices": 0,
+              "rms": 0.014272312774731778
+            },
+            {
+              "phase": "sostenuto-later-key",
+              "voices": 144,
+              "unreleased_attack_voices": 48,
+              "release_trigger_voices": 96,
+              "rms": 0.07516364842065827
+            },
+            {
+              "phase": "natural-release-observation",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 7.911185196434667e-05
+            },
+            {
+              "phase": "panic-after-declick",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.008505859501128515
+            },
+            {
+              "phase": "post-panic-fresh-note",
+              "voices": 48,
+              "unreleased_attack_voices": 48,
+              "release_trigger_voices": 0,
+              "rms": 0.014293712838037702
+            }
+          ]
+        },
+        {
+          "case": "channel-articulations",
+          "peak": 0.830612301826477,
+          "rms": 0.01401635103638194,
+          "nonfinite_samples": 0,
+          "underruns": 0,
+          "dropped_commands": 0,
+          "diagnostic_count": 199,
+          "stages": [
+            {
+              "phase": "natural-release-observation",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.0007643441262667998
+            },
+            {
+              "phase": "panic-after-declick",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.004694176951339547
+            },
+            {
+              "phase": "post-panic-fresh-note",
+              "voices": 48,
+              "unreleased_attack_voices": 48,
+              "release_trigger_voices": 0,
+              "rms": 0.014244065144226489
+            }
+          ]
+        },
+        {
+          "case": "mpe-lower",
+          "peak": 0.5090460777282715,
+          "rms": 0.0074242624352311385,
+          "nonfinite_samples": 0,
+          "underruns": 0,
+          "dropped_commands": 0,
+          "diagnostic_count": 199,
+          "stages": [
+            {
+              "phase": "natural-release-observation",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.0011693790030999978
+            },
+            {
+              "phase": "panic-after-declick",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.001983429125807583
+            },
+            {
+              "phase": "post-panic-fresh-note",
+              "voices": 48,
+              "unreleased_attack_voices": 48,
+              "release_trigger_voices": 0,
+              "rms": 0.014278734305632947
+            }
+          ]
+        },
+        {
+          "case": "mpe-upper",
+          "peak": 0.509303629398346,
+          "rms": 0.00751708430642718,
+          "nonfinite_samples": 0,
+          "underruns": 0,
+          "dropped_commands": 0,
+          "diagnostic_count": 199,
+          "stages": [
+            {
+              "phase": "natural-release-observation",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.001185511938163809
+            },
+            {
+              "phase": "panic-after-declick",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.001982607125350698
+            },
+            {
+              "phase": "post-panic-fresh-note",
+              "voices": 48,
+              "unreleased_attack_voices": 48,
+              "release_trigger_voices": 0,
+              "rms": 0.014197652427947434
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "build": {
+        "build_hash": "8d4a60d753a6d851",
+        "built_at_utc": "2026-10-07T22:06:09Z",
+        "dirty": false,
+        "features": [
+          "clap",
+          "default",
+          "library-access",
+          "plugin",
+          "vst3"
+        ],
+        "import_hash": "e5923baf64b09b21",
+        "profile": "release",
+        "revision": "0cb7a8a0b4d43086596a64c77320caa1b26d6d98",
+        "source_date_epoch": 1791410769,
+        "source_revision": "0cb7a8a0b4d43086596a64c77320caa1b26d6d98",
+        "target": "x86_64-unknown-linux-gnu",
+        "version": "0.3.148"
+      },
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Solo/Instruments/02 Single Patches/03 Solo Cello/Solo - 07 Solo Cello - Tremolo.nki",
+      "name": "Solo - 07 Solo Cello - Tremolo",
+      "note": 60,
+      "load_ms": 2273.17462,
+      "samples": 11858,
+      "streamed_samples": 11858,
+      "skipped_zones": 0,
+      "tail_observation_seconds": 35.333390625,
+      "script_error_count": 0,
+      "cases": [
+        {
+          "case": "notes-pedals-stops",
+          "peak": 2.1309685707092285,
+          "rms": 0.06764194260246356,
+          "nonfinite_samples": 0,
+          "underruns": 0,
+          "dropped_commands": 0,
+          "diagnostic_count": 0,
+          "stages": [
+            {
+              "phase": "same-pitch-first",
+              "voices": 21,
+              "unreleased_attack_voices": 21,
+              "release_trigger_voices": 0,
+              "rms": 0.17482075335009747
+            },
+            {
+              "phase": "sostenuto-later-key",
+              "voices": 42,
+              "unreleased_attack_voices": 42,
+              "release_trigger_voices": 0,
+              "rms": 0.22644357030612747
+            },
+            {
+              "phase": "natural-release-observation",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.0017487452101702424
+            },
+            {
+              "phase": "panic-after-declick",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.06504446265621482
+            },
+            {
+              "phase": "post-panic-fresh-note",
+              "voices": 21,
+              "unreleased_attack_voices": 21,
+              "release_trigger_voices": 0,
+              "rms": 0.1760645108523413
+            }
+          ]
+        },
+        {
+          "case": "channel-articulations",
+          "peak": 2.5382919311523438,
+          "rms": 0.10221551205102435,
+          "nonfinite_samples": 0,
+          "underruns": 0,
+          "dropped_commands": 0,
+          "diagnostic_count": 0,
+          "stages": [
+            {
+              "phase": "natural-release-observation",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.00516445548307001
+            },
+            {
+              "phase": "panic-after-declick",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.0529167749645457
+            },
+            {
+              "phase": "post-panic-fresh-note",
+              "voices": 21,
+              "unreleased_attack_voices": 21,
+              "release_trigger_voices": 0,
+              "rms": 0.16662309386135357
+            }
+          ]
+        },
+        {
+          "case": "mpe-lower",
+          "peak": 2.3151938915252686,
+          "rms": 0.308040624634474,
+          "nonfinite_samples": 0,
+          "underruns": 0,
+          "dropped_commands": 0,
+          "diagnostic_count": 0,
+          "stages": [
+            {
+              "phase": "natural-release-observation",
+              "voices": 21,
+              "unreleased_attack_voices": 21,
+              "release_trigger_voices": 0,
+              "rms": 0.43165219358576246
+            },
+            {
+              "phase": "panic-after-declick",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.1278820305697559
+            },
+            {
+              "phase": "post-panic-fresh-note",
+              "voices": 21,
+              "unreleased_attack_voices": 21,
+              "release_trigger_voices": 0,
+              "rms": 0.1682297766639511
+            }
+          ]
+        },
+        {
+          "case": "mpe-upper",
+          "peak": 2.2968690395355225,
+          "rms": 0.30797975372057135,
+          "nonfinite_samples": 0,
+          "underruns": 0,
+          "dropped_commands": 0,
+          "diagnostic_count": 0,
+          "stages": [
+            {
+              "phase": "natural-release-observation",
+              "voices": 21,
+              "unreleased_attack_voices": 21,
+              "release_trigger_voices": 0,
+              "rms": 0.43178721888591626
+            },
+            {
+              "phase": "panic-after-declick",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.11951794841026309
+            },
+            {
+              "phase": "post-panic-fresh-note",
+              "voices": 21,
+              "unreleased_attack_voices": 21,
+              "release_trigger_voices": 0,
+              "rms": 0.1721758945745564
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "build": {
+        "build_hash": "8d4a60d753a6d851",
+        "built_at_utc": "2026-10-07T22:06:09Z",
+        "dirty": false,
+        "features": [
+          "clap",
+          "default",
+          "library-access",
+          "plugin",
+          "vst3"
+        ],
+        "import_hash": "e5923baf64b09b21",
+        "profile": "release",
+        "revision": "0cb7a8a0b4d43086596a64c77320caa1b26d6d98",
+        "source_date_epoch": 1791410769,
+        "source_revision": "0cb7a8a0b4d43086596a64c77320caa1b26d6d98",
+        "target": "x86_64-unknown-linux-gnu",
+        "version": "0.3.148"
+      },
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Instruments/Conflux.nki",
+      "name": "Conflux",
+      "note": 60,
+      "load_ms": 107.73342299999999,
+      "samples": 1962,
+      "streamed_samples": 1949,
+      "skipped_zones": 0,
+      "tail_observation_seconds": 8.0,
+      "script_error_count": 0,
+      "cases": [
+        {
+          "case": "notes-pedals-stops",
+          "peak": 0.7045634984970093,
+          "rms": 0.08787875991792303,
+          "nonfinite_samples": 0,
+          "underruns": 0,
+          "dropped_commands": 0,
+          "diagnostic_count": 252,
+          "stages": [
+            {
+              "phase": "same-pitch-first",
+              "voices": 2,
+              "unreleased_attack_voices": 2,
+              "release_trigger_voices": 0,
+              "rms": 0.22307258805100988
+            },
+            {
+              "phase": "sostenuto-later-key",
+              "voices": 4,
+              "unreleased_attack_voices": 4,
+              "release_trigger_voices": 0,
+              "rms": 0.31653442116064295
+            },
+            {
+              "phase": "natural-release-observation",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.0
+            },
+            {
+              "phase": "panic-after-declick",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.020303640491926758
+            },
+            {
+              "phase": "post-panic-fresh-note",
+              "voices": 2,
+              "unreleased_attack_voices": 2,
+              "release_trigger_voices": 0,
+              "rms": 0.2230725880510171
+            }
+          ]
+        },
+        {
+          "case": "channel-articulations",
+          "peak": 1.4667108058929443,
+          "rms": 0.20559126280728288,
+          "nonfinite_samples": 0,
+          "underruns": 0,
+          "dropped_commands": 0,
+          "diagnostic_count": 252,
+          "stages": [
+            {
+              "phase": "natural-release-observation",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.0
+            },
+            {
+              "phase": "panic-after-declick",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.020303640491702784
+            },
+            {
+              "phase": "post-panic-fresh-note",
+              "voices": 2,
+              "unreleased_attack_voices": 2,
+              "release_trigger_voices": 0,
+              "rms": 0.22307258805108876
+            }
+          ]
+        },
+        {
+          "case": "mpe-lower",
+          "peak": 0.8061345219612122,
+          "rms": 0.07623685314184588,
+          "nonfinite_samples": 0,
+          "underruns": 0,
+          "dropped_commands": 0,
+          "diagnostic_count": 252,
+          "stages": [
+            {
+              "phase": "natural-release-observation",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.0
+            },
+            {
+              "phase": "panic-after-declick",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.015567160230997348
+            },
+            {
+              "phase": "post-panic-fresh-note",
+              "voices": 2,
+              "unreleased_attack_voices": 2,
+              "release_trigger_voices": 0,
+              "rms": 0.2230725880510171
+            }
+          ]
+        },
+        {
+          "case": "mpe-upper",
+          "peak": 0.8061345219612122,
+          "rms": 0.07623685314184588,
+          "nonfinite_samples": 0,
+          "underruns": 0,
+          "dropped_commands": 0,
+          "diagnostic_count": 252,
+          "stages": [
+            {
+              "phase": "natural-release-observation",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.0
+            },
+            {
+              "phase": "panic-after-declick",
+              "voices": 0,
+              "unreleased_attack_voices": 0,
+              "release_trigger_voices": 0,
+              "rms": 0.015567160230997348
+            },
+            {
+              "phase": "post-panic-fresh-note",
+              "voices": 2,
+              "unreleased_attack_voices": 2,
+              "release_trigger_voices": 0,
+              "rms": 0.2230725880510171
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "historical_full3": {
+    "count": 834,
+    "stages": {
+      "ok": 726,
+      "note-on/selection": 40,
+      "needs-controller": 51,
+      "render": 5,
+      "release": 12
+    },
+    "families": {
+      "Afflatus Chapter II Brass": {
+        "count": 348,
+        "stages": {
+          "ok": 348
+        }
+      },
+      "ANALOG STRINGS": {
+        "count": 1,
+        "stages": {
+          "ok": 1
+        }
+      },
+      "Areia 1.2.0 [Audio Imperia]": {
+        "count": 155,
+        "stages": {
+          "ok": 85,
+          "note-on/selection": 31,
+          "needs-controller": 37,
+          "render": 2
+        }
+      },
+      "Audio Imperia CHORUS": {
+        "count": 42,
+        "stages": {
+          "ok": 28,
+          "needs-controller": 13,
+          "release": 1
+        }
+      },
+      "Audio Imperia Dolce": {
+        "count": 77,
+        "stages": {
+          "needs-controller": 1,
+          "ok": 67,
+          "note-on/selection": 5,
+          "release": 1,
+          "render": 3
+        }
+      },
+      "Conflux 1.1.0 [Native Instruments]": {
+        "count": 51,
+        "stages": {
+          "ok": 51
+        }
+      },
+      "Pacific Ensemble Strings": {
+        "count": 49,
+        "stages": {
+          "ok": 45,
+          "note-on/selection": 4
+        }
+      },
+      "Morphology Evolved [Zero-G] rutracker.org": {
+        "count": 1,
+        "stages": {
+          "ok": 1
+        }
+      },
+      "Performance Samples Vista": {
+        "count": 7,
+        "stages": {
+          "ok": 7
+        }
+      },
+      "Solo": {
+        "count": 100,
+        "stages": {
+          "ok": 90,
+          "release": 10
+        }
+      },
+      "Una Corda Library": {
+        "count": 3,
+        "stages": {
+          "ok": 3
+        }
+      }
+    },
+    "exposures": {
+      "Filter: EQ band shape": {
+        "files": 352,
+        "families": 3,
+        "family_names": [
+          "ANALOG STRINGS",
+          "Afflatus Chapter II Brass",
+          "Una Corda Library"
+        ]
+      },
+      "modulation of a module parameter": {
+        "files": 363,
+        "families": 9,
+        "family_names": [
+          "ANALOG STRINGS",
+          "Afflatus Chapter II Brass",
+          "Audio Imperia CHORUS",
+          "Audio Imperia Dolce",
+          "Conflux 1.1.0 [Native Instruments]",
+          "Morphology Evolved [Zero-G] rutracker.org",
+          "Pacific Ensemble Strings",
+          "Performance Samples Vista",
+          "Una Corda Library"
+        ]
+      },
+      "script Approximate: find_mod": {
+        "files": 780,
+        "families": 9,
+        "family_names": [
+          "ANALOG STRINGS",
+          "Afflatus Chapter II Brass",
+          "Areia 1.2.0 [Audio Imperia]",
+          "Audio Imperia CHORUS",
+          "Audio Imperia Dolce",
+          "Morphology Evolved [Zero-G] rutracker.org",
+          "Pacific Ensemble Strings",
+          "Performance Samples Vista",
+          "Solo"
+        ]
+      },
+      "script Approximate: set_engine_par": {
+        "files": 834,
+        "families": 11,
+        "family_names": [
+          "ANALOG STRINGS",
+          "Afflatus Chapter II Brass",
+          "Areia 1.2.0 [Audio Imperia]",
+          "Audio Imperia CHORUS",
+          "Audio Imperia Dolce",
+          "Conflux 1.1.0 [Native Instruments]",
+          "Morphology Evolved [Zero-G] rutracker.org",
+          "Pacific Ensemble Strings",
+          "Performance Samples Vista",
+          "Solo",
+          "Una Corda Library"
+        ]
+      },
+      "script Approximate: ticks_to_ms": {
+        "files": 349,
+        "families": 2,
+        "family_names": [
+          "ANALOG STRINGS",
+          "Afflatus Chapter II Brass"
+        ]
+      },
+      "script Unsupported: get_engine_par_disp": {
+        "files": 834,
+        "families": 11,
+        "family_names": [
+          "ANALOG STRINGS",
+          "Afflatus Chapter II Brass",
+          "Areia 1.2.0 [Audio Imperia]",
+          "Audio Imperia CHORUS",
+          "Audio Imperia Dolce",
+          "Conflux 1.1.0 [Native Instruments]",
+          "Morphology Evolved [Zero-G] rutracker.org",
+          "Pacific Ensemble Strings",
+          "Performance Samples Vista",
+          "Solo",
+          "Una Corda Library"
+        ]
+      },
+      "script Unsupported: output_channel_name": {
+        "files": 348,
+        "families": 1,
+        "family_names": [
+          "Afflatus Chapter II Brass"
+        ]
+      },
+      "script Warning": {
+        "files": 834,
+        "families": 11,
+        "family_names": [
+          "ANALOG STRINGS",
+          "Afflatus Chapter II Brass",
+          "Areia 1.2.0 [Audio Imperia]",
+          "Audio Imperia CHORUS",
+          "Audio Imperia Dolce",
+          "Conflux 1.1.0 [Native Instruments]",
+          "Morphology Evolved [Zero-G] rutracker.org",
+          "Pacific Ensemble Strings",
+          "Performance Samples Vista",
+          "Solo",
+          "Una Corda Library"
+        ]
+      },
+      "source mode (played as a sampler)": {
+        "files": 832,
+        "families": 11,
+        "family_names": [
+          "ANALOG STRINGS",
+          "Afflatus Chapter II Brass",
+          "Areia 1.2.0 [Audio Imperia]",
+          "Audio Imperia CHORUS",
+          "Audio Imperia Dolce",
+          "Conflux 1.1.0 [Native Instruments]",
+          "Morphology Evolved [Zero-G] rutracker.org",
+          "Pacific Ensemble Strings",
+          "Performance Samples Vista",
+          "Solo",
+          "Una Corda Library"
+        ]
+      },
+      "undefined voice group": {
+        "files": 347,
+        "families": 1,
+        "family_names": [
+          "Afflatus Chapter II Brass"
+        ]
+      },
+      "keyswitch script": {
+        "files": 399,
+        "families": 5,
+        "family_names": [
+          "Afflatus Chapter II Brass",
+          "Areia 1.2.0 [Audio Imperia]",
+          "Audio Imperia CHORUS",
+          "Audio Imperia Dolce",
+          "Solo"
+        ]
+      },
+      "Compressor: compressor level law": {
+        "files": 7,
+        "families": 4,
+        "family_names": [
+          "ANALOG STRINGS",
+          "Areia 1.2.0 [Audio Imperia]",
+          "Solo",
+          "Una Corda Library"
+        ]
+      },
+      "Convolution: IR <path> filtering": {
+        "files": 1,
+        "families": 1,
+        "family_names": [
+          "ANALOG STRINGS"
+        ]
+      },
+      "Convolution: IR size": {
+        "files": 1,
+        "families": 1,
+        "family_names": [
+          "ANALOG STRINGS"
+        ]
+      },
+      "Filter: filter type": {
+        "files": 54,
+        "families": 6,
+        "family_names": [
+          "ANALOG STRINGS",
+          "Audio Imperia Dolce",
+          "Conflux 1.1.0 [Native Instruments]",
+          "Pacific Ensemble Strings",
+          "Performance Samples Vista",
+          "Una Corda Library"
+        ]
+      },
+      "Inverter: inverter flag order": {
+        "files": 4,
+        "families": 2,
+        "family_names": [
+          "ANALOG STRINGS",
+          "Una Corda Library"
+        ]
+      },
+      "LFO waveform (id, multi weights, pulse width)": {
+        "files": 53,
+        "families": 3,
+        "family_names": [
+          "ANALOG STRINGS",
+          "Conflux 1.1.0 [Native Instruments]",
+          "Morphology Evolved [Zero-G] rutracker.org"
+        ]
+      },
+      "effect": {
+        "files": 87,
+        "families": 10,
+        "family_names": [
+          "ANALOG STRINGS",
+          "Afflatus Chapter II Brass",
+          "Areia 1.2.0 [Audio Imperia]",
+          "Audio Imperia Dolce",
+          "Conflux 1.1.0 [Native Instruments]",
+          "Morphology Evolved [Zero-G] rutracker.org",
+          "Pacific Ensemble Strings",
+          "Performance Samples Vista",
+          "Solo",
+          "Una Corda Library"
+        ]
+      },
+      "loop crossfade longer than its room, clamped": {
+        "files": 13,
+        "families": 6,
+        "family_names": [
+          "ANALOG STRINGS",
+          "Areia 1.2.0 [Audio Imperia]",
+          "Audio Imperia CHORUS",
+          "Pacific Ensemble Strings",
+          "Performance Samples Vista",
+          "Solo"
+        ]
+      },
+      "modulation target": {
+        "files": 52,
+        "families": 2,
+        "family_names": [
+          "ANALOG STRINGS",
+          "Conflux 1.1.0 [Native Instruments]"
+        ]
+      },
+      "pan modulation": {
+        "files": 53,
+        "families": 3,
+        "family_names": [
+          "ANALOG STRINGS",
+          "Conflux 1.1.0 [Native Instruments]",
+          "Morphology Evolved [Zero-G] rutracker.org"
+        ]
+      },
+      "script Approximate: find_target": {
+        "files": 4,
+        "families": 3,
+        "family_names": [
+          "ANALOG STRINGS",
+          "Areia 1.2.0 [Audio Imperia]",
+          "Solo"
+        ]
+      },
+      "script Approximate: ignore_event": {
+        "files": 57,
+        "families": 3,
+        "family_names": [
+          "ANALOG STRINGS",
+          "Conflux 1.1.0 [Native Instruments]",
+          "Pacific Ensemble Strings"
+        ]
+      },
+      "script Unsupported: event_status": {
+        "files": 56,
+        "families": 4,
+        "family_names": [
+          "ANALOG STRINGS",
+          "Conflux 1.1.0 [Native Instruments]",
+          "Morphology Evolved [Zero-G] rutracker.org",
+          "Una Corda Library"
+        ]
+      },
+      "script Unsupported: fade_out": {
+        "files": 4,
+        "families": 3,
+        "family_names": [
+          "ANALOG STRINGS",
+          "Areia 1.2.0 [Audio Imperia]",
+          "Solo"
+        ]
+      },
+      "script Unsupported: get_event_par": {
+        "files": 426,
+        "families": 6,
+        "family_names": [
+          "ANALOG STRINGS",
+          "Areia 1.2.0 [Audio Imperia]",
+          "Audio Imperia CHORUS",
+          "Audio Imperia Dolce",
+          "Conflux 1.1.0 [Native Instruments]",
+          "Solo"
+        ]
+      },
+      "script Unsupported: set_skin_offset": {
+        "files": 5,
+        "families": 3,
+        "family_names": [
+          "ANALOG STRINGS",
+          "Morphology Evolved [Zero-G] rutracker.org",
+          "Una Corda Library"
+        ]
+      },
+      "signed modulation target": {
+        "files": 80,
+        "families": 4,
+        "family_names": [
+          "ANALOG STRINGS",
+          "Conflux 1.1.0 [Native Instruments]",
+          "Pacific Ensemble Strings",
+          "Una Corda Library"
+        ]
+      },
+      "Reverb: reverb algorithm": {
+        "files": 374,
+        "families": 4,
+        "family_names": [
+          "Areia 1.2.0 [Audio Imperia]",
+          "Audio Imperia CHORUS",
+          "Audio Imperia Dolce",
+          "Solo"
+        ]
+      },
+      "saved persistent text arrays": {
+        "files": 422,
+        "families": 5,
+        "family_names": [
+          "Areia 1.2.0 [Audio Imperia]",
+          "Audio Imperia CHORUS",
+          "Audio Imperia Dolce",
+          "Conflux 1.1.0 [Native Instruments]",
+          "Solo"
+        ]
+      },
+      "Convolution: impulse response": {
+        "files": 6,
+        "families": 3,
+        "family_names": [
+          "Areia 1.2.0 [Audio Imperia]",
+          "Conflux 1.1.0 [Native Instruments]",
+          "Una Corda Library"
+        ]
+      },
+      "keys beyond the runtime's pitch range, narrowed": {
+        "files": 109,
+        "families": 5,
+        "family_names": [
+          "Areia 1.2.0 [Audio Imperia]",
+          "Audio Imperia Dolce",
+          "Conflux 1.1.0 [Native Instruments]",
+          "Morphology Evolved [Zero-G] rutracker.org",
+          "Solo"
+        ]
+      },
+      "script Unsupported: fs_get_filename": {
+        "files": 9,
+        "families": 1,
+        "family_names": [
+          "Audio Imperia CHORUS"
+        ]
+      },
+      "instrument bus pan": {
+        "files": 66,
+        "families": 1,
+        "family_names": [
+          "Audio Imperia Dolce"
+        ]
+      },
+      "additional loop": {
+        "files": 61,
+        "families": 3,
+        "family_names": [
+          "Conflux 1.1.0 [Native Instruments]",
+          "Pacific Ensemble Strings",
+          "Performance Samples Vista"
+        ]
+      },
+      "external modulation from RandomBipolar": {
+        "files": 51,
+        "families": 1,
+        "family_names": [
+          "Conflux 1.1.0 [Native Instruments]"
+        ]
+      },
+      "script Approximate: get_mod_idx": {
+        "files": 52,
+        "families": 2,
+        "family_names": [
+          "Conflux 1.1.0 [Native Instruments]",
+          "Morphology Evolved [Zero-G] rutracker.org"
+        ]
+      },
+      "script Approximate: get_target_idx": {
+        "files": 52,
+        "families": 2,
+        "family_names": [
+          "Conflux 1.1.0 [Native Instruments]",
+          "Morphology Evolved [Zero-G] rutracker.org"
+        ]
+      },
+      "script Unsupported: get_control_par_str": {
+        "files": 51,
+        "families": 1,
+        "family_names": [
+          "Conflux 1.1.0 [Native Instruments]"
+        ]
+      },
+      "script Unsupported: get_engine_par_disp_ext": {
+        "files": 51,
+        "families": 1,
+        "family_names": [
+          "Conflux 1.1.0 [Native Instruments]"
+        ]
+      },
+      "script Unsupported: get_event_ids": {
+        "files": 51,
+        "families": 1,
+        "family_names": [
+          "Conflux 1.1.0 [Native Instruments]"
+        ]
+      },
+      "script Unsupported: get_menu_item_str": {
+        "files": 54,
+        "families": 2,
+        "family_names": [
+          "Conflux 1.1.0 [Native Instruments]",
+          "Una Corda Library"
+        ]
+      },
+      "script Unsupported: get_menu_item_value": {
+        "files": 51,
+        "families": 1,
+        "family_names": [
+          "Conflux 1.1.0 [Native Instruments]"
+        ]
+      },
+      "script Unsupported: get_zone_par": {
+        "files": 51,
+        "families": 1,
+        "family_names": [
+          "Conflux 1.1.0 [Native Instruments]"
+        ]
+      },
+      "script Unsupported: ignore_controller": {
+        "files": 51,
+        "families": 1,
+        "family_names": [
+          "Conflux 1.1.0 [Native Instruments]"
+        ]
+      },
+      "script Unsupported: set_event_par_arr": {
+        "files": 51,
+        "families": 1,
+        "family_names": [
+          "Conflux 1.1.0 [Native Instruments]"
+        ]
+      },
+      "wavetable source": {
+        "files": 52,
+        "families": 2,
+        "family_names": [
+          "Conflux 1.1.0 [Native Instruments]",
+          "Morphology Evolved [Zero-G] rutracker.org"
+        ]
+      },
+      "loop starting before the zone start or past its end, dropped": {
+        "files": 10,
+        "families": 2,
+        "family_names": [
+          "Pacific Ensemble Strings",
+          "Performance Samples Vista"
+        ]
+      },
+      "script Unsupported: note_off": {
+        "files": 1,
+        "families": 1,
+        "family_names": [
+          "Morphology Evolved [Zero-G] rutracker.org"
+        ]
+      },
+      "group start options (mode, next, cycle class)": {
+        "files": 4,
+        "families": 2,
+        "family_names": [
+          "Performance Samples Vista",
+          "Una Corda Library"
+        ]
+      }
+    }
+  },
+  "corpus_binary_sha256": "094d810365d2c24f3a1ad4005278c7ac9d14985e96fff4d3c39097f33c985d16",
+  "ksp_audit": {
+    "source_revision": "a1446ec6",
+    "passed": 3,
+    "failed": 40,
+    "ignored": 0,
+    "seconds": 0.04
+  },
+  "validation": {
+    "cargo_test_no_run": "passed",
+    "seconds": 31.75
+  }
+}
