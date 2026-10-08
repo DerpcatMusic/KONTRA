@@ -94,6 +94,9 @@ pub use engine_parameters::{
     EngineParameterLaw, EngineParameterOutcome, EngineParameterOffset, engine_parameter_id, engine_parameter_name, engine_parameter_control,
 };
 mod steal;
+mod parameter_registry;
+pub use parameter_registry::{ParameterAddress, ParameterDescriptor, ParameterDisplay, ParameterLaw,
+    ParameterRegistry, ParameterScope, ParameterUnit, PreparedParameterRegistry};
 mod voice_mod;
 pub use plan_programs::{PlanProgram, SignalProgram};
 pub use script_params::{EnvelopeStage, GroupParams, ParamScope};
