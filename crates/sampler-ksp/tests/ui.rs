@@ -259,3 +259,40 @@ fn a_saved_menu_is_the_item_position_not_its_value() {
         widget.value
     );
 }
+
+#[test]
+fn missing_performance_description_does_not_create_visible_unsized_knob() {
+    let script = sampler_ksp::compile(
+        "on init\nload_performance_view(\"missing\")\n$ghost := 0\nend on",
+        48000, sampler_ksp::Limits::LIBRARY, &[],
+    ).unwrap();
+    let ghost = &script.model().interface.widgets[0];
+    assert!(ghost.unresolved);
+    assert!(ghost.control.is_none());
+    assert!(ghost.properties.is_empty());
+    assert!(script.ui(&|_| None).unwrap().widgets.is_empty());
+    assert!(script.warnings().iter().any(|d| d.message.contains("unbound")));
+}
+
+#[test]
+fn typed_seed_meter_and_waveform_addresses_reach_ir() {
+    let script = sampler_ksp::compile(r#"on init
+        declare ui_table %t[4](1,1,100)
+        set_control_par_arr(get_ui_id(%t),$CONTROL_PAR_VALUE,42,2)
+        declare ui_text_edit @text
+        @text := "seed"
+        declare ui_level_meter $m
+        attach_level_meter(get_ui_id($m),3,4,1,2)
+        declare ui_waveform $w(1,1)
+        attach_zone($w,27,3)
+        set_ui_wf_property($w,$UI_WF_PROP_PLAY_CURSOR,12000,0)
+        set_ui_wf_property($w,$UI_WF_PROP_TABLE_VAL,42,2)
+    end on"#,48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
+    let ui = script.ui(&|_|None).unwrap();
+    assert_eq!(ui.widgets[0].value,Some(sampler_ui_ir::Value::Integers(vec![0,0,42,0])));
+    assert_eq!(ui.widgets[1].value,Some(sampler_ui_ir::Value::Text("seed".into())));
+    assert_eq!(ui.widgets[2].meter,Some(sampler_ui_ir::MeterAddress {group:3,slot:4,channel:1,bus:Some(2)}));
+    let waveform = ui.widgets[3].waveform.as_ref().unwrap();
+    assert_eq!((waveform.zone,waveform.flags,waveform.cursor_us),(27,3,12000));
+    assert_eq!(waveform.table,vec![0,0,42]);
+}
