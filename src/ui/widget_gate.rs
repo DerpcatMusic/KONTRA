@@ -97,7 +97,7 @@ impl Gate {
         }
     }
     fn settle(&mut self) {
-        for _ in 0..8 {
+        for _ in 0..3 {
             self.tick(Input::default());
             std::thread::sleep(Duration::from_millis(2));
         }
@@ -143,7 +143,6 @@ impl Gate {
         let part = &view.parts[0];
         for (source, face) in part.interfaces.iter().enumerate() {
             for (n, widget) in face.widgets.iter().enumerate() {
-                if !widget.enabled || !face.visible(ir::WidgetRef(n)) { continue; }
                 let kind = match widget.kind {
                     ir::Kind::Knob {..} => "knob", ir::Kind::Slider {..} => "slider",
                     ir::Kind::Button {..} => "button", ir::Kind::Switch => "switch",
@@ -151,7 +150,7 @@ impl Gate {
                     ir::Kind::TextEdit => "text", ir::Kind::Table {..} => "table",
                     ir::Kind::Xy {..} => "xy", ir::Kind::MouseArea => "mouse-area",
                     ir::Kind::FileSelector {..} => "file-selector",
-                    
+
                     _ => continue,
                 };
                 let id = format!("part-0-epoch-{}-script-{source}-ir-{n}", part.generation);
@@ -209,7 +208,7 @@ impl Gate {
                 }
             }
             _ => {
-                self.pointer(at, true); self.pointer(at, false); self.settle();
+                self.pointer(at, true); self.pointer(at, false);
                 if kind == "menu" || kind == "native-click" {
                     // A menu choice is another real pointer target. Do not call callbacks directly.
                     let popup: Vec<_> = if kind == "native-click" {
@@ -238,6 +237,22 @@ fn changed(before: &Values, after: &Values) -> Vec<String> {
 }
 fn retained(keys: &[String], saved: &Values, reloaded: &Values) -> bool {
     !keys.is_empty() && keys.iter().all(|key| saved.get(key).is_some() && saved.get(key) == reloaded.get(key))
+}
+
+fn load_failure(status: &str) -> &'static str {
+    if !status.starts_with("Load failed:") { "none" }
+    else if status.contains("schema changed") { "script-schema-changed" }
+    else if status.contains("type changed") { "script-value-type-changed" }
+    else if status.contains("Script persistence: InvalidInput") { "script-restore-invalid-input" }
+    else if status.contains("Script persistence: Capacity") { "script-restore-capacity" }
+    else { "load-failed" }
+}
+
+#[test]
+fn load_failure_receipt_keeps_authored_error_text_private() {
+    assert_eq!(load_failure("Load failed: Saved script state schema changed"), "script-schema-changed");
+    assert_eq!(load_failure("Load failed: authored private text"), "load-failed");
+    assert_eq!(load_failure("loaded"), "none");
 }
 
 #[test]
@@ -401,3 +416,23 @@ fn original_idle_script_attribution() {
 }
 
 use sha2::Digest;
+
+#[test]
+#[ignore = "real Original host recall; private state stays in RAM"]
+fn original_host_state_roundtrip() {
+    let mut selection = Selection::default();
+    selection.parts = vec![Part { path: std::env::var("KONTRA_WIDGET_GATE_PATH").unwrap(), view: 1, ..Default::default() }];
+    let gate = Gate::load(selection);
+    let expected = gate.values();
+    assert!(!expected.is_empty(), "Original must expose engine state");
+    let mut saved = gate.params.selection.read().unwrap().clone();
+    gate.params.shared.capture_ui_controls(&mut saved);
+    let state = serde_json::to_vec(&saved.parts).unwrap();
+    saved.parts = serde_json::from_slice(&state).unwrap();
+    drop(gate);
+    let recalled = Gate::load(saved);
+    let failure = load_failure(&recalled.params.shared.view.lock().unwrap().parts[0].status);
+    assert_eq!(failure, "none", "host recall must load all Original state");
+    assert_eq!(expected.len(), recalled.values().len(), "host recall retains all parameter addresses");
+    assert!(expected == recalled.values(), "host recall preserves exact parameter values");
+}
