@@ -56,7 +56,11 @@ impl SilentNote {
 
     /// `None` if a region was accepted (the silence is not the selection's).
     pub fn from_record(r: &SelectionRecord) -> Option<Self> {
-        let mut note = Self { key: r.key, suppressed: r.suppressed, ..Self::default() };
+        let mut note = Self {
+            key: r.key,
+            suppressed: r.suppressed,
+            ..Self::default()
+        };
         for c in &r.candidates {
             match c.rejected {
                 Some(why) => note.counts[Self::slot(why)] += 1,
@@ -81,22 +85,44 @@ impl SilentNote {
         Self {
             key: w[0] as u8,
             suppressed: w[0] >> 8 & 1 == 1,
-            counts: [n(w[1], 0), n(w[1], 1), n(w[1], 2), n(w[1], 3), n(w[2], 0), n(w[2], 1)],
+            counts: [
+                n(w[1], 0),
+                n(w[1], 1),
+                n(w[1], 2),
+                n(w[1], 3),
+                n(w[2], 0),
+                n(w[2], 1),
+            ],
         }
     }
 
     /// One sentence, with the script faults seen, if any.
     pub fn message(&self, faults: &[ScriptFault]) -> String {
         let key = self.key;
-        let faults_text = || faults.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
+        let faults_text = || {
+            faults
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
         if self.suppressed {
             return if faults.is_empty() {
                 format!("key {key}: note suppressed by its script")
             } else {
-                format!("key {key}: note suppressed by script fault {}", faults_text())
+                format!(
+                    "key {key}: note suppressed by script fault {}",
+                    faults_text()
+                )
             };
         }
-        let (top, n) = self.counts.iter().enumerate().max_by_key(|(_, n)| **n).map(|(i, n)| (ORDER[i], *n)).unwrap_or((Rejection::Group, 0));
+        let (top, n) = self
+            .counts
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, n)| **n)
+            .map(|(i, n)| (ORDER[i], *n))
+            .unwrap_or((Rejection::Group, 0));
         if n == 0 {
             return format!("key {key}: no zone is mapped to this key");
         }
@@ -145,7 +171,11 @@ mod tests {
             candidates: rejected
                 .iter()
                 .enumerate()
-                .map(|(region, r)| RegionVerdict { region, group: None, rejected: *r })
+                .map(|(region, r)| RegionVerdict {
+                    region,
+                    group: None,
+                    rejected: *r,
+                })
                 .collect(),
         }
     }
@@ -153,19 +183,44 @@ mod tests {
     #[test]
     fn says_why_a_note_was_silent() {
         let group = Some(Rejection::Group);
-        let fault = ScriptFault { callback: "script 1 on note".into(), error: "InvalidInput".into() };
+        let fault = ScriptFault {
+            callback: "script 1 on note".into(),
+            error: "InvalidInput".into(),
+        };
         assert_eq!(
-            why_silent(60, &[record(60, false, &[group, group, Some(Rejection::Velocity)])], &[]).unwrap(),
+            why_silent(
+                60,
+                &[record(
+                    60,
+                    false,
+                    &[group, group, Some(Rejection::Velocity)]
+                )],
+                &[]
+            )
+            .unwrap(),
             "key 60: 2 zones rejected by group selection (script), 1 by velocity range"
         );
         assert_eq!(
             why_silent(60, &[record(60, true, &[])], &[fault]).unwrap(),
             "key 60: note suppressed by script fault InvalidInput in script 1 on note"
         );
-        assert_eq!(why_silent(61, &[record(61, false, &[])], &[]).unwrap(), "key 61: no zone is mapped to this key");
-        assert_eq!(why_silent(60, &[record(60, false, &[None, group])], &[]), None);
-        let note = SilentNote { key: 60, suppressed: false, counts: [1122, 3, 0, 0, 0, 7] };
+        assert_eq!(
+            why_silent(61, &[record(61, false, &[])], &[]).unwrap(),
+            "key 61: no zone is mapped to this key"
+        );
+        assert_eq!(
+            why_silent(60, &[record(60, false, &[None, group])], &[]),
+            None
+        );
+        let note = SilentNote {
+            key: 60,
+            suppressed: false,
+            counts: [1122, 3, 0, 0, 0, 7],
+        };
         assert_eq!(SilentNote::unpack(note.pack()), note);
-        assert_eq!(note.message(&[]), "key 60: 1122 zones rejected by group selection (script), 3 by velocity range, 7 by round-robin take");
+        assert_eq!(
+            note.message(&[]),
+            "key 60: 1122 zones rejected by group selection (script), 3 by velocity range, 7 by round-robin take"
+        );
     }
 }

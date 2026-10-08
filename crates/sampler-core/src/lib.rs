@@ -34,13 +34,15 @@ struct Siblings {
 
 mod control;
 pub use control::{
-    ControlCallback, ControlClient, ControlContext, ControlDefinition, ControlDomain, ControlId,
-    ControlOperation, ControlQueueError, ControlReply, ControlRequest, ControlValue, ControlWrite,
-    BUS_VOLUME_SLOT, RejectedControls, SlotKind, is_slot_control, slot_control,
+    BUS_VOLUME_SLOT, ControlCallback, ControlClient, ControlContext, ControlDefinition,
+    ControlDomain, ControlId, ControlOperation, ControlQueueError, ControlReply, ControlRequest,
+    ControlValue, ControlWrite, RejectedControls, SlotKind, is_slot_control, slot_control,
 };
 mod controller_event;
 mod performance;
-pub use performance::{AXIS_SWITCH, Keyswitch, previous_key_value, PerformanceId, SelectionPolicy, SelectionSnapshot};
+pub use performance::{
+    AXIS_SWITCH, Keyswitch, PerformanceId, SelectionPolicy, SelectionSnapshot, previous_key_value,
+};
 mod switching;
 pub use switching::{Driver, Selector, Switch, SwitchKeys, Switching};
 mod behavior;
@@ -65,8 +67,9 @@ pub use bus::{Bus, BusMix, BusSend, GroupFader};
 pub use resample::{ResampleQuality, read_radius};
 mod dsp;
 pub use dsp::{
-    Biquad, CompressorSettings, ControlRange, ConvolutionUpload, DaftSettings, Decimator, Delay, FilterKind, Impulse, MAX_IMPULSE_FRAMES, Parameter, Processor,
-    Rectifier, ReverbSettings, StateVariableFilter, SvfMode, VoiceChain,
+    Biquad, CompressorSettings, ControlRange, ConvolutionUpload, DaftSettings, Decimator, Delay,
+    FilterKind, Impulse, MAX_IMPULSE_FRAMES, Parameter, Processor, Rectifier, ReverbSettings,
+    StateVariableFilter, SvfMode, VoiceChain,
 };
 mod envelope;
 use envelope::EnvelopeState;
@@ -110,8 +113,8 @@ mod resample;
 use plans::{Generation, PlanQueues};
 pub use plans::{PlanControl, PlanError, PlanId, PlanTransfer, RejectedPlan};
 pub use prepare::{
-    AssetId, AXIS_BASE, ControllerCondition, MAX_AXES, PREVIOUS_KEY, Pcm, Prepared, Ranges, Region, Tuning, VelocityCurve, ZoneFades,
-    service_mipmaps,
+    AXIS_BASE, AssetId, ControllerCondition, MAX_AXES, PREVIOUS_KEY, Pcm, Prepared, Ranges, Region,
+    Tuning, VelocityCurve, ZoneFades, service_mipmaps,
 };
 mod integer;
 pub mod lower;
@@ -157,11 +160,12 @@ pub enum EventInfo {
     Key,
     /// The event's velocity, 0..=127.
     Velocity,
+    ReleaseVelocity,
     /// Nonzero while the event has a sounding voice, 0 once it ended.
     ZoneId,
     /// The event's MIDI channel (0-based).
     MidiChannel,
-    /// 1 when a script created the event (`play_note`), 0 for a host event.
+    /// Physical creator script slot, or -1 for a host event.
     Source,
 }
 
@@ -626,6 +630,7 @@ pub struct Runtime {
     note_events: Box<[note_event::NoteEvent]>,
     source_ids: Vec<(i32, NoteId)>,
     last_source_id: i32,
+    last_callback_id: i32,
     closed_notes: Vec<NoteId>,
     channels: Arena<Channel>,
     voices: Arena<Voice>,
@@ -801,6 +806,7 @@ impl Runtime {
             closed_notes: Vec::with_capacity(limits.notes),
             source_ids: Vec::with_capacity(limits.notes),
             last_source_id: 0,
+            last_callback_id: 0,
             channels: Arena::new(id, limits.channels),
             voices: Arena::new(id, limits.voices),
             voice_activity: vec![0; limits.voices.div_ceil(64)].into_boxed_slice(),
