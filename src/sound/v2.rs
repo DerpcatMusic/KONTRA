@@ -2903,6 +2903,10 @@ mod send_tests {
 #[path = "keyswitch_tests.rs"]
 mod keyswitch_tests;
 
+#[cfg(test)]
+#[path = "envelope_init_tests.rs"]
+mod envelope_init_tests;
+
 // Port from v1 0cb7a8a0:src/import.rs; v2 containers retain native metadata.
 /// Container identity only, for the off-thread snapshot catalog. Snapshot
 /// metadata names its base instrument, not the snapshot itself; the latter's
