@@ -43,12 +43,13 @@ pub struct PlanTransfer {
     script: super::script_params::EngineLayers,
 }
 
-pub(super) struct Generation {
-    pub request: u64,
+pub(super) struct Generation {    pub request: u64,
     pub prepared: Box<Prepared>,
     pub notes: usize,
     pub callbacks: usize,
     pub sequences: super::variation::SequenceState,
+    pub native_cycle: u64,
+    pub native_seed: u64,
     pub controls: super::control::ControlState,
     pub scripts: Box<[super::ops::ScriptBank]>,
     pub dsp: super::dsp::DspState,
@@ -77,6 +78,7 @@ pub struct PlanControl {
     voices: usize,
     expressions: usize,
     notes: usize,
+    note_params: usize,
     performances: usize,
     sequence: u64,
     /// Render lanes of the runtime (see `Runtime::set_threads`).
@@ -85,12 +87,33 @@ pub struct PlanControl {
     growth: Producer<super::grow::Growth>,
     grown: Consumer<super::grow::Growth>,
     pressure: super::grow::Pressure,
+    note_pressure: super::grow::NotePressure,
     /// Sizes of the plans the runtime may still hold, for growth.
     live: Vec<super::grow::Dims>,
     growing: bool,
 }
 
 impl PlanControl {
+    pub fn note_params_capacity(&self) -> usize { self.note_params }
+    pub fn note_params_bytes(&self) -> usize { std::mem::size_of::<crate::script_params::NoteParams>() }
+    pub fn note_pressure(&self) -> bool { self.note_pressure.load(std::sync::atomic::Ordering::Relaxed) >= self.note_params }
+
+    /// Control side allocates new pages; audio adopts pointers and returns the
+    /// emptied transfer for control-side destruction. Existing notes do not move.
+    pub fn grow_note_params(&mut self, notes: usize) -> Result<usize, PlanError> {
+        if self.growth.is_abandoned() { return Err(PlanError::Disconnected); }
+        while self.grown.pop().is_ok() { self.growing = false; }
+        let adopted = self.installed.load(std::sync::atomic::Ordering::Acquire) == self.sequence;
+        if self.growing || !adopted { return Err(PlanError::Capacity); }
+        let pages = crate::script_params::NoteParamsGrowth::build(self.note_params, notes, self.notes)
+            .map_err(|_| PlanError::Capacity)?;
+        let capacity = pages.capacity;
+        self.growth.push(super::grow::Growth::note_params(pages)).map_err(|_| PlanError::Capacity)?;
+        self.note_pressure.store(0, std::sync::atomic::Ordering::Relaxed);
+        self.growing = true;
+        self.note_params = capacity;
+        Ok(capacity)
+    }
     /// Voice slots the pool has, or is being grown to.
     pub fn voice_capacity(&self) -> usize {
         self.voices
@@ -131,7 +154,7 @@ impl PlanControl {
     }
 
     /// Rejection returns the exact owned plan to the caller; nothing is published.
-    pub fn submit(&mut self, prepared: Box<Prepared>) -> Result<u64, RejectedPlan> {
+    pub fn submit(&mut self, mut prepared: Box<Prepared>) -> Result<u64, RejectedPlan> {
         let reason = if self.pending.is_abandoned() {
             Some(PlanError::Disconnected)
         } else if prepared.rate != self.rate {
@@ -150,6 +173,7 @@ impl PlanControl {
         if let Some(reason) = reason {
             return Err(RejectedPlan { reason, prepared });
         }
+        if super::trace_report::configure(&mut prepared).is_err() { return Err(RejectedPlan {reason:PlanError::Capacity,prepared}); }
         let dsp = match super::dsp::DspState::new(
             &prepared,
             self.voices,
@@ -211,7 +235,7 @@ impl PlanControl {
         let script = super::script_params::EngineLayers::new(&prepared);
         let sequences = super::variation::SequenceState::new(&prepared);
         let controls = super::control::ControlState::new(&prepared);
-        let scripts = prepared.script_initial.clone();
+        let scripts = prepared.script_initial.iter().map(super::ops::ScriptInitial::bank).collect();
         let dims = super::grow::Dims::of(request, &prepared);
         match self.pending.push(PlanTransfer {
             request,
@@ -254,10 +278,18 @@ impl Runtime {
         generations: usize,
         queued: usize,
     ) -> Result<(Self, PlanControl), Error> {
+        Self::with_plan_updates_and_note_capacity(plan, limits, generations, queued, limits.notes)
+    }
+
+    /// Prepare a smaller initial note-parameter pool, growable from PlanControl.
+    /// Other Limits::notes storage retains the full ceiling.
+    pub fn with_plan_updates_and_note_capacity(
+        plan: Prepared, limits: Limits, generations: usize, queued: usize, initial_notes: usize,
+    ) -> Result<(Self, PlanControl), Error> {
         if generations < 2 || queued == 0 {
             return Err(Error::InvalidInput);
         }
-        let mut runtime = Self::new(plan, limits)?;
+        let mut runtime = Self::new_with_note_params(plan, limits, initial_notes)?;
         // Move the initial generation into the larger control-side arena. No live
         // notes exist yet, and the emptied old arena owns no prepared assets.
         let mut slots = Arena::new(runtime.plans.runtime, generations);
@@ -290,6 +322,7 @@ impl Runtime {
             voices: limits.voices,
             expressions: limits.expressions,
             notes: limits.notes,
+            note_params: runtime.note_params.capacity(),
             performances: limits.performances,
             sequence: 0,
             lanes: runtime.lanes.clone(),
@@ -297,6 +330,7 @@ impl Runtime {
             growth,
             grown,
             pressure: runtime.voice_pressure.clone(),
+            note_pressure: runtime.note_pressure.clone(),
             live,
             growing: false,
         };
@@ -368,7 +402,8 @@ impl Runtime {
                     self.plans.restore(
                         id,
                         Generation {
-                            request: plan.request,
+                            native_cycle: 0,
+                            native_seed: 0,                            request: plan.request,
                             prepared: plan.prepared,
                             sequences: plan.sequences,
                             controls: plan.controls,
@@ -387,6 +422,7 @@ impl Runtime {
                 }
             }
         }
+        if self.signal_trace { self.signal_trace = self.plans.slots.iter().any(|s| s.value.as_ref().is_some_and(|g| g.prepared.signal_trace.is_some())); }
         count
     }
 
@@ -410,11 +446,13 @@ impl Runtime {
             return Ok(None);
         };
         let request = plan.request;
+        self.signal_trace |= plan.prepared.signal_trace.is_some();
         // The single audio writer preflighted a non-quarantined slot before popping.
         self.active_plan = PlanId(
             self.plans
                 .insert(Generation {
-                    request,
+                            native_cycle: 0,
+                            native_seed: 0,                    request,
                     prepared: plan.prepared,
                     sequences: plan.sequences,
                     controls: plan.controls,
@@ -431,6 +469,7 @@ impl Runtime {
                 .expect("reserved plan generation slot"),
         );
         self.collect_retired_plans();
+        self.start_plan_programs();
         if let Some(queues) = &self.plan_queues {
             queues
                 .installed

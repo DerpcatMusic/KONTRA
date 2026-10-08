@@ -34,6 +34,8 @@ pub enum StreamError {
     Disconnected,
     SequenceExhausted,
     WrongWorker,
+    Timeout,
+    DecodeFailed(DecodeFailure),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PageUpdate {
@@ -100,6 +102,8 @@ struct Entry {
     request: Request,
     used: u64,
     state: State,
+    retries: u8,
+    retry_after: Option<std::time::Instant>,
 }
 impl Entry {
     fn status(&self) -> PageStatus {
@@ -355,11 +359,40 @@ impl StreamCache {
             request,
             used: self.epoch,
             state: State::Pending,
+            retries: 0,
+            retry_after: None,
         });
         let index = self.index.partition_point(|(found, _)| *found < key);
         self.index.insert(index, (key, slot));
         Ok(PageStatus::Pending)
     }
+    /// Client retry policy: transient unavailability gets three retries with
+    /// exponential wall-clock backoff. Invalid sample data never retries. Reuse
+    /// the protected slot and its generation; no invalidation or audio allocation.
+    pub fn request_retry(&mut self, asset: &Pcm, page: usize, deadline: u64) -> Result<PageStatus, StreamError> {
+        let key = PageKey { asset: asset.asset_id(), index: page };
+        if let Some(slot) = self.find(key) {
+            let entry = self.entries[slot].as_mut().unwrap();
+            if let State::Failed(error) = entry.state {
+                if error != DecodeFailure::Unavailable || entry.retries == 3 {
+                    return Err(StreamError::DecodeFailed(error));
+                }
+                if entry.retry_after.is_some_and(|at| std::time::Instant::now() >= at) {
+                    if self.requests.is_abandoned() { return Err(StreamError::Disconnected); }
+                    if self.requests.is_full() { return Err(StreamError::Capacity); }
+                    self.serial = self.serial.checked_add(1).ok_or(StreamError::SequenceExhausted)?;
+                    entry.request.serial = self.serial;
+                    entry.request.deadline = deadline;
+                    self.requests.push(entry.request).expect("reserved request capacity");
+                    entry.retries += 1;
+                    entry.state = State::Pending;
+                    self.pushed = true;
+                }
+            }
+        }
+        self.request(asset, page, deadline)
+    }
+
     /// Explicitly invalidate one page, including a failed request before retry.
     /// An in-flight result becomes stale; ready storage returns to the worker.
     pub fn invalidate(&mut self, key: PageKey) -> Result<bool, StreamError> {
@@ -416,6 +449,7 @@ impl StreamCache {
                     .push(samples)
                     .expect("reserved return capacity");
                 entry.state = State::Failed(error);
+                entry.retry_after = Some(std::time::Instant::now() + std::time::Duration::from_millis(10 << entry.retries));
                 Some(PageUpdate::Failed(request.key, error))
             }
         }
@@ -566,15 +600,34 @@ impl crate::Runtime {
 
     /// Poll a bounded batch, protect every live source's horizon, then request its
     /// pages with first-use deadlines. No voice/clock advancement or worker waiting.
-    /// True means the complete snapshot horizon is resident; false includes pending
-    /// or failed pages (inspect page status and explicitly invalidate failures).
-    /// A queue/cache error leaves accepted requests intact and reports incomplete
-    /// service. Requery after events. Cold onsets require control-side preloading.
+    /// True means the complete snapshot horizon is resident. Transient decode
+    /// failures retry with bounded backoff; corruption and exhausted retries
+    /// return an error. Accepted requests survive errors. Requery after events.
     /// Start sources whose first frames are not resident (say, purged start
     /// ranges) silent, fading in once their pages arrive, instead of refusing
     /// them `NotReady`. They still mark the asset cold for reload.
     pub fn set_cold_starts(&mut self, on: bool) {
         self.cold_starts = on;
+    }
+
+    /// Offline waits occur only at render boundaries, after due callbacks and
+    /// delayed starts. Realtime service never sleeps or waits for storage.
+    pub fn set_offline(&mut self, offline: bool) { self.offline = offline; }
+
+    pub fn take_stream_fault(&mut self) -> Option<StreamError> { self.stream_fault.take() }
+
+    pub fn wait_streaming(&mut self, frames: u32, timeout: std::time::Duration) -> Result<(), StreamError> {
+        if self.stream_cache.is_none() { return Ok(()); }
+        let until = std::time::Instant::now() + timeout;
+        loop {
+            match self.service_streaming(frames) {
+                Ok(true) => return Ok(()),
+                Ok(false) => {},
+                Err(error) => return Err(error),
+            }
+            if std::time::Instant::now() >= until { return Err(StreamError::Timeout); }
+            std::thread::sleep(std::time::Duration::from_micros(100));
+        }
     }
 
     pub fn service_streaming(&mut self, frames: u32) -> Result<bool, StreamError> {
@@ -585,6 +638,25 @@ impl crate::Runtime {
         // Temporarily detach only the audio-owned cache to borrow the immutable
         // voice/plan snapshot. The visitor cannot execute callbacks or mutate it.
         let result = self.service_cache(&mut cache, frames);
+        if matches!(result, Err(StreamError::DecodeFailed(_) | StreamError::Disconnected)) {
+            // A terminal source fault cannot leave a never-started onset held.
+            for word in 0..self.voice_activity.len() {
+                let mut bits = self.voice_activity[word];
+                while bits != 0 {
+                    let index = word * 64 + bits.trailing_zeros() as usize;
+                    bits &= bits - 1;
+                    let Some(voice) = self.voices.slots[index].value else { continue; };
+                    if !voice.cursor.holding_onset() { continue; }
+                    let note = self.notes.get(self.families.get(voice.family.0).unwrap().note.0).unwrap();
+                    let asset = self.plans.get(note.plan.0).unwrap().prepared.pcm[voice.sample].asset_id();
+                    let failed = cache.requests.is_abandoned() || cache.entries.iter().flatten().any(|entry| {
+                        entry.request.key.asset == asset && matches!(entry.state,
+                            State::Failed(error) if error != DecodeFailure::Unavailable || entry.retries == 3)
+                    });
+                    if failed { self.end_voice(crate::VoiceId(self.voices.id(index))); }
+                }
+            }
+        }
         cache.wake();
         self.stream_cache = Some(cache);
         result
@@ -598,6 +670,7 @@ impl crate::Runtime {
         }
         cache.begin_epoch()?;
         let mut ready = true;
+        let mut first_error = None;
         // Protect all voices before any eviction: admission order must never evict
         // a page that a later voice already needs in this same snapshot horizon.
         for requesting in [false, true] {
@@ -647,7 +720,7 @@ impl crate::Runtime {
                                     .expect("validated source demand");
                                 continue;
                             }
-                            match cache.request(asset, page, deadline) {
+                            match cache.request_retry(asset, page, deadline) {
                                 Ok(status) => ready &= status == PageStatus::Ready,
                                 Err(error) => {
                                     failure = Some(error);
@@ -709,11 +782,12 @@ impl crate::Runtime {
                     debug_assert!(complete || failure.is_some());
                 }
                 if let Some(error) = failure {
-                    return Err(error);
+                    first_error.get_or_insert(error);
+                    ready = false;
                 }
             }
         }
-        Ok(ready)
+        first_error.map_or(Ok(ready), Err)
     }
 
     /// Whether a source can start: `Ok(true)` for a cold start (its first

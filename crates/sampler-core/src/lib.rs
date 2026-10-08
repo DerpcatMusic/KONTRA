@@ -32,15 +32,25 @@ struct Siblings {
     next: Option<Index>,
 }
 
+mod automation;
+pub use automation::{AutomationBinding, AutomationSource};
+mod widget;
+pub use widget::{
+    WIDGET_EDIT_CAPACITY, WIDGET_DROP_CAPACITY, WidgetDefinition, WidgetDropKind, WidgetDropStorage,
+    WidgetEdit, WidgetEventType, WidgetInteraction, WidgetStorage, WidgetValue,
+};
 mod control;
 pub use control::{
-    ControlCallback, ControlClient, ControlContext, ControlDefinition, ControlDomain, ControlId,
-    ControlOperation, ControlQueueError, ControlReply, ControlRequest, ControlValue, ControlWrite,
-    BUS_VOLUME_SLOT, RejectedControls, SlotKind, is_slot_control, slot_control,
+    BUS_VOLUME_SLOT, ControlCallback, ControlClient, ControlContext, ControlDefinition,
+    ControlDomain, ControlId, ControlOperation, ControlQueueError, ControlReply, ControlRequest,
+    ControlValue, ControlWrite, RejectedControls, ScriptStateAddress, ScriptStateBuffer,
+    ScriptStateCallback, ScriptStateEntry, ScriptStateValue, SlotKind, is_slot_control, slot_control,
 };
 mod controller_event;
 mod performance;
-pub use performance::{AXIS_SWITCH, Keyswitch, previous_key_value, PerformanceId, SelectionPolicy, SelectionSnapshot};
+pub use performance::{
+    AXIS_SWITCH, Keyswitch, PerformanceId, SelectionPolicy, SelectionSnapshot, previous_key_value,
+};
 mod switching;
 pub use switching::{Driver, Selector, Switch, SwitchKeys, Switching};
 mod behavior;
@@ -59,22 +69,30 @@ pub use stream::{
     StreamCache, StreamError, StreamWorker,
 };
 mod source;
-pub use source::{Direction, Loop, LoopMode, LoopShape, Playback, SampleDemand};
+pub use source::{Direction, Loop, LoopMode, LoopShape, LoopSlot, Playback, SampleDemand};
 mod bus;
 pub use bus::{Bus, BusMix, BusSend, GroupFader};
 pub use resample::{ResampleQuality, read_radius};
 mod dsp;
 pub use dsp::{
-    Biquad, CompressorSettings, ControlRange, ConvolutionUpload, DaftSettings, Decimator, Delay, FilterKind, Impulse, MAX_IMPULSE_FRAMES, Parameter, Processor,
-    Rectifier, ReverbSettings, StateVariableFilter, SvfMode, VoiceChain,
+    Biquad, LoFiSettings, CompressorSettings, ControlRange, ConvolutionUpload, DaftSettings, Decimator, Delay,
+    FilterKind, Impulse, LadderSettings, MAX_IMPULSE_FRAMES, Parameter, Processor, Rectifier, ReverbSettings,
+    StateVariableFilter, StereoSettings, SvfMode, VoiceChain, VoiceSendPosition, VoiceSendTap,
 };
 mod envelope;
 use envelope::EnvelopeState;
 pub use envelope::{Envelope, EnvelopeCurve};
+mod engine_parameter_names;
+mod engine_parameters;
 mod gate;
 mod modulation;
 mod plan_programs;
 mod script_params;
+pub use engine_parameter_names::ENGINE_PARAMETER_NAMES;
+pub use engine_parameters::{
+    EngineLookup, EngineMeterAddress, EngineParameterAddress, EngineParameterBinding,
+    EngineParameterLaw, EngineParameterOutcome, EngineParameterOffset, engine_parameter_id, engine_parameter_name, engine_parameter_control,
+};
 mod steal;
 mod voice_mod;
 pub use plan_programs::{PlanProgram, SignalProgram};
@@ -90,6 +108,7 @@ pub use modulation::{Destination, ExpressionSource, Modulation, Route};
 mod pitch;
 pub use pitch::NotePitch;
 mod groups;
+mod native_start;
 mod note_event;
 pub use note_event::NoteProperties;
 mod packed;
@@ -110,8 +129,8 @@ mod resample;
 use plans::{Generation, PlanQueues};
 pub use plans::{PlanControl, PlanError, PlanId, PlanTransfer, RejectedPlan};
 pub use prepare::{
-    AssetId, AXIS_BASE, ControllerCondition, MAX_AXES, PREVIOUS_KEY, Pcm, Prepared, Ranges, Region, Tuning, VelocityCurve, ZoneFades,
-    service_mipmaps,
+    AXIS_BASE, AssetId, ControllerCondition, MAX_AXES, PREVIOUS_KEY, Pcm, Prepared, Ranges, Region,
+    Tuning, VelocityCurve, ZoneFades, service_mipmaps,
 };
 mod integer;
 pub mod lower;
@@ -133,6 +152,9 @@ use ownership::{ExpressionOwner, Family};
 pub use schedule::Event;
 use schedule::{Action, Scheduled};
 pub use variation::{Sequence, SequenceScope, Take, TakePolicy};
+
+pub mod trace;
+pub mod trace_report;
 
 pub type Frame = [f32; 2];
 
@@ -157,11 +179,14 @@ pub enum EventInfo {
     Key,
     /// The event's velocity, 0..=127.
     Velocity,
+    ReleaseVelocity,
+    /// 1 for a live note event, 0 for an unknown or retired event.
+    Status,
     /// Nonzero while the event has a sounding voice, 0 once it ended.
     ZoneId,
     /// The event's MIDI channel (0-based).
     MidiChannel,
-    /// 1 when a script created the event (`play_note`), 0 for a host event.
+    /// Physical creator script slot, or -1 for a host event.
     Source,
 }
 
@@ -191,6 +216,29 @@ pub struct RegionVerdict {
     pub region: usize,
     pub group: Option<u32>,
     pub rejected: Option<Rejection>,
+    /// Actual admitted source, after script offsets and start modulation.
+    pub started: Option<SelectedSource>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelectedSource {
+    /// One-based original zone identity (the KSP zone ID).
+    pub zone: u32,
+    pub sample: usize,
+    pub frame: u64,
+    pub direction: Direction,
+    pub loops: [Option<SelectedLoop>; 8],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelectedLoop {
+    pub start: usize,
+    pub end: usize,
+    pub until_release: bool,
+    pub alternating: bool,
+    pub crossfade: usize,
+    pub count: u32,
+    pub tuning_bits: u64,
 }
 
 /// One selection's diagnostic: every region mapped to the key with its verdict.
@@ -198,6 +246,8 @@ pub struct RegionVerdict {
 /// script-suppressed attack has `suppressed` set and no candidates.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SelectionRecord {
+    pub event: u64,
+    pub parent_event: Option<u64>,
     pub at: u64,
     pub key: u8,
     pub velocity: f64,
@@ -411,6 +461,10 @@ struct Note {
     children: usize,
 }
 
+/// Fixed editor probe of actual occupied native voices (v1 playheads).
+#[derive(Clone, Copy, Debug)]
+pub struct VoiceTap {pub group:u32,pub key:u8,pub velocity:u8,pub phase:u8,pub level:f32}
+
 #[derive(Clone, Copy, Debug)]
 struct Voice {
     family: FamilyId,
@@ -418,12 +472,17 @@ struct Voice {
     sample: usize,
     cursor: source::Cursor,
     base_step: f64,
+    /// v1 Voice::pitch: cache the exact modulation exponent and its ratio.
+    mod_pitch: (f64, f64),
     chain: Option<usize>,
     bus: Option<usize>,
     tail_remaining: Option<u32>,
     dsp_fade: Option<(u32, f32)>,
+    script_fade: Option<script_params::Fade>,
     envelope: EnvelopeState,
     gain: f32,
+    /// v1 audible_voices: applied channel gains at the last render chunk.
+    last_gains: [f32; 2],
     started: bool,
     /// Admission order, for oldest-first stealing.
     born: u64,
@@ -431,17 +490,22 @@ struct Voice {
     stolen: bool,
     /// The region's group, for script group layers.
     group: Option<u32>,
+    source_zone: u32,
     /// Frames a releasing voice's gain bound has stayed under `render::INAUDIBLE`.
     quiet: u32,
 }
 
 #[derive(Clone, Copy, Debug)]
 struct Slot<T> {
+    previous: Option<usize>,
+    next: Option<usize>,
     generation: u64,
     value: Option<T>,
 }
 
 struct Arena<T> {
+    first: Option<usize>,
+    last: Option<usize>,
     runtime: u64,
     slots: Box<[Slot<T>]>,
     occupied: usize,
@@ -462,11 +526,15 @@ impl<T> Arena<T> {
         }
         Self {
             runtime,
+            first: None,
+            last: None,
             occupied: 0,
             available: capacity,
             reserved: 0,
             free,
             slots: std::iter::repeat_with(|| Slot {
+                previous: None,
+                next: None,
                 generation: 0,
                 value: None,
             })
@@ -482,6 +550,8 @@ impl<T> Arena<T> {
             *free.last_mut().unwrap() = (1u64 << (capacity % 64)) - 1;
         }
         let slots = std::iter::repeat_with(|| Slot {
+            previous: None,
+            next: None,
             generation: 0,
             value: None,
         })
@@ -513,6 +583,10 @@ impl<T> Arena<T> {
     }
 
     fn insert(&mut self, value: T) -> Result<Handle, Error> {
+        self.insert_below(value, self.slots.len())
+    }
+
+    fn insert_below(&mut self, value: T, capacity: usize) -> Result<Handle, Error> {
         if self.available() == 0 {
             return Err(Error::Capacity);
         }
@@ -521,21 +595,27 @@ impl<T> Arena<T> {
         let (word, bits) = self
             .free
             .iter_mut()
+            .take(capacity.div_ceil(64))
             .enumerate()
-            .find(|(_, bits)| **bits != 0)
+            .find(|(word, bits)| {
+                let mask = if (*word + 1) * 64 > capacity { (1u64 << (capacity % 64)) - 1 } else { u64::MAX };
+                **bits & mask != 0
+            })
             .ok_or(Error::Capacity)?;
         let index = word * 64 + bits.trailing_zeros() as usize;
         *bits &= *bits - 1;
         let slot = &mut self.slots[index];
         debug_assert!(slot.value.is_none() && slot.generation < u64::MAX);
         slot.generation += 1; // Exhausted generations are quarantined, never wrapped.
+        let generation = slot.generation;
         slot.value = Some(value);
+        self.link(index);
         self.occupied += 1;
         self.available -= 1;
         Ok(Handle {
             runtime: self.runtime,
             index,
-            generation: slot.generation,
+            generation,
         })
     }
 
@@ -561,6 +641,7 @@ impl<T> Arena<T> {
 
     fn take(&mut self, id: Handle) -> Option<T> {
         self.get(id)?;
+        self.unlink(id.index);
         let slot = &mut self.slots[id.index];
         let value = slot.value.take();
         self.occupied -= 1;
@@ -582,6 +663,34 @@ impl<T> Arena<T> {
         self.occupied += 1;
         self.available -= usize::from(slot.generation < u64::MAX);
         self.free[id.index / 64] &= !(1 << (id.index % 64));
+        self.link(id.index);
+    }
+
+    fn link(&mut self, index: usize) {
+        self.slots[index].previous = self.last;
+        self.slots[index].next = None;
+        if let Some(last) = self.last {
+            self.slots[last].next = Some(index);
+        } else {
+            self.first = Some(index);
+        }
+        self.last = Some(index);
+    }
+
+    fn unlink(&mut self, index: usize) {
+        let (previous, next) = (self.slots[index].previous, self.slots[index].next);
+        if let Some(previous) = previous {
+            self.slots[previous].next = next;
+        } else {
+            self.first = next;
+        }
+        if let Some(next) = next {
+            self.slots[next].previous = previous;
+        } else {
+            self.last = previous;
+        }
+        // Keep the successor until slot reuse: retirement can also unlink a
+        // parent that a live traversal has yet to visit.
     }
 
     fn id(&self, index: usize) -> Handle {
@@ -626,6 +735,7 @@ pub struct Runtime {
     note_events: Box<[note_event::NoteEvent]>,
     source_ids: Vec<(i32, NoteId)>,
     last_source_id: i32,
+    last_callback_id: i32,
     closed_notes: Vec<NoteId>,
     channels: Arena<Channel>,
     voices: Arena<Voice>,
@@ -642,6 +752,8 @@ pub struct Runtime {
     kernel: resample::Kernel,
     stream_cache: Option<StreamCache>,
     stream_underruns: u64,
+    offline: bool,
+    stream_fault: Option<StreamError>,
     voice_drops: u64,
     refused_starts: u64,
     /// Voice-pool growths adopted, and refused (see `grow`).
@@ -650,11 +762,13 @@ pub struct Runtime {
     growth: Option<grow::GrowthQueues>,
     /// Set on the audio side when the pool runs three quarters full.
     voice_pressure: grow::Pressure,
+    note_pressure: grow::NotePressure,
     steal_releases: bool,
     cold_starts: bool,
     cold_started: u64,
     /// Last and peak `render` nanoseconds, and the last call's frames.
     render_time: [u64; 3],
+    signal_trace: bool,
     families: Arena<Family>,
     decisions: Arena<variation::Decision>,
     expressions: Arena<ExpressionOwner>,
@@ -682,7 +796,7 @@ pub struct Runtime {
     behavior_locals: Box<[i64]>,
     note_stride: usize,
     note_values: Box<[i64]>,
-    note_params: Box<[script_params::NoteParams]>,
+    note_params: script_params::NoteParamsPool,
     /// Set once a script writes a voice parameter; voices then render in chunks.
     // ponytail: sticky for the runtime's life; count live layers if chunking costs show up.
     script_params: bool,
@@ -728,6 +842,12 @@ impl Runtime {
     }
 
     pub fn new(plan: Prepared, limits: Limits) -> Result<Self, Error> {
+        Self::new_with_note_params(plan, limits, limits.notes)
+    }
+
+    fn new_with_note_params(mut plan: Prepared, limits: Limits, initial_notes: usize) -> Result<Self, Error> {
+        trace_report::configure(&mut plan)?;
+        if initial_notes == 0 || initial_notes > limits.notes { return Err(Error::InvalidInput); }
         if limits.notes == 0 || limits.performances == 0 {
             return Err(Error::InvalidInput);
         }
@@ -776,10 +896,12 @@ impl Runtime {
         let rate = plan.rate;
         let mut plans = Arena::new(id, 1);
         let active_plan = PlanId(plans.insert(Generation {
+            native_cycle: 0,
+            native_seed: 0,
             request: 0,
             sequences: variation::SequenceState::new(&plan),
             controls: control::ControlState::new(&plan),
-            scripts: plan.script_initial.clone(),
+            scripts: plan.script_initial.iter().map(ops::ScriptInitial::bank).collect(),
             dsp: dsp::DspState::new(&plan, limits.voices, limits.expressions, 1)?,
             groups: groups::GroupState::new(plan.group_count, limits.notes, plan.stages.len())?,
             controllers: controller_event::ControllerState::new(&plan, limits.performances)?,
@@ -790,7 +912,9 @@ impl Runtime {
             notes: 0,
             callbacks: 0,
         })?);
-        Ok(Self {
+        let signal_trace = plans.get(active_plan.0).unwrap().prepared.signal_trace.is_some();
+        let mut runtime = Self {
+            signal_trace,
             rate,
             tempo: 120.0,
             plans,
@@ -801,6 +925,7 @@ impl Runtime {
             closed_notes: Vec::with_capacity(limits.notes),
             source_ids: Vec::with_capacity(limits.notes),
             last_source_id: 0,
+            last_callback_id: 0,
             channels: Arena::new(id, limits.channels),
             voices: Arena::new(id, limits.voices),
             voice_activity: vec![0; limits.voices.div_ceil(64)].into_boxed_slice(),
@@ -813,12 +938,15 @@ impl Runtime {
             kernel: resample::Kernel::new(ResampleQuality::default()),
             stream_cache: None,
             stream_underruns: 0,
+            offline: false,
+            stream_fault: None,
             voice_drops: 0,
             refused_starts: 0,
             voice_growths: 0,
             growth_failures: 0,
             growth: None,
             voice_pressure: Arc::default(),
+            note_pressure: Arc::default(),
             steal_releases: false,
             cold_starts: false,
             cold_started: 0,
@@ -851,8 +979,7 @@ impl Runtime {
             // Keep cold payload allocation after the frequently traversed pools.
             note_stride,
             note_values: vec![0; note_cells].into_boxed_slice(),
-            note_params: vec![script_params::NoteParams::default(); limits.notes]
-                .into_boxed_slice(),
+            note_params: script_params::NoteParamsPool::new(limits.notes, initial_notes),
             script_params: false,
             input_keys: 0,
             deferred: Vec::with_capacity(limits.notes),
@@ -876,7 +1003,11 @@ impl Runtime {
                 }
                 state
             },
-        })
+        };
+        // Authored init effects must reach the DSP before the first input or
+        // getter, including hosts that send MIDI before their first render.
+        runtime.start_plan_programs();
+        Ok(runtime)
     }
 
     pub fn sample_rate(&self) -> u32 {
@@ -899,6 +1030,36 @@ impl Runtime {
     pub fn voice_count(&self) -> usize {
         self.voices.count()
     }
+    /// Port from v1 0cb7a8a0:src/engine/mod.rs audible_voices predicate.
+    /// Walk occupied voices, including script-muted layers; never scan capacity.
+    pub fn audible_voice_count(&self) -> usize {
+        let mut audible = 0;
+        let mut next = self.voices.first;
+        while let Some(i) = next {
+            let slot = &self.voices.slots[i];
+            let voice = slot.value.as_ref().unwrap();
+            if voice.last_gains != [0.0; 2] {
+                let family = self.families.get(voice.family.0).unwrap();
+                let note = self.notes.get(family.note.0).unwrap();
+                let plan = self.plans.get(note.plan.0).unwrap();
+                audible += usize::from(!plan.script.fader_muted(voice.group));
+            }
+            next = slot.next;
+        }
+        audible
+    }
+
+    pub fn voice_taps(&self) -> [Option<VoiceTap>;16] {
+        let mut taps=[None;16]; let mut next=self.voices.first;
+        for to in &mut taps {
+            let Some(i)=next else {break;};let slot=&self.voices.slots[i];let v=slot.value.as_ref().unwrap();
+            let family=self.families.get(v.family.0).unwrap();let note=self.notes.get(family.note.0).unwrap();
+            *to=Some(VoiceTap {group:v.group.unwrap_or(u32::MAX),key:note.pitch.key(),velocity:(note.velocity*127.).round() as u8,phase:v.envelope.editor_phase(),level:v.envelope.current()});
+            next=slot.next;
+        }
+        taps
+    }
+
     pub fn pending_commands(&self) -> usize {
         self.commands.len()
     }
@@ -1161,7 +1322,8 @@ impl Runtime {
         if let Some(input) = input {
             self.input_keys |= 1 << (input.key & 127);
         }
-        let id = match self.notes.insert(Note {
+        self.note_note_pressure();
+        let id = match self.notes.insert_below(Note {
             input,
             input_down: input.is_some(),
             address,
@@ -1192,7 +1354,7 @@ impl Runtime {
             expression,
             families: 0,
             children: 0,
-        }) {
+        }, self.note_params.capacity()) {
             Ok(id) => id,
             Err(error) => {
                 self.drop_expression(expression);
@@ -1203,6 +1365,13 @@ impl Runtime {
             let begin = id.index * self.note_stride;
             let cells = self.plans.get(plan.0).unwrap().prepared.note_cells;
             self.note_values[begin..begin + cells].fill(0);
+        }
+        if !self.plans.get(plan.0).unwrap().prepared.native_start.is_empty() {
+            let generation = self.plans.get_mut(plan.0).unwrap();
+            let state = self.performance_state.edit(performance);
+            state.native_tick = generation.native_cycle;
+            state.native_seed = generation.native_seed;
+            generation.native_cycle = generation.native_cycle.wrapping_add(1);
         }
         self.selections[id.index] = performance::NoteSelection {
             performance,
@@ -1243,6 +1412,20 @@ impl Runtime {
     pub fn note(&self, id: NoteId) -> Result<(u8, f64, bool), Error> {
         let n = self.notes.get(id.0).ok_or(Error::StaleHandle)?;
         Ok((n.pitch.key(), n.velocity, n.gate()))
+    }
+
+    /// Merge live engine gates, including generated notes; release tails are unpressed.
+    pub fn pressed_keys(&self, keys: &mut [u8; 128]) {
+        let mut next = self.notes.first;
+        while let Some(index) = next {
+            let slot = &self.notes.slots[index];
+            next = slot.next;
+            let note = slot.value.as_ref().unwrap();
+            if note.gate() {
+                let key = &mut keys[usize::from(note.pitch.key())];
+                *key = (*key).max((note.velocity * 127.).round().clamp(1., 127.) as u8);
+            }
+        }
     }
 
     pub fn note_pitch(&self, id: NoteId) -> Result<NotePitch, Error> {
@@ -1413,18 +1596,22 @@ impl Runtime {
                 next: next_sibling,
             },
             sample,
-            cursor: if cold { cursor.cold() } else { cursor },
+            cursor: if cold && !self.offline { cursor.cold() } else { cursor },
             base_step,
+            mod_pitch: (f64::NAN, 1.0),
             chain: None,
             bus: None,
             tail_remaining: None,
             dsp_fade: None,
+            script_fade: None,
             envelope: EnvelopeState::new(envelope),
             gain,
+            last_gains: [0.0; 2],
             started: at == self.now,
             born: self.voice_order,
             stolen: false,
             group: None,
+            source_zone: 0,
             quiet: 0,
         })?);
         self.cold_started += u64::from(cold);
@@ -1459,6 +1646,15 @@ impl Runtime {
     pub fn release(&mut self, id: NoteId) -> Result<(), Error> {
         self.apply_due();
         self.release_now(id, ReleaseCause::Explicit)
+    }
+
+    fn discard_note(&mut self, id: NoteId) -> Result<(), Error> {
+        let note = self.notes.get_mut(id.0).ok_or(Error::StaleHandle)?;
+        note.attack = AttackStatus::Suppressed;
+        note.sostenuto = false;
+        self.close_gate(id, ReleaseCause::Discarded);
+        self.cleanup_closed_notes();
+        Ok(())
     }
 
     fn release_now(&mut self, id: NoteId, cause: ReleaseCause) -> Result<(), Error> {
@@ -1547,6 +1743,16 @@ impl Runtime {
         while let Some(note) = self.closed_notes.pop() {
             let n = self.notes.get(note.0).unwrap();
             let cause = self.release_times[note.0.index].cleanup.take().unwrap();
+            if cause == ReleaseCause::Discarded {
+                for slot in &mut self.behaviors.slots {
+                    if let Some(callback) = &mut slot.value
+                        && callback.owner == BehaviorOwner::Note(note)
+                        && callback.outcome.is_none()
+                    {
+                        callback.outcome = Some(Outcome::Cancelled);
+                    }
+                }
+            }
             let child_cause = if cause.musical() {
                 ReleaseCause::Parent
             } else {
@@ -1568,7 +1774,9 @@ impl Runtime {
             while let Some(index) = family {
                 let state = self.families.at_mut(index);
                 family = state.siblings.next;
-                if state.trigger == Trigger::Attack || !cause.musical() {
+                if cause == ReleaseCause::Discarded {
+                    self.choke_family_now(FamilyId(self.families.id(index.get())), 0);
+                } else if state.trigger == Trigger::Attack || !cause.musical() {
                     self.release_family_now(FamilyId(self.families.id(index.get())));
                 }
             }

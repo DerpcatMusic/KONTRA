@@ -52,8 +52,13 @@ pub struct Interface {
     pub icon: Option<AssetRef>,
     /// The source hides the instrument icon (KSP `$INST_ICON_ID` `HIDE`).
     pub icon_hidden: bool,
+    /// A legacy authored NativeUI entry point, consumed by the editor frontend.
+    pub native_ui: Option<NativeUi>,
     pub unsupported: Vec<Unsupported>,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeUi { pub entry: String }
 
 /// Which frontend produced the interface.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -89,6 +94,10 @@ pub struct Background {
     pub image: Option<AssetRef>,
     /// Vertical source offset into the wallpaper, in pixels (KSP skin offset).
     pub offset_y: i32,
+    /// Source/profile header rows, independent of the script's skin offset.
+    pub origin_y: u32,
+    /// The selected wallpaper strip frame.
+    pub frame: u32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -107,7 +116,9 @@ pub struct Widget {
     /// The source did not size the widget; the renderer uses its default
     /// size for the kind and source.
     pub auto_size: bool,
-    /// Stacking among siblings; higher draws later.
+    /// Default width/height independently. Explicit zero stays zero.
+    pub default_axes: [bool; 2],
+    /// Higher draws later: global layers for KSP, sibling layers for Lua.
     pub z: i32,
     /// Hidden as a whole (`HIDE_WHOLE_CONTROL`, Lua `visible = false`).
     pub hidden: bool,
@@ -122,6 +133,7 @@ pub struct Widget {
     /// Vertical offset of the text inside the widget, in pixels (KSP
     /// `TEXTPOS_Y`); `None` centres it.
     pub text_y: Option<i32>,
+    pub value_y: Option<i32>,
     /// Shown instead of the formatted value (KSP knob `LABEL`).
     pub value_text: Option<String>,
     pub tooltip: String,
@@ -131,8 +143,30 @@ pub struct Widget {
     /// Colours the source sets on its stock drawing; unset ones are the renderer's.
     pub colors: Colors,
     pub style: Option<StyleRef>,
+    /// Off/on, off/on pressed, off/on hover; absent entries inherit `style`.
+    pub state_styles: [Option<StyleRef>; 6],
     /// Bitmaps the source draws this widget with, by role.
     pub images: Vec<ImageUse>,
+    /// Table cell or XY axis controls, in component order.
+    pub components: Vec<ControlId>,
+    /// Scalar state for controls without a numeric range (toggles/menus).
+    pub initial_value: f64,
+    pub opacity: f32,
+    pub intercepts_mouse: bool,
+    /// Clip children and offset their origin (UVI Viewport).
+    pub viewport: Option<[i32; 2]>,
+    /// Source response curve, e.g. UVI Exponential.
+    pub mapper: Option<String>,
+    /// MultiStateButton advances on click; Menu opens a choice list.
+    pub menu_cycle: bool,
+    /// Even coordinate index of the manually selected XY cursor.
+    pub active_index: Option<i32>,
+    /// Current source value for typed widgets; numeric controls use their service.
+    pub value: Option<Value>,
+    pub waveform: Option<Waveform>,
+    pub meter: Option<MeterAddress>,
+    /// Source display endpoints, including an inverted meter scale.
+    pub meter_range: Option<[i32; 2]>,
 }
 
 impl Widget {
@@ -146,6 +180,7 @@ impl Widget {
             rect,
             placement: Placement::Pixels,
             auto_size: false,
+            default_axes: [false; 2],
             z: 0,
             hidden: false,
             hide: Parts::default(),
@@ -154,13 +189,27 @@ impl Widget {
             binding: Binding::None,
             text: String::new(),
             text_y: None,
+            value_y: None,
             value_text: None,
             tooltip: String::new(),
             automation: Automation::default(),
             drag: None,
             colors: Colors::default(),
             style: None,
+            state_styles: [None; 6],
             images: Vec::new(),
+            components: Vec::new(),
+            initial_value: 0.0,
+            opacity: 1.0,
+            intercepts_mouse: true,
+            viewport: None,
+            mapper: None,
+            menu_cycle: false,
+            active_index: None,
+            value: None,
+            waveform: None,
+            meter: None,
+            meter_range: None,
         }
     }
 
@@ -206,11 +255,47 @@ impl Default for Automation {
     }
 }
 
+/// Source-owned widget state; arrays and strings retain their authored types.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Value {
+    Integer(i32),
+    Real(f64),
+    Text(String),
+    Integers(Vec<i32>),
+    Reals(Vec<f64>),
+    /// Transient OS drop payload; never published as a widget value snapshot.
+    DropPath { kind: DropKind, path: String },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DropKind { Audio, Midi, Array }
+
+/// A physical meter tap, using the source's group, effect slot and bus identities.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct MeterAddress {
+    pub group: i32,
+    pub slot: i32,
+    pub channel: u8,
+    pub bus: Option<i32>,
+}
+
+/// Attached source zone and waveform properties. Zone is the native ID, not
+/// an index into a translated sample list; the importer resolves that identity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Waveform {
+    pub zone: i32,
+    pub flags: u32,
+    pub cursor_us: i64,
+    pub table: Vec<i32>,
+    pub highlighted: Option<u32>,
+    pub midi_start_note: u8,
+}
+
 /// The drag gesture of a continuous control (KSP `MOUSE_BEHAVIOUR`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Drag {
     pub axis: Orientation,
-    /// Source units: KSP's magnitude, larger is finer.
+    /// Source units: KSP's magnitude, larger is faster; travel is picture-relative.
     pub sensitivity: u32,
 }
 
@@ -256,7 +341,13 @@ pub enum Kind {
     ValueEdit { range: Range, display: Display, arrows: bool },
     /// `cells`: initial values, one per column (may be shorter than `columns`);
     /// `steps_shown`: value steps drawn as grid lines (KSP `set_table_steps_shown`).
-    Table { columns: u32, range: Range, bipolar: bool, cells: Vec<i32>, steps_shown: Option<u32> },
+    Table {
+        columns: u32,
+        range: Range,
+        bipolar: bool,
+        cells: Vec<f64>,
+        steps_shown: Option<u32>,
+    },
     /// `sensitivity`: per-axis drag sensitivity in source units (KSP
     /// `MOUSE_BEHAVIOUR_X`/`_Y`); `mouse_mode`: the source's pointer mode,
     /// verbatim (KSP `MOUSE_MODE`), until its meanings are verified.
@@ -373,6 +464,9 @@ pub enum Role {
     Strip,
     /// A separately drawn moving part: slider handle, XY cursor, meter fill.
     Handle,
+    Pressed,
+    Hover,
+    HoverPressed,
 }
 
 impl Role {
@@ -395,6 +489,7 @@ pub enum AssetKind {
     Image(ImageMeta),
     /// A bitmap font (KSP `get_font_id` picture font).
     BitmapFont,
+    TrueTypeFont,
 }
 
 /// Layout of an image, from source metadata (KSP picture `.txt`, Lua args).
@@ -450,6 +545,7 @@ pub enum Font {
     Named(String),
     /// A bitmap font asset. [`Presentation::Vector`] draws [`Font::Default`] instead.
     Bitmap(AssetRef),
+    File(AssetRef),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -538,11 +634,11 @@ impl Interface {
                 }
             }
         }
-        if !vector {
-            for s in &self.styles {
-                if let Font::Bitmap(a) = s.font {
-                    mark(a);
-                }
+        for s in &self.styles {
+            match s.font {
+                Font::File(a) => mark(a),
+                Font::Bitmap(a) if !vector => mark(a),
+                _ => {}
             }
         }
         keep
@@ -569,18 +665,32 @@ impl Interface {
         let mut parent = self.widgets[widget.0].parent;
         for _ in 0..self.widgets.len() {
             let Some(p) = parent else { break };
-            let p = &self.widgets[p.0];
-            rect.x += p.rect.x;
-            rect.y += p.rect.y;
+            let Some(p) = self.widgets.get(p.0) else {
+                break;
+            };
+            rect.x = rect
+                .x
+                .saturating_add(p.rect.x)
+                .saturating_sub(p.viewport.map_or(0, |v| v[0]));
+            rect.y = rect
+                .y
+                .saturating_add(p.rect.y)
+                .saturating_sub(p.viewport.map_or(0, |v| v[1]));
             parent = p.parent;
         }
         rect
     }
 
-    /// `page`'s widgets back to front: siblings by ([`Widget::z`], declaration
-    /// order), each panel's contents straight after the panel.
+    /// `page`'s widgets back to front by ([`Widget::z`], declaration order).
+    /// Kontakt uses global layers; native graphs order siblings and draw each
+    /// panel's contents straight after the panel.
     /// Requires a [validated](Self::validate) interface.
     pub fn draw_order(&self, page: PageRef) -> Vec<WidgetRef> {
+        if matches!(self.source, Source::Ksp { .. } | Source::PerformanceView) {
+            let mut out: Vec<_> = self.widgets.iter().enumerate().filter(|(_,w)| w.page == page).map(|(n,_)| WidgetRef(n)).collect();
+            out.sort_by_key(|n| (self.widgets[n.0].z, n.0));
+            return out;
+        }
         let mut children: Vec<Vec<WidgetRef>> = vec![Vec::new(); self.widgets.len() + 1];
         let root = self.widgets.len();
         for (n, w) in self.widgets.iter().enumerate() {
@@ -613,7 +723,7 @@ impl Interface {
             }
         }
         for s in &self.styles {
-            if let Font::Bitmap(a) = s.font {
+            if let Font::Bitmap(a) | Font::File(a) = s.font {
                 asset(a, false)?;
             }
         }
@@ -740,8 +850,21 @@ mod tests {
     }
 
     #[test]
-    fn panels_draw_before_children_and_by_z() {
-        let ui = sample();
+    fn ksp_child_z_layer_crosses_parent_boundaries() {
+        let mut ui = sample();
+        ui.widgets[1].z = 5;
+        ui.widgets[2].z = 2;
+        assert_eq!(ui.draw_order(PageRef(0)), [WidgetRef(0), WidgetRef(2), WidgetRef(1)]);
+        ui.widgets[1].z = 2;
+        assert_eq!(ui.draw_order(PageRef(0)), [WidgetRef(0), WidgetRef(1), WidgetRef(2)]);
+        ui.widgets[0].hidden = true;
+        assert!(!ui.visible(WidgetRef(1)), "global layers retain inherited hiding");
+    }
+
+    #[test]
+    fn lua_panels_draw_before_children_and_by_z() {
+        let mut ui = sample();
+        ui.source = Source::FalconLua;
         // Label (z 0) before the panel (z 1); the knob straight after its panel.
         assert_eq!(ui.draw_order(PageRef(0)), [WidgetRef(2), WidgetRef(0), WidgetRef(1)]);
         assert_eq!(ui.page_rect(WidgetRef(1)), Rect::new(15, 26, 40, 40));
@@ -768,3 +891,6 @@ mod tests {
         assert_eq!(ui.validate(), Err(Error::AssetKind(AssetRef(2))));
     }
 }
+
+mod publication;
+pub use publication::InterfacePatch;

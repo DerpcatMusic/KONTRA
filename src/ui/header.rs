@@ -10,6 +10,9 @@ use std::time::Instant;
 
 pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El {
     let p = cx.p;
+    let disk = f32::from_bits(cx.state.meters.disk.load(Ordering::Relaxed));
+    let (memory, freed) = p.shared.memory_snapshot();
+    let memory = memory as usize;
     let cpu = f32::from_bits(cx.state.meters.cpu.load(Ordering::Relaxed));
     let voices = p.shared.voices.load(Ordering::Relaxed);
     let audible = p.shared.audible.load(Ordering::Relaxed);
@@ -27,7 +30,7 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
         // Notes refused for lack of room; zero when all is well.
         [] => match p.shared.dropouts.load(Ordering::Relaxed) {
             0 => String::new(),
-            n => format!("{n} notes dropped"),
+            n => format!("{n} audio dropouts"),
         },
         [one] => format!("Loading {one}…"),
         many => format!("Loading {} instruments…", many.len()),
@@ -122,7 +125,15 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
             .when(!activity.is_empty(), |e| e.tip(activity))
             .id("activity"),
         stat("CPU", format!("{:.0}%", cpu * 100.), "100%"),
-        stat("Voices", audible.to_string(), "000").tip(format!("{voices} running")),
+        stat("Voices", audible.to_string(), "000").tip(format!("{voices} running, {} muted by the script", voices.saturating_sub(audible))),
+        // Sample heads sized by use and idle stream rings handed back.
+        stat("RAM", megabytes(memory), "00000 MB").tip(format!(
+            "Smart memory: {} of samples resident, for this rack · {} freed",
+            megabytes(memory),
+            megabytes(freed as usize)
+        )).id("readout-ram"),
+        stat("Disk", format!("{disk:.1} MB/s"), "000.0 MB/s").id("readout-disk"),
+
         vrule().h(CONTROL - TIGHT),
         cluster(vec![section("Master"), master, meter_bar(level)]).gap(SPACE),
         vrule().h(CONTROL - TIGHT),

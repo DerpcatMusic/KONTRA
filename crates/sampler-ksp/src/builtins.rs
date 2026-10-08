@@ -307,6 +307,7 @@ pub enum SysVar {
     NumZones,
     NumOutputChannels,
     MouseOverControl,
+    WidgetInteraction(u8),
     Date(u8),
     Time(u8),
 }
@@ -351,7 +352,9 @@ pub fn sys_var(name: &str) -> Option<SysVar> {
         "$NUM_GROUPS" => NumGroups,
         "$NUM_ZONES" => NumZones,
         "$NUM_OUTPUT_CHANNELS" => NumOutputChannels,
-        "$NI_MOUSE_OVER_CONTROL" => MouseOverControl,
+        "$NI_MOUSE_OVER_CONTROL" => WidgetInteraction(6),
+        "$NI_CONTROL_PAR_IDX" => WidgetInteraction(0),
+        "$NI_MOUSE_EVENT_TYPE" => WidgetInteraction(5),
         "$NI_DATE_YEAR" => Date(0),
         "$NI_DATE_MONTH" => Date(1),
         "$NI_DATE_DAY" => Date(2),
@@ -373,6 +376,9 @@ pub enum SysArray {
     GroupsAffected,
     KeyDownOct,
     EventPar,
+    DndAudio,
+    DndMidi,
+    DndArray,
 }
 impl SysArray {
     pub fn from_name(name: &str) -> Option<Self> {
@@ -385,8 +391,19 @@ impl SysArray {
             "%GROUPS_AFFECTED" => Self::GroupsAffected,
             "%KEY_DOWN_OCT" => Self::KeyDownOct,
             "%EVENT_PAR" => Self::EventPar,
+            "!NI_DND_ITEMS_AUDIO" => Self::DndAudio,
+            "!NI_DND_ITEMS_MIDI" => Self::DndMidi,
+            "!NI_DND_ITEMS_ARRAY" => Self::DndArray,
             _ => return None,
         })
+    }
+    pub fn drop_kind(self) -> Option<u8> {
+        match self {
+            Self::DndAudio => Some(0),
+            Self::DndMidi => Some(1),
+            Self::DndArray => Some(2),
+            _ => None,
+        }
     }
     pub fn len(self) -> u32 {
         match self {
@@ -395,6 +412,7 @@ impl SysArray {
             Self::KeyDownOct => 12,
             Self::GroupsSelected | Self::GroupsAffected => 4096,
             Self::EventPar => 4,
+            Self::DndAudio | Self::DndMidi | Self::DndArray => 0,
         }
     }
 }
@@ -518,6 +536,9 @@ const VALUED: &[(&str, i32)] = &[
     ("$HIDE_PART_TITLE", 4),
     ("$HIDE_PART_MOD_LIGHT", 8),
     ("$HIDE_WHOLE_CONTROL", HIDE_WHOLE_CONTROL),
+    ("$NI_DND_ACCEPT_NONE", 0),
+    ("$NI_DND_ACCEPT_ONE", 1),
+    ("$NI_DND_ACCEPT_MULTIPLE", 2),
     ("$NI_SEND_BUS", 0),
     ("$NI_INSERT_BUS", 1),
     ("$NI_MAIN_BUS", 2),
@@ -570,6 +591,9 @@ const VALUED: &[(&str, i32)] = &[
 
 /// Constants whose numeric value carries meaning.
 pub fn constant(name: &str) -> Option<i32> {
+    if let Some(event) = sampler_core::WidgetEventType::ksp_constant(name) {
+        return Some(event as i32);
+    }
     if let Some(&(_, v)) = VALUED.iter().find(|(n, _)| *n == name) {
         return Some(v);
     }
@@ -666,6 +690,10 @@ pub const CONTROL_PARS: &[&str] = &[
     "$CONTROL_PAR_OVERLOAD_COLOR",
     "$CONTROL_PAR_ZERO_LINE_COLOR",
     "$CONTROL_PAR_VERTICAL",
+    "$CONTROL_PAR_DND_ACCEPT_AUDIO",
+    "$CONTROL_PAR_DND_ACCEPT_MIDI",
+    "$CONTROL_PAR_DND_ACCEPT_ARRAY",
+    "$CONTROL_PAR_RECEIVE_DRAG_EVENTS",
 ];
 
 pub fn control_par(name: &str) -> Option<i32> {

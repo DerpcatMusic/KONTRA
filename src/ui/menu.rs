@@ -2,7 +2,7 @@
 //! asked for, closed by a pick, a click elsewhere or Escape.
 
 use super::{Cx, theme::*};
-use crate::sound::BUSES;
+use crate::sound::{BUSES, Streaming};
 use moose::mui::mui::prelude::*;
 use std::path::Path;
 
@@ -19,6 +19,8 @@ pub enum Target {
     LibrarySort,
     /// A rack slot.
     Part(usize),
+    Snapshots(usize),
+    View(usize),
     /// A key on the keyboard.
     Key(u8),
     /// The editor's own menu in the top bar.
@@ -29,6 +31,11 @@ pub enum Target {
     Output(usize),
     /// The mixer's routing: the Outputs mode and the one-click actions.
     Routing,
+    Articulations(usize),
+    Articulation(usize, String),
+    ArtDriver(usize),
+    Aux(usize),
+    Mixer(u64),
 }
 
 #[derive(Clone, Debug)]
@@ -42,7 +49,18 @@ pub struct Menu {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
+    Art(usize, super::inside::ArtAction),
+    Aux(usize, i16),
+    RenameStrip(u64),
+    ResetStrip(u64),
+    Streaming(Streaming),
+    PartStreaming(usize, Option<Streaming>),
+    LoadSnapshot(usize),
+    SelectSnapshot { slot: usize, source: (String, u32, String), path: String },
+    DefaultView(usize, crate::library::ViewMode),
+    MpeZone(usize, u8),
     Open(String),
+    View(usize, u8),
     OpenNew(String),
     Reveal(String),
     CopyPath(String),
@@ -60,6 +78,7 @@ pub enum Command {
     /// Add a library folder (`true`) or a folder of libraries.
     AddFolder(bool),
     ImportKontakt,
+    CreateLibrary,
     Rescan,
     CancelScan,
     /// A library's cover, by its folder: a picture chosen for it, the
@@ -98,6 +117,14 @@ pub enum Command {
     ArtworkBlur,
     /// [`crate::plugin::Selection::memory_budget_mb`].
     MemoryBudget(u32),
+    /// Auto-align timing on or off, and only while the transport plays.
+    AutoAlign,
+    AlignTransportOnly,
+    /// Set how late a part sounds by hand, ms; `None` goes back to what was measured.
+    Lateness(usize, Option<f32>),
+    ExcludeTiming(usize),
+    Remeasure(usize),
+
 }
 
 enum Item {
@@ -160,6 +187,80 @@ pub fn open_under(ui: &Ui, cx: &mut Cx, target: Target, anchor: &str) {
 
 fn items(cx: &Cx, target: &Target) -> Vec<Item> {
     match target {
+        Target::Snapshots(slot) => {
+            let Some(part) = cx.selection.parts.get(*slot).filter(|p| p.snapshot_base()) else { return Vec::new(); };
+            let mut items = Vec::new();
+            if let Some(catalog) = cx.view.shelf.snapshots.get(Path::new(&part.path)) {
+                for path in &catalog.paths {
+                    let label = super::header::stem(&path.to_string_lossy());
+                    let category = path.parent().and_then(Path::file_name).unwrap_or_default().to_string_lossy();
+                    items.push(Item::Act {
+                        label: format!("{label} · {category}"),
+                        hint: "",
+                        on: path == Path::new(&part.snapshot),
+                        command: Command::SelectSnapshot { slot: *slot, source: part.source(), path: path.to_string_lossy().into_owned() },
+                    });
+                }
+            }
+            if !items.is_empty() { items.push(Item::Rule); }
+            items.push(check("Original instrument", part.snapshot.is_empty(), Command::SelectSnapshot { slot: *slot, source: part.source(), path: String::new() }));
+            items.push(act("Load snapshot…", "", Command::LoadSnapshot(*slot)));
+            items
+        }
+        Target::View(slot) => {
+            let mode = super::part::mode(cx, *slot);
+            let mut items = vec![check("Original", mode == crate::library::ViewMode::Original, Command::View(*slot, 1)),
+                 check("Vector", mode == crate::library::ViewMode::Vectorized, Command::View(*slot, 3)),
+                 check("KONTRA", mode == crate::library::ViewMode::Kontra, Command::View(*slot, 2))];
+            if mode != cx.settings.view_mode {
+                items.extend([Item::Rule, act(format!("Make {} the default", mode.label()), "", Command::DefaultView(*slot, mode))]);
+            }
+            items
+        }
+        Target::ArtDriver(slot) => {
+            use super::inside::ArtAction;
+            let part = &cx.selection.parts[*slot];
+            let now = part.articulation_overlay.driver.unwrap_or_else(|| if part.switching & 0x80 != 0 { part.switching >> 1 & 7 } else { cx.view.parts[*slot].instrument.as_ref().map_or(0, |i| i.switching.driver as u8) });
+            ["Keys", "Velocity", "Channel", "CC", "Program"].iter().enumerate().map(|(n, label)| check(*label, now == n as u8, Command::Art(*slot, ArtAction::Driver(n as u8)))).collect()
+        }
+        Target::Articulations(slot) => {
+            use super::inside::ArtAction;
+            let part = &cx.selection.parts[*slot];
+            let learns = part.articulation_overlay.driver.unwrap_or_else(|| if part.switching & 0x80 != 0 { part.switching >> 1 & 7 } else { cx.view.parts[*slot].instrument.as_ref().map_or(0, |i| i.switching.driver as u8) }) == 0;
+            vec![act("Reset mappings", "Restore source inputs and display order", Command::Art(*slot, ArtAction::Reset)),
+                check("Keep original keys", cx.selection.parts[*slot].articulation_overlay.keep_originals, Command::Art(*slot, ArtAction::Keep)),
+                if learns { act("MIDI learn", "Learn a key for the active row", Command::Art(*slot, ArtAction::Learn(None))) } else { Item::Info("MIDI learn available in Keys mode".into()) },
+                Item::Rule,
+                act("Reassign triggers in this order", "Explicitly assign existing triggers in display order", Command::Art(*slot, ArtAction::Reassign)),
+                act("Split velocities evenly", "Spread 1–127 over participating rows in display order", Command::Art(*slot, ArtAction::Split))]
+        }
+        Target::Articulation(slot, id) => {
+            use super::inside::ArtAction;
+            let part = &cx.selection.parts[*slot];
+            let learns = part.articulation_overlay.driver.unwrap_or_else(|| if part.switching & 0x80 != 0 { part.switching >> 1 & 7 } else { cx.view.parts[*slot].instrument.as_ref().map_or(0, |i| i.switching.driver as u8) }) == 0;
+            let mut items = vec![if learns { act("MIDI learn", "Play a new key for this articulation", Command::Art(*slot, ArtAction::Learn(Some(id.clone())))) } else { Item::Info("MIDI learn available in Keys mode".into()) },
+                act("Clear trigger", "Remove this row's input in the current mode", Command::Art(*slot, ArtAction::Clear(id.clone()))),
+                act("Reset row mappings", "Restore all this row's source triggers", Command::Art(*slot, ArtAction::ResetRow(id.clone()))),
+                Item::Rule,
+                act("Move up", "", Command::Art(*slot, ArtAction::Move(id.clone(), -1))),
+                act("Move down", "", Command::Art(*slot, ArtAction::Move(id.clone(), 1)))];
+            if let Some(inst) = cx.view.parts[*slot].instrument.as_ref() {
+                let ids = crate::sound::articulation::identities(&inst.articulations);
+                if let Some(n) = ids.iter().position(|i| i == id) {
+                    let input = cx.selection.parts[*slot].articulation_overlay.input(id, &inst.articulations[n], sampler_ir::Driver::Keys);
+                    if let crate::sound::articulation::Input::Keys(keys) = input { items.push(Item::Info(format!("Keys: {}", keys.into_iter().map(note_name).collect::<Vec<_>>().join(", ")))); }
+                }
+            }
+            items.push(check("Use in channel/velocity modes", part.articulation_overlay.inputs.get(id).is_none_or(|a| a.enabled != Some(false)), Command::Art(*slot, ArtAction::Include(id.clone()))));
+            items
+        }
+        Target::Aux(slot) => {
+            let Some(part) = cx.selection.parts.get(*slot) else { return Vec::new() };
+            let mut items = vec![check("No send", part.aux < 0, Command::Aux(*slot, -1)), Item::Rule];
+            items.extend((0..BUSES).map(|n| check(bus_item(cx, n), part.aux == n as i16, Command::Aux(*slot, n as i16))));
+            items
+        }
+        Target::Mixer(id) => vec![act("Rename…", "", Command::RenameStrip(*id)), act("Reset strip", "Level, pan, switches and send; routing and name stay", Command::ResetStrip(*id))],
         Target::Library(name) => {
             let Some(library) = cx.view.shelf.named(name) else { return Vec::new() };
             let dir = library.dir.to_string_lossy().into_owned();
@@ -197,6 +298,7 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 act("Add folder of libraries…", "", Command::AddFolder(false)),
                 act("Add library folder…", "", Command::AddFolder(true)),
                 act("Import from Kontakt", "", Command::ImportKontakt),
+                act("Create library from folder…", "", Command::CreateLibrary),
                 Item::Rule,
                 act("Library folders…", "", Command::Folders),
                 act("Reset library order to A–Z", "", Command::ResetLibraryOrder),
@@ -246,6 +348,23 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 check("Solo", part.solo, Command::Solo(slot)),
                 Item::Rule,
             ];
+            // Where its samples play from, the rack's way unless it has its own.
+            let rack = match cx.selection.streaming {
+                Streaming::Auto => "Samples as the rack (streaming)",
+                Streaming::RamOnly => "Samples as the rack (all in RAM)",
+            };
+            items.extend([
+                check(rack, part.streaming.is_none(), Command::PartStreaming(slot, None)),
+                check("Stream from disk", part.streaming == Some(Streaming::Auto), Command::PartStreaming(slot, Some(Streaming::Auto))),
+                check("Load all into RAM", part.streaming == Some(Streaming::RamOnly), Command::PartStreaming(slot, Some(Streaming::RamOnly))),
+                Item::Rule,
+            ]);
+            if cx.selection.auto_align {timing_items(cx,slot,&mut items);}
+            if part.snapshot_base() { items.insert(1, act("Load snapshot…", "", Command::LoadSnapshot(slot))); }
+            items.extend([Item::Info("MPE".into()),
+                check("MPE off", !part.mpe, Command::MpeZone(slot, 0)),
+                check("Lower zone", part.mpe && !part.mpe_upper, Command::MpeZone(slot, 1)),
+                check("Upper zone", part.mpe && part.mpe_upper, Command::MpeZone(slot, 2)), Item::Rule]);
             if position.is_some_and(|p| p > 0) {
                 items.push(act("Move up", "", Command::Move(slot, -1)));
             }
@@ -261,7 +380,8 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             items
         }
         Target::Key(note) => {
-            let mut items = vec![Item::Info(format!("{} · MIDI {note}", note_name(*note)))];
+            let mut items = vec![Item::Info(key_info(cx, *note))];
+            if let Some(what) = cx.view.parts.get(cx.state.selected).and_then(|v| v.keys.get(*note as usize)).and_then(|k| k.name.clone()).filter(|n| !n.is_empty()) { items.push(Item::Info(what)); }
             items.push(Item::Rule);
             items.push(act(format!("Audition {}", note_name(*note)), "", Command::Audition(*note)));
             items
@@ -324,6 +444,24 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 items.extend([act("Save multi…", "", Command::SaveMulti), Item::Rule]);
             }
             items.push(act("All notes off", "", Command::Panic));
+            let rack = cx.selection.streaming;
+            items.extend([
+                Item::Rule,
+                Item::Info("Performance".into()),
+                check("Disk streaming: Auto", rack == Streaming::Auto, Command::Streaming(Streaming::Auto)),
+                check("Load all into RAM", rack == Streaming::RamOnly, Command::Streaming(Streaming::RamOnly)),
+                Item::Rule,
+                check("Auto-align timing", cx.selection.auto_align, Command::AutoAlign),
+            ]);
+            if cx.selection.auto_align {
+                let told = f32::from_bits(cx.p.shared.reported.load(std::sync::atomic::Ordering::Relaxed));
+                items.extend([
+                    check("Only while the transport plays", cx.selection.align_transport_only, Command::AlignTransportOnly),
+                    Item::Info(format!("Experimental · {told:.0} ms latency")),
+                ]);
+            } else {
+                items.push(Item::Info("Experimental".into()));
+            }
             items.extend([
                 Item::Rule, Item::Info("Appearance".into()),
             ]);
@@ -345,9 +483,38 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             for (mb, label) in [(0, "Keep all"), (1024, "1 GB"), (2048, "2 GB"), (4096, "4 GB"), (8192, "8 GB")] {
                 items.push(check(label, cx.selection.memory_budget_mb == mb, Command::MemoryBudget(mb)));
             }
+            items.push(act("Create library from folder…", "", Command::CreateLibrary));
             items
         }
     }
+}
+
+/// A part's timing under auto-align: how late it sounds and why, per
+/// articulation, and the player's say.
+fn timing_items(cx: &Cx, slot: usize, items: &mut Vec<Item>) {
+    let timing = crate::plugin::timing_for(&cx.selection.parts[slot]);
+    let t = timing.as_ref();
+    let latest = t.latest();
+    items.push(Item::Info(format!("Timing −{latest:.0} ms · {}", t.basis())));
+    let status = &cx.view.parts[slot].timing_status;
+    if !status.is_empty() {
+        items.push(Item::Info(status.clone()));
+    }
+    if t.override_ms.is_none() && !t.exclude {
+        let ms = |d: &crate::timing::Delay, legato| d.ms(legato, 100).map_or("–".into(), |ms| format!("−{ms:.0}"));
+        for d in t.arts.iter().filter(|d| d.max().is_some()) {
+            let legato = if d.mono() { format!(", legato {} ms", ms(d, true)) } else { String::new() };
+            items.push(Item::Info(format!("{} {} ms{legato}", d.name, ms(d, false))));
+        }
+    }
+    items.extend([
+        act("Play 10 ms earlier", "", Command::Lateness(slot, Some((latest + 10.).min(crate::timing::MAX_MS)))),
+        act("Play 10 ms later", "", Command::Lateness(slot, Some((latest - 10.).max(0.)))),
+        check("As measured", t.override_ms.is_none(), Command::Lateness(slot, None)),
+        check("Exclude from alignment", t.exclude, Command::ExcludeTiming(slot)),
+        act("Measure again", "", Command::Remeasure(slot)),
+        Item::Rule,
+    ]);
 }
 
 /// "st.3", or "st.3 · Drums" once named.
@@ -357,6 +524,15 @@ fn bus_item(cx: &Cx, n: usize) -> String {
         name if name == own => name,
         name => format!("{own} · {name}"),
     }
+}
+
+fn key_info(cx: &Cx, note: u8) -> String {
+    let mapped = cx.view.parts.get(cx.state.selected).and_then(|v| v.report.as_ref()).is_some_and(|r| r.decoded.maps(note));
+    format!(
+        "{} · MIDI {note} · {}",
+        note_name(note),
+        if mapped { "plays samples" } else { "no samples" }
+    )
 }
 
 /// The open menu, if any, positioned inside `window`; runs what was picked.
@@ -399,6 +575,9 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, window: Size) -> Option<El> {
             } => {
                 height += ROW;
                 let id = format!("menu-item-{n}");
+                // Articulation explanations belong in tooltips, not a second
+                // wrapped column inside a compact fixed-height menu row.
+                let tip = matches!(&command, Command::Art(..)).then_some(if matches!(&command, Command::Art(_, super::inside::ArtAction::Move(_, _))) { "Changes display order only; trigger assignments stay unchanged" } else { hint });
                 if ui.get(id.as_str()).activated() {
                     picked = Some(command);
                 }
@@ -414,7 +593,7 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, window: Size) -> Option<El> {
                         .lines(1)
                         .flex(1)
                         .min_w(0),
-                    caption(hint).fill(secondary())
+                    caption(if tip.is_some() { "" } else { hint }).fill(secondary())
                 ]
                 .gap(SPACE)
                 .align(Align::Center)
@@ -423,6 +602,7 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, window: Size) -> Option<El> {
                 .focusable()
                 .a11y(A11y::Button)
                 .named(label)
+                .when(tip.is_some(), |e| e.tip(tip.unwrap()))
                 .id(id)
                 .shrink(0);
                 rows.push(interactive(el, false));
@@ -456,7 +636,6 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, window: Size) -> Option<El> {
             .stroke(Role::Ink.alpha(0.14))
             .stroke_width(1)
             .at(x, y)
-            .appear(Appear::Slide(0., -4.))
             .a11y(A11y::Group)
             .named("Context menu")
             .id(ID),
@@ -467,6 +646,18 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, window: Size) -> Option<El> {
 pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
     let shared = &cx.p.shared;
     match command {
+        Command::View(slot, mode) => {
+            if let Some(part) = cx.selection.parts.get_mut(slot) { part.view = mode; }
+            let chosen = super::part::mode(cx, slot);
+            let path = cx.selection.parts[slot].path.clone();
+            cx.p.shared.libraries.edit(|settings| { settings.instrument_views.insert(path, chosen); });
+        },
+        Command::Aux(slot, n) => { if let Some(part) = cx.selection.parts.get_mut(slot) { part.aux = n; } }
+        Command::RenameStrip(id) => {
+            if let Some(node) = super::bridge::tree(cx).nodes.into_iter().find(|n| n.id == id) { cx.state.mix_tree.renaming = Some((id, node.name)); }
+        }
+        Command::ResetStrip(id) => super::bridge::reset(cx, id),
+        Command::Art(slot, action) => super::inside::action(ui, cx, slot, action),
         Command::Open(path) => cx.open(Path::new(&path)),
         Command::OpenNew(path) => cx.add(path),
         Command::Reveal(path) => {
@@ -487,6 +678,23 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
             cx.show(slot);
             cx.state.renaming = Some((slot, super::rack::name(cx, slot)));
         }
+        Command::SelectSnapshot { slot, source, path } => {
+            if cx.selection.parts.get(slot).is_some_and(|part| part.source() == source) {
+                cx.snapshot(slot, path);
+            } else {
+                cx.state.notice = "Snapshot ignored: the base instrument changed while its menu was open.".into();
+            }
+        }
+        Command::LoadSnapshot(slot) => {
+            if let Some(part) = cx.selection.parts.get(slot) {
+                let from = Path::new(if part.snapshot.is_empty() { &part.path } else { &part.snapshot })
+                    .parent().unwrap_or(Path::new(".")).to_path_buf();
+                let ask = super::picker::Ask::Snapshot { slot, source: part.source(), from };
+                if !cx.state.picker.ask(ask) {
+                    cx.state.notice = "No file dialog here: drop a .nksn snapshot onto this instrument's header.".into();
+                }
+            }
+        }
         Command::Mute(slot) => cx.selection.parts[slot].mute ^= true,
         Command::Solo(slot) => cx.selection.parts[slot].solo ^= true,
         Command::Move(slot, by) => cx.move_by(slot, by),
@@ -494,6 +702,12 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
         Command::Folders => cx.state.settings = !cx.state.settings,
         Command::AddFolder(single) => super::header::add_folder(cx, single),
         Command::ImportKontakt => shared.libraries.import_kontakt(),
+        Command::CreateLibrary => {
+            let out = super::header::root(cx).into();
+            if !cx.state.picker.ask(super::picker::Ask::Samples { out }) {
+                cx.state.notice = "No file dialog here: use `kontakto create-library <folder>`".into();
+            }
+        }
         Command::Rescan => shared.libraries.rescan(),
         Command::SortLibraries(sort) => shared.libraries.edit(|s| s.sort = sort),
         Command::Pin(dir) => shared.libraries.edit(|s| match s.pinned.iter().position(|d| *d == dir) {
@@ -547,6 +761,28 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
         Command::Appearance(look) => cx.selection.appearance = look as u8,
         Command::ArtworkBlur => cx.selection.sharp_artwork ^= true,
         Command::StickyHeaders => cx.selection.sticky_off ^= true,
+        Command::Streaming(mode) => cx.selection.streaming = mode,
+        Command::PartStreaming(slot, mode) => {
+            if let Some(part) = cx.selection.parts.get_mut(slot) {
+                part.streaming = mode;
+            }
+        }
+        Command::MpeZone(slot, zone) => {
+            let part = &mut cx.selection.parts[slot];
+            part.mpe = zone != 0;
+            part.mpe_upper = zone == 2;
+            if part.mpe && part.bend_range == 0 { part.bend_range = 48; }
+        }
+        Command::DefaultView(slot, mode) => {
+            shared.libraries.edit(|s| s.view_mode = mode);
+            cx.selection.parts[slot].view = 0;
+            shared.libraries.edit(|s| { s.instrument_views.remove(&cx.selection.parts[slot].path); });
+        }
+        Command::AutoAlign => cx.selection.auto_align ^= true,
+        Command::AlignTransportOnly => cx.selection.align_transport_only ^= true,
+        Command::Lateness(slot, ms) => cx.selection.parts[slot].timing.override_ms = ms,
+        Command::ExcludeTiming(slot) => cx.selection.parts[slot].timing.exclude ^= true,
+        Command::Remeasure(slot) => cx.selection.parts[slot].timing.source.clear(),
         Command::MemoryBudget(mb) => cx.selection.memory_budget_mb = mb,
         Command::Keyboard => cx.state.keyboard ^= true,
         Command::Panic => shared.panic.store(true, std::sync::atomic::Ordering::Release),

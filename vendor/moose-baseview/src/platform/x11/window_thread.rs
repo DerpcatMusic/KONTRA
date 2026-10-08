@@ -115,13 +115,21 @@ pub struct WindowThreadHandle {
     response_receiver: mpsc::Receiver<WindowThreadResponseMessage>,
     callback_receiver: Option<mpsc::Receiver<HostCallback>>,
     host_callbacks: Option<RefCell<Box<dyn HostCallbacks>>>,
-    can_detach: bool,
+    can_detach: Cell<bool>,
     close_timeout: Cell<Option<Duration>>,
+}
+
+// Pinning code cannot keep a host-owned parent drawable alive after close.
+fn can_detach(settings: &WindowSettings, host: &crate::host::Host) -> bool {
+    settings.parent.is_none()
+        && !settings.wait_for_parent
+        && host.callbacks.is_none()
+        && host.main_thread.is_none()
 }
 
 impl WindowThreadHandle {
     pub fn create_window(init: WindowInitializer) -> Result<Self> {
-        let can_detach = init.host.callbacks.is_none() && init.host.main_thread.is_none();
+        let can_detach = can_detach(&init.settings, &init.host);
         let (tx, rx) = result_channel();
         let shared = Arc::new(WindowThreadShared::new());
         let (request_sender, request_receiver) = calloop::channel::sync_channel(1);
@@ -165,7 +173,7 @@ impl WindowThreadHandle {
             response_receiver,
             host_callbacks: init.host.callbacks.map(|c| c.into_inner().into()),
             callback_receiver: main_thread_receiver,
-            can_detach,
+            can_detach: Cell::new(can_detach),
             close_timeout: Cell::new(None),
         })
     }
@@ -257,6 +265,7 @@ impl WindowThreadHandle {
     }
 
     pub fn set_parent(&self, new_parent: ParentWindowHandle) -> Result<()> {
+        self.can_detach.set(false);
         self.request(WindowThreadRequest::SetParent(new_parent))
     }
 
@@ -291,7 +300,7 @@ impl Drop for WindowThreadHandle {
         if let Some(timeout) = self.close_timeout.get() {
             let Some(thread) = self.event_loop_handle.take() else { return };
             join_bounded(thread, timeout, || {
-                if !self.can_detach || !crate::pin_current_image_for_detached_work() {
+                if !self.can_detach.get() || !crate::pin_current_image_for_detached_work() {
                     return false;
                 }
                 self.shared.callbacks_revoked.store(true, Ordering::Release);
@@ -322,6 +331,24 @@ fn join_bounded(thread: JoinHandle<()>, timeout: Duration, pin: impl FnOnce() ->
 #[cfg(test)]
 mod close_tests {
     use super::*;
+
+    #[test]
+    fn embedded_windows_cannot_detach_before_native_teardown() {
+        let host = crate::host::Host::new();
+        let mut settings = WindowSettings::new();
+        assert!(can_detach(&settings, &host));
+
+        settings.wait_for_parent = true;
+        assert!(!can_detach(&settings, &host));
+
+        settings.wait_for_parent = false;
+        settings.parent = Some(crate::ParentWindowHandle {
+            inner: crate::platform::x11::ParentWindowHandle {
+                window_id: std::num::NonZeroU32::new(1).unwrap(),
+            },
+        });
+        assert!(!can_detach(&settings, &host));
+    }
 
     #[test]
     fn stalled_thread_detaches_only_after_pin() {

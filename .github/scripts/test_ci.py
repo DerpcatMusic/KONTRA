@@ -58,16 +58,17 @@ class Gates(unittest.TestCase):
         gate = textwrap.dedent(workflow.split("      - name: Require every applicable check\n", 1)[1].split("        run: |\n", 1)[1])
         states = ("success", "failure", "cancelled", "skipped")
         for code, changes in itertools.product(("true", "false", ""), states):
-            for native in (("success",) * 3, ("skipped",) * 3,
-                           ("failure", "success", "success"),
-                           ("success", "cancelled", "success"),
-                           ("success", "success", "skipped")):
+            for native in (("success",) * 4, ("skipped",) * 4,
+                           ("failure", "success", "success", "success"),
+                           ("success", "cancelled", "success", "success"),
+                           ("success", "success", "skipped", "success"),
+                           ("success", "success", "success", "failure")):
                 env = dict(os.environ, CODE=code, CHANGES=changes,
-                           LINUX=native[0], WINDOWS=native[1], MACOS=native[2])
+                           LINUX=native[0], WINDOWS=native[1], MACOS=native[2], EDITOR=native[3])
                 result = subprocess.run(["bash", "-e", "-c", gate], env=env)
                 expected = changes == "success" and (
-                    (code == "true" and native == ("success",) * 3) or
-                    (code == "false" and native == ("skipped",) * 3))
+                    (code == "true" and native == ("success",) * 4) or
+                    (code == "false" and native == ("skipped",) * 4))
                 self.assertEqual(result.returncode == 0, expected, (code, changes, native))
 
     def test_snapshot_graph(self):
@@ -77,6 +78,10 @@ class Gates(unittest.TestCase):
         self.assertIn("    uses: ./.github/workflows/ci.yml\n    with:\n      release_validation: true", nightly)
         build = nightly.split("  build:\n", 1)[1].split("\n  macos-universal:\n", 1)[0]
         self.assertNotIn("needs:", build)
+        self.assertIn("os: ubuntu-22.04, target: x86_64-unknown-linux-gnu", build)
+        self.assertIn("key: nightly-${{ matrix.os }}-${{ matrix.target }}-release", build)
+        self.assertLess(build.index("uses: actions/setup-python@"), build.index("- name: Nightly version"))
+        self.assertIn("python3 .github/scripts/check_glibc.py", build)
         release = nightly.split("\n  release:\n", 1)[1]
         self.assertIn("    needs: [verify, build, macos-universal]\n", release)
         universal = nightly.split("\n  macos-universal:\n", 1)[1].split("\n  release:\n", 1)[0]
@@ -94,7 +99,7 @@ class Gates(unittest.TestCase):
         self.assertIn("FORCE: ${{ inputs.release_validation ||", ci)
         self.assertIn("python3 tools/version.py check\n          python3 tools/version.py self-test", ci)
         self.assertEqual(ci.count("      - name: Nightly shipping identity"), 3)
-        self.assertIn("    if: always()\n    needs: [changes, linux, windows, macos]", ci)
+        self.assertIn("    if: always()\n    needs: [changes, linux, windows, macos, editor]", ci)
         self.assertNotIn("cargo test --release --features library-access", ci)
 
 

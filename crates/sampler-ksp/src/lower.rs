@@ -1,6 +1,5 @@
-//! HIR -> sampler-core programs. One program per callback; functions a callback
-//! reaches are appended to its program as subroutines lowered in the caller's
-//! event context. Expressions evaluate into a destination register and use the
+//! HIR -> sampler-core programs. Callbacks share functions lowered once per
+//! event context; each callback keeps its own entry and admission requirements. Expressions evaluate into a destination register and use the
 //! registers above it as temporaries, keeping callbacks within small budgets.
 use crate::builtins::{self as b, Builtin, SysArray, SysVar};
 use crate::diag::{Fault, Result, Span, fault};
@@ -12,7 +11,10 @@ use sampler_core::{
     ParamScope, Program, RealBinary, RealUnary, ScriptArray, SlotKind, TextPart, TextRef,
     WaitLifetime, real_bits,
 };
-use std::collections::{BTreeMap, HashMap};
+use std::{
+    collections::{BTreeMap, HashSet},
+    ops::Range,
+};
 
 /// Event context a program runs in; decides which event operands exist.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -112,6 +114,17 @@ pub fn name_hash(name: &str) -> i32 {
     h as i32
 }
 
+#[derive(Default)]
+pub struct Module {
+    code: Vec<I>,
+    texts: Vec<String>,
+    group_table: Option<u16>,
+    calls: Vec<(usize, FnId)>,
+    starts: Vec<u32>,
+    ends: Vec<u32>,
+    entries: Vec<(usize, Vec<Range<usize>>, i32, Span)>,
+}
+
 pub struct Unit<'h> {
     pub hir: &'h Hir,
     /// Host control per UI index.
@@ -127,11 +140,13 @@ pub struct Unit<'h> {
     pub warnings: Vec<(Fault, crate::diag::Kind)>,
     /// Scratch text cells used above `hir.texts`.
     pub scratch: u32,
+    pub modules: Vec<(Context, i32, Option<i32>, Module)>,
 }
 
 impl<'h> Unit<'h> {
     pub fn program(
         &mut self,
+        index: usize,
         body: &[Stmt],
         span: Span,
         context: Context,
@@ -144,51 +159,210 @@ impl<'h> Unit<'h> {
                 .map(|ui| b::FIRST_UI_ID + ui as i32),
             _ => None,
         };
+        let cb = callback_type(kind);
+        let module_index = self
+            .modules
+            .iter()
+            .position(|(ctx, ty, sig, _)| (*ctx, *ty, *sig) == (context, cb, signal))
+            .unwrap_or_else(|| {
+                self.modules.push((
+                    context,
+                    cb,
+                    signal,
+                    Module {
+                        starts: vec![u32::MAX; self.hir.functions.len()],
+                        ends: vec![0; self.hir.functions.len()],
+                        ..Module::default()
+                    },
+                ));
+                self.modules.len() - 1
+            });
+        let module = std::mem::take(&mut self.modules[module_index].3);
         let mut g = Gen {
             u: self,
             ctx: context,
-            callback_type: callback_type(kind),
+            callback_type: cb,
             ui_id,
-            code: Vec::new(),
-            texts: Vec::new(),
-            group_table: None,
-            calls: Vec::new(),
-            starts: HashMap::new(),
+            code: module.code,
+            texts: module.texts,
+            group_table: module.group_table,
+            calls: module.calls,
+            starts: module.starts,
+            ends: module.ends,
             loops: Vec::new(),
             span,
             tdepth: 0,
             signal,
         };
+        let start = g.code.len();
+        let first_call = g.calls.len();
         g.block(body)?;
         g.forward()?;
         g.emit(I::End)?;
-        // Append reached functions breadth-first; calls are patched afterwards.
-        let mut next = 0;
+        let end = g.code.len();
+        let root_calls: Vec<_> = g.calls[first_call..].iter().map(|(_, f)| *f).collect();
+        // A function is emitted once per callback context, not once per callback.
+        let mut next = first_call;
         while next < g.calls.len() {
             let f = g.calls[next].1;
             next += 1;
-            if g.starts.contains_key(&f) {
+            if g.starts[f.0 as usize] != u32::MAX {
                 continue;
             }
-            g.starts.insert(f, g.code.len());
+            g.starts[f.0 as usize] = g.code.len() as u32;
             let function = &g.u.hir.functions[f.0 as usize];
             g.span = function.span;
             g.block(&function.body)?;
             g.emit(I::Op(Op::Return))?;
+            g.ends[f.0 as usize] = g.code.len() as u32;
         }
-        for &(at, f) in &g.calls {
+        for &(at, f) in &g.calls[first_call..] {
             g.code[at] = I::Op(Op::Call {
-                target: g.starts[&f] as u32,
+                target: g.starts[f.0 as usize],
             });
         }
-        let texts: Vec<&str> = g.texts.iter().map(String::as_str).collect();
-        Program::new(g.code)
-            .and_then(|p| p.with_texts(&texts))
+        let mut ranges = vec![start..end];
+        let mut visited = HashSet::new();
+        let mut reached = root_calls;
+        while let Some(f) = reached.pop() {
+            if !visited.insert(f) {
+                continue;
+            }
+            let range = g.starts[f.0 as usize] as usize..g.ends[f.0 as usize] as usize;
+            reached.extend(
+                g.calls
+                    .iter()
+                    .filter(|(at, _)| range.contains(at))
+                    .map(|(_, f)| *f),
+            );
+            ranges.push(range);
+        }
+        if std::env::var_os("KONTRA_AUDIT_LOWER").is_some() {
+            eprintln!(
+                "AUDIT {{\"stage\":\"ksp_code_owners\",\"slot\":{},\"callback_type\":{},\"body_instructions\":{},\"function_instructions\":{},\"functions\":{},\"calls\":{},\"text_constants\":{},\"text_payload_bytes\":{}}}",
+                g.u.slot,
+                cb,
+                end - start,
+                g.code.len() - end,
+                visited.len(),
+                g.calls.len() - first_call,
+                g.texts.len(),
+                g.texts.iter().map(String::len).sum::<usize>()
+            );
+        }
+        if g.texts.len() > usize::from(u16::MAX) + 1 {
+            return fault(span, "too many shared text constants");
+        }
+        let mut entries = module.entries;
+        entries.push((index, ranges, ui_id.unwrap_or(0), span));
+        let module = Module {
+            code: g.code,
+            texts: g.texts,
+            group_table: g.group_table,
+            calls: g.calls,
+            starts: g.starts,
+            ends: g.ends,
+            entries,
+        };
+        self.modules[module_index].3 = module;
+        Program::new(Vec::new()).map_err(|e| Fault {
+            span,
+            builtin: None,
+            message: format!("invalid lowered program: {e:?}"),
+        })
+    }
+
+    pub fn finish(&mut self, programs: &mut [Program]) -> Result<()> {
+        for (_, _, _, module) in std::mem::take(&mut self.modules) {
+            if std::env::var_os("KONTRA_AUDIT_LOWER").is_some() {
+                eprintln!(
+                    "AUDIT {{\"stage\":\"ksp_shared_module\",\"slot\":{},\"entries\":{},\"instructions\":{},\"instruction_bytes\":{},\"text_constants\":{},\"text_payload_bytes\":{}}}",
+                    self.slot,
+                    module.entries.len(),
+                    module.code.len(),
+                    std::mem::size_of::<I>(),
+                    module.texts.len(),
+                    module.texts.iter().map(String::len).sum::<usize>()
+                );
+            }
+            let texts: Vec<_> = module.texts.iter().map(String::as_str).collect();
+            let shared = Program::new(module.code)
+                .and_then(|p| p.with_texts(&texts))
+                .map_err(|e| Fault {
+                    span: Span::default(),
+                    builtin: None,
+                    message: format!("invalid lowered module: {e:?}"),
+                })?
+                .with_wait_lifetime(WaitLifetime::Callback)
+                .with_source_slot(self.slot);
+            for (index, ranges, ui_id, span) in module.entries {
+                programs[index] = shared
+                    .clone()
+                    .with_entry(ranges[0].start, &ranges, ui_id)
+                    .map_err(|e| Fault {
+                        span,
+                        builtin: None,
+                        message: format!("invalid lowered entry: {e:?}"),
+                    })?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The group volume, pan and tune writes `on init` left, as one program
+    /// run at plan start so the runtime layers begin where Kontakt's engine
+    /// does: `(target, group, engine value)`, group negative for the instrument.
+    pub fn engine_start(
+        &mut self,
+        writes: &[([i32; 4], i32)],
+        purges: &[(i32, i32)],
+    ) -> Result<Program> {
+        let mut code = Vec::new();
+        for &(address, value) in writes {
+            for (i, v) in address.into_iter().enumerate() {
+                code.push(I::SetLocal {
+                    local: i as u16,
+                    value: i64::from(v),
+                });
+            }
+            code.push(I::SetLocal {
+                local: 4,
+                value: i64::from(value),
+            });
+            code.push(I::Op(Op::EngineParameter {
+                address: 0,
+                local: 4,
+                write: true,
+            }));
+        }
+        for &(group, value) in purges {
+            code.push(I::SetLocal {
+                local: 0,
+                value: i64::from(group),
+            });
+            code.push(I::SetLocal {
+                local: 1,
+                value: i64::from(value),
+            });
+            code.push(I::Op(Op::Purge {
+                group: 0,
+                local: 1,
+                write: true,
+            }));
+        }
+        if std::env::var_os("KONTRA_AUDIT_LOWER").is_some() {
+            eprintln!(
+                "AUDIT {{\"stage\":\"ksp_engine_start_code\",\"slot\":{},\"instructions\":{}}}",
+                self.slot,
+                code.len()
+            );
+        }
+        Program::new(code)
             .map(|p| p.with_wait_lifetime(WaitLifetime::Callback))
             .map_err(|e| Fault {
-                span,
+                span: Span::default(),
                 builtin: None,
-                message: format!("invalid lowered program: {e:?}"),
+                message: format!("invalid engine start: {e:?}"),
             })
     }
 
@@ -205,7 +379,8 @@ impl<'h> Unit<'h> {
             texts: Vec::new(),
             group_table: None,
             calls: Vec::new(),
-            starts: HashMap::new(),
+            starts: Vec::new(),
+            ends: Vec::new(),
             loops: Vec::new(),
             span,
             tdepth: 0,
@@ -248,7 +423,10 @@ impl<'h> Unit<'h> {
         g.emit(I::Wait(480))?;
         g.emit(I::Jump { target: top })?;
         Program::new(g.code)
-            .map(|p| p.with_wait_lifetime(WaitLifetime::Callback))
+            .map(|p| {
+                p.with_wait_lifetime(WaitLifetime::Callback)
+                    .with_source_slot(g.u.slot)
+            })
             .map_err(|e| Fault {
                 span,
                 builtin: None,
@@ -294,7 +472,8 @@ struct Gen<'u, 'h> {
     /// Base of the group names, appended once as consecutive text constants.
     group_table: Option<u16>,
     calls: Vec<(usize, FnId)>,
-    starts: HashMap<FnId, usize>,
+    starts: Vec<u32>,
+    ends: Vec<u32>,
     /// Condition position of each enclosing `while`, for `continue`.
     loops: Vec<usize>,
     span: Span,
@@ -549,8 +728,8 @@ impl Gen<'_, '_> {
 
     fn assign(&mut self, place: &Place, value: &Expr) -> Result<()> {
         let v = place.var();
-        let var = self.var(v).clone();
-        match (place, var.home) {
+        let home = self.var(v).home;
+        match (place, home) {
             (Place::Var(_), Home::Text(cell)) => self.text_into(value, TextRef::Cell(cell), 0),
             (Place::Elem(_, index), Home::Texts { offset, len }) => {
                 self.value(index, 0)?;
@@ -567,8 +746,8 @@ impl Gen<'_, '_> {
                 })
             }
             (Place::Var(_), _) => {
-                if let (Home::Control(ui), Some(Const::Int(n))) =
-                    (var.home, fold(self.u.hir, value))
+                if let Home::Control(ui) = home
+                    && let Some(Const::Int(n)) = fold(self.u.hir, value)
                 {
                     let (lo, hi) = self.range(ui);
                     self.set(0, i64::from(n.clamp(lo, hi)))?;
@@ -819,31 +998,36 @@ impl Gen<'_, '_> {
 
     fn sys(&mut self, s: SysVar, dst: u16) -> Result<()> {
         let note = self.note_context();
+        if s == SysVar::PitchBend {
+            self.set(dst, 128)?;
+            return self.sys_read(SysArray::Cc, dst);
+        }
         let op = match s {
-            SysVar::EventId | SysVar::CallbackId if note => I::ReadEventId { local: dst },
+            SysVar::EventId if note => I::ReadEventId { local: dst },
+            SysVar::CallbackId => I::ReadCallbackId { local: dst },
             SysVar::EventNote if note => I::ReadKey { local: dst },
             SysVar::EventVelocity if note => I::ReadVelocity7 { local: dst },
             SysVar::NoteHeld if note => I::ReadKeyDown { local: dst },
             SysVar::CcNum if self.ctx == Context::Controller => {
                 I::ReadControllerNumber { local: dst }
             }
+            SysVar::WidgetInteraction(field) => {
+                I::Op(Op::ReadWidgetInteraction { local: dst, field })
+            }
             SysVar::NumGroups => I::ReadGroupCount { local: dst },
             SysVar::EngineUptime => I::Op(Op::ReadClock {
                 local: dst,
                 micros: 1000,
             }),
-            // ponytail: reset_ksp_timer is not honoured; the timer counts from engine start.
-            SysVar::KspTimer => I::Op(Op::ReadClock {
-                local: dst,
-                micros: 1,
-            }),
+            SysVar::KspTimer => I::Op(Op::ReadTimer { local: dst }),
             SysVar::CallbackType => I::SetLocal {
                 local: dst,
                 value: i64::from(self.callback_type),
             },
+            SysVar::UiId if self.ui_id.is_some() => I::Op(Op::ReadCallbackUiId { local: dst }),
             SysVar::UiId => I::SetLocal {
                 local: dst,
-                value: i64::from(self.ui_id.unwrap_or(0)),
+                value: 0,
             },
             SysVar::SignalType if self.signal.is_some() => I::SetLocal {
                 local: dst,
@@ -879,6 +1063,8 @@ impl Gen<'_, '_> {
     fn sys_readable(&self, array: SysArray) -> bool {
         match array {
             SysArray::Cc | SysArray::KeyDown => true,
+            SysArray::EventPar => self.ui_id.is_some(),
+            SysArray::GroupsAffected => self.note_context(),
             SysArray::CcTouched => self.ctx == Context::Controller,
             _ => false,
         }
@@ -888,13 +1074,28 @@ impl Gen<'_, '_> {
     fn sys_read(&mut self, array: SysArray, at: u16) -> Result<()> {
         match array {
             SysArray::Cc => {
+                let number = reg(at, 1)?;
+                self.set(number, 0)?;
+                self.emit(I::Binary32 {
+                    lhs: number,
+                    rhs: at,
+                    operation: IB::Or,
+                })?;
                 self.emit(I::ReadInputController {
-                    controller: at,
+                    controller: number,
                     local: at,
                 })?;
-                self.emit(I::ControllerToMidi7 { local: at })
+                self.emit(I::ControllerToScript {
+                    controller: number,
+                    local: at,
+                })
             }
             SysArray::KeyDown => self.emit(I::ReadKeyHeld { local: at }),
+            SysArray::EventPar => self.emit(I::Op(Op::ReadWidgetEventParameter { local: at })),
+            SysArray::GroupsAffected => self.emit(I::ReadAffectedGroup {
+                index: Some(at),
+                local: at,
+            }),
             // Kontakt marks the controllers that changed for this callback:
             // here, the one that triggered it.
             SysArray::CcTouched => {
@@ -936,6 +1137,18 @@ impl Gen<'_, '_> {
 
     fn append(&mut self, e: &Expr, dst: TextRef, free: u16) -> Result<()> {
         let part = match &e.kind {
+            ExprKind::SysElem(array, index) if array.drop_kind().is_some() => {
+                self.value(index, free)?;
+                let scratch = self.scratch();
+                self.emit(I::Op(Op::ReadWidgetDropText {
+                    ui: self.ui_id.map_or(0, |_| i32::MIN),
+                    kind: array.drop_kind().unwrap(),
+                    index: free,
+                    text: scratch,
+                }))?;
+                self.tdepth -= 1;
+                TextPart::Text(scratch)
+            }
             ExprKind::Str(s) => TextPart::Constant(self.constant(s)),
             ExprKind::Concat(parts) => {
                 for p in parts {
@@ -946,7 +1159,7 @@ impl Gen<'_, '_> {
             ExprKind::Load(v) if e.ty == Ty::Str => match self.var(*v).home {
                 Home::Text(cell) => TextPart::Text(TextRef::Cell(cell)),
                 Home::Const(k) => match &self.u.hir.consts[k as usize] {
-                    Const::Str(s) => TextPart::Constant(self.constant(&s.clone())),
+                    Const::Str(s) => TextPart::Constant(self.constant(&s)),
                     _ => return Ok(()),
                 },
                 _ => return Ok(()),
@@ -983,6 +1196,46 @@ impl Gen<'_, '_> {
                         return Ok(());
                     }
                 }
+            }
+            ExprKind::Builtin(Builtin::FsGetFilename, args) => {
+                self.arg(args, 0, free)?;
+                self.arg(args, 1, free + 1)?;
+                self.emit(I::Op(Op::FileName {
+                    ui: free,
+                    format: free + 1,
+                    text: dst,
+                }))?;
+                self.cover(Builtin::FsGetFilename, Coverage::Native);
+                return Ok(());
+            }
+            ExprKind::Builtin(Builtin::GetControlParStr, args) => {
+                self.property_key(args, free, None)?;
+                self.emit(I::Op(Op::TextProperty {
+                    key: free,
+                    text: dst,
+                    write: false,
+                }))?;
+                self.cover(Builtin::GetControlParStr, Coverage::Native);
+                return Ok(());
+            }
+            ExprKind::Builtin(
+                builtin @ (Builtin::GetEngineParDisp | Builtin::GetEngineParDispExt),
+                args,
+            ) => {
+                self.engine_address(args, free, false)?;
+                let value = if *builtin == Builtin::GetEngineParDispExt {
+                    self.arg(args, 4, free + 4)?;
+                    Some(free + 4)
+                } else {
+                    None
+                };
+                self.emit(I::Op(Op::EngineDisplay {
+                    address: free,
+                    value,
+                    text: dst,
+                }))?;
+                self.cover(*builtin, Coverage::Native);
+                return Ok(());
             }
             ExprKind::Builtin(builtin, _) if e.ty == Ty::Str => {
                 self.ignore(*builtin, "text is not available at runtime; empty");
@@ -1111,7 +1364,33 @@ impl Gen<'_, '_> {
             if usize::from(count) == sampler_core::EFFECT_ARGS {
                 break;
             }
-            self.arg(args, i, reg(dst, count)?)?;
+            if i == 0
+                && matches!(
+                    builtin,
+                    Builtin::SetText
+                        | Builtin::AddTextLine
+                        | Builtin::SetKnobLabel
+                        | Builtin::SetKnobUnit
+                        | Builtin::SetKnobDefval
+                        | Builtin::SetControlHelp
+                        | Builtin::MoveControl
+                        | Builtin::MoveControlPx
+                        | Builtin::HidePart
+                        | Builtin::AddMenuItem
+                        | Builtin::SetTableStepsShown
+                )
+            {
+                if let Some(ui) = self.ui_index(args, 0) {
+                    self.set(
+                        reg(dst, count)?,
+                        i64::from(crate::builtins::FIRST_UI_ID + ui as i32),
+                    )?;
+                } else {
+                    self.arg(args, i, reg(dst, count)?)?;
+                }
+            } else {
+                self.arg(args, i, reg(dst, count)?)?;
+            }
             count += 1;
         }
         let service = self.u.service(builtin);
@@ -1416,25 +1695,34 @@ impl Gen<'_, '_> {
                 true
             }
             MsToTicks | TicksToMs => {
-                // ponytail: fixed 120 BPM (960 ticks per quarter); host tempo if needed.
-                let (mul, div) = if builtin == MsToTicks {
-                    (48, 25)
-                } else {
-                    (25, 48)
-                };
                 self.arg(args, 0, dst)?;
-                for (value, operation) in [(mul, IB::Multiply), (div, IB::Divide)] {
-                    self.set(t, value)?;
-                    self.emit(I::Binary32 {
-                        lhs: dst,
-                        rhs: t,
-                        operation,
-                    })?;
-                }
-                self.cover(builtin, Coverage::Approximate);
-                return Ok(());
+                self.emit(I::Op(Op::TimeConversion {
+                    local: dst,
+                    ticks_to_micros: builtin == TicksToMs,
+                }))?;
+                true
+            }
+            NumElements
+                if matches!(args.first(), Some(Arg::SysArray(SysArray::GroupsAffected)))
+                    && self.note_context() =>
+            {
+                self.emit(I::ReadAffectedGroup {
+                    index: None,
+                    local: dst,
+                })?;
+                true
             }
             NumElements => {
+                if let Some(Arg::SysArray(array)) = args.first()
+                    && let Some(kind) = array.drop_kind()
+                {
+                    self.emit(I::Op(Op::ReadWidgetDropCount {
+                        ui: self.ui_id.map_or(0, |_| i32::MIN),
+                        kind,
+                        local: dst,
+                    }))?;
+                    return Ok(());
+                }
                 let len = match args.first() {
                     Some(Arg::Var(v, _)) => self.var(*v).len.unwrap_or(1),
                     Some(Arg::SysArray(a)) => a.len(),
@@ -1457,9 +1745,7 @@ impl Gen<'_, '_> {
                 true
             }
             PlayNote => return self.play(args, dst),
-            NoteOff | IgnoreEvent | ChangeNote | ChangeVelo
-                if self.selects_many(builtin, args, 0) =>
-            {
+            ChangeNote | ChangeVelo if self.selects_many(builtin, args, 0) => {
                 return Ok(());
             }
             NoteOff => {
@@ -1483,14 +1769,12 @@ impl Gen<'_, '_> {
                 true
             }
             IgnoreEvent => {
-                // ponytail: another event is released rather than discarded.
                 self.arg(args, 0, dst)?;
-                self.emit(I::KeyUpEvent {
+                self.emit(I::DiscardEvent {
                     event: dst,
-                    delay: None,
+                    current_release: self.ctx == Context::Release,
                 })?;
-                self.cover(builtin, Coverage::Approximate);
-                return Ok(());
+                true
             }
             ChangeNote | ChangeVelo => {
                 self.event_write(builtin == ChangeNote, args, 0, 1, dst)?;
@@ -1524,20 +1808,12 @@ impl Gen<'_, '_> {
                 if self.const_int(args, 1) == Some(b::event_par::SOURCE)
                     && !self.selects_many(builtin, args, 0) =>
             {
-                // -1 for a host event, else the creating script's slot (ponytail:
-                // the reading script's own slot; notes carry no creator slot).
                 self.arg(args, 0, dst)?;
                 self.emit(I::ReadEventInfo {
                     event: dst,
                     info: sampler_core::EventInfo::Source,
                     local: dst,
                 })?;
-                let host = self.jump_if_zero(dst)?;
-                self.set(dst, i64::from(self.u.slot))?;
-                let end = self.jump()?;
-                self.land(host);
-                self.set(dst, -1)?;
-                self.land(end);
                 true
             }
             GetEventPar
@@ -1548,6 +1824,7 @@ impl Gen<'_, '_> {
                             | b::event_par::MIDI_CHANNEL
                             | b::event_par::NOTE
                             | b::event_par::VELOCITY
+                            | b::event_par::REL_VELOCITY
                     )
                 ) && !self.selects_many(builtin, args, 0) =>
             {
@@ -1555,6 +1832,7 @@ impl Gen<'_, '_> {
                     Some(b::event_par::ZONE_ID) => sampler_core::EventInfo::ZoneId,
                     Some(b::event_par::NOTE) => sampler_core::EventInfo::Key,
                     Some(b::event_par::VELOCITY) => sampler_core::EventInfo::Velocity,
+                    Some(b::event_par::REL_VELOCITY) => sampler_core::EventInfo::ReleaseVelocity,
                     _ => sampler_core::EventInfo::MidiChannel,
                 };
                 self.arg(args, 0, dst)?;
@@ -1598,7 +1876,10 @@ impl Gen<'_, '_> {
             SetController => {
                 self.arg(args, 0, dst)?;
                 self.arg(args, 1, t)?;
-                self.emit(I::ControllerFromMidi7 { local: t })?;
+                self.emit(I::ControllerFromScript {
+                    controller: dst,
+                    local: t,
+                })?;
                 self.emit(I::WriteController {
                     controller: dst,
                     value: t,
@@ -1655,21 +1936,26 @@ impl Gen<'_, '_> {
                 true
             }
             FindMod | GetModIdx | FindTarget | GetTargetIdx => {
-                let name = self.const_text(args, args.len() - 1);
-                match name {
-                    Some(name) => self.set(dst, i64::from(crate::eval::lookup_index(&name)))?,
-                    None => {
-                        let free = reg(dst, 1)?;
-                        let Some(text) = self.text_arg(args, args.len() - 1, free)? else {
-                            self.ignore(builtin, "needs a text name; -1");
-                            return self.set(dst, -1);
-                        };
-                        self.emit(I::Op(Op::TextIndex { text, local: dst }))?;
-                        self.tdepth -= 1;
-                    }
+                let (group, owner) = (dst + 1, dst + 2);
+                self.arg(args, 0, group)?;
+                let target = matches!(builtin, FindTarget | GetTargetIdx);
+                if target {
+                    self.arg(args, 1, owner)?;
+                } else {
+                    self.set(owner, -1)?;
                 }
-                self.cover(builtin, Coverage::Approximate);
-                return Ok(());
+                let Some(text) = self.text_arg(args, args.len() - 1, dst + 3)? else {
+                    return self.set(dst, -1);
+                };
+                self.emit(I::Op(Op::EngineLookup {
+                    group,
+                    owner,
+                    target,
+                    text,
+                    local: dst,
+                }))?;
+                self.tdepth -= 1;
+                true
             }
             ChangeVol | ChangeTune | ChangePan if !self.selects_many(builtin, args, 0) => {
                 let target = match builtin {
@@ -1714,29 +2000,108 @@ impl Gen<'_, '_> {
                 self.land(end);
                 true
             }
-            // "From script" modulator values (Kontakt 6.6+), per source event.
-            SetEventParArr | GetEventParArr
-                if self.const_int(args, 1) == Some(b::event_par::MOD_VALUE_ID)
-                    && !self.selects_many(builtin, args, 0) =>
+            EventStatus => {
+                self.arg(args, 0, dst)?;
+                self.emit(I::ReadEventInfo {
+                    event: dst,
+                    info: sampler_core::EventInfo::Status,
+                    local: dst,
+                })?;
+                true
+            }
+            GetEventIds => {
+                if let Some(Arg::Var(v, _)) = args.first()
+                    && let Home::Cells { offset, len } = self.var(*v).home
+                {
+                    self.emit(I::ReadEventIds {
+                        array: ScriptArray { offset, len },
+                    })?;
+                }
+                true
+            }
+            SetEventMark | DeleteEventMark | GetEventMark
+                if !self.selects_many(builtin, args, 0) =>
             {
+                self.arg(args, 0, dst)?;
+                self.arg(args, 1, t)?;
+                self.emit(if builtin == GetEventMark {
+                    I::ReadEventMark {
+                        event: dst,
+                        mark: t,
+                        local: dst,
+                    }
+                } else {
+                    I::WriteEventMark {
+                        event: dst,
+                        mark: t,
+                        delete: builtin == DeleteEventMark,
+                    }
+                })?;
+                true
+            }
+            GetEventParArr if self.const_int(args, 1) == Some(b::event_par::ALLOW_GROUP) => {
+                self.arg(args, 0, dst)?;
+                self.arg(args, 2, t)?;
+                self.emit(I::ReadEventGroup {
+                    event: dst,
+                    group: t,
+                    local: dst,
+                })?;
+                true
+            }
+            SetEventParArr | GetEventParArr
+                if matches!(
+                    self.const_int(args, 1),
+                    Some(b::event_par::CUSTOM | b::event_par::MOD_VALUE_ID)
+                ) && !self.selects_many(builtin, args, 0) =>
+            {
+                let custom = self.const_int(args, 1) == Some(b::event_par::CUSTOM);
                 let id = reg(dst, 2)?;
+                let bound = reg(dst, 3)?;
                 self.arg(args, 0, dst)?;
                 if builtin == SetEventParArr {
                     self.arg(args, 2, t)?;
-                    self.arg(args, 3, id)?;
-                    self.emit(I::WriteModValue {
+                }
+                self.arg(args, if builtin == SetEventParArr { 3 } else { 2 }, id)?;
+                // Validate before adding the storage base; invalid indexes cannot alias another namespace.
+                self.set(bound, 0)?;
+                self.emit(I::CompareLocal {
+                    lhs: bound,
+                    rhs: id,
+                    comparison: Cmp::LessEqual,
+                })?;
+                let negative = self.jump_if_zero(bound)?;
+                self.set(bound, if custom { 16 } else { 1001 })?;
+                self.emit(I::CompareLocal {
+                    lhs: bound,
+                    rhs: id,
+                    comparison: Cmp::Greater,
+                })?;
+                let beyond = self.jump_if_zero(bound)?;
+                if custom {
+                    self.emit(I::AddLocal {
+                        local: id,
+                        value: i64::from(sampler_core::USER_EVENT_PAR),
+                    })?;
+                }
+                self.emit(if builtin == SetEventParArr {
+                    I::WriteModValue {
                         event: dst,
                         id,
                         local: t,
-                    })?;
+                    }
                 } else {
-                    self.arg(args, 2, id)?;
-                    self.emit(I::ReadModValue {
+                    I::ReadModValue {
                         event: dst,
                         id,
                         local: dst,
-                    })?;
-                }
+                    }
+                })?;
+                let end = self.jump()?;
+                self.land(negative);
+                self.land(beyond);
+                self.set(dst, 0)?;
+                self.land(end);
                 true
             }
             // The four user parameters ($EVENT_PAR_0..3) a script keeps on an
@@ -1748,14 +2113,16 @@ impl Gen<'_, '_> {
                     && !self.selects_many(builtin, args, 0) =>
             {
                 let id = reg(dst, 2)?;
+                self.arg(args, 0, dst)?;
+                if builtin == SetEventPar {
+                    self.arg(args, 2, t)?;
+                }
                 self.set(
                     id,
                     i64::from(sampler_core::USER_EVENT_PAR)
                         + i64::from(self.const_int(args, 1).unwrap()),
                 )?;
-                self.arg(args, 0, dst)?;
                 if builtin == SetEventPar {
-                    self.arg(args, 2, t)?;
                     self.emit(I::WriteModValue {
                         event: dst,
                         id,
@@ -1814,154 +2181,32 @@ impl Gen<'_, '_> {
                 }
                 true
             }
-            PurgeGroup => {
-                // Purged groups are silent; the host still frees their samples.
-                self.arg(args, 0, dst)?;
-                self.arg(args, 1, t)?;
-                self.clamp(t, 0, 1)?;
-                let thousand = reg(dst, 2)?;
-                self.set(thousand, 1000)?;
-                self.emit(I::Binary32 {
-                    lhs: t,
-                    rhs: thousand,
-                    operation: IB::Multiply,
-                })?;
-                self.write_param(ParamScope::Group, ModTarget::Attenuate, dst, args, None)?;
-                return self.effect(builtin, args, dst);
-            }
-            SetEnginePar if self.slot_param(args).is_some() => {
-                // An effect slot's bypass, output gain or dry level, at runtime
-                // (the slot rack is the plan's; unknown slots are ignored).
-                let kind = self.slot_param(args).unwrap();
-                let [group, slot, generic, value] = [1, 2, 3, 4].map(|n| dst + n);
-                self.arg(args, 2, group)?;
-                self.arg(args, 3, slot)?;
-                self.arg(args, 4, generic)?;
-                self.arg(args, 1, value)?;
-                if kind != SlotKind::Bypass {
-                    self.effect_gain(value)?;
+            PurgeGroup | GetPurgeState => {
+                self.arg(args, 0, t)?;
+                if builtin == PurgeGroup {
+                    self.arg(args, 1, dst)?;
                 }
-                self.emit(I::WriteSlot {
-                    kind,
-                    group,
-                    slot,
-                    generic,
-                    local: value,
-                })?;
-                self.set(dst, 0)?;
-                self.cover(builtin, Coverage::Approximate);
-                return Ok(());
-            }
-            SetEnginePar
-                if self.engine_par_name(args).as_deref() == Some("ENGINE_PAR_OUTPUT_CHANNEL")
-                    && self.const_int(args, 3) == Some(-1)
-                    && self.const_int(args, 4) == Some(-1) =>
-            {
-                // A group's output: `$NI_BUS_OFFSET` + n routes it to instrument bus n.
-                let [group, address] = [1, 2].map(|n| dst + n);
-                self.arg(args, 2, group)?;
-                self.arg(args, 1, address)?;
-                self.emit(I::WriteGroupBus { group, address })?;
-                self.set(dst, 0)?;
-                self.cover(builtin, Coverage::Approximate);
-                return Ok(());
-            }
-            SetEnginePar
-                if self.engine_par_name(args).as_deref() == Some("ENGINE_PAR_VOLUME")
-                    && self.const_int(args, 2) == Some(-1)
-                    && self.const_int(args, 3) == Some(-1)
-                    && self.const_int(args, 4).is_none_or(|n| n >= 1000) =>
-            {
-                // An instrument bus's volume (`generic` = `$NI_BUS_OFFSET` + n);
-                // another generic index is ignored by the plan.
-                let [group, slot, generic, value] = [1, 2, 3, 4].map(|n| dst + n);
-                self.arg(args, 2, group)?;
-                self.set(slot, i64::from(sampler_core::BUS_VOLUME_SLOT))?;
-                self.arg(args, 4, generic)?;
-                self.arg(args, 1, value)?;
-                self.volume_gain(value)?;
-                self.emit(I::WriteSlot {
-                    kind: SlotKind::Output,
-                    group,
-                    slot,
-                    generic,
-                    local: value,
-                })?;
-                self.set(dst, 0)?;
-                self.cover(builtin, Coverage::Approximate);
-                return Ok(());
-            }
-            SetEnginePar if self.envelope_param(args).is_some() => {
-                // The group's volume envelope when the slot is find_mod's
-                // "ENV_AHDSR"; any other modulator goes to the host as before.
-                self.arg(args, 1, dst)?;
-                self.store(args, [0, 2, 3, 4].map(Key::Arg), dst, true)?;
-                let stage = self.envelope_param(args).unwrap();
-                let (slot, value) = (reg(dst, 1)?, reg(dst, 2)?);
-                self.arg(args, 3, slot)?;
-                self.set(value, i64::from(crate::eval::lookup_index(AMP_ENVELOPE)))?;
-                self.emit(I::CompareLocal {
-                    lhs: slot,
-                    rhs: value,
-                    comparison: Cmp::Equal,
-                })?;
-                let other = self.jump_if_zero(slot)?;
-                self.arg(args, 1, value)?;
-                if stage == EnvelopeStage::AttackCurve {
-                    self.clamp(value, 0, 1_000_000)?;
-                } else if stage == EnvelopeStage::Sustain {
-                    self.envelope_sustain(value)?;
-                } else {
-                    self.envelope_frames(stage, value)?;
-                }
-                self.arg(args, 2, dst)?;
-                self.emit(I::WriteEnvelope {
-                    group: dst,
-                    stage,
-                    local: value,
-                })?;
-                let end = self.jump()?;
-                self.land(other);
-                self.emit_effect(builtin, args, dst)?;
-                self.land(end);
-                self.set(dst, 0)?;
-                self.cover(builtin, Coverage::Approximate);
-                return Ok(());
-            }
-            SetEnginePar if self.engine_param(args, 3).is_some() => {
-                // Absolute: the group or instrument layer get_engine_par reads.
-                let target = self.engine_param(args, 3).unwrap();
-                self.arg(args, 1, t)?;
-                self.engine_units(target, t)?;
-                self.arg(args, 2, dst)?;
-                self.write_param(ParamScope::Group, target, dst, args, None)?;
-                self.set(dst, 0)?;
-                true
-            }
-            GetEnginePar if self.engine_param(args, 2).is_some() => {
-                // The group's current value, authored until a script sets it.
-                let target = self.engine_param(args, 2).unwrap();
-                self.arg(args, 1, dst)?;
-                self.emit(I::ReadParam {
-                    scope: ParamScope::Group,
-                    index: dst,
-                    target,
+                self.emit(I::Op(Op::Purge {
+                    group: t,
                     local: dst,
-                })?;
-                self.engine_value(target, dst)?;
+                    write: builtin == PurgeGroup,
+                }))?;
                 true
             }
-            GetEnginePar => {
-                self.set(dst, 0)?;
-                self.store(args, [0, 1, 2, 3].map(Key::Arg), dst, false)?;
+            SetEnginePar | GetEnginePar => {
+                self.engine_address(args, dst + 1, builtin == SetEnginePar)?;
+                if builtin == SetEnginePar {
+                    self.arg(args, 1, dst)?;
+                }
+                self.emit(I::Op(Op::EngineParameter {
+                    address: dst + 1,
+                    local: dst,
+                    write: builtin == SetEnginePar,
+                }))?;
+                if builtin == SetEnginePar {
+                    self.set(dst, 0)?;
+                }
                 true
-            }
-            SetEnginePar => {
-                // Mirror for get_engine_par, then hand the edit to the host.
-                self.arg(args, 1, dst)?;
-                self.store(args, [0, 2, 3, 4].map(Key::Arg), dst, true)?;
-                self.effect(builtin, args, dst)?;
-                return self.set(dst, 0);
             }
             SetListener | ChangeListenerPar => {
                 // The timer driver reads the period from the store.
@@ -1981,6 +2226,43 @@ impl Gen<'_, '_> {
                     .map_or(0, |ui| b::FIRST_UI_ID + ui as i32);
                 self.set(dst, i64::from(id))?;
                 true
+            }
+            ResetRlsTrigCounter => {
+                self.arg(args, 0, dst)?;
+                self.emit(I::ResetReleaseCounter { event: dst })?;
+                self.cover(builtin, Coverage::Native);
+                return self.set(dst, 0);
+            }
+            StopWait => {
+                let disable = reg(dst, 1)?;
+                self.arg(args, 0, dst)?;
+                self.arg(args, 1, disable)?;
+                self.emit(I::StopWait {
+                    callback: dst,
+                    disable,
+                })?;
+                self.cover(builtin, Coverage::Native);
+                return self.set(dst, 0);
+            }
+            SetControlParStr | SetControlParStrArr => {
+                self.property_key(
+                    args,
+                    dst,
+                    if builtin == SetControlParStrArr {
+                        Some(3)
+                    } else {
+                        None
+                    },
+                )?;
+                if let Some(text) = self.text_arg(args, 2, dst + 4)? {
+                    self.emit(I::Op(Op::TextProperty {
+                        key: dst,
+                        text,
+                        write: true,
+                    }))?;
+                    self.tdepth -= 1;
+                }
+                return self.effect(builtin, args, dst);
             }
             SetControlPar | SetControlParReal | SetControlParArr | SetControlParRealArr => {
                 return self.set_control_par(builtin, args, dst);
@@ -2015,6 +2297,10 @@ impl Gen<'_, '_> {
                 })?;
                 true
             }
+            ResetKspTimer => {
+                self.emit(I::Op(Op::ResetTimer))?;
+                true
+            }
             WaitAsync | DisableLogging | WatchVar | WatchArrayIdx => {
                 // Effects complete immediately; logging switches have no runtime state.
                 true
@@ -2027,16 +2313,11 @@ impl Gen<'_, '_> {
             | FadeOut
             | SetEventPar
             | SetEventParArr
-            | SetEventMark
-            | DeleteEventMark
             | SetNoteController
             | SetRpn
             | SetNrpn
-            | ResetRlsTrigCounter
             | WillNeverTerminate
             | RedirectOutput
-            | StopWait
-            | ResetKspTimer
             | SetZonePar
             | SetVoiceLimit
             | LoadIrSample
@@ -2057,6 +2338,8 @@ impl Gen<'_, '_> {
             | SetMenuItemVisibility
             | SetMenuItemValue
             | SetTableStepsShown
+            | SetSkinOffset
+            | SetUiColor
             | AttachZone
             | SetUiWfProperty
             | FsNavigate
@@ -2092,8 +2375,8 @@ impl Gen<'_, '_> {
                     IgnoreController => "outside on controller is ignored",
                     MakePersistent | MakeInstrPersistent | ReadPersistentVar | LoadNativeUi
                     | LoadPerformanceView | MakePerfview | ExposeControls | SetSnapshotType
-                    | ShowLibraryTab | SetSkinOffset | SetUiColor | SetUiHeight | SetUiHeightPx
-                    | SetUiWidthPx | SetScriptTitle | GetFontId => "only takes effect in on init",
+                    | ShowLibraryTab | SetUiHeight | SetUiHeightPx | SetUiWidthPx
+                    | SetScriptTitle | GetFontId => "only takes effect in on init",
                     _ => "is not executed at runtime; result 0",
                 };
                 self.ignore(builtin, why);
@@ -2156,10 +2439,17 @@ impl Gen<'_, '_> {
             return self.emit(write(false));
         };
         if let Some(flag) = self.const_int(args, arg) {
-            return self.emit(write(flag != 0));
+            return self.emit(write(flag == 1));
         }
         let flag = reg(index, 2)?;
         self.arg(args, arg, flag)?;
+        let one = reg(index, 3)?;
+        self.set(one, 1)?;
+        self.emit(I::CompareLocal {
+            lhs: flag,
+            rhs: one,
+            comparison: Cmp::Equal,
+        })?;
         let absolute = self.jump_if_zero(flag)?;
         self.emit(write(true))?;
         let end = self.jump()?;
@@ -2494,7 +2784,18 @@ impl Gen<'_, '_> {
         } else {
             self.set(dst, 0)?;
             self.arg(args, 1, value)?;
-            self.set(end, i64::from(len) - 1)?;
+            if matches!(array, Err(SysArray::GroupsAffected)) {
+                self.emit(I::ReadAffectedGroup {
+                    index: None,
+                    local: end,
+                })?;
+                self.emit(I::AddLocal {
+                    local: end,
+                    value: -1,
+                })?;
+            } else {
+                self.set(end, i64::from(len) - 1)?;
+            }
         }
         let start = self.here();
         self.set(t, 0)?;
@@ -2564,6 +2865,7 @@ impl Gen<'_, '_> {
             self.ignore(Builtin::Sort, "of a text or runtime array is not available");
             return Ok(());
         };
+        let real = matches!(args.first(),Some(Arg::Var(v,_)) if self.var(*v).ty==Ty::Real);
         // Arguments in ascending registers: evaluation uses those above.
         let [end, desc, i, key, j, x, t] = [1, 2, 3, 4, 5, 6, 7].map(|n| dst + n);
         reg(dst, 8)?;
@@ -2638,25 +2940,37 @@ impl Gen<'_, '_> {
             local: x,
         })?;
         // Shift while a[j] is out of order against key.
-        self.set(t, 0)?;
-        self.emit(I::Binary32 {
-            lhs: t,
-            rhs: x,
-            operation: IB::Add,
-        })?;
         let ascending = self.jump_if_zero(desc)?;
-        self.emit(I::CompareLocal {
-            lhs: t,
-            rhs: key,
-            comparison: Cmp::Less,
+        let compare = |real, lhs, rhs, comparison| {
+            if real {
+                I::Op(Op::CompareReal {
+                    lhs,
+                    rhs,
+                    comparison,
+                })
+            } else {
+                I::CompareLocal {
+                    lhs,
+                    rhs,
+                    comparison,
+                }
+            }
+        };
+        // Comparing consumes lhs; copy real bits without 32-bit arithmetic.
+        self.emit(I::ReadScriptArray {
+            array,
+            index: j,
+            local: t,
         })?;
+        self.emit(compare(real, t, key, Cmp::Less))?;
         let compared = self.jump()?;
         self.land(ascending);
-        self.emit(I::CompareLocal {
-            lhs: t,
-            rhs: key,
-            comparison: Cmp::Greater,
+        self.emit(I::ReadScriptArray {
+            array,
+            index: j,
+            local: t,
         })?;
+        self.emit(compare(real, t, key, Cmp::Greater))?;
         self.land(compared);
         let place2 = self.jump_if_zero(t)?;
         self.set(t, 1)?;
@@ -2871,8 +3185,83 @@ impl Gen<'_, '_> {
         Ok(())
     }
 
+    fn property_key(&mut self, args: &[Arg], base: u16, index: Option<usize>) -> Result<()> {
+        self.arg(args, 0, base)?;
+        self.arg(args, 1, base + 1)?;
+        if let Some(index) = index {
+            self.arg(args, index, base + 2)?;
+        } else {
+            self.set(base + 2, i64::from(PROPERTY_TAG))?;
+        }
+        self.set(base + 3, i64::from(PROPERTY_TAG))
+    }
+    fn engine_address(&mut self, args: &[Arg], base: u16, write: bool) -> Result<()> {
+        for (i, arg) in (if write { [0, 2, 3, 4] } else { [0, 1, 2, 3] })
+            .into_iter()
+            .enumerate()
+        {
+            self.arg(args, arg, reg(base, i as u16)?)?;
+        }
+        Ok(())
+    }
+    fn indexed_value(&mut self, args: &[Arg], dst: u16, write: bool) -> Result<()> {
+        let widgets: Vec<_> = self
+            .u
+            .hir
+            .uis
+            .iter()
+            .enumerate()
+            .filter_map(|(i, ui)| match self.var(ui.var).home {
+                Home::Cells { offset, len } => Some((i, ScriptArray { offset, len })),
+                _ => None,
+            })
+            .collect();
+        for (ui, array) in widgets {
+            self.arg(args, 0, dst + 1)?;
+            self.set(dst + 2, i64::from(b::FIRST_UI_ID + ui as i32))?;
+            self.emit(I::CompareLocal {
+                lhs: dst + 1,
+                rhs: dst + 2,
+                comparison: Cmp::Equal,
+            })?;
+            let skip = self.jump_if_zero(dst + 1)?;
+            self.arg(args, if write { 3 } else { 2 }, dst + 1)?;
+            if write {
+                self.arg(args, 2, dst)?;
+                self.emit(I::WriteScriptArray {
+                    array,
+                    index: dst + 1,
+                    local: dst,
+                })?;
+            } else {
+                self.emit(I::ReadScriptArray {
+                    array,
+                    index: dst + 1,
+                    local: dst,
+                })?;
+            }
+            self.land(skip);
+        }
+        Ok(())
+    }
     fn set_control_par(&mut self, builtin: Builtin, args: &[Arg], dst: u16) -> Result<()> {
         let par = self.const_int(args, 1);
+        if matches!(
+            builtin,
+            Builtin::SetControlParArr | Builtin::SetControlParRealArr
+        ) {
+            if par == Some(b::CONTROL_PAR_VALUE) {
+                self.indexed_value(args, dst, true)?;
+            }
+            self.property_key(args, dst + 1, Some(3))?;
+            self.arg(args, 2, dst)?;
+            self.emit(I::Op(Op::Store {
+                key: dst + 1,
+                local: dst,
+                write: true,
+            }))?;
+            return self.effect(builtin, args, dst);
+        }
         if par == Some(b::CONTROL_PAR_VALUE) && builtin != Builtin::SetControlParArr {
             if let Some(ui) = self.ui_index(args, 0) {
                 let var = self.u.hir.uis[ui as usize].var;
@@ -2908,6 +3297,20 @@ impl Gen<'_, '_> {
     fn get_control_par(&mut self, builtin: Builtin, args: &[Arg], dst: u16) -> Result<()> {
         let par = self.const_int(args, 1);
         let ui = self.ui_index(args, 0);
+        if builtin == Builtin::GetControlParArr {
+            self.property_key(args, dst + 1, Some(2))?;
+            self.set(dst, 0)?;
+            self.emit(I::Op(Op::Store {
+                key: dst + 1,
+                local: dst,
+                write: false,
+            }))?;
+            if par == Some(b::CONTROL_PAR_VALUE) {
+                self.indexed_value(args, dst, false)?;
+            }
+            self.cover(builtin, Coverage::Native);
+            return Ok(());
+        }
         self.cover(builtin, Coverage::Native);
         if let Some(ui) = ui {
             let var = self.u.hir.uis[ui as usize].var;
@@ -2989,6 +3392,8 @@ fn host_service(builtin: Builtin) -> Coverage {
         | SetMenuItemVisibility
         | SetMenuItemValue
         | SetTableStepsShown
+        | SetSkinOffset
+        | SetUiColor
         | SetUiWfProperty
         | AttachLevelMeter
         | FsNavigate
