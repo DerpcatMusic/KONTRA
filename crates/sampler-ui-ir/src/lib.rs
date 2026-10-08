@@ -133,6 +133,12 @@ pub struct Widget {
     pub style: Option<StyleRef>,
     /// Bitmaps the source draws this widget with, by role.
     pub images: Vec<ImageUse>,
+    /// Current source value for typed widgets; numeric controls use their service.
+    pub value: Option<Value>,
+    pub waveform: Option<Waveform>,
+    pub meter: Option<MeterAddress>,
+    /// Source display endpoints, including an inverted meter scale.
+    pub meter_range: Option<[i32; 2]>,
 }
 
 impl Widget {
@@ -161,6 +167,10 @@ impl Widget {
             colors: Colors::default(),
             style: None,
             images: Vec::new(),
+            value: None,
+            waveform: None,
+            meter: None,
+            meter_range: None,
         }
     }
 
@@ -206,11 +216,42 @@ impl Default for Automation {
     }
 }
 
+/// Source-owned widget state; arrays and strings retain their authored types.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Value {
+    Integer(i32),
+    Real(f64),
+    Text(String),
+    Integers(Vec<i32>),
+    Reals(Vec<f64>),
+}
+
+/// A physical meter tap, using the source's group, effect slot and bus identities.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct MeterAddress {
+    pub group: i32,
+    pub slot: i32,
+    pub channel: u8,
+    pub bus: Option<i32>,
+}
+
+/// Attached source zone and waveform properties. Zone is the native ID, not
+/// an index into a translated sample list; the importer resolves that identity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Waveform {
+    pub zone: i32,
+    pub flags: u32,
+    pub cursor_us: i64,
+    pub table: Vec<i32>,
+    pub highlighted: Option<u32>,
+    pub midi_start_note: u8,
+}
+
 /// The drag gesture of a continuous control (KSP `MOUSE_BEHAVIOUR`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Drag {
     pub axis: Orientation,
-    /// Source units: KSP's magnitude, larger is finer.
+    /// Source units: KSP's magnitude, larger is faster; travel is picture-relative.
     pub sensitivity: u32,
 }
 
