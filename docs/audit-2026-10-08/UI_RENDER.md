@@ -261,7 +261,7 @@ Do not replace the working authored presentation with a generic theme.
 | R12 preparation / diagnostics / cache | `src/ui/perf_view.rs:371` off-frame picture fetch with generation check, `:418` per-control dependency cache; `src/artwork.rs:259` categorized failures; `src/ui/fitted.rs:73,79,103,116` owner generation / resize / cut / window caches | Restore worker preparation, explicit errors and reusable render assets. Do not copy v1's cache-count ceiling as a decoded-byte budget; strengthen bounds/retry/resource identity through the shared v2 asset layer. |
 
 The shared scanner extension is published at
-`tools/kontra-scan@abf248cd0b99d884b9f2456914362a7bd8e81869`. Its installed v2
+`tools/kontra-scan@01178ba443e2b409c23282509f57d35a60753c36`. Its installed v2
 digest is `d4534838916e008d32a6e0763541a8bd9285651d77f130bad18fe926d0975f5a`.
 Canonical measurement uses
 `~/.cache/kontra-scan/bin/kontra-scan-v1` (pinned v1) and
@@ -273,20 +273,25 @@ The matching Conflux v2 hash above comes from that published scanner.
 Pinned Kontakt v1 remains `0cb7a8a0`; adapter source is `44d03cec`, and its
 installed scanner digest is
 `870cea2140b5c9db5361831664966848302a2f57e82fcb6c7ed1b3534545ce5e`.
-The UVI sidecar is a distinct later-v1 baseline, source `1c198e60` on product
+The UVI sidecar is a distinct later-v1 baseline, source
+`026bdbb49f29a5ad752b3470a5f6f64a20a8957d` on product
 base `4bffbb18`, digest
-`d565661afb3ae1cab3100d1e83b7f12c0f5b02c51b7593451a6fe77929af8ea1`.
-Its section J timing extension is pending; this exact sidecar is preserved
-until the owner stages its replacement.
+`34a61e82ca6f09afc0eab692a1bf0b6765edbd7d063fccca94d95e699a93b9c1`.
+Its section J timing extension is installed. Canonical `kontra-scan-v1-uvi`
+and alias `kontra-scan-v1uvi` hashes were checked and are identical. Historical
+`1c198e60` / `d565661a` is retained separately under `~/.cache/kontra-scan/frozen`.
+The common driver/README update leaves verified `abf248cd` Rust binaries unchanged;
+the latest pinned-v1 driver snapshot is `59c6cbbb`, with Rust adapter `44d03cec`.
 
 ### Shared schema and coverage update
 
 The adjacent `bin/kontra_scan.py:COLUMNS` defines **72** columns; its first nine
 remain stable. Published summaries are `~/.cache/kontra-scan/results/{v1,v2}.tsv`,
 with per-ID evidence in `{v1,v2}/cache`. The owner reset publication to the final
-installed revision; each summary has 25 rows at this read. The final Conflux
+installed revision; each summary had 25 rows at the final Conflux snapshot. The final Conflux
 pair above is verified against both installed digests. The owner's serial
-235-second Kontakt sweep has restarted; section J UVI handoff remains pending.
+235-second Kontakt sweep has restarted; the installed UVI sidecar now permits
+the subsequent 660-ID paired pass with common notes.
 The full 1,494-ID paired sweep is pending. This partial snapshot cannot supply
 whole-corpus affected counts, regression totals or a paired Conflux rendering comparison.
 
@@ -340,6 +345,15 @@ Source-slot decoding and saved-table integrity are independent: only actual
 record/parameter failures enter `decode_failed`; an unknown saved format retains
 its observed bypass/inline/link/empty source category. Incomplete raw sigil
 aggregates export unknown rather than a misleading partial total.
+
+All three adapters now expose section J. The UVI sidecar starts its clock at
+production `Worker::start` after the metadata/assets prepass, includes required
+pre-audition native snapshots, and observes audio concurrently with CPU paint.
+Its `load_ms` retains the legacy origin, distinct from first sound. The shared
+driver forces `KONTRA_UVI_STATIC_PCM_CACHE=0`; `cache_state=cold` refers to this
+disabled persistent PCM cache, not the OS cache. The owner's finite-onset,
+missing-onset/null and common MIDI 60/64 Clarinet smoke proofs passed; these
+selected checks do not establish full UVI corpus coverage or native UI fidelity.
 
 ## Prior work to reuse, not reimplement
 
