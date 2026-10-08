@@ -90,6 +90,17 @@ pub struct Config {
     pub memory: usize,
     /// The host's sample rate, for `getSamplingRate` and the sample conversions.
     pub rate: f64,
+    /// Explicit audit seed; absent from normal builds and user preferences.
+    #[cfg(feature = "scan")]
+    pub audit_seed: Option<u32>,
+}
+
+/// Explicit scanner/test option, never read by ordinary plugin builds.
+#[cfg(feature = "scan")]
+pub fn audit_seed() -> Result<Option<u32>, String> {
+    std::env::var("KONTRA_UVI_AUDIT_SEED").map_or_else(
+        |e| if matches!(e, std::env::VarError::NotPresent) { Ok(None) } else { Err("invalid UVI audit seed".into()) },
+        |value| value.parse().map(Some).map_err(|_| "invalid UVI audit seed".into()))
 }
 
 impl Config {
@@ -108,6 +119,8 @@ impl Default for Config {
             callback_work: 1 << 20,
             memory: 1536 << 20,
             rate: 48000.0,
+            #[cfg(feature = "scan")]
+            audit_seed: None,
         }
     }
 }
@@ -695,6 +708,13 @@ impl ScriptHost {
             .map_err(lua_error)?
         };
         lua.set_memory_limit(config.memory).map_err(lua_error)?;
+        #[cfg(feature = "scan")]
+        if let Some(seed) = config.audit_seed {
+            let math: Table = lua.globals().get("math").map_err(lua_error)?;
+            math.get::<Function>("randomseed").map_err(lua_error)?
+                .call::<()>(seed).map_err(lua_error)?;
+        }
+
         let shared = Rc::new(Shared {
             #[cfg(feature = "scan")]
             init_api: RefCell::new(BTreeMap::new()),
