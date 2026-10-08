@@ -265,6 +265,7 @@ pub(crate) enum Params {
     Convolution(Box<Convolution>),
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Convolution {
     /// Sample-rate decimation factor (1 or negative: none).
@@ -642,6 +643,7 @@ pub(crate) type Decoded = (u32, Vec<[f32; 2]>);
 /// response an other-files index names, `store` collects the shaped ones.
 pub(crate) struct Impulses<'a> {
     pub store: &'a mut Vec<sampler_ir::Impulse>,
+    pub recipes: Option<&'a mut Vec<Convolution>>,
     pub load: &'a mut dyn FnMut(i32) -> Result<Decoded, String>,
 }
 
@@ -1025,6 +1027,7 @@ fn convolution(
         right,
         asset: None,
     });
+    if let Some(recipes)=impulses.recipes.as_deref_mut() { recipes.push(c.clone()); }
     Ok(sampler_ir::ImpulseRef(impulses.store.len() - 1))
 }
 
@@ -1112,6 +1115,17 @@ pub(crate) fn instrument_buses(
     dynamic: bool,
     load: &mut dyn FnMut(i32) -> Result<Decoded, String>,
 ) -> Vec<(String, Note)> {
+    instrument_buses_with_recipes(ir,racks,buses,dynamic,load,None)
+}
+
+pub(crate) fn instrument_buses_with_recipes(
+    ir: &mut sampler_ir::Instrument,
+    racks: &[(String, Vec<Slot>)],
+    buses: &[BusPlan],
+    dynamic: bool,
+    load: &mut dyn FnMut(i32) -> Result<Decoded, String>,
+    recipes: Option<&mut Vec<Convolution>>,
+) -> Vec<(String, Note)> {
     use sampler_ir::{BusRef, ChainRef, Output, Scope as IrScope, Send, SendPosition};
     let rack = |name: &str| {
         racks
@@ -1126,6 +1140,7 @@ pub(crate) fn instrument_buses(
     let mut store = std::mem::take(&mut ir.impulses);
     let mut source = Impulses {
         store: &mut store,
+        recipes,
         load,
     };
     // `$NI_INSERT_BUS` 1, `$NI_SEND_BUS` 0, `$NI_MAIN_BUS` 2.
@@ -1892,4 +1907,12 @@ mod tests {
         assert_eq!(routed.groups[0].output, ir::Output::Bus(ir::BusRef(0)));
         routed.validate().unwrap();
     }
+}
+
+/// Rebuild an impulse with the same shaping path; cache metadata carries no audio.
+pub(crate) fn restore_impulse(c:&Convolution,decoded:Decoded)->Result<sampler_ir::Impulse,String> {
+    let mut store=Vec::new(); let mut decoded=Some(decoded);
+    let mut load=|_|decoded.take().ok_or_else(||"impulse already consumed".to_owned());
+    convolution(c,&mut Impulses {store:&mut store,load:&mut load,recipes:None},&mut Vec::new())?;
+    store.pop().ok_or_else(||"missing shaped impulse".into())
 }
