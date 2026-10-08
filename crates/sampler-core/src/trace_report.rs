@@ -206,15 +206,11 @@ impl Session {
             .iter()
             .filter_map(|&id| self.levels[id].row.map(|_| (id, &self.levels[id])))
             .collect();
-        let mut svg = format!(
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1400\" height=\"{}\" viewBox=\"0 0 1400 {}\"><rect width=\"100%\" height=\"100%\" fill=\"#101722\"/><g fill=\"#e6edf3\" font-family=\"monospace\" font-size=\"13\"><text x=\"24\" y=\"28\">Signal chain — energy across recorded blocks; levels dBFS, deltas dB. Numeric identities only.</text>",
-            75 + active.len() * 112,
-            75 + active.len() * 112
-        );
-        for (n, (id, level)) in active.iter().enumerate() {
+        let mut body = String::new();
+        let mut y = 65;
+        for (id, level) in &active {
             let node = &self.reader.graph.nodes[*id];
             let row = level.row.unwrap();
-            let y = 65 + n * 112;
             let db = |p: f64| {
                 if p > 0. {
                     format!("{:.2}", 10. * p.log10())
@@ -229,7 +225,7 @@ impl Session {
                 .graph
                 .edges
                 .iter()
-                .filter(|e| e.to == *id)
+                .filter(|e| e.to == *id && self.levels[e.from].row.is_some())
                 .map(|e| e.from)
                 .collect();
             let header = format!(
@@ -237,11 +233,11 @@ impl Session {
                 node.kind, node.processor, node.zone, node.group, node.bus
             );
             let metrics = format!(
-                "{} → {} dBFS; Δ {} dB | applied {:?} | latency {} samples | enabled {} | contributors {}",
+                "{} → {} dBFS; Δ {} dB | applied [{:.6}, {:.6}] | latency {} samples | enabled {} | contributors {}",
                 db(input),
                 db(output),
                 db(if input > 0. { output / input } else { 0. }),
-                row.gain,
+                row.gain[0], row.gain[1],
                 row.latency_samples,
                 row.enabled,
                 row.contributors
@@ -264,29 +260,25 @@ impl Session {
                 })
                 .collect::<Vec<_>>()
                 .join("; ");
-            let split = parameters
-                .char_indices()
-                .filter(|(i, c)| *i <= 150 && *c == ';')
-                .map(|(i, _)| i + 1)
-                .last()
-                .unwrap_or(parameters.len());
-            let (first, second) = parameters.split_at(split);
-            for (offset, text) in [
-                (0, header),
-                (22, metrics),
-                (44, first.to_owned()),
-                (66, second.trim().to_owned()),
-            ] {
-                let escaped = text
-                    .replace('&', "&amp;")
-                    .replace('<', "&lt;")
-                    .replace('>', "&gt;");
-                svg.push_str(&format!(
-                    "<text x=\"24\" y=\"{}\">{escaped}</text>",
-                    y + offset
-                ));
+            for text in [header, metrics, parameters] {
+                let mut rest = text.as_str();
+                while !rest.is_empty() {
+                    let limit = rest.char_indices().nth(165).map_or(rest.len(), |(i, _)| i);
+                    let split = if limit < rest.len() {
+                        rest[..limit].rfind(' ').filter(|i| *i > 0).unwrap_or(limit)
+                    } else { limit };
+                    let escaped = rest[..split].replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+                    body.push_str(&format!("<text x=\"24\" y=\"{y}\">{escaped}</text>"));
+                    y += 22;
+                    rest = rest[split..].trim_start();
+                }
             }
+            y += 22;
         }
+        let height = y + 24;
+        let mut svg = format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1400\" height=\"{height}\" viewBox=\"0 0 1400 {height}\"><rect width=\"100%\" height=\"100%\" fill=\"#101722\"/><g fill=\"#e6edf3\" font-family=\"monospace\" font-size=\"13\"><text x=\"24\" y=\"28\">Signal chain — energy across recorded blocks; levels dBFS, deltas dB. Numeric identities only.</text>{body}"
+        );
         svg.push_str("</g></svg>");
         svg
     }
