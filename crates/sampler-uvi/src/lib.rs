@@ -1918,7 +1918,11 @@ mod survey {
                         host.note_off(1000 + u64::from(key), key, 64, 0);
                         clock += 4000.0;
                         host.advance(clock);
-                        host.take_commands();
+                        let after = host.take_commands();
+                        println!("UR key {key}: {} commands after release", after.len());
+                        for command in after.iter().filter(|c| !matches!(c, crate::script::Command::Parameter { .. } | crate::script::Command::Modulation { .. } | crate::script::Command::Midi(_))).take(12) {
+                            println!("UR   {}", format!("{command:?}").chars().take(200).collect::<String>());
+                        }
                     }
                     for f in host.findings() {
                         println!("UF {}|{}", f.feature, f.value.chars().take(300).collect::<String>().replace(' ', "_"));
@@ -2118,6 +2122,7 @@ mod survey {
         };
         let mut peak = 0.0f32;
         let mut buf = [[0.0f32; 2]; 256];
+        let mut buf2 = [[0.0f32; 2]; 256];
         let mut run = |player: &mut crate::scripted::Player, blocks: usize| {
             for _ in 0..blocks {
                 player.render(&mut buf)?;
@@ -2133,7 +2138,23 @@ mod survey {
             .and_then(|_| player.note_on(key, 100.0 / 127.0))
             .and_then(|_| run(&mut player, 188))
             .and_then(|_| player.note_off(key))
-            .and_then(|_| run(&mut player, 188));
+            .and_then(|_| {
+                if std::env::var_os("KONTRA_LIVE").is_none() {
+                    return run(&mut player, 188);
+                }
+                for second in 0..6 {
+                    let mut local = 0.0f32;
+                    for _ in 0..188 {
+                        player.render(&mut buf2)?;
+                        local = buf2.iter().flatten().fold(local, |p, x| p.max(x.abs()));
+                    }
+                    println!("UP release second {second}: voices={} peak={local:.4}", player.runtime().stats().voices);
+                }
+                Ok(())
+            });
+        if std::env::var_os("KONTRA_LIVE").is_some() {
+            println!("UP live after release: {:?}", player.live_ids());
+        }
         let (ok, failure) = (result.is_ok(), result.err());
         let state = match (ok, peak > 1e-4) {
             (false, _) => "render-err",

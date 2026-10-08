@@ -530,6 +530,9 @@ impl<S: Script> Driver<S> {
             Err(e) => return Err(e),
         };
         self.notes.insert(play.id, note);
+        if std::env::var_os("KONTRA_LIVE").is_some() {
+            println!("UP t={:.0} id={} key={} vel={} layers={:?} osc={:?} dur={:?} parent={:?}", self.now_ms(rt), play.id, play.key, play.velocity, play.layers, play.osc, play.duration_ms, play.parent);
+        }
         self.select(rt, note, play)?;
         let expression = Expression {
             gain: play.vol.clamp(0.0, 4.0),
@@ -617,6 +620,13 @@ impl Player {
 
     pub fn runtime(&self) -> &Runtime {
         &self.rt
+    }
+
+    /// Survey aid: the script ids whose notes are still alive.
+    pub fn live_ids(&mut self) -> Vec<u64> {
+        let mut ids: Vec<u64> = self.driver.notes.iter().filter(|(_, n)| self.rt.set_note_param(**n, ModTarget::Decibels, 0.0, true).is_ok()).map(|(i, _)| *i).collect();
+        ids.sort_unstable();
+        ids
     }
 
     /// What plays asked for that was ignored, once each.

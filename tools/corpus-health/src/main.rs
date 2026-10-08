@@ -54,6 +54,7 @@ fn faults() -> (u64, u64) {
 
 const HOLD_SECONDS: f64 = 1.5;
 const TAIL_SECONDS: f64 = 0.5;
+const SCRIPTED_TAIL_SECONDS: f64 = 4.0;
 const VELOCITY: u8 = 64;
 
 #[derive(Clone, Debug)]
@@ -899,7 +900,10 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
     };
     let frame = |seconds: f64| (seconds * f64::from(rate)).round() as usize;
     let release_at = frame(HOLD_SECONDS);
-    let total = release_at + frame(TAIL_SECONDS);
+    // A script plays its own release samples after the note-off (clarinet
+    // breath and key noises last over a second): give those time to end.
+    let tail = if matches!(rig, Rig::Scripted { .. }) { SCRIPTED_TAIL_SECONDS } else { TAIL_SECONDS };
+    let total = release_at + frame(tail);
     let key = std::env::var("CH_KEY").ok().and_then(|v| v.parse().ok()).unwrap_or(pick.key);
     let on = [0x2090_0000 | u32::from(key) << 8 | u32::from(pick.velocity)];
     let off = [0x2080_0000 | u32::from(key) << 8];
