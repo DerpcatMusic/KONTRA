@@ -82,6 +82,7 @@ pub(super) struct ControlEvent {
     pub origin: crate::ChannelAddress,
     pub channels: u16,
     pub stage: usize,
+    pub interaction: crate::WidgetInteraction,
 }
 impl ControlEvent {
     pub fn scope(self) -> crate::ChannelScope {
@@ -96,7 +97,7 @@ impl ControlEvent {
 
 pub(super) struct ControlState {
     values: Box<[ControlValue]>,
-    revision: u64,
+    pub(super) revision: u64,
     /// Future writes reserve both this generation and one revision increment each.
     pub(super) pending: usize,
 }
@@ -214,6 +215,7 @@ impl Runtime {
                 origin: context.origin,
                 channels: context.channels,
                 stage: binding.stage,
+                interaction: crate::WidgetInteraction::default(),
             })
         });
         if let Some(binding) = binding {
