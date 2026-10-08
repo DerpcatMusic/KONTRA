@@ -81,12 +81,28 @@ impl Runtime {
             .flatten()
         {
             let note = self.note_on_pitched_in(performance, input, pitch, velocity, expression)?;
-            if !self.plans.get(self.active_plan.0).unwrap().prepared.native_start.is_empty() {
+            if !self
+                .plans
+                .get(self.active_plan.0)
+                .unwrap()
+                .prepared
+                .native_start
+                .is_empty()
+            {
                 let generation = self.plans.get_mut(self.active_plan.0).unwrap();
                 generation.native_cycle = generation.native_cycle.wrapping_sub(1);
-                self.performance_state.edit(index).native_key = Some(input.key);
             }
             self.articulation_now(index, value);
+            if !self
+                .plans
+                .get(self.active_plan.0)
+                .unwrap()
+                .prepared
+                .native_start
+                .is_empty()
+            {
+                self.performance_state.edit(index).native_key = Some(input.key);
+            }
             self.performance_state
                 .release(self.selections[note.0.index].snapshot);
             self.selections[note.0.index].snapshot = self.performance_state.capture(index);
@@ -224,7 +240,14 @@ impl Runtime {
         {
             self.record_previous_key(performance, note_pitch.key());
         }
-        if !self.plans.get(plan.0).unwrap().prepared.native_start.is_empty() {
+        if !self
+            .plans
+            .get(plan.0)
+            .unwrap()
+            .prepared
+            .native_start
+            .is_empty()
+        {
             let generation = self.plans.get(plan.0).unwrap();
             let state = self.performance_state.edit(performance);
             state.native_tick = generation.native_cycle;
@@ -876,7 +899,15 @@ impl Runtime {
                 let routed = self.plans.get(plan.0).unwrap().script.bus(group, r.bus);
                 let state = self.voices.get_mut(voice.0).unwrap();
                 state.bus = routed;
-                state.source_zone = self.plans.get(plan.0).unwrap().prepared.region_zone_ids.get(candidate.region).copied().unwrap_or(candidate.region as u32 + 1);
+                state.source_zone = self
+                    .plans
+                    .get(plan.0)
+                    .unwrap()
+                    .prepared
+                    .region_zone_ids
+                    .get(candidate.region)
+                    .copied()
+                    .unwrap_or(candidate.region as u32 + 1);
                 if r.chain.is_some() {
                     self.plans.get_mut(plan.0).unwrap().dsp.reset(voice.0.index);
                 }
