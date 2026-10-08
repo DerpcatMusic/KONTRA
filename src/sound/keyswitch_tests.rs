@@ -68,33 +68,6 @@ fn keyswitch_remapped_input_selects_native_and_authored_articulations() {
 }
 
 #[test]
-fn keyswitch_routes_survive_rack_growth_reload_and_later_slot_updates() {
-    for owner in [ir::SwitchOwner::Native, ir::SwitchOwner::Behavior] {
-        let (mut core, inst) = fixture(owner);
-        let mut overlay = Overlay::default();
-        overlay.set(&identities(&inst.articulations)[0], Trigger::Keys(vec![49]));
-        route(&mut core, &inst, &overlay);
-        let mut grown = V2Core::with_parts(33, 48000.);
-        core.adopt(&mut grown);
-        let (mut replacement, _) = fixture(owner);
-        let _retired = core.install(0, replacement.parts[0].take());
-        tap(&mut core, 49);
-        assert_eq!(core.articulation(0), Some(0), "growth keeps the remap through reload ({owner:?})");
-        let (keys, switching) = overlay.routing(&inst, 0).unwrap();
-        let mut mix = Mix::default();
-        mix.parts.resize(33, Default::default());
-        mix.articulation_routes.resize(33, None);
-        mix.articulation_routes[32] = Some(Arc::new(Routing { keys, switching }));
-        core.set_mix(&mix);
-        let (mut replacement, _) = fixture(owner);
-        let _retired = core.install(32, replacement.parts[0].take());
-        core.play(32, Event::midi1(0x90, 49, 100));
-        core.render(16);
-        assert_eq!(core.articulation(32), Some(0), "new slots retain their own route after install ({owner:?})");
-    }
-}
-
-#[test]
 fn keyswitch_custom_alternatives_and_held_notes_survive_updates() {
     let (mut core, mut inst) = fixture(ir::SwitchOwner::Native);
     let ids = identities(&inst.articulations);

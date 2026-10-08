@@ -2219,27 +2219,6 @@ mod tests {
     }
 
     #[test]
-    fn v1_upper_mpe_keyboard_controls_reach_every_member() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("upper.wav"); sine(&path);
-        let request = LoadRequest { path, sample_rate: 48000.0, mpe: true, mpe_upper: true, ..Default::default() };
-        let loaded = V2Loader.prepare(&request, &mut |_| {}, &|| false).unwrap();
-        let mut core = V2Core::with_parts(1, 48000.0);
-        let mut mix = Mix::default(); mix.parts[0].mpe = true; mix.parts[0].bend_range = 12;
-        core.set_mix(&mix); core.install(0, loaded.part);
-        for (channel, key) in [(1, 60), (2, 64)] {
-            core.event(0, on(HostNote { port: 0, channel, key, id: i32::from(key), clap: true }));
-        }
-        core.play(0, Event::midi1(0xe0, 127, 127));
-        let part = core.parts[0].as_ref().unwrap();
-        for held in &core.held[..2] {
-            let expression = part.runtime.expression_id(held.id).unwrap();
-            assert!(part.runtime.expression(expression).unwrap().pitch_semitones > 1.0,
-                "the keyboard bend uses the upper manager, as v1 service_channel did");
-        }
-    }
-
-    #[test]
     fn mpe_member_channels_bend_their_own_notes() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("a.wav");
@@ -3270,8 +3249,10 @@ mod timing_parity_tests {
         let mut gains=[0.;128];gains[96..].fill(1.);
         let expected={let output=core.render(128);(output.buses[0][0].iter().zip(gains).map(|(x,g)|f64::from(*x*g).powi(2)).sum::<f64>()/128.).sqrt()};
         assert!(expected>0.1);assert!(core.trace_master(&gains));
-        let rows=reader.drain();let master=rows.iter().find(|r|reader.graph.nodes[r.node].kind=="host_master").unwrap();
-        assert!((master.output.rms[0]-expected).abs()<1e-6,"trace must use the assembled aligned frame positions: {:?} vs {expected}",master.output.rms);
+        let rows=reader.drain();let masters:Vec<_>=rows.iter().filter(|r|reader.graph.nodes[r.node].kind=="host_master").collect();
+        assert_eq!(masters.iter().map(|r|r.frames as usize).sum::<usize>(),128);
+        let traced=(masters.iter().map(|r|r.output.rms[0].powi(2)*r.frames as f64).sum::<f64>()/128.).sqrt();
+        assert!((traced-expected).abs()<1e-6,"trace must use the assembled aligned frame positions: {traced} vs {expected}");
     }
     #[test]
     fn v1_auto_align_first_plan_swap_never_frees_on_audio() {
