@@ -2253,11 +2253,12 @@ fn widget_nested_wheel_stays_in_child_then_hands_off_at_end() {
     for n in 0..40 {
         inst.articulations.push(sampler_ir::Articulation {name:format!("Technique {n}"), switch_keys:vec![n], ..Default::default()});
     }
+    let row = super::inside::row_id(0, &crate::sound::articulation::identities(&inst.articulations)[4]);
     p.shared.view.lock().unwrap().parts[0].instrument = Some(Arc::new(inst));
     let mut h = Harness::new(&p,1180.,900.);
     h.press("view-0-Articulations");
     h.idle(8);
-    let pos = center(&h.ui,"art-0-4");
+    let pos = center(&h.ui,&row);
     let before = h.ui.scroll("arts-0");
     let rack_before = h.ui.scene().unwrap().surface("rack-content").unwrap().frame.y;
     h.tick(Input {pointer:PointerInput {pos:Some(pos), ..Default::default()}, wheel:Vec2::new(0.,80.), ..Default::default()});
