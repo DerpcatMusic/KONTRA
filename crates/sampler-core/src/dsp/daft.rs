@@ -92,6 +92,7 @@ struct Coefficients {
 }
 
 impl Daft {
+    pub(crate) fn trace_parameters(&self) -> [(&'static str, PreparedParameter); 4] { std::array::from_fn(|i| (["gain","cutoff","resonance","response"][i],self.lanes[i])) }
     /// The four ramped quantities for the normalized controls.
     fn targets(x: [f64; 4]) -> [f64; 4] {
         let x = x.map(|v| if v.is_nan() { 0. } else { v.clamp(0., 1.) });
