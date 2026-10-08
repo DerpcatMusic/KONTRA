@@ -469,7 +469,6 @@ fn replacing_the_instrument_drops_the_old_remap_and_dynamics_start() {
 fn keyswitch_panel_edits_swaps_learns_reorders_and_keeps_source() {
     use crate::sound::articulation::{Input as Trigger, identities};
     use sampler_ir as sir;
-    use std::sync::atomic::Ordering;
     let mut inst = sir::Instrument { name: "Strings".into(), ..Default::default() };
     inst.articulations = ["Legato", "Sustain", "Staccato", "Pizzicato", "Tremolo"].into_iter().enumerate().map(|(n, name)| sir::Articulation { source: format!("axis:main:{name}"), name: name.into(), switch_keys: vec![24 + n as u8], default: n == 0, ..Default::default() }).collect();
     inst.assign_alternatives(32);
@@ -518,7 +517,27 @@ fn keyswitch_panel_edits_swaps_learns_reorders_and_keeps_source() {
     assert_eq!(p.selection.read().unwrap().parts[0].articulation_overlay.input(&ids[2], &source.articulations[2], sir::Driver::Keys), Trigger::Keys(vec![50]));
     let before = p.selection.read().unwrap().parts[0].articulation_overlay.inputs.clone();
     h.press(&format!("{}-more", row(2)));
-    h.press("menu-item-5"); // Move Down (rule occupies item 3).
+    let menu_frame = h.ui.scene().unwrap().surface("context-menu").unwrap().frame;
+    let menu_just_opened = pixels(&h.ui, 1180, 780);
+    h.idle(45);
+    let menu_settled = pixels(&h.ui, 1180, 780);
+    let sample = ((menu_frame.y as usize + 2) * 1180 + menu_frame.x as usize + 20) * 4;
+    assert_eq!(&menu_just_opened[sample..sample+4], &menu_settled[sample..sample+4], "open menu is immediately opaque");
+    if let Ok(dir) = std::env::var("KONTRA_KEYSWITCH_SHOTS") {
+        std::fs::create_dir_all(&dir).unwrap();
+        moose::core::screenshot::save_png(&Path::new(&dir).join("keyswitch-menu-open.png"), &pixels(&h.ui, 1180, 780), 1180, 780);
+    }
+    h.press("menu-item-5"); // Move down (rule occupies item 3).
+    assert!(h.ui.scene().unwrap().surface("context-menu").is_none(), "closed menu has no surface");
+    let just_closed = pixels(&h.ui, 1180, 780);
+    h.idle(45);
+    let settled = pixels(&h.ui, 1180, 780);
+    // Below the list, where no row/focus animation occurs, a closing menu
+    // used to leave its text painted as a fading ghost above the editor.
+    for y in 360..445 {
+        let range = (y * 1180 + 970) * 4 .. (y * 1180 + 1150) * 4;
+        assert_eq!(&just_closed[range.clone()], &settled[range], "closed menu must disappear immediately, scanline {y}");
+    }
     let overlay = p.selection.read().unwrap().parts[0].articulation_overlay.clone();
     assert_eq!(overlay.display_order(&source.articulations), vec![0, 1, 3, 2, 4]);
     assert_eq!(overlay.inputs, before);
