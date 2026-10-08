@@ -44,7 +44,7 @@ impl Ladder {
     pub(super) fn process(
         &self, state: &mut ProcessorState, cells: &mut [[f64; 2]],
         parameters: &[ControlRamp], block: &mut Planar, len: usize, at: u64,
-        modulation: [f64; 2],
+        modulation: [f64; 4],
     ) -> bool {
         if state.aux[0] == 0.0 {
             cells.fill([0.0; 2]);
@@ -52,10 +52,14 @@ impl Ladder {
         }
         let mut kernel = ladder_kernel::Ladder::restore(cells);
         kernel.record_version(self.record_version);
-        kernel.enabled_modulation(modulation[1] != 0.);
+        kernel.enabled_modulation(modulation[3] != 0.);
         let values = |frame| {
             let mut values = self.parameters.map(|p| p.value(parameters, frame, None) as f32);
             values[0] = (values[0] + modulation[0] as f32).clamp(0., 1.);
+            values[1] = (values[1] + modulation[1] as f32).clamp(0., 1.);
+            values[2] += modulation[2] as f32;
+            // v1 filter.rs: enabled Gain routes clamp even when their delta is zero.
+            if (modulation[3] as u8) & 4 != 0 { values[2] = values[2].clamp(0., 1.); }
             values
         };
         let first = values(at);
@@ -108,14 +112,14 @@ mod tests {
             let mut cells = [[0.0; 2]; CELLS];
             let mut state = ProcessorState::default();
             let mut whole = source;
-            assert!(!prepared.process(&mut state, &mut cells, &[], &mut whole, BLOCK, 0, [0.; 2]));
+            assert!(!prepared.process(&mut state, &mut cells, &[], &mut whole, BLOCK, 0, [0.; 4]));
             assert_eq!(whole, expected.map(|ch| ch.map(f64::from)));
             state = ProcessorState::default(); // recycled voice, same reserved storage
             let mut split = source;
             for (start, end) in [(0, 1), (1, 23), (23, 32), (32, 64)] {
                 let mut fragment = [[0.0; BLOCK]; 2];
                 for c in 0..2 { fragment[c][..end-start].copy_from_slice(&source[c][start..end]); }
-                assert!(!prepared.process(&mut state, &mut cells, &[], &mut fragment, end-start, start as u64, [0.; 2]));
+                assert!(!prepared.process(&mut state, &mut cells, &[], &mut fragment, end-start, start as u64, [0.; 4]));
                 for c in 0..2 { split[c][start..end].copy_from_slice(&fragment[c][..end-start]); }
             }
             assert_eq!(split, whole);
