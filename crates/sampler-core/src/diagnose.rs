@@ -137,6 +137,8 @@ mod tests {
 
     fn record(key: u8, suppressed: bool, rejected: &[Option<Rejection>]) -> SelectionRecord {
         SelectionRecord {
+            event: 0,
+            parent_event: None,
             at: 0,
             key,
             velocity: 0.5,
@@ -145,7 +147,7 @@ mod tests {
             candidates: rejected
                 .iter()
                 .enumerate()
-                .map(|(region, r)| RegionVerdict { region, group: None, rejected: *r })
+                .map(|(region, r)| RegionVerdict { region, group: None, rejected: *r, started: None })
                 .collect(),
         }
     }

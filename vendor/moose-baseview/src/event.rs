@@ -112,6 +112,8 @@ pub enum MouseEvent {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum WindowEvent {
+    /// Native contents were invalidated; present retained software pixels again.
+    RedrawRequested,
     Focused,
     Unfocused,
     WillClose,

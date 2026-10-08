@@ -181,6 +181,59 @@ fn pitch_and_pan_routes_reach_the_voice() {
 }
 
 #[test]
+fn changing_and_held_controller_pitch_matches_expression_without_heap() {
+    let build = |source, depth| {
+        Runtime::new(
+            modulated(
+                plan(1024, Envelope::default()),
+                program(
+                    vec![source],
+                    vec![ModRoute::new(0, ModTarget::Pitch, depth)],
+                ),
+                0,
+            ),
+            limits(),
+        )
+        .unwrap()
+    };
+    let mut actual = build(ModSource::Controller(1), 12.0);
+    let mut reference = build(ModSource::Constant, 0.0);
+    actual.trigger(input(1), 60, 1.0).unwrap();
+    let note = reference.trigger(input(1), 60, 1.0).unwrap();
+    let expression = reference.expression_id(note).unwrap();
+    let performance = actual.performance(0).unwrap();
+    // The first cell after a CC change holds the old/new pitch midpoint.
+    for (cc, pitch) in [
+        (0, 0.0),
+        (u32::MAX, 6.0),
+        (u32::MAX, 12.0),
+        (0, 6.0),
+        (0, 0.0),
+    ] {
+        let mut got = [[0.0; 2]; 64];
+        let mut expected = got;
+        support::without_heap(|| {
+            actual.set_controller(performance, 1, cc).unwrap();
+            reference
+                .set_expression(
+                    expression,
+                    Expression {
+                        pitch_semitones: pitch,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            actual.render(&mut got).unwrap();
+            reference.render(&mut expected).unwrap();
+        });
+        assert_eq!(
+            got.map(|f| f.map(f32::to_bits)),
+            expected.map(|f| f.map(f32::to_bits))
+        );
+    }
+}
+
+#[test]
 fn modulated_cutoff_equals_the_static_filter_at_the_modulated_frequency() {
     let svf = |hz| {
         Processor::StateVariable(StateVariableFilter {

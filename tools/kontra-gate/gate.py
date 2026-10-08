@@ -102,7 +102,9 @@ def summarize(run, complete=False):
                 totals[version]['audible'] += row.get('plays_note') == 'yes'
             ui = 'UNKNOWN' if not new else 'PASS' if new.get('ui') == 'original-ok' else 'FAIL'
             audible = 'UNKNOWN' if not new or new.get('audition_status') in ['audition-mismatch', 'fallback-note', 'not-auditioned'] else 'PASS' if new.get('plays_note') == 'yes' else 'FAIL'
-            axes['UI'] += [ui, gestures.get('status', 'UNKNOWN') if path.endswith('/Instruments/Conflux.nki') else 'UNKNOWN']  # gesture/persistence coverage is not scalar readback
+            from adapters import gesture_cell
+            gesture = gesture_cell(gestures.get('cells', []), item, condition)
+            axes['UI'] += [ui, gesture['status']]
             axes['DSP'] += [audible, 'UNKNOWN']  # native family and complete slot disposition not observed
             if '::' in path:
                 axes['UVI'] += [ui, audible, 'UNKNOWN']  # gate subset never certifies the entire corpus
@@ -111,6 +113,9 @@ def summarize(run, complete=False):
             axes['scripting'].append('FAIL' if any(v and v > 0 for v in known) else 'UNKNOWN' if not known or None in known else 'PASS')
             for metric in METRICS:
                 a, b = old.get(metric), new.get(metric)
+                if metric == 'widget_gesture_pass':
+                    observed.append({'item_sha256': item, 'condition': condition, 'metric': metric, 'v1': None, 'v2': gesture.get('passed'), 'total': gesture.get('total'), 'delta': None, 'failures': gesture.get('failures', {}), 'verdict': gesture['status']})
+                    continue
                 if metric in ['load_ms', 'first_audio_ms']:
                     a = a if old.get('loads') == 'yes' else None
                     b = b if new.get('loads') == 'yes' else None
