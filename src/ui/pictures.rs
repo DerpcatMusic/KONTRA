@@ -247,6 +247,47 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "requires locally owned libraries; numeric asset inventory only"]
+    fn kontakt_missing_image_inventory() {
+        let manifest=std::fs::read_to_string(std::env::var_os("KONTRA_RESOURCE_PROBE_LIST").unwrap()).unwrap();
+        for (item,line) in manifest.lines().enumerate() {
+            let path=Path::new(line.split_once('\t').unwrap().1);
+            let mut instrument=sampler_kontakt::read(path).unwrap().instrument;
+            instrument.retain_zones(|_|false);instrument.assets.clear();
+            let loaded=sampler_kontakt::prepare(instrument,vec![],&sampler_kontakt::Options {library:Some(path.to_owned()),..Default::default()}).unwrap();
+            let mut source=Source::of(path);
+            let root=source.kontakt.root().to_owned();
+            let names=source.kontakt.names("");
+            for (container,path) in source.kontakt.locations().iter().filter(|p|p.extension().is_some_and(|e|e.eq_ignore_ascii_case("nkr")||e.eq_ignore_ascii_case("nicnt"))).enumerate() {
+                match sampler_kontakt::ResourceContainer::open(path) {
+                    Ok(c)=>println!("RESOURCE_PROBE item={item} container={container} indexed=true members={}",c.names().len()),
+                    Err(e)=>println!("RESOURCE_PROBE item={item} container={container} indexed=false kind={:?} stage={:?}",e.kind(),e.stage()),
+                }
+            }
+            let loose:Vec<_>=std::fs::read_dir(&root).unwrap().flatten().filter(|e|e.file_type().is_ok_and(|t|t.is_file())).map(|e|e.file_name().to_string_lossy().to_lowercase()).collect();
+            let mut requested=0;let mut resolved=0;let mut failures=0;
+            for (face_index,face) in loaded.interfaces.iter().enumerate() {
+                for (asset_index,asset) in face.assets.iter().enumerate() {
+                    if !matches!(asset.kind,ir::AssetKind::Image(_)) {continue;}
+                    requested+=1;
+                    let result=source.read_result(&asset.path);
+                    if result.as_ref().is_ok_and(|b|b.is_some()) {resolved+=1;continue;}
+                    failures+=1;
+                    let basename=asset.path.rsplit(['/', '\\']).next().unwrap().to_lowercase();
+                    let stem=Path::new(&basename).file_stem().unwrap().to_string_lossy();
+                    let namespace_exact=names.iter().filter(|n|n.eq_ignore_ascii_case(&asset.path)).count();
+                    let namespace_basename=names.iter().filter(|n|n.rsplit(['/', '\\', '|']).next().is_some_and(|n|n.eq_ignore_ascii_case(&basename))).count();
+                    let namespace_stem=names.iter().filter(|n|Path::new(n).file_stem().is_some_and(|n|n.to_string_lossy().eq_ignore_ascii_case(&stem))).count();
+                    let root_basename=loose.iter().filter(|n|*n==&basename).count();
+                    let root_stem=loose.iter().filter(|n|Path::new(n).file_stem().is_some_and(|n|n.to_string_lossy().eq_ignore_ascii_case(&stem))).count();
+                    println!("RESOURCE_PROBE item={item} face={face_index} asset={asset_index} requested_hash={} error={:?} namespace_exact={namespace_exact} namespace_basename={namespace_basename} namespace_stem={namespace_stem} root_basename={root_basename} root_stem={root_stem}",&blake3::hash(asset.path.as_bytes()).to_hex()[..16],result.err());
+                }
+            }
+            println!("RESOURCE_PROBE item={item} namespace_members={} requested={requested} resolved={resolved} failed={failures}",names.len());
+        }
+    }
+
+    #[test]
     fn shared_lookup_distinguishes_absence_invalid_path_and_failed_authority() {
         let dir = std::env::temp_dir().join(format!("kontra-shared-resource-result-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("Resources")).unwrap();
