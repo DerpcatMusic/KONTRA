@@ -232,9 +232,14 @@ impl Part {
     // Mix changes frequently while dragging faders. Reuse the worker's
     // immutable sparse layer and rebind only when its contents actually change.
     fn apply_editor_offsets(&mut self,offsets:&Arc<[sampler_core::EngineParameterOffset]>) {
-        if self.editor_offsets.as_deref()!=Some(offsets.as_ref()) && self.runtime.set_engine_offsets(offsets).is_ok() {
-            self.editor_offsets=Some(offsets.clone());
+        if self.editor_offsets.as_deref() != Some(offsets.as_ref())
+            && self.runtime.set_engine_offsets(offsets).is_err()
+        {
+            self.editor_offsets = None;
+            return;
         }
+        // Adopt the current Mix's owner before the shell retires the previous Mix.
+        self.editor_offsets = Some(offsets.clone());
     }
 
     /// Follow the part's tuning, MPE and bend range settings.
@@ -3138,4 +3143,38 @@ mod editor_reload_tests {
             assert_eq!(rt.control_value(rt.active_plan(),id).unwrap(),ControlValue::Real(law.decode(law.encode(100.)+100000)),"loading applies the already saved editor layer");
         }
     }
+    #[test]
+    fn equal_offset_arcs_follow_mix_ownership_and_failed_updates_drop_the_cache() {
+        let address = EngineParameterAddress { parameter: sampler_core::engine_parameter_id("ENGINE_PAR_CUTOFF").unwrap(), group:0, slot:3, generic:-1 };
+        let id = ControlId(10);
+        let law = EngineParameterLaw::Exponential { low:10., high:10000. };
+        let plan = Prepared::new(48000, vec![], vec![], 0).unwrap()
+            .with_controls(vec![ControlDefinition { id, domain:ControlDomain::Real { min:10., max:10000. }, default:ControlValue::Real(100.) }]).unwrap()
+            .with_engine_parameters(vec![EngineParameterBinding { address, control:id, law }], vec![]).unwrap();
+        let limits = Limits::for_plan(&plan,128,16);
+        let mut part = Part::new(Runtime::new(plan,limits).unwrap(),MixTree::instrument("Ownership")).unwrap();
+        let offsets = |offset| Arc::<[EngineParameterOffset]>::from([EngineParameterOffset { address, offset }]);
+        let a = offsets(0.1); let b = offsets(0.1); let c = offsets(0.2);
+        part.apply_editor_offsets(&a);
+        let plan = part.runtime.active_plan();
+        let revision = part.runtime.control_revision(plan).unwrap();
+        assert!(!Arc::ptr_eq(&a,&b));
+        part.apply_editor_offsets(&b);
+        assert!(Arc::ptr_eq(part.editor_offsets.as_ref().unwrap(),&b), "equal contents must adopt the latest worker-owned Mix Arc");
+        assert_eq!(part.runtime.control_revision(plan).unwrap(),revision, "equal contents must not call the engine setter");
+        part.apply_editor_offsets(&c);
+        assert!(Arc::ptr_eq(part.editor_offsets.as_ref().unwrap(),&c));
+        assert_eq!(part.runtime.control_value(plan,id).unwrap(),ControlValue::Real(law.decode(law.encode(100.)+200000)));
+        let revision = part.runtime.control_revision(plan).unwrap();
+        let invalid = offsets(f32::NAN);
+        part.apply_editor_offsets(&invalid);
+        assert!(part.editor_offsets.is_none(), "a failed update must release the older cache while the old Mix still retains it");
+        assert_eq!(part.runtime.control_revision(plan).unwrap(),revision);
+        part.apply_editor_offsets(&c);
+        assert!(Arc::ptr_eq(part.editor_offsets.as_ref().unwrap(),&c), "valid retry must restore cache ownership");
+        let d = offsets(0.3); part.apply_editor_offsets(&d);
+        assert!(Arc::ptr_eq(part.editor_offsets.as_ref().unwrap(),&d));
+        assert_eq!(part.runtime.control_value(plan,id).unwrap(),ControlValue::Real(law.decode(law.encode(100.)+300000)));
+    }
+
 }
