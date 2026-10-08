@@ -150,6 +150,23 @@ fn saved_persistent_arrays_are_restored() {
     assert_eq!(cell(&rt, 0), 73);
 }
 
+/// An ordinary array is saved only up to its last change: `%on 7 -3 0 ` for
+/// `%on[6]` means `[7, -3, 0, 0, 0, 0]`, and a prefix ending in 1 stays 1.
+#[test]
+fn saved_array_tail_repeats_its_last_value() {
+    use sampler_ksp::model::Value;
+    let environment = sampler_ksp::Environment {
+        persisted_arrays: [("%on".to_owned(), [4, 1].map(Value::Int).to_vec())].into(),
+        ..Default::default()
+    };
+    let rt = run_in(
+        "on init declare $a declare %on[5] make_persistent(%on) read_persistent_var(%on) end on
+         on note $a := %on[0] * 100 + %on[4] end on",
+        environment,
+    );
+    assert_eq!(cell(&rt, 0), 401);
+}
+
 /// Kontakt ignores a script's call on a note that already ended: a gate-linked
 /// note played after its parent was released is dropped, not a fault.
 #[test]

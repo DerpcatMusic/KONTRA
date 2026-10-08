@@ -359,11 +359,16 @@ impl Eval<'_> {
                 self.write_var(var, value);
             }
         } else if let Some(saved) = self.env.persisted_arrays.get(&*v.name) {
-            let values: Vec<V> = saved
-                .iter()
-                .take(v.len.unwrap_or(0) as usize)
-                .map(conv)
-                .collect();
+            let len = v.len.unwrap_or(0) as usize;
+            let mut values: Vec<V> = saved.iter().take(len).map(conv).collect();
+            // Kontakt stores an ordinary array only up to its last change; the
+            // cells after the stored prefix take the last stored value. UI
+            // tables and XY pads store every cell.
+            if matches!(v.home, Home::Cells { .. })
+                && let Some(last) = values.last().cloned()
+            {
+                values.resize(len, last);
+            }
             let span = v.span;
             for (i, value) in values.into_iter().enumerate() {
                 self.write_elem(var, i as i32, value, span);
