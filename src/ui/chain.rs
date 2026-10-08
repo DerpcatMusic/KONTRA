@@ -202,6 +202,7 @@ fn detail(p: ir::Processor) -> String {
         ir::Processor::Gainer { gain, dry } => {
             format!("Gainer · {} · dry {:.0}%", db(gain), dry * 100.)
         }
+        ir::Processor::LoFi { bits, frequency, noise, color } => format!("LoFi · {bits:.1} bits · {frequency:.0} Hz · noise {noise:.2} · color {color:.2}"),
         ir::Processor::Pan(p) => format!("Pan · {}", pan_text(p.position)),
         ir::Processor::StereoModeller { width, pan, pseudo } => format!(
             "Stereo modeller · width {:.0}% · pan {}{}",

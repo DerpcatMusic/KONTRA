@@ -894,86 +894,6 @@ impl V2Core {
         std::mem::swap(&mut self.peaks.parts, &mut grown.peaks.parts);
     }
 
-    fn reaches(&self, part: usize, port: u8, channel: Option<u8>) -> bool {
-        self.mix.parts.get(part).is_some_and(|c| {
-            c.port == port && (c.mpe || c.channel < 0 || channel.is_none_or(|channel| c.channel == i16::from(channel)))
-        })
-    }
-
-    fn deliver(&mut self, part: usize, event: Event) {
-        let Some(Some(p)) = self.parts.get_mut(part) else { return };
-        deliver(p, part, &mut self.held, &mut self.overflow, event);
-    }
-}
-
-fn record_stream_error(problems: &mut RuntimeProblems, error: sampler_core::StreamError) {
-    use sampler_core::StreamError;
-    match error {
-        StreamError::Capacity => problems.stream_capacity += 1,
-        StreamError::Disconnected => problems.stream_disconnected += 1,
-        StreamError::DecodeFailed(_) => problems.stream_failed += 1,
-        _ => problems.stream_errors += 1,
-    }
-}
-
-impl Core for V2Core {
-    /// `None` empties the part.
-    type Prepared = Option<Box<Part>>;
-    type Retired = Retired;
-
-    fn parts(&self) -> usize {
-        self.parts.len()
-    }
-
-    fn sample_rate(&self) -> f64 {
-        self.rate
-    }
-
-    fn reset(&mut self, sample_rate: f64) {
-        // ponytail: parts keep their prepared rate; the shell reloads them on a rate change.
-        self.rate = sample_rate;
-        self.panic();
-    }
-
-    fn panic(&mut self) {
-        for p in self.parts.iter_mut().flatten() {
-            p.runtime.panic();
-        }
-    }
-
-    fn install(&mut self, part: usize, mut prepared: Option<Box<Part>>) -> Retired {
-        let Some(slot) = self.parts.get_mut(part) else { return Retired(prepared) };
-        for held in self.held.iter_mut().filter(|h| h.part == part) {
-            held.part = ORPHAN;
-        }
-        if let (Some(p), Some(c)) = (prepared.as_mut(), self.mix.parts.get(part)) {
-            p.apply_editor_offsets(self.mix.editor_offsets.get(part).unwrap_or(&self.empty_editor_offsets));
-            p.configure(c, self.mix.articulation_routes.get(part).and_then(Option::as_ref));
-        }
-        Retired(std::mem::replace(slot, prepared))
-    }
-
-    fn begin_block(&mut self, block: &BlockInfo) {
-        for part in self.parts.iter_mut().flatten() { part.runtime.set_offline(block.offline); }
-    }
-
-    fn event(&mut self, port: u8, event: Event) {
-        let channel = event.channel();
-        for part in 0..self.parts.len() {
-            if self.reaches(part, port, channel) {
-                self.deliver(part, event);
-            }
-        }
-    }
-
-    fn play(&mut self, part: usize, event: Event) {
-        self.deliver(part, event);
-    }
-
-    fn key_held(&self, channel: u8, key: u8) -> bool {
-        self.held.iter().any(|h| h.part != ORPHAN && h.note.channel == channel && h.note.key == key)
-    }
-
     fn render_chunk(&mut self, frames: usize) -> Rendered<'_> {
         let n = frames.min(MAX_BLOCK);
         for bus in self.buses.iter_mut() {
@@ -1611,6 +1531,7 @@ fn insert_names(instrument: &ir::Instrument, chain: Option<ir::ChainRef>) -> Vec
             ir::Processor::Gainer { .. } => "Gainer",
             ir::Processor::StereoModeller { .. } => "Stereo Modeller",
             ir::Processor::Pan(_) => "Pan",
+            ir::Processor::LoFi { .. } => "LoFi",
             ir::Processor::StereoMatrix(_) => "Stereo",
             ir::Processor::Reverb(_) => "Reverb",
             ir::Processor::Compressor(_) => "Compressor",
@@ -3454,10 +3375,7 @@ mod timing_parity_tests {
     }
 }
 
-#[cfg(test)]
-mod editor_reload_tests {
-    use super::*;
-    use sampler_core::{EngineParameterAddress,EngineParameterLaw,EngineParameterBinding,EngineParameterOffset,ControlId};
+;
     #[test]
     fn v1_editor_mix_before_load_and_reload_keeps_the_saved_offset() {
         let address=EngineParameterAddress{parameter:sampler_core::engine_parameter_id("ENGINE_PAR_CUTOFF").unwrap(),group:0,slot:3,generic:-1};
