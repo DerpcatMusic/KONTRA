@@ -1171,6 +1171,12 @@ impl<'a> Sema<'a, '_> {
         }
         if b == Builtin::Search
             && let Arg::Var(v, _) = out[0]
+            && self.hir.vars[v.0 as usize].ty == Ty::Real
+        {
+            return fault(span, "search does not accept real arrays");
+        }
+        if b == Builtin::Search
+            && let Arg::Var(v, _) = out[0]
             && num.is_some_and(|n| n != self.hir.vars[v.0 as usize].ty)
         {
             return fault(span, "search value type differs from the array");
