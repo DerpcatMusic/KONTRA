@@ -143,3 +143,32 @@ The current implementation reuses the render loop's existing projected pitch ins
 Median-of-run medians / median-of-run p99s improve in this matched window: piano **26.461 / 52.161 → 25.490 / 45.101**, FX **78.441 / 159.433 → 74.681 / 145.612**. Total underruns are piano 0 → 0 and FX 2 → 0. Warm FX/64 is **79.341 / 149.183 → 81.001 / 148.963**, underruns 0 → 0. All event/render heap counts are zero; cold eviction has zero file pages remaining; peak voices stay 12 and 24.
 
 **HOLD remains:** repeat 3 regresses (piano median and p99, FX median), warm FX median increases, and the historical absolute baseline and v1 target are not met. These results do not prove every regression is scheduler noise. The corrected audio-TID piano profile has zero lost samples; protection falls to 1.82% of sampled userspace cycles, and admission/reservation no longer appears above the 1% leaf threshold. Function inlining and separate windows prohibit treating that threshold as a complete cost comparison.
+
+## Full corrected admission matrix (fresh alternating cells)
+
+Before is frozen integrated `94448100…`; after is `c2cfa510`, frozen `66e04227…`. All 36 event/render heap counters are zero; all cold evictions leave zero file pages, peak audio is nonzero and peak voice counts agree. Each entry is steady block median / p99 in microseconds. Every run obtains its own FIFO slot; the tighter follow-up will hold one bounded shard for consecutive pairs.
+
+| Cell | Before | After | Underruns before / after |
+|---|---:|---:|---:|
+| piano/32 warm | 23.590 / 74.001 | 14.830 / 29.971 | 0 / 0 |
+| piano/64 warm | 27.350 / 52.081 | 28.611 / 49.841 | 0 / 0 |
+| piano/256 warm | 91.932 / 135.352 | 100.652 / 193.764 | 0 / 0 |
+| strings/32 warm | 22.190 / 38.630 | 32.231 / 62.361 | 0 / 0 |
+| strings/64 warm | 39.161 / 81.191 | 39.661 / 86.212 | 0 / 0 |
+| strings/256 warm | 141.512 / 229.674 | 133.212 / 205.904 | 0 / 0 |
+| fx/32 warm | 74.991 / 406.448 | 50.041 / 123.382 | 0 / 0 |
+| fx/64 warm | 83.262 / 166.853 | 98.921 / 269.735 | 0 / 0 |
+| fx/256 warm | 298.656 / 1188.382 | 276.685 / 870.826 | 0 / 2 |
+| piano/32 cold | 15.910 / 35.060 | 17.280 / 37.711 | 0 / 0 |
+| piano/64 cold | 26.040 / 51.691 | 26.560 / 59.262 | 0 / 0 |
+| piano/256 cold | 89.231 / 139.493 | 90.551 / 141.523 | 0 / 0 |
+| strings/32 cold | 27.401 / 50.861 | 39.540 / 347.947 | 20 / 0 |
+| strings/64 cold | 40.951 / 65.001 | 41.371 / 62.541 | 0 / 0 |
+| strings/256 cold | 125.242 / 165.453 | 228.954 / 360.637 | 0 / 0 |
+| fx/32 cold | 48.841 / 107.712 | 47.721 / 114.693 | 0 / 0 |
+| fx/64 cold | 82.541 / 174.944 | 84.272 / 174.323 | 0 / 0 |
+| fx/256 cold | 188.764 / 318.686 | 314.126 / 1526.258 | 1 / 5 |
+
+This full matrix **fails acceptance**: several CPU cells and FX/256 underruns regress. The cold64 historical spikes are reduced but no noise-only conclusion is established. Do not land this checkpoint. The remaining sorted page-index shifts in normal block service are the next admission mechanism to measure and remove.
+
+The synthetic `page_admission` probe excludes decoding from its request timer and asserts zero allocations/frees across request, decode ownership transfer and completion. Before removing vector shifts, 768 slots have fill 0.150 / 1.310 µs and churn 0.200 / 0.290 µs; 6144 slots have fill 0.870 / 2.450 µs and churn 0.900 / 1.690 µs. Frozen probe SHA256 `f14d6b5d7ec0a34c5c38ea98dc31eaf703382f8ff3507f63c4e3b28c0e29d4cc`. Synthetic logical fill/churn is separate from the library warm/cold disk-cache cells above.
