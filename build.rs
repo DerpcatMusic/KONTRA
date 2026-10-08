@@ -8,6 +8,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+#[path = "src/plugin/automation_ids.rs"]
+mod automation_ids;
+
 const SOURCES: &[&str] = &[
     "crates/sampler-ir/src",
     "crates/sampler-kontakt/src",
@@ -15,6 +18,7 @@ const SOURCES: &[&str] = &[
 ];
 
 fn main() {
+    host_parameter_index();
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     for source in SOURCES {
         println!("cargo:rerun-if-changed={source}");
@@ -35,6 +39,22 @@ fn main() {
     }
     println!("cargo:rustc-env=KONTRA_BUILD_HASH={build_hash:016x}");
     identity(hash, build_hash);
+}
+
+// The framework's compile-time preset index cannot inspect a manual Params
+// implementation. Emit the same stable slot IDs used by its runtime metadata.
+fn host_parameter_index() {
+    let out = std::path::PathBuf::from(env::var_os("OUT_DIR").expect("cargo OUT_DIR"));
+    let target = out.ancestors().nth(4).expect("cargo build output layout");
+    let directory = target.join("param-index").join(env::var("CARGO_PKG_NAME").unwrap());
+    std::fs::create_dir_all(&directory).expect("parameter index directory");
+    let mut index = String::from("struct = \"HostAutomation\"\nscheme = \"hash\"\n");
+    for address in 0..automation_ids::HOST_AUTOMATION_SLOTS {
+        use std::fmt::Write;
+        writeln!(index, "[[param]]\nid = {}\nfield = \"slot_{address}\"\nname = \"Automation {address}\"\n",
+            automation_ids::HOST_AUTOMATION_BASE + u32::from(address)).unwrap();
+    }
+    std::fs::write(directory.join("HostAutomation.params.toml"), index).expect("host parameter index");
 }
 
 fn git(args: &[&str]) -> Option<String> {
