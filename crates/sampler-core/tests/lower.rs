@@ -801,6 +801,18 @@ fn addressed_gain_and_filter_controls_drive_real_audio_lanes() {
         rt.control_value(rt.active_plan(), id),
         Ok(ControlValue::Real(0.25))
     );
+    instrument.chains[0].pre_amplitude[0] = ir::Processor::Gainer {
+        gain: ir::Gain::UNITY,
+        dry: 0.,
+    };
+    let mut rt = Runtime::new(prepare(&instrument, constant(0.5)), limits()).unwrap();
+    rt.trigger(input(60), 60, 1.).unwrap();
+    rt.render(&mut out).unwrap();
+    rt.set_engine_parameter(address, 250000).unwrap();
+    let mut settled = [[0.; 2]; 2048];
+    rt.render(&mut settled).unwrap();
+    let expected = 0.25 + 0.75 * (1. - f64::from(f32::from_bits(0x3a11a2b4))).powi(2047);
+    assert!((f64::from(settled[2047][0]) / 0.5 - expected).abs() < 1e-5);
     instrument.controls[0].value = ir::ControlValue::Continuous {
         min: 100.,
         max: 12000.,
@@ -873,6 +885,113 @@ fn addressed_gain_and_filter_controls_drive_real_audio_lanes() {
     rt.render(&mut out).unwrap();
     let high: f32 = out[512..].iter().map(|f| f[0] * f[0]).sum();
     assert!(high > low * 100., "Daft {low} {high}");
+}
+
+#[test]
+fn native_stereo_width_and_pan_controls_reach_the_processor() {
+    use sampler_core::{
+        ControlValue, EngineParameterAddress, EngineParameterBinding, EngineParameterLaw,
+        engine_parameter_id,
+    };
+    let keys = [
+        "xml/program/layer2/node7/width",
+        "xml/program/layer2/node7/pan",
+    ];
+    let addresses =
+        ["ENGINE_PAR_STEREO", "ENGINE_PAR_STEREO_PAN"].map(|name| EngineParameterAddress {
+            parameter: engine_parameter_id(name).unwrap(),
+            group: 2,
+            slot: 7,
+            generic: -1,
+        });
+    let ir = ir::Instrument {
+        assets: vec![asset("stereo")],
+        zones: vec![ir::Zone {
+            keys: ir::KeyRange { low: 60, high: 60 },
+            chain: Some(ir::ChainRef(0)),
+            velocity: ir::VelocityResponse::None,
+            ..ir::Zone::new(ir::AssetRef(0))
+        }],
+        chains: vec![ir::Chain {
+            scope: ir::Scope::Voice,
+            pre_amplitude: vec![ir::Processor::StereoModeller {
+                width: 0.5,
+                pan: 0.,
+                pseudo: false,
+            }],
+            post_amplitude: vec![],
+        }],
+        controls: keys
+            .iter()
+            .enumerate()
+            .map(|(i, key)| ir::Control {
+                key: (*key).into(),
+                label: String::new(),
+                value: ir::ControlValue::Continuous {
+                    min: if i == 0 { 0. } else { -1. },
+                    max: 1.,
+                    default: if i == 0 { 0.5 } else { 0. },
+                    unit: ir::ControlUnit::None,
+                },
+                automation: ir::Automation::None,
+            })
+            .collect(),
+        processor_controls: [ir::ProcessorParameter::Width, ir::ProcessorParameter::Pan]
+            .into_iter()
+            .enumerate()
+            .map(|(i, parameter)| ir::ProcessorControl {
+                control: ir::ControlRef(i),
+                chain: ir::ChainRef(0),
+                index: 0,
+                parameter,
+                ramp: ir::Time::ZERO,
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let plan = lower(
+        &ir,
+        48000,
+        vec![Pcm::new(48000, vec![[0.1, 0.2]; 4096].into_boxed_slice()).unwrap()],
+        no_behaviors,
+    )
+    .unwrap()
+    .with_engine_parameters(
+        addresses
+            .into_iter()
+            .enumerate()
+            .map(|(i, address)| EngineParameterBinding {
+                address,
+                control: sampler_core::lower::ir_control_id(keys[i]),
+                law: EngineParameterLaw::Linear {
+                    low: if i == 0 { 0. } else { -1. },
+                    high: 1.,
+                },
+            })
+            .collect(),
+        vec![],
+    )
+    .unwrap();
+    let mut rt = Runtime::new(plan, limits()).unwrap();
+    rt.trigger(input(60), 60, 1.).unwrap();
+    let mut out = [[0.; 2]; 1024];
+    rt.render(&mut out).unwrap();
+    assert!((out[1023][0] - 0.1).abs() < 1e-5);
+    rt.set_engine_parameter(addresses[0], 0).unwrap();
+    rt.render(&mut out).unwrap();
+    let remaining_width = 0.5 * (1. - 1. / 180f64).powi(1023);
+    assert!((f64::from(out[1023][0]) - (0.15 - 0.1 * remaining_width)).abs() < 1e-5);
+    assert!((f64::from(out[1023][1]) - (0.15 + 0.1 * remaining_width)).abs() < 1e-5);
+    rt.set_engine_parameter(addresses[1], 1_000_000).unwrap();
+    rt.render(&mut out).unwrap();
+    assert!(out[1023][0] < 0.1 && out[1023][1] > 0.149);
+    assert_eq!(
+        rt.control_value(
+            rt.active_plan(),
+            sampler_core::lower::ir_control_id(keys[1])
+        ),
+        Ok(ControlValue::Real(1.))
+    );
 }
 
 #[test]
