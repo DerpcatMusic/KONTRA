@@ -1,6 +1,6 @@
 """Small trust-boundary and schedule checks before any real-library run."""
 import struct
-from live_host import events, keyed, v1_state, frozen_underruns
+from live_host import events, keyed, v1_state, frozen_underruns, measured_status
 
 plan = events({'key': 60, 'velocity': 64, 'keyswitch': 12}, 6)
 assert plan[:3] == [(0, 0xb0, 1, 100), (0, 0xb0, 11, 127), (0, 0x90, 12, 64)]
@@ -20,3 +20,9 @@ assert frozen_underruns([]) is None
 assert frozen_underruns([{'event': 'host_audio_config'}]) == 0
 assert frozen_underruns([{'event': 'host_audio_config'}, {'code': 'playback_drops', 'data': {'state': {'underruns': 4}}}]) == 4
 print('PASS: event plan, native v1-only envelope, unavailable diagnostics')
+
+complete = {'returncode':0, 'events_dispatched':12, 'events_planned':12, 'peak':.5, 'nonfinite':0, 'contention':'QUIET'}
+assert measured_status(complete) == 'MEASURED'
+for change in [{'contention':'CONTENDED'}, {'contention':'UNKNOWN'}, {'peak':0}, {'nonfinite':1}, {'returncode':1}, {'events_dispatched':11}]:
+    assert measured_status(dict(complete, **change)) == 'UNKNOWN'
+print('PASS: silent, incomplete and contended runs cannot certify live playback')
