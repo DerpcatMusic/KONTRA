@@ -529,7 +529,7 @@ impl View<'_> {
         for (k, slot) in slots.iter_mut().enumerate().take(voices.len()) {
             let v = slot.as_mut().unwrap()[0].value.as_mut().unwrap();
             let len = batch.ends[2 * k];
-            lanes::scale(&mut block, k, &crate::dsp::levels(v, len), len);
+            lanes::scale(&mut block, k, &crate::dsp::levels(v, len, 0), len);
         }
         sampler_simd::dispatch(
             #[inline(always)]
