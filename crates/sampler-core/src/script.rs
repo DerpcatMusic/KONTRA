@@ -3,6 +3,7 @@ use crate::ops::{ScriptBank, ScriptResources};
 use crate::{BehaviorId, Error, PlanId, Prepared, Program, Runtime};
 
 /// Dense instance identity scoped to a prepared plan, not a callback or note.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ScriptInstanceId(pub u16);
 
