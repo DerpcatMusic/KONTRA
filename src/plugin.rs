@@ -97,6 +97,7 @@ pub struct Part {
     pub control_values: Vec<SavedControl>,
     pub group: u32,
     pub edits: crate::sound::edits::Edits,
+    pub timing: crate::timing::Timing,
 }
 
 impl Default for Part {
@@ -133,6 +134,7 @@ impl Default for Part {
             control_values: Vec::new(),
             group: 0,
             edits: Default::default(),
+            timing: Default::default(),
         }
     }
 }
@@ -271,6 +273,8 @@ pub struct Selection {
     pub memory_budget_mb: u32,
     /// Ported v1 rack sample mode; changing it reloads affected parts.
     pub streaming: Streaming,
+    pub auto_align: bool,
+    pub align_transport_only: bool,
 }
 
 /// Seconds a streamed sample goes unplayed before the memory budget may drop it.
@@ -882,6 +886,7 @@ pub(crate) fn mix(selection: &Selection) -> Mix {
         parts: rack_controls(selection),
         articulation_routes: Vec::new(),
         editor_offsets: selection.parts.iter().map(|p|p.edits.native()).collect(),
+        timing: std::sync::Arc::new(timing_plan(selection)),
         buses: std::array::from_fn(|n| {
             let b = selection.bus(n);
             BusControls {
@@ -2510,4 +2515,17 @@ mod settings_parity_tests {
         let restored = Part::read_field(&mut moose::core::custom_state::StateCursor::new(&buf)).unwrap();
         assert!(part == restored);
     }
+}
+
+/// Port v1 timing_for/plan; stale patch and snapshot measurements are excluded.
+fn timing_for(p:&Part)->std::borrow::Cow<'_,crate::timing::Timing>{
+    if p.timing.measured(&p.path,p.program,&p.snapshot){std::borrow::Cow::Borrowed(&p.timing)}else{std::borrow::Cow::Owned(crate::timing::Timing{override_ms:p.timing.override_ms,exclude:p.timing.exclude,..Default::default()})}
+}
+fn timing_plan(s:&Selection)->crate::timing::Plan{
+    let latency_ms=crate::timing::reported_ms(s.parts.iter().filter(|p|!p.path.is_empty()).map(|p|timing_for(p).latest()));
+    crate::timing::Plan{on:s.auto_align,transport_only:s.align_transport_only,latency_ms,
+        parts:(0..s.parts.len().max(RACK_SLOTS)).map(|n|std::sync::Arc::new(s.parts.get(n).filter(|p|!p.path.is_empty()).map_or_else(crate::timing::Holds::default,|p|{
+            let names:Vec<&str>=p.timing.arts.iter().map(|a|a.identity.as_str()).collect();
+            crate::timing::Holds::of(&timing_for(p),&names,latency_ms)
+        }))).collect()}
 }
