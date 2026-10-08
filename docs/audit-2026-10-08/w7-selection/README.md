@@ -19,7 +19,7 @@ vectors**: mixed joins/precedence, counted wrap/ping-pong, tuning onset,
 ping-pong crossfade, slots 1..7 traversal. Overlapping loop ranges reject
 preparation. Alternating crossfade preserves metadata and an UnknownLaw
 finding; exact native transition is not claimed. The new ignored real Una
-Corda source proof is not yet green at this checkpoint.
+Corda source proof passed on6ae82fa7; see the receipt below.
 
 ## Areia controls before W5 init-service merge
 
@@ -76,3 +76,11 @@ Native-vs-native control remains48/48; clean v1 and baseline v2 remain0/48 under
 The new reader supports accepted Program versions0x91/0x92/0xa0..0xa8 with legacy min(inner,outer-capacity) semantics and0xa9..0xb5 with modern inner-count semantics. It walks raw0/version0x50 ArrayA/ArrayB elements, counts UTF-16 code units as2 bytes each, rejects ArrayB K>64, and reads BAO0x70/0x71. Older0x80/0x82/0x90 and unknown versions produce unsupported diagnostics. Raw private bytes and unrelated fields remain owned by the original reader.
 
 Failing-first runtime and decoder contracts preceded implementation. Passing regressions cover CC/host scaling, same-timestamp callback order, soft takeover/rearm, nonempty arrays (first BAO header at exact offset140), legacy/modern version gates, malformed headers, truncation, and slider-only resolution despite labels/knobs. A fixture offset was corrected for the preceding label: the observed script variable occupies cell1. V1's controller path only enqueued controller callbacks; its separate UI path clamped values and ran UI callbacks. V1 also explicitly warned that native group criteria were retained but not evaluated. The v2 fix reuses typed widget admission and does not import a second VM or invent missing automation defaults.
+
+## Current Una Corda source-loop proof
+
+The runnable ignored real-library test passed for Pure zone3725, Felt/Cotton3726:3,036,139 frames per preset; actual source loop33761..462673; exact equality to independently unrolled PCM and nonzero audio. `una-loop-proof.tsv` retains only aggregate metadata. No WAV or source samples were written. This replaces the missing historical probe as a reproducible source/engine consistency check and remains separate from the five pending native vector gates.
+
+## Landing gates
+
+Final post-W5 checks: core lib62; controller stages5/controllers11/controls10; lower17; native starts2; paged render15; release4/release selection18; source9; voice modulation11 (1 ignored). KSP automation4, selection8, typed widgets7; decoder/loader4; actual Una source proof1 covering3 presets. Root `cargo test --no-run` passed. Automation CC execution is checked without heap activity; both callback capacity and pedal-domain capacity reject before widget/input writes. The pedal regression failed first (target changed90→127 despite Capacity), then passed using the shared pedal-domain preflight. Failed unbound pedal inputs preserve the old raw CC bank, while bound widget callbacks see the newly admitted CC.
