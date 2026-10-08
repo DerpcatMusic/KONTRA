@@ -213,6 +213,7 @@ impl Watch {
         // The wheels follow incoming MIDI as it moves them.
         p.shared.bend.load(Ordering::Relaxed).hash(&mut h);
         p.shared.modulation.load(Ordering::Relaxed).hash(&mut h);
+        p.shared.learned_note.load(Ordering::Relaxed).hash(&mut h);
         // Lit keys, and what the computer keyboard plays.
         for lit in p.shared.played.iter().chain(&p.shared.heard) {
             lit.load(Ordering::Relaxed).hash(&mut h);
@@ -633,6 +634,7 @@ fn replace_part(part: &mut Part, path: String) {
     // Another instrument has another output tree, switching and dynamics.
     part.nodes.clear();
     part.switching = 0;
+    part.articulation_overlay = Default::default();
     part.dynamics = -1;
 }
 
@@ -1001,7 +1003,7 @@ fn shortcuts(ui: &mut Ui, cx: &mut Cx) {
             // The browser shut: Ctrl+F opens it on its filter.
             Key::Char('f' | 'F') if ctrl && !cx.state.browser => (cx.state.browser, cx.state.browse.find) = (true, true),
             Key::Char(' ') if free && loaded && !k.mods.shift => cx.p.shared.audition(None),
-            Key::Escape if cx.state.menu.is_none() && cx.state.renaming.is_none() && !cx.state.browse.typing() => cx.state.selected_none(),
+            Key::Escape if cx.state.menu.is_none() && cx.state.renaming.is_none() && !cx.state.inside.values().any(inside::State::editing) && !cx.state.browse.typing() => cx.state.selected_none(),
             _ => {}
         }
     }
