@@ -310,3 +310,28 @@ Original audit64 collectors, three alternating A/B repeats on the same foundatio
 Evidence: `/home/derpcat/.cache/kontakto-fix-cpu/filter-identity-pairs/{1,2,3}/{before,after}/`.
 
 Follow-up exact audio-TID profile: approximate sampled cycles 510,499,115 → 350,520,014; no lost samples in either run. `pow` and `exp2` are absent above the 1% reporting threshold; `fill_filter_factors` remains 8.88%. This is explanatory profiling, not an acceptance substitute for the paired timings. Profile evidence: `~/.cache/kontakto-fix-cpu/{integrated-9993-profile,filter-identity-profile}/`.
+
+## Sparse addressed filter-factor projection
+
+Candidate `admission-filter-sparse` SHA256 `0f49127d32f1ae0e195329326c21bd20d288fdb30cc84132de83769015ce0b3b`, before frozen `6f41449f` neutral-only candidate. Compile unique addressed filter indices off the audio thread; reset only the preceding program’s targets, then sum/project only the current program’s targets. No per-voice state expansion, audio allocations or locks. The PCM fixture compares two voices (addressed/unaddressed) against separate static-filter oracles through voice release and block sizes1/17/64/128. The factor unit and 39 filter/modulation/lowering integration tests pass (one unrelated ignored); default no-run passes.
+
+Three alternating original-audit64 pairs, same foundation. All24 event/render heap counters are zero and every cold eviction reports zero remaining file pages.
+
+| Cell | Repeat | Before median / p99 µs | After median / p99 µs | Underruns before / after |
+|---|---:|---:|---:|---:|
+| piano-64-cold | 1 | 47.551 / 2431.645 | 27.570 / 49.041 | 0 / 0 |
+| piano-64-cold | 2 | 33.021 / 59.341 | 26.820 / 46.281 | 0 / 0 |
+| piano-64-cold | 3 | 33.080 / 58.441 | 32.520 / 59.361 | 0 / 0 |
+| piano-64-warm | 1 | 32.581 / 56.521 | 24.421 / 45.821 | 0 / 0 |
+| piano-64-warm | 2 | 31.701 / 53.361 | 28.541 / 52.771 | 0 / 0 |
+| piano-64-warm | 3 | 31.951 / 61.642 | 32.630 / 63.442 | 0 / 0 |
+| fx-64-cold | 1 | 56.931 / 131.093 | 51.781 / 111.672 | 0 / 1 |
+| fx-64-cold | 2 | 53.141 / 117.612 | 48.851 / 99.982 | 0 / 1 |
+| fx-64-cold | 3 | 55.351 / 126.572 | 77.002 / 200.884 | 0 / 0 |
+| fx-64-warm | 1 | 53.271 / 114.642 | 52.680 / 116.842 | 0 / 0 |
+| fx-64-warm | 2 | 55.111 / 112.422 | 52.521 / 114.862 | 0 / 0 |
+| fx-64-warm | 3 | 68.411 / 175.634 | 55.071 / 122.392 | 0 / 0 |
+
+**HOLD.** Piano cold aggregate improves33.080 /59.341 →27.570 /49.041 µs but exceeds historical baseline23.380 /43.701. ANALOG STRINGS cold aggregate55.351 /126.572 →51.781 /111.672 meets the historical CPU threshold in aggregate, but repeat3 after regresses and there are two after underruns versus zero before. Warm piano31.951 /56.521 →28.541 /52.771; warm FX55.111 /114.642 →52.680 /116.842 (p99 regression). No streaming or v1 gate pass. All failures, including piano before repeat1 p99=2431.645 µs, are retained.
+
+Evidence: `/home/derpcat/.cache/kontakto-fix-cpu/filter-sparse-pairs/{1,2,3}/{before,after}/`. Profiles and separately tagged underrun-timing diagnostics follow;32/256 and Vista acceptance remain unmeasured/unscorable for this candidate.
