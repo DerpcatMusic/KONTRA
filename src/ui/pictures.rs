@@ -274,12 +274,33 @@ mod tests {
             }
             let loose:Vec<_>=std::fs::read_dir(&root).unwrap().flatten().filter(|e|e.file_type().is_ok_and(|t|t.is_file())).map(|e|e.file_name().to_string_lossy().to_lowercase()).collect();
             let mut inventory=Vec::new();
-            let mut indexed_containers=0;let mut rejected_containers=0;
+            let mut indexed_containers=0;let mut rejected_containers=0;let mut metadata_only_members=0;
             if let Ok(list)=std::env::var("KONTRA_RESOURCE_GLOBAL_LIST") {
                 for line in std::fs::read_to_string(list).unwrap().lines() {
                     let path=Path::new(line);
                     if path.extension().is_some_and(|e|e.eq_ignore_ascii_case("nkr")||e.eq_ignore_ascii_case("nicnt")) {
-                        match sampler_kontakt::ResourceContainer::open(path) {Ok(c)=>{indexed_containers+=1;inventory.extend(c.names().into_iter().map(str::to_owned));},Err(_)=>rejected_containers+=1}
+                        match sampler_kontakt::ResourceContainer::open(path) {Ok(c)=>{indexed_containers+=1;inventory.extend(c.names().into_iter().map(str::to_owned));},Err(_)=>{
+                            rejected_containers+=1;
+                            // Inspect bounded names only; truncated payloads remain unreadable.
+                            if path.extension().is_some_and(|e|e.eq_ignore_ascii_case("nicnt")) {
+                                use std::io::Read;
+                                let mut head=Vec::new();std::fs::File::open(path).unwrap().take(4<<20).read_to_end(&mut head).unwrap();
+                                let marker=b"/\\ NI FC MTD  /\\";
+                                if let Some(start)=head.windows(marker.len()).enumerate().skip(1).find_map(|(n,b)|(b==marker).then_some(n)) {
+                                    if let Some(raw)=head.get(start+272..start+280) {
+                                        let count=u64::from_le_bytes(raw.try_into().unwrap());
+                                        let first=start+904;
+                                        if count<=100_000 && count<=head.len().saturating_sub(first) as u64/640 {
+                                            for n in 0..count as usize {
+                                                let raw=&head[first+n*640+24..first+n*640+624];
+                                                let units:Vec<_>=raw.chunks_exact(2).map(|b|u16::from_le_bytes([b[0],b[1]])).take_while(|&u|u!=0).collect();
+                                                inventory.push(String::from_utf16_lossy(&units));metadata_only_members+=1;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }}
                     } else {inventory.push(path.to_string_lossy().into_owned());}
                 }
             }
@@ -315,9 +336,14 @@ mod tests {
                     let root_twice_stem=twice_stem.as_ref().map_or(0,|stem|loose.iter().filter(|n|Path::new(n).file_stem().is_some_and(|n|n.to_string_lossy().eq_ignore_ascii_case(stem))).count());
                     let image_refs:Vec<_>=face.widgets.iter().enumerate().filter(|(_,w)|w.images.iter().any(|i|i.asset.0==asset_index)).collect();
                     let visible_refs=image_refs.iter().filter(|(i,_)|face.visible(ir::WidgetRef(*i))).count();
+                    let background_hidden_refs=image_refs.iter().filter(|(_,w)|w.hide.background).count();
+                    let title_hidden_refs=image_refs.iter().filter(|(_,w)|w.hide.title).count();
+                    let text_empty_refs=image_refs.iter().filter(|(_,w)|w.text.is_empty()).count();
+                    let resolved=super::super::ir_view::resolved(face);
+                    let geometry_refs:Vec<_>=image_refs.iter().map(|(i,_)|{let r=resolved.page_rect(ir::WidgetRef(*i));[r.x as i64,r.y as i64,r.width as i64,r.height as i64]}).collect();
                     let background_refs=face.pages.iter().filter(|p|p.background.image.is_some_and(|a|a.0==asset_index)).count();
                     let root_stem=loose.iter().filter(|n|Path::new(n).file_stem().is_some_and(|n|n.to_string_lossy().eq_ignore_ascii_case(&stem))).count();
-                    println!("RESOURCE_PROBE item={item} face={face_index} asset={asset_index} requested_hash={} error={:?} namespace_exact={namespace_exact} namespace_basename={namespace_basename} namespace_stem={namespace_stem} root_basename={root_basename} root_stem={root_stem} namespace_twice_stem={namespace_twice_stem} root_twice_stem={root_twice_stem} indexed_containers={indexed_containers} rejected_containers={rejected_containers} numeric_name={numeric_name} blank_name={blank_name} literal_occurrences={literal_occurrences} kind_counts={kinds:?} global_basename={global_basename} global_stem={global_stem} nil_name={nil_name} dropdown_name={dropdown_name} label_refs={label_refs} menu_refs={menu_refs} name_bytes={} png_suffixes={} refs={} visible_refs={visible_refs} background_refs={background_refs}",&blake3::hash(asset.path.as_bytes()).to_hex()[..16],result.err(),asset.path.len(),basename.matches(".png").count(),image_refs.len());
+                    println!("RESOURCE_PROBE item={item} face={face_index} asset={asset_index} requested_hash={} error={:?} namespace_exact={namespace_exact} namespace_basename={namespace_basename} namespace_stem={namespace_stem} root_basename={root_basename} root_stem={root_stem} namespace_twice_stem={namespace_twice_stem} root_twice_stem={root_twice_stem} indexed_containers={indexed_containers} rejected_containers={rejected_containers} metadata_only_members={metadata_only_members} numeric_name={numeric_name} blank_name={blank_name} literal_occurrences={literal_occurrences} kind_counts={kinds:?} global_basename={global_basename} global_stem={global_stem} nil_name={nil_name} dropdown_name={dropdown_name} label_refs={label_refs} menu_refs={menu_refs} name_bytes={} png_suffixes={} refs={} visible_refs={visible_refs} background_refs={background_refs} background_hidden_refs={background_hidden_refs} title_hidden_refs={title_hidden_refs} text_empty_refs={text_empty_refs} geometry_refs={geometry_refs:?}",&blake3::hash(asset.path.as_bytes()).to_hex()[..16],result.err(),asset.path.len(),basename.matches(".png").count(),image_refs.len());
                 }
             }
             println!("RESOURCE_PROBE item={item} namespace_members={} requested={requested} resolved={resolved} failed={failures}",names.len());
