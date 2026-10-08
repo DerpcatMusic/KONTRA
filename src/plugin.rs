@@ -1881,7 +1881,22 @@ impl PluginLogic for Sampler {
                     }
                 }
             }
-            s.core.trace_master(&gains[..len]);
+            if s.core.trace_master(&gains[..len]) {
+                let mut observed = [[0f32; 2]; MAX_BLOCK];
+                for port in 0..BUSES {
+                    let route = cx.bus_routing.output(port).map(|r| (r.channel_start(), r.channel_count()));
+                    let (start, count) = route.unwrap_or(if port == 0 { (0, channels.min(2)) } else { (0, 0) });
+                    let count = count.min(2).min(channels.saturating_sub(start));
+                    if count == 0 { continue }
+                    observed[..len].fill([0.; 2]);
+                    for channel in 0..count {
+                        for (frame, sample) in observed[..len].iter_mut().zip(&b.output(start + channel)[at..at + len]) {
+                            frame[channel] = *sample;
+                        }
+                    }
+                    s.core.trace_output(port, &observed[..len], count as u8);
+                }
+            }
             if let Some(tapped) = s.core.tapped(len) {
                 shared.scope.push(tapped);
             }
