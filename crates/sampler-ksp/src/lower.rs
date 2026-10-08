@@ -1197,6 +1197,11 @@ impl Gen<'_, '_> {
                     }
                 }
             }
+            ExprKind::Builtin(Builtin::MfGetLastFilename, _) => {
+                self.emit(I::Op(Op::MidiFilename {text:dst}))?;
+                self.cover(Builtin::MfGetLastFilename,Coverage::Native);
+                return Ok(());
+            }
             ExprKind::Builtin(Builtin::FsGetFilename, args) => {
                 self.arg(args, 0, free)?;
                 self.arg(args, 1, free + 1)?;
@@ -2220,6 +2225,48 @@ impl Gen<'_, '_> {
                 self.store(args, key, dst, true)?;
                 true
             }
+            builtin if builtin.midi().is_some() => {
+                let action = builtin.midi().unwrap();
+                let has_text = matches!(
+                    action,
+                    sampler_core::MidiAction::ExportArea
+                        | sampler_core::MidiAction::InsertFile
+                        | sampler_core::MidiAction::SaveFile
+                );
+                let text = if has_text {
+                    let text = self.scratch();
+                    self.emit(I::Op(Op::TextClear { text }))?;
+                    if let Some(Arg::Expr(e)) = args.first() {
+                        self.append(e, text, reg(dst, 6)?)?;
+                    }
+                    Some(text)
+                } else {
+                    None
+                };
+                for i in 0..action.arguments() {
+                    self.arg(args, i + usize::from(has_text), reg(dst, 1 + i as u16)?)?;
+                }
+                self.emit(I::Op(Op::Midi {
+                    action,
+                    args: reg(dst, 1)?,
+                    local: dst,
+                    text,
+                }))?;
+                if has_text {
+                    self.tdepth -= 1;
+                }
+                true
+            }
+            ByTrack => {
+                self.arg(args, 0, dst)?;
+                self.set(t, i64::from(sampler_core::MIDI_TRACK_FLAG))?;
+                self.emit(I::Binary32 {
+                    lhs: dst,
+                    rhs: t,
+                    operation: IB::Or,
+                })?;
+                true
+            }
             GetUiId => {
                 let id = self
                     .ui_index(args, 0)
@@ -2301,7 +2348,10 @@ impl Gen<'_, '_> {
                 self.emit(I::Op(Op::ResetTimer))?;
                 true
             }
-            WaitAsync | DisableLogging | WatchVar | WatchArrayIdx => {
+            WaitAsync => {
+                self.arg(args,0,dst)?;self.emit(I::Op(Op::WaitMidi {local:dst}))?;true
+            }
+            DisableLogging | WatchVar | WatchArrayIdx => {
                 // Effects complete immediately; logging switches have no runtime state.
                 true
             }

@@ -104,6 +104,7 @@ pub struct Entry {
 }
 /// A compiled script: programs, initial state after `on init`, and its model.
 pub struct Script {
+    midi_object: sampler_core::MidiObject,
     programs: Vec<Program>,
     entries: Vec<Entry>,
     /// Programs started when the plan becomes active (listener timers).
@@ -472,6 +473,8 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
     let mut starts = Vec::new();
     let mut signals = Vec::new();
     let mut shared = Vec::new();
+    let mut midi_object = sampler_core::MidiObject::default();
+    let mut midi_instances=Vec::new();
     let initial_controllers: Vec<(u8, u8)> = scripts
         .iter()
         .flat_map(|s| s.model().controllers.iter().copied())
@@ -590,9 +593,9 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
             script
                 .entries
                 .iter()
-                .filter(|e| e.kind == EntryKind::PgsChanged)
+                .filter(|e| matches!(e.kind,EntryKind::PgsChanged | EntryKind::AsyncComplete))
                 .map(|e| sampler_core::SignalProgram {
-                    signal: lower::PGS_SIGNAL,
+                    signal: if e.kind==EntryKind::AsyncComplete {sampler_core::MIDI_ASYNC_SIGNAL} else {lower::PGS_SIGNAL},
                     program: base + e.program,
                     stage: index,
                 }),
@@ -603,6 +606,8 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
             program: base + p,
             stage: index,
         }));
+        midi_instances.push((script.slot,instance));
+        midi_object = script.midi_object;
         programs.extend(
             script
                 .programs
@@ -613,6 +618,7 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
         resources.push(script.resources);
     }
     let capacity = shared.len() + 4096;
+    midi_object.bind_initial_instances(&midi_instances)?;
     plan.with_initial_controllers(&initial_controllers)
         .with_script_sustain(owns_sustain)
         .with_script_release_triggers(owns_release_triggers)
@@ -628,6 +634,7 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
         .with_plan_programs(starts)?
         .with_signal_programs(signals)?
         .with_widgets(widgets)?
+        .with_midi_object(midi_object)
         // ponytail: fixed headroom for keys created at runtime, like the script stores.
         .with_shared_store(shared, capacity)
 }
@@ -738,6 +745,9 @@ pub struct Initialized {
 }
 
 impl Initialized {
+    pub fn midi_object(&self) -> &sampler_core::MidiObject {
+        &self.init.midi_object
+    }
     pub fn engine_pars(&self) -> Vec<EnginePar> {
         let mut writes: Vec<_> = self
             .init
@@ -1230,6 +1240,7 @@ fn compile_initialized_inner(
         );
     }
     Ok(Script {
+        midi_object: init.midi_object,
         programs: programs
             .into_iter()
             .map(|p| {
