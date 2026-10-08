@@ -2244,3 +2244,29 @@ fn library_rename_edits_only_the_display_name_and_filter_follows_it() {
     assert!(h.ui.scene().unwrap().surface("instrument-0").is_some(), "selection retains its canonical source");
     p.shared.libraries.edit(|s| s.rename_library(dir, ""));
 }
+
+/// Every product menu target uses menu::view, so exercise a non-articulation
+/// target too: popup paint must be opaque on entry and absent immediately on exit.
+#[test]
+fn shared_context_menu_never_fades_over_interactive_content() {
+    let p = Arc::new(SamplerParams::new());
+    let mut h = Harness::new(&p, 1180., 780.);
+    h.press("app-menu");
+    let frame = h.ui.scene().unwrap().surface("context-menu").unwrap().frame;
+    let first = pixels(&h.ui, 1180, 780);
+    h.idle(45);
+    let settled = pixels(&h.ui, 1180, 780);
+    let sample = ((frame.y as usize + 2) * 1180 + frame.x as usize + 20) * 4;
+    assert_eq!(&first[sample..sample+4], &settled[sample..sample+4], "shared menu must be opaque on entry");
+    h.tick(Input { keys: vec![KeyPress { key: Key::Escape, mods: Mods::default() }], ..Default::default() });
+    h.idle(2);
+    assert!(h.ui.scene().unwrap().surface("context-menu").is_none());
+    let closed = pixels(&h.ui, 1180, 780);
+    h.idle(45);
+    let settled = pixels(&h.ui, 1180, 780);
+    for y in 80..200 {
+        let x = frame.x as usize + 10;
+        let range = (y * 1180 + x) * 4 .. (y * 1180 + x + 180) * 4;
+        assert_eq!(&closed[range.clone()], &settled[range], "shared menu must leave no ghost, scanline {y}");
+    }
+}
