@@ -1616,9 +1616,8 @@ impl Gen<'_, '_> {
                         operation: IB::Multiply,
                     })?;
                 }
-                self.emit(I::MicrosToFrames { local: dst })?;
                 self.forward()?;
-                self.emit(I::WaitLocal { local: dst })?;
+                self.emit(I::WaitMicros { local: dst })?;
                 if builtin == WaitTicks {
                     self.cover(builtin, Coverage::Approximate);
                     return Ok(());
@@ -1844,6 +1843,45 @@ impl Gen<'_, '_> {
                 }
                 self.emit(I::WriteSlot {
                     kind,
+                    group,
+                    slot,
+                    generic,
+                    local: value,
+                })?;
+                self.set(dst, 0)?;
+                self.cover(builtin, Coverage::Approximate);
+                return Ok(());
+            }
+            SetEnginePar
+                if self.engine_par_name(args).as_deref() == Some("ENGINE_PAR_OUTPUT_CHANNEL")
+                    && self.const_int(args, 3) == Some(-1)
+                    && self.const_int(args, 4) == Some(-1) =>
+            {
+                // A group's output: `$NI_BUS_OFFSET` + n routes it to instrument bus n.
+                let [group, address] = [1, 2].map(|n| dst + n);
+                self.arg(args, 2, group)?;
+                self.arg(args, 1, address)?;
+                self.emit(I::WriteGroupBus { group, address })?;
+                self.set(dst, 0)?;
+                self.cover(builtin, Coverage::Approximate);
+                return Ok(());
+            }
+            SetEnginePar
+                if self.engine_par_name(args).as_deref() == Some("ENGINE_PAR_VOLUME")
+                    && self.const_int(args, 2) == Some(-1)
+                    && self.const_int(args, 3) == Some(-1)
+                    && self.const_int(args, 4).is_none_or(|n| n >= 1000) =>
+            {
+                // An instrument bus's volume (`generic` = `$NI_BUS_OFFSET` + n);
+                // another generic index is ignored by the plan.
+                let [group, slot, generic, value] = [1, 2, 3, 4].map(|n| dst + n);
+                self.arg(args, 2, group)?;
+                self.set(slot, i64::from(sampler_core::BUS_VOLUME_SLOT))?;
+                self.arg(args, 4, generic)?;
+                self.arg(args, 1, value)?;
+                self.volume_gain(value)?;
+                self.emit(I::WriteSlot {
+                    kind: SlotKind::Output,
                     group,
                     slot,
                     generic,
@@ -2156,6 +2194,12 @@ impl Gen<'_, '_> {
         }
     }
 
+    /// The `ENGINE_PAR_*` name of the first argument, if it is one.
+    fn engine_par_name(&self, args: &[Arg]) -> Option<String> {
+        let name = crate::eval::symbol_name(self.u.hir, self.const_int(args, 0)?)?;
+        Some(name.trim_start_matches('$').to_string())
+    }
+
     /// AHDSR times a script sets on a modulator (`generic` -1).
     fn envelope_param(&self, args: &[Arg]) -> Option<EnvelopeStage> {
         if self.const_int(args, 4) != Some(-1) {
@@ -2183,6 +2227,24 @@ impl Gen<'_, '_> {
             "ENGINE_PAR_SEND_EFFECT_DRY_LEVEL" => Some(SlotKind::Dry),
             _ => None,
         }
+    }
+
+    /// Volume engine units (0..=1000000) to linear gain real bits in place,
+    /// through the decibel law group volume uses.
+    fn volume_gain(&mut self, local: u16) -> Result<()> {
+        self.engine_units(ModTarget::Decibels, local)?;
+        let t = reg(local, 1)?;
+        self.emit(I::Op(Op::IntegerToReal { local }))?;
+        self.set(t, real_bits(std::f64::consts::LN_10 / 20_000.0))?;
+        self.emit(I::Op(Op::Real {
+            lhs: local,
+            rhs: t,
+            operation: RealBinary::Multiply,
+        }))?;
+        self.emit(I::Op(Op::RealUnary {
+            local,
+            operation: RealUnary::Exp,
+        }))
     }
 
     /// Effect level engine units (0..=1000000) to linear gain real bits in

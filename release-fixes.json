@@ -1918,6 +1918,51 @@
       ],
       "validation": "Commit ee7525b5 changes crates/sampler-ksp/src/eval.rs, crates/sampler-native/examples/stream_report.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes the full suite with 0 failures.",
       "accepted": true
+    },
+    {
+      "id": "ksp-event-par-source",
+      "summary": "$EVENT_PAR_SOURCE returns -1 for host events and the creating slot otherwise, releasing the stuck Soprano Legato voices",
+      "source_commits": [
+        "46c71d7e773b4aeae023ddfc892d3885d0ef7222"
+      ],
+      "validation": "Commit 46c71d7e changes crates/sampler-native/tests/articulation_real.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes the full suite with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "ksp-saved-array-prefix-repeats-last",
+      "summary": "Saved arrays repeat their stored last value past the stored prefix",
+      "source_commits": [
+        "88fdfd6b7466ab44885860b6b030549a57812018"
+      ],
+      "validation": "Commit 88fdfd6b changes crates/sampler-ksp/tests/strings.rs, crates/sampler-native/tests/articulation_real.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes the full suite with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "ksp-script-group-routing-and-intensity",
+      "summary": "Script-driven group output routing, bus volume and MOD_TARGET_INTENSITY are applied from init and persistence_changed",
+      "source_commits": [
+        "a511eadef547808c998061e59bf5587363bbe244"
+      ],
+      "validation": "Commit a511eade changes crates/sampler-native/tests/articulation_real.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes the full suite with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "ksp-wait-overshoot-credit",
+      "summary": "A wait shorter than one frame spends the previous rounding overshoot, removing note-on CPU spikes in Vista",
+      "source_commits": [
+        "989f3ae19e9b0d364c9c72c7010af86cbf92e6c5"
+      ],
+      "validation": "Commit 989f3ae1 changes crates/sampler-core/src/behavior.rs, crates/sampler-ksp/src/lower.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes the full suite with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "settings-keep-unknown-keys",
+      "summary": "Settings keep keys this version does not know, so saving no longer drops v1's uvi_reader",
+      "source_commits": [
+        "af77fb290b7a660dc8bf0e6bef7734f13f6bae64"
+      ],
+      "validation": "Commit af77fb29 changes src/library.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes the full suite with 0 failures.",
+      "accepted": true
     }
   ]
 }

@@ -131,6 +131,12 @@ pub enum Instruction {
     WaitLocal {
         local: u16,
     },
+    /// Wait for the microseconds in a register. The overshoot of the frame
+    /// rounding is credited to the callback's next wait, so a loop of `wait(1)` costs 1 us each, as in
+    /// Kontakt, instead of a frame each.
+    WaitMicros {
+        local: u16,
+    },
     /// Sample-clock wait. Zero advances inline and still consumes instruction fuel.
     Wait(u32),
     End,
@@ -231,6 +237,13 @@ pub enum Instruction {
         slot: u16,
         generic: u16,
         local: u16,
+    },
+    /// Route group `group` to the bus at source address `address`
+    /// (`set_engine_par($ENGINE_PAR_OUTPUT_CHANNEL, ...)`). Voices that start
+    /// afterwards use it.
+    WriteGroupBus {
+        group: u16,
+        address: u16,
     },
     Jump {
         target: usize,
@@ -353,7 +366,7 @@ impl Program {
     pub fn writes_slots(&self) -> bool {
         self.code
             .iter()
-            .any(|op| matches!(op, Instruction::WriteSlot { .. }))
+            .any(|op| matches!(op, Instruction::WriteSlot { .. } | Instruction::WriteGroupBus { .. }))
     }
 
     /// Text constants addressed by `TextPart::Constant`.
@@ -463,6 +476,7 @@ impl Program {
             | Instruction::WriteEventVelocity7 { local, .. }
             | Instruction::MicrosToFrames { local }
             | Instruction::WaitLocal { local }
+            | Instruction::WaitMicros { local }
             | Instruction::ReadKey { local }
             | Instruction::ReadKeyDown { local }
             | Instruction::ReadKeyHeld { local }
@@ -551,6 +565,9 @@ impl Program {
             }
             if let Instruction::ReadEventInfo { event, local, .. } = *op {
                 locals = locals.max(usize::from(event.max(local)) + 1);
+            }
+            if let Instruction::WriteGroupBus { group, address } = *op {
+                locals = locals.max(usize::from(group.max(address)) + 1);
             }
             if let Instruction::WriteSlot {
                 group,
@@ -738,6 +755,8 @@ pub(super) struct Continuation {
     pub frames: super::ops::Frames,
     /// Sample time of the first preemption.
     pub yielded_at: Option<u64>,
+    /// Frames the waits so far overshot their exact time by, in micro-frames (< 1_000_000).
+    pub wait_carry: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -801,6 +820,7 @@ impl Runtime {
             outcome: None,
             frames: Default::default(),
             yielded_at: None,
+            wait_carry: 0,
         })?);
         n.work = work;
         let begin = id.0.index * self.behavior_stride;
@@ -872,6 +892,7 @@ impl Runtime {
             outcome: None,
             frames: Default::default(),
             yielded_at: None,
+            wait_carry: 0,
         })?);
         generation.callbacks += 1;
         let begin = id.0.index * self.behavior_stride;
@@ -1829,6 +1850,14 @@ impl Runtime {
                     )?;
                 }
             }
+            Instruction::WriteGroupBus { group, address } => {
+                let plan = self.behavior_plan(owner)?;
+                let group = *self.local_cell_mut(id, group)?;
+                let address = *self.local_cell_mut(id, address)?;
+                if let Ok(group) = usize::try_from(group) {
+                    self.plans.get_mut(plan.0).ok_or(Error::StaleHandle)?.script.set_route(group, address);
+                }
+            }
             Instruction::Jump { target } => {
                 self.behaviors.get_mut(id.0).ok_or(Error::StaleHandle)?.pc = target
             }
@@ -1844,6 +1873,26 @@ impl Runtime {
             Instruction::WaitLocal { local } => {
                 let frames = u32::try_from(*self.local_cell_mut(id, local)?)
                     .map_err(|_| Error::InvalidInput)?;
+                return self.wait_behavior(id, frames);
+            }
+            Instruction::WaitMicros { local } => {
+                let micros = u64::try_from(*self.local_cell_mut(id, local)?)
+                    .map_err(|_| Error::InvalidInput)?;
+                let c = self.behaviors.get_mut(id.0).ok_or(Error::StaleHandle)?;
+                // A wait never ends early: it rounds up to whole frames. Only a
+                // wait shorter than a frame is credited, so `wait(1)` loops
+                // cost 1 us each (as in Kontakt) instead of a frame each.
+                let exact = u128::from(micros) * u128::from(self.rate);
+                let credit = u128::from(c.wait_carry);
+                let (frames, left) = if exact >= 1_000_000 {
+                    (exact.div_ceil(1_000_000), credit)
+                } else if exact <= credit {
+                    (0, credit - exact)
+                } else {
+                    (1, 1_000_000 - (exact - credit))
+                };
+                let frames = u32::try_from(frames).map_err(|_| Error::ArithmeticOverflow)?;
+                c.wait_carry = left as u32;
                 return self.wait_behavior(id, frames);
             }
             Instruction::Wait(frames) => return self.wait_behavior(id, frames),
