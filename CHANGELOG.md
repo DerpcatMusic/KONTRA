@@ -12,7 +12,7 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 The user explicitly authorized shipping this alpha now. The former all-axis v1
 parity release hold is superseded for this release. Falcon/UVI stays always on.
-The version ledger accepts 77 additional logical fixes after 0.3.225; diagnostic
+The version ledger accepts 79 additional logical fixes after 0.3.225; diagnostic
 features and follow-up commits do not increment the version separately.
 
 - Restore authored Native UI text/arrays, bindings, Canvas budgets, caption types,
@@ -29,7 +29,7 @@ features and follow-up commits do not increment the version separately.
   lookups, Assistant font resources and immediate host-save capture.
 - Improve GPU recovery, diagnostics and embedded native-window teardown.
 
-### Known limits for 0.3.302
+### Known limits for 0.3.304
 
 - CPU/RSS/load parity with v1 is incomplete. W6 PCM is bit-exact but its quiet CPU
   improvement is unmeasured. W5 fresh A/B passes 8/9 cells; Conflux/256 remains

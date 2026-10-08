@@ -114,7 +114,7 @@ def summarize(run, complete=False):
             for metric in METRICS:
                 a, b = old.get(metric), new.get(metric)
                 if metric == 'widget_gesture_pass':
-                    observed.append({'item_sha256': item, 'condition': condition, 'metric': metric, 'v1': None, 'v2': gesture.get('passed'), 'total': gesture.get('total'), 'failures': gesture.get('failures', {}), 'verdict': gesture['status']})
+                    observed.append({'item_sha256': item, 'condition': condition, 'metric': metric, 'v1': None, 'v2': gesture.get('passed'), 'total': gesture.get('total'), 'delta': None, 'failures': gesture.get('failures', {}), 'verdict': gesture['status']})
                     continue
                 if metric in ['load_ms', 'first_audio_ms']:
                     a = a if old.get('loads') == 'yes' else None
