@@ -2,6 +2,8 @@
 use crate::{AssetId, Error, Frame, Index, Pcm};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 use std::{
+    cmp::Reverse,
+    collections::BinaryHeap,
     ops::Range,
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -142,6 +144,7 @@ pub struct StreamCache {
     pushed: bool,
     /// Set by a start that found an asset cold; wakes the reloader.
     cold: std::sync::atomic::AtomicBool,
+    reloader: Option<std::thread::Thread>,
     vacant: Vec<usize>,
     idle: PageList,
     active: PageList,
@@ -153,6 +156,7 @@ pub struct StreamWorker {
     completed: Producer<Completed>,
     recycled: Consumer<Box<[Frame]>>,
     pending: Box<[Option<Request>]>,
+    ready: BinaryHeap<Reverse<(u64, usize, u64)>>,
     launched: Box<[u64]>,
     free: Vec<Box<[Frame]>>,
     store: u64,
@@ -209,6 +213,7 @@ impl StreamCache {
                 wake: Vec::new(),
                 pushed: false,
                 cold: std::sync::atomic::AtomicBool::new(false),
+                reloader: None,
                 vacant: (0..pages).rev().collect(),
                 idle: PageList::default(),
                 active: PageList::default(),
@@ -218,6 +223,7 @@ impl StreamCache {
                 completed: outgoing,
                 recycled: returned,
                 pending: vec![None; pages].into_boxed_slice(),
+                ready: BinaryHeap::with_capacity(pages * 2),
                 launched: vec![0; pages].into_boxed_slice(),
                 free,
                 store,
@@ -230,14 +236,21 @@ impl StreamCache {
     pub fn set_wake(&mut self, threads: Vec<std::thread::Thread>) {
         self.wake = threads;
     }
-    /// Unpark the decoder threads if requests were queued since the last call.
+    /// Control side: start-range reloads wake only when a start found cold PCM.
+    pub fn set_reloader(&mut self, thread: Option<std::thread::Thread>) {
+        self.reloader = thread;
+    }
+    /// Unpark decoders for queued requests or returned storage. Head reloads
+    /// have a separate wake, so each page batch cannot scan every asset.
     fn wake(&mut self) {
-        if std::mem::take(&mut self.pushed)
-            | self.cold.swap(false, std::sync::atomic::Ordering::Relaxed)
-        {
+        let cold = self.cold.swap(false, std::sync::atomic::Ordering::Relaxed);
+        if std::mem::take(&mut self.pushed) | cold {
             for thread in &self.wake {
                 thread.unpark();
             }
+        }
+        if cold && let Some(thread) = &self.reloader {
+            thread.unpark();
         }
     }
     pub fn begin_epoch(&mut self) -> Result<(), StreamError> {
@@ -483,6 +496,7 @@ impl StreamCache {
             self.recycled
                 .push(samples)
                 .expect("reserved return capacity");
+            self.pushed = true;
         }
         Ok(true)
     }
@@ -503,6 +517,7 @@ impl StreamCache {
             self.recycled
                 .push(samples)
                 .expect("reserved return capacity");
+            self.pushed = true;
             return Some(PageUpdate::Discarded(request.key));
         }
         let entry = entry.as_mut().unwrap();
@@ -515,6 +530,7 @@ impl StreamCache {
                 self.recycled
                     .push(samples)
                     .expect("reserved return capacity");
+                self.pushed = true;
                 entry.state = State::Failed(error);
                 entry.retry_after = Some(std::time::Instant::now() + std::time::Duration::from_millis(10 << entry.retries));
                 Some(PageUpdate::Failed(request.key, error))
@@ -605,18 +621,27 @@ impl StreamWorker {
                 && self.pending[slot].is_none_or(|old| old.serial <= request.serial)
             {
                 self.pending[slot] = Some(request);
+                // Superseded priorities are discarded lazily, with a bounded
+                // rebuild. Allocation/selection stay on the worker endpoint.
+                if self.ready.len() == self.pending.len() * 2 {
+                    self.ready.clear();
+                    for request in self.pending.iter().flatten() {
+                        self.ready.push(Reverse((request.deadline, request.slot, request.serial)));
+                    }
+                } else {
+                    self.ready.push(Reverse((request.deadline, slot, request.serial)));
+                }
             }
         }
         if self.requests.is_abandoned() || self.free.is_empty() {
             return None;
         }
-        let slot = self
-            .pending
-            .iter()
-            .enumerate()
-            .filter_map(|(i, request)| request.map(|r| (i, r.deadline)))
-            .min_by_key(|(_, deadline)| *deadline)?
-            .0;
+        let slot = loop {
+            let Reverse((deadline, slot, serial)) = self.ready.pop()?;
+            if self.pending[slot].is_some_and(|r| r.serial == serial && r.deadline == deadline) {
+                break slot;
+            }
+        };
         let request = self.pending[slot].take().unwrap();
         self.launched[slot] = request.serial;
         let mut samples = self.free.pop().unwrap();
@@ -959,6 +984,103 @@ impl crate::Runtime {
 #[cfg(test)]
 mod admission_tests {
     use crate::*;
+
+    #[test]
+    fn worker_priorities_stay_bounded_while_all_buffers_are_in_flight() {
+        let pcm = Pcm::streamed(48000, PAGE_FRAMES * 4).unwrap();
+        let (mut cache, mut worker) = StreamCache::new(2).unwrap();
+        cache.request(&pcm, 0, 0).unwrap();
+        cache.request(&pcm, 1, 0).unwrap();
+        let first = worker.next_job().unwrap();
+        let second = worker.next_job().unwrap();
+        cache.begin_epoch().unwrap();
+        cache.request(&pcm, 2, 200).unwrap();
+        cache.request(&pcm, 3, 100).unwrap();
+        assert!(worker.next_job().is_none());
+        let capacity = worker.ready.capacity();
+        for deadline in (0..200).rev() {
+            cache.request(&pcm, 2, deadline).unwrap();
+            assert!(worker.next_job().is_none());
+            assert!(worker.ready.len() <= 4);
+            assert_eq!(worker.ready.capacity(), capacity);
+        }
+        worker.complete(first, Ok(())).unwrap();
+        worker.complete(second, Ok(())).unwrap();
+        assert!(matches!(cache.poll(), Some(PageUpdate::Discarded(_))));
+        assert!(matches!(cache.poll(), Some(PageUpdate::Discarded(_))));
+        let urgent = worker.next_job().unwrap();
+        let later = worker.next_job().unwrap();
+        assert_eq!((urgent.key().index, urgent.deadline()), (2, 0));
+        assert_eq!((later.key().index, later.deadline()), (3, 100));
+        worker.complete(urgent, Ok(())).unwrap();
+        worker.complete(later, Ok(())).unwrap();
+        assert!(matches!(cache.poll(), Some(PageUpdate::Loaded(_))));
+        assert!(matches!(cache.poll(), Some(PageUpdate::Loaded(_))));
+        assert!(worker.next_job().is_none());
+    }
+
+    #[test]
+    fn page_batches_do_not_wake_the_head_reloader() {
+        let pcm = Pcm::streamed(48000, PAGE_FRAMES).unwrap();
+        let (mut cache, _worker) = StreamCache::new(1).unwrap();
+        let (started, ready) = std::sync::mpsc::channel();
+        let (woken, wake) = std::sync::mpsc::channel();
+        let reloader = std::thread::spawn(move || {
+            started.send(()).unwrap();
+            std::thread::park();
+            woken.send(()).unwrap();
+        });
+        cache.set_reloader(Some(reloader.thread().clone()));
+        ready.recv().unwrap();
+        cache.request(&pcm, 0, 0).unwrap();
+        cache.wake();
+        let page_woke = wake.recv_timeout(std::time::Duration::from_millis(20)).is_ok();
+        cache.cold.store(true, std::sync::atomic::Ordering::Relaxed);
+        cache.wake();
+        let cold_woke = page_woke || wake.recv_timeout(std::time::Duration::from_millis(100)).is_ok();
+        reloader.thread().unpark();
+        reloader.join().unwrap();
+        assert!(!page_woke, "ordinary page work must not reload heads");
+        assert!(cold_woke, "a cold start must wake its head reloader");
+    }
+
+    #[test]
+    fn returning_a_stale_buffer_wakes_a_decoder_waiting_for_storage() {
+        let pcm = Pcm::streamed(48000, PAGE_FRAMES * 2).unwrap();
+        let (mut cache, mut worker) = StreamCache::new(1).unwrap();
+        cache.request(&pcm, 0, 0).unwrap();
+        let stale = worker.next_job().unwrap();
+        cache.begin_epoch().unwrap();
+        cache.request(&pcm, 1, 0).unwrap();
+        assert!(worker.next_job().is_none(), "the only buffer is still in flight");
+        cache.wake(); // The pending request's first wake was already consumed.
+        let (ready, started) = std::sync::mpsc::channel();
+        let (finished, done) = std::sync::mpsc::channel();
+        let decoder = std::thread::spawn(move || {
+            worker.complete(stale, Ok(())).unwrap();
+            ready.send(()).unwrap();
+            loop {
+                std::thread::park();
+                if let Some(mut job) = worker.next_job() {
+                    job.frames_mut().fill([0.5; 2]);
+                    worker.complete(job, Ok(())).unwrap();
+                    finished.send(()).unwrap();
+                    break;
+                }
+            }
+        });
+        cache.set_wake(vec![decoder.thread().clone()]);
+        started.recv().unwrap();
+        assert_eq!(cache.poll(), Some(PageUpdate::Discarded(PageKey { asset: pcm.asset_id(), index: 0 })));
+        cache.wake();
+        let woke = done.recv_timeout(std::time::Duration::from_millis(100)).is_ok();
+        // Always retire the test worker, including the failing-first run.
+        decoder.thread().unpark();
+        decoder.join().unwrap();
+        assert!(woke, "returning storage must wake the already queued decode");
+        assert_eq!(cache.poll(), Some(PageUpdate::Loaded(PageKey { asset: pcm.asset_id(), index: 1 })));
+        assert_eq!(cache.frame(pcm.asset_id(), PAGE_FRAMES), Some([0.5; 2]));
+    }
 
     #[test]
     fn epoch_splices_preserve_protected_pages_and_reuse_returned_slots() {
