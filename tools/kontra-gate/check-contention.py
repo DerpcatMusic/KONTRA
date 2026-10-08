@@ -48,6 +48,25 @@ with tempfile.TemporaryDirectory() as tmp:
     assert observed['units'][0]['owned'] and not observed['units'][1]['owned']
     assert observed['disk_io']['sda']['read_sectors'] == 512 and contention.status(observed) == 'CONTENDED'
 
+    # An admitted workload contends; a ticket waiting without one does not.
+    proc = root / '30'
+    proc.joinpath('cmdline').write_bytes(b'bash\0/home/user/.cache/kontakto-heavy\0cargo')
+    queue = root / 'queue'; queue.mkdir(); queue.joinpath('123.30').touch()
+    with patch.object(contention, 'QUEUE', queue), patch.object(contention, 'Path', side_effect=fake_path), patch.object(contention.os, 'getpid', return_value=20), patch.object(contention.subprocess, 'run', return_value=SimpleNamespace(stdout='kontakto-build.service loaded active running\n')):
+        observed = contention.snapshot()
+        assert contention.status(observed) == 'QUIET'
+        assert observed['processes'][-1]['waiting'] and observed['units'][0]['waiting']
+        child = root / '31'; child.mkdir()
+        child.joinpath('stat').write_text('31 (fixture) S 30')
+        child.joinpath('cmdline').write_bytes(b'sleep\0' + b'5')
+        child.joinpath('cgroup').write_text('0::/kontakto-build.service\n')
+        assert contention.status(contention.snapshot()) == 'QUIET'
+        child.joinpath('cmdline').write_bytes(b'cargo\0test')
+        assert contention.status(contention.snapshot()) == 'CONTENDED'
+        child.joinpath('cmdline').write_bytes(b'sleep\0' + b'5')
+        queue.joinpath('123.30').unlink()
+        assert contention.status(contention.snapshot()) == 'CONTENDED'
+
 with tempfile.TemporaryDirectory() as tmp:
     root = Path(tmp)
     with patch.dict(os.environ, {'KONTRA_GATE_REQUIRE_QUIET': '1'}), patch.object(contention, 'snapshot', side_effect=[busy, quiet]), patch.object(contention.time, 'sleep') as sleep:
