@@ -1,6 +1,6 @@
 //! Bounded legacy .nui execution over the published UI IR. No filesystem Lua API.
 use super::pictures::Source;
-use mlua::{Function, Lua, Table, UserData, UserDataMethods, Value as LuaValue};
+use mlua::{Function, Lua, Table, UserData, UserDataFields, UserDataMethods, Value as LuaValue};
 use moose::mui::mui::{prelude::Font, scene::Image};
 use sampler_ui_ir as ir;
 use std::{
@@ -91,17 +91,17 @@ impl Package {
         })
     }
     pub fn load(path: &Path) -> anyhow::Result<Self> {
-        Self::load_cancel(path,||false)
+        Self::load_declared_cancel(path,None,||false)
     }
-    pub fn load_cancel(path: &Path, canceled: impl Fn()->bool) -> anyhow::Result<Self> {
+    pub fn load_declared_cancel(path: &Path, declared: Option<&str>, canceled: impl Fn()->bool) -> anyhow::Result<Self> {
         anyhow::ensure!(!canceled(),"NativeUI preparation canceled");
-        let mut source = Source::of(path);
+        let mut source = Source::of_declared(path, declared);
         let mut members = BTreeMap::new();
         let mut fonts = BTreeMap::new();
         let mut font_names = Vec::new();
         let mut total = 0;
         let mut resource_paths = BTreeMap::new();
-        for name in source.native_names() {
+        for name in source.native_names()? {
             anyhow::ensure!(!canceled(),"NativeUI preparation canceled");
             let relative = name
                 .strip_prefix("resources/native_ui/")
@@ -223,6 +223,33 @@ impl Package {
             .ok_or_else(|| anyhow::anyhow!("NativeUI module absent"))?;
         Ok(std::str::from_utf8(bytes)?)
     }
+    #[cfg(test)]
+    pub(super) fn tagged_identifiers(&self, identifiers:&[String]) -> Arc<Self> {
+        let members=self.members.iter().map(|(name,bytes)| {
+            let mut text=std::str::from_utf8(bytes).unwrap().to_owned();
+            for (n,id) in identifiers.iter().enumerate() {
+                for quote in ['\'', '"'] {
+                    text=text.replace(&format!("{quote}{id}{quote}"),&format!("{quote}__binding_probe_{n}{quote}"));
+                }
+            }
+            (name.clone(),Arc::from(text.into_bytes()))
+        }).collect();
+        Arc::new(Self {members,fonts:self.fonts.clone(),font_names:self.font_names.clone(),images:Images {cache:self.images.cache.clone(),request:self.images.request.clone()}})
+    }
+    #[cfg(test)]
+    pub(super) fn error_operations(&self,error:&mlua::Error) -> Vec<String> {
+        let mut out=Vec::new();
+        for line in error.to_string().lines() {
+            let Some(tail)=line.split_once("[string \"").map(|(_,tail)|tail) else {continue};
+            let Some((module,tail))=tail.split_once(".nui\"]:") else {continue};
+            let Some(n)=tail.split(':').next().and_then(|n|n.parse::<usize>().ok()) else {continue};
+            let Ok(source)=self.source(module).and_then(|s|syntax::translate(s).map_err(Into::into)) else {continue};
+            let Some(source)=source.lines().nth(n.saturating_sub(1)) else {continue};
+            let operations:Vec<_>=["value()", " or ", "#", "string.", "table.", "[", "ipairs", "pairs", "connected", "text", "data", "binding", "parameter"].into_iter().filter(|op|source.contains(op)).collect();
+            out.push(format!("site={}:{} operations={operations:?}",&blake3::hash(module.as_bytes()).to_hex()[..16],n));
+        }
+        out
+    }
 }
 
 // Read names only from the already validated, bounded supplied font. This does
@@ -291,6 +318,10 @@ struct Bridge {
     touches: BTreeSet<(usize, usize)>,
     unavailable: BTreeSet<String>,
     meters: HashMap<usize, f64>,
+    #[cfg(test)]
+    connections: BTreeSet<String>,
+    #[cfg(test)]
+    connection_kinds: BTreeMap<&'static str,usize>,
 }
 #[derive(Clone)]
 struct Parameter {
@@ -335,6 +366,9 @@ fn value(lua: &Lua, value: &ir::Value, index: Option<usize>) -> mlua::Result<Lua
     })
 }
 impl UserData for Parameter {
+    fn add_fields<F:UserDataFields<Self>>(fields:&mut F) {
+        fields.add_field_method_get("connected",|_,this|Ok(this.bridge.lock().unwrap().controls.get(this.binding).is_some()));
+    }
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("value", |lua, this, index: Option<usize>| {
             #[cfg(test)]
@@ -382,10 +416,7 @@ impl UserData for Parameter {
                 #[cfg(test)]
                 trace_parameter(_lua,this,"write")?;
                 let mut bridge = this.bridge.lock().unwrap();
-                let widget = bridge
-                    .controls
-                    .get(this.binding)
-                    .ok_or_else(|| mlua::Error::external("NativeUI control unavailable"))?;
+                let Some(widget) = bridge.controls.get(this.binding) else {return Ok(())};
                 let value = match v {
                     LuaValue::String(s) => {
                         let s = s.to_str()?.to_owned();
@@ -486,11 +517,8 @@ impl UserData for Parameter {
             },
         );
         methods.add_method("update_touch", |_, this, index: Option<usize>| {
-            this.bridge
-                .lock()
-                .unwrap()
-                .touches
-                .insert((this.binding, index.unwrap_or(0)));
+            let mut bridge=this.bridge.lock().unwrap();
+            if bridge.controls.get(this.binding).is_some() {bridge.touches.insert((this.binding,index.unwrap_or(0)));}
             Ok(())
         });
         methods.add_method("end_touch", |_, this, index: Option<usize>| {
@@ -511,7 +539,8 @@ impl UserData for Parameter {
         });
         methods.add_method("is_midi_learn_active", |_, _, _: Option<usize>| Ok(false));
         for name in ["begin_midi_learn", "end_midi_learn"] {
-            methods.add_method(name, |_, _, _: Option<usize>| {
+            methods.add_method(name, |_, this, _: Option<usize>| {
+                if this.bridge.lock().unwrap().controls.get(this.binding).is_none() {return Ok(())};
                 Err::<(), _>(mlua::Error::external("NativeUI MIDI learn is unavailable"))
             });
         }
@@ -618,8 +647,13 @@ impl Session {
         kontakt.set(
             "connect_parameter",
             lua.create_function(move |_, (identifier, kind): (String, Option<String>)| {
-                // Connection handles are lazy: shipped libraries may retain unused bindings.
-                // Reading or writing an unavailable control still reports its name.
+                #[cfg(test)]
+                {
+                    let mut bridge=parameters.lock().unwrap();
+                    bridge.connections.insert(identifier.clone());
+                    *bridge.connection_kinds.entry(match kind.as_deref() {Some("bool")=>"bool",Some("string")=>"string",Some("int")=>"int",Some("float")=>"float",None=>"none",_=>"other"}).or_default()+=1;
+                }
+                // PROVISIONAL NI binding semantics: keep the requested face and leave unmatched handles inert.
                 let binding = names.get(&identifier).copied().unwrap_or(usize::MAX);
                 Ok(Parameter {
                     binding,
@@ -633,20 +667,16 @@ impl Session {
         kontakt.set(
             "connect_level_meter",
             lua.create_function(move |lua, identifier: String| {
-                let binding = meter_names.get(&identifier).copied()
-                    .ok_or_else(|| mlua::Error::external("NativeUI meter unavailable"))?;
+                #[cfg(test)]
+                meter_bridge.lock().unwrap().connections.insert(identifier.clone());
+                let binding = meter_names.get(&identifier).copied();
                 let bridge = meter_bridge.clone();
                 let meter = lua.create_table()?;
+                meter.set("connected",binding.is_some())?;
                 meter.set(
                     "level_value",
                     lua.create_function(move |_, _: LuaValue| {
-                        Ok(bridge
-                            .lock()
-                            .unwrap()
-                            .meters
-                            .get(&binding)
-                            .copied()
-                            .unwrap_or(0.))
+                        Ok(binding.and_then(|binding|bridge.lock().unwrap().meters.get(&binding).copied()).unwrap_or(0.))
                     })?,
                 )?;
                 Ok(meter)
@@ -708,7 +738,8 @@ impl Session {
             let w = &mut bridge.controls[at];
             if let Some(value) = typed.get(&ir::WidgetRef(index)) {
                 w.value = Some(value.clone());
-            } else if let ir::Binding::Control(c) = w.binding
+            } else if matches!(w.value, None | Some(ir::Value::Integer(_) | ir::Value::Real(_)))
+                && let ir::Binding::Control(c) = w.binding
                 && let Some(&n) = values.get(&c)
             {
                 w.value = Some(if matches!(w.value, Some(ir::Value::Real(_))) {
@@ -792,14 +823,30 @@ impl Session {
             .cloned()
             .collect()
     }
+    #[cfg(test)]
+    pub(super) fn connections(&self) -> Vec<String> {self.bridge.lock().unwrap().connections.iter().cloned().collect()}
+    #[cfg(test)]
+    pub(super) fn connection_kinds(&self) -> BTreeMap<&'static str,usize> {self.bridge.lock().unwrap().connection_kinds.clone()}
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
+    fn declared_missing_package_keeps_its_typed_resource_stage() {
+        let root=std::env::temp_dir().join(format!("native-missing-package-{}",std::process::id()));
+        std::fs::create_dir_all(root.join("Resources/native_ui")).unwrap();
+        std::fs::write(root.join("Resources/native_ui/main.nui"),b"return function() return nil end").unwrap();
+        let error=Package::load_declared_cancel(&root.join("fixture.nki"),Some("missing.nkr"),||false).err().unwrap();
+        let error=error.downcast_ref::<sampler_kontakt::LoadError>().unwrap();
+        assert_eq!(error.kind(),sampler_kontakt::Kind::ResourceContainerMissing);
+        assert_eq!(error.stage(),Some(sampler_kontakt::Stage::ResourceResolve));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn legacy_component_reads_the_published_ir_and_produces_a_typed_edit() {
-        assert_eq!(Package::load_cancel(Path::new("/unopened/synthetic.nki"),||true)
+        assert_eq!(Package::load_declared_cancel(Path::new("/unopened/synthetic.nki"),None,||true)
             .err().unwrap().to_string(),"NativeUI preparation canceled");
         let (request, _jobs) = std::sync::mpsc::sync_channel(1);
         let package=Arc::new(Package{members:BTreeMap::from([("main.nui".into(),Arc::from(br#"local ui=require("native_ui")
@@ -868,6 +915,12 @@ mod tests {
         );
         assert_eq!(session.bridge.lock().unwrap().controls[0].value,Some(ir::Value::Integer(20)),
             "another source is not overwritten by this source's scalar fallback");
+        let mut typed_source=source.clone();
+        for saved in [ir::Value::Text("published text".into()),ir::Value::Integers(vec![1,2,3]),ir::Value::Reals(vec![0.25,0.5])] {
+            typed_source.widgets[0].value=Some(saved.clone());
+            session.update_view(&typed_source,&HashMap::from([(ir::ControlId(42),75.)]),&Default::default(),&Default::default());
+            assert_eq!(session.bridge.lock().unwrap().controls[1].value,Some(saved),"scalar telemetry must preserve declared text/array values");
+        }
         session.update_view(
             &source,
             &Default::default(),
@@ -884,6 +937,22 @@ mod tests {
         assert_eq!(edits[0].source_id, Some(7));
         assert_eq!(edits[0].source, ir::Source::Ksp { slot: 2 });
         assert!(session.unavailable_controls().is_empty());
+        // Requested faces may contain bindings absent from this instrument.
+        session.lua().load(r#"
+            local kontakt=require('kontakt')
+            local missing=kontakt.connect_parameter('undeclared')
+            local missing_bool=kontakt.connect_parameter('undeclared_bool','bool')
+            local meter=kontakt.connect_level_meter('undeclared_meter')
+            assert(missing.connected==false and missing_bool.connected==false)
+            assert(meter.connected==false and meter:level_value()==0)
+            assert(missing:value()==0 and missing_bool:value()==false)
+            missing:set_value(0.75)
+            missing:update_touch()
+            assert(missing:is_touch_active()==false)
+            missing:end_touch()
+        "#).exec().unwrap();
+        assert!(session.take_edits().is_empty(),"unconnected bindings cannot edit a declared control");
+        assert!(session.bridge.lock().unwrap().touches.is_empty());
         assert!(
             session
                 .lua()

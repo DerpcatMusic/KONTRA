@@ -177,6 +177,17 @@ fn translate(
     let params = program
         .params()
         .map_err(|e| decode("program parameters", e))?;
+    // F0 is the first suffix word from 0x91 (ni-file ProgramPublicRecord::read).
+    let resource_ref = if program.version() >= 0x91 {
+        let word: [u8; 4] = params.unknown_tail.get(..4)
+            .ok_or_else(|| invalid("Truncated program resource-container reference"))?
+            .try_into().unwrap();
+        Some(i32::from_le_bytes(word))
+    } else { None };
+    let resource_container = resource_ref.filter(|&id| id >= 0)
+        .map(|id| others.get(&(id as u32)).cloned()
+            .ok_or_else(|| invalid("Missing declared resource-container filename reference")))
+        .transpose()?;
     let mut out = Translation {
         ir: ir::Instrument {
             name: params.name.clone(),
@@ -241,6 +252,7 @@ fn translate(
             .ok_or_else(|| invalid("missing group list"))?,
     )
     .map_err(|e| decode("group list", e))?;
+    out.ir.source_indices.resource_container = resource_container.clone();
     let mut resources = None;
     for (slot, chunk) in program
         .0
@@ -259,7 +271,7 @@ fn translate(
                 .filter(|n| !n.trim().is_empty())
             {
                 if let Some(text) = resources
-                    .get_or_insert_with(|| crate::Resources::of(&path))
+                    .get_or_insert_with(|| crate::Resources::of_declared(&path, resource_container.as_deref()))
                     .script(link)
                 {
                     script.text = Some(text);
@@ -1884,7 +1896,7 @@ mod saved_tests {
         let saved = "on init\nmessage(\"saved\")\nend on";
         let file = root.join("Resources/scripts/Source.txt");
         std::fs::write(&file, linked).unwrap();
-        for expected in [linked, saved] {
+        for (case, expected) in [linked, saved].into_iter().enumerate() {
             let mut public = (saved.len() as u32).to_le_bytes().to_vec();
             public.extend(saved.as_bytes());
             public.extend([0; 3]);
@@ -1897,7 +1909,7 @@ mod saved_tests {
             script.extend(public);
             let program = Program(StructuredObject {
                 version: 0xaf,
-                public_data: vec![0; 70],
+                public_data: { let mut data=vec![0;70]; data.extend(if case==0 {17i32} else {-1i32}.to_le_bytes()); data },
                 private_data: Vec::new(),
                 children: vec![
                     Chunk {
@@ -1918,10 +1930,11 @@ mod saved_tests {
                 root.join("Piano.nki"),
                 program,
                 Default::default(),
-                Default::default(),
+                [(17u32,"absent.nkr".into())].into_iter().collect(),
                 None,
             )
             .unwrap();
+            assert_eq!(translated.instrument.source_indices.resource_container.as_deref(), (case==0).then_some("absent.nkr"));
             assert_eq!(translated.instrument.behaviors[0].source, expected);
             if expected == linked {
                 std::fs::remove_file(&file).unwrap();

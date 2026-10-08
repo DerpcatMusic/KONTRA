@@ -298,3 +298,84 @@ Evidence: `~/.cache/kontakto-w3/stack-safety/{manifest,evidence}.json`,
 The shared collector CLI/metrics and driver stayed unchanged. The scanner was
 built at 74718ad7; later commits add tests/reporting only, with unchanged
 production lowering and scanner code.
+
+## Library resource membership and absent-container fallback (W3)
+
+**Correction:** the earlier F0/basename survey did not establish missing data.
+F0 retains the author's saved container hint, which may be stale after relocation;
+library ID zero is not evidence of a separate library. All 50 affected multis
+belong to Conflux and its existing `Samples/Conflux.nkr` resource namespace.
+The shared resolver tries the stored path and library-relative path first,
+then retains containers discovered inside the containing library. That set
+includes its NICNT/SNPID archive and basename candidates; sibling libraries are
+never searched. The meter mismatch remains under investigation across multi
+scripts and every program; no cross-program binding is inferred from a name alone.
+
+A declared archive absent from the instrument's resource namespace is reported
+as typed `Kind::ResourceContainerMissing` at `Stage::ResourceResolve`, exported
+as `resource_container_missing` / `resource_resolve`. Invalid, ambiguous,
+inaccessible and corrupt containers retain separate failure behavior. When
+NativeUI cannot start because its containing library has no resource container, Original draws
+the program's own KSP performance widgets using its own available loose art.
+The missing native scene remains unavailable, with unknown graph depth; the
+scanner does not claim successful NativeUI paint merely because KSP fallback
+paint succeeded. No meter value is fabricated.
+
+**Kontakt-observed behavior: UNVERIFIED.** No reference recorder was active for
+this change. The conservative KSP/loose-resource policy was explicitly authorized
+by the coordinator. Reference check: “What does Kontakt show for Big Screen.nkm
+program 0's requested face with unmatched controls?” The evidence JSON and each scanner
+resource diagnostic retain this UNVERIFIED status.
+
+Pinned v1 `0cb7a8a0` has no NativeUI consumer. Its KSP meter renderer paints the
+unlit authored background/off frame, and its meter-attachment stub reports
+unavailability. It offers no better live NativeUI meter implementation to port.
+The root fix preserves the existing typed live meter service for valid graphs.
+
+### Multi face binding evidence (PROVISIONAL; no reference capture)
+
+The read-only reference inventory contains no Conflux/Big Screen capture. In
+Big Screen, both programs request the same NativeUI entry. The four native
+meter identifiers belong to program 1: its declarations and attachments match;
+program 0 and the multi-level scripts have no matching meter declaration. A
+diagnostic session combining genuine controls can render the graph, but that
+experiment establishes neither a multi-wide connection nor permission to alias
+program 1's controls into program 0. Production sessions remain program-owned.
+
+NI's [KSP UI command reference](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#expose_controls)
+documents identifier-only exposure across an instrument's five script slots,
+with the first duplicate taking precedence. Its `load_performance_view` loads
+Creator Tools `.nckp` controls; it does not document the older Lua `.nui` API.
+NI's [KSPLevelMeter reference](https://developer.native-instruments.com/komplete-ui/docs/Packages/kontakt/Classes/KSPLevelMeter/)
+documents `connected=false` when the requested control is absent. The latter
+uses the newer Komplete Script API and does not specify an unconnected meter's
+numeric value or a switch to another face.
+
+The coordinator's provisional rule is to retain the requested face, leave
+unmatched bindings inert and unconnected, and show no level on an unconnected
+meter. Applying it is conditional on the numeric installed-package inventory
+finding no package binding program 0's identifiers. All 12 installed NKRs index
+successfully; only Conflux has NativeUI modules (134 readable `.nui`). Two quoted
+strings match program 0's control names, but neither is a direct binding argument.
+Replacing those strings with unique markers in every source in RAM leaves the
+requested graph renderable and produces zero marked binding arguments across
+module initialization and rendering, including table/variable/concatenated flows.
+The 92 identifiers read by the requested graph match zero program 0 controls.
+The provisional rule therefore applies: unconnected handles report
+`connected=false`, edits/touch operations do nothing, and unconnected meters
+produce no level. Valid bindings keep their typed edit routing and live levels.
+
+The live bridge's scalar fallback now preserves declared text and array values.
+A failing-first focused test reproduced a published text value becoming integer
+75, then verified text, integer arrays and real arrays survive scalar telemetry.
+The real full editor is forced to Original during the 2 MiB audit. It exits
+without overflow, but still reports Canvas/runtime failures; those results do
+not certify Native paint or the final 50-multi Original-OK count.
+
+Focused validation and the 50-ID authority/depth survey are recorded under
+`~/.cache/kontakto-w3/resource-authority/`; final counts and parity receipt follow
+once the coordinator's quiet-machine gate window ends. Changes outside W3's
+renderer include the minimal Kontakt translator/load provenance seam, the two
+IR provenance fields, W1's `src/ui/part.rs` fallback selection, a shared diagnostic
+enum variant in `sampler-uvi` (no UVI resolver behavior change), and the
+`corpus-health` stage-name mapping.

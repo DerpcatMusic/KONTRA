@@ -2308,13 +2308,67 @@ fn shared_context_menu_never_fades_over_interactive_content() {
         assert_eq!(&closed[range.clone()], &settled[range], "shared menu must leave no ghost, scanline {y}");
     }
 }
- pub(super) fn audit_frames(p: &Arc<SamplerParams>) -> serde_json::Value {
-    let start = std::time::Instant::now();
-    let mut h=Harness::new(p,1180.,760.);
-    h.idle(4);
-    let build_ms = start.elapsed().as_secs_f64() * 1000.;
-    std::thread::sleep(std::time::Duration::from_secs(4));
-    let status=std::fs::read_to_string("/proc/self/status").unwrap();
-    let kb=|key:&str| status.lines().find_map(|l|l.strip_prefix(key)?.split_whitespace().next()?.parse::<u64>().ok()).unwrap_or(0);
-    serde_json::json!({"build_ms":build_ms,"rss_live_mb":kb("VmRSS:") as f64/1024.,"hwm_live_mb":kb("VmHWM:") as f64/1024.})
- }
+pub(super) fn audit_frames(p: &Arc<SamplerParams>) -> serde_json::Value {
+    let p = p.clone();
+    std::thread::Builder::new().stack_size(2 << 20).spawn(move || {
+        #[cfg(target_os="linux")]
+        let watermark = super::native_ui::stack_watermark();
+        let start = std::time::Instant::now();
+        for part in &mut p.selection.write().unwrap().parts {part.view=1;}
+        let mut h = Harness::new(&p,1180.,760.);
+        let expects_native=p.shared.view.lock().unwrap().parts.iter().any(|part|part.interfaces.iter().any(|face|face.native_ui.is_some()));
+        let has_native=|h:&Harness|h.ui.scene().unwrap().surfaces().any(|s|s.key.as_str().starts_with("nui-"));
+        while expects_native && !has_native(&h) && start.elapsed()<std::time::Duration::from_secs(5) {
+            h.idle(1); std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        h.idle(4);
+        let build_ms = start.elapsed().as_secs_f64() * 1000.;
+        #[cfg(target_os="linux")]
+        let peak = super::native_ui::stack_peak(watermark);
+        std::thread::sleep(std::time::Duration::from_secs(4));
+        let status=std::fs::read_to_string("/proc/self/status").unwrap();
+        let kb=|key:&str| status.lines().find_map(|l|l.strip_prefix(key)?.split_whitespace().next()?.parse::<u64>().ok()).unwrap_or(0);
+        let mut report = serde_json::json!({"build_ms":build_ms,"rss_live_mb":kb("VmRSS:") as f64/1024.,"hwm_live_mb":kb("VmHWM:") as f64/1024.,"native_expected":expects_native,"native_painted":has_native(&h)});
+        report["native_failure_categories"]=serde_json::json!(super::native_ui::audit_failures());
+        #[cfg(target_os="linux")]
+        {
+            assert!(peak < watermark.2-watermark.0-4096,"full-editor stack watermark saturated");
+            report["ui_stack_peak_bytes"] = peak.into();
+            report["ui_thread_stack_bytes"] = (2_u64 << 20).into();
+        }
+        report
+    }).unwrap().join().unwrap()
+}
+
+#[test]
+fn full_editor_native_frames_fit_a_plain_two_mib_thread() {
+    std::thread::Builder::new().stack_size(2 << 20).spawn(|| {
+        use sampler_ui_ir as ir;
+        let dir = std::env::temp_dir().join(format!("kontra-editor-native-stack-{}",std::process::id()));
+        std::fs::create_dir_all(dir.join("Resources/native_ui")).unwrap();
+        let mut node="@ui.Rectangle {color=ui.Color(20,40,60)}.frame(width=32,height=32)".to_owned();
+        for _ in 0..32 {node=format!("@ui.VStack {{ {node} }}");}
+        std::fs::write(dir.join("Resources/native_ui/main.nui"),format!("local ui=require('native_ui')\nreturn function() return {node}.frame(width=32,height=32).on_tap_gesture({{complete=function() end}}) end")).unwrap();
+        let p = Arc::new(SamplerParams::new());
+        p.selection.write().unwrap().parts=vec![crate::plugin::Part {path:dir.join("fixture.nki").to_string_lossy().into_owned(),view:1,..Default::default()}];
+        p.selection.write().unwrap().order=vec![0];
+        p.shared.view.lock().unwrap().parts[0].interfaces=vec![ir::Interface {
+            source:ir::Source::Ksp{slot:0},
+            native_ui:Some(ir::NativeUi{entry:"main".into()}),
+            pages:vec![ir::Page{size:ir::Size{width:32,height:32},..Default::default()}],
+            widgets:vec![ir::Widget::new("fixture",ir::PageRef(0),ir::Rect::new(0,0,32,32),ir::Kind::Label)],
+            ..Default::default()
+        }].into();
+        let mut h=Harness::new(&p,1180.,760.);
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);
+        let painted=|h:&Harness|h.ui.scene().unwrap().surfaces().any(|s|s.key.as_str().starts_with("nui-")&&s.key.as_str().ends_with("-root/component"));
+        while !painted(&h) {
+            assert!(std::time::Instant::now()<deadline,"full editor never painted native fixture");
+            h.idle(1); std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        h.idle(4);
+        assert!(painted(&h));
+        drop(h);
+        std::fs::remove_dir_all(dir).unwrap();
+    }).unwrap().join().unwrap();
+}
