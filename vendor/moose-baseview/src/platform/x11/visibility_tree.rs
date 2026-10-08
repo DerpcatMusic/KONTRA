@@ -71,7 +71,9 @@ impl AncestryList {
     }
 
     pub fn check_all_mapped(&self) -> bool {
-        self.inner.borrow().iter().all(|a| a.mapped.get())
+        let inner = self.inner.borrow();
+        // An empty ancestry means the server destroyed our window.
+        !inner.is_empty() && inner.iter().all(|a| a.mapped.get())
     }
 
     pub fn set_mapped(&self, window: NonZeroU32, mapped: bool) -> bool {
@@ -179,6 +181,7 @@ impl AncestorVisibilityState {
 
     pub fn window_destroyed(&self, window_id: NonZeroU32, connection: &X11Connection) {
         let Self::Parented { ancestry, .. } = &self else {
+            self.window_unmapped(window_id);
             return;
         };
 
