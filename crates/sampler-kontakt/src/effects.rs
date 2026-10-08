@@ -1602,6 +1602,15 @@ mod tests {
     }
 
     #[test]
+    fn addressed_engine_writes_require_dynamic_effect_racks() {
+        let script = sampler_ksp::compile_with(
+            "on controller\nset_engine_par($ENGINE_PAR_EFFECT_BYPASS, 1, -1, 1, $NI_INSERT_BUS)\nend on",
+            48_000, sampler_ksp::Limits::LIBRARY, &[], &Default::default(),
+        ).unwrap();
+        assert!(script.writes_effect_slots(), "shared engine writes must retain live slot lanes");
+    }
+
+    #[test]
     #[ignore = "installed library metadata probe; run through kontakto-heavy"]
     fn analog_saved_compressor_state() {
         let path = std::path::Path::new("/mnt/MAIN_STORAGE/Libraries/Kontakt/ANALOG STRINGS/Instruments/ANALOG STRINGS.nki");
