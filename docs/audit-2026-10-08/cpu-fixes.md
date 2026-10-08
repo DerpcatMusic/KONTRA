@@ -187,3 +187,39 @@ The sorted key vector is replaced by a fixed bucket table with intrusive slot li
 A preliminary DefaultHasher build was profiled on the cold64 audio TID: piano 958 samples / 318.9M cycles, DSP 25.32%, filtered source 9.45%, bus 9.42%, hashing 1.78%; FX approximately 3K samples / 1,365.6M cycles, behavior VM 18.60%, DSP 11.77%, bus 6.41%, SipHash 1.68% and bucket 1.58%. These profiles have zero lost samples. They motivated using the existing faster hasher, but do not prove the final library CPU gate. That preliminary build measured piano 24.310 / 47.981 and FX 123.172 / 570.841 µs steady median / p99, both zero underruns and zero event/render heap calls; it is rejected.
 
 The preliminary paired run failed with exit 124 in the **before** integrated warm FX binary after a 90-second timeout, with no stderr. Its failure is retained, not scored as a successful comparison or attributed to the new index. Final fixed-index warm/cold pairs are running consecutively inside bounded heavy shards, reversing binary order in repeat 2, with the audit's original collectors and cold-cache helper. Every failure remains visible. **HOLD remains; v1 and the historical cold64 targets are not met.** The canonical frozen v1 reference currently has no CPU-audit adapter binary; the audit's historical v1 medians/p99 remain the comparison until that original binary can be recovered without rebuilding v1.
+
+## Direct slot selection (admission hold continues)
+
+The remaining clock search is linear even with the fixed page index: one idle slot behind 6,143 protected slots costs 7.630 / 9.970 µs median / p99. The new allocator ports v1 `0cb7a8a0:src/engine/mod.rs` free-slot `pop`/`push` operations and adapts them to shared decoded pages. Idle and current-epoch chains permit direct replacement; epoch rollover splices a chain in constant work. Admission never searches the slot array. A collision bucket still has expected amortized O(1) lookup. This is allocator reuse, not a completed port of v1's virtual per-voice rings.
+
+| Pool slots / phase | Clock median / p99 µs | Direct selection median / p99 µs | Heap calls before / after |
+|---|---:|---:|---:|
+| 768 / fill | 0.040 / 1.080 | 0.040 / 1.100 | 0 / 0 |
+| 768 / churn | 0.050 / 0.090 | 0.050 / 0.090 | 0 / 0 |
+| 768 / protected churn | 0.980 / 1.260 | 0.040 / 0.060 | 0 / 0 |
+| 6144 / fill | 0.040 / 1.370 | 0.050 / 1.480 | 0 / 0 |
+| 6144 / churn | 0.050 / 0.150 | 0.050 / 0.180 | 0 / 0 |
+| 6144 / protected churn | 7.630 / 9.970 | 0.080 / 0.220 | 0 / 0 |
+
+Epoch splicing, protected-page preservation, free-slot reuse, oldest idle replacement and list ownership have a regression check. Existing collision, stale-completion, heap-free, offline readiness, retry and admission tests pass; default `cargo test --no-run` passes. The additional horizon-change test refuses new work when a live source's widened horizon consumes capacity. Native kernels, amp routing and Cursor cold behavior are untouched.
+
+Final frozen candidate SHA256 `30f9aa2ab224c50c9fecac731f6b89f985c6118ffcadae4a31fdff92e036f5a5`. Each pair holds one bounded heavy shard and reverses binary order in repeat 2. Before is integrated `94448100…`. All event/render heap counts are zero, every cold eviction has zero file pages remaining, and all peak voice counts agree (piano 12, FX 24). Numbers are steady block median / p99 in microseconds. V1 is the historical audit reference, **not** a simultaneous third binary.
+
+| Cell | Repeat | Integrated before | Direct selection after | v1 historical reference | Underruns before / after |
+|---|---:|---:|---:|---:|---:|
+| piano/64 cold | 1 | 30.910 / 61.941 | 25.430 / 50.621 | 12.170 / 30.750 | 0 / 0 |
+| piano/64 cold | 2 | 27.341 / 52.691 | 27.860 / 57.491 | 12.170 / 30.750 | 0 / 0 |
+| piano/64 cold | 3 | 26.780 / 56.001 | 39.301 / 139.803 | 12.170 / 30.750 | 0 / 0 |
+| piano/64 warm | 1 | 27.100 / 60.871 | 25.990 / 61.821 | 6.920 / 21.111 | 0 / 0 |
+| piano/64 warm | 2 | 26.800 / 50.741 | 25.390 / 47.171 | 6.920 / 21.111 | 0 / 0 |
+| piano/64 warm | 3 | 27.151 / 52.041 | 28.600 / 83.011 | 6.920 / 21.111 | 0 / 0 |
+| fx/64 cold | 1 | 80.131 / 155.273 | 76.521 / 159.613 | 68.431 / 241.434 | 0 / 0 |
+| fx/64 cold | 2 | 84.021 / 167.453 | 83.632 / 168.743 | 68.431 / 241.434 | 0 / 0 |
+| fx/64 cold | 3 | 81.102 / 175.984 | 82.432 / 168.643 | 68.431 / 241.434 | 0 / 0 |
+| fx/64 warm | 1 | 78.411 / 167.133 | 83.192 / 183.993 | 45.571 / 84.912 | 0 / 0 |
+| fx/64 warm | 2 | 84.191 / 176.193 | 79.701 / 167.603 | 45.571 / 84.912 | 0 / 0 |
+| fx/64 warm | 3 | 79.522 / 162.823 | 108.132 / 244.775 | 45.571 / 84.912 | 0 / 0 |
+
+**This candidate fails the library CPU gate and remains held.** Median-of-run median/p99: cold piano 27.341 / 56.001 → 27.860 / 57.491; cold FX 81.102 / 167.453 → 82.432 / 168.643; warm piano 27.100 / 52.041 → 25.990 / 61.821; warm FX 79.522 / 167.133 → 83.192 / 183.993. Total underruns are zero on both sides. The historical absolute integrated cold64 baseline (piano 23.380 / 43.701, FX 64.221 / 113.413) and v1 targets are unmet. Piano repeat 3 regresses strongly. The structural O(1) result does not prove that the library tails are noise. The remaining 32/256/Vista cells and final scanner gate have not been measured for this candidate.
+
+The between-page credit-cache experiment was rejected and removed before this candidate. Its cold median-of-run median/p99 was piano 25.291 / 48.061 → 25.381 / 55.071 and FX 78.291 / 163.583 → 111.842 / 261.875, all cold underruns zero. Its horizon negative control reproduced stale credits, but its additional fields and helpers did not meet the CPU gate. Frozen binary `0c2b496e…` and source snapshot `refs/wip/v2/fix-cpu/20261008T102704Z` retain provenance outside production. The fixed-index-only series is also retained: piano cold median 28.510 / 61.841 → 39.010 / 71.302; one baseline cold FX timeout (124) invalidates that pair, and warm FX repeat 2 has one after underrun and a 2534.787 µs p99. No failed pair is treated as a pass.

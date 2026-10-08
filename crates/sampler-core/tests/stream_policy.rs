@@ -281,3 +281,24 @@ fn a_pitch_edit_updates_live_credits_before_the_next_start() {
         rt.start(second, 1, 0, 1.).unwrap();
     });
 }
+
+#[test]
+fn a_horizon_change_updates_live_credits_before_the_next_start() {
+    let pcm = Pcm::headed(48000, PAGE_FRAMES * 3, &[[0.25; 2]; PAGE_FRAMES]).unwrap();
+    let short = Pcm::headed(48000, PAGE_FRAMES, &[[0.25; 2]; 64]).unwrap();
+    let plan = Prepared::new(48000, vec![pcm, short], vec![], 0).unwrap();
+    let limits = Limits::for_plan(&plan, 8, 8);
+    let (cache, _worker) = StreamCache::new(2).unwrap();
+    let mut rt = Runtime::new(plan, limits).unwrap().with_stream_cache(cache);
+    rt.set_stream_horizon(64).unwrap();
+    let input = |id| Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: Some(id) };
+    let first = rt.note_on(input(1), 60, 1.).unwrap();
+    let live = rt.start(first, 0, 0, 1.).unwrap();
+    rt.render(&mut [[0.; 2]; 64]).unwrap();
+    let second = rt.note_on(input(2), 60, 1.).unwrap();
+    support::without_heap(|| {
+        rt.set_stream_horizon(PAGE_FRAMES as u32 * 2).unwrap();
+        assert_eq!(rt.start(second, 1, rt.now(), 1.), Err(Error::Capacity));
+        assert!(rt.voice_active(live));
+    });
+}
