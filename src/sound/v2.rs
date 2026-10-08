@@ -1054,6 +1054,8 @@ fn insert_names(instrument: &ir::Instrument, chain: Option<ir::ChainRef>) -> Vec
         .chain(&chain.post_amplitude)
         .map(|p| match p {
             ir::Processor::Gain(_) => "Gain",
+            ir::Processor::Gainer { .. } => "Gainer",
+            ir::Processor::StereoModeller { .. } => "Stereo Modeller",
             ir::Processor::Pan(_) => "Pan",
             ir::Processor::StereoMatrix(_) => "Stereo",
             ir::Processor::Reverb(_) => "Reverb",
@@ -1201,6 +1203,7 @@ fn kontakt(
         library: Some(path.clone()),
         mpe: request.mpe.then(|| sampler_core::lower::MpeDefaults::for_instrument(&source.instrument)),
         dynamics_start: request.dynamics_start,
+        control_values: request.control_values.iter().filter(|(_, value)| value.is_finite()).map(|&(id, value)| (sampler_core::ControlId(id.0), value.round().clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32)).collect(),
         ..Default::default()
     };
     let progress = |p: sampler_kontakt::Progress<'_>| {

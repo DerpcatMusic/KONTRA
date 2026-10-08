@@ -10,6 +10,8 @@ pub struct Script<'a> {
     pub source_editor_open: bool,
     pub touched_but_not_applied: bool,
     pub bypass: bool,
+    /// v0x60 hash bytes; v0x50's legacy optional password bytes. The original
+    /// public view retains the distinction between absent and empty v0x50 fields.
     pub password_hash: Bytes<'a>,
     pub description: Option<Bytes<'a>>,
     pub textfile_name: Option<Bytes<'a>>,
@@ -36,7 +38,14 @@ impl<'a> Script<'a> {
         let source_editor_open = r.boolean()?;
         let touched_but_not_applied = r.boolean()?;
         let bypass = r.boolean()?;
-        let password_hash = r.sized()?;
+        let password_hash = if object.version == 0x50 {
+            r.optional()?.unwrap_or(Bytes {
+                data: &r.0.data[..0],
+                offset: r.0.offset,
+            })
+        } else {
+            r.sized()?
+        };
         let description = r.optional()?;
         let textfile_name = r.optional()?;
         let persistent = if r.0.data.is_empty() {
