@@ -13,6 +13,8 @@ pub enum ReleaseCause {
     Parent,
     AllNotesOff,
     AllSoundOff,
+    /// Script discard: stop source work without creating a physical key-up.
+    Discarded,
     Panic,
     /// A script held the release (`ignore_event` in `on release`) and nothing
     /// of the note sounds or can sound; like a Kontakt event, it just ends.
