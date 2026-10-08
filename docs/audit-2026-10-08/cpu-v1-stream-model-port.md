@@ -65,3 +65,32 @@ The candidate plans **41,334 distinct assets and head spans**, **166,617,354 sou
 The probe descendants each recorded zero VmSwap. The ordinary wrapper unit separately reached 7.1 MiB swap, which includes persistent helper processes; zero-swap release acceptance still requires the quiet gate. No new quiet request was made because candidate RSS fails the required exact-52438 ceiling.
 
 **Reference-stage correction:** the 307.10 MiB gate scanner row explicitly reports an “initial streaming bank”. Its pinned `src/ui/scan.rs:250` calls `Bank::load_bare`, not the full-bank UI benchmark’s separate 512 MiB path. Product v1 first publishes that no-head bank, then fills resident heads on a worker. The CPU adapter instead finishes the full 1 GiB load. Both provenance and numbers remain explicit; the required RSS ceiling is not silently changed. The optional heap-retention probe was stopped before completion: the packed payload alone exceeds the total RSS ceiling, so trimming cannot change the verdict. Next: resolve initial-vs-completed-bank residency policy with the coordinator; prepare the deferred held-note slow-attack fixture in source-only time. Streaming remains HOLD.
+
+## Auto budget trial — source only, not accepted
+
+The 1 GiB trial correctly reproduces v1's completed head payload, but that payload alone exceeds the required total RSS ceiling. Next trial: Auto uses a general 128 MiB stream budget, including its 64 MiB virtual ring reservation. The existing v1 planner shrinks preload, limits offset coverage, and finally reaches its 256-frame floor; starts outside resident coverage retain the accepted late-onset offset/direction semantics. This is an adapted budget, not v1's default 1 GiB. RAM-only retains its available-memory policy. No library-specific value, new setting or alternate transport is added. The original-instrument RSS/swap and zero-underrun/capacity rule decides acceptance. Builds wait behind W0's release priority; no quiet request until RSS passes.
+
+128 MiB is measurement-only. Acceptance requires zero storage underruns and zero stream-capacity errors on Areia Full/32 cold, plus no new underruns across the gate cells, including fast-repeat and legato. A failing budget is raised in steps or made to scale with available RAM; lower RSS never compensates for dropouts. The coordinator assigned their schedules to this trial. Shared `tools/cpu-audit-schedules.rs` defines fast-repeat (two 8 s phases at quarter=140 BPM, half-length gates, alternating velocities64/127), legato (24 chromatic notes48–71, literal eighth=180 BPM/333⅓ ms spacing with30 ms overlap), and cold jump (keys0,18,36,54,72,90,108,127 together in the first block after load). A one-second release tail follows repeats/legato; cold jump holds one second and releases one second. The same source feeds v1/v2 adapters; the original piano/strings/fx events remain sample-exact. These are probe changes only, not new gate acceptance results. The source-only lazy-reload regression fixture covers reserving ring bytes during both initial preload and reload; it has not been compiled yet because W0's release build has priority.
+
+## 128 MiB ownership result and corrected acceptance comparator
+
+Coordinator steering at22:48 replaces the52438 RSS ceiling with matched frozen v1. The128MiB trial98e92f9f therefore passes the RSS axis on this fresh ordinary ownership comparison; playback acceptance remains pending a quiet run. No256MiB trial was built. A source-only256 change was manually reversed before validation.
+
+Receipt: `/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w9-budget128-owners/summary.json`. Same Areia Full/block32 original strings sequence, disabled parsed cache, identical watcher/harness. v1 ran immediately after the fresh52438 row. Timing and dropout attribution are UNKNOWN under contention.
+
+| Engine | Loaded RSS MiB | Final RSS MiB | Watcher peak RSS MiB | Actual probe peak swap MiB | Unscored underruns | Capacity errors |
+|---|---:|---:|---:|---:|---:|---:|
+|52438|379.0195|380.9727|506.8359|0|24|951|
+|128MiB candidate98e92f9f|413.6250|454.4492|490.8516|23.4297|185|0|
+|Frozen full-v1|764.9883|796.5508|798.9688|0|0|UNKNOWN(not exposed)|
+
+Candidate plans25,503,078 frames /153,018,468 native bytes, packs41,334 spans to79,385,881 bytes, preload256, with64MiB virtual rings. v1's mandatory256-frame floor can exceed the nominal budget when minimum start coverage cannot fit; this explains why128MiB does not imply64MiB of physical heads. The candidate's observed swap is disclosed; even adding its peak swap to loaded/final RSS leaves it below matched v1. Quiet playback must still certify zero underruns, zero capacity errors and zero stream errors on the original Areia32cold cell and shared fast-repeat, legato and cold-jump schedules. No READY streaming SHA is claimed yet.
+
+Validation for schedules/cap correction: four schedule checks, stream/preload13, cold_chain10, cold_offset2 and paged_render16 PASS; root no-run PASS. The cap regression failed first with one unwanted reload read and passes with none. New frozen v1 challenge adapter validation is pending; the original frozen v1 binaries remain untouched.
+
+Quiet playback will additionally record VmSwap for all three comparators(52438,
+v1,candidate). Candidate-only swap in a quiet run requires ownership/pressure
+attribution before READY, per coordinator steering; ordinary pressure-induced
+swap cannot be silently omitted. W13 owns the first timed window; W9 takes the
+next only after the direct handoff. The earlier52438 RSS criterion is historical
+and superseded by matched v1; the production trial remains128MiB.
