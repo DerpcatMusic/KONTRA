@@ -579,3 +579,7 @@ First nine stable fields: `path library loads ui controls_bound plays_note load_
 
 Detailed JSON retains Lua init/runtime safe first diagnostic categories/digests, actual paint and budget status, widget kinds, lookup/decode/font success/failure categories, frames/strips/margins, declared/observed background RGBA and pixel fraction, load path, sample residency/underruns, runtime behavior outcomes, wire/runtime slots, compile admission/cleanliness, and independent init/persistence phase outcomes. Never serialize authored fault messages, identifiers, saved values, source text or resource bytes.
 
+
+## KSP keyboard classifier correction
+
+The frozen census retains 348 no-safe-key observations caused by the scanner, not product silence. Corrected probes on the exact same IDs now produce audible audio in 348/348 pairs on both engines, using identical notes with no mismatches or fallback picks. See [the separate correction receipt](UI_CENSUS_KEYBOARD.md) for source versions, reason counts and complete signatures. The frozen full sweep resumes without replacing its binaries.
