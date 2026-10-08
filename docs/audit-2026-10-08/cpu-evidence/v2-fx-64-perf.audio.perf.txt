@@ -1,0 +1,33 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 323  of event 'cycles:u'
+# Event count (approx.): 694604661
+#
+# Overhead  Command    Shared Object     Symbol
+# ........  .........  ................  ..................................................................................................................................................................................................................................................................................................................................................................................
+#
+    37.79%  cpu_audit  cpu_audit         [.] <kontakto::sound::v2::V2Core as kontakto::sound::Core>::end_block
+    13.33%  cpu_audit  cpu_audit         [.] <sampler_core::Runtime>::drain_behavior
+     8.70%  cpu_audit  cpu_audit         [.] sampler_core::dsp::process
+     4.68%  cpu_audit  cpu_audit         [.] <sampler_core::bus::BusState>::render
+     3.41%  cpu_audit  cpu_audit         [.] sampler_simd::dispatch::v3::<(), sampler_simd::dispatch::run_fused<(&mut sampler_core::source::Cursor, &mut [[f32; 2]], &mut sampler_core::envelope::EnvelopeState), (), <sampler_core::source::Cursor>::render_run<sampler_core::source::PagedFrames>::{closure#3}, <sampler_core::source::Cursor>::render_run<sampler_core::source::PagedFrames>::{closure#4}>::{closure#0}>
+     2.91%  cpu_audit  cpu_audit         [.] <sampler_core::Runtime>::render_voice
+     2.02%  cpu_audit  cpu_audit         [.] <sampler_core::Runtime>::service_streaming
+     1.88%  cpu_audit  cpu_audit         [.] sampler_simd::dispatch::v3::<(), sampler_core::dsp::convolution::mac::{closure#0}>
+     1.84%  cpu_audit  cpu_audit         [.] <sampler_core::envelope::EnvelopeState>::next
+     1.59%  cpu_audit  cpu_audit         [.] <sampler_core::stream::StreamCache>::protect
+     1.52%  cpu_audit  [unknown]         [k] 0000000000000000
+     1.46%  cpu_audit  cpu_audit         [.] sampler_core::render::render_source::<sampler_core::source::PagedFrames>
+     1.42%  cpu_audit  libc.so.6         [.] 0x00000000001b7bdd
+     1.32%  cpu_audit  cpu_audit         [.] <sampler_core::voice_mod::VoiceModState>::mix
+     1.30%  cpu_audit  cpu_audit         [.] <sampler_core::dsp::PreparedVoiceChain>::begin::<sampler_core::source::PagedFrames>
+     1.07%  cpu_audit  cpu_audit         [.] <sampler_core::resample::Kernel>::sample_window
+     1.06%  cpu_audit  libc.so.6         [.] 0x00000000001b7ad3
+
+
+#
+# (Tip: For tracepoint events, try: perf report -s trace_fields)
+#

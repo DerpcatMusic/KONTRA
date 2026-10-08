@@ -985,7 +985,9 @@ impl Runtime {
         &mut self,
         accept: &mut dyn FnMut(BehaviorId, BehaviorOwner, Outcome, usize) -> bool,
     ) {
-        for i in 0..self.behaviors.slots.len() {
+        let mut next = self.behaviors.first;
+        while let Some(i) = next {
+            next = self.behaviors.slots[i].next;
             let Some(c) = self.behaviors.slots[i].value else {
                 continue;
             };
