@@ -630,3 +630,13 @@ fn v1_mixer_view_controls_are_reachable() {
         assert!(h.ui.scene().unwrap().surface(id).is_some(), "v1 control missing: {id}");
     }
 }
+
+#[test]
+fn v1_ram_and_disk_readouts_are_reachable() {
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    let h = Harness::new(&p, 1180., 780.);
+    shoot(&h.ui, 1180, 780, "settings-telemetry.png");
+    for id in ["readout-ram", "readout-disk"] {
+        assert!(h.ui.scene().unwrap().surface(id).is_some(), "v1 readout missing: {id}");
+    }
+}
