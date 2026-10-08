@@ -886,6 +886,20 @@ fn addressed_gain_and_filter_controls_drive_real_audio_lanes() {
     rt.render(&mut out).unwrap();
     let high: f32 = out[512..].iter().map(|f| f[0] * f[0]).sum();
     assert!(high > low * 100., "Daft {low} {high}");
+    instrument.chains[0].pre_amplitude[0] = ir::Processor::LadderLP4(ir::LadderLP4 {
+        gain: 0., cutoff: 0., resonance: 0., record_version: 0x92,
+    });
+    let pcm = Pcm::new(48000, (0..4096)
+        .map(|i| [(i as f32 * std::f32::consts::TAU / 8.).sin() * 0.001; 2])
+        .collect::<Vec<_>>().into_boxed_slice()).unwrap();
+    let mut rt = Runtime::new(prepare(&instrument, pcm), limits()).unwrap();
+    rt.trigger(input(60), 60, 1.).unwrap();
+    rt.render(&mut out).unwrap();
+    let low: f32 = out[512..].iter().map(|f| f[0] * f[0]).sum();
+    rt.set_engine_parameter(address, 1000000).unwrap();
+    rt.render(&mut out).unwrap();
+    let high: f32 = out[512..].iter().map(|f| f[0] * f[0]).sum();
+    assert!(high > low * 100., "Ladder LP4 {low} {high}");
 }
 
 #[test]

@@ -1203,6 +1203,9 @@ impl Lowering<'_> {
             (Processor::Daft(filter), Cutoff) => filter.cutoff = parameter,
             (Processor::Daft(filter), Resonance) => filter.resonance = parameter,
             (Processor::Daft(filter), Response) => filter.response = parameter,
+            (Processor::LadderLP4(filter), Gain) => filter.gain = parameter,
+            (Processor::LadderLP4(filter), Cutoff) => filter.cutoff = parameter,
+            (Processor::LadderLP4(filter), Resonance) => filter.resonance = parameter,
             (Processor::Gainer { gain, .. }, Gain) => *gain = parameter,
             (Processor::StereoModeller(settings), Width) => settings.width = parameter,
             (Processor::StereoModeller(settings), Pan) => settings.pan = parameter,
@@ -1380,6 +1383,12 @@ impl Lowering<'_> {
                 cutoff: Parameter::Constant(d.cutoff),
                 resonance: Parameter::Constant(d.resonance),
                 response: Parameter::Constant(if d.highpass { 1.0 } else { 0.0 }),
+            }),
+            ir::Processor::LadderLP4(d) => Processor::LadderLP4(crate::LadderSettings {
+                gain: Parameter::Constant(d.gain),
+                cutoff: Parameter::Constant(d.cutoff),
+                resonance: Parameter::Constant(d.resonance),
+                record_version: d.record_version,
             }),
             ir::Processor::Rectify(mode) => Processor::Rectify(match mode {
                 ir::Rectifier::Full => Rectifier::Full,
