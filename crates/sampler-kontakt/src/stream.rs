@@ -94,6 +94,11 @@ impl Seek for Bytes {
     }
 }
 
+impl symphonia::core::io::MediaSource for Bytes {
+    fn is_seekable(&self) -> bool { true }
+    fn byte_len(&self) -> Option<u64> { Some(self.source.size) }
+}
+
 /// Fills frames from a start.
 type Reader = Box<dyn FnMut(usize, &mut [Frame]) -> io::Result<()> + Send>;
 
@@ -159,6 +164,11 @@ impl SampleReader {
             });
         }
         bytes.seek(SeekFrom::Start(0))?;
+        if head.starts_with(b"FORM") {
+            let mut reader = crate::pcm::Reader::open(Box::new(bytes)).map_err(|e| invalid(format!("AIFF: {e:#}")))?;
+            let frames = usize::try_from(reader.frames).map_err(|_| invalid("AIFF too long".into()))?;
+            return Ok(Self::custom(reader.rate, frames, move |start, out| reader.read(start as u64, out).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))));
+        }
         let reader = ncw::NcwReader::read(bytes).map_err(|e| invalid(format!("NCW: {e}")))?;
         Ok(Self {
             rate: reader.header.sample_rate,
