@@ -27,7 +27,13 @@ impl BPatchHeader {
             0..=255 => BPatchHeaderV1::read_le(&mut reader).map(Self::BPatchHeaderV1),
             256..=271 => BPatchHeaderV2::read_le(&mut reader).map(Self::BPatchHeaderV2),
             _ => BPatchHeaderV42::read_le(&mut reader).map(Self::BPatchHeaderV42),
-        }.map_err(|e| NKSError::context(format!("NKS patch header at offset {at}, format word 0x{header_version:04x}"), e))
+        }
+        .map_err(|e| {
+            NKSError::context(
+                format!("NKS patch header at offset {at}, format word 0x{header_version:04x}"),
+                e,
+            )
+        })
     }
 }
 
@@ -356,10 +362,11 @@ impl std::fmt::Debug for NKIAppVersion {
 
 impl std::fmt::Display for NKIAppVersion {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&format!(
+        write!(
+            f,
             "{}.{}.{}.{}",
-            self.major, self.minor_2, self.minor_2, self.minor_3,
-        ))
+            self.major, self.minor_1, self.minor_2, self.minor_3,
+        )
     }
 }
 
@@ -375,7 +382,7 @@ pub enum PatchType {
 }
 
 impl PatchType {
-    /// Get a meaningful string for a PatchType (FileTypeProxy).
+    /// Get a label for a PatchType (FileTypeProxy), without implying layout support.
     pub fn description(&self) -> String {
         match self {
             PatchType::NKB => "Bank",
@@ -383,8 +390,8 @@ impl PatchType {
             PatchType::NKI => "Instrument",
             PatchType::NKM => "Multi",
             PatchType::NKP => "Preset",
-            PatchType::NKZ => todo!(),
-            PatchType::Unknown(_) => "?",
+            PatchType::NKZ => "NKZ (layout unknown)",
+            PatchType::Unknown(id) => return format!("Unknown patch type (0x{id:04x})"),
         }
         .into()
     }
@@ -410,6 +417,29 @@ mod tests {
     use std::fs::File;
 
     use super::*;
+
+    #[test]
+    fn reader_regression_version_and_patch_descriptions() {
+        let version = NKIAppVersion {
+            major: 7,
+            minor_1: 5,
+            minor_2: 3,
+            minor_3: 1,
+        };
+        assert_eq!(version.to_string(), "7.5.3.1");
+        assert_eq!(version.to_string(), format!("{version:?}"));
+        for (id, description) in [
+            (0, "Multi"),
+            (1, "Instrument"),
+            (2, "Bank"),
+            (3, "Preset"),
+            (4, "Group"),
+            (5, "NKZ (layout unknown)"),
+            (0xabcd, "Unknown patch type (0xabcd)"),
+        ] {
+            assert_eq!(PatchType::from(id).description(), description);
+        }
+    }
 
     #[test]
     #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]

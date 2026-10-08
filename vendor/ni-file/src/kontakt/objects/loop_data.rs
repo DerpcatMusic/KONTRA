@@ -1,4 +1,4 @@
-use crate::{read_bytes::ReadBytesExt, Error};
+use crate::{Error, read_bytes::ReadBytesExt};
 
 // TODO: change to Chunk reader
 
@@ -6,7 +6,7 @@ use crate::{read_bytes::ReadBytesExt, Error};
 /// SerType:        0x05
 /// Kontakt 7:      BLoop
 /// KontaktIO:      K4PL_Loop
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Loop {
     pub mode: i32,
     pub loop_start: i32,
@@ -24,7 +24,11 @@ impl Loop {
             loop_start: reader.read_i32_le()?,
             loop_length: reader.read_i32_le()?,
             loop_count: reader.read_i32_le()?,
-            alternating_loop: reader.read_bool()?,
+            alternating_loop: match reader.read_u8()? {
+                0 => false,
+                1 => true,
+                _ => return Err(Error::Static("Invalid loop alternating flag")),
+            },
             loop_tuning: reader.read_f32_le()?,
             x_fade_length: reader.read_i32_le()?,
         })

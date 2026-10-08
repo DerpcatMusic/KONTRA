@@ -19,6 +19,7 @@ pub enum Target {
     LibrarySort,
     /// A rack slot.
     Part(usize),
+    View(usize),
     /// A key on the keyboard.
     Key(u8),
     /// The editor's own menu in the top bar.
@@ -29,6 +30,9 @@ pub enum Target {
     Output(usize),
     /// The mixer's routing: the Outputs mode and the one-click actions.
     Routing,
+    Articulations(usize),
+    Articulation(usize, String),
+    ArtDriver(usize),
 }
 
 #[derive(Clone, Debug)]
@@ -42,7 +46,9 @@ pub struct Menu {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
+    Art(usize, super::inside::ArtAction),
     Open(String),
+    View(usize, u8),
     OpenNew(String),
     Reveal(String),
     CopyPath(String),
@@ -160,6 +166,47 @@ pub fn open_under(ui: &Ui, cx: &mut Cx, target: Target, anchor: &str) {
 
 fn items(cx: &Cx, target: &Target) -> Vec<Item> {
     match target {
+        Target::View(slot) => {
+            let mode = super::part::mode(cx, *slot);
+            vec![check("Original", mode == crate::library::ViewMode::Original, Command::View(*slot, 1)),
+                 check("Vector", mode == crate::library::ViewMode::Vectorized, Command::View(*slot, 3)),
+                 check("KONTRA", mode == crate::library::ViewMode::Kontra, Command::View(*slot, 2))]
+        }
+        Target::ArtDriver(slot) => {
+            use super::inside::ArtAction;
+            let part = &cx.selection.parts[*slot];
+            let now = part.articulation_overlay.driver.unwrap_or_else(|| if part.switching & 0x80 != 0 { part.switching >> 1 & 7 } else { cx.view.parts[*slot].instrument.as_ref().map_or(0, |i| i.switching.driver as u8) });
+            ["Keys", "Velocity", "Channel", "CC", "Program"].iter().enumerate().map(|(n, label)| check(*label, now == n as u8, Command::Art(*slot, ArtAction::Driver(n as u8)))).collect()
+        }
+        Target::Articulations(slot) => {
+            use super::inside::ArtAction;
+            let part = &cx.selection.parts[*slot];
+            let learns = part.articulation_overlay.driver.unwrap_or_else(|| if part.switching & 0x80 != 0 { part.switching >> 1 & 7 } else { cx.view.parts[*slot].instrument.as_ref().map_or(0, |i| i.switching.driver as u8) }) == 0;
+            vec![act("Reset mappings", "Restore source inputs and display order", Command::Art(*slot, ArtAction::Reset)),
+                check("Keep original keys", cx.selection.parts[*slot].articulation_overlay.keep_originals, Command::Art(*slot, ArtAction::Keep)),
+                if learns { act("MIDI learn", "Learn a key for the active row", Command::Art(*slot, ArtAction::Learn(None))) } else { Item::Info("MIDI learn available in Keys mode".into()) },
+                Item::Rule,
+                act("Reassign triggers in this order", "Explicitly assign existing triggers in display order", Command::Art(*slot, ArtAction::Reassign))]
+        }
+        Target::Articulation(slot, id) => {
+            use super::inside::ArtAction;
+            let part = &cx.selection.parts[*slot];
+            let learns = part.articulation_overlay.driver.unwrap_or_else(|| if part.switching & 0x80 != 0 { part.switching >> 1 & 7 } else { cx.view.parts[*slot].instrument.as_ref().map_or(0, |i| i.switching.driver as u8) }) == 0;
+            let mut items = vec![if learns { act("MIDI learn", "Play a new key for this articulation", Command::Art(*slot, ArtAction::Learn(Some(id.clone())))) } else { Item::Info("MIDI learn available in Keys mode".into()) },
+                act("Clear trigger", "Remove this row's input in the current mode", Command::Art(*slot, ArtAction::Clear(id.clone()))),
+                act("Reset row mappings", "Restore all this row's source triggers", Command::Art(*slot, ArtAction::ResetRow(id.clone()))),
+                Item::Rule,
+                act("Move up", "", Command::Art(*slot, ArtAction::Move(id.clone(), -1))),
+                act("Move down", "", Command::Art(*slot, ArtAction::Move(id.clone(), 1)))];
+            if let Some(inst) = cx.view.parts[*slot].instrument.as_ref() {
+                let ids = crate::sound::articulation::identities(&inst.articulations);
+                if let Some(n) = ids.iter().position(|i| i == id) {
+                    let input = cx.selection.parts[*slot].articulation_overlay.input(id, &inst.articulations[n], sampler_ir::Driver::Keys);
+                    if let crate::sound::articulation::Input::Keys(keys) = input { items.push(Item::Info(format!("Keys: {}", keys.into_iter().map(note_name).collect::<Vec<_>>().join(", ")))); }
+                }
+            }
+            items
+        }
         Target::Library(name) => {
             let Some(library) = cx.view.shelf.named(name) else { return Vec::new() };
             let dir = library.dir.to_string_lossy().into_owned();
@@ -399,6 +446,9 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, window: Size) -> Option<El> {
             } => {
                 height += ROW;
                 let id = format!("menu-item-{n}");
+                // Articulation explanations belong in tooltips, not a second
+                // wrapped column inside a compact fixed-height menu row.
+                let tip = matches!(&command, Command::Art(..)).then_some(if matches!(&command, Command::Art(_, super::inside::ArtAction::Move(_, _))) { "Changes display order only; trigger assignments stay unchanged" } else { hint });
                 if ui.get(id.as_str()).activated() {
                     picked = Some(command);
                 }
@@ -414,7 +464,7 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, window: Size) -> Option<El> {
                         .lines(1)
                         .flex(1)
                         .min_w(0),
-                    caption(hint).fill(secondary())
+                    caption(if tip.is_some() { "" } else { hint }).fill(secondary())
                 ]
                 .gap(SPACE)
                 .align(Align::Center)
@@ -423,6 +473,7 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, window: Size) -> Option<El> {
                 .focusable()
                 .a11y(A11y::Button)
                 .named(label)
+                .when(tip.is_some(), |e| e.tip(tip.unwrap()))
                 .id(id)
                 .shrink(0);
                 rows.push(interactive(el, false));
@@ -456,7 +507,6 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, window: Size) -> Option<El> {
             .stroke(Role::Ink.alpha(0.14))
             .stroke_width(1)
             .at(x, y)
-            .appear(Appear::Slide(0., -4.))
             .a11y(A11y::Group)
             .named("Context menu")
             .id(ID),
@@ -467,6 +517,13 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, window: Size) -> Option<El> {
 pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
     let shared = &cx.p.shared;
     match command {
+        Command::View(slot, mode) => {
+            if let Some(part) = cx.selection.parts.get_mut(slot) { part.view = mode; }
+            let chosen = super::part::mode(cx, slot);
+            let path = cx.selection.parts[slot].path.clone();
+            cx.p.shared.libraries.edit(|settings| { settings.instrument_views.insert(path, chosen); });
+        },
+        Command::Art(slot, action) => super::inside::action(ui, cx, slot, action),
         Command::Open(path) => cx.open(Path::new(&path)),
         Command::OpenNew(path) => cx.add(path),
         Command::Reveal(path) => {

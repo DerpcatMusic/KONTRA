@@ -105,6 +105,9 @@ pub enum ModTarget {
     Cutoff,
     /// Every voice-chain state-variable filter's Q × 10^(depth·v / 20).
     Resonance,
+    /// Actual compiled filter index, preserving the addressed source stage.
+    ProcessorCutoff(u32),
+    ProcessorResonance(u32),
     /// A per-voice low-pass, open (bypassed) at 0, closing by depth·v semitones
     /// below the open cutoff when the sum is negative.
     Tone,
@@ -549,7 +552,7 @@ pub(crate) struct Inputs<'a> {
     pub controllers: &'a [u32; 128],
     /// Frames from the note's admission to its key release (or now).
     pub held: u64,
-    pub script: crate::script_params::ModValues,
+    pub script: &'a crate::script_params::ModValues,
     /// The note's raw pitch bend, -1..=1.
     pub bend: f64,
 }
@@ -560,7 +563,7 @@ impl<'a> Inputs<'a> {
         expression: crate::Expression,
         controllers: &'a [u32; 128],
         held: u64,
-        script: crate::script_params::ModValues,
+        script: &'a crate::script_params::ModValues,
     ) -> Self {
         Self {
             velocity: note.velocity,
@@ -616,6 +619,8 @@ pub(crate) struct VoiceModState {
     phase: Box<[f64]>,
     values: Box<[f64]>,
     lagged: Box<[f64]>,
+    processor_values: Box<[f64]>,
+    previous_processor_values: Box<[f64]>,
     envelope: Box<[EnvelopeState]>,
     segments: Box<[Segment]>,
     /// Runtime frame and seed of the latest voice start: the restart of every
@@ -697,6 +702,8 @@ impl VoiceModState {
             phase: crate::dsp::allocate(slots(modulation.sources)?)?,
             values: crate::dsp::allocate(slots(modulation.sources)?)?,
             lagged: crate::dsp::allocate(slots(modulation.routes)?)?,
+            processor_values: crate::dsp::allocate(slots(modulation.routes)?)?,
+            previous_processor_values: crate::dsp::allocate(slots(modulation.routes)?)?,
             envelope: std::iter::repeat_n(
                 EnvelopeState::new(Envelope::default()),
                 slots(modulation.envelopes)?,
@@ -725,6 +732,11 @@ impl VoiceModState {
         take(&mut self.phase, &mut larger.phase);
         take(&mut self.values, &mut larger.values);
         take(&mut self.lagged, &mut larger.lagged);
+        take(&mut self.processor_values, &mut larger.processor_values);
+        take(
+            &mut self.previous_processor_values,
+            &mut larger.previous_processor_values,
+        );
         take(&mut self.envelope, &mut larger.envelope);
     }
 
@@ -744,6 +756,8 @@ impl VoiceModState {
             phase: Box::new([]),
             values: Box::new([]),
             lagged: Box::new([]),
+            processor_values: Box::new([]),
+            previous_processor_values: Box::new([]),
             envelope: Box::new([]),
             segments: Box::new([]),
             restart: (0, 0),
@@ -752,6 +766,32 @@ impl VoiceModState {
 
     pub fn program(&self, voice: usize) -> Option<u32> {
         self.program.get(voice).copied().flatten()
+    }
+
+    pub(crate) fn fill_filter_factors(
+        &self,
+        modulation: &VoiceModulation,
+        voice: usize,
+        factors: &mut [[f64; 2]],
+    ) {
+        factors.fill([0.0; 2]);
+        if let Some(program) = self.program(voice) {
+            let p = &modulation.programs[program as usize];
+            let offset = voice * self.routes;
+            for (i, route) in p.routes.iter().enumerate() {
+                let value = (self.processor_values[offset + i]
+                    + self.previous_processor_values[offset + i])
+                    * 0.5;
+                match route.target {
+                    ModTarget::ProcessorCutoff(index) => factors[index as usize][0] += value,
+                    ModTarget::ProcessorResonance(index) => factors[index as usize][1] += value,
+                    _ => {}
+                }
+            }
+        }
+        for factor in factors {
+            *factor = [(factor[0] / 12.0).exp2(), 10f64.powf(factor[1] / 20.0)];
+        }
     }
 
     /// Bind a starting voice and compute its first control point, so the first
@@ -911,7 +951,11 @@ impl VoiceModState {
         let mut resonance = 0.0;
         let mut cutoff = 0.0;
         let lagged = &mut self.lagged[voice * self.routes..][..p.routes.len()];
-        for (route, lagged) in p.routes.iter().zip(lagged) {
+        let processor_values = &mut self.processor_values[voice * self.routes..][..p.routes.len()];
+        let previous_processor_values =
+            &mut self.previous_processor_values[voice * self.routes..][..p.routes.len()];
+        previous_processor_values.copy_from_slice(processor_values);
+        for (i, (route, lagged)) in p.routes.iter().zip(lagged).enumerate() {
             let bipolar = p.bipolar[route.source];
             let mut v = p.transform(route, values[route.source], bipolar);
             if route.lag != 0 && !onset {
@@ -925,6 +969,10 @@ impl VoiceModState {
             let d = route
                 .scale
                 .map_or(route.depth, |s| route.depth * p.scale(s, values[s.source]));
+            processor_values[i] = d * v;
+            if onset {
+                previous_processor_values[i] = processor_values[i];
+            }
             match route.target {
                 ModTarget::Attenuate => gain *= 1.0 - d * (1.0 - unipolar(v, bipolar)),
                 ModTarget::Decibels => decibels += d * v,
@@ -934,6 +982,7 @@ impl VoiceModState {
                 ModTarget::Resonance => resonance += d * v,
                 ModTarget::Tone => out.tone += d * v,
                 ModTarget::SampleStart => {}
+                ModTarget::ProcessorCutoff(_) | ModTarget::ProcessorResonance(_) => {}
             }
         }
         let gain = (gain * 10f64.powf(decibels / 20.0)).max(0.0);
@@ -1019,6 +1068,22 @@ pub(crate) struct Ramp {
     pub to: Outputs,
     pub begin: u64,
     pub end: u64,
+}
+
+impl Ramp {
+    pub(crate) fn gains_at(self, at: u64) -> [f32; 2] {
+        let len = self.end.saturating_sub(self.begin).max(1) as f32;
+        let offset = at.saturating_sub(self.begin) as f32;
+        std::array::from_fn(|c| {
+            self.from.gains[c] + (self.to.gains[c] - self.from.gains[c]) / len * offset
+        })
+    }
+
+    pub(crate) fn without_gains(mut self) -> Self {
+        self.from.gains = [1.0; 2];
+        self.to.gains = [1.0; 2];
+        self
+    }
 }
 
 /// The tone filter's open cutoff as a fraction of the sample rate.
@@ -1112,7 +1177,7 @@ mod tests {
                 timbre: 0,
                 controllers: &controllers,
                 held: 0,
-                script: Default::default(),
+                script: &Default::default(),
                 bend: 0.0,
             };
             let clock = |now| Clock {

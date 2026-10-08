@@ -132,10 +132,15 @@ pub enum Processor {
         last: bool,
     },
     /// Kontakt Gainer (DSP_SYSTEM_INVENTORY "Gainer", KONTAKT_REFERENCE s.25):
-    /// `x * (dry + g)` where `g` follows `gain` through a one-pole of time
-    /// constant [`GAINER_TAU`] seconds, starting at its first target. Constant
+    /// `x * (dry + g)` where `g` follows `gain` through a one-pole using the
+    /// native per-frame coefficient, starting at its first target. Constant
     /// or control targets only; per-voice scalar path.
-    Gainer { dry: f64, gain: Parameter },
+    Gainer {
+        dry: f64,
+        gain: Parameter,
+    },
+    /// Native Stereo Modeller width/balance smoothing and optional right delay.
+    StereoModeller(StereoSettings),
     /// Kontakt Daft filter; per-voice scalar path.
     Daft(DaftSettings),
     /// WaveShaper rectification (stateless).
@@ -178,6 +183,7 @@ impl Processor {
             Processor::Compressor(settings) => settings.valid(),
             Processor::Decimate(decimator) => decimator.valid(),
             Processor::Daft(settings) => settings.valid(),
+            Processor::StereoModeller(settings) => settings.valid(),
             Processor::Branch { gain, .. } => gain.is_finite(),
             Processor::Rectify(_) => true,
             Processor::Gainer { dry, gain } => {
@@ -188,30 +194,30 @@ impl Processor {
     }
 }
 
-/// Gainer smoothing time constant (seconds): KONTAKT_REFERENCE s.25 fits 43-49 ms
-/// at two step sizes; the engine's per-sample k = 1/1800 is 41 ms at 44.1 kHz.
-pub const GAINER_TAU: f64 = 0.045;
-
 mod compressor;
 pub(super) mod control;
 mod convolution;
 mod daft;
 mod delay;
+mod stereo;
+mod taps;
+pub use stereo::StereoSettings;
+pub use taps::{VoiceSendPosition, VoiceSendTap};
 pub(super) mod lanes;
 mod reverb;
 mod shaping;
 pub(super) mod svf;
 pub use compressor::CompressorSettings;
-pub use daft::DaftSettings;
-pub use shaping::{Decimator, Rectifier};
 pub(super) use control::ControlRamp;
 pub use control::{ControlRange, Parameter};
 pub use convolution::ConvolutionUpload;
 pub(super) use convolution::{Convolution, tail_frames as impulse_tail_frames};
 pub use convolution::{Impulse, MAX_IMPULSE_FRAMES};
+pub use daft::DaftSettings;
 pub use delay::Delay;
 pub(super) use reverb::Reverb;
 pub use reverb::ReverbSettings;
+pub use shaping::{Decimator, Rectifier};
 pub use svf::{StateVariableFilter, SvfMode};
 
 pub(super) enum PreparedProcessor {
@@ -233,6 +239,10 @@ pub(super) enum PreparedProcessor {
     },
     Decimate(Decimator),
     Daft(daft::Daft),
+    StereoModeller {
+        stereo: stereo::Stereo,
+        offset: usize,
+    },
     Branch {
         count: u16,
         gain: f64,
@@ -257,14 +267,18 @@ pub(super) struct PreparedVoiceChain {
     post: Box<[PreparedProcessor]>,
     tail_frames: u32,
     pub delay_frames: usize,
+    taps: Box<[taps::PreparedTap]>,
+    pub tap_buses: Box<[usize]>,
 }
 
 pub(super) struct RenderContext<'a> {
+    pub amplifier: Option<crate::voice_mod::Ramp>,
     pub expression: Frame,
     pub delay: &'a mut [[f64; 2]],
     pub parameters: &'a [ControlRamp],
     pub filters: svf::FilterContext<'a>,
     pub at: u64,
+    pub feeds: &'a mut [taps::TapFeed],
 }
 
 /// Serial stereo processing with an explicit envelope boundary.
@@ -274,6 +288,7 @@ pub struct VoiceChain {
     pre: Box<[Processor]>,
     post: Box<[Processor]>,
     tail_frames: u32,
+    taps: Box<[VoiceSendTap]>,
 }
 impl VoiceChain {
     pub fn new(
@@ -296,6 +311,7 @@ impl VoiceChain {
             pre: pre_envelope.into_boxed_slice(),
             post: post_envelope.into_boxed_slice(),
             tail_frames,
+            taps: Box::new([]),
         })
     }
     pub(super) fn compile(
@@ -305,6 +321,9 @@ impl VoiceChain {
         filters: &mut Vec<svf::PreparedFilter>,
     ) -> Result<PreparedVoiceChain, Error> {
         let mut delay_frames = 0;
+        let mut tap_buses: Vec<_> = self.taps.iter().map(|tap| tap.bus).collect();
+        tap_buses.sort_unstable();
+        tap_buses.dedup();
         Ok(PreparedVoiceChain {
             pre: compile_processors(
                 self.pre,
@@ -326,6 +345,12 @@ impl VoiceChain {
             )?,
             tail_frames: self.tail_frames,
             delay_frames,
+            taps: self
+                .taps
+                .into_iter()
+                .map(|tap| tap.compile(bindings))
+                .collect(),
+            tap_buses: tap_buses.into_boxed_slice(),
         })
     }
 }
@@ -379,8 +404,18 @@ pub(super) fn compile_processors(
                 Processor::Gainer { dry, gain } => PreparedProcessor::Gainer {
                     dry,
                     gain: gain.compile(bindings),
-                    k: -(-1.0 / (GAINER_TAU * f64::from(rate))).exp_m1(),
+                    k: f64::from(f32::from_bits(0x3a11a2b4)),
                 },
+                Processor::StereoModeller(settings) => {
+                    let offset = *delay_frames;
+                    if settings.pseudo {
+                        *delay_frames = offset.checked_add(1024).ok_or(Error::Capacity)?;
+                    }
+                    PreparedProcessor::StereoModeller {
+                        stereo: settings.compile(rate, bindings),
+                        offset,
+                    }
+                }
                 Processor::Decimate(decimator) => PreparedProcessor::Decimate(decimator),
                 Processor::Reverb(settings) => {
                     let reverbs = reverbs.as_deref_mut().ok_or(Error::InvalidInput)?;
@@ -423,6 +458,19 @@ pub(super) fn compile_processors(
 }
 
 impl PreparedVoiceChain {
+    pub(crate) fn filter_indices(&self, stages: std::ops::Range<usize>) -> Vec<u32> {
+        self.pre
+            .iter()
+            .chain(&self.post)
+            .enumerate()
+            .filter_map(|(i, p)| match p {
+                PreparedProcessor::StateVariable(filter) if stages.contains(&i) => {
+                    u32::try_from(*filter).ok()
+                }
+                _ => None,
+            })
+            .collect()
+    }
     pub(super) fn stages(&self) -> usize {
         self.pre.len() + self.post.len()
     }
@@ -449,32 +497,15 @@ impl PreparedVoiceChain {
             let len = begun.len;
             let at = context.at + (chunk_index * BLOCK) as u64;
             let (pre, post) = states.split_at_mut(self.pre.len());
-            let mut fault = process(
-                &self.pre,
-                pre,
-                &mut block,
-                len,
-                context.parameters,
-                at,
-                context.delay,
-                &mut context.filters,
-            );
+            let mut fault = self.process_section(true, pre, &mut block, len, at, &mut context);
             let levels = levels(voice, len);
             let [left, right] = &mut block;
-            for ((l, r), level) in left[..len].iter_mut().zip(&mut right[..len]).zip(&levels) {
-                *l *= level;
-                *r *= level;
+            for (i, ((l, r), level)) in left[..len].iter_mut().zip(&mut right[..len]).zip(&levels).enumerate() {
+                let gains = context.amplifier.map_or([1.0; 2], |r| r.gains_at(at + i as u64 + 1));
+                *l *= level * f64::from(gains[0]);
+                *r *= level * f64::from(gains[1]);
             }
-            fault |= process(
-                &self.post,
-                post,
-                &mut block,
-                len,
-                context.parameters,
-                at,
-                context.delay,
-                &mut context.filters,
-            );
+            fault |= self.process_section(false, post, &mut block, len, at, &mut context);
             faults += u64::from(self.finish(
                 voice,
                 begun,
@@ -516,7 +547,7 @@ impl PreparedVoiceChain {
                 pcm,
                 &mut raw[..count],
                 &mut unity,
-                voice.gain,
+                1.0,
                 [1.; 2],
                 kernel,
             )
@@ -589,17 +620,15 @@ impl PreparedVoiceChain {
 
     /// Whether every stage has a lane kernel (delay lines and compressors stay per voice).
     pub(super) fn batches(&self) -> bool {
-        !self
-            .pre
-            .iter()
-            .chain(&self.post)
-            .any(|stage| {
+        self.taps.is_empty()
+            && !self.pre.iter().chain(&self.post).any(|stage| {
                 matches!(
                     stage,
                     PreparedProcessor::Delay { .. }
                         | PreparedProcessor::Compressor(_)
                         | PreparedProcessor::Decimate(_)
                         | PreparedProcessor::Gainer { .. }
+                        | PreparedProcessor::StereoModeller { .. }
                         | PreparedProcessor::Daft(_)
                         | PreparedProcessor::Branch { .. }
                 )
@@ -632,7 +661,7 @@ pub(super) struct Begun {
 pub(super) fn levels(voice: &mut Voice, len: usize) -> [f64; BLOCK] {
     let mut levels = [0.; BLOCK];
     for level in &mut levels[..len] {
-        *level = f64::from(
+        *level = f64::from(voice.gain) * f64::from(
             voice
                 .envelope
                 .constant_level()
@@ -813,6 +842,16 @@ pub(super) fn process(
             PreparedProcessor::Compressor(compressor) => compressor.process(state, block, len),
             PreparedProcessor::Decimate(decimator) => decimator.process(state, block, len),
             PreparedProcessor::Daft(daft) => daft.process(state, parameters, block, len, at),
+            PreparedProcessor::StereoModeller { stereo, offset } => {
+                stereo.process(
+                    state,
+                    parameters,
+                    block,
+                    len,
+                    at,
+                    &mut delay_samples[*offset..],
+                );
+            }
             PreparedProcessor::Rectify(mode) => {
                 for channel in block.iter_mut() {
                     channel[..len].iter_mut().for_each(|v| *v = mode.apply(*v));
@@ -822,18 +861,18 @@ pub(super) fn process(
                 // z[0][0] is the smoothed gain; aux[0] marks it initialised
                 // (a new state starts at the first target, not at zero).
                 let [left, right] = block;
-                let mut current = state.z[0][0];
+                let mut current = state.z[0][0] as f32;
                 for (i, (l, r)) in left[..len].iter_mut().zip(&mut right[..len]).enumerate() {
-                    let target = gain.value(parameters, at + i as u64, None);
+                    let target = gain.value(parameters, at + i as u64, None) as f32;
                     if state.aux[0] == 0. {
                         (current, state.aux[0]) = (target, 1.);
                     }
-                    let m = dry + current;
+                    let m = dry + f64::from(current);
                     *l *= m;
                     *r *= m;
-                    current += (target - current) * k;
+                    current += (target - current) * *k as f32;
                 }
-                state.z[0][0] = flush(current);
+                state.z[0][0] = f64::from(current);
             }
             PreparedProcessor::Gain(gain) => {
                 for channel in block.iter_mut() {
@@ -899,6 +938,7 @@ pub(super) struct DspState {
     /// thread's (and the whole of single-threaded rendering).
     pub filters: Slab<svf::FilterBank>,
     pub buses: crate::bus::BusState,
+    pub feeds: Box<[taps::TapFeed]>,
 }
 impl DspState {
     pub fn new(
@@ -910,6 +950,19 @@ impl DspState {
         let (stride, delay_stride) = Self::shape(plan);
         let cells = stride.checked_mul(voices).ok_or(Error::Capacity)?;
         let delay_count = delay_stride.checked_mul(voices).ok_or(Error::Capacity)?;
+        if plan
+            .voice_chains
+            .iter()
+            .flat_map(|chain| &chain.tap_buses)
+            .any(|bus| *bus >= plan.buses.len())
+        {
+            return Err(Error::InvalidInput);
+        }
+        let feeds = if plan.voice_chains.iter().any(|chain| !chain.taps.is_empty()) {
+            plan.buses.len()
+        } else {
+            0
+        };
         Ok(Self {
             voices,
             stride,
@@ -923,6 +976,7 @@ impl DspState {
             delay_samples: Slab::new(allocate(delay_count)?, delay_stride),
             parameters: control::initial_parameters(plan, &plan.dsp_bindings),
             buses: crate::bus::BusState::new(plan)?,
+            feeds: allocate(feeds)?,
         })
     }
     /// Per-voice chain state and delay line sizes (`stride`, `delay_stride`).

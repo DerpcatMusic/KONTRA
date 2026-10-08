@@ -1,0 +1,24 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 533  of event 'cycles:u'
+# Event count (approx.): 330503936
+#
+# Overhead  Command         Shared Object     Symbol
+# ........  ..............  ................  ..................................................................................................................................................................................................................................................................................................................................................................................
+#
+    36.41%  cpu_audit       cpu_audit         [.] <kontakto::sound::v2::V2Core as kontakto::sound::Core>::end_block
+    22.33%  cpu_audit       cpu_audit         [.] <sampler_core::Runtime>::render_split
+    13.78%  cpu_audit       cpu_audit         [.] <sampler_core::Runtime>::render_voice
+    13.50%  cpu_audit       cpu_audit         [.] <sampler_core::bus::BusState>::render
+     3.42%  sampler-reload  cpu_audit         [.] sampler_kontakt::stream::reload
+     2.18%  sampler-stream  cpu_audit         [.] <sampler_core::stream::StreamWorker>::complete
+     1.22%  sampler-stream  cpu_audit         [.] <sampler_core::stream::StreamWorker>::next_job
+     1.09%  cpu_audit       cpu_audit         [.] <sampler_core::Runtime>::commit_selection
+
+
+#
+# (Tip: Boolean options have negative forms, e.g.: perf report --no-children)
+#

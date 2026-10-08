@@ -3,7 +3,7 @@ use crate::ops::{ScriptBank, ScriptResources};
 use crate::{BehaviorId, Error, PlanId, Prepared, Program, Runtime};
 
 /// Dense instance identity scoped to a prepared plan, not a callback or note.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ScriptInstanceId(pub u16);
 
 /// Bounded integer-array view in the program's own script-instance bank.
