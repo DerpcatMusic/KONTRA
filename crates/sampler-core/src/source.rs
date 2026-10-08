@@ -372,6 +372,19 @@ impl Cursor {
         }) || self.loop_range.is_some() && self.exit.is_none()
     }
 
+    pub(super) fn trace_direction(&self) -> Direction { self.direction }
+
+    pub(super) fn trace_loops(&self) -> [Option<crate::SelectedLoop>; 8] {
+        let convert = |range: Loop, tuning: f64| crate::SelectedLoop {
+            start: range.start, end: range.end, until_release: range.mode == LoopMode::UntilRelease,
+            alternating: range.shape == LoopShape::PingPong,
+            crossfade: match range.shape { LoopShape::Crossfade {frames} | LoopShape::EqualPowerCrossfade {frames} => frames, _ => 0 },
+            count: range.passes.map_or(0, |n| n.get()), tuning_bits: tuning.to_bits(),
+        };
+        if let Some(loops) = self.loops { loops.slots.map(|s| s.map(|s| convert(s.range, s.tuning))) }
+        else { let mut slots = [None; 8]; slots[0] = self.loop_range.map(|r| convert(r, 1.0)); slots }
+    }
+
     pub(super) fn trace_start(&self) -> u64 { self.start as u64 }
     pub(super) fn trace_position(&self) -> u64 { self.index(self.position as i128).map_or(self.start as u64, |i| i as u64) }
 
