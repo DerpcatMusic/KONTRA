@@ -104,6 +104,8 @@ pub fn one(id: &str, out: &Path) -> Value {
         let mut assets = UiAssets::open(&config)?;
         r["stage"] = json!("worker initialization");
         metrics::checkpoint(out, &r);
+        // Section J starts at the production import, after the metadata/UI-asset prepass.
+        let onset_start = Instant::now();
         let mut worker = Worker::start(config, 1, 1)?;
         if worker.wait_ready(Duration::from_secs(60)).is_err() {
             r["initialization_errors"] = json!(worker.stats().errors);
@@ -114,6 +116,7 @@ pub fn one(id: &str, out: &Path) -> Value {
         r["load_ms"] = json!(t.elapsed().as_secs_f64() * 1000.);
         let mut views = Vec::new();
         let mut snapshots = Vec::new();
+        let mut pending_paints = Vec::new();
         let (mut visible, mut bound, mut ui_error, mut blank) = (0, 0, false, false);
         r["stage"] = json!("Original UI");
         metrics::checkpoint(out, &r);
@@ -157,15 +160,8 @@ pub fn one(id: &str, out: &Path) -> Value {
                                 .filter(|w| w.effective_visible)
                                 .count();
                             blank |= shown == 0;
-                            let paint =
-                                crate::ui::scan_uvi::paint(&snapshot, &mut assets, reply.stamp, t);
-                            if r["ui_first_frame_ms"].is_null()
-                                && let Ok(frame) = &paint
-                            {
-                                r["ui_first_frame_ms"] = frame["ui_first_frame_ms"].clone();
-                            }
-                            ui_error |= paint.is_err();
-                            views.push(json!({"widgets":snapshot.widgets.len(),"visible":shown,"interactive":interactive,"bound":interactive,"render":paint.unwrap_or_else(|e|metrics::error("Original paint",e))}));
+                            views.push(json!({"widgets":snapshot.widgets.len(),"visible":shown,"interactive":interactive,"bound":interactive,"render":null}));
+                            pending_paints.push((views.len() - 1, reply.stamp));
                             snapshots.push(snapshot);
                         }
                     }
@@ -179,28 +175,161 @@ pub fn one(id: &str, out: &Path) -> Value {
             }
         }
         let colours = crate::plugin::uvi_ui::KeyColours::merge(&snapshots);
-        let native_valid_keys: Vec<u8> = colours.colours.iter()
+        let native_valid_keys: Vec<u8> = colours
+            .colours
+            .iter()
             .filter(|(_, c)| c.eq_ignore_ascii_case("#00FFFFFF"))
-            .map(|(&k, _)| k).collect();
-        let native_preferred = native_valid_keys.iter().copied()
-            .filter(|k| program.program.sample_zones.iter().any(|z|
-                !z.bypassed && !z.purged && (z.low_key..=z.high_key).contains(k)
-                    && (z.low_velocity..=z.high_velocity).contains(&64)))
-            .min_by_key(|k| k.abs_diff(60)).map(|k| (k, 64));
+            .map(|(&k, _)| k)
+            .collect();
+        let native_preferred = native_valid_keys
+            .iter()
+            .copied()
+            .filter(|k| {
+                program.program.sample_zones.iter().any(|z| {
+                    !z.bypassed
+                        && !z.purged
+                        && (z.low_key..=z.high_key).contains(k)
+                        && (z.low_velocity..=z.high_velocity).contains(&64)
+                })
+            })
+            .min_by_key(|k| k.abs_diff(60))
+            .map(|k| (k, 64));
         r["native_valid_keys"] = json!(native_valid_keys);
         r["native_key_conflicts"] = json!(colours.conflicts);
         r["native_preferred_note"] = json!(native_preferred);
         let planned = metrics::note(0);
-        let pick_source = if planned.is_some() { "shared-note-plan" }
-            else if native_preferred.is_some() { "native-valid-keys" }
-            else { "active-zone-nearest60-fallback" };
-        if let Some(note) = planned.or(native_preferred) { pick = note; }
+        let pick_source = if planned.is_some() {
+            "shared-note-plan"
+        } else if native_preferred.is_some() {
+            "native-valid-keys"
+        } else {
+            "active-zone-nearest60-fallback"
+        };
+        if let Some(note) = planned.or(native_preferred) {
+            pick = note;
+        }
         r["pick_source"] = json!(pick_source);
         r["pick"] = json!(pick);
         r["programs"] = json!([{"source":"uvi","program":0,"pick":pick,"pick_source":pick_source,
             "native_valid_keys":native_valid_keys,"native_preferred_note":native_preferred,
             "first_audio_ms":null,"ui_first_frame_ms":r["ui_first_frame_ms"],"cache_state":"cold",
             "load_path":"v1 UVI production worker; full PCM"}]);
+        r["controls_bound"] = json!(format!("{bound}/{visible}"));
+        r["stage"] = json!("play and Original paint");
+        metrics::checkpoint(out, &r);
+        let mut port = worker
+            .take_audio_port()
+            .ok_or_else(|| anyhow::anyhow!("audio port unavailable"))?;
+        let mut peak = 0f32;
+        let mut nonfinite = 0;
+        let mut first_audio_ms = None;
+        // Retain pre-audition native declarations, then paint off the audio observation thread.
+        let (audio_result, paint_result) = std::thread::scope(|scope| {
+            let painting = scope.spawn(|| {
+                let mut first_frame = None;
+                let mut error = false;
+                for (snapshot, &(view, stamp)) in snapshots.iter().zip(&pending_paints) {
+                    let paint =
+                        crate::ui::scan_uvi::paint(snapshot, &mut assets, stamp, onset_start);
+                    if first_frame.is_none()
+                        && let Ok(frame) = &paint
+                    {
+                        first_frame = frame["ui_first_frame_ms"].as_f64();
+                    }
+                    error |= paint.is_err();
+                    views[view]["render"] =
+                        paint.unwrap_or_else(|e| metrics::error("Original paint", e));
+                }
+                (error, first_frame)
+            });
+            let audio_result = (|| -> anyhow::Result<()> {
+                for block in 0..96 {
+                    let stamp = Stamp {
+                        epoch: 1,
+                        generation: 1,
+                        frame: block * 256,
+                    };
+                    let input = if block == 0 {
+                        vec![
+                            Input {
+                                frame: 0,
+                                kind: InputKind::Controller {
+                                    channel: 0,
+                                    controller: 1,
+                                    value: 100,
+                                },
+                            },
+                            Input {
+                                frame: 0,
+                                kind: InputKind::Controller {
+                                    channel: 0,
+                                    controller: 11,
+                                    value: 127,
+                                },
+                            },
+                            Input {
+                                frame: 0,
+                                kind: InputKind::NoteOn {
+                                    channel: 0,
+                                    note: pick.0,
+                                    velocity: pick.1,
+                                },
+                            },
+                        ]
+                    } else if block == 72 {
+                        vec![Input {
+                            frame: stamp.frame,
+                            kind: InputKind::NoteOff {
+                                channel: 0,
+                                note: pick.0,
+                            },
+                        }]
+                    } else {
+                        Vec::new()
+                    };
+                    port.realtime()
+                        .try_submit(Request::new(stamp, &input)?)
+                        .map_err(|_| anyhow::anyhow!("packet rejected"))?;
+                    let start = Instant::now();
+                    let packet = loop {
+                        if let Some(packet) = port.realtime().try_receive_available(stamp)? {
+                            break packet;
+                        }
+                        if start.elapsed() > Duration::from_secs(2) {
+                            return Err(anyhow::anyhow!("audio packet timeout"));
+                        }
+                        std::thread::sleep(Duration::from_millis(1));
+                    };
+                    // Observe received PCM before pacing sleep; never derive onset from load_ms.
+                    observe_first_audio(&mut first_audio_ms, onset_start, &packet.audio);
+                    if let Some(wait) =
+                        Duration::from_secs_f64(256.0 / 48000.0).checked_sub(start.elapsed())
+                    {
+                        std::thread::sleep(wait);
+                    }
+                    for x in packet.audio.into_iter().flatten() {
+                        if x.is_finite() {
+                            peak = peak.max(x.abs());
+                        } else {
+                            nonfinite += 1;
+                        }
+                    }
+                }
+                Ok(())
+            })();
+            (audio_result, painting.join())
+        });
+        match paint_result {
+            Ok((error, first_frame)) => {
+                ui_error |= error;
+                r["ui_first_frame_ms"] = json!(first_frame);
+            }
+            Err(_) => {
+                ui_error = true;
+                r["paint_worker_failed"] = json!(true);
+            }
+        }
+        r["programs"][0]["ui_first_frame_ms"] = r["ui_first_frame_ms"].clone();
         let diag = assets.diagnostics();
         r["ui"] = json!(if ui_error {
             "error"
@@ -220,86 +349,6 @@ pub fn one(id: &str, out: &Path) -> Value {
         r["font_failures"] = json!(diag.font_failed);
         r["asset_limit"] = json!(diag.limited);
         r["ui_resident_bytes"] = json!(assets.resident_bytes());
-        r["stage"] = json!("play");
-        metrics::checkpoint(out, &r);
-        let mut port = worker
-            .take_audio_port()
-            .ok_or_else(|| anyhow::anyhow!("audio port unavailable"))?;
-        let mut peak = 0f32;
-        let mut nonfinite = 0;
-        let mut first_audio_ms = None;
-        for block in 0..96 {
-            let stamp = Stamp {
-                epoch: 1,
-                generation: 1,
-                frame: block * 256,
-            };
-            let input = if block == 0 {
-                vec![
-                    Input {
-                        frame: 0,
-                        kind: InputKind::Controller {
-                            channel: 0,
-                            controller: 1,
-                            value: 100,
-                        },
-                    },
-                    Input {
-                        frame: 0,
-                        kind: InputKind::Controller {
-                            channel: 0,
-                            controller: 11,
-                            value: 127,
-                        },
-                    },
-                    Input {
-                        frame: 0,
-                        kind: InputKind::NoteOn {
-                            channel: 0,
-                            note: pick.0,
-                            velocity: pick.1,
-                        },
-                    },
-                ]
-            } else if block == 72 {
-                vec![Input {
-                    frame: stamp.frame,
-                    kind: InputKind::NoteOff {
-                        channel: 0,
-                        note: pick.0,
-                    },
-                }]
-            } else {
-                Vec::new()
-            };
-            port.realtime()
-                .try_submit(Request::new(stamp, &input)?)
-                .map_err(|_| anyhow::anyhow!("packet rejected"))?;
-            let start = Instant::now();
-            let packet = loop {
-                if let Some(packet) = port.realtime().try_receive_available(stamp)? {
-                    break packet;
-                }
-                if start.elapsed() > Duration::from_secs(2) {
-                    return Err(anyhow::anyhow!("audio packet timeout"));
-                }
-                std::thread::sleep(Duration::from_millis(1));
-            };
-            // Observe received PCM before pacing sleep; never derive onset from load_ms.
-            observe_first_audio(&mut first_audio_ms, t, &packet.audio);
-            if let Some(wait) =
-                Duration::from_secs_f64(256.0 / 48000.0).checked_sub(start.elapsed())
-            {
-                std::thread::sleep(wait);
-            }
-            for x in packet.audio.into_iter().flatten() {
-                if x.is_finite() {
-                    peak = peak.max(x.abs());
-                } else {
-                    nonfinite += 1;
-                }
-            }
-        }
         drop(port);
         let stats = worker.stats();
         r["sample_resident_bytes"] = json!(stats.resource_resident_pcm_bytes);
@@ -313,13 +362,10 @@ pub fn one(id: &str, out: &Path) -> Value {
         r["nonfinite"] = json!(nonfinite);
         r["pick"] = json!(pick);
         let audible = peak > 1e-5 && nonfinite == 0;
-        r["first_audio_ms"] = json!(first_audio_ms.filter(|_| audible));
+        r["first_audio_ms"] = json!(first_audio_ms);
         r["programs"][0]["first_audio_ms"] = r["first_audio_ms"].clone();
-        r["plays_note"] = json!(if audible {
-            "yes"
-        } else {
-            "silent"
-        });
+        audio_result?;
+        r["plays_note"] = json!(if audible { "yes" } else { "silent" });
         r["reason"] =
             json!("v1 UVI production worker; Original panel; 0.5s audition; no native comparison");
         r["stage"] = json!("complete");
@@ -345,7 +391,8 @@ mod tests {
         let mut first = None;
         super::observe_first_audio(&mut first, start, &[[0., -0.], [f32::NAN, f32::INFINITY]]);
         assert_eq!(first, None);
-        super::observe_first_audio(&mut first, start, &[[0., 0.], [0., 0.1]]);
+        // A finite signal below the separate audible threshold still has an onset.
+        super::observe_first_audio(&mut first, start, &[[0., 0.], [0., 1e-8]]);
         assert!(first.is_some_and(|ms| ms.is_finite() && ms >= 0.));
         let observed = first;
         super::observe_first_audio(&mut first, start, &[[0.2, 0.]]);
