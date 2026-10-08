@@ -14,7 +14,7 @@ use sampler_core::{
     Stealing,
 };
 use std::collections::HashMap;
-pub use thread::{Loaded, ScriptThread};
+pub use thread::{Loaded, ScriptThread, UiBridge};
 
 /// What the driver needs of a script runtime: a [`ScriptHost`] run inline (offline,
 /// deterministic), or a [`ScriptThread`] that keeps Lua off the audio thread.
@@ -663,4 +663,9 @@ impl Player {
         }
         Ok(())
     }
+}
+
+impl Driver<ScriptThread> {
+    pub fn ui(&self) -> &std::sync::Arc<UiBridge> { self.host.ui() }
+    pub fn set_control(&mut self, id: sampler_ui_ir::ControlId, value: f64) -> bool { self.host.set_control(id, value) }
 }
