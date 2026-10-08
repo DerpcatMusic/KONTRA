@@ -31,12 +31,18 @@ mod menu;
 #[allow(dead_code)]
 mod mix_tree;
 mod ir_view;
+mod generated;
 #[cfg(feature = "shots")]
 pub(crate) mod scan;
 #[allow(dead_code)]
 mod load_report;
 mod bridge;
 mod pictures;
+mod picture_decode;
+mod picture_worker;
+mod native_runtime;
+mod native_ui;
+mod render_art;
 mod inside;
 mod part;
 pub(crate) mod picker;
@@ -199,10 +205,12 @@ impl Watch {
             p.shared.voices.load(Ordering::Relaxed).hash(&mut h);
             p.shared.audible.load(Ordering::Relaxed).hash(&mut h);
             p.shared.dropouts.load(Ordering::Relaxed).hash(&mut h);
+            p.shared.with_parts(|parts| { for part in parts { part.scalar_revision.load(Ordering::Acquire).hash(&mut h); part.native_revision.load(Ordering::Acquire).hash(&mut h); } });
             self.readouts = h.finish();
         }
         let mut h = DefaultHasher::new();
         self.readouts.hash(&mut h);
+        pictures::revision().hash(&mut h);
         if meters.logs_visible.load(Ordering::Relaxed) {
             crate::diagnostics::revision().hash(&mut h);
             logs::wake().hash(&mut h);
@@ -274,7 +282,7 @@ fn fingerprint(view: &View, h: &mut DefaultHasher) {
     (&view.status, &view.multi_status, view.scanned).hash(h);
     (Arc::as_ptr(&view.files) as usize, view.artwork.len()).hash(h);
     for v in &view.parts {
-        (v.loading, &v.status, v.program).hash(h);
+        (v.loading, &v.status, v.program, v.ui_revision, v.generation).hash(h);
         (at(&v.tree), at(&v.report), at(&v.trace), Arc::as_ptr(&v.interfaces) as *const () as usize).hash(h);
     }
 }
@@ -360,6 +368,7 @@ struct EditorState {
     /// How far the rack is scrolled (where it glides to), a part to scroll
     /// to once it is laid out, and a part's height while its edge is dragged.
     rack_y: f64,
+    rack_scrolls: HashMap<String, [f64; 2]>,
     /// Where the rack was scrolled to when last drawn.
     rack_drawn: f64,
     reveal: Option<usize>,
@@ -626,6 +635,7 @@ fn library_of(shelf: &crate::library::Shelf, path: &Path) -> String {
 fn replace_part(part: &mut Part, path: String) {
     part.path = path;
     part.program = 0;
+    part.view = 0;
     part.name.clear();
     // Another instrument has another output tree, switching and dynamics.
     part.nodes.clear();
@@ -838,6 +848,7 @@ fn build(
         art,
         libraries: Default::default(),
         rack_y: 0.,
+        rack_scrolls: Default::default(),
         rack_drawn: 0.,
         reveal: None,
         resizing: None,
@@ -1194,3 +1205,5 @@ impl Cx<'_> {
 
 #[cfg(feature = "shots")]
 pub use ir_view::uvi_ui_health;
+#[cfg(test)]
+mod loop_audit;
