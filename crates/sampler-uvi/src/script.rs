@@ -17,6 +17,7 @@ use std::{
 };
 
 mod ui;
+pub use ui::{UiState, SavedValue, control_id};
 
 const PRELUDE: &str = include_str!("script_prelude.lua");
 /// Where `require` finds a module: a bank's script members.
@@ -519,6 +520,10 @@ impl ScriptHost {
     /// Run the scripts of the program `xml` (its `ScriptProcessor`s). Fails when
     /// the sandbox cannot be built or a script does not load.
     pub fn new(xml: &str, files: impl Files + 'static, config: Config) -> Result<Self, String> {
+        Self::new_with_ui_state(xml, files, config, None)
+    }
+
+    pub fn new_with_ui_state(xml: &str, files: impl Files + 'static, config: Config, state: Option<&UiState>) -> Result<Self, String> {
         let options = roxmltree::ParsingOptions {
             nodes_limit: 4_000_000,
             ..Default::default()
@@ -562,7 +567,7 @@ impl ScriptHost {
         let host = Self { lua, shared };
         host.install().map_err(lua_error)?;
         host.build_program(&doc).map_err(lua_error)?;
-        host.load_scripts(&doc)?;
+        host.load_scripts(&doc, state)?;
         #[cfg(feature = "scan")]
         host.shared.initializing.set(false);
         Ok(host)
@@ -996,7 +1001,7 @@ impl ScriptHost {
         Ok(())
     }
 
-    fn load_scripts(&self, doc: &roxmltree::Document) -> Result<(), String> {
+    fn load_scripts(&self, doc: &roxmltree::Document, state: Option<&UiState>) -> Result<(), String> {
         for script in doc.descendants().filter(|n| n.has_tag_name("script")) {
             let text: String = script.text().unwrap_or_default().to_owned();
             if text.trim().is_empty() {
@@ -1022,7 +1027,9 @@ impl ScriptHost {
                     self.cycle();
                 }
             }
+            if let Some(state) = state { self.restore_ui_values(state)?; }
             self.call("onInit", None);
+            if let Some(state) = state { self.restore_ui_custom(state)?; }
         }
         Ok(())
     }

@@ -2276,3 +2276,6 @@ fn widget_nested_wheel_stays_in_child_then_hands_off_at_end() {
     assert_eq!(h.ui.scroll("arts-0"),at_end);
     assert!(h.ui.scene().unwrap().surface("rack-content").unwrap().frame.y<rack_before-1.,"exhausted child yields to rack");
 }
+
+include!("viewmodel_tests.rs");
+

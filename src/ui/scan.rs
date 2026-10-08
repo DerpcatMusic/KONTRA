@@ -29,7 +29,7 @@ fn render(
     prefix: &str,
 ) -> Value {
     let face = ir_view::resolved(face);
-    let before = source.1;
+    let before = source.scan;
     let mut missing = Vec::new();
     let mut assets = ir_view::Assets::default();
     assets.sync(&face, ir::Presentation::Bitmap, |a| {
@@ -229,15 +229,15 @@ fn render(
         .filter(|s| !matches!(s.font, ir::Font::Default))
         .count();
     json!({"controls_declared":declared,"controls_bound_declared":declared_bound,
-        "asset_lookup_requested":source.1.lookups-before.lookups,"asset_lookup_ok":source.1.lookup_ok-before.lookup_ok,
-        "asset_decode_requested":source.1.decodes-before.decodes,"asset_decode_ok":source.1.decode_ok-before.decode_ok,
+        "asset_lookup_requested":source.scan.lookups-before.lookups,"asset_lookup_ok":source.scan.lookup_ok-before.lookup_ok,
+        "asset_decode_requested":source.scan.decodes-before.decodes,"asset_decode_ok":source.scan.decode_ok-before.decode_ok,
         "font_declared":fonts_declared,"font_success":0,
         "custom_font_uses":face.styles.iter().filter(|s|matches!(s.font,ir::Font::Named(_)|ir::Font::Bitmap(_))).count(),
         "image_strips":face.assets.iter().filter(|a|matches!(&a.kind,ir::AssetKind::Image(m)if m.frames>1)).count(),
         "image_frames":face.assets.iter().filter_map(|a|if let ir::AssetKind::Image(m)=&a.kind{Some(m.frames.max(1))}else{None}).sum::<u32>(),
         "image_margins":face.assets.iter().filter(|a|matches!(&a.kind,ir::AssetKind::Image(m)if m.margins!=ir::Margins::default())).count(),
-        "asset_failure_reasons":{"lookup-not-found":(source.1.lookups-before.lookups)-(source.1.lookup_ok-before.lookup_ok),
-            "decode-failed":(source.1.decodes-before.decodes)-(source.1.decode_ok-before.decode_ok),"font-service-unavailable":fonts_declared},
+        "asset_failure_reasons":{"lookup-not-found":(source.scan.lookups-before.lookups)-(source.scan.lookup_ok-before.lookup_ok),
+            "decode-failed":(source.scan.decodes-before.decodes)-(source.scan.decode_ok-before.decode_ok),"font-service-unavailable":fonts_declared},
         "widgets":face.widgets.len(),"visible":visible,"interactive":interactive,"bound":bound,
         "kinds":kinds,"placeholder_widgets":placeholders,"unsupported_params":properties,"geometry":geometry,
         "missing_images":missing.len(),"missing_image_hashes":missing,"assets":face.assets.len(),
