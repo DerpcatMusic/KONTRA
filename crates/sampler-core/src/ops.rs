@@ -445,6 +445,8 @@ impl Op {
 }
 
 /// Fixed-capacity UTF-8 text.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "cache", serde(try_from = "String", into = "String"))]
 #[derive(Clone, Copy)]
 pub struct Text {
     len: u16,
@@ -1569,4 +1571,12 @@ mod initial_text_tests {
         assert!(first.text_properties.capacity() >= 4);
         assert_eq!(&*initial.texts[0], "seed");
     }
+}
+
+#[cfg(feature = "cache")]
+impl From<Text> for String { fn from(value: Text) -> Self { value.as_str().to_owned() } }
+#[cfg(feature = "cache")]
+impl TryFrom<String> for Text {
+    type Error = Error;
+    fn try_from(value: String) -> Result<Self, Error> { Self::try_new(&value) }
 }
