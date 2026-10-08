@@ -530,3 +530,79 @@ Cold32FX repeated alternating pairs:
 | 3 | 46.111 / 102.622 | 52.051 / 111.193 | 0 / 0 |
 
 Cold32FX aggregate 45.801 / 102.622→52.051 / 111.193µs; the12 deadline misses in the first after run did not recur in repeats2/3, but were not proven noise or fixed. **HOLD**, cold64 and warmFX p99 remain above the acceptance baseline.
+
+### High-rate candidate measurements
+
+Frozen original-cell candidate SHA256 `fd0f76a08aad65b12a9f8ddfc0c23f24c2ca97fb41c5845f3d3f3b74fd8e49d7`, source-probe SHA256 `e7dea035291f57b473f5aab5018d5158c58a54ee0dd0ebb8e1a439d90385c40e`. Before is `admission-idle-pool` /8c74dc71 (CPU SHA256 `8e69ea921f4dcddc14b0af51b43d502da966101c9a22e9cead6e497104330f44`). After source is4c3c8f07. The original cold helper verifies pages_after=0 before each cold launch; all40 library runs complete successfully and retain zero event/render heap calls.
+
+First matched original matrix, steady median / p99 in µs. Counters are before / after.
+
+| Cell | Before µs | After µs | Underruns | Deadline misses |
+|---|---:|---:|---:|---:|
+| piano-32-cold | 20.281 / 43.061 | 30.490 / 94.692 | 0 / 0 | 0 / 1 |
+| piano-32-warm | 28.991 / 55.181 | 30.431 / 126.682 | 0 / 0 | 2 / 1 |
+| piano-64-cold | 31.510 / 63.571 | 25.811 / 52.641 | 0 / 0 | 0 / 0 |
+| piano-64-warm | 27.260 / 48.711 | 26.260 / 51.951 | 0 / 0 | 0 / 0 |
+| piano-256-cold | 133.142 / 232.884 | 144.933 / 807.695 | 0 / 0 | 1 / 0 |
+| piano-256-warm | 147.753 / 482.449 | 161.213 / 295.336 | 0 / 0 | 0 / 0 |
+| fx-32-cold | 70.101 / 386.048 | 70.561 / 334.217 | 0 / 0 | 7 / 19 |
+| fx-32-warm | 57.451 / 133.683 | 70.141 / 260.185 | 0 / 0 | 7 / 5 |
+| fx-64-cold | 52.321 / 119.732 | 54.751 / 111.662 | 0 / 0 | 0 / 0 |
+| fx-64-warm | 52.101 / 131.932 | 59.971 / 131.863 | 0 / 0 | 0 / 0 |
+| fx-256-cold | 285.076 / 490.929 | 270.855 / 458.969 | 0 / 2 | 0 / 0 |
+| fx-256-warm | 236.605 / 444.718 | 264.355 / 594.481 | 0 / 0 | 0 / 0 |
+
+Alternating64-frame repeats; repeat2 reverses binary order. All failures remain counted.
+
+| Cell | Repeat | Before µs | After µs | Underruns | Deadline misses |
+|---|---:|---:|---:|---:|---:|
+| piano-64-cold | 1 | 31.510 / 63.571 | 25.811 / 52.641 | 0 / 0 | 0 / 0 |
+| piano-64-cold | 2 | 25.131 / 50.241 | 39.481 / 68.862 | 0 / 0 | 0 / 2 |
+| piano-64-cold | 3 | 25.610 / 45.531 | 26.361 / 55.791 | 0 / 0 | 0 / 0 |
+| piano-64-warm | 1 | 27.260 / 48.711 | 26.260 / 51.951 | 0 / 0 | 0 / 0 |
+| piano-64-warm | 2 | 37.590 / 75.592 | 26.651 / 52.111 | 0 / 0 | 0 / 0 |
+| piano-64-warm | 3 | 26.041 / 48.561 | 26.700 / 50.371 | 0 / 0 | 0 / 0 |
+| fx-64-cold | 1 | 52.321 / 119.732 | 54.751 / 111.662 | 0 / 0 | 0 / 0 |
+| fx-64-cold | 2 | 51.911 / 114.663 | 73.061 / 399.727 | 0 / 0 | 0 / 0 |
+| fx-64-cold | 3 | 51.901 / 122.153 | 54.571 / 114.552 | 0 / 0 | 0 / 0 |
+| fx-64-warm | 1 | 52.101 / 131.932 | 59.971 / 131.863 | 0 / 0 | 0 / 0 |
+| fx-64-warm | 2 | 52.741 / 117.632 | 52.711 / 111.582 | 0 / 0 | 0 / 0 |
+| fx-64-warm | 3 | 52.251 / 110.002 | 54.391 / 126.972 | 0 / 0 | 0 / 0 |
+
+Repeated aggregates (median of the three run medians / p99):
+
+| Cell | Before µs | After µs |
+|---|---:|---:|
+| piano-64-cold | 25.610 / 50.241 | 26.361 / 55.791 |
+| piano-64-warm | 27.260 / 48.711 | 26.651 / 51.951 |
+| fx-64-cold | 51.911 / 119.732 | 54.751 / 114.552 |
+| fx-64-warm | 52.251 / 117.632 | 54.391 / 126.972 |
+
+**FAIL/HOLD.** Piano64 cold aggregate regresses25.610/50.241→26.361/55.791µs; warm27.260/48.711→26.651/51.951(p99 worse). FX64 cold51.911/119.732→54.751/114.552(median worse); warm52.251/117.632→54.391/126.972(both worse). All40 library runs: before17 / after28 deadline misses; before0 / after2 storage underruns (the after coldFX256 cell). No scheduling-noise explanation or v1 parity claim. The favorable source medians cannot certify the release gate. Piano32 adverse cells and coldFX256 are being repeated, then matched cold piano32/64 audio-TID profiles will assess the tail.
+
+Synthetic preloaded source aggregates from3 alternating pairs; these are not cold-storage cells or native-host PCM comparisons. All120 records retain zero heap calls/underruns, stable voice counts and DC PCM.
+
+| Voices | Storage | Rate | Before median/p99 µs | After median/p99 µs |
+|---:|---|---:|---:|---:|
+| 8 | resident | 1.5 | 6.670 / 8.260 | 6.590 / 7.871 |
+| 8 | resident | 2.5 | 51.351 / 80.581 | 8.710 / 43.360 |
+| 8 | resident | 4 | 77.551 / 122.343 | 13.530 / 62.092 |
+| 8 | resident | 8 | 139.592 / 231.895 | 20.770 / 112.322 |
+| 8 | resident | 16 | 266.465 / 444.108 | 40.601 / 266.915 |
+| 8 | paged | 1.5 | 6.800 / 10.380 | 7.030 / 11.990 |
+| 8 | paged | 2.5 | 51.501 / 103.092 | 9.051 / 71.731 |
+| 8 | paged | 4 | 77.932 / 159.113 | 13.760 / 100.652 |
+| 8 | paged | 8 | 138.292 / 317.926 | 21.820 / 190.864 |
+| 8 | paged | 16 | 281.525 / 606.192 | 80.881 / 428.938 |
+| 64 | resident | 1.5 | 52.851 / 74.902 | 53.351 / 88.002 |
+| 64 | resident | 2.5 | 419.128 / 888.217 | 69.581 / 340.477 |
+| 64 | resident | 4 | 612.952 / 987.389 | 121.803 / 804.525 |
+| 64 | resident | 8 | 1102.080 / 1810.065 | 183.933 / 1630.720 |
+| 64 | resident | 16 | 2145.590 / 4870.142 | 371.637 / 2947.146 |
+| 64 | paged | 1.5 | 54.361 / 76.461 | 54.481 / 61.891 |
+| 64 | paged | 2.5 | 412.208 / 814.315 | 71.321 / 554.820 |
+| 64 | paged | 4 | 614.471 / 1268.614 | 133.752 / 1186.432 |
+| 64 | paged | 8 | 1122.472 / 2576.008 | 213.564 / 2847.683 |
+| 64 | paged | 16 | 2336.404 / 8905.688 | 649.143 / 3247.921 |
+
+64-voice paged medians improve at high rates, but8x p99 regresses2576.008→2847.683µs. Per-run records, including earlier single-probe outliers and setup times, remain in `~/.cache/kontakto-fix-cpu/streamed-resample-{micro,matrix}/` and streamed-resample-check.log. No rows are excluded.
