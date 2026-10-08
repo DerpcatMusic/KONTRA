@@ -258,9 +258,22 @@ impl Persistence {
                     _ => return Err(CoreError::Invalid("Saved script state type changed".into())),
                 };
             }
-            runtime
-                .restore_script_state(plan, None, &mut state)
-                .map_err(core)?;
+            let restored = runtime.restore_script_state(plan, None, &mut state);
+            #[cfg(all(test, feature = "shots"))]
+            if restored.is_err() {
+                let rejected_domains = state.values.iter().filter(|entry| {
+                    let (Address::Control(id), Value::Control(value)) = (entry.address, entry.value) else { return false };
+                    let Ok(definition) = runtime.control_definition(plan, id) else { return true };
+                    match (definition.domain, value) {
+                        (ControlDomain::Integer { min, max }, ControlValue::Integer(value)) => value < min || value > max,
+                        (ControlDomain::Real { min, max }, ControlValue::Real(value)) => !value.is_finite() || value < min || value > max,
+                        (ControlDomain::Toggle, ControlValue::Toggle(_)) => false,
+                        _ => true,
+                    }
+                }).count();
+                println!("\n{}", serde_json::json!({"script_restore_diagnostic": true, "rejected_domains": rejected_domains, "callbacks": state.callbacks.len(), "values": state.values.len()}));
+            }
+            restored.map_err(core)?;
             runtime
                 .capture_script_state(plan, &mut state)
                 .map_err(core)?;
