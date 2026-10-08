@@ -1174,7 +1174,7 @@ impl Core for V2Core {
         let p = self.parts.get(part)?.as_ref()?;
         if let Some(v) = p.script.as_ref().and_then(|s| s.ui().value(control)) { return Some(v) }
         let rt = &p.runtime;
-        rt.control_value(rt.active_plan(), sampler_core::ControlId(control.0)).ok().map(number)
+        rt.control_base_value(rt.active_plan(), sampler_core::ControlId(control.0)).ok().map(number)
     }
 }
 
