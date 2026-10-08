@@ -112,3 +112,15 @@ with tempfile.TemporaryDirectory(prefix='kontra-gate-cache-', dir='/dev/shm') as
     finally:
         os.environ.clear();os.environ.update(saved)
 print('empty cache, enabled warm reload, resume re-prime and zero-optimum checks passed')
+
+# Each condition/item uses its own receipt; a global Conflux PASS proves no other cell.
+with tempfile.TemporaryDirectory() as tmp:
+    run = Path(tmp)
+    item = adapters.hashlib.sha256(b'fixture').hexdigest()
+    record = {'item_sha256': item, 'condition': 'cold', 'status': 'PASS', 'passed': 2, 'total': 2, 'coverage_complete': True, 'programs': [0], 'faults': 0}
+    assert adapters.gesture_cell([record], item, 'cold')['status'] == 'PASS'
+    assert adapters.gesture_cell([record], item, 'product-warm')['status'] == 'UNKNOWN'
+    assert adapters.gesture_cell([dict(record, passed=1)], item, 'cold')['status'] == 'FAIL'
+    assert adapters.gesture_cell([dict(record, coverage_complete=False)], item, 'cold')['status'] == 'UNKNOWN'
+    assert adapters.gesture_cell([dict(record, faults=1)], item, 'cold')['status'] == 'FAIL'
+print('per-item gesture receipt checks passed')
