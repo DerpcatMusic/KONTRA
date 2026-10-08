@@ -8,6 +8,102 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ## Unreleased
 
+### Fixed after 0.3.224
+
+The user explicitly authorized shipping this alpha now. The former all-axis v1
+parity release hold is superseded for this release. Falcon/UVI stays always on.
+The version ledger accepts 81 additional logical fixes after 0.3.225; diagnostic
+features and follow-up commits do not increment the version separately.
+
+- Restore authored Native UI text/arrays, bindings, Canvas budgets, caption types,
+  stack-safe lowering and bounded cancellable resource preparation.
+- Preserve envelope initialization, exact ignored-event cancellation, delayed
+  correct-offset staccato playback, keyboard gates and host lifecycle ownership.
+- Reduce startup arenas, share script text/code, compact playback templates and
+  construct group envelopes once. Analog's shared KSP code saves about 406 MiB.
+- Restore Sound editor controls, native ladder laws, chain ownership, offset-cache
+  ownership and validated timing alignment and articulation routes through rack growth. Add persistent catalog metadata and
+  separate Kontakt/Falcon browser hierarchies.
+- Port v1 cubic interpolation and unchanged pitch-ratio reuse; add native Pan,
+  Formant I and LoFi processing. Include UVI bounded initialization, typed host
+  lookups, Assistant font resources and fresh custom host-save capture.
+- Verify native CLAP source and routing readback before accepting host receipts.
+- Improve GPU recovery, diagnostics and embedded native-window teardown.
+
+### Known limits for 0.3.306
+
+- CPU/RSS/load parity with v1 is incomplete. W6 PCM is bit-exact but its quiet CPU
+  improvement is unmeasured. W5 fresh A/B passes 8/9 cells; Conflux/256 remains
+  slower: p50 11.2→16.2 µs and p99 about +35 µs, above the A/A noise floor.
+  Dolce/32's original +14% result is retained; fresh matched A/B is within noise,
+  and does not establish a causal improvement. Analog still uses substantial RAM.
+- W12's pre-port native census finds dropped enabled/bypassed FX 377/1521,
+  filters 2109/4962 and modulators 20404/24478. W15 admits Pan, Formant I and LoFi;
+  a post-port recount is pending. Formant/LoFi approximations retain native
+  fidelity gaps. Native filter subtypes 30 and 106,
+  UVI MS20/Xpander, LFO/random sources and several
+  modulation targets still lack full native modeling. See the W12 fidelity ledger.
+- 21/22 scripted sample-family cells need native captures; static Pacific matches
+  do not prove scripted family parity. Native UI paint does not certify every
+  widget, OS/DAW gesture or source resource. Unmatched requested-face controls use
+  a provisional disconnected/inert policy.
+- Thirty of fifty audited multis retain 45 pre-existing KSP semantic/stage compile
+  faults. Vista/Pacific resource resolution is still incomplete.
+- W9's predictive streaming stack is excluded: matched loaded RSS 819.92 MiB
+  versus 380.16 MiB on its baseline. Native callback-context persistence 65e345e3
+  is excluded because real Conflux recall rejects callbacks (InvalidInput).
+- Untested zone-vector trimming, settled-modulation work, nativeAlways and new
+  stream residency trials are excluded. Existing full Kontakt/UVI support ships
+  as implemented; this release does not claim complete native parity.
+
+
+### Accepted 0.3.225 — keyswitch panel and Program Change accounting
+
+One reviewed logical defect advances the accepted counter from 0.3.224.
+This source version uses the green integration checkpoint `67dafc61`.
+
+### Added after 0.3.224
+
+- Add the compact keyswitch panel, persistent articulation overlays, MIDI learn,
+  conflict swaps and the appended input palette.
+
+### Fixed after 0.3.224
+
+- Route MIDI 1 and MIDI 2 Program Change through authored Program selectors.
+  Selection changes without an ignored-input count; instruments without a
+  Program selector continue counting the message as ignored.
+
+### Known limits for 0.3.225
+
+- Historical 0.3.225 checkpoint: packaging was held pending all-axis parity.
+  The alpha authorization above supersedes that hold; the parity gaps remain.
+- The full integration shards, reader checks, keyswitch and App-menu tests pass.
+  The final shared scanner quick15 has 15 loads, seven Original UIs OK, eight
+  with missing images and 14 matched audible auditions, with no measured
+  regressions. Afflatus has no safe test key and is not auditioned.
+- Historical 0.3.225 checkpoint excluded later worker changes. This alpha
+  includes the subsequently validated integration work listed above.
+- This is a normal local build using the host glibc. CI targets Ubuntu 22.04
+  and checks a 2.35 maximum; actual CI artifact proof remains separate.
+
+### Accepted 0.3.224 — Original view, verified readers and runtime storage
+
+Sixteen reviewed logical fixes advance the accepted counter from 0.3.208.
+
+### Fixed after 0.3.208
+
+- Default to Original and preserve saved view selection, script/page state, control values and artwork identities through sparse runtime UI publications. Both selectors expose Original, Vector and generated KONTRA; fit uses both axes and explicit zoom remains exact.
+- Admit native scalar edits through their bounded request/reply service, guard replaced source generations, and route UI alias effects by widget identity. Picker results become visible only after the owned worker operation closes.
+- Decode complete verified versioned Program and NIS records. Program resource metadata uses the same public reader; neutral F1/F2 values retain their verified layout without guessed wallpaper semantics. Failed occupied FX slots remain diagnosed while valid siblings survive.
+- Traverse live note/callback owners, flush callback outcomes at host-block end, wait for exact offline sample readiness with bounded failure, and retry transient protected pages with backoff and storage counters.
+- Build CI Linux packages on Ubuntu 22.04 and reject GLIBC requirements newer than 2.35. Local user builds use the machine's normal toolchain.
+
+### Known limits for 0.3.224
+
+- The urgent local release uses the pinned ready W1 checkpoint and green integration no-run, root library, KSP/UI IR and release-core checks. Remaining post-install integration shards and current-HEAD quick regression follow; broader fix branches are queued.
+- Authored image/font gaps, specialized widget support and full native sound parity remain separate acceptance work. The CI baseline check is implemented; its actual KONTRA 2.35 artifact proof follows CI execution.
+
+
 ### Accepted 0.3.148 — primary envelope processing and visible crash receipts
 
 Two reviewed logical fixes advance the accepted counter from 0.3.146.

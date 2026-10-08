@@ -35,7 +35,7 @@ fn pointer(pos: Point, down: bool) -> Input {
     }
 }
 
-fn center(ui: &Ui, id: &str) -> Point {
+pub(super) fn center(ui: &Ui, id: &str) -> Point {
     let r = ui
         .scene()
         .unwrap()
@@ -47,8 +47,8 @@ fn center(ui: &Ui, id: &str) -> Point {
 
 type Build = Box<dyn FnMut(&mut Ui, &mut Bridge<SamplerParams>) -> El>;
 
-pub(super) struct Harness {
-    pub(super) ui: Ui,
+pub(crate) struct Harness {
+    pub(crate) ui: Ui,
     build: Build,
     bridge: Bridge<SamplerParams>,
     size: Size,
@@ -57,7 +57,7 @@ pub(super) struct Harness {
 }
 
 impl Harness {
-    pub(super) fn new(p: &Arc<SamplerParams>, width: f64, height: f64) -> Self {
+    pub(crate) fn new(p: &Arc<SamplerParams>, width: f64, height: f64) -> Self {
         let computer = Arc::<computer::Computer>::default();
         let art = Arc::<art::Art>::default();
         let mut h = Self {
@@ -72,7 +72,7 @@ impl Harness {
         h
     }
 
-    fn tick(&mut self, input: Input) {
+    pub(crate) fn tick(&mut self, input: Input) {
         let root = (self.build)(&mut self.ui, &mut self.bridge);
         self.ui
             .frame(root, Some(self.size), input, 1. / 60.)
@@ -80,7 +80,7 @@ impl Harness {
     }
 
     /// Frames until the library artwork asked for is made and drawn.
-    fn settle_art(&mut self) {
+    pub(super) fn settle_art(&mut self) {
         loop {
             self.idle(1);
             if !self.art.busy() {
@@ -104,7 +104,7 @@ impl Harness {
         self.idle(3);
     }
 
-    fn drag(&mut self, from: &str, to: &str) {
+    pub(super) fn drag(&mut self, from: &str, to: &str) {
         let (from, to) = (center(&self.ui, from), center(&self.ui, to));
         for (pos, down) in [
             (from, true),
@@ -117,7 +117,7 @@ impl Harness {
         self.idle(2);
     }
 
-    fn type_into(&mut self, id: &str, text: &str) {
+    pub(super) fn type_into(&mut self, id: &str, text: &str) {
         self.ui.focus(id);
         self.tick(enter());
         self.idle(2);
@@ -378,14 +378,14 @@ fn the_browser_finds_by_library_and_folder() {
     assert!(shown(&h, "folder-4") && !shown(&h, "instrument-5"));
     tap(&mut h, Key::Down);
     tap(&mut h, Key::Right);
-    assert!(shown(&h, "instrument-2"), "Right opens a folder");
+    assert!(shown(&h, "instrument-0"), "Right opens a folder");
     assert_eq!(p.shared.libraries.settings().folders.get("/virtual/Lib 042/Instruments/0 Part"), Some(&true));
     tap(&mut h, Key::Right);
-    assert_eq!(h.ui.focus_key(), Some("instrument-2"), "and steps into it");
+    assert_eq!(h.ui.focus_key(), Some("instrument-0"), "and steps into it");
     tap(&mut h, Key::Left);
     assert_eq!(h.ui.focus_key(), Some("folder-1"), "Left steps back to its folder");
     tap(&mut h, Key::Left);
-    assert!(!shown(&h, "instrument-2"), "and shuts it");
+    assert!(!shown(&h, "instrument-0"), "and shuts it");
     tap(&mut h, Key::Right);
     tap(&mut h, Key::Right);
     tap(&mut h, Key::Enter);
@@ -514,8 +514,8 @@ fn rack_interactions() {
     h.press("preset-prev-0");
     assert!(parts(&p)[0].path.ends_with("Piano.nki"));
 
-    h.press("picker-multis");
-    h.press("instrument-0");
+    h.press("folder-3");
+    h.press("instrument-2");
     assert!(
         p.shared
             .multi_request
@@ -526,7 +526,7 @@ fn rack_interactions() {
             .ends_with("Ensemble.kontra-multi")
     );
     assert_eq!(parts(&p).len(), 2, "the rack stays until the multi loads");
-    h.press("picker-instruments");
+    h.press("folder-3");
 
     h.drag("name-1", "header-0");
     assert_eq!(
@@ -691,20 +691,22 @@ fn rack_interactions() {
     assert!(s.parts[1].path.ends_with("Strings.nki"));
 
     let ui = &h.ui;
+    let drag = std::sync::Mutex::new(None);
     let files = vec![PathBuf::from("/external/Native.nki")];
     let at = Point::new(10., 10.);
-    assert!(native_files(&p, &Default::default(), ui, at, &files, false));
+    assert!(native_files(&p, &Default::default(), &drag, ui, at, &files, false));
     assert!(parts(&p)[0].path.is_empty(), "hovering does not load");
-    assert!(native_files(&p, &Default::default(), ui, at, &files, true));
+    assert!(native_files(&p, &Default::default(), &drag, ui, at, &files, true));
     assert!(
         parts(&p)[0].path.ends_with("Native.nki"),
         "a dropped file takes the free slot"
     );
-    assert!(!native_files(&p, &Default::default(), ui, at, &[PathBuf::from("notes.txt")], true));
+    assert!(!native_files(&p, &Default::default(), &drag, ui, at, &[PathBuf::from("notes.txt")], true));
     let before_append = parts(&p).len();
     assert!(native_files(
         &p,
         &Default::default(),
+        &drag,
         ui,
         at,
         &vec![PathBuf::from("full.nki"); 17],
@@ -712,16 +714,16 @@ fn rack_interactions() {
     ));
     assert_eq!(parts(&p).len(), before_append + 17, "a native drop grows the rack rather than rejecting files");
     let at = center(ui, "header-1");
-    assert!(native_files(&p, &Default::default(), ui, at, &files, true));
+    assert!(native_files(&p, &Default::default(), &drag, ui, at, &files, true));
     assert!(
         parts(&p)[1].path.ends_with("Native.nki"),
         "a file dropped on a header replaces its part"
     );
     let multi = [PathBuf::from("/external/Multi.kontra-multi")];
     let before = p.selection.read().unwrap().clone();
-    assert!(native_files(&p, &Default::default(), ui, at, &multi, false));
+    assert!(native_files(&p, &Default::default(), &drag, ui, at, &multi, false));
     assert!(p.shared.multi_request.lock().unwrap().is_none());
-    assert!(native_files(&p, &Default::default(), ui, at, &multi, true));
+    assert!(native_files(&p, &Default::default(), &drag, ui, at, &multi, true));
     assert_eq!(
         p.shared.multi_request.lock().unwrap().take().unwrap(),
         "/external/Multi.kontra-multi"
@@ -802,7 +804,7 @@ fn the_split_browser_walks_both_panes() {
     assert!(shown(&h, "instrument-0") && !shown(&h, "instrument-1"), "and lists the one it lands on");
     h.tick(key(Key::Tab));
     h.idle(2);
-    assert_eq!(h.ui.focus_key(), Some("instrument-0"), "Tab crosses to the presets");
+    assert_eq!(h.ui.focus_key(), Some("folder-0"), "Tab crosses to the preset categories");
     h.tick(key(Key::Tab));
     h.idle(2);
     assert_eq!(h.ui.focus_key(), Some("library-1"), "and back to the library");
@@ -876,7 +878,7 @@ fn split_browser_keeps_both_panes_usable_across_resize_and_scale() {
                 h.ui.focus(start);
                 h.tick(Input { keys: vec![KeyPress { key: Key::Home, mods: Mods::default() }], ..Default::default() });
                 h.idle(30);
-                assert_eq!(h.ui.focus_key(), Some("instrument-0"), "Home: split={split} scale={scale} size={size:?}");
+                assert_eq!(h.ui.focus_key(), Some("folder-0"), "Home: split={split} scale={scale} size={size:?}");
                 h.tick(Input { keys: vec![KeyPress { key: Key::End, mods: Mods::default() }], ..Default::default() });
                 h.idle(30);
                 assert_eq!(h.ui.focus_key(), Some("instrument-99"), "End: split={split} scale={scale} size={size:?}");
@@ -1341,7 +1343,7 @@ fn screenshot() {
         ("rack", true, &["tab-rack"]),
         ("info", true, &["tab-info"]),
         ("library", false, &["library-1"]),
-        ("multis", false, &["picker-multis"]),
+        ("falcon-uvi", false, &["bank-uvi"]),
         // A library's folders, one opened by the keys, a part loaded.
         ("browser-tree", true, &["library-2"]),
         // The search inside a library: flat, each with its folder under it.
@@ -1610,7 +1612,8 @@ fn idle_editor_rebuilds_only_when_something_moves() {
     // The library is scanned: nothing is pending for the loader.
     p.shared.view.lock().unwrap().scanned = p.shared.libraries.wanted();
     let meters = Meters::default();
-    let mut watch = Watch::default();
+    static IDLE_DISK: AtomicU64 = AtomicU64::new(0);
+    let mut watch = Watch { disk_counter: Some(&IDLE_DISK), ..Default::default() };
     let computer = computer::Computer::default();
     let mut changed = || watch.changed(&p, &meters, &computer);
     assert!(changed(), "the first tick builds");
@@ -2243,4 +2246,108 @@ fn library_rename_edits_only_the_display_name_and_filter_follows_it() {
     h.press("library-0");
     assert!(h.ui.scene().unwrap().surface("instrument-0").is_some(), "selection retains its canonical source");
     p.shared.libraries.edit(|s| s.rename_library(dir, ""));
+}
+
+#[test]
+fn widget_nested_wheel_stays_in_child_then_hands_off_at_end() {
+    let p = Arc::new(SamplerParams::new());
+    p.selection.write().unwrap().parts.push(crate::plugin::Part {path:"/widget/synthetic.nki".into(), ..Default::default()});
+    let mut inst = sampler_ir::Instrument::default();
+    for n in 0..40 {
+        inst.articulations.push(sampler_ir::Articulation {name:format!("Technique {n}"), switch_keys:vec![n], ..Default::default()});
+    }
+    let row = super::inside::row_id(0, &crate::sound::articulation::identities(&inst.articulations)[4]);
+    p.shared.view.lock().unwrap().parts[0].instrument = Some(Arc::new(inst));
+    let mut h = Harness::new(&p,1180.,900.);
+    h.press("view-0-Articulations");
+    h.idle(8);
+    let pos = center(&h.ui,&row);
+    let before = h.ui.scroll("arts-0");
+    let rack_before = h.ui.scene().unwrap().surface("rack-content").unwrap().frame.y;
+    h.tick(Input {pointer:PointerInput {pos:Some(pos), ..Default::default()}, wheel:Vec2::new(0.,80.), ..Default::default()});
+    h.idle(30);
+    let after = h.ui.scroll("arts-0");
+    let rack_after = h.ui.scene().unwrap().surface("rack-content").unwrap().frame.y;
+    assert!(after[1]>before[1]);
+    assert!((rack_after-rack_before).abs()<1.,"child consumed wheel, rack moved {}",rack_after-rack_before);
+    h.ui.set_scroll("arts-0",[0.,10000.]);
+    h.idle(30);
+    let at_end = h.ui.scroll("arts-0");
+    let pos = center(&h.ui,"arts-0");
+    let rack_before = h.ui.scene().unwrap().surface("rack-content").unwrap().frame.y;
+    h.tick(Input {pointer:PointerInput {pos:Some(pos), ..Default::default()}, wheel:Vec2::new(0.,80.), ..Default::default()});
+    h.idle(30);
+    assert_eq!(h.ui.scroll("arts-0"),at_end);
+    assert!(h.ui.scene().unwrap().surface("rack-content").unwrap().frame.y<rack_before-1.,"exhausted child yields to rack");
+}
+
+include!("viewmodel_tests.rs");
+
+/// Every product menu target uses menu::view, so exercise a non-articulation
+/// target too: popup paint must be opaque on entry and absent immediately on exit.
+#[test]
+fn shared_context_menu_never_fades_over_interactive_content() {
+    let p = Arc::new(SamplerParams::new());
+    let mut h = Harness::new(&p, 1180., 780.);
+    h.press("app-menu");
+    let frame = h.ui.scene().unwrap().surface("context-menu").unwrap().frame;
+    let first = pixels(&h.ui, 1180, 780);
+    h.idle(45);
+    let settled = pixels(&h.ui, 1180, 780);
+    let sample = ((frame.y as usize + 2) * 1180 + frame.x as usize + 20) * 4;
+    assert_eq!(&first[sample..sample+4], &settled[sample..sample+4], "shared menu must be opaque on entry");
+    h.tick(Input { keys: vec![KeyPress { key: Key::Escape, mods: Mods::default() }], ..Default::default() });
+    h.idle(2);
+    assert!(h.ui.scene().unwrap().surface("context-menu").is_none());
+    let closed = pixels(&h.ui, 1180, 780);
+    h.idle(45);
+    let settled = pixels(&h.ui, 1180, 780);
+    for y in 80..200 {
+        let x = frame.x as usize + 10;
+        let range = (y * 1180 + x) * 4 .. (y * 1180 + x + 180) * 4;
+        assert_eq!(&closed[range.clone()], &settled[range], "shared menu must leave no ghost, scanline {y}");
+    }
+}
+ pub(super) fn audit_frames(p: &Arc<SamplerParams>) -> serde_json::Value {
+    let start = std::time::Instant::now();
+    let mut h=Harness::new(p,1180.,760.);
+    h.idle(4);
+    let build_ms = start.elapsed().as_secs_f64() * 1000.;
+    std::thread::sleep(std::time::Duration::from_secs(4));
+    let status=std::fs::read_to_string("/proc/self/status").unwrap();
+    let kb=|key:&str| status.lines().find_map(|l|l.strip_prefix(key)?.split_whitespace().next()?.parse::<u64>().ok()).unwrap_or(0);
+    serde_json::json!({"build_ms":build_ms,"rss_live_mb":kb("VmRSS:") as f64/1024.,"hwm_live_mb":kb("VmHWM:") as f64/1024.})
+ }
+
+#[test]
+fn full_editor_native_frames_fit_a_plain_two_mib_thread() {
+    std::thread::Builder::new().stack_size(2 << 20).spawn(|| {
+        use sampler_ui_ir as ir;
+        let dir = std::env::temp_dir().join(format!("kontra-editor-native-stack-{}",std::process::id()));
+        std::fs::create_dir_all(dir.join("Resources/native_ui")).unwrap();
+        let mut node="@ui.Rectangle {color=ui.Color(20,40,60)}.frame(width=32,height=32)".to_owned();
+        for _ in 0..32 {node=format!("@ui.VStack {{ {node} }}");}
+        std::fs::write(dir.join("Resources/native_ui/main.nui"),format!("local ui=require('native_ui')\nreturn function() return {node}.frame(width=32,height=32).on_tap_gesture({{complete=function() end}}) end")).unwrap();
+        let p = Arc::new(SamplerParams::new());
+        p.selection.write().unwrap().parts=vec![crate::plugin::Part {path:dir.join("fixture.nki").to_string_lossy().into_owned(),view:1,..Default::default()}];
+        p.selection.write().unwrap().order=vec![0];
+        p.shared.view.lock().unwrap().parts[0].interfaces=vec![ir::Interface {
+            source:ir::Source::Ksp{slot:0},
+            native_ui:Some(ir::NativeUi{entry:"main".into()}),
+            pages:vec![ir::Page{size:ir::Size{width:32,height:32},..Default::default()}],
+            widgets:vec![ir::Widget::new("fixture",ir::PageRef(0),ir::Rect::new(0,0,32,32),ir::Kind::Label)],
+            ..Default::default()
+        }].into();
+        let mut h=Harness::new(&p,1180.,760.);
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);
+        let painted=|h:&Harness|h.ui.scene().unwrap().surfaces().any(|s|s.key.as_str().starts_with("nui-")&&s.key.as_str().ends_with("-root/component"));
+        while !painted(&h) {
+            assert!(std::time::Instant::now()<deadline,"full editor never painted native fixture");
+            h.idle(1); std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        h.idle(4);
+        assert!(painted(&h));
+        drop(h);
+        std::fs::remove_dir_all(dir).unwrap();
+    }).unwrap().join().unwrap();
 }

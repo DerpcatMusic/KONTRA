@@ -1110,14 +1110,17 @@ fn performance_view_controls_and_indexed_properties_reach_the_model() {
     assert!(
         ui.widgets
             .iter()
-            .all(|w| w.name == "$L" || w.control.is_some())
+            .all(|w| w.name == "$L" || w.name == "$Drive" || w.control.is_some())
     );
     assert_eq!(ui.widgets[0].callback, Some(0));
     assert_eq!(
         ui.widgets[2].indexed_properties["$CONTROL_PAR_TEXT"][&1],
         Value::Text("two".into())
     );
-    // `$Drive` was not described by the host: assumed a knob, with a warning.
+    // An unresolved handle stays in script storage, never in the rendered UI.
+    let drive = ui.widgets.iter().find(|w| w.name == "$Drive").unwrap();
+    assert!(drive.control.is_none());
+    assert_eq!(script.ui(&|_| None).unwrap().widgets.len(), 3);
     assert!(
         script
             .warnings()
@@ -1183,4 +1186,27 @@ fn type_constants_outside_the_vendor_families_compile() {
     if let Err(error) = sampler_ksp::compile(&body, 48000, limits, &[]) {
         panic!("{error:?}");
     }
+}
+
+#[test]
+fn ui_callbacks_emit_reachable_functions_once_per_context() {
+    fn source(callbacks: usize) -> String {
+        let mut text = "on init declare $calls ".to_owned();
+        for i in 0..callbacks {
+            text += &format!("declare ui_button $b{i} ");
+        }
+        text += "end on function leaf ";
+        text += &"inc($calls) ".repeat(50);
+        text += "end function function parent call leaf end function ";
+        for i in 0..callbacks {
+            text += &format!("on ui_control($b{i}) call parent end on ");
+        }
+        text
+    }
+    let one = compile(&source(1), 48000, Limits::LIBRARY).unwrap();
+    let mut limits = Limits::LIBRARY;
+    limits.instructions = one.usage().instructions + 20;
+    let many = compile(&source(6), 48000, limits).unwrap();
+    assert_eq!(many.controls().len(), 6);
+    assert!(many.usage().instructions <= one.usage().instructions + 20);
 }

@@ -2,8 +2,8 @@
 mod predicates;
 mod selection;
 use super::{Envelope, Error, Frame, NotePitch, Playback};
-pub use predicates::{AXIS_BASE, ControllerCondition, MAX_AXES, PREVIOUS_KEY};
 use predicates::Matching;
+pub use predicates::{AXIS_BASE, ControllerCondition, MAX_AXES, PREVIOUS_KEY};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering::Relaxed};
 use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard};
 
@@ -133,15 +133,30 @@ impl Pcm {
             .into_iter()
             .map(|(start, frames)| (start, crate::Packed::new(&frames)))
             .collect();
-        Ok(std::mem::replace(&mut *self.0.head.write().unwrap_or_else(|e| e.into_inner()), ranges))
+        Ok(std::mem::replace(
+            &mut *self.0.head.write().unwrap_or_else(|e| e.into_inner()),
+            ranges,
+        ))
     }
     /// Frames in resident ranges.
     pub fn head_frames(&self) -> usize {
-        self.0.head.read().unwrap_or_else(|e| e.into_inner()).iter().map(|(_, f)| f.len()).sum()
+        self.0
+            .head
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|(_, f)| f.len())
+            .sum()
     }
     /// Bytes resident ranges hold, packed.
     pub fn head_bytes(&self) -> usize {
-        self.0.head.read().unwrap_or_else(|e| e.into_inner()).iter().map(|(_, f)| f.bytes()).sum()
+        self.0
+            .head
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|(_, f)| f.bytes())
+            .sum()
     }
     /// Whether a start was refused for a missing head since the last call.
     pub fn take_cold(&self) -> bool {
@@ -156,7 +171,7 @@ impl Pcm {
     pub(crate) fn try_head(&self) -> Option<RwLockReadGuard<'_, Ranges>> {
         self.0.head.try_read().ok()
     }
-    pub(crate) fn mark_cold(&self) {
+    pub fn mark_cold(&self) {
         self.0.cold.store(true, Relaxed);
     }
     pub(crate) fn touch(&self, now: u64) {
@@ -387,7 +402,7 @@ struct PreparedRegion {
     chain: Option<usize>,
     bus: Option<usize>,
     envelope: Envelope,
-    cursor: super::source::Cursor,
+    cursor: super::source::CursorTemplate,
     root_key: Option<u8>,
     transpose_semitones: f64,
     take: Option<super::Take>,
@@ -403,6 +418,7 @@ struct Candidate {
 }
 
 pub struct Prepared {
+    pub(super) signal_trace: Option<crate::trace::TracePrepared>,
     pub(super) rate: u32,
     pub(super) pcm: Box<[Pcm]>,
     pub(super) buses: super::bus::PreparedBuses,
@@ -412,6 +428,7 @@ pub struct Prepared {
     pub(super) dsp_bindings: Box<[super::ControlRange]>,
     pub(super) dsp_controls: Box<[(super::ControlId, usize)]>,
     regions: Box<[PreparedRegion]>,
+    cursor_loops: Box<[super::source::LoopSlots]>,
     pub(super) group_count: u32,
     pub(super) source_event_limit: i32,
     /// CC64 holds no gate: a behavior implements sustain itself.
@@ -420,10 +437,19 @@ pub struct Prepared {
     /// Controller values a script set in `on init`, before any input.
     pub(super) initial_controllers: Vec<(u8, u32)>,
     pub(super) region_groups: Box<[Option<u32>]>,
+    pub(super) region_zone_ids: Box<[u32]>,
+    pub(super) native_start: Box<[Box<[sampler_ir::GroupStart]>]>,
+    pub(super) native_articulation_keys: Box<[Option<u8>]>,
+    pub(super) native_default_key: Option<u8>,
+    pub(super) native_rr_length: u32,
+    pub(super) native_random_groups: Box<[u32]>,
     pub(super) voice_limit: Option<super::VoiceLimit>,
     pub(super) voice_limits: Box<[super::VoiceLimit]>,
     pub(super) group_voice_limits: Box<[Option<usize>]>,
     pub(super) monophonic_release: Box<[bool]>,
+    pub(super) engine_parameters: Box<[super::EngineParameterBinding]>,
+    pub(super) envelope_controls: Box<[[Option<super::ControlId>; 6]]>,
+    pub(super) engine_lookups: Box<[super::EngineLookup]>,
     pub(super) group_params: Box<[super::GroupParams]>,
     pub(super) group_faders: Box<[Option<super::GroupFader>]>,
     /// Bus index by source address, for script group routing.
@@ -436,9 +462,11 @@ pub struct Prepared {
     pub(super) release_reserves: Box<[[super::ReleaseReserve; 2]; 128]>,
     candidates: Box<[Candidate]>,
     pub(super) programs: Box<[super::Program]>,
-    pub(super) script_initial: Box<[super::ops::ScriptBank]>,
+    pub(super) script_initial: Box<[super::ops::ScriptInitial]>,
     pub(super) stages: Box<[super::Stage]>,
     pub(super) note_cells: usize,
+    pub(super) automation: Box<[super::AutomationBinding]>,
+    pub(super) widgets: Box<[super::WidgetDefinition]>,
     pub(super) controls: Box<[super::ControlDefinition]>,
     pub(super) control_programs: Box<[super::ControlCallback]>,
     pub(super) plan_programs: Box<[super::PlanProgram]>,
@@ -515,6 +543,7 @@ impl Prepared {
         }
         let mut count = 0usize;
         let mut prepared_regions = Vec::new();
+        let mut cursor_loops = Vec::new();
         for r in &regions {
             if r.sample >= pcm.len()
                 || r.key_low > r.key_high
@@ -562,7 +591,7 @@ impl Prepared {
                 chain: None,
                 bus: None,
                 envelope: r.envelope,
-                cursor,
+                cursor: super::source::CursorTemplate::new(cursor, &mut cursor_loops),
                 root_key: r.root_key,
                 transpose_semitones: r.playback.transpose_semitones,
                 take: None,
@@ -583,7 +612,7 @@ impl Prepared {
                             f64::from(key) - f64::from(root) + tuning.0[key as usize];
                         playback.step(pcm[r.sample].sample_rate(), rate)
                     } else {
-                        prepared_regions[region].cursor.step()
+                        prepared_regions[region].cursor.cursor(&cursor_loops).step()
                     };
                     if !(super::resample::MIN_STEP..=super::resample::MAX_STEP).contains(&step) {
                         return Err(Error::InvalidInput);
@@ -593,26 +622,42 @@ impl Prepared {
             }
         }
         offsets[128] = candidates.len();
+        if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
+            eprintln!("AUDIT {{\"stage\":\"region_playback_templates\",\"regions\":{},\"region_bytes\":{},\"cursor_bytes\":{},\"template_bytes\":{},\"multi_loop_regions\":{},\"multi_loop_bytes\":{}}}",
+                prepared_regions.len(), size_of::<PreparedRegion>(), size_of::<super::source::Cursor>(),
+                size_of::<super::source::CursorTemplate>(), cursor_loops.len(), size_of::<super::source::LoopSlots>());
+        }
         Ok(Self {
             rate,
             pcm: pcm.into_boxed_slice(),
             buses: super::bus::PreparedBuses::default(),
             impulses: Vec::new(),
             voice_chains: Box::new([]),
+            signal_trace: None,
             dsp_bindings: Box::new([]),
             filters: Box::new([]),
             dsp_controls: Box::new([]),
             regions: prepared_regions.into_boxed_slice(),
+            cursor_loops: cursor_loops.into_boxed_slice(),
             group_count: 0,
             source_event_limit: i32::MAX,
             script_sustain: false,
             script_release_triggers: false,
             initial_controllers: Vec::new(),
             region_groups: Box::new([]),
+            region_zone_ids: Box::new([]),
+            native_start: Box::new([]),
+            native_articulation_keys: Box::new([]),
+            native_default_key: None,
+            native_rr_length: 0,
+            native_random_groups: Box::new([]),
             voice_limit: None,
             voice_limits: Box::new([]),
             group_voice_limits: Box::new([]),
             monophonic_release: Box::new([]),
+            engine_parameters: Box::new([]),
+            envelope_controls: Box::new([]),
+            engine_lookups: Box::new([]),
             group_params: Box::new([]),
             group_faders: Box::new([]),
             bus_addresses: Box::new([]),
@@ -625,6 +670,8 @@ impl Prepared {
             script_initial: Box::new([]),
             stages: Box::new([]),
             note_cells: 0,
+            automation: Box::new([]),
+            widgets: Box::new([]),
             controls: Box::new([]),
             control_programs: Box::new([]),
             plan_programs: Box::new([]),
@@ -713,7 +760,16 @@ impl Prepared {
         regions: Vec<Option<usize>>,
         start_ranges: Vec<u32>,
     ) -> Result<Self, Error> {
-        if regions.len() != self.regions.len() {
+        if regions.len() != self.regions.len()
+            || programs
+                .iter()
+                .flat_map(|p| &p.routes)
+                .any(|r| match r.target {
+                    super::ModTarget::ProcessorCutoff(i)
+                    | super::ModTarget::ProcessorResonance(i) => i as usize >= self.filters.len(),
+                    _ => false,
+                })
+        {
             return Err(Error::InvalidInput);
         }
         self.voice_modulation =
@@ -729,6 +785,10 @@ impl Prepared {
 
     pub fn sample_rate(&self) -> u32 {
         self.rate
+    }
+
+    pub(crate) fn region_chain(&self, region: usize) -> Option<usize> {
+        self.regions[region].chain
     }
 
     /// Required cells per logical note across all script-instance namespaces.
@@ -789,6 +849,21 @@ impl Prepared {
     pub fn region_count(&self) -> usize {
         self.regions.len()
     }
+    /// Resolve the positive source zone ID used by EventInfo::ZoneId, retaining source holes.
+    /// Control-side lookup; zero, omitted zones and absent source maps return None.
+    /// No fallback to runtime region ordinals.
+    pub fn source_zone_region(&self, zone_id: u32) -> Option<usize> {
+        if zone_id == 0 {
+            return None;
+        }
+        self.region_zone_ids.iter().position(|&id| id == zone_id)
+    }
+
+    /// The immutable prepared sample asset behind a region, for control-side peak work.
+    pub fn region_asset(&self, region: usize) -> Option<&Pcm> {
+        self.regions.get(region).and_then(|r| self.pcm.get(r.sample))
+    }
+
     pub fn candidate_count(&self) -> usize {
         self.candidates.len()
     }
@@ -896,7 +971,7 @@ impl Prepared {
         for (region, trigger) in self.regions.iter_mut().zip(triggers) {
             if let Some(index) = trigger.release_index()
                 && self.release_options[index].duration.is_none()
-                && region.cursor.unbounded_loop()
+                && region.cursor.cursor(&self.cursor_loops).unbounded_loop()
                 && !region.envelope.finite()
             {
                 return Err(Error::InvalidInput);
@@ -1340,5 +1415,48 @@ mod fade_tests {
         assert_eq!(ramp(40, 1, 100, 0, 60), 1.0);
         assert_eq!(ramp(100, 1, 100, 0, 60), 1.0 / 61.0);
         assert_eq!(ramp(80, 1, 100, 0, 60), 21.0 / 61.0);
+    }
+}
+
+impl Prepared {
+    pub(crate) fn trace_region_take(&self,region:usize) -> Option<crate::Take> {self.regions[region].take}
+    pub(crate) fn trace_region_gains(&self, region: usize, key: u8, velocity: f64) -> [f64;3] {
+        let r=&self.regions[region]; [f64::from(r.gain),f64::from(r.velocity_curve.amplitude(velocity)),f64::from(r.fade_gain(key,velocity))]
+    }
+    /// Build all signal identities and fixed diagnostic storage off audio.
+    /// This opt-in builder leaves ordinary plans/rendering unchanged.
+    pub fn with_signal_trace(mut self, records: usize) -> Result<Self, Error> {
+        self.enable_signal_trace(records)?; Ok(self)
+    }
+    pub(crate) fn enable_signal_trace(&mut self, records:usize) -> Result<(),Error> {
+        if self.signal_trace.is_some() { return Err(Error::InvalidInput); }
+        if self.regions.iter().any(|r| r.chain.is_none()) {
+            let index = self.voice_chains.len();
+            let empty = crate::VoiceChain::new(vec![], vec![], 0)?.compile(self.rate, &mut vec![], &mut vec![])?;
+            let mut chains = std::mem::take(&mut self.voice_chains).into_vec(); chains.push(empty); self.voice_chains = chains.into_boxed_slice();
+            for region in &mut self.regions { if region.chain.is_none() { region.chain = Some(index); } }
+        }
+        let mut graph = crate::trace::TraceGraph::new(self.rate);
+        self.buses.trace_graph(&self, &mut graph);
+        let initial = crate::dsp::control::initial_parameters(&self, &self.dsp_bindings);
+        for (index, region) in self.regions.iter().enumerate() {
+            let zone = self.region_zone_ids.get(index).copied().unwrap_or(index as u32 + 1);
+            let group = self.region_groups.get(index).copied().flatten();
+            let chain = &self.voice_chains[region.chain.unwrap()];
+            let mut nodes = chain.trace_graph(&self, &mut graph, zone, group, region.bus, &initial);
+            nodes.region=index;
+            graph.nodes[nodes.amp].parameters = std::iter::once(crate::trace::TraceParameter::constant("region_gain",f64::from(region.gain)))
+                .chain(std::iter::once(crate::trace::TraceParameter::constant("velocity_exponent",match region.velocity_curve {VelocityCurve::Constant=>0.,VelocityCurve::Linear=>1.,VelocityCurve::Power(p)=>p})))
+                .chain(region.envelope.trace_parameters().into_iter().map(|(n,v)| {
+                    let stage=match n {"attack_frames"=>Some(0),"hold_frames"=>Some(1),"decay_frames"=>Some(2),"sustain"=>Some(3),"release_frames"=>Some(4),"attack_curvature"=>Some(5),_=>None};
+                    let control=group.and_then(|g|self.envelope_controls.get(g as usize)).and_then(|lanes|stage.and_then(|s|lanes[s]));
+                    let binding=control.and_then(|control|self.engine_parameters.iter().find(|b|b.control==control));
+                    crate::trace::TraceParameter::envelope(n,v,binding)
+                })).collect();
+            graph.voices.insert(zone, nodes);
+        }
+        graph.order=graph.topological_order();
+        if graph.order.len()!=graph.nodes.len() {return Err(Error::InvalidInput);}
+        self.signal_trace = Some(crate::trace::TracePrepared::new(graph, records)?); Ok(())
     }
 }

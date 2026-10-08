@@ -7,6 +7,7 @@ impl Bank {
     pub fn open(_: &Path) -> Result<Self, AccessError> {
         Err(AccessError::Disabled)
     }
+    pub fn scripts(&self) -> crate::script::Scripts { Default::default() }
     pub fn programs(&self) -> Vec<String> {
         Vec::new()
     }

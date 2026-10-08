@@ -81,7 +81,28 @@ impl Runtime {
             .flatten()
         {
             let note = self.note_on_pitched_in(performance, input, pitch, velocity, expression)?;
+            if !self
+                .plans
+                .get(self.active_plan.0)
+                .unwrap()
+                .prepared
+                .native_start
+                .is_empty()
+            {
+                let generation = self.plans.get_mut(self.active_plan.0).unwrap();
+                generation.native_cycle = generation.native_cycle.wrapping_sub(1);
+            }
             self.articulation_now(index, value);
+            if !self
+                .plans
+                .get(self.active_plan.0)
+                .unwrap()
+                .prepared
+                .native_start
+                .is_empty()
+            {
+                self.performance_state.edit(index).native_key = Some(input.key);
+            }
             self.performance_state
                 .release(self.selections[note.0.index].snapshot);
             self.selections[note.0.index].snapshot = self.performance_state.capture(index);
@@ -219,6 +240,19 @@ impl Runtime {
         {
             self.record_previous_key(performance, note_pitch.key());
         }
+        if !self
+            .plans
+            .get(plan.0)
+            .unwrap()
+            .prepared
+            .native_start
+            .is_empty()
+        {
+            let generation = self.plans.get(plan.0).unwrap();
+            let state = self.performance_state.edit(performance);
+            state.native_tick = generation.native_cycle;
+            state.native_seed = generation.native_seed;
+        }
         let snapshot = self.performance_state.current[performance];
         let release = if routed {
             ReleaseReserve::default()
@@ -259,6 +293,10 @@ impl Runtime {
         };
         let event = &mut self.note_events[note.0.index];
         event.source_offset_micros = offset_micros;
+        event.creator_slot = defer.map_or(-1, |id| {
+            let c = self.behaviors.get(id.0).unwrap();
+            self.plans.get(plan.0).unwrap().prepared.programs[c.program].source_slot
+        });
         let origin_stage = source_stage.map_or(0, |stage| stage.index());
         event.entry = origin_stage;
         let generation = self.plans.get_mut(plan.0).unwrap();
@@ -291,6 +329,9 @@ impl Runtime {
             // Pending until the callback waits or ends, so it can still edit
             // the note's groups; `release` is recomputed then.
             let _ = release;
+            let n = self.notes.get_mut(note.0).unwrap();
+            n.work = n.work.checked_add(1).expect("bounded deferred attack pin");
+            assert!(self.deferred.len() < self.deferred.capacity());
             self.deferred.push((id, note, entry));
         } else {
             self.commit_attack(note, release, snapshot, entry);
@@ -369,9 +410,15 @@ impl Runtime {
         }
         n.attack = crate::AttackStatus::Suppressed;
         let key = n.pitch.key();
-        self.silent = Some(crate::SilentNote { key, suppressed: true, ..Default::default() });
+        self.silent = Some(crate::SilentNote {
+            key,
+            suppressed: true,
+            ..Default::default()
+        });
         if let Some(log) = &mut self.selection_log {
             log.push(crate::SelectionRecord {
+                event: n.order,
+                parent_event: None,
                 at: self.now,
                 key,
                 velocity: 0.,
@@ -564,6 +611,7 @@ impl Runtime {
                     let asset = &prepared.pcm[r.sample];
                     let cursor = r
                         .cursor
+                        .cursor(&prepared.cursor_loops)
                         .with_offset(offset_micros, asset.sample_rate())
                         .with_step(step);
                     self.check_source_ready(asset, cursor, r.envelope)?;
@@ -643,6 +691,8 @@ impl Runtime {
                 && r.articulation.is_some_and(|a| a != state.articulation)
             {
                 Some(Rejection::Articulation)
+            } else if group.is_some_and(|g| !prepared.native_group_allowed(g, state)) {
+                Some(Rejection::Condition)
             } else if r.conditions.is_some_and(|i| {
                 !prepared.conditions[i].iter().all(|c| {
                     let v = state.value(c.controller);
@@ -661,6 +711,64 @@ impl Runtime {
         }
     }
 
+    /// Eligible groups at this callback's selection view. Do not advance RR or random state.
+    pub(crate) fn affected_group(
+        &self,
+        note: NoteId,
+        view: crate::groups::GroupView,
+        index: Option<i64>,
+    ) -> i64 {
+        let n = self.notes.get(note.0).unwrap();
+        let generation = self.plans.get(n.plan.0).unwrap();
+        let prepared = &generation.prepared;
+        let stage = match view {
+            crate::groups::GroupView::Note(s) | crate::groups::GroupView::Release(s) => s,
+            crate::groups::GroupView::Committed => self.note_events[note.0.index].entry,
+        };
+        let properties = generation
+            .projections
+            .get(note.0.index, stage)
+            .ok()
+            .and_then(|p| p.properties)
+            .unwrap_or(self.note_events[note.0.index].initial);
+        let snapshot = self.selections[note.0.index].snapshot;
+        let state = &self.performance_state.states[snapshot];
+        let trigger = match view {
+            crate::groups::GroupView::Release(_) => Trigger::KeyRelease,
+            _ => Trigger::Attack,
+        };
+        let range = prepared.range(properties.pitch.key(), trigger);
+        // GROUPS_AFFECTED describes native mapping before script allow/disallow edits.
+        let mask = None;
+        let mut count = 0;
+        // ponytail: bounded group/candidate scan; cache a group index if query profiling warrants it.
+        for group in 0..prepared.group_count {
+            let mut from = range.start;
+            let mut found = false;
+            while from < range.end && !found {
+                let until = prepared.group_end(from, range.end);
+                let ranges = prepared.active_ranges(from..until, state.articulation);
+                let mut matching = super::Matching::new(ranges);
+                while let Some(c) =
+                    matching.next_in_groups(prepared, state, properties.velocity, mask)
+                {
+                    if prepared.region_groups[c.region] == Some(group) {
+                        found = true;
+                        break;
+                    }
+                }
+                from = until;
+            }
+            if found {
+                if index == Some(count) {
+                    return i64::from(group);
+                }
+                count += 1;
+            }
+        }
+        if index.is_none() { count } else { -1 }
+    }
+
     /// Verdict for every region mapped to the note's key, then the round-robin take.
     fn diagnose(
         &self,
@@ -675,9 +783,15 @@ impl Runtime {
         let generation = self.plans.get(plan.0).unwrap();
         let prepared = &generation.prepared;
         let mut candidates = Vec::new();
-        self.each_verdict(note, trigger, velocity, snapshot, |index, group, verdict| {
-            candidates.push((index, prepared.candidates[index], group, verdict));
-        });
+        self.each_verdict(
+            note,
+            trigger,
+            velocity,
+            snapshot,
+            |index, group, verdict| {
+                candidates.push((index, prepared.candidates[index], group, verdict));
+            },
+        );
         // The take actually chosen per sequence is the first survivor's; others
         // of the same sequence lose to the round robin.
         let mut chosen = std::collections::BTreeMap::new();
@@ -700,10 +814,13 @@ impl Runtime {
                     region: c.region,
                     group,
                     rejected: verdict,
+                    started: None,
                 }
             })
             .collect();
         crate::SelectionRecord {
+            event: n.order,
+            parent_event: n.parent.and_then(|id| self.notes.get(id.0).map(|n| n.order)),
             at: self.now,
             key,
             velocity,
@@ -721,7 +838,10 @@ impl Runtime {
         let (begin, end) = (range.start, range.end);
         if trigger == Trigger::Attack {
             // Always on and allocation-free: the plugin's "why silent" line.
-            let mut silent = crate::SilentNote { key, ..Default::default() };
+            let mut silent = crate::SilentNote {
+                key,
+                ..Default::default()
+            };
             let mut accepted = false;
             self.each_verdict(note, trigger, velocity, snapshot, |_, _, v| match v {
                 Some(r) => silent.counts[crate::SilentNote::slot(r)] += 1,
@@ -785,25 +905,26 @@ impl Runtime {
                 let step = prepared.step(candidate, note_pitch);
                 let seed =
                     self.now ^ ((note.0.index as u64) << 40) ^ ((candidate.region as u64) << 20);
-                let held = self.held_frames(note);
+                let held = self.release_counter_frames(note).unwrap();
                 let n = self.notes.get(note.0).unwrap();
                 let inputs = crate::voice_mod::Inputs::new(
                     n,
                     self.expressions.get(n.expression.0).unwrap().value,
                     &state.controllers,
                     held,
-                    self.note_params[note.0.index].mods,
+                    &self.note_params[note.0.index].mods,
                 );
                 let start = prepared
                     .voice_modulation
                     .start_offset(candidate.region, &inputs, seed);
+                let cursor = r.cursor.cursor(&prepared.cursor_loops);
                 let cursor = if trigger == Trigger::Attack {
-                    r.cursor.with_offset(
+                    cursor.with_offset(
                         self.note_events[note.0.index].source_offset_micros,
                         prepared.pcm[r.sample].sample_rate(),
                     )
                 } else {
-                    r.cursor
+                    cursor
                 };
                 let cursor = if start != 0 {
                     cursor.skip(start)
@@ -817,12 +938,7 @@ impl Runtime {
                     self.families.get_mut(family.0).unwrap().decision = decision;
                     family
                 });
-                let envelope = self
-                    .plans
-                    .get(plan.0)
-                    .unwrap()
-                    .script
-                    .envelope(group, r.envelope);
+                let envelope = self.controlled_envelope(plan, group, r.envelope);
                 let admitted = self.admit_voice(
                     family,
                     r.sample,
@@ -846,10 +962,27 @@ impl Runtime {
                 let routed = self.plans.get(plan.0).unwrap().script.bus(group, r.bus);
                 let state = self.voices.get_mut(voice.0).unwrap();
                 state.bus = routed;
+                state.source_zone = self
+                    .plans
+                    .get(plan.0)
+                    .unwrap()
+                    .prepared
+                    .region_zone_ids
+                    .get(candidate.region)
+                    .copied()
+                    .unwrap_or(candidate.region as u32 + 1);
+                if let Some(record) = self.selection_log.as_mut().and_then(|log| log.last_mut()) {
+                    if let Some(candidate) = record.candidates.iter_mut().find(|c| c.region == candidate.region) {
+                        candidate.started = Some(crate::SelectedSource {
+                            zone: state.source_zone, sample: r.sample,
+                            frame: state.cursor.trace_position(), direction: state.cursor.trace_direction(), loops: state.cursor.trace_loops(),
+                        });
+                    }
+                }
                 if r.chain.is_some() {
                     self.plans.get_mut(plan.0).unwrap().dsp.reset(voice.0.index);
                 }
-                let held = self.held_frames(note);
+                let held = self.release_counter_frames(note).unwrap();
                 let n = self.notes.get(note.0).unwrap();
                 let controllers = &self.performance_state.states[snapshot].controllers;
                 let inputs = crate::voice_mod::Inputs::new(
@@ -857,7 +990,7 @@ impl Runtime {
                     self.expressions.get(n.expression.0).unwrap().value,
                     controllers,
                     held,
-                    self.note_params[note.0.index].mods,
+                    &self.note_params[note.0.index].mods,
                 );
                 let clock = crate::voice_mod::Clock {
                     rate: f64::from(self.rate),

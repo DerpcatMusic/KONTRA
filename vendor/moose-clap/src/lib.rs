@@ -665,6 +665,18 @@ unsafe fn data_from_plugin<P: PluginExport>(
     unsafe { &*(*plugin).plugin_data.cast::<ClapPluginData<P>>() }
 }
 
+/// Read an instance's shared params on the host main thread without borrowing
+/// the audio-owned plugin. Used by numeric diagnostic probes.
+///
+/// # Safety
+/// `plugin` must be a live instance exported by this library for exactly `P`.
+pub unsafe fn with_plugin_params<P: PluginExport, T>(
+    plugin: *const clap_plugin,
+    read: impl FnOnce(&P::Params) -> T,
+) -> T {
+    read(&unsafe { data_from_plugin::<P>(plugin) }.params_arc)
+}
+
 // ---------------------------------------------------------------------------
 // Plugin callbacks
 //
@@ -874,6 +886,7 @@ unsafe extern "C" fn clap_plugin_deactivate<P: PluginExport>(plugin: *const clap
             state::apply_state(&mut *instance, &deserialized);
             instance.republish_snapshot();
         }
+        clap_plugin_reset::<P>(plugin);
         if refresh_parameter_list(data)
             && !data.host_params.is_null()
             && !data.host.is_null()
@@ -3310,6 +3323,29 @@ unsafe fn zero_clap_output_buffers(process: *const clap_process) {
                 }
             }
         }
+    }
+}
+
+/// Test helper exercising hard resets through the exported CLAP lifecycle vtable.
+#[doc(hidden)]
+pub fn lifecycle_reset_smoke<P: PluginExport>(seed: impl Fn(&P::Params), cleared: impl Fn(&P::Params) -> bool) -> [bool; 2] {
+    unsafe extern "C" fn no_extension(_host: *const clap_host, _id: *const c_char) -> *const c_void { ptr::null() }
+    let descriptor=Box::leak(Box::new(clap_plugin_descriptor {clap_version:CLAP_VERSION,id:ptr::null(),name:ptr::null(),vendor:ptr::null(),url:ptr::null(),manual_url:ptr::null(),support_url:ptr::null(),version:ptr::null(),description:ptr::null(),features:ptr::null()}));
+    let host=Box::leak(Box::new(clap_host {clap_version:CLAP_VERSION,host_data:ptr::null_mut(),name:ptr::null(),vendor:ptr::null(),url:ptr::null(),version:ptr::null(),get_extension:Some(no_extension),request_restart:None,request_process:None,request_callback:None}));
+    // Same exported lifecycle vtable and ownership as the audio smoke below.
+    unsafe {
+        let plugin=create_plugin_instance::<P>(descriptor,host);
+        let api=&*plugin;
+        (api.init.unwrap())(plugin);
+        (api.activate.unwrap())(plugin,48000.,1,64);
+        {let instance=enter_plugin(&data_from_plugin::<P>(plugin).plugin);seed(instance.params());}
+        (api.reset.unwrap())(plugin);
+        let reset={let instance=enter_plugin(&data_from_plugin::<P>(plugin).plugin);cleared(instance.params())};
+        {let instance=enter_plugin(&data_from_plugin::<P>(plugin).plugin);seed(instance.params());}
+        (api.deactivate.unwrap())(plugin);
+        let deactivate={let instance=enter_plugin(&data_from_plugin::<P>(plugin).plugin);cleared(instance.params())};
+        (api.destroy.unwrap())(plugin);
+        [reset,deactivate]
     }
 }
 

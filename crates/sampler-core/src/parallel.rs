@@ -250,6 +250,11 @@ impl Runtime {
                     .plans
                     .get(self.notes.get(f.note.0).unwrap().plan.0)
                     .unwrap();
+                if v.chain
+                    .is_some_and(|index| !plan.prepared.voice_chains[index].tap_buses.is_empty())
+                {
+                    return false;
+                }
                 // A plan adopted before the thread count rose may lack lane caches.
                 if plan.dsp.filters.len() < lanes {
                     return false;
@@ -290,7 +295,9 @@ impl Runtime {
                     Some(bus) => dsp.buses.input(bus, frames),
                     None => &mut *output,
                 };
-                match par.preps[i].and_then(|p| p.points.map(|r| (p.modulated, r))) {
+                match par.preps[i].and_then(|p| p.points.map(|r| {
+                    (p.modulated, if v.chain.is_some() { r.without_gains() } else { r })
+                })) {
                     Some((true, ramp)) => {
                         modulation.mix(
                             i,
@@ -373,13 +380,14 @@ impl View<'_> {
         let mut cells = plan.dsp.cells.claim(i);
         let mut delay = plan.dsp.delay_samples.claim(i);
         let mut bank = plan.dsp.filters.claim(lane);
-        if let Some(filter) = prelude.and_then(|p| p.filter) {
-            bank[0].modulation = filter;
-        }
+        bank[0].modulation = prelude.and_then(|p| p.filter).unwrap_or([1.0; 2]);
+        bank[0].set_addressed_modulation(&plan.prepared.voice_modulation, &plan.modulation, i);
         let mut scratch = self.scratch.claim(i);
         let segment = &mut scratch[0][..self.frames];
         segment.fill([0.; 2]);
         let context = RenderContext {
+            trace: None,
+            amplifier: chain.and(prelude.and_then(|p| p.points)),
             delay: &mut delay[..chain.map_or(0, |c| c.delay_frames)],
             expression: expression.rendered.gains,
             parameters: &plan.dsp.parameters,
@@ -390,6 +398,7 @@ impl View<'_> {
                 convolutions: &mut [],
             },
             at: self.at,
+            feeds: &mut [],
         };
         let applied = prelude
             .and_then(|p| p.points)
@@ -408,7 +417,7 @@ impl View<'_> {
                 frames,
                 levels: guard.as_deref().map_or(&[], |l| l),
             };
-            render_source(v, &pcm, segment, chain, states, context, self.kernel)
+            render_source::<false>(v, &pcm, segment, chain, states, context, self.kernel)
         } else {
             asset.touch(self.at + self.frames as u64);
             let head = asset.try_head();
@@ -417,7 +426,7 @@ impl View<'_> {
                 asset: asset.asset_id(),
                 head: head.as_deref().map_or(&[], |h| h),
             };
-            render_source(v, &source, segment, chain, states, context, self.kernel)
+            render_source::<false>(v, &source, segment, chain, states, context, self.kernel)
         };
         if prelude.is_some_and(|p| p.points.is_some()) {
             bank[0].modulation = [1.0; 2];
@@ -520,7 +529,7 @@ impl View<'_> {
         for (k, slot) in slots.iter_mut().enumerate().take(voices.len()) {
             let v = slot.as_mut().unwrap()[0].value.as_mut().unwrap();
             let len = batch.ends[2 * k];
-            lanes::scale(&mut block, k, &crate::dsp::levels(v, len), len);
+            lanes::scale(&mut block, k, &crate::dsp::levels(v, len, 0), len);
         }
         sampler_simd::dispatch(
             #[inline(always)]
