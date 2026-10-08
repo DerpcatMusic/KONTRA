@@ -108,6 +108,8 @@ pub enum ModTarget {
     /// Actual compiled filter index, preserving the addressed source stage.
     ProcessorCutoff(u32),
     ProcessorResonance(u32),
+    /// Add normalized depth to the native filter's saved cutoff knob.
+    ProcessorNativeCutoff(u32),
     /// A per-voice low-pass, open (bypassed) at 0, closing by depth·v semitones
     /// below the open cutoff when the sum is negative.
     Tone,
@@ -773,6 +775,7 @@ impl VoiceModState {
         modulation: &VoiceModulation,
         voice: usize,
         factors: &mut [[f64; 2]],
+        normalized: impl Fn(usize) -> bool,
     ) {
         factors.fill([0.0; 2]);
         if let Some(program) = self.program(voice) {
@@ -785,11 +788,16 @@ impl VoiceModState {
                 match route.target {
                     ModTarget::ProcessorCutoff(index) => factors[index as usize][0] += value,
                     ModTarget::ProcessorResonance(index) => factors[index as usize][1] += value,
+                    ModTarget::ProcessorNativeCutoff(index) => {
+                        factors[index as usize][0] += value;
+                        factors[index as usize][1] = 1.; // Enabled even at zero depth, as in v1.
+                    }
                     _ => {}
                 }
             }
         }
-        for factor in factors {
+        for (index, factor) in factors.iter_mut().enumerate() {
+            if normalized(index) { continue; }
             let deltas = *factor;
             *factor = [1.; 2];
             // v1 0cb7a8a0:src/engine/filter.rs skips neutral modulation deltas.
@@ -996,7 +1004,8 @@ impl VoiceModState {
                 ModTarget::Resonance => resonance += d * v,
                 ModTarget::Tone => out.tone += d * v,
                 ModTarget::SampleStart => {}
-                ModTarget::ProcessorCutoff(_) | ModTarget::ProcessorResonance(_) => {}
+                ModTarget::ProcessorCutoff(_) | ModTarget::ProcessorResonance(_)
+                | ModTarget::ProcessorNativeCutoff(_) => {}
             }
         }
         let gain = (gain * 10f64.powf(decibels / 20.0)).max(0.0);
@@ -1146,7 +1155,7 @@ mod tests {
         for delta in [-24., -0., 0., 6., 20.] {
             state.processor_values[..5].copy_from_slice(&[12., -12., delta, 9., 127.]);
             state.previous_processor_values[..5].copy_from_slice(&[12., -12., delta, 3., -127.]);
-            state.fill_filter_factors(&modulation, 0, &mut actual);
+            state.fill_filter_factors(&modulation, 0, &mut actual, |_| false);
             let expected = [
                 [1., 1.],
                 [1., 10f64.powf(delta / 20.)],
@@ -1157,7 +1166,7 @@ mod tests {
                 actual.map(|v| v.map(f64::to_bits)),
                 expected.map(|v| v.map(f64::to_bits))
             );
-            state.fill_filter_factors(&modulation, 1, &mut actual);
+            state.fill_filter_factors(&modulation, 1, &mut actual, |_| false);
             assert_eq!(
                 actual, [[1.; 2]; 4],
                 "unbound voice must clear the previous voice's factors"
