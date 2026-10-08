@@ -235,7 +235,7 @@ pub use delay::Delay;
 pub(super) use reverb::Reverb;
 pub use reverb::ReverbSettings;
 pub use shaping::{Decimator, Rectifier};
-pub use svf::{StateVariableFilter, SvfMode};
+pub use svf::{OutputLowPass, StateVariableFilter, SvfMode};
 
 pub(super) enum PreparedProcessor {
     Gain(f64),

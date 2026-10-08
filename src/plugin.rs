@@ -314,6 +314,12 @@ impl Selection {
 pub struct SamplerParams {
     #[param(name = "Volume", range = "linear(-60, 6)", default = 0.0, unit = "dB", smooth = "exp(5)")]
     pub volume: FloatParam,
+    #[param(id = 0x95b8fd, name = "Attack", range = "log(0.0001, 5)", default = 0.002, unit = "s")]
+    pub attack: FloatParam,
+    #[param(id = 0x36ae7e, name = "Release", range = "log(0.001, 10)", default = 0.15, unit = "s")]
+    pub release: FloatParam,
+    #[param(id = 0x62f120, name = "Tone", range = "log(20, 20000)", default = 20000.0, unit = "Hz")]
+    pub cutoff: FloatParam,
     #[nested(base = 0)]
     pub host: automation::HostAutomation,
     // Raw MIDI stays port/channel-specific; VST3 supplies its own controller proxies.
@@ -1863,6 +1869,9 @@ fn feed_typed_input(s: &mut Dsp, p: &SamplerParams, e: &Event, cx: &mut ProcessC
     if let EventBody::ParamChange { id, value } = e.body {
         if let Some(address) = automation::HostAutomation::address(id) {
             if !s.core.host_parameter(address, value) { s.unsupported += 1; }
+        } else if [p.attack.id(), p.release.id(), p.cutoff.id()].contains(&id) {
+            p.set_plain(id, value);
+            s.core.set_performance(p.attack.raw_target(), p.release.raw_target(), p.cutoff.raw_target());
         }
         return;
     }
@@ -2071,6 +2080,8 @@ impl PluginLogic for Sampler {
             };
             let _ = shared.discard.push(retired);
         }
+        // Port v1 per-part engine defaults before any keyboard or host note starts.
+        s.core.set_performance(p.attack.raw_target(), p.release.raw_target(), p.cutoff.raw_target());
         s.core.begin_block(&BlockInfo {
             frames,
             offline: cx.process_mode.is_offline(),

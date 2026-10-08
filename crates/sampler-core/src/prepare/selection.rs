@@ -611,7 +611,7 @@ impl Runtime {
                         .cursor
                         .with_offset(offset_micros, asset.sample_rate())
                         .with_step(step);
-                    self.check_source_ready(asset, cursor, r.envelope)?;
+                    self.check_source_ready(asset, cursor, self.region_envelope(r.envelope, r.fallback_envelope))?;
                     count += 1;
                 }
                 candidate = matching.next_in_groups(prepared, state, velocity, groups);
@@ -931,7 +931,7 @@ impl Runtime {
                     self.families.get_mut(family.0).unwrap().decision = decision;
                     family
                 });
-                let envelope = self.controlled_envelope(plan, group, r.envelope);
+                let envelope = self.controlled_envelope(plan, group, self.region_envelope(r.envelope, r.fallback_envelope));
                 let admitted = self.admit_voice(
                     family,
                     r.sample,

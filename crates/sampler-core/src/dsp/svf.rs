@@ -66,6 +66,41 @@ impl StateVariableFilter {
     }
 }
 
+/// Summed-part Tone adapter for the shared one-pole, with caller-owned histories.
+pub struct OutputLowPass {
+    cache: FilterCache,
+    rate: u32,
+}
+impl OutputLowPass {
+    pub fn new(rate: u32) -> Result<Self, Error> {
+        let filter = StateVariableFilter {
+            mode: SvfMode::OnePoleLowPass,
+            cutoff_hz: Parameter::Constant(20_000f64.min(f64::from(rate) * 0.45)),
+            q: Parameter::Constant(1.),
+        }.compile(rate, &mut Vec::new())?;
+        Ok(Self { cache: FilterCache::new(filter), rate })
+    }
+
+    /// v1 Player::output: dry bypass tracks the last sample before filter enable.
+    pub fn process(&mut self, frames: &mut [crate::Frame], state: &mut [[f64; 2]; 2], cutoff: f64, at: u64) -> Result<(), Error> {
+        if !(20.0..=20_000.).contains(&cutoff) { return Err(Error::InvalidInput); }
+        if cutoff >= 20_000. {
+            if let Some(last) = frames.last() { *state = [last.map(f64::from), [0.; 2]]; }
+            return Ok(());
+        }
+        self.cache.filter.cutoff = PreparedParameter::Constant(cutoff.min(f64::from(self.rate) * 0.45));
+        for (chunk, frames) in frames.chunks_mut(BLOCK).enumerate() {
+            let mut block = [[0.; BLOCK]; 2];
+            for (n, frame) in frames.iter().enumerate() {
+                block[0][n] = f64::from(frame[0]); block[1][n] = f64::from(frame[1]);
+            }
+            self.cache.process(state, &mut block, frames.len(), &[], at + (chunk * BLOCK) as u64, None);
+            for (n, frame) in frames.iter_mut().enumerate() { *frame = [block[0][n] as f32, block[1][n] as f32]; }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct PreparedFilter {
     mode: SvfMode,
