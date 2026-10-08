@@ -72,7 +72,7 @@ impl Harness {
         h
     }
 
-    fn tick(&mut self, input: Input) {
+    pub(super) fn tick(&mut self, input: Input) {
         let root = (self.build)(&mut self.ui, &mut self.bridge);
         self.ui
             .frame(root, Some(self.size), input, 1. / 60.)
