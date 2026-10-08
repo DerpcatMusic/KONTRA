@@ -19,7 +19,7 @@ clap = ["plugin", "dep:moose-clap", "dep:clap-sys"]
 vst3 = ["plugin", "dep:moose-vst3"]
 standalone = ["plugin", "dep:moose-standalone"]
 # `audit-ui --shots`: draws views with the CPU renderer (kept out of the plugin).
-shots = ["plugin", "dep:mui"]
+shots = ["plugin", "dep:mui", "sampler-ksp/scan", "sampler-kontakt/scan", "sampler-uvi/scan"]
 
 [dependencies]
 sampler-core = { path = "crates/sampler-core" }
@@ -78,6 +78,10 @@ windows-sys = { version = "0.61.2", features = ["Wdk_System_SystemServices", "Wi
 name = "kontakto-standalone"
 path = "src/standalone.rs"
 required-features = ["standalone"]
+
+[[example]]
+name = "kontra_scan"
+required-features = ["shots"]
 
 # panic stays "unwind": a plugin must not abort the host, and the importer
 # catches parser panics. Fat LTO with one codegen unit measured no faster than

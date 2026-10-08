@@ -165,6 +165,8 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
         fuel: INIT_FUEL,
         depth: 0,
     };
+    #[cfg(feature="scan")]
+    crate::scan::present(hir.callbacks.iter().any(|c|c.kind==CallbackKind::Init),hir.callbacks.iter().any(|c|c.kind==CallbackKind::PersistenceChanged));
     // Kontakt's defaults: knobs/sliders start at their minimum when 0 is outside.
     for (index, ui) in hir.uis.iter().enumerate() {
         if let Some((lo, hi)) = declared_range(ui) {
@@ -172,7 +174,12 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
         }
     }
     if let Some(init) = hir.callbacks.iter().find(|c| c.kind == CallbackKind::Init) {
-        e.block(&init.body)?;
+        #[cfg(feature="scan")]
+        crate::scan::stage("init");
+        let r=e.block(&init.body);
+        #[cfg(feature="scan")]
+        crate::scan::phase("init",r.as_ref().err());
+        r?;
     }
     // On load Kontakt restores saved persistent values, then runs
     // `on persistence_changed`, before the interface is shown.
@@ -181,16 +188,13 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
             e.restore(VarId(i as u32));
         }
     }
-    if let Some(cb) = hir
-        .callbacks
-        .iter()
-        .find(|c| c.kind == CallbackKind::PersistenceChanged)
-        && let Err(f) = e.block(&cb.body)
-    {
-        e.warn(
-            f.span,
-            format!("on persistence_changed at load: {}", f.message),
-        );
+    if let Some(cb) = hir.callbacks.iter().find(|c| c.kind == CallbackKind::PersistenceChanged) {
+        #[cfg(feature="scan")]
+        crate::scan::stage("persistence_changed");
+        let r=e.block(&cb.body);
+        #[cfg(feature="scan")]
+        crate::scan::phase("persistence_changed",r.as_ref().err());
+        if let Err(f)=r { e.warn(f.span,format!("on persistence_changed at load: {}",f.message)); }
     }
     Ok(e.st)
 }
@@ -221,6 +225,8 @@ impl Eval<'_> {
     fn block(&mut self, body: &[Stmt]) -> Result<Flow> {
         for s in body {
             if self.fuel == 0 {
+                #[cfg(feature="scan")]
+                crate::scan::category("fuel-budget");
                 return fault(s.span, "on init exceeded its evaluation budget");
             }
             self.fuel -= 1;
@@ -255,7 +261,9 @@ impl Eval<'_> {
             StmtKind::While(cond, body) => {
                 while self.expr(cond)?.int() != 0 {
                     if self.fuel == 0 {
-                        return fault(s.span, "on init exceeded its evaluation budget");
+                        #[cfg(feature="scan")]
+                crate::scan::category("fuel-budget");
+                return fault(s.span, "on init exceeded its evaluation budget");
                     }
                     self.fuel -= 1;
                     match self.block(body)? {
@@ -713,7 +721,14 @@ impl Eval<'_> {
         Ok(())
     }
 
-    fn builtin(&mut self, builtin: Builtin, args: &[Arg], span: Span) -> Result<V> {
+    fn builtin(&mut self,builtin:Builtin,args:&[Arg],span:Span)->Result<V> {
+        let result=self.builtin_inner(builtin,args,span);
+        #[cfg(feature="scan")]
+        crate::scan::builtin(result.as_ref().err().map(|_|builtin.name()));
+        result
+    }
+
+    fn builtin_inner(&mut self, builtin: Builtin, args: &[Arg], span: Span) -> Result<V> {
         use Builtin::*;
         if let Some(Arg::SysArray(array)) = args.first() {
             // Runtime-maintained arrays are all zero while initializing.
