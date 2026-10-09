@@ -17,6 +17,8 @@ use std::{
 };
 const BUDGET: usize = 64 << 20;
 static REVISION: AtomicU64 = AtomicU64::new(0);
+// Bound aggregate transient decoder memory across rack instances.
+static DECODE: OnceLock<Mutex<()>> = OnceLock::new();
 pub(super) fn completed() {
     REVISION.fetch_add(1, Ordering::Release);
 }
@@ -93,8 +95,6 @@ impl Preparation {
                         if canceled() {
                             continue;
                         }
-                        // Bound aggregate transient decoder memory across rack instances.
-                        static DECODE: OnceLock<Mutex<()>> = OnceLock::new();
                         let Ok(_permit) = DECODE.get_or_init(|| Mutex::new(())).lock() else {
                             return;
                         };
@@ -409,6 +409,25 @@ impl Preparation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn poisoned_decode_permit_does_not_strand_later_original_art() {
+        const CHILD: &str = "KONTRA_DECODE_POISON_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "ui::picture_worker::tests::poisoned_decode_permit_does_not_strand_later_original_art", "--nocapture"])
+                .env(CHILD, "1").env("KONTRA_DISABLE_NETWORK", "1").output().unwrap();
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            return;
+        }
+        let permit = DECODE.get_or_init(|| Mutex::new(()));
+        assert!(std::panic::catch_unwind(|| {
+            let _guard = permit.lock().unwrap();
+            panic!("synthetic decoder permit fault");
+        }).is_err());
+        assert!(permit.is_poisoned());
+        prepares_one_frame_off_thread_and_releases_vector_strips();
+        assert!(!permit.is_poisoned());
+    }
     #[test]
     fn uncacheable_oversized_result_settles_without_requeueing() {
         uncacheable_results_settle(vec![BUDGET + 1]);
