@@ -249,6 +249,15 @@ impl Samples {
         })
     }
 
+    pub(crate) fn resolve_impulse(
+        &mut self,
+        parent: &Path,
+        name: &str,
+        _containers: &[String],
+    ) -> Result<Option<PathBuf>, LoadError> {
+        self.resolve(parent, name)
+    }
+
     /// Decode a sample [`Samples::resolve`] returned.
     pub fn decode(&mut self, location: &Path) -> Result<Decoded, LoadError> {
         if self.embedded.contains_key(location) {
@@ -1062,6 +1071,43 @@ mod tests {
                 .is_err()
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn impulse_resources_use_the_authored_nkr_after_direct_lookup() {
+        let root = std::env::temp_dir().join(format!("v2-impulse-nkr-{}", std::process::id()));
+        let parent = root.join("Instruments");
+        std::fs::create_dir_all(&parent).unwrap();
+        std::fs::create_dir_all(root.join("Samples")).unwrap();
+        let member = "Resources/ir/authored.wav";
+        let wav = wav_bytes(1, 1, 16, &[0, 0x40]);
+        let mut bytes = 0x5e70ac54u32.to_le_bytes().to_vec();
+        bytes.extend(0x110u16.to_le_bytes());
+        bytes.extend([0; 8]);
+        bytes.extend(1u32.to_le_bytes());
+        bytes.extend([0; 4]);
+        let record = 8 + (member.len() + 1) * 2;
+        bytes.extend((record as u16).to_le_bytes());
+        bytes.extend((22 + record as u32).to_le_bytes());
+        bytes.extend(0u16.to_le_bytes());
+        for c in member.encode_utf16().chain([0]) {
+            bytes.extend(c.to_le_bytes());
+        }
+        let mut header = [0u8; 22];
+        header[..4].copy_from_slice(&0x2ae905fau32.to_le_bytes());
+        header[4..6].copy_from_slice(&0x110u16.to_le_bytes());
+        header[10..14].copy_from_slice(&0xffu32.to_le_bytes());
+        header[14..18].copy_from_slice(&(wav.len() as u32).to_le_bytes());
+        bytes.extend(header);
+        bytes.extend(&wav);
+        let archive = root.join("Samples/authored.nkr");
+        std::fs::write(&archive, bytes).unwrap();
+        let containers = ["Samples/authored.nkr".into()];
+        let expected = root.canonicalize().unwrap().join("Samples/authored.nkr").join(member);
+        let mut samples = Samples::new(&root);
+        let resolved = samples.resolve_impulse(&parent, "C:\\old\\Resources\\ir\\authored.wav", &containers);
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(resolved.unwrap(), Some(expected));
     }
 
     fn wav_bytes(tag: u16, channels: u16, bits: u16, data: &[u8]) -> Vec<u8> {
