@@ -134,6 +134,7 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
             zoom_params.shared.libraries.settings().editor_scale()
         })
         .on_close(move || {
+            close_params.shared.editor_watch.store(usize::MAX, Ordering::Relaxed);
             close_picker.close();
             close_params.shared.libraries.flush_settings();
         })
@@ -1345,6 +1346,8 @@ pub use ir_view::uvi_ui_health;
 mod loop_audit;
 #[cfg(test)]
 mod browser_tests;
+#[cfg(test)]
+mod chrome_tests;
 #[cfg(test)]
  pub(crate) fn audit_frames(p: &Arc<SamplerParams>) -> serde_json::Value { tests::audit_frames(p) }
 #[cfg(all(test, feature = "library-access"))]

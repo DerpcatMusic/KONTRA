@@ -353,3 +353,69 @@ bytes; optimized CI peak 269,207 bytes. The CI area no-run and both explicit
 `~/.cache/kontakto-w3/ui-audit-stack/`; the evidence build includes test-only
 diagnostics omitted from this commit. The corpus count and scanner receipts
 are recorded separately under `~/.cache/kontakto-w3/native-caption/`.
+
+### Shared picture preparation admission (2026-10-09)
+
+Oversized completed results previously disappeared after clearing `pending`,
+so the same wanted key was queued again. A wanted set larger than the 64 MiB
+cache also cycled: admitting later results evicted earlier still-wanted keys.
+Preparation now determines the wanted set before admission, evicts only cold
+positive entries, and caches rejected admissions as terminal failures. A
+changed wanted set can retry those keys; the 64 MiB cache budget is unchanged.
+The scanner records the fixed `preparation-limit` resource stage rather than
+reporting an endlessly pending render as complete. This reuses v2's existing
+failed-result cache; v1 `0cb7a8a0:src/ui/perf_view.rs::fetch` likewise deduplicates
+requested picture names through `perf_asked`.
+
+Failing-first synthetic byte metadata covers one 64 MiB + 1 result and three
+individually admissible results totaling 64 MiB + 2. Both previously requeued;
+both now settle, and the latter recovers after reducing the wanted set. The
+fixtures allocate one pixel per result. Existing off-thread sparse-frame and
+vector-release behavior also passes. Shots exports `image_preparation` in view
+JSON: completed count/bytes, maximum key bytes, peak observed wanted bytes,
+oversized and aggregate-budget rejection counts, evictions/requeues, and hashed
+completed-key byte pairs. Native-package views report this legacy-worker object
+as null. W10's eleven real UVI timeouts remain **UNATTRIBUTED** pending its
+Winds Arcs Short/Attack candidate witness; zero service counters alone do not
+prove a cache-budget branch. No authored names or resource bytes are persisted.
+
+### Native evaluation uses work bounds (2026-10-09)
+
+A synthetic finite graph with an injected 300 ms scheduler pause fails the old
+250 ms elapsed guard and passes with that fatal guard removed. Its node and VM
+checkpoint counts and output text match the unpaused graph. Existing bounds are
+unchanged: initialization 500,000 checkpoints, graph 1,000,000, callback/Canvas
+100,000, 16,384 component nodes, depth 192 and 128 MiB Lua memory. Checkpoints
+mean Luau function-entry/loop-backedge interrupts, not exact instructions. The
+pathological callback loop still stops at zero remaining checkpoints; deferred
+Canvas starts a fresh callback allowance. Default and shots regressions pass,
+as does the full-editor regression on a plain 2 MiB thread. No CPU claim follows
+from these contended checks.
+
+Eight frames each from Conflux and Big Screen programs 0/1 returned successfully
+with numeric counters only. Initialization uses 3,762 checkpoints for each.
+Conflux uses 1,724 nodes and 243,351 checkpoints on its first frame, then 243,343.
+Big Screen program 0 uses 1,668 nodes and 239,813 then 239,805 checkpoints;
+program 1 uses 1,724 nodes and 243,069 then 243,061. Conflux therefore reaches
+10.52% of the node allowance and 24.34% of the graph checkpoint allowance.
+The exact first failing W11 gesture was not recorded; its candidate rerun must
+capture that frame/index before claiming full gesture acceptance. Shots now
+exports phase-local `native_graph_work` counts, including partial graph failures.
+
+W10 and W3 agree on one policy: deterministic work/node/depth/memory bounds
+protect evaluation; elapsed asset/process watchdogs are incomplete operational
+observations with preserved stage/counters, not product admission or proof of
+missing resources. UVI retains its separately measured numeric allowances.
+Receipts are under `~/.cache/kontakto-w3/native-budget/`. The immutable W10
+Winds witness is reused, not rerun: both rows are Original-OK with wanted peaks
+below 3 MiB and zero cache rejection/eviction/requeue counts. This does not
+attribute their historical deadlines to the cache guard.
+
+The scanner's existing 15-second asset-preparation watchdog now returns an
+incomplete render observation with its stage and pending count. Completed bytes,
+queue/cache counters and graph work stay in the parent view record. The shared
+exporter reports `ui=incomplete`, `paint_ok=unknown` and no paint error; a proven
+paint or Native runtime fault still wins. This changes scanner classification,
+not the asynchronous product worker or its deterministic limits. A failing-first
+pipeline check covers pending Native metrics and preservation of a real paint
+error alongside incomplete work.

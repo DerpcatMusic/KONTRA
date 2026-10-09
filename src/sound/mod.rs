@@ -332,6 +332,7 @@ pub trait Core: Send {
     /// Host input from MIDI/note port `port`, to every part listening there.
     fn event(&mut self, port: u8, event: event::Event);
     /// Input straight to one part, bypassing port and channel routing.
+    /// Part keyboard MIDI uses its MPE manager; exact host-note tuples stay intact.
     fn play(&mut self, part: usize, event: event::Event);
     /// Whether a host note on `channel` and `key` still sounds (keyboard display).
     fn key_held(&self, channel: u8, key: u8) -> bool;
@@ -350,6 +351,8 @@ pub trait Core: Send {
 
     /// The mixer: parts, output pairs and each part's tree nodes.
     fn set_mix(&mut self, mix: &mix::Mix);
+    /// Global fallback-envelope times in seconds and part-output Tone cutoff in Hz.
+    fn set_performance(&mut self, attack: f64, release: f64, cutoff: f64);
     /// Host output port of each pair, as last set by [`set_mix`](Self::set_mix).
     fn bus_ports(&self) -> [u8; BUSES];
     /// Copy `part`'s post-fader mono signal during [`render`](Self::render).

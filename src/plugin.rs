@@ -100,6 +100,8 @@ pub struct Part {
     pub group: u32,
     pub edits: crate::sound::edits::Edits,
     pub timing: crate::timing::Timing,
+    pub script_state: String,
+    pub script_state_source: String,
 }
 
 impl Default for Part {
@@ -137,6 +139,8 @@ impl Default for Part {
             group: 0,
             edits: Default::default(),
             timing: Default::default(),
+            script_state: String::new(),
+            script_state_source: String::new(),
         }
     }
 }
@@ -316,6 +320,12 @@ impl Selection {
 pub struct SamplerParams {
     #[param(name = "Volume", range = "linear(-60, 6)", default = 0.0, unit = "dB", smooth = "exp(5)")]
     pub volume: FloatParam,
+    #[param(id = 0x95b8fd, name = "Attack", range = "log(0.0001, 5)", default = 0.002, unit = "s")]
+    pub attack: FloatParam,
+    #[param(id = 0x36ae7e, name = "Release", range = "log(0.001, 10)", default = 0.15, unit = "s")]
+    pub release: FloatParam,
+    #[param(id = 0x62f120, name = "Tone", range = "log(20, 20000)", default = 20000.0, unit = "Hz")]
+    pub cutoff: FloatParam,
     #[nested(base = 0)]
     pub host: automation::HostAutomation,
     // Raw MIDI stays port/channel-specific; VST3 supplies its own controller proxies.
@@ -339,6 +349,8 @@ impl SamplerParams {
                 part.control_values = captured.control_values;
                 part.uvi_state = captured.uvi_state;
                 part.uvi_state_source = captured.uvi_state_source;
+                part.script_state = captured.script_state;
+                part.script_state_source = captured.script_state_source;
             }
         }
     }
@@ -1140,6 +1152,11 @@ impl Shared {
                     part.uvi_state_source = serde_json::to_string(&part.source()).unwrap();
                     part.uvi_state = state;
                 }
+                if let Some(state) = atoms.ingress.lock().unwrap().as_ref().and_then(|client|client.save_script_state()) {
+                    part.script_state_source = serde_json::to_string(&part.source()).unwrap();
+                    part.script_state = state;
+                }
+
             }
         }
     }
@@ -1648,7 +1665,16 @@ fn load_part(params: &SamplerParams, slot: usize, prepared: Option<crate::sound:
         },
     };
     let mut progress = |p: Progress| atoms.load_progress.store(u32::from(p.0), Ordering::Relaxed);
-    let result = state.and_then(|_| match prepared { Some(loaded) if !canceled() => Ok(loaded), Some(_) => Err(CoreError::Canceled), None => V2Loader.prepare(&request, &mut progress, &canceled) });
+    let result = state.and_then(|_| match prepared { Some(loaded) if !canceled() => Ok(loaded), Some(_) => Err(CoreError::Canceled), None => V2Loader.prepare(&request, &mut progress, &canceled) }).and_then(|mut loaded| {
+        if let Some(runtime) = loaded.part.as_mut() {
+            let saved = if part.script_state_source == serde_json::to_string(&source).unwrap() { part.script_state.as_str() } else { "" };
+            runtime.prepare_persistence(&loaded.scripts.views, saved)?;
+            for (id, value) in &mut loaded.controls {
+                if let Some(current) = runtime.persistent_control_value(*id) { *value = current; }
+            }
+        }
+        Ok(loaded)
+    });
     let mut view = shared.view.lock().unwrap();
     let v = &mut view.parts[slot];
     v.loading = false;
@@ -1876,6 +1902,9 @@ fn feed_typed_input(s: &mut Dsp, p: &SamplerParams, e: &Event, cx: &mut ProcessC
     if let EventBody::ParamChange { id, value } = e.body {
         if let Some(address) = automation::HostAutomation::address(id) {
             if !s.core.host_parameter(address, value) { s.unsupported += 1; }
+        } else if [p.attack.id(), p.release.id(), p.cutoff.id()].contains(&id) {
+            p.set_plain(id, value);
+            s.core.set_performance(p.attack.raw_target(), p.release.raw_target(), p.cutoff.raw_target());
         }
         return;
     }
@@ -2090,6 +2119,8 @@ impl PluginLogic for Sampler {
             };
             let _ = shared.discard.push(retired);
         }
+        // Port v1 per-part engine defaults before any keyboard or host note starts.
+        s.core.set_performance(p.attack.raw_target(), p.release.raw_target(), p.cutoff.raw_target());
         s.core.begin_block(&BlockInfo {
             frames,
             offline: cx.process_mode.is_offline(),
@@ -2650,7 +2681,11 @@ pub(crate) mod tests {
 #[cfg(test)]
 mod loop_audit;
 #[cfg(test)]
+mod uvi_save_tests;
+#[cfg(test)]
 mod pressed_tests;
+#[cfg(test)]
+mod persistence_tests;
 
 #[cfg(test)]
 mod settings_parity_tests {
@@ -2824,6 +2859,3 @@ mod timing_loader_tests {
         drop(s);drop(p);std::fs::remove_dir_all(dir).unwrap();
     }
 }
-
-#[cfg(test)]
-mod persistence_tests;
