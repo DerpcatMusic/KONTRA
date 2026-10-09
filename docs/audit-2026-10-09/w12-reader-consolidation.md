@@ -18,7 +18,8 @@ validation. Receipts: `/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w12-reader-extra
 
 RED: reader fixtures had 2 passed/2 failed (compact count and Boolean2 context),
 privacy failed 1/1. Final GREEN: reader fixtures 4/4, ni-file snapshot guards 5/5,
-snapshot translation 1/1 (2 native exploratory tests ignored), privacy 1/1.
+privacy 1/1. The snapshot translator filter selects one ignored native exploratory
+test and executes zero tests; translation is compile-checked by area/root no-run.
 Area no-run and plugin/shot-enabled root no-run both pass through the normal
 `kontakto-heavy` FIFO. No W6 duplicate implementation or native render was run.
 
