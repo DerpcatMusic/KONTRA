@@ -1302,6 +1302,7 @@ pub(crate) fn instrument_buses(
     ir.impulses = store;
     let chained = !(insert.processors.is_empty() && sends.is_empty() && main.processors.is_empty());
     if !chained && instrument.is_empty() {
+        ir.input_bus = None;
         return (report, Vec::new());
     }
     // Bus order: insert, sends, main, then the instrument buses.
@@ -1398,6 +1399,7 @@ pub(crate) fn instrument_buses(
     } else {
         Output::Master
     };
+    ir.input_bus = if let Output::Bus(bus) = entry { Some(bus) } else { None };
     for (bus, processors) in instrument {
         let at = BusRef(ir.buses.len());
         add(
@@ -1734,6 +1736,15 @@ mod tests {
             48_000, sampler_ksp::Limits::LIBRARY, &[], &Default::default(),
         ).unwrap();
         assert!(script.writes_effect_slots(), "shared engine writes must retain live slot lanes");
+    }
+
+    #[test]
+    fn input_tone_marker_names_instrument_insert_entry() {
+        let mut i=sampler_ir::Instrument::default(); i.groups.push(Default::default());
+        instrument_buses(&mut i,&[("instrument insert".into(),vec![slot(0x13,1.0f32.to_le_bytes().to_vec(),1.)])],&[],false,&mut |_|Err("none".into()));
+        assert_eq!(i.input_bus,Some(sampler_ir::BusRef(0)));
+        assert_eq!(i.groups[0].output,sampler_ir::Output::Bus(i.input_bus.unwrap()));
+        i.validate().unwrap();
     }
 
     #[test]

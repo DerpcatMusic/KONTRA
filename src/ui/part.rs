@@ -271,10 +271,6 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
 pub fn welcome(cx: &Cx) -> El {
     let mut lines = vec![
         title("Pick an instrument").text_weight(Weight::SEMIBOLD),
-        body("Choose a library on the left and click an instrument, or drag it onto the rack. Multis load the whole rack.")
-            .fill(secondary())
-            .lines(3)
-            .max_size(Size::new(TEXT * 35., CONTROL * 3.)),
     ];
     if !cx.view.multi_status.is_empty() {
         lines.push(caption(cx.view.multi_status.clone()).fill(secondary()).lines(2));

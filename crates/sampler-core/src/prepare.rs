@@ -464,6 +464,7 @@ pub struct Prepared {
     candidates: Box<[Candidate]>,
     pub(super) programs: Box<[super::Program]>,
     pub(super) script_initial: Box<[super::ops::ScriptInitial]>,
+    pub(super) midi_object: super::MidiObject,
     pub(super) stages: Box<[super::Stage]>,
     pub(super) note_cells: usize,
     pub(super) automation: Box<[super::AutomationBinding]>,
@@ -670,6 +671,7 @@ impl Prepared {
             candidates: candidates.into_boxed_slice(),
             programs: Box::new([]),
             script_initial: Box::new([]),
+            midi_object: super::MidiObject::default(),
             stages: Box::new([]),
             note_cells: 0,
             automation: Box::new([]),
@@ -1367,6 +1369,13 @@ impl Prepared {
     pub fn with_impulses(mut self, impulses: Vec<super::Impulse>) -> Self {
         self.impulses = impulses.into_iter().map(std::sync::Arc::new).collect();
         self
+    }
+
+    /// Mark the pre-insert sum before signal-trace preparation. Processor indices stay unchanged.
+    pub fn with_input_bus(mut self, bus: usize) -> Result<Self, Error> {
+        if bus >= self.buses.len() { return Err(Error::InvalidInput); }
+        self.buses.input = Some(bus);
+        Ok(self)
     }
 
     /// Bind each region to a bus, or directly to stereo output (`None`).

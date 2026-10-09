@@ -844,6 +844,17 @@ pub enum Outcome {
     Fault(Error),
 }
 
+/// Read-only callback progress for owner-thread diagnostics; no script values.
+pub struct BehaviorProgress<'a> {
+    pub program: usize,
+    pub pc: usize,
+    pub owner: BehaviorOwner,
+    pub yielded_at: Option<u64>,
+    pub waiting: bool,
+    pub outcome: Option<Outcome>,
+    pub callers: &'a [u32],
+}
+
 /// A callback can retain an instrument generation without inventing a MIDI note.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BehaviorOwner {
@@ -909,6 +920,8 @@ pub(super) struct Continuation {
     pub callback_id: i32,
     pub waiting: bool,
     pub disable_wait: bool,
+    pub async_result: Option<(i32,i32)>,
+    pub async_wait:Option<i32>,
 }
 
 #[derive(Clone, Copy)]
@@ -982,6 +995,8 @@ impl Runtime {
             },
             waiting: false,
             disable_wait: false,
+            async_result: None,
+            async_wait: None,
         })?);
         n.work = work;
         let begin = id.0.index * self.behavior_stride;
@@ -1075,6 +1090,8 @@ impl Runtime {
             },
             waiting: false,
             disable_wait: false,
+            async_result: None,
+            async_wait: None,
         })?);
         generation.callbacks += 1;
         let begin = id.0.index * self.behavior_stride;
@@ -1105,6 +1122,19 @@ impl Runtime {
 
     pub fn behavior_outcome(&self, id: BehaviorId) -> Result<Option<Outcome>, Error> {
         Ok(self.behaviors.get(id.0).ok_or(Error::StaleHandle)?.outcome)
+    }
+
+    /// Inspect continuations without consuming outcomes or allocating.
+    pub fn visit_behavior_progress(&self, mut visit: impl FnMut(BehaviorProgress<'_>)) {
+        let mut next = self.behaviors.first;
+        while let Some(index) = next {
+            let slot = &self.behaviors.slots[index];
+            next = slot.next;
+            let Some(c) = slot.value.as_ref() else { continue };
+            visit(BehaviorProgress { program: c.program, pc: c.pc, owner: c.owner,
+                yielded_at: c.yielded_at, waiting: c.waiting, outcome: c.outcome,
+                callers: c.frames.callers() });
+        }
     }
 
     /// Callback-local integer state remains readable through waits and completion
@@ -1236,6 +1266,7 @@ impl Runtime {
     pub(super) fn resume_behavior(&mut self, id: BehaviorId) {
         if let Some(c) = self.behaviors.get_mut(id.0) {
             c.waiting = false;
+            c.async_wait=None;
         }
         self.queue_behavior(id);
         self.drain_behavior();

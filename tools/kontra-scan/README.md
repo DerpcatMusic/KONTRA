@@ -30,7 +30,7 @@ Cache identity includes binary SHA-256, item path, container byte size and mtime
 - plays_note = yes if any measured multi program emits finite audio above 1e-5; silent if admitted but not audible for one declared/covered or explicit safe fallback note in ~0.5 seconds with CC1=100, CC11=127; no if loading failed or every program has no safe audition key. This is an audition, not DSP/reference validation.
 - load_ms = import/script/sample-bank construction wall time (v1 excludes UI render; v2 loader includes asset metadata resolution), separate from process_ms and UI renders. v2 currently reports zero for failed loads; failure duration is in process_ms. Peak RSS covers the isolated worker, including assets/UI/audio.
 
-An installed official UVI 4.0.9 reader is selected if KONTRA_UVI_READER is unset; an explicit environment selection wins. UVI IDs in items.tsv are bank.ufs::program; the adapter uses the production bank.ufs/program virtual path.
+UVI libraries use the native bank reader and need no Workstation executable, Wine setup or reader environment setting. UVI IDs in items.tsv are bank.ufs::program; the adapter uses the production bank.ufs/program virtual path.
 
 ## Outputs and checks
 
@@ -142,3 +142,18 @@ source address and ordinal; an admitted sibling is excluded from loss counts.
 `tools/kontra-gate/slot-report.py RECEIPT_DIRECTORY` aggregates both slot and
 per-target losses, with enabled/bypassed totals and engine SHA provenance.
 Keep before/after receipt directories separate for each product SHA.
+
+## Deterministic UVI audit renders
+
+Scan/shot builds accept `--audit-seed 42`, or per-job
+`KONTRA_UVI_AUDIT_SEED=42` (u32). This seeds Luau math before authored scripts,
+seeds runtime random operations/native cycles, and synchronizes the Lua owner at
+each audited virtual clock before draining generated commands. Due coroutines
+are drained at that clock, including command/event queue backpressure. Normal
+plugin builds and unseeded scan jobs keep their RNG and asynchronous scheduling.
+The seed is never a user preference or saved preset setting. Cache identity
+includes the seed, and records retain `audit_seed`. Frozen old adapters do not
+implement this protocol; do not infer seeded parity from their unchanged output.
+`uvi_audit_pcm` is a four-second numeric hash witness using the production loader;
+it never retains authored PCM. Other engine selection/modulation randomness is
+already deterministic from per-plan seeds and the virtual note/frame sequence.

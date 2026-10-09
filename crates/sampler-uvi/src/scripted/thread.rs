@@ -3,9 +3,11 @@
 //! applies the commands that come back at the next block, so a script reacts
 //! within a block or two. Offline renders use [`ScriptHost`] inline instead:
 //! a thread cannot be deterministic against a clock that runs faster than real
-//! time.
+//! time. Scan builds may explicitly opt into a seeded owner-thread barrier.
 
 use super::{HostInput, Script};
+#[cfg(feature = "scan")]
+use crate::script::diagnostics::{OwnerPhase, ScanProgress};
 use crate::script::{Command, Config, Files, Finding, FaultCounts, FaultCategory, ScriptHost, UiState};
 use sampler_ui_ir::{ControlId, Interface};
 use std::{
@@ -67,14 +69,52 @@ pub struct ScriptThread {
     thread: Option<JoinHandle<()>>,
     handles_notes: bool,
     time_ms: f64,
+    #[cfg(feature = "scan")]
+    audit: bool,
+    #[cfg(feature = "scan")]
+    audit_due: Option<f64>,
+    #[cfg(feature = "scan")]
+    audit_pending: Vec<Command>,
 }
 
 enum UiRequest {
     Edit(ControlId, f64),
     Save(mpsc::SyncSender<Result<UiState, String>>),
+    #[cfg(feature = "scan")]
+    Audit(f64, mpsc::SyncSender<(Vec<Command>, Option<f64>)>),
 }
 
-fn process_ui_requests(host: &mut ScriptHost, requests: &mpsc::Receiver<UiRequest>) {
+#[cfg(feature = "scan")]
+type AuditReply = (mpsc::SyncSender<(Vec<Command>, Option<f64>)>, Vec<Command>, Option<f64>, f64);
+
+fn process_events(host: &mut ScriptHost, incoming: &mut rtrb::Consumer<Message>) {
+    while let Ok(message) = incoming.pop() {
+        match message {
+            Message::Control { id, value } => {
+                let _ = host.set_control(id, value);
+            }
+            Message::On {
+                id,
+                key,
+                velocity,
+                at_ms,
+            } => {
+                host.set_time(at_ms);
+                host.note_on(id, key, velocity, 0);
+            }
+            Message::Off { id, key, at_ms } => {
+                host.set_time(at_ms);
+                host.note_off(id, key, 64, 0);
+            }
+            Message::In { input, at_ms } => {
+                host.set_time(at_ms);
+                Script::input(host, input);
+            }
+        }
+    }
+}
+
+fn process_ui_requests(host: &mut ScriptHost, requests: &mpsc::Receiver<UiRequest>, _incoming: &mut rtrb::Consumer<Message>, #[cfg(feature = "scan")] audit_reply: &mut Option<AuditReply>) {
     while let Ok(request) = requests.try_recv() {
         match request {
             UiRequest::Edit(id, value) => {
@@ -82,6 +122,17 @@ fn process_ui_requests(host: &mut ScriptHost, requests: &mpsc::Receiver<UiReques
             }
             UiRequest::Save(reply) => {
                 let _ = reply.send(host.save_ui_state());
+            }
+            #[cfg(feature = "scan")]
+            UiRequest::Audit(ms, reply) => {
+                // Events were published before this request; drain again to close the queue race.
+                host.owner_phase(OwnerPhase::Events);
+                process_events(host, _incoming);
+                host.owner_phase(OwnerPhase::Advance);
+                host.advance(ms);
+                *audit_reply = Some((reply, host.take_commands(), host.next_due(), ms));
+                // Complete this barrier after publication, before later UI requests.
+                break;
             }
         }
     }
@@ -104,6 +155,8 @@ impl ScriptThread {
         config: Config,
         state: Option<UiState>,
     ) -> Result<(Self, Loaded), String> {
+        #[cfg(feature = "scan")]
+        let audit = config.audit_seed.is_some();
         let (ui_send, ui_receive) = mpsc::sync_channel(256);
         let (events, mut incoming) = rtrb::RingBuffer::new(QUEUE);
         let (mut outgoing, commands) = rtrb::RingBuffer::new(QUEUE);
@@ -143,32 +196,20 @@ impl ScriptThread {
                     let mut revision = host.ui_revision();
                     let mut finding_revision = host.finding_revision();
                     while !stop.load(Ordering::Acquire) {
-                        while let Ok(message) = incoming.pop() {
-                            match message {
-                                Message::Control { id, value } => {
-                                    let _ = host.set_control(id, value);
-                                }
-                                Message::On {
-                                    id,
-                                    key,
-                                    velocity,
-                                    at_ms,
-                                } => {
-                                    host.set_time(at_ms);
-                                    host.note_on(id, key, velocity, 0);
-                                }
-                                Message::Off { id, key, at_ms } => {
-                                    host.set_time(at_ms);
-                                    host.note_off(id, key, 64, 0);
-                                }
-                                Message::In { input, at_ms } => {
-                                    host.set_time(at_ms);
-                                    Script::input(&mut host, input);
-                                }
-                            }
-                        }
-                        process_ui_requests(&mut host, &ui_receive);
+                        #[cfg(feature = "scan")]
+                        let mut audit_reply = None;
+                        #[cfg(feature = "scan")]
+                        host.owner_phase(OwnerPhase::Events);
+                        process_events(&mut host, &mut incoming);
+                        #[cfg(feature = "scan")]
+                        host.owner_phase(OwnerPhase::UiRequests);
+                        process_ui_requests(&mut host, &ui_receive, &mut incoming, #[cfg(feature = "scan")] &mut audit_reply);
+                        #[cfg(feature = "scan")]
+                        if !audit { host.advance(f64::from_bits(clock.load(Ordering::Acquire))); }
+                        #[cfg(not(feature = "scan"))]
                         host.advance(f64::from_bits(clock.load(Ordering::Acquire)));
+                        #[cfg(feature = "scan")]
+                        host.owner_phase(OwnerPhase::Publish);
                         let current = host.ui_revision();
                         if current != revision {
                             ui.publish(&host);
@@ -180,6 +221,17 @@ impl ScriptThread {
                         }
                         #[cfg(feature = "scan")]
                         { *scan.lock().unwrap() = host.scan_faults(); }
+                        #[cfg(feature = "scan")]
+                        if let Some((reply, commands, due, ms)) = audit_reply.take() {
+                            if let Some(progress) = ui.scan_progress() { progress.complete(ms); }
+                            let _ = reply.send((commands, due));
+                        }
+                        #[cfg(feature = "scan")]
+                        if audit {
+                            host.owner_phase(OwnerPhase::Parked);
+                            std::thread::park();
+                            continue;
+                        }
                         backlog.extend(host.take_commands());
                         for command in backlog.drain(..) {
                             // A full queue only delays: the audio side drains it every block.
@@ -192,7 +244,7 @@ impl ScriptThread {
                                         if stop.load(Ordering::Acquire) {
                                             return;
                                         }
-                                        process_ui_requests(&mut host, &ui_receive);
+                                        process_ui_requests(&mut host, &ui_receive, &mut incoming, #[cfg(feature = "scan")] &mut audit_reply);
                                         std::thread::sleep(POLL);
                                     }
                                 }
@@ -222,6 +274,12 @@ impl ScriptThread {
                 thread: Some(thread),
                 handles_notes,
                 time_ms: 0.0,
+                #[cfg(feature = "scan")]
+                audit,
+                #[cfg(feature = "scan")]
+                audit_due: None,
+                #[cfg(feature = "scan")]
+                audit_pending: Vec::new(),
             },
             report,
         ))
@@ -244,6 +302,45 @@ impl ScriptThread {
     #[cfg(feature = "scan")]
     pub fn scan_faults(&self) -> crate::script::ScanFaults { self.scan.lock().unwrap().clone() }
 
+    #[cfg(feature = "scan")]
+    fn synchronize_audit(&mut self, out: &mut Vec<Command>) {
+        let (reply, received) = mpsc::sync_channel(1);
+        if let Some(progress) = self.ui.scan_progress() { progress.request(self.time_ms); }
+        self.ui.edits.send(UiRequest::Audit(self.time_ms, reply)).expect("audit script owner stopped");
+        self.wake();
+        let (commands, due) = received.recv().expect("audit script owner stopped");
+        out.extend(commands);
+        self.audit_due = due;
+    }
+
+    fn enqueue(&mut self, message: Message) {
+        #[cfg(feature = "scan")]
+        {
+            let mut message = message;
+            loop {
+                match self.events.push(message) {
+                    Ok(()) => { self.wake(); return; }
+                    Err(rtrb::PushError::Full(back)) => {
+                        message = back;
+                        if self.audit {
+                            let mut commands = std::mem::take(&mut self.audit_pending);
+                            self.synchronize_audit(&mut commands);
+                            self.audit_pending = commands;
+                            continue;
+                        }
+                        self.wake();
+                        return;
+                    }
+                }
+            }
+        }
+        #[cfg(not(feature = "scan"))]
+        {
+            let _ = self.events.push(message);
+            self.wake();
+        }
+    }
+
     fn wake(&self) {
         if let Some(thread) = &self.thread {
             thread.thread().unpark();
@@ -262,41 +359,51 @@ impl Script for ScriptThread {
 
     fn note_on(&mut self, id: u64, key: u8, velocity: u8) {
         let at_ms = self.time_ms;
-        let _ = self.events.push(Message::On {
+        self.enqueue(Message::On {
             id,
             key,
             velocity,
             at_ms,
         });
-        self.wake();
     }
 
     fn note_off(&mut self, id: u64, key: u8) {
         let at_ms = self.time_ms;
-        let _ = self.events.push(Message::Off { id, key, at_ms });
-        self.wake();
+        self.enqueue(Message::Off { id, key, at_ms });
     }
 
     fn input(&mut self, input: HostInput) {
         let at_ms = self.time_ms;
-        let _ = self.events.push(Message::In { input, at_ms });
-        self.wake();
+        self.enqueue(Message::In { input, at_ms });
     }
 
     /// The thread advances itself from the clock.
-    fn advance(&mut self, _ms: f64) {}
+    fn advance(&mut self, _ms: f64) {
+        #[cfg(feature = "scan")]
+        if self.audit { self.time_ms = _ms; }
+    }
 
     fn next_due(&mut self) -> Option<f64> {
+        #[cfg(feature = "scan")]
+        if self.audit { return self.audit_due; }
         None
     }
 
     fn drain(&mut self, out: &mut Vec<Command>) {
+        #[cfg(feature = "scan")]
+        if self.audit {
+            out.append(&mut self.audit_pending);
+            self.synchronize_audit(out);
+            return;
+        }
         while let Ok(command) = self.commands.pop() {
             out.push(command);
         }
     }
 
     fn tick(&mut self, now_ms: f64) {
+        #[cfg(feature = "scan")]
+        if self.audit { self.time_ms = now_ms; }
         self.clock.store(now_ms.to_bits(), Ordering::Release);
     }
 }
@@ -314,6 +421,8 @@ impl Drop for ScriptThread {
 /// UI-thread edits and presentation snapshots. The audio side reads immutable
 /// cell identities plus atomics; Lua and the interface mutex stay on the worker.
 pub struct UiBridge {
+    #[cfg(feature = "scan")]
+    progress: Option<Arc<ScanProgress>>,
     edits: mpsc::SyncSender<UiRequest>,
     owner: std::thread::Thread,
     values: Vec<(ControlId, AtomicU64)>,
@@ -335,6 +444,8 @@ impl UiBridge {
         let mut values = ScriptHost::control_values_from(&face);
         values.sort_by_key(|(id, _)| *id);
         Self {
+            #[cfg(feature = "scan")]
+            progress: host.scan_progress(),
             edits,
             owner,
             values: values
@@ -358,6 +469,9 @@ impl UiBridge {
         self.revision.fetch_add(1, Ordering::Release);
     }
     pub fn findings(&self) -> Vec<Finding> { self.findings.lock().unwrap().clone() }
+    /// Numeric progress only; this does not acquire a UI or Lua owner lock.
+    #[cfg(feature = "scan")]
+    pub fn scan_progress(&self) -> Option<Arc<ScanProgress>> { self.progress.clone() }
     pub fn fault_counts(&self) -> FaultCounts { self.faults.lock().unwrap().clone() }
     /// Lock-free counters for the audio host's cumulative runtime report.
     pub fn runtime_faults(&self) -> (u64,u64) {

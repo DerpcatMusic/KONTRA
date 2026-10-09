@@ -79,6 +79,7 @@ pub struct Part {
     /// DAW pairs some node plays to directly, as a bit set.
     direct: u32,
     problems: RuntimeProblems,
+    pub(crate) fault_inbox: Arc<super::report::FaultInbox>,
     /// Velocity, channel, CC or program selecting articulations, when not keys.
     articulator: Option<Articulator>,
     /// The part's switching for each driver, from its instrument, and which
@@ -209,7 +210,7 @@ impl Part {
             epoch: 0,
             engine_bindings,
             waveform_sources: Default::default(),
-            ui_controls: Some(ControlIngress { client, plan, context, definitions, widgets, widget_values, captures, capturing:false, revision, pending_widgets: Default::default(), pending: Default::default(), persistence: None }),
+            ui_controls: Some(ControlIngress { client, plan, context, definitions, widgets, widget_values, captures, capturing:false, midi_requests:Default::default(), revision, pending_widgets: Default::default(), pending: Default::default(), persistence: None }),
             runtime,
             tone,
             tone_history: [[[0.; 2]; 2]; BUSES + 1],
@@ -224,6 +225,7 @@ impl Part {
             audible: vec![true; count].into_boxed_slice(),
             direct: 0,
             problems: RuntimeProblems::default(),
+            fault_inbox: Arc::new(super::report::FaultInbox::default()),
             articulator,
             drivers: Vec::new(),
             switching: 0,
@@ -376,12 +378,30 @@ pub(crate) struct ControlIngress {
     pending: std::collections::BTreeMap<sampler_ui_ir::ControlId, (u64, f64)>,
     captures:std::collections::VecDeque<Vec<sampler_core::WidgetEdit>>,
     capturing:bool,
+    midi_requests:std::collections::VecDeque<sampler_core::ControlRequest>,
     revision:u64,
     persistence: Option<Arc<persistence::Snapshot>>,
 }
 
 impl ControlIngress {
     pub(crate) fn save_script_state(&self) -> Option<String> { self.persistence.as_ref().map(|state|state.save()) }
+    pub(crate) fn service_midi(&mut self,effect:&sampler_core::Effect)->bool {
+        if effect.service!=sampler_core::MIDI_SERVICE {return false;}
+        let Some(instance)=effect.instance else {return false;};
+        let mut output=if effect.args[0]==4 {sampler_core::MidiCompletion::capture(effect.args[1] as i32,instance)}
+            else {sampler_core::MidiCompletion::empty(effect.args[1] as i32,instance)};
+        output.path=effect.text.unwrap_or_default();
+        if effect.args[0]==3 {let path=output.path;output.read_file(path.as_str());}
+        let operation=if effect.args[0]==4 {sampler_core::ControlOperation::MidiCapture(output)} else {sampler_core::ControlOperation::MidiComplete(output)};
+        self.midi_requests.push_back(sampler_core::ControlRequest {plan:effect.plan,expected_revision:None,operation});
+        self.flush_midi();true
+    }
+    fn flush_midi(&mut self) {
+        while let Some(command)=self.midi_requests.pop_front() {
+            if let Err(rejected)=self.client.submit(command) {self.midi_requests.push_front(rejected.command);break;}
+        }
+    }
+
     pub(crate) fn plan(&self) -> sampler_core::PlanId { self.plan }
     pub(crate) fn submit_host_parameter(&mut self, address: u16, value: f64) -> bool {
         if address >= super::HOST_AUTOMATION_SLOTS || !value.is_finite() || !(0.0..=1.0).contains(&value) { return false; }
@@ -486,6 +506,15 @@ impl ControlIngress {
     pub(crate) fn settle(&mut self) -> bool {
         let mut changed = false;
         while let Some(reply) = self.client.reply() {
+            if matches!(&reply.command.operation,sampler_core::ControlOperation::MidiCapture(_) | sampler_core::ControlOperation::MidiComplete(_)) {
+                if reply.result==Err(sampler_core::Error::Capacity) {self.midi_requests.push_back(reply.command);continue;}
+                if let sampler_core::ControlOperation::MidiCapture(mut output)=reply.command.operation {
+                    output.success=reply.result.is_ok() && output.save_file(output.path.as_str()).is_ok();
+                    self.midi_requests.push_back(sampler_core::ControlRequest {plan:reply.command.plan,expected_revision:None,operation:sampler_core::ControlOperation::MidiComplete(output)});
+                }
+                continue;
+            }
+
             if let Ok((_,revision))=reply.result {self.revision=revision;}
             if let sampler_core::ControlOperation::Invoke(_, write) = &reply.command.operation {
                 let id = sampler_ui_ir::ControlId(write.id.0);
@@ -515,6 +544,7 @@ impl ControlIngress {
                 crate::diagnostics::event(crate::diagnostics::LogLevel::Warning, "ui", "control_rejected", serde_json::json!({"request": reply.request, "reason": format!("{error:?}")}));
             }
         }
+        self.flush_midi();
         changed
     }
 
@@ -637,6 +667,14 @@ impl V2Core {
     }
     pub fn scan_selections(&mut self, part: usize) -> Vec<sampler_core::SelectionRecord> {
         self.parts.get_mut(part).and_then(Option::as_mut).map(|p|p.runtime.take_selection_records()).unwrap_or_default()
+    }
+    #[cfg(test)]
+    pub(crate) fn widget_gate_behavior_progress(&self, part: usize, visit: impl FnMut(sampler_core::BehaviorProgress<'_>)) {
+        if let Some(Some(part)) = self.parts.get(part) { part.runtime.visit_behavior_progress(visit); }
+    }
+    #[cfg(test)]
+    pub(crate) fn widget_gate_preemptions(&self, part: usize) -> u64 {
+        self.parts.get(part).and_then(Option::as_ref).map_or(0, |part| part.runtime.preemptions())
     }
     #[cfg(test)]
     pub(crate) fn widget_gate_values(&self, part: usize) -> std::collections::BTreeMap<sampler_ui_ir::ControlId, sampler_ui_ir::Value> {
@@ -964,8 +1002,7 @@ impl V2Core {
                 }
                 continue;
             }
-            // ponytail: post-FX until a cross-format input-bus marker admits pre-insert Tone.
-            let cutoff = self.performance.map_or(20_000., |p| p[2]);
+            let cutoff = if part.runtime.has_input_tone() { 20_000. } else { self.performance.map_or(20_000., |p| p[2]) };
             let at = part.runtime.now().saturating_sub(n as u64);
             let _ = part.tone.process(out, &mut part.tone_history[BUSES], cutoff, at);
             for pair in pairs(part.direct) {
@@ -1157,8 +1194,9 @@ impl Core for V2Core {
             held.part = ORPHAN;
         }
         if let (Some(p), Some(c)) = (prepared.as_mut(), self.mix.parts.get(part)) {
-            if let Some([attack, release, _]) = self.performance {
+            if let Some([attack, release, cutoff]) = self.performance {
                 let _ = p.runtime.set_fallback_envelope(attack, release);
+                let _ = p.runtime.set_part_tone_cutoff(cutoff);
             }
             p.apply_editor_offsets(self.mix.editor_offsets.get(part).unwrap_or(&self.empty_editor_offsets));
             p.configure(c, self.mix.articulation_routes.get(part).and_then(Option::as_ref));
@@ -1280,6 +1318,9 @@ impl Core for V2Core {
         for (index, part) in parts.iter_mut().enumerate() {
             let Some(part) = part else { continue };
             part.runtime.flush_behaviors_at(|_, _, outcome, program| {
+                if matches!(outcome, sampler_core::Outcome::Fault(_) | sampler_core::Outcome::FuelExhausted) {
+                    part.fault_inbox.record(program, outcome);
+                }
                 if let sampler_core::Outcome::Fault(error) = outcome {
                     part.problems.fault_program = program as u64 + 1;
                     part.problems.fault_error = sampler_core::Error::ALL.iter().position(|e| *e == error).unwrap_or(0) as u64;
@@ -1321,6 +1362,7 @@ impl Core for V2Core {
         self.performance = next;
         for part in self.parts.iter_mut().flatten() {
             let _ = part.runtime.set_fallback_envelope(attack, release);
+            let _ = part.runtime.set_part_tone_cutoff(cutoff);
         }
     }
 
@@ -1779,7 +1821,10 @@ fn uvi(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
     drop(span);
     let span = sampler_kontakt::audit::Span::new("uvi_lua_init");
     let rate = request.sample_rate as u32;
-    let attached = t.attach_script_with_ui_state(rate, sampler_uvi::script::Config::realtime(), request.uvi_state.clone()).map_err(|e| load(&e))?;
+    let config = sampler_uvi::script::Config::realtime();
+    #[cfg(feature = "shots")]
+    let config = sampler_uvi::script::Config { audit_seed: sampler_uvi::script::audit_seed().map_err(|e| load(&e))?, ..config };
+    let attached = t.attach_script_with_ui_state(rate, config, request.uvi_state.clone()).map_err(|e| load(&e))?;
     drop(span);
     let mut report = LoadReport::of(&t.instrument, &request.path, t.locations.len());
     if let Some(a) = &attached { report.uvi_faults = a.driver.ui().fault_counts(); }
@@ -1928,15 +1973,14 @@ impl V2Loader {
         report.decoded.script_callbacks = limits.behaviors;
         let voices = limits.voices;
         let mut waveform_sources = std::collections::HashMap::new();
-        if interfaces.iter().any(|face| face.widgets.iter().any(|w| matches!(w.kind, sampler_ui_ir::Kind::Waveform))) {
-            if let Some(inst) = &instrument {
-                for id in 1..=inst.source_indices.zones.len() {
-                    let Some(id) = u32::try_from(id).ok() else { break; };
-                    if let Some(pcm) = prepared.source_zone_region(id).and_then(|region| prepared.region_asset(region)) {
-                        waveform_sources.insert(id, super::waveform::Source {
-                            pcm: pcm.clone(), stream: stream.as_ref().and_then(|stream| stream.streamer.source(pcm.asset_id())),
-                        });
-                    }
+        // Both Original waveform widgets and the chrome Mapping view use this worker.
+        if let Some(inst) = &instrument {
+            for (zone, id) in super::waveform::source_ids(inst).into_iter().enumerate() {
+                // Lowering keeps one region per IR zone in order; IDs remain physical where present.
+                if let Some(pcm) = prepared.region_asset(zone) {
+                    waveform_sources.insert(id, super::waveform::Source {
+                        pcm: pcm.clone(), stream: stream.as_ref().and_then(|stream| stream.streamer.source(pcm.asset_id())),
+                    });
                 }
             }
         }
@@ -1944,6 +1988,11 @@ impl V2Loader {
             prepared, limits, 2, 1, limits.notes.min(INITIAL_NOTE_PARAMS),
         ).map_err(core)?;
         let mut runtime = runtime.with_threads(render_threads(request));
+        #[cfg(feature = "shots")]
+        if let Some(seed) = sampler_uvi::script::audit_seed().map_err(CoreError::Invalid)? {
+            runtime.seed_random(u64::from(seed));
+            runtime.reset_native_cycles(u64::from(seed));
+        }
         // A source whose first window is not resident starts silent and fades in
         // rather than being refused NotReady.
         runtime.set_cold_starts(true);
@@ -2048,6 +2097,29 @@ impl CoreLoader for V2Loader {
 mod tests {
     use super::*;
     use crate::sound::event::HostPattern;
+
+    #[test]
+    fn input_tone_core_skips_post_filter_for_main_and_direct_outputs() {
+        let samples: Vec<_>=(0..4096).map(|n|[(n as f32*0.17).sin()*0.5;2]).collect();
+        let region=Region {sample:0,key_low:0,key_high:127,root_key:None,velocity_low:0.,velocity_high:1.,gain:1.,envelope:Envelope::default(),playback:Playback::default()};
+        let mut filtered=samples[..128].to_vec();
+        sampler_core::OutputLowPass::new(48000).unwrap().process(&mut filtered,&mut [[0.;2];2],1000.,0).unwrap();
+        for f in &mut filtered {*f=f.map(f32::abs);}
+        for direct in [None,Some(0),Some(1),Some(2)] {
+            let buses=(0..3).map(|b|sampler_core::Bus {processors:if b==1 {vec![sampler_core::Processor::Rectify(sampler_core::Rectifier::Full)]} else {vec![]}, sends:vec![sampler_core::BusSend {bus:(b<2).then_some(b+1),gain:1.}],tail_frames:0}).collect();
+            let plan=Prepared::new(48000,vec![Pcm::new(48000,samples.clone().into_boxed_slice()).unwrap()],vec![region.clone()],128).unwrap().with_buses(buses,vec![Some(0)]).unwrap().with_input_bus(1).unwrap();
+            let limits=Limits::for_plan(&plan,4,4);
+            let mut tree=MixTree::instrument("Tone");
+            for b in 0..3 {tree.nodes.push(super::super::tree::MixNode {name:format!("bus{b}"),kind:super::super::tree::NodeKind::Bus,parent:Some(if b==2 {0} else {b+2}),inserts:vec![],sends:vec![]});}
+            let part=Box::new(Part::new(Runtime::new(plan,limits).unwrap(),tree).unwrap());
+            let mut c=V2Core::with_parts(1,48000.);let mut mix=Mix::default();mix.nodes[0]=vec![Default::default();3];
+            if let Some(bus)=direct {mix.nodes[0][bus].output=super::super::tree::NodeOutput::Pair(1);}
+            c.install(0,Some(part));c.set_mix(&mix);c.set_performance(0.002,0.15,1000.);c.play(0,Event::midi1(0x90,60,127));
+            let out=c.render(128);let pair=usize::from(direct.is_some());
+            for n in 0..128 {for channel in 0..2 {let expected=if direct==Some(0) {samples[n][channel]} else {filtered[n][channel]};assert!((out.buses[pair][channel][n]-expected).abs()<1e-6,"Core Tone route {direct:?} must filter once");}}
+            if direct.is_some() {assert!(out.buses[0].iter().flatten().all(|x|*x==0.));}
+        }
+    }
 
     #[test]
     fn v1_global_fallback_attack_and_release_reach_audio() {
@@ -2704,6 +2776,34 @@ mod tests {
         core.render(16);
         assert_eq!(core.control_value(0, k), Some(100.0), "clamped");
         assert!(!core.set_control(0, sampler_ui_ir::ControlId(7), 1.0), "no such control");
+    }
+
+    #[test]
+    fn midi_file_service_uses_the_host_control_queue_and_completes_its_source_slot() {
+        let dir=tempfile::tempdir().unwrap();let path=dir.path().join("own-fixture.mid");
+        let source=format!(r#"on init mf_set_buffer_size(1)
+          declare $event:=mf_insert_event(0,0,$MIDI_COMMAND_NOTE_ON,60,100)
+          mf_set_event_par($event,$EVENT_PAR_NOTE_LENGTH,96)
+          declare $job declare $status end on
+          on note $job:=save_midi_file("{}") end on
+          on async_complete $status:=$NI_ASYNC_EXIT_STATUS end on"#,path.display());
+        let script=sampler_ksp::compile(&source,48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
+        let plan=script.bind(Prepared::new(48000,vec![],vec![],1).unwrap()).unwrap();
+        let runtime_limits=limits(&plan).0;
+        let runtime=Runtime::new(plan,runtime_limits).unwrap();
+        let mut part=Part::new(runtime,MixTree::instrument("midi")).unwrap();
+        let mut ingress=part.ui_controls.take().unwrap();
+        part.runtime.trigger(sampler_core::Input {protocol:sampler_core::Protocol::Native,port:0,group:0,channel:0,key:60,external_id:None},60,1.).unwrap();
+        let mut effects=Vec::new();part.runtime.drain_effects(|e|{effects.push(*e);true});
+        assert_eq!(effects.len(),1);assert!(ingress.service_midi(&effects[0]));
+        while part.runtime.poll_control_update().unwrap().is_some() {}
+        ingress.settle();
+        assert!(path.exists());
+        while part.runtime.poll_control_update().unwrap().is_some() {}
+        ingress.settle();
+        assert_eq!(part.runtime.script_cell(part.runtime.active_plan(),sampler_core::ScriptInstanceId(0),2),Ok(1));
+        let mut loaded=sampler_core::MidiObject::default();loaded.insert_file(path.to_str().unwrap(),[0,0,0]).unwrap();
+        loaded.first(0);assert_eq!(loaded.apply(sampler_core::MidiAction::Get(sampler_core::midi_par::LENGTH),&[],None),Ok(96));
     }
 
     #[test]

@@ -94,3 +94,19 @@ assert load_status([{'event':'load_finished','data':{'status':'failed'}}]) == 'F
 for state in ['loaded','partial']:
     assert load_status([{'event':'load_finished','data':{'status':state}}]) == 'READY'
 print('PASS: load diagnostics fail fast for both plugin versions')
+
+from live_host import load_observation
+assert events({'key':60, 'velocity':100, 'cc1':127}, 2)[:2] == [(0,0xb0,1,127),(0,0xb0,11,127)]
+probe = dict(kind='load_probe', ready_ms=50., first_audio_wall_ms=151., first_audio_frame=48,
+             rss_before_kb=100, rss_ready_kb=200, rss_done_kb=180, hwm_kb=220, swap_kb=0)
+rows = [{'load_id':'one', 'event':'load_finished', 'data':{'status':'loaded', 'elapsed_ms':40., 'stages_ms':{'scripts':35.}}}]
+result = load_observation([probe], rows + rows)
+assert result['complete'] and result['plugin_load_ms']==40 and result['plugin_stages_ms']=={'scripts':35.}
+for change in [{'first_audio_frame':-1}, {'ready_ms':float('nan')}, {'swap_kb':None}, {'hwm_kb':1}, {'rss_before_kb':True}, {'first_audio_wall_ms':1}]:
+    assert not load_observation([dict(probe, **change)], rows)['complete']
+assert not load_observation([],rows)['complete'] and not load_observation([probe,probe],rows)['complete']
+assert load_observation([probe], rows + [dict(rows[0],load_id='two')])['plugin_load_ms'] is None
+for stages in [None, [], 'malformed']:
+    malformed = [dict(rows[0], data=dict(rows[0]['data'], stages_ms=stages))]
+    assert load_observation([probe], malformed)['plugin_stages_ms'] == {}
+print('PASS: real RSS, first-audio and load fields reject missing, silent, malformed and ambiguous evidence')

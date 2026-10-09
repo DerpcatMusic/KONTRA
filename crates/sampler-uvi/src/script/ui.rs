@@ -117,7 +117,7 @@ impl ScriptHost {
             return Err("non-finite UI value".into());
         }
         let (widget, component) = identity(id).ok_or("not a UVI control")?;
-        self.shared.arm(self.shared.config.callback);
+        self.shared.arm(self.shared.config.callback, self.shared.config.callback_work);
         let f = self
             .lua
             .globals()
@@ -134,6 +134,7 @@ impl ScriptHost {
     }
     /// Current declaration, with script-driven geometry, visibility and text.
     pub fn interface(&self) -> ui::Interface {
+        let _budget = self.shared.inspection_budget();
         let _span = sampler_kontakt::audit::Span::new("uvi_lua_ui_snapshot");
         let mut out = ui::Interface {
             source: ui::Source::FalconLua,
@@ -661,7 +662,7 @@ impl ScriptHost {
     }
     pub fn save_ui_state(&self) -> Result<UiState, String> {
         let _span = sampler_kontakt::audit::Span::new("uvi_lua_ui_save");
-        self.shared.arm(self.shared.config.load);
+        self.shared.arm(self.shared.config.load, self.shared.config.load_work);
         let mut out = UiState::default();
         let mut remaining = 65536;
         if let Ok(Value::Function(f)) = self.lua.globals().raw_get::<Value>("onSave") {
@@ -692,7 +693,7 @@ impl ScriptHost {
         Ok(out)
     }
     pub(super) fn restore_ui_values(&self, state: &UiState) -> Result<(), String> {
-        self.shared.arm(self.shared.config.load);
+        self.shared.arm(self.shared.config.load, self.shared.config.load_work);
         let list = widgets(self);
         let mut remaining = 65536;
         for (i, name, v) in &state.widgets {
@@ -727,7 +728,7 @@ impl ScriptHost {
         if let Some(value) = &state.custom
             && let Ok(Value::Function(f)) = self.lua.globals().raw_get::<Value>("onLoad")
         {
-            self.shared.arm(self.shared.config.load);
+            self.shared.arm(self.shared.config.load, self.shared.config.load_work);
             f.call::<()>(load_value(&self.lua, value, 0, &mut 65536)?)
                 .map_err(super::lua_error)?;
             self.cycle();

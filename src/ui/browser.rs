@@ -451,14 +451,23 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         top += CONTROL;
     }
     let scanning = cx.p.shared.libraries.scanning();
-    if arranged.is_empty() && scanning.is_none() {
+    let bank_problem = uvi && !catalog.bank_issues.is_empty();
+    if bank_problem {
+        let count: usize = catalog.bank_issues.iter().map(|i| i.locations.len()).sum();
+        let unsupported: usize = catalog.bank_issues.iter().filter(|i| i.unsupported).map(|i| i.locations.len()).sum();
+        let mut message = if unsupported > 0 { format!("Protected library: not supported ({unsupported} banks). ") } else { String::new() };
+        if count > unsupported { message.push_str(&format!("{} UVI banks could not be read. ", count - unsupported)); }
+        message.push_str("See Logs for the affected locations.");
+        rows.insert(0, hint(&message).id("uvi-bank-problem"));
+    }
+    if !bank_problem && arranged.is_empty() && scanning.is_none() {
         if presets.is_empty() {
             // First, so its buttons are in view above favorites and recent.
             rows.insert(0, empty_state(ui, cx));
         } else {
             rows.push(hint(if uvi { "No Falcon / UVI libraries." } else { "No Kontakt libraries." }));
         }
-    } else if sources.is_empty() {
+    } else if !bank_problem && sources.is_empty() {
         rows.push(hint("No library matches that filter."));
     }
     let reveal = chosen_at.filter(|_| cx.state.browse.reveal_source > 0);
@@ -1047,14 +1056,8 @@ fn empty_state(ui: &mut Ui, cx: &mut Cx) -> El {
     }
     col![
         body("No libraries yet").text_size(TEXT).lines(1),
-        caption(
-            "Add the folder that holds your Kontakt libraries: each library in it is found, \
-             with or without a library file. Or add one library's own folder."
-        )
-        .fill(secondary())
-        .lines(5),
-        many_el,
-        one_el,
+        many_el.tip("Add the folder that holds your libraries; each library is found, with or without a library file."),
+        one_el.tip("Add one library's own folder."),
     ]
     .gap(SPACE)
     .align(Align::Start)

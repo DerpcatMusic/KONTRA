@@ -22,6 +22,9 @@ impl Shared {
 }
 
 impl PartShared {
+    pub(crate) fn widget_gate_callback(&self, program: usize) -> String {
+        sampler_ksp::callback_of(&self.scripts.lock().unwrap().views, program)
+    }
     pub(crate) fn widget_gate_uvi_value(&self, id: sampler_ui_ir::ControlId) -> Option<f64> {
         self.scripts.lock().unwrap().uvi.as_ref().and_then(|uvi| uvi.value(id))
     }
