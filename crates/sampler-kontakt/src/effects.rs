@@ -2559,7 +2559,6 @@ mod tests {
         }
         let mut instrument = ir::Instrument {
             groups: vec![ir::Group {
-                wavetable: None,
                 start: Vec::new(),
                 name: "g".into(),
                 gain: ir::Gain::UNITY,

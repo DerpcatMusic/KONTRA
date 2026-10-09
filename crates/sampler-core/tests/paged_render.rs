@@ -151,7 +151,6 @@ fn paged_audio_matches_resident_across_rates_boundaries_loops_release_and_partit
                 Some(LoopShape::Crossfade { frames: 17 }),
             ] {
                 let playback = Playback {
-            wavetable: None,
                     loop_slots: [None; 8],
                     start: PAGE_FRAMES - 101,
                     end: Some(PAGE_FRAMES + 111),
