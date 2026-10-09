@@ -1,6 +1,6 @@
 # W10 authored UVI Lua/UI parity — READY
 
-Reference: `4bffbb18:src/uvi/host.rs`. Baseline: `b34c08e6` above diagnostic `4912e581`. This ports actual v1 behavior into the existing v2 Lua owner and shared renderer. It removes the invented constructor grid.
+Product: `44eacd756364fb3c92228d6eac0e00527ec0ffbe`. Reference: `4bffbb18:src/uvi/host.rs`. Baseline: `b34c08e6` above diagnostic `4912e581`. This ports actual v1 behavior into the existing v2 Lua owner and shared renderer. It removes the invented constructor grid.
 
 ## Executed contracts
 
