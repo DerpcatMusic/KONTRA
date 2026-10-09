@@ -344,6 +344,7 @@ def observe(host, plugin, state, plan, block, seconds, folder, version, load_pro
                 if os.environ.get('KONTRA_FAMILY_AUDIO') == '1':
                     live['family_observation'] = True
                     live['note_audio'] = [r for r in records if r.get('kind') == 'note_audio']
+                    live['family_audio'] = next((r for r in records if r.get('kind') == 'family_audio'), {})
                 views = [r for r in records if r.get('kind') == 'perf_view']
                 io = next((r for r in records if r.get('kind') == 'stream_io'), {})
                 rows = log_rows(capture.root)
