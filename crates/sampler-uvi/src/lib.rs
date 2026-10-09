@@ -6,8 +6,8 @@
 //! With the `library-access` feature, installed UVI banks open through [`Bank`]
 //! (ported from v1 `src/uvi/{access,crypto,ufs}.rs` and `src/library/uvi.rs`):
 //! reader namespaces come from the user's own installed, hash-verified UVI
-//! Workstation and a bank's content state lives only in v1's owner-only private
-//! cache; neither is embedded, logged, printed or returned in an error. Every
+//! Workstation and bank access state is kept only in memory; neither is
+//! embedded, logged, printed or returned in an error. Every
 //! module this translator does not model is listed in `Instrument::unsupported`.
 
 #[cfg(feature = "library-access")]
@@ -46,6 +46,14 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
 };
+
+/// Installed reader identity for display-cache invalidation; no bank access state.
+pub fn installed_reader() -> Option<PathBuf> {
+    #[cfg(feature = "library-access")]
+    { access::reader_path(bank::configured_reader().as_deref()).ok() }
+    #[cfg(not(feature = "library-access"))]
+    { None }
+}
 
 const XML_LIMIT: u64 = 32 << 20;
 
@@ -184,6 +192,22 @@ pub fn translate(text: &str, folder: &Path) -> Result<Uvi, Translate> {
 /// bank-relative sample path, resolved by the loader against `program_path`.
 fn translate_bank(text: &str) -> Result<(ir::Instrument, Vec<String>), Translate> {
     translate_with(text, Source::Bank)
+}
+
+#[cfg(all(test, feature = "library-access"))]
+#[test]
+fn bank_volume_sample_reaches_the_bank_resource_resolver() {
+    let xml = r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators>
+        <SamplePlayer SamplePath="$Authored.ufs/Samples/note.wav"/>
+        </Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#;
+    let (bank, locations) = translate_bank(xml).unwrap();
+    assert_eq!(bank.zones.len(), 1, "bank authority resolves its own volume");
+    assert_eq!(locations, ["$Authored.ufs/Samples/note.wav"]);
+    let disk = translate(xml, Path::new(".")).unwrap();
+    assert!(
+        disk.instrument.zones.is_empty(),
+        "a loose file has no bank authority"
+    );
 }
 
 fn translate_with(text: &str, source: Source) -> Result<(ir::Instrument, Vec<String>), Translate> {
@@ -882,7 +906,9 @@ impl Translation {
             Some("ogg") => ir::Encoding::Ogg,
             _ => ir::Encoding::Unknown,
         };
-        if relative.starts_with('$') || relative.contains(".ufs/") {
+        if matches!(&self.source, Source::Disk(_))
+            && (relative.starts_with('$') || relative.contains(".ufs/"))
+        {
             self.unsupported(at, "sample outside the program's bank", sample);
             return None;
         }
