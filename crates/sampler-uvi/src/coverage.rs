@@ -244,7 +244,7 @@ pub(super) fn native_family(program: Node) -> sampler_ir::NativeFamily {
         .enumerate()
     {
         let Some(keygroup) = player.ancestors().find(|n| n.has_tag_name("Keygroup")) else {
-            data.unknown = Some("native-player-owner-absent");
+            data.unknown = Some("native-player-owner-absent".into());
             continue;
         };
         let mut low = number(keygroup, "LowKey", 0);
@@ -260,7 +260,7 @@ pub(super) fn native_family(program: Node) -> sampler_ir::NativeFamily {
             .iter()
             .any(|v| !(0..=127).contains(v))
         {
-            data.unknown = Some("native-midi-range-invalid");
+            data.unknown = Some("native-midi-range-invalid".into());
             continue;
         }
         let options = player
@@ -286,7 +286,7 @@ pub(super) fn native_family(program: Node) -> sampler_ir::NativeFamily {
                     .attribute(name)
                     .is_some_and(|v| v.parse::<f64>().map_or(true, |n| !n.is_finite()))
                 {
-                    data.unknown = Some("native-numeric-metadata-invalid");
+                    data.unknown = Some("native-numeric-metadata-invalid".into());
                 }
             }
         }
@@ -296,11 +296,11 @@ pub(super) fn native_family(program: Node) -> sampler_ir::NativeFamily {
             .attribute("SampleStart")
             .is_some_and(|v| v.parse::<f64>().is_ok_and(|n| n != 0.0))
         {
-            data.unknown = Some("native-uvi-sample-start-law-unverified");
+            data.unknown = Some("native-uvi-sample-start-law-unverified".into());
         }
         let direction = options.map_or(0, |n| number(n, "PlayDirection", 0));
         if direction != 0 {
-            data.unknown = Some("native-uvi-direction-law-unverified");
+            data.unknown = Some("native-uvi-direction-law-unverified".into());
         }
         let mut loops = Vec::new();
         if let Some(options) = options {
@@ -311,7 +311,7 @@ pub(super) fn native_family(program: Node) -> sampler_ir::NativeFamily {
             {
                 let kind = number(l, "Type", 0);
                 if kind != 0 {
-                    data.unknown = Some("native-uvi-loop-law-unverified");
+                    data.unknown = Some("native-uvi-loop-law-unverified".into());
                 }
                 loops.push(NativeFamilyLoop {
                     slot,

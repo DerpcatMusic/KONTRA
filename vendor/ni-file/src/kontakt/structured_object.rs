@@ -77,7 +77,16 @@ impl std::convert::TryFrom<&Chunk> for StructuredObject {
 
     fn try_from(chunk: &Chunk) -> Result<Self, Self::Error> {
         let cursor = Cursor::new(&chunk.data);
-        StructuredObject::read(cursor).map_err(|e| NIFileError::context(format!("Kontakt structured chunk 0x{:04x}, body length {}", chunk.id, chunk.data.len()), e))
+        StructuredObject::read(cursor).map_err(|e| {
+            NIFileError::context(
+                format!(
+                    "Kontakt structured chunk 0x{:04x}, body length {}",
+                    chunk.id,
+                    chunk.data.len()
+                ),
+                e,
+            )
+        })
     }
 }
 

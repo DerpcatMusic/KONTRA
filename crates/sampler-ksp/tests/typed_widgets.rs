@@ -581,7 +581,10 @@ fn shared_ui_functions_use_each_widgets_owned_drop_storage() {
             .unwrap();
         });
         assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 2), Ok(1));
-        assert_eq!(rt.script_text(plan, ScriptInstanceId(0), 0), Ok(Text::new(path)));
+        assert_eq!(
+            rt.script_text(plan, ScriptInstanceId(0), 0),
+            Ok(Text::new(path))
+        );
         assert!(rt.take_fault().is_none());
     }
 }

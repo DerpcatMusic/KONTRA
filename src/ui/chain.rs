@@ -125,10 +125,16 @@ pub fn modulation(p: &Arc<crate::plugin::SamplerParams>, i: &ir::Instrument, g: 
 /// Native Kontakt group inserts live on shared zone voice chains.
 pub fn group_chains(i: &ir::Instrument, g: usize) -> Vec<ir::ChainRef> {
     let mut chains = Vec::new();
-    for reference in i.zones.iter().filter(|z| z.group == Some(ir::GroupRef(g)))
-        .filter_map(|z| z.chain).chain(i.groups.get(g).and_then(|group| group.chain))
+    for reference in i
+        .zones
+        .iter()
+        .filter(|z| z.group == Some(ir::GroupRef(g)))
+        .filter_map(|z| z.chain)
+        .chain(i.groups.get(g).and_then(|group| group.chain))
     {
-        if !chains.contains(&reference) { chains.push(reference); }
+        if !chains.contains(&reference) {
+            chains.push(reference);
+        }
     }
     chains
 }
@@ -136,8 +142,11 @@ pub fn group_chains(i: &ir::Instrument, g: usize) -> Vec<ir::ChainRef> {
 pub fn effects(i: &ir::Instrument, g: usize) -> El {
     let mut rows = Vec::new();
     let mut chain = |title: String, references: &[ir::ChainRef]| {
-        let mut processors = references.iter().filter_map(|r| i.chains.get(r.0))
-            .flat_map(|c| c.pre_amplitude.iter().chain(&c.post_amplitude)).peekable();
+        let mut processors = references
+            .iter()
+            .filter_map(|r| i.chains.get(r.0))
+            .flat_map(|c| c.pre_amplitude.iter().chain(&c.post_amplitude))
+            .peekable();
         if processors.peek().is_none() {
             return;
         }
@@ -218,7 +227,14 @@ fn detail(p: ir::Processor) -> String {
         ir::Processor::Gainer { gain, dry } => {
             format!("Gainer · {} · dry {:.0}%", db(gain), dry * 100.)
         }
-        ir::Processor::LoFi { bits, frequency, noise, color } => format!("LoFi · {bits:.1} bits · {frequency:.0} Hz · noise {noise:.2} · color {color:.2}"),
+        ir::Processor::LoFi {
+            bits,
+            frequency,
+            noise,
+            color,
+        } => format!(
+            "LoFi · {bits:.1} bits · {frequency:.0} Hz · noise {noise:.2} · color {color:.2}"
+        ),
         ir::Processor::Pan(p) => format!("Pan · {}", pan_text(p.position)),
         ir::Processor::StereoModeller { width, pan, pseudo } => format!(
             "Stereo modeller · width {:.0}% · pan {}{}",

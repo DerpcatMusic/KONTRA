@@ -65,24 +65,44 @@ fn ambient_program_load_finishes_inside_scanner_budget() {
 #[test]
 #[ignore = "largest installed AO graph; simulate slow resource preload through kontakto-heavy"]
 fn large_program_slow_preload_does_not_spend_lua_init_budget() {
-    let path = PathBuf::from("/mnt/MAIN_STORAGE/Libraries/UVI/UVI - Augmented Orchestra v1.1.2-R2R/Augmented Orchestra.ufs/Presets/00 Orchestra/01 Strings/V Strings Bartok.uvip");
+    let path = PathBuf::from(
+        "/mnt/MAIN_STORAGE/Libraries/UVI/UVI - Augmented Orchestra v1.1.2-R2R/Augmented Orchestra.ufs/Presets/00 Orchestra/01 Strings/V Strings Bartok.uvip",
+    );
     let mut translated = sampler_uvi::translate_path(&path).unwrap();
     // Production has read the XML and module bytes before arming the Lua deadline.
     std::thread::sleep(Duration::from_secs(21));
     let started = Instant::now();
-    let attached = translated.attach_script(48000, sampler_uvi::script::Config::realtime())
-        .unwrap().expect("installed preset has a script");
+    let attached = translated
+        .attach_script(48000, sampler_uvi::script::Config::realtime())
+        .unwrap()
+        .expect("installed preset has a script");
     assert!(started.elapsed() < Duration::from_secs(20));
     assert!(attached.interface.widgets.len() > 5000);
-    eprintln!("SLOW_PRELOAD init_ready_ms={} zones={} widgets={}", started.elapsed().as_millis(), translated.instrument.zones.len(), attached.interface.widgets.len());
+    eprintln!(
+        "SLOW_PRELOAD init_ready_ms={} zones={} widgets={}",
+        started.elapsed().as_millis(),
+        translated.instrument.zones.len(),
+        attached.interface.widgets.len()
+    );
 }
 
 #[test]
 fn zero_wait_cannot_refill_a_virtual_clock_work_allowance() {
     let xml = "<UVI4><Program><EventProcessors><ScriptProcessor><script>function onNote(e) while true do wait(0) end end</script></ScriptProcessor></EventProcessors></Program></UVI4>";
-    let mut h = sampler_uvi::script::ScriptHost::new(xml, (), sampler_uvi::script::Config { callback_work: 1000, ..Default::default() }).unwrap();
-    h.note_on(1,60,64,0);
+    let mut h = sampler_uvi::script::ScriptHost::new(
+        xml,
+        (),
+        sampler_uvi::script::Config {
+            callback_work: 1000,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    h.note_on(1, 60, 64, 0);
     h.advance(0.);
-    assert_eq!(h.next_due(),None);
-    assert_eq!(h.fault_counts().runtime[&sampler_uvi::script::FaultCategory::Budget],1);
+    assert_eq!(h.next_due(), None);
+    assert_eq!(
+        h.fault_counts().runtime[&sampler_uvi::script::FaultCategory::Budget],
+        1
+    );
 }

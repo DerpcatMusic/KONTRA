@@ -45,7 +45,11 @@ fn container_children_are_found_by_id_and_truncated_references_are_errors() {
         zone.0.public_data.pop();
         assert!(zone.filename_id().is_err());
     }
-    assert!(Zone(object(vec![], 0xa0, vec![0; 52])).filename_id().is_err());
+    assert!(
+        Zone(object(vec![], 0xa0, vec![0; 52]))
+            .filename_id()
+            .is_err()
+    );
 }
 
 #[test]

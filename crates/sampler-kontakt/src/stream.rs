@@ -73,7 +73,12 @@ impl Read for Bytes {
             while filled < len {
                 match file.read(&mut self.buffer[filled..])? {
                     0 => break,
-                    n => { filled += n; if self.counted { DISK_READ.fetch_add(n as u64, Ordering::Relaxed); } },
+                    n => {
+                        filled += n;
+                        if self.counted {
+                            DISK_READ.fetch_add(n as u64, Ordering::Relaxed);
+                        }
+                    }
                 }
             }
             self.buffer.truncate(filled);
@@ -103,8 +108,12 @@ impl Seek for Bytes {
 }
 
 impl symphonia::core::io::MediaSource for Bytes {
-    fn is_seekable(&self) -> bool { true }
-    fn byte_len(&self) -> Option<u64> { Some(self.source.size) }
+    fn is_seekable(&self) -> bool {
+        true
+    }
+    fn byte_len(&self) -> Option<u64> {
+        Some(self.source.size)
+    }
 }
 
 /// Fills frames from a start.
@@ -125,7 +134,9 @@ pub trait AssetSource: Send + Sync {
         None
     }
     /// Playback/reload IO, counted separately from initial loading.
-    fn open_stream(&self) -> io::Result<SampleReader> { self.open() }
+    fn open_stream(&self) -> io::Result<SampleReader> {
+        self.open()
+    }
 }
 
 impl AssetSource for Source {
@@ -135,7 +146,9 @@ impl AssetSource for Source {
     fn header(&self) -> Option<(u32, usize)> {
         self.header
     }
-    fn open_stream(&self) -> io::Result<SampleReader> { SampleReader::open_counted(self, true) }
+    fn open_stream(&self) -> io::Result<SampleReader> {
+        SampleReader::open_counted(self, true)
+    }
 }
 
 /// Random-access frames of one sample, converted exactly as a full decode.
@@ -149,7 +162,9 @@ pub struct SampleReader {
 }
 
 impl SampleReader {
-    pub fn open(source: &Source) -> io::Result<Self> { Self::open_counted(source, false) }
+    pub fn open(source: &Source) -> io::Result<Self> {
+        Self::open_counted(source, false)
+    }
 
     fn open_counted(source: &Source, counted: bool) -> io::Result<Self> {
         let invalid = |e: String| io::Error::new(io::ErrorKind::InvalidData, e);
@@ -192,9 +207,15 @@ impl SampleReader {
         }
         bytes.seek(SeekFrom::Start(0))?;
         if head.starts_with(b"FORM") {
-            let mut reader = crate::pcm::Reader::open(Box::new(bytes)).map_err(|e| invalid(format!("AIFF: {e:#}")))?;
-            let frames = usize::try_from(reader.frames).map_err(|_| invalid("AIFF too long".into()))?;
-            return Ok(Self::custom(reader.rate, frames, move |start, out| reader.read(start as u64, out).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))));
+            let mut reader = crate::pcm::Reader::open(Box::new(bytes))
+                .map_err(|e| invalid(format!("AIFF: {e:#}")))?;
+            let frames =
+                usize::try_from(reader.frames).map_err(|_| invalid("AIFF too long".into()))?;
+            return Ok(Self::custom(reader.rate, frames, move |start, out| {
+                reader
+                    .read(start as u64, out)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+            }));
         }
         let reader = ncw::NcwReader::read(bytes).map_err(|e| invalid(format!("NCW: {e}")))?;
         Ok(Self {
@@ -411,7 +432,9 @@ pub(crate) fn start_ranges(
         }
         *list = merged;
     }
-    if let Some(room) = policy.resident_budget { keep_whole(assets, &mut ranges, room); }
+    if let Some(room) = policy.resident_budget {
+        keep_whole(assets, &mut ranges, room);
+    }
     ranges
 }
 
@@ -421,7 +444,9 @@ pub(crate) fn start_ranges(
 fn keep_whole(assets: &[Pcm], ranges: &mut [Vec<Range<usize>>], room: usize) -> usize {
     let size = |i: usize| assets[i].frame_count().saturating_mul(8);
     let resident = |list: &[Range<usize>]| list.iter().map(|r| r.end - r.start).sum::<usize>() * 8;
-    let mut streamed: Vec<_> = (0..ranges.len()).filter(|&i| !ranges[i].is_empty() && resident(&ranges[i]) < size(i)).collect();
+    let mut streamed: Vec<_> = (0..ranges.len())
+        .filter(|&i| !ranges[i].is_empty() && resident(&ranges[i]) < size(i))
+        .collect();
     streamed.sort_by_key(|&i| size(i));
     let bytes: usize = ranges.iter().map(|r| resident(r)).sum();
     let mut room = room.saturating_sub(bytes);
@@ -438,7 +463,6 @@ fn keep_whole(assets: &[Pcm], ranges: &mut [Vec<Range<usize>>], room: usize) -> 
     }
     needed
 }
-
 
 /// Streamed assets before their start ranges are read.
 pub(crate) struct Opened {
@@ -730,13 +754,22 @@ fn reload(
             .sum::<usize>();
         let held = assets.iter().map(Pcm::head_bytes).sum::<usize>();
         if held.saturating_add(estimate) <= budget {
-        if let Err(error) = source.open_stream().and_then(|mut reader| load_ranges(pcm, &mut reader, ranges)) {
-            if !matches!(error.kind(), io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof | io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied) {
-                pcm.mark_cold();
+            if let Err(error) = source
+                .open_stream()
+                .and_then(|mut reader| load_ranges(pcm, &mut reader, ranges))
+            {
+                if !matches!(
+                    error.kind(),
+                    io::ErrorKind::InvalidData
+                        | io::ErrorKind::UnexpectedEof
+                        | io::ErrorKind::NotFound
+                        | io::ErrorKind::PermissionDenied
+                ) {
+                    pcm.mark_cold();
+                }
+                return Err(error);
             }
-            return Err(error);
-        }
-        count += 1;
+            count += 1;
         }
     }
     Ok(count)
@@ -781,14 +814,17 @@ fn decode(
         let asset = job.key().asset;
         let index = match readers.iter().position(|(id, ..)| *id == asset) {
             Some(i) => Some(i),
-            None => sources.get(&asset).and_then(|s| s.open_stream().ok()).map(|r| {
-                if readers.len() == OPEN_READERS {
-                    let oldest = (0..readers.len()).min_by_key(|&i| readers[i].2).unwrap();
-                    readers.swap_remove(oldest);
-                }
-                readers.push((asset, r, tick));
-                readers.len() - 1
-            }),
+            None => sources
+                .get(&asset)
+                .and_then(|s| s.open_stream().ok())
+                .map(|r| {
+                    if readers.len() == OPEN_READERS {
+                        let oldest = (0..readers.len()).min_by_key(|&i| readers[i].2).unwrap();
+                        readers.swap_remove(oldest);
+                    }
+                    readers.push((asset, r, tick));
+                    readers.len() - 1
+                }),
         };
         let result = match index {
             Some(i) => {
@@ -798,14 +834,18 @@ fn decode(
                     .1
                     .read(start, job.frames_mut())
                     .map_err(|error| match error.kind() {
-                        io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof => DecodeFailure::InvalidSamples,
+                        io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof => {
+                            DecodeFailure::InvalidSamples
+                        }
                         _ => DecodeFailure::Unavailable,
                     })
             }
             None => Err(DecodeFailure::Unavailable),
         };
         if result == Err(DecodeFailure::Unavailable) {
-            if let Some(i) = index { readers.swap_remove(i); }
+            if let Some(i) = index {
+                readers.swap_remove(i);
+            }
         }
         let completed = worker().complete(job, result);
         if let Err(rejected) = completed {
@@ -852,7 +892,7 @@ impl Streamed {
             path: "stream cache".into(),
             reason,
         };
-        let pool_span=crate::audit::Span::new("stream_page_pool");
+        let pool_span = crate::audit::Span::new("stream_page_pool");
         let (mut cache, worker) =
             StreamCache::new(report.pool_pages.max(1)).map_err(|e| invalid(e.to_string()))?;
         report.pool_bytes = cache.bytes();
@@ -947,18 +987,31 @@ mod tests {
         for limit in [None, Some(2), Some(12), Some(1000)] {
             let instrument = Instrument {
                 voice_limit: limit.map(|voices| VoiceLimit {
-                    voices, kill: Kill::Oldest, prefer_released: true,
+                    voices,
+                    kill: Kill::Oldest,
+                    prefer_released: true,
                     fade: Time::Milliseconds(0.),
                 }),
                 ..Default::default()
             };
             let streamed = crate::stream_instrument(
-                instrument, vec![], vec![], &crate::Options::default(),
-                &StreamPolicy { voices: 4, lazy: true, ..Default::default() },
-            ).unwrap();
+                instrument,
+                vec![],
+                vec![],
+                &crate::Options::default(),
+                &StreamPolicy {
+                    voices: 4,
+                    lazy: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
             let pages = usize::try_from(limit.unwrap_or(4)).unwrap().max(4) * PAGES_PER_VOICE;
             assert_eq!(streamed.report.pool_pages, pages);
-            assert_eq!(streamed.report.pool_bytes, pages * PAGE_FRAMES * size_of::<Frame>());
+            assert_eq!(
+                streamed.report.pool_bytes,
+                pages * PAGE_FRAMES * size_of::<Frame>()
+            );
             assert_eq!(streamed.cache.bytes(), streamed.report.pool_bytes);
             assert_eq!(streamed.report.head_bytes, 0);
         }
@@ -1005,17 +1058,23 @@ mod tests {
 
     #[test]
     fn v1_ram_mode_fills_small_samples_first_and_streams_over_budget() {
-        let assets: Vec<_> = [1000, 4000, 2000].into_iter().map(|n| Pcm::streamed(48000, n).unwrap()).collect();
+        let assets: Vec<_> = [1000, 4000, 2000]
+            .into_iter()
+            .map(|n| Pcm::streamed(48000, n).unwrap())
+            .collect();
         let mut heads = vec![vec![0..100]; 3];
         let needed = keep_whole(&assets, &mut heads, 24000 + 800);
         assert_eq!(heads[0], vec![0..1000]);
         assert_eq!(heads[2], vec![0..2000]);
-        assert_eq!(heads[1], vec![0..100], "large sample falls back to streaming");
+        assert_eq!(
+            heads[1],
+            vec![0..100],
+            "large sample falls back to streaming"
+        );
         assert_eq!(needed, (4000 - 100) * 8);
         keep_whole(&assets, &mut heads, usize::MAX);
         assert_eq!(heads[1], vec![0..4000]);
     }
-
 
     #[test]
     fn trimming_purges_idle_heads_until_within_budget() {
@@ -1078,10 +1137,17 @@ mod tests {
                 assert_eq!(out, full[range], "{name}");
             }
             assert!(reader.read(39999, &mut [[0.0; 2]; 2]).is_err());
-            assert_eq!(DISK_READ.load(Ordering::Relaxed), before, "loading reads do not count");
+            assert_eq!(
+                DISK_READ.load(Ordering::Relaxed),
+                before,
+                "loading reads do not count"
+            );
             let mut reader = source.open_stream().unwrap();
             reader.read(0, &mut vec![[0.; 2]; 40000]).unwrap();
-            assert!(DISK_READ.load(Ordering::Relaxed) >= before + bytes.len() as u64, "physical playback reads count");
+            assert!(
+                DISK_READ.load(Ordering::Relaxed) >= before + bytes.len() as u64,
+                "physical playback reads count"
+            );
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }

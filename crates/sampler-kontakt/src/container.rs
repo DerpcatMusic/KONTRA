@@ -71,7 +71,9 @@ pub fn read_multi(path: &Path) -> Result<Multi, LoadError> {
             {
                 continue;
             }
-            if !zone.has_sample().map_err(error)? { continue; }
+            if !zone.has_sample().map_err(error)? {
+                continue;
+            }
             let id = zone.filename_id().map_err(error)? as u32;
             let name = table.get(&id).ok_or_else(|| {
                 error(ni_file::Error::Static(

@@ -45,20 +45,44 @@ pub(super) fn gate_targets(slot: usize) -> Vec<(String, &'static str)> {
     fn visit(node: &Table, slot: u64, out: &mut Vec<(String, &'static str)>) {
         let kind = string(node, "kind");
         let modifiers = tables(node, "modifiers").unwrap_or_default();
-        let action = if kind == "TextInput" { Some("text") }
-            else if modifiers.iter().any(|m| string(m, "name") == "on_drag_gesture") { Some("drag") }
-            else if modifiers.iter().any(|m| string(m, "name") == "on_tap_gesture") { Some("click") }
-            else { None };
+        let action = if kind == "TextInput" {
+            Some("text")
+        } else if modifiers
+            .iter()
+            .any(|m| string(m, "name") == "on_drag_gesture")
+        {
+            Some("drag")
+        } else if modifiers
+            .iter()
+            .any(|m| string(m, "name") == "on_tap_gesture")
+        {
+            Some("click")
+        } else {
+            None
+        };
         if let Some(action) = action {
-            out.push((format!("nui-{slot}-{}{}", string(node, "path"), if action == "text" { "-text" } else { "" }), action));
+            out.push((
+                format!(
+                    "nui-{slot}-{}{}",
+                    string(node, "path"),
+                    if action == "text" { "-text" } else { "" }
+                ),
+                action,
+            ));
         }
-        for child in tables(node, "children").unwrap_or_default() { visit(&child, slot, out); }
+        for child in tables(node, "children").unwrap_or_default() {
+            visit(&child, slot, out);
+        }
         for modifier in modifiers {
             if let Ok(child) = modifier.get::<Table>("value") {
                 match string(&modifier, "name").as_str() {
                     "background" | "overlay" => visit(&child, slot, out),
-                    "popover" => if let Ok(content) = child.get::<Table>("content") { visit(&content, slot, out); },
-                    _ => {},
+                    "popover" => {
+                        if let Ok(content) = child.get::<Table>("content") {
+                            visit(&content, slot, out);
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -67,7 +91,11 @@ pub(super) fn gate_targets(slot: usize) -> Vec<(String, &'static str)> {
         let mut out = Vec::new();
         let id = GATE_PAINTED.with(|painted| painted.borrow().get(&slot).copied());
         if let Some(id) = id {
-            if let Some(graph) = local.borrow().get(&id).and_then(|local| local.graph.clone()) {
+            if let Some(graph) = local
+                .borrow()
+                .get(&id)
+                .and_then(|local| local.graph.clone())
+            {
                 visit(&graph, id, &mut out);
             }
         }
@@ -77,16 +105,33 @@ pub(super) fn gate_targets(slot: usize) -> Vec<(String, &'static str)> {
 static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 #[cfg(test)]
 pub(super) fn audit_memory(collect: bool) -> usize {
-    LOCAL.with(|local| local.borrow().values().map(|local| {
-        if collect { local.session.lua().gc_collect().unwrap(); }
-        local.session.lua().used_memory()
-    }).sum())
+    LOCAL.with(|local| {
+        local
+            .borrow()
+            .values()
+            .map(|local| {
+                if collect {
+                    local.session.lua().gc_collect().unwrap();
+                }
+                local.session.lua().used_memory()
+            })
+            .sum()
+    })
 }
 #[cfg(test)]
 pub(super) fn audit_assets() -> (usize, usize, usize) {
-    LOCAL.with(|local| local.borrow().values().fold((0,0,0), |(encoded,decoded,pending),local| {
-        (encoded+local.package.audit_bytes(), decoded+local.package.images.bytes(), pending+local.package.images.pending())
-    }))
+    LOCAL.with(|local| {
+        local
+            .borrow()
+            .values()
+            .fold((0, 0, 0), |(encoded, decoded, pending), local| {
+                (
+                    encoded + local.package.audit_bytes(),
+                    decoded + local.package.images.bytes(),
+                    pending + local.package.images.pending(),
+                )
+            })
+    })
 }
 pub(super) struct State {
     id: u64,
@@ -132,7 +177,8 @@ fn failure(error: &anyhow::Error, phase: &str) -> String {
             mlua::Error::SyntaxError { .. } => "NativeUI Lua syntax".into(),
             mlua::Error::ExternalError(error) => {
                 let message = error.to_string();
-                if let Some(site) = message.strip_prefix("NativeUI interrupt budget exceeded; site ")
+                if let Some(site) =
+                    message.strip_prefix("NativeUI interrupt budget exceeded; site ")
                     && site.bytes().all(|c| c.is_ascii_hexdigit() || c == b':')
                 {
                     return message;
@@ -160,9 +206,13 @@ fn failure(error: &anyhow::Error, phase: &str) -> String {
     let category = error
         .downcast_ref::<mlua::Error>()
         .map(category)
-        .unwrap_or_else(|| if error.to_string()=="NativeUI supplied font unavailable" {
-            "NativeUI font service unavailable".into()
-        } else {"NativeUI package".into()});
+        .unwrap_or_else(|| {
+            if error.to_string() == "NativeUI supplied font unavailable" {
+                "NativeUI font service unavailable".into()
+            } else {
+                "NativeUI package".into()
+            }
+        });
     format!("{phase}, {category}: {error}")
 }
 impl Drop for State {
@@ -184,7 +234,8 @@ impl State {
         let _ = std::thread::Builder::new()
             .name("native-resources".into())
             .spawn(move || {
-                let result = Package::load_cancel(&path,||cancel.load(Ordering::Acquire)).map(Arc::new);
+                let result =
+                    Package::load_cancel(&path, || cancel.load(Ordering::Acquire)).map(Arc::new);
                 if !cancel.load(Ordering::Acquire) {
                     let _ = done.send(result);
                     super::picture_worker::completed();
@@ -245,9 +296,7 @@ impl State {
         }
         LOCAL.with(|local| {
             if let Some(local) = local.borrow().get(&self.id) {
-                local
-                    .session
-                    .update_view(face, values, typed, meters);
+                local.session.update_view(face, values, typed, meters);
             }
         });
     }
@@ -269,7 +318,9 @@ impl State {
         self.graph_depth
     }
     #[cfg(feature = "shots")]
-    pub fn graph_work(&self) -> Option<(usize,usize)> { self.graph_work }
+    pub fn graph_work(&self) -> Option<(usize, usize)> {
+        self.graph_work
+    }
     #[cfg(feature = "shots")]
     pub fn failures(&self) -> Vec<String> {
         self.package
@@ -311,7 +362,9 @@ impl State {
         }
         #[cfg(all(test, feature = "shots"))]
         if let Some(diagnostic) = self.diagnostic() {
-            GATE_DIAGNOSTICS.with(|state| { state.borrow_mut().insert(_slot, diagnostic); });
+            GATE_DIAGNOSTICS.with(|state| {
+                state.borrow_mut().insert(_slot, diagnostic);
+            });
         }
         if self.failed {
             return caption("The authored native interface could not start.")
@@ -353,10 +406,14 @@ impl State {
             }
             let graph = session.render();
             #[cfg(feature = "shots")]
-            { self.graph_work = Some(session.graph_work()); }
+            {
+                self.graph_work = Some(session.graph_work());
+            }
             let graph = graph?;
             #[cfg(feature = "shots")]
-            { self.graph_depth = Some(self.graph_depth.unwrap_or(0).max(graph_depth(&graph)?)); }
+            {
+                self.graph_depth = Some(self.graph_depth.unwrap_or(0).max(graph_depth(&graph)?));
+            }
             let authored = authored_size(&graph);
             self.size = authored;
             let el = draw(
@@ -375,17 +432,28 @@ impl State {
             .named("NativeUI performance view");
             local.graph = Some(graph);
             #[cfg(all(test, feature = "shots"))]
-            GATE_PAINTED.with(|painted| { painted.borrow_mut().insert(_slot, self.id); });
+            GATE_PAINTED.with(|painted| {
+                painted.borrow_mut().insert(_slot, self.id);
+            });
             Ok(el)
         });
         match result {
             Ok(el) => el,
             Err(error) => {
                 self.failed = true;
-                self.failure = Some(failure(&error, if self.started { "NativeUI graph" } else { "NativeUI module initialization" }));
+                self.failure = Some(failure(
+                    &error,
+                    if self.started {
+                        "NativeUI graph"
+                    } else {
+                        "NativeUI module initialization"
+                    },
+                ));
                 #[cfg(all(test, feature = "shots"))]
                 if let Some(diagnostic) = self.diagnostic() {
-                    GATE_DIAGNOSTICS.with(|state| { state.borrow_mut().insert(_slot, diagnostic); });
+                    GATE_DIAGNOSTICS.with(|state| {
+                        state.borrow_mut().insert(_slot, diagnostic);
+                    });
                 }
                 caption("The authored native interface could not render.")
                     .lines(2)
@@ -629,14 +697,31 @@ fn draw(
         let (progress, depth) = match job {
             Work::Enter(node, style, depth) => {
                 nodes += 1;
-                anyhow::ensure!(nodes <= 16384 && depth <= 192, "NativeUI graph budget exceeded");
+                anyhow::ensure!(
+                    nodes <= 16384 && depth <= 192,
+                    "NativeUI graph budget exceeded"
+                );
                 let props = node.get("props")?;
                 let modifiers = tables(&node, "modifiers")?;
                 let style = draw_style(package, &modifiers, style)?;
                 let child_nodes = tables(&node, "children")?;
                 let children = child_nodes.clone();
-                work.push(Work::Build(DrawNode { node, props, modifiers, style: style.clone(), child_nodes }, depth));
-                work.extend(children.into_iter().rev().map(|child| Work::Enter(child, style.clone(), depth + 1)));
+                work.push(Work::Build(
+                    DrawNode {
+                        node,
+                        props,
+                        modifiers,
+                        style: style.clone(),
+                        child_nodes,
+                    },
+                    depth,
+                ));
+                work.extend(
+                    children
+                        .into_iter()
+                        .rev()
+                        .map(|child| Work::Enter(child, style.clone(), depth + 1)),
+                );
                 continue;
             }
             Work::Build(input, depth) => {
@@ -644,7 +729,9 @@ fn draw(
                 let frame = draw_base(ui, package, session, slot, s, drafts, input, children)?;
                 (draw_modifiers(ui, slot, s, frame, None)?, depth)
             }
-            Work::Resume(frame, depth) => (draw_modifiers(ui, slot, s, *frame, results.pop())?, depth),
+            Work::Resume(frame, depth) => {
+                (draw_modifiers(ui, slot, s, *frame, results.pop())?, depth)
+            }
         };
         match progress {
             DrawProgress::Complete(el) => results.push(el),
@@ -682,8 +769,11 @@ fn draw_style(package: &Package, modifiers: &[Table], mut style: Style) -> anyho
         }
     }
     if let Some(name) = font_name {
-        style.font=Some(package.font(&name,style.bold)
-            .ok_or_else(||anyhow::anyhow!("NativeUI supplied font unavailable"))?);
+        style.font = Some(
+            package
+                .font(&name, style.bold)
+                .ok_or_else(|| anyhow::anyhow!("NativeUI supplied font unavailable"))?,
+        );
     }
     Ok(style)
 }
@@ -697,7 +787,13 @@ fn draw_base(
     input: DrawNode,
     rendered: Vec<El>,
 ) -> anyhow::Result<DrawFrame> {
-    let DrawNode { node, props, modifiers, style, child_nodes } = input;
+    let DrawNode {
+        node,
+        props,
+        modifiers,
+        style,
+        child_nodes,
+    } = input;
     let kind = string(&node, "kind");
     let node = &node;
     let has_flexible_content = child_nodes.iter().any(|child| {
@@ -791,19 +887,34 @@ fn draw_base(
                 *value = string(&props, "text");
             }
             static FALLBACK: std::sync::OnceLock<Font> = std::sync::OnceLock::new();
-            let font=style.font.clone().unwrap_or_else(||FALLBACK.get_or_init(||Font::new(NOTO_SANS).unwrap()).clone());
-            let nominal=style.size*s;
+            let font = style.font.clone().unwrap_or_else(|| {
+                FALLBACK
+                    .get_or_init(|| Font::new(NOTO_SANS).unwrap())
+                    .clone()
+            });
+            let nominal = style.size * s;
             // Reuse v1's bounded caption fit when the host default face is
             // approximated. Authored fonts and focused editing keep their size.
-            let size=if style.font.is_none() && !ui.focused(id.as_str()) {
-                ui.scene().and_then(|scene|scene.surface(&id)).map_or(nominal,|surface| {
-                    let advance=mui_text::shape_run(std::slice::from_ref(&font),value,nominal,
-                        &[("wght",if style.bold {700.}else{400.})]).map_or(0.,|r|r.advance);
-                    if advance>0. && surface.frame.size.width>0. {
-                        nominal*(surface.frame.size.width/advance).clamp(0.75,1.)
-                    } else {nominal}
-                })
-            } else {nominal};
+            let size = if style.font.is_none() && !ui.focused(id.as_str()) {
+                ui.scene()
+                    .and_then(|scene| scene.surface(&id))
+                    .map_or(nominal, |surface| {
+                        let advance = mui_text::shape_run(
+                            std::slice::from_ref(&font),
+                            value,
+                            nominal,
+                            &[("wght", if style.bold { 700. } else { 400. })],
+                        )
+                        .map_or(0., |r| r.advance);
+                        if advance > 0. && surface.frame.size.width > 0. {
+                            nominal * (surface.frame.size.width / advance).clamp(0.75, 1.)
+                        } else {
+                            nominal
+                        }
+                    })
+            } else {
+                nominal
+            };
             let field = text_edit(ui, id, value, TextOpts::default());
             if field.changed.changed
                 && let Ok(f) = props.get::<Function>("on_change")
@@ -819,7 +930,11 @@ fn draw_base(
                 .el
                 .text_size(size)
                 .font(font.clone())
-                .text_weight(if style.bold { mui_text::Weight::BOLD } else { mui_text::Weight::REGULAR })
+                .text_weight(if style.bold {
+                    mui_text::Weight::BOLD
+                } else {
+                    mui_text::Weight::REGULAR
+                })
                 .fill(Fill::None)
                 .pad(0)
                 .radius(0.);
@@ -828,9 +943,13 @@ fn draw_base(
             if let Some(edit) = &mut el.payload_mut().extras_mut().editable_text {
                 edit.insets = [0., 0.];
             }
-            let height=mui_text::shape_run(std::slice::from_ref(&font), "M", size,
-                &[("wght", if style.bold { 700. } else { 400. })])
-                .map_or(size*1.25,|run|run.line_height);
+            let height = mui_text::shape_run(
+                std::slice::from_ref(&font),
+                "M",
+                size,
+                &[("wght", if style.bold { 700. } else { 400. })],
+            )
+            .map_or(size * 1.25, |run| run.line_height);
             el.h(height)
         }
         "Rectangle" => block(Len::Auto, Len::Auto)
@@ -911,7 +1030,15 @@ fn draw_base(
         flex = (true, true);
     }
     el = expand(el, flex);
-    Ok(DrawFrame { node: node.clone(), props, modifiers: modifiers.into(), style, el, flex, fixed: (false, false) })
+    Ok(DrawFrame {
+        node: node.clone(),
+        props,
+        modifiers: modifiers.into(),
+        style,
+        el,
+        flex,
+        fixed: (false, false),
+    })
 }
 fn draw_modifiers(
     ui: &mut Ui,
@@ -920,7 +1047,15 @@ fn draw_modifiers(
     frame: DrawFrame,
     mut subtree: Option<El>,
 ) -> anyhow::Result<DrawProgress> {
-    let DrawFrame { node, props, style, mut modifiers, mut el, mut flex, mut fixed } = frame;
+    let DrawFrame {
+        node,
+        props,
+        style,
+        mut modifiers,
+        mut el,
+        mut flex,
+        mut fixed,
+    } = frame;
     let kind = string(&node, "kind");
     let container = matches!(kind.as_str(), "HStack" | "VStack" | "ZStack");
     while let Some(m) = modifiers.pop_front() {
@@ -1053,9 +1188,18 @@ fn draw_modifiers(
                     let (x, y) = align(&string(&m, "alignment"));
                     let Some(mut background) = subtree.take() else {
                         modifiers.push_front(m);
-                        return Ok(DrawProgress::Child(Box::new(DrawFrame {
-                            node, props, style, modifiers, el, flex, fixed,
-                        }), t));
+                        return Ok(DrawProgress::Child(
+                            Box::new(DrawFrame {
+                                node,
+                                props,
+                                style,
+                                modifiers,
+                                el,
+                                flex,
+                                fixed,
+                            }),
+                            t,
+                        ));
                     };
                     if !string(&m, "alignment").is_empty() {
                         background = background.anchor(x, y);
@@ -1118,15 +1262,21 @@ fn draw_modifiers(
                     };
                     let Some(popup) = subtree.take() else {
                         modifiers.push_front(m);
-                        return Ok(DrawProgress::Child(Box::new(DrawFrame {
-                            node, props, style, modifiers, el, flex, fixed,
-                        }), content));
+                        return Ok(DrawProgress::Child(
+                            Box::new(DrawFrame {
+                                node,
+                                props,
+                                style,
+                                modifiers,
+                                el,
+                                flex,
+                                fixed,
+                            }),
+                            content,
+                        ));
                     };
                     ui.capture_popup_wheel(popup_id.clone());
-                    let popup = popup.id(popup_id)
-                    .tracks_pointer()
-                    .float()
-                    .at(x, y);
+                    let popup = popup.id(popup_id).tracks_pointer().float().at(x, y);
                     el = stack([el, popup]);
                 }
             }
@@ -1376,23 +1526,35 @@ mod tests {
             end
         "#).eval().unwrap();
         let graph: Table = make.call(false).unwrap();
-        assert_eq!(flexibility(&graph), (true,true));
+        assert_eq!(flexibility(&graph), (true, true));
         let calls = crate::plugin::tests::allocations(|| {
-            for _ in 0..32 { assert_eq!(flexibility(&graph), (true,true)); }
+            for _ in 0..32 {
+                assert_eq!(flexibility(&graph), (true, true));
+            }
         });
-        assert!(calls < 512, "repeated layout queries made {calls} allocator calls");
+        assert!(
+            calls < 512,
+            "repeated layout queries made {calls} allocator calls"
+        );
         let fresh: Table = make.call(true).unwrap();
-        assert_eq!(flexibility(&fresh), (false,false));
+        assert_eq!(flexibility(&fresh), (false, false));
     }
 
     #[test]
     fn native_popover_keeps_its_geometry_and_pointer_target_while_capturing_wheel() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("Resources/native_ui")).unwrap();
-        std::fs::write(dir.path().join("Resources/native_ui/main.nui"), b"return function() return nil end").unwrap();
+        std::fs::write(
+            dir.path().join("Resources/native_ui/main.nui"),
+            b"return function() return nil end",
+        )
+        .unwrap();
         let package = Arc::new(Package::load(&dir.path().join("fixture.nki")).unwrap());
         let session = Session::new(package.clone(), "main", vec![]).unwrap();
-        let graph: Table = session.lua().load(r#"return {
+        let graph: Table = session
+            .lua()
+            .load(
+                r#"return {
             kind="Rectangle",path="root",props={},children={},modifiers={
                 {name="frame",value={width=80,height=24}},
                 {name="popover",value={direction="down",spacing=4,content={
@@ -1401,24 +1563,66 @@ mod tests {
                     }
                 }}}
             }
-        }"#).eval().unwrap();
+        }"#,
+            )
+            .eval()
+            .unwrap();
         let mut ui = super::super::theme::ui();
         let tick = |ui: &mut Ui, input: Input| {
-            let el = draw(ui, &graph, &package, &session, 0, 1., Style::default(), &mut HashMap::new()).unwrap();
-            ui.frame(stack![
-                col![block(300.,900.)].size(300.,200.).scroll().id("background"),
-                el.at(100.,30.)
-            ].size(300.,200.), None, input, 1./60.).unwrap();
+            let el = draw(
+                ui,
+                &graph,
+                &package,
+                &session,
+                0,
+                1.,
+                Style::default(),
+                &mut HashMap::new(),
+            )
+            .unwrap();
+            ui.frame(
+                stack![
+                    col![block(300., 900.)]
+                        .size(300., 200.)
+                        .scroll()
+                        .id("background"),
+                    el.at(100., 30.)
+                ]
+                .size(300., 200.),
+                None,
+                input,
+                1. / 60.,
+            )
+            .unwrap();
         };
-        for _ in 0..4 { tick(&mut ui, Input::default()); }
-        let popup = ui.scene().unwrap().surface("nui-0-root-popup").unwrap().frame;
-        assert_eq!(popup.size, Size::new(137.,83.));
-        let at = Point::new(popup.x+10.,popup.y+10.);
-        tick(&mut ui, Input { pointer: PointerInput {pos: Some(at), ..Default::default()},
-            wheel: Vec2::new(0.,60.), ..Default::default() });
-        assert!(ui.get("nui-0-root-popup").hovered, "the authored popup keeps its pointer target");
+        for _ in 0..4 {
+            tick(&mut ui, Input::default());
+        }
+        let popup = ui
+            .scene()
+            .unwrap()
+            .surface("nui-0-root-popup")
+            .unwrap()
+            .frame;
+        assert_eq!(popup.size, Size::new(137., 83.));
+        let at = Point::new(popup.x + 10., popup.y + 10.);
+        tick(
+            &mut ui,
+            Input {
+                pointer: PointerInput {
+                    pos: Some(at),
+                    ..Default::default()
+                },
+                wheel: Vec2::new(0., 60.),
+                ..Default::default()
+            },
+        );
+        assert!(
+            ui.get("nui-0-root-popup").hovered,
+            "the authored popup keeps its pointer target"
+        );
         assert_eq!(ui.wheel("background"), None);
-        assert_eq!(ui.scroll("background"), [0.,0.]);
+        assert_eq!(ui.scroll("background"), [0., 0.]);
     }
 
     #[cfg(feature = "shots")]
@@ -1426,75 +1630,151 @@ mod tests {
     fn widget_gate_uses_the_painted_session_namespace() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("Resources/native_ui")).unwrap();
-        std::fs::write(dir.path().join("Resources/native_ui/main.nui"), b"return function() return nil end").unwrap();
+        std::fs::write(
+            dir.path().join("Resources/native_ui/main.nui"),
+            b"return function() return nil end",
+        )
+        .unwrap();
         let package = Arc::new(Package::load(&dir.path().join("fixture.nki")).unwrap());
         let session = Session::new(package.clone(), "main", vec![]).unwrap();
         let graph = session.lua().create_table().unwrap();
-        graph.set("kind", "TextInput").unwrap(); graph.set("path", "root").unwrap();
-        for field in ["children", "modifiers"] { graph.set(field, session.lua().create_table().unwrap()).unwrap(); }
+        graph.set("kind", "TextInput").unwrap();
+        graph.set("path", "root").unwrap();
+        for field in ["children", "modifiers"] {
+            graph
+                .set(field, session.lua().create_table().unwrap())
+                .unwrap();
+        }
         let lifetime = Arc::new(AtomicBool::new(false));
-        LOCAL.with(|local| { local.borrow_mut().insert(97, Local {
-            package: package.clone(), lifetime: Arc::downgrade(&lifetime), session, graph: Some(graph), hovered: Default::default(), drafts: Default::default(),
-        }); });
-        GATE_PAINTED.with(|painted| { painted.borrow_mut().insert(0, 97); });
+        LOCAL.with(|local| {
+            local.borrow_mut().insert(
+                97,
+                Local {
+                    package: package.clone(),
+                    lifetime: Arc::downgrade(&lifetime),
+                    session,
+                    graph: Some(graph),
+                    hovered: Default::default(),
+                    drafts: Default::default(),
+                },
+            );
+        });
+        GATE_PAINTED.with(|painted| {
+            painted.borrow_mut().insert(0, 97);
+        });
         assert_eq!(gate_targets(0), vec![("nui-97-root-text".into(), "text")]);
         assert!(gate_targets(1).is_empty());
-        gate_clear(); assert!(gate_targets(0).is_empty());
-        LOCAL.with(|local| { local.borrow_mut().remove(&97); });
+        gate_clear();
+        assert!(gate_targets(0).is_empty());
+        LOCAL.with(|local| {
+            local.borrow_mut().remove(&97);
+        });
     }
 
     #[test]
     fn scheduler_delay_does_not_reject_bounded_native_graph_work() {
-        let dir=std::env::temp_dir().join(format!("kontra-native-work-budget-{}",std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("kontra-native-work-budget-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("Resources/native_ui")).unwrap();
-        std::fs::write(dir.join("Resources/native_ui/main.nui"),br#"
+        std::fs::write(
+            dir.join("Resources/native_ui/main.nui"),
+            br#"
             local ui=require('native_ui')
             return function()
                 __audit_pause()
                 local sum=0;for i=1,2000 do sum=sum+i end
                 return @ui.Text {text=tostring(sum)}
             end
-        "#).unwrap();
-        let package=Arc::new(Package::load(&dir.join("fixture.nki")).unwrap());
-        let session=Session::new(package,"main",vec![]).unwrap();
-        let pause=Arc::new(AtomicBool::new(false));let callback_pause=pause.clone();
-        session.lua().globals().set("__audit_pause",session.lua().create_function(move |_,()| {
-            if callback_pause.load(Ordering::Relaxed) {std::thread::sleep(std::time::Duration::from_millis(300));}
-            Ok(())
-        }).unwrap()).unwrap();
-        let graph=session.render().unwrap();let work=session.graph_work();
-        pause.store(true,Ordering::Relaxed);
-        let delayed=session.render().expect("scheduler delay must not invalidate bounded graph work");
-        assert_eq!(session.graph_work(),work,"work counts must be independent of scheduler delay");
-        assert_eq!(string(&graph.get::<Table>("props").unwrap(),"text"),string(&delayed.get::<Table>("props").unwrap(),"text"));
-        assert!(work.0>0 && work.0<=16384 && work.1>0 && work.1<1_000_000);
+        "#,
+        )
+        .unwrap();
+        let package = Arc::new(Package::load(&dir.join("fixture.nki")).unwrap());
+        let session = Session::new(package, "main", vec![]).unwrap();
+        let pause = Arc::new(AtomicBool::new(false));
+        let callback_pause = pause.clone();
+        session
+            .lua()
+            .globals()
+            .set(
+                "__audit_pause",
+                session
+                    .lua()
+                    .create_function(move |_, ()| {
+                        if callback_pause.load(Ordering::Relaxed) {
+                            std::thread::sleep(std::time::Duration::from_millis(300));
+                        }
+                        Ok(())
+                    })
+                    .unwrap(),
+            )
+            .unwrap();
+        let graph = session.render().unwrap();
+        let work = session.graph_work();
+        pause.store(true, Ordering::Relaxed);
+        let delayed = session
+            .render()
+            .expect("scheduler delay must not invalidate bounded graph work");
+        assert_eq!(
+            session.graph_work(),
+            work,
+            "work counts must be independent of scheduler delay"
+        );
+        assert_eq!(
+            string(&graph.get::<Table>("props").unwrap(), "text"),
+            string(&delayed.get::<Table>("props").unwrap(), "text")
+        );
+        assert!(work.0 > 0 && work.0 <= 16384 && work.1 > 0 && work.1 < 1_000_000);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn deferred_canvas_gets_a_fresh_callback_budget() {
-        let dir=std::env::temp_dir().join(format!("kontra-native-canvas-budget-{}",std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "kontra-native-canvas-budget-{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(dir.join("Resources/native_ui")).unwrap();
-        std::fs::write(dir.join("Resources/native_ui/main.nui"),br#"
+        std::fs::write(
+            dir.join("Resources/native_ui/main.nui"),
+            br#"
             local ui=require('native_ui')
             return function() return @ui.Canvas {paint=function(painter,frame)
                 for i=1,600 do painter:move_to(0,0);painter:line_to(16,16) end
                 painter.stroke_style=ui.Color.white;painter:draw_path()
             end}.frame(width=16,height=16) end
-        "#).unwrap();
-        let package=Arc::new(Package::load(&dir.join("fixture.nki")).unwrap());
-        let session=Session::new(package.clone(),"main",vec![]).unwrap();
-        let graph=session.render().unwrap();
-        let mut ui=super::super::theme::ui();
-        let el=draw(&mut ui,&graph,&package,&session,0,1.,Style::default(),&mut HashMap::new()).unwrap();
+        "#,
+        )
+        .unwrap();
+        let package = Arc::new(Package::load(&dir.join("fixture.nki")).unwrap());
+        let session = Session::new(package.clone(), "main", vec![]).unwrap();
+        let graph = session.render().unwrap();
+        let mut ui = super::super::theme::ui();
+        let el = draw(
+            &mut ui,
+            &graph,
+            &package,
+            &session,
+            0,
+            1.,
+            Style::default(),
+            &mut HashMap::new(),
+        )
+        .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(300));
-        ui.frame(el,Some(Size::new(16.,16.)),Input::default(),1./60.).unwrap();
-        let _=super::super::tests::pixels(&ui,16,16);
-        assert!(session.lua().globals().get::<Value>("__canvas_error").unwrap().is_nil(),"deferred Canvas reused an expired graph budget");
+        ui.frame(el, Some(Size::new(16., 16.)), Input::default(), 1. / 60.)
+            .unwrap();
+        let _ = super::super::tests::pixels(&ui, 16, 16);
+        assert!(
+            session
+                .lua()
+                .globals()
+                .get::<Value>("__canvas_error")
+                .unwrap()
+                .is_nil(),
+            "deferred Canvas reused an expired graph budget"
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
-
-
 
     #[test]
     fn native_graph_lowering_fits_a_plain_two_mib_thread() {
@@ -1553,95 +1833,220 @@ mod tests {
     #[test]
     #[ignore = "requires locally owned NativeUI library; graph and bindings stay in RAM"]
     fn native_edit_selector_bindings_use_the_published_source() {
-        let path=std::path::PathBuf::from(std::env::var_os("KONTRA_AUDIT_WIDGET_PATCH").unwrap());
-        let mut source=sampler_kontakt::read(&path).unwrap().instrument;
-        source.zones.clear(); source.source_indices.zones.clear(); source.assets.clear();
-        let loaded=sampler_kontakt::prepare(source,vec![],&sampler_kontakt::Options {
-            library:Some(path.clone()),..Default::default()
-        }).unwrap();
-        let entry=loaded.interfaces.iter().find_map(|f|f.native_ui.as_ref()).unwrap().entry.clone();
-        let controls:Vec<_>=loaded.interfaces.iter().flat_map(|f|f.widgets.iter().enumerate()
-            .map(move |(n,w)|(f.source,n,w.clone()))).collect();
-        let package=Arc::new(Package::load(&path).unwrap());
-        let session=Session::new(package,&entry,controls.clone()).unwrap();
-        let reads=Arc::new(std::sync::Mutex::new(Vec::<(String,usize,String,String)>::new()));
-        let trace=reads.clone();
-        session.lua().globals().set("__audit_parameter",session.lua().create_function(
-            move |_,(name,binding,path,access):(String,i64,String,String)| {
-                if binding>=0 && (name.starts_with("Edit__Synth__Src__") || name.starts_with("Edit__Synth__Shp__")) {
-                    let mut trace=trace.lock().unwrap();
-                    if trace.len()<16384 {trace.push((name,binding as usize,path,access));}
+        let path = std::path::PathBuf::from(std::env::var_os("KONTRA_AUDIT_WIDGET_PATCH").unwrap());
+        let mut source = sampler_kontakt::read(&path).unwrap().instrument;
+        source.zones.clear();
+        source.source_indices.zones.clear();
+        source.assets.clear();
+        let loaded = sampler_kontakt::prepare(
+            source,
+            vec![],
+            &sampler_kontakt::Options {
+                library: Some(path.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let entry = loaded
+            .interfaces
+            .iter()
+            .find_map(|f| f.native_ui.as_ref())
+            .unwrap()
+            .entry
+            .clone();
+        let controls: Vec<_> = loaded
+            .interfaces
+            .iter()
+            .flat_map(|f| {
+                f.widgets
+                    .iter()
+                    .enumerate()
+                    .map(move |(n, w)| (f.source, n, w.clone()))
+            })
+            .collect();
+        let package = Arc::new(Package::load(&path).unwrap());
+        let session = Session::new(package, &entry, controls.clone()).unwrap();
+        let reads = Arc::new(std::sync::Mutex::new(
+            Vec::<(String, usize, String, String)>::new(),
+        ));
+        let trace = reads.clone();
+        session
+            .lua()
+            .globals()
+            .set(
+                "__audit_parameter",
+                session
+                    .lua()
+                    .create_function(
+                        move |_, (name, binding, path, access): (String, i64, String, String)| {
+                            if binding >= 0
+                                && (name.starts_with("Edit__Synth__Src__")
+                                    || name.starts_with("Edit__Synth__Shp__"))
+                            {
+                                let mut trace = trace.lock().unwrap();
+                                if trace.len() < 16384 {
+                                    trace.push((name, binding as usize, path, access));
+                                }
+                            }
+                            Ok(())
+                        },
+                    )
+                    .unwrap(),
+            )
+            .unwrap();
+        fn tap(node: &Table, target: &str) -> Option<Function> {
+            let mut contains = string(node, "kind") == "Text"
+                && node
+                    .get::<Table>("props")
+                    .ok()
+                    .is_some_and(|p| string(&p, "text").eq_ignore_ascii_case(target));
+            for child in tables(node, "children").unwrap() {
+                if let Some(callback) = tap(&child, target) {
+                    return Some(callback);
                 }
-                Ok(())
+                contains |= has_text(&child, target);
             }
-        ).unwrap()).unwrap();
-        fn tap(node:&Table,target:&str)->Option<Function> {
-            let mut contains=string(node,"kind")=="Text" &&
-                node.get::<Table>("props").ok().is_some_and(|p|string(&p,"text").eq_ignore_ascii_case(target));
-            for child in tables(node,"children").unwrap() {
-                if let Some(callback)=tap(&child,target) {return Some(callback);}
-                contains|=has_text(&child,target);
+            if contains {
+                for modifier in tables(node, "modifiers").unwrap() {
+                    if string(&modifier, "name") == "on_tap_gesture"
+                        && let Ok(value) = modifier.get::<Table>("value")
+                        && let Ok(callback) = value
+                            .get::<Function>("complete")
+                            .or_else(|_| value.get("start"))
+                    {
+                        return Some(callback);
+                    }
+                    if matches!(string(&modifier, "name").as_str(), "background" | "overlay")
+                        && let Ok(child) = modifier.get::<Table>("value")
+                        && let Some(callback) = tap(&child, target)
+                    {
+                        return Some(callback);
+                    }
+                }
             }
-            if contains {for modifier in tables(node,"modifiers").unwrap() {
-                if string(&modifier,"name")=="on_tap_gesture" &&
-                    let Ok(value)=modifier.get::<Table>("value") &&
-                    let Ok(callback)=value.get::<Function>("complete").or_else(|_|value.get("start")) {return Some(callback);}
-                if matches!(string(&modifier,"name").as_str(),"background"|"overlay") &&
-                    let Ok(child)=modifier.get::<Table>("value") &&
-                    let Some(callback)=tap(&child,target) {return Some(callback);}
-            }}
             None
         }
-        fn has_text(node:&Table,target:&str)->bool {
-            (string(node,"kind")=="Text" && node.get::<Table>("props").ok()
-                .is_some_and(|p|string(&p,"text").eq_ignore_ascii_case(target))) ||
-                tables(node,"children").unwrap().iter().any(|c|has_text(c,target))
+        fn has_text(node: &Table, target: &str) -> bool {
+            (string(node, "kind") == "Text"
+                && node
+                    .get::<Table>("props")
+                    .ok()
+                    .is_some_and(|p| string(&p, "text").eq_ignore_ascii_case(target)))
+                || tables(node, "children")
+                    .unwrap()
+                    .iter()
+                    .any(|c| has_text(c, target))
         }
-        let graph=session.render().unwrap_or_else(|e|panic!("{}",failure(&e,"graph").split_once(": ").unwrap().0));
-        let callback=tap(&graph,"EDIT").expect("authored Edit tab has a tap callback");
-        session.call(callback,session.event(0.,0.,0.,0.,0.,0.,false,false,false,false).unwrap()).unwrap();
+        let graph = session
+            .render()
+            .unwrap_or_else(|e| panic!("{}", failure(&e, "graph").split_once(": ").unwrap().0));
+        let callback = tap(&graph, "EDIT").expect("authored Edit tab has a tap callback");
+        session
+            .call(
+                callback,
+                session
+                    .event(0., 0., 0., 0., 0., 0., false, false, false, false)
+                    .unwrap(),
+            )
+            .unwrap();
         reads.lock().unwrap().clear();
-        let graph=session.render().unwrap_or_else(|e|panic!("{}",failure(&e,"graph").split_once(": ").unwrap().0));
-        fn node_kinds(node:&Table,out:&mut HashMap<String,String>) {
-            out.insert(string(node,"path"),string(node,"kind"));
-            for child in tables(node,"children").unwrap() {node_kinds(&child,out);}
-            for modifier in tables(node,"modifiers").unwrap() {
-                if matches!(string(&modifier,"name").as_str(),"background"|"overlay") &&
-                    let Ok(child)=modifier.get::<Table>("value") {node_kinds(&child,out);}
+        let graph = session
+            .render()
+            .unwrap_or_else(|e| panic!("{}", failure(&e, "graph").split_once(": ").unwrap().0));
+        fn node_kinds(node: &Table, out: &mut HashMap<String, String>) {
+            out.insert(string(node, "path"), string(node, "kind"));
+            for child in tables(node, "children").unwrap() {
+                node_kinds(&child, out);
+            }
+            for modifier in tables(node, "modifiers").unwrap() {
+                if matches!(string(&modifier, "name").as_str(), "background" | "overlay")
+                    && let Ok(child) = modifier.get::<Table>("value")
+                {
+                    node_kinds(&child, out);
+                }
             }
         }
-        let mut kinds=HashMap::new();node_kinds(&graph,&mut kinds);
-        let mut seen=std::collections::BTreeSet::new();
-        for (name,binding,path,access) in reads.lock().unwrap().iter() {
-            if !(name.starts_with("Edit__Synth__Src__") || name.starts_with("Edit__Synth__Shp__")) {continue;}
-            let kind=kinds.get(path).map(String::as_str).unwrap_or("Component");
-            if !seen.insert((name.clone(),kind.to_owned(),*binding,access.clone())) {continue;}
-            let (source,_,widget)=controls.get(*binding).expect("binding addresses a published control");
-            println!("NATIVE_BINDING node={kind} parameter={name} access={access} source={source:?} ui_id={:?} binding={:?}",widget.source_id,widget.binding);
+        let mut kinds = HashMap::new();
+        node_kinds(&graph, &mut kinds);
+        let mut seen = std::collections::BTreeSet::new();
+        for (name, binding, path, access) in reads.lock().unwrap().iter() {
+            if !(name.starts_with("Edit__Synth__Src__") || name.starts_with("Edit__Synth__Shp__")) {
+                continue;
+            }
+            let kind = kinds.get(path).map(String::as_str).unwrap_or("Component");
+            if !seen.insert((name.clone(), kind.to_owned(), *binding, access.clone())) {
+                continue;
+            }
+            let (source, _, widget) = controls
+                .get(*binding)
+                .expect("binding addresses a published control");
+            println!(
+                "NATIVE_BINDING node={kind} parameter={name} access={access} source={source:?} ui_id={:?} binding={:?}",
+                widget.source_id, widget.binding
+            );
         }
-        assert!(!seen.is_empty(),"Edit graph reads published selector parameters");
+        assert!(
+            !seen.is_empty(),
+            "Edit graph reads published selector parameters"
+        );
     }
 
     #[cfg(feature = "shots")]
     #[test]
     #[ignore = "requires locally owned NativeUI program; numeric work only"]
     fn native_program_work_counts() {
-        let path=std::path::PathBuf::from(std::env::var_os("KONTRA_AUDIT_WIDGET_PATCH").unwrap());
-        let program=std::env::var("KONTRA_AUDIT_PROGRAM").ok().map_or(0,|n|n.parse().unwrap());
-        let mut source=if path.extension().is_some_and(|e|e=="nkm") {
-            sampler_kontakt::read_program(&path,program).unwrap().instrument
-        } else {sampler_kontakt::read(&path).unwrap().instrument};
-        source.retain_zones(|_|false);source.assets.clear();
-        let loaded=sampler_kontakt::prepare(source,vec![],&sampler_kontakt::Options {library:Some(path.clone()),..Default::default()}).unwrap();
-        let entry=loaded.interfaces.iter().find_map(|f|f.native_ui.as_ref()).unwrap().entry.clone();
-        let controls=loaded.interfaces.iter().flat_map(|f|f.widgets.iter().enumerate().map(move |(n,w)|(f.source,n,w.clone()))).collect();
-        let package=Arc::new(Package::load(&path).unwrap());
-        let session=Session::new(package,&entry,controls).unwrap();
-        println!("NATIVE_WORK_INIT program={program} checkpoints={} checkpoint_budget=500000",500_000-session.work_remaining());
+        let path = std::path::PathBuf::from(std::env::var_os("KONTRA_AUDIT_WIDGET_PATCH").unwrap());
+        let program = std::env::var("KONTRA_AUDIT_PROGRAM")
+            .ok()
+            .map_or(0, |n| n.parse().unwrap());
+        let mut source = if path.extension().is_some_and(|e| e == "nkm") {
+            sampler_kontakt::read_program(&path, program)
+                .unwrap()
+                .instrument
+        } else {
+            sampler_kontakt::read(&path).unwrap().instrument
+        };
+        source.retain_zones(|_| false);
+        source.assets.clear();
+        let loaded = sampler_kontakt::prepare(
+            source,
+            vec![],
+            &sampler_kontakt::Options {
+                library: Some(path.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let entry = loaded
+            .interfaces
+            .iter()
+            .find_map(|f| f.native_ui.as_ref())
+            .unwrap()
+            .entry
+            .clone();
+        let controls = loaded
+            .interfaces
+            .iter()
+            .flat_map(|f| {
+                f.widgets
+                    .iter()
+                    .enumerate()
+                    .map(move |(n, w)| (f.source, n, w.clone()))
+            })
+            .collect();
+        let package = Arc::new(Package::load(&path).unwrap());
+        let session = Session::new(package, &entry, controls).unwrap();
+        println!(
+            "NATIVE_WORK_INIT program={program} checkpoints={} checkpoint_budget=500000",
+            500_000 - session.work_remaining()
+        );
         for frame in 0..8 {
-            let _=session.render().unwrap();let (nodes,checkpoints)=session.graph_work();
-            assert!(nodes>0 && nodes<=16384 && checkpoints<1_000_000);
-            println!("NATIVE_WORK program={program} frame={frame} nodes={nodes} checkpoints={checkpoints} node_budget=16384 checkpoint_budget=1000000");
+            let _ = session.render().unwrap();
+            let (nodes, checkpoints) = session.graph_work();
+            assert!(nodes > 0 && nodes <= 16384 && checkpoints < 1_000_000);
+            println!(
+                "NATIVE_WORK program={program} frame={frame} nodes={nodes} checkpoints={checkpoints} node_budget=16384 checkpoint_budget=1000000"
+            );
         }
     }
 
@@ -1650,20 +2055,44 @@ mod tests {
     #[ignore = "requires locally owned NativeUI program; graph stays in RAM"]
     fn native_program_stack_watermark() {
         let path = std::path::PathBuf::from(std::env::var_os("KONTRA_AUDIT_WIDGET_PATCH").unwrap());
-        let program = std::env::var("KONTRA_AUDIT_PROGRAM").ok().map_or(0, |n| n.parse().unwrap());
+        let program = std::env::var("KONTRA_AUDIT_PROGRAM")
+            .ok()
+            .map_or(0, |n| n.parse().unwrap());
         let mut source = if path.extension().is_some_and(|e| e == "nkm") {
-            sampler_kontakt::read_program(&path, program).unwrap().instrument
+            sampler_kontakt::read_program(&path, program)
+                .unwrap()
+                .instrument
         } else {
             sampler_kontakt::read(&path).unwrap().instrument
         };
         source.retain_zones(|_| false);
         source.assets.clear();
-        let loaded = sampler_kontakt::prepare(source, vec![], &sampler_kontakt::Options {
-            library: Some(path.clone()), ..Default::default()
-        }).unwrap();
-        let entry = loaded.interfaces.iter().find_map(|f| f.native_ui.as_ref()).unwrap().entry.clone();
-        let controls = loaded.interfaces.iter().flat_map(|f| f.widgets.iter().enumerate()
-            .map(move |(n, w)| (f.source, n, w.clone()))).collect();
+        let loaded = sampler_kontakt::prepare(
+            source,
+            vec![],
+            &sampler_kontakt::Options {
+                library: Some(path.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let entry = loaded
+            .interfaces
+            .iter()
+            .find_map(|f| f.native_ui.as_ref())
+            .unwrap()
+            .entry
+            .clone();
+        let controls = loaded
+            .interfaces
+            .iter()
+            .flat_map(|f| {
+                f.widgets
+                    .iter()
+                    .enumerate()
+                    .map(move |(n, w)| (f.source, n, w.clone()))
+            })
+            .collect();
         let package = Arc::new(Package::load(&path).unwrap());
         let watermark = stack_watermark();
         let session = Session::new(package.clone(), &entry, controls).unwrap();
@@ -1671,13 +2100,30 @@ mod tests {
         let mut ui = super::super::theme::ui();
         let mut drafts = HashMap::new();
         for _ in 0..4 {
-            let el = draw(&mut ui, &graph, &package, &session, 0, 1., Style::default(), &mut drafts).unwrap();
-            ui.frame(el, Some(authored_size(&graph)), Input::default(), 1. / 60.).unwrap();
+            let el = draw(
+                &mut ui,
+                &graph,
+                &package,
+                &session,
+                0,
+                1.,
+                Style::default(),
+                &mut drafts,
+            )
+            .unwrap();
+            ui.frame(el, Some(authored_size(&graph)), Input::default(), 1. / 60.)
+                .unwrap();
         }
         let peak = stack_peak(watermark);
-        assert!(peak < watermark.2 - watermark.0 - 4096, "stack watermark saturated");
-        println!("NATIVE_STACK program={program} depth={} native_init_graph_draw_layout_peak_bytes={peak} unmarked_top_bytes={}",
-            graph_depth(&graph).unwrap(), watermark.2 - watermark.1);
+        assert!(
+            peak < watermark.2 - watermark.0 - 4096,
+            "stack watermark saturated"
+        );
+        println!(
+            "NATIVE_STACK program={program} depth={} native_init_graph_draw_layout_peak_bytes={peak} unmarked_top_bytes={}",
+            graph_depth(&graph).unwrap(),
+            watermark.2 - watermark.1
+        );
     }
 
     #[test]
@@ -1685,89 +2131,178 @@ mod tests {
     fn native_saved_text_reaches_authored_field_without_host_insets() {
         let path = std::path::PathBuf::from(std::env::var_os("KONTRA_AUDIT_WIDGET_PATCH").unwrap());
         let mut source = sampler_kontakt::read(&path).unwrap().instrument;
-        source.retain_zones(|_|false);
+        source.retain_zones(|_| false);
         source.assets.clear();
-        let loaded = sampler_kontakt::prepare(source, vec![], &sampler_kontakt::Options {
-            library: Some(path.clone()), ..Default::default()
-        }).unwrap();
-        let entry = loaded.interfaces.iter().find_map(|f|f.native_ui.as_ref()).unwrap().entry.clone();
-        let controls: Vec<_> = loaded.interfaces.iter().flat_map(|f|f.widgets.iter().enumerate()
-            .map(move |(n,w)|(f.source,n,w.clone()))).collect();
-        let saved: Vec<_> = controls.iter().filter(|(_,_,w)|w.name.starts_with("@Footer__Macro__Name__"))
-            .map(|(_,_,w)|match &w.value {Some(ir::Value::Text(s))=>s.clone(),_=>panic!("published text missing")}).collect();
+        let loaded = sampler_kontakt::prepare(
+            source,
+            vec![],
+            &sampler_kontakt::Options {
+                library: Some(path.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let entry = loaded
+            .interfaces
+            .iter()
+            .find_map(|f| f.native_ui.as_ref())
+            .unwrap()
+            .entry
+            .clone();
+        let controls: Vec<_> = loaded
+            .interfaces
+            .iter()
+            .flat_map(|f| {
+                f.widgets
+                    .iter()
+                    .enumerate()
+                    .map(move |(n, w)| (f.source, n, w.clone()))
+            })
+            .collect();
+        let saved: Vec<_> = controls
+            .iter()
+            .filter(|(_, _, w)| w.name.starts_with("@Footer__Macro__Name__"))
+            .map(|(_, _, w)| match &w.value {
+                Some(ir::Value::Text(s)) => s.clone(),
+                _ => panic!("published text missing"),
+            })
+            .collect();
         assert_eq!(saved.len(), 6);
         let package = Arc::new(Package::load(&path).unwrap());
         let session = Session::new(package.clone(), &entry, controls).unwrap();
         let graph = session.render().unwrap();
-        fn font_usage(node:&Table,package:&Package,counts:&mut [usize;3]) {
-            for modifier in tables(node,"modifiers").unwrap() {
-                let kind=string(&modifier,"name");
-                if matches!(kind.as_str(),"font"|"font_family") {
-                    counts[0]+=1;
-                    let name=string(&modifier,"value");
-                    counts[1]+=usize::from(!name.is_empty());
-                    counts[2]+=usize::from(package.font(&name,false).is_some());
+        fn font_usage(node: &Table, package: &Package, counts: &mut [usize; 3]) {
+            for modifier in tables(node, "modifiers").unwrap() {
+                let kind = string(&modifier, "name");
+                if matches!(kind.as_str(), "font" | "font_family") {
+                    counts[0] += 1;
+                    let name = string(&modifier, "value");
+                    counts[1] += usize::from(!name.is_empty());
+                    counts[2] += usize::from(package.font(&name, false).is_some());
                 }
-                if matches!(kind.as_str(),"background"|"overlay") {
-                    if let Ok(child)=modifier.get::<Table>("value") {font_usage(&child,package,counts);}
-                }
-            }
-            for child in tables(node,"children").unwrap() {font_usage(&child,package,counts);}
-        }
-        let mut fonts=[0;3];font_usage(&graph,&package,&mut fonts);
-        println!("NATIVE_FONT declarations={} string_names={} supplied_matches={}",fonts[0],fonts[1],fonts[2]);
-        fn fields(node:&Table,saved:&[String],out:&mut Vec<(String,usize,usize)>) {
-            let kind = string(node,"kind");
-            if matches!(kind.as_str(),"Text"|"TextInput") {
-                let props=node.get::<Table>("props").unwrap();
-                let text = string(&props,"text");
-                if let Some(n)=saved.iter().position(|s|s==&text) {
-                    println!("NATIVE_TEXT_PROPS slot={n} font_size={:?} size={:?} family_declared={} font_table={} style_table={}",number(&props,"font_size"),number(&props,"size"),!string(&props,"font_family").is_empty(),matches!(val(&props,"font"),Value::Table(_)),matches!(val(&props,"style"),Value::Table(_)));
-                    out.push((string(node,"path"),n,text.chars().count()));
+                if matches!(kind.as_str(), "background" | "overlay") {
+                    if let Ok(child) = modifier.get::<Table>("value") {
+                        font_usage(&child, package, counts);
+                    }
                 }
             }
-            for child in tables(node,"children").unwrap() {fields(&child,saved,out);}
-            for modifier in tables(node,"modifiers").unwrap() {
-                if matches!(string(&modifier,"name").as_str(),"background"|"overlay") {
-                    if let Ok(child)=modifier.get::<Table>("value") {fields(&child,saved,out);}
-                }
+            for child in tables(node, "children").unwrap() {
+                font_usage(&child, package, counts);
             }
         }
-        let mut fields_found=Vec::new();
-        fields(&graph,&saved,&mut fields_found);
-        assert!(fields_found.len()>=6,"six complete saved strings reach native primitives");
-        let mut ui=super::super::theme::ui();
-        let mut drafts=HashMap::new();
+        let mut fonts = [0; 3];
+        font_usage(&graph, &package, &mut fonts);
+        println!(
+            "NATIVE_FONT declarations={} string_names={} supplied_matches={}",
+            fonts[0], fonts[1], fonts[2]
+        );
+        fn fields(node: &Table, saved: &[String], out: &mut Vec<(String, usize, usize)>) {
+            let kind = string(node, "kind");
+            if matches!(kind.as_str(), "Text" | "TextInput") {
+                let props = node.get::<Table>("props").unwrap();
+                let text = string(&props, "text");
+                if let Some(n) = saved.iter().position(|s| s == &text) {
+                    println!(
+                        "NATIVE_TEXT_PROPS slot={n} font_size={:?} size={:?} family_declared={} font_table={} style_table={}",
+                        number(&props, "font_size"),
+                        number(&props, "size"),
+                        !string(&props, "font_family").is_empty(),
+                        matches!(val(&props, "font"), Value::Table(_)),
+                        matches!(val(&props, "style"), Value::Table(_))
+                    );
+                    out.push((string(node, "path"), n, text.chars().count()));
+                }
+            }
+            for child in tables(node, "children").unwrap() {
+                fields(&child, saved, out);
+            }
+            for modifier in tables(node, "modifiers").unwrap() {
+                if matches!(string(&modifier, "name").as_str(), "background" | "overlay") {
+                    if let Ok(child) = modifier.get::<Table>("value") {
+                        fields(&child, saved, out);
+                    }
+                }
+            }
+        }
+        let mut fields_found = Vec::new();
+        fields(&graph, &saved, &mut fields_found);
+        assert!(
+            fields_found.len() >= 6,
+            "six complete saved strings reach native primitives"
+        );
+        let mut ui = super::super::theme::ui();
+        let mut drafts = HashMap::new();
         #[cfg(target_os = "linux")]
-        let watermark=stack_watermark();
+        let watermark = stack_watermark();
         for _ in 0..4 {
-            let el=draw(&mut ui,&graph,&package,&session,0,1.,Style::default(),&mut drafts).unwrap();
-            ui.frame(el,Some(authored_size(&graph)),Input::default(),1./60.).unwrap();
+            let el = draw(
+                &mut ui,
+                &graph,
+                &package,
+                &session,
+                0,
+                1.,
+                Style::default(),
+                &mut drafts,
+            )
+            .unwrap();
+            ui.frame(el, Some(authored_size(&graph)), Input::default(), 1. / 60.)
+                .unwrap();
         }
         #[cfg(target_os = "linux")]
-        println!("NATIVE_STACK draw_and_layout_peak_bytes={}",stack_peak(watermark));
-        let scene=ui.scene().unwrap();
-        let mut matched=0;
-        for (path,n,len) in fields_found {
-            if let Some(surface)=scene.surface(&format!("nui-0-{path}-text")) {
-                let geometry=surface.text_geometry.as_ref().unwrap();
-                let advance=geometry.lines[0].carets.x(geometry.text.len());
-                println!("NATIVE_TEXT slot={n} chars={len} equals_saved={} frame_width={} viewport_width={} advance={} insets={:?}",
-                    geometry.text.as_ref()==saved[n],surface.frame.size.width,geometry.viewport.width,advance,geometry.state.insets);
-                assert!(geometry.text.as_ref()==saved[n],"full saved text reaches final field geometry");
-                assert_eq!(geometry.state.insets,[0.,0.],"authored text fields must not retain generic editor padding");
-                assert!(advance<=geometry.viewport.width+0.01,"fallback metrics fit the complete saved caption");
-                matched+=1;
+        println!(
+            "NATIVE_STACK draw_and_layout_peak_bytes={}",
+            stack_peak(watermark)
+        );
+        let scene = ui.scene().unwrap();
+        let mut matched = 0;
+        for (path, n, len) in fields_found {
+            if let Some(surface) = scene.surface(&format!("nui-0-{path}-text")) {
+                let geometry = surface.text_geometry.as_ref().unwrap();
+                let advance = geometry.lines[0].carets.x(geometry.text.len());
+                println!(
+                    "NATIVE_TEXT slot={n} chars={len} equals_saved={} frame_width={} viewport_width={} advance={} insets={:?}",
+                    geometry.text.as_ref() == saved[n],
+                    surface.frame.size.width,
+                    geometry.viewport.width,
+                    advance,
+                    geometry.state.insets
+                );
+                assert!(
+                    geometry.text.as_ref() == saved[n],
+                    "full saved text reaches final field geometry"
+                );
+                assert_eq!(
+                    geometry.state.insets,
+                    [0., 0.],
+                    "authored text fields must not retain generic editor padding"
+                );
+                assert!(
+                    advance <= geometry.viewport.width + 0.01,
+                    "fallback metrics fit the complete saved caption"
+                );
+                matched += 1;
             }
         }
-        assert_eq!(matched,6);
-        let modifiers=graph.get::<Table>("modifiers").unwrap();
-        let missing=session.lua().create_table().unwrap();
-        missing.set("name","font_family").unwrap();
-        missing.set("value","unavailable-test-font").unwrap();
+        assert_eq!(matched, 6);
+        let modifiers = graph.get::<Table>("modifiers").unwrap();
+        let missing = session.lua().create_table().unwrap();
+        missing.set("name", "font_family").unwrap();
+        missing.set("value", "unavailable-test-font").unwrap();
         modifiers.push(missing).unwrap();
-        let error=draw(&mut ui,&graph,&package,&session,0,1.,Style::default(),&mut drafts).err().unwrap();
-        assert!(failure(&error,"graph").starts_with("graph, NativeUI font service unavailable:"));
+        let error = draw(
+            &mut ui,
+            &graph,
+            &package,
+            &session,
+            0,
+            1.,
+            Style::default(),
+            &mut drafts,
+        )
+        .err()
+        .unwrap();
+        assert!(failure(&error, "graph").starts_with("graph, NativeUI font service unavailable:"));
     }
 }
 
@@ -1777,20 +2312,40 @@ mod tests {
 fn native_alias_menus_are_legacy_skin_proxies() {
     let path = std::path::PathBuf::from(std::env::var_os("KONTRA_AUDIT_WIDGET_PATCH").unwrap());
     let mut source = sampler_kontakt::read(&path).unwrap().instrument;
-    source.retain_zones(|_| false); source.assets.clear();
-    let loaded = sampler_kontakt::prepare(source, vec![], &sampler_kontakt::Options {
-        library: Some(path.clone()), ..Default::default()
-    }).unwrap();
+    source.retain_zones(|_| false);
+    source.assets.clear();
+    let loaded = sampler_kontakt::prepare(
+        source,
+        vec![],
+        &sampler_kontakt::Options {
+            library: Some(path.clone()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let package = Package::load(&path).unwrap();
-    let aliases: Vec<_> = loaded.interfaces.iter().flat_map(|f| &f.widgets)
-        .filter(|w| matches!(w.kind, ir::Kind::Menu {..}) && w.name.ends_with("Alias")).collect();
+    let aliases: Vec<_> = loaded
+        .interfaces
+        .iter()
+        .flat_map(|f| &f.widgets)
+        .filter(|w| matches!(w.kind, ir::Kind::Menu { .. }) && w.name.ends_with("Alias"))
+        .collect();
     assert_eq!(aliases.len(), 4);
     // A NativeUI module cannot bind these names indirectly without even the
     // Alias suffix occurring in its immutable module sources.
-    assert_eq!(package.audit_token_count("Alias"), 0, "NativeUI mentions aliases; classify its actual binding before excluding them");
+    assert_eq!(
+        package.audit_token_count("Alias"),
+        0,
+        "NativeUI mentions aliases; classify its actual binding before excluding them"
+    );
     for (n, alias) in aliases.into_iter().enumerate() {
         let underlying = alias.name.trim_start_matches('$').trim_end_matches("Alias");
-        assert!(package.audit_token_count(underlying) > 0, "native skin must bind the corresponding original selector");
-        println!("NATIVE_ALIAS_BY_DESIGN index={n} native_alias_references=0 underlying_selector_present=true");
+        assert!(
+            package.audit_token_count(underlying) > 0,
+            "native skin must bind the corresponding original selector"
+        );
+        println!(
+            "NATIVE_ALIAS_BY_DESIGN index={n} native_alias_references=0 underlying_selector_present=true"
+        );
     }
 }

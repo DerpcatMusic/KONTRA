@@ -1094,14 +1094,29 @@ impl Gen<'_, '_> {
             SysArray::EventPar if self.note_context() => {
                 let (event, bound) = (reg(at, 1)?, reg(at, 2)?);
                 self.set(bound, 0)?;
-                self.emit(I::CompareLocal { lhs: bound, rhs: at, comparison: Cmp::LessEqual })?;
+                self.emit(I::CompareLocal {
+                    lhs: bound,
+                    rhs: at,
+                    comparison: Cmp::LessEqual,
+                })?;
                 let negative = self.jump_if_zero(bound)?;
                 self.set(bound, 16)?;
-                self.emit(I::CompareLocal { lhs: bound, rhs: at, comparison: Cmp::Greater })?;
+                self.emit(I::CompareLocal {
+                    lhs: bound,
+                    rhs: at,
+                    comparison: Cmp::Greater,
+                })?;
                 let beyond = self.jump_if_zero(bound)?;
-                self.emit(I::AddLocal { local: at, value: i64::from(sampler_core::USER_EVENT_PAR) })?;
+                self.emit(I::AddLocal {
+                    local: at,
+                    value: i64::from(sampler_core::USER_EVENT_PAR),
+                })?;
                 self.emit(I::ReadEventId { local: event })?;
-                self.emit(I::ReadModValue { event, id: at, local: at })?;
+                self.emit(I::ReadModValue {
+                    event,
+                    id: at,
+                    local: at,
+                })?;
                 let end = self.jump()?;
                 self.land(negative);
                 self.land(beyond);
@@ -1216,8 +1231,8 @@ impl Gen<'_, '_> {
                 }
             }
             ExprKind::Builtin(Builtin::MfGetLastFilename, _) => {
-                self.emit(I::Op(Op::MidiFilename {text:dst}))?;
-                self.cover(Builtin::MfGetLastFilename,Coverage::Native);
+                self.emit(I::Op(Op::MidiFilename { text: dst }))?;
+                self.cover(Builtin::MfGetLastFilename, Coverage::Native);
                 return Ok(());
             }
             ExprKind::Builtin(Builtin::FsGetFilename, args) => {
@@ -2178,10 +2193,16 @@ impl Gen<'_, '_> {
                 }
                 true
             }
-            GetEventPar if self.const_int(args, 1).is_none() && !self.selects_many(builtin, args, 0) => {
+            GetEventPar
+                if self.const_int(args, 1).is_none() && !self.selects_many(builtin, args, 0) =>
+            {
                 self.arg(args, 0, dst)?;
                 self.arg(args, 1, t)?;
-                self.emit(I::ReadEventParameter { event: dst, parameter: t, local: dst })?;
+                self.emit(I::ReadEventParameter {
+                    event: dst,
+                    parameter: t,
+                    local: dst,
+                })?;
                 true
             }
             FadeIn | FadeOut if !self.selects_many(builtin, args, 0) => {
@@ -2373,7 +2394,9 @@ impl Gen<'_, '_> {
                 true
             }
             WaitAsync => {
-                self.arg(args,0,dst)?;self.emit(I::Op(Op::WaitMidi {local:dst}))?;true
+                self.arg(args, 0, dst)?;
+                self.emit(I::Op(Op::WaitMidi { local: dst }))?;
+                true
             }
             DisableLogging | WatchVar | WatchArrayIdx => {
                 // Effects complete immediately; logging switches have no runtime state.

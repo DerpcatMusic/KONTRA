@@ -150,7 +150,9 @@ impl Script {
         ui::interface(&self.model, self.slot, picture)
     }
     /// Source slot retained independently of the bound script-instance index.
-    pub fn slot(&self) -> u8 { self.slot }
+    pub fn slot(&self) -> u8 {
+        self.slot
+    }
     pub fn has_performance_view(&self) -> bool {
         self.model.interface.performance_view
     }
@@ -295,11 +297,16 @@ fn apply_ui_effect(
     let Some(&service) = services.get(usize::from(effect.service)) else {
         return false;
     };
-    let Some(args) = effect.args.get(..usize::from(effect.count)) else { return false };
+    let Some(args) = effect.args.get(..usize::from(effect.count)) else {
+        return false;
+    };
     let arg = |i: usize| args.get(i).and_then(|&v| i32::try_from(v).ok());
     let text = || effect.text.as_ref().map(|t| t.as_str().to_string());
     if let Some(rest) = service.strip_prefix("set_key_") {
-        let Some(key) = arg(0).and_then(|k| model.interface.keys.get_mut(usize::try_from(k).ok()?)) else { return false };
+        let Some(key) = arg(0).and_then(|k| model.interface.keys.get_mut(usize::try_from(k).ok()?))
+        else {
+            return false;
+        };
         let before = key.clone();
         match rest {
             "color" => key.color = arg(1),
@@ -318,69 +325,173 @@ fn apply_ui_effect(
     }
     if service == "set_ui_color" {
         let Some(value) = arg(0) else { return false };
-        if let Some(request) = model.requests.iter_mut().rev().find(|r| r.command == "set_ui_color") {
-            if request.args == [Value::Int(value)] { return false; }
+        if let Some(request) = model
+            .requests
+            .iter_mut()
+            .rev()
+            .find(|r| r.command == "set_ui_color")
+        {
+            if request.args == [Value::Int(value)] {
+                return false;
+            }
             request.args = vec![Value::Int(value)];
-        } else { model.requests.push(model::Request { command: "set_ui_color", args: vec![Value::Int(value)] }); }
+        } else {
+            model.requests.push(model::Request {
+                command: "set_ui_color",
+                args: vec![Value::Int(value)],
+            });
+        }
         return true;
     }
     let Some(id) = arg(0) else { return false };
     let widget = model.interface.widgets.iter_mut().find(|w| w.ui_id == id);
-    if matches!(service, "move_control" | "move_control_px" | "add_menu_item" | "set_menu_item_str" | "set_menu_item_visibility" | "set_menu_item_value") {
+    if matches!(
+        service,
+        "move_control"
+            | "move_control_px"
+            | "add_menu_item"
+            | "set_menu_item_str"
+            | "set_menu_item_visibility"
+            | "set_menu_item_value"
+    ) {
         let Some(w) = widget else { return false };
         let before = w.clone();
         match service {
             "move_control" | "move_control_px" => {
-                let (Some(x), Some(y)) = (arg(1), arg(2)) else { return false };
-                let (px, py) = if service == "move_control" { ("grid_x", "grid_y") } else {
-                    w.properties.remove("grid_x"); w.properties.remove("grid_y");
+                let (Some(x), Some(y)) = (arg(1), arg(2)) else {
+                    return false;
+                };
+                let (px, py) = if service == "move_control" {
+                    ("grid_x", "grid_y")
+                } else {
+                    w.properties.remove("grid_x");
+                    w.properties.remove("grid_y");
                     ("$CONTROL_PAR_POS_X", "$CONTROL_PAR_POS_Y")
                 };
                 w.properties.insert(px.into(), Value::Int(x));
                 w.properties.insert(py.into(), Value::Int(y));
             }
             "add_menu_item" => {
-                let (Some(text), Some(value)) = (text(), arg(1)) else { return false };
-                w.menu.push(model::MenuItem { text, value, visible: true });
+                let (Some(text), Some(value)) = (text(), arg(1)) else {
+                    return false;
+                };
+                w.menu.push(model::MenuItem {
+                    text,
+                    value,
+                    visible: true,
+                });
             }
             _ => {
-                let Some(item) = arg(1).and_then(|i| w.menu.get_mut(usize::try_from(i).ok()?)) else { return false };
+                let Some(item) = arg(1).and_then(|i| w.menu.get_mut(usize::try_from(i).ok()?))
+                else {
+                    return false;
+                };
                 match service {
-                    "set_menu_item_str" => { let Some(value) = text() else { return false }; item.text = value; }
-                    "set_menu_item_value" => { let Some(value) = arg(2) else { return false }; item.value = value; }
-                    _ => { let Some(value) = arg(2) else { return false }; item.visible = value != 0; }
+                    "set_menu_item_str" => {
+                        let Some(value) = text() else { return false };
+                        item.text = value;
+                    }
+                    "set_menu_item_value" => {
+                        let Some(value) = arg(2) else { return false };
+                        item.value = value;
+                    }
+                    _ => {
+                        let Some(value) = arg(2) else { return false };
+                        item.visible = value != 0;
+                    }
                 }
             }
         }
         return *w != before;
     }
     let (name, value, index) = match service {
-        "set_text" | "add_text_line" => (Some("$CONTROL_PAR_TEXT".into()), text().map(Value::Text), None),
-        "set_knob_label" => (Some("$CONTROL_PAR_LABEL".into()), text().map(Value::Text), None),
-        "set_control_help" => (Some("$CONTROL_PAR_HELP".into()), text().map(Value::Text), None),
-        "set_knob_unit" => (Some("$CONTROL_PAR_UNIT".into()), arg(1).map(Value::Int), None),
-        "set_knob_defval" => (Some("$CONTROL_PAR_DEFAULT_VALUE".into()), arg(1).map(Value::Int), None),
-        "hide_part" => (Some("$CONTROL_PAR_HIDE".into()), arg(1).map(Value::Int), None),
-        "set_table_steps_shown" => (Some("table_steps_shown".into()), arg(1).map(Value::Int), None),
-        "set_control_par" => (arg(1).and_then(|p| eval::symbol_in(symbols, p)), arg(2).map(Value::Int), None),
-        "set_control_par_real" | "set_control_par_real_arr" => (arg(1).and_then(|p| eval::symbol_in(symbols, p)), args.get(2).map(|&b| Value::Real(f64::from_bits(b as u64))), if service.ends_with("_arr") { arg(3) } else { None }),
-        "set_control_par_str" => (arg(1).and_then(|p| eval::symbol_in(symbols, p)), text().map(Value::Text), None),
-        "set_control_par_arr" => (arg(1).and_then(|p| eval::symbol_in(symbols, p)), arg(2).map(Value::Int), arg(3)),
-        "set_control_par_str_arr" => (arg(1).and_then(|p| eval::symbol_in(symbols, p)), text().map(Value::Text), arg(2)),
+        "set_text" | "add_text_line" => (
+            Some("$CONTROL_PAR_TEXT".into()),
+            text().map(Value::Text),
+            None,
+        ),
+        "set_knob_label" => (
+            Some("$CONTROL_PAR_LABEL".into()),
+            text().map(Value::Text),
+            None,
+        ),
+        "set_control_help" => (
+            Some("$CONTROL_PAR_HELP".into()),
+            text().map(Value::Text),
+            None,
+        ),
+        "set_knob_unit" => (
+            Some("$CONTROL_PAR_UNIT".into()),
+            arg(1).map(Value::Int),
+            None,
+        ),
+        "set_knob_defval" => (
+            Some("$CONTROL_PAR_DEFAULT_VALUE".into()),
+            arg(1).map(Value::Int),
+            None,
+        ),
+        "hide_part" => (
+            Some("$CONTROL_PAR_HIDE".into()),
+            arg(1).map(Value::Int),
+            None,
+        ),
+        "set_table_steps_shown" => (
+            Some("table_steps_shown".into()),
+            arg(1).map(Value::Int),
+            None,
+        ),
+        "set_control_par" => (
+            arg(1).and_then(|p| eval::symbol_in(symbols, p)),
+            arg(2).map(Value::Int),
+            None,
+        ),
+        "set_control_par_real" | "set_control_par_real_arr" => (
+            arg(1).and_then(|p| eval::symbol_in(symbols, p)),
+            args.get(2).map(|&b| Value::Real(f64::from_bits(b as u64))),
+            if service.ends_with("_arr") {
+                arg(3)
+            } else {
+                None
+            },
+        ),
+        "set_control_par_str" => (
+            arg(1).and_then(|p| eval::symbol_in(symbols, p)),
+            text().map(Value::Text),
+            None,
+        ),
+        "set_control_par_arr" => (
+            arg(1).and_then(|p| eval::symbol_in(symbols, p)),
+            arg(2).map(Value::Int),
+            arg(3),
+        ),
+        "set_control_par_str_arr" => (
+            arg(1).and_then(|p| eval::symbol_in(symbols, p)),
+            text().map(Value::Text),
+            arg(2),
+        ),
         _ => return false,
     };
-    let (Some(name), Some(mut value)) = (name, value) else { return false };
+    let (Some(name), Some(mut value)) = (name, value) else {
+        return false;
+    };
     if let Some(w) = widget {
-        if service == "add_text_line" && let Value::Text(new) = &mut value
-            && let Some(Value::Text(old)) = w.properties.get(&name) && !old.is_empty() {
+        if service == "add_text_line"
+            && let Value::Text(new) = &mut value
+            && let Some(Value::Text(old)) = w.properties.get(&name)
+            && !old.is_empty()
+        {
             *new = format!("{old}\n{new}");
         }
         if let Some(i) = index {
             let properties = w.indexed_properties.entry(name).or_default();
-            if properties.get(&i) == Some(&value) { return false; }
+            if properties.get(&i) == Some(&value) {
+                return false;
+            }
             properties.insert(i, value);
         } else {
-            if w.properties.get(&name) == Some(&value) { return false; }
+            if w.properties.get(&name) == Some(&value) {
+                return false;
+            }
             if name == "$CONTROL_PAR_VALUE" {
                 match (&value, &mut w.value) {
                     (Value::Int(v), model::WidgetValue::Int(old)) => *old = *v,
@@ -391,9 +502,13 @@ fn apply_ui_effect(
         }
     } else if (builtins::INST_ICON_ID..=builtins::INST_ICON_ID + 5).contains(&id) {
         let properties = model.interface.instrument.entry(id).or_default();
-        if properties.get(&name) == Some(&value) { return false; }
+        if properties.get(&name) == Some(&value) {
+            return false;
+        }
         properties.insert(name, value);
-    } else { return false; }
+    } else {
+        return false;
+    }
     true
 }
 
@@ -436,26 +551,50 @@ pub fn persistent_state_buffer(
     let mut state = sampler_core::ScriptStateBuffer::default();
     let mut base = 0;
     for (i, view) in views.iter().enumerate() {
-        let instance = ScriptInstanceId(u16::try_from(i).map_err(|_| sampler_core::Error::Capacity)?);
+        let instance =
+            ScriptInstanceId(u16::try_from(i).map_err(|_| sampler_core::Error::Capacity)?);
         for persistent in &view.model.persistent {
             match persistent.location {
                 model::Location::Control(id) => state.values.push(sampler_core::ScriptStateEntry {
-                    address: A::Control(id), value: V::Control(sampler_core::ControlValue::Integer(0)),
+                    address: A::Control(id),
+                    value: V::Control(sampler_core::ControlValue::Integer(0)),
                 }),
                 model::Location::Cells { offset, len } => {
-                    for index in offset..offset.checked_add(len).ok_or(sampler_core::Error::Capacity)? {
-                        state.values.push(sampler_core::ScriptStateEntry { address: A::Cell {instance,index}, value: V::Cell(0) });
+                    for index in offset
+                        ..offset
+                            .checked_add(len)
+                            .ok_or(sampler_core::Error::Capacity)?
+                    {
+                        state.values.push(sampler_core::ScriptStateEntry {
+                            address: A::Cell { instance, index },
+                            value: V::Cell(0),
+                        });
                     }
                 }
                 model::Location::Texts { offset, len } => {
-                    for index in offset..offset.checked_add(len).ok_or(sampler_core::Error::Capacity)? {
-                        state.values.push(sampler_core::ScriptStateEntry { address: A::Text {instance,index}, value: V::Text(sampler_core::Text::new("")) });
+                    for index in offset
+                        ..offset
+                            .checked_add(len)
+                            .ok_or(sampler_core::Error::Capacity)?
+                    {
+                        state.values.push(sampler_core::ScriptStateEntry {
+                            address: A::Text { instance, index },
+                            value: V::Text(sampler_core::Text::new("")),
+                        });
                     }
                 }
             }
         }
-        if let Some(entry) = view.entries.iter().find(|e| e.kind == EntryKind::PersistenceChanged) {
-            state.callbacks.push(sampler_core::ScriptStateCallback { program: base + entry.program, behavior: None, outcome: None });
+        if let Some(entry) = view
+            .entries
+            .iter()
+            .find(|e| e.kind == EntryKind::PersistenceChanged)
+        {
+            state.callbacks.push(sampler_core::ScriptStateCallback {
+                program: base + entry.program,
+                behavior: None,
+                outcome: None,
+            });
         }
         base += view.programs;
     }
@@ -480,7 +619,7 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
     let mut signals = Vec::new();
     let mut shared = Vec::new();
     let mut midi_object = sampler_core::MidiObject::default();
-    let mut midi_instances=Vec::new();
+    let mut midi_instances = Vec::new();
     let initial_controllers: Vec<(u8, u8)> = scripts
         .iter()
         .flat_map(|s| s.model().controllers.iter().copied())
@@ -599,9 +738,13 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
             script
                 .entries
                 .iter()
-                .filter(|e| matches!(e.kind,EntryKind::PgsChanged | EntryKind::AsyncComplete))
+                .filter(|e| matches!(e.kind, EntryKind::PgsChanged | EntryKind::AsyncComplete))
                 .map(|e| sampler_core::SignalProgram {
-                    signal: if e.kind==EntryKind::AsyncComplete {sampler_core::MIDI_ASYNC_SIGNAL} else {lower::PGS_SIGNAL},
+                    signal: if e.kind == EntryKind::AsyncComplete {
+                        sampler_core::MIDI_ASYNC_SIGNAL
+                    } else {
+                        lower::PGS_SIGNAL
+                    },
                     program: base + e.program,
                     stage: index,
                 }),
@@ -612,7 +755,7 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
             program: base + p,
             stage: index,
         }));
-        midi_instances.push((script.slot,instance));
+        midi_instances.push((script.slot, instance));
         midi_object = script.midi_object;
         programs.extend(
             script

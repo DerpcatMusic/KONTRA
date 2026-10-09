@@ -9,11 +9,19 @@ fn preempted_listener_driver_keeps_ticking_after_one_second() {
            set_listener($NI_SIGNAL_TIMER_MS,10000)
          end on
          on listener inc($ticks) end on",
-        48000, sampler_ksp::Limits::LIBRARY, &[],
-    ).unwrap();
+        48000,
+        sampler_ksp::Limits::LIBRARY,
+        &[],
+    )
+    .unwrap();
     let id = script.controls()[0].definition.id;
-    let plan = script.bind(Prepared::new(48000, vec![], vec![], 0).unwrap()).unwrap();
-    let limits = Limits { behavior_fuel: 8, ..Limits::for_plan(&plan, 8, 0) };
+    let plan = script
+        .bind(Prepared::new(48000, vec![], vec![], 0).unwrap())
+        .unwrap();
+    let limits = Limits {
+        behavior_fuel: 8,
+        ..Limits::for_plan(&plan, 8, 0)
+    };
     let mut rt = Runtime::new(plan, limits).unwrap();
     let mut faults = Vec::new();
     let mut second = 0;
@@ -26,13 +34,27 @@ fn preempted_listener_driver_keeps_ticking_after_one_second() {
             true
         });
         if block == 749 {
-            let ControlValue::Integer(value) = rt.control_value(rt.active_plan(), id).unwrap() else { panic!("integer ticks") };
+            let ControlValue::Integer(value) = rt.control_value(rt.active_plan(), id).unwrap()
+            else {
+                panic!("integer ticks")
+            };
             second = value;
         }
     }
-    let ControlValue::Integer(final_ticks) = rt.control_value(rt.active_plan(), id).unwrap() else { panic!("integer ticks") };
-    assert!(faults.is_empty(), "periodic driver must not age across waits: {faults:?}");
-    assert!(second > 0 && final_ticks > second, "timer stopped after one second");
-    assert!(rt.preemptions() > 0, "regression must exercise fuel preemption");
+    let ControlValue::Integer(final_ticks) = rt.control_value(rt.active_plan(), id).unwrap() else {
+        panic!("integer ticks")
+    };
+    assert!(
+        faults.is_empty(),
+        "periodic driver must not age across waits: {faults:?}"
+    );
+    assert!(
+        second > 0 && final_ticks > second,
+        "timer stopped after one second"
+    );
+    assert!(
+        rt.preemptions() > 0,
+        "regression must exercise fuel preemption"
+    );
     assert_eq!(rt.now(), 96000);
 }

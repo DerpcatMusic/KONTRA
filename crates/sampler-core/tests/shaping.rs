@@ -207,10 +207,20 @@ fn rack_branches_sum_at_their_gains_with_nested_stages() {
         })
         .collect();
     let stages = vec![
-        Processor::Branch { count: 2, gain: 0.5, first: true, last: false },
+        Processor::Branch {
+            count: 2,
+            gain: 0.5,
+            first: true,
+            last: false,
+        },
         Processor::Rectify(Rectifier::Full),
         Processor::Gain(2.),
-        Processor::Branch { count: 0, gain: 0.25, first: false, last: true },
+        Processor::Branch {
+            count: 0,
+            gain: 0.25,
+            first: false,
+            last: true,
+        },
     ];
     for block in [1, 7, 64, 129] {
         let voice = plan()
@@ -224,7 +234,10 @@ fn rack_branches_sum_at_their_gains_with_nested_stages() {
             .with_buses(
                 vec![Bus {
                     processors: stages.clone(),
-                    sends: vec![BusSend { bus: None, gain: 1. }],
+                    sends: vec![BusSend {
+                        bus: None,
+                        gain: 1.,
+                    }],
                     tail_frames: 0,
                 }],
                 vec![Some(0)],

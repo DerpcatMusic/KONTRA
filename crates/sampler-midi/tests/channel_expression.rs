@@ -191,7 +191,13 @@ fn reset_all_controllers_centres_bend_and_clears_pressure() {
     assert_eq!(expression(&rt, note).pitch_semitones, 0.0);
     assert_eq!(expression(&rt, note).pressure, 0);
     let later = start(&mut ingress, &mut rt, 0, 61);
-    assert_eq!((expression(&rt, later).pitch_semitones, expression(&rt, later).pressure), (0.0, 0));
+    assert_eq!(
+        (
+            expression(&rt, later).pitch_semitones,
+            expression(&rt, later).pressure
+        ),
+        (0.0, 0)
+    );
     apply(&mut ingress, &mut rt, &[bend(0, 16383)]);
     assert!(expression(&rt, later).pitch_semitones > 1.9, "range kept");
 }

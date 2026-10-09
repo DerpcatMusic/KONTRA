@@ -192,14 +192,21 @@ impl Initialized {
     /// one fixed-capacity Text union for every integer cell.
     pub fn capture_initialized(&self) -> Option<CachedInit> {
         // ponytail: fall back to fresh init until the cache carries owned MIDI jobs/events.
-        if self.init.midi_object != Default::default() || self.environment.midi_object != Default::default() {
+        if self.init.midi_object != Default::default()
+            || self.environment.midi_object != Default::default()
+        {
             return None;
         }
         Some(CachedInit {
             groups: self.environment.groups.clone(),
             slot: self.environment.slot,
             performance_view: self.environment.performance_view.clone(),
-            engine_values: self.environment.engine_values.iter().map(|(k, v)| (*k, *v)).collect(),
+            engine_values: self
+                .environment
+                .engine_values
+                .iter()
+                .map(|(k, v)| (*k, *v))
+                .collect(),
             engine_lookups: self.environment.engine_lookups.clone(),
             state: serde_json::value::to_raw_value(&NativeValues(self)).ok()?,
             cells: self.hir.cells,
@@ -336,7 +343,10 @@ pub fn restore_initialized(
     )
     .map_err(|f| f.locate(source))?;
     if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
-        eprintln!("AUDIT {{\"stage\":\"ksp_cache_frontend\",\"ms\":{}}}", frontend_begin.elapsed().as_secs_f64() * 1000.);
+        eprintln!(
+            "AUDIT {{\"stage\":\"ksp_cache_frontend\",\"ms\":{}}}",
+            frontend_begin.elapsed().as_secs_f64() * 1000.
+        );
     }
     let restore_begin = std::time::Instant::now();
     if cached.persistence.len() != hir.vars.len() {
@@ -376,7 +386,10 @@ pub fn restore_initialized(
     .map_err(|_| error("invalid cached native state"))?;
     d.end().map_err(|_| error("trailing cached state"))?;
     if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
-        eprintln!("AUDIT {{\"stage\":\"ksp_cache_native_restore\",\"ms\":{}}}", restore_begin.elapsed().as_secs_f64() * 1000.);
+        eprintln!(
+            "AUDIT {{\"stage\":\"ksp_cache_native_restore\",\"ms\":{}}}",
+            restore_begin.elapsed().as_secs_f64() * 1000.
+        );
     }
     for (start, end, builtin, message) in cached.warnings {
         if start > end || end as usize > source.len() {
@@ -451,13 +464,30 @@ mod tests {
         let source = "on init\nend on";
         let mut environment = crate::Environment::default();
         environment.engine_values.insert([9, 2, 0, 0], 12345);
-        environment.engine_lookups.push(sampler_core::EngineLookup {group: 2, owner: 0, target: false, name: "ENV_AHDSR".into(), index: 3});
+        environment.engine_lookups.push(sampler_core::EngineLookup {
+            group: 2,
+            owner: 0,
+            target: false,
+            name: "ENV_AHDSR".into(),
+            index: 3,
+        });
         let init = crate::initialize(source, crate::Limits::LIBRARY, &environment).unwrap();
         let cached = init.capture_initialized().unwrap();
         let restored = super::restore_initialized(source, crate::Limits::LIBRARY, cached).unwrap();
-        assert_eq!(restored.environment.engine_values, environment.engine_values);
-        assert_eq!(restored.environment.engine_lookups, environment.engine_lookups);
-        let midi = crate::initialize("on init\nmf_set_buffer_size(2)\nend on", crate::Limits::LIBRARY, &Default::default()).unwrap();
+        assert_eq!(
+            restored.environment.engine_values,
+            environment.engine_values
+        );
+        assert_eq!(
+            restored.environment.engine_lookups,
+            environment.engine_lookups
+        );
+        let midi = crate::initialize(
+            "on init\nmf_set_buffer_size(2)\nend on",
+            crate::Limits::LIBRARY,
+            &Default::default(),
+        )
+        .unwrap();
         assert!(midi.capture_initialized().is_none());
     }
     #[test]

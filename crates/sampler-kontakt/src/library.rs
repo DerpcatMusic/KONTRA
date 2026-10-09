@@ -44,7 +44,10 @@ pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
 }
 
 /// [`read`] with host-saved scalar values applied before script initialization.
-pub fn read_with_controls(path: &Path, control_values: &[(sampler_core::ControlId, i32)]) -> Result<Kontakt, LoadError> {
+pub fn read_with_controls(
+    path: &Path,
+    control_values: &[(sampler_core::ControlId, i32)],
+) -> Result<Kontakt, LoadError> {
     read_overlaid(path, None, control_values)
 }
 
@@ -76,7 +79,11 @@ fn read_overlaid(
     control_values: &[(sampler_core::ControlId, i32)],
 ) -> Result<Kontakt, LoadError> {
     let path = path.canonicalize().map_err(|e| LoadError::io(path, e))?;
-    if snapshot.is_none() { if let Some(cached)=crate::cache::load(&path,0,control_values) {return Ok(cached);} }
+    if snapshot.is_none() {
+        if let Some(cached) = crate::cache::load(&path, 0, control_values) {
+            return Ok(cached);
+        }
+    }
     let chunks = crate::read_chunks(&path).map_err(|e| e.at(crate::Stage::Container))?;
     let span = crate::audit::Span::new("ni_objects_parse");
     let invalid = |reason: &str| LoadError::Invalid {
@@ -106,7 +113,16 @@ fn read_overlaid(
     };
     drop(span);
     let _span = crate::audit::Span::new("translate_resolve_ir");
-    translate(path, program, table, others, snapshot, control_values, snapshot.is_none().then_some(0)).map_err(|e| e.at(crate::Stage::Translate))
+    translate(
+        path,
+        program,
+        table,
+        others,
+        snapshot,
+        control_values,
+        snapshot.is_none().then_some(0),
+    )
+    .map_err(|e| e.at(crate::Stage::Translate))
 }
 
 /// Translate program `index` (0-based, in slot order) of the multi at `path`;
@@ -116,10 +132,18 @@ pub fn read_program(path: &Path, index: usize) -> Result<Kontakt, LoadError> {
 }
 
 /// [`read_program`] with host overrides applied before script initialization.
-pub fn read_program_with_controls(path: &Path, index: usize, control_values: &[(sampler_core::ControlId, i32)]) -> Result<Kontakt, LoadError> {
+pub fn read_program_with_controls(
+    path: &Path,
+    index: usize,
+    control_values: &[(sampler_core::ControlId, i32)],
+) -> Result<Kontakt, LoadError> {
     use ni_file::kontakt::objects::Bank;
     let path = path.canonicalize().map_err(|e| LoadError::io(path, e))?;
-    if let Ok(index)=u32::try_from(index) { if let Some(cached)=crate::cache::load(&path,index,control_values) {return Ok(cached);} }
+    if let Ok(index) = u32::try_from(index) {
+        if let Some(cached) = crate::cache::load(&path, index, control_values) {
+            return Ok(cached);
+        }
+    }
     let chunks = crate::read_chunks(&path).map_err(|e| e.at(crate::Stage::Container))?;
     let span = crate::audit::Span::new("ni_objects_parse");
     let invalid = |reason: &str| LoadError::Invalid {
@@ -168,7 +192,16 @@ pub fn read_program_with_controls(path: &Path, index: usize, control_values: &[(
     };
     drop(span);
     let _span = crate::audit::Span::new("translate_resolve_ir");
-    translate(path, program, table, others, None, control_values, u32::try_from(index).ok()).map_err(|e| e.at(crate::Stage::Translate))
+    translate(
+        path,
+        program,
+        table,
+        others,
+        None,
+        control_values,
+        u32::try_from(index).ok(),
+    )
+    .map_err(|e| e.at(crate::Stage::Translate))
 }
 
 fn translate(
@@ -231,31 +264,62 @@ fn translate(
         dynamic: false,
         eq_mod_slots: HashMap::new(),
         send_taps: Vec::new(),
-        #[cfg(feature="scan")]
+        #[cfg(feature = "scan")]
         target_outcomes: HashMap::new(),
     };
-    match crate::program_automation(&program.0.private_data, program.version(), crate::Limits { bytes: 64 << 20, records: 65536 }) {
-        Ok(records) => for record in records {
-            let target = std::str::from_utf8(record.tag.data()).ok().and_then(|tag| {
-                let rest = tag.strip_prefix("pts_script_slider_")?;
-                let (slot, ordinal) = rest.split_once('_')?;
-                Some((slot.parse::<u8>().ok()?, ordinal.parse::<u32>().ok()?))
-            });
-            let source = match record.mode {
-                1 if record.address < 128 => Some(ir::ScriptAutomationSource::Controller(record.address as u8)),
-                2 => Some(ir::ScriptAutomationSource::HostParameter(record.address)),
-                _ => None,
-            };
-            if let (Some((source_slot, slider)), Some(source)) = (target, source)
-                && (0.0..=1.0).contains(&record.low) && (0.0..=1.0).contains(&record.high)
-            {
-                out.ir.script_automation.push(ir::ScriptAutomation { source, source_slot, slider,
-                    low: f64::from(record.low), high: f64::from(record.high), soft_takeover: record.soft_takeover });
-            } else {
-                out.unsupported("program private", "saved automation target", format!("record {} mode {} address {}", record.offset, record.mode, record.address), ir::Reason::NotModeled);
-            }
+    match crate::program_automation(
+        &program.0.private_data,
+        program.version(),
+        crate::Limits {
+            bytes: 64 << 20,
+            records: 65536,
         },
-        Err(error) => out.unsupported("program private", "saved automation layout", error, ir::Reason::NotModeled),
+    ) {
+        Ok(records) => {
+            for record in records {
+                let target = std::str::from_utf8(record.tag.data()).ok().and_then(|tag| {
+                    let rest = tag.strip_prefix("pts_script_slider_")?;
+                    let (slot, ordinal) = rest.split_once('_')?;
+                    Some((slot.parse::<u8>().ok()?, ordinal.parse::<u32>().ok()?))
+                });
+                let source = match record.mode {
+                    1 if record.address < 128 => {
+                        Some(ir::ScriptAutomationSource::Controller(record.address as u8))
+                    }
+                    2 => Some(ir::ScriptAutomationSource::HostParameter(record.address)),
+                    _ => None,
+                };
+                if let (Some((source_slot, slider)), Some(source)) = (target, source)
+                    && (0.0..=1.0).contains(&record.low)
+                    && (0.0..=1.0).contains(&record.high)
+                {
+                    out.ir.script_automation.push(ir::ScriptAutomation {
+                        source,
+                        source_slot,
+                        slider,
+                        low: f64::from(record.low),
+                        high: f64::from(record.high),
+                        soft_takeover: record.soft_takeover,
+                    });
+                } else {
+                    out.unsupported(
+                        "program private",
+                        "saved automation target",
+                        format!(
+                            "record {} mode {} address {}",
+                            record.offset, record.mode, record.address
+                        ),
+                        ir::Reason::NotModeled,
+                    );
+                }
+            }
+        }
+        Err(error) => out.unsupported(
+            "program private",
+            "saved automation layout",
+            error,
+            ir::Reason::NotModeled,
+        ),
     }
     if let Some(chunk) = program.0.find_first(VOICE_GROUPS) {
         out.voice_groups(&chunk.data)
@@ -330,7 +394,8 @@ fn translate(
     }
     // Lookup metadata precedes script init and never depends on DSP admission.
     for (index, group) in groups.groups.iter().enumerate() {
-        out.source_modulators(index, group).map_err(|e| decode("source modulation names", e))?;
+        out.source_modulators(index, group)
+            .map_err(|e| decode("source modulation names", e))?;
     }
     // Scripts first: what `on init` writes with set_engine_par (effect gains,
     // bypass) is the rack's state, so racks are translated after it.
@@ -338,15 +403,20 @@ fn translate(
         .groups
         .iter()
         .map(|g| g.params().map(|p| p.name))
-        .collect::<Result<_,_>>()
-        .map_err(|e| decode("source group names",e))?;
+        .collect::<Result<_, _>>()
+        .map_err(|e| decode("source group names", e))?;
     if let Some(snapshot) = snapshot {
         for behavior in &mut out.ir.behaviors {
             if let Some(entries) = behavior
                 .slot
                 .and_then(|slot| snapshot.persistent.get(usize::from(slot)))
             {
-                for (name, value) in saved(entries).map_err(|e| invalid(&format!("snapshot persistent values: {:?} at {}", e.kind, e.offset)))? {
+                for (name, value) in saved(entries).map_err(|e| {
+                    invalid(&format!(
+                        "snapshot persistent values: {:?} at {}",
+                        e.kind, e.offset
+                    ))
+                })? {
                     match behavior.state.iter_mut().find(|(n, _)| *n == name) {
                         Some(slot) => slot.1 = value,
                         None => behavior.state.push((name, value)),
@@ -356,7 +426,8 @@ fn translate(
         }
     }
     let span = crate::audit::Span::new("translate_ksp_init");
-    let initialized = crate::load::initialize_scripts(&mut out.ir, Some(&path), group_names, control_values);
+    let initialized =
+        crate::load::initialize_scripts(&mut out.ir, Some(&path), group_names, control_values);
     out.engine = initialized
         .states
         .iter()
@@ -418,8 +489,8 @@ fn translate(
             bus.volume = volume;
         }
     }
-    let mut impulse_sources=HashMap::new();
-    let mut impulse_params=Vec::new();
+    let mut impulse_sources = HashMap::new();
+    let mut impulse_params = Vec::new();
     {
         // Convolution impulse responses are named by the other-files table.
         let mut load = |index: i32| -> Result<crate::effects::Decoded, String> {
@@ -431,12 +502,18 @@ fn translate(
                 .resolve(parent, name)
                 .map_err(|e| e.to_string())?
                 .ok_or_else(|| format!("{name} was not found"))?;
-            impulse_sources.insert(index,at.clone());
+            impulse_sources.insert(index, at.clone());
             let decoded = samples.decode(&at).map_err(|e| e.to_string())?;
             Ok((decoded.rate, decoded.frames))
         };
-        let (notes, send_buses) =
-            crate::effects::instrument_buses_with_recipes(&mut out.ir, &racks, &buses, dynamic, &mut load, Some(&mut impulse_params));
+        let (notes, send_buses) = crate::effects::instrument_buses_with_recipes(
+            &mut out.ir,
+            &racks,
+            &buses,
+            dynamic,
+            &mut load,
+            Some(&mut impulse_params),
+        );
         for (at, (slot, feature, value, reason)) in notes {
             out.unsupported(&format!("{at} slot {slot}"), &feature, value, reason);
         }
@@ -472,7 +549,9 @@ fn translate(
         else {
             continue; // Muted group: never sounds.
         };
-        if !zone.sample_present { continue; } // Authored empty zone, no sample to resolve.
+        if !zone.sample_present {
+            continue;
+        } // Authored empty zone, no sample to resolve.
         let name = table.get(&(zone.file as u32)).ok_or_else(|| {
             invalid(&format!(
                 "zone {index} sample is absent from the file table"
@@ -514,14 +593,37 @@ fn translate(
     out.ir.register_compressor_controls();
     out.ir.unsupported.dedup();
     #[cfg(feature = "scan")]
-    { out.ir.dsp_slots = crate::coverage::slots(&program, &out.ir, dynamic, &out.engine, &out.target_outcomes).ok(); out.ir.native_start_mod_groups = crate::coverage::start_mod_groups(&program).ok(); }
+    {
+        out.ir.dsp_slots = crate::coverage::slots(
+            &program,
+            &out.ir,
+            dynamic,
+            &out.engine,
+            &out.target_outcomes,
+        )
+        .ok();
+        out.ir.native_start_mod_groups = crate::coverage::start_mod_groups(&program).ok();
+    }
     out.ir.validate().map_err(|e| invalid(&e.to_string()))?;
     drop(_span);
-    let mut kontakt=Kontakt {
-        instrument:out.ir,locations:out.locations,samples,initialized:Some(initialized),
+    let mut kontakt = Kontakt {
+        instrument: out.ir,
+        locations: out.locations,
+        samples,
+        initialized: Some(initialized),
     };
-    let recipes=impulse_params.into_iter().map(|params|Some(crate::cache::ImpulseRecipe {source:impulse_sources.get(&params.ir_index)?.clone(),params})).collect::<Option<Vec<_>>>();
-    if let (Some(program),Some(recipes))=(cache_program,recipes) { crate::cache::store(&path,program,&mut kontakt,&recipes); }
+    let recipes = impulse_params
+        .into_iter()
+        .map(|params| {
+            Some(crate::cache::ImpulseRecipe {
+                source: impulse_sources.get(&params.ir_index)?.clone(),
+                params,
+            })
+        })
+        .collect::<Option<Vec<_>>>();
+    if let (Some(program), Some(recipes)) = (cache_program, recipes) {
+        crate::cache::store(&path, program, &mut kontakt, &recipes);
+    }
     Ok(kontakt)
 }
 
@@ -561,13 +663,16 @@ struct Translation {
     dynamic: bool,
     eq_mod_slots: HashMap<usize, Vec<usize>>,
     send_taps: Vec<(ir::ChainRef, crate::effects::SendTap)>,
-    #[cfg(feature="scan")]
+    #[cfg(feature = "scan")]
     target_outcomes: crate::coverage::Targets,
 }
 
 fn eq_knob(name: &str) -> Option<(usize, ir::ProcessorParameter)> {
-    for (prefix, parameter) in [("eqGain", ir::ProcessorParameter::Gain),
-        ("eqFreq", ir::ProcessorParameter::Cutoff), ("eqBandwidth", ir::ProcessorParameter::Resonance)] {
+    for (prefix, parameter) in [
+        ("eqGain", ir::ProcessorParameter::Gain),
+        ("eqFreq", ir::ProcessorParameter::Cutoff),
+        ("eqBandwidth", ir::ProcessorParameter::Resonance),
+    ] {
         if let Some(rest) = name.strip_prefix(prefix) {
             let band = rest.parse::<u8>().ok().filter(|b| (1..=3).contains(b))?;
             return Some((usize::from(band - 1), parameter));
@@ -624,21 +729,34 @@ impl Translation {
         for (chain, tap) in std::mem::take(&mut self.send_taps) {
             for (send, level) in tap.levels.into_iter().enumerate() {
                 if !level.is_finite() || level < 0.0 {
-                    self.unsupported(&format!("voice chain {} slot {}", chain.0, tap.slot),
-                        "send level", send.to_string(), ir::Reason::InvalidValue);
+                    self.unsupported(
+                        &format!("voice chain {} slot {}", chain.0, tap.slot),
+                        "send level",
+                        send.to_string(),
+                        ir::Reason::InvalidValue,
+                    );
                     continue;
                 }
                 let Some(&(_, bus)) = buses.iter().find(|(slot, _)| *slot == send) else {
                     if level != 0.0 && !tap.bypass {
-                        self.unsupported(&format!("voice chain {} slot {}", chain.0, tap.slot),
-                            "send return", send.to_string(), ir::Reason::NotModeled);
+                        self.unsupported(
+                            &format!("voice chain {} slot {}", chain.0, tap.slot),
+                            "send return",
+                            send.to_string(),
+                            ir::Reason::NotModeled,
+                        );
                     }
                     continue;
                 };
                 self.ir.voice_send_taps.push(ir::VoiceSendTap {
-                    chain, position: tap.position, bus,
-                    gain: ir::Gain::Linear(f64::from(level)), bypass: tap.bypass,
-                    gain_control: None, bypass_control: None, ramp: ir::Time::Seconds(0.0),
+                    chain,
+                    position: tap.position,
+                    bus,
+                    gain: ir::Gain::Linear(f64::from(level)),
+                    bypass: tap.bypass,
+                    gain_control: None,
+                    bypass_control: None,
+                    ramp: ir::Time::Seconds(0.0),
                 });
             }
         }
@@ -710,7 +828,12 @@ impl Translation {
                     for (slot, modulator) in InternalModArray16::try_from(chunk)?.slots()? {
                         let params = modulator.params()?;
                         if let Modulator::Ahdsr(envelope) = &params.modulator {
-                            Self::source_envelope(&mut self.ir.source_indices, index, slot, envelope);
+                            Self::source_envelope(
+                                &mut self.ir.source_indices,
+                                index,
+                                slot,
+                                envelope,
+                            );
                         }
                         names.push((slot, params.name, params.targets));
                     }
@@ -718,9 +841,13 @@ impl Translation {
                 };
                 for (slot, name, targets) in names {
                     for target in &targets {
-                        if eq_knob(&target.param).is_some() && let Some(slot) = target.slot {
+                        if eq_knob(&target.param).is_some()
+                            && let Some(slot) = target.slot
+                        {
                             let live = self.eq_mod_slots.entry(index).or_default();
-                            if !live.contains(&usize::from(slot)) { live.push(usize::from(slot)); }
+                            if !live.contains(&usize::from(slot)) {
+                                live.push(usize::from(slot));
+                            }
                         }
                     }
                     self.source_modulator(index, slot, external, name, &targets);
@@ -731,7 +858,17 @@ impl Translation {
         let rack = match saved {
             Some(state) => Ok(ni_file::kontakt::objects::BParamArrayBParFX8 {
                 version: state.fx.0,
-                items: state.fx.1.iter().map(|slot| slot.as_ref().map(|(id, data)| ni_file::kontakt::Chunk { id: *id, data: data.clone() })).collect(),
+                items: state
+                    .fx
+                    .1
+                    .iter()
+                    .map(|slot| {
+                        slot.as_ref().map(|(id, data)| ni_file::kontakt::Chunk {
+                            id: *id,
+                            data: data.clone(),
+                        })
+                    })
+                    .collect(),
             }),
             None => group.insert_fx(),
         };
@@ -751,12 +888,25 @@ impl Translation {
                         ("FREQ", (f64::from(*hz) / 20.).log10() / 3., 0., 1.),
                         ("BW", (f64::from(*width) - 0.3) / 2.7, 0., 1.),
                     ] {
-                        if !value.is_finite() { continue; }
-                        let parameter = sampler_core::engine_parameter_id(&format!("ENGINE_PAR_{name}{}", band + 1)).unwrap();
-                        self.ir.source_indices.engine_values.push(ir::SourceEngineValue {
-                            parameter, group: group as i32, slot: slot.slot as i32, generic: -1,
-                            value: sampler_core::EngineParameterLaw::Linear { low, high }.encode(value),
-                        });
+                        if !value.is_finite() {
+                            continue;
+                        }
+                        let parameter = sampler_core::engine_parameter_id(&format!(
+                            "ENGINE_PAR_{name}{}",
+                            band + 1
+                        ))
+                        .unwrap();
+                        self.ir
+                            .source_indices
+                            .engine_values
+                            .push(ir::SourceEngineValue {
+                                parameter,
+                                group: group as i32,
+                                slot: slot.slot as i32,
+                                generic: -1,
+                                value: sampler_core::EngineParameterLaw::Linear { low, high }
+                                    .encode(value),
+                            });
                     }
                 }
             }
@@ -812,21 +962,41 @@ impl Translation {
     }
 
     fn source_modulator(
-        &mut self, group: usize, slot: usize, external: bool,
-        name: String, targets: &[ni_file::kontakt::objects::ModTarget],
+        &mut self,
+        group: usize,
+        slot: usize,
+        external: bool,
+        name: String,
+        targets: &[ni_file::kontakt::objects::ModTarget],
     ) {
-        self.ir.source_indices.engine_lookups.push(ir::SourceEngineLookup {
-            group: group as i32, owner: -1, target: false,
-            name: name.clone(), index: slot as i32,
-        });
-        for (index, target) in targets.iter().enumerate() {
-            self.ir.source_indices.engine_lookups.push(ir::SourceEngineLookup {
-                group: group as i32, owner: slot as i32, target: true,
-                name: target.name.clone(), index: index as i32,
+        self.ir
+            .source_indices
+            .engine_lookups
+            .push(ir::SourceEngineLookup {
+                group: group as i32,
+                owner: -1,
+                target: false,
+                name: name.clone(),
+                index: slot as i32,
             });
+        for (index, target) in targets.iter().enumerate() {
+            self.ir
+                .source_indices
+                .engine_lookups
+                .push(ir::SourceEngineLookup {
+                    group: group as i32,
+                    owner: slot as i32,
+                    target: true,
+                    name: target.name.clone(),
+                    index: index as i32,
+                });
         }
         self.ir.source_indices.modulators.push(ir::SourceModulator {
-            group, slot, external, name, runtime: None,
+            group,
+            slot,
+            external,
+            name,
+            runtime: None,
         });
     }
 
@@ -960,9 +1130,17 @@ impl Translation {
                 });
                 crate::effects::apply_writes(&mut slots, &self.engine, index as i32, -1);
                 let dynamic = self.dynamic.then_some((index as i32, -1));
-                let live_eq = self.eq_mod_slots.get(&index).map(Vec::as_slice).unwrap_or(&[]);
+                let live_eq = self
+                    .eq_mod_slots
+                    .get(&index)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
                 let (c, boundary) = crate::effects::voice_chain(
-                    &slots, v.fx_idx_amp_split_point, dynamic, index as i32, live_eq,
+                    &slots,
+                    v.fx_idx_amp_split_point,
+                    dynamic,
+                    index as i32,
+                    live_eq,
                 );
                 let mut processors = c.processors;
                 filter_slots = c.filter_slots;
@@ -978,7 +1156,8 @@ impl Translation {
                     });
                     chain = Some(ir::ChainRef(self.ir.chains.len() - 1));
                     self.eq_controls(index, chain.unwrap(), &filter_slots);
-                    self.send_taps.extend(c.send_taps.into_iter().map(|tap| (chain.unwrap(), tap)));
+                    self.send_taps
+                        .extend(c.send_taps.into_iter().map(|tap| (chain.unwrap(), tap)));
                 }
             }
             Err(error) => self.unsupported(
@@ -1083,19 +1262,33 @@ impl Translation {
                     source,
                 });
                 let modulator = ir::ModulatorRef(self.ir.modulators.len() - 1);
-                if let Some(address) = self.ir.source_indices.modulators.iter_mut()
+                if let Some(address) = self
+                    .ir
+                    .source_indices
+                    .modulators
+                    .iter_mut()
                     .find(|m| m.group == index && m.slot == usize::from(slot) && !m.external)
-                { address.runtime = Some(modulator); }
+                {
+                    address.runtime = Some(modulator);
+                }
                 if envelope_source && volume && envelope.is_none() {
                     envelope = Some(modulator);
-                    #[cfg(feature="scan")]
-                    self.target_outcomes.insert((index,usize::from(slot),false,0),true);
+                    #[cfg(feature = "scan")]
+                    self.target_outcomes
+                        .insert((index, usize::from(slot), false, 0), true);
                     continue;
                 }
-                for (_ordinal,target) in params.targets.iter().enumerate() {
-                    let route=self.route(&at,modulator,envelope_source,target,chain.zip(Some(&filter_slots[..])));
-                    #[cfg(feature="scan")]
-                    self.target_outcomes.insert((index,usize::from(slot),false,_ordinal),route.is_some());
+                for (_ordinal, target) in params.targets.iter().enumerate() {
+                    let route = self.route(
+                        &at,
+                        modulator,
+                        envelope_source,
+                        target,
+                        chain.zip(Some(&filter_slots[..])),
+                    );
+                    #[cfg(feature = "scan")]
+                    self.target_outcomes
+                        .insert((index, usize::from(slot), false, _ordinal), route.is_some());
                     routes.extend(route);
                 }
             }
@@ -1148,8 +1341,9 @@ impl Translation {
                     // gain × velocity: the attenuate law at full intensity,
                     // kept on the voice so no per-voice modulation is needed.
                     velocity = ir::VelocityResponse::Linear;
-                    #[cfg(feature="scan")]
-                    self.target_outcomes.insert((index,usize::from(slot),true,0),true);
+                    #[cfg(feature = "scan")]
+                    self.target_outcomes
+                        .insert((index, usize::from(slot), true, 0), true);
                     continue;
                 }
                 let source = match params.source {
@@ -1205,10 +1399,17 @@ impl Translation {
                 {
                     address.runtime = Some(modulator);
                 }
-                for (_ordinal,target) in params.targets.iter().enumerate() {
-                    let route=self.route(&at,modulator,!bipolar,target,chain.zip(Some(&filter_slots[..])));
-                    #[cfg(feature="scan")]
-                    self.target_outcomes.insert((index,usize::from(slot),true,_ordinal),route.is_some());
+                for (_ordinal, target) in params.targets.iter().enumerate() {
+                    let route = self.route(
+                        &at,
+                        modulator,
+                        !bipolar,
+                        target,
+                        chain.zip(Some(&filter_slots[..])),
+                    );
+                    #[cfg(feature = "scan")]
+                    self.target_outcomes
+                        .insert((index, usize::from(slot), true, _ordinal), route.is_some());
                     routes.extend(route);
                 }
             }
@@ -1261,32 +1462,97 @@ impl Translation {
     fn eq_controls(&mut self, group: usize, chain: ir::ChainRef, slots: &[(usize, usize)]) {
         let mut bands = HashMap::<usize, usize>::new();
         for &(slot, index) in slots {
-            let Some(ir::Processor::Filter(ir::Filter { kind: ir::FilterKind::Peak { gain },
-                cutoff: ir::Frequency::Hertz(hz), resonance: ir::Resonance::Q(q) })) =
-                self.ir.chains[chain.0].pre_amplitude.iter().chain(&self.ir.chains[chain.0].post_amplitude).nth(index)
-            else { continue; };
+            let Some(ir::Processor::Filter(ir::Filter {
+                kind: ir::FilterKind::Peak { gain },
+                cutoff: ir::Frequency::Hertz(hz),
+                resonance: ir::Resonance::Q(q),
+            })) = self.ir.chains[chain.0]
+                .pre_amplitude
+                .iter()
+                .chain(&self.ir.chains[chain.0].post_amplitude)
+                .nth(index)
+            else {
+                continue;
+            };
             let band = bands.entry(slot).or_default();
-            let saved = [20. * gain.linear().log10(), (hz / 20.).log10() / 3.,
-                (2. * (0.5 / q).asinh() / std::f64::consts::LN_2 - 0.3) / 2.7];
+            let saved = [
+                20. * gain.linear().log10(),
+                (hz / 20.).log10() / 3.,
+                (2. * (0.5 / q).asinh() / std::f64::consts::LN_2 - 0.3) / 2.7,
+            ];
             for (n, (native, name, label, parameter, min, max, unit)) in [
-                ("GAIN", "gain", "Gain", ir::ProcessorParameter::Gain, -18., 18., ir::ControlUnit::Decibels),
-                ("FREQ", "frequency", "Frequency", ir::ProcessorParameter::Cutoff, 0., 1., ir::ControlUnit::Percent),
-                ("BW", "bandwidth", "Bandwidth", ir::ProcessorParameter::Resonance, 0., 1., ir::ControlUnit::Percent),
-            ].into_iter().enumerate() {
+                (
+                    "GAIN",
+                    "gain",
+                    "Gain",
+                    ir::ProcessorParameter::Gain,
+                    -18.,
+                    18.,
+                    ir::ControlUnit::Decibels,
+                ),
+                (
+                    "FREQ",
+                    "frequency",
+                    "Frequency",
+                    ir::ProcessorParameter::Cutoff,
+                    0.,
+                    1.,
+                    ir::ControlUnit::Percent,
+                ),
+                (
+                    "BW",
+                    "bandwidth",
+                    "Bandwidth",
+                    ir::ProcessorParameter::Resonance,
+                    0.,
+                    1.,
+                    ir::ControlUnit::Percent,
+                ),
+            ]
+            .into_iter()
+            .enumerate()
+            {
                 let native = format!("ENGINE_PAR_{native}{}", *band + 1);
-                let default = self.script_par(&native, group as i32, slot as i32, -1)
-                    .map_or(saved[n], |v| min + (max - min) * f64::from(v.clamp(0, 1_000_000)) / 1_000_000.)
+                let default = self
+                    .script_par(&native, group as i32, slot as i32, -1)
+                    .map_or(saved[n], |v| {
+                        min + (max - min) * f64::from(v.clamp(0, 1_000_000)) / 1_000_000.
+                    })
                     .clamp(min, max);
                 let control = ir::ControlRef(self.ir.controls.len());
                 self.ir.controls.push(ir::Control {
-                    key: format!("kontakt/group/{group}/slot/{slot}/eq/band/{}/{name}", *band + 1),
+                    key: format!(
+                        "kontakt/group/{group}/slot/{slot}/eq/band/{}/{name}",
+                        *band + 1
+                    ),
                     label: format!("EQ Band {} {label}", *band + 1),
-                    value: ir::ControlValue::Continuous { min, max, default, unit },
+                    value: ir::ControlValue::Continuous {
+                        min,
+                        max,
+                        default,
+                        unit,
+                    },
                     automation: ir::Automation::None,
                 });
-                self.ir.processor_controls.push(ir::ProcessorControl { control, chain, index, parameter, ramp: ir::Time::ZERO });
-                self.ir.source_indices.control_aliases.push(ir::SourceControlAlias { control, parameter: native,
-                    address: ir::SlotAddress { group: group as i32, slot: slot as i32, generic: -1 } });
+                self.ir.processor_controls.push(ir::ProcessorControl {
+                    control,
+                    chain,
+                    index,
+                    parameter,
+                    ramp: ir::Time::ZERO,
+                });
+                self.ir
+                    .source_indices
+                    .control_aliases
+                    .push(ir::SourceControlAlias {
+                        control,
+                        parameter: native,
+                        address: ir::SlotAddress {
+                            group: group as i32,
+                            slot: slot as i32,
+                            generic: -1,
+                        },
+                    });
             }
             *band += 1;
         }
@@ -1311,9 +1577,18 @@ impl Translation {
 
     /// The modulation intensity a script set for modulation `name` of group `index`.
     fn script_intensity(&self, index: usize, name: &str) -> Option<f32> {
-        let slot = self.ir.source_indices.engine_lookups.iter()
-            .find(|lookup| lookup.group == index as i32 && lookup.owner == -1 && !lookup.target
-                && lookup.name.eq_ignore_ascii_case(name))?.index;
+        let slot = self
+            .ir
+            .source_indices
+            .engine_lookups
+            .iter()
+            .find(|lookup| {
+                lookup.group == index as i32
+                    && lookup.owner == -1
+                    && !lookup.target
+                    && lookup.name.eq_ignore_ascii_case(name)
+            })?
+            .index;
         let v = self.script_par("ENGINE_PAR_MOD_TARGET_INTENSITY", index as i32, slot, -1)?;
         Some(v.clamp(0, 1_000_000) as f32 / 1_000_000.0)
     }
@@ -1345,26 +1620,75 @@ impl Translation {
         let addressed = filters.and_then(|(chain, slots)| {
             let slot = target.slot?;
             let knob = eq_knob(&target.param);
-            let (_, index) = slots.iter().filter(|(s, _)| *s == usize::from(slot)).nth(knob.map_or(0, |(band, _)| band))?;
-            let processor = self.ir.chains.get(chain.0)?.pre_amplitude.iter()
-                .chain(&self.ir.chains[chain.0].post_amplitude).nth(*index)?;
+            let (_, index) = slots
+                .iter()
+                .filter(|(s, _)| *s == usize::from(slot))
+                .nth(knob.map_or(0, |(band, _)| band))?;
+            let processor = self
+                .ir
+                .chains
+                .get(chain.0)?
+                .pre_amplitude
+                .iter()
+                .chain(&self.ir.chains[chain.0].post_amplitude)
+                .nth(*index)?;
             if let Some((_, parameter)) = knob {
-                return matches!(processor, ir::Processor::Filter(ir::Filter { kind: ir::FilterKind::Peak { .. }, .. }))
-                    .then_some((ir::Target::Processor { chain, index: *index, parameter }, ir::Depth::Normalized(i)));
+                return matches!(
+                    processor,
+                    ir::Processor::Filter(ir::Filter {
+                        kind: ir::FilterKind::Peak { .. },
+                        ..
+                    })
+                )
+                .then_some((
+                    ir::Target::Processor {
+                        chain,
+                        index: *index,
+                        parameter,
+                    },
+                    ir::Depth::Normalized(i),
+                ));
             }
-            let native = matches!(processor, ir::Processor::LadderLP4(_) | ir::Processor::Daft(_));
+            let native = matches!(
+                processor,
+                ir::Processor::LadderLP4(_) | ir::Processor::Daft(_)
+            );
             let parameter = match target.param.as_str() {
-                "filterCutoff" if !matches!(processor, ir::Processor::Filter(ir::Filter { kind: ir::FilterKind::Peak { .. }, .. })) => ir::ProcessorParameter::Cutoff,
+                "filterCutoff"
+                    if !matches!(
+                        processor,
+                        ir::Processor::Filter(ir::Filter {
+                            kind: ir::FilterKind::Peak { .. },
+                            ..
+                        })
+                    ) =>
+                {
+                    ir::ProcessorParameter::Cutoff
+                }
                 "filterQ" if native => ir::ProcessorParameter::Resonance,
                 "Gain" if native => ir::ProcessorParameter::Gain,
                 _ => return None,
             };
-            let depth = if native { ir::Depth::Normalized(i) }
-                else { ir::Depth::Pitch(ir::Pitch::Semitones(120.0 * i)) };
-            Some((ir::Target::Processor { chain, index: *index, parameter }, depth))
+            let depth = if native {
+                ir::Depth::Normalized(i)
+            } else {
+                ir::Depth::Pitch(ir::Pitch::Semitones(120.0 * i))
+            };
+            Some((
+                ir::Target::Processor {
+                    chain,
+                    index: *index,
+                    parameter,
+                },
+                depth,
+            ))
         });
         if target.slot.is_some() && addressed.is_none() {
-            return report(self, "modulation of a module parameter", ir::Reason::NotModeled);
+            return report(
+                self,
+                "modulation of a module parameter",
+                ir::Reason::NotModeled,
+            );
         }
         let (route_target, depth) = match target.param.as_str() {
             _ if addressed.is_some() => addressed.unwrap(),
@@ -1429,7 +1753,9 @@ impl Translation {
         let shape = match (lfo.waveform, lfo.trailing_values) {
             // Native core 0x140b07290: the five weighted components sum to zero.
             // Verified original-byte waveform checks; the bipolar view is still 0.5.
-            (5, Some(weights)) if weights == [0.; 5] && width > 0. && width < 1. => ir::LfoShape::Zero,
+            (5, Some(weights)) if weights == [0.; 5] && width > 0. && width < 1. => {
+                ir::LfoShape::Zero
+            }
             (0, _) => ir::LfoShape::Sine,
             (1, _) if width == 0.5 => ir::LfoShape::Square,
             (2, _) => ir::LfoShape::Triangle,
@@ -1531,7 +1857,12 @@ impl Translation {
             return;
         }
         let mut slots = [None; 8];
-        for (slot, l) in z.loop_slots.iter().zip(&z.loops).filter(|(_, l)| l.mode != 0) {
+        for (slot, l) in z
+            .loop_slots
+            .iter()
+            .zip(&z.loops)
+            .filter(|(_, l)| l.mode != 0)
+        {
             if l.loop_count < 0
                 || !l.loop_tuning.is_finite()
                 || l.loop_tuning <= 0.0
@@ -1552,7 +1883,12 @@ impl Translation {
                 continue;
             }
             if l.alternating_loop && l.x_fade_length > 0 {
-                self.unsupported(&at, "alternating loop crossfade law (metadata retained)", format!("slot {slot}, fade {}", l.x_fade_length), ir::Reason::UnknownLaw);
+                self.unsupported(
+                    &at,
+                    "alternating loop crossfade law (metadata retained)",
+                    format!("slot {slot}, fade {}", l.x_fade_length),
+                    ir::Reason::UnknownLaw,
+                );
             }
             slots[usize::from(*slot)] = Some(ir::LoopSlot {
                 range: ir::LoopRange {
@@ -1660,20 +1996,22 @@ mod empty_zone_tests {
     #[test]
     fn tester_sampleless_zone_preserves_native_mapping_without_a_file_reference() {
         use std::io::Cursor;
-        let mut public = vec![0;48];
+        let mut public = vec![0; 48];
         public[16..18].copy_from_slice(&36i16.to_le_bytes());
         public[18..20].copy_from_slice(&81i16.to_le_bytes());
         let mut record = 2u32.to_le_bytes().to_vec();
-        record.extend([1,0x9a,0]); record.extend(0u32.to_le_bytes());
-        record.extend(48u32.to_le_bytes()); record.extend(public);
+        record.extend([1, 0x9a, 0]);
+        record.extend(0u32.to_le_bytes());
+        record.extend(48u32.to_le_bytes());
+        record.extend(public);
         record.extend(0u32.to_le_bytes());
         let mut cursor = Cursor::new(record.as_slice());
         let zone = super::raw_zone(&mut cursor).unwrap();
         assert!(!zone.sample_present);
-        assert_eq!((zone.group,zone.file),(2,-1));
-        assert_eq!((zone.source.low_key,zone.source.high_key),(36,81));
-        assert_eq!(zone.source.zone_tune,0.);
-        assert_eq!(cursor.position(),record.len() as u64);
+        assert_eq!((zone.group, zone.file), (2, -1));
+        assert_eq!((zone.source.low_key, zone.source.high_key), (36, 81));
+        assert_eq!(zone.source.zone_tune, 0.);
+        assert_eq!(cursor.position(), record.len() as u64);
     }
 }
 
@@ -1711,7 +2049,9 @@ fn raw_zone(r: &mut Cursor<&[u8]>) -> Result<RawZone, String> {
     let [lv, hv, lk, hk, f0, f1, f2, f3, root] = ranges;
     let sample_present = params.sample_present;
     let midi = |value: i16, what| {
-        if !sample_present { return Ok(0); }
+        if !sample_present {
+            return Ok(0);
+        }
         u8::try_from(value)
             .ok()
             .filter(|v| *v < 128)
@@ -1728,11 +2068,12 @@ fn raw_zone(r: &mut Cursor<&[u8]>) -> Result<RawZone, String> {
             "inverted range: keys {lk}..={hk}, velocities {lv}..={hv}"
         ));
     }
-    if params.sample_present && (start < 0
-        || end > 0
-        || !gain.is_finite()
-        || !pan.is_finite()
-        || !(tune.is_finite() && tune > 0.0))
+    if params.sample_present
+        && (start < 0
+            || end > 0
+            || !gain.is_finite()
+            || !pan.is_finite()
+            || !(tune.is_finite() && tune > 0.0))
     {
         return Err(format!(
             "start {start}, end {end}, gain {gain}, pan {pan}, tune {tune}"
@@ -2014,7 +2355,8 @@ mod saved_tests {
             (sampler_core::EnvelopeStage::Decay, 25000.),
         ] {
             let ms = sampler_core::EngineParameterLaw::envelope(stage, 1000).encode(native);
-            let frames = sampler_core::EngineParameterLaw::envelope(stage, 48000).encode(native * 48.);
+            let frames =
+                sampler_core::EngineParameterLaw::envelope(stage, 48000).encode(native * 48.);
             assert_eq!(
                 ms, frames,
                 "authored init and DSP binding must use the same law"
@@ -2048,19 +2390,25 @@ mod saved_tests {
                 Default::default(),
             );
             environment.engine_values.clear();
-            let cold =
-                sampler_ksp::initialize(&behavior.source, sampler_ksp::Limits::LIBRARY, &environment)
-                    .unwrap_or_else(|_| panic!("init failed; authored diagnostics omitted"))
-                    .engine_pars();
+            let cold = sampler_ksp::initialize(
+                &behavior.source,
+                sampler_ksp::Limits::LIBRARY,
+                &environment,
+            )
+            .unwrap_or_else(|_| panic!("init failed; authored diagnostics omitted"))
+            .engine_pars();
             for group in 0..instrument.groups.len() {
                 environment
                     .engine_values
                     .insert([i32::from(parameter), group as i32, 1, -1], 1_000_000);
             }
-            let authored =
-                sampler_ksp::initialize(&behavior.source, sampler_ksp::Limits::LIBRARY, &environment)
-                    .unwrap_or_else(|_| panic!("init failed; authored diagnostics omitted"))
-                    .engine_pars();
+            let authored = sampler_ksp::initialize(
+                &behavior.source,
+                sampler_ksp::Limits::LIBRARY,
+                &environment,
+            )
+            .unwrap_or_else(|_| panic!("init failed; authored diagnostics omitted"))
+            .engine_pars();
             for write in authored
                 .iter()
                 .filter(|write| write.parameter == "$ENGINE_PAR_SUSTAIN" && write.slot == 1)
@@ -2165,8 +2513,23 @@ mod saved_tests {
         script.extend(u32::MAX.to_le_bytes());
         script.extend(0u32.to_le_bytes());
         Program(StructuredObject {
-            version: 0xaf, public_data: vec![0; 70], private_data: vec![],
-            children: vec![Chunk { id: 0x33, data: vec![0; 4] }, Chunk { id: 0x34, data: vec![0; 4] }, Chunk { id: 6, data: script }],
+            version: 0xaf,
+            public_data: vec![0; 70],
+            private_data: vec![],
+            children: vec![
+                Chunk {
+                    id: 0x33,
+                    data: vec![0; 4],
+                },
+                Chunk {
+                    id: 0x34,
+                    data: vec![0; 4],
+                },
+                Chunk {
+                    id: 6,
+                    data: script,
+                },
+            ],
         })
     }
 
@@ -2177,11 +2540,43 @@ mod saved_tests {
         for saved in [4, -3, 0] {
             crate::load::take_script_init_runs();
             let controls = vec![(mode, saved)];
-            let translated = super::translate(std::env::temp_dir().join("restored-menu.nki"), menu_program(), Default::default(), Default::default(), None, &controls, None).unwrap();
-            let loaded = crate::load_read(translated, &crate::Options { control_values: controls, ..Default::default() }, |_| {}, || false).unwrap();
-            assert_eq!(crate::load::take_script_init_runs(), 1, "restored translation must initialize once");
+            let translated = super::translate(
+                std::env::temp_dir().join("restored-menu.nki"),
+                menu_program(),
+                Default::default(),
+                Default::default(),
+                None,
+                &controls,
+                None,
+            )
+            .unwrap();
+            let loaded = crate::load_read(
+                translated,
+                &crate::Options {
+                    control_values: controls,
+                    ..Default::default()
+                },
+                |_| {},
+                || false,
+            )
+            .unwrap();
+            assert_eq!(
+                crate::load::take_script_init_runs(),
+                1,
+                "restored translation must initialize once"
+            );
             for id in [mode, echo] {
-                assert_eq!(loaded.plan.controls().iter().find(|c| c.id == id).unwrap().default, sampler_core::ControlValue::Integer(i64::from(saved)), "host menu item values reach persistence_changed");
+                assert_eq!(
+                    loaded
+                        .plan
+                        .controls()
+                        .iter()
+                        .find(|c| c.id == id)
+                        .unwrap()
+                        .default,
+                    sampler_core::ControlValue::Integer(i64::from(saved)),
+                    "host menu item values reach persistence_changed"
+                );
             }
         }
     }
@@ -2190,10 +2585,37 @@ mod saved_tests {
     fn late_host_override_reinitializes_instead_of_reusing_wrong_state() {
         let mode = sampler_ksp::derived_control_id(0, "$mode");
         crate::load::take_script_init_runs();
-        let translated = super::translate(std::env::temp_dir().join("late-menu.nki"), menu_program(), Default::default(), Default::default(), None, &[], None).unwrap();
-        let loaded = crate::load_read(translated, &crate::Options { control_values: vec![(mode, -3)], ..Default::default() }, |_| {}, || false).unwrap();
+        let translated = super::translate(
+            std::env::temp_dir().join("late-menu.nki"),
+            menu_program(),
+            Default::default(),
+            Default::default(),
+            None,
+            &[],
+            None,
+        )
+        .unwrap();
+        let loaded = crate::load_read(
+            translated,
+            &crate::Options {
+                control_values: vec![(mode, -3)],
+                ..Default::default()
+            },
+            |_| {},
+            || false,
+        )
+        .unwrap();
         assert_eq!(crate::load::take_script_init_runs(), 2);
-        assert_eq!(loaded.plan.controls().iter().find(|c| c.id == mode).unwrap().default, sampler_core::ControlValue::Integer(-3));
+        assert_eq!(
+            loaded
+                .plan
+                .controls()
+                .iter()
+                .find(|c| c.id == mode)
+                .unwrap()
+                .default,
+            sampler_core::ControlValue::Integer(-3)
+        );
     }
 
     #[test]
@@ -2274,26 +2696,42 @@ mod modulation {
             dynamic: false,
             eq_mod_slots: HashMap::new(),
             send_taps: Vec::new(),
-        #[cfg(feature="scan")]
-        target_outcomes: HashMap::new(),
+            #[cfg(feature = "scan")]
+            target_outcomes: HashMap::new(),
         }
     }
 
     #[test]
     fn group_send_taps_keep_physical_return_identity_and_amplifier_side() {
         let mut out = translation();
-        out.ir.chains.push(ir::Chain { scope: ir::Scope::Voice,
-            pre_amplitude: Vec::new(), post_amplitude: Vec::new() });
-        out.send_taps.push((ir::ChainRef(0), crate::effects::SendTap {
-            slot: 5, position: ir::VoiceSendPosition::AfterAmplitude(0),
-            levels: vec![0.0, 0.0, 0.0, 0.5], bypass: false,
-        }));
+        out.ir.chains.push(ir::Chain {
+            scope: ir::Scope::Voice,
+            pre_amplitude: Vec::new(),
+            post_amplitude: Vec::new(),
+        });
+        out.send_taps.push((
+            ir::ChainRef(0),
+            crate::effects::SendTap {
+                slot: 5,
+                position: ir::VoiceSendPosition::AfterAmplitude(0),
+                levels: vec![0.0, 0.0, 0.0, 0.5],
+                bypass: false,
+            },
+        ));
         out.resolve_send_taps(&[(3, ir::BusRef(1))]);
-        assert_eq!(out.ir.voice_send_taps, vec![ir::VoiceSendTap {
-            chain: ir::ChainRef(0), position: ir::VoiceSendPosition::AfterAmplitude(0),
-            bus: ir::BusRef(1), gain: ir::Gain::Linear(0.5), bypass: false,
-            gain_control: None, bypass_control: None, ramp: ir::Time::Seconds(0.0),
-        }]);
+        assert_eq!(
+            out.ir.voice_send_taps,
+            vec![ir::VoiceSendTap {
+                chain: ir::ChainRef(0),
+                position: ir::VoiceSendPosition::AfterAmplitude(0),
+                bus: ir::BusRef(1),
+                gain: ir::Gain::Linear(0.5),
+                bypass: false,
+                gain_control: None,
+                bypass_control: None,
+                ramp: ir::Time::Seconds(0.0),
+            }]
+        );
         assert!(out.ir.unsupported.is_empty());
     }
 
@@ -2308,21 +2746,43 @@ mod modulation {
         out.source_modulator(7, 12, false, "Envelope".into(), &[]);
         let lookups = &out.ir.source_indices.engine_lookups;
         assert_eq!(lookups.len(), 4);
-        assert_eq!((lookups[0].group, lookups[0].owner, lookups[0].target, lookups[0].index), (7,-1,false,31));
-        assert_eq!((lookups[2].group, lookups[2].owner, lookups[2].target, lookups[2].index), (7,31,true,1));
-        assert_eq!(lookups[2].name,"Cutoff");
-        assert_eq!(lookups[3].index,12);
-        assert_eq!(out.ir.source_indices.modulators[0].slot,31);
+        assert_eq!(
+            (
+                lookups[0].group,
+                lookups[0].owner,
+                lookups[0].target,
+                lookups[0].index
+            ),
+            (7, -1, false, 31)
+        );
+        assert_eq!(
+            (
+                lookups[2].group,
+                lookups[2].owner,
+                lookups[2].target,
+                lookups[2].index
+            ),
+            (7, 31, true, 1)
+        );
+        assert_eq!(lookups[2].name, "Cutoff");
+        assert_eq!(lookups[3].index, 12);
+        assert_eq!(out.ir.source_indices.modulators[0].slot, 31);
         assert!(out.ir.source_indices.modulators[0].external);
-        assert_eq!(out.ir.source_indices.modulators[0].runtime,None);
+        assert_eq!(out.ir.source_indices.modulators[0].runtime, None);
     }
 
     #[test]
     fn authored_init_intensity_uses_the_same_physical_modulator_slot() {
-        let mut out=translation();
-        out.source_modulator(7,31,true,"Controller".into(),&[]);
-        out.engine.push(sampler_ksp::EnginePar { parameter:"$ENGINE_PAR_MOD_TARGET_INTENSITY".into(), group:7, slot:31, generic:-1, value:500000 });
-        assert_eq!(out.script_intensity(7,"controller"),Some(0.5));
+        let mut out = translation();
+        out.source_modulator(7, 31, true, "Controller".into(), &[]);
+        out.engine.push(sampler_ksp::EnginePar {
+            parameter: "$ENGINE_PAR_MOD_TARGET_INTENSITY".into(),
+            group: 7,
+            slot: 31,
+            generic: -1,
+            value: 500000,
+        });
+        assert_eq!(out.script_intensity(7, "controller"), Some(0.5));
     }
 
     #[test]
@@ -2433,7 +2893,11 @@ mod modulation {
     fn authored_pan_target_reaches_the_shared_voice_pan_route() {
         for unipolar in [false, true] {
             let mut t = translation();
-            let pan = ModTarget { lag_ms: 15, invert: true, ..target("pan", 0.5) };
+            let pan = ModTarget {
+                lag_ms: 15,
+                invert: true,
+                ..target("pan", 0.5)
+            };
             t.route("g", ir::ModulatorRef(0), unipolar, &pan, None)
                 .expect("authored pan must execute");
             assert_eq!(t.ir.routes[0].target, ir::Target::Pan);
@@ -2446,12 +2910,28 @@ mod modulation {
     #[test]
     fn zero_wave_multi_lfo_retains_its_bipolar_source_instead_of_disappearing() {
         let mut t = translation();
-        let lfo = Lfo { structured: false, version: 0x73, waveform: 5,
+        let lfo = Lfo {
+            structured: false,
+            version: 0x73,
+            waveform: 5,
             initial_values: [0., 1., 0.5, 0.],
-            records: [LfoRecord { flag: true, values: [-1., 0., 1.] },
-                LfoRecord { flag: false, values: [-1., 0., 1.] }],
-            trailing_flag: false, trailing_values: Some([0.; 5]), additional_flag: Some(true) };
-        let source = t.lfo("g", &lfo, true).expect("authored zero-wave Multi still has a bipolar output");
+            records: [
+                LfoRecord {
+                    flag: true,
+                    values: [-1., 0., 1.],
+                },
+                LfoRecord {
+                    flag: false,
+                    values: [-1., 0., 1.],
+                },
+            ],
+            trailing_flag: false,
+            trailing_values: Some([0.; 5]),
+            additional_flag: Some(true),
+        };
+        let source = t
+            .lfo("g", &lfo, true)
+            .expect("authored zero-wave Multi still has a bipolar output");
         assert_eq!(source.shape, ir::LfoShape::Zero);
     }
 
@@ -2464,9 +2944,19 @@ mod modulation {
             ..target("filterCutoff", 0.444)
         };
         let chain = ir::ChainRef(3);
-        let filter = ir::Processor::Filter(ir::Filter { kind: ir::FilterKind::LowPass { poles: 2 },
-            cutoff: ir::Frequency::Hertz(1000.), resonance: ir::Resonance::Q(1.) });
-        t.ir.chains = vec![ir::Chain { scope: ir::Scope::Voice, pre_amplitude: vec![filter; 2], post_amplitude: vec![] }; 4];
+        let filter = ir::Processor::Filter(ir::Filter {
+            kind: ir::FilterKind::LowPass { poles: 2 },
+            cutoff: ir::Frequency::Hertz(1000.),
+            resonance: ir::Resonance::Q(1.),
+        });
+        t.ir.chains = vec![
+            ir::Chain {
+                scope: ir::Scope::Voice,
+                pre_amplitude: vec![filter; 2],
+                post_amplitude: vec![]
+            };
+            4
+        ];
         t.route("g", source, true, &cutoff, Some((chain, &[(2, 1)])))
             .unwrap();
         assert_eq!(
@@ -2491,21 +2981,64 @@ mod modulation {
     #[test]
     fn eq_frequency_and_width_routes_keep_the_physical_band() {
         let mut t = translation();
-        let peak = ir::Processor::Filter(ir::Filter { kind: ir::FilterKind::Peak { gain: ir::Gain::Decibels(6.) },
-            cutoff: ir::Frequency::Hertz(1000.), resonance: ir::Resonance::Q(1.) });
-        t.ir.chains.push(ir::Chain { scope: ir::Scope::Voice, pre_amplitude: vec![peak; 3], post_amplitude: vec![] });
-        t.engine.push(sampler_ksp::EnginePar { parameter: "$ENGINE_PAR_FREQ2".into(), group: 7, slot: 5, generic: -1, value: 700000 });
-        t.engine.push(sampler_ksp::EnginePar { parameter: "$ENGINE_PAR_BW3".into(), group: 7, slot: 5, generic: -1, value: 400000 });
+        let peak = ir::Processor::Filter(ir::Filter {
+            kind: ir::FilterKind::Peak {
+                gain: ir::Gain::Decibels(6.),
+            },
+            cutoff: ir::Frequency::Hertz(1000.),
+            resonance: ir::Resonance::Q(1.),
+        });
+        t.ir.chains.push(ir::Chain {
+            scope: ir::Scope::Voice,
+            pre_amplitude: vec![peak; 3],
+            post_amplitude: vec![],
+        });
+        t.engine.push(sampler_ksp::EnginePar {
+            parameter: "$ENGINE_PAR_FREQ2".into(),
+            group: 7,
+            slot: 5,
+            generic: -1,
+            value: 700000,
+        });
+        t.engine.push(sampler_ksp::EnginePar {
+            parameter: "$ENGINE_PAR_BW3".into(),
+            group: 7,
+            slot: 5,
+            generic: -1,
+            value: 400000,
+        });
         t.eq_controls(7, ir::ChainRef(0), &[(5, 0), (5, 1), (5, 2)]);
         for (control, default, name) in [(4, 0.7, "ENGINE_PAR_FREQ2"), (8, 0.4, "ENGINE_PAR_BW3")] {
-            assert!(matches!(t.ir.controls[control].value, ir::ControlValue::Continuous { min: 0., max: 1., default: v, unit: ir::ControlUnit::Percent } if v == default));
+            assert!(
+                matches!(t.ir.controls[control].value, ir::ControlValue::Continuous { min: 0., max: 1., default: v, unit: ir::ControlUnit::Percent } if v == default)
+            );
             assert_eq!(t.ir.source_indices.control_aliases[control].parameter, name);
         }
-        for (name, index, parameter) in [("eqFreq2", 1, ir::ProcessorParameter::Cutoff), ("eqBandwidth3", 2, ir::ProcessorParameter::Resonance)] {
-            let target = ModTarget { slot: Some(5), ..target(name, -0.25) };
-            let route = t.route("g", ir::ModulatorRef(0), true, &target, Some((ir::ChainRef(0), &[(5, 0), (5, 1), (5, 2)])))
+        for (name, index, parameter) in [
+            ("eqFreq2", 1, ir::ProcessorParameter::Cutoff),
+            ("eqBandwidth3", 2, ir::ProcessorParameter::Resonance),
+        ] {
+            let target = ModTarget {
+                slot: Some(5),
+                ..target(name, -0.25)
+            };
+            let route = t
+                .route(
+                    "g",
+                    ir::ModulatorRef(0),
+                    true,
+                    &target,
+                    Some((ir::ChainRef(0), &[(5, 0), (5, 1), (5, 2)])),
+                )
                 .expect("native EQ knob route reaches its physical band");
-            assert_eq!(t.ir.routes[route.0].target, ir::Target::Processor { chain: ir::ChainRef(0), index, parameter });
+            assert_eq!(
+                t.ir.routes[route.0].target,
+                ir::Target::Processor {
+                    chain: ir::ChainRef(0),
+                    index,
+                    parameter
+                }
+            );
             assert_eq!(t.ir.routes[route.0].depth, ir::Depth::Normalized(-0.25));
         }
     }
@@ -2513,32 +3046,72 @@ mod modulation {
     #[test]
     fn eq_live_owner_clamps_saved_gain_like_v1_knobs() {
         let mut t = translation();
-        t.ir.chains.push(ir::Chain { scope: ir::Scope::Voice, pre_amplitude: vec![ir::Processor::Filter(ir::Filter {
-            kind: ir::FilterKind::Peak { gain: ir::Gain::Decibels(24.) },
-            cutoff: ir::Frequency::Hertz(1000.), resonance: ir::Resonance::Q(1.),
-        })], post_amplitude: vec![] });
+        t.ir.chains.push(ir::Chain {
+            scope: ir::Scope::Voice,
+            pre_amplitude: vec![ir::Processor::Filter(ir::Filter {
+                kind: ir::FilterKind::Peak {
+                    gain: ir::Gain::Decibels(24.),
+                },
+                cutoff: ir::Frequency::Hertz(1000.),
+                resonance: ir::Resonance::Q(1.),
+            })],
+            post_amplitude: vec![],
+        });
         t.eq_controls(7, ir::ChainRef(0), &[(5, 0)]);
-        assert!(matches!(t.ir.controls[0].value, ir::ControlValue::Continuous { default: 18., .. }),
-            "v1 clamps normalized EQ knobs before conversion; a saved outlier must not invalidate the instrument");
+        assert!(
+            matches!(
+                t.ir.controls[0].value,
+                ir::ControlValue::Continuous { default: 18., .. }
+            ),
+            "v1 clamps normalized EQ knobs before conversion; a saved outlier must not invalidate the instrument"
+        );
     }
 
     #[test]
     fn eq_saved_gain_metadata_precedes_script_init() {
         let mut public = Vec::new();
-        for kind in [24i32, 24] { public.extend(kind.to_le_bytes()); }
-        for values in [[300f32, 1., 0.], [1000., 1., 9.], [6000., 1., -18.]] {
-            for value in values { public.extend(value.to_le_bytes()); }
+        for kind in [24i32, 24] {
+            public.extend(kind.to_le_bytes());
         }
-        let slot = crate::effects::Slot { slot: 5, module: 0x18, version: 0x92,
-            bypass: false, output_gain: 1., dry_level: 0., output_set: false, public };
+        for values in [[300f32, 1., 0.], [1000., 1., 9.], [6000., 1., -18.]] {
+            for value in values {
+                public.extend(value.to_le_bytes());
+            }
+        }
+        let slot = crate::effects::Slot {
+            slot: 5,
+            module: 0x18,
+            version: 0x92,
+            bypass: false,
+            output_gain: 1.,
+            dry_level: 0.,
+            output_set: false,
+            public,
+        };
         let mut t = translation();
         t.source_eq_values(7, &[slot]);
         let values = &t.ir.source_indices.engine_values;
         assert_eq!(values.len(), 9);
         for (band, expected) in [500000, 750000, 0].into_iter().enumerate() {
             assert_eq!(values[band * 3].value, expected);
-            assert_eq!((values[band * 3].group, values[band * 3].slot, values[band * 3].generic), (7, 5, -1));
-            assert_eq!(sampler_core::engine_parameter_name(values[band * 3].parameter), Some(["$ENGINE_PAR_GAIN1", "$ENGINE_PAR_GAIN2", "$ENGINE_PAR_GAIN3"][band]));
+            assert_eq!(
+                (
+                    values[band * 3].group,
+                    values[band * 3].slot,
+                    values[band * 3].generic
+                ),
+                (7, 5, -1)
+            );
+            assert_eq!(
+                sampler_core::engine_parameter_name(values[band * 3].parameter),
+                Some(
+                    [
+                        "$ENGINE_PAR_GAIN1",
+                        "$ENGINE_PAR_GAIN2",
+                        "$ENGINE_PAR_GAIN3"
+                    ][band]
+                )
+            );
         }
     }
 
@@ -2547,51 +3120,158 @@ mod modulation {
         for (name, index) in [("eqGain1", 0), ("eqGain2", 1), ("eqGain3", 2)] {
             let mut t = translation();
             let peak = ir::Processor::Filter(ir::Filter {
-                kind: ir::FilterKind::Peak { gain: ir::Gain::Decibels(0.) },
-                cutoff: ir::Frequency::Hertz(1000.), resonance: ir::Resonance::Q(1.) });
-            t.ir.chains.push(ir::Chain { scope: ir::Scope::Voice, pre_amplitude: vec![peak; 3], post_amplitude: vec![] });
-            t.engine.push(sampler_ksp::EnginePar { parameter: "$ENGINE_PAR_GAIN2".into(), group: 7, slot: 5, generic: -1, value: 750000 });
+                kind: ir::FilterKind::Peak {
+                    gain: ir::Gain::Decibels(0.),
+                },
+                cutoff: ir::Frequency::Hertz(1000.),
+                resonance: ir::Resonance::Q(1.),
+            });
+            t.ir.chains.push(ir::Chain {
+                scope: ir::Scope::Voice,
+                pre_amplitude: vec![peak; 3],
+                post_amplitude: vec![],
+            });
+            t.engine.push(sampler_ksp::EnginePar {
+                parameter: "$ENGINE_PAR_GAIN2".into(),
+                group: 7,
+                slot: 5,
+                generic: -1,
+                value: 750000,
+            });
             t.eq_controls(7, ir::ChainRef(0), &[(5, 0), (5, 1), (5, 2)]);
             assert_eq!(t.ir.processor_controls.len(), 9);
-            assert_eq!(t.ir.source_indices.control_aliases[3].parameter, "ENGINE_PAR_GAIN2");
-            assert!(matches!(t.ir.controls[3].value, ir::ControlValue::Continuous { default: 9., unit: ir::ControlUnit::Decibels, .. }));
-            let target = ModTarget { slot: Some(5), ..target(name, -0.25) };
-            t.route("g", ir::ModulatorRef(0), true, &target, Some((ir::ChainRef(0), &[(5, 0), (5, 1), (5, 2)])))
-                .expect("authored EQ gain must reach its physical band");
-            assert_eq!(t.ir.routes[0].target, ir::Target::Processor {
-                chain: ir::ChainRef(0), index, parameter: ir::ProcessorParameter::Gain });
+            assert_eq!(
+                t.ir.source_indices.control_aliases[3].parameter,
+                "ENGINE_PAR_GAIN2"
+            );
+            assert!(matches!(
+                t.ir.controls[3].value,
+                ir::ControlValue::Continuous {
+                    default: 9.,
+                    unit: ir::ControlUnit::Decibels,
+                    ..
+                }
+            ));
+            let target = ModTarget {
+                slot: Some(5),
+                ..target(name, -0.25)
+            };
+            t.route(
+                "g",
+                ir::ModulatorRef(0),
+                true,
+                &target,
+                Some((ir::ChainRef(0), &[(5, 0), (5, 1), (5, 2)])),
+            )
+            .expect("authored EQ gain must reach its physical band");
+            assert_eq!(
+                t.ir.routes[0].target,
+                ir::Target::Processor {
+                    chain: ir::ChainRef(0),
+                    index,
+                    parameter: ir::ProcessorParameter::Gain
+                }
+            );
             assert_eq!(t.ir.routes[0].depth, ir::Depth::Normalized(-0.25));
         }
     }
 
     #[test]
     fn native_filter_q_and_gain_routes_add_normalized_depth() {
-        for processor in [ir::Processor::LadderLP4(ir::LadderLP4 { address: None, gain: -0.25,
-            cutoff: 0.5, resonance: 0., record_version: 0x92 }),
-            ir::Processor::Daft(ir::Daft { gain: 0., cutoff: 0.5, resonance: 0., highpass: false })] {
-            for (name, parameter) in [("filterQ", ir::ProcessorParameter::Resonance), ("Gain", ir::ProcessorParameter::Gain)] {
+        for processor in [
+            ir::Processor::LadderLP4(ir::LadderLP4 {
+                address: None,
+                gain: -0.25,
+                cutoff: 0.5,
+                resonance: 0.,
+                record_version: 0x92,
+            }),
+            ir::Processor::Daft(ir::Daft {
+                gain: 0.,
+                cutoff: 0.5,
+                resonance: 0.,
+                highpass: false,
+            }),
+        ] {
+            for (name, parameter) in [
+                ("filterQ", ir::ProcessorParameter::Resonance),
+                ("Gain", ir::ProcessorParameter::Gain),
+            ] {
                 let mut t = translation();
-                t.ir.chains.push(ir::Chain { scope: ir::Scope::Voice, pre_amplitude: vec![processor], post_amplitude: vec![] });
-                let target = ModTarget { slot: Some(5), ..target(name, -0.25) };
-                t.route("g", ir::ModulatorRef(0), true, &target, Some((ir::ChainRef(0), &[(5, 0)])))
-                    .expect("v1 executes native normalized Q/Gain routes");
+                t.ir.chains.push(ir::Chain {
+                    scope: ir::Scope::Voice,
+                    pre_amplitude: vec![processor],
+                    post_amplitude: vec![],
+                });
+                let target = ModTarget {
+                    slot: Some(5),
+                    ..target(name, -0.25)
+                };
+                t.route(
+                    "g",
+                    ir::ModulatorRef(0),
+                    true,
+                    &target,
+                    Some((ir::ChainRef(0), &[(5, 0)])),
+                )
+                .expect("v1 executes native normalized Q/Gain routes");
                 assert_eq!(t.ir.routes[0].depth, ir::Depth::Normalized(-0.25));
-                assert_eq!(t.ir.routes[0].target, ir::Target::Processor { chain: ir::ChainRef(0), index: 0, parameter });
+                assert_eq!(
+                    t.ir.routes[0].target,
+                    ir::Target::Processor {
+                        chain: ir::ChainRef(0),
+                        index: 0,
+                        parameter
+                    }
+                );
             }
         }
     }
 
     #[test]
     fn native_filter_cutoff_modulation_adds_normalized_depth() {
-        for processor in [ir::Processor::LadderLP4(ir::LadderLP4 { address: None, gain: 0.,
-            cutoff: 0.5, resonance: 0., record_version: 0x92 }),
-            ir::Processor::Daft(ir::Daft { gain: 0., cutoff: 0.5, resonance: 0., highpass: false })] {
+        for processor in [
+            ir::Processor::LadderLP4(ir::LadderLP4 {
+                address: None,
+                gain: 0.,
+                cutoff: 0.5,
+                resonance: 0.,
+                record_version: 0x92,
+            }),
+            ir::Processor::Daft(ir::Daft {
+                gain: 0.,
+                cutoff: 0.5,
+                resonance: 0.,
+                highpass: false,
+            }),
+        ] {
             let mut t = translation();
-            t.ir.chains.push(ir::Chain { scope: ir::Scope::Voice, pre_amplitude: vec![processor], post_amplitude: vec![] });
-            let target = ModTarget { slot: Some(5), ..target("filterCutoff", -0.25) };
-            t.route("g", ir::ModulatorRef(0), true, &target, Some((ir::ChainRef(0), &[(5, 0)]))).unwrap();
+            t.ir.chains.push(ir::Chain {
+                scope: ir::Scope::Voice,
+                pre_amplitude: vec![processor],
+                post_amplitude: vec![],
+            });
+            let target = ModTarget {
+                slot: Some(5),
+                ..target("filterCutoff", -0.25)
+            };
+            t.route(
+                "g",
+                ir::ModulatorRef(0),
+                true,
+                &target,
+                Some((ir::ChainRef(0), &[(5, 0)])),
+            )
+            .unwrap();
             assert_eq!(t.ir.routes[0].depth, ir::Depth::Normalized(-0.25));
-            assert_eq!(t.ir.routes[0].target, ir::Target::Processor { chain: ir::ChainRef(0), index: 0, parameter: ir::ProcessorParameter::Cutoff });
+            assert_eq!(
+                t.ir.routes[0].target,
+                ir::Target::Processor {
+                    chain: ir::ChainRef(0),
+                    index: 0,
+                    parameter: ir::ProcessorParameter::Cutoff
+                }
+            );
         }
     }
 
@@ -2623,7 +3303,8 @@ mod modulation {
         t.route("g", source, true, &target("playPos", 1.0), None)
             .unwrap();
         assert_eq!(t.ir.routes[2].target, ir::Target::SampleStart);
-        t.route("g", source, true, &target("pan", 1.0), None).unwrap();
+        t.route("g", source, true, &target("pan", 1.0), None)
+            .unwrap();
         assert_eq!(t.ir.routes[3].target, ir::Target::Pan);
         for unknown in [
             target("cutoff", 1.0),
@@ -2636,13 +3317,7 @@ mod modulation {
         }
         assert_eq!(t.ir.routes.len(), 4);
         let reasons: Vec<_> = t.ir.unsupported.iter().map(|u| u.reason).collect();
-        assert_eq!(
-            reasons,
-            [
-                ir::Reason::NotModeled,
-                ir::Reason::NotModeled
-            ]
-        );
+        assert_eq!(reasons, [ir::Reason::NotModeled, ir::Reason::NotModeled]);
     }
 
     #[test]
@@ -2650,9 +3325,17 @@ mod modulation {
         for unipolar in [false, true] {
             for invert in [false, true] {
                 let mut t = translation();
-                let signed = ModTarget { unknown_flags: 0x12, invert, ..target("pitch", 0.25) };
-                t.route("g", ir::ModulatorRef(0), unipolar, &signed, None).expect("signed pitch route");
-                assert_eq!(t.ir.routes[0].depth, ir::Depth::Pitch(ir::Pitch::Semitones(-3.0)));
+                let signed = ModTarget {
+                    unknown_flags: 0x12,
+                    invert,
+                    ..target("pitch", 0.25)
+                };
+                t.route("g", ir::ModulatorRef(0), unipolar, &signed, None)
+                    .expect("signed pitch route");
+                assert_eq!(
+                    t.ir.routes[0].depth,
+                    ir::Depth::Pitch(ir::Pitch::Semitones(-3.0))
+                );
                 assert_eq!(t.ir.routes[0].invert, invert);
             }
         }

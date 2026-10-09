@@ -59,7 +59,14 @@ pub struct Switching {
 
 impl Default for Switching {
     fn default() -> Self {
-        Self { driver: Driver::Keys, keys: SwitchKeys::Keep, switch_keys: 0, selectors: Vec::new().into(), key_inputs: None, blocked: 0 }
+        Self {
+            driver: Driver::Keys,
+            keys: SwitchKeys::Keep,
+            switch_keys: 0,
+            selectors: Vec::new().into(),
+            key_inputs: None,
+            blocked: 0,
+        }
     }
 }
 
@@ -95,20 +102,41 @@ impl Switching {
     }
 
     /// Worker-prepared user inputs. Duplicates/bad keys are rejected, never clamped.
-    pub fn set_key_inputs(&mut self, inputs: Vec<(u8, Switch)>, blocked: u128) -> Result<(), Error> {
+    pub fn set_key_inputs(
+        &mut self,
+        inputs: Vec<(u8, Switch)>,
+        blocked: u128,
+    ) -> Result<(), Error> {
         let inputs_nonempty = !inputs.is_empty();
         let mut keys = [None; 128];
         for (key, switch) in inputs {
-            if matches!(switch, Switch::Tap(k) if k > 127) { return Err(Error::InvalidInput); }
-            if keys.get_mut(usize::from(key)).ok_or(Error::InvalidInput)?.replace(switch).is_some() { return Err(Error::InvalidInput); }
+            if matches!(switch, Switch::Tap(k) if k > 127) {
+                return Err(Error::InvalidInput);
+            }
+            if keys
+                .get_mut(usize::from(key))
+                .ok_or(Error::InvalidInput)?
+                .replace(switch)
+                .is_some()
+            {
+                return Err(Error::InvalidInput);
+            }
         }
         self.key_inputs = inputs_nonempty.then(|| std::sync::Arc::new(keys));
         self.blocked = blocked;
         Ok(())
     }
 
-    pub fn key_input(&self, key: u8) -> Option<Switch> { self.key_inputs.as_ref()?.get(usize::from(key)).copied().flatten() }
-    pub fn blocked(&self, key: u8) -> bool { key < 128 && self.blocked >> key & 1 != 0 }
+    pub fn key_input(&self, key: u8) -> Option<Switch> {
+        self.key_inputs
+            .as_ref()?
+            .get(usize::from(key))
+            .copied()
+            .flatten()
+    }
+    pub fn blocked(&self, key: u8) -> bool {
+        key < 128 && self.blocked >> key & 1 != 0
+    }
 
     pub fn driver(&self) -> Driver {
         self.driver
@@ -174,7 +202,11 @@ impl Runtime {
     }
 
     /// Install worker-prepared tables without allocating on the audio thread.
-    pub fn set_switching_table(&mut self, switching: Switching, switches: &[crate::Keyswitch]) -> Result<(), Error> {
+    pub fn set_switching_table(
+        &mut self,
+        switching: Switching,
+        switches: &[crate::Keyswitch],
+    ) -> Result<(), Error> {
         let mut keys = [None; 128];
         for switch in switches {
             let slot = keys

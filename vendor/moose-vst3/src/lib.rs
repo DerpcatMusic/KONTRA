@@ -1280,7 +1280,10 @@ unsafe fn process_block<P: PluginExport, H: Sample>(
         // plugin sees consistent params and extra state for the
         // entire block. See `pending_state` field comment for the
         // queue-overflow policy.
-        if inst.pending_state.apply_audio(|state| state::apply_state(&mut *plugin, state)) {
+        if inst
+            .pending_state
+            .apply_audio(|state| state::apply_state(&mut *plugin, state))
+        {
             ffi::moose_vst3_mark_restart(ctx, 0);
         }
 
@@ -1644,7 +1647,9 @@ unsafe extern "C" fn cb_output_bus_name<P: PluginExport>(
         let named = if ctx.is_null() {
             None
         } else {
-            (*ctx.cast::<Vst3Instance<P>>()).params_arc.output_port_name(index)
+            (*ctx.cast::<Vst3Instance<P>>())
+                .params_arc
+                .output_port_name(index)
         };
         let name = named.or_else(|| {
             let layouts = P::bus_layouts();

@@ -15,10 +15,24 @@ use crate::{
 /// wavetable names map to native target IDs 11..=16; both native target
 /// readers and writers omit the module slot for these IDs.
 const GROUP_TARGETS: [&str; 18] = [
-    "volume", "pan", "pitch", "playPos", "loopStart", "loopLength",
-    "warpFactor", "warpFactor2", "wavetablePosition", "wavetableInharmonic",
-    "wavetableModAmount", "wavetableModFrequency",
-    "formantShift", "overlap", "grainSize", "grainSpeed", "playDirection", "legacyAddIntensity",
+    "volume",
+    "pan",
+    "pitch",
+    "playPos",
+    "loopStart",
+    "loopLength",
+    "warpFactor",
+    "warpFactor2",
+    "wavetablePosition",
+    "wavetableInharmonic",
+    "wavetableModAmount",
+    "wavetableModFrequency",
+    "formantShift",
+    "overlap",
+    "grainSize",
+    "grainSpeed",
+    "playDirection",
+    "legacyAddIntensity",
 ];
 const MAX_TARGETS: u32 = 16;
 const MAX_NAME_BYTES: u32 = 4096;
@@ -266,7 +280,10 @@ fn read_source(reader: &mut Cursor<&[u8]>) -> Result<ModSource, Error> {
 
 /// Read a modulator's target list: all target headers first, then one
 /// shaper per target.
-pub(crate) fn read_targets(reader: &mut Cursor<&[u8]>, legacy: bool) -> Result<Vec<ModTarget>, Error> {
+pub(crate) fn read_targets(
+    reader: &mut Cursor<&[u8]>,
+    legacy: bool,
+) -> Result<Vec<ModTarget>, Error> {
     let count = reader.read_u32_le()?;
     if !(1..=MAX_TARGETS).contains(&count) {
         return Err(Error::Generic(format!(
@@ -290,9 +307,8 @@ pub(crate) fn read_targets(reader: &mut Cursor<&[u8]>, legacy: bool) -> Result<V
         } else {
             Some(reader.read_u8()?)
         };
-        let invert = read_flag(reader).map_err(|error| {
-            Error::context(format!("Modulation target {param} invert"), error)
-        })?;
+        let invert = read_flag(reader)
+            .map_err(|error| Error::context(format!("Modulation target {param} invert"), error))?;
         targets.push(ModTarget {
             param,
             intensity,
@@ -365,20 +381,36 @@ pub fn read_param_slots(
     let parse = |slot_words: bool| -> Result<Vec<(usize, Chunk)>, Error> {
         let mut reader = Cursor::new(object.public_data.as_slice());
         if object.version == 0x13 && reader.read_u32_le()? as usize != slots {
-            return Err(Error::Static("Parameter array serialized slot count differs"));
+            return Err(Error::Static(
+                "Parameter array serialized slot count differs",
+            ));
         }
         let mut items = Vec::new();
         for slot in 0..slots {
             let present = read_flag(&mut reader).map_err(|error| {
-                Error::context(format!("Parameter array 0x{:X} slot {slot} presence", object.version), error)
+                Error::context(
+                    format!(
+                        "Parameter array 0x{:X} slot {slot} presence",
+                        object.version
+                    ),
+                    error,
+                )
             })?;
-            if slot_words { reader.read_u32_le()?; }
-            if present { items.push((slot, Chunk::read(&mut reader)?)); }
+            if slot_words {
+                reader.read_u32_le()?;
+            }
+            if present {
+                items.push((slot, Chunk::read(&mut reader)?));
+            }
         }
-        if matches!(object.version, 0x11 | 0x13) { ensure_consumed(&reader)?; }
+        if matches!(object.version, 0x11 | 0x13) {
+            ensure_consumed(&reader)?;
+        }
         Ok(items)
     };
-    if object.version != 0x11 { return parse(false); }
+    if object.version != 0x11 {
+        return parse(false);
+    }
     // Native v11 has two context-dependent layouts; bounded records must fit exactly one.
     match (parse(false), parse(true)) {
         (Ok(items), Err(_)) | (Err(_), Ok(items)) => Ok(items),
@@ -393,9 +425,14 @@ pub(crate) fn read_name(reader: &mut Cursor<&[u8]>) -> Result<String, Error> {
 }
 
 /// Only the legacy C-string reader uses -1 for an absent assignment/target name.
-pub(crate) fn read_assignment_name(reader: &mut Cursor<&[u8]>, legacy: bool) -> Result<String, Error> {
+pub(crate) fn read_assignment_name(
+    reader: &mut Cursor<&[u8]>,
+    legacy: bool,
+) -> Result<String, Error> {
     let len = reader.read_u32_le()?;
-    if legacy && len == u32::MAX { return Ok(String::new()); }
+    if legacy && len == u32::MAX {
+        return Ok(String::new());
+    }
     if len > MAX_NAME_BYTES {
         return Err(Error::Generic(format!(
             "Modulation name too long ({len} bytes)"
