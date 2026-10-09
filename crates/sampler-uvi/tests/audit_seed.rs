@@ -93,3 +93,35 @@ fn audit_rng_cannot_change_user_persistence() {
     .unwrap();
     assert_eq!(ordinary, seeded);
 }
+
+#[test]
+fn audit_barrier_publishes_ui_and_faults_before_reply() {
+    let xml = "<UVI4><Program><EventProcessors><ScriptProcessor><script>
+      local k=Knob('Velocity',0,0,127)
+      local labels={}; for n=1,4096 do labels[n]=Label('Status'); labels[n].text='0' end
+      function onNote(e)
+        k:setValue(e.velocity,false)
+        for n=1,#labels do labels[n].text=tostring(e.velocity) end
+        playNote(e.note,e.velocity)
+        error('synthetic callback fault')
+      end
+    </script></ScriptProcessor></EventProcessors></Program></UVI4>";
+    let (mut thread, loaded) = ScriptThread::spawn(xml.into(), (), Config {
+        audit_seed: Some(42), ..Config::default()
+    }).unwrap();
+    thread.note_on(1,60,64);
+    let mut commands=Vec::new();
+    thread.drain(&mut commands);
+    assert!(commands.iter().any(|c| matches!(c,Command::Play(_))));
+    assert_eq!(loaded.ui.value(sampler_uvi::script::control_id(1,0)), Some(64.),
+        "a completed audit barrier must publish control readback");
+    let face=loaded.ui.interface();
+    assert_eq!(face.widgets.len(),4097);
+    assert!(face.widgets[1..].iter().all(|w| w.text=="64"),
+        "a completed audit barrier must publish the authored UI: {:?}",
+        face.widgets[1..].iter().enumerate().filter(|(_,w)| w.text!="64").take(4)
+            .map(|(i,w)| (i,w.source_id,&w.name,&w.text,&w.kind)).collect::<Vec<_>>());
+    assert_eq!(loaded.ui.runtime_faults(),(1,0),
+        "a completed audit barrier must publish callback faults");
+    assert_eq!(thread.scan_faults().runtime_count,1);
+}

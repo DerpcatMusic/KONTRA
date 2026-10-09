@@ -82,6 +82,9 @@ enum UiRequest {
     Audit(f64, mpsc::SyncSender<(Vec<Command>, Option<f64>)>),
 }
 
+#[cfg(feature = "scan")]
+type AuditReply = (mpsc::SyncSender<(Vec<Command>, Option<f64>)>, Vec<Command>, Option<f64>);
+
 fn process_events(host: &mut ScriptHost, incoming: &mut rtrb::Consumer<Message>) {
     while let Ok(message) = incoming.pop() {
         match message {
@@ -109,7 +112,7 @@ fn process_events(host: &mut ScriptHost, incoming: &mut rtrb::Consumer<Message>)
     }
 }
 
-fn process_ui_requests(host: &mut ScriptHost, requests: &mpsc::Receiver<UiRequest>, _incoming: &mut rtrb::Consumer<Message>) {
+fn process_ui_requests(host: &mut ScriptHost, requests: &mpsc::Receiver<UiRequest>, _incoming: &mut rtrb::Consumer<Message>, #[cfg(feature = "scan")] audit_reply: &mut Option<AuditReply>) {
     while let Ok(request) = requests.try_recv() {
         match request {
             UiRequest::Edit(id, value) => {
@@ -123,7 +126,9 @@ fn process_ui_requests(host: &mut ScriptHost, requests: &mpsc::Receiver<UiReques
                 // Events were published before this request; drain again to close the queue race.
                 process_events(host, _incoming);
                 host.advance(ms);
-                let _ = reply.send((host.take_commands(), host.next_due()));
+                *audit_reply = Some((reply, host.take_commands(), host.next_due()));
+                // Complete this barrier after publication, before later UI requests.
+                break;
             }
         }
     }
@@ -187,8 +192,10 @@ impl ScriptThread {
                     let mut revision = host.ui_revision();
                     let mut finding_revision = host.finding_revision();
                     while !stop.load(Ordering::Acquire) {
+                        #[cfg(feature = "scan")]
+                        let mut audit_reply = None;
                         process_events(&mut host, &mut incoming);
-                        process_ui_requests(&mut host, &ui_receive, &mut incoming);
+                        process_ui_requests(&mut host, &ui_receive, &mut incoming, #[cfg(feature = "scan")] &mut audit_reply);
                         #[cfg(feature = "scan")]
                         if !audit { host.advance(f64::from_bits(clock.load(Ordering::Acquire))); }
                         #[cfg(not(feature = "scan"))]
@@ -204,6 +211,10 @@ impl ScriptThread {
                         }
                         #[cfg(feature = "scan")]
                         { *scan.lock().unwrap() = host.scan_faults(); }
+                        #[cfg(feature = "scan")]
+                        if let Some((reply, commands, due)) = audit_reply.take() {
+                            let _ = reply.send((commands, due));
+                        }
                         #[cfg(feature = "scan")]
                         if audit {
                             std::thread::park();
@@ -221,7 +232,7 @@ impl ScriptThread {
                                         if stop.load(Ordering::Acquire) {
                                             return;
                                         }
-                                        process_ui_requests(&mut host, &ui_receive, &mut incoming);
+                                        process_ui_requests(&mut host, &ui_receive, &mut incoming, #[cfg(feature = "scan")] &mut audit_reply);
                                         std::thread::sleep(POLL);
                                     }
                                 }
