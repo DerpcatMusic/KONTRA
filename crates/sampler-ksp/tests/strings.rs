@@ -413,3 +413,16 @@ fn menu_control_properties_report_selected_index_and_live_item_count() {
         end on", &[]);
     assert_eq!((cell(&rt, 1), cell(&rt, 2), cell(&rt, 3), cell(&rt, 4)), (1, 2, 1, -1));
 }
+
+#[test]
+fn real_xy_getters_read_authored_and_live_indexed_values() {
+    let rt = run("on init declare ui_xy ?xy[2] declare ~before declare ~after
+        set_control_par_real_arr(get_ui_id(?xy),$CONTROL_PAR_VALUE,0.25,0) end on
+        on note
+            ~before := get_control_par_real_arr(get_ui_id(?xy),$CONTROL_PAR_VALUE,0)
+            set_control_par_real_arr(get_ui_id(?xy),$CONTROL_PAR_VALUE,0.75,1)
+            ~after := get_control_par_real_arr(get_ui_id(?xy),$CONTROL_PAR_VALUE,1)
+        end on", &[]);
+    assert_eq!(f64::from_bits(cell(&rt, 2) as u64), 0.25);
+    assert_eq!(f64::from_bits(cell(&rt, 3) as u64), 0.75);
+}
