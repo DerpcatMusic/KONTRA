@@ -427,6 +427,7 @@ mod tests {
                 external: true,
                 name: String::new(),
                 runtime: Some(ir::ModulatorRef(0)),
+                settings: None,
             });
         instrument.unsupported.push(ir::Unsupported {
             location: "g".into(),
