@@ -73,10 +73,15 @@ pub(crate) fn normalize(instrument: &mut ir::Instrument, interfaces: &[Interface
             instrument.assign_alternatives(super::keyswitch::CONTROLLER);
         }
     } else {
+        let named = |key: &u8| keys.get(usize::from(*key)).and_then(|k| k.name.as_deref()).map(str::trim).filter(|s| !s.is_empty());
         for a in &mut instrument.articulations {
             if let Some(row) = found.iter().find(|r| r.switch_keys.iter().any(|k| a.switch_keys.contains(k))) {
                 a.control = row.control;
                 a.name.clone_from(&row.name);
+            } else if let Some(name) = a.switch_keys.first().and_then(named)
+                && ir::parse_note(&a.name) == a.switch_keys.first().copied()
+                && a.switch_keys.iter().all(|key| named(key) == Some(name)) {
+                a.name = name.into();
             }
         }
     }
@@ -115,4 +120,23 @@ mod tests {
         normalize(&mut reloaded, &[ui], &[]);
         assert_eq!(source, reloaded.articulations.iter().map(|a| a.source.clone()).collect::<Vec<_>>(), "identity follows controls, never caption/order");
     }
+    #[test]
+    fn keyswitch_existing_note_labels_use_agreeing_authored_key_names() {
+        let script = sampler_ksp::compile("on init\n set_key_name(24,\"Legato\")\n set_key_name(25,\"Legato\")\n set_key_name(26,\"Staccato\")\n set_key_name(27,\"Pizzicato\")\nend on", 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+        let mut inst = ir::Instrument::default();
+        inst.articulations = [
+            ("range", "C0", vec![24,25]),
+            ("single", "D0", vec![26]),
+            ("mixed", "D0", vec![26,27]),
+            ("authored", "Saved label", vec![27]),
+            ("unnamed", "E0", vec![28]),
+            ("partial", "C0", vec![24,28]),
+        ].into_iter().enumerate().map(|(n,(source,name,switch_keys))| ir::Articulation { source:source.into(),name:name.into(),switch_keys,control:Some(n as u128),default:n==1,..Default::default() }).collect();
+        let before=inst.clone();
+        normalize(&mut inst,&[],&[script]);
+        assert_eq!(inst.articulations.iter().map(|a|a.name.as_str()).collect::<Vec<_>>(),["Legato","Staccato","D0","Saved label","E0","C0"]);
+        for (after,before) in inst.articulations.iter_mut().zip(&before.articulations) { after.name.clone_from(&before.name); }
+        assert_eq!(inst,before,"source IDs, ranges, controls, defaults and alternatives do not change");
+    }
+
 }
