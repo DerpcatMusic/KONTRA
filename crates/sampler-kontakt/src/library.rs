@@ -829,10 +829,21 @@ impl Translation {
                     for (slot, modulator) in InternalModArray16::try_from(chunk)?.slots()? {
                         let params = modulator.params()?;
                         if let Modulator::Ahdsr(envelope) = &params.modulator {
-                            Self::source_envelope(&mut self.ir.source_indices, index, slot, envelope);
-                            if params.targets.iter().any(|t| t.param == "volume") && !amplitude_seen {
+                            Self::source_envelope(
+                                &mut self.ir.source_indices,
+                                index,
+                                slot,
+                                envelope,
+                            );
+                            if params.targets.iter().any(|t| t.param == "volume") && !amplitude_seen
+                            {
                                 amplitude_seen = true;
-                                self.ir.source_indices.ahdsrs.last_mut().unwrap().native_amplitude =
+                                self.ir
+                                    .source_indices
+                                    .ahdsrs
+                                    .last_mut()
+                                    .unwrap()
+                                    .native_amplitude =
                                     Self::native_primary_ahdsr(&modulator, &params, envelope);
                             }
                         }
