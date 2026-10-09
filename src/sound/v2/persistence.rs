@@ -163,6 +163,8 @@ pub(super) struct Persistence {
     pub(super) snapshot: Arc<Snapshot>,
 }
 impl Persistence {
+    #[cfg(test)]
+    pub(super) fn values_len(&self) -> usize { self.state.values.len() }
     fn new(
         runtime: &mut Runtime,
         views: &[sampler_ksp::ScriptView],

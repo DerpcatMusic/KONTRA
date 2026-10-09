@@ -2657,22 +2657,33 @@ pub(crate) mod tests {
         let mut installed_ms = None;
         let mut peak = 0f32;
         let mut blocks = 0u32;
+        let audit_onset = std::env::var_os("PROBE_ONSET").is_some();
+        let mut onset = Vec::new();
         loop {
             if publication_ms.is_none() && params.shared.view.lock().unwrap().parts[0].tree.is_some() { publication_ms = Some(t0.elapsed().as_secs_f64()*1000.); }
             while let Some((slot, _, part)) = params.shared.ready.pop() {
                 let present = part.is_some(); dsp.core.install(slot, part);
                 if present {
                     installed_ms = Some(t0.elapsed().as_secs_f64()*1000.);
-                    for cc in [1,11] { dsp.core.play(0, CoreEvent::midi1(0xb0,cc,127)); }
+                    if audit_onset { onset.push(serde_json::json!({"event":"installed","at_ms":installed_ms,"state":dsp.core.onset_audit()})); }
+                    for cc in [1,11] {
+                        let start = Instant::now();
+                        dsp.core.play(0, CoreEvent::midi1(0xb0,cc,127));
+                        if audit_onset { onset.push(serde_json::json!({"event":"cc","cc":cc,"elapsed_ms":start.elapsed().as_secs_f64()*1000.,"at_ms":t0.elapsed().as_secs_f64()*1000.,"state":dsp.core.onset_audit()})); }
+                    }
+                    let start = Instant::now();
                     dsp.core.play(0, CoreEvent::midi1(0x90,60,100));
+                    if audit_onset { onset.push(serde_json::json!({"event":"note_admitted","elapsed_ms":start.elapsed().as_secs_f64()*1000.,"at_ms":t0.elapsed().as_secs_f64()*1000.,"state":dsp.core.onset_audit()})); }
                 }
             }
             if installed_ms.is_some() {
+                let render_start = Instant::now();
                 let rendered=dsp.core.render(64); for bus in rendered.buses { for channel in bus { for x in &channel[..64] { peak=peak.max(x.abs()); } } }
                 if peak > 1e-7 && first_audio_ms.is_none() {
                     first_audio_ms = Some(t0.elapsed().as_secs_f64()*1000.);
                     first_audio_frame = Some(blocks*64);
                 }
+                if audit_onset && blocks < 16 { onset.push(serde_json::json!({"event":"render","block":blocks,"elapsed_ms":render_start.elapsed().as_secs_f64()*1000.,"at_ms":t0.elapsed().as_secs_f64()*1000.,"peak":peak,"state":dsp.core.onset_audit()})); }
                 blocks += 1;
             }
             if worker.is_finished() && (installed_ms.is_none() || blocks >= 375) { break; }
@@ -2706,7 +2717,7 @@ pub(crate) mod tests {
             "load_run_ms":total.as_secs_f64()*1000.,"ui_wall_ms":ui_wall_ms,"ui":ui,
             "rss0_mb":rss0 as f64/1024.,"rss_done_mb":rss_done as f64/1024.,"hwm_done_mb":hwm_done as f64/1024.,
             "rss_settled_mb":rss_settled as f64/1024.,"rss_after_trim_mb":trimmed_rss as f64/1024.,"hwm_mb":hwm as f64/1024.,"trace":trace,
-            "extra":extra
+            "extra":extra,"onset":onset
         }));
     }
 
