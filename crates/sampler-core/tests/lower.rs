@@ -1468,3 +1468,131 @@ fn normalized_q_gain_routes_address_native_knobs_without_audio_heap() {
       }
     }
 }
+
+#[test]
+fn arbitrary_registered_control_target_drives_its_real_processor_per_voice_without_heap() {
+    let mut instrument = ir::Instrument {
+        assets: vec![asset("generic target")],
+        controls: vec![ir::Control { key: "custom/gain/no-native-id".into(), label: "level".into(),
+            value: ir::ControlValue::Continuous { min: 0., max: 2., default: 1., unit: ir::ControlUnit::None },
+            automation: ir::Automation::None }],
+        chains: vec![ir::Chain { scope: ir::Scope::Voice,
+            pre_amplitude: vec![ir::Processor::Gain(ir::Gain::UNITY)], post_amplitude: vec![] }],
+        processor_controls: vec![ir::ProcessorControl { control: ir::ControlRef(0), chain: ir::ChainRef(0),
+            index: 0, parameter: ir::ProcessorParameter::Gain, ramp: ir::Time::ZERO }],
+        modulators: vec![ir::Modulator { scope: ir::Scope::Voice, source: ir::ModulationSource::Velocity }],
+        routes: vec![ir::Route { source: ir::ModulatorRef(0), target: ir::Target::Control(ir::ControlRef(0)),
+            depth: ir::Depth::Normalized(0.25), invert: false, shape: None, smoothing: ir::Time::ZERO, scale: None }],
+        zones: vec![ir::Zone { chain: Some(ir::ChainRef(0)), routes: vec![ir::RouteRef(0)],
+            keys: ir::KeyRange { low: 60, high: 60 }, pitch: ir::KeyTracking::Fixed,
+            velocity: ir::VelocityResponse::None, ..ir::Zone::new(ir::AssetRef(0)) }],
+        ..Default::default()
+    };
+    for (processor_target, threads, block) in [false, true].into_iter().flat_map(|processor_target|
+        [1, 2, 4].into_iter().flat_map(move |threads| [1, 7, 64, 137].map(|block| (processor_target, threads, block)))) {
+        instrument.routes[0].target = if processor_target {
+            ir::Target::Processor { chain: ir::ChainRef(0), index: 0, parameter: ir::ProcessorParameter::Gain }
+        } else { ir::Target::Control(ir::ControlRef(0)) };
+        let prepared = lower(&instrument, 48000, vec![constant(0.1)], no_behaviors)
+            .expect("registered processor parameter must have a generic route consumer");
+        let published: Vec<_> = prepared.parameter_registry().descriptors().collect();
+        assert_eq!(published.len(), 1);
+        assert_eq!(published[0].name, "level");
+        assert_eq!(published[0].range, [0., 2.]);
+        assert_eq!(published[0].default, 1.);
+        assert_eq!(published[0].address.scope, sampler_core::ParameterScope::Voice);
+        assert_eq!(published[0].display.group, "chain 0 processor 0");
+        let mut rt = Runtime::new(prepared, Limits { notes: 128, families: 128, expressions: 128, voices: 128, ..limits() }).unwrap().with_threads(sampler_core::Threads::Fixed(threads));
+        let voice = |id| Input { protocol: Protocol::Clap, external_id: Some(id), ..input(60) };
+        let mut first = [[0.; 2]; 256];
+        support::without_heap(|| {
+            rt.trigger(voice(1), 60, 1.).unwrap();
+            for chunk in first.chunks_mut(block) { rt.render(chunk).unwrap(); }
+        });
+        assert_eq!(first[128], [0.15; 2]);
+        let mut second = [[0.; 2]; 256];
+        support::without_heap(|| {
+            // Independent voice contribution must not overwrite the first's target.
+            rt.trigger(voice(2), 60, 0.5).unwrap();
+            for chunk in second.chunks_mut(block) { rt.render(chunk).unwrap(); }
+        });
+        assert_eq!(second[128], [0.275; 2]);
+        let id = sampler_core::lower::ir_control_id("custom/gain/no-native-id");
+        let active = rt.active_plan();
+        assert_eq!(rt.control_value(active, id), Ok(sampler_core::ControlValue::Real(1.)),
+            "voice modulation must not overwrite the shared editor/script base");
+        let mut edited = [[0.; 2]; 256];
+        support::without_heap(|| {
+            rt.edit_controls(active, None, &[sampler_core::ControlWrite {
+                id, value: sampler_core::ControlValue::Real(0.5),
+            }]).unwrap();
+            for chunk in edited.chunks_mut(block) { rt.render(chunk).unwrap(); }
+        });
+        let expected = 0.1f32 + 0.1f32 * 0.75;
+        assert_eq!(edited[128], [expected; 2],
+            "a base edit must invalidate consumers while retaining each voice's held offset");
+        assert_eq!(rt.control_base_value(active, id), Ok(sampler_core::ControlValue::Real(0.5)));
+        let mut many = [[0.; 2]; 256];
+        support::without_heap(|| {
+            for id in 3..=128 { rt.trigger(voice(id), 60, 1.).unwrap(); }
+            for chunk in many.chunks_mut(block) { rt.render(chunk).unwrap(); }
+        });
+        let expected_many = (3..=128).fold(expected, |sum, _| sum + 0.1f32);
+        assert_eq!(many[128], [expected_many; 2]);
+        if threads > 1 { assert!(rt.parallel_blocks() > 0, "worker projection must actually execute"); }
+    }
+}
+
+
+#[test]
+fn generic_voice_filter_parameters_never_share_another_voices_coefficients() {
+    let zone = |key, routes| ir::Zone { chain: Some(ir::ChainRef(0)), routes,
+        keys: ir::KeyRange { low: key, high: key }, pitch: ir::KeyTracking::Fixed,
+        velocity: ir::VelocityResponse::None, ..ir::Zone::new(ir::AssetRef(0)) };
+    let instrument = ir::Instrument {
+        assets: vec![asset("per-voice filter coefficients")],
+        controls: vec![ir::Control { key: "filter/cutoff".into(), label: "Cutoff".into(),
+            value: ir::ControlValue::Continuous { min: 500., max: 9500., default: 500., unit: ir::ControlUnit::Hertz },
+            automation: ir::Automation::None }],
+        chains: vec![ir::Chain { scope: ir::Scope::Voice,
+            pre_amplitude: vec![ir::Processor::Filter(ir::Filter { kind: ir::FilterKind::LowPass { poles: 2 },
+                cutoff: ir::Frequency::Hertz(500.), resonance: ir::Resonance::Q(1.) })], post_amplitude: vec![] }],
+        processor_controls: vec![ir::ProcessorControl { control: ir::ControlRef(0), chain: ir::ChainRef(0),
+            index: 0, parameter: ir::ProcessorParameter::Cutoff, ramp: ir::Time::ZERO }],
+        modulators: vec![ir::Modulator { scope: ir::Scope::Voice, source: ir::ModulationSource::Velocity }],
+        routes: vec![ir::Route { source: ir::ModulatorRef(0), target: ir::Target::Control(ir::ControlRef(0)),
+            depth: ir::Depth::Normalized(1.), invert: false, shape: None, smoothing: ir::Time::ZERO, scale: None }],
+        zones: vec![zone(60, vec![ir::RouteRef(0)]), zone(61, vec![])],
+        ..Default::default()
+    };
+    let frames: Vec<_> = (0..4800).map(|n| [0.01 * (std::f32::consts::TAU * n as f32 / 16.).sin(); 2]).collect();
+    let runtime = |threads| {
+        let pcm = Pcm::new(48000, frames.clone().into_boxed_slice()).unwrap();
+        Runtime::new(lower(&instrument, 48000, vec![pcm], no_behaviors).unwrap(),
+            Limits { notes: 128, families: 128, expressions: 128, voices: 128, ..limits() }).unwrap()
+            .with_threads(sampler_core::Threads::Fixed(threads))
+    };
+    for threads in [1, 2, 4] {
+        let mut expected = [[0f32; 2]; 256];
+        for id in 1..=128 {
+            let (key, velocity) = match id % 3 { 0 => (61, 1.), 1 => (60, 1.), _ => (60, 0.1) };
+            let input = Input { external_id: Some(id), ..input(key) };
+            let mut rt = runtime(1);
+            let mut separate = [[0.; 2]; 256];
+            support::without_heap(|| { rt.trigger(input, key, velocity).unwrap(); rt.render(&mut separate).unwrap(); });
+            for (sum, voice) in expected.iter_mut().zip(separate) { for c in 0..2 { sum[c] += voice[c]; } }
+        }
+        let mut combined = runtime(threads);
+        let mut actual = [[0.; 2]; 256];
+        support::without_heap(|| {
+            for id in 1..=128 {
+                let (key, velocity) = match id % 3 { 0 => (61, 1.), 1 => (60, 1.), _ => (60, 0.1) };
+                combined.trigger(Input { external_id: Some(id), ..input(key) }, key, velocity).unwrap();
+            }
+            combined.render(&mut actual).unwrap();
+        });
+        let mismatch = actual.iter().zip(expected).enumerate().find(|(_, (a, b))| **a != *b);
+        assert!(mismatch.is_none(), "each voice keeps its cutoff, including the unmodulated sibling, threads={threads}, first mismatch={mismatch:?}");
+        if threads > 1 { assert!(combined.parallel_blocks() > 0); }
+    }
+}
