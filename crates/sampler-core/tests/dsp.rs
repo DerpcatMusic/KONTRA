@@ -75,15 +75,24 @@ fn close(actual: [f32; 2], expected: f32) {
 #[test]
 fn lofi_voice_state_processes_and_recycles_without_audio_heap_calls() {
     let processor = Processor::LoFi(sampler_core::LoFiSettings {
-        bits: 0.1, frequency: 0.2, noise: 0.6, color: 0.7,
+        bits: 0.1,
+        frequency: 0.2,
+        noise: 0.6,
+        color: 0.7,
     });
-    let mut rt = Runtime::new(plan(vec![processor], vec![], 0, Envelope::default(), 128), limits()).unwrap();
+    let mut rt = Runtime::new(
+        plan(vec![processor], vec![], 0, Envelope::default(), 128),
+        limits(),
+    )
+    .unwrap();
     let mut first = [[0.; 2]; 128];
     let mut second = first;
     support::without_heap(|| {
         for (id, output) in [(1, &mut first), (2, &mut second)] {
             let note = rt.trigger(input(id), 60, 1.).unwrap();
-            for chunk in output.chunks_mut(7) { rt.render(chunk).unwrap(); }
+            for chunk in output.chunks_mut(7) {
+                rt.render(chunk).unwrap();
+            }
             rt.key_up(note, None).unwrap();
             rt.flush_ended(|_| true);
         }
@@ -484,5 +493,71 @@ fn stereo_matrices_preserve_both_inputs_order_filter_tails_and_voice_reuse() {
                 assert!(VoiceChain::new(before, after, 0).is_err());
             }
         }
+    }
+}
+
+#[test]
+fn held_eq_and_rack_mix_render_and_recycle_without_heap_calls() {
+    use sampler_core::{
+        ControlDefinition, ControlDomain, ControlId, ControlRange, ControlValue, Parameter,
+        PeakingEq,
+    };
+    let lane = |i| ControlRange {
+        control: ControlId(i),
+        low: 0.,
+        high: 1.,
+        ramp_frames: 0,
+    };
+    let p = plan(vec![], vec![], 0, Envelope::default(), 256)
+        .with_controls(
+            [0.2, 0.8, 0.25]
+                .into_iter()
+                .enumerate()
+                .map(|(i, v)| ControlDefinition {
+                    id: ControlId(i as u128),
+                    domain: ControlDomain::Real { min: 0., max: 1. },
+                    default: ControlValue::Real(v),
+                })
+                .collect(),
+        )
+        .unwrap()
+        .with_voice_chains(
+            vec![
+                VoiceChain::new(
+                    vec![
+                        Processor::Mix {
+                            count: 1,
+                            dry: lane(0),
+                            wet: lane(1),
+                            bypass: lane(2),
+                        },
+                        Processor::PeakingEq(PeakingEq {
+                            frequency: Parameter::Constant(0.6),
+                            bandwidth: Parameter::Constant(0.4),
+                            gain_db: Parameter::Constant(6.),
+                        }),
+                    ],
+                    vec![],
+                    0,
+                )
+                .unwrap(),
+            ],
+            vec![Some(0)],
+        )
+        .unwrap();
+    let mut rt = Runtime::new(p, limits()).unwrap();
+    for fragment in [1, 3, 7, 32, 64, 127, 256] {
+        support::without_heap(|| {
+            let note = rt.trigger(input(fragment as i32), 60, 1.).unwrap();
+            let mut output = [[0.; 2]; 256];
+            for chunk in output.chunks_mut(fragment) {
+                rt.render(chunk).unwrap();
+            }
+            assert!(output.iter().flatten().all(|v| v.is_finite()));
+            assert!(output[0][0].abs() > 0.1);
+            rt.key_up(note, None).unwrap();
+            rt.panic();
+            rt.flush_ended(|_| true);
+        });
     }
 }

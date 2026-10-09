@@ -194,8 +194,14 @@ impl Matching {
     ) -> Option<Candidate> {
         loop {
             let candidate = self.next(prepared, Some(state), Some(velocity))?;
-            let group = prepared.region_groups.get(candidate.region).copied().flatten();
-            if group.is_some_and(|group| !prepared.native_group_allowed(group, state)) { continue; }
+            let group = prepared
+                .region_groups
+                .get(candidate.region)
+                .copied()
+                .flatten();
+            if group.is_some_and(|group| !prepared.native_group_allowed(group, state)) {
+                continue;
+            }
             if groups.is_none_or(|mask| {
                 prepared
                     .region_groups

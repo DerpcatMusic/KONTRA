@@ -47,7 +47,10 @@ fn plan(signal: Vec<[f32; 2]>, cutoff: f64, response: f64) -> Prepared {
         1,
     )
     .unwrap()
-    .with_voice_chains(vec![VoiceChain::new(vec![daft], vec![], 0).unwrap()], vec![Some(0)])
+    .with_voice_chains(
+        vec![VoiceChain::new(vec![daft], vec![], 0).unwrap()],
+        vec![Some(0)],
+    )
     .unwrap()
 }
 
@@ -61,7 +64,14 @@ fn run(prepared: Prepared, block: usize, start: usize) -> Vec<[f32; 2]> {
             rt.render(chunk).unwrap();
         }
         rt.trigger(
-            Input { protocol: Protocol::Clap, port: 0, group: 0, channel: 0, key: 60, external_id: Some(1) },
+            Input {
+                protocol: Protocol::Clap,
+                port: 0,
+                group: 0,
+                channel: 0,
+                key: 60,
+                external_id: Some(1),
+            },
             60,
             1.,
         )
@@ -75,12 +85,22 @@ fn run(prepared: Prepared, block: usize, start: usize) -> Vec<[f32; 2]> {
 
 #[test]
 fn output_does_not_depend_on_the_block_partition() {
-    let signal: Vec<[f32; 2]> =
-        (0..FRAMES).map(|i| [((i * 7) % 23) as f32 / 12. - 1., ((i * 5) % 19) as f32 / 10. - 0.9]).collect();
+    let signal: Vec<[f32; 2]> = (0..FRAMES)
+        .map(|i| {
+            [
+                ((i * 7) % 23) as f32 / 12. - 1.,
+                ((i * 5) % 19) as f32 / 10. - 0.9,
+            ]
+        })
+        .collect();
     for start in [0, 13] {
         let whole = run(plan(signal.clone(), 0.5, 0.), FRAMES - start, start);
         for block in [1, 7, 31, 32, 33, 64, 129] {
-            assert_eq!(run(plan(signal.clone(), 0.5, 0.), block, start), whole, "block {block}, start {start}");
+            assert_eq!(
+                run(plan(signal.clone(), 0.5, 0.), block, start),
+                whole,
+                "block {block}, start {start}"
+            );
         }
     }
 }
@@ -90,7 +110,9 @@ fn low_pass_keeps_dc_and_removes_nyquist_high_pass_the_reverse() {
     let dc = vec![[0.5f32; 2]; FRAMES];
     let low = run(plan(dc.clone(), 0.3, 0.), 64, 0);
     assert!((low[900][0] - 0.5).abs() < 1e-3, "{:?}", low[900]);
-    let alt: Vec<[f32; 2]> = (0..FRAMES).map(|i| if i % 2 == 0 { [0.5; 2] } else { [-0.5; 2] }).collect();
+    let alt: Vec<[f32; 2]> = (0..FRAMES)
+        .map(|i| if i % 2 == 0 { [0.5; 2] } else { [-0.5; 2] })
+        .collect();
     let cut = run(plan(alt.clone(), 0.3, 0.), 64, 0);
     assert!(cut[900][0].abs() < 0.05, "{:?}", cut[900]);
     let high = run(plan(dc, 0.3, 1.), 64, 0);

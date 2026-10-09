@@ -134,6 +134,39 @@ fn worker_coalesces_priority_changes_and_launches_each_request_once() {
 }
 
 #[test]
+fn priority_rebuilds_and_stale_jobs_do_not_allocate_or_duplicate_work() {
+    let asset = Pcm::streamed(48000, PAGE_FRAMES * 4).unwrap();
+    let (mut cache, mut worker) = StreamCache::new(2).unwrap();
+    support::without_heap(|| {
+        cache.request(&asset, 0, 0).unwrap();
+        cache.request(&asset, 1, 0).unwrap();
+        let first = worker.next_job().unwrap();
+        let second = worker.next_job().unwrap();
+        cache.begin_epoch().unwrap();
+        cache.request(&asset, 2, 200).unwrap();
+        cache.request(&asset, 3, 100).unwrap();
+        assert!(worker.next_job().is_none());
+        for deadline in (0..200).rev() {
+            cache.request(&asset, 2, deadline).unwrap();
+            assert!(worker.next_job().is_none());
+        }
+        worker.complete(first, Ok(())).unwrap();
+        worker.complete(second, Ok(())).unwrap();
+        assert!(matches!(cache.poll(), Some(PageUpdate::Discarded(_))));
+        assert!(matches!(cache.poll(), Some(PageUpdate::Discarded(_))));
+        let urgent = worker.next_job().unwrap();
+        let later = worker.next_job().unwrap();
+        assert_eq!((urgent.key(), urgent.deadline()), (key(&asset, 2), 0));
+        assert_eq!((later.key(), later.deadline()), (key(&asset, 3), 100));
+        worker.complete(urgent, Ok(())).unwrap();
+        worker.complete(later, Ok(())).unwrap();
+        assert!(matches!(cache.poll(), Some(PageUpdate::Loaded(_))));
+        assert!(matches!(cache.poll(), Some(PageUpdate::Loaded(_))));
+        assert!(worker.next_job().is_none());
+    });
+}
+
+#[test]
 fn late_completion_cannot_overwrite_a_reused_slot_and_returns_its_buffer() {
     let asset = asset();
     let (mut cache, mut worker) = StreamCache::new(2).unwrap();

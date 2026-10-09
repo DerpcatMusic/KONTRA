@@ -378,12 +378,17 @@ fn persistence_callbacks_share_the_instrument_controller_context() {
         48000, sampler_ksp::Limits::LIBRARY, &[],
     ).unwrap();
     let mut state = sampler_ksp::persistent_state_buffer(&[script.view()]).unwrap();
-    let plan = sampler_ksp::bind_modules(vec![script], Prepared::new(48000, vec![], vec![], 0).unwrap()).unwrap();
+    let plan = sampler_ksp::bind_modules(
+        vec![script],
+        Prepared::new(48000, vec![], vec![], 0).unwrap(),
+    )
+    .unwrap();
     let limits = Limits::for_plan(&plan, 4, 4);
     let mut rt = Runtime::new(plan, limits).unwrap();
     let plan = rt.active_plan();
     rt.capture_script_state(plan, &mut state).unwrap();
-    rt.restore_script_state(plan, None, &mut state).expect("persistence must use the instrument performance context");
+    rt.restore_script_state(plan, None, &mut state)
+        .expect("persistence must use the instrument performance context");
     assert_eq!(state.callbacks[0].outcome, Some(Outcome::Finished));
     rt.capture_script_state(plan, &mut state).unwrap();
     assert_eq!(state.values[0].value, ScriptStateValue::Cell(17));

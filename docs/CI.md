@@ -121,6 +121,12 @@ For branch protection, select the stable **CI required** check after it has run
 successfully. This PR does not change repository protection/settings. Existing
 required check names must be reviewed by a maintainer before changing them.
 
+The Linux dependency step keeps its exact downloaded `.deb` files in the plugin artifact.
+Editor jobs verify the cache hashes and configure those packages offline, with five
+bounded attempts and exponential backoff. A complete preinstalled Xvfb/graphics/tool
+stack needs no installation. Vulkan/GL diagnostics, the screen recording, editor
+reopen and MUI first-frame checks remain required.
+
 ## Why this setup / primary references
 
 - [GitHub: required checks and skipped workflows](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks)

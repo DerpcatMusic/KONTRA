@@ -8,7 +8,9 @@
 use super::{HostInput, Script};
 #[cfg(feature = "scan")]
 use crate::script::diagnostics::{OwnerPhase, ScanProgress};
-use crate::script::{Command, Config, Files, Finding, FaultCounts, FaultCategory, ScriptHost, UiState};
+use crate::script::{
+    Command, Config, FaultCategory, FaultCounts, Files, Finding, ScriptHost, UiState,
+};
 use sampler_ui_ir::{ControlId, Interface};
 use std::{
     sync::{
@@ -85,7 +87,12 @@ enum UiRequest {
 }
 
 #[cfg(feature = "scan")]
-type AuditReply = (mpsc::SyncSender<(Vec<Command>, Option<f64>)>, Vec<Command>, Option<f64>, f64);
+type AuditReply = (
+    mpsc::SyncSender<(Vec<Command>, Option<f64>)>,
+    Vec<Command>,
+    Option<f64>,
+    f64,
+);
 
 fn process_events(host: &mut ScriptHost, incoming: &mut rtrb::Consumer<Message>) {
     while let Ok(message) = incoming.pop() {
@@ -114,7 +121,12 @@ fn process_events(host: &mut ScriptHost, incoming: &mut rtrb::Consumer<Message>)
     }
 }
 
-fn process_ui_requests(host: &mut ScriptHost, requests: &mpsc::Receiver<UiRequest>, _incoming: &mut rtrb::Consumer<Message>, #[cfg(feature = "scan")] audit_reply: &mut Option<AuditReply>) {
+fn process_ui_requests(
+    host: &mut ScriptHost,
+    requests: &mpsc::Receiver<UiRequest>,
+    _incoming: &mut rtrb::Consumer<Message>,
+    #[cfg(feature = "scan")] audit_reply: &mut Option<AuditReply>,
+) {
     while let Ok(request) = requests.try_recv() {
         match request {
             UiRequest::Edit(id, value) => {
@@ -172,18 +184,21 @@ impl ScriptThread {
                 #[cfg(feature = "scan")]
                 let scan = scan.clone();
                 move || {
-                    let mut host = match ScriptHost::new_with_ui_state(&xml, files, config, state.as_ref()) {
-                        Ok(host) => host,
-                        Err(e) => {
-                            #[cfg(feature = "scan")]
-                            crate::script::scan_failed_load(&e);
-                            return drop(ready.send(Err(e)));
-                        }
-                    };
+                    let mut host =
+                        match ScriptHost::new_with_ui_state(&xml, files, config, state.as_ref()) {
+                            Ok(host) => host,
+                            Err(e) => {
+                                #[cfg(feature = "scan")]
+                                crate::script::scan_failed_load(&e);
+                                return drop(ready.send(Err(e)));
+                            }
+                        };
                     let handles = host.handles_notes();
                     let ui = Arc::new(UiBridge::new(&host, ui_send, std::thread::current()));
                     #[cfg(feature = "scan")]
-                    { *scan.lock().unwrap() = host.scan_faults(); }
+                    {
+                        *scan.lock().unwrap() = host.scan_faults();
+                    }
                     let report = Loaded {
                         insert_overrides: host.insert_overrides(),
                         findings: host.findings(),
@@ -203,9 +218,17 @@ impl ScriptThread {
                         process_events(&mut host, &mut incoming);
                         #[cfg(feature = "scan")]
                         host.owner_phase(OwnerPhase::UiRequests);
-                        process_ui_requests(&mut host, &ui_receive, &mut incoming, #[cfg(feature = "scan")] &mut audit_reply);
+                        process_ui_requests(
+                            &mut host,
+                            &ui_receive,
+                            &mut incoming,
+                            #[cfg(feature = "scan")]
+                            &mut audit_reply,
+                        );
                         #[cfg(feature = "scan")]
-                        if !audit { host.advance(f64::from_bits(clock.load(Ordering::Acquire))); }
+                        if !audit {
+                            host.advance(f64::from_bits(clock.load(Ordering::Acquire)));
+                        }
                         #[cfg(not(feature = "scan"))]
                         host.advance(f64::from_bits(clock.load(Ordering::Acquire)));
                         #[cfg(feature = "scan")]
@@ -220,10 +243,14 @@ impl ScriptThread {
                             finding_revision = host.finding_revision();
                         }
                         #[cfg(feature = "scan")]
-                        { *scan.lock().unwrap() = host.scan_faults(); }
+                        {
+                            *scan.lock().unwrap() = host.scan_faults();
+                        }
                         #[cfg(feature = "scan")]
                         if let Some((reply, commands, due, ms)) = audit_reply.take() {
-                            if let Some(progress) = ui.scan_progress() { progress.complete(ms); }
+                            if let Some(progress) = ui.scan_progress() {
+                                progress.complete(ms);
+                            }
                             let _ = reply.send((commands, due));
                         }
                         #[cfg(feature = "scan")]
@@ -244,7 +271,13 @@ impl ScriptThread {
                                         if stop.load(Ordering::Acquire) {
                                             return;
                                         }
-                                        process_ui_requests(&mut host, &ui_receive, &mut incoming, #[cfg(feature = "scan")] &mut audit_reply);
+                                        process_ui_requests(
+                                            &mut host,
+                                            &ui_receive,
+                                            &mut incoming,
+                                            #[cfg(feature = "scan")]
+                                            &mut audit_reply,
+                                        );
                                         std::thread::sleep(POLL);
                                     }
                                 }
@@ -300,13 +333,20 @@ impl ScriptThread {
         ok
     }
     #[cfg(feature = "scan")]
-    pub fn scan_faults(&self) -> crate::script::ScanFaults { self.scan.lock().unwrap().clone() }
+    pub fn scan_faults(&self) -> crate::script::ScanFaults {
+        self.scan.lock().unwrap().clone()
+    }
 
     #[cfg(feature = "scan")]
     fn synchronize_audit(&mut self, out: &mut Vec<Command>) {
         let (reply, received) = mpsc::sync_channel(1);
-        if let Some(progress) = self.ui.scan_progress() { progress.request(self.time_ms); }
-        self.ui.edits.send(UiRequest::Audit(self.time_ms, reply)).expect("audit script owner stopped");
+        if let Some(progress) = self.ui.scan_progress() {
+            progress.request(self.time_ms);
+        }
+        self.ui
+            .edits
+            .send(UiRequest::Audit(self.time_ms, reply))
+            .expect("audit script owner stopped");
         self.wake();
         let (commands, due) = received.recv().expect("audit script owner stopped");
         out.extend(commands);
@@ -319,7 +359,10 @@ impl ScriptThread {
             let mut message = message;
             loop {
                 match self.events.push(message) {
-                    Ok(()) => { self.wake(); return; }
+                    Ok(()) => {
+                        self.wake();
+                        return;
+                    }
                     Err(rtrb::PushError::Full(back)) => {
                         message = back;
                         if self.audit {
@@ -380,12 +423,16 @@ impl Script for ScriptThread {
     /// The thread advances itself from the clock.
     fn advance(&mut self, _ms: f64) {
         #[cfg(feature = "scan")]
-        if self.audit { self.time_ms = _ms; }
+        if self.audit {
+            self.time_ms = _ms;
+        }
     }
 
     fn next_due(&mut self) -> Option<f64> {
         #[cfg(feature = "scan")]
-        if self.audit { return self.audit_due; }
+        if self.audit {
+            return self.audit_due;
+        }
         None
     }
 
@@ -403,7 +450,9 @@ impl Script for ScriptThread {
 
     fn tick(&mut self, now_ms: f64) {
         #[cfg(feature = "scan")]
-        if self.audit { self.time_ms = now_ms; }
+        if self.audit {
+            self.time_ms = now_ms;
+        }
         self.clock.store(now_ms.to_bits(), Ordering::Release);
     }
 }
@@ -463,19 +512,42 @@ impl UiBridge {
     fn publish_findings(&self, host: &ScriptHost) {
         *self.findings.lock().unwrap() = host.findings();
         let faults = host.fault_counts();
-        self.runtime_faults.store(faults.runtime.values().copied().fold(0u64,u64::saturating_add), Ordering::Release);
-        self.runtime_budgets.store(faults.runtime.get(&FaultCategory::Budget).copied().unwrap_or(0), Ordering::Release);
+        self.runtime_faults.store(
+            faults
+                .runtime
+                .values()
+                .copied()
+                .fold(0u64, u64::saturating_add),
+            Ordering::Release,
+        );
+        self.runtime_budgets.store(
+            faults
+                .runtime
+                .get(&FaultCategory::Budget)
+                .copied()
+                .unwrap_or(0),
+            Ordering::Release,
+        );
         *self.faults.lock().unwrap() = faults;
         self.revision.fetch_add(1, Ordering::Release);
     }
-    pub fn findings(&self) -> Vec<Finding> { self.findings.lock().unwrap().clone() }
+    pub fn findings(&self) -> Vec<Finding> {
+        self.findings.lock().unwrap().clone()
+    }
     /// Numeric progress only; this does not acquire a UI or Lua owner lock.
     #[cfg(feature = "scan")]
-    pub fn scan_progress(&self) -> Option<Arc<ScanProgress>> { self.progress.clone() }
-    pub fn fault_counts(&self) -> FaultCounts { self.faults.lock().unwrap().clone() }
+    pub fn scan_progress(&self) -> Option<Arc<ScanProgress>> {
+        self.progress.clone()
+    }
+    pub fn fault_counts(&self) -> FaultCounts {
+        self.faults.lock().unwrap().clone()
+    }
     /// Lock-free counters for the audio host's cumulative runtime report.
-    pub fn runtime_faults(&self) -> (u64,u64) {
-        (self.runtime_faults.load(Ordering::Acquire), self.runtime_budgets.load(Ordering::Acquire))
+    pub fn runtime_faults(&self) -> (u64, u64) {
+        (
+            self.runtime_faults.load(Ordering::Acquire),
+            self.runtime_budgets.load(Ordering::Acquire),
+        )
     }
     fn publish(&self, host: &ScriptHost) {
         let next = host.interface();
@@ -518,10 +590,12 @@ impl UiBridge {
     pub fn state(&self) -> Result<UiState, String> {
         let (reply, state) = mpsc::sync_channel(1);
         self.owner.unpark();
-        self.edits.send(UiRequest::Save(reply))
+        self.edits
+            .send(UiRequest::Save(reply))
             .map_err(|_| "UVI save worker stopped".to_string())?;
         self.owner.unpark();
-        state.recv_timeout(Duration::from_secs(2))
+        state
+            .recv_timeout(Duration::from_secs(2))
             .map_err(|_| "UVI save worker did not reply".to_string())?
     }
     pub fn revision(&self) -> u64 {
