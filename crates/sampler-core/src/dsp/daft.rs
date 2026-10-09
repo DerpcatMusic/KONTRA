@@ -107,6 +107,8 @@ impl Daft {
     }
 
     fn coefficients(&self, now: &[f64]) -> Coefficients {
+        #[cfg(test)]
+        COEFFICIENT_CALLS.set(COEFFICIENT_CALLS.get() + 1);
         let hz = now[1].min(self.rate * 0.45);
         let g = (std::f64::consts::PI * hz / self.rate).tan();
         let feedback = 1.6 - (hz * 0.5).min(14_000.) * 5.714_285_725_844_093e-5;
@@ -256,3 +258,10 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+std::thread_local! { static COEFFICIENT_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+#[cfg(test)]
+#[path = "daft_cache_tests.rs"]
+mod cache_tests;
