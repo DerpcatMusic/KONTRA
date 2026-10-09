@@ -1,0 +1,26 @@
+# id	keys	path under /mnt/MAIN_STORAGE/Libraries/Kontakt
+una_cotton	36,60,84	Una Corda Library/Instruments/Una Corda Cotton.nki
+una_felt	36,60,84	Una Corda Library/Instruments/Una Corda Felt.nki
+una_pure	36,60,84	Una Corda Library/Instruments/Una Corda Pure.nki
+analog_strings	48,60,72	ANALOG STRINGS/Instruments/ANALOG STRINGS.nki
+barbarian	48,60,72	Afflatus Chapter II Brass/Instruments/3. Curated Ensembles/Barbarian Brass.nki
+trumpets_stacc	60,70,80	Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/3 Trumpets/3 Trumpets Staccato.nki
+trumpets_legato	60,70,80	Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/3 Trumpets/3 Trumpets Legato.nki
+vista_3cellos	36,48,60	Performance Samples Vista/Instruments/Vista - 3 Cellos.nki
+vista_5violins	60,72,84	Performance Samples Vista/Instruments/Vista - 5 Violins.nki
+vista_3basses	30,40,50	Performance Samples Vista/Instruments/Vista - 3 Basses.nki
+areia_vln_sus	60,72,84	Areia 1.2.0 [Audio Imperia]/Instruments/03 Single Patches/01 Core Techniques/01 16 Violins/Areia - 01 16 Violins - Sustained.nki
+areia_vln_stacc	60,72,84	Areia 1.2.0 [Audio Imperia]/Instruments/03 Single Patches/01 Core Techniques/01 16 Violins/Areia - 05 16 Violins - Staccato.nki
+areia_celli_pizz	40,52,64	Areia 1.2.0 [Audio Imperia]/Instruments/03 Single Patches/01 Core Techniques/03 6 Celli/Areia - 06 6 Celli - Pizzicato.nki
+areia_core_vln	60,72,84	Areia 1.2.0 [Audio Imperia]/Instruments/01 Core Technique Patches/01 Areia - 16 Violins - Core Techniques.nki
+dolce_vln1_sus	60,72,84	Audio Imperia Dolce/Instruments/01 7 1st Violins/Dolce - 02 7 1st Violins - Sustained.nki
+dolce_vln1_stacc	60,72,84	Audio Imperia Dolce/Instruments/01 7 1st Violins/Dolce - 07 7 1st Violins - Staccato.nki
+dolce_vln1_legato	60,72,84	Audio Imperia Dolce/Instruments/01 7 1st Violins/Dolce - 01 7 1st Violins - Legato.nki
+dolce_celli_pizz	40,52,64	Audio Imperia Dolce/Instruments/04 3 Celli/Dolce - 09 3 Celli - Pizzicato.nki
+chorus_women_sus	60,67,74	Audio Imperia CHORUS/Instruments/02 Single Patches/02 Women - Traditional Articulations/Chorus - 04 Women - Sustained Ah.nki
+chorus_men_stacc	43,50,57	Audio Imperia CHORUS/Instruments/02 Single Patches/01 Men - Traditional Articulations/Chorus - 10 Men - Staccato Ah.nki
+dolce_basses_legato	36,44,52	Audio Imperia Dolce/Instruments/05 3 Basses/Dolce - 01 3 Basses - Legato.nki
+chorus_syllables	60,67,74	Audio Imperia CHORUS/Instruments/01 Multi Patches/02 Chorus - Women - Traditional Syllables.nki
+dolce_vln1_legato_lg	60,72	Audio Imperia Dolce/Instruments/01 7 1st Violins/Dolce - 01 7 1st Violins - Legato.nki	legato
+dolce_basses_legato_lg	36,44	Audio Imperia Dolce/Instruments/05 3 Basses/Dolce - 01 3 Basses - Legato.nki	legato
+chorus_syllables_lg	60,67	Audio Imperia CHORUS/Instruments/01 Multi Patches/02 Chorus - Women - Traditional Syllables.nki	legato

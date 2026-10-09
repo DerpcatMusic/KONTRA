@@ -1,0 +1,37 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 3K of event 'cycles:u'
+# Event count (approx.): 299129992
+#
+# Overhead  Command          Shared Object         Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      
+# ........  ...............  ....................  ............................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+    19.93%  admission-corre  admission-corrected3  [.] sampler_core::dsp::process
+    12.14%  admission-corre  admission-corrected3  [.] <sampler_core::resample::Kernel>::sample_window
+     9.90%  admission-corre  admission-corrected3  [.] <sampler_core::bus::BusState>::render
+     8.26%  admission-corre  admission-corrected3  [.] <sampler_core::source::Cursor>::render_filtered::<sampler_core::source::PagedFrames>
+     4.27%  admission-corre  admission-corrected3  [.] <sampler_core::voice_mod::VoiceModState>::evaluate
+     4.15%  admission-corre  admission-corrected3  [.] <sampler_core::Runtime>::service_streaming
+     2.34%  admission-corre  admission-corrected3  [.] sampler_core::render::render_source::<sampler_core::source::PagedFrames>
+     2.11%  admission-corre  admission-corrected3  [.] <sampler_core::dsp::PreparedVoiceChain>::finish
+     2.10%  admission-corre  admission-corrected3  [.] <sampler_core::Runtime>::render_voice
+     2.02%  admission-corre  admission-corrected3  [.] sampler_simd::dispatch::v3::<(), sampler_simd::dispatch::run_fused<(&mut sampler_core::source::Cursor, &mut [[f32; 2]], &mut sampler_core::envelope::EnvelopeState), (), <sampler_core::source::Cursor>::render_run<sampler_core::source::PagedFrames>::{closure#3}, <sampler_core::source::Cursor>::render_run<sampler_core::source::PagedFrames>::{closure#4}>::{closure#0}>
+     1.82%  admission-corre  admission-corrected3  [.] <sampler_core::stream::StreamCache>::protect
+     1.74%  admission-corre  admission-corrected3  [.] <sampler_core::voice_mod::VoiceModState>::mix
+     1.40%  admission-corre  admission-corrected3  [.] <sampler_core::stream::StreamCache>::request
+     1.35%  admission-corre  admission-corrected3  [.] <sampler_core::Runtime>::render_split
+     1.31%  admission-corre  admission-corrected3  [.] <core::slice::iter::Iter<sampler_core::dsp::ProcessorState> as core::iter::traits::iterator::Iterator>::all::<<sampler_core::dsp::ProcessorState>::finite>
+     1.27%  admission-corre  admission-corrected3  [.] cpu_audit::main
+     1.22%  admission-corre  admission-corrected3  [.] <sampler_core::stream::StreamCache>::request_retry
+     1.14%  admission-corre  libc.so.6             [.] 0x00000000001b7bdd
+     1.12%  admission-corre  admission-corrected3  [.] <sampler_core::stream::PageReader>::span
+     1.10%  admission-corre  admission-corrected3  [.] <kontakto::sound::v2::V2Core as kontakto::sound::Core>::render
+     1.07%  admission-corre  admission-corrected3  [.] <sampler_core::dsp::PreparedVoiceChain>::begin::<sampler_core::source::PagedFrames>
+
+
+#
+# (Tip: To not accumulate CPU time of children symbols add --no-children)
+#

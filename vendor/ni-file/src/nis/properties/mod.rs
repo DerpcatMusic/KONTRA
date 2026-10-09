@@ -34,7 +34,7 @@ pub mod resources;
 pub mod sound_info_item;
 
 mod subtree_item;
-pub use subtree_item::{SubtreeItem, LibraryKey};
+pub use subtree_item::{LibraryKey, SubtreeItem};
 
 mod preset_chunk_item;
 pub use preset_chunk_item::PresetChunkItemProperties;
