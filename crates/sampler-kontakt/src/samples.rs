@@ -441,9 +441,7 @@ fn content_roots() -> Vec<PathBuf> {
     ROOTS
         .get_or_init(|| {
             let mut roots = Vec::new();
-            let bases: Vec<PathBuf> = ["ProgramFiles", "ProgramFiles(x86)"]
-                .into_iter().filter_map(std::env::var_os).map(PathBuf::from).collect();
-            for base in bases {
+            for base in content_install_bases(|key| std::env::var_os(key)) {
                 for relative in ["Native Instruments", "Common Files/VST3"] {
                     // ponytail: bounded standard install discovery; use KONTRA_KONTAKT_CONTENT for custom installs.
                     find_content(&base.join(relative), 6, false, &mut 4096, &mut roots);
@@ -454,6 +452,11 @@ fn content_roots() -> Vec<PathBuf> {
             roots
         })
         .clone()
+}
+
+#[cfg(feature = "library-access")]
+fn content_install_bases(env: impl FnMut(&str) -> Option<std::ffi::OsString>) -> Vec<PathBuf> {
+    ["ProgramFiles", "ProgramFiles(x86)"].into_iter().filter_map(env).map(PathBuf::from).collect()
 }
 
 #[cfg(feature = "library-access")]
@@ -763,6 +766,18 @@ pub(crate) fn wav_layout(bytes: &[u8]) -> Result<Wav, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "library-access")]
+    #[test]
+    fn default_content_discovery_never_searches_wine() {
+        let bases = content_install_bases(|key| match key {
+            "ProgramFiles" => Some("/native/Program Files".into()),
+            "ProgramFiles(x86)" => None,
+            _ => panic!("default discovery must not consult HOME or WINEPREFIX: {key}"),
+        });
+        assert_eq!(bases, [PathBuf::from("/native/Program Files")]);
+        assert!(content_install_bases(|_| None).is_empty());
+    }
 
     #[cfg(feature = "library-access")]
     #[test]
