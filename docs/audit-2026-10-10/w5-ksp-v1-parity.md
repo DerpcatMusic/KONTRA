@@ -16,8 +16,8 @@ All 16 v2 `ui_*` declaration kinds have typed HIR entries. Literal declaration s
 | `set_control_par` | Numeric HIDE, Z_LAYER, PARENT_PANEL and other authored property writes have a runtime keyed store plus host UI effect. Retain this shared representation. Scalar/indexed real and text getter/value coverage is incomplete. |
 | Indexed real/text control getters | Callback `get_control_par_real[_arr]` and `get_control_par_str_arr` have no lowering route despite init support and setters. |
 | Waveform state | Callback `get_ui_wf_property` returns zero; `attach_zone`/`set_ui_wf_property` host effects have no consumer. |
-| Assets | Callback `get_folder` returns empty. `fs_get_filename` has a runtime route but init returns empty. Runtime font lookup is init-only. Picture/font/resource resolution remains the loader/W3 lane. |
-| Global callbacks | v1 executes `ui_controls` after local control callbacks and has `ui_update`; v2 rejects both names. Specific `ui_control($var)` callbacks exist. Global callback context/ordering must be ported at the dispatch boundary, not faked in the renderer. |
+| Assets | v2 init `get_folder` has no library/patch environment; both versions return empty in callbacks. `fs_get_filename` has a runtime route but init returns empty. Runtime font lookup is init-only. Picture/font/resource resolution remains the loader/W3 lane. |
+| Global callbacks | v1 starts `ui_controls` before the local callback and then starts `ui_update`; v2 rejects both names. Specific `ui_control($var)` callbacks exist. Global callback context/ordering must be ported at the dispatch boundary, not faked in the renderer. |
 | Keyboard ranges | Three getters are absent. Range setter/remover host effects have no runtime consumer; keyboard getter callbacks return defaults. |
 
 ## Other commands and callbacks
