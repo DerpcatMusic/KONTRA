@@ -575,9 +575,16 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, window: Size) -> Option<El> {
             } => {
                 height += ROW;
                 let id = format!("menu-item-{n}");
-                // Articulation explanations belong in tooltips, not a second
-                // wrapped column inside a compact fixed-height menu row.
-                let tip = matches!(&command, Command::Art(..)).then_some(if matches!(&command, Command::Art(_, super::inside::ArtAction::Move(_, _))) { "Changes display order only; trigger assignments stay unchanged" } else { hint });
+                // Only shortcuts occupy the trailing column; explanations stay on hover.
+                let shortcut = matches!(&command, Command::Open(_) | Command::Duplicate(_) | Command::Remove(_));
+                let explanation = if matches!(&command, Command::Art(_, super::inside::ArtAction::Move(_, _))) {
+                    Some("Changes display order only; trigger assignments stay unchanged")
+                } else if !shortcut && !hint.is_empty() {
+                    Some(hint)
+                } else {
+                    None
+                };
+                let tip = explanation.map_or_else(|| label.clone(), |text| format!("{label}\n{text}"));
                 if ui.get(id.as_str()).activated() {
                     picked = Some(command);
                 }
@@ -593,7 +600,7 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, window: Size) -> Option<El> {
                         .lines(1)
                         .flex(1)
                         .min_w(0),
-                    caption(if tip.is_some() { "" } else { hint }).fill(secondary())
+                    caption(if shortcut { hint } else { "" }).fill(secondary())
                 ]
                 .gap(SPACE)
                 .align(Align::Center)
@@ -601,9 +608,8 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, window: Size) -> Option<El> {
                 .h(ROW)
                 .focusable()
                 .a11y(A11y::Button)
-                .tip(label.clone())
+                .tip(tip)
                 .named(label)
-                .when(tip.is_some(), |e| e.tip(tip.unwrap()))
                 .id(id)
                 .shrink(0);
                 rows.push(interactive(el, false));
