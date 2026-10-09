@@ -71,7 +71,7 @@ fn authored_resource_containers_are_bounded_and_case_insensitive() {
     let mut routed = sampler_kontakt::Resources::of(&instrument);
     assert_eq!(
         routed.read("Resources\\pictures\\Wallpaper.PNG").as_deref(),
-        Some(picture.as_slice())
+        Some(picture)
     );
     assert!(
         routed.locations().contains(&path),
