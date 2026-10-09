@@ -31,6 +31,29 @@ impl Ahdsr {
         ahd_only: false,
     };
 }
+// Port from v1 0cb7a8a0:src/engine/bank.rs GroupSettings/Ahdsr conversion.
+impl From<&sampler_ir::SourceAhdsr> for Ahdsr {
+    fn from(source: &sampler_ir::SourceAhdsr) -> Self {
+        // The admitted native setter multiplies f32 .001; ordinary sources divide.
+        let seconds = |ms: f32| {
+            if source.native_amplitude {
+                ms * 0.001
+            } else {
+                ms / 1000.
+            }
+        };
+        Self {
+            attack: seconds(source.attack_ms),
+            curve: source.attack_curve,
+            hold: seconds(source.hold_ms),
+            decay: seconds(source.decay_ms),
+            sustain: source.sustain.clamp(0., 1.),
+            release: seconds(source.release_ms),
+            ahd_only: source.native_amplitude && source.ahd_only,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Phase {
