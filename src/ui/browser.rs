@@ -1068,7 +1068,8 @@ fn library_paths<'a>(grouped: &'a super::Libraries, name: &str) -> Vec<&'a Path>
 fn categories(library: &Library, paths: &[&Path], open: &BTreeMap<String, bool>) -> Vec<Row> {
     let mut out = Vec::new();
     for name in ["Instruments", "Multis", "Presets"] {
-        let mut selected: Vec<&Path> = paths
+        // Filtering preserves the natural order of the cached library catalog.
+        let selected: Vec<&Path> = paths
             .iter()
             .copied()
             .filter(|p| {
@@ -1092,9 +1093,6 @@ fn categories(library: &Library, paths: &[&Path], open: &BTreeMap<String, bool>)
         if selected.is_empty() {
             continue;
         }
-        #[cfg(test)]
-        work(2, selected.len());
-        selected.sort_by_cached_key(|p| import::natural(&p.to_string_lossy()));
         let mut root = library.dir.clone();
         // Bank members keep their source identity while hiding the container wrapper.
         if name == "Presets"
@@ -2136,7 +2134,8 @@ mod tests {
             "/lib/Scene.kontra-multi",
             "/lib/Snap.nksn",
         ];
-        let paths: Vec<_> = paths.iter().map(Path::new).collect();
+        let mut paths: Vec<_> = paths.iter().map(Path::new).collect();
+        paths.sort_by_cached_key(|p| import::natural(&p.to_string_lossy()));
         let rows = categories(&library, &paths, &BTreeMap::new());
         let names: Vec<_> = rows
             .iter()
