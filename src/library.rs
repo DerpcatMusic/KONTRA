@@ -375,6 +375,8 @@ pub struct Shelf {
     pub libraries: Vec<Library>,
     pub snapshots: HashMap<PathBuf, Snapshots>,
     pub bank_issues: Vec<BankIssue>,
+    /// Unavailable filesystem entries retained for per-root diagnostics.
+    pub path_issues: BTreeMap<PathBuf, String>,
     /// Prepared once by the library worker, never scanned during painting.
     /// Native path keys also equate Windows' slash and backslash separators.
     by_dir: HashMap<PathBuf, usize>,
@@ -405,7 +407,7 @@ impl Shelf {
             .map(|(n, l)| (l.dir.clone(), n))
             .collect();
         let by_name = libraries.iter().enumerate().map(|(n, l)| (l.name.clone(), n)).collect();
-        Self { libraries, by_dir, by_name, per_root: Vec::new(), snapshots: HashMap::new(), bank_issues: Vec::new() }
+        Self { libraries, by_dir, by_name, per_root: Vec::new(), snapshots: HashMap::new(), bank_issues: Vec::new(), path_issues: BTreeMap::new() }
     }
 
     /// The library `path` is in: the nearest library folder above it.
@@ -436,6 +438,17 @@ impl Shelf {
         (count > 0).then(|| format!("{count} UVI {} could not be cataloged: {}", if count == 1 { "bank" } else { "banks" }, causes.join("; ")))
     }
 
+    /// Filesystem and bank failures under a saved root, including partial scans.
+    pub fn root_problem(&self, root: &Path) -> Option<String> {
+        let mut messages: Vec<String> = self.bank_problem(root).into_iter().collect();
+        let issues: Vec<_> = self.path_issues.iter().filter(|(path, _)| path.starts_with(root)).collect();
+        if !issues.is_empty() {
+            let reasons: BTreeSet<&str> = issues.iter().map(|(_, message)| message.as_str()).collect();
+            messages.push(format!("{} library {} skipped: {}", issues.len(), if issues.len() == 1 { "path" } else { "paths" }, reasons.into_iter().collect::<Vec<_>>().join("; ")));
+        }
+        (!messages.is_empty()).then(|| messages.join("\n"))
+    }
+
     /// One library per folder right under `root`, named for it: what a list
     /// of files with no folders on disk behind them is shelved as.
     #[cfg(test)]
@@ -464,6 +477,7 @@ pub struct Progress {
     pub cancel: AtomicBool,
     pub running: AtomicBool,
     bank_issues: Mutex<BTreeMap<(bool, String), BTreeSet<PathBuf>>>,
+    path_issues: Mutex<BTreeMap<PathBuf, String>>,
 }
 
 /// One catalog problem and every bank affected by it.
@@ -475,6 +489,13 @@ pub struct BankIssue {
 }
 
 impl Progress {
+    fn path_issue(&self, path: &Path, reason: impl ToString) {
+        let reason = reason.to_string();
+        if lock(&self.path_issues).insert(path.into(), reason.clone()).is_none() {
+            crate::diagnostics::resource(path, "library path", &reason);
+        }
+    }
+
     fn bank_issue(&self, path: &Path, error: sampler_uvi::AccessError) {
         let unsupported = matches!(error, sampler_uvi::AccessError::Disabled);
         let message = if unsupported { "protected library: not supported".into() } else { error.to_string() };
@@ -507,20 +528,33 @@ struct Listing {
     folders: Vec<PathBuf>,
 }
 
-fn list(dir: &Path) -> Listing {
+fn list(dir: &Path, progress: &Progress) -> Listing {
     let mut out = Listing::default();
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
-        Err(e) => { crate::diagnostics::resource(dir, "library directory", &e.to_string()); return out; }
+        Err(e) => { progress.path_issue(dir, e); return out; }
     };
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => { progress.path_issue(dir, error); continue; }
+        };
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_lowercase();
         if name.starts_with('.') {
             continue;
         }
         // Symbolic links are not followed: a loop would never end.
-        let Ok(kind) = entry.file_type() else { continue };
+        let kind = match entry.file_type() {
+            Ok(kind) => kind,
+            Err(error) => { progress.path_issue(&path, error); continue; }
+        };
+        if kind.is_symlink() {
+            if let Err(error) = std::fs::metadata(&path) {
+                progress.path_issue(&path, format!("Symbolic link cannot be resolved: {error}"));
+            }
+            continue;
+        }
         if kind.is_dir() {
             match name.as_str() {
                 "instruments" | "multis" => out.instruments = true,
@@ -530,6 +564,7 @@ fn list(dir: &Path) -> Listing {
             out.folders.push(path);
             continue;
         }
+        if !kind.is_file() { continue; }
         let ext = name.rsplit_once('.').map_or("", |(_, e)| e);
         match ext {
             "nicnt" => out.nicnt = out.nicnt.take().or(Some(path)),
@@ -557,10 +592,16 @@ struct Candidate {
 fn detect(root: &Root, progress: &Progress) -> Vec<Candidate> {
     let dir = PathBuf::from(&root.path);
     let mut out = Vec::new();
-    if dir.is_file() && dir.extension().is_some_and(|x| x.eq_ignore_ascii_case("ufs")) {
+    let metadata = match std::fs::metadata(&dir) {
+        Ok(metadata) => metadata,
+        Err(error) => { progress.path_issue(&dir, error); return out; }
+    };
+    if metadata.is_file() && (dir.extension().is_some_and(|x| x.eq_ignore_ascii_case("ufs")) || (root.single && is_preset(&dir))) {
         out.push(Candidate { dir, nicnt: None, vendor: None });
+    } else if !metadata.is_dir() {
+        progress.path_issue(&dir, "Not a library directory or UFS bank");
     } else if root.single {
-        let listing = list(&dir);
+        let listing = list(&dir, progress);
         out.push(Candidate { dir, nicnt: listing.nicnt, vendor: None });
     } else {
         visit(&dir, 0, None, &mut out, progress);
@@ -573,7 +614,7 @@ fn visit(dir: &Path, depth: usize, vendor: Option<String>, out: &mut Vec<Candida
         return;
     }
     progress.folders.fetch_add(1, Ordering::Relaxed);
-    let l = list(dir);
+    let l = list(dir, progress);
     let library = l.nicnt.is_some()
         || l.instruments
         || (l.presets > 0 && (l.samples || l.monolith))
@@ -732,12 +773,22 @@ fn cached_presets(dir: &Path, progress: &Progress, cache: &mut cache::Cache) -> 
         }
         let e = match entry {
             Ok(e) => e,
-            Err(e) => { trace.issue("catalog", "directory_unreadable", e.to_string()); continue; }
+            Err(e) => {
+                progress.path_issue(e.path().unwrap_or(dir), e.io_error().map_or_else(|| e.to_string(), ToString::to_string));
+                trace.issue("catalog", "directory_unreadable", e.to_string());
+                continue;
+            }
         };
         if e.file_type().is_dir() {
             progress.folders.fetch_add(1, Ordering::Relaxed);
         }
         let path = e.path();
+        if e.file_type().is_symlink() {
+            if let Err(error) = std::fs::metadata(path) {
+                progress.path_issue(path, format!("Symbolic link cannot be resolved: {error}"));
+            }
+            continue;
+        }
         if !e.file_type().is_file() { continue; }
         if path.extension().is_some_and(|s| s.eq_ignore_ascii_case("nksn")) {
             if let Some(cache::Metadata::Snapshot(name)) = cache.memo(path, || match crate::sound::v2::snapshot_instrument(path) {
@@ -846,6 +897,7 @@ fn cached_scan(roots: &[Root], progress: &Progress, cache: &mut cache::Cache) ->
     let mut shelf = Shelf::new(libraries);
     shelf.per_root = per_root;
     shelf.snapshots = snapshots;
+    shelf.path_issues = lock(&progress.path_issues).clone();
     shelf.bank_issues = lock(&progress.bank_issues).iter().map(|((unsupported, message), locations)| BankIssue {
         unsupported: *unsupported, message: message.clone(), locations: locations.iter().cloned().collect(),
     }).collect();
@@ -1156,10 +1208,12 @@ impl Scanner {
                     let per_root = std::mem::take(&mut shelf.per_root);
                     let snapshots = std::mem::take(&mut shelf.snapshots);
                     let bank_issues = std::mem::take(&mut shelf.bank_issues);
+                    let path_issues = std::mem::take(&mut shelf.path_issues);
                     let mut shelf = Shelf::new(shelf.libraries);
                     shelf.per_root = per_root;
                     shelf.snapshots = snapshots;
                     shelf.bank_issues = bank_issues;
+                    shelf.path_issues = path_issues;
                     Scanned { shelf: Arc::new(shelf), files: Arc::new(files), artwork, imported }
                 });
                 let scanned = scanned.filter(|_| !progress.canceled());
