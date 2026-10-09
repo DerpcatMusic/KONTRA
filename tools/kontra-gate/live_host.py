@@ -223,6 +223,44 @@ def load_observation(records, rows):
                 plugin_stages_ms={k: v for k, v in stages.items() if number(v)})
 
 
+def load_audit(stderr):
+    """Retain fixed load-stage counters; raw stderr remains in tmpfs."""
+    stages = set('file_read_ni_container decrypt_expand ni_chunk_parse ni_objects_parse '
+                 'translate_resolve_ir translate_ksp_init translate_resource_ir_dsp '
+                 'translate_zones_sample_resolve translate_keys_validate sample_source_resolve '
+                 'sample_header_cache sample_headers_latency_probe sample_preload '
+                 'ksp_frontend ksp_on_init ksp_callback_program ksp_callback_lower '
+                 'ksp_state_mirror ksp_diagnostics ksp_model_assemble '
+                 'region_playback_templates runtime_alloc_init uvi_lua_work uvi_read_translate '
+                 'uvi_lua_init uvi_stream_prepare uvi_bank_open uvi_program_read_decrypt '
+                 'uvi_xml_translate_ir uvi_script_resources uvi_ufs_header uvi_directory_namespace '
+                 'uvi_content_setup uvi_lua_ui_snapshot uvi_lua_ui_save'.split())
+    numbers = set('ms rss_kb hwm_kb calls warnings widgets instructions regions region_bytes '
+                  'cursor_bytes template_bytes multi_loop_regions multi_loop_bytes xml_bytes '
+                  'script_bytes graph_nodes graph_depth vm_checkpoints work_limit work_remaining '
+                  'memory_bytes wall_limit_ms'.split())
+    flags = {'hit', 'work_exhausted', 'wall_expired', 'initialized'}
+    records, dropped = [], 0
+    for line in stderr.splitlines():
+        if not line.startswith('AUDIT '): continue
+        if len(line) > 4096 or len(records) >= 4096:
+            dropped += 1
+            continue
+        try: row = json.loads(line[6:])
+        except ValueError: continue
+        if not isinstance(row, dict) or not isinstance(row.get('stage'), str) or row['stage'] not in stages:
+            continue
+        kept = {'stage': row['stage']}
+        for key, value in row.items():
+            if (key in numbers and type(value) in (int, float) and 0 <= value <= 2**64 - 1 and math.isfinite(value)
+                    or key in flags and type(value) is bool):
+                kept[key] = value
+        if row.get('context') in ('Note', 'Release', 'Controller', 'Plan'):
+            kept['context'] = row['context']
+        if len(kept) > 1: records.append(kept)
+    return {'records': records, 'dropped_records': dropped}
+
+
 def observe(host, plugin, state, plan, block, seconds, folder, version, load_probe=False):
     folder.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='kontra-live-', dir='/dev/shm') as temp:
@@ -283,6 +321,7 @@ def observe(host, plugin, state, plan, block, seconds, folder, version, load_pro
                             perf_view=views, streaming_io=io, underruns=views[-1]['underruns'] if views else frozen_underruns(rows))
                 if load_probe:
                     live['load_probe'] = load_observation(records, rows)
+                    live['load_audit'] = load_audit(errors)
                 if job.returncode == 0 and not live['native_state_verified']:
                     live['host_failure'] = 'native selection readback mismatch or unavailable'
         finally:
