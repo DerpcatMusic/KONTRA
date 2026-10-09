@@ -50,6 +50,30 @@ Conflux script-error results. Pacific and Vista missing-art cases were previousl
 searched across the library folder and containers and also failed frozen v1.
 These are historical findings, not fresh shipping-source or native-host verdicts.
 
+| Kontakt library | Historical observations | Original OK | Missing images | Script errors | Current call fidelity |
+| --- | ---: | ---: | ---: | ---: | --- |
+| ANALOG STRINGS | 1 | 1 | 0 | 0 | Pending |
+| Afflatus Chapter II Brass | 348 | 348 | 0 | 0 | Pending |
+| Areia | 155 | 155 | 0 | 0 | Pending |
+| CHORUS | 42 | 42 | 0 | 0 | Pending |
+| Dolce | 77 | 77 | 0 | 0 | Pending |
+| Conflux | 51 | 21 | 0 | 30 | Pending |
+| Morphology Evolved | 1 | 1 | 0 | 0 | Pending |
+| Pacific Ensemble Strings | 50 | 4 | 46 | 0 | Pending |
+| Vista | 7 | 0 | 7 | 0 | Pending |
+| Solo | 100 | 100 | 0 | 0 | Pending |
+| Una Corda | 3 | 3 | 0 | 0 | Pending |
+
+W10's current metadata-only checklist covers 26 UVI banks / 660 programs:
+`/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w10-uvi-scan-344/scripted-ui-bank-checklist.csv`
+and `scripted-ui-checklist-PROVENANCE.json`. Protected runtime cells are
+UNKNOWN/PARKED; frozen v1 cells needing the official reader are unavailable.
+Trusted source `b34c08e6` has three authored RED findings: missing `setHeight`,
+missing `Button.push`, and an invented constructor grid. W10 owns their v1
+`4bffbb18` port, module/resource semantics, publication and production pixel
+receipts. A prepared port or a recognized call does not establish runtime support;
+its GREEN/no-run/READY results are pending and must be cited separately.
+
 ## Acceptance limits
 
 The decoder's exact pixel fixture establishes reduction parity, not full-library
