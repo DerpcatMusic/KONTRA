@@ -81,6 +81,7 @@ pub use dsp::{
     Parameter, PeakingEq, Processor, Rectifier, ReverbSettings, StateVariableFilter,
     StereoSettings, SvfMode, VoiceChain, VoiceSendPosition, VoiceSendTap,
 };
+pub mod v1_voice_controls;
 mod envelope;
 use envelope::EnvelopeState;
 pub use envelope::{Envelope, EnvelopeCurve};
