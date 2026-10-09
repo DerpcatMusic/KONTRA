@@ -4,10 +4,8 @@
 //! `codex/uvi-latest-integration` (`src/uvi/program.rs`, `playback.rs`,
 //! `modulation.rs`). Clear `.uvip` with loose samples load through [`load`].
 //! With the `library-access` feature, installed UVI banks open through [`Bank`]
-//! (ported from v1 `src/uvi/{access,crypto,ufs}.rs` and `src/library/uvi.rs`):
-//! reader namespaces come from the user's own installed, hash-verified UVI
-//! Workstation and bank access state is kept only in memory; neither is
-//! embedded, logged, printed or returned in an error. Every
+//! using the native UFS and PasswordV2 implementation. Recovered bank access
+//! state stays only in memory; it is never logged, printed or returned in an error. Every
 //! module this translator does not model is listed in `Instrument::unsupported`.
 
 #[cfg(feature = "library-access")]
@@ -47,13 +45,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Installed reader identity for display-cache invalidation; no bank access state.
-pub fn installed_reader() -> Option<PathBuf> {
-    #[cfg(feature = "library-access")]
-    { access::reader_path(bank::configured_reader().as_deref()).ok() }
-    #[cfg(not(feature = "library-access"))]
-    { None }
-}
+/// Increment when native protected-library decoding changes, for cache invalidation.
+pub const LIBRARY_ACCESS_REVISION: u32 = 1;
 
 const XML_LIMIT: u64 = 32 << 20;
 
@@ -502,6 +495,7 @@ impl Translation {
             auxes.push((name, bus));
         }
         let program_output = self.insert_bus(program, ir::Output::Master)?;
+        self.ir.input_bus = if let ir::Output::Bus(bus) = program_output { Some(bus) } else { None };
         for (_, bus) in &auxes {
             self.ir.buses[bus.0].output = program_output;
         }
@@ -1000,7 +994,7 @@ impl Translation {
 
 /// Load a loose program, a virtual `bank.ufs/member.uvip` path, or the first
 /// program in a UFS bank. [`load_program`] selects a specific bank member.
-/// Protected programs use the installed reader behind `library-access`.
+/// Protected programs use the native reader behind `library-access`.
 pub fn load(path: &Path, rate: u32) -> Result<sampler_kontakt::Loaded, Box<dyn std::error::Error>> {
     assemble_translated(translate_path(path)?, rate)
 }

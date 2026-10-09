@@ -1,12 +1,43 @@
 # Changelog
 
 Human-reviewed changes belong in the unreleased section before publication. Nightly
-notes compare those entries with the previous published source, retain known limits,
-and include the complete shipped public commit messages and merged PR descriptions.
+notes use accepted ledger entries added since the previous published source,
+with a short user-facing known-issues list and collapsed source/checksum details.
 Each published release manifest also retains its versioned changelog. Frozen entries
 below record reviewed source checkpoints; they are not claims about pending work.
 
 ## Unreleased
+
+### Fixed after 0.3.326
+
+- Open protected Falcon and UVI content with the native format implementation.
+- Bound UVI script evaluation by deterministic callback work.
+- Stop zero-wait coroutine wakeups from exhausting a callback indefinitely.
+- Publish complete authored UVI controls before audit replies while preserving live work limits.
+- Retain member identity without persisting instrument member names.
+- Yield long metadata census shards to waiting builds.
+- Avoid duplicate runtime fault summaries on unchanged refreshes.
+- Place part Tone before instrument effects as in KONTRA v1.
+- Execute authored KSP MIDI object commands and return host file completions.
+- Reject MIDI completions and captures for unpublished jobs.
+- Preserve every completed Nightly snapshot and publish source versions in order.
+- Show grouped failed UVI banks with accurate access causes and affected locations.
+- Keep the piano keyboard visible in the current Sound editor.
+- Keep wheel gestures inside dropdown and picker popups.
+- Remove the repeated instrument name in Info.
+- Preserve partial redraw coordinates for GPU vector rendering.
+- Show each EQ band gain and apply the correct graph drag scale.
+- Share identical immutable zone chains without changing audible PCM.
+
+### Added
+
+- Read-only Mapping workbench with shared Sound tabs, zone identity, waveform inspection and balanced audition.
+- Optional numeric audit progress and grouped diagnostics with location sidecars.
+
+### Internal
+
+- Scalar and batched voices use one shared biquad sample kernel; no control or coefficient law changes.
+
 
 ### Fixed after 0.3.306
 
@@ -23,6 +54,14 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 - Global Tone is currently after part FX, before faders/rack routing; v1 pre-insert placement remains unverified.
 - CPU/RSS and native-law parity remain incomplete. W9 streaming and W8 chain sharing remain excluded pending acceptance. Existing KSP compile and DSP gaps are retained in the fidelity ledger. Native persistence is restored in this follow-up; the exclusion below describes the historical 0.3.306 freeze.
+
+### Known issues
+
+- Some Kontakt and Falcon effects, modulation and script actions remain incomplete.
+- Saving and reopening a project may not restore every Kontakt script setting.
+- Some instrument controls and artwork may differ from the original interface.
+- Large libraries can use substantial memory, and performance may be worse than KONTRA v1.
+- Some Vista and Pacific patches cannot yet find all required sample resources.
 
 ### Fixed after 0.3.224
 
