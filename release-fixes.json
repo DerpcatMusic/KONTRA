@@ -1971,7 +1971,9 @@
         "f94d3993c60db61b44eaffa2fb234698fbeb5d22"
       ],
       "validation": "Verified synthetic reader tests15/15, compatibility32/32, Program metadata tests5/5, full integration shards and shared quick15 regression passed; no native semantic meaning is inferred for F1/F2.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Read more of the saved instrument data in Kontakt presets.",
+      "category": "Fixed"
     },
     {
       "id": "nis-complete-typed-preset-readers",
@@ -1980,7 +1982,9 @@
         "f94d3993c60db61b44eaffa2fb234698fbeb5d22"
       ],
       "validation": "Verified synthetic reader tests15/15, compatibility32/32, Program metadata tests5/5, full integration shards and shared quick15 regression passed; no native semantic meaning is inferred for F1/F2.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Read versioned NIS preset and sound records correctly.",
+      "category": "Fixed"
     },
     {
       "id": "kontakt-occupied-fx-slot-failure-diagnostics",
@@ -1989,7 +1993,9 @@
         "d3f95c9ceaf89dbbd6a78fea0470f7e3218eb70d"
       ],
       "validation": "Verified synthetic reader tests15/15, compatibility32/32, Program metadata tests5/5, full integration shards and shared quick15 regression passed; no native semantic meaning is inferred for F1/F2.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Report effects that cannot load while keeping working effects and routing.",
+      "category": "Fixed"
     },
     {
       "id": "kontakt-program-resource-reader-unification",
@@ -1998,7 +2004,9 @@
         "29ad88a727c08994002a0d00ebbb873ce7e6e989"
       ],
       "validation": "Verified synthetic reader tests15/15, compatibility32/32, Program metadata tests5/5, full integration shards and shared quick15 regression passed; no native semantic meaning is inferred for F1/F2.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Read Kontakt artwork and resource metadata from the correct preset records.",
+      "category": "Fixed"
     },
     {
       "id": "live-note-callback-owner-traversal",
@@ -2007,7 +2015,9 @@
         "ffd858c4665b98e0f446dc359cc44ff80bcca599"
       ],
       "validation": "W9 failing-first storage/lifecycle tests and full integration shards passed at cd93997d; new shared scanner quick15 admissions and14 matched auditions show zero regressions. Original pre-existing picker race receipt is retained; retry passed.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Avoid unnecessary work on notes and script callbacks that have already ended.",
+      "category": "Improved"
     },
     {
       "id": "sound-callback-flush-once-per-host-block",
@@ -2016,7 +2026,9 @@
         "ffd858c4665b98e0f446dc359cc44ff80bcca599"
       ],
       "validation": "W9 failing-first storage/lifecycle tests and full integration shards passed at cd93997d; new shared scanner quick15 admissions and14 matched auditions show zero regressions. Original pre-existing picker race receipt is retained; retry passed.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Apply completed script actions once per audio block.",
+      "category": "Improved"
     },
     {
       "id": "offline-exact-stream-step-readiness",
@@ -2025,7 +2037,9 @@
         "87b23907a493a34aed63a87111794ca5e5ff427d"
       ],
       "validation": "W9 failing-first storage/lifecycle tests and full integration shards passed at cd93997d; new shared scanner quick15 admissions and14 matched auditions show zero regressions. Original pre-existing picker race receipt is retained; retry passed.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Wait for the required sample data during offline rendering and report failures.",
+      "category": "Fixed"
     },
     {
       "id": "transient-stream-page-retry-and-storage-reporting",
@@ -2034,7 +2048,9 @@
         "87b23907a493a34aed63a87111794ca5e5ff427d"
       ],
       "validation": "W9 failing-first storage/lifecycle tests and full integration shards passed at cd93997d; new shared scanner quick15 admissions and14 matched auditions show zero regressions. Original pre-existing picker race receipt is retained; retry passed.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Retry temporary sample-read failures and report storage problems.",
+      "category": "Fixed"
     },
     {
       "id": "original-default-persisted-view-selection",
@@ -2043,7 +2059,9 @@
         "42cba1ba727fa46a67ffa93025e38d98fc7bbefe"
       ],
       "validation": "Pinned W1 f2f1a979 readiness: no-run, five isolated picker runs, seven loop probes, three callback checks, quick15; integration61d519b3 no-run,213 root library tests including both picker tests, and full KSP/UI IR suites pass. Equal-canvas A/B is performance-neutral.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Open instruments in Original view and honor saved view preferences.",
+      "category": "Fixed"
     },
     {
       "id": "incremental-authored-ui-publication",
@@ -2052,7 +2070,9 @@
         "42cba1ba727fa46a67ffa93025e38d98fc7bbefe"
       ],
       "validation": "Pinned W1 f2f1a979 readiness: no-run, five isolated picker runs, seven loop probes, three callback checks, quick15; integration61d519b3 no-run,213 root library tests including both picker tests, and full KSP/UI IR suites pass. Equal-canvas A/B is performance-neutral.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Keep the selected script page, control values and artwork during live updates.",
+      "category": "Improved"
     },
     {
       "id": "native-scalar-edit-admission-readback",
@@ -2061,7 +2081,9 @@
         "42cba1ba727fa46a67ffa93025e38d98fc7bbefe"
       ],
       "validation": "Pinned W1 f2f1a979 readiness: no-run, five isolated picker runs, seven loop probes, three callback checks, quick15; integration61d519b3 no-run,213 root library tests including both picker tests, and full KSP/UI IR suites pass. Equal-canvas A/B is performance-neutral.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Show native control edits only after the instrument accepts them.",
+      "category": "Fixed"
     },
     {
       "id": "native-widget-source-generation-guards",
@@ -2070,7 +2092,9 @@
         "42cba1ba727fa46a67ffa93025e38d98fc7bbefe"
       ],
       "validation": "Pinned W1 f2f1a979 readiness: no-run, five isolated picker runs, seven loop probes, three callback checks, quick15; integration61d519b3 no-run,213 root library tests including both picker tests, and full KSP/UI IR suites pass. Equal-canvas A/B is performance-neutral.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Prevent stale controls from changing a replacement instrument.",
+      "category": "Fixed"
     },
     {
       "id": "runtime-ui-alias-identity-and-effects",
@@ -2079,7 +2103,9 @@
         "42cba1ba727fa46a67ffa93025e38d98fc7bbefe"
       ],
       "validation": "Pinned W1 f2f1a979 readiness: no-run, five isolated picker runs, seven loop probes, three callback checks, quick15; integration61d519b3 no-run,213 root library tests including both picker tests, and full KSP/UI IR suites pass. Equal-canvas A/B is performance-neutral.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Apply scripted label, text, position and property changes to the correct widgets.",
+      "category": "Fixed"
     },
     {
       "id": "authored-view-two-axis-fit-and-exact-zoom",
@@ -2088,7 +2114,9 @@
         "42cba1ba727fa46a67ffa93025e38d98fc7bbefe"
       ],
       "validation": "Pinned W1 f2f1a979 readiness: no-run, five isolated picker runs, seven loop probes, three callback checks, quick15; integration61d519b3 no-run,213 root library tests including both picker tests, and full KSP/UI IR suites pass. Equal-canvas A/B is performance-neutral.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Fit instrument pages to both dimensions and preserve the selected zoom.",
+      "category": "Fixed"
     },
     {
       "id": "picker-completion-after-worker-close",
@@ -2097,7 +2125,9 @@
         "f2f1a9791a9bdb3b46e156a2c84e0ab90399f978"
       ],
       "validation": "Pinned W1 f2f1a979 readiness: no-run, five isolated picker runs, seven loop probes, three callback checks, quick15; integration61d519b3 no-run,213 root library tests including both picker tests, and full KSP/UI IR suites pass. Equal-canvas A/B is performance-neutral.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Show file-picker results after the picker operation finishes.",
+      "category": "Fixed"
     },
     {
       "id": "linux-release-glibc-235-baseline",
@@ -2106,7 +2136,9 @@
         "f954a6cb5d74762c0e680db131a608fc443c592b"
       ],
       "validation": "Eight CI unit checks,24 nightly publication scenarios and actionlint pass; real readelf accepts GLIBC2.34 and rejects the installed GLIBC2.39 plugin. Actual packaged KONTRA ABI is enforced by CI; the user local release intentionally uses the host toolchain.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Build Linux downloads for systems compatible with glibc 2.35.",
+      "category": "Fixed"
     },
     {
       "id": "program-change-selector-input-accounting",
@@ -2116,7 +2148,9 @@
         "76f5469487cb3278de3922a9bb9e588290f9574f"
       ],
       "validation": "Integration 67dafc61 root no-run, all three test shards, NI reader15/compat32, thirteen keyswitch tests and App-menu pixel check pass. MIDI1/MIDI2 selectors change selection with ignored_input zero; absent selectors increment ignored_input. Fresh final-scanner quick15 versus frozen f1105599 has zero load/UI/binding/audio regressions across fourteen matched auditions; Afflatus is not auditioned. The keyswitch panel is a feature and adds no second defect count.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Handle MIDI Program Change through the instrument's program selector.",
+      "category": "Fixed"
     },
     {
       "id": "authored-ui-input-state",
@@ -2125,7 +2159,9 @@
         "ad27ae94ddfa7d1a364b416f3fd8ed83c526cdc8"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Keep typed values and input state in instrument controls.",
+      "category": "Fixed"
     },
     {
       "id": "native-widget-capture-and-drag",
@@ -2134,7 +2170,9 @@
         "8278b1e0c4a4e1d86c14154003ac4c03b65bef42"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Keep dragging controls consistent when their views update.",
+      "category": "Fixed"
     },
     {
       "id": "native-font-and-sliced-art",
@@ -2143,7 +2181,9 @@
         "662645689f0637b0e7bb6ffc979181ec6434b8ce"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Restore instrument fonts, contrast and sliced artwork.",
+      "category": "Fixed"
     },
     {
       "id": "sparse-native-frame-preparation",
@@ -2152,7 +2192,9 @@
         "02906792cd3e14283772ffa9b8c0a5749e01d4dd"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Prepare changed instrument artwork away from the editor thread.",
+      "category": "Improved"
     },
     {
       "id": "native-authored-runtime-consumption",
@@ -2161,7 +2203,9 @@
         "d44d7d54457d12003592d9b850e0a492bcf2067e"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Display the instrument's published native interface.",
+      "category": "Fixed"
     },
     {
       "id": "native-global-widget-layers",
@@ -2170,7 +2214,9 @@
         "56c92894deb6b66aa368f311c9687899d146b35d"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Keep global instrument controls in the correct visual layer.",
+      "category": "Fixed"
     },
     {
       "id": "native-mousearea-callbacks",
@@ -2180,7 +2226,9 @@
         "4c4da3a028aa7be562baf865dc9731886373e77c"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Deliver mouse-area input and file-drop callbacks to instrument scripts.",
+      "category": "Fixed"
     },
     {
       "id": "native-widget-hit-order",
@@ -2189,7 +2237,9 @@
         "6fecfdf35aeda8baffaae67d000c44781ad1c382"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Send wheel input to the correct overlapping control or label.",
+      "category": "Fixed"
     },
     {
       "id": "native-xy-and-table-strokes",
@@ -2198,7 +2248,9 @@
         "4f3db733ff9f5ec156b5aaa403a8005455d4806c"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Honor XY-pad cursor modes and fill gaps in table drawing strokes.",
+      "category": "Fixed"
     },
     {
       "id": "native-typed-current-publication",
@@ -2208,7 +2260,9 @@
         "630e82f10743c6a1b71ca61e79d10d413d486602"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Show the instrument's current values after typed control edits.",
+      "category": "Fixed"
     },
     {
       "id": "native-source-slot-bindings",
@@ -2218,7 +2272,9 @@
         "f862106178f9de273de30e01eb9820ce05ebaa2c"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Connect instrument controls to the correct script and source.",
+      "category": "Fixed"
     },
     {
       "id": "native-meter-readback",
@@ -2227,7 +2283,9 @@
         "dacffc7b385602d7215c53af162f592bc910bad3"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Read native level-meter values from the instrument.",
+      "category": "Fixed"
     },
     {
       "id": "native-live-text-preservation",
@@ -2236,7 +2294,9 @@
         "4b9039e3587ffd63137988093f6e9665d825745b"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Keep script text and array values intact during meter updates.",
+      "category": "Fixed"
     },
     {
       "id": "native-unmatched-bindings",
@@ -2245,7 +2305,9 @@
         "4b9039e3587ffd63137988093f6e9665d825745b"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Keep controls disconnected when their requested source cannot be matched.",
+      "category": "Fixed"
     },
     {
       "id": "native-deferred-canvas-budget",
@@ -2254,7 +2316,9 @@
         "dd943398abbd2b9397c30baade36ab2f8beabd54"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Limit work in each scripted Canvas paint callback.",
+      "category": "Fixed"
     },
     {
       "id": "native-caption-property-types",
@@ -2263,7 +2327,9 @@
         "f3c96317f88662bc39272af44a4b6a7428976644"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Return empty text for disconnected caption properties.",
+      "category": "Fixed"
     },
     {
       "id": "native-iterative-graph-lowering",
@@ -2272,7 +2338,9 @@
         "16acebb8e56bf54281ca984e6e1ce60adf8d298d"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Prepare complex instrument interfaces without deep stack recursion.",
+      "category": "Fixed"
     },
     {
       "id": "native-resource-cancellation",
@@ -2281,7 +2349,9 @@
         "0fe7d5b6cf3a22978a36f805614ba2e9d6a3f022"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Cancel outdated artwork loads and limit image requests.",
+      "category": "Fixed"
     },
     {
       "id": "kontakt-saved-depth-signs",
@@ -2290,7 +2360,9 @@
         "b33ddb2a9f65786b381f279416357d191360250e"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Preserve the direction of saved modulation amounts.",
+      "category": "Fixed"
     },
     {
       "id": "kontakt-amplifier-boundaries",
@@ -2300,7 +2372,9 @@
         "c44a44b00f0c36b69abd2cc23981fee4199e21de"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Preserve native amplifier placement and gain ramps.",
+      "category": "Fixed"
     },
     {
       "id": "kontakt-ordered-send-taps",
@@ -2310,7 +2384,9 @@
         "5c9e18e6188ab0609671d2bf633983614a6a56e8"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Keep instrument and voice sends in their authored order.",
+      "category": "Fixed"
     },
     {
       "id": "kontakt-bypassed-send-returns",
@@ -2319,7 +2395,9 @@
         "4a49033f2a670071295794a81187642b5535f83d"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Preserve bypassed send-return behavior.",
+      "category": "Fixed"
     },
     {
       "id": "kontakt-native-ladder-controls",
@@ -2329,7 +2407,9 @@
         "e003f66d18bd80274acbea75a17a6eb2fcf2574c"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Read Ladder LP4 filters and connect their controls.",
+      "category": "Fixed"
     },
     {
       "id": "kontakt-physical-envelope-controls",
@@ -2338,7 +2418,9 @@
         "f6a18451814a1ab7c5fad1614a2f5f1ee373df92"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Connect amplitude-envelope controls to the correct voices.",
+      "category": "Fixed"
     },
     {
       "id": "kontakt-physical-engine-lookups",
@@ -2347,7 +2429,9 @@
         "d60e13c295fef2834c6720189381c5057a2bfdf1"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Resolve native engine parameters using their saved addresses.",
+      "category": "Fixed"
     },
     {
       "id": "kontakt-authored-init-envelopes",
@@ -2356,7 +2440,9 @@
         "1c55f279a182b8c54944f9164b100afe1b6d0615"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Apply saved envelope settings before script initialization changes them.",
+      "category": "Fixed"
     },
     {
       "id": "kontakt-stale-source-map-validation",
@@ -2365,7 +2451,9 @@
         "9f4176d47a7108b5146b6dbcf17585506b075586"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Reject outdated sample-zone mappings before preparing playback.",
+      "category": "Fixed"
     },
     {
       "id": "ksp-deferred-attack-ownership",
@@ -2374,7 +2462,9 @@
         "99e4e0c86e4596bab6c228fd0c7f1dfe41399254"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Keep delayed attacks when another script callback interrupts them.",
+      "category": "Fixed"
     },
     {
       "id": "ksp-exact-ignore-event",
@@ -2383,7 +2473,9 @@
         "b4ae3c088fcf024b7fbbee5fe173b952daf2daeb"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Cancel ignored script events without sending a false note-off.",
+      "category": "Fixed"
     },
     {
       "id": "ksp-event-query-contracts",
@@ -2392,7 +2484,9 @@
         "e7f7bca1daf27d92b2a5e2a6675b6969716e8066"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Support native note-event queries and parameter access.",
+      "category": "Fixed"
     },
     {
       "id": "ksp-event-selectors-and-virtual-cc",
@@ -2401,7 +2495,9 @@
         "a39da8fa1133159e4eadb9828a715f2de389e0d5"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Honor marked note-event selectors and virtual controllers.",
+      "category": "Fixed"
     },
     {
       "id": "ksp-init-persistent-arrays",
@@ -2410,7 +2506,9 @@
         "f040122b1db8887593f2a9e955a01d5681351e01"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Restore persistent arrays loaded during script initialization.",
+      "category": "Fixed"
     },
     {
       "id": "kontakt-strict-snapshot-values",
@@ -2419,7 +2517,9 @@
         "6f8049d9263a527c82b3db4e7a77b48da60f6bc1"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Report malformed snapshot values before starting the instrument's scripts.",
+      "category": "Fixed"
     },
     {
       "id": "ksp-shared-immutable-code",
@@ -2428,7 +2528,9 @@
         "799d6a3b3eb40548ba7210454711ccaabd1dbccf"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Use less memory by sharing Kontakt script code.",
+      "category": "Improved"
     },
     {
       "id": "ksp-bounded-call-return",
@@ -2437,7 +2539,9 @@
         "c46143393375a840238205d980e9bef83f27ada0"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Limit script call storage and avoid copying unchanged constants.",
+      "category": "Fixed"
     },
     {
       "id": "stream-cold-onset-state",
@@ -2446,7 +2550,9 @@
         "0af58a6d5658c72bf56685bc98e185a1f62a04f6"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Keep note state while waiting for samples at cold startup.",
+      "category": "Fixed"
     },
     {
       "id": "stream-late-onset-offset",
@@ -2456,7 +2562,9 @@
         "1d4e2911ccc7212435c27049c411ba5d950115d8"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Keep note timing and short notes when sample data arrives late.",
+      "category": "Fixed"
     },
     {
       "id": "startup-note-parameter-pages",
@@ -2466,7 +2574,9 @@
         "4417ba4e66e98ef09d7b650de0b25b70ce224139"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Reduce startup note storage and grow it away from the audio thread.",
+      "category": "Fixed"
     },
     {
       "id": "shared-initial-script-text",
@@ -2475,7 +2585,9 @@
         "6f51d817dc389e33d92208ea6a12fbc29caa785d"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Share unchanged initial script text without copying it on the audio thread.",
+      "category": "Improved"
     },
     {
       "id": "startup-voice-arena-sizing",
@@ -2484,7 +2596,9 @@
         "5e7071d505322c6b5e174e3c6ed93fd73da12e44"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Reduce startup voice and event storage.",
+      "category": "Fixed"
     },
     {
       "id": "compact-region-playback-templates",
@@ -2493,7 +2607,9 @@
         "4ef0d62d8f34e3c14352f9bfa09cc3fdc47710ca"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Use smaller shared sample-playback templates.",
+      "category": "Improved"
     },
     {
       "id": "batch-authored-envelope-construction",
@@ -2502,7 +2618,9 @@
         "7956e97e0e255ea75e210f6dcc57029706210da7"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Prepare shared group envelopes once.",
+      "category": "Improved"
     },
     {
       "id": "neutral-filter-factor-conversion",
@@ -2511,7 +2629,9 @@
         "8b2929cd953038a9f4faf98717d826d53c0da0f0"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Skip unnecessary calculations for unchanged modulation amounts.",
+      "category": "Improved"
     },
     {
       "id": "vector-cubic-resampling",
@@ -2520,7 +2640,9 @@
         "4c26a197ea7a99f0108b5e50e4f06583caa2242c"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Use v1's cubic sample interpolation without changing the rendered audio.",
+      "category": "Fixed"
     },
     {
       "id": "unchanged-pitch-ratio-cache",
@@ -2529,7 +2651,9 @@
         "44ba9d2c60539f1803baf206043cc4f007eeb4df"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Reuse pitch calculations until their controllers change.",
+      "category": "Improved"
     },
     {
       "id": "uvi-typed-widget-contracts",
@@ -2539,7 +2663,9 @@
         "b4380fc218de4bc79c0418c6b8e401cf94d8819b"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Honor Falcon/UVI widget types and Lua setters.",
+      "category": "Fixed"
     },
     {
       "id": "uvi-authored-resource-origins",
@@ -2548,7 +2674,9 @@
         "4f033c79ac2b6ccce754343c7a5760c186259c29"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Find Falcon/UVI artwork and resources relative to their authored locations.",
+      "category": "Fixed"
     },
     {
       "id": "uvi-processor-scope-routing",
@@ -2558,7 +2686,9 @@
         "f8c709eb4d4b3aec736b17f144a17104ce566adc"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Keep Falcon/UVI insert routing and one-pole filters independent.",
+      "category": "Fixed"
     },
     {
       "id": "uvi-runtime-fault-publication",
@@ -2567,7 +2697,9 @@
         "87a5d188426ef8d5010496fe050d01b4fbfb47db"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Report Falcon/UVI script errors even when widgets do not change.",
+      "category": "Fixed"
     },
     {
       "id": "uvi-bounded-init",
@@ -2576,7 +2708,9 @@
         "0c69feead4e73886792cd6d676a74886d4f2ac75"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Stop Falcon/UVI initialization that exceeds its time limit.",
+      "category": "Fixed"
     },
     {
       "id": "uvi-direct-host-lookups",
@@ -2585,7 +2719,9 @@
         "baccabfceccf9c6054ea5b6e0485bba827b7a60e"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Resolve Falcon/UVI host parameters directly.",
+      "category": "Improved"
     },
     {
       "id": "uvi-sparse-host-collections",
@@ -2594,7 +2730,9 @@
         "1bb07045c02209c9041e47c5e13cbd1ea42dd663"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Use less memory for Falcon/UVI script collections.",
+      "category": "Improved"
     },
     {
       "id": "uvi-requested-assistant-font",
@@ -2603,7 +2741,9 @@
         "0d8b84c74aa79f97ef8661502630a6e7be057643"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Use the Assistant font when an instrument requests that exact font.",
+      "category": "Fixed"
     },
     {
       "id": "uvi-immediate-host-save",
@@ -2612,7 +2752,9 @@
         "323d744cba56174462d3ce469d913ffc9a68ea71"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Save current Falcon/UVI control values when the host saves immediately.",
+      "category": "Fixed"
     },
     {
       "id": "keyboard-live-engine-gates",
@@ -2621,7 +2763,9 @@
         "602c80b4971d9c5784b13362265576fa68070459"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Clear released keyboard highlights and release notes normally when transport stops.",
+      "category": "Fixed"
     },
     {
       "id": "host-deactivation-hard-reset",
@@ -2630,7 +2774,9 @@
         "0be454d67923747ac643db84ded641268ee1e2b7"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Clear held notes when a CLAP or VST3 host deactivates the plugin.",
+      "category": "Fixed"
     },
     {
       "id": "sound-editor-native-control-parity",
@@ -2640,7 +2786,9 @@
         "30580d3f29ffff0f0526d49af78baa87fd2dc872"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Restore native Sound editor controls for the selected instrument.",
+      "category": "Fixed"
     },
     {
       "id": "sound-editor-offset-owner",
@@ -2649,7 +2797,9 @@
         "fba565c917203d236696623d7e95c50a2d5e8ff0"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Keep Sound editor settings attached to the correct owner after edits or rejection.",
+      "category": "Fixed"
     },
     {
       "id": "sound-editor-native-ladder-law",
@@ -2659,7 +2809,9 @@
         "24ab6d08bf2838f7682b63a0d9f9a08a803a6889"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Use native Ladder cutoff values and avoid duplicate voice processing chains.",
+      "category": "Fixed"
     },
     {
       "id": "aligned-host-note-ownership",
@@ -2668,7 +2820,9 @@
         "6536c505a6616fb6ccd036eb7fc4236d5ae3c235"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Keep aligned notes attached to their correct host owners.",
+      "category": "Fixed"
     },
     {
       "id": "catalog-metadata-reuse",
@@ -2677,7 +2831,9 @@
         "439e79190f210dc1c6f212d00189d8a189037402"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Reuse unchanged library metadata when opening KONTRA again.",
+      "category": "Improved"
     },
     {
       "id": "kontakt-falcon-browser-hierarchy",
@@ -2686,7 +2842,9 @@
         "1035c85bd7ac91f46e97bb98e7b7a3d7ecfb31ce"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Separate Kontakt and Falcon libraries in the browser.",
+      "category": "Fixed"
     },
     {
       "id": "kontakt-authored-pan-route",
@@ -2695,7 +2853,9 @@
         "8f7980f5d13c348ec49ea4851f9b2c988b19dfb1"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Play authored native Pan effects.",
+      "category": "New"
     },
     {
       "id": "kontakt-formant-i-processing",
@@ -2704,7 +2864,9 @@
         "f6116b1bd3a46adc59a5c8112b2e78eb75fc6d30"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Play Formant I effects on voices and buses.",
+      "category": "New"
     },
     {
       "id": "kontakt-lofi-processing",
@@ -2713,7 +2875,9 @@
         "d4574125a4131e524978a07c765344cbc1db2eea"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Play native LoFi effects on voices and buses.",
+      "category": "New"
     },
     {
       "id": "native-gpu-recovery",
@@ -2722,7 +2886,9 @@
         "ed444fca14a49270d084b9d9b73c0b09b2be09f4"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Recover failed GPU presentation through the CPU display path.",
+      "category": "Fixed"
     },
     {
       "id": "native-terminal-gpu-diagnostics",
@@ -2731,7 +2897,9 @@
         "3e352f1c0146075a8b705c284f7e079133aa05be"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Report unrecoverable GPU presentation failures as errors.",
+      "category": "Fixed"
     },
     {
       "id": "native-x11-teardown-order",
@@ -2740,7 +2908,9 @@
         "f2bf971e31d861e3a15f6e7ecc642ce42fedd734"
       ],
       "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Close embedded Linux editor windows before releasing their host window.",
+      "category": "Fixed"
     },
     {
       "id": "host-sample-exact-automation",
@@ -2749,7 +2919,9 @@
         "4f1abcc7f454ce31328effdd51e11f7b31932758"
       ],
       "validation": "Owner focused checks passed; shipped in the combined alpha validation. Native capture and performance limits remain documented.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Preserve sample-exact host automation and native file drag-leave handling.",
+      "category": "Fixed"
     },
     {
       "id": "generation-bound-source-waveforms",
@@ -2758,7 +2930,9 @@
         "86dfb90d510cc35c4470081f68cdd342e6c57bea"
       ],
       "validation": "Owner focused checks passed; shipped in the combined alpha validation. Native capture and performance limits remain documented.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Keep waveform previews attached to the instrument that produced them.",
+      "category": "Fixed"
     },
     {
       "id": "bounded-shared-sample-metadata",
@@ -2767,7 +2941,9 @@
         "3f01b47063326a039c3383eae5861df98a181369"
       ],
       "validation": "Owner focused checks passed; shipped in the combined alpha validation. Native capture and performance limits remain documented.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Share archive handles and limit cached sample metadata.",
+      "category": "Improved"
     },
     {
       "id": "single-ksp-initialization",
@@ -2776,7 +2952,9 @@
         "f9cb7245b99b84cdb17b4a294bec89fdb49a578b"
       ],
       "validation": "Owner focused checks passed; shipped in the combined alpha validation. Native capture and performance limits remain documented.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Initialize Kontakt scripts once with their authored controls.",
+      "category": "Improved"
     },
     {
       "id": "generated-menu-gesture-anchors",
@@ -2785,7 +2963,9 @@
         "2f4a4b3ec092845a69d07d683b0b8b697f91533a"
       ],
       "validation": "Owner focused checks passed; shipped in the combined alpha validation. Native capture and performance limits remain documented.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Open generated menus at the correct control and submit their value edits.",
+      "category": "Fixed"
     },
     {
       "id": "uvi-live-insert-controls",
@@ -2794,7 +2974,9 @@
         "f17ccc58972e69096736d9b6d9fa2562259e36fe"
       ],
       "validation": "Owner focused checks passed; shipped in the combined alpha validation. Native capture and performance limits remain documented.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Connect Falcon/UVI insert controls to live effect settings.",
+      "category": "Fixed"
     },
     {
       "id": "native-gainer-stereo-laws",
@@ -2803,7 +2985,9 @@
         "a4ee89ccd1790f12717b1163a809f23b88bff50a"
       ],
       "validation": "Owner focused checks passed; shipped in the combined alpha validation. Native capture and performance limits remain documented.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Use the verified native Gainer and Stereo Modeller behavior.",
+      "category": "Fixed"
     },
     {
       "id": "safe-authored-audition-articulation",
@@ -2812,7 +2996,9 @@
         "cc6ac0e8689e05e19127ebe2c2cc456def1d19c5"
       ],
       "validation": "Owner focused checks passed; shipped in the combined alpha validation. Native capture and performance limits remain documented.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Audition enabled articulations on notes covered by the instrument.",
+      "category": "Fixed"
     },
     {
       "id": "rack-growth-articulation-routes",
@@ -2821,7 +3007,9 @@
         "876309f493a0253883d6129d2ced1c0c756e349a"
       ],
       "validation": "Owner failing-first growth/reload regression passed with zero audio heap calls; combined alpha validation includes it.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Keep articulation routing correct as rack parts are added or reloaded.",
+      "category": "Fixed"
     },
     {
       "id": "gate-scanner-module-import",
@@ -2830,7 +3018,9 @@
         "c857c1c3c7217c2d8473837a8ec66c7ccc90ad49"
       ],
       "validation": "Combined gate self-check passes after W12 observer integration.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Fix shared-module imports in release-gate scanning tools.",
+      "category": "Fixed"
     },
     {
       "id": "gate-gesture-null-delta",
@@ -2839,7 +3029,9 @@
         "c39fd7b0fc3245b3087c5da7408028a9831ffbfd"
       ],
       "validation": "Contention self-check reproduces missing delta; fixed receipt preserves unknown and passes.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Report unavailable gesture measurements explicitly in release checks.",
+      "category": "Fixed"
     },
     {
       "id": "uvi-fresh-custom-host-save",
@@ -2848,7 +3040,9 @@
         "b247fdfc82f6daf32ebe77bada8c7594a4fad75e"
       ],
       "validation": "Owner failing-first focused checks pass; combined UVI save and host admission selfchecks run before alpha packaging.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Save fresh Falcon/UVI custom state on every host save.",
+      "category": "Improved"
     },
     {
       "id": "host-native-selection-readback",
@@ -2857,7 +3051,9 @@
         "5659d58658459606ad6efc79484c954bd057094d"
       ],
       "validation": "Owner failing-first focused checks pass; combined UVI save and host admission selfchecks run before alpha packaging.",
-      "accepted": true
+      "accepted": true,
+      "release_note": "Reject live plugin checks when saved instrument identity or routing does not match.",
+      "category": "Fixed"
     }
   ]
 }
