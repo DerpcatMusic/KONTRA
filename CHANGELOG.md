@@ -61,7 +61,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 - Saving and reopening a project may not restore every Kontakt script setting.
 - Some instrument controls and artwork may differ from the original interface.
 - Large libraries can use substantial memory, and performance may be worse than KONTRA v1.
-- Some Vista and Pacific patches cannot yet find all required sample resources.
+- Some Vista and Pacific features remain untranslated. All 56 installed NKI presets
+  resolve their required sample and impulse resources on source54d9; full audio parity remains unverified.
 
 ### Fixed after 0.3.224
 
@@ -103,7 +104,9 @@ features and follow-up commits do not increment the version separately.
   widget, OS/DAW gesture or source resource. Unmatched requested-face controls use
   a provisional disconnected/inert policy.
 - Thirty of fifty audited multis retain 45 pre-existing KSP semantic/stage compile
-  faults. Vista/Pacific resource resolution is still incomplete.
+  faults. Earlier Vista/Pacific missing counts described untranslated features;
+  the source54d9 census finds no required sample or impulse resource failures
+  across7 Vista and49 Pacific installed NKI presets.
 - W9's predictive streaming stack is excluded: matched loaded RSS 819.92 MiB
   versus 380.16 MiB on its baseline. Native callback-context persistence 65e345e3
   is excluded because real Conflux recall rejects callbacks (InvalidInput).
