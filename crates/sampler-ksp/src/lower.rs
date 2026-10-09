@@ -2160,6 +2160,12 @@ impl Gen<'_, '_> {
                 }
                 true
             }
+            GetEventPar if self.const_int(args, 1).is_none() && !self.selects_many(builtin, args, 0) => {
+                self.arg(args, 0, dst)?;
+                self.arg(args, 1, t)?;
+                self.emit(I::ReadEventParameter { event: dst, parameter: t, local: dst })?;
+                true
+            }
             FadeIn | FadeOut if !self.selects_many(builtin, args, 0) => {
                 self.arg(args, 0, dst)?;
                 self.arg(args, 1, t)?;
