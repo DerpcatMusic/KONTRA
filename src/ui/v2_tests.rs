@@ -2000,3 +2000,49 @@ fn mapping_audition_editor_close_releases_held_note() {
         assert_eq!(p.shared.keyboard.pop(),Some((0,crate::plugin::Play::Note(60,0))));
     }
 }
+
+#[test]
+fn mapping_navigation_reaches_late_takes_and_restores_fitted_keys() {
+    use sampler_ir as sir;
+    let mut inst=sir::Instrument {name:"Synthetic 96-take mapping".into(),..Default::default()};
+    inst.sequences.push(sir::Sequence {policy:sir::SequencePolicy::RoundRobin,takes:96,counter:sir::CounterScope::Key});
+    for n in 0..96 {let mut z=sir::Zone::new(sir::AssetRef(0));z.selection=Some(sir::Selection {sequence:sir::SequenceRef(0),take:sir::Take::Index(n)});inst.zones.push(z);}
+    let source=Arc::new(inst);let before=(*source).clone();
+    let p=Arc::new(crate::plugin::SamplerParams::new());
+    p.selection.write().unwrap().parts.push(crate::plugin::Part {path:"/x/Synthetic 96-take mapping.nki".into(),..Default::default()});
+    {let mut v=p.shared.view.lock().unwrap();v.parts.resize_with(1,Default::default);v.parts[0].active="Synthetic 96-take mapping".into();v.parts[0].instrument=Some(source.clone());}
+    for (w,h) in [(1180,780),(900,640)] {
+        let mut ui=Harness::new(&p,w as f64,h as f64);ui.press("view-0-Mapping");
+        assert!(ui.ui.scene().unwrap().surface("map-zoom-in-0").is_some(),"mapping can zoom a full keyboard");
+        ui.press("map-zoom-in-0");ui.press("map-pan-right-0");
+        assert!(ui.ui.scene().unwrap().surface("map-scale-0-0").is_none(),"zoom and pan move away from MIDI 0");
+        let map=ui.ui.scene().unwrap().surface("map-0").unwrap().frame;
+        let at=Point::new(map.x+0.5,map.y+map.size.height/2.);
+        let held=||Input {pointer:PointerInput {pos:Some(at),buttons:Buttons::PRIMARY,..Default::default()},..Default::default()};
+        ui.tick(held());ui.tick(held());
+        assert_eq!(p.shared.keyboard.pop(),Some((0,crate::plugin::Play::Note(64,64))),"zoomed hit testing auditions the shown key and velocity");
+        ui.tick(Input::default());ui.idle(2);
+        assert_eq!(p.shared.keyboard.pop(),Some((0,crate::plugin::Play::Note(64,0))));
+        ui.press("map-fit-0");
+        assert!(ui.ui.scene().unwrap().surface("map-scale-0-0").is_some(),"Fit restores the full authored range");
+        assert!(ui.ui.scene().unwrap().surface("map-scale-0-120").is_some());
+        ui.press("map-stack-next-0");ui.press("map-stack-next-0");
+        assert!(ui.ui.scene().unwrap().surface("map-zone-0-80").is_some(),"later takes are directly reachable");
+        let at=super::tests::center(&ui.ui,"map-stack-0");
+        ui.tick(Input {pointer:PointerInput {pos:Some(at),..Default::default()},wheel:Vec2::new(0.,352.),..Default::default()});ui.idle(90);
+        let scene=ui.ui.scene().unwrap();let list=scene.surface("map-stack-0").unwrap().frame;let take=scene.surface("map-zone-0-80").unwrap().frame;
+        assert!(take.y>=list.y-0.5 && take.y+take.size.height <= list.y+list.size.height+0.5,"scroll brings take 81 inside the visible list at {w}×{h}");
+        ui.press("map-zone-0-80");
+        assert!(ui.ui.scene().unwrap().surface("map-inspector-0-80").is_some());
+        if let Some(dir)=std::env::var_os("KONTAKTO_MAPPING_SHOTS") {
+            let path=std::path::PathBuf::from(dir).join(format!("mapping-stack-{w}x{h}.png"));std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            moose::core::screenshot::save_png(&path,&pixels(&ui.ui,w,h),w as u32,h as u32);
+        }
+        ui.press("map-stack-prev-0");
+        assert!(ui.ui.scene().unwrap().surface("map-zone-0-32").is_some());
+        assert_eq!(ui.ui.scroll("map-stack-0"),[0.,0.],"page changes reset the old list scroll");
+        let scene=ui.ui.scene().unwrap();let map=scene.surface("map-0").unwrap().frame;let tick=scene.surface("map-scale-0-60").unwrap().frame;
+        assert!((tick.x - map.x - map.size.width * 60. / 128.).abs() < 1.,"octave labels align with exact map cells");
+    }
+    assert_eq!(*source,before,"navigation leaves authored ranges and sequence order untouched");
+}
