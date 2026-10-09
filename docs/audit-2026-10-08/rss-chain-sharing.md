@@ -1,8 +1,8 @@
 # Shared immutable voice chains
 
 Base: `c39fd7b0fc3245b3087c5da7408028a9831ffbfd` (includes W15 pan routing).
-Status: **HOLD** pending the seeded/synchronized UVI audit protocol and the
-queued quiet load receipt. Pacific Legato smoke trace is resolved below.
+Status: **HOLD, parked** at the item timebox. Seeded UVI indices11/21 and the
+authorized quiet load receipt remain UNKNOWN. Pacific smoke trace is resolved.
 
 ## Change and v1 source
 
@@ -50,7 +50,8 @@ The unchanged baseline also produces different PCM on repeat UVI12/13 runs,
 with zero counters and nonzero audio. W10 confirmed the production threaded Lua
 path lacks an offline script barrier and starts Luau math RNG without a fixed
 audit seed. W10 owns the explicit audit-only seed/clock-barrier follow-up; the
-normal product randomness and realtime path remain its responsibility.
+normal product randomness and realtime path remain its responsibility. The
+seeded follow-up is recorded below; the original unseeded receipts are retained.
 Numeric receipts: `c39-chain-pcm-summary.json` and
 `c39-chain-aa-pcm-{12,13}.json` in the same owned cache.
 
@@ -62,10 +63,70 @@ JSON footers. Prefix records support this diagnostic observation only; complete
 coverage and dropped-record counts remain UNKNOWN. No trace was repaired.
 See `c39-chain-uvi12-first-divergence.json` and `c39-chain-uvi12-trace-summary.json`.
 
+## Seeded follow-up, parked
+
+W10 supplied audit protocol `0be9aa7b8bc41257980c455f1ecb1e93a4ea00fb`.
+Both sides include the same work/save dependencies `08dfa0e7`, `469013bc`,
+`c41e9ef9`, `78d159df`, root `--features shots`, and
+`KONTRA_UVI_AUDIT_SEED=42`. Source fingerprints match outside `lower.rs`.
+The isolated reproduction branch is `audit/w8-chain-seeded-c39` at `bb36f954`;
+scanner-only conflict hunks were excluded because this check uses the renderer.
+Do not merge that audit branch as the chain production change.
+
+| Held UVI index | Matched dev baseline/candidate | Verdict |
+|---|---|---|
+| 11 | both timeout at 180 seconds | UNKNOWN |
+| 12 | identical audible PCM, zero counters | PASS |
+| 13 | identical audible PCM, zero counters | PASS |
+| 14 | identical audible PCM, zero counters | PASS |
+| 21 | both timeout at 180 seconds | UNKNOWN |
+
+Rows12/13 reproduce W10's exact committed optimized hashes `97ad41a1…` and
+`e8e09e24…`. Full PCM records, including every runtime counter, agree on all
+three passing rows. Combined with the original protocol's Kontakt and UVI19/20
+checks, there are now 20 audible matching records, one identical silent record,
+and two held records. This combines explicitly different audit protocols; it
+is not an all-22 seeded PASS claim.
+
+A separately frozen matched `ci` pair retried index11. Its unchanged baseline
+also timed out at 180 seconds, so optimization did not resolve the UNKNOWN.
+The candidate attempt was canceled and index21's optimized attempts were not
+measured when the item was parked for the P0 installed Falcon discovery hotfix.
+A read-only candidate snapshot showed `uvi-script` at64.73 CPU seconds, the
+main thread at0.13 and stream workers at0.00, with the main thread waiting.
+That routes investigation to the UVI owner path; it proves neither exhaustion
+nor the underlying cause. No compiler, VM, stream, or audit-protocol repair is
+included in this chain change.
+
+Numeric receipts in the owned cache:
+`c39-chain-seeded-summary.{json,md}`,
+`c39-chain-seeded-{before,after}-pcm-{11,12,13,14,21}.json`,
+`c39-chain-seeded-ci-before-pcm-11.json`,
+`c39-chain-seeded-ci-after-thread-snapshot.json`,
+`c39-chain-seeded-ci-cancelled.json`.
+All default-feature RSS/load frozen binaries remain untouched. These normal
+wrapper renders establish correctness only; there is no CPU or load verdict.
+
+| Additional frozen witness | SHA256 |
+|---|---|
+| c39-chain-seeded-before-pcm (dev) | 0bd1964150da39c05d88ac0a93b1bbde121d3aa2a60fa14e5e808263aef0f604 |
+| c39-chain-seeded-after-pcm (dev) | 3280032dc59edc4744c354fba6aadc27fb5a4c49ed8df4da1ec198bc2b21d974 |
+| c39-chain-seeded-ci-before-pcm | fd0964c0eb0941cae34c967ea5b09f1bcae7c1a6ef4ba16ab5e9752a4f9ba06c |
+| c39-chain-seeded-ci-after-pcm | ed765dca34b829cdecbf5ab4247c22171e12424558a873ab2e2eebae299f2526 |
+
+Each has a separate BUILD.json with features, source fingerprints and protocol.
+No authored PCM was retained; the original manifest and note plans are reused.
+
+Parked work: resolve the owner-clock/work behavior for UVI11/21 after W10's
+hotfix, then complete strict parity. Run the prepared six-cell quiet collector
+only after the actual W9→W8 handoff. No W8 quiet request was created or claimed.
+NEXT: UVI11/21 owner evidence, then authorized quiet load measurements.
+
 ## RSS and load receipts
 
 Numeric receipts: `~/.cache/kontakto-fix-load/rss-owners/c39-chain-{before,after}-rss.json`.
-Same production base, original plugin Load/publication/editor path, disabled
+Same production base, original plugin Load/publication/editor path, unoptimized
+root test/dev profile, disabled
 product cache (`XDG_CACHE_HOME=/dev/null`). Normal kontakto-heavy wrapper;
 load/onset timing is **UNKNOWN**, since no quiet window was held.
 
