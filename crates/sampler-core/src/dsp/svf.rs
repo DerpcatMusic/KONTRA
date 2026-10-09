@@ -259,6 +259,20 @@ impl FilterCache {
 
 /// `y += (x - y) b` per channel in `state[0]`; the band-state row stays zero.
 #[inline(always)]
+pub(super) fn one_pole_sample(input: f64, state: f64, b: f64, high: bool) -> (f64, f64) {
+    let next = state + (input - state) * b;
+    (if high { input - next } else { next }, next)
+}
+
+#[inline(always)]
+pub(super) fn sample(x: f64, [ic1, ic2]: [f64; 2], [a1, a2, a3, km]: [f64; 4], [m0, m2]: [f64; 2]) -> (f64, [f64; 2]) {
+    let v3 = x - ic2;
+    let band = a1 * ic1 + a2 * v3;
+    let low = ic2 + a2 * ic1 + a3 * v3;
+    (m0 * x + km * band + m2 * low, [2. * band - ic1, 2. * low - ic2])
+}
+
+#[inline(always)]
 fn one_pole(
     state: &mut [[f64; 2]; 2],
     block: &mut Planar,
@@ -270,9 +284,8 @@ fn one_pole(
     let [left, right] = block;
     for (i, (l, r)) in left[..len].iter_mut().zip(&mut right[..len]).enumerate() {
         let b = b(i);
-        yl += (*l - yl) * b;
-        yr += (*r - yr) * b;
-        (*l, *r) = if high { (*l - yl, *r - yr) } else { (yl, yr) };
+        (*l, yl) = one_pole_sample(*l, yl, b, high);
+        (*r, yr) = one_pole_sample(*r, yr, b, high);
     }
     state[0] = [yl, yr].map(flush);
 }
@@ -291,13 +304,9 @@ fn run(
         let c = coefficients(i);
         let x = [*l, *r];
         let y: [f64; 2] = std::array::from_fn(|ch| {
-            let (ic1, ic2) = (s0[ch], s1[ch]);
-            let v3 = x[ch] - ic2;
-            let band = c.a1 * ic1 + c.a2 * v3;
-            let low = ic2 + c.a2 * ic1 + c.a3 * v3;
-            s0[ch] = 2. * band - ic1;
-            s1[ch] = 2. * low - ic2;
-            m0 * x[ch] + (mk * c.k) * band + m2 * low
+            let (y, next) = sample(x[ch], [s0[ch], s1[ch]], [c.a1, c.a2, c.a3, mk * c.k], [m0, m2]);
+            (s0[ch], s1[ch]) = (next[0], next[1]);
+            y
         });
         (*l, *r) = (y[0], y[1]);
     }
