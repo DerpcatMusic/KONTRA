@@ -1700,8 +1700,6 @@ mod distill_tests;
 #[cfg(test)]
 mod keyboard_tests;
 #[cfg(test)]
-mod keyboard_tests;
-#[cfg(test)]
 mod loop_audit;
 #[cfg(test)]
 mod popup_tests;
