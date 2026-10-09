@@ -190,6 +190,10 @@ fn target_name(i: &ir::Instrument, t: ir::Target) -> String {
                 ir::ProcessorParameter::Cutoff => "Cutoff",
                 ir::ProcessorParameter::Resonance => "Resonance",
                 ir::ProcessorParameter::Gain => "Gain",
+                ir::ProcessorParameter::Threshold => "Threshold",
+                ir::ProcessorParameter::Ratio => "Ratio",
+                ir::ProcessorParameter::Attack => "Attack",
+                ir::ProcessorParameter::Release => "Release",
             },
             index + 1
         ),
