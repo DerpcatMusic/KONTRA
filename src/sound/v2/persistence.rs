@@ -99,6 +99,9 @@ pub(super) struct Snapshot {
     read_lock: Mutex<()>,
     atoms: Vec<Atom>,
     addresses: Box<[Address]>,
+    dynamic: Box<[usize]>,
+    #[cfg(test)]
+    captured_values: AtomicUsize,
     slots: [Box<[AtomicU64]>; 3],
 }
 impl Snapshot {
@@ -120,9 +123,17 @@ impl Snapshot {
             read_lock: Mutex::new(()),
             atoms,
             addresses: state.values.iter().map(|entry| entry.address).collect(),
+            dynamic: state.values.iter().enumerate().filter_map(|(index, entry)|
+                (!matches!(entry.address, Address::Cell { .. })).then_some(index)).collect(),
+            #[cfg(test)]
+            captured_values: AtomicUsize::new(0),
             slots: std::array::from_fn(|_| (0..size).map(|_| AtomicU64::new(0)).collect()),
         });
-        snapshot.publish(state);
+        for slot in &snapshot.slots {
+            for (atom, entry) in snapshot.atoms.iter().zip(&state.values) {
+                atom.write(slot, &entry.value);
+            }
+        }
         snapshot
     }
     fn next_slot(&self) -> usize {
@@ -133,6 +144,7 @@ impl Snapshot {
         }
         next
     }
+    #[cfg(test)]
     fn publish(&self, state: &ScriptStateBuffer) {
         let next = self.next_slot();
         for (atom, entry) in self.atoms.iter().zip(&state.values) {
@@ -140,15 +152,34 @@ impl Snapshot {
         }
         self.published.store(next, Ordering::SeqCst);
     }
-    fn capture(&self, runtime: &Runtime, plan: sampler_core::PlanId) -> Result<(), sampler_core::Error> {
+    fn capture(&self, runtime: &Runtime, plan: sampler_core::PlanId, dirty: Option<&[u64]>) -> Result<(), sampler_core::Error> {
         let next = self.next_slot();
-        for (atom, address) in self.atoms.iter().zip(&self.addresses) {
+        #[cfg(test)]
+        self.captured_values.store(0, Ordering::Relaxed);
+        let capture = |index: usize| -> Result<(), sampler_core::Error> {
+            let address = self.addresses.get(index).ok_or(sampler_core::Error::InvalidInput)?;
             let value = match *address {
                 Address::Control(id) => Value::Control(runtime.control_base_value(plan, id)?),
                 Address::Cell { instance, index } => Value::Cell(runtime.script_cell(plan, instance, index)?),
                 Address::Text { instance, index } => Value::Text(runtime.script_text(plan, instance, index)?),
             };
-            atom.write(&self.slots[next], &value);
+            self.atoms[index].write(&self.slots[next], &value);
+            #[cfg(test)]
+            self.captured_values.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        };
+        if let Some(dirty) = dirty {
+            for &index in &self.dynamic { capture(index)?; }
+            for (word, &bits) in dirty.iter().enumerate() {
+                let mut bits = bits;
+                while bits != 0 {
+                    let index = word * 64 + bits.trailing_zeros() as usize;
+                    bits &= bits - 1;
+                    capture(index)?;
+                }
+            }
+        } else {
+            for index in 0..self.addresses.len() { capture(index)?; }
         }
         // A rejected capture leaves the previous coherent slot published.
         self.published.store(next, Ordering::SeqCst);
@@ -179,6 +210,7 @@ impl Snapshot {
 }
 
 pub(super) struct Persistence {
+    pending_cells: [Box<[u64]>; 3],
     revision: (sampler_core::PlanId, (u64, u64)),
     pub(super) snapshot: Arc<Snapshot>,
 }
@@ -188,6 +220,8 @@ impl Persistence {
     #[cfg(test)]
     pub(super) fn values_bytes(&self) -> usize {
         self.snapshot.addresses.len() * std::mem::size_of::<Address>()
+            + self.snapshot.dynamic.len() * std::mem::size_of::<usize>()
+            + self.pending_cells.iter().map(|mask| mask.len() * std::mem::size_of::<u64>()).sum::<usize>()
             + self.snapshot.atoms.capacity() * std::mem::size_of::<Atom>()
             + self.snapshot.slots.iter().map(|slot| slot.len() * std::mem::size_of::<AtomicU64>()).sum::<usize>()
     }
@@ -297,11 +331,12 @@ impl Persistence {
         let snapshot = Snapshot::new(schema, &state);
         let revision = (plan, runtime.script_state_revision(plan).map_err(core)?);
         Ok(Self {
+            pending_cells: std::array::from_fn(|_| vec![0; state.values.len().div_ceil(64)].into_boxed_slice()),
             revision,
             snapshot,
         })
     }
-    pub(super) fn publish(&mut self, runtime: &Runtime) {
+    pub(super) fn publish(&mut self, runtime: &mut Runtime) {
         let plan = runtime.active_plan();
         let Ok(revision) = runtime.script_state_revision(plan) else {
             return;
@@ -309,7 +344,26 @@ impl Persistence {
         if self.revision == (plan, revision) {
             return;
         }
-        if self.snapshot.capture(runtime, plan).is_ok() {
+        let mut valid = true;
+        let known = runtime.visit_dirty_script_cells(plan, |address| {
+            match self.snapshot.addresses.binary_search(&address) {
+                Ok(index) => for mask in &mut self.pending_cells { mask[index / 64] |= 1 << (index % 64); },
+                Err(_) => valid = false,
+            }
+        });
+        if !valid || known.is_err() { return; }
+        if known == Ok(false) || self.revision.0 != plan {
+            for (index, address) in self.snapshot.addresses.iter().enumerate() {
+                if matches!(address, Address::Cell { .. }) {
+                    for mask in &mut self.pending_cells { mask[index / 64] |= 1 << (index % 64); }
+                }
+            }
+        }
+        let next = self.snapshot.next_slot();
+        // ponytail: bulk rewrites cost O(changed cells); bound deltas if they exceed the callback budget.
+        if self.snapshot.capture(runtime, plan, Some(&self.pending_cells[next])).is_ok() {
+            self.pending_cells[next].fill(0);
+            let _ = runtime.clear_dirty_script_cells(plan);
             self.revision = (plan, revision);
         }
     }
@@ -352,6 +406,84 @@ impl Part {
 mod tests {
     use super::*;
     #[test]
+    fn typed_widget_cell_edits_reach_compact_persistence_without_callbacks() {
+        let script = sampler_ksp::compile(
+            "on init\n declare ui_table %table[2](1,1,127)\n declare ui_xy ?xy[2]\n end on\n",
+            48000, sampler_ksp::Limits::LIBRARY, &[],
+        ).unwrap();
+        let view = script.view();
+        let plan = script.bind(Prepared::new(48000, vec![], vec![], 1).unwrap()).unwrap();
+        let limits = sampler_core::Limits::for_plan(&plan, 128, 8);
+        let mut part = Part::new(Runtime::new(plan, limits).unwrap(), MixTree::instrument("s")).unwrap();
+        part.prepare_persistence(&[view], "").unwrap();
+        for (name, value, bits) in [
+            ("%table", sampler_core::WidgetValue::Integer(99), 99),
+            ("?xy", sampler_core::WidgetValue::Real(0.25), 0.25f64.to_bits() as i64),
+        ] {
+            let id = sampler_ksp::derived_control_id(0, name);
+            let plan = part.runtime.active_plan();
+            let widget = *part.runtime.widget_definitions(plan).unwrap().iter().find(|widget| widget.id == id).unwrap();
+            let sampler_core::WidgetStorage::Cells { offset, .. } = widget.storage else { panic!("cell widget"); };
+            let context = sampler_core::ControlContext {
+                performance: part.runtime.performance(0).unwrap(), origin: WIRE, channels: 1,
+            };
+            let edits = [sampler_core::WidgetEdit { id, index: 1, value, interaction: Default::default() }];
+            let persistence = part.persistence.as_mut().unwrap();
+            let mut edit = || {
+                assert!(part.runtime.invoke_widget(context, plan, None, &edits).unwrap().1.is_none());
+                persistence.publish(&mut part.runtime);
+            };
+            #[cfg(feature = "plugin")]
+            assert_eq!(crate::plugin::tests::allocations(edit), 0);
+            #[cfg(not(feature = "plugin"))]
+            edit();
+            let address = Address::Cell { instance: widget.instance, index: offset + 1 };
+            let index = persistence.snapshot.addresses.binary_search(&address).unwrap();
+            let saved: Saved = serde_json::from_str(&persistence.snapshot.save()).unwrap();
+            assert!(matches!(saved.values[index], SavedValue::Cell(v) if v == bits));
+        }
+    }
+    #[test]
+    fn one_saved_cell_write_refreshes_only_changed_values_across_snapshot_slots() {
+        let script = sampler_ksp::compile(
+            "on init\n declare %saved[32768]\n make_persistent(%saved)\n end on\n on note\n %saved[$EVENT_NOTE] := $EVENT_NOTE + 1\n ignore_event($EVENT_ID)\n end on\n",
+            48000, sampler_ksp::Limits::LIBRARY, &[],
+        ).unwrap();
+        let view = script.view();
+        let plan = script.bind(Prepared::new(48000, vec![], vec![], 1).unwrap()).unwrap();
+        let limits = sampler_core::Limits::for_plan(&plan, 128, 8);
+        let mut part = Part::new(Runtime::new(plan, limits).unwrap(), MixTree::instrument("s")).unwrap();
+        part.prepare_persistence(&[view], "").unwrap();
+        for key in 60..66 {
+            part.runtime.trigger(sampler_core::Input {
+                protocol: sampler_core::Protocol::Native, port: 0, group: 0,
+                channel: 0, key, external_id: None,
+            }, key, 1.).unwrap();
+            let persistence = part.persistence.as_mut().unwrap();
+            #[cfg(feature = "plugin")]
+            assert_eq!(crate::plugin::tests::allocations(|| persistence.publish(&mut part.runtime)), 0);
+            #[cfg(not(feature = "plugin"))]
+            persistence.publish(&mut part.runtime);
+            assert!(persistence.snapshot.captured_values.load(Ordering::Relaxed) <= 16384,
+                "one scalar write must not copy the whole saved array");
+            let saved: Saved = serde_json::from_str(&persistence.snapshot.save()).unwrap();
+            for old in 60..=key {
+                assert!(matches!(saved.values[usize::from(old)], SavedValue::Cell(v) if v == i64::from(old) + 1));
+            }
+        }
+        let mut restore = ScriptStateBuffer {
+            values: vec![ScriptStateEntry { address: Address::Cell {
+                instance: sampler_core::ScriptInstanceId(0), index: 32767,
+            }, value: Value::Cell(99) }], callbacks: vec![],
+        };
+        part.runtime.restore_script_state(part.runtime.active_plan(), None, &mut restore).unwrap();
+        let persistence = part.persistence.as_mut().unwrap();
+        persistence.publish(&mut part.runtime);
+        assert!(persistence.snapshot.captured_values.load(Ordering::Relaxed) <= 16384);
+        let saved: Saved = serde_json::from_str(&persistence.snapshot.save()).unwrap();
+        assert!(matches!(saved.values[32767], SavedValue::Cell(99)));
+    }
+    #[test]
     fn numeric_persistence_keeps_compact_storage() {
         let script = sampler_ksp::compile(
             "on init\n declare %saved[32768]\n make_persistent(%saved)\n end on\n",
@@ -377,7 +509,7 @@ mod tests {
         let snapshot = Snapshot::new("test".into(), &values(17));
         let published = snapshot.published.load(Ordering::SeqCst);
         let saved = snapshot.save();
-        assert!(snapshot.capture(&runtime, runtime.active_plan()).is_err());
+        assert!(snapshot.capture(&runtime, runtime.active_plan(), None).is_err());
         assert_eq!(snapshot.published.load(Ordering::SeqCst), published);
         assert_eq!(snapshot.save(), saved);
     }
@@ -400,15 +532,15 @@ mod tests {
             channel: 0, key: 60, external_id: None,
         }, 60, 1.).unwrap();
         #[cfg(feature = "plugin")]
-        assert_eq!(crate::plugin::tests::allocations(|| persistence.publish(&part.runtime)), 0);
+        assert_eq!(crate::plugin::tests::allocations(|| persistence.publish(&mut part.runtime)), 0);
         #[cfg(not(feature = "plugin"))]
-        persistence.publish(&part.runtime);
+        persistence.publish(&mut part.runtime);
         assert_eq!(persistence.snapshot.published.load(Ordering::SeqCst), slot);
         part.runtime.trigger(sampler_core::Input {
             protocol: sampler_core::Protocol::Native, port: 0, group: 0,
             channel: 0, key: 61, external_id: None,
         }, 61, 1.).unwrap();
-        persistence.publish(&part.runtime);
+        persistence.publish(&mut part.runtime);
         let saved: Saved = serde_json::from_str(&persistence.snapshot.save()).unwrap();
         assert!(matches!(saved.values.as_slice(), [SavedValue::Cell(61)]));
     }
@@ -456,6 +588,7 @@ mod tests {
         };
         let snapshot = Snapshot::new("dsp-only".into(), &state);
         let mut persistence = Persistence {
+            pending_cells: std::array::from_fn(|_| vec![0; state.values.len().div_ceil(64)].into_boxed_slice()),
             snapshot,
             revision: (plan, runtime.script_state_revision(plan).unwrap()),
         };
@@ -473,19 +606,19 @@ mod tests {
         assert_eq!(
             crate::plugin::tests::allocations(|| {
                 runtime.poll_control_update().unwrap();
-                persistence.publish(&runtime);
+                persistence.publish(&mut runtime);
             }),
             0
         );
         #[cfg(not(feature = "plugin"))]
         {
             runtime.poll_control_update().unwrap();
-            persistence.publish(&runtime);
+            persistence.publish(&mut runtime);
         }
         let saved: Saved = serde_json::from_str(&persistence.snapshot.save()).unwrap();
         assert!(matches!(saved.values.as_slice(), [SavedValue::Real(v)] if *v == 0.75));
         let slot = persistence.snapshot.published.load(Ordering::SeqCst);
-        persistence.publish(&runtime);
+        persistence.publish(&mut runtime);
         assert_eq!(persistence.snapshot.published.load(Ordering::SeqCst), slot);
     }
     #[test]
@@ -529,6 +662,7 @@ mod tests {
             .unwrap();
         let snapshot = Snapshot::new("large-array".into(), &state);
         let mut persistence = Persistence {
+            pending_cells: std::array::from_fn(|_| vec![0; state.values.len().div_ceil(64)].into_boxed_slice()),
             snapshot,
             revision: (
                 runtime.active_plan(),
@@ -540,18 +674,18 @@ mod tests {
         let slot = persistence.snapshot.published.load(Ordering::SeqCst);
         #[cfg(feature = "plugin")]
         assert_eq!(
-            crate::plugin::tests::allocations(|| persistence.publish(&runtime)),
+            crate::plugin::tests::allocations(|| persistence.publish(&mut runtime)),
             0
         );
         #[cfg(not(feature = "plugin"))]
-        persistence.publish(&runtime);
+        persistence.publish(&mut runtime);
         assert_eq!(persistence.snapshot.published.load(Ordering::SeqCst), slot);
         state.values[0].value = Value::Cell(101);
         let mut restore_and_publish = || {
             runtime
                 .restore_script_state(runtime.active_plan(), None, &mut state)
                 .unwrap();
-            persistence.publish(&runtime);
+            persistence.publish(&mut runtime);
         };
         #[cfg(feature = "plugin")]
         assert_eq!(crate::plugin::tests::allocations(restore_and_publish), 0);

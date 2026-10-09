@@ -151,6 +151,18 @@ fn registered_snapshot_tracks_only_captured_cells_in_fast_and_general_paths() {
             let id = runtime.start_plan_behavior(plan, program).unwrap();
             assert_eq!(runtime.behavior_outcome(id), Ok(Some(Outcome::Finished)));
             assert_eq!(runtime.script_state_revision(plan).unwrap() != before, changes);
+            let mut addresses = [None; 2];
+            let mut count = 0;
+            assert!(runtime.visit_dirty_script_cells(plan, |address| {
+                addresses[count] = Some(address); count += 1;
+            }).unwrap());
+            assert_eq!(count, usize::from(changes));
+            if changes {
+                let index = if program == 2 { 0 } else { 70 };
+                assert_eq!(addresses[0], Some(ScriptStateAddress::Cell { instance: ScriptInstanceId(0), index }));
+            }
+            runtime.clear_dirty_script_cells(plan).unwrap();
+            assert!(runtime.visit_dirty_script_cells(plan, |_| panic!("dirty cell was not cleared")).unwrap());
             runtime.flush_behaviors(|_, _, _| true);
         }
     });
