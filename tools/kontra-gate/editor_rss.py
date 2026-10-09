@@ -108,7 +108,9 @@ def observe(host, plugin, item, folder):
                     time.sleep(.05)
                 output.seek(0); raw = output.read()
             receipt.update(returncode=job.returncode, stdout_sha256=hashlib.sha256(raw).hexdigest())
-            rows = [json.loads(line) for line in raw.splitlines()]
+            records = [json.loads(line) for line in raw.splitlines()]
+            receipt['geometry_checks'] = [r for r in records if r.get('kind') == 'geometry']
+            rows = [r for r in records if 'sample' in r]
             receipt['samples'] = rows
             logs = log_rows(capture.root)
             selected = selected_loads(logs,item,programs)
