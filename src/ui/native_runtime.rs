@@ -822,6 +822,19 @@ mod tests {
         for (n,text) in [(1,"visible"),(2,"sparse")] {
             assert_eq!(children.get::<Table>(n).unwrap().get::<Table>("props").unwrap().get::<String>("text").unwrap(),text);
         }
+        lua.load(r#"
+            local child=__node('Text',function() return {text='reused'} end)
+            local props={[1]=child}
+            local callback=function() return props[1]==child end
+            props.on_change=callback
+            local root=function() return __node('VStack',function() return props end) end
+            for _=1,2 do
+                local graph=__render(root)
+                assert(graph.children[1].props.text=='reused')
+                assert(graph.props.on_change())
+                assert(props[1]==child and props.on_change==callback)
+            end
+        "#).exec().unwrap();
     }
     #[test]
     fn legacy_component_reads_the_published_ir_and_produces_a_typed_edit() {
