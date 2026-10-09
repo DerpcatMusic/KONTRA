@@ -85,6 +85,7 @@ const REMAINING: usize = 12;
 const STARTED: usize = 13;
 const PREVIOUS: usize = 14;
 
+#[derive(Clone, Copy)]
 struct Coefficients {
     g: f64,
     inverse: f64,
@@ -179,6 +180,7 @@ impl Daft {
         modulation: [f64; 4],
     ) {
         let mut i = 0;
+        let mut cached: Option<([f64; 4], Coefficients)> = None;
         while i < len {
             let t = at + i as u64;
             if t % QUANTUM == 0 || state.aux[STARTED] == 0. {
@@ -186,7 +188,11 @@ impl Daft {
             }
             let run = ((QUANTUM - t % QUANTUM) as usize).min(len - i);
             let ramping = state.aux[DELTA..DELTA + 4].iter().any(|d| *d != 0.);
-            let mut coefficients = self.coefficients(&state.aux[CURRENT..CURRENT + 4]);
+            let current = std::array::from_fn(|k| state.aux[CURRENT + k]);
+            let mut coefficients = match cached {
+                Some((previous, coefficients)) if previous == current => coefficients,
+                _ => self.coefficients(&current),
+            };
             for n in i..i + run {
                 let x = [block[0][n], block[1][n]];
                 let inputs = [0, 1].map(|c| [0.5 * (state.aux[PREVIOUS + c] + x[c]), x[c]]);
@@ -206,6 +212,7 @@ impl Daft {
                 block[0][n] = 0.5 * out[0];
                 block[1][n] = 0.5 * out[1];
             }
+            cached = Some((std::array::from_fn(|k| state.aux[CURRENT + k]), coefficients));
             i += run;
         }
         for v in &mut state.z.iter_mut().flatten() {
