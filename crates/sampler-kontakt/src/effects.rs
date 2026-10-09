@@ -593,7 +593,7 @@ pub(crate) struct Chain {
     pub processors: Vec<sampler_ir::Processor>,
     pub sends: Vec<f32>,
     pub notes: Vec<Note>,
-    /// Each translated SV filter slot and its index in `processors`, for
+    /// Each translated filter/EQ band slot and its index in `processors`, for
     /// modulation targets that name a module slot.
     pub filter_slots: Vec<(usize, usize)>,
     pub send_taps: Vec<SendTap>,
@@ -613,6 +613,7 @@ pub(crate) fn voice_chain(
     split: i32,
     dynamic: Option<(i32, i32)>,
     group: i32,
+    live_eq: &[usize],
 ) -> (Chain, usize) {
     let valid = (0..=8).contains(&split);
     let cut = if valid {
@@ -620,8 +621,8 @@ pub(crate) fn voice_chain(
     } else {
         slots.len()
     };
-    let mut before = chain_with(&slots[..cut], Scope::Voice, None, dynamic, (group, -1));
-    let after = chain_with(&slots[cut..], Scope::Voice, None, dynamic, (group, -1));
+    let mut before = chain_with(&slots[..cut], Scope::Voice, None, dynamic, (group, -1), live_eq);
+    let after = chain_with(&slots[cut..], Scope::Voice, None, dynamic, (group, -1), live_eq);
     let boundary = before.processors.len();
     before.processors.extend(after.processors);
     before.send_taps.extend(after.send_taps.into_iter().map(|mut tap| {
@@ -655,7 +656,7 @@ pub(crate) fn voice_chain(
 /// channels, so they commute with it.
 #[cfg(test)]
 pub(crate) fn chain(slots: &[Slot], scope: Scope) -> Chain {
-    chain_with(slots, scope, None, None, (-1, 1))
+    chain_with(slots, scope, None, None, (-1, 1), &[])
 }
 
 /// A decoded impulse response: its sample rate and frames.
@@ -678,6 +679,7 @@ pub(crate) fn chain_with(
     mut impulses: Option<&mut Impulses>,
     dynamic: Option<(i32, i32)>,
     physical: (i32, i32),
+    live_eq: &[usize],
 ) -> Chain {
     let mut out = Chain::default();
     let mut combined = IDENTITY;
@@ -751,7 +753,20 @@ pub(crate) fn chain_with(
                 }
             }
             Some(Params::Eq { bands }) => {
-                filters.extend(bands.iter().filter_map(|band| eq_band(*band, &mut notes)));
+                let live = scope == Scope::Voice && (dynamic.is_some() || live_eq.contains(&fx.slot));
+                if live {
+                    flush(&mut combined, &mut filters, &mut out);
+                    let live_bands: Option<Vec<_>> = bands.iter()
+                        .map(|band| eq_band(*band, true, &mut notes)).collect();
+                    if let Some(live_bands) = live_bands {
+                        for p in live_bands {
+                            out.filter_slots.push((fx.slot, out.processors.len()));
+                            out.processors.push(p);
+                        }
+                    } else { modelled = false; }
+                } else {
+                    filters.extend(bands.iter().filter_map(|band| eq_band(*band, false, &mut notes)));
+                }
                 combined = product(eq_gain, combined);
             }
             Some(Params::SendLevels { sends, .. }) => {
@@ -1216,6 +1231,7 @@ pub(crate) fn instrument_buses(
         Scope::Bus,
         Some(&mut source),
         generic(1), (-1, 1),
+        &[],
     );
     take("instrument insert", &insert);
     let main = chain_with(
@@ -1223,6 +1239,7 @@ pub(crate) fn instrument_buses(
         Scope::Bus,
         Some(&mut source),
         generic(2), (-1, 2),
+        &[],
     );
     take("instrument main", &main);
     // A send slot's effect runs on its own bus, fed at the Send Levels slot's level.
@@ -1236,6 +1253,7 @@ pub(crate) fn instrument_buses(
             Scope::Bus,
             Some(&mut source),
             generic(0), (-1, 0),
+            &[],
         );
         // Port from v1 0cb7a8a0:src/fx/processor.rs (process returns and
         // SendInputs::tap): bypassed returns contribute no dry signal.
@@ -1262,6 +1280,7 @@ pub(crate) fn instrument_buses(
             Scope::Bus,
             Some(&mut source),
             generic(1000 + bus.index as i32), (-1, 1000 + bus.index as i32),
+            &[],
         );
         take(&name, &c);
         if bus.pan.abs() > 0.01 {
@@ -1420,15 +1439,16 @@ pub(crate) fn instrument_buses(
     (report, send_buses)
 }
 
-/// One EQ band (Hz, octaves, dB) as a peaking filter; flat bands vanish.
+/// One EQ band (Hz, octaves, dB); live owners retain flat bands.
 fn eq_band(
     [hz, octaves, db]: [f32; 3],
+    keep_flat: bool,
     notes: &mut Vec<(String, String, sampler_ir::Reason)>,
 ) -> Option<sampler_ir::Processor> {
-    if db == 0.0 {
+    if db == 0.0 && !keep_flat {
         return None;
     }
-    if !(hz > 0.0 && octaves > 0.0) {
+    if !(hz.is_finite() && octaves.is_finite() && db.is_finite() && hz > 0.0 && octaves > 0.0) {
         notes.push((
             "EQ band".into(),
             format!("{hz} Hz {octaves} oct {db} dB"),
@@ -1457,6 +1477,31 @@ fn eq_band(
 mod tests {
     use ni_file::kontakt::Chunk;
     #[test]
+    fn live_eq_retains_flat_bands_and_their_physical_indices() {
+        let mut public = Vec::new();
+        for kind in [24i32, 24] { public.extend(kind.to_le_bytes()); }
+        for values in [[300f32, 1., 0.], [1000., 1., 12.], [6000., 1., 0.]] {
+            for value in values { public.extend(value.to_le_bytes()); }
+        }
+        let slot = super::Slot { slot: 5, module: 0x18, version: 0x92,
+            bypass: false, output_gain: 1., dry_level: 0., output_set: false, public };
+        let fixed = super::chain(std::slice::from_ref(&slot), super::Scope::Voice);
+        assert_eq!(fixed.processors.iter().filter(|p| matches!(p, sampler_ir::Processor::Filter(_))).count(), 1,
+            "the static unmodulated path keeps its existing arithmetic");
+        let live = super::chain_with(std::slice::from_ref(&slot), super::Scope::Voice,
+            None, Some((7, -1)), (7, -1), &[]);
+        let routed = super::chain_with(std::slice::from_ref(&slot), super::Scope::Voice,
+            None, None, (7, -1), &[5]);
+        assert_eq!(routed.filter_slots, vec![(5, 0), (5, 1), (5, 2)]);
+        assert_eq!(live.filter_slots.len(), 3, "live EQ must retain physical band owners, including flat bands");
+        for (band, &(physical, index)) in live.filter_slots.iter().enumerate() {
+            assert_eq!(physical, 5);
+            assert!(matches!(live.processors[index], sampler_ir::Processor::Filter(sampler_ir::Filter {
+                kind: sampler_ir::FilterKind::Peak { .. }, .. })), "band {band} must address its actual EQ processor");
+        }
+    }
+
+    #[test]
     fn ladder_and_daft_cutoff_routes_retain_the_authored_physical_slot() {
         for kind in [33i32, 70, 71] {
             let mut public = kind.to_le_bytes().to_vec();
@@ -1466,7 +1511,7 @@ mod tests {
             let slot = super::Slot { slot: 5, module: 0x18, version: 0x92,
                 bypass: false, output_gain: 1., dry_level: 0., output_set: false, public };
             for dynamic in [None, Some((7, -1))] {
-                let chain = super::chain_with(std::slice::from_ref(&slot), super::Scope::Voice, None, dynamic, (7, -1));
+                let chain = super::chain_with(std::slice::from_ref(&slot), super::Scope::Voice, None, dynamic, (7, -1), &[]);
                 let index = usize::from(dynamic.is_some());
                 assert_eq!(chain.filter_slots, vec![(5, index)], "native filter {kind} loses its addressed cutoff consumer");
                 assert!(matches!(chain.processors[index], sampler_ir::Processor::LadderLP4(_) | sampler_ir::Processor::Daft(_)));
@@ -1482,7 +1527,7 @@ mod tests {
         for value in [-0.25f32, 0.5, 0.3] { public.extend(value.to_le_bytes()); }
         let slot = super::Slot { slot: 3, module: 0x18, version: 0x92,
             bypass: false, output_gain: 1., dry_level: 0., output_set: false, public };
-        let chain = super::chain_with(&[slot], super::Scope::Voice, None, Some((7, -1)), (7, -1));
+        let chain = super::chain_with(&[slot], super::Scope::Voice, None, Some((7, -1)), (7, -1), &[]);
         assert!(chain.notes.is_empty());
         assert!(chain.processors.iter().any(|p| matches!(p,
             sampler_ir::Processor::LadderLP4(d) if d.gain == -0.25
@@ -1873,7 +1918,7 @@ mod tests {
         after.slot = 7;
         before.dry_level = 0.0;
         after.dry_level = 0.0;
-        let (chain, boundary) = voice_chain(&[before, after], 6, None, 0);
+        let (chain, boundary) = voice_chain(&[before, after], 6, None, 0, &[]);
         assert_eq!(boundary, 1);
         assert_eq!(chain.processors.len(), 2);
         assert_eq!(
@@ -1897,13 +1942,14 @@ mod tests {
         let mut gainer = slot(0x13, 2.0f32.to_le_bytes().to_vec(), 1.0);
         gainer.slot = 3;
         gainer.bypass = true;
-        let plain = chain_with(std::slice::from_ref(&gainer), Scope::Bus, None, None, (-1, 1));
+        let plain = chain_with(std::slice::from_ref(&gainer), Scope::Bus, None, None, (-1, 1), &[]);
         assert!(plain.processors.is_empty());
         let c = chain_with(
             std::slice::from_ref(&gainer),
             Scope::Bus,
             None,
             Some((-1, 1)), (-1, 1),
+            &[],
         );
         assert!(
             matches!(
@@ -2204,7 +2250,7 @@ mod tests {
         before.slot = 2;
         let mut after = slot(0x17, levels, 1.0);
         after.slot = 6;
-        let (chain, boundary) = voice_chain(&[before, after], 4, None, 0);
+        let (chain, boundary) = voice_chain(&[before, after], 4, None, 0, &[]);
         assert!(chain.notes.is_empty(), "{:?}", chain.notes);
         assert_eq!(boundary, 0);
         assert_eq!(chain.send_taps.len(), 2);
