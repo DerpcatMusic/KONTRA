@@ -17,6 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod modules;
 mod ui;
 #[cfg(feature = "scan")]
 pub mod diagnostics;
@@ -57,15 +58,25 @@ impl Scripts {
             .push((path.to_lowercase().replace('\\', "/"), source));
     }
     fn member(&self, module: &str) -> Option<&(String, String)> {
-        let wanted = format!("{}.lua", module.to_lowercase().replace('\\', "/"));
-        let tail = format!("/{wanted}");
-        self.files.iter().filter(|(path, _)| *path == wanted || path.ends_with(&tail))
-            .min_by_key(|(path, _)| path.len())
+        let module = module.to_lowercase().replace('\\', "/");
+        let wanted = format!("{module}.lua");
+        if let Some(exact) = self.files.iter().find(|(path, _)| *path == wanted) {
+            return Some(exact);
+        }
+        let relative = module.replace('/', ".");
+        let suffix = format!(".{relative}");
+        let mut matches = self.files.iter().filter(|(path, _)| {
+            let name = path.strip_suffix(".lua").unwrap_or(path).replace('/', ".");
+            name == relative || name.ends_with(&suffix)
+        });
+        let first = matches.next()?;
+        if matches.any(|(_, source)| source != &first.1) { return None; }
+        Some(first)
     }
 }
 
 impl Files for Scripts {
-    /// `require 'a/b'` finds the member `.../a/b.lua`; the shortest path wins.
+    /// Exact bank members win; relative slash/dot aliases require identical source.
     fn script(&self, module: &str) -> Option<String> {
         self.member(module).map(|(_, source)| source.clone())
     }
@@ -1149,8 +1160,17 @@ impl ScriptHost {
         let s = shared.clone();
         native.set(
             "source",
-            lua.create_function(move |_, name: String| Ok(s.files.script(&name)))?,
+            lua.create_function(move |_, name: String| {
+                Ok(s.files.script(&name).or_else(|| {
+                    (name == "uvi.ChordRec").then(|| modules::CHORD_REC.to_owned())
+                }))
+            })?,
         )?;
+        native.set("asyncUpdater", lua.create_function(|lua, ()| {
+            let factory = lua.create_userdata(modules::AsyncUpdaterFactory)?;
+            factory.set_user_value(lua.globals())?;
+            Ok(factory)
+        })?)?;
         let s = shared.clone();
         native.set(
             "assigned",
