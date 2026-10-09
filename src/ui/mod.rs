@@ -153,6 +153,7 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
 
 /// Focus left or the window closes: every key the editor holds comes up.
 fn let_go(p: &SamplerParams, computer: &computer::Computer) {
+    p.shared.learn_target.store(0, Ordering::Relaxed);
     computer.release(p);
     p.shared.release_keyboard();
     // The next frame names the spectrum's strip again, if one still shows.
@@ -1008,6 +1009,7 @@ fn build(
             selection,
             state: &mut state,
         };
+        inside::release_learn(&mut cx);
         mapping::release(ui, &mut cx);
         shortcuts(ui, &mut cx);
         picked(&mut cx);
