@@ -195,6 +195,13 @@ pub enum EventInfo {
     Source,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ZoneParameter {
+    Group,
+    LowKey,
+    HighKey,
+}
+
 /// First mod-value id of a note's four user event parameters (`$EVENT_PAR_0..3`).
 pub const USER_EVENT_PAR: u16 = 1001;
 

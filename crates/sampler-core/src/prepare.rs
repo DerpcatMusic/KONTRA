@@ -903,6 +903,15 @@ impl Prepared {
         self.region_zone_ids.iter().position(|&id| id == zone_id)
     }
 
+    pub fn source_zone_parameter(&self, zone_id: u32, parameter: super::ZoneParameter) -> Option<i32> {
+        let region = self.source_zone_region(zone_id)?;
+        Some(match parameter {
+            super::ZoneParameter::Group => self.region_groups.get(region).copied().flatten().map_or(-1, |group| group as i32),
+            super::ZoneParameter::LowKey => i32::from(self.regions.get(region)?.bounds[0]),
+            super::ZoneParameter::HighKey => i32::from(self.regions.get(region)?.bounds[1]),
+        })
+    }
+
     /// The immutable prepared sample asset behind a region, for control-side peak work.
     pub fn region_asset(&self, region: usize) -> Option<&Pcm> {
         self.regions.get(region).and_then(|r| self.pcm.get(r.sample))
