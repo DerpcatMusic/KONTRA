@@ -692,3 +692,25 @@ fn slot_clip_shots() {
         moose::core::screenshot::save_png(&out.join(format!("slot-clip-{w}.png")), &pixels(&fixture.ui, w, h), w.into(), h.into());
     }
 }
+
+#[test]
+fn report_is_one_tab_and_settings_uses_the_workspace() {
+    let p = specimen();
+    let mut h = Harness::new(&p, 900., 600.);
+    h.press("tab-report");
+    assert!(h.ui.scene().unwrap().surface("tab-logs").is_none(), "Report replaces both old tabs");
+    h.press("app-menu");
+    h.press("menu-item-5");
+    h.idle(20);
+    let scene = h.ui.scene().unwrap();
+    let settings = scene.surface("settings-body").unwrap().frame;
+    let center = scene.surface("center").unwrap().frame;
+    assert!(settings.size.height > 250., "Settings is a workspace panel, not a two-row strip: {settings:?}");
+    assert!(settings.y >= center.y && settings.y + settings.size.height <= center.y + center.size.height + 0.5);
+    for id in ["settings-libraries", "settings-interface", "settings-midi", "settings-performance"] {
+        assert!(scene.surface(id).is_some(), "Settings has a labelled section: {id}");
+    }
+    h.press("settings-close");
+    assert!(h.ui.scene().unwrap().surface("settings-body").is_none());
+
+}
