@@ -204,14 +204,22 @@ pub fn read_program_with_controls(
                 .filter(|name| name.to_ascii_lowercase().ends_with(".nkr"))
                 .collect(),
         ),
-        None => (
-            chunks
-                .filename_table()
-                .ok_or_else(|| invalid("missing multi sample table"))?
-                .map_err(|e| decode("multi file table", e))?,
-            Default::default(),
-            Vec::new(),
-        ),
+        None => {
+            // filename_table() exposes only samples; retain the legacy IR and NKR tables too.
+            let chunk = chunks
+                .find_first(LEGACY_FILE_TABLE)
+                .ok_or_else(|| invalid("missing multi sample table"))?;
+            let t = FileNameListPreK51::try_from(chunk)
+                .map_err(|e| decode("multi legacy file table", e))?;
+            (
+                t.sample_filetable,
+                t.other_filetable,
+                t.special_filetable
+                    .into_values()
+                    .filter(|name| name.to_ascii_lowercase().ends_with(".nkr"))
+                    .collect(),
+            )
+        }
     };
     drop(span);
     let _span = crate::audit::Span::new("translate_resolve_ir");
