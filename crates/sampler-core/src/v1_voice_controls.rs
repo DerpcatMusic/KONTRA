@@ -114,6 +114,31 @@ pub struct FlexPoint {
     pub level: f32,
     pub curve: f32,
 }
+/// Prepared native normalized-frequency lane for W9's original LFO consumer.
+#[derive(Clone, Copy, Debug)]
+pub struct LfoFrequency {
+    inverse_rate: f32,
+}
+impl LfoFrequency {
+    /// `rate` is the native control rate (audio rate / 32), not audio rate.
+    pub fn new(rate: f32) -> Result<Self, Error> {
+        let inverse_rate = 1. / rate;
+        if !rate.is_finite() || rate <= 0. || !inverse_rate.is_finite() || inverse_rate <= 0. {
+            return Err(Error::InvalidInput);
+        }
+        Ok(Self { inverse_rate })
+    }
+    /// One normalized lane point; original 0x140b07bd9..0x140b07c69.
+    pub fn increment(&self, input: f32) -> f64 {
+        // COMISS treats NaN as below zero; preserve this before MINSS.
+        let input = if input.is_nan() || input < 0. { 0. } else { input.min(1.) };
+        let exponent = input * f32::from_bits(0x41650ef6) - f32::from_bits(0x40d2b2b7);
+        let fraction = exponent - exponent.floor();
+        let correction = (fraction - fraction * fraction) * f32::from_bits(0x3eadee78);
+        let bits = ((exponent + 127. - correction) * 8_388_608.) as u32;
+        f64::from(f32::from_bits(bits) * self.inverse_rate)
+    }
+}
 #[derive(Clone, Debug, PartialEq)]
 pub struct PitchLfo {
     pub start_phase: f32,

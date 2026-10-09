@@ -958,3 +958,65 @@ fn original_flex_projection_uses_pinned_direction_curve_and_units() {
         assert!(Flex::from_kontakt(&[bad], 0).is_err());
     }
 }
+
+#[test]
+fn native_lfo_frequency_lane_matches_original_instruction_checkpoints_without_heap() {
+    // Captured from the hash-pinned original kernel, including COMISS NaN -> zero.
+    let cases: &[(f32, u32, u64)] = &[
+        (44100., 0xff800000, 0x3edfb300a0000000),
+        (44100., 0xbf800000, 0x3edfb300a0000000),
+        (44100., 0x80000000, 0x3edfb300a0000000),
+        (44100., 0x00000000, 0x3edfb300a0000000),
+        (44100., 0x33d6bf95, 0x3edfb300a0000000),
+        (44100., 0x3c23d70a, 0x3ee1897060000000),
+        (44100., 0x3e000000, 0x3efb56c5e0000000),
+        (44100., 0x3e800000, 0x3f17b17860000000),
+        (44100., 0x3f000000, 0x3f51b8e080000000),
+        (44100., 0x3f400000, 0x3f8a5d6400000000),
+        (44100., 0x3f666666, 0x3fad37fbc0000000),
+        (44100., 0x3f800000, 0x3fc3cbf0e0000000),
+        (44100., 0x40000000, 0x3fc3cbf0e0000000),
+        (44100., 0x7f800000, 0x3fc3cbf0e0000000),
+        (44100., 0x7fc00000, 0x3edfb300a0000000),
+        (48000., 0xff800000, 0x3edd1fa8a0000000),
+        (48000., 0xbf800000, 0x3edd1fa8a0000000),
+        (48000., 0x80000000, 0x3edd1fa8a0000000),
+        (48000., 0x00000000, 0x3edd1fa8a0000000),
+        (48000., 0x33d6bf95, 0x3edd1fa8a0000000),
+        (48000., 0x3c23d70a, 0x3ee01cac00000000),
+        (48000., 0x3e000000, 0x3ef91e1f60000000),
+        (48000., 0x3e800000, 0x3f15c4a680000000),
+        (48000., 0x3f000000, 0x3f50484180000000),
+        (48000., 0x3f400000, 0x3f883900a0000000),
+        (48000., 0x3f666666, 0x3faad83c00000000),
+        (48000., 0x3f800000, 0x3fc2302ba0000000),
+        (48000., 0x40000000, 0x3fc2302ba0000000),
+        (48000., 0x7f800000, 0x3fc2302ba0000000),
+        (48000., 0x7fc00000, 0x3edd1fa8a0000000),
+        (96000., 0xff800000, 0x3ecd1fa8a0000000),
+        (96000., 0xbf800000, 0x3ecd1fa8a0000000),
+        (96000., 0x80000000, 0x3ecd1fa8a0000000),
+        (96000., 0x00000000, 0x3ecd1fa8a0000000),
+        (96000., 0x33d6bf95, 0x3ecd1fa8a0000000),
+        (96000., 0x3c23d70a, 0x3ed01cac00000000),
+        (96000., 0x3e000000, 0x3ee91e1f60000000),
+        (96000., 0x3e800000, 0x3f05c4a680000000),
+        (96000., 0x3f000000, 0x3f40484180000000),
+        (96000., 0x3f400000, 0x3f783900a0000000),
+        (96000., 0x3f666666, 0x3f9ad83c00000000),
+        (96000., 0x3f800000, 0x3fb2302ba0000000),
+        (96000., 0x40000000, 0x3fb2302ba0000000),
+        (96000., 0x7f800000, 0x3fb2302ba0000000),
+        (96000., 0x7fc00000, 0x3ecd1fa8a0000000),
+    ];
+    support::without_heap(|| {
+        for &(rate, input, expected) in cases {
+            let source = LfoFrequency::new(rate / 32.).unwrap();
+            assert_eq!(source.increment(f32::from_bits(input)).to_bits(), expected,
+                "native frequency rate{rate} input{input:x}");
+        }
+    });
+    for rate in [0., -1., f32::NAN, f32::INFINITY, f32::from_bits(1)] {
+        assert!(LfoFrequency::new(rate).is_err());
+    }
+}
