@@ -68,3 +68,24 @@ Measured Kontakt loss counts, enabled/bypassed: FX slots **459/1037**, filter sl
 W15 received this final queue, superseding the provisional 123-item prefix. Full artifacts beside the earlier receipts: `grouped-corpus-native.json`, `grouped-corpus-native-locations.json.gz`, `grouped-top20-corpus-native.md`, `grouped-top20-all-corpus-native.md`, and `grouped-corpus-native-resume.log`. The older plain sidecar belongs to the partial prefix; only the compressed sidecar named by the final report is authoritative. `corpus-ranked-stream.py` and its resumable runner retain the analysis and assertions in the receipt directory.
 
 NEXT: recount admission-changing W15 EQ/source routes; prioritise the NI family protocol in `w12-priority-family.md`. UVI whole-manifest inventory remains UNKNOWN pending an admitted reader path.
+
+## Cached EQ route projection, c49d5862
+
+Una Corda first: eqGain2 9 enabled / 0 bypassed; eqGain3 9 / 0, three of each in Cotton, Felt and Pure. Corpus candidates: eqGain1 10,396 / 0; eqGain2 7,157 / 0; eqGain3 1,265 / 0; eqFreq1 200 / 0; eqFreq2/3 and eqBandwidth1/2/3 zero. Total 19,018 enabled source/physical-owner-supported route candidates. No native reader rerun or new playback measurement; the cached inventory does not retain native band count or target-shaper data. Keep measured gates unchanged until executed route evidence exists.
+
+Cached source-reviewed EQ projection: c49d5862 over fdf6d4e0; 834 Kontakt inventories, 660 UVI UNKNOWN. Native band count/shaper unrecorded; counts are candidates, not new executed gate evidence.
+
+| Reason / target | Enabled | Bypassed | Libraries |
+|---|---:|---:|---:|
+| TargetsDropped/intensity | 64974 | 0 | 1 |
+| TargetsDropped/frequency | 37128 | 0 | 1 |
+| SourceNotExecuted/filterCutoff | 14047 | 0 | 2 |
+| SourceNotExecuted/filterQ | 14047 | 0 | 2 |
+| SourceNotExecuted/pan | 14047 | 0 | 2 |
+| SourceNotExecuted/frequency | 13923 | 0 | 1 |
+| SourceNotExecuted/pitch | 13923 | 0 | 1 |
+| SourceNotExecuted/volume | 9406 | 0 | 2 |
+| SourceNotExecuted/intensity | 4641 | 0 | 1 |
+| TargetsDropped/filterCutoff | 4612 | 0 | 7 |
+
+Receipt and complete location sidecar: `/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w12-fidelity/cached-c49-eq-summary.json` and `cached-c49-eq-locations.json`. The latter uses the common grouped-diagnostics-v1 format; capped locations remain in the summary.

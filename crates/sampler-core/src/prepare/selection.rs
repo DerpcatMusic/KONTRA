@@ -615,14 +615,24 @@ impl Runtime {
             while let Some(c) = candidate {
                 if prepared.regions[c.region].take == choice.map(|c| c.take) {
                     let r = prepared.regions[c.region];
-                    let step = pitch.apply(prepared.step(c, note_pitch))?;
+                    let step = pitch.apply_source(
+                        prepared.step(c, note_pitch),
+                        r.cursor
+                            .cursor(&prepared.cursor_loops)
+                            .wavetable()
+                            .is_some(),
+                    )?;
                     let asset = &prepared.pcm[r.sample];
                     let cursor = r
                         .cursor
                         .cursor(&prepared.cursor_loops)
                         .with_offset(offset_micros, asset.sample_rate())
                         .with_step(step);
-                    self.check_source_ready(asset, cursor, self.region_envelope(r.envelope, r.fallback_envelope))?;
+                    self.check_source_ready(
+                        asset,
+                        cursor,
+                        self.region_envelope(r.envelope, r.fallback_envelope),
+                    )?;
                     count += 1;
                 }
                 candidate = matching.next_in_groups(prepared, state, velocity, groups);
@@ -828,7 +838,9 @@ impl Runtime {
             .collect();
         crate::SelectionRecord {
             event: n.order,
-            parent_event: n.parent.and_then(|id| self.notes.get(id.0).map(|n| n.order)),
+            parent_event: n
+                .parent
+                .and_then(|id| self.notes.get(id.0).map(|n| n.order)),
             at: self.now,
             key,
             velocity,
@@ -946,7 +958,11 @@ impl Runtime {
                     self.families.get_mut(family.0).unwrap().decision = decision;
                     family
                 });
-                let envelope = self.controlled_envelope(plan, group, self.region_envelope(r.envelope, r.fallback_envelope));
+                let envelope = self.controlled_envelope(
+                    plan,
+                    group,
+                    self.region_envelope(r.envelope, r.fallback_envelope),
+                );
                 let admitted = self.admit_voice(
                     family,
                     r.sample,
@@ -980,10 +996,17 @@ impl Runtime {
                     .copied()
                     .unwrap_or(candidate.region as u32 + 1);
                 if let Some(record) = self.selection_log.as_mut().and_then(|log| log.last_mut()) {
-                    if let Some(candidate) = record.candidates.iter_mut().find(|c| c.region == candidate.region) {
+                    if let Some(candidate) = record
+                        .candidates
+                        .iter_mut()
+                        .find(|c| c.region == candidate.region)
+                    {
                         candidate.started = Some(crate::SelectedSource {
-                            zone: state.source_zone, sample: r.sample,
-                            frame: state.cursor.trace_position(), direction: state.cursor.trace_direction(), loops: state.cursor.trace_loops(),
+                            zone: state.source_zone,
+                            sample: r.sample,
+                            frame: state.cursor.trace_position(),
+                            direction: state.cursor.trace_direction(),
+                            loops: state.cursor.trace_loops(),
                         });
                     }
                 }

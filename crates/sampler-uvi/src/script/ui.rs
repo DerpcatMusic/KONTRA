@@ -117,7 +117,10 @@ impl ScriptHost {
             return Err("non-finite UI value".into());
         }
         let (widget, component) = identity(id).ok_or("not a UVI control")?;
-        self.shared.arm(self.shared.config.callback, self.shared.config.callback_work);
+        self.shared.arm(
+            self.shared.config.callback,
+            self.shared.config.callback_work,
+        );
         let f = self
             .lua
             .globals()
@@ -560,22 +563,52 @@ pub struct UiState {
     pub custom: Option<SavedValue>,
 }
 pub(super) fn json_state(source: &str) -> Result<SavedValue, String> {
-    if source.len() > 2 << 20 { return Err("UVI state exceeds 2 MiB".into()); }
-    fn convert(v: serde_json::Value, depth: usize, remaining: &mut usize) -> Result<SavedValue, String> {
-        *remaining = remaining.checked_sub(1).ok_or("UVI state exceeds 65536 values")?;
-        if depth > 64 { return Err("UVI state exceeds depth limit".into()); }
+    if source.len() > 2 << 20 {
+        return Err("UVI state exceeds 2 MiB".into());
+    }
+    fn convert(
+        v: serde_json::Value,
+        depth: usize,
+        remaining: &mut usize,
+    ) -> Result<SavedValue, String> {
+        *remaining = remaining
+            .checked_sub(1)
+            .ok_or("UVI state exceeds 65536 values")?;
+        if depth > 64 {
+            return Err("UVI state exceeds depth limit".into());
+        }
         Ok(match v {
             serde_json::Value::Null => SavedValue::Nil,
             serde_json::Value::Bool(b) => SavedValue::Boolean(b),
-            serde_json::Value::Number(n) => SavedValue::Number(n.as_f64().filter(|n| n.is_finite()).ok_or("invalid state number")?),
+            serde_json::Value::Number(n) => SavedValue::Number(
+                n.as_f64()
+                    .filter(|n| n.is_finite())
+                    .ok_or("invalid state number")?,
+            ),
             serde_json::Value::String(s) => SavedValue::String(s),
-            serde_json::Value::Array(v) => SavedValue::Table(v.into_iter().enumerate().map(|(i,v)| Ok((SavedValue::Number((i+1) as f64), convert(v,depth+1,remaining)?))).collect::<Result<_,String>>()?),
-            serde_json::Value::Object(v) => SavedValue::Table(v.into_iter().map(|(k,v)| Ok((SavedValue::String(k),convert(v,depth+1,remaining)?))).collect::<Result<_,String>>()?),
+            serde_json::Value::Array(v) => SavedValue::Table(
+                v.into_iter()
+                    .enumerate()
+                    .map(|(i, v)| {
+                        Ok((
+                            SavedValue::Number((i + 1) as f64),
+                            convert(v, depth + 1, remaining)?,
+                        ))
+                    })
+                    .collect::<Result<_, String>>()?,
+            ),
+            serde_json::Value::Object(v) => SavedValue::Table(
+                v.into_iter()
+                    .map(|(k, v)| Ok((SavedValue::String(k), convert(v, depth + 1, remaining)?)))
+                    .collect::<Result<_, String>>()?,
+            ),
         })
     }
     let value: serde_json::Value = serde_json::from_str(source).map_err(|e| e.to_string())?;
-    if !value.is_object() && !value.is_array() && !value.is_null() { return Err("UVI custom state must be a table or nil".into()); }
-    convert(value,0,&mut 65536)
+    if !value.is_object() && !value.is_array() && !value.is_null() {
+        return Err("UVI custom state must be a table or nil".into());
+    }
+    convert(value, 0, &mut 65536)
 }
 fn save_value(
     v: Value,
@@ -662,7 +695,8 @@ impl ScriptHost {
     }
     pub fn save_ui_state(&self) -> Result<UiState, String> {
         let _span = sampler_kontakt::audit::Span::new("uvi_lua_ui_save");
-        self.shared.arm(self.shared.config.load, self.shared.config.load_work);
+        self.shared
+            .arm(self.shared.config.load, self.shared.config.load_work);
         let mut out = UiState::default();
         let mut remaining = 65536;
         if let Ok(Value::Function(f)) = self.lua.globals().raw_get::<Value>("onSave") {
@@ -693,7 +727,8 @@ impl ScriptHost {
         Ok(out)
     }
     pub(super) fn restore_ui_values(&self, state: &UiState) -> Result<(), String> {
-        self.shared.arm(self.shared.config.load, self.shared.config.load_work);
+        self.shared
+            .arm(self.shared.config.load, self.shared.config.load_work);
         let list = widgets(self);
         let mut remaining = 65536;
         for (i, name, v) in &state.widgets {
@@ -728,7 +763,8 @@ impl ScriptHost {
         if let Some(value) = &state.custom
             && let Ok(Value::Function(f)) = self.lua.globals().raw_get::<Value>("onLoad")
         {
-            self.shared.arm(self.shared.config.load, self.shared.config.load_work);
+            self.shared
+                .arm(self.shared.config.load, self.shared.config.load_work);
             f.call::<()>(load_value(&self.lua, value, 0, &mut 65536)?)
                 .map_err(super::lua_error)?;
             self.cycle();

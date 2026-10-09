@@ -1373,37 +1373,69 @@ mod tests {
     #[test]
     #[ignore = "requires a native adapter with Vello compute support"]
     fn expose_and_same_size_restore_require_full_repaint() {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let instance =
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
         let gpu = OnDevice::open(&instance, None, (16, 16), Transparency::Opaque).unwrap();
         let mut host = Host {
-            instance, surface: None, gpu, wanted: Some((16, 16)), retry_at: None,
-            generation: 0, transparency: Transparency::Opaque, first_frame: true,
+            instance,
+            surface: None,
+            gpu,
+            wanted: Some((16, 16)),
+            retry_at: None,
+            generation: 0,
+            transparency: Transparency::Opaque,
+            first_frame: true,
         };
         let scene = resolve(&SceneSpec::new(block(16., 16.).fill(Role::Primary))).unwrap();
         let target = host.gpu.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("first-frame regression"), size: wgpu::Extent3d { width: 16, height: 16, depth_or_array_layers: 1 },
-            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm, usage: wgpu::TextureUsages::RENDER_ATTACHMENT, view_formats: &[],
+            label: Some("first-frame regression"),
+            size: wgpu::Extent3d {
+                width: 16,
+                height: 16,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
         });
         let view = target.create_view(&Default::default());
-        let first = host.gpu.renderer.render(&scene, Affine::IDENTITY, &view).unwrap();
+        let first = host
+            .gpu
+            .renderer
+            .render(&scene, Affine::IDENTITY, &view)
+            .unwrap();
         assert_eq!(first.encoded_scenes, 1);
         assert!(host.gpu.renderer.is_current(&scene, Affine::IDENTITY));
         host.first_frame = false;
         host.invalidate();
         assert!(host.first_frame);
         assert!(!host.gpu.renderer.is_current(&scene, Affine::IDENTITY));
-        assert_eq!(host.gpu.renderer.render(&scene, Affine::IDENTITY, &view).unwrap().encoded_scenes, 1);
+        assert_eq!(
+            host.gpu
+                .renderer
+                .render(&scene, Affine::IDENTITY, &view)
+                .unwrap()
+                .encoded_scenes,
+            1
+        );
         host.first_frame = false;
         host.resize(0, 0).unwrap();
         host.resize(16, 16).unwrap();
-        assert!(host.first_frame, "restore at the same size must force first present");
+        assert!(
+            host.first_frame,
+            "restore at the same size must force first present"
+        );
         assert!(!host.gpu.renderer.is_current(&scene, Affine::IDENTITY));
-        host.gpu.renderer.render(&scene, Affine::IDENTITY, &view).unwrap();
+        host.gpu
+            .renderer
+            .render(&scene, Affine::IDENTITY, &view)
+            .unwrap();
         host.first_frame = false;
         host.resize(32, 32).unwrap();
         assert!(host.first_frame);
         assert!(!host.gpu.renderer.is_current(&scene, Affine::IDENTITY));
     }
-
 }

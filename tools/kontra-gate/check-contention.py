@@ -146,8 +146,8 @@ with tempfile.TemporaryDirectory() as tmp:
 import adapters
 with tempfile.TemporaryDirectory() as tmp:
     root = Path(tmp)
-    with patch.object(adapters, 'QUIET_REQUEST', root / 'quiet-request'), patch.object(adapters, 'HEAVY', Path('/usr/bin/env')), patch.dict(os.environ, {'KONTRA_GATE_REQUIRE_QUIET': '0'}):
-        records, witness, _ = adapters.capture([sys.executable, '-c', 'print("{\\"block\\":64}")'], root, timed=True)
+    with patch.object(adapters, 'QUIET_REQUEST', root / 'absent-request'), patch.object(adapters, 'HEAVY', Path('/usr/bin/env')), patch.dict(os.environ, {'KONTRA_GATE_REQUIRE_QUIET': '0'}):
+        records, witness, _ = adapters.capture([sys.executable, '-c', 'print(\'{"block":64}\')'], root, timed=True)
     assert records == [{'block': 64}] and witness['returncode'] == 0
     assert witness['contention'] in ['QUIET', 'CONTENDED', 'UNKNOWN']
     assert len(root.joinpath('activity.jsonl').read_text().splitlines()) >= 2
@@ -160,7 +160,7 @@ with tempfile.TemporaryDirectory() as tmp:
         root.joinpath('activity.json').write_text(json.dumps({'status': 'WAITING' if waiting else 'QUIET'}))
         if not waiting: kwargs['stdout'].write(b'{"block":64}\n')
         return SimpleNamespace(returncode=75 if waiting else 0)
-    with patch.object(adapters, 'QUIET_REQUEST', root / 'quiet-request'), patch.dict(os.environ, {'KONTRA_GATE_REQUIRE_QUIET': '1'}), patch.object(adapters, 'wait_for_quiet') as wait, patch.object(adapters.subprocess, 'run', side_effect=admitted):
+    with patch.object(adapters, 'QUIET_REQUEST', root / 'absent-request'), patch.dict(os.environ, {'KONTRA_GATE_REQUIRE_QUIET': '1'}), patch.object(adapters, 'wait_for_quiet') as wait, patch.object(adapters.subprocess, 'run', side_effect=admitted):
         records, witness, _ = adapters.capture(['fixture-worker'], root, timed=True)
     assert records == [{'block': 64}] and witness['contention'] == 'QUIET' and wait.call_count == 2
     assert len(calls) == 2 and Path(calls[0][4]).name == 'contention.py'

@@ -854,7 +854,10 @@ fn controller_ingress_preserves_full_resolution_and_only_updates_the_routed_doma
                 Ok(Applied::ResetControllers)
             );
             assert_eq!(rt.controller(domain, 11).unwrap(), u32::MAX);
-            assert_eq!(rt.controller(rt.performance(0).unwrap(), 11).unwrap(), u32::MAX);
+            assert_eq!(
+                rt.controller(rt.performance(0).unwrap(), 11).unwrap(),
+                u32::MAX
+            );
             rt.panic();
             rt.flush_ended(|_| true);
         });
@@ -875,18 +878,30 @@ fn reset_all_controllers_follows_rp015() {
         panic!()
     };
     apply(&mut ingress, &mut rt, &[0x2080_3c00]).unwrap();
-    assert!(rt.release_context(note).unwrap().gate.is_none(), "sustained");
+    assert!(
+        rt.release_context(note).unwrap().gate.is_none(),
+        "sustained"
+    );
     let (volume, pan) = (rt.controller(p, 7).unwrap(), rt.controller(p, 10).unwrap());
     assert_eq!(
         apply(&mut ingress, &mut rt, &[0x20b0_7900]),
         Ok(Applied::ResetControllers)
     );
-    assert!(rt.release_context(note).unwrap().gate.is_some(), "pedal released");
+    assert!(
+        rt.release_context(note).unwrap().gate.is_some(),
+        "pedal released"
+    );
     for cc in [1, 64, 65, 66, 67] {
         assert_eq!(rt.controller(p, cc).unwrap(), 0, "CC{cc}");
     }
     assert_eq!(rt.controller(p, 11).unwrap(), u32::MAX);
-    assert_eq!((rt.controller(p, 7).unwrap(), rt.controller(p, 10).unwrap()), (volume, pan));
+    assert_eq!(
+        (rt.controller(p, 7).unwrap(), rt.controller(p, 10).unwrap()),
+        (volume, pan)
+    );
     // A non-zero value is not a channel mode message.
-    assert_eq!(apply(&mut ingress, &mut rt, &[0x20b0_7901]), Ok(Applied::Unsupported));
+    assert_eq!(
+        apply(&mut ingress, &mut rt, &[0x20b0_7901]),
+        Ok(Applied::Unsupported)
+    );
 }
