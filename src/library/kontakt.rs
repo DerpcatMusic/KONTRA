@@ -116,7 +116,7 @@ fn uvi_roots_in(have: &[Root], folders: Vec<PathBuf>) -> Vec<Root> {
 
 /// A folder is a library when it would be found as one by a scan.
 fn is_library(dir: &Path) -> bool {
-    let l = list(dir);
+    let l = list(dir, &Progress::default());
     l.nicnt.is_some() || l.instruments || l.presets > 0
 }
 
@@ -517,6 +517,32 @@ mod tests {
     fn reg_query_output_names_them() {
         let out = "\r\nHKEY_LOCAL_MACHINE\\SOFTWARE\\Native Instruments\\Areia\r\n    ContentDir    REG_SZ    E:\\Kontakt\\Areia\\\r\n    HU    REG_SZ    00\r\n    InstallDir64    REG_SZ    C:\\No\r\n\r\nHKEY_LOCAL_MACHINE\\SOFTWARE\\Native Instruments\\Kontakt 7\r\n    InstallDir    REG_SZ    C:\\Program Files\\Native Instruments\\Kontakt 7\\\r\n";
         assert_eq!(reg_query(out), [r"E:\Kontakt\Areia\", r"C:\Program Files\Native Instruments\Kontakt 7\"]);
+    }
+
+    #[test]
+    fn w10_uvi_stale_registry_paths_skip_without_losing_healthy_content() {
+        let tmp = tempfile::tempdir().unwrap();
+        let good = tmp.path().join("Good");
+        let missing = tmp.path().join("Missing");
+        let not_folder = tmp.path().join("NotFolder");
+        std::fs::create_dir_all(good.join("Instruments")).unwrap();
+        let preset = good.join("Instruments/Owned.uvip");
+        std::fs::write(&preset, b"<UVI4><Program/></UVI4>").unwrap();
+        std::fs::write(&not_folder, b"not a directory").unwrap();
+        let query = format!("ContentDir REG_SZ {}\nInstallDir REG_SZ {}\nContentDir REG_SZ {}\nContentDir REG_SZ\nmalformed entry\n", missing.display(), not_folder.display(), good.display());
+        let paths: Vec<PathBuf> = reg_query(&query).into_iter().map(PathBuf::from).collect();
+        assert_eq!(paths.len(), 3);
+        assert_eq!(paths.iter().filter(|p| is_library(p)).count(), 1, "auto-import skips stale registrations");
+        let roots: Vec<_> = paths.iter().map(|path| root(path, true)).collect();
+        let (shelf, files) = super::super::scan(&roots, &Progress::default()).unwrap();
+        assert_eq!(shelf.per_root, [0, 0, 1]);
+        assert_eq!(files, [preset.clone()]);
+        assert!(shelf.root_problem(&missing).is_some());
+        assert!(shelf.root_problem(&not_folder).is_some());
+        assert!(shelf.root_problem(&good).is_none());
+        let (direct, files) = super::super::scan(&[root(&preset, true)], &Progress::default()).unwrap();
+        assert_eq!(files, [preset]);
+        assert_eq!(direct.libraries.len(), 1, "a valid direct single-preset root keeps its prior behavior");
     }
 
     #[test]

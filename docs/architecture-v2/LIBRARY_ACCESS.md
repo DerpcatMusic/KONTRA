@@ -124,3 +124,26 @@ runs. Actual licensed Windows installations were not available for this witness;
 no native Windows installation was mounted for validation. No release/install or full corpus
 claim is made. Detailed logs live under
 `/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w10-uvi-scan-344/`.
+
+## Missing and dangling library paths
+
+`c6393dce` skipped missing directories without a panic, but filesystem failures
+were only logged and dangling entries were silent. Discovery now checks saved
+roots before traversing them, records failed directory listings and metadata
+reads, and skips unresolved symlinks without following nested links. The preset
+walk retains the same failures if a path disappears during cataloging.
+Unavailable paths are deduplicated and preserved when the worker publishes its
+shelf; both browser tabs and Settings show their per-root count and causes.
+
+A synthetic fixture retains its healthy library and preset while handling 25
+dangling directory entries, a dangling bank link, a link cycle, a missing saved
+root and a file used as a directory: **29 unavailable paths, 1 surviving library /
+1 preset**. Its visible-reason assertion was RED on `c6393dce` and is now GREEN.
+A synthetic registry query also verifies that stale registrations are filtered
+safely, while invalid paths already saved as roots retain visible reasons.
+No native registry or Wine prefix was read by these checks.
+
+The reported Linux unclean exit has no stack or signal identifying its cause.
+These checks establish scan survival for the fixtures, not attribution or
+reproduction of that tester's crash. The existing merged nightly gates are not
+repeated for this follow-up.
