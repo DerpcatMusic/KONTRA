@@ -669,6 +669,14 @@ impl V2Core {
         self.parts.get_mut(part).and_then(Option::as_mut).map(|p|p.runtime.take_selection_records()).unwrap_or_default()
     }
     #[cfg(test)]
+    pub(crate) fn widget_gate_behavior_progress(&self, part: usize, visit: impl FnMut(sampler_core::BehaviorProgress<'_>)) {
+        if let Some(Some(part)) = self.parts.get(part) { part.runtime.visit_behavior_progress(visit); }
+    }
+    #[cfg(test)]
+    pub(crate) fn widget_gate_preemptions(&self, part: usize) -> u64 {
+        self.parts.get(part).and_then(Option::as_ref).map_or(0, |part| part.runtime.preemptions())
+    }
+    #[cfg(test)]
     pub(crate) fn widget_gate_values(&self, part: usize) -> std::collections::BTreeMap<sampler_ui_ir::ControlId, sampler_ui_ir::Value> {
         let Some(Some(part)) = self.parts.get(part) else { return Default::default() };
         let plan = part.runtime.active_plan();
