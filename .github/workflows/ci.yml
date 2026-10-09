@@ -52,6 +52,7 @@ jobs:
         run: |
           python3 tools/version.py check
           python3 tools/version.py self-test
+          python3 tools/test_version.py
           python3 - <<'PYDEPS'
           import pathlib, tomllib
           packages = tomllib.loads(pathlib.Path('Cargo.lock').read_text())['package']
@@ -95,6 +96,7 @@ jobs:
           export SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")
           echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" >> "$GITHUB_ENV"
           python3 tools/version.py nightly --write
+          echo "KONTRA_NIGHTLY_BUILD=1" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
         with:
           toolchain: 1.99.0
@@ -191,6 +193,7 @@ jobs:
           export SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")
           echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" >> "$GITHUB_ENV"
           python3 tools/version.py nightly --write
+          echo "KONTRA_NIGHTLY_BUILD=1" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
         with:
           toolchain: 1.99.0
@@ -234,6 +237,7 @@ jobs:
           export SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")
           echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" >> "$GITHUB_ENV"
           python3 tools/version.py nightly --write
+          echo "KONTRA_NIGHTLY_BUILD=1" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
         with:
           toolchain: 1.99.0
