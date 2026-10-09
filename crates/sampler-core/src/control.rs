@@ -135,7 +135,8 @@ impl ControlState {
         let ControlValue::Real(base) = base else { return base };
         let binding = &prepared.engine_parameters[self.engine_index[index]];
         let norm = binding.law.encode(base);
-        let to = (f64::from(norm) + f64::from(offset) * 1e6).round().clamp(0., 1e6) as i32;
+        // The admitted law owns its normalized bounds, including bipolar gains.
+        let to = (f64::from(norm) + f64::from(offset) * 1e6).round() as i32;
         let mut value = binding.law.decode(to);
         if let ControlDomain::Real { min, max } = prepared.controls[index].domain {
             value = value.clamp(min, max);
@@ -222,6 +223,23 @@ impl Prepared {
 }
 
 impl Runtime {
+    /// v1 engine defaults: captured by new fallback voices, never authored envelopes.
+    pub fn set_fallback_envelope(&mut self, attack: f64, release: f64) -> Result<(), Error> {
+        if !(0.0001..=5.).contains(&attack) || !(0.001..=10.).contains(&release) {
+            return Err(Error::InvalidInput);
+        }
+        self.fallback_envelope = Some([(attack * f64::from(self.rate)).round() as u32,
+            (release * f64::from(self.rate)).round() as u32]);
+        Ok(())
+    }
+
+    pub(crate) fn region_envelope(&self, envelope: crate::Envelope, fallback: bool) -> crate::Envelope {
+        if fallback && let Some([attack, release]) = self.fallback_envelope {
+            envelope.with_stage(crate::EnvelopeStage::Attack, attack)
+                .with_stage(crate::EnvelopeStage::Release, release)
+        } else { envelope }
+    }
+
     pub(crate) fn controlled_envelope(&self, plan: PlanId, group: Option<u32>, envelope: crate::Envelope) -> crate::Envelope {
         let generation = self.plans.get(plan.0).unwrap();
         let mut envelope = generation.script.envelope(group,envelope);

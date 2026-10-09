@@ -21,7 +21,7 @@ impl EnvelopeCurve {
     }
 
     /// Normalized position at stage fraction `t` (0..=1).
-    pub(crate) fn value(self, t: f64) -> f64 {
+    pub fn value(self, t: f64) -> f64 {
         if self.0 == 0.0 {
             t
         } else if self.0.is_infinite() {
@@ -367,6 +367,7 @@ impl EnvelopeState {
         matches!(self.phase, Phase::Release | Phase::Done)
     }
 
+    pub(super) fn editor_phase(&self)->u8 {match self.phase {Phase::Attack=>0,Phase::Hold=>1,Phase::Decay=>2,Phase::Sustain=>3,Phase::Release=>4,Phase::Delay=>5,Phase::Done=>6}}
     /// The level the next frame starts from.
     pub(super) fn current(&self) -> f32 {
         self.level()

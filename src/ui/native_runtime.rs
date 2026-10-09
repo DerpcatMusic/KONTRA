@@ -1,6 +1,6 @@
 //! Bounded legacy .nui execution over the published UI IR. No filesystem Lua API.
 use super::pictures::Source;
-use mlua::{Function, Lua, Table, UserData, UserDataMethods, Value as LuaValue};
+use mlua::{Function, Lua, Table, UserData, UserDataFields, UserDataMethods, Value as LuaValue};
 use moose::mui::mui::{prelude::Font, scene::Image};
 use sampler_ui_ir as ir;
 use std::{
@@ -78,6 +78,11 @@ impl Images {
     }
 }
 impl Package {
+    #[cfg(test)]
+    pub(super) fn audit_token_count(&self, token: &str) -> usize {
+        self.members.values().filter_map(|bytes| std::str::from_utf8(bytes).ok())
+            .map(|source| source.matches(token).count()).sum()
+    }
     pub fn font(&self, name: &str, bold: bool) -> Option<Font> {
         let name = name.to_lowercase();
         self.fonts.iter().find(|(path, _)| {
@@ -335,6 +340,9 @@ fn value(lua: &Lua, value: &ir::Value, index: Option<usize>) -> mlua::Result<Lua
     })
 }
 impl UserData for Parameter {
+    fn add_fields<F:UserDataFields<Self>>(fields:&mut F) {
+        fields.add_field_method_get("connected",|_,this|Ok(this.bridge.lock().unwrap().controls.get(this.binding).is_some()));
+    }
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("value", |lua, this, index: Option<usize>| {
             #[cfg(test)]
@@ -382,10 +390,7 @@ impl UserData for Parameter {
                 #[cfg(test)]
                 trace_parameter(_lua,this,"write")?;
                 let mut bridge = this.bridge.lock().unwrap();
-                let widget = bridge
-                    .controls
-                    .get(this.binding)
-                    .ok_or_else(|| mlua::Error::external("NativeUI control unavailable"))?;
+                let Some(widget) = bridge.controls.get(this.binding) else {return Ok(())};
                 let value = match v {
                     LuaValue::String(s) => {
                         let s = s.to_str()?.to_owned();
@@ -452,7 +457,12 @@ impl UserData for Parameter {
                 trace_parameter(lua,this,"property")?;
                 let bridge = this.bridge.lock().unwrap();
                 let Some(w) = bridge.controls.get(this.binding) else {
-                    return Ok(LuaValue::Nil);
+                    return Ok(match property {
+                        0 | 1 | 14 | 18 => LuaValue::String(lua.create_string("")?),
+                        17 => LuaValue::Integer(0),
+                        20 => LuaValue::Boolean(false),
+                        _ => LuaValue::Nil,
+                    });
                 };
                 let range = bounds(w);
                 Ok(match property {
@@ -486,11 +496,8 @@ impl UserData for Parameter {
             },
         );
         methods.add_method("update_touch", |_, this, index: Option<usize>| {
-            this.bridge
-                .lock()
-                .unwrap()
-                .touches
-                .insert((this.binding, index.unwrap_or(0)));
+            let mut bridge=this.bridge.lock().unwrap();
+            if bridge.controls.get(this.binding).is_some() {bridge.touches.insert((this.binding,index.unwrap_or(0)));}
             Ok(())
         });
         methods.add_method("end_touch", |_, this, index: Option<usize>| {
@@ -511,7 +518,8 @@ impl UserData for Parameter {
         });
         methods.add_method("is_midi_learn_active", |_, _, _: Option<usize>| Ok(false));
         for name in ["begin_midi_learn", "end_midi_learn"] {
-            methods.add_method(name, |_, _, _: Option<usize>| {
+            methods.add_method(name, |_, this, _: Option<usize>| {
+                if this.bridge.lock().unwrap().controls.get(this.binding).is_none() {return Ok(())};
                 Err::<(), _>(mlua::Error::external("NativeUI MIDI learn is unavailable"))
             });
         }
@@ -524,7 +532,6 @@ pub struct Session {
     root: Function,
     bridge: Arc<Mutex<Bridge>>,
     fuel: Arc<AtomicUsize>,
-    deadline: Arc<Mutex<std::time::Instant>>,
 }
 impl Session {
     pub fn new(
@@ -550,12 +557,8 @@ impl Session {
         for name in ["loadstring", "collectgarbage", "getfenv", "setfenv"] {
             lua.globals().set(name, LuaValue::Nil)?;
         }
-        // Luau interrupts fire at calls/backedges, unlike Lua instruction hooks.
+        // Bound Luau call/backedge checkpoints; scheduler time cannot invalidate UI work.
         let fuel = Arc::new(AtomicUsize::new(500_000));
-        let deadline = Arc::new(Mutex::new(
-            std::time::Instant::now() + std::time::Duration::from_secs(2),
-        ));
-        let hook_deadline = deadline.clone();
         let hook_fuel = fuel.clone();
         lua.set_interrupt(move |lua| {
             if hook_fuel
@@ -568,11 +571,6 @@ impl Session {
                     format!("{}:{}:{}:{}", usize::from(source == "NativeUI host"), debug.current_line().unwrap_or(0), &blake3::hash(source.as_bytes()).to_hex()[..16], lua.globals().get::<u32>("__native_nodes").unwrap_or(0))
                 }).unwrap_or_default();
                 return Err(mlua::Error::external(format!("NativeUI interrupt budget exceeded; site {site}")));
-            }
-            if hook_fuel.load(Ordering::Relaxed) % 256 == 0
-                && std::time::Instant::now() > *hook_deadline.lock().unwrap()
-            {
-                return Err(mlua::Error::external("NativeUI time budget exceeded"));
             }
             Ok(mlua::VmState::Continue)
         });
@@ -633,20 +631,14 @@ impl Session {
         kontakt.set(
             "connect_level_meter",
             lua.create_function(move |lua, identifier: String| {
-                let binding = meter_names.get(&identifier).copied()
-                    .ok_or_else(|| mlua::Error::external("NativeUI meter unavailable"))?;
+                let binding = meter_names.get(&identifier).copied();
                 let bridge = meter_bridge.clone();
                 let meter = lua.create_table()?;
+                meter.set("connected",binding.is_some())?;
                 meter.set(
                     "level_value",
                     lua.create_function(move |_, _: LuaValue| {
-                        Ok(bridge
-                            .lock()
-                            .unwrap()
-                            .meters
-                            .get(&binding)
-                            .copied()
-                            .unwrap_or(0.))
+                        Ok(binding.and_then(|binding|bridge.lock().unwrap().meters.get(&binding).copied()).unwrap_or(0.))
                     })?,
                 )?;
                 Ok(meter)
@@ -683,7 +675,6 @@ impl Session {
             root,
             bridge,
             fuel,
-            deadline,
         })
     }
     pub fn update_view(
@@ -708,7 +699,8 @@ impl Session {
             let w = &mut bridge.controls[at];
             if let Some(value) = typed.get(&ir::WidgetRef(index)) {
                 w.value = Some(value.clone());
-            } else if let ir::Binding::Control(c) = w.binding
+            } else if matches!(w.value, None | Some(ir::Value::Integer(_) | ir::Value::Real(_)))
+                && let ir::Binding::Control(c) = w.binding
                 && let Some(&n) = values.get(&c)
             {
                 w.value = Some(if matches!(w.value, Some(ir::Value::Real(_))) {
@@ -732,8 +724,6 @@ impl Session {
     }
     pub fn render(&self) -> anyhow::Result<Table> {
         self.fuel.store(1_000_000, Ordering::Relaxed);
-        *self.deadline.lock().unwrap() =
-            std::time::Instant::now() + std::time::Duration::from_millis(250);
         if let Ok(error) = self.lua.globals().get::<String>("__canvas_error") {
             anyhow::bail!("NativeUI canvas: {error}");
         }
@@ -743,13 +733,26 @@ impl Session {
             .get::<Function>("__render")?
             .call(self.root.clone())?)
     }
+    #[cfg(test)]
+    pub fn work_remaining(&self) -> usize { self.fuel.load(Ordering::Relaxed) }
+    #[cfg(any(test, feature = "shots"))]
+    pub fn graph_work(&self) -> (usize, usize) {
+        (self.lua.globals().get::<usize>("__native_nodes").unwrap_or(0),
+            1_000_000usize.saturating_sub(self.fuel.load(Ordering::Relaxed)))
+    }
     pub fn lua(&self) -> &Lua {
         &self.lua
     }
+    pub fn paint_callback(&self, paint:Function) -> mlua::Result<Function> {
+        let fuel=self.fuel.clone();
+        self.lua.create_function(move |_,args:mlua::MultiValue| {
+            // Deferred Canvas starts its own work allowance after layout.
+            fuel.store(100_000,Ordering::Relaxed);
+            paint.call::<()>(args)
+        })
+    }
     pub fn call<A: mlua::IntoLuaMulti>(&self, function: Function, args: A) -> mlua::Result<()> {
         self.fuel.store(100_000, Ordering::Relaxed);
-        *self.deadline.lock().unwrap() =
-            std::time::Instant::now() + std::time::Duration::from_millis(250);
         function.call(args)
     }
     pub fn event(
@@ -868,6 +871,12 @@ mod tests {
         );
         assert_eq!(session.bridge.lock().unwrap().controls[0].value,Some(ir::Value::Integer(20)),
             "another source is not overwritten by this source's scalar fallback");
+        let mut typed_source=source.clone();
+        for saved in [ir::Value::Text("published text".into()),ir::Value::Integers(vec![1,2,3]),ir::Value::Reals(vec![0.25,0.5])] {
+            typed_source.widgets[0].value=Some(saved.clone());
+            session.update_view(&typed_source,&HashMap::from([(ir::ControlId(42),75.)]),&Default::default(),&Default::default());
+            assert_eq!(session.bridge.lock().unwrap().controls[1].value,Some(saved),"scalar telemetry must preserve declared text/array values");
+        }
         session.update_view(
             &source,
             &Default::default(),
@@ -884,6 +893,27 @@ mod tests {
         assert_eq!(edits[0].source_id, Some(7));
         assert_eq!(edits[0].source, ir::Source::Ksp { slot: 2 });
         assert!(session.unavailable_controls().is_empty());
+        // Requested faces may contain bindings absent from this instrument.
+        session.lua().load(r#"
+            local kontakt=require('kontakt')
+            local missing=kontakt.connect_parameter('undeclared')
+            local missing_bool=kontakt.connect_parameter('undeclared_bool','bool')
+            local meter=kontakt.connect_level_meter('undeclared_meter')
+            assert(missing.connected==false and missing_bool.connected==false)
+            assert(meter.connected==false and meter:level_value()==0)
+            assert(missing:value()==0 and missing_bool:value()==false)
+            for _,property in ipairs({0,1,14,18}) do
+                assert(missing:ksp_control_property(property)=='')
+            end
+            assert('caption:'..missing:ksp_control_property(0)=='caption:')
+            assert(missing:ksp_control_property(17)==0 and missing:ksp_control_property(20)==false)
+            missing:set_value(0.75)
+            missing:update_touch()
+            assert(missing:is_touch_active()==false)
+            missing:end_touch()
+        "#).exec().unwrap();
+        assert!(session.take_edits().is_empty(),"unconnected bindings cannot edit a declared control");
+        assert!(session.bridge.lock().unwrap().touches.is_empty());
         assert!(
             session
                 .lua()
@@ -911,6 +941,7 @@ mod tests {
         assert_eq!(nested.get::<Table>("props").unwrap().get::<String>("text").unwrap(), "nested");
         assert_eq!(sibling.get::<Table>("props").unwrap().get::<String>("text").unwrap(), "base");
         let forever: Function = session.lua().load("return function() while true do end end").eval().unwrap();
-        assert!(session.call(forever, ()).unwrap_err().to_string().contains("budget exceeded"));
+        assert!(session.call(forever, ()).unwrap_err().to_string().contains("NativeUI interrupt budget exceeded"));
+        assert_eq!(session.work_remaining(),0,"pathological loops must exhaust deterministic work");
     }
 }

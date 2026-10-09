@@ -45,7 +45,8 @@ fn main() {
 // implementation. Emit the same stable slot IDs used by its runtime metadata.
 fn host_parameter_index() {
     let out = std::path::PathBuf::from(env::var_os("OUT_DIR").expect("cargo OUT_DIR"));
-    let target = out.ancestors().nth(4).expect("cargo build output layout");
+    let triple = env::var("TARGET").expect("cargo target triple");
+    let target = parameter_target_dir(&out, &triple);
     let directory = target.join("param-index").join(env::var("CARGO_PKG_NAME").unwrap());
     std::fs::create_dir_all(&directory).expect("parameter index directory");
     let mut index = String::from("struct = \"HostAutomation\"\nscheme = \"hash\"\n");
@@ -55,6 +56,24 @@ fn host_parameter_index() {
             automation_ids::HOST_AUTOMATION_BASE + u32::from(address)).unwrap();
     }
     std::fs::write(directory.join("HostAutomation.params.toml"), index).expect("host parameter index");
+}
+
+fn parameter_target_dir<'a>(out: &'a Path, triple: &str) -> &'a Path {
+    let target = out.ancestors().nth(4).expect("cargo build output layout");
+    // Explicit --target adds a triple directory even when it equals the host.
+    if target.file_name().is_some_and(|name| name == triple) {
+        target.parent().expect("cargo target root")
+    } else {
+        target
+    }
+}
+
+#[test]
+fn parameter_index_uses_the_root_for_host_and_explicit_target_builds() {
+    let triple = "x86_64-unknown-linux-gnu";
+    let root = Path::new("workspace/target");
+    assert_eq!(parameter_target_dir(&root.join("release/build/kontakto-hash/out"), triple), root);
+    assert_eq!(parameter_target_dir(&root.join(triple).join("release/build/kontakto-hash/out"), triple), root);
 }
 
 fn git(args: &[&str]) -> Option<String> {

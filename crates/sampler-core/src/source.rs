@@ -88,7 +88,7 @@ pub struct LoopSlot {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct LoopSlots {
+pub(super) struct LoopSlots {
     slots: [Option<LoopSlot>; 8],
     exits: [Option<u64>; 8],
 }
@@ -218,6 +218,59 @@ impl Playback {
     }
 }
 
+// port from v1 0cb7a8a0:src/engine/map.rs compact PlayMap geometry;
+// v2 multi-slot state is stored only for the regions that need it.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct CursorTemplate {
+    start: usize,
+    end: usize,
+    direction: Direction,
+    loop_range: Option<Loop>,
+    loops: Option<usize>,
+    step: f64,
+    exit: Option<u64>,
+    fade_frames: u32,
+}
+
+impl CursorTemplate {
+    pub(super) fn new(cursor: Cursor, loops: &mut Vec<LoopSlots>) -> Self {
+        let index = cursor.loops.map(|slots| {
+            let index = loops.len();
+            loops.push(slots);
+            index
+        });
+        Self {
+            start: cursor.start,
+            end: cursor.end,
+            direction: cursor.direction,
+            loop_range: cursor.loop_range,
+            loops: index,
+            step: cursor.step,
+            exit: cursor.exit,
+            fade_frames: cursor.fade_frames,
+        }
+    }
+
+    pub(super) fn cursor(self, loops: &[LoopSlots]) -> Cursor {
+        Cursor {
+            start: self.start,
+            end: self.end,
+            direction: self.direction,
+            loop_range: self.loop_range,
+            loops: self.loops.map(|i| loops[i]),
+            position: 0,
+            fraction: 0.0,
+            step: self.step,
+            exit: self.exit,
+            last: [0.; 2],
+            starvation: None,
+            fade_in: 0,
+            fade_frames: self.fade_frames,
+            cold_hold: false,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Cursor {
     start: usize,
@@ -317,6 +370,19 @@ impl Cursor {
                 .enumerate()
                 .any(|(i, slot)| slot.is_some() && loops.exits[i].is_none())
         }) || self.loop_range.is_some() && self.exit.is_none()
+    }
+
+    pub(super) fn trace_direction(&self) -> Direction { self.direction }
+
+    pub(super) fn trace_loops(&self) -> [Option<crate::SelectedLoop>; 8] {
+        let convert = |range: Loop, tuning: f64| crate::SelectedLoop {
+            start: range.start, end: range.end, until_release: range.mode == LoopMode::UntilRelease,
+            alternating: range.shape == LoopShape::PingPong,
+            crossfade: match range.shape { LoopShape::Crossfade {frames} | LoopShape::EqualPowerCrossfade {frames} => frames, _ => 0 },
+            count: range.passes.map_or(0, |n| n.get()), tuning_bits: tuning.to_bits(),
+        };
+        if let Some(loops) = self.loops { loops.slots.map(|s| s.map(|s| convert(s.range, s.tuning))) }
+        else { let mut slots = [None; 8]; slots[0] = self.loop_range.map(|r| convert(r, 1.0)); slots }
     }
 
     pub(super) fn trace_start(&self) -> u64 { self.start as u64 }
@@ -964,6 +1030,12 @@ impl Cursor {
             None => return 0,
         };
         let output = &mut output[..count];
+        if kernel.uses_cubic(self.step()) && output.len() >= 4 {
+            sampler_simd::dispatch(#[inline(always)] || {
+                self.run_cubic(span, width, output, envelope, gain, gains, kernel)
+            });
+            return count;
+        }
         match bank {
             Some(bank) => sampler_simd::dispatch_fused(
                 (self, output, envelope),
@@ -1002,6 +1074,47 @@ impl Cursor {
             }
         }
         count
+    }
+
+    /// v1 voice.rs::mix_avx2 gathers several output frames before its polynomial.
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn run_cubic(
+        &mut self,
+        span: &[Frame],
+        width: usize,
+        output: &mut [Frame],
+        envelope: &mut EnvelopeState,
+        gain: f32,
+        gains: [f32; 2],
+        kernel: &Kernel,
+    ) {
+        let (mut fraction, step, mut offset, mut last) = (self.fraction, self.step(), 0, self.last);
+        let (chunks, tail) = output.as_chunks_mut::<4>();
+        for chunk in chunks {
+            let mut phases = [0.; 4];
+            let windows = std::array::from_fn(|i| {
+                phases[i] = fraction;
+                let window = &span[offset..offset + width];
+                let phase = fraction + step;
+                let whole = phase as i64;
+                fraction = phase - whole as f64;
+                offset += whole as usize;
+                window
+            });
+            let sources = crate::resample::cubic_four(windows, phases);
+            for (frame, source) in chunk.iter_mut().zip(sources) {
+                last = if source.iter().all(|value| value.is_finite()) { source } else { [0.; 2] };
+                let level = envelope.constant_level().unwrap_or_else(|| envelope.next());
+                for channel in 0..2 {
+                    frame[channel] += source[channel] * gain * gains[channel] * level;
+                }
+            }
+        }
+        self.fraction = fraction;
+        self.position += offset as u64;
+        self.last = last;
+        self.run(&span[offset..], width, tail, envelope, gain, gains, |f, w| kernel.sample_window(f, step, w));
     }
 
     /// The [`Self::render_run`] frame loop over one contiguous span, with the
@@ -1128,7 +1241,105 @@ fn mix<'a>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cubic_columns_preserve_scalar_output_cursor_and_envelope() {
+        use super::*;
+        use crate::{Envelope, EnvelopeCurve};
+        let kernel = Kernel::new(crate::ResampleQuality::Realtime);
+        let span: Vec<Frame> = (0..128).map(|i| {
+            let x = (i as f32 * 0.731).sin();
+            [x, -x * 0.321]
+        }).collect();
+        for step in [MIN_STEP, 0.25, 0.8, 44100.0 / 48000.0, 1.0] {
+            for fraction in [0.0, 0.123456789, 0.999999999] {
+                for len in 0..=65 {
+                    for shape in [Envelope::default(), Envelope::new(5, 2, 17, 0.1, 13).unwrap().with_curves(
+                        EnvelopeCurve::exponential(2.0).unwrap(), EnvelopeCurve::exponential(-3.0).unwrap(), EnvelopeCurve::default())] {
+                        let mut old = Playback::default().cursor(128, 48000, 48000).unwrap();
+                        old.step = step;
+                        old.fraction = fraction;
+                        let mut new = old;
+                        let mut old_env = EnvelopeState::new(shape);
+                        let mut new_env = old_env;
+                        let mut expected = vec![[0.123, -0.567]; len];
+                        let mut actual = expected.clone();
+                        old.run(&span, 5, &mut expected, &mut old_env, 0.731, [0.7, -0.2], |f,w| kernel.sample_window(f, step, w));
+                        sampler_simd::dispatch(#[inline(always)] || new.run_cubic(&span, 5, &mut actual, &mut new_env, 0.731, [0.7, -0.2], &kernel));
+                        for (a,b) in actual.iter().zip(&expected) { assert_eq!(a.map(f32::to_bits), b.map(f32::to_bits)); }
+                        assert_eq!(new.position, old.position);
+                        assert_eq!(new.fraction.to_bits(), old.fraction.to_bits());
+                        assert_eq!(new.last.map(f32::to_bits), old.last.map(f32::to_bits));
+                        assert_eq!(new_env.remaining(), old_env.remaining());
+                        for _ in 0..64 { assert_eq!(new_env.next().to_bits(), old_env.next().to_bits()); }
+                    }
+                }
+            }
+        }
+    }
+
     use super::*;
+
+    #[test]
+    fn compact_templates_preserve_cursor_paths_and_independent_loop_release() {
+        assert!(size_of::<CursorTemplate>() * 3 < size_of::<Cursor>());
+        eprintln!(
+            "cursor_bytes={} template_bytes={} multi_loop_bytes={}",
+            size_of::<Cursor>(),
+            size_of::<CursorTemplate>(),
+            size_of::<LoopSlots>()
+        );
+        for direction in [Direction::Forward, Direction::Reverse] {
+            for passes in [None, std::num::NonZeroU32::new(3)] {
+                for count in 0..=8 {
+                    let slots = std::array::from_fn(|i| {
+                        (i < count).then(|| LoopSlot {
+                            range: Loop {
+                                start: 2 + i * 4,
+                                end: 4 + i * 4,
+                                mode: LoopMode::UntilRelease,
+                                shape: if i % 2 == 0 {
+                                    LoopShape::Wrap
+                                } else {
+                                    LoopShape::PingPong
+                                },
+                                passes,
+                            },
+                            tuning: if i % 2 == 0 { 1.0 } else { 1.25 },
+                        })
+                    });
+                    let original = Playback {
+                        direction,
+                        loop_slots: slots,
+                        ..Default::default()
+                    }
+                    .cursor(40, 44100, 48000)
+                    .unwrap();
+                    let mut loops = Vec::new();
+                    let template = CursorTemplate::new(original, &mut loops);
+                    assert_eq!(loops.len(), usize::from(original.loops.is_some()));
+                    let mut left = original.with_offset(125, 44100);
+                    let mut right = template.cursor(&loops).with_offset(125, 44100);
+                    for frame in 0..160 {
+                        assert_eq!(format!("{left:?}"), format!("{right:?}"));
+                        assert_eq!(
+                            left.index(i128::from(left.position)),
+                            right.index(i128::from(right.position))
+                        );
+                        if frame == 23 {
+                            left.release();
+                            right.release();
+                        }
+                        left.advance();
+                        right.advance();
+                    }
+                    assert_eq!(
+                        format!("{original:?}"),
+                        format!("{:?}", template.cursor(&loops))
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn offsets_preserve_source_time_and_bounds_without_advancing_loop_passes() {

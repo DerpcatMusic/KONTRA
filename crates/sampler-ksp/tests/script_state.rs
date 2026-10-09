@@ -370,3 +370,21 @@ fn init_load_array_implicitly_restores_numeric_and_text_arrays() {
             .any(|e| e.value == ScriptStateValue::Text(Text::new("text")))
     );
 }
+
+#[test]
+fn persistence_callbacks_share_the_instrument_controller_context() {
+    let script = sampler_ksp::compile(
+        "on init declare $seen make_persistent($seen) end on on persistence_changed set_controller(1,17) $seen := %CC[1] end on",
+        48000, sampler_ksp::Limits::LIBRARY, &[],
+    ).unwrap();
+    let mut state = sampler_ksp::persistent_state_buffer(&[script.view()]).unwrap();
+    let plan = sampler_ksp::bind_modules(vec![script], Prepared::new(48000, vec![], vec![], 0).unwrap()).unwrap();
+    let limits = Limits::for_plan(&plan, 4, 4);
+    let mut rt = Runtime::new(plan, limits).unwrap();
+    let plan = rt.active_plan();
+    rt.capture_script_state(plan, &mut state).unwrap();
+    rt.restore_script_state(plan, None, &mut state).expect("persistence must use the instrument performance context");
+    assert_eq!(state.callbacks[0].outcome, Some(Outcome::Finished));
+    rt.capture_script_state(plan, &mut state).unwrap();
+    assert_eq!(state.values[0].value, ScriptStateValue::Cell(17));
+}

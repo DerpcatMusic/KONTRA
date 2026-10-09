@@ -38,6 +38,40 @@ Owner adapters run after scanner/probes when present. They may also be run witho
 # --adapter gestures, host or all
 ```
 
-CPU consumes immutable `~/.cache/kontra-scan/cpu-v1/bin/cpu-audit-v1` and builds the exact-source `cpu_audit` example. The binary SHA256 must be `b9998ca2ce2f2ed4f9f88bbfb11c5e884fa162a87cdf89f26ece6f1248fdc6ab`; adjacent `BUILD.json` must match that digest, v1 source `0cb7a8a0`, adapter commit `42a0ae9103b1a1cc31a93b3c08e5b86462ccfcad` and equivalence PASS. Its receipt is retained in `cpu.json`. Both CPU workers run with `XDG_CACHE_HOME=/dev/null`, using `PATH BLOCK piano|strings|fx` at 32/64/256 frames. Raw output stays in RAM. Cells remain unknown when the adapter is missing, fails integrity or is inaudible; UVI and multi support is absent from the existing v1 CPU adapter. Gesture invokes W2's exact ignored native Conflux sweep and requires one executed test plus nonzero gesture witnesses; this does not certify the other gate instruments. Family stays unknown: the current scanner exposes MIDI audition picks and zone counts, not selected family/RR identity.
+CPU consumes immutable `~/.cache/kontra-scan/cpu-v1/bin/cpu-audit-v1` and builds the exact-source `cpu_audit` example. The binary SHA256 must be `b9998ca2ce2f2ed4f9f88bbfb11c5e884fa162a87cdf89f26ece6f1248fdc6ab`; adjacent `BUILD.json` must match that digest, v1 source `0cb7a8a0`, adapter commit `42a0ae9103b1a1cc31a93b3c08e5b86462ccfcad` and equivalence PASS. Its receipt is retained in `cpu.json`. Both CPU workers run with `XDG_CACHE_HOME=/dev/null`, using `PATH BLOCK piano|strings|fx` at 32/64/256 frames. Raw output stays in RAM. Cells remain unknown when the adapter is missing, fails integrity or is inaudible; UVI and multi support is absent from the existing v1 CPU adapter. Gesture coverage is measured per item and condition by the Original editor probe below. Family stays unknown: the current scanner exposes MIDI audition picks and zone counts, not selected family/RR identity.
 
 Host consumes the existing CPU audit CLAP host probe and an existing exact-source v2 artifact, never builds or installs a plugin release. Set `KONTRA_GATE_CLAP_INCLUDE` to the SDK include path and `KONTRA_GATE_V2_CLAP_RECEIPT` to a JSON file with `path`, `source_sha` and `sha256`. The source/hash must match the gate. Both installed v1 and supplied v2 process/flush cells must complete; they measure an empty exported plugin, not loaded-library host CPU. Initial baseline manifest/metrics/summary/diff are preserved before adapter extensions.
+
+W12 fidelity contract for integration: `fidelity.slot_verdict` reads each dropped
+slot object's enabled/bypassed counts and fails either nonzero count. These are
+absolute native-parity verdicts, not comparisons against frozen v1's absent
+observer columns. Map scanner `family_match` MATCH→PASS, MISMATCH→FAIL,
+UNKNOWN→UNKNOWN, preserve typed `family_match_reason` and
+`family_script_driven_count`. Include these four measured verdicts in DSP parity.
+The full authored rows remain in each program's `dsp_slots` receipt. The independent
+Tier 1 evaluator is `tools/kontra-scan/native_family.py`; native captures for
+SCRIPT_DRIVEN cells can be compared by `fidelity.family_match` (minimum 32 takes).
+No host launching is required or authorized by these tools.
+
+Widget receipts now address each item and cache condition independently. The ignored
+`ui::widget_gate::original_widget_gestures` test loads through the production plugin
+loader, forces Original, drives pointer/keyboard input through the full editor, reads
+engine/Lua values, serializes the host Part in RAM, and reloads it. The adapter runs
+all programs named by the same-run scanner receipt, one heavy invocation per program.
+Missing, crashed, timed-out, empty or partially enumerated probes cannot pass. A legacy
+Conflux Vector/readback witness cannot certify another cell.
+
+`gestures/<condition>/<item-sha256>/metrics.json` contains passed/total counts,
+per-program observations and typed reasons: parameter-unchanged, navigation-only,
+occluded-or-outside-viewport, save-reload-mismatch, save-reload-load-failed,
+script-or-render-fault, probe-budget,
+probe-timeout, probe-crash-or-no-receipt, invalid-receipt. Target identity is hashed;
+resources, parameter values and serialized host state are never exported. Native
+menus use real popup item clicks. Passive meters/panels/images and disabled controls
+have no edit obligation. Navigation-only targets remain explicit failures until their
+view-state obligation has its own witness. These are headless production editor
+receipts; they do not certify OS/DAW capture, IME or native Kontakt calibration.
+
+`live_host.py GATE V2_CLAP V2_CLI LIVE_HOST OUTPUT` measures loaded libraries through `vendor/moose-clap/tests/live_performance.cpp`. Build that native host outside the quiet window, then run the driver through `kontakto-heavy` as the quiet owner after other builds finish. Frozen v1 is run without rebuilding. The supplied plugin's adjacent `BUILD.json` must identify its full source SHA, `ci` or `release` profile, path, and plugin/CLI/host hashes; alpha release artifacts are now authorized through W0.
+
+The native host takes `PLUGIN STATE BLOCK SECONDS READY_FLAG EVENT_TSV EXPECTED_PARTS READBACK_STATE`. It saves CLAP state on the main thread after audition, outside CPU/streaming measurements. The driver verifies saved native Selection source/program, MIDI/output/gain/aux and part order against the authored state. Raw readback stays in private tmpfs; receipts retain only its hash and verdict. Missing/mismatched readback, silence, incomplete events or contention means UNKNOWN. This identity/routing proof does not certify scripted widget/custom-state recall or VST3. `check-live-host.py` and the native host's `--self-check` cover receipt admission and bounded streams.

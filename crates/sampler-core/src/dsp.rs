@@ -23,6 +23,16 @@ pub struct Biquad {
 }
 impl Biquad {
     pub(crate) fn trace_coefficients(&self) -> [f64; 5] { [self.b[0],self.b[1],self.b[2],self.a[0],self.a[1]] }
+    /// Static response from the coefficients playback consumes. Port from v1
+    /// filter::magnitude, for the sound editor; no second filter kernel.
+    pub fn magnitude(self, hz: f64) -> f64 {
+        let w=std::f64::consts::TAU*hz/f64::from(self.rate);
+        let norm=|c:[f64;3]| {
+            let re=c[0]+c[1]*w.cos()+c[2]*(2.*w).cos();
+            let im=-c[1]*w.sin()-c[2]*(2.*w).sin(); re*re+im*im
+        };
+        (norm(self.b)/norm([1.,self.a[0],self.a[1]])).sqrt()
+    }
     /// Prepare coefficients off audio. Frequency is strictly between DC and Nyquist;
     /// Q is positive, including for shelves: Q = 1/sqrt(2) gives RBJ shelf slope S=1.
     /// Larger Q permits resonant overshoot. Reject numerically unstable coefficients.
@@ -122,6 +132,7 @@ pub enum Processor {
     Delay(Delay),
     /// Stereo compressor; the smoothed reduction lives in the stage's state.
     Compressor(CompressorSettings),
+    LoFi(LoFiSettings),
     /// One parallel branch of an effect rack: the next `count` processors run
     /// on the signal that entered the first branch, and `gain` times their
     /// output joins the sum. The last branch leaves the sum as the signal.
@@ -185,6 +196,7 @@ impl Processor {
             } => dry.valid() && wet.valid() && bypass.valid(),
             Processor::Compressor(settings) => settings.valid(),
             Processor::Decimate(decimator) => decimator.valid(),
+            Processor::LoFi(settings) => settings.valid(),
             Processor::Daft(settings) => settings.valid(),
             Processor::LadderLP4(settings) => settings.valid(),
             Processor::StereoModeller(settings) => settings.valid(),
@@ -203,6 +215,8 @@ pub(super) mod control;
 mod convolution;
 mod daft;
 mod ladder_kernel;
+mod lofi;
+pub use lofi::LoFiSettings;
 mod ladder;
 pub use ladder::LadderSettings;
 mod delay;
@@ -225,7 +239,7 @@ pub use delay::Delay;
 pub(super) use reverb::Reverb;
 pub use reverb::ReverbSettings;
 pub use shaping::{Decimator, Rectifier};
-pub use svf::{StateVariableFilter, SvfMode};
+pub use svf::{OutputLowPass, StateVariableFilter, SvfMode};
 
 pub(super) enum PreparedProcessor {
     Gain(f64),
@@ -245,6 +259,7 @@ pub(super) enum PreparedProcessor {
         k: f64,
     },
     Decimate(Decimator),
+    LoFi(lofi::LoFi),
     Daft(daft::Daft),
     LadderLP4 { ladder: ladder::Ladder, offset: usize },
     StereoModeller {
@@ -406,13 +421,20 @@ pub(super) fn compile_processors(
                     first,
                     last,
                 },
+                Processor::LoFi(settings) => PreparedProcessor::LoFi(settings.compile(rate)),
                 Processor::Daft(settings) => {
-                    PreparedProcessor::Daft(settings.compile(rate, bindings))
+                    let mut daft = settings.compile(rate, bindings);
+                    daft.modulation_index = filters.len();
+                    filters.push(svf::PreparedFilter::NativeControl);
+                    PreparedProcessor::Daft(daft)
                 }
                 Processor::LadderLP4(settings) => {
                     let offset = *delay_frames;
                     *delay_frames = offset.checked_add(ladder::CELLS).ok_or(Error::Capacity)?;
-                    PreparedProcessor::LadderLP4 { ladder: settings.compile(rate, bindings), offset }
+                    let mut ladder = settings.compile(rate, bindings);
+                    ladder.modulation_index = filters.len();
+                    filters.push(svf::PreparedFilter::NativeControl);
+                    PreparedProcessor::LadderLP4 { ladder, offset }
                 }
                 Processor::Rectify(mode) => PreparedProcessor::Rectify(mode),
                 Processor::Gainer { dry, gain } => PreparedProcessor::Gainer {
@@ -481,6 +503,8 @@ impl PreparedVoiceChain {
                 PreparedProcessor::StateVariable(filter) if stages.contains(&i) => {
                     u32::try_from(*filter).ok()
                 }
+                PreparedProcessor::Daft(daft) if stages.contains(&i) => u32::try_from(daft.modulation_index).ok(),
+                PreparedProcessor::LadderLP4 { ladder, .. } if stages.contains(&i) => u32::try_from(ladder.modulation_index).ok(),
                 _ => None,
             })
             .collect()
@@ -681,6 +705,7 @@ impl PreparedVoiceChain {
                     PreparedProcessor::Delay { .. }
                         | PreparedProcessor::Compressor(_)
                         | PreparedProcessor::Decimate(_)
+                        | PreparedProcessor::LoFi(_)
                         | PreparedProcessor::Daft(_)
                         | PreparedProcessor::LadderLP4 { .. }
                         | PreparedProcessor::Branch { .. }
@@ -911,9 +936,12 @@ pub(super) fn process<const TRACE: bool>(
             }
             PreparedProcessor::Compressor(compressor) => compressor.process(state, block, len),
             PreparedProcessor::Decimate(decimator) => decimator.process(state, block, len),
-            PreparedProcessor::Daft(daft) => daft.process(state, parameters, block, len, at),
+            PreparedProcessor::LoFi(lofi) => lofi.process(state, block, len),
+            PreparedProcessor::Daft(daft) => daft.process(state, parameters, block, len, at,
+                filters.bank.native_knobs(daft.modulation_index)),
             PreparedProcessor::LadderLP4 { ladder, offset } => {
-                fault |= ladder.process(state, &mut delay_samples[*offset..*offset + ladder::CELLS], parameters, block, len, at);
+                fault |= ladder.process(state, &mut delay_samples[*offset..*offset + ladder::CELLS], parameters, block, len, at,
+                    filters.bank.native_knobs(ladder.modulation_index));
             }
             PreparedProcessor::StereoModeller { stereo, offset } => {
                 stereo.process(
