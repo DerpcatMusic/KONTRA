@@ -105,7 +105,7 @@ fn load_report_shot() {
     };
     let mut state = lr::State::default();
     let ui = settle(760., 620., |ui| lr::view(ui, &mut state, &r));
-    assert!(ui.scene().unwrap().surface("report-more-1").is_some(), "four missing samples collapse behind Show all");
+    assert!(ui.scene().unwrap().surface("report-entry-1").is_some(), "missing samples have an expandable summary");
     shoot(&ui, 760, 620, "load-report.png");
 }
 

@@ -1599,7 +1599,7 @@ fn failed_load_diagnostics_remain_visible_without_an_instrument() {
     let status = p.shared.view.lock().unwrap().parts[0].status.clone();
     assert!(status.starts_with("Load failed: "), "{status}");
     assert!(h.ui.scene().unwrap().surface("stage-0").is_some(), "a failed part keeps its place in the rack");
-    h.press("tab-logs");
+    h.press("tab-report");
     assert!(h.ui.scene().unwrap().surface("logs-export-preview").is_some(), "global Logs is available after a failed load");
     h.press("logs-export-preview");
     assert!(h.ui.scene().unwrap().surface("logs-export-path").is_some(), "export preview does not require a loaded instrument");
