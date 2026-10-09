@@ -64,10 +64,71 @@ Owned evidence directory: `~/.cache/kontakto-w5/ksp-coverage/`.
 - Frozen gallery v2 executable SHA256:
   `7ce04ef47e7250d196a64a56e65017a7926d15cb8d610469f135a8361f7bc6c0`.
 
-The production probe is not a presented-plugin or audio parity test. This change
-records attribution only; no product behavior or scanner correction is included.
-W3 owns the scanner seam and received the matched witness: settle and apply UI
-effects before capturing the face. The independent Conflux GPU transparency
-failure is not explained by this result.
+The attribution probe is not a presented-plugin or audio parity test. The
+independent Conflux GPU transparency failure is not explained by this result.
 
-NEXT: remaining semantic-command declaration and contract attribution.
+## Scanner correction
+
+W5 now owns the scanner fix. `settle_snapshot` runs the frozen adapter's ten
+480-sample ticks in `MAX_BLOCK` chunks, applies drained effects to `ScriptUi`,
+and regenerates changed interfaces before face capture and control-value reads.
+It uses offline blocks, retains runtime faults in the existing scanner report,
+and completes the block lifecycle. The scanner reports `snapshot_settle_ms`
+separately from its loader metric.
+
+The ignored, authored-library test
+`areia_scanner_snapshot_applies_listener_before_face_capture` uses the production
+`V2Loader` with all keys, the owned translation manifest, and numeric visibility
+assertions. Before the fix it fails because the warning remains visible; after
+the fix it passes with the articulation list visible, zero runtime faults and
+zero streaming/offline failures. No authored source or identifiers are logged.
+Run it explicitly with `cargo test --profile ci --features shots --lib
+areia_scanner_snapshot_applies_listener_before_face_capture -- --ignored
+--nocapture` through the normal wrapper.
+
+Frozen before test executable SHA256:
+`7f9e3aa18ed26433995c388ecd08cb69fe3488b0df7d313bd962a1fb9e34449d`.
+Frozen after test executable SHA256:
+`dc9a3086822dc571139c7650d3cdb9d597cf8e16f123ac3f790ca70539ab01b4`.
+The before executable is the intentionally failing fixture on source base
+`bc318a1f` with an empty settle seam; the after executable contains the correction.
+
+## Quiet timing and validation
+
+Code commit: `c643531d` (`port from v1 0cb7a8a0:src/engine/script.rs`).
+Targeted authored Areia test: **1 failing before → 1 passing after**.
+Root `ci` + `shots` library `--no-run`: PASS. The five timed before runs reproduce
+the same expected failure; all five after runs pass the visibility, runtime and
+streaming assertions. The original full KSP suite was not repeated for this
+scanner-only change.
+
+After W8's direct handoff, the timing runner alternated five runs per frozen test
+executable. The measured scan phase is **production preparation, installation
+and face snapshot**, excluding painting and audition. Each executable runs the
+same authored fixture; the before executable intentionally fails its post-snapshot
+visibility assertion. These are not end-to-end CLI or presented-plugin timings.
+
+| Milliseconds | Before median | After median | Delta |
+|---|---:|---:|---:|
+| Prepare and snapshot scan | 3,095.710 | 3,154.575 | +58.865 (+1.90%) |
+| Snapshot settle phase | 0.000 | 3.796 | +3.796 |
+| Whole test process | 3,129.830 | 3,186.231 | +56.402 |
+
+The timings are noisy: before scan range 2,971.672–8,830.450 ms, after range
+2,971.194–10,565.942 ms. Medians use all five runs per binary, without dropping
+outliers. No speedup or causal attribution for the total-time delta is claimed.
+The accepted repeat's activity observer records **QUIET**, 45 samples at one-second
+intervals, with no foreign heavy work or observer errors.
+
+The first timing batch is retained separately as **CONTENDED / UNKNOWN**:
+foreign cargo PID 2308769 and rustc PID 2308828 started during the request at
+08:58:03 UTC. It is excluded from the table. One clean repeat completed after
+those processes exited. No foreign processes were killed. The bounded window
+ended with removal of W5's request/grant and direct handoff to W6 and coordinator.
+
+Owned receipts: `areia-snapshot-timing.json`,
+`areia-snapshot-activity/activity.{json,jsonl}`, and
+`areia-snapshot-timing-contended.json` under the evidence directory above.
+No further builds or library probes followed the handoff.
+
+NEXT: W0 integration of the scanner fix and receipt; subscription stays parked.

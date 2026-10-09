@@ -529,7 +529,6 @@ pub fn lower_with(
             .map_err(core(Stage::Regions, "zone crossfades"))?;
     }
     plan = lowering.buses(plan)?;
-    plan = lowering.modulation(plan)?;
     plan = lowering.variation(plan)?;
     plan = lowering.releases(plan)?;
     plan = lowering.articulations(plan)?;
@@ -590,9 +589,24 @@ pub fn lower_with(
         }
     }
     engine_bindings.extend(native.into_values());
+    for alias in &instrument.source_indices.control_aliases {
+        let control = &instrument.controls[alias.control.0];
+        let ir::ControlValue::Continuous { min, max, .. } = control.value else {
+            return Err(unsupported(&control.key, Feature::Controls));
+        };
+        let parameter = crate::engine_parameter_id(&alias.parameter)
+            .ok_or_else(|| unsupported(&control.key, Feature::Controls))?;
+        engine_bindings.push(crate::EngineParameterBinding {
+            address: crate::EngineParameterAddress { parameter, group: alias.address.group,
+                slot: alias.address.slot, generic: alias.address.generic },
+            control: ir_control_id(&control.key), law: crate::EngineParameterLaw::Linear { low: min, high: max },
+        });
+    }
     plan = plan
         .with_engine_parameters(engine_bindings, source_engine_lookups(&instrument.source_indices))
         .map_err(core(Stage::Controls, "source engine lookups"))?;
+    plan = lowering.parameter_registry(plan)?;
+    plan = lowering.modulation(plan)?;
     if instrument.behaviors.is_empty() {
         Ok(plan)
     } else {
@@ -906,6 +920,53 @@ impl Lowering<'_> {
         ))
     }
 
+    fn registered_processor_target(&self, plan: &Prepared, chain: ir::ChainRef, index: usize,
+        parameter: ir::ProcessorParameter) -> Option<crate::ParameterAddress> {
+        let chain_data = &self.ir.chains[chain.0];
+        let processor = chain_data.pre_amplitude.iter().chain(&chain_data.post_amplitude).nth(index)?;
+        if matches!(processor, ir::Processor::LadderLP4(_) | ir::Processor::Daft(_)) { return None; }
+        let binding = self.ir.processor_controls.iter().find(|b| b.chain == chain && b.index == index && b.parameter == parameter)?;
+        let address = crate::ParameterAddress { scope: crate::ParameterScope::Voice,
+            node: binding.control.0 as u32, parameter: 0 };
+        plan.parameter_registry.resolve(address).map(|_| address)
+    }
+
+    fn parameter_registry(&self, plan: Prepared) -> Result<Prepared, LowerError> {
+        use crate::{ParameterAddress, ParameterDescriptor, ParameterDisplay, ParameterLaw,
+            ParameterRegistry, ParameterScope, ParameterUnit};
+        let mut registry = ParameterRegistry::default();
+        let mut registered = std::collections::BTreeSet::new();
+        for (order, binding) in self.ir.processor_controls.iter().enumerate() {
+            let control = &self.ir.controls[binding.control.0];
+            let ir::ControlValue::Continuous { min, max, default, unit } = control.value else { continue; };
+            let scope = match self.ir.chains[binding.chain.0].scope {
+                ir::Scope::Voice => ParameterScope::Voice,
+                ir::Scope::Group(group) => ParameterScope::Group(group.0 as u32),
+                ir::Scope::Bus(bus) => ParameterScope::Bus(bus.0 as u32),
+                ir::Scope::Master => ParameterScope::Plan,
+            };
+            let address = ParameterAddress { scope, node: binding.control.0 as u32, parameter: 0 };
+            if !registered.insert(address) { continue; }
+            let id = ir_control_id(&control.key);
+            let aliases: Vec<_> = plan.engine_parameters.iter().filter(|b| b.control == id).collect();
+            registry.register(ParameterDescriptor {
+                address, control: id, name: if control.label.is_empty() { control.key.clone() } else { control.label.clone() }, range: [min, max], default,
+                unit: match unit {
+                    ir::ControlUnit::None => ParameterUnit::Linear,
+                    ir::ControlUnit::Decibels => ParameterUnit::Decibels,
+                    ir::ControlUnit::Hertz => ParameterUnit::Hertz,
+                    ir::ControlUnit::Seconds => ParameterUnit::Seconds,
+                    ir::ControlUnit::Semitones => ParameterUnit::Semitones,
+                    ir::ControlUnit::Percent => ParameterUnit::Percent,
+                },
+                law: aliases.first().map_or(ParameterLaw::Linear, |b| ParameterLaw::Native(b.law)),
+                display: ParameterDisplay { group: format!("chain {} processor {}", binding.chain.0, binding.index), order: order as u32 },
+            }).map_err(core(Stage::Controls, &control.key))?;
+            for alias in aliases { registry.alias_native(alias.address, address).map_err(core(Stage::Controls, &control.key))?; }
+        }
+        plan.with_parameter_registry(registry).map_err(core(Stage::Controls, "parameter registry"))
+    }
+
     /// One voice modulation program per distinct zone route list.
     fn modulation(&self, plan: Prepared) -> Result<Prepared, LowerError> {
         if self.mpe.is_none() && self.ir.zones.iter().all(|z| z.routes.is_empty()) {
@@ -969,6 +1030,18 @@ impl Lowering<'_> {
                 (ir::Target::Pitch, ir::Depth::Pitch(p)) => (ModTarget::Pitch, p.semitones()),
                 (ir::Target::Pan, ir::Depth::Normalized(d)) => (ModTarget::Pan, d),
                 (ir::Target::SampleStart, ir::Depth::Normalized(d)) => (ModTarget::SampleStart, d),
+                (ir::Target::Control(control), ir::Depth::Normalized(depth)) => {
+                    let address = crate::ParameterAddress { scope: crate::ParameterScope::Voice,
+                        node: control.0 as u32, parameter: 0 };
+                    if plan.parameter_registry.resolve(address).is_none()
+                        || !self.ir.processor_controls.iter().any(|b| b.control == control && Some(b.chain) == zone.chain)
+                    { return Err(unsupported(owner, Feature::ModulationRoute(route.target))); }
+                    (address, depth)
+                }
+                (ir::Target::Processor { chain, index, parameter }, ir::Depth::Normalized(depth))
+                    if Some(chain) == zone.chain && self.registered_processor_target(plan, chain, index, parameter).is_some() => {
+                    (self.registered_processor_target(plan, chain, index, parameter).unwrap(), depth)
+                }
                 (
                     ir::Target::Processor {
                         chain,
@@ -1096,14 +1169,7 @@ impl Lowering<'_> {
             };
             program.routes.push(native);
             for index in processor_targets.into_iter().skip(1) {
-                let target = match native.target {
-                    ModTarget::ProcessorCutoff(_) => ModTarget::ProcessorCutoff(index),
-                    ModTarget::ProcessorResonance(_) => ModTarget::ProcessorResonance(index),
-                    ModTarget::ProcessorNativeCutoff(_) => ModTarget::ProcessorNativeCutoff(index),
-                    ModTarget::ProcessorNativeResonance(_) => ModTarget::ProcessorNativeResonance(index),
-                    ModTarget::ProcessorNativeGain(_) => ModTarget::ProcessorNativeGain(index),
-                    _ => unreachable!(),
-                };
+                let target = crate::ParameterAddress { node: index, ..native.target };
                 program.routes.push(ModRoute { target, ..native });
             }
         }
@@ -1302,6 +1368,9 @@ impl Lowering<'_> {
             (Processor::LadderLP4(filter), Cutoff) => filter.cutoff = parameter,
             (Processor::LadderLP4(filter), Resonance) => filter.resonance = parameter,
             (Processor::Gainer { gain, .. }, Gain) => *gain = parameter,
+            (Processor::PeakingEq(eq), Gain) => eq.gain_db = parameter,
+            (Processor::PeakingEq(eq), Cutoff) => eq.frequency = parameter,
+            (Processor::PeakingEq(eq), Resonance) => eq.bandwidth = parameter,
             (Processor::StereoModeller(settings), Width) => settings.width = parameter,
             (Processor::StereoModeller(settings), Pan) => settings.pan = parameter,
             _ => return Ok(false),
@@ -1372,7 +1441,12 @@ impl Lowering<'_> {
         let mut starts = Vec::with_capacity(listed.len() + 1);
         for (index, p) in listed.iter().enumerate() {
             starts.push(processors.len());
-            let mut stages = self.processors(owner, **p)?;
+            let mut stages = if let ir::Processor::Filter(ir::Filter { kind: ir::FilterKind::Peak { gain }, cutoff: ir::Frequency::Hertz(hz), resonance: ir::Resonance::Q(q) }) = **p
+                && self.ir.processor_controls.iter().any(|b| b.chain == chain && b.index == start + index) {
+                vec![Processor::PeakingEq(crate::PeakingEq { frequency: Parameter::Constant(((hz / 20.).log10() / 3.).clamp(0., 1.)),
+                    bandwidth: Parameter::Constant(((2. * (0.5 / q).asinh() / std::f64::consts::LN_2 - 0.3) / 2.7).clamp(0., 1.)),
+                    gain_db: Parameter::Constant(20. * gain.linear().log10()) })]
+            } else { self.processors(owner, **p)? };
             // A physical native owner already binds these fields to the shared
             // service; replacing them would leave writes on an unused mirror.
             if matches!(**p, ir::Processor::LadderLP4(d) if d.address.is_some())

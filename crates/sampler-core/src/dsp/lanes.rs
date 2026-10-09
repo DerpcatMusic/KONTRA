@@ -191,6 +191,20 @@ pub(crate) fn process(
                         std::array::from_fn(|c| [z[0][2 * v + c], z[1][2 * v + c]].map(flush));
                 }
             }
+            PreparedProcessor::PeakingEq(eq) => {
+                if eq.is_flat(parameters, at, len) { continue; }
+                for v in 0..batch.count {
+                    let end = batch.ends[2 * v];
+                    let mut planar = [[0.; BLOCK]; 2];
+                    for (i, x) in block[..end].iter().enumerate() {
+                        (planar[0][i], planar[1][i]) = (x[2 * v], x[2 * v + 1]);
+                    }
+                    eq.process(&mut cells[v].as_mut().expect("batch voice")[cell], parameters, &mut planar, end, at);
+                    for (i, x) in block[..end].iter_mut().enumerate() {
+                        (x[2 * v], x[2 * v + 1]) = (planar[0][i], planar[1][i]);
+                    }
+                }
+            }
             PreparedProcessor::StateVariable(filter) => {
                 // Scalar layout: z = [s0, s1], each [left, right].
                 let mut s = [[0.; LANES]; 2];
@@ -382,6 +396,50 @@ fn recurrence<const MASK: bool>(
 mod tests {
     use super::*;
     use super::super::{Biquad, FilterKind};
+
+    #[test]
+    fn eq_lane_pcm_and_histories_match_scalar_across_flat_and_masked_blocks() {
+        for rate in [8000, 48000, 192000] {
+            for hz in [20., 1000., f64::from(rate) * 0.49] {
+                for width in [0.3, 3.] {
+                    for len in [0usize, 1, 3, 17, BLOCK] {
+                        let initial: Vec<_> = (0..VOICES).map(|v| {
+                            let mut state = ProcessorState::default();
+                            state.z = [[v as f64 * 0.003, -0.02], [0.01, v as f64 * -0.004]];
+                            state
+                        }).collect();
+                        let mut expected_state = initial.clone();
+                        let slab = sampler_pool::Slab::new(initial.into_boxed_slice(), 1);
+                        let mut cells: Cells<'_> = std::array::from_fn(|v| Some(slab.claim(v)));
+                        let batch = Batch { count: VOICES, expressions: [None; VOICES],
+                            ends: std::array::from_fn(|k| len.saturating_sub(k / 2)), len };
+                        let mut bank = FilterBank::new(&[], 0).unwrap();
+                        for gain in [12., 0., -12.] {
+                            let eq = super::super::PeakingEq { frequency: super::super::Parameter::Constant(((hz / 20f64).log10() / 3.).clamp(0., 1.)), bandwidth: super::super::Parameter::Constant(((width - 0.3f64) / 2.7).clamp(0., 1.)),
+                                gain_db: super::super::Parameter::Constant(gain) }.compile(rate, &mut Vec::new()).unwrap();
+                            let mut block: LaneBlock = std::array::from_fn(|i| std::array::from_fn(|k|
+                                ((i + k) as f64 * 0.137).sin() * 0.2));
+                            let mut expected = block;
+                            for v in 0..VOICES {
+                                let end = batch.ends[2 * v];
+                                let mut planar = [[0.; BLOCK]; 2];
+                                for i in 0..end { (planar[0][i], planar[1][i]) = (expected[i][2 * v], expected[i][2 * v + 1]); }
+                                eq.process(&mut expected_state[v], &[], &mut planar, end, 0);
+                                for i in 0..end { (expected[i][2 * v], expected[i][2 * v + 1]) = (planar[0][i], planar[1][i]); }
+                            }
+                            process(&[PreparedProcessor::PeakingEq(eq)], 0, &mut cells, &batch, &mut block, &[], 0, &mut bank);
+                            assert_eq!(block.map(|f| f.map(f64::to_bits)), expected.map(|f| f.map(f64::to_bits)));
+                            for v in 0..VOICES {
+                                let actual = &cells[v].as_ref().unwrap()[0];
+                                assert_eq!(actual.z.map(|c| c.map(f64::to_bits)), expected_state[v].z.map(|c| c.map(f64::to_bits)));
+                                assert_eq!(actual.aux.map(f64::to_bits), expected_state[v].aux.map(f64::to_bits));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // Frozen 608a20a1 arithmetic: independent of the shared sample helper.
     fn reference(filter: Biquad, x: f64, z: [f64; 2]) -> (f64, [f64; 2]) {

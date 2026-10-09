@@ -170,6 +170,8 @@ pub enum Processor {
     /// Formant Crusher decimation; per-voice scalar path.
     Decimate(Decimator),
     StateVariable(StateVariableFilter),
+    /// Live gain owner for the v1 TPT peaking-band fallback.
+    PeakingEq(PeakingEq),
     /// Stereo reverb; bus scope only (it owns megabytes of state).
     Reverb(ReverbSettings),
     /// `dry * x + wet * (x * impulse)`; bus scope only. `impulse` indexes
@@ -197,6 +199,7 @@ impl Processor {
             Processor::StereoMatrix(matrix) => matrix.iter().flatten().all(|v| v.is_finite()),
             Processor::ControlGain(binding) => binding.valid(),
             Processor::StateVariable(filter) => filter.valid(),
+            Processor::PeakingEq(settings) => settings.valid(),
             Processor::Reverb(settings) => settings.valid(),
             Processor::Convolution { dry, wet, .. } => dry.is_finite() && wet.is_finite(),
             Processor::Mix {
@@ -222,6 +225,8 @@ mod compressor;
 pub(super) mod control;
 mod convolution;
 mod daft;
+mod eq;
+pub use eq::PeakingEq;
 mod ladder_kernel;
 mod lofi;
 pub use lofi::LoFiSettings;
@@ -253,6 +258,7 @@ pub(super) enum PreparedProcessor {
     Gain(f64),
     StereoMatrix([[f64; 2]; 2]),
     Biquad(Biquad),
+    PeakingEq(eq::Eq),
     ControlGain(usize),
     Delay {
         delay: Delay,
@@ -294,6 +300,7 @@ pub(super) enum PreparedProcessor {
 }
 
 pub(super) struct PreparedVoiceChain {
+    pub parameter_span: std::ops::Range<usize>,
     pre: Box<[PreparedProcessor]>,
     post: Box<[PreparedProcessor]>,
     tail_frames: u32,
@@ -352,6 +359,7 @@ impl VoiceChain {
         bindings: &mut Vec<ControlRange>,
         filters: &mut Vec<svf::PreparedFilter>,
     ) -> Result<PreparedVoiceChain, Error> {
+        let first_parameter = bindings.len();
         let mut delay_frames = 0;
         let mut tap_buses: Vec<_> = self.taps.iter().map(|tap| tap.bus).collect();
         tap_buses.sort_unstable();
@@ -383,6 +391,7 @@ impl VoiceChain {
                 .map(|tap| tap.compile(bindings))
                 .collect(),
             tap_buses: tap_buses.into_boxed_slice(),
+            parameter_span: first_parameter..bindings.len(),
         })
     }
 }
@@ -491,6 +500,7 @@ pub(super) fn compile_processors(
                     }
                     PreparedProcessor::Biquad(filter)
                 }
+                Processor::PeakingEq(settings) => PreparedProcessor::PeakingEq(settings.compile(rate, bindings)?),
                 Processor::ControlGain(binding) => {
                     let lane = bindings.len();
                     bindings.push(binding);
@@ -1006,6 +1016,7 @@ pub(super) fn process<const TRACE: bool>(
                     *r *= gain;
                 }
             }
+            PreparedProcessor::PeakingEq(eq) => eq.process(state, parameters, block, len, at),
             PreparedProcessor::Biquad(filter) => {
                 let [mut zl, mut zr] = state.z;
                 let [left, right] = block;
@@ -1050,6 +1061,7 @@ pub(super) struct DspState {
     /// One `stride` of chain state per voice slot; claimed per voice.
     pub cells: Slab<ProcessorState>,
     pub parameters: Box<[ControlRamp]>,
+    pub modulated_parameters: Slab<ControlRamp>,
     pub delay_samples: Slab<[f64; 2]>,
     /// Filter coefficient caches, one per render lane. Lane 0 is the audio
     /// thread's (and the whole of single-threaded rendering).
@@ -1092,6 +1104,10 @@ impl DspState {
                 1,
             ),
             delay_samples: Slab::new(allocate(delay_count)?, delay_stride),
+            modulated_parameters: {
+                let stride = if plan.voice_modulation.has_control_targets() { plan.dsp_bindings.len() } else { 0 };
+                Slab::new(allocate(stride.checked_mul(lanes.clamp(1, MAX_LANES)).ok_or(Error::Capacity)?)?, stride)
+            },
             parameters: control::initial_parameters(plan, &plan.dsp_bindings),
             buses: crate::bus::BusState::new(plan)?,
             feeds: allocate(feeds)?,
@@ -1152,6 +1168,13 @@ impl DspState {
         lanes: usize,
     ) -> Result<(), Error> {
         let lanes = lanes.clamp(1, MAX_LANES);
+        if plan.voice_modulation.has_control_targets() {
+            let stride = plan.dsp_bindings.len();
+            let size = stride.checked_mul(lanes).ok_or(Error::Capacity)?;
+            if self.modulated_parameters.len() < size {
+                self.modulated_parameters = Slab::new(allocate(size)?, stride);
+            }
+        }
         if self.filters.len() >= lanes {
             return Ok(());
         }
@@ -1186,6 +1209,16 @@ mod tests {
                 }),
             ], Vec::new(), 0).unwrap().compile(48000, &mut Vec::new(), &mut Vec::new()).unwrap();
             assert_eq!(chain.batches(), !pseudo);
+        }
+    }
+
+    #[test]
+    fn live_eq_keeps_other_stages_in_the_lane_path() {
+        for gain in [-12., 0., 12.] {
+            let chain = VoiceChain::new(vec![Processor::PeakingEq(PeakingEq {
+                frequency: Parameter::Constant((1000f64 / 20.).log10() / 3.), bandwidth: Parameter::Constant((1. - 0.3) / 2.7), gain_db: Parameter::Constant(gain),
+            })], Vec::new(), 0).unwrap().compile(48000, &mut Vec::new(), &mut Vec::new()).unwrap();
+            assert!(chain.batches(), "live EQ must not force unrelated stages out of the lane path");
         }
     }
 

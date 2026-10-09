@@ -1,4 +1,4 @@
-//! Where the Kontakt libraries are and what they are called, found without
+//! Where Kontakt and UVI libraries are and what they are called, found without
 //! the player doing anything past naming a folder.
 //!
 //! The player adds roots, kept in the app's settings (not a project): a
@@ -6,7 +6,8 @@
 //! library. A folder is a library when it holds a `.nicnt` (registered), an
 //! `Instruments` or `Multis` folder, presets beside a `Samples` folder or a
 //! monolith (`.nkx`/`.nkc`/`.nkr`), or, below the root, presets of its own
-//! (detected). The search stops at a library, skips sample folders, and gives
+//! (detected). Loose `.ufs` banks at a root are individual libraries.
+//! The search stops at a library, skips sample folders, and gives
 //! up on a folder of hundreds of audio files with no presets: a sample tree.
 //! A library shows only when it holds a preset.
 //!
@@ -16,7 +17,8 @@
 //! their own, report progress, and can be canceled.
 //!
 //! On a first run with no roots, the libraries Kontakt knows about are added
-//! (see [`kontakt`]); the player can import them again at any time.
+//! (see [`kontakt`]); default Windows UVI bank folders are checked once even
+//! with existing roots. The player can find installed libraries again at any time.
 
 
 mod kontakt;
@@ -30,7 +32,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock};
 
-/// A folder the player added.
+/// A folder or UFS bank the player added.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Root {
     pub path: String,
@@ -59,6 +61,8 @@ pub struct Settings {
     pub covers: BTreeMap<String, Cover>,
     /// The libraries Kontakt knows about were looked for, on the first run.
     pub imported: bool,
+    /// Default UVI bank locations were checked independently of Kontakt roots.
+    pub uvi_imported: bool,
     /// The performance view parts show unless they choose their own.
     pub view_mode: ViewMode,
     /// Saved view override by instrument path; rack overrides take precedence.
@@ -418,6 +422,20 @@ impl Shelf {
         self.by_name.get(name).map(|&n| &self.libraries[n])
     }
 
+    /// Count unreadable banks and retain each reported cause for this root.
+    pub fn bank_problem(&self, root: &Path) -> Option<String> {
+        let mut count = 0;
+        let mut causes = Vec::new();
+        for issue in &self.bank_issues {
+            let matched = issue.locations.iter().filter(|path| path.starts_with(root)).count();
+            if matched > 0 {
+                count += matched;
+                causes.push(issue.message.as_str());
+            }
+        }
+        (count > 0).then(|| format!("{count} UVI {} could not be cataloged: {}", if count == 1 { "bank" } else { "banks" }, causes.join("; ")))
+    }
+
     /// One library per folder right under `root`, named for it: what a list
     /// of files with no folders on disk behind them is shelved as.
     #[cfg(test)]
@@ -484,6 +502,7 @@ struct Listing {
     samples: bool,
     monolith: bool,
     presets: usize,
+    banks: Vec<PathBuf>,
     audio: usize,
     folders: Vec<PathBuf>,
 }
@@ -515,16 +534,18 @@ fn list(dir: &Path) -> Listing {
         match ext {
             "nicnt" => out.nicnt = out.nicnt.take().or(Some(path)),
             "nkx" | "nkc" | "nkr" => out.monolith = true,
-            "nki" | "nkm" | "ufs" | "uvip" | MULTI => out.presets += 1,
+            "ufs" => { out.presets += 1; out.banks.push(path); }
+            "nki" | "nkm" | "uvip" | MULTI => out.presets += 1,
             "wav" | "ncw" | "aif" | "aiff" | "flac" | "ogg" => out.audio += 1,
             _ => {}
         }
     }
     out.folders.sort();
+    out.banks.sort();
     out
 }
 
-/// A library folder found under a root.
+/// A library folder or loose UFS bank found under a root.
 struct Candidate {
     dir: PathBuf,
     nicnt: Option<PathBuf>,
@@ -536,7 +557,9 @@ struct Candidate {
 fn detect(root: &Root, progress: &Progress) -> Vec<Candidate> {
     let dir = PathBuf::from(&root.path);
     let mut out = Vec::new();
-    if root.single {
+    if dir.is_file() && dir.extension().is_some_and(|x| x.eq_ignore_ascii_case("ufs")) {
+        out.push(Candidate { dir, nicnt: None, vendor: None });
+    } else if root.single {
         let listing = list(&dir);
         out.push(Candidate { dir, nicnt: listing.nicnt, vendor: None });
     } else {
@@ -561,6 +584,13 @@ fn visit(dir: &Path, depth: usize, vendor: Option<String>, out: &mut Vec<Candida
         progress.found.fetch_add(1, Ordering::Relaxed);
         out.push(Candidate { dir: dir.into(), nicnt: l.nicnt, vendor });
         return;
+    }
+    // Loose banks are libraries themselves; keep searching adjacent folders.
+    if depth == 0 {
+        for bank in l.banks {
+            progress.found.fetch_add(1, Ordering::Relaxed);
+            out.push(Candidate { dir: bank, nicnt: None, vendor: vendor.clone() });
+        }
     }
     if depth >= DEPTH || (l.audio >= SAMPLE_ONLY && l.presets == 0) {
         return;
@@ -718,8 +748,8 @@ fn cached_presets(dir: &Path, progress: &Progress, cache: &mut cache::Cache) -> 
             cache.observe(path);
             out.push(e.into_path());
         } else if path.extension().is_some_and(|x| x.eq_ignore_ascii_case("ufs")) {
-            if let Some(cache::Metadata::Bank(members)) = cache.memo(path, || match sampler_uvi::Bank::open(path) {
-                Ok(bank) => Some(cache::Metadata::Bank(bank.programs())),
+            if let Some(cache::Metadata::Bank(members)) = cache.memo(path, || match sampler_uvi::Bank::catalog(path) {
+                Ok(members) => Some(cache::Metadata::Bank(members)),
                 Err(e) => { progress.bank_issue(path, e); None }
             }) { out.extend(members.into_iter().map(|member| path.join(member))); }
         }
@@ -784,7 +814,10 @@ fn cached_scan(roots: &[Root], progress: &Progress, cache: &mut cache::Cache) ->
             if found.is_empty() {
                 continue;
             }
-            let (folder_name, bracket) = clean_name(&file_name(&c.dir));
+            let name = if c.dir.is_file() && c.dir.extension().is_some_and(|x| x.eq_ignore_ascii_case("ufs")) {
+                c.dir.file_stem().unwrap_or_default().to_string_lossy().into_owned()
+            } else { file_name(&c.dir) };
+            let (folder_name, bracket) = clean_name(&name);
             let product = c.nicnt.as_deref().and_then(|path| cache.memo(path, || {
                 let (name, vendor) = product(path).unwrap_or_default();
                 Some(cache::Metadata::Product(name, vendor))
@@ -830,7 +863,7 @@ pub struct Scanned {
     pub shelf: Arc<Shelf>,
     pub files: Arc<Vec<PathBuf>>,
     pub artwork: HashMap<String, Arc<Image>>,
-    /// The roots an import from Kontakt added, when the scan made one.
+    /// Registered Kontakt and default UVI roots added by this scan.
     pub imported: Option<Vec<Root>>,
 }
 
@@ -1015,7 +1048,7 @@ impl Scanner {
         });
     }
 
-    /// Add the libraries Kontakt knows about that are not here yet, and scan.
+    /// Add registered Kontakt libraries and default UVI bank roots, and scan.
     pub fn import_kontakt(&self) {
         self.import.store(true, Ordering::Relaxed);
         self.rescan();
@@ -1068,6 +1101,7 @@ impl Scanner {
                             }
                         }
                         s.imported = true;
+                        s.uvi_imported = true;
                     });
                 }
                 return Some(done);
@@ -1087,15 +1121,22 @@ impl Scanner {
         let mut roots = settings.roots.clone();
         // A first run, with nothing set up yet, starts from what Kontakt knows.
         let first = !settings.imported && roots.is_empty() && Settings::path().is_some();
-        let import = self.import.swap(false, Ordering::Relaxed) || first;
+        let import_kontakt = self.import.swap(false, Ordering::Relaxed) || first;
+        let import_uvi = import_kontakt || (!settings.uvi_imported && Settings::path().is_some());
         // Multis saved with no library folder to keep them in.
         let multis = data_dir().map(|d| d.join("Multis")).filter(|d| d.is_dir());
         let done = self.done.clone();
-        let nothing = roots.is_empty() && multis.is_none() && !import;
+        let nothing = roots.is_empty() && multis.is_none() && !import_kontakt && !import_uvi;
         let work = {
             let (progress, done, stamp) = (progress.clone(), done.clone(), self.stamp.clone());
             move || {
-                let imported = import.then(|| kontakt::roots(&roots));
+                let imported = (import_kontakt || import_uvi).then(|| {
+                    let mut added = if import_kontakt { kontakt::roots(&roots) } else { Vec::new() };
+                    let mut have = roots.clone();
+                    have.extend(added.iter().cloned());
+                    added.extend(kontakt::uvi_roots(&have));
+                    added
+                });
                 roots.extend(imported.iter().flatten().cloned());
                 if let Some(multis) = multis {
                     roots.push(Root { path: multis.to_string_lossy().into_owned(), single: true });
@@ -1213,6 +1254,126 @@ mod tests {
         root
     }
 
+    #[test]
+    fn w10_uvi_import_flag_migrates_v2_settings_and_survives_restart() {
+        let path = std::env::temp_dir().join(format!("kontra-uvi-import-{}.json", std::process::id()));
+        std::fs::write(&path, r#"{"version":2,"imported":true,"roots":[{"path":"/owned/Kontakt","single":false}]}"#).unwrap();
+        let mut settings = Settings::load(&path).unwrap();
+        assert!(settings.imported);
+        assert!(!settings.uvi_imported, "old Kontakt import cannot suppress new UVI defaults");
+        settings.uvi_imported = true;
+        settings.save(&path).unwrap();
+        assert_eq!(Settings::load(&path), Some(settings));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(feature = "library-access")]
+    fn clear_bank(path: &Path) {
+        fn append(bytes: &mut Vec<u8>, payload: &[u8]) -> u64 {
+            let pointer = bytes.len() as u64 + 8;
+            bytes.extend((payload.len() as u64).to_le_bytes());
+            bytes.extend(payload);
+            pointer
+        }
+        fn point(bytes: &mut [u8], at: u64, value: u64) {
+            bytes[at as usize..at as usize + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        let xml = b"<UVI4><Program Name=\"Our clear fixture\"/></UVI4>";
+        let mut bytes = vec![0; 320];
+        bytes[..4].copy_from_slice(b"UFS2");
+        bytes[4..8].copy_from_slice(&3u32.to_le_bytes());
+        bytes[48..56].copy_from_slice(b"Authored");
+        // +32 stays opaque, not an asserted physical size.
+        point(&mut bytes, 32, 123);
+        let mut folder = vec![0; 272];
+        folder[..4].copy_from_slice(&0x2fba3632u32.to_le_bytes());
+        folder[4..8].copy_from_slice(b"Root");
+        let root = append(&mut bytes, &folder);
+        point(&mut bytes, 40, root);
+        let mut file = vec![0; 289];
+        file[..4].copy_from_slice(&0x675850e4u32.to_le_bytes());
+        file[4..15].copy_from_slice(b"preset.uvip");
+        let member = append(&mut bytes, &file);
+        let mut descriptor = vec![0; 34];
+        descriptor[..4].copy_from_slice(&0x1847b398u32.to_le_bytes());
+        let tree = append(&mut bytes, &descriptor);
+        point(&mut bytes, root + 260, tree);
+        let mut leaf = vec![0; 288];
+        leaf[..4].copy_from_slice(&0x3ca86aafu32.to_le_bytes());
+        leaf[4..8].copy_from_slice(&1u32.to_le_bytes());
+        leaf[8..19].copy_from_slice(b"preset.uvip");
+        point(&mut leaf, 264, member);
+        leaf[272..288].fill(255);
+        let table = append(&mut bytes, &leaf);
+        for offset in [4, 12, 20] { point(&mut bytes, tree + offset, table); }
+        let payload = append(&mut bytes, xml);
+        point(&mut bytes, member + 260, xml.len() as u64);
+        point(&mut bytes, member + 268, payload);
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    #[cfg(feature = "library-access")]
+    fn w10_uvi_catalog_does_not_prepare_unavailable_member_payloads() {
+        let root = tree("uvi-catalog-only", &[]);
+        let path = root.join("Owned.ufs");
+        clear_bank(&path);
+        let mut bytes = std::fs::read(&path).unwrap();
+        let member = bytes.windows(4).position(|x| x == 0x675850e4u32.to_le_bytes()).unwrap();
+        bytes[member + 276] = 2;
+        std::fs::write(&path, bytes).unwrap();
+        let (shelf, files) = scan(&[Root { path: root.to_string_lossy().into_owned(), single: false }], &Progress::default()).unwrap();
+        assert_eq!((shelf.libraries.len(), files.len()), (1, 1), "cataloging requires directory metadata, not content preparation");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[cfg(feature = "library-access")]
+    fn w10_uvi_flat_bank_folder_is_cataloged_and_cached() {
+        let root = tree("uvi-flat-banks", &[]);
+        clear_bank(&root.join("Alpha.ufs"));
+        clear_bank(&root.join("Beta.UFS"));
+        let roots = [Root { path: root.to_string_lossy().into_owned(), single: false }];
+        let mut cache = cache::Cache::default();
+        let (shelf, files) = cached_scan(&roots, &Progress::default(), &mut cache).unwrap();
+        println!("UVI_FLAT libraries={} presets={}", shelf.libraries.len(), files.len());
+        assert_eq!((shelf.libraries.len(), files.len()), (2, 2));
+        let index = root.join("index.json");
+        cache.save(Some(&index)).unwrap();
+        let mut cache = cache::Cache::load(Some(&index));
+        let (warm, warm_files) = cached_scan(&roots, &Progress::default(), &mut cache).unwrap();
+        assert_eq!((warm.libraries.len(), warm_files), (2, files));
+        assert_eq!(cache.stats.reads, 0, "unchanged accessible banks retain their catalog");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[cfg(feature = "library-access")]
+    fn w10_uvi_banks_at_root_and_nested_libraries_are_all_cataloged() {
+        let root = tree("uvi-root-banks", &[("Nested/Instruments/Owned.uvip", "<UVI4><Program/></UVI4>")]);
+        clear_bank(&root.join("Alpha.ufs"));
+        clear_bank(&root.join("Beta.UFS"));
+        let (shelf, files) = scan(&[Root { path: root.to_string_lossy().into_owned(), single: false }], &Progress::default()).unwrap();
+        assert_eq!(shelf.libraries.len(), 3, "loose banks must not disappear or hide nested libraries");
+        assert_eq!(files.len(), 3);
+        assert!(files.iter().all(|p| shelf.of(p).is_some()));
+        assert!(shelf.libraries.iter().any(|l| l.name == "Alpha"));
+        let (shelf, files) = scan(&[Root { path: root.join("Beta.UFS").to_string_lossy().into_owned(), single: true }], &Progress::default()).unwrap();
+        assert_eq!((shelf.libraries.len(), files.len()), (1, 1));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "filesystem-only installed UVI discovery receipt; no bank payload access"]
+    fn w10_uvi_installed_paths_receipt() {
+        let root = Root { path: std::env::var("KONTRA_UVI_DISCOVERY_ROOT").expect("discovery root"), single: false };
+        let detected = detect(&root, &Progress::default());
+        let banks = walkdir::WalkDir::new(&root.path).into_iter().flatten()
+            .filter(|e| e.file_type().is_file() && e.path().extension().is_some_and(|x| x.eq_ignore_ascii_case("ufs"))).count();
+        println!("UVI_FILESYSTEM libraries={} containers={banks}", detected.len());
+        assert!(!detected.is_empty() && banks > 0);
+    }
+
     fn found(root: &Path, single: bool) -> Vec<(String, String, bool, usize)> {
         let roots = [Root { path: root.to_string_lossy().into(), single }];
         let (shelf, _) = scan(&roots, &Progress::default()).unwrap();
@@ -1265,6 +1426,21 @@ mod tests {
         assert_eq!(records.len(), 1, "one grouped diagnostic must retain every failed bank location");
         assert_eq!(records[0].details["locations"].as_array().unwrap().len(), 2);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn w10_uvi_root_problem_counts_banks_and_keeps_distinct_causes() {
+        let mut shelf = Shelf::default();
+        shelf.bank_issues = vec![
+            BankIssue { unsupported: false, message: "Truncated header".into(),
+                locations: vec!["/owned/A.ufs".into(), "/owned/B.ufs".into(), "/owned-other/C.ufs".into()] },
+            BankIssue { unsupported: false, message: "Invalid directory".into(), locations: vec!["/owned/D.ufs".into()] },
+        ];
+        assert_eq!(shelf.bank_problem(Path::new("/owned")).as_deref(),
+            Some("3 UVI banks could not be cataloged: Truncated header; Invalid directory"));
+        assert_eq!(shelf.bank_problem(Path::new("/owned/D.ufs")).as_deref(),
+            Some("1 UVI bank could not be cataloged: Invalid directory"));
+        assert_eq!(shelf.bank_problem(Path::new("/missing")), None);
     }
 
     #[test]
