@@ -8,25 +8,9 @@ fn empty_browser_keeps_help_on_its_action() {
         let p = Arc::new(SamplerParams::new());
         let h = Harness::new(&p, width, height);
         let scene = h.ui.scene().unwrap();
-        let heading = scene
-            .surfaces()
-            .find(|s| s.text_value.as_deref() == Some("No libraries yet"))
-            .unwrap()
-            .frame;
-        let last = scene.surface("empty-add-one").unwrap().frame;
-        assert!(
-            last.y + last.size.height - heading.y <= CONTROL * 3. + SPACE * 2.,
-            "empty browser keeps its two actions together without a repeated paragraph"
-        );
-        assert!(
-            scene
-                .surface("empty-add-many")
-                .unwrap()
-                .tip
-                .as_deref()
-                .is_some_and(|tip| tip.contains("without a library file")),
-            "discovery help remains available"
-        );
+        assert!(scene.surfaces().any(|s| s.text_value.as_deref() == Some("No libraries yet")));
+        assert!(scene.surface("empty-add-many").is_none() && scene.surface("empty-add-one").is_none());
+        assert!(scene.surface("libraries-add").unwrap().tip.as_deref().is_some_and(|tip| tip.contains("Add libraries")));
     }
 }
 

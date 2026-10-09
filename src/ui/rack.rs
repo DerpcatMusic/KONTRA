@@ -1098,23 +1098,12 @@ fn snapshot_row(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
         return None;
     }
     let chosen = paths.iter().position(|p| p == Path::new(&part.snapshot));
-    let previous = chosen
-        .and_then(|i| i.checked_sub(1))
-        .and_then(|i| paths.get(i))
-        .cloned();
-    let next = chosen
-        .map_or_else(|| paths.first(), |i| paths.get(i + 1))
-        .cloned();
-    let title = if part.snapshot.is_empty() {
-        "Select snapshot…".into()
-    } else {
-        super::header::stem(&part.snapshot)
-    };
+    let previous = chosen.and_then(|i| i.checked_sub(1)).and_then(|i| paths.get(i)).cloned();
+    let next = chosen.map_or_else(|| paths.first(), |i| paths.get(i + 1)).cloned();
+    let title = if part.snapshot.is_empty() { "Select preset…".into() } else { super::header::stem(&part.snapshot) };
     let id = format!("snapshot-{slot}");
-    let (hit, selector) = dropdown(ui, id.as_str(), &title, "Snapshot");
-    if hit {
-        menu::open_under(ui, cx, menu::Target::Snapshots(slot), &id);
-    }
+    let (hit, selector) = dropdown(ui, id.as_str(), &title, "Preset");
+    if hit { menu::open_under(ui, cx, menu::Target::Snapshots(slot), &id); }
     let selector = selector.flex(1);
     let arrow = |ui: &mut Ui, id: String, picture: Icon, label: &str, enabled: bool| {
         if enabled {
@@ -1123,20 +1112,8 @@ fn snapshot_row(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
             (false, dead_icon(picture, label))
         }
     };
-    let (prev_hit, prev) = arrow(
-        ui,
-        format!("snapshot-prev-{slot}"),
-        Icon::Left,
-        "Previous snapshot",
-        previous.is_some(),
-    );
-    let (next_hit, next_el) = arrow(
-        ui,
-        format!("snapshot-next-{slot}"),
-        Icon::Right,
-        "Next snapshot",
-        next.is_some(),
-    );
+    let (prev_hit, prev) = arrow(ui, format!("snapshot-prev-{slot}"), Icon::Left, "Previous preset", previous.is_some());
+    let (next_hit, next_el) = arrow(ui, format!("snapshot-next-{slot}"), Icon::Right, "Next preset", next.is_some());
     if let Some(path) = previous.filter(|_| prev_hit).or(next.filter(|_| next_hit)) {
         cx.snapshot(slot, path.to_string_lossy().into_owned());
     }
