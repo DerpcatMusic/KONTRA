@@ -528,7 +528,7 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                     Command::OpenNew(path.clone()),
                 ));
             }
-            let favorite = cx.selection.favorites.contains(path);
+            let favorite = cx.is_favorite(path);
             items.extend([
                 Item::Rule,
                 act(
