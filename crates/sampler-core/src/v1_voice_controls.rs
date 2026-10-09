@@ -47,6 +47,44 @@ pub struct Flex {
     pub points: Box<[FlexPoint]>,
     pub sustain: usize,
 }
+impl Flex {
+    /// Port from v1 0cb7a8a0:src/engine/bank.rs::Flex::from; admission stays with W9.
+    pub fn from_kontakt(
+        points: &[sampler_ir::kontakt::FlexPoint],
+        sustain: u32,
+    ) -> Result<Self, Error> {
+        if points.is_empty()
+            || points.len() > 32
+            || sustain as usize >= points.len()
+            || points.iter().any(|p| {
+                !p.time_ms.is_finite()
+                    || p.time_ms < 0.
+                    || !(0. ..=1.).contains(&p.level)
+                    || !(0. ..=1.).contains(&p.curve)
+            })
+        {
+            return Err(Error::InvalidInput);
+        }
+        let mut from = 0.;
+        let points = points
+            .iter()
+            .map(|p| {
+                let bulge = 2. * p.curve - 1.;
+                let point = FlexPoint {
+                    seconds: p.time_ms / 1000.,
+                    level: p.level,
+                    curve: if p.level < from { -bulge } else { bulge },
+                };
+                from = p.level;
+                point
+            })
+            .collect();
+        Ok(Self {
+            points,
+            sustain: sustain as usize,
+        })
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FlexPoint {
     pub seconds: f32,
