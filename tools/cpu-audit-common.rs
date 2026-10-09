@@ -1,4 +1,14 @@
 include!("cpu-audit-schedules.rs");
+// Attribute callback deadline outliers without counting a sleeping Lua owner as audio CPU.
+#[cfg(target_os = "linux")]
+fn thread_cpu_ns() -> u64 {
+    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    if unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) } != 0 { return 0; }
+    ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
+}
+#[cfg(not(target_os = "linux"))]
+fn thread_cpu_ns() -> u64 { 0 }
+
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
@@ -46,6 +56,8 @@ fn main() {
     let args: Vec<_> = std::env::args().collect();
     if args.get(1).is_some_and(|s| s == "--check") {
         assert_eq!(quantiles(vec![1000, 2000, 3000])["p50_us"], 2.);
+        #[cfg(target_os = "linux")]
+        assert!(thread_cpu_ns() > 0, "audio-thread CPU clock must be available for miss attribution");
         cpu_checks();
         println!("ok");
         return;
@@ -74,6 +86,7 @@ fn main() {
     let (mut next, mut peak, mut voice_sum, mut voice_peak, mut misses) =
         (0, 0.0f32, 0usize, 0usize, 0usize);
     let (mut allocations, mut event_allocations) = (0u64, 0u64);
+    let mut miss_detail = Vec::with_capacity(6000);
     let (io0, rchar0) = (
         proc_value("/proc/self/io", "read_bytes:"),
         proc_value("/proc/self/io", "rchar:"),
@@ -100,6 +113,7 @@ fn main() {
     for begin in (0..schedule.frames).step_by(block) {
         let before = CALLS.get();
         COUNT.set(true);
+        let cpu_start = thread_cpu_ns();
         let t = Instant::now();
         while next < events.len() && events[next].0 < begin + block {
             let (_, s, a, b) = events[next];
@@ -111,7 +125,9 @@ fn main() {
         let v = p.voices();
         let got = p.render(block);
         let ns = t.elapsed().as_nanos() as u64;
+        let cpu_ns = thread_cpu_ns().saturating_sub(cpu_start);
         COUNT.set(false);
+        if ns > block as u64 * 1_000_000_000 / 48000 { miss_detail.push((begin, ns, cpu_ns, v)); }
         allocations += CALLS.get() - after_events;
         if trace_stream {
             let underruns = p.problems()["underruns"].as_u64().unwrap();
@@ -154,6 +170,11 @@ fn main() {
     info["voices_mean"] = json!(voice_sum as f64 / all.len() as f64);
     info["voices_peak"] = json!(voice_peak);
     info["deadline_misses"] = json!(misses);
+    info["thread_cpu_clock"] = json!(if cfg!(target_os = "linux") { "CLOCK_THREAD_CPUTIME_ID" } else { "unavailable" });
+    info["deadline_miss_detail"] = json!(miss_detail.iter().map(|&(frame, wall_ns, cpu_ns, voices)| json!({
+        "frame":frame, "wall_us":wall_ns as f64 / 1000., "thread_cpu_us":cpu_ns as f64 / 1000., "voices":voices,
+        "phase":if frame == 0 { "first_block" } else if frame < 12000 { "startup" } else if frame < 48000 { "steady" } else if frame < 144000 { "sustain" } else { "release" },
+    })).collect::<Vec<_>>());
     info["render_heap_calls"] = json!(allocations);
     info["event_heap_calls"] = json!(event_allocations);
     info["problems"] = p.problems();
