@@ -239,7 +239,7 @@ pub use delay::Delay;
 pub(super) use reverb::Reverb;
 pub use reverb::ReverbSettings;
 pub use shaping::{Decimator, Rectifier};
-pub use svf::{StateVariableFilter, SvfMode};
+pub use svf::{OutputLowPass, StateVariableFilter, SvfMode};
 
 pub(super) enum PreparedProcessor {
     Gain(f64),
@@ -423,12 +423,18 @@ pub(super) fn compile_processors(
                 },
                 Processor::LoFi(settings) => PreparedProcessor::LoFi(settings.compile(rate)),
                 Processor::Daft(settings) => {
-                    PreparedProcessor::Daft(settings.compile(rate, bindings))
+                    let mut daft = settings.compile(rate, bindings);
+                    daft.modulation_index = filters.len();
+                    filters.push(svf::PreparedFilter::NativeControl);
+                    PreparedProcessor::Daft(daft)
                 }
                 Processor::LadderLP4(settings) => {
                     let offset = *delay_frames;
                     *delay_frames = offset.checked_add(ladder::CELLS).ok_or(Error::Capacity)?;
-                    PreparedProcessor::LadderLP4 { ladder: settings.compile(rate, bindings), offset }
+                    let mut ladder = settings.compile(rate, bindings);
+                    ladder.modulation_index = filters.len();
+                    filters.push(svf::PreparedFilter::NativeControl);
+                    PreparedProcessor::LadderLP4 { ladder, offset }
                 }
                 Processor::Rectify(mode) => PreparedProcessor::Rectify(mode),
                 Processor::Gainer { dry, gain } => PreparedProcessor::Gainer {
@@ -497,6 +503,8 @@ impl PreparedVoiceChain {
                 PreparedProcessor::StateVariable(filter) if stages.contains(&i) => {
                     u32::try_from(*filter).ok()
                 }
+                PreparedProcessor::Daft(daft) if stages.contains(&i) => u32::try_from(daft.modulation_index).ok(),
+                PreparedProcessor::LadderLP4 { ladder, .. } if stages.contains(&i) => u32::try_from(ladder.modulation_index).ok(),
                 _ => None,
             })
             .collect()
@@ -929,9 +937,11 @@ pub(super) fn process<const TRACE: bool>(
             PreparedProcessor::Compressor(compressor) => compressor.process(state, block, len),
             PreparedProcessor::Decimate(decimator) => decimator.process(state, block, len),
             PreparedProcessor::LoFi(lofi) => lofi.process(state, block, len),
-            PreparedProcessor::Daft(daft) => daft.process(state, parameters, block, len, at),
+            PreparedProcessor::Daft(daft) => daft.process(state, parameters, block, len, at,
+                filters.bank.native_knobs(daft.modulation_index)),
             PreparedProcessor::LadderLP4 { ladder, offset } => {
-                fault |= ladder.process(state, &mut delay_samples[*offset..*offset + ladder::CELLS], parameters, block, len, at);
+                fault |= ladder.process(state, &mut delay_samples[*offset..*offset + ladder::CELLS], parameters, block, len, at,
+                    filters.bank.native_knobs(ladder.modulation_index));
             }
             PreparedProcessor::StereoModeller { stereo, offset } => {
                 stereo.process(

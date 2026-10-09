@@ -192,6 +192,10 @@ impl Assets {
             .as_ref()
             .map_or(Vec::new(), |p| p.failures())
     }
+    #[cfg(feature = "shots")]
+    pub fn completed_key_bytes(&self) -> Vec<(String, usize)> {
+        self.preparation.as_ref().map_or_else(Vec::new, |p| p.completed_key_bytes())
+    }
     /// Loads what `presentation` draws and releases everything else.
     pub fn sync(
         &mut self,

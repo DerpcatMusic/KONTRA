@@ -132,7 +132,7 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, view: View) -> Option<El> {
         (View::Info, i) => info(cx, slot, i.as_deref()),
         _ => return None,
     };
-    Some(el.pad((SPACE, INSET)).w(Len::Pct(100.)).shrink(0).id(format!("inside-{slot}")))
+    Some(el.pad(INSET).w(Len::Pct(100.)).shrink(0).id(format!("inside-{slot}")))
 }
 
 // Articulations ---------------------------------------------------------
@@ -338,15 +338,19 @@ fn articulations(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument) -
     let capacity = if !cx.selection.parts[slot].articulation_overlay.valid() { Some("Invalid saved mappings; Reset mappings") } else { match mode { ir::Driver::Channel if arts.len() > 16 => Some("16 channels maximum"), ir::Driver::Velocity if arts.len() > 127 => Some("127 velocity partitions maximum"), ir::Driver::Controller | ir::Driver::Program if arts.len() > 128 => Some("128 values maximum"), _ => None } };
     let edit = cx.state.inside.entry(slot).or_default().edit.clone();
     let error = edit.as_ref().and_then(|e| e.error.clone()).or_else(|| capacity.map(String::from));
-    let mut head = vec![section("Articulations"), caption(arts.len().to_string()).fill(secondary()), spacer(), driver_el.h(24.), more_el.h(24.).w(24.)];
-    if let Some(error) = error { head.insert(2, caption(error).fill(Role::Danger).lines(1).min_w(0).tip("Correct the trigger and press Enter")); }
-    if let Some(edit) = edit.as_ref().filter(|e| e.learn) { head.insert(2, caption(format!("Learn {}…", arts[ids.iter().position(|id| id == &edit.source).unwrap_or(0)].name)).lines(1).min_w(0)); }
+    let mut head = vec![section("Articulations").shrink(0), caption(arts.len().to_string()).fill(secondary()).lines(1).shrink(0), spacer(), driver_el.h(CONTROL).shrink(0), more_el];
+    if let Some(error) = error { head.insert(2, caption(error.clone()).fill(Role::Danger).lines(1).min_w(0).tip(format!("{error}\nCorrect the trigger and press Enter"))); }
+    if let Some(edit) = edit.as_ref().filter(|e| e.learn) {
+        let message = format!("Learn {}…", arts[ids.iter().position(|id| id == &edit.source).unwrap_or(0)].name);
+        head.insert(2, caption(message.clone()).lines(1).min_w(0).tip(message));
+    }
     if let Some(edit) = edit.as_ref() && let Some((proposal, other)) = &edit.conflict {
         let other_name = ids.iter().position(|id| id == other).map(|n| arts[n].name.as_str()).unwrap_or("other row");
         let (swap, swap_el) = latch(ui, format!("art-swap-{slot}"), "Swap", &format!("Swap triggers with {other_name}"), false);
         let (cancel, cancel_el) = icon_button(ui, format!("art-cancel-{slot}"), Icon::Close, "Cancel trigger swap", false);
-        head.insert(2, caption(format!("Used by {other_name}")).lines(1).min_w(0));
-        head.insert(3, swap_el.h(24.)); head.insert(4, cancel_el.h(24.));
+        let message = format!("Used by {other_name}");
+        head.insert(2, caption(message.clone()).lines(1).min_w(0).tip(message));
+        head.insert(3, swap_el.h(CONTROL).shrink(0)); head.insert(4, cancel_el);
         if swap {
             let n = ids.iter().position(|id| id == &edit.source).unwrap();
             let overlay = &mut cx.selection.parts[slot].articulation_overlay;
@@ -364,7 +368,7 @@ fn articulations(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument) -
         }
         if cancel { cx.state.inside.entry(slot).or_default().edit = None; cx.p.shared.learn_target.store(0, Ordering::Relaxed); }
     }
-    let head = row(head).gap(SPACE).align(Align::Center).h(24.).shrink(0);
+    let head = row(head).gap(SPACE).align(Align::Center).h(CONTROL).shrink(0);
     let order = cx.selection.parts[slot].articulation_overlay.display_order(arts);
     let mut rows = Vec::new();
     for (place, n) in order.into_iter().enumerate() {
@@ -443,6 +447,7 @@ fn mapping(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument) -> El {
         .when(on, |e| e.fill(Role::Raised))
         .focusable()
         .a11y(A11y::Button)
+        .tip(label.clone())
         .named(label)
         .id(id);
         list.push(interactive(el, on));

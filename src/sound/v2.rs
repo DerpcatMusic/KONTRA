@@ -44,6 +44,7 @@ use super::{
 
 #[cfg(test)]
 mod pressed_tests;
+mod persistence;
 
 /// Host notes tracked for ownership and NOTE_END across the rack.
 const HELD: usize = 1024;
@@ -58,6 +59,9 @@ const WIRE: ChannelAddress = ChannelAddress { protocol: Protocol::Midi1, port: 0
 /// One playable part: its runtime, the MIDI zone in front of it and its tree.
 pub struct Part {
     runtime: Runtime,
+    persistence: Option<persistence::Persistence>,
+    tone: sampler_core::OutputLowPass,
+    tone_history: [[[f64; 2]; 2]; BUSES + 1],
     pub(crate) epoch: u64,
     pub(crate) waveform_sources: std::collections::HashMap<u32, super::waveform::Source>,
     pub(crate) ui_controls: Option<ControlIngress>,
@@ -200,13 +204,17 @@ impl Part {
         let revision=runtime.control_revision(plan).unwrap_or(0);
         let context = ControlContext { performance: runtime.performance(0).map_err(core)?, origin: WIRE, channels: 1 };
         let (runtime, client) = runtime.with_control_updates(256, sampler_core::WIDGET_EDIT_CAPACITY).map_err(core)?;
+        let tone = sampler_core::OutputLowPass::new(runtime.sample_rate()).map_err(core)?;
         Ok(Self {
             epoch: 0,
             engine_bindings,
             waveform_sources: Default::default(),
-            ui_controls: Some(ControlIngress { client, plan, context, definitions, widgets, widget_values, captures, capturing:false, revision, pending_widgets: Default::default(), pending: Default::default() }),
+            ui_controls: Some(ControlIngress { client, plan, context, definitions, widgets, widget_values, captures, capturing:false, revision, pending_widgets: Default::default(), pending: Default::default(), persistence: None }),
             runtime,
+            tone,
+            tone_history: [[[0.; 2]; 2]; BUSES + 1],
             editor_offsets:None,
+            persistence: None,
             mpe,
             force_articulation_once: false,
             tune: 0.0,
@@ -333,6 +341,7 @@ struct Held {
 
 pub struct V2Core {
     parts: Vec<Option<Box<Part>>>,
+    performance: Option<[f64; 3]>,
     align: crate::timing::Align,
     holding: bool,
     aligned_buses: Box<[Block; BUSES]>,
@@ -368,9 +377,11 @@ pub(crate) struct ControlIngress {
     captures:std::collections::VecDeque<Vec<sampler_core::WidgetEdit>>,
     capturing:bool,
     revision:u64,
+    persistence: Option<Arc<persistence::Snapshot>>,
 }
 
 impl ControlIngress {
+    pub(crate) fn save_script_state(&self) -> Option<String> { self.persistence.as_ref().map(|state|state.save()) }
     pub(crate) fn plan(&self) -> sampler_core::PlanId { self.plan }
     pub(crate) fn submit_host_parameter(&mut self, address: u16, value: f64) -> bool {
         if address >= super::HOST_AUTOMATION_SLOTS || !value.is_finite() || !(0.0..=1.0).contains(&value) { return false; }
@@ -852,6 +863,7 @@ impl V2Core {
         peaks.parts.resize(parts.max(peaks.parts.len()), [0.0; 2]);
         Self {
             parts: (0..parts).map(|_| None).collect(),
+            performance: None,
             align: crate::timing::Align::with_slots(parts, mix.timing.clone()),
             holding: false,
             aligned_buses: Box::new([[[0.;MAX_BLOCK];2];BUSES]),
@@ -952,6 +964,13 @@ impl V2Core {
                 }
                 continue;
             }
+            // ponytail: post-FX until a cross-format input-bus marker admits pre-insert Tone.
+            let cutoff = self.performance.map_or(20_000., |p| p[2]);
+            let at = part.runtime.now().saturating_sub(n as u64);
+            let _ = part.tone.process(out, &mut part.tone_history[BUSES], cutoff, at);
+            for pair in pairs(part.direct) {
+                let _ = part.tone.process(&mut self.direct[pair][..n], &mut part.tone_history[pair], cutoff, at);
+            }
             if let Some((program, error)) = part.runtime.take_fault() {
                 part.problems.fault_program = program as u64 + 1;
                 part.problems.fault_error = sampler_core::Error::ALL.iter().position(|e| *e == error).unwrap_or(0) as u64;
@@ -1032,6 +1051,9 @@ impl V2Core {
                 }
                 *m = m.max(peak(&signal[..n]));
             }
+        }
+        for part in self.parts.iter_mut().flatten() {
+            if let Some(state) = part.persistence.as_mut() { state.publish(&part.runtime); }
         }
         Rendered { buses: &self.buses, live: self.written }
     }
@@ -1124,6 +1146,7 @@ impl Core for V2Core {
         for s in &mut self.align.parts {s.cancel();}
         for p in self.parts.iter_mut().flatten() {
             p.runtime.panic();
+            p.tone_history.fill([[0.; 2]; 2]);
         }
     }
 
@@ -1134,6 +1157,9 @@ impl Core for V2Core {
             held.part = ORPHAN;
         }
         if let (Some(p), Some(c)) = (prepared.as_mut(), self.mix.parts.get(part)) {
+            if let Some([attack, release, _]) = self.performance {
+                let _ = p.runtime.set_fallback_envelope(attack, release);
+            }
             p.apply_editor_offsets(self.mix.editor_offsets.get(part).unwrap_or(&self.empty_editor_offsets));
             p.configure(c, self.mix.articulation_routes.get(part).and_then(Option::as_ref));
         }
@@ -1156,7 +1182,14 @@ impl Core for V2Core {
         }
     }
 
-    fn play(&mut self, part: usize, event: Event) {
+    fn play(&mut self, part: usize, mut event: Event) {
+        // Port v1 service_channel: the part's keyboard controls its MPE manager.
+        if let Event::Ump(words)=&mut event
+            && matches!(words[0]>>28,2|4)
+            && let Some(Some(p))=self.parts.get(part)
+            && p.mpe_zone {
+            words[0]=(words[0]&!0x000f_0000)|u32::from(p.mpe.manager_channel())<<16;
+        }
         self.deliver(part, event);
     }
 
@@ -1278,6 +1311,17 @@ impl Core for V2Core {
             }
         }
         refused
+    }
+
+    fn set_performance(&mut self, attack: f64, release: f64, cutoff: f64) {
+        if !(0.0001..=5.).contains(&attack) || !(0.001..=10.).contains(&release)
+            || !(20.0..=20_000.).contains(&cutoff) { return; }
+        let next = Some([attack, release, cutoff]);
+        if self.performance == next { return; }
+        self.performance = next;
+        for part in self.parts.iter_mut().flatten() {
+            let _ = part.runtime.set_fallback_envelope(attack, release);
+        }
     }
 
     fn set_mix(&mut self, mix: &Mix) {
@@ -1807,7 +1851,8 @@ fn wav(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
         envelope: Envelope::new(0, 0, 0, 1.0, release).map_err(core)?,
         playback: Playback::default(),
     };
-    let plan = Prepared::new(rate, vec![pcm], vec![region], 128).map_err(core)?;
+    let plan = Prepared::new(rate, vec![pcm], vec![region], 128).map_err(core)?
+        .with_fallback_envelopes(vec![true]).map_err(core)?;
     let name = stem(&request.path);
     let mut report = LoadReport { name: name.clone(), path: request.path.display().to_string(), ..Default::default() };
     report.decoded.format = "WAV".into();
@@ -2003,6 +2048,46 @@ impl CoreLoader for V2Loader {
 mod tests {
     use super::*;
     use crate::sound::event::HostPattern;
+
+    #[test]
+    fn v1_global_fallback_attack_and_release_reach_audio() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fallback.wav");
+        let spec = hound::WavSpec { channels: 1, sample_rate: 48000, bits_per_sample: 32, sample_format: hound::SampleFormat::Float };
+        let mut wav = hound::WavWriter::create(&path, spec).unwrap();
+        for _ in 0..48000 { wav.write_sample(0.5f32).unwrap(); }
+        wav.finalize().unwrap();
+        let mut core = V2Core::with_parts(1, 48000.);
+        core.install(0, load(&path));
+        core.set_performance(0.1, 0.2, 20_000.);
+        core.play(0, Event::midi1(0x90, 60, 127));
+        let first = core.render(128).buses[0][0][127];
+        assert!(first > 0. && first < 0.02, "100ms fallback attack must start quietly, got {first}");
+        for _ in 0..40 { core.render(128); }
+        core.play(0, Event::midi1(0x80, 60, 0));
+        for _ in 0..24 { core.render(128); }
+        assert!(core.render(128).buses[0][0][127] > 0.2, "200ms fallback release outlasts the old 50ms WAV release");
+        for _ in 0..60 { core.render(128); }
+        assert_eq!(core.voices().active, 0);
+    }
+
+    #[test]
+    fn v1_global_tone_filters_audio_and_default_bypasses() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tone.wav"); sine(&path);
+        let energy = |cutoff| {
+            let mut core = V2Core::with_parts(1, 48000.);
+            core.install(0, load(&path));
+            core.set_performance(0.002, 0.15, cutoff);
+            core.play(0, Event::midi1(0x90, 60, 127));
+            for _ in 0..30 { core.render(128); }
+            let out = core.render(128);
+            out.buses[0][0][..128].iter().map(|x| f64::from(*x).powi(2)).sum::<f64>()
+        };
+        let dry = energy(20_000.);
+        let wet = energy(20.);
+        assert!(dry > 1. && wet < dry * 0.01, "Tone must filter the part output: dry={dry}, wet={wet}");
+    }
 
     fn sine(path: &Path) {
         let spec = hound::WavSpec { channels: 1, sample_rate: 48000, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
@@ -2262,6 +2347,36 @@ mod tests {
             let expression = part.runtime.expression_id(held.id).unwrap();
             assert!(part.runtime.expression(expression).unwrap().pitch_semitones > 1.0, "upper manager bends every member");
         }
+    }
+
+    #[test]
+    fn v1_upper_mpe_keyboard_controls_reach_every_member() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("upper.wav"); sine(&path);
+        let request = LoadRequest { path, sample_rate: 48000.0, mpe: true, mpe_upper: true, ..Default::default() };
+        let loaded = V2Loader.prepare(&request, &mut |_| {}, &|| false).unwrap();
+        let mut core = V2Core::with_parts(1, 48000.0);
+        let mut mix = Mix::default(); mix.parts[0].mpe = true; mix.parts[0].bend_range = 12;
+        core.set_mix(&mix); core.install(0, loaded.part);
+        for (channel, key) in [(1, 60), (2, 64)] {
+            core.event(0, on(HostNote { port: 0, channel, key, id: i32::from(key), clap: true }));
+        }
+        for event in [Event::midi1(0xe0, 127, 127), Event::Ump([0x40e0_0000, u32::MAX])] {
+            core.play(0, event);
+            let part = core.parts[0].as_ref().unwrap();
+            for held in &core.held[..2] {
+                let expression = part.runtime.expression_id(held.id).unwrap();
+                assert!(part.runtime.expression(expression).unwrap().pitch_semitones > 1.0,
+                    "the keyboard bend uses the upper manager, as v1 service_channel did");
+            }
+            core.play(0, Event::midi1(0xe0, 0, 64));
+        }
+        core.event(0, Event::midi1(0xe1, 127, 127));
+        let part = core.parts[0].as_ref().unwrap();
+        let pitches:Vec<_>=core.held[..2].iter().map(|h| {
+            part.runtime.expression(part.runtime.expression_id(h.id).unwrap()).unwrap().pitch_semitones
+        }).collect();
+        assert!(pitches[0]>1.0);assert_eq!(pitches[1],0.,"external member bend still affects only its own note");
     }
 
     #[test]
