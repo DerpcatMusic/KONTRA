@@ -438,3 +438,51 @@ Updated explanatory audio-TID profiles of settled candidate: piano25.551/49.191�
 The actual existing wrapper handoff alias, with8192 params,256KiB extra and1MiB persist, fails a semantic heap guard: three frees on the audio consumer, expected zero. Receipt state-retirement-red.log (exit101). CLAP and VST3 now use the same latest-wins pending queue plus two bounded retirement slots. Audio applies by reference and retires ownership even on authored panic; host/editor writers, inactive drains and main callbacks collect it. CLAP requests its main callback, VST3 reuses the existing main restart drain/wake without changing the C++ ABI. Full retirement capacity defers pending application rather than destroying audio-owned data. The realtime section begins before restore application.
 
 Five targeted fixtures pass in each wrapper: large-state heap guard, a recall published during application, panic retirement, concurrent recalls, newest-wins. All70 wrapper-area tests pass, and default root cargo test --no-run passes. No native DAW large-rack recall or C++ allocator claim. Hosts without a main-thread pump can retain up to two consumed blobs until the next recall/deactivate; arbitrary authored load_state allocation is now visible to the guard, not automatically made realtime-safe. Frozen sound-seam candidate admission-state-retirement SHA2562f9bf6c7ab5be4beacc529dc19569eb697d6ba37bb59ad5bb4aa3c0e836c1c15; paired original-cell measurements follow. The original sound seam does not perform wrapper state recalls, so its timings cannot certify this allocation fix.
+
+Completed one same-window A/B pair for all nine cells, warm and cold: frozen64919587→3a288897. All36exit0, event/render heap0, underruns0, all18coldpages_after0. These sound-seam numbers do not exercise restored-wrapper ownership, and a single pair does not establish noise bounds.
+
+| Cell | Temperature | Before median / p99 µs | After median / p99 µs | Underruns before / after | Deadline misses before / after |
+|---|---|---:|---:|---:|---:|
+| piano-32 | cold | 14.910 / 29.901 | 15.350 / 30.231 | 0 / 0 | 0 / 0 |
+| piano-32 | warm | 17.280 / 39.900 | 15.890 / 33.101 | 0 / 0 | 0 / 0 |
+| strings-32 | cold | unscorable (no steady voices) | unscorable (no steady voices) | 0 / 0 | 23 / 23 |
+| strings-32 | warm | unscorable (no steady voices) | unscorable (no steady voices) | 0 / 0 | 23 / 23 |
+| fx-32 | cold | 44.511 / 93.862 | 44.331 / 103.102 | 0 / 0 | 0 / 0 |
+| fx-32 | warm | 47.321 / 111.272 | 44.240 / 91.802 | 0 / 0 | 0 / 0 |
+| piano-64 | cold | 21.710 / 40.211 | 21.601 / 42.980 | 0 / 0 | 0 / 0 |
+| piano-64 | warm | 21.441 / 39.171 | 22.841 / 48.551 | 0 / 0 | 0 / 0 |
+| strings-64 | cold | unscorable (no steady voices) | unscorable (no steady voices) | 0 / 0 | 15 / 15 |
+| strings-64 | warm | unscorable (no steady voices) | unscorable (no steady voices) | 0 / 0 | 15 / 15 |
+| fx-64 | cold | 48.961 / 113.052 | 46.801 / 111.242 | 0 / 0 | 0 / 0 |
+| fx-64 | warm | 45.221 / 100.892 | 47.951 / 112.102 | 0 / 0 | 0 / 0 |
+| piano-256 | cold | 83.331 / 109.032 | 87.152 / 120.102 | 0 / 0 | 0 / 0 |
+| piano-256 | warm | 88.882 / 130.592 | 86.001 / 115.252 | 0 / 0 | 0 / 0 |
+| strings-256 | cold | 14207.156 / 22156.184 | 12788.319 / 19213.640 | 0 / 0 | 591 / 591 |
+| strings-256 | warm | 14586.553 / 21974.352 | 15479.780 / 16473.389 | 0 / 0 | 591 / 591 |
+| fx-256 | cold | 177.093 / 252.715 | 172.513 / 249.455 | 0 / 0 | 0 / 0 |
+| fx-256 | warm | 166.363 / 273.255 | 177.574 / 268.395 | 0 / 0 | 0 / 0 |
+
+**HOLD.** The favorable single cold64piano21.601/42.980 andFX46.801/111.242 meet historical1ed CPU thresholds in this window, but prior3-rep settled candidate aggregate24.230/46.701 andFX51.711/119.502 miss them; no acceptance from a favorable repeat. Warm64piano remains above historicalv1~6.920/21.111. Vista32/64 has no steady voices and15–23deadline misses despite zero reported underruns. Vista256 has591deadline misses on both sides and12.8–15.5milliseconds per block, not microseconds. W6 received the exact path/checkpoint/originaleventplan for sharedsignalgraph diagnosis. No parity claim on any full9-cell matrix. Evidence:~/.cache/kontakto-fix-cpu/state-retirement-matrix/.
+
+## Finding9: idle decoded page memory
+
+Ported v1 `0cb7a8a0:src/engine/stream.rs` `Slot::reclaim` and its five-second idle policy. `sampler-pool::discard_f32` owns the narrow unsafe boundary: only complete OS pages inside an exclusively borrowed f32 payload are discarded, excluding allocator metadata and neighboring storage; unaligned edges remain allocated. Linux releases physical RSS without changing bounded Box ownership; unsupported/refused discard returns zero. Core remains unsafe-free. New buffers are discarded after construction; worker free buffers are discarded once after five wall-clock seconds without decoded jobs. Every requested range is initialized again before publication.
+
+After five runtime seconds without voices, audio returns at most16 idle entries per streaming service through existing invalidation/recycle queues. Protected entries and active voices/tails prevent reclamation; stale results retain serial identity and return storage to the worker. No audio madvise, reader close, allocation, or buffer destruction. Decode threads park for five seconds between idle checks and close only their reader LRU; source catalog, archive handles, header caches and reload path remain intact.
+
+Five new targeted checks pass: owned-page/neighbor/edge bounds; protected pages and stale results; live-voice retention; threshold/bounded return plus PCM reactivation under the heap guard; actual five-second Kontakt reader close/reopen from the retained source. All54 targeted streaming/cold/lane integration tests pass (one independent timing test ignored), including the97voice resident/streamed/parallel PCM fixture. Default root `cargo test --no-run` passes. No native-host suspend/resume or non-Linux physical memory claim.
+
+Synthetic16part×768page pools (384MiB allocated decoded storage); same probe, frozen before/after:
+
+| Measurement | Before | After |
+|---|---:|---:|
+| Initial RSS KiB | 2484 | 2552 |
+| Loaded RSS KiB | 399356 | 55104 |
+| Warm populated RSS KiB | 400864 | 400868 |
+| Idle RSS after6seconds KiB | 400992 | 56740 |
+| Reactivated RSS KiB | 400992 | 57188 |
+| Setup milliseconds | 113.965 | 107.500 |
+| Audio heap calls | 0 | 0 |
+| Reactivation PCM equal | yes | yes |
+
+Idle RSS decreases85.85%; storage capacity stays384MiB and physical edge pages remain resident. Single synthetic A/B; setup time is not a real-library load gate. Frozen `idle-pool-before` SHA256`4ad2b87240e73bf7347996fe9cf33a56b3ac2a6d1723c2d75cedb9e300a34588`, after`93777e30604e86b29fcc03786f2e729b00725286645502d2e9d5dfc81acd0935`. CPU candidate `admission-idle-pool` SHA256`8e69ea921f4dcddc14b0af51b43d502da966101c9a22e9cead6e497104330f44`; original warm/cold nine-cell same-window A/B matrix and repeated64 cells running. **HOLD** until CPU/underrun checks complete; overall v1 gate remains unmet.
