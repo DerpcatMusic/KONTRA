@@ -1352,3 +1352,6 @@ mod chrome_tests;
  pub(crate) fn audit_frames(p: &Arc<SamplerParams>) -> serde_json::Value { tests::audit_frames(p) }
 #[cfg(all(test, feature = "library-access"))]
 mod uvi_audit;
+
+#[cfg(test)]
+mod gpu_audit;
