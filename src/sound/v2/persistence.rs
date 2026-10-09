@@ -46,7 +46,7 @@ impl Atom {
             },
         }
     }
-    fn write(&self, slot: &[AtomicU64], value: Value) {
+    fn write(&self, slot: &[AtomicU64], value: &Value) {
         let words = &slot[self.offset..self.offset + self.len];
         let set = |index: usize, value| {
             if words[index].load(Ordering::Relaxed) != value {
@@ -54,9 +54,9 @@ impl Atom {
             }
         };
         match value {
-            Value::Control(ControlValue::Integer(v)) | Value::Cell(v) => set(0, v as u64),
+            Value::Control(ControlValue::Integer(v)) | Value::Cell(v) => set(0, *v as u64),
             Value::Control(ControlValue::Real(v)) => set(0, v.to_bits()),
-            Value::Control(ControlValue::Toggle(v)) => set(0, u64::from(v)),
+            Value::Control(ControlValue::Toggle(v)) => set(0, u64::from(*v)),
             Value::Text(v) => {
                 let bytes = v.as_str().as_bytes();
                 set(0, bytes.len() as u64);
@@ -130,7 +130,7 @@ impl Snapshot {
             next = (next + 1) % 3;
         }
         for (atom, entry) in self.atoms.iter().zip(&state.values) {
-            atom.write(&self.slots[next], entry.value);
+            atom.write(&self.slots[next], &entry.value);
         }
         self.published.store(next, Ordering::SeqCst);
     }
@@ -160,6 +160,7 @@ impl Snapshot {
 
 pub(super) struct Persistence {
     state: ScriptStateBuffer,
+    revision: (sampler_core::PlanId, (u64, u64)),
     pub(super) snapshot: Arc<Snapshot>,
 }
 impl Persistence {
@@ -268,14 +269,27 @@ impl Persistence {
                 .map_err(core)?;
         }
         let snapshot = Snapshot::new(schema, &state);
-        Ok(Self { state, snapshot })
+        let revision = (plan, runtime.script_state_revision(plan).map_err(core)?);
+        Ok(Self {
+            state,
+            revision,
+            snapshot,
+        })
     }
     pub(super) fn publish(&mut self, runtime: &Runtime) {
+        let plan = runtime.active_plan();
+        let Ok(revision) = runtime.script_state_revision(plan) else {
+            return;
+        };
+        if self.revision == (plan, revision) {
+            return;
+        }
         if runtime
             .capture_script_state(runtime.active_plan(), &mut self.state)
             .is_ok()
         {
             self.snapshot.publish(&self.state);
+            self.revision = (plan, revision);
         }
     }
 }
@@ -317,32 +331,155 @@ impl Part {
 mod tests {
     use super::*;
     #[test]
+    fn dsp_control_edit_without_script_changes_is_published() {
+        use sampler_core::{
+            ControlDefinition, ControlDomain, ControlOperation, ControlRequest, ControlWrite,
+        };
+        let id = sampler_core::ControlId(700);
+        let prepared = sampler_core::Prepared::new(48000, vec![], vec![], 0)
+            .unwrap()
+            .with_controls(vec![ControlDefinition {
+                id,
+                domain: ControlDomain::Real { min: 0., max: 1. },
+                default: ControlValue::Real(0.25),
+            }])
+            .unwrap();
+        let (mut runtime, mut client) = Runtime::new(
+            prepared,
+            sampler_core::Limits {
+                notes: 1,
+                channels: 0,
+                performances: 1,
+                families: 0,
+                expressions: 1,
+                voices: 0,
+                decisions: 0,
+                commands: 1,
+                behaviors: 1,
+                behavior_fuel: 16,
+                behavior_cells: 1,
+                note_cells: 0,
+            },
+        )
+        .unwrap()
+        .with_control_updates(1, 1)
+        .unwrap();
+        let plan = runtime.active_plan();
+        let state = ScriptStateBuffer {
+            values: vec![ScriptStateEntry {
+                address: Address::Control(id),
+                value: Value::Control(ControlValue::Real(0.25)),
+            }],
+            callbacks: vec![],
+        };
+        let snapshot = Snapshot::new("dsp-only".into(), &state);
+        let mut persistence = Persistence {
+            state,
+            snapshot,
+            revision: (plan, runtime.script_state_revision(plan).unwrap()),
+        };
+        client
+            .submit(ControlRequest {
+                plan,
+                expected_revision: None,
+                operation: ControlOperation::Edit(Box::from([ControlWrite {
+                    id,
+                    value: ControlValue::Real(0.75),
+                }])),
+            })
+            .unwrap();
+        #[cfg(feature = "plugin")]
+        assert_eq!(
+            crate::plugin::tests::allocations(|| {
+                runtime.poll_control_update().unwrap();
+                persistence.publish(&runtime);
+            }),
+            0
+        );
+        #[cfg(not(feature = "plugin"))]
+        {
+            runtime.poll_control_update().unwrap();
+            persistence.publish(&runtime);
+        }
+        let saved: Saved = serde_json::from_str(&persistence.snapshot.save()).unwrap();
+        assert!(matches!(saved.values.as_slice(), [SavedValue::Real(v)] if *v == 0.75));
+        let slot = persistence.snapshot.published.load(Ordering::SeqCst);
+        persistence.publish(&runtime);
+        assert_eq!(persistence.snapshot.published.load(Ordering::SeqCst), slot);
+    }
+    #[test]
     fn unchanged_persistent_array_is_not_recaptured_or_published() {
         let prepared = sampler_core::Prepared::new(48000, vec![], vec![], 0)
             .unwrap()
             .with_script_instances(vec![vec![17; 32768]])
             .unwrap();
-        let runtime = Runtime::new(prepared, sampler_core::Limits {
-            notes: 1, channels: 0, performances: 1, families: 0,
-            expressions: 1, voices: 0, decisions: 0, commands: 1,
-            behaviors: 1, behavior_fuel: 16, behavior_cells: 1, note_cells: 0,
-        }).unwrap();
+        let mut runtime = Runtime::new(
+            prepared,
+            sampler_core::Limits {
+                notes: 1,
+                channels: 0,
+                performances: 1,
+                families: 0,
+                expressions: 1,
+                voices: 0,
+                decisions: 0,
+                commands: 1,
+                behaviors: 1,
+                behavior_fuel: 16,
+                behavior_cells: 1,
+                note_cells: 0,
+            },
+        )
+        .unwrap();
         let mut state = ScriptStateBuffer {
-            values: (0..32768).map(|index| ScriptStateEntry {
-                address: Address::Cell { instance: sampler_core::ScriptInstanceId(0), index },
-                value: Value::Cell(0),
-            }).collect(),
+            values: (0..32768)
+                .map(|index| ScriptStateEntry {
+                    address: Address::Cell {
+                        instance: sampler_core::ScriptInstanceId(0),
+                        index,
+                    },
+                    value: Value::Cell(0),
+                })
+                .collect(),
             callbacks: vec![],
         };
-        runtime.capture_script_state(runtime.active_plan(), &mut state).unwrap();
+        runtime
+            .capture_script_state(runtime.active_plan(), &mut state)
+            .unwrap();
         let snapshot = Snapshot::new("large-array".into(), &state);
-        let mut persistence = Persistence { state, snapshot };
+        let mut persistence = Persistence {
+            state,
+            snapshot,
+            revision: (
+                runtime.active_plan(),
+                runtime
+                    .script_state_revision(runtime.active_plan())
+                    .unwrap(),
+            ),
+        };
         let slot = persistence.snapshot.published.load(Ordering::SeqCst);
         // Poison only the staging buffer: an unchanged block must never visit it.
         persistence.state.values[0].value = Value::Cell(-123);
+        #[cfg(feature = "plugin")]
+        assert_eq!(
+            crate::plugin::tests::allocations(|| persistence.publish(&runtime)),
+            0
+        );
+        #[cfg(not(feature = "plugin"))]
         persistence.publish(&runtime);
         assert_eq!(persistence.state.values[0].value, Value::Cell(-123));
         assert_eq!(persistence.snapshot.published.load(Ordering::SeqCst), slot);
+        persistence.state.values[0].value = Value::Cell(101);
+        runtime
+            .restore_script_state(runtime.active_plan(), None, &mut persistence.state)
+            .unwrap();
+        persistence.publish(&runtime);
+        assert_eq!(persistence.state.values[0].value, Value::Cell(101));
+        let slot = persistence.snapshot.published.load(Ordering::SeqCst);
+        assert_eq!(
+            persistence.snapshot.slots[slot][0].load(Ordering::SeqCst),
+            101
+        );
     }
     fn values(value: i64) -> ScriptStateBuffer {
         ScriptStateBuffer {
