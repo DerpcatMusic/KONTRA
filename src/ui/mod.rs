@@ -46,6 +46,9 @@ mod render_art;
 mod inside;
 mod mapping;
 mod editor;
+// ponytail: standalone until W11 publishes selected-effect metadata and a typed DSP route.
+#[allow(dead_code)]
+mod effects;
 mod editor_model;
 mod viz;
 mod chain;
