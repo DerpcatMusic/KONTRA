@@ -6,6 +6,7 @@ use crate::LoadError;
 use ni_file::{nis::LibraryKey, nkr::Archive};
 use std::{
     collections::HashMap,
+    ffi::OsString,
     fs::File,
     io::{self, Cursor, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
@@ -34,6 +35,9 @@ pub struct Source {
 /// directory and each library key once.
 pub struct Samples {
     root: PathBuf,
+    // Port from v1 0cb7a8a0:src/import.rs: one path walk per archive per load.
+    canonical: HashMap<OsString, PathBuf>,
+    is_file: HashMap<OsString, bool>,
     archives: HashMap<PathBuf, Arc<Archive>>,
     keys: HashMap<PathBuf, Arc<dyn LibraryKey>>,
     handles: HashMap<PathBuf, Arc<File>>,
@@ -48,12 +52,27 @@ impl Samples {
     pub fn new(root: &Path) -> Self {
         Self {
             root: root.canonicalize().unwrap_or_else(|_| root.into()),
+            canonical: HashMap::new(),
+            is_file: HashMap::new(),
             archives: HashMap::new(),
             keys: HashMap::new(),
             handles: HashMap::new(),
             frame_counts: HashMap::new(),
             loose: None,
         }
+    }
+
+    fn archive_member(&mut self, path: &Path) -> Option<(PathBuf, String)> {
+        archive_member_where(path, |parent| {
+            self.archives.contains_key(parent)
+                || match self.is_file.get(parent.as_os_str()) {
+                    Some(&is_file) => is_file,
+                    None => *self
+                        .is_file
+                        .entry(parent.into())
+                        .or_insert(parent.is_file()),
+                }
+        })
     }
 
     /// Where the sample `name`, as the instrument at `parent` authored it, lives:
@@ -72,10 +91,16 @@ impl Samples {
         );
         for base in &bases {
             let candidate = base.join(&name);
-            if let Some((archive, member)) = archive_member(&candidate) {
-                let archive = archive
-                    .canonicalize()
-                    .map_err(|e| LoadError::io(&archive, e))?;
+            if let Some((archive, member)) = self.archive_member(&candidate) {
+                if !self.canonical.contains_key(archive.as_os_str()) {
+                    self.canonical.insert(
+                        archive.clone().into(),
+                        archive
+                            .canonicalize()
+                            .map_err(|e| LoadError::io(&archive, e))?,
+                    );
+                }
+                let archive = self.canonical[archive.as_os_str()].clone();
                 if archive.starts_with(&self.root)
                     && self.archive(&archive)?.find(&member).is_some()
                 {
@@ -130,7 +155,7 @@ impl Samples {
 
     /// Decode a sample [`Samples::resolve`] returned.
     pub fn decode(&mut self, location: &Path) -> Result<Decoded, LoadError> {
-        let bytes = match archive_member(location) {
+        let bytes = match self.archive_member(location) {
             Some((archive, member)) => {
                 let key = match self.keys.get(&archive) {
                     Some(key) => Some(key.clone()),
@@ -151,9 +176,7 @@ impl Samples {
 
     /// Where a resolved sample's bytes live, for random-access streaming.
     pub fn source(&mut self, location: &Path) -> Result<Source, LoadError> {
-        let Some((archive, member)) =
-            archive_member_where(location, |p| self.archives.contains_key(p) || p.is_file())
-        else {
+        let Some((archive, member)) = self.archive_member(location) else {
             let size = std::fs::metadata(location)
                 .map_err(|e| LoadError::io(location, e))?
                 .len();
@@ -219,9 +242,9 @@ impl Samples {
         keyed: bool,
         header: (u32, usize),
     ) -> Option<Source> {
-        let holding =
-            archive_member_where(location, |p| self.archives.contains_key(p) || p.is_file())
-                .map_or_else(|| location.to_path_buf(), |(archive, _)| archive);
+        let holding = self
+            .archive_member(location)
+            .map_or_else(|| location.to_path_buf(), |(archive, _)| archive);
         if holding != file || !file.starts_with(&self.root) {
             return None;
         }
@@ -276,6 +299,8 @@ impl Samples {
                 .map(|chunk| {
                     let mut samples = Self {
                         root: self.root.clone(),
+                        canonical: HashMap::new(),
+                        is_file: self.is_file.clone(),
                         archives: self.archives.clone(),
                         keys: self.keys.clone(),
                         handles: self.handles.clone(),
@@ -311,7 +336,7 @@ impl Samples {
             return Ok(count);
         }
         let mut head = Vec::new();
-        match archive_member(location) {
+        match self.archive_member(location) {
             Some((archive, member)) => {
                 let key = match self.keys.get(&archive) {
                     Some(key) => Some(key.clone()),
@@ -418,10 +443,6 @@ impl Seek for FileAt<'_> {
     }
 }
 
-/// `(archive, member)` when an ancestor of `path` is an NKX/NKR file.
-fn archive_member(path: &Path) -> Option<(PathBuf, String)> {
-    archive_member_where(path, Path::is_file)
-}
 // Port from v1 0cb7a8a0:src/import.rs: format only an actual archive member.
 fn archive_member_where(path: &Path, mut is_file: impl FnMut(&Path) -> bool) -> Option<(PathBuf, String)> {
     for parent in path.ancestors().skip(1) {
