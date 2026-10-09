@@ -939,6 +939,32 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "fixed pool trial 56f1822b rejected: storage underruns and RSS; retained as trial evidence"]
+    fn authored_polyphony_sizes_new_stream_pools_without_shrinking_the_policy_floor() {
+        use sampler_ir::{Instrument, Kill, Time, VoiceLimit};
+        // Rebuilding a source with a changed limit allocates its new pool here,
+        // before any runtime/audio callback owns the cache.
+        for limit in [None, Some(2), Some(12), Some(1000)] {
+            let instrument = Instrument {
+                voice_limit: limit.map(|voices| VoiceLimit {
+                    voices, kill: Kill::Oldest, prefer_released: true,
+                    fade: Time::Milliseconds(0.),
+                }),
+                ..Default::default()
+            };
+            let streamed = crate::stream_instrument(
+                instrument, vec![], vec![], &crate::Options::default(),
+                &StreamPolicy { voices: 4, lazy: true, ..Default::default() },
+            ).unwrap();
+            let pages = usize::try_from(limit.unwrap_or(4)).unwrap().max(4) * PAGES_PER_VOICE;
+            assert_eq!(streamed.report.pool_pages, pages);
+            assert_eq!(streamed.report.pool_bytes, pages * PAGE_FRAMES * size_of::<Frame>());
+            assert_eq!(streamed.cache.bytes(), streamed.report.pool_bytes);
+            assert_eq!(streamed.report.head_bytes, 0);
+        }
+    }
+
+    #[test]
     fn lazy_heads_are_not_read_until_requested_and_respect_the_budget() {
         struct Head(Arc<std::sync::atomic::AtomicUsize>);
         impl AssetSource for Head {
