@@ -502,7 +502,14 @@ impl FilterContext<'_> {
             }
             return;
         }
-        cache.process(state, block, len, parameters, at, expression);
+        let filter = cache.filter;
+        if filter.cutoff.projected(parameters) || filter.q.projected(parameters) {
+            // Voice offsets must neither reuse nor overwrite a sibling's coefficients.
+            let mut projected = FilterCache::new(PreparedFilter::StateVariable(filter));
+            projected.process(state, block, len, parameters, at, expression);
+        } else {
+            cache.process(state, block, len, parameters, at, expression);
+        }
     }
 }
 
