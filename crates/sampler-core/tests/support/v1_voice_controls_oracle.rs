@@ -8,7 +8,11 @@ const FIXED_ONE: f64 = (1u64 << 32) as f64;
 const SILENT: f32 = 1e-4;
 const VOICE_MODS: usize = 8;
 fn frequency(lfo: &PitchLfo, tempo: f32) -> f32 {
-    let tempo = if tempo.is_finite() && tempo >= 0.1 { tempo } else { 120. };
+    let tempo = if tempo.is_finite() && tempo >= 0.1 {
+        tempo
+    } else {
+        120.
+    };
     (tempo / (60. * lfo.note_value * lfo.count)).clamp(0.01, 210.)
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
