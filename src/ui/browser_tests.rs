@@ -358,3 +358,50 @@ fn w10_uvi_unreadable_banks_show_the_root_count_and_cause() {
     h.press("menu-item-5");
     assert!(h.ui.scene().unwrap().surface("root-bank-problem-0").is_some(), "settings must show the count and cause");
 }
+
+#[test]
+#[cfg(unix)]
+fn w10_uvi_dangling_library_paths_survive_scan_and_show_root_reasons() {
+    use crate::library::{Root, Progress};
+    use std::os::unix::fs::symlink;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("Good/Instruments")).unwrap();
+    std::fs::write(root.join("Good/Instruments/Owned.uvip"), b"<UVI4><Program/></UVI4>").unwrap();
+    for n in 0..25 {
+        symlink(root.join(format!("absent-{n}")), root.join(format!("Stale-{n}"))).unwrap();
+    }
+    symlink(root.join("absent-bank"), root.join("Dangling.ufs")).unwrap();
+    symlink(root.join("Cycle"), root.join("Cycle")).unwrap();
+    std::fs::write(root.join("NotFolder"), b"not a library directory").unwrap();
+    let roots = vec![
+        Root { path: root.to_string_lossy().into_owned(), single: false },
+        Root { path: root.join("MissingRoot").to_string_lossy().into_owned(), single: true },
+        Root { path: root.join("Cycle").to_string_lossy().into_owned(), single: false },
+        Root { path: root.join("NotFolder").to_string_lossy().into_owned(), single: false },
+    ];
+    let (shelf, files) = crate::library::scan(&roots, &Progress::default()).unwrap();
+    assert_eq!(shelf.per_root, [1, 0, 0, 0]);
+    assert_eq!(files.len(), 1, "broken paths must not discard the healthy library");
+    assert_eq!(shelf.path_issues.len(), 29, "each unavailable path must be retained once");
+    assert!(shelf.root_problem(root).unwrap().contains("29 library paths skipped"));
+    assert!(shelf.path_issues[&root.join("Dangling.ufs")].contains("Symbolic link cannot be resolved"));
+    assert_eq!(shelf.root_problem(&root.join("NotFolder")).as_deref(),
+        Some("1 library path skipped: Not a library directory or UFS bank"));
+    let p = Arc::new(SamplerParams::new());
+    p.shared.libraries.edit(|s| s.roots = roots);
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        view.shelf = Arc::new(shelf);
+        view.files = Arc::new(files);
+        view.scanned = p.shared.libraries.wanted();
+    }
+    let mut h = Harness::new(&p, 900., 600.);
+    h.press("bank-uvi");
+    assert!(h.ui.scene().unwrap().surface("uvi-bank-root-0").is_some(), "dangling entries must have a visible per-root reason");
+    h.press("app-menu");
+    h.press("menu-item-5");
+    for n in 0..4 {
+        assert!(h.ui.scene().unwrap().surface(&format!("root-bank-problem-{n}")).is_some(), "root {n} must report its skipped paths");
+    }
+}
