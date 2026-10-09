@@ -2,6 +2,7 @@
 //! enter rendering; preparation resolves addresses to existing control owners.
 use crate::{ControlId, EngineParameterAddress, Error};
 use std::collections::BTreeMap;
+pub use sampler_ir::ProcessorParameter as ParameterRole;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ParameterScope {
@@ -49,6 +50,8 @@ pub struct ParameterDescriptor {
     pub address: ParameterAddress,
     pub control: ControlId,
     pub name: String,
+    /// Semantic processor field, independent of display labels.
+    pub role: ParameterRole,
     pub unit: ParameterUnit,
     pub range: [f64; 2],
     pub default: f64,
