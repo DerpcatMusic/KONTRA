@@ -4654,6 +4654,28 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn standalone_delivery_worker_survives_bare_argv0_and_changed_directory() {
+        const TEST: &str = "support::crash::tests::standalone_delivery_worker_survives_bare_argv0_and_changed_directory";
+        const CHILD: &str = "KONTRA_PIN_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            use std::os::unix::process::CommandExt;
+            let directory = tempfile::tempdir().unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .arg0("kontakto-standalone")
+                .current_dir(directory.path())
+                .env(CHILD, "1")
+                .args(["--exact", TEST, "--test-threads=1"])
+                .output().unwrap();
+            assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            return;
+        }
+        let (sent, received) = mpsc::channel();
+        spawn_detached("standalone-delivery-test", move || { let _ = sent.send(()); }).unwrap();
+        received.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+    }
+
     /// Unload returns while work that waits on the user (an open file dialog) is still blocked.
     #[test]
     fn unload_does_not_wait_for_a_blocked_detached_worker() {
