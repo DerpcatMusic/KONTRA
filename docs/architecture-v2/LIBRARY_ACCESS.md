@@ -73,3 +73,54 @@ provenance and do not establish support under the new policy. The release owner
 must apply the product's separate access policy; this change only reports failures.
 Its tests use synthetic catalog errors and UI fixtures, without opening installed
 protected banks or touching a Wine prefix.
+
+
+## UVI discovery on 0.3.344
+
+The published `7cd326ee5b67` and preceding `81db45a3d462` both omitted UVI
+Windows defaults and ignored loose `.ufs` files at a folder-of-libraries root.
+A manually selected single-library folder or a nested bank folder still worked.
+No new extension or Falcon-tab filter regression was found between those versions.
+
+Discovery now adds Windows `ProgramFiles/UVISoundBanks` (also the native and
+x86 Program Files variants) once, independently of previously imported Kontakt
+roots. This is UVI's [documented soundware location](https://support.uvi.net/hc/en-us/articles/5265178227869-Step-3-Download-and-Install-Your-UVI-Product).
+The `uvi_imported` v2 setting prevents removed defaults from being re-added on
+every scan; **Find installed libraries** checks them again. Custom locations on
+Windows and Linux remain selectable library roots. Loose banks are individual
+libraries and do not hide adjacent nested libraries. Uppercase `.UFS` and direct
+bank roots are covered. Failed catalogs retain the existing bank diagnostics;
+the browser and Settings also show each affected root's bank count and causes.
+
+Cataloging uses `Bank::catalog`, which reads directory metadata without preparing
+content access or reading program/sample payloads. A synthetic bank with valid
+directory metadata and unavailable payload access previously disappeared from
+the catalog (**0 programs → 1**). Loading remains a separate operation.
+
+Clear, self-authored fixtures reproduced a flat bank folder at **0 libraries /
+0 presets before → 2 / 2 after**, and a mixed root at **1 → 3 libraries**.
+Default-root discovery, saved-root deduplication, v2 settings migration, warm
+catalog reuse, and the UVI browser's bank-file rows have focused regressions.
+The authorized installed Linux root retains **4 candidate
+library folders / 26 container paths** before and after; this is filesystem-only
+identification, not a protected-bank program or playback measurement.
+
+The directory-only follow-up finds **26 / 26 installed banks and 660 program
+entries**. The production library scan lists **4 libraries / 660 programs /
+0 bank issues**, with no payloads read. Filesystem discovery remains **4 candidate
+folders / 26 containers**. A retained earlier baseline at `72bb9767` had zero
+UVI libraries and 26 bank metadata rereads; a fresh 0.3.344 payload-opening
+baseline was not run under the current directory-only scope.
+
+The frozen W12 census worker succeeds on our
+self-authored clear bank (exit 0, valid JSON). This excludes a universal
+clear-bank worker failure; it does not establish the payload-stage cause of the
+660 installed census failures, whose collector discarded stderr. All installed
+directories examined declare encoded program entries and content-protected
+members. No content-recovery step was run for this witness.
+
+Content checks use our clear fixtures, with no activation, key extraction or Wine
+runs. Actual licensed Windows installations were not available for this witness;
+no native Windows installation was mounted for validation. No release/install or full corpus
+claim is made. Detailed logs live under
+`/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w10-uvi-scan-344/`.

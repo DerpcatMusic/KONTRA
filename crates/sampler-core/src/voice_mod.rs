@@ -243,6 +243,7 @@ struct Program {
     control: bool,
     /// v1 settled-result reuse, restricted to sources without clocks or lag.
     cacheable: bool,
+    control: bool,
 }
 
 /// Immutable per-plan programs and region bindings.
