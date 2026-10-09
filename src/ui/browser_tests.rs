@@ -278,3 +278,25 @@ fn oversized_library_panel_reveals_its_top() {
     let viewport = scene.surface("browser-sources-false").unwrap().frame;
     assert!((card.y - viewport.y).abs() < 0.5, "an oversized panel must reveal its top: {card:?}, {viewport:?}");
 }
+
+#[test]
+fn w10_uvi_bank_file_libraries_appear_in_the_uvi_browser() {
+    let p = Arc::new(SamplerParams::new());
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        view.shelf = Arc::new(crate::library::Shelf::new(["Alpha.ufs", "Beta.UFS"].into_iter().map(|bank| {
+            crate::library::Library { dir: PathBuf::from("/virtual/UVISoundBanks").join(bank),
+                name: bank.into(), instruments: 1, ..Default::default() }
+        }).collect()));
+        view.files = Arc::new(["Alpha.ufs", "Beta.UFS"].into_iter().map(|bank| {
+            PathBuf::from("/virtual/UVISoundBanks").join(bank).join("Presets/Owned.uvip")
+        }).collect());
+        view.scanned = p.shared.libraries.wanted();
+    }
+    let mut h = Harness::new(&p, 1180., 760.);
+    h.press("bank-uvi");
+    assert!(h.ui.scene().unwrap().surface("library-0").is_some());
+    assert!(h.ui.scene().unwrap().surface("library-1").is_some());
+    h.press("library-0");
+    assert!(h.ui.scene().unwrap().surface("instrument-0").is_some());
+}

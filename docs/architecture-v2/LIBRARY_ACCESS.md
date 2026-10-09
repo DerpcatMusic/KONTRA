@@ -73,3 +73,35 @@ provenance and do not establish support under the new policy. The release owner
 must apply the product's separate access policy; this change only reports failures.
 Its tests use synthetic catalog errors and UI fixtures, without opening installed
 protected banks or touching a Wine prefix.
+
+
+## UVI discovery on 0.3.344
+
+The published `7cd326ee5b67` and preceding `81db45a3d462` both omitted UVI
+Windows defaults and ignored loose `.ufs` files at a folder-of-libraries root.
+A manually selected single-library folder or a nested bank folder still worked.
+No new extension or Falcon-tab filter regression was found between those versions.
+
+Discovery now adds Windows `ProgramFiles/UVISoundBanks` (also the native and
+x86 Program Files variants) once, independently of previously imported Kontakt
+roots. This is UVI's [documented soundware location](https://support.uvi.net/hc/en-us/articles/18117734238749-Where-to-Install-UVI-Soundware).
+The `uvi_imported` v2 setting prevents removed defaults from being re-added on
+every scan; **Find installed libraries** checks them again. Custom locations on
+Windows and Linux remain selectable library roots. Loose banks are individual
+libraries and do not hide adjacent nested libraries. Uppercase `.UFS` and direct
+bank roots are covered. Failed catalogs retain the existing bank diagnostics.
+
+Clear, self-authored fixtures reproduced a flat bank folder at **0 libraries /
+0 presets before → 2 / 2 after**, and a mixed root at **1 → 3 libraries**.
+Default-root discovery, saved-root deduplication, v2 settings migration, warm
+catalog reuse, and the UVI browser's bank-file rows have focused regressions.
+The authorized installed Linux root retains **4 candidate
+library folders / 26 container paths** before and after; this is filesystem-only
+identification, not a protected-bank program or playback measurement.
+
+This patch changes discovery and labels only. Its content checks use our clear
+fixtures, with no activation, key extraction, protected-content access or Wine
+runs. Actual licensed Windows installations were not available for this witness;
+no native Windows installation was mounted for validation. No release/install or full corpus
+claim is made. Detailed logs live under
+`/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w10-uvi-scan-344/`.
