@@ -120,7 +120,8 @@ class PackagingTests(unittest.TestCase):
                 command=textwrap.dedent(workflow.split('      - name: Stage\n',1)[1].split('        run: |\n',1)[1].split('      - name: Verify Linux glibc baseline',1)[0])
                 command=command.replace('${{ matrix.name }}',platform).replace('${{ matrix.target }}',target)
                 env=dict(os.environ,RUNNER_OS='Windows' if windows else 'Linux',GITHUB_SHA='a'*40,GITHUB_ENV=str(root/'env'))
-                subprocess.run(['bash','-e','-o','pipefail','-c',command],cwd=root,env=env,check=True,capture_output=True)
+                staged=subprocess.run(['bash','-e','-o','pipefail','-c',command],cwd=root,env=env,check=True,capture_output=True,text=True)
+                self.assertIn('::warning::standalone: source provenance is dirty or unknown',staged.stdout)
                 metadata=json.loads(output.with_suffix('.build.json').read_text())
                 ext='ps1' if windows else 'sh';exe='kontakto-standalone.exe' if windows else 'kontakto-standalone'
                 self.assertEqual({p.name for p in output.iterdir()}, {'KONTRA.clap','KONTRA.vst3',exe,'README.txt','LICENSES.txt','install.'+ext,'uninstall.'+ext})
