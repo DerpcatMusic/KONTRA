@@ -650,7 +650,7 @@ fn gesture(w: &ir::Widget, scale: f64) -> (bool, f64) {
     let vertical = match w.kind {
         Kind::Knob { .. } | Kind::ValueEdit { .. } => true,
         Kind::Slider { orientation, .. } => w.drag.map_or(
-            orientation == ir::Orientation::Vertical || w.rect.height > w.rect.width,
+            orientation == ir::Orientation::Vertical,
             |d| d.axis == ir::Orientation::Vertical,
         ),
         _ => true,
