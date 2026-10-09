@@ -534,11 +534,12 @@ impl PartShared {
         }
     }
 
-    pub(crate) fn zone_waveform(&self, zone: u32, epoch: u64, bins: usize) -> Option<crate::sound::waveform::Envelope> {
+    pub(crate) fn zone_waveform(&self, zone: u32, epoch: u64, bins: usize) -> Option<crate::sound::waveform::Envelope> { self.zone_waveform_window(zone,epoch,bins,None) }
+    pub(crate) fn zone_waveform_window(&self, zone: u32, epoch: u64, bins: usize, range: Option<(u64,u64)>) -> Option<crate::sound::waveform::Envelope> {
         let plan = self.ingress.lock().unwrap().as_ref().map(|ingress| ingress.plan());
         let provider = self.waveforms.lock().unwrap();
         if self.generation.load(Ordering::Acquire) != epoch { return None; }
-        provider.as_ref().filter(|provider| Some(provider.plan) == plan)?.get(zone, bins)
+        provider.as_ref().filter(|provider| Some(provider.plan) == plan)?.get_window(zone, bins, range)
     }
 
     pub(crate) fn widget_waveforms(&self, face: &sampler_ui_ir::Interface, epoch: u64, pixel_scale: f64) -> Vec<(sampler_ui_ir::WidgetRef, crate::sound::waveform::Envelope)> {
