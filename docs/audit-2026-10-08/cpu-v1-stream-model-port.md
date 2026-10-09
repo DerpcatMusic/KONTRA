@@ -1,0 +1,96 @@
+# v1 source-time streaming port — HOLD
+
+Base: `52438eb49b3d9daa45e88eeead48f610c9dfaa95`. Compare against this exact source and the frozen, equivalence-checked v1 CPU adapter. The earlier d75 reference is excluded: intervening accepted runtime reductions must not be credited to this port.
+
+## Source port and adaptation
+
+- `0cb7a8a0:src/engine/stream.rs`: zeroed 8192-frame per-voice rings, urgent 4096-frame lead before speculative whole 2048-frame chunks, 64 cached readers and 128 shared physical decode blocks per worker. Untouched idle ring pages remain uncommitted.
+- `0cb7a8a0:src/engine/bank.rs`: resident heads of 4048 source frames, merged sample/start-offset and short-loop spans, budget fitting and controller-reachable start ranges. RAM-only keeps the existing smallest-sample-first policy.
+- `0cb7a8a0:src/engine/params.rs`: control-side start-offset reach queries, including initialized CCs and conservative unknown/script sources.
+
+The pool boundary owns unsafe ring storage and checked borrowed runs. Core remains `forbid(unsafe_code)`. Core traverses virtual source frames while retaining reverse playback, crossfade guards, loop tuning and all eight native loop slots. Admission counts only streamed layers and reserves available setup queue space before publishing the selection. Typed decode failures keep bounded retries; terminal faults retire held voices of the affected source. Fault notifications survive queue pressure and stale generations cannot publish into reused slots. Workers remain parked while idle and wake at a failed decode's retry deadline.
+
+Kontakt assembly uses the ring transport and the preload planner. The host Auto policy eagerly loads budgeted onset spans with v1's 1 GiB bank budget; storage reads remain off audio. Existing cold-onset lifecycle semantics are inherited from the accepted base.
+
+## Targeted validation
+
+Validation at `d826303f`: **56 targeted tests PASS**, plus root `cargo test --no-run` PASS.
+
+| Area | Tests |
+|---|---:|
+| Worker fairness, EOF tail, stale completion/fault, fault pressure, queued admission, retry/idle parking and resident-prefix purge backfill | 7 |
+| Ring/resident rates/directions/native loops/release/actual 64-voice parallel path, mixed admission, terminal held-source fault | 3 |
+| Cold lifecycle | 10 |
+| Late source offsets and pre-onset note-off, both directions and both backends | 2 |
+| Existing paged render regressions | 16 |
+| Ring storage: wrap, stale generation, concurrent publication, head gap, untouched physical idle pages | 5 |
+| Kontakt decoder, retry, preload planning, RAM policy, lazy budget compatibility, random reads and complete-source offline factory render | 11 |
+| Initialized-controller/nonmonotonic/conservative offset reach | 2 |
+
+The first draft's parallel fixture used an undersized candidate bound, and the first offline fixture omitted its IR asset entry. Both setup mistakes were corrected before the above green runs. Logs: `~/.cache/kontakto-fix-cpu/v1-ring-wired-check2.log` and `v1-ring-wired-check3.log`; latest status is zero. A separate failing-first resident-head purge regression reproduced an unfilled virtual prefix; ring reuse now requires that prefix to remain resident. `ring-purge-red.log` records the failure and `ring-purge-green.log` records the correction plus neighboring ring render checks and root compile validation. Audio event/render/adoption checks allocate and free no heap memory. Per-part workers retain the existing v2 ownership boundary; process-wide shared-bank scheduling is still pending a multi-part probe.
+
+## Original-instrument acceptance — pending
+
+Areia Full Ensemble and ANALOG STRINGS at 32/64/256 frames, cold and warm. Three rotations compare candidate, exact 52438 twice (A/A), and frozen v1. Record median/p99 per block, deadlines, storage underruns, capacity errors, loaded/final RSS and per-run unit/cgroup activity. Only QUIET observations count. Candidate must have zero underruns and capacity errors; RSS must not exceed 52438 beyond its measured A/A noise floor. CPU/deadline changes and v1 gaps remain explicit.
+
+The first attempt stopped on external cargo/rustc contention at 21:04:58 UTC and removed its request. Exact 52438 A/A Areia32 cold rows were QUIET: 24 underruns each, 932/933 capacity errors, loaded RSS 379.30/379.02 MiB. The candidate row had zero underruns/capacity errors but was CONTENDED: loaded RSS 688.01 MiB, and its unit recorded 553 MiB swap. This is a memory failure warning, not an accepted timing comparison. Attempt receipts remain under `~/.cache/kontakto-fix-cpu/stream-model-matrix`. No streaming SHA is READY for integration. Release/install remains held.
+
+
+## Complete v1 head memory model — instrument acceptance pending
+
+The `d826303f` head owner reports 800,308,908 bytes (763.23 MiB). Rings reserve 67,108,864 bytes virtually (64 MiB; idle pages remain untouched), matching v1's f32 ring representation. Four decoder caches can hold 8 MiB of physical frames; the 64 readers per worker have 4 MiB total byte buffers, plus codec metadata. These cache figures are maximum capacities, not attributed resident measurements. Frozen v1 Full Ensemble scanner RSS was 307.10 MiB cold and 305.12 MiB os-warm in the d75 gate receipt.
+
+The follow-up ports `0cb7a8a0:src/audio.rs` predictive 64-frame blocks, with safe scalar reads at the core boundary; short or whole resident loops keep raw native PCM. Native 4/6/8-byte planning and cache metadata replace the eight-byte estimate. The 1 GiB v1 budget includes the ring reservation before the preload/offset-coverage fallback. The existing numeric header cache version advances because the old entries did not retain native width. Warm valid entries still skip codec opens.
+
+Numeric `stream_head_owners` diagnostics count distinct assets, head assets/spans, planned source frames/native bytes, predictive spans/frames and actual stored bytes. RSS/swap and original-instrument timing are pending. A smooth stereo i24 fixture failed before the codec port (`head-packed-red.log`, status101); 48 targeted checks PASS: packing3, compressed ring render3, Kontakt stream/preload12, header cache1, AIFF1, cold-chain10, cold-offset2, paged render16. Root `cargo test --no-run` PASS. Logs are `head-model-check-3.log` and `head-model-neighbors.log`, both status0. The previous exact raw-size assertion now verifies both compression-disabled raw sizing and the smaller predictive representation; a noisy fixture that correctly fell back to native PCM was replaced with a smooth nonzero-residual fixture to exercise the predictor. Next is ordinary-wrapper ownership/RSS/swap measurement, followed by quiet A/B only if RSS fits the exact 52438 baseline.
+
+The v1 full-bank UI probe (`0cb7a8a0:src/ui/audit.rs:737`) uses 512 MiB, while the frozen CPU adapter uses the product `MEMORY_LIMIT` of 1 GiB. Scanner and CPU-adapter RSS must retain that provenance; the candidate still must meet the exact 52438 RSS ceiling and zero swap. The upcoming ownership probe records the CPU adapter’s actual head bytes, sample count and chosen preload alongside v2’s detailed counts.
+
+## 368d2654 ownership verdict — RSS FAIL, no quiet window
+
+Normal-wrapper, OS-warm ownership probes (timing UNKNOWN; other work recorded) used the frozen candidate, exact 52438 and frozen v1 CPU adapter. Receipt: `/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w9-head-owners/summary.json`. Source 368d2654; frozen binary SHA256 `b3239c67f8ae7e10debf1217eaa13929cd9eb164141f11adc08acd9684bdcf1b`.
+
+| Metric | 52438 | 368d2654 | Frozen v1 CPU adapter |
+|---|---:|---:|---:|
+| Loaded RSS, MiB | 380.16 | 819.92 | 765.15 |
+| Final RSS, MiB | 387.86 | 875.13 | 812.38 |
+| Probe-process peak VmSwap, MiB | 0 | 0 | 0 |
+| Storage underruns, this unscored run | 24 | 0 | 0 |
+| Stream capacity errors | 912 | 0 | UNKNOWN (not exposed) |
+| Actual head payload, bytes | 0 | 498,620,047 | 498,608,156 |
+| Preload, frames | 616 (lazy old path) | 3670 | 3664 |
+
+The candidate plans **41,334 distinct assets and head spans**, **166,617,354 source frames**, **999,704,124 native bytes**. All spans/frames use predictive packing, holding **498,620,047 bytes** (49.88% less than the native plan). Every source plans at six bytes per stereo frame. Rings remain 67,108,864 virtual bytes. The v1 adapter’s `head_bytes=565,717,020` includes its 64 MiB ring reservation; subtracting that gives the head payload above. Full-bank payload parity is within 11,891 bytes. Compared with d826’s 800,308,908-byte raw heads, stored heads fall by 287.71 MiB, but the old swapped RSS row is not a valid physical-memory comparison.
+
+The probe descendants each recorded zero VmSwap. The ordinary wrapper unit separately reached 7.1 MiB swap, which includes persistent helper processes; zero-swap release acceptance still requires the quiet gate. No new quiet request was made because candidate RSS fails the required exact-52438 ceiling.
+
+**Reference-stage correction:** the 307.10 MiB gate scanner row explicitly reports an “initial streaming bank”. Its pinned `src/ui/scan.rs:250` calls `Bank::load_bare`, not the full-bank UI benchmark’s separate 512 MiB path. Product v1 first publishes that no-head bank, then fills resident heads on a worker. The CPU adapter instead finishes the full 1 GiB load. Both provenance and numbers remain explicit; the required RSS ceiling is not silently changed. The optional heap-retention probe was stopped before completion: the packed payload alone exceeds the total RSS ceiling, so trimming cannot change the verdict. Next: resolve initial-vs-completed-bank residency policy with the coordinator; prepare the deferred held-note slow-attack fixture in source-only time. Streaming remains HOLD.
+
+## Auto budget trial — source only, not accepted
+
+The 1 GiB trial correctly reproduces v1's completed head payload, but that payload alone exceeds the required total RSS ceiling. Next trial: Auto uses a general 128 MiB stream budget, including its 64 MiB virtual ring reservation. The existing v1 planner shrinks preload, limits offset coverage, and finally reaches its 256-frame floor; starts outside resident coverage retain the accepted late-onset offset/direction semantics. This is an adapted budget, not v1's default 1 GiB. RAM-only retains its available-memory policy. No library-specific value, new setting or alternate transport is added. The original-instrument RSS/swap and zero-underrun/capacity rule decides acceptance. Builds wait behind W0's release priority; no quiet request until RSS passes.
+
+128 MiB is measurement-only. Acceptance requires zero storage underruns and zero stream-capacity errors on Areia Full/32 cold, plus no new underruns across the gate cells, including fast-repeat and legato. A failing budget is raised in steps or made to scale with available RAM; lower RSS never compensates for dropouts. The coordinator assigned their schedules to this trial. Shared `tools/cpu-audit-schedules.rs` defines fast-repeat (two 8 s phases at quarter=140 BPM, half-length gates, alternating velocities64/127), legato (24 chromatic notes48–71, literal eighth=180 BPM/333⅓ ms spacing with30 ms overlap), and cold jump (keys0,18,36,54,72,90,108,127 together in the first block after load). A one-second release tail follows repeats/legato; cold jump holds one second and releases one second. The same source feeds v1/v2 adapters; the original piano/strings/fx events remain sample-exact. These are probe changes only, not new gate acceptance results. The source-only lazy-reload regression fixture covers reserving ring bytes during both initial preload and reload; it has not been compiled yet because W0's release build has priority.
+
+## 128 MiB ownership result and corrected acceptance comparator
+
+Coordinator steering at22:48 replaces the52438 RSS ceiling with matched frozen v1. The128MiB trial98e92f9f therefore passes the RSS axis on this fresh ordinary ownership comparison; playback acceptance remains pending a quiet run. No256MiB trial was built. A source-only256 change was manually reversed before validation.
+
+Receipt: `/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w9-budget128-owners/summary.json`. Same Areia Full/block32 original strings sequence, disabled parsed cache, identical watcher/harness. v1 ran immediately after the fresh52438 row. Timing and dropout attribution are UNKNOWN under contention.
+
+| Engine | Loaded RSS MiB | Final RSS MiB | Watcher peak RSS MiB | Actual probe peak swap MiB | Unscored underruns | Capacity errors |
+|---|---:|---:|---:|---:|---:|---:|
+|52438|379.0195|380.9727|506.8359|0|24|951|
+|128MiB candidate98e92f9f|413.6250|454.4492|490.8516|23.4297|185|0|
+|Frozen full-v1|764.9883|796.5508|798.9688|0|0|UNKNOWN(not exposed)|
+
+Candidate plans25,503,078 frames /153,018,468 native bytes, packs41,334 spans to79,385,881 bytes, preload256, with64MiB virtual rings. v1's mandatory256-frame floor can exceed the nominal budget when minimum start coverage cannot fit; this explains why128MiB does not imply64MiB of physical heads. The candidate's observed swap is disclosed; even adding its peak swap to loaded/final RSS leaves it below matched v1. Quiet playback must still certify zero underruns, zero capacity errors and zero stream errors on the original Areia32cold cell and shared fast-repeat, legato and cold-jump schedules. No READY streaming SHA is claimed yet.
+
+Validation for schedules/cap correction: four schedule checks, stream/preload13, cold_chain10, cold_offset2 and paged_render16 PASS; root no-run PASS. The cap regression failed first with one unwanted reload read and passes with none. New frozen v1 challenge adapter validation is pending; the original frozen v1 binaries remain untouched.
+
+Quiet playback will additionally record VmSwap for all three comparators(52438,
+v1,candidate). Candidate-only swap in a quiet run requires ownership/pressure
+attribution before READY, per coordinator steering; ordinary pressure-induced
+swap cannot be silently omitted. W13 owns the first timed window; W9 takes the
+next only after the direct handoff. The earlier52438 RSS criterion is historical
+and superseded by matched v1; the production trial remains128MiB.

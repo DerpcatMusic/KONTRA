@@ -68,7 +68,6 @@ impl BParamArrayBParFX8 {
     pub fn is_empty(&self) -> bool {
         self.items.iter().all(Option::is_none)
     }
-
 }
 
 impl std::convert::TryFrom<&Chunk> for BParamArrayBParFX8 {
@@ -86,8 +85,13 @@ impl std::convert::TryFrom<&Chunk> for BParamArrayBParFX8 {
             let object = super::super::StructuredObject::try_from(chunk)?;
             let occupied = super::modulation::read_param_slots(&object, 8)?;
             let mut items: Vec<_> = (0..8).map(|_| None).collect();
-            for (slot, child) in occupied { items[slot] = Some(child); }
-            return Ok(Self { version: object.version, items });
+            for (slot, child) in occupied {
+                items[slot] = Some(child);
+            }
+            return Ok(Self {
+                version: object.version,
+                items,
+            });
         }
         let reader = Cursor::new(&chunk.data);
         Self::read(reader, 8)

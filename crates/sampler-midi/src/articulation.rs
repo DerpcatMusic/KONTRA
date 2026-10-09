@@ -12,8 +12,9 @@
 //! reaches behaviors unchanged. No allocation or heap work occurs in `intercept`.
 use crate::{Applied, ApplyError, Message, Packet, Value, Version};
 use sampler_core::{
-    Driver, Error, Expression, Input, NotePitch, PerformanceId, Protocol, Runtime, RuntimeId,
-    Switch, SwitchKeys, ControlContext, ControlId, ControlWrite, ControlValue, ControlDomain, ChannelAddress,
+    ChannelAddress, ControlContext, ControlDomain, ControlId, ControlValue, ControlWrite, Driver,
+    Error, Expression, Input, NotePitch, PerformanceId, Protocol, Runtime, RuntimeId, Switch,
+    SwitchKeys,
 };
 
 /// What to do with the packet after interception.
@@ -65,7 +66,9 @@ impl Articulator {
         self.selected
     }
 
-    pub fn selected_articulation(&self) -> Option<u32> { self.selected_articulation }
+    pub fn selected_articulation(&self) -> Option<u32> {
+        self.selected_articulation
+    }
 
     /// Apply the driver part of `packet` at `Runtime::now()`.
     pub fn intercept(
@@ -95,13 +98,22 @@ impl Articulator {
                     return Ok(Intercept::Forward);
                 }
             }
-            Message::NoteOn { key, velocity, .. } if key < 128 && (switching.key_input(key).is_some() || switching.blocked(key)) => {
+            Message::NoteOn { key, velocity, .. }
+                if key < 128 && (switching.key_input(key).is_some() || switching.blocked(key)) =>
+            {
                 let switch = switching.key_input(key);
                 self.swallowed[channel] |= 1u128 << key;
                 if let Some(switch) = switch {
                     // A physical press always reaches the authored action, even after another switch.
                     self.tapped = None;
-                    self.switch(runtime, switch, voice.version, voice.group, voice.channel, velocity.normalized())?;
+                    self.switch(
+                        runtime,
+                        switch,
+                        voice.version,
+                        voice.group,
+                        voice.channel,
+                        velocity.normalized(),
+                    )?;
                 }
                 return Ok(Intercept::Consumed(Applied::Configuration));
             }
@@ -180,12 +192,23 @@ impl Articulator {
     ) -> Result<(), Error> {
         match switch {
             Switch::Control { id, articulation } => {
-                let context = ControlContext { performance: self.performance, origin: ChannelAddress { protocol: Protocol::Midi1, port: self.port, group, channel }, channels: 1 << channel };
+                let context = ControlContext {
+                    performance: self.performance,
+                    origin: ChannelAddress {
+                        protocol: Protocol::Midi1,
+                        port: self.port,
+                        group,
+                        channel,
+                    },
+                    channels: 1 << channel,
+                };
                 let plan = runtime.active_plan();
                 let id = ControlId(id);
                 let value = match runtime.control_definition(plan, id)?.domain {
                     ControlDomain::Toggle => ControlValue::Toggle(true),
-                    ControlDomain::Integer { min, max } => ControlValue::Integer(1i64.clamp(min, max)),
+                    ControlDomain::Integer { min, max } => {
+                        ControlValue::Integer(1i64.clamp(min, max))
+                    }
                     ControlDomain::Real { min, max } => ControlValue::Real(1f64.clamp(min, max)),
                 };
                 runtime.invoke_control(context, plan, None, ControlWrite { id, value })?;
