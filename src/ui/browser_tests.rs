@@ -1417,3 +1417,77 @@ fn catalog_ordering_is_reused_across_queries_and_invalidated_by_new_files() {
         "removed native presets leave the cache"
     );
 }
+
+#[test]
+fn hierarchy_reuses_catalog_order_when_folders_toggle() {
+    let p = redesign_catalog(false);
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        let brass = &view.shelf.named("Afflatus Chapter II Brass").unwrap().dir;
+        let analog = &view.shelf.named("Analog").unwrap().dir;
+        // Publication order deliberately differs from natural preset order.
+        view.files = Arc::new(vec![
+            brass.join("Instruments/Brass 10.nki"),
+            brass.join("Instruments/Brass 2.nki"),
+            analog.join("Bank.ufs/Presets/Pad 10.uvip"),
+            analog.join("Bank.ufs/Presets/Pad 2.uvip"),
+        ]);
+        view.shelf = Arc::new(crate::library::Shelf::new(view.shelf.libraries.clone()));
+    }
+    let mut h = Harness::new(&p, 1180., 760.);
+    let mut counts = Vec::new();
+    for (provider, name) in [("bank-kontakt", "Brass"), ("bank-uvi", "Pad")] {
+        h.press(provider);
+        browser::WORK.with(|n| n.set([0; 6]));
+        h.press("library-0");
+        for _ in 0..2 {
+            for (index, number) in [(0, 2), (1, 10)] {
+                let id = format!("instrument-{index}");
+                let expected = format!("{name} {number}.");
+                assert!(
+                    h.ui.scene()
+                        .unwrap()
+                        .surface(&id)
+                        .unwrap()
+                        .tip
+                        .as_deref()
+                        .is_some_and(|tip| tip.contains(&expected)),
+                    "natural preset order survives hierarchy rebuilds"
+                );
+            }
+            h.press("folder-0");
+            assert!(
+                h.ui.scene().unwrap().surface("instrument-0").is_none(),
+                "folding hides category presets"
+            );
+            h.press("folder-0");
+        }
+        counts.push(browser::WORK.with(|n| n.get()));
+        #[cfg(feature = "shots")]
+        if let Some(out) = std::env::var_os("KONTRA_CATEGORY_SHOTS") {
+            let out = PathBuf::from(out);
+            std::fs::create_dir_all(&out).unwrap();
+            moose::core::screenshot::save_png(
+                &out.join(format!("{provider}.png")),
+                &pixels(&h.ui, 1180, 760),
+                1180,
+                760,
+            );
+        }
+    }
+    println!("HIERARCHY_WORK Kontakt={:?} UVI={:?}", counts[0], counts[1]);
+    for work in counts {
+        assert!(
+            work[0] >= 5,
+            "selecting and folding still rebuild the hierarchy"
+        );
+        assert_eq!(
+            work[1], 0,
+            "folding reuses the provider's warmed catalog order"
+        );
+        assert_eq!(
+            work[2], 0,
+            "category filtering must preserve the cached order without sorting again"
+        );
+    }
+}
