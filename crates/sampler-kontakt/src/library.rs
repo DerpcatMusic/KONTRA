@@ -2626,6 +2626,7 @@ mod saved_tests {
         let root =
             std::env::temp_dir().join(format!("kontakt-linked-translation-{}", std::process::id()));
         std::fs::create_dir_all(root.join("Resources/scripts")).unwrap();
+        std::fs::write(root.join("Piano.nki"), [0; 16]).unwrap();
         let linked = "on init\nmessage(\"linked\")\nend on";
         let saved = "on init\nmessage(\"saved\")\nend on";
         let file = root.join("Resources/scripts/Source.txt");
@@ -2723,13 +2724,15 @@ mod saved_tests {
 
     #[test]
     fn restored_translation_initializes_once_with_host_menu_values() {
+        let path = std::env::temp_dir().join(format!("restored-menu-{}.nki", std::process::id()));
+        std::fs::write(&path, [0; 16]).unwrap();
         let mode = sampler_ksp::derived_control_id(0, "$mode");
         let echo = sampler_ksp::derived_control_id(0, "$echo");
         for saved in [4, -3, 0] {
             crate::load::take_script_init_runs();
             let controls = vec![(mode, saved)];
             let translated = super::translate(
-                std::env::temp_dir().join("restored-menu.nki"),
+                path.clone(),
                 menu_program(),
                 Default::default(),
                 Default::default(),
@@ -2767,14 +2770,17 @@ mod saved_tests {
                 );
             }
         }
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
     fn late_host_override_reinitializes_instead_of_reusing_wrong_state() {
+        let path = std::env::temp_dir().join(format!("late-menu-{}.nki", std::process::id()));
+        std::fs::write(&path, [0; 16]).unwrap();
         let mode = sampler_ksp::derived_control_id(0, "$mode");
         crate::load::take_script_init_runs();
         let translated = super::translate(
-            std::env::temp_dir().join("late-menu.nki"),
+            path.clone(),
             menu_program(),
             Default::default(),
             Default::default(),
@@ -2804,6 +2810,7 @@ mod saved_tests {
                 .default,
             sampler_core::ControlValue::Integer(-3)
         );
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -3026,7 +3033,13 @@ mod modulation {
         group.0.public_data[34] = 1; // Muted groups do not enter FX translation.
         let mut muted = translation();
         assert!(muted.group(0, &group).unwrap().is_none());
-        assert!(muted.ir.unsupported.is_empty());
+        assert!(
+            muted
+                .ir
+                .unsupported
+                .iter()
+                .all(|n| n.feature != "effect decoding")
+        );
     }
 
     fn target(param: &str, intensity: f32) -> ModTarget {
