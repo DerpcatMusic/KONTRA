@@ -13,6 +13,8 @@
 #include <fstream>
 #include <thread>
 #include <sstream>
+#include <sched.h>
+#include <sys/resource.h>
 #include <vector>
 
 using Clock = std::chrono::steady_clock;
@@ -124,6 +126,17 @@ static double quantile(const std::vector<double>& sorted, double q) {
     require(!sorted.empty(), "measured process calls");
     return sorted[std::min(sorted.size()-1, size_t(std::ceil(q * sorted.size())-1))];
 }
+static rusage thread_usage() {
+    rusage value{};
+    require(getrusage(RUSAGE_THREAD, &value) == 0, "thread context switches");
+    return value;
+}
+static std::array<long,2> switches(const rusage& before, const rusage& after) {
+    require(after.ru_nvcsw >= before.ru_nvcsw && after.ru_nivcsw >= before.ru_nivcsw, "monotonic context switches");
+    return {after.ru_nvcsw-before.ru_nvcsw, after.ru_nivcsw-before.ru_nivcsw};
+}
+struct SwitchMiss { uint64_t frame; double wall, cpu; long voluntary, involuntary; };
+
 int main(int argc, char** argv) {
     if (argc == 2 && std::strcmp(argv[1], "--self-check") == 0) {
         require(quantile({1, 2, 3, 4}, .5) == 2 && quantile({1, 2, 3, 4}, .99) == 4, "nearest-rank percentiles");
@@ -143,7 +156,11 @@ int main(int argc, char** argv) {
         SavedState saved;
         require(saved.api.write(&saved.api, "abc", 3) == 3 && saved.bytes == std::vector<char>({'a', 'b', 'c'})
             && saved.api.write(&saved.api, "x", 64 * 1024 * 1024) == -1, "bounded native state-save stream");
-        std::puts("PASS: percentiles, event input, stream I/O, process memory, first audio and native state save"); return 0;
+        rusage a{}, b{}; a.ru_nvcsw=3; a.ru_nivcsw=5; b.ru_nvcsw=4; b.ru_nivcsw=9;
+        require(switches(a,b) == std::array<long,2>{1,4}, "context switch deltas");
+        const auto u0=thread_usage(), u1=thread_usage();
+        switches(u0,u1); require(sched_getscheduler(0)>=0, "read-only scheduler policy");
+        std::puts("PASS: percentiles, event input, stream I/O, process memory, first audio, native state save and scheduler counters"); return 0;
     }
     require(argc == 9, "PLUGIN STATE BLOCK SECONDS READY_FLAG EVENT_TSV EXPECTED_PARTS READBACK_STATE");
     const unsigned block = std::strtoul(argv[3], nullptr, 10);
@@ -204,8 +221,17 @@ int main(int argc, char** argv) {
     wall.reserve(frames / block + 1); cpu.reserve(wall.capacity());
     Io io_start{}, io_end{};
     uint64_t misses = 0, wake_misses = 0, nonfinite = 0, dispatched = 0; double peak = 0;
+    const auto* diagnostic_env=std::getenv("KONTRA_HOST_SCHED_DIAGNOSTIC");
+    const bool scheduling_diagnostic=diagnostic_env && std::strcmp(diagnostic_env,"1")==0;
+    int scheduler_policy=-1; sched_param scheduler_parameters{};
+    // ponytail: retain the first 256 misses; enlarge only if omitted_misses prevents diagnosis.
+    std::array<SwitchMiss,256> switch_misses{}; size_t recorded_misses=0;
+    uint64_t voluntary=0,involuntary=0;
     auto audio = std::thread([&] {
-        on_audio_thread = true; require(p->start_processing(p), "start processing");
+        on_audio_thread = true;
+        scheduler_policy=sched_getscheduler(0);
+        require(scheduler_policy>=0 && sched_getparam(0,&scheduler_parameters)==0, "callback scheduler policy");
+        require(p->start_processing(p), "start processing");
         const auto started = Clock::now(); auto deadline = started;
         bool measuring = false; uint64_t at = 0, warm = 0; size_t next = 0;
         while (!measuring || at < frames) {
@@ -219,13 +245,24 @@ int main(int argc, char** argv) {
                 require(plan[next].frame >= at, "no late scheduled event");
                 events.add(plan[next], uint32_t(plan[next].frame - at)); ++next; ++dispatched;
             }
+            rusage switches_before{};
+            if (scheduling_diagnostic && measuring) switches_before=thread_usage();
             timespec c0{}, c1{}; clock_gettime(CLOCK_THREAD_CPUTIME_ID, &c0);
             const auto before = Clock::now();
             require(p->process(p, &process) != CLAP_PROCESS_ERROR, "real CLAP process");
             const auto after = Clock::now(); clock_gettime(CLOCK_THREAD_CPUTIME_ID, &c1);
+            rusage switches_after{};
+            if (scheduling_diagnostic && measuring) switches_after=thread_usage();
             if (measuring) {
                 const auto us = std::chrono::duration<double, std::micro>(after - before).count(); wall.push_back(us);
-                cpu.push_back((c1.tv_sec - c0.tv_sec) * 1e6 + (c1.tv_nsec - c0.tv_nsec) / 1e3);
+                const double cpu_us=(c1.tv_sec - c0.tv_sec) * 1e6 + (c1.tv_nsec - c0.tv_nsec) / 1e3;
+                cpu.push_back(cpu_us);
+                if (scheduling_diagnostic) {
+                    const auto delta=switches(switches_before,switches_after);
+                    voluntary+=delta[0]; involuntary+=delta[1];
+                    if (us>block*1e6/48000. && recorded_misses<switch_misses.size())
+                        switch_misses[recorded_misses++]={at,us,cpu_us,delta[0],delta[1]};
+                }
                 misses += us > block * 1e6 / 48000.; wake_misses += before > deadline + period;
                 for (const auto& b : pcm) for (const auto& c : b) for (unsigned f = 0; f < block; ++f) {
                     const auto x = c[f]; nonfinite += !std::isfinite(x); if (std::isfinite(x)) peak = std::max(peak, double(std::abs(x)));
@@ -268,6 +305,16 @@ int main(int argc, char** argv) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     audio.join(); if (host.callback.exchange(false)) p->on_main_thread(p);
+    // Diagnostic syscalls bracket the clocks/process, not pacing sleeps; never CPU acceptance.
+    std::printf("{\"kind\":\"callback_scheduling\",\"diagnostic\":%s,\"policy\":%d,\"priority\":%d,\"voluntary_switches\":%llu,\"involuntary_switches\":%llu,\"recorded_misses\":%zu,\"omitted_misses\":%llu}\n",
+        scheduling_diagnostic?"true":"false",scheduler_policy,scheduler_parameters.sched_priority,
+        (unsigned long long)voluntary,(unsigned long long)involuntary,recorded_misses,
+        (unsigned long long)(scheduling_diagnostic?misses-recorded_misses:0));
+    for (size_t i=0;i<recorded_misses;++i) {
+        const auto& miss=switch_misses[i];
+        std::printf("{\"kind\":\"deadline_switches\",\"frame\":%llu,\"wall_us\":%.3f,\"thread_cpu_us\":%.3f,\"voluntary\":%ld,\"involuntary\":%ld}\n",
+            (unsigned long long)miss.frame,miss.wall,miss.cpu,miss.voluntary,miss.involuntary);
+    }
     if (load_probe) {
         const auto memory_done = read_memory();
         std::printf("{\"kind\":\"load_probe\",\"ready_ms\":%.6f,\"first_audio_wall_ms\":%.6f,\"first_audio_frame\":%lld,\"rss_before_kb\":%llu,\"rss_ready_kb\":%llu,\"rss_done_kb\":%llu,\"hwm_kb\":%llu,\"swap_kb\":%llu}\n",
