@@ -213,6 +213,15 @@ def main():
     files = [p for p in files if not p.name.startswith("KONTRA-nightly-macos-")] + [package, receipt_file]
     previous = max((r for r in current if not r["draft"]), key=lambda r: r["published_at"], default=None)
     changelog = release_notes(api, REPO, SHA, version, previous)
+    inline_changelog = changelog
+    # Leave room for the source and distribution notices within GitHub's body limit.
+    if len(changelog.encode()) > 100000:
+        complete = Path("dist/release-notes.md")
+        complete.write_text(changelog)
+        files.append(complete)
+        assets.append(dict(name=complete.name, platform="notes", size=complete.stat().st_size,
+                           sha256=hashlib.sha256(complete.read_bytes()).hexdigest()))
+        inline_changelog = f"[Download the complete release notes](https://github.com/{REPO}/releases/download/{tag}/release-notes.md)."
     manifest = dict(version=version, revision=SHA, workflow_run=os.environ["GITHUB_RUN_ID"], assets=assets, changelog=changelog)
     data = (json.dumps(manifest, indent=2) + "\n").encode()
     Path("dist/release-manifest.json").write_bytes(data)
@@ -220,7 +229,7 @@ def main():
 Source tag: [`v{version}`](https://github.com/{REPO}/tree/v{version}).
 <!-- kontra-source-tag: v{version} -->
 
-{changelog}
+{inline_changelog}
 
 Every download comes from this source commit. `release-manifest.json` records their sizes and SHA256 checksums; each Linux/Windows archive includes separate `clap-build-info.json`, `vst3-build-info.json` and standalone `build-info.json` with their actual feature sets.
 Experimental nightly snapshot, not a stable-quality release. GitHub marks it Latest solely to provide permanent download links.

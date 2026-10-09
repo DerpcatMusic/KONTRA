@@ -20,7 +20,13 @@ with tempfile.TemporaryDirectory() as tmp:
     manifest.write_text(f'kontakt\t{good}\nkontakt\t{hung}\n')
     engine = root / 'engine'
     engine.write_text('#!/usr/bin/env python3\nimport sys,json,time,os\n'
-                      'if "hung" in sys.argv[2]: time.sleep(60)\n'
+                      'from pathlib import Path\n'
+                      'if "hung" in sys.argv[2] or "partial" in sys.argv[2]:\n'
+                      '  progress={"stage":"sample-preload","completed_bytes":123}\n'
+                      '  if "partial" in sys.argv[2]: progress.update(loads="yes",plays_note="yes")\n'
+                      '  Path(sys.argv[3],"progress.json").write_text(json.dumps(progress))\n'
+                      '  if "partial" in sys.argv[2]: print(json.dumps(progress),flush=True)\n'
+                      '  time.sleep(60)\n'
                       'assert os.environ.get("KONTRA_UVI_STATIC_PCM_CACHE")=="0"\n'
                       'print(json.dumps({"loads":"yes","ui":"original-ok","plays_note":"silent","reason":"x\\ty\\nz"}))\n')
     engine.chmod(0o755)
@@ -30,7 +36,13 @@ with tempfile.TemporaryDirectory() as tmp:
     records = [json.loads(p.read_text()) for p in (root / 'out/cache').glob('*.json')]
     assert len(records) == 2
     assert any(r['loads'] == 'yes' for r in records)
-    assert any(r['timed_out'] and r['loads'] == 'no' for r in records)
+    incomplete = next(r for r in records if r['timed_out'])
+    assert incomplete['loads'] == 'incomplete' and incomplete['ui'] == 'incomplete'
+    assert incomplete['incomplete'] and incomplete['stage'] == 'sample-preload'
+    assert incomplete['completed_bytes'] == 123
+    partial = scanner.probe(engine, str(root / 'partial.nki'), root / 'partial', 0.3, False)
+    assert partial['incomplete'] and partial['loads'] == 'yes' and partial['plays_note'] == 'yes'
+    assert partial['ui'] == 'incomplete' and partial['stage'] == 'sample-preload'
     assert len((root / 'out/results.tsv').read_text().splitlines()) == 3
     result = subprocess.run(args, check=True, capture_output=True, text=True)
     assert 'new=0 reused=2' in result.stdout
@@ -41,6 +53,17 @@ with tempfile.TemporaryDirectory() as tmp:
     assert len((root/'out/results.tsv').read_text().splitlines())==3 # stale signature never duplicates a row
     assert scanner.items(str(manifest)) == [str(good), str(hung)]
 assert scanner.extra_columns({'loads':'yes','plays_note':'silent','ui':'no-ui','programs':[{'pick':None}]})['plays_note']=='no'
+# An incomplete watchdog observation is neither paint failure nor paint success.
+incomplete=scanner.extra_columns({'loads':'yes','ui':'original-ok','programs':[{'views':[{
+ 'source_presentation':'native-package','font_declared':None,
+ 'image_preparation':{'completed':2,'completed_bytes':1024},
+ 'renders':[{'ok':False,'incomplete':True,'stage':'asset-preparation','pending':3}]}]}]})
+assert incomplete['ui']=='incomplete' and incomplete['paint_ok']=='unknown' and incomplete['paint_error']==''
+assert incomplete['programs'][0]['views'][0]['image_preparation']['completed']==2
+mixed=scanner.extra_columns({'ui':'error','programs':[{'views':[{'renders':[
+ {'ok':False,'incomplete':True,'stage':'asset-preparation'},
+ {'ok':False,'reason':'paint failed'}]}]}]})
+assert mixed['ui']=='error' and mixed['paint_ok']=='no' and mixed['paint_error']=='paint failed'
 # Phase failures, MUI budgets, slot partitions and fixed dictionaries share one exporter.
 r=scanner.extra_columns({'ui':'error','programs':[{'source':'kontakt','program':0,'pick':[62,64],
  'ksp':{'compile_ok':'yes','init_ok':'yes','slots':[{'compile_ok':True,'compile_clean':False,'disabled_block_errors':2,'init':{'completion':'completed'},'persistence_changed':{'completion':'failed','fault':{'category':'fuel-budget'}}}]},

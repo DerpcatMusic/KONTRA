@@ -1758,6 +1758,24 @@ fn v1_editor_graph_drag_wheel_fine_and_typed_readout_work() {
 }
 
 #[test]
+fn sound_editor_close_and_drop_release_probe_owner() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let p = editor_fixture();
+    let mut h = Harness::new(&p, 1180., 780.);
+    h.press("view-0-Sound");
+    for close in [true, false] {
+        assert_eq!(p.shared.editor_watch.load(Relaxed), 0, "the visible Sound editor owns the probe");
+        let mut editor = super::editor(p.clone());
+        if close { editor.close(); }
+        drop(editor);
+        assert_eq!(p.shared.editor_watch.load(Relaxed), usize::MAX,
+            "closing or dropping the editor stops audio-thread probe publication");
+        h.idle(3);
+        assert_eq!(p.shared.editor_watch.load(Relaxed), 0, "reopening restores the visible editor's probe");
+    }
+}
+
+#[test]
 fn v1_editor_has_one_selected_owner_across_rack_parts() {
     let p=editor_fixture();let i=p.shared.view.lock().unwrap().parts[0].instrument.clone();
     p.selection.write().unwrap().parts.push(crate::plugin::Part{path:"/generated/second.nki".into(),..Default::default()});

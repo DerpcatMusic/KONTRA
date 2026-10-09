@@ -1378,3 +1378,93 @@ fn physical_ladder_lanes_keep_signed_gain_and_drive_audio_without_heap() {
     assert!((10. * (high / low).log10() - 6.).abs() < 0.02, "{low} {high}");
     assert_eq!(rt.engine_parameter(gain), Ok(250000));
 }
+
+#[test]
+fn normalized_cutoff_routes_address_ladder_and_daft_without_audio_heap() {
+    for ladder in [true, false] {
+        let render = |cutoff, depth| {
+            let processor = if ladder {
+                ir::Processor::LadderLP4(ir::LadderLP4 { address: None, gain: 0.,
+                    cutoff, resonance: 0.1, record_version: 0x92 })
+            } else {
+                ir::Processor::Daft(ir::Daft { gain: 0., cutoff, resonance: 0.1, highpass: false })
+            };
+            let instrument = ir::Instrument {
+                assets: vec![asset("native cutoff")],
+                chains: vec![ir::Chain { scope: ir::Scope::Voice,
+                    pre_amplitude: vec![ir::Processor::Gain(ir::Gain::Linear(1.)), processor],
+                    post_amplitude: vec![] }],
+                modulators: vec![ir::Modulator { scope: ir::Scope::Voice, source: ir::ModulationSource::Constant }],
+                routes: vec![ir::Route { source: ir::ModulatorRef(0),
+                    target: ir::Target::Processor { chain: ir::ChainRef(0), index: 1, parameter: ir::ProcessorParameter::Cutoff },
+                    depth: ir::Depth::Normalized(depth), invert: false, shape: None, smoothing: ir::Time::Seconds(0.), scale: None }],
+                zones: vec![ir::Zone { chain: Some(ir::ChainRef(0)), routes: vec![ir::RouteRef(0)],
+                    pitch: ir::KeyTracking::Fixed, velocity: ir::VelocityResponse::None,
+                    ..ir::Zone::new(ir::AssetRef(0)) }], ..Default::default() };
+            let pcm = Pcm::new(48000, (0..4096).map(|i|
+                [0.01 * (i as f32 * std::f32::consts::TAU / 24.).sin(); 2]).collect::<Vec<_>>().into_boxed_slice()).unwrap();
+            let plan = lower(&instrument, 48000, vec![pcm], no_behaviors).unwrap();
+            let mut runtime = Runtime::new(plan, limits()).unwrap();
+            let mut out = [[0.; 2]; 2048];
+            support::without_heap(|| {
+                runtime.trigger(input(60), 60, 1.).unwrap();
+                for frames in out.chunks_mut(7) { runtime.render(frames).unwrap(); }
+                runtime.note_off(input(60), None).unwrap();
+            });
+            out
+        };
+        let dry = render(0.5, 0.);
+        let wet = render(0.5, 0.25);
+        assert_eq!(wet, render(0.75, 0.), "normalized depth must adjust the saved knob before conversion");
+        let energy = |x: &[[f32; 2]]| x[1024..].iter().flatten().map(|v| f64::from(*v).powi(2)).sum::<f64>();
+        assert!(10. * (energy(&wet) / energy(&dry)).log10() > 3., "opening the cutoff must pass more of the 2 kHz tone");
+    }
+}
+
+#[test]
+fn normalized_q_gain_routes_address_native_knobs_without_audio_heap() {
+    for ladder in [true, false] {
+      for parameter in [ir::ProcessorParameter::Resonance, ir::ProcessorParameter::Gain] {
+        let render = |value, depth| {
+            let (gain, resonance) = if parameter == ir::ProcessorParameter::Gain { (value, 0.1) } else { (0., value) };
+            let processor = if ladder {
+                ir::Processor::LadderLP4(ir::LadderLP4 { address: None, gain,
+                    cutoff: 0.5, resonance, record_version: 0x92 })
+            } else {
+                ir::Processor::Daft(ir::Daft { gain, cutoff: 0.5, resonance, highpass: false })
+            };
+            let instrument = ir::Instrument {
+                assets: vec![asset("native cutoff")],
+                chains: vec![ir::Chain { scope: ir::Scope::Voice,
+                    pre_amplitude: vec![ir::Processor::Gain(ir::Gain::Linear(1.)), processor],
+                    post_amplitude: vec![] }],
+                modulators: vec![ir::Modulator { scope: ir::Scope::Voice, source: ir::ModulationSource::Constant }],
+                routes: vec![ir::Route { source: ir::ModulatorRef(0),
+                    target: ir::Target::Processor { chain: ir::ChainRef(0), index: 1, parameter },
+                    depth: ir::Depth::Normalized(depth), invert: false, shape: None, smoothing: ir::Time::Seconds(0.), scale: None }],
+                zones: vec![ir::Zone { chain: Some(ir::ChainRef(0)), routes: vec![ir::RouteRef(0)],
+                    pitch: ir::KeyTracking::Fixed, velocity: ir::VelocityResponse::None,
+                    ..ir::Zone::new(ir::AssetRef(0)) }], ..Default::default() };
+            let pcm = Pcm::new(48000, (0..4096).map(|i|
+                [0.01 * (i as f32 * std::f32::consts::TAU / 24.).sin(); 2]).collect::<Vec<_>>().into_boxed_slice()).unwrap();
+            let plan = lower(&instrument, 48000, vec![pcm], no_behaviors).unwrap();
+            let mut runtime = Runtime::new(plan, limits()).unwrap();
+            let mut out = [[0.; 2]; 2048];
+            support::without_heap(|| {
+                runtime.trigger(input(60), 60, 1.).unwrap();
+                for frames in out.chunks_mut(7) { runtime.render(frames).unwrap(); }
+                runtime.note_off(input(60), None).unwrap();
+            });
+            out
+        };
+        let dry = render(0.1, 0.);
+        let wet = render(0.1, 0.4);
+        assert_eq!(wet, render(0.5, 0.), "depth must add to the native knob before conversion");
+        assert_ne!(wet, dry, "Q/Gain must change audio");
+        assert_eq!(render(0.9, 0.4), render(1., 0.), "normalized knobs saturate");
+        if ladder && parameter == ir::ProcessorParameter::Gain {
+            assert_eq!(render(-0.25, 0.), render(0., 0.), "enabled zero-depth Gain clamps saved signed gain, as v1 does");
+        }
+      }
+    }
+}

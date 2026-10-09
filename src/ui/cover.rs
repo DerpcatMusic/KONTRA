@@ -281,22 +281,11 @@ pub fn cached(spec: &Spec, w: u32, h: u32, title: bool) -> Option<Image> {
     }
     let image = render(spec, w, h, title)?;
     if let Some(path) = path {
-        let _ = save(&image, &path);
+        let _ = crate::artwork::save_display(&image, &path);
     }
     Some(image)
 }
 
-fn save(image: &Image, path: &std::path::Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(path.parent().unwrap_or(path))?;
-    let tmp = path.with_extension("png.tmp");
-    {
-        let mut e = png::Encoder::new(std::io::BufWriter::new(std::fs::File::create(&tmp)?), image.width, image.height);
-        e.set_color(png::ColorType::Rgba);
-        let mut w = e.write_header().map_err(std::io::Error::other)?;
-        w.write_image_data(&image.rgba).map_err(std::io::Error::other)?;
-    }
-    std::fs::rename(tmp, path)
-}
 
 #[cfg(test)]
 mod tests {
