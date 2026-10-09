@@ -129,17 +129,30 @@ impl Samples {
     pub fn resolve(&mut self, parent: &Path, name: &str) -> Result<Option<PathBuf>, LoadError> {
         let name = name.replace('\\', "/");
         // Saved paths can include the old external sample folder. Prefer an
-        // exact suffix, then a unique basename; never choose a duplicate.
+        // exact member, then a unique suffix/basename; never choose a duplicate.
         // ponytail: linear member lookup; index names if large monoliths load slowly.
         if !self.embedded.is_empty() {
             let normalized = name.replace('|', "/").to_lowercase();
             let basename = normalized.rsplit('/').next().unwrap_or(&normalized);
-            for suffix in [normalized.as_str(), basename] {
+            for (exact, suffix) in [
+                (true, normalized.as_str()),
+                (false, normalized.as_str()),
+                (false, basename),
+            ] {
                 let suffix = format!("/{suffix}");
                 let mut matches = self
                     .embedded
-                    .keys()
-                    .filter(|p| p.to_string_lossy().to_lowercase().ends_with(&suffix));
+                    .iter()
+                    .filter(|(path, source)| {
+                        if exact {
+                            path.strip_prefix(&source.path).is_ok_and(|member| {
+                                member.to_string_lossy().to_lowercase() == normalized
+                            })
+                        } else {
+                            path.to_string_lossy().to_lowercase().ends_with(&suffix)
+                        }
+                    })
+                    .map(|(path, _)| path);
                 if let Some(found) = matches.next() {
                     if matches.next().is_some() {
                         return Err(LoadError::Invalid {

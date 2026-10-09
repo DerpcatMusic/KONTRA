@@ -3977,6 +3977,17 @@
       "validation": "W0 stable f1a067a1 full workspace2074PASS/0FAIL/261ignored; scheduler48PASS, reader45PASS/1ignored, workspace+standalone no-run and GPU gates PASS. Native15 loads/audible15/15; Original12 and retained Vista image-reference limit unchanged. Strict quick72 retry matches published381:72loads/68audible, no new stage/audibility/fault/stuck-note failures, audio heap0/nonfinite0. Initial parallel Pacific missing-page failures retained; both traced and uninstrumented serial pairs match381 peaks with zero underruns. No CPU/load/RSS/underrun or complete widget/audio parity acceptance.",
       "accepted": true,
       "category": "Fixed"
+    },
+    {
+      "id": "filecontainer-exact-member-precedence",
+      "summary": "Prefer an exact embedded sample member before suffix or basename fallback.",
+      "release_note": "Load exact FileContainer sample members even when another member shares their suffix.",
+      "source_commits": [
+        "85d15c65047684e4041e907b4659995eef37ad91"
+      ],
+      "validation": "Codex P2 authored exact/suffix collision RED1\u2192GREEN3 monolith tests; Kontakt lib97PASS/5ignored and area no-run PASS. Case and separator normalization retained; ambiguous fallback still fails closed. Existing full f1 workspace/native regression receipts precede this isolated correction.",
+      "accepted": true,
+      "category": "Fixed"
     }
   ]
 }
