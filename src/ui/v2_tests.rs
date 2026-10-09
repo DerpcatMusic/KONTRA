@@ -1821,7 +1821,7 @@ fn widget_gesture_uses_authored_axis_and_sensitivity_without_shape_guesses() {
         ("ui_knob $s(0,1000000,1)", 200, 40, None, true),
     ] {
         let mouse = behaviour.map(|value| format!("set_control_par(get_ui_id($s),$CONTROL_PAR_MOUSE_BEHAVIOUR,{value})")).unwrap_or_default();
-        let source = format!("on init\n declare {kind}\n move_control_px($s,20,20)\n set_control_par(get_ui_id($s),$CONTROL_PAR_WIDTH,{width})\n set_control_par(get_ui_id($s),$CONTROL_PAR_HEIGHT,{height})\n {mouse}\nend on");
+        let source = format!("on init\n set_ui_height_px(260)\n declare {kind}\n move_control_px($s,20,20)\n set_control_par(get_ui_id($s),$CONTROL_PAR_WIDTH,{width})\n set_control_par(get_ui_id($s),$CONTROL_PAR_HEIGHT,{height})\n {mouse}\nend on");
         let script = sampler_ksp::compile(&source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
         let face = ir_view::resolved(&script.ui(&|_| None).unwrap());
         let (horizontal, captured_x) = audit_motion(&face, 0, 10., 0.);
