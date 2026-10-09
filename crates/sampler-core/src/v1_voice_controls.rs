@@ -1294,7 +1294,9 @@ mod lfo {
 }
 impl Mod {
     pub(crate) fn follow_value(&self, value: &mut f32, input: f32, frames: usize, rate: f32) {
-        approach(value, self.shape(input), self.lag, frames, rate);
+        if self.route.is_some_and(|(source, _)| source.live()) {
+            approach(value, self.shape(input), self.lag, frames, rate);
+        }
     }
     /// Shaped value at note start; zero for unmodelled sources.
     pub fn start_value(&self, input: &Inputs) -> f32 {
@@ -1948,4 +1950,18 @@ impl Primary {
     }
     pub(crate) fn skip(&mut self, n: usize) { self.value.skip(n, None, self.rate); }
     pub(crate) fn render(&mut self, out: &mut [f32]) { self.value.render(out, None, self.rate); }
+}
+
+#[cfg(test)]
+mod adapter_tests {
+    use super::*;
+    #[test]
+    fn native_module_follow_retains_static_onset_and_follows_live_sources() {
+        for source in [Source::Constant, Source::Key, Source::Velocity, Source::Cc(11), Source::Pressure, Source::Bend] {
+            let target = Mod { route: Some((source, Target::Module)), intensity: 1., lag: 0., curve: None };
+            let mut value = 0.25;
+            target.follow_value(&mut value, 1., 64, 48000.);
+            assert_eq!(value, if source.live() { 1. } else { 0.25 });
+        }
+    }
 }
