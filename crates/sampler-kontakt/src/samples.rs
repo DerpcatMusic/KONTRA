@@ -97,6 +97,8 @@ impl Samples {
                     offset: container.file_section_offset + item.file_start_offset,
                     size: item.file_size,
                     key: None,
+                    handle: None,
+                    header: None,
                 };
                 if samples.embedded.insert(location, source).is_some() {
                     return Err(LoadError::Invalid {
@@ -409,8 +411,11 @@ impl Samples {
                         archives: self.archives.clone(),
                         keys: self.keys.clone(),
                         handles: self.handles.clone(),
+                        embedded: self.embedded.clone(),
                         frame_counts: HashMap::new(),
                         loose: None,
+                        #[cfg(feature = "library-access")]
+                        content_roots: self.content_roots.clone(),
                     };
                     scope.spawn(move || {
                         chunk
