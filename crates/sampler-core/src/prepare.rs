@@ -419,6 +419,7 @@ struct Candidate {
 }
 
 pub struct Prepared {
+    pub(super) parameter_registry: super::PreparedParameterRegistry,
     pub(super) signal_trace: Option<crate::trace::TracePrepared>,
     pub(super) rate: u32,
     pub(super) pcm: Box<[Pcm]>,
@@ -631,6 +632,7 @@ impl Prepared {
                 size_of::<super::source::CursorTemplate>(), cursor_loops.len(), size_of::<super::source::LoopSlots>());
         }
         Ok(Self {
+            parameter_registry: Default::default(),
             rate,
             pcm: pcm.into_boxed_slice(),
             buses: super::bus::PreparedBuses::default(),
@@ -768,21 +770,54 @@ impl Prepared {
             || programs
                 .iter()
                 .flat_map(|p| &p.routes)
-                .any(|r| match r.target {
-                    super::ModTarget::ProcessorCutoff(i)
-                    | super::ModTarget::ProcessorResonance(i) => !matches!(self.filters.get(i as usize),
+                .any(|r| match r.target.compiled() {
+                    Some(super::voice_mod::CompiledTarget::ProcessorCutoff(i)
+                    | super::voice_mod::CompiledTarget::ProcessorResonance(i)) => !matches!(self.filters.get(i as usize),
                         Some(super::dsp::svf::PreparedFilter::StateVariable(_))),
-                    super::ModTarget::ProcessorNativeCutoff(i)
-                    | super::ModTarget::ProcessorNativeResonance(i)
-                    | super::ModTarget::ProcessorNativeGain(i) => !matches!(self.filters.get(i as usize),
+                    Some(super::voice_mod::CompiledTarget::ProcessorNativeCutoff(i)
+                    | super::voice_mod::CompiledTarget::ProcessorNativeResonance(i)
+                    | super::voice_mod::CompiledTarget::ProcessorNativeGain(i)) => !matches!(self.filters.get(i as usize),
                         Some(super::dsp::svf::PreparedFilter::NativeControl)),
                     _ => false,
                 })
         {
             return Err(Error::InvalidInput);
         }
-        self.voice_modulation =
-            super::voice_mod::VoiceModulation::new(programs, regions, start_ranges)?;
+        for (region, program) in self.regions.iter().zip(&regions) {
+            let Some(program) = program else { continue; };
+            let Some(program) = programs.get(*program) else { return Err(Error::InvalidInput); };
+            for route in &program.routes {
+                if route.target.compiled().is_some() { continue; }
+                let descriptor = self.parameter_registry.resolve(route.target)
+                    .and_then(|lane| self.parameter_registry.descriptor(lane)).ok_or(Error::InvalidInput)?;
+                let chain = region.chain.and_then(|i| self.voice_chains.get(i)).ok_or(Error::InvalidInput)?;
+                if !self.dsp_bindings[chain.parameter_span.clone()].iter().any(|b| b.control == descriptor.control) {
+                    return Err(Error::InvalidInput);
+                }
+            }
+        }
+        let mut programs = programs;
+        for program in &mut programs {
+            let mut routes = Vec::new();
+            for route in &program.routes {
+                if route.target.compiled().is_some() { routes.push(*route); continue; }
+                if route.target.scope != super::ParameterScope::Voice { return Err(Error::InvalidInput); }
+                let descriptor = self.parameter_registry.resolve(route.target)
+                    .and_then(|lane| self.parameter_registry.descriptor(lane)).ok_or(Error::InvalidInput)?;
+                let consumers: Vec<_> = self.dsp_bindings.iter().enumerate()
+                    .filter(|(_, binding)| binding.control == descriptor.control).collect();
+                if consumers.is_empty() { return Err(Error::InvalidInput); }
+                for (lane, binding) in consumers {
+                    // Compiled control addresses are private to this preparation call.
+                    routes.push(super::ModRoute { target: super::ParameterAddress {
+                        scope: super::ParameterScope::Voice, node: u32::try_from(lane).map_err(|_| Error::Capacity)?, parameter: u32::MAX - 13,
+                    }, depth: route.depth * (binding.high - binding.low), ..*route });
+                }
+            }
+            program.routes = routes;
+        }
+        self.voice_modulation = super::voice_mod::VoiceModulation::new_resolved(
+            programs, regions, start_ranges, |address| (address.parameter == u32::MAX - 13).then_some(address.node as usize))?;
         Ok(self)
     }
 
