@@ -206,6 +206,17 @@ impl From<&sampler_ir::Unsupported> for Missing {
 }
 
 impl LoadReport {
+    #[cfg(test)]
+    pub(crate) fn audit_counts(&self) -> serde_json::Value {
+        let d = &self.decoded;
+        // Legacy `missing` counted all untranslated features, not sample resources.
+        serde_json::json!({"zones":d.zones,"groups":d.groups,"samples":d.samples,
+            "scripts":d.scripts,"missing":self.missing.len(),
+            "untranslated_features":self.missing.len(),
+            "sample_resource_failures":self.missing.iter().filter(|m| m.feature == "missing sample").count(),
+            "impulse_resource_failures":self.missing.iter().filter(|m| m.feature.ends_with("impulse response")).count()})
+    }
+
     /// The decoded counts and missing list of a translated instrument.
     pub fn of(instrument: &sampler_ir::Instrument, path: &std::path::Path, samples: usize) -> Self {
         Self {
@@ -261,6 +272,26 @@ impl LoadReport {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn audit_counts_separate_resource_failures_from_untranslated_features() {
+        let mut report = super::LoadReport::default();
+        let entry = |feature: &str| super::Missing {
+            location: "authored fixture".into(), feature: feature.into(), value: String::new(),
+            reason: super::MissingReason::NotModeled,
+        };
+        report.missing = ["effect", "Filter: filter type", "source mode (played as a sampler)"]
+            .into_iter().map(entry).collect();
+        let counts = report.audit_counts();
+        assert_eq!(counts["untranslated_features"], 3);
+        assert_eq!(counts["sample_resource_failures"], 0);
+        assert_eq!(counts["impulse_resource_failures"], 0);
+        report.missing.extend([entry("missing sample"), entry("impulse response")]);
+        let counts = report.audit_counts();
+        assert_eq!(counts["missing"], 5, "legacy total remains compatible");
+        assert_eq!(counts["sample_resource_failures"], 1);
+        assert_eq!(counts["impulse_resource_failures"], 1);
+    }
+
     #[test]
     #[cfg(feature = "plugin")]
     fn fault_transport_is_bounded_and_does_not_allocate_on_audio() {
