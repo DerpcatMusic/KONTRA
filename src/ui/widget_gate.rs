@@ -443,34 +443,6 @@ fn source_shards_reject_unknown_sources_and_preserve_full_default() {
     assert_eq!(source_range(2, Some(2)), None);
 }
 
-fn load_failure(status: &str) -> &'static str {
-    if !status.starts_with("Load failed:") {
-        "none"
-    } else if status.contains("schema changed") {
-        "script-schema-changed"
-    } else if status.contains("type changed") {
-        "script-value-type-changed"
-    } else if status.contains("Script persistence: InvalidInput") {
-        "script-restore-invalid-input"
-    } else if status.contains("Script persistence: Capacity") {
-        "script-restore-capacity"
-    } else {
-        "load-failed"
-    }
-}
-
-#[test]
-fn load_failure_receipt_keeps_authored_error_text_private() {
-    assert_eq!(
-        load_failure("Load failed: Saved script state schema changed"),
-        "script-schema-changed"
-    );
-    assert_eq!(
-        load_failure("Load failed: authored private text"),
-        "load-failed"
-    );
-    assert_eq!(load_failure("loaded"), "none");
-}
 
 #[test]
 #[ignore = "release gate: set KONTRA_WIDGET_GATE_PATH and KONTRA_WIDGET_GATE_PROGRAM; all private values stay in RAM"]
