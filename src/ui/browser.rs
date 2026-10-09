@@ -40,6 +40,12 @@ const SOURCE_RULE: f64 = 2. * INSET + 1.;
 /// How far a folder level steps in.
 const INDENT: f64 = TEXT;
 
+// Test counters: row rebuilds, catalog keys, category keys, query matches, preset rows, source rows.
+#[cfg(test)]
+thread_local! { pub(super) static WORK: std::cell::Cell<[usize; 6]> = const { std::cell::Cell::new([0; 6]) }; }
+#[cfg(test)]
+fn work(at: usize, count: usize) { WORK.with(|n| { let mut counts = n.get(); counts[at] += count; n.set(counts); }); }
+
 /// The browser's own state between frames.
 #[derive(Default)]
 pub struct Browse {
@@ -197,22 +203,25 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             .is_some_and(|p| is_uvi(p));
     }
     let uvi = cx.state.uvi;
-    // Which library each file is in, worked out once per scan.
+    // Library paths and their order, prepared once per catalog/provider.
     let (files, shelf, kind, grouped) = &mut cx.state.libraries;
     let scanned = Arc::as_ptr(&catalog) as usize;
-    if !files.upgrade().is_some_and(|f| Arc::ptr_eq(&f, &presets))
-        || *shelf != scanned
-        || *kind != uvi
-    {
-        let mut by: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-        for (n, file) in presets
-            .iter()
-            .enumerate()
-            .filter(|(_, f)| import::is_multi(f) || is_uvi(f) == uvi)
-        {
+    if !files.upgrade().is_some_and(|f| Arc::ptr_eq(&f, &presets)) || *shelf != scanned || *kind != uvi {
+        let mut by: super::Libraries = BTreeMap::new();
+        for file in presets.iter().filter(|f| import::is_multi(f) || is_uvi(f) == uvi) {
             if let Some(library) = catalog.of(file) {
-                by.entry(library.name.clone()).or_default().push(n);
+                by.entry(library.name.clone()).or_default().push(file.clone());
             }
+        }
+        for (base, saved) in &catalog.snapshots {
+            if let Some(library) = catalog.of(base) && let Some(paths) = by.get_mut(&library.name) {
+                paths.extend(saved.paths.iter().cloned());
+            }
+        }
+        for paths in by.values_mut() {
+            #[cfg(test)] work(1, paths.len());
+            paths.sort_by_cached_key(|p| import::natural(&p.to_string_lossy()));
+            paths.dedup();
         }
         (*files, *shelf, *kind, *grouped) = (Arc::downgrade(&presets), scanned, uvi, Arc::new(by));
     }
@@ -344,7 +353,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     if cx.state.browse.matching.0 != Some(matching_key) {
         let matching = arranged.iter().filter(|library| {
             matches_query(library, None, &words, &settings)
-                || library_paths(&cx.view, &grouped, &library.name).into_iter()
+                || library_paths(&grouped, &library.name).into_iter()
                     .any(|path| matches_query(library, Some(path), &words, &settings))
         }).map(|library| library.name.clone()).collect();
         cx.state.browse.matching = (Some(matching_key), matching);
@@ -478,7 +487,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
                     None => stack![glyph(Icon::Sidebar, TEXT, secondary()).centered()].w(Len::Pct(100.)).h(height).fill(Role::Raised),
                 }.id(format!("{id}-art")).disabled().shrink(0);
                 (catalog.named(name).map_or_else(|| library_label(name), |l| settings.library_name(l)),
-                    preset_count(&catalog, &grouped, name),
+                    preset_count(&grouped, name),
                     art, height + 2. * TIGHT, true)
             },
         };
@@ -793,8 +802,8 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     // How many presets are listed, folded away or not; all of them before
     // a library is chosen.
     let count = match &cx.state.source {
-        Some(Source::Library(name)) if needle.is_empty() => preset_count(&catalog, &grouped, name),
-        None if needle.is_empty() => arranged.iter().map(|l| preset_count(&catalog, &grouped, &l.name)).sum(),
+        Some(Source::Library(name)) if needle.is_empty() => preset_count(&grouped, name),
+        None if needle.is_empty() => arranged.iter().map(|l| preset_count(&grouped, &l.name)).sum(),
         _ => listed.presets,
     };
     let counted = caption(count.to_string())
@@ -874,6 +883,7 @@ fn list(
     recent: &[PathBuf],
     needle: &str,
 ) -> Vec<Row> {
+    #[cfg(test)] work(0, 1);
     let view = &cx.view;
     let words: Vec<&str> = needle.split_whitespace().collect();
     // A preset's library and its folders inside it.
@@ -907,12 +917,8 @@ fn list(
             }
         })
     };
-    let files = |name: &str| {
-        let mut paths = library_paths(view, grouped, name);
-        paths.sort_by_cached_key(|p| import::natural(&p.to_string_lossy()));
-        paths.dedup();
-        paths
-    };
+    // port from v1 0cb7a8a0:src/ui/browser.rs: queries only gather the cached paths.
+    let files = |name: &str| library_paths(grouped, name);
     match &cx.state.source {
         Some(Source::Favorites) => favorites.iter().filter_map(|p| flat(p, true)).collect(),
         Some(Source::Recent) => recent.iter().filter_map(|p| flat(p, true)).collect(),
@@ -937,25 +943,19 @@ fn list(
 }
 
 fn matches_query(library: &Library, path: Option<&Path>, words: &[&str], settings: &import::Settings) -> bool {
+    #[cfg(test)] work(3, 1);
     let provider = if is_uvi(&library.dir) { "UVI" } else { "" };
     let hay = format!("{provider} {} {} {} {} {}", settings.library_name(library), library.name, library.vendor,
         path.map(stem).unwrap_or_default(), path.map(|p| folders(&library.dir, p)).unwrap_or_default()).to_lowercase();
     words.iter().all(|word| hay.contains(word))
 }
 
-fn preset_count(shelf: &import::Shelf, grouped: &super::Libraries, name: &str) -> usize {
-    grouped.get(name).map_or(0, Vec::len) + shelf.snapshots.iter()
-        .filter(|(base, _)| shelf.of(base).is_some_and(|l| l.name == name))
-        .map(|(_, presets)| presets.paths.len()).sum::<usize>()
+fn preset_count(grouped: &super::Libraries, name: &str) -> usize {
+    grouped.get(name).map_or(0, Vec::len)
 }
 
-fn library_paths<'a>(view: &'a super::View, grouped: &super::Libraries, name: &str) -> Vec<&'a Path> {
-    let mut paths: Vec<_> = grouped.get(name).into_iter().flatten().map(|&n| view.files[n].as_path()).collect();
-    if let Some(library) = view.shelf.named(name) {
-        paths.extend(view.shelf.snapshots.iter().filter(|(base, _)| view.shelf.of(base).is_some_and(|l| l.dir == library.dir))
-            .flat_map(|(_, presets)| presets.paths.iter().map(PathBuf::as_path)));
-    }
-    paths
+fn library_paths<'a>(grouped: &'a super::Libraries, name: &str) -> Vec<&'a Path> {
+    grouped.get(name).into_iter().flatten().map(PathBuf::as_path).collect()
 }
 
 fn categories(library: &Library, paths: &[&Path], open: &BTreeMap<String, bool>) -> Vec<Row> {
@@ -968,6 +968,7 @@ fn categories(library: &Library, paths: &[&Path], open: &BTreeMap<String, bool>)
             category == name
         }).collect();
         if selected.is_empty() { continue; }
+        #[cfg(test)] work(2, selected.len());
         selected.sort_by_cached_key(|p| import::natural(&p.to_string_lossy()));
         let mut root = library.dir.clone();
         // Bank members keep their source identity while hiding the container wrapper.
@@ -1211,6 +1212,7 @@ fn source_row(
             .pad((TIGHT, SPACE)).fill(Role::Raised).anchor(Align::Start, Align::Start)]
             .w(Len::Pct(100.))
     } else { thumb };
+    #[cfg(test)] work(5, 1);
     let editing = edit.is_some();
     let name = edit.unwrap_or_else(|| body(label.clone())
         .text_size(TEXT)
@@ -1750,6 +1752,7 @@ fn folder(ui: &mut Ui, cx: &mut Cx, n: usize, row: &Row) -> El {
 /// rack, right-click opens its menu. A star at its end, shown on hover and
 /// kept once set, makes it a favorite. `under`, when set, is its folder.
 fn preset(ui: &mut Ui, cx: &mut Cx, n: usize, path: &Path, depth: usize, under: &str) -> El {
+    #[cfg(test)] work(4, 1);
     let id = format!("instrument-{n}");
     let star_id = format!("star-{n}");
     let text = path.to_string_lossy().into_owned();
