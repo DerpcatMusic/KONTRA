@@ -473,6 +473,8 @@ struct Held {
 }
 
 pub struct V2Core {
+    #[cfg(test)]
+    onset_audit: Option<[u64; 6]>,
     parts: Vec<Option<Box<Part>>>,
     performance: Option<[f64; 3]>,
     align: crate::timing::Align,
@@ -1519,6 +1521,8 @@ impl V2Core {
         peaks.parts.resize(parts.max(peaks.parts.len()), [0.0; 2]);
         Self {
             parts: (0..parts).map(|_| None).collect(),
+            #[cfg(test)]
+            onset_audit: None,
             performance: None,
             align: crate::timing::Align::with_slots(parts, mix.timing.clone()),
             holding: false,
@@ -1581,6 +1585,25 @@ impl V2Core {
         std::mem::swap(&mut self.peaks.parts, &mut grown.peaks.parts);
     }
 
+    #[cfg(test)]
+    pub(crate) fn onset_audit(&mut self) -> serde_json::Value {
+        let timings = self.onset_audit.replace([0; 6]);
+        let states: Vec<_> = self.parts.iter().flatten().map(|p| {
+            let stats = p.runtime.stats();
+            let mut callbacks = 0;
+            let mut yielded = 0;
+            p.runtime.visit_behavior_progress(|c| {
+                callbacks += 1;
+                yielded += usize::from(c.yielded_at.is_some());
+            });
+            serde_json::json!({"voices":stats.voices,"audible":p.runtime.audible_voice_count(),
+                "cold_starts":stats.cold_starts,"pending_commands":p.runtime.pending_commands(),
+                "callbacks":callbacks,"yielded":yielded,"clock":p.runtime.now(),
+                "runtime_render_ns":stats.render_nanos_last,"persistent_values":p.persistence.as_ref().map_or(0, |s| s.values_len())})
+        }).collect();
+        serde_json::json!({"stage_ns":timings,"parts":states})
+    }
+
     fn render_chunk(&mut self, frames: usize) -> Rendered<'_> {
         let n = frames.min(MAX_BLOCK);
         for bus in self.buses.iter_mut() {
@@ -1593,12 +1616,16 @@ impl V2Core {
         let solo = self.mix.parts.iter().take(self.parts.len()).any(|c| c.solo);
         for (index, part) in self.parts.iter_mut().enumerate() {
             let Some(part) = part else { continue };
+            #[cfg(test)]
+            let audit_start = self.onset_audit.map(|_| std::time::Instant::now());
             // Native replies apply backpressure; bounded ingress is serviced before rendering.
             for _ in 0..256 {
                 if !matches!(part.runtime.poll_control_update(), Ok(Some(_))) {
                     break;
                 }
             }
+            #[cfg(test)]
+            if let (Some(t), Some(a)) = (audit_start, self.onset_audit.as_mut()) { a[0] += t.elapsed().as_nanos() as u64; }
             let pairs = |direct: u32| (0..BUSES).filter(move |pair| direct & 1 << pair != 0);
             for pair in pairs(part.direct) {
                 self.direct[pair][..n].fill([0.0; 2]);
@@ -1609,6 +1636,8 @@ impl V2Core {
             if part.runtime.behavior_block_fuel() != fuel {
                 part.runtime.set_behavior_block_fuel(fuel);
             }
+            #[cfg(test)]
+            let audit_start = self.onset_audit.map(|_| std::time::Instant::now());
             if let Some(script) = part.script.as_mut() {
                 let _ = script.wake(&mut part.runtime);
                 // What the scripts generated plays into the part.
@@ -1624,14 +1653,25 @@ impl V2Core {
                     wire_event(part, out.status, out.a, out.b);
                 }
             }
+            #[cfg(test)]
+            if let (Some(t), Some(a)) = (audit_start, self.onset_audit.as_mut()) { a[1] += t.elapsed().as_nanos() as u64; }
+            #[cfg(test)]
+            let audit_start = self.onset_audit.map(|_| std::time::Instant::now());
             if let Some(horizon) = part.horizon {
                 // Pending pages play silent and count as underruns.
-                if let Err(error) = part.runtime.service_streaming(horizon) {
+                let readiness = part.runtime.service_streaming(horizon);
+                #[cfg(test)]
+                if let Some(a) = self.onset_audit.as_mut() { a[4] += u64::from(matches!(readiness, Ok(false))); }
+                if let Err(error) = readiness {
                     record_stream_error(&mut part.problems, error);
                 }
             }
+            #[cfg(test)]
+            if let (Some(t), Some(a)) = (audit_start, self.onset_audit.as_mut()) { a[2] += t.elapsed().as_nanos() as u64; }
             let out = &mut self.scratch[..n];
             let mut outs: [&mut [Frame]; BUSES] = self.direct.each_mut().map(|d| &mut d[..n]);
+            #[cfg(test)]
+            let audit_start = self.onset_audit.map(|_| std::time::Instant::now());
             if part.runtime.render_split(out, &mut outs).is_err() {
                 if let Some(error) = part.runtime.take_stream_fault() {
                     part.problems.offline_failures += 1;
@@ -1639,11 +1679,9 @@ impl V2Core {
                 }
                 continue;
             }
-            let cutoff = if part.runtime.has_input_tone() {
-                20_000.
-            } else {
-                self.performance.map_or(20_000., |p| p[2])
-            };
+            #[cfg(test)]
+            if let (Some(t), Some(a)) = (audit_start, self.onset_audit.as_mut()) { a[3] += t.elapsed().as_nanos() as u64; }
+            let cutoff = if part.runtime.has_input_tone() { 20_000. } else { self.performance.map_or(20_000., |p| p[2]) };
             let at = part.runtime.now().saturating_sub(n as u64);
             let _ = part
                 .tone
@@ -1778,15 +1816,16 @@ impl V2Core {
                 *m = m.max(peak(&signal[..n]));
             }
         }
+        #[cfg(test)]
+        let audit_start = self.onset_audit.map(|_| std::time::Instant::now());
         for part in self.parts.iter_mut().flatten() {
             if let Some(state) = part.persistence.as_mut() {
                 state.publish(&part.runtime);
             }
         }
-        Rendered {
-            buses: &self.buses,
-            live: self.written,
-        }
+        #[cfg(test)]
+        if let (Some(t), Some(a)) = (audit_start, self.onset_audit.as_mut()) { a[5] += t.elapsed().as_nanos() as u64; }
+        Rendered { buses: &self.buses, live: self.written }
     }
 
     /// Port v1 Align::release: stable original events, with their captured articulation.
