@@ -1,0 +1,24 @@
+# Native CLAP editor lifecycle
+
+Functional viewport validation and the four fixed-viewport observations are pending. The new host mode preserves the plugin and its paced 48 kHz/64-frame processing thread while opening, hiding and destroying, then recreating the editor. Native state and raw plugin output remain in tmpfs; receipts retain numeric samples and hashes. The ordinary presented-pixel host mode is unchanged.
+
+The first Conflux observations ran on the real X11 display `:0`, requested Original view, interface scale 1 and 1180×760, waited four seconds per phase, then sampled VmRSS ten times at 100 ms intervals. They sent no MIDI and performed no explicit GC, malloc_trim or pixel readback. The window manager enlarged the mapped window after map; these observations do **not** establish memory parity at the requested size.
+
+| Artifact | Loaded MiB | Open MiB | Destroyed MiB | Reopened MiB | Open delta MiB |
+|---|---:|---:|---:|---:|---:|
+| Frozen v1 plugin 0.3.152 | 415.707 | 577.041 | 501.641 | 593.727 | 161.334 |
+| Frozen v2 plugin 0.3.381 | 126.168 | 319.234 | 261.605 | 383.445 | 193.066 |
+
+v1 SHA256 `20ff6b471069d6891d2847e72a4f863db5b50ce24265fda82d083b713b3496de`; v2 SHA256 `4d1a55641f8f702280685c162db67a60f90cafa26240a6c7b63124b26dd00a25`, clean source `54d9a5c5da45ada122694bde78e3b4aaf36dc731`, release, CLAP/library-access/plugin, local GLIBC 2.44. W0's frozen artifact receipt SHA256 is `5f7242ba5de71759d14340ffbfeeb114b82f04a296b9ada5ca82e51d00aff8be`. No installed artifact identity is assumed.
+
+Mapped v1 child sizes were 1872×2073 at open and 1884×2073 at reopen; v2 was 1884×2073 at both. The source and routing readback remained identical at all four phases. Parent geometry was not recorded by this first host binary, so these receipts do not establish a parent/child disagreement or clipping. They establish that the initial accepted dimensions did not remain the measured dimensions.
+
+The fixed RSS host uses an X11 override-redirect parent so the tiling WM cannot replace its measurement viewport, rejects plugin resize requests outside that viewport, and checks requested, accepted, CLAP-reported, mapped parent and mapped child dimensions at both opens. The original ordinary presented host remains WM-managed. `check-editor-size.py` fails on the first 381 receipt; the functional GREEN is still required.
+
+381's selected Conflux load finished `partial`, whereas v1's latest selected-source load finished `loaded`. This is the plugin's typed translator report, not a failed native-state restore or a host readiness error: `src/plugin.rs` marks successful publication partial when `loaded.report.missing` is nonempty. Its 21 distinct diagnostic groups are 13 `NotModeled`, two `UnknownLaw`, one `InvalidValue`, and five KSP `UnknownCommand`. Known subjects include saved automation, wavetable source, wavetablePosition/warpFactor/warpFactor2/wavetableModFrequency/wavetableModAmount/wavetableInharmonic modulation, module parameter modulation, source mode played as sampler and an effect. KSP subjects are get_menu_item_value, get_zone_par, get_menu_item_str, set_event_par_arr and ignore_controller. Initializer implementations do not establish event-context support; W5 owns review of those five diagnostics. Three remaining subject identifiers and authored locations/values remain hashed. No host-side implementation change can remove these translator omissions.
+
+The driver now binds readiness to the exact selected source path and each distinct program, so repeated reports for program 0 cannot admit program 1. Big Screen is inventoried as two embedded programs: controller 0 and audible program 1; the forthcoming multi lifecycle loads both, separately from individual scanner measurements. A partial load can produce a raw RSS receipt, but never a claim of feature-matched v1 parity. W3's stage probes use other artifacts and omit the native rasterizer/device; these host deltas neither reproduce nor refute their scene-only deltas.
+
+Receipts: `/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w13-clap-editor-rss-20261009/`, including both original Conflux metrics, sanitized plugin journals, typed-reason summary, failing size log and direct drained handoff to W9. Timing admission is separate and remains pending.
+
+NEXT: fixed viewport GREEN, Big Screen lifecycle, root no-run, push READY; quiet CLAP 64/32/256 afterward.
