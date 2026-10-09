@@ -1,0 +1,13 @@
+# Native-primary production checkpoint
+
+Branch `v2/w9-v1-whole-voice-381`; production `d8f1c623`, failing-first fixture `c3cb7aa9`. The held EQ/mix implementation `27d7ccb0` and its `ec75697e` frozen source were already pushed and reported READY. This checkpoint consumes W6 `4507cb1e` (local same-patch `6496f199`) in the production voice's existing `EnvelopeState`.
+
+Only an unambiguous, importer-validated physical native primary AHDSR address is admitted: original group/slot/runtime identity, native amplitude marker, non-one-shot playback, no generic onset delay. Invalid native coefficients are rejected. The prepared native recurrence is copied from the region template into the existing envelope owner on trigger, then drives dry and processed samples, release, interpolation drain, retirement, phase telemetry and voice reuse without a second clock. Chokes retain the next level and never extend release. Storage-onset release retains the existing v2 readiness policy. Frame-valued script/live controls clear native admission and retain existing v2 semantics until their original native knob representation is available.
+
+Failing-first numerical RED used the actual lowered production voice (block 1, frame 0: bits 844319348 versus pinned reference 0). GREEN compares dry and post-Gain output against W6's prepared evaluator bit for bit at blocks 1/7/31/32/33/64/17/3, release inside that partition, and voice reuse. Trigger, release, render and panic remain heap0. Focused validation: 31 lowering tests, two native lifecycle tests and ten pinned evaluator tests PASS; sampler-core/sampler-kontakt ci no-run PASS (70 executables). Duplicate raw descriptors, external/mismatched identity and nonfinite native coefficients have explicit checks.
+
+Full ordered ControlPlan and native fused whole-voice execution remain HOLD. Original ordered LFO/Flex/external descriptors and the native initialization/live-knob overlay are still missing from IR. W6's saved wavetable descriptor `61158054` and Digital zero-delay generic `SineScaled` subset do not fill that representation. This checkpoint claims neither the full ControlPlan port nor full-instrument sound parity. Wavetable sampler admission is unchanged.
+
+Artifacts: `/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w9-native-primary-20261009/` contains the frozen build, original probe measurements, validation log/receipt and three-line parked boundary. Timed values require whole-run QUIET and matching binary digest; contended attempts are retained and excluded. No PCM or decrypted library metadata is persisted.
+
+NEXT: original ordered source descriptors and native initialization overlay, then fail-first one complete production group/voice consumer.
