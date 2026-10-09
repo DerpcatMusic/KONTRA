@@ -426,3 +426,11 @@ fn real_xy_getters_read_authored_and_live_indexed_values() {
     assert_eq!(f64::from_bits(cell(&rt, 2) as u64), 0.25);
     assert_eq!(f64::from_bits(cell(&rt, 3) as u64), 0.75);
 }
+
+#[test]
+fn init_font_ids_keep_v1_numeric_and_invalid_name_semantics() {
+    let rt = run("on init declare $font declare $empty declare $path declare $out
+        $font := get_font_id(\"12\") $empty := get_font_id(\"\") $path := get_font_id(\"foo/bar\") end on
+        on note $out := $font end on", &[]);
+    assert_eq!((cell(&rt, 0), cell(&rt, 1), cell(&rt, 2), cell(&rt, 3)), (12, 0, 0, 12));
+}
