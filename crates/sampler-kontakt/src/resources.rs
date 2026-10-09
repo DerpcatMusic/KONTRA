@@ -210,14 +210,6 @@ impl Resources {
         }
         names.into_iter().collect()
     }
-    pub fn locations(&self) -> Vec<PathBuf> {
-        self.files
-            .values()
-            .flatten()
-            .cloned()
-            .chain(self.containers.iter().cloned())
-            .collect()
-    }
     /// None means absent. Invalid, ambiguous, corrupt and inaccessible resources remain errors.
     pub fn read_result(&mut self, path: &str) -> Result<Option<Vec<u8>>, LoadError> {
         let root = self.root.clone();

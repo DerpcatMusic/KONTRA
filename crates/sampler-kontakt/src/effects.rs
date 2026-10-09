@@ -177,7 +177,7 @@ pub(crate) fn program_racks(
             _ => {}
         }
     }
-    Ok(out)
+    out
 }
 
 /// Engine value (0..1000000) of an effect level as a linear gain: cubic about
