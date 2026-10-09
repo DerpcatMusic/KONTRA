@@ -12,6 +12,16 @@ for bad in [{'key': 128, 'velocity': 64}, {'key': 60, 'velocity': 0}, {'key': 60
     try: events(bad, 6)
     except AssertionError: pass
     else: raise AssertionError('invalid audition accepted')
+# Performance trills require a held neighbor, repeated without stuck notes.
+paired = events({'key':60, 'velocity':64, 'keyswitch':12, 'held_key':61}, 6)
+assert (128,0x90,61,64) in paired and (256,0x90,60,64) in paired
+assert (24256,0x80,60,0) in paired and (24384,0x80,61,0) in paired
+assert len([e for e in paired if e[1]==0x90 and e[2] in (60,61)]) == 10
+assert all(e[0] < 6*48000 for e in paired)
+for held in [-1,128,True,60,12,'61']:
+    try: events({'key':60,'velocity':64,'keyswitch':12,'held_key':held},2)
+    except AssertionError: pass
+    else: raise AssertionError('invalid held audition accepted')
 template = b'OAST\x01\0\0\0' + b'\0' * 8 + struct.pack('<IQQ', 0, 0, 0)
 native = v1_state(template, '/generated/tone.nki', 3)
 assert native[:28] == template[:28] and len(native) > len(template)
