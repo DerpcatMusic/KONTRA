@@ -3,15 +3,60 @@
 
 pub fn process(c: [f32; 6], history: &mut [f32; 4], left: &mut [f64], right: &mut [f64]) {
     assert_eq!(left.len(), right.len());
-    crate::dispatch(
-        #[inline(always)]
-        || kernel::process_body(c, history, left, right),
-    );
+    kernel::process_body(c, history, left, right);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn section_matches_baseline_from_every_dispatch_context() {
+        eprintln!("section dispatch context: {:?}", crate::level());
+        for c in [
+            [0.91, 0.073, 0.006, 1., 0.22, 0.],
+            [0.23, 0.37, 0.59, 1., -0.72, 0.11],
+        ] {
+            for len in [0, 1, 2, 3, 7, 31, 32, 33, 63, 64, 65, 256] {
+                let mut baseline = ([0.11, -0.02, 0.21, -0.03], [0.; 256], [0.; 256]);
+                let mut dispatched = baseline;
+                for block in 0..3 {
+                    for (i, (l, r)) in baseline.1.iter_mut().zip(&mut baseline.2).enumerate() {
+                        *l = f64::from(((i + block * 3) as f32 * 0.13).sin() * 0.25);
+                        *r = -*l;
+                    }
+                    dispatched.1 = baseline.1;
+                    dispatched.2 = baseline.2;
+                    kernel::process_body(
+                        c,
+                        &mut baseline.0,
+                        &mut baseline.1[..len],
+                        &mut baseline.2[..len],
+                    );
+                    crate::dispatch(
+                        #[inline(always)]
+                        || {
+                            process(
+                                c,
+                                &mut dispatched.0,
+                                &mut dispatched.1[..len],
+                                &mut dispatched.2[..len],
+                            )
+                        },
+                    );
+                    assert_eq!(baseline.0.map(f32::to_bits), dispatched.0.map(f32::to_bits));
+                    assert_eq!(baseline.1.map(f64::to_bits), dispatched.1.map(f64::to_bits));
+                    assert_eq!(baseline.2.map(f64::to_bits), dispatched.2.map(f64::to_bits));
+                }
+            }
+        }
+    }
 }
 
 #[allow(unsafe_code)]
 mod kernel {
-    #[inline(always)]
+    // Keep v1's SSE2 operation order outside callers' AVX2/FMA dispatch contexts.
+    #[inline(never)]
     pub(super) fn process_body(
         c: [f32; 6],
         history: &mut [f32; 4],
