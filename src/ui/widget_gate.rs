@@ -7,6 +7,29 @@ use sampler_ui_ir as ir;
 use std::{collections::{BTreeMap, BTreeSet}, sync::Arc, time::{Duration, Instant}};
 
 type Values = BTreeMap<String, ir::Value>;
+fn advance_editor_frame(core: &mut V2Core, mut observe: impl FnMut(&mut V2Core)) {
+    let mut remaining = 800;
+    while remaining > 0 {
+        let frames = remaining.min(crate::sound::MAX_BLOCK);
+        core.render(frames);
+        observe(core);
+        remaining -= frames;
+    }
+}
+
+#[test]
+fn editor_frame_advances_the_full_engine_clock() {
+    let plan = sampler_core::Prepared::new(48000, vec![], vec![], 0).unwrap();
+    let limits = sampler_core::Limits::for_plan(&plan, 128, 8);
+    let runtime = sampler_core::Runtime::new(plan, limits).unwrap();
+    let part = crate::sound::v2::Part::new(runtime, crate::sound::tree::MixTree::default()).unwrap();
+    let mut core = V2Core::with_parts(1, 48000.);
+    core.install(0, Some(Box::new(part)));
+    let before = core.clock(0);
+    for _ in 0..60 { advance_editor_frame(&mut core, |_| {}); }
+    assert_eq!(core.clock(0) - before, 48000, "one second of editor time must advance one second of script time");
+}
+
 struct Gate {
     params: Arc<SamplerParams>,
     core: V2Core,
@@ -17,6 +40,11 @@ struct Gate {
     current_target: Option<usize>,
     first_native_diagnostic: Option<(usize, Option<usize>)>,
     fault_events: Vec<serde_json::Value>,
+    fault_cursor: usize,
+    preemption_observations: Vec<serde_json::Value>,
+    preemptions: u64,
+    progress_truncated: bool,
+    phase: &'static str,
 }
 impl Gate {
     fn load(selection: Selection) -> Self {
@@ -27,7 +55,8 @@ impl Gate {
         params.shared.widget_gate_install(&mut core);
         native_ui::gate_clear();
         let editor = Harness::new(&params, 1500., 1100.);
-        let mut gate = Self { params, core, editor, observing: None, observed_changes: BTreeSet::new(), frame: 0, current_target: None, first_native_diagnostic: None, fault_events: Vec::new() };
+        let mut gate = Self { params, core, editor, observing: None, observed_changes: BTreeSet::new(), frame: 0, current_target: None, first_native_diagnostic: None, fault_events: Vec::new(), fault_cursor: 0,
+            preemption_observations: Vec::new(), preemptions: 0, progress_truncated: false, phase: "load" };
         gate.settle();
         gate
     }
@@ -38,7 +67,28 @@ impl Gate {
             self.first_native_diagnostic = Some((self.frame, self.current_target));
         }
         // One 60 Hz editor frame advances the 48 kHz engine by the same time.
-        self.core.render(800);
+        let atoms = self.params.shared.part(0).unwrap();
+        advance_editor_frame(&mut self.core, |core| {
+            let sample = core.clock(0);
+            let total = core.widget_gate_preemptions(0);
+            core.widget_gate_behavior_progress(0, |p| {
+                let fault = matches!(p.outcome, Some(sampler_core::Outcome::FuelExhausted | sampler_core::Outcome::Fault(_)));
+                if !fault && (p.yielded_at.is_none() || total == self.preemptions) { return; }
+                if self.preemption_observations.len() >= 128 { self.progress_truncated = true; return; }
+                self.preemption_observations.push(serde_json::json!({"frame": self.frame, "target": self.current_target,
+                    "phase": self.phase, "sample": sample, "aggregate_preemptions": total,
+                    "program": p.program, "callback": atoms.widget_gate_callback(p.program), "pc": p.pc,
+                    "owner": match p.owner { sampler_core::BehaviorOwner::Note(_) => "note", sampler_core::BehaviorOwner::Plan(_) => "plan" },
+                    "waiting": p.waiting, "first_preemption_sample": p.yielded_at, "callers": p.callers,
+                    "outcome": p.outcome.map(|outcome| format!("{outcome:?}"))}));
+            });
+            self.preemptions = total;
+            for (program, outcome) in core.scan_runtime_faults(0) {
+                self.fault_events.push(serde_json::json!({"frame": self.frame, "target": self.current_target,
+                    "phase": self.phase, "sample": sample, "program": program,
+                    "callback": atoms.widget_gate_callback(program), "outcome": format!("{outcome:?}")}));
+            }
+        });
         self.params.shared.widget_gate_readback(&mut self.core);
         Load.run(&self.params);
         if let Some(before) = self.observing.as_ref() {
@@ -110,6 +160,7 @@ impl Gate {
         targets.into_iter().collect()
     }
     fn hit(&mut self, id: &str) -> Option<Point> {
+        self.phase = "hit-test";
         let frame = self.editor.ui.scene()?.surface(id)?.frame;
         if frame.size.width <= 0. || frame.size.height <= 0. { return None; }
         for y in [0.5, 0.2, 0.8] { for x in [0.5, 0.2, 0.8] {
@@ -122,13 +173,12 @@ impl Gate {
     fn faults(&mut self) -> usize {
         let p = self.core.problems(0);
         let lua = self.core.scan_lua(0).map_or(0, |f| f.init_count + f.runtime_count + f.budget_hits);
-        let runtime = self.core.scan_runtime_faults(0);
-        for (program, outcome) in &runtime {
-            self.fault_events.push(serde_json::json!({"frame": self.frame, "target": self.current_target, "program": program, "outcome": format!("{outcome:?}")}));
-        }
-        runtime.len() + lua + (p.nonfinite + p.script_overruns + p.lua_faults) as usize
+        let runtime = self.fault_events.len() - self.fault_cursor;
+        self.fault_cursor = self.fault_events.len();
+        runtime + lua + (p.nonfinite + p.script_overruns + p.lua_faults) as usize
     }
     fn gesture(&mut self, id: &str, kind: &str, at: Point, attempt: usize) -> Vec<String> {
+        self.phase = "gesture";
         self.observing = Some(self.values());
         self.observed_changes.clear();
         match kind {
@@ -257,11 +307,13 @@ fn original_widget_gestures() {
     let source_scope = source_range(sources, requested_source).expect("gate source out of range");
     for source in source_scope {
         gate.current_target = None;
+        gate.phase = "source-navigation";
         let selector = format!("face-0-{source}");
         if gate.editor.ui.scene().unwrap().surface(&selector).is_some() { gate.editor.press(&selector); gate.settle(); }
         let pages = gate.params.shared.view.lock().unwrap().parts[0].interfaces.get(source).map_or(1,|face|face.pages.len().max(1));
         for page in 0..pages {
             gate.current_target = None;
+            gate.phase = "page-navigation";
             let selector = format!("face-page-0-{page}");
             if gate.editor.ui.scene().unwrap().surface(&selector).is_some() { gate.editor.press(&selector); gate.settle(); }
             loop {
@@ -290,6 +342,7 @@ fn original_widget_gestures() {
         if exhausted { break; }
     }
     gate.current_target = None;
+    gate.phase = "pre-save";
     gate.settle();
     let saved_values = gate.values();
     let mut saved = gate.params.selection.read().unwrap().clone();
@@ -300,6 +353,8 @@ fn original_widget_gestures() {
     let native_diagnostics = native_ui::gate_diagnostics();
     let first_native_diagnostic = gate.first_native_diagnostic;
     let fault_events = std::mem::take(&mut gate.fault_events);
+    let preemption_observations = std::mem::take(&mut gate.preemption_observations);
+    let progress_truncated = gate.progress_truncated;
     let captured_state_bytes = saved.parts[0].script_state.len();
     let captured_controls = saved.parts[0].control_values.len();
     drop(gate);
@@ -321,7 +376,27 @@ fn original_widget_gestures() {
     let total = rows.len();
     let status = if faults > 0 || reload_failed { "FAIL" } else if exhausted || total == 0 || requested_source.is_some() { "UNKNOWN" } else if passed == total { "PASS" } else { "FAIL" };
     let problems = reloaded.core.problems(0);
-    println!("\n{}", serde_json::json!({"widget_gate_schema": 1, "program": program, "status": status, "passed": passed, "total": total, "requested_source": requested_source, "sources_total": sources, "scope_complete": !exhausted && total > 0 && native_diagnostics.is_empty(), "coverage_complete": requested_source.is_none() && !exhausted && total > 0 && native_diagnostics.is_empty(), "faults": faults, "fault_events": fault_events, "reload_fault_events": reloaded.fault_events, "reload_problem_counters": {"nonfinite": problems.nonfinite, "script_overruns": problems.script_overruns, "lua_faults": problems.lua_faults}, "native_diagnostics": native_diagnostics, "first_native_diagnostic_frame_and_target": first_native_diagnostic, "reload_first_native_diagnostic_frame_and_target": reloaded.first_native_diagnostic, "captured_state_bytes": captured_state_bytes, "captured_controls": captured_controls, "initial_load_failure": initial_load_failure, "reload_failure": reload_failure, "saved_parameters": saved_values.len(), "reloaded_parameters": reload_values.len(), "targets": rows}));
+    println!("\n{}", serde_json::json!({"widget_gate_schema": 1, "program": program, "status": status, "passed": passed, "total": total, "requested_source": requested_source, "sources_total": sources, "scope_complete": !exhausted && total > 0 && native_diagnostics.is_empty(), "coverage_complete": requested_source.is_none() && !exhausted && total > 0 && native_diagnostics.is_empty(), "faults": faults, "fault_events": fault_events, "preemption_observations": preemption_observations, "progress_truncated": progress_truncated, "reload_fault_events": reloaded.fault_events, "reload_preemption_observations": reloaded.preemption_observations, "reload_progress_truncated": reloaded.progress_truncated, "reload_problem_counters": {"nonfinite": problems.nonfinite, "script_overruns": problems.script_overruns, "lua_faults": problems.lua_faults}, "native_diagnostics": native_diagnostics, "first_native_diagnostic_frame_and_target": first_native_diagnostic, "reload_first_native_diagnostic_frame_and_target": reloaded.first_native_diagnostic, "captured_state_bytes": captured_state_bytes, "captured_controls": captured_controls, "initial_load_failure": initial_load_failure, "reload_failure": reload_failure, "saved_parameters": saved_values.len(), "reloaded_parameters": reload_values.len(), "targets": rows}));
+}
+
+#[test]
+#[ignore = "owner attribution: two engine seconds without gestures; library state stays in RAM"]
+fn original_idle_script_attribution() {
+    let path = std::env::var("KONTRA_WIDGET_GATE_PATH").expect("gate path required");
+    let program = std::env::var("KONTRA_WIDGET_GATE_PROGRAM").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let mut selection = Selection::default();
+    selection.parts = vec![Part { path, program, view: 1, ..Default::default() }];
+    let mut gate = Gate::load(selection);
+    gate.phase = "post-load-idle";
+    for _ in 0..120 {
+        if !gate.fault_events.is_empty() { break; }
+        gate.tick(Input::default());
+    }
+    println!("\n{}", serde_json::json!({"widget_idle_attribution_schema": 1, "program": program,
+        "sample": gate.core.clock(0), "frame": gate.frame, "gestures": 0,
+        "initial_load_failure": load_failure(&gate.params.shared.view.lock().unwrap().parts[0].status),
+        "fault_events": gate.fault_events, "preemption_observations": gate.preemption_observations,
+        "progress_truncated": gate.progress_truncated, "native_diagnostics": native_ui::gate_diagnostics()}));
 }
 
 use sha2::Digest;
