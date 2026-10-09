@@ -755,7 +755,9 @@ impl Lowering<'_> {
         };
         let group = self.group(zone);
         let wavetable = group.and_then(|g| g.wavetable);
-        if wavetable.is_some() { root_key = Some(69); }
+        if wavetable.is_some() {
+            root_key = Some(69);
+        }
         if group.is_some_and(|g| g.chain.is_some()) {
             return Err(unsupported(owner, Feature::GroupChain));
         }
@@ -909,12 +911,20 @@ impl Lowering<'_> {
             } else {
                 Direction::Forward
             },
-            loop_range: match if wavetable.is_some() { ir::Looping::None } else { zone.playback.looping } {
+            loop_range: match if wavetable.is_some() {
+                ir::Looping::None
+            } else {
+                zone.playback.looping
+            } {
                 ir::Looping::None | ir::Looping::OneShot | ir::Looping::Slots(_) => None,
                 ir::Looping::Continuous(range) => Some(loop_range(range, LoopMode::Continuous)),
                 ir::Looping::UntilRelease(range) => Some(loop_range(range, LoopMode::UntilRelease)),
             },
-            loop_slots: match if wavetable.is_some() { ir::Looping::None } else { zone.playback.looping } {
+            loop_slots: match if wavetable.is_some() {
+                ir::Looping::None
+            } else {
+                zone.playback.looping
+            } {
                 ir::Looping::Slots(slots) => slots.map(|slot| {
                     slot.map(|slot| {
                         let mut range = loop_range(

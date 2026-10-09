@@ -109,8 +109,11 @@ pub struct Playback {
 
 impl Playback {
     pub(super) fn rate_ratio(self, source_rate: u32, output_rate: u32) -> f64 {
-        if self.wavetable.is_some() { 440. * crate::wavetable::CYCLE as f64 / f64::from(output_rate) }
-        else { f64::from(source_rate) / f64::from(output_rate) }
+        if self.wavetable.is_some() {
+            440. * crate::wavetable::CYCLE as f64 / f64::from(output_rate)
+        } else {
+            f64::from(source_rate) / f64::from(output_rate)
+        }
     }
     pub(super) fn step(self, source_rate: u32, output_rate: u32) -> f64 {
         self.rate_ratio(source_rate, output_rate) * (self.transpose_semitones / 12.0).exp2()
@@ -157,8 +160,12 @@ impl Playback {
             direction: self.direction,
             loop_range: self.loop_range,
             loops: None,
-            position: self.wavetable.map_or(0, |w| (f64::from(w.phase).rem_euclid(1.) * 2048.) as u64),
-            fraction: self.wavetable.map_or(0., |w| (f64::from(w.phase).rem_euclid(1.) * 2048.).fract()),
+            position: self
+                .wavetable
+                .map_or(0, |w| (f64::from(w.phase).rem_euclid(1.) * 2048.) as u64),
+            fraction: self
+                .wavetable
+                .map_or(0., |w| (f64::from(w.phase).rem_euclid(1.) * 2048.).fract()),
             step,
             exit: None,
             last: [0.; 2],
@@ -224,7 +231,11 @@ impl Playback {
                 cursor.loop_range = Some(slots[0].unwrap().range);
                 cursor.exit = exits[0];
             } else {
-                cursor.loops = Some(LoopSlots { slots, exits, wavetable: None });
+                cursor.loops = Some(LoopSlots {
+                    slots,
+                    exits,
+                    wavetable: None,
+                });
             }
         }
         Ok(cursor)
@@ -247,9 +258,13 @@ pub(super) struct CursorTemplate {
 
 impl CursorTemplate {
     pub(super) fn new(cursor: Cursor, loops: &mut Vec<LoopSlots>) -> Self {
-        let extra = cursor.loops.or_else(|| cursor.wavetable.map(|wavetable| LoopSlots {
-            slots: [None; 8], exits: [None; 8], wavetable: Some(wavetable),
-        }));
+        let extra = cursor.loops.or_else(|| {
+            cursor.wavetable.map(|wavetable| LoopSlots {
+                slots: [None; 8],
+                exits: [None; 8],
+                wavetable: Some(wavetable),
+            })
+        });
         let index = extra.map(|slots| {
             let index = loops.len();
             loops.push(slots);
@@ -322,12 +337,16 @@ struct ReadAddress {
 }
 
 impl Cursor {
-    pub(super) fn wavetable(&self) -> Option<crate::Wavetable> { self.wavetable }
+    pub(super) fn wavetable(&self) -> Option<crate::Wavetable> {
+        self.wavetable
+    }
     /// Start within the original view, measured in source time, never pitch time.
     /// Offsets at/past the view end are silent. Starting past a loop's outward
     /// edge bypasses it; starting inside retains its original boundaries/count.
     pub(super) fn with_offset(mut self, micros: u32, source_rate: u32) -> Self {
-        if self.wavetable.is_some() { return self; }
+        if self.wavetable.is_some() {
+            return self;
+        }
         let ticks = u64::from(micros) * u64::from(source_rate);
         self.position = ticks / 1_000_000;
         self.fraction = (ticks % 1_000_000) as f64 / 1_000_000.;
@@ -358,7 +377,9 @@ impl Cursor {
 
     /// Skip `frames` further source frames from the current start position.
     pub(super) fn skip(mut self, frames: u32) -> Self {
-        if self.wavetable.is_some() { return self; }
+        if self.wavetable.is_some() {
+            return self;
+        }
         self.position += u64::from(frames);
         if self.position >= (self.end - self.start) as u64
             || self
@@ -386,7 +407,9 @@ impl Cursor {
     }
 
     pub(super) fn unbounded_loop(&self) -> bool {
-        if self.wavetable.is_some() { return true; }
+        if self.wavetable.is_some() {
+            return true;
+        }
         self.loops.is_some_and(|loops| {
             loops
                 .slots
@@ -480,7 +503,10 @@ impl Cursor {
 
     // Prepared candidates and validated expression changes supply this rate.
     pub(super) fn with_step(mut self, step: f64) -> Self {
-        debug_assert!(self.wavetable.is_some() && step.is_finite() && step > 0. || (MIN_STEP..=MAX_STEP).contains(&step));
+        debug_assert!(
+            self.wavetable.is_some() && step.is_finite() && step > 0.
+                || (MIN_STEP..=MAX_STEP).contains(&step)
+        );
         self.step = step;
         self
     }
@@ -542,7 +568,9 @@ impl Cursor {
     }
 
     fn limit(&self) -> Option<u64> {
-        if self.wavetable.is_some() { return None; }
+        if self.wavetable.is_some() {
+            return None;
+        }
         let length = (self.end - self.start) as u64;
         if let Some(loops) = self.loops {
             let mut limit = length;
@@ -768,7 +796,8 @@ impl Cursor {
 
     fn advance(&mut self) {
         if self.wavetable.is_some() {
-            let phase = (self.position as f64 + self.fraction + self.step.rem_euclid(2048.)).rem_euclid(2048.);
+            let phase = (self.position as f64 + self.fraction + self.step.rem_euclid(2048.))
+                .rem_euclid(2048.);
             self.position = phase as u64;
             self.fraction = phase.fract();
             return;
@@ -845,7 +874,15 @@ impl Cursor {
             while rendered < output.len() && !envelope.done() {
                 let Some(mut sample) = self.sample(pcm, kernel) else {
                     self.starvation = Some(self.fade_frames);
-                    return rendered + self.render_starved(pcm, &mut output[rendered..], envelope, gain, gains, kernel);
+                    return rendered
+                        + self.render_starved(
+                            pcm,
+                            &mut output[rendered..],
+                            envelope,
+                            gain,
+                            gains,
+                            kernel,
+                        );
                 };
                 if self.fade_in > 0 {
                     self.fade_in -= 1;
@@ -854,7 +891,9 @@ impl Cursor {
                 }
                 self.last = sample;
                 let amplitude = envelope.next() * gain;
-                for c in 0..2 { output[rendered][c] += sample[c] * amplitude * gains[c]; }
+                for c in 0..2 {
+                    output[rendered][c] += sample[c] * amplitude * gains[c];
+                }
                 self.advance();
                 rendered += 1;
             }
@@ -902,7 +941,11 @@ impl Cursor {
     }
 
     fn advance_silent(&mut self, frames: usize, envelope: &mut EnvelopeState) -> usize {
-        if self.wavetable.is_none() && self.loops.is_none() && self.fraction == 0.0 && self.step().fract() == 0.0 {
+        if self.wavetable.is_none()
+            && self.loops.is_none()
+            && self.fraction == 0.0
+            && self.step().fract() == 0.0
+        {
             let step = self.step() as u64;
             let remaining = self
                 .limit()
@@ -977,7 +1020,9 @@ impl Cursor {
     /// One complete output frame at the cursor, or None if any tap is missing.
     fn sample(&self, pcm: &(impl ReadFrames + ?Sized), kernel: &Kernel) -> Option<Frame> {
         if let Some(source) = self.wavetable {
-            return crate::wavetable::Table::new(self.start, self.end).unwrap().sample(pcm, &source, self.position as f64 + self.fraction);
+            return crate::wavetable::Table::new(self.start, self.end)
+                .unwrap()
+                .sample(pcm, &source, self.position as f64 + self.fraction);
         }
         let position = i128::from(self.position);
         if self.step() == 1.0 && self.fraction == 0.0 {

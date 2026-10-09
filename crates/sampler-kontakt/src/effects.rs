@@ -1970,40 +1970,83 @@ mod tests {
     #[test]
     fn v1_legacy_lowpass_keeps_the_authored_slot_and_knob_laws() {
         let mut payload = 2i32.to_le_bytes().repeat(2);
-        for value in [0.5996094f32, 0.] { payload.extend(value.to_le_bytes()); }
+        for value in [0.5996094f32, 0.] {
+            payload.extend(value.to_le_bytes());
+        }
         for scope in [Scope::Voice, Scope::Bus] {
             let mut saved = slot(0x18, payload.clone(), 1.);
             saved.slot = 5;
             let out = chain(&[saved], scope);
-            assert!(!out.notes.iter().any(|(_, _, _, r)| *r == sampler_ir::Reason::NotModeled),
-                "v1 executes legacy type 2: {:?}", out.notes);
+            assert!(
+                !out.notes
+                    .iter()
+                    .any(|(_, _, _, r)| *r == sampler_ir::Reason::NotModeled),
+                "v1 executes legacy type 2: {:?}",
+                out.notes
+            );
             assert_eq!(out.filter_slots, [(5, 0)]);
-            let sampler_ir::Processor::Filter(filter) = out.processors[0] else { panic!("missing filter") };
+            let sampler_ir::Processor::Filter(filter) = out.processors[0] else {
+                panic!("missing filter")
+            };
             assert_eq!(filter.kind, sampler_ir::FilterKind::LowPass { poles: 2 });
-            assert_eq!(filter.cutoff, sampler_ir::Frequency::Hertz(f64::from(43.6f32 * (8.96 * 0.5996094f32).exp2())));
-            assert_eq!(filter.resonance, sampler_ir::Resonance::Q(f64::from(std::f32::consts::FRAC_1_SQRT_2)));
+            assert_eq!(
+                filter.cutoff,
+                sampler_ir::Frequency::Hertz(f64::from(43.6f32 * (8.96 * 0.5996094f32).exp2()))
+            );
+            assert_eq!(
+                filter.resonance,
+                sampler_ir::Resonance::Q(f64::from(std::f32::consts::FRAC_1_SQRT_2))
+            );
         }
-        let sampler_ir::Processor::Filter(filter) = filter(2, 0.4, 0.7).unwrap() else { panic!("missing filter") };
-        assert_eq!(filter.resonance, sampler_ir::Resonance::Q(f64::from(std::f32::consts::FRAC_1_SQRT_2 * 28f32.powf(0.7))));
+        let sampler_ir::Processor::Filter(filter) = filter(2, 0.4, 0.7).unwrap() else {
+            panic!("missing filter")
+        };
+        assert_eq!(
+            filter.resonance,
+            sampler_ir::Resonance::Q(f64::from(std::f32::consts::FRAC_1_SQRT_2 * 28f32.powf(0.7)))
+        );
     }
 
     #[test]
     fn v1_legacy_highpass_keeps_the_authored_slot_and_knob_laws() {
         let mut payload = 3i32.to_le_bytes().repeat(2);
-        for value in [0f32, 0.] { payload.extend(value.to_le_bytes()); }
+        for value in [0f32, 0.] {
+            payload.extend(value.to_le_bytes());
+        }
         for scope in [Scope::Voice, Scope::Bus] {
             let mut saved = slot(0x18, payload.clone(), 1.);
             saved.slot = 5;
             let out = chain(&[saved], scope);
-            assert_eq!(out.filter_slots, [(5, 0)], "v1's legacy HP slot was dropped: {:?}", out.notes);
-            let sampler_ir::Processor::Filter(filter) = out.processors[0] else { panic!("missing filter") };
+            assert_eq!(
+                out.filter_slots,
+                [(5, 0)],
+                "v1's legacy HP slot was dropped: {:?}",
+                out.notes
+            );
+            let sampler_ir::Processor::Filter(filter) = out.processors[0] else {
+                panic!("missing filter")
+            };
             assert_eq!(filter.kind, sampler_ir::FilterKind::HighPass { poles: 2 });
-            assert_eq!(filter.cutoff, sampler_ir::Frequency::Hertz(f64::from(43.6f32)));
-            assert_eq!(filter.resonance, sampler_ir::Resonance::Q(f64::from(std::f32::consts::FRAC_1_SQRT_2)));
+            assert_eq!(
+                filter.cutoff,
+                sampler_ir::Frequency::Hertz(f64::from(43.6f32))
+            );
+            assert_eq!(
+                filter.resonance,
+                sampler_ir::Resonance::Q(f64::from(std::f32::consts::FRAC_1_SQRT_2))
+            );
         }
-        let sampler_ir::Processor::Filter(filter) = filter(3, 0.4, 0.7).unwrap() else { panic!("missing filter") };
-        assert_eq!(filter.cutoff, sampler_ir::Frequency::Hertz(f64::from(43.6f32 * (8.96 * 0.4f32).exp2())));
-        assert_eq!(filter.resonance, sampler_ir::Resonance::Q(f64::from(std::f32::consts::FRAC_1_SQRT_2 * 28f32.powf(0.7))));
+        let sampler_ir::Processor::Filter(filter) = filter(3, 0.4, 0.7).unwrap() else {
+            panic!("missing filter")
+        };
+        assert_eq!(
+            filter.cutoff,
+            sampler_ir::Frequency::Hertz(f64::from(43.6f32 * (8.96 * 0.4f32).exp2()))
+        );
+        assert_eq!(
+            filter.resonance,
+            sampler_ir::Resonance::Q(f64::from(std::f32::consts::FRAC_1_SQRT_2 * 28f32.powf(0.7)))
+        );
     }
 
     #[test]

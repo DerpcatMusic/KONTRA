@@ -603,11 +603,19 @@ pub(crate) struct ScriptBank {
 
 #[inline]
 pub(super) fn captures_cell(mask: Option<&[u64]>, cell: usize) -> bool {
-    mask.is_none_or(|mask| mask.get(cell / 64).is_some_and(|word| word & (1 << (cell % 64)) != 0))
+    mask.is_none_or(|mask| {
+        mask.get(cell / 64)
+            .is_some_and(|word| word & (1 << (cell % 64)) != 0)
+    })
 }
 
 #[inline]
-pub(super) fn mark_captured_cell(mask: Option<&[u64]>, dirty: Option<&mut [u64]>, cell: usize, changed: bool) -> bool {
+pub(super) fn mark_captured_cell(
+    mask: Option<&[u64]>,
+    dirty: Option<&mut [u64]>,
+    cell: usize,
+    changed: bool,
+) -> bool {
     let captured = changed && captures_cell(mask, cell);
     if captured && let Some(dirty) = dirty {
         dirty[cell / 64] |= 1 << (cell % 64);
@@ -617,7 +625,12 @@ pub(super) fn mark_captured_cell(mask: Option<&[u64]>, dirty: Option<&mut [u64]>
 
 impl ScriptBank {
     pub fn mark_captured_cell(&mut self, cell: usize, changed: bool) -> bool {
-        mark_captured_cell(self.captured_cells.as_deref(), self.dirty_cells.as_deref_mut(), cell, changed)
+        mark_captured_cell(
+            self.captured_cells.as_deref(),
+            self.dirty_cells.as_deref_mut(),
+            cell,
+            changed,
+        )
     }
 }
 
