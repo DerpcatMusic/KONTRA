@@ -72,9 +72,10 @@ use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant};
 use theme::*;
+use crate::support::{MutexExt, RwLockExt};
 
 pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
     let mut config = mui::diagnostics::Config::new("kontra", env!("CARGO_PKG_VERSION"));
@@ -161,15 +162,15 @@ fn let_go(p: &SamplerParams, computer: &computer::Computer) {
 /// The lock's data even if a panicking thread held it: the editor shows what
 /// is there rather than taking the host down with it.
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(PoisonError::into_inner)
+    m.lock_unpoisoned()
 }
 
 fn read<T>(l: &RwLock<T>) -> RwLockReadGuard<'_, T> {
-    l.read().unwrap_or_else(PoisonError::into_inner)
+    l.read_unpoisoned()
 }
 
 fn write<T>(l: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
-    l.write().unwrap_or_else(PoisonError::into_inner)
+    l.write_unpoisoned()
 }
 
 /// The top bar's eased readouts, as [`Watch`] last sampled them: `f32` bits.

@@ -23,6 +23,7 @@ use crate::sound::{
     v2::{Part as CorePart, Retired as CoreRetired, V2Core, V2Loader},
 };
 use crate::{library, routing};
+use crate::support::{MutexExt, RwLockExt};
 use crossbeam_queue::ArrayQueue;
 use moose::core::{ExactAddress, ExactEvent, ExactEventBody, ExactEventRef, ExactNoteAddress, ExactNoteKind, LosslessEventRef};
 use moose::mui::mui::scene::Image;
@@ -341,9 +342,9 @@ pub(crate) use SamplerParamsParamId as P;
 impl SamplerParams {
     fn capture_ui_controls(&self) {
         self.shared.refresh_uvi(self);
-        let mut selection = self.selection.read().unwrap().clone();
+        let mut selection = self.selection.read_unpoisoned().clone();
         self.shared.capture_ui_controls(&mut selection);
-        let mut current = self.selection.write().unwrap();
+        let mut current = self.selection.write_unpoisoned();
         for (part, captured) in current.parts.iter_mut().zip(selection.parts) {
             if part.source() == captured.source() {
                 part.control_values = captured.control_values;
@@ -357,12 +358,12 @@ impl SamplerParams {
 
     fn reload_ui_controls(&self) {
         // Recall of the same source still needs fresh script initialization.
-        for part in &mut self.shared.view.lock().unwrap().parts { part.attempted = None; }
+        for part in &mut self.shared.view.lock_unpoisoned().parts { part.attempted = None; }
     }
 
     /// Host output port `index`'s name, as last published (`routing.rs`).
     fn port_name(&self, index: u32) -> Option<String> {
-        let names = self.shared.port_names.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let names = self.shared.port_names.lock_unpoisoned();
         names.published.get(index as usize).cloned()
     }
 
@@ -372,9 +373,9 @@ impl SamplerParams {
 
     /// Support context: call on an export worker, never paint or process.
     pub(crate) fn diagnostic_report(&self) -> serde_json::Value {
-        let selection = self.selection.read().unwrap().clone();
+        let selection = self.selection.read_unpoisoned().clone();
         self.shared.ensure_parts(selection.parts.len());
-        let view = self.shared.view.lock().unwrap();
+        let view = self.shared.view.lock_unpoisoned();
         let parts: Vec<_> = selection
             .parts
             .iter()
@@ -477,17 +478,17 @@ impl PartShared {
         if node == 0 {
             return Meters::read(&self.meter);
         }
-        self.node_meters.lock().unwrap().get(node).map_or([0.0; 2], Meters::read)
+        self.node_meters.lock_unpoisoned().get(node).map_or([0.0; 2], Meters::read)
     }
 
     /// The part's controls and their values, in id order.
     pub(crate) fn control_values(&self) -> Vec<(sampler_ui_ir::ControlId, f64)> {
-        self.controls.lock().unwrap().iter().map(|c| (c.id, c.value())).collect()
+        self.controls.lock_unpoisoned().iter().map(|c| (c.id, c.value())).collect()
     }
 
     /// Audio thread: copy the core's values in, unless the loader holds the lock.
     pub(crate) fn refresh_controls(&self, value: impl Fn(sampler_ui_ir::ControlId) -> Option<f64>) {
-        if let Ok(cells) = self.controls.try_lock() {
+        if let Ok(cells) = self.controls.try_lock_unpoisoned() {
             let mut changed = false;
             for cell in cells.iter() {
                 if let Some(v) = value(cell.id) {
@@ -500,12 +501,12 @@ impl PartShared {
 
     pub(crate) fn display_values(&self) -> Vec<(sampler_ui_ir::ControlId, f64)> {
         let mut values = self.control_values();
-        if let Some(ingress) = self.ingress.lock().unwrap().as_mut() { ingress.overlay(&mut values); }
+        if let Some(ingress) = self.ingress.lock_unpoisoned().as_mut() { ingress.overlay(&mut values); }
         values
     }
 
     pub(crate) fn widget_meters(&self, face: &sampler_ui_ir::Interface, epoch: u64) -> std::collections::HashMap<sampler_ui_ir::WidgetRef, f64> {
-        let mut meters = self.engine_meters.lock().unwrap();
+        let mut meters = self.engine_meters.lock_unpoisoned();
         if self.generation.load(Ordering::Acquire) != epoch { return Default::default(); }
         // Only addresses in the current IR face stay registered; GUI prunes them.
         meters.retain(|m| face.widgets.iter().filter_map(|w| w.meter).any(|a|
@@ -522,7 +523,7 @@ impl PartShared {
     }
 
     fn refresh_widget_meters(&self, epoch: u64, read: impl Fn(sampler_core::EngineMeterAddress) -> Option<f32>) {
-        if let Ok(meters) = self.engine_meters.try_lock() {
+        if let Ok(meters) = self.engine_meters.try_lock_unpoisoned() {
             if self.generation.load(Ordering::Acquire) != epoch { return; }
             let mut changed = false;
             for meter in meters.iter() {
@@ -536,15 +537,15 @@ impl PartShared {
 
     pub(crate) fn zone_waveform(&self, zone: u32, epoch: u64, bins: usize) -> Option<crate::sound::waveform::Envelope> { self.zone_waveform_window(zone,epoch,bins,None) }
     pub(crate) fn zone_waveform_window(&self, zone: u32, epoch: u64, bins: usize, range: Option<(u64,u64)>) -> Option<crate::sound::waveform::Envelope> {
-        let plan = self.ingress.lock().unwrap().as_ref().map(|ingress| ingress.plan());
-        let provider = self.waveforms.lock().unwrap();
+        let plan = self.ingress.lock_unpoisoned().as_ref().map(|ingress| ingress.plan());
+        let provider = self.waveforms.lock_unpoisoned();
         if self.generation.load(Ordering::Acquire) != epoch { return None; }
         provider.as_ref().filter(|provider| Some(provider.plan) == plan)?.get_window(zone, bins, range)
     }
 
     pub(crate) fn widget_waveforms(&self, face: &sampler_ui_ir::Interface, epoch: u64, pixel_scale: f64) -> Vec<(sampler_ui_ir::WidgetRef, crate::sound::waveform::Envelope)> {
-        let plan = self.ingress.lock().unwrap().as_ref().map(|ingress| ingress.plan());
-        let provider = self.waveforms.lock().unwrap();
+        let plan = self.ingress.lock_unpoisoned().as_ref().map(|ingress| ingress.plan());
+        let provider = self.waveforms.lock_unpoisoned();
         if self.generation.load(Ordering::Acquire) != epoch { return Vec::new(); }
         let Some(provider) = provider.as_ref().filter(|provider| Some(provider.plan) == plan) else { return Vec::new(); };
         face.widgets.iter().enumerate().filter_map(|(n, widget)| {
@@ -556,7 +557,7 @@ impl PartShared {
     }
 
     pub(crate) fn widget_values(&self, face: &sampler_ui_ir::Interface) -> std::collections::HashMap<sampler_ui_ir::WidgetRef, sampler_ui_ir::Value> {
-        let mut ingress = self.ingress.lock().unwrap();
+        let mut ingress = self.ingress.lock_unpoisoned();
         let Some(ingress) = ingress.as_mut() else { return Default::default() };
         if ingress.settle() { self.scalar_revision.fetch_add(1, Ordering::Release); }
         ingress.values(face)
@@ -818,7 +819,7 @@ impl Default for Shared {
                 status: "Choose a library and select a preset".into(),
             }),
         };
-        if let Some(guard) = shared._crash_session.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_mut() {
+        if let Some(guard) = shared._crash_session.lock_unpoisoned().as_mut() {
             guard.mark_initialized();
         }
         shared
@@ -1000,18 +1001,18 @@ fn route(params: &SamplerParams) {
     let shared = &params.shared;
     let trees = shared.trees();
     // Never hold the selection's lock while taking `view` (in `trees`).
-    let mut routed = params.selection.read().unwrap().clone();
+    let mut routed = params.selection.read_unpoisoned().clone();
     let before = routed.clone();
     routing::apply(&mut routed, &trees);
     let names = {
-        let mut current = params.selection.write().unwrap();
+        let mut current = params.selection.write_unpoisoned();
         // Changed meanwhile: the next pass routes the new selection.
         if routed != before && *current == before {
             *current = routed;
         }
         routing::port_names(&current, &trees)
     };
-    let mut ports = shared.port_names.lock().unwrap();
+    let mut ports = shared.port_names.lock_unpoisoned();
     if ports.offer(names, Instant::now()) {
         shared.port_names_revision.fetch_add(1, Ordering::Release);
     }
@@ -1023,7 +1024,7 @@ impl Shared {
     pub(crate) fn queue_snapshot(&self, slot: usize, part: &Part, path: String) -> bool {
         if !part.snapshot_base()
         { return false; }
-        let mut request = self.snapshot_request.lock().unwrap();
+        let mut request = self.snapshot_request.lock_unpoisoned();
         let Some(atoms) = self.part(slot) else { return false };
         let generation = atoms.generation.load(Ordering::Acquire);
         *request = Some(SnapshotRequest { slot, source: part.source(), path, generation });
@@ -1033,21 +1034,21 @@ impl Shared {
 
     /// Editor/loader only. Audio reads its prepared registry without this lock.
     pub(crate) fn with_parts<T>(&self, read: impl FnOnce(&[Arc<PartShared>]) -> T) -> T {
-        read(&self.parts.lock().unwrap())
+        read(&self.parts.lock_unpoisoned())
     }
 
     pub(crate) fn part(&self, slot: usize) -> Option<Arc<PartShared>> {
-        self.parts.lock().unwrap().get(slot).cloned()
+        self.parts.lock_unpoisoned().get(slot).cloned()
     }
 
     /// Prepare metadata for newly appended/restored rows off the audio thread.
     pub(crate) fn ensure_parts(&self, count: usize) {
-        let mut parts = self.parts.lock().unwrap();
+        let mut parts = self.parts.lock_unpoisoned();
         while parts.len() < count {
             parts.push(Arc::default());
         }
         drop(parts);
-        let mut view = self.view.lock().unwrap();
+        let mut view = self.view.lock_unpoisoned();
         if view.parts.len() < count {
             view.parts.resize_with(count, PartView::default);
         }
@@ -1055,7 +1056,7 @@ impl Shared {
 
     /// Each slot's output tree, as last loaded.
     pub(crate) fn trees(&self) -> Vec<Option<Arc<MixTree>>> {
-        let view = self.view.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let view = self.view.lock_unpoisoned();
         view.parts.iter().map(|v| v.tree.clone()).collect()
     }
 
@@ -1067,14 +1068,14 @@ impl Shared {
     /// Loader only. Keep different parts when the bounded queue is full; a
     /// newer part for a slot replaces one still pending.
     fn publish_part(&self, item: Ready) {
-        let mut pending = self.pending_ready.lock().unwrap();
+        let mut pending = self.pending_ready.lock_unpoisoned();
         pending.retain(|(slot, ..)| *slot != item.0);
         pending.push_back(item);
         self.flush_ready_inner(&mut pending);
     }
 
     fn flush_ready(&self) {
-        self.flush_ready_inner(&mut self.pending_ready.lock().unwrap());
+        self.flush_ready_inner(&mut self.pending_ready.lock_unpoisoned());
     }
 
     fn flush_ready_inner(&self, pending: &mut std::collections::VecDeque<Ready>) {
@@ -1107,8 +1108,8 @@ impl Shared {
 
     /// Ask the loader to replace the rack with the multi at `path`.
     pub(crate) fn queue_multi(&self, path: String) {
-        self.view.lock().unwrap().multi_status = "Loading multi…".into();
-        *self.multi_request.lock().unwrap() = Some(path);
+        self.view.lock_unpoisoned().multi_status = "Loading multi…".into();
+        *self.multi_request.lock_unpoisoned() = Some(path);
     }
 
     /// Retain even a note pressed and released between editor frames.
@@ -1148,12 +1149,12 @@ impl Shared {
     /// Capture only the source actually loaded; a recalled or pending source
     /// must not be overwritten with values from the previous instrument.
     pub(crate) fn capture_ui_controls(&self, selection: &mut Selection) {
-        let sources: Vec<_> = self.view.lock().unwrap().parts.iter().map(|p| if p.loading { None } else { p.attempted.as_ref().map(|(path, program, snapshot, ..)| (path.clone(), *program, snapshot.clone())) }).collect();
+        let sources: Vec<_> = self.view.lock_unpoisoned().parts.iter().map(|p| if p.loading { None } else { p.attempted.as_ref().map(|(path, program, snapshot, ..)| (path.clone(), *program, snapshot.clone())) }).collect();
         for (slot, part) in selection.parts.iter_mut().enumerate() {
             if sources.get(slot).and_then(Option::as_ref) != Some(&part.source()) { continue; }
             if let Some(atoms) = self.part(slot) {
                 part.control_values = atoms.control_values().into_iter().filter(|(_, value)| value.is_finite()).map(|(id, value)| SavedControl::new(id, value)).collect();
-                let scripts = atoms.scripts.lock().unwrap();
+                let scripts = atoms.scripts.lock_unpoisoned();
                 if scripts.uvi_source.as_ref() == Some(&part.source())
                     && let Some(uvi) = &scripts.uvi
                     && let Ok(state) = uvi.state()
@@ -1162,7 +1163,7 @@ impl Shared {
                     part.uvi_state_source = serde_json::to_string(&part.source()).unwrap();
                     part.uvi_state = state;
                 }
-                if let Some(state) = atoms.ingress.lock().unwrap().as_ref().and_then(|client|client.save_script_state()) {
+                if let Some(state) = atoms.ingress.lock_unpoisoned().as_ref().and_then(|client|client.save_script_state()) {
                     part.script_state_source = serde_json::to_string(&part.source()).unwrap();
                     part.script_state = state;
                 }
@@ -1182,11 +1183,11 @@ impl Shared {
 
     pub(crate) fn set_control_at(&self, slot: usize, epoch: u64, control: sampler_ui_ir::ControlId, value: f64) -> bool {
         let Some(part) = self.part(slot) else { return false };
-        if let Some(uvi) = &part.scripts.lock().unwrap().uvi {
+        if let Some(uvi) = &part.scripts.lock_unpoisoned().uvi {
             if part.generation.load(Ordering::Acquire) != epoch || !value.is_finite() { return false; }
             return uvi.edit(control,value);
         }
-        let mut ingress = part.ingress.lock().unwrap();
+        let mut ingress = part.ingress.lock_unpoisoned();
         if part.generation.load(Ordering::Acquire) != epoch || !value.is_finite() { return false; }
         ingress.as_mut().is_some_and(|client| client.submit(control, value))
     }
@@ -1194,7 +1195,7 @@ impl Shared {
     /// Main-thread host automation uses the same epoch admission and reply queue.
     pub(crate) fn set_host_parameter_at(&self, slot: usize, epoch: u64, address: u16, value: f64) -> bool {
         let Some(part) = self.part(slot) else { return false };
-        let mut ingress = part.ingress.lock().unwrap();
+        let mut ingress = part.ingress.lock_unpoisoned();
         if part.generation.load(Ordering::Acquire) != epoch { return false; }
         ingress.as_mut().is_some_and(|client| client.submit_host_parameter(address, value))
     }
@@ -1202,14 +1203,14 @@ impl Shared {
     /// One authored gesture; XY axes and touched table cells stay one transaction.
     pub(crate) fn set_widget_batch_at(&self, slot: usize, epoch: u64, source_slot: u8, widget: &sampler_ui_ir::Widget, edits: Vec<(u32, sampler_ui_ir::Value)>, interaction: sampler_core::WidgetInteraction) -> bool {
         let Some(part) = self.part(slot) else { return false };
-        if part.scripts.lock().unwrap().uvi.is_some() {
+        if part.scripts.lock_unpoisoned().uvi.is_some() {
             return match (&widget.binding, edits.as_slice()) {
                 (sampler_ui_ir::Binding::Control(id), [(0, sampler_ui_ir::Value::Integer(value))]) => self.set_control_at(slot,epoch,*id,f64::from(*value)),
                 (sampler_ui_ir::Binding::Control(id), [(0, sampler_ui_ir::Value::Real(value))]) => self.set_control_at(slot,epoch,*id,*value),
                 _=>false,
             };
         }
-        let mut ingress = part.ingress.lock().unwrap();
+        let mut ingress = part.ingress.lock_unpoisoned();
         if part.generation.load(Ordering::Acquire) != epoch { return false; }
         ingress.as_mut().is_some_and(|ingress| ingress.submit_ui_widgets(source_slot, widget, edits, interaction))
     }
@@ -1232,10 +1233,10 @@ impl Shared {
             let Some(part) = self.part(slot) else { continue };
             if part.generation.load(Ordering::Acquire) != epoch { continue; }
             if effect.service==sampler_core::MIDI_SERVICE {
-                if let Some(ingress)=part.ingress.lock().unwrap().as_mut() {ingress.service_midi(&effect);}
+                if let Some(ingress)=part.ingress.lock_unpoisoned().as_mut() {ingress.service_midi(&effect);}
                 continue;
             }
-            let mut scripts = part.scripts.lock().unwrap();
+            let mut scripts = part.scripts.lock_unpoisoned();
             let key_only = scripts.views.get(instance).and_then(|v| v.service(effect.service)).is_some_and(|s| s.starts_with("set_key_"));
             if scripts.apply(instance, &effect) {
                 let instances = changed.entry((slot, epoch)).or_default();
@@ -1243,16 +1244,16 @@ impl Shared {
             }
         }
         self.with_parts(|parts| { for part in parts {
-            if let Some(ingress) = part.ingress.lock().unwrap().as_mut() { ingress.settle(); }
+            if let Some(ingress) = part.ingress.lock_unpoisoned().as_mut() { ingress.settle(); }
         }});
         for ((slot, epoch), instances) in changed {
             let Some(part) = self.part(slot) else { continue };
             if part.generation.load(Ordering::Acquire) != epoch { continue; }
             let (interfaces, keys) = {
-                let mut scripts = part.scripts.lock().unwrap();
+                let mut scripts = part.scripts.lock_unpoisoned();
                 (instances.into_iter().filter_map(|i| scripts.interface(i)).collect::<Vec<_>>(), scripts.keys())
             };
-            if let Some(v) = self.view.lock().unwrap().parts.get_mut(slot).filter(|v| v.generation == epoch) {
+            if let Some(v) = self.view.lock_unpoisoned().parts.get_mut(slot).filter(|v| v.generation == epoch) {
                 for interface in interfaces { v.publish_interface(&interface); }
                 if v.keys != keys { v.keys = keys; v.ui_revision += 1; }
             }
@@ -1260,13 +1261,13 @@ impl Shared {
     }
 
     fn refresh_uvi(&self, params: &SamplerParams) {
-        let parts = self.parts.lock().unwrap().clone();
+        let parts = self.parts.lock_unpoisoned().clone();
         for (slot, part) in parts.iter().enumerate() {
-            let mut scripts = part.scripts.lock().unwrap();
+            let mut scripts = part.scripts.lock_unpoisoned();
             let Some(uvi) = scripts.uvi.clone() else {
                 continue;
             };
-            if scripts.uvi_source != params.selection.read().unwrap().parts.get(slot).map(Part::source) {
+            if scripts.uvi_source != params.selection.read_unpoisoned().parts.get(slot).map(Part::source) {
                 continue;
             }
             let revision = uvi.revision();
@@ -1274,7 +1275,7 @@ impl Shared {
                 continue;
             }
             scripts.uvi_revision = revision;
-            if let Some(view) = self.view.lock().unwrap().parts.get_mut(slot) {
+            if let Some(view) = self.view.lock_unpoisoned().parts.get_mut(slot) {
                 view.publish_interface(&uvi.interface());
             }
         }
@@ -1283,15 +1284,15 @@ impl Shared {
     /// Fit streamed start data in `budget_mb`, shared evenly by the parts that
     /// stream, dropping what has idled longest; refresh what each holds.
     pub(crate) fn memory_snapshot(&self) -> (u64, u64) {
-        let resident = self.parts.lock().unwrap().iter().map(|p| p.resident_bytes.load(Ordering::Relaxed)).sum();
+        let resident = self.parts.lock_unpoisoned().iter().map(|p| p.resident_bytes.load(Ordering::Relaxed)).sum();
         (resident, self.memory_freed.load(Ordering::Relaxed))
     }
 
     fn trim_streams(&self, budget_mb: u32) {
         let idle = (IDLE_SECONDS * self.rate()) as u64;
-        let parts = self.parts.lock().unwrap().clone();
+        let parts = self.parts.lock_unpoisoned().clone();
         let streams: Vec<_> =
-            parts.iter().filter_map(|p| Some((p, p.stream.lock().unwrap().clone()?))).collect();
+            parts.iter().filter_map(|p| Some((p, p.stream.lock_unpoisoned().clone()?))).collect();
         let share = u64::from(budget_mb) * (1 << 20) / streams.len().max(1) as u64;
         for (part, stream) in streams {
             if budget_mb > 0 && !part.keep_resident.load(Ordering::Relaxed) {
@@ -1404,7 +1405,7 @@ pub(crate) struct SnapshotRequest {
 /// Validate on the loader before replacing any saved or playing state.
 fn prepare_snapshot(params: &SamplerParams) -> Option<(usize, (String, u32, String), crate::sound::Loaded<Option<Box<CorePart>>>)> {
     let request = {
-        let mut pending = params.shared.snapshot_request.lock().unwrap();
+        let mut pending = params.shared.snapshot_request.lock_unpoisoned();
         if pending.as_ref()?.slot >= params.shared.grown.load(Ordering::Acquire) as usize { return None }
         pending.take()?
     };
@@ -1416,18 +1417,18 @@ fn prepare_snapshot(params: &SamplerParams) -> Option<(usize, (String, u32, Stri
     trace.stage("snapshot_parse_and_validation");
     let current = || {
         params.shared.part(request.slot).unwrap().generation.load(Ordering::Acquire) == request.generation
-            && params.selection.read().unwrap().parts.get(request.slot)
+            && params.selection.read_unpoisoned().parts.get(request.slot)
                 .is_some_and(|p| p.source() == request.source)
-            && params.shared.snapshot_request.lock().unwrap().is_none()
+            && params.shared.snapshot_request.lock_unpoisoned().is_none()
     };
     if !current() {
         trace.detail("cancellation", "Source changed or a newer snapshot was requested");
         trace.finish("canceled");
         return None;
     }
-    params.shared.view.lock().unwrap().parts[request.slot].status = "Loading snapshot…".into();
-    let part = params.selection.read().unwrap().parts[request.slot].clone();
-    let rack_streaming = params.selection.read().unwrap().streaming;
+    params.shared.view.lock_unpoisoned().parts[request.slot].status = "Loading snapshot…".into();
+    let part = params.selection.read_unpoisoned().parts[request.slot].clone();
+    let rack_streaming = params.selection.read_unpoisoned().streaming;
     let load = LoadRequest {
         path: part.path.clone().into(), program: part.program, sample_rate: params.shared.rate(),
         snapshot: (!request.path.is_empty()).then(|| request.path.clone().into()),
@@ -1448,8 +1449,8 @@ fn prepare_snapshot(params: &SamplerParams) -> Option<(usize, (String, u32, Stri
     }
     match result {
         Ok(instrument) => {
-            let mut selection = params.selection.write().unwrap();
-            let pending = params.shared.snapshot_request.lock().unwrap();
+            let mut selection = params.selection.write_unpoisoned();
+            let pending = params.shared.snapshot_request.lock_unpoisoned();
             let valid = pending.is_none()
                 && params.shared.part(request.slot).unwrap().generation.load(Ordering::Acquire) == request.generation;
             let Some(part) = selection.parts.get_mut(request.slot).filter(|p| valid && p.source() == request.source) else {
@@ -1467,8 +1468,8 @@ fn prepare_snapshot(params: &SamplerParams) -> Option<(usize, (String, u32, Stri
             Some((request.slot, source, instrument))
         }
         Err(error) => {
-            let selection = params.selection.read().unwrap();
-            let pending = params.shared.snapshot_request.lock().unwrap();
+            let selection = params.selection.read_unpoisoned();
+            let pending = params.shared.snapshot_request.lock_unpoisoned();
             let valid = params.shared.part(request.slot).unwrap().generation.load(Ordering::Acquire) == request.generation
                 && selection.parts.get(request.slot).is_some_and(|p| p.source() == request.source)
                 && pending.is_none();
@@ -1484,7 +1485,7 @@ fn prepare_snapshot(params: &SamplerParams) -> Option<(usize, (String, u32, Stri
             // LoadTrace only enqueues its journal record; it does no file IO.
             trace.fail(&message);
             let report = trace.finish("failed");
-            let mut view = params.shared.view.lock().unwrap();
+            let mut view = params.shared.view.lock_unpoisoned();
             view.parts[request.slot].status = format!("Snapshot was not loaded: {message}");
             view.parts[request.slot].trace = Some(report);
             None
@@ -1503,16 +1504,16 @@ impl BackgroundTask for Load {
         shared.flush_ready();
         shared.apply_effects();
         shared.with_parts(|parts| { for part in parts {
-            if let Some(ingress) = part.ingress.lock().unwrap().as_mut() && ingress.refresh() {
+            if let Some(ingress) = part.ingress.lock_unpoisoned().as_mut() && ingress.refresh() {
                 part.scalar_revision.fetch_add(1, Ordering::Release);
             }
         } });
         shared.refresh_uvi(&params);
-        shared.trim_streams(params.selection.read().unwrap().memory_budget_mb);
+        shared.trim_streams(params.selection.read_unpoisoned().memory_budget_mb);
         // Dropping what the audio thread replaced is this thread's job.
         while shared.discard.pop().is_some() {}
         load_multi(params);
-        let selection = params.selection.read().unwrap().clone();
+        let selection = params.selection.read_unpoisoned().clone();
         shared.ensure_parts(selection.parts.len());
         shared.prepare_growth();
         shared.midi_thru.store(selection.midi_thru, Ordering::Release);
@@ -1520,10 +1521,10 @@ impl BackgroundTask for Load {
         route(params);
         align(params);
         let push_mix = || {
-            let selection = params.selection.read().unwrap();
+            let selection = params.selection.read_unpoisoned();
             let mut mix = mix(&selection);
-            if let Some(plan) = &shared.published.lock().unwrap().0 { mix.timing = plan.clone(); }
-            let view = shared.view.lock().unwrap();
+            if let Some(plan) = &shared.published.lock_unpoisoned().0 { mix.timing = plan.clone(); }
+            let view = shared.view.lock_unpoisoned();
             mix.articulation_routes = selection.parts.iter().enumerate().map(|(slot, p)| {
                 let instrument = view.parts.get(slot)?.instrument.as_deref()?;
                 let (keys, switching) = p.articulation_overlay.routing(instrument, p.switching).ok()?;
@@ -1535,7 +1536,7 @@ impl BackgroundTask for Load {
         let mut snapshot = prepare_snapshot(params);
         let mut loaded = false;
         for slot in 0..shared.grown.load(Ordering::Acquire) as usize {
-            let prepared = if snapshot.as_ref().is_some_and(|(s, source, _)| *s == slot && params.selection.read().unwrap().parts[slot].source() == *source) { snapshot.take().map(|(_, _, loaded)| loaded) } else { None };
+            let prepared = if snapshot.as_ref().is_some_and(|(s, source, _)| *s == slot && params.selection.read_unpoisoned().parts[slot].source() == *source) { snapshot.take().map(|(_, _, loaded)| loaded) } else { None };
             loaded |= load_part(params, slot, prepared);
         }
         if loaded {
@@ -1551,15 +1552,15 @@ impl BackgroundTask for Load {
 /// Replace the rack with a requested multi.
 fn load_multi(params: &SamplerParams) {
     let shared = &params.shared;
-    let Some(path) = shared.multi_request.lock().unwrap().take() else { return };
-    let before = params.selection.read().unwrap().clone();
+    let Some(path) = shared.multi_request.lock_unpoisoned().take() else { return };
+    let before = params.selection.read_unpoisoned().clone();
     let result = SavedMulti::read(Path::new(&path)).map(|m| {
         let status = format!("{} · {} instruments", m.name, m.parts.len());
         (m.parts, status)
     });
     let status = match result {
         Ok((parts, status)) => {
-            let mut current = params.selection.write().unwrap();
+            let mut current = params.selection.write_unpoisoned();
             if *current == before {
                 current.order = (0..parts.len() as u32).collect();
                 current.parts = parts;
@@ -1572,14 +1573,14 @@ fn load_multi(params: &SamplerParams) {
         }
         Err(e) => format!("Multi load failed: {e:#}"),
     };
-    shared.view.lock().unwrap().multi_status = status;
+    shared.view.lock_unpoisoned().multi_status = status;
 }
 
 /// A finished library scan replaces what the browser lists.
 fn poll_libraries(shared: &Shared) {
-    let installed = shared.view.lock().unwrap().scanned;
+    let installed = shared.view.lock_unpoisoned().scanned;
     let Some((generation, scanned)) = shared.libraries.poll(installed) else { return };
-    let mut view = shared.view.lock().unwrap();
+    let mut view = shared.view.lock_unpoisoned();
     view.scanned = generation;
     match scanned {
         Some(scanned) => {
@@ -1604,14 +1605,14 @@ fn load_part(params: &SamplerParams, slot: usize, prepared: Option<crate::sound:
     let shared = &params.shared;
     let atoms = shared.part(slot).unwrap();
     let (part, rack_streaming) = {
-        let selection = params.selection.read().unwrap();
+        let selection = params.selection.read_unpoisoned();
         (selection.parts.get(slot).cloned().unwrap_or_default(), selection.streaming)
     };
     let streaming = part.streaming(rack_streaming);
     let rate = shared.rate();
     let target = (part.path.clone(), part.program, part.snapshot.clone(), rate.to_bits(), part.mpe, part.mpe_upper, part.dynamics, streaming);
     {
-        let mut view = shared.view.lock().unwrap();
+        let mut view = shared.view.lock_unpoisoned();
         let v = &mut view.parts[slot];
         if v.attempted.as_ref() == Some(&target) {
             return false;
@@ -1628,24 +1629,24 @@ fn load_part(params: &SamplerParams, slot: usize, prepared: Option<crate::sound:
     atoms.load_progress.store(0, Ordering::Relaxed);
     // Serialize epoch changes with off-audio producers.
     let generation = {
-        let mut ingress = atoms.ingress.lock().unwrap();
+        let mut ingress = atoms.ingress.lock_unpoisoned();
         let epoch = atoms.generation.fetch_add(1, Ordering::AcqRel) + 1;
         *ingress = None;
-        atoms.engine_meters.lock().unwrap().clear();
-        *atoms.waveforms.lock().unwrap() = None;
+        atoms.engine_meters.lock_unpoisoned().clear();
+        *atoms.waveforms.lock_unpoisoned() = None;
         epoch
     };
     if part.path.is_empty() {
-        *atoms.stream.lock().unwrap() = None;
+        *atoms.stream.lock_unpoisoned() = None;
         atoms.resident_bytes.store(0, Ordering::Relaxed);
         atoms.full_bytes.store(0, Ordering::Relaxed);
-        shared.view.lock().unwrap().parts[slot].status.clear();
+        shared.view.lock_unpoisoned().parts[slot].status.clear();
         shared.publish_part((slot, generation, None));
         return true;
     }
     let source = part.source();
     let canceled = || {
-        ({ let selection = params.selection.read().unwrap(); selection.parts.get(slot).is_none_or(|p| p.source() != source || p.streaming(selection.streaming) != streaming || p.mpe != part.mpe || p.mpe_upper != part.mpe_upper || p.dynamics != part.dynamics) })
+        ({ let selection = params.selection.read_unpoisoned(); selection.parts.get(slot).is_none_or(|p| p.source() != source || p.streaming(selection.streaming) != streaming || p.mpe != part.mpe || p.mpe_upper != part.mpe_upper || p.dynamics != part.dynamics) })
             || atoms.generation.load(Ordering::Acquire) != generation
             || shared.rate.load(Ordering::Acquire) != rate.to_bits()
     };
@@ -1689,7 +1690,7 @@ fn load_part(params: &SamplerParams, slot: usize, prepared: Option<crate::sound:
         }
         Ok(loaded)
     });
-    let mut view = shared.view.lock().unwrap();
+    let mut view = shared.view.lock_unpoisoned();
     let v = &mut view.parts[slot];
     v.loading = false;
     match result {
@@ -1724,31 +1725,31 @@ fn load_part(params: &SamplerParams, slot: usize, prepared: Option<crate::sound:
             v.interfaces = loaded.interfaces.into();
             if let Some(part) = loaded.part.as_mut() {
                 part.epoch = generation;
-                *atoms.engine_bindings.lock().unwrap() = part.engine_bindings.clone();
+                *atoms.engine_bindings.lock_unpoisoned() = part.engine_bindings.clone();
                 if !part.waveform_sources.is_empty() && let Some(ingress) = &part.ui_controls {
                     let wake = Arc::downgrade(&atoms);
-                    *atoms.waveforms.lock().unwrap() = crate::sound::waveform::Provider::start(ingress.plan(), std::mem::take(&mut part.waveform_sources), move || {
+                    *atoms.waveforms.lock_unpoisoned() = crate::sound::waveform::Provider::start(ingress.plan(), std::mem::take(&mut part.waveform_sources), move || {
                         if let Some(atoms) = wake.upgrade() && atoms.generation.load(Ordering::Acquire) == generation {
                             atoms.scalar_revision.fetch_add(1, Ordering::Release);
                         }
                     }).ok();
                 }
-                *atoms.ingress.lock().unwrap() = part.ui_controls.take();
+                *atoms.ingress.lock_unpoisoned() = part.ui_controls.take();
             }
             let nodes = v.tree.as_ref().map_or(1, |t| t.nodes.len());
-            *atoms.node_meters.lock().unwrap() = (0..nodes).map(|_| Default::default()).collect();
-            *atoms.controls.lock().unwrap() = loaded
+            *atoms.node_meters.lock_unpoisoned() = (0..nodes).map(|_| Default::default()).collect();
+            *atoms.controls.lock_unpoisoned() = loaded
                 .controls
                 .iter()
                 .map(|&(id, value)| ControlCell::new(id,value))
                 .collect();
             v.instrument = loaded.instrument;
             v.keys = loaded.scripts.keys();
-            *atoms.scripts.lock().unwrap() = loaded.scripts;
+            *atoms.scripts.lock_unpoisoned() = loaded.scripts;
             let held = loaded.stream.as_ref().map(|s| s.resident_bytes());
             atoms.resident_bytes.store(held.unwrap_or(full), Ordering::Relaxed);
             atoms.full_bytes.store(full, Ordering::Relaxed);
-            *atoms.stream.lock().unwrap() = loaded.stream;
+            *atoms.stream.lock_unpoisoned() = loaded.stream;
             v.trace = Some(trace.finish(if missing > 0 { "partial" } else { "loaded" }));
             atoms.load_progress.store(u32::from(Progress::DONE.0), Ordering::Relaxed);
             drop(view);
@@ -1785,18 +1786,18 @@ fn refresh_problems(shared: &Shared) {
                     Some(program) => {
                         let rt = p.problems();
                         vec![sampler_core::ScriptFault {
-                            callback: sampler_ksp::callback_of(&p.scripts.lock().unwrap().views, program as usize),
+                            callback: sampler_ksp::callback_of(&p.scripts.lock_unpoisoned().views, program as usize),
                             error: format!("{:?}", sampler_core::Error::ALL[(rt.fault_error as usize).min(11)]),
                         }]
                     }
                     None => Vec::new(),
                 };
-                let lua = p.scripts.lock().unwrap().uvi.as_ref().map(|ui| ui.fault_counts());
+                let lua = p.scripts.lock_unpoisoned().uvi.as_ref().map(|ui| ui.fault_counts());
                 (p.problems(), faults, lua)
             })
             .collect::<Vec<_>>()
     });
-    let mut view = shared.view.lock().unwrap();
+    let mut view = shared.view.lock_unpoisoned();
     for (v, (problems, faults, lua)) in view.parts.iter_mut().zip(problems) {
         if let Some(log) = v.runtime_log.as_mut() {
             let mut changed = log.counters(problems);
@@ -2328,7 +2329,7 @@ impl PluginLogic for Sampler {
             let peaks_parts = peaks.parts.len();
             for slot in 0..peaks_parts.min(s.core.parts()) {
                 let Some(atoms) = part_atoms(&s.shared_parts, shared, slot) else { continue };
-                let Ok(meters) = atoms.node_meters.try_lock() else { continue };
+                let Ok(meters) = atoms.node_meters.try_lock_unpoisoned() else { continue };
                 let unlit = AtomicBool::new(false);
                 s.core.take_node_peaks(slot, &mut |node, peak| {
                     if let Some(meter) = meters.get(node) {
@@ -2382,6 +2383,53 @@ pub(crate) mod tests {
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     use super::allocation_audit;
     use super::*;
+
+    #[test]
+    fn poisoned_editor_state_recovers_without_reset_or_frame_panics() {
+        let p = SamplerParams::new();
+        let poison = |f: &mut dyn FnMut()| {
+            assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).is_err());
+        };
+        poison(&mut || {
+            let mut view = p.shared.view.lock_unpoisoned();
+            view.status = "retained editor state".into();
+            panic!("synthetic original UI fault");
+        });
+        poison(&mut || {
+            let mut selection = p.selection.write_unpoisoned();
+            selection.parts = vec![Part { program: 77, ..Default::default() }];
+            panic!("synthetic selection fault");
+        });
+        poison(&mut || {
+            let _parts = p.shared.parts.lock_unpoisoned();
+            panic!("synthetic registry fault");
+        });
+        assert!(p.shared.view.is_poisoned());
+        for _ in 0..64 {
+            p.reload_ui_controls();
+            assert_eq!(p.shared.with_parts(|parts| parts.len()), RACK_SLOTS);
+        }
+        let report = p.diagnostic_report();
+        assert_eq!(report["rack"]["parts"][0]["program"], 77);
+        assert_eq!(p.shared.view.lock_unpoisoned().status, "retained editor state");
+        assert!(!p.shared.view.is_poisoned());
+        assert!(!p.selection.is_poisoned());
+        assert!(!p.shared.parts.is_poisoned());
+    }
+
+    #[test]
+    fn poisoned_nonblocking_controls_resume_publication() {
+        let part = PartShared::default();
+        let id = sampler_ui_ir::ControlId(1);
+        *part.controls.lock_unpoisoned() = vec![ControlCell::new(id, 0.25)].into();
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = part.controls.lock_unpoisoned();
+            panic!("synthetic control publication fault");
+        })).is_err());
+        assert_eq!(allocations(|| part.refresh_controls(|_| Some(0.75))), 0);
+        assert_eq!(part.control_values(), [(id, 0.75)]);
+        assert!(!part.controls.is_poisoned());
+    }
 
     #[test]
     fn storage_failures_survive_the_plugin_report_without_heap_work() {
@@ -2542,9 +2590,9 @@ pub(crate) mod tests {
         }
         w.finalize().unwrap();
         let params = SamplerParams::new();
-        params.selection.write().unwrap().parts = vec![Part { path: path.display().to_string(), ..Default::default() }];
-        load_until(&params, |p| p.shared.view.lock().unwrap().parts[0].tree.is_some());
-        let view = params.shared.view.lock().unwrap();
+        params.selection.write_unpoisoned().parts = vec![Part { path: path.display().to_string(), ..Default::default() }];
+        load_until(&params, |p| p.shared.view.lock_unpoisoned().parts[0].tree.is_some());
+        let view = params.shared.view.lock_unpoisoned();
         let v = &view.parts[0];
         assert!(!v.loading && v.report.as_ref().is_some_and(|r| r.decoded.zones == 1), "{}", v.status);
         drop(view);
@@ -2554,7 +2602,7 @@ pub(crate) mod tests {
         assert_eq!((slot, generation), (0, params.shared.part(0).unwrap().generation.load(Ordering::Relaxed)));
         dsp.core.install(slot, part);
         dsp.core.play(0, CoreEvent::midi1(0x90, 60, 100));
-        let mut mix = mix(&params.selection.read().unwrap());
+        let mut mix = mix(&params.selection.read_unpoisoned());
         let installed = allocations(|| {
             dsp.core.set_mix(&mix);
             let r = dsp.core.render(64);
@@ -2566,8 +2614,8 @@ pub(crate) mod tests {
         assert!(!dsp.core.render(64).buses[0][0][..64].iter().any(|x| x.abs() > 0.0), "muted");
 
         // Clearing the part hands over an empty slot.
-        params.selection.write().unwrap().parts[0].path.clear();
-        load_until(&params, |p| p.shared.view.lock().unwrap().parts[0].tree.is_none());
+        params.selection.write_unpoisoned().parts[0].path.clear();
+        load_until(&params, |p| p.shared.view.lock_unpoisoned().parts[0].tree.is_none());
         let (_, _, part) = std::iter::from_fn(|| params.shared.ready.pop()).last().unwrap();
         assert!(part.is_none());
     }
@@ -2575,9 +2623,9 @@ pub(crate) mod tests {
     #[test]
     fn a_failed_load_reports_why() {
         let params = SamplerParams::new();
-        params.selection.write().unwrap().parts = vec![Part { path: "/nonexistent/x.nki".into(), ..Default::default() }];
+        params.selection.write_unpoisoned().parts = vec![Part { path: "/nonexistent/x.nki".into(), ..Default::default() }];
         Load.run(&params);
-        let view = params.shared.view.lock().unwrap();
+        let view = params.shared.view.lock_unpoisoned();
         assert!(view.parts[0].status.starts_with("Load failed"), "{}", view.parts[0].status);
         assert!(view.parts[0].trace.is_some());
     }
@@ -2643,9 +2691,9 @@ pub(crate) mod tests {
                 .find_map(|l| l.strip_prefix(key)?.split_whitespace().next()?.parse().ok()).unwrap_or(0)
         };
         let params = std::sync::Arc::new(SamplerParams::new());
-        params.selection.write().unwrap().parts = vec![Part { path: path.clone(), program, ..Default::default() }];
+        params.selection.write_unpoisoned().parts = vec![Part { path: path.clone(), program, ..Default::default() }];
         let rss0 = proc_kb("VmRSS:");
-        let mut dsp = Dsp::default(); dsp.core.set_mix(&mix(&params.selection.read().unwrap()));
+        let mut dsp = Dsp::default(); dsp.core.set_mix(&mix(&params.selection.read_unpoisoned()));
         let t0 = Instant::now();
         #[cfg(all(target_os = "linux", target_env = "gnu"))]
         let allocation_output = std::env::var_os("PROBE_ALLOCS");
@@ -2659,7 +2707,7 @@ pub(crate) mod tests {
         let mut peak = 0f32;
         let mut blocks = 0u32;
         loop {
-            if publication_ms.is_none() && params.shared.view.lock().unwrap().parts[0].tree.is_some() { publication_ms = Some(t0.elapsed().as_secs_f64()*1000.); }
+            if publication_ms.is_none() && params.shared.view.lock_unpoisoned().parts[0].tree.is_some() { publication_ms = Some(t0.elapsed().as_secs_f64()*1000.); }
             while let Some((slot, _, part)) = params.shared.ready.pop() {
                 let present = part.is_some(); dsp.core.install(slot, part);
                 if present {
@@ -2694,13 +2742,13 @@ pub(crate) mod tests {
         let trimmed_rss = rss_settled;
 
         let atoms = params.shared.part(0).unwrap();
-        let stream = atoms.stream.lock().unwrap();
+        let stream = atoms.stream.lock_unpoisoned();
         let stream = stream.as_ref().map(|s| serde_json::json!({"heads":s.report.head_bytes,"head_frames":s.report.head_frames,"pool_bytes":s.report.pool_bytes,"full_bytes":s.report.full_bytes,"resident_bytes":s.resident_bytes()}));
-        let view = params.shared.view.lock().unwrap();
+        let view = params.shared.view.lock_unpoisoned();
         let decoded = view.parts[0].report.as_ref().map(|r| serde_json::json!({"zones":r.decoded.zones,"groups":r.decoded.groups,"samples":r.decoded.samples,"scripts":r.decoded.scripts,"missing":r.missing.len()}));
         drop(view);
         let extra = serde_json::json!({"stream":stream,"decoded":decoded,"problems":format!("{:?}",dsp.core.problems(0))});
-        let trace = params.shared.view.lock().unwrap().parts[0].trace.as_deref().cloned();
+        let trace = params.shared.view.lock_unpoisoned().parts[0].trace.as_deref().cloned();
         println!("PROBE {}", serde_json::json!({
             "path":path,"program":program,"publication_ms":publication_ms,
             "installed_ms":installed_ms,"first_audio_ms":first_audio_ms,"first_audio_frames":first_audio_frame,"peak":peak,
@@ -2729,13 +2777,13 @@ mod settings_parity_tests {
     fn v1_snapshot_requests_validate_before_mutating() {
         let part = Part { path: "/unavailable-kontakto/base.nki".into(), snapshot: "/unavailable-kontakto/old.nksn".into(), gain: -4., channel: 3, ..Default::default() };
         let p = SamplerParams::new();
-        p.selection.write().unwrap().parts = vec![part.clone()];
+        p.selection.write_unpoisoned().parts = vec![part.clone()];
         let generation = p.shared.part(0).unwrap().generation.load(Ordering::Acquire);
         assert!(p.shared.queue_snapshot(0, &part, "/unavailable-kontakto/missing.nksn".into()));
         assert_eq!(p.shared.part(0).unwrap().generation.load(Ordering::Acquire), generation, "an unvalidated request cannot invalidate the active bank's services");
         assert!(prepare_snapshot(&p).is_none());
-        assert!(p.selection.read().unwrap().parts[0] == part);
-        let report = p.shared.view.lock().unwrap().parts[0].trace.clone().unwrap();
+        assert!(p.selection.read_unpoisoned().parts[0] == part);
+        let report = p.shared.view.lock_unpoisoned().parts[0].trace.clone().unwrap();
         assert_eq!(report["details"]["operation"], "snapshot_validation");
         assert_eq!(report["status"], "failed");
         assert!(report["failure"].is_string());
@@ -2743,12 +2791,12 @@ mod settings_parity_tests {
         assert!(crate::diagnostics::snapshot().events.iter().any(|event|
             event.load_id.as_deref() == report["load_id"].as_str() && event.event == "load_finished"
                 && event.details["status"] == "failed"), "failed validation is retained in the diagnostic journal");
-        assert!(p.shared.view.lock().unwrap().parts[0].status.contains("Snapshot was not loaded"));
+        assert!(p.shared.view.lock_unpoisoned().parts[0].status.contains("Snapshot was not loaded"));
         assert!(p.shared.queue_snapshot(0, &part, "/unavailable-kontakto/stale.nksn".into()));
-        p.selection.write().unwrap().parts[0].snapshot = "replacement.nksn".into();
-        p.shared.view.lock().unwrap().parts[0].status = "replacement".into();
+        p.selection.write_unpoisoned().parts[0].snapshot = "replacement.nksn".into();
+        p.shared.view.lock_unpoisoned().parts[0].status = "replacement".into();
         assert!(prepare_snapshot(&p).is_none());
-        assert_eq!(p.shared.view.lock().unwrap().parts[0].status, "replacement");
+        assert_eq!(p.shared.view.lock_unpoisoned().parts[0].status, "replacement");
         crate::diagnostics::flush(std::time::Duration::from_secs(5)).unwrap();
         assert!(crate::diagnostics::snapshot().events.iter().any(|event|
             event.event == "load_finished" && event.details["status"] == "canceled"
@@ -2785,7 +2833,7 @@ fn align(params:&SamplerParams) {
     let shared=&params.shared;
     let done=shared.measure.take();
     if !done.is_empty() {
-        let mut statuses=Vec::new();let mut current=params.selection.write().unwrap();
+        let mut statuses=Vec::new();let mut current=params.selection.write_unpoisoned();
         for (slot,generation,source,result) in done {
             if !shared.part(slot).is_some_and(|p| p.generation.load(Ordering::Acquire) == generation) { continue; }
             let Some(p)=current.parts.get_mut(slot).filter(|p|crate::timing::source(&p.path,p.program,&p.snapshot)==source)else{continue};
@@ -2795,14 +2843,14 @@ fn align(params:&SamplerParams) {
                 Err(e)=>{p.timing=crate::timing::Timing{source,override_ms:p.timing.override_ms,exclude:p.timing.exclude,..Default::default()};statuses.push((slot,format!("Timing not measured: {e}")));}
             }
         }
-        drop(current);let mut view=shared.view.lock().unwrap();for (slot,status)in statuses{if let Some(v)=view.parts.get_mut(slot){v.timing_status=status;}}
+        drop(current);let mut view=shared.view.lock_unpoisoned();for (slot,status)in statuses{if let Some(v)=view.parts.get_mut(slot){v.timing_status=status;}}
     }
-    let selection=params.selection.read().unwrap().clone();
+    let selection=params.selection.read_unpoisoned().clone();
     if !selection.auto_align {shared.measure.cancel();}
     if selection.auto_align&&!shared.measure.busy() {
         for (slot,part) in selection.parts.iter().enumerate() {
             if part.path.is_empty()||part.timing.measured(&part.path,part.program,&part.snapshot){continue;}
-            let ready={let view=shared.view.lock().unwrap();view.parts.get(slot).is_some_and(|v|!v.loading&&v.attempted.as_ref().is_some_and(|(path,program,snapshot,..)|path==&part.path&&*program==part.program&&snapshot==&part.snapshot)&&v.report.is_some())};
+            let ready={let view=shared.view.lock_unpoisoned();view.parts.get(slot).is_some_and(|v|!v.loading&&v.attempted.as_ref().is_some_and(|(path,program,snapshot,..)|path==&part.path&&*program==part.program&&snapshot==&part.snapshot)&&v.report.is_some())};
             if !ready {continue;}
             let Some(atoms)=shared.part(slot)else{continue};let generation=atoms.generation.load(Ordering::Acquire);
             let request=LoadRequest {
@@ -2815,11 +2863,11 @@ fn align(params:&SamplerParams) {
                 mpe:false,mpe_upper:false,streaming:Streaming::Auto,threads:Some(crate::sound::ThreadChoice::Fixed(1)),
             };
             let result=shared.measure.start(slot,generation,request,part.edits.clone(),move||atoms.generation.load(Ordering::Acquire)!=generation);
-            shared.view.lock().unwrap().parts[slot].timing_status=match result {Ok(())=>"Measuring timing…".into(),Err(e)=>format!("Timing not measured: {e}")};
+            shared.view.lock_unpoisoned().parts[slot].timing_status=match result {Ok(())=>"Measuring timing…".into(),Err(e)=>format!("Timing not measured: {e}")};
             break;
         }
     }
-    let plan=timing_plan(&selection);let mut published=shared.published.lock().unwrap();
+    let plan=timing_plan(&selection);let mut published=shared.published.lock_unpoisoned();
     let (sent,waiting)=&mut *published;
     if sent.as_ref().is_some_and(|old|old.as_ref()==&plan){*waiting=None;return;}
     let told=|p:&crate::timing::Plan|if p.on{p.latency_ms}else{0.};let now=Instant::now();
@@ -2853,42 +2901,42 @@ mod timing_loader_tests {
         let p=SamplerParams::new();
         let atoms=p.shared.part(0).unwrap();atoms.generation.store(7,Ordering::Release);
         let source=crate::timing::source("synthetic.nki",2,"saved.nksn");
-        p.selection.write().unwrap().parts=vec![Part{path:"synthetic.nki".into(),program:2,snapshot:"saved.nksn".into(),timing:crate::timing::Timing{override_ms:Some(95.),exclude:true,..Default::default()},..Default::default()}];
+        p.selection.write_unpoisoned().parts=vec![Part{path:"synthetic.nki".into(),program:2,snapshot:"saved.nksn".into(),timing:crate::timing::Timing{override_ms:Some(95.),exclude:true,..Default::default()},..Default::default()}];
         let result=crate::timing::Timing{source:source.clone(),declared:Some(47.),..Default::default()};
         for (generation,identity) in [(6,source.clone()),(7,crate::timing::source("synthetic.nki",2,"other.nksn"))] {
-            p.shared.measure.done.lock().unwrap().push((0,generation,identity,Some(Ok(result.clone()))));
-            align(&p);assert!(p.selection.read().unwrap().parts[0].timing.source.is_empty(),"stale result changed this part");
+            p.shared.measure.done.lock_unpoisoned().push((0,generation,identity,Some(Ok(result.clone()))));
+            align(&p);assert!(p.selection.read_unpoisoned().parts[0].timing.source.is_empty(),"stale result changed this part");
         }
-        p.shared.measure.done.lock().unwrap().push((0,7,source.clone(),Some(Ok(result))));
-        align(&p);let s=p.selection.read().unwrap();let t=&s.parts[0].timing;
+        p.shared.measure.done.lock_unpoisoned().push((0,7,source.clone(),Some(Ok(result))));
+        align(&p);let s=p.selection.read_unpoisoned();let t=&s.parts[0].timing;
         assert_eq!(t.source,source);assert_eq!(t.declared,Some(47.));assert_eq!(t.override_ms,Some(95.));assert!(t.exclude);
     }
     #[test]
     fn v1_auto_align_publishes_changed_latency_only_after_settling() {
         let p=SamplerParams::new();{
-            let mut s=p.selection.write().unwrap();s.auto_align=true;
+            let mut s=p.selection.write_unpoisoned();s.auto_align=true;
             s.parts=vec![Part{path:"synthetic.nki".into(),timing:crate::timing::Timing{override_ms:Some(10.),..Default::default()},..Default::default()}];
         }
         align(&p);assert_eq!(f32::from_bits(p.shared.reported.load(Ordering::Relaxed)),10.);
-        p.selection.write().unwrap().parts[0].timing.override_ms=Some(20.);
+        p.selection.write_unpoisoned().parts[0].timing.override_ms=Some(20.);
         align(&p);assert_eq!(f32::from_bits(p.shared.reported.load(Ordering::Relaxed)),10.);
-        p.shared.published.lock().unwrap().1=Some((20.,Instant::now()-LATENCY_SETTLE));
+        p.shared.published.lock_unpoisoned().1=Some((20.,Instant::now()-LATENCY_SETTLE));
         align(&p);assert_eq!(f32::from_bits(p.shared.reported.load(Ordering::Relaxed)),20.);
-        assert_eq!(p.shared.published.lock().unwrap().0.as_ref().unwrap().latency_ms,20.);
+        assert_eq!(p.shared.published.lock_unpoisoned().0.as_ref().unwrap().latency_ms,20.);
     }
     #[test]
     fn v1_auto_align_loader_measures_a_fresh_generated_wave_and_persists_it() {
         let dir=std::env::temp_dir().join(format!("kontra-timing-{}",std::process::id()));std::fs::create_dir_all(&dir).unwrap();let path=dir.join("C3.wav");
         let data:Vec<u8>=(0..72000).flat_map(|n|(((std::f64::consts::TAU*261.625565*n as f64/48000.).sin()*12000.)as i16).to_le_bytes()).collect();
         let mut wav=Vec::new();wav.extend(b"RIFF");wav.extend((36+data.len()as u32).to_le_bytes());wav.extend(b"WAVEfmt ");wav.extend(16u32.to_le_bytes());wav.extend(1u16.to_le_bytes());wav.extend(1u16.to_le_bytes());wav.extend(48000u32.to_le_bytes());wav.extend(96000u32.to_le_bytes());wav.extend(2u16.to_le_bytes());wav.extend(16u16.to_le_bytes());wav.extend(b"data");wav.extend((data.len()as u32).to_le_bytes());wav.extend(data);std::fs::write(&path,wav).unwrap();
-        let p=SamplerParams::new();{let mut s=p.selection.write().unwrap();s.auto_align=true;s.parts.push(Part{path:path.to_string_lossy().into(),timing:crate::timing::Timing{override_ms:Some(12.),..Default::default()},..Default::default()});s.order.push(0);}
+        let p=SamplerParams::new();{let mut s=p.selection.write_unpoisoned();s.auto_align=true;s.parts.push(Part{path:path.to_string_lossy().into(),timing:crate::timing::Timing{override_ms:Some(12.),..Default::default()},..Default::default()});s.order.push(0);}
         let began=Instant::now();
         loop {
             Load.run(&p);
-            if p.selection.read().unwrap().parts[0].timing.measured(&path.to_string_lossy(),0,""){break;}
+            if p.selection.read_unpoisoned().parts[0].timing.measured(&path.to_string_lossy(),0,""){break;}
             assert!(began.elapsed().as_secs()<15,"auto-align never measured a loaded part");std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        let s=p.selection.read().unwrap();let t=&s.parts[0].timing;
+        let s=p.selection.read_unpoisoned();let t=&s.parts[0].timing;
         assert_eq!(t.override_ms,Some(12.));assert!(t.loaded.first.iter().all(Option::is_some),"all velocity buckets were actually rendered");
         let restored=Selection::deserialize(&s.serialize()).unwrap();assert_eq!(restored.parts[0].timing,*t);
         drop(s);drop(p);std::fs::remove_dir_all(dir).unwrap();
