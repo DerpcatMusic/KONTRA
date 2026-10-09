@@ -220,13 +220,22 @@ pub fn filter_handles(s: &GroupSettings) -> Vec<Handle> {
                 Param::Freq(slot, b) => (Param::Gain(slot, b), Some(Param::Bandwidth(slot, b))),
                 _ => unreachable!(),
             };
+            // port from v1 0cb7a8a0:src/ui/viz.rs: EQ handles show their own gain.
+            let (db, y_scale) = if matches!(p, Param::Freq(..)) {
+                let db = y.read(s).and_then(|n| s.gain_db(y, n));
+                let range = s.gain_db(y, 1.).zip(s.gain_db(y, 0.))
+                    .map(|(high, low)| high - low).filter(|range| *range > 0.);
+                (db, range.map(|range| (TOP_DB - BOTTOM_DB) / range))
+            } else {
+                (None, Some(1.))
+            };
             Some(Handle {
                 at: [
                     freq_x(hz),
-                    db_y(20. * s.magnitude(hz).max(1e-6).log10()).clamp(0., 1.),
+                    db_y(db.unwrap_or_else(|| 20. * s.magnitude(hz).max(1e-6).log10())).clamp(0., 1.),
                 ],
                 x: Some((x, scale)),
-                y: s.values.iter().any(|(q, _)| *q == y).then_some((y, 1.)),
+                y: y_scale.filter(|_| y.read(s).is_some()).map(|scale| (y, scale)),
                 wheel: wheel.filter(|w| s.values.iter().any(|(q, _)| q == w)),
                 active: true,
             })
