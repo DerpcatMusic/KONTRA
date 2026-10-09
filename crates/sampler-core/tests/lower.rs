@@ -1382,6 +1382,8 @@ fn physical_ladder_lanes_keep_signed_gain_and_drive_audio_without_heap() {
 #[test]
 fn normalized_cutoff_routes_address_ladder_and_daft_without_audio_heap() {
     for ladder in [true, false] {
+      for post in [false, true] {
+        for mixed in [false, true] {
         let render = |cutoff, depth| {
             let processor = if ladder {
                 ir::Processor::LadderLP4(ir::LadderLP4 { address: None, gain: 0.,
@@ -1389,16 +1391,28 @@ fn normalized_cutoff_routes_address_ladder_and_daft_without_audio_heap() {
             } else {
                 ir::Processor::Daft(ir::Daft { gain: 0., cutoff, resonance: 0.1, highpass: false })
             };
+            let mut processors = vec![ir::Processor::Gain(ir::Gain::UNITY),
+                ir::Processor::Filter(ir::Filter { kind: ir::FilterKind::LowPass { poles: 4 },
+                    cutoff: ir::Frequency::Hertz(20000.), resonance: ir::Resonance::Q(0.7) })];
+            if mixed {
+                processors.push(ir::Processor::Mix { count: 1,
+                    address: ir::SlotAddress { group: 0, slot: 5, generic: -1 },
+                    dry: 0., wet: 1., bypass: false });
+            }
+            let index = processors.len();
+            processors.push(processor);
+            let mut chains = vec![ir::Chain { scope: ir::Scope::Voice,
+                pre_amplitude: vec![], post_amplitude: vec![] }; 13];
+            chains.push(ir::Chain { scope: ir::Scope::Voice,
+                pre_amplitude: if post { vec![] } else { processors.clone() },
+                post_amplitude: if post { processors } else { vec![] } });
             let instrument = ir::Instrument {
-                assets: vec![asset("native cutoff")],
-                chains: vec![ir::Chain { scope: ir::Scope::Voice,
-                    pre_amplitude: vec![ir::Processor::Gain(ir::Gain::Linear(1.)), processor],
-                    post_amplitude: vec![] }],
+                assets: vec![asset("native cutoff")], chains,
                 modulators: vec![ir::Modulator { scope: ir::Scope::Voice, source: ir::ModulationSource::Constant }],
                 routes: vec![ir::Route { source: ir::ModulatorRef(0),
-                    target: ir::Target::Processor { chain: ir::ChainRef(0), index: 1, parameter: ir::ProcessorParameter::Cutoff },
+                    target: ir::Target::Processor { chain: ir::ChainRef(13), index, parameter: ir::ProcessorParameter::Cutoff },
                     depth: ir::Depth::Normalized(depth), invert: false, shape: None, smoothing: ir::Time::Seconds(0.), scale: None }],
-                zones: vec![ir::Zone { chain: Some(ir::ChainRef(0)), routes: vec![ir::RouteRef(0)],
+                zones: vec![ir::Zone { chain: Some(ir::ChainRef(13)), routes: vec![ir::RouteRef(0)],
                     pitch: ir::KeyTracking::Fixed, velocity: ir::VelocityResponse::None,
                     ..ir::Zone::new(ir::AssetRef(0)) }], ..Default::default() };
             let pcm = Pcm::new(48000, (0..4096).map(|i|
@@ -1419,6 +1433,8 @@ fn normalized_cutoff_routes_address_ladder_and_daft_without_audio_heap() {
         let energy = |x: &[[f32; 2]]| x[1024..].iter().flatten().map(|v| f64::from(*v).powi(2)).sum::<f64>();
         assert!(10. * (energy(&wet) / energy(&dry)).log10() > 3., "opening the cutoff must pass more of the 2 kHz tone");
     }
+        }
+      }
 }
 
 #[test]
