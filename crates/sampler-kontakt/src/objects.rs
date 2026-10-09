@@ -58,7 +58,7 @@ pub(crate) fn group(g: &ni::Group, v: &ni::GroupParams) -> ir::kontakt::Group {
                     .into_iter()
                     .map(|f| ir::kontakt::SourceField {
                         offset: f.offset,
-                        name: f.name,
+                        name: f.name.into(),
                         value: match f.value {
                             ni::SourceValue::Float(v) => ir::kontakt::SourceValue::Float(v),
                             ni::SourceValue::Integer(v) => ir::kontakt::SourceValue::Integer(v),

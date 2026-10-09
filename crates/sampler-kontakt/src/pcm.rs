@@ -1,8 +1,15 @@
 //! Port from v1 0cb7a8a0:src/audio.rs PCM reader: accurate random access.
 use anyhow::{Context, Result, bail, ensure};
-use symphonia::core::{audio::SampleBuffer, codecs::{self, DecoderOptions}, errors::Error as SymphoniaError,
-    formats::{FormatOptions, FormatReader, SeekMode, SeekTo}, io::{MediaSource, MediaSourceStream}, meta::MetadataOptions, probe::Hint};
 use std::io;
+use symphonia::core::{
+    audio::SampleBuffer,
+    codecs::{self, DecoderOptions},
+    errors::Error as SymphoniaError,
+    formats::{FormatOptions, FormatReader, SeekMode, SeekTo},
+    io::{MediaSource, MediaSourceStream},
+    meta::MetadataOptions,
+    probe::Hint,
+};
 type Frame = [f32; 2];
 const SKIP_AHEAD: u64 = 16384;
 pub(crate) struct Reader {
@@ -19,19 +26,29 @@ impl Reader {
         // v1 creator::probe COMM prefix. Symphonia 0.5 counts SSND's eight
         // offset/block bytes as PCM frames; COMM is the authoritative count.
         use std::io::{Read, Seek, SeekFrom};
-        let mut head = [0; 12]; source.read_exact(&mut head)?;
-        ensure!(&head[..4] == b"FORM" && matches!(&head[8..], b"AIFF" | b"AIFC"), "Not AIFF");
-        let end = (u64::from(u32::from_be_bytes(head[4..8].try_into().unwrap())) + 8).min(source.byte_len().unwrap_or(u64::MAX));
+        let mut head = [0; 12];
+        source.read_exact(&mut head)?;
+        ensure!(
+            &head[..4] == b"FORM" && matches!(&head[8..], b"AIFF" | b"AIFC"),
+            "Not AIFF"
+        );
+        let end = (u64::from(u32::from_be_bytes(head[4..8].try_into().unwrap())) + 8)
+            .min(source.byte_len().unwrap_or(u64::MAX));
         let mut at = 12u64;
         let mut declared = None;
         while at + 8 <= end {
             source.seek(SeekFrom::Start(at))?;
-            let mut chunk = [0; 8]; source.read_exact(&mut chunk)?;
+            let mut chunk = [0; 8];
+            source.read_exact(&mut chunk)?;
             let size = u64::from(u32::from_be_bytes(chunk[4..].try_into().unwrap()));
             ensure!(at + 8 + size <= end, "Truncated AIFF chunk");
             if &chunk[..4] == b"COMM" && size >= 18 {
-                let mut common = [0; 6]; source.read_exact(&mut common)?;
-                declared = Some(u64::from(u32::from_be_bytes(common[2..].try_into().unwrap()))); break;
+                let mut common = [0; 6];
+                source.read_exact(&mut common)?;
+                declared = Some(u64::from(u32::from_be_bytes(
+                    common[2..].try_into().unwrap(),
+                )));
+                break;
             }
             at += 8 + size + (size & 1);
         }
@@ -58,7 +75,15 @@ impl Reader {
         let decoder = symphonia::default::get_codecs().make(params, &DecoderOptions::default())?;
         let track = track.id;
         ensure!(rate > 0 && frames > 0, "Empty sample or invalid rate");
-        Ok(Self { rate, frames, format, decoder, track, buffer: Vec::new(), start: 0 })
+        Ok(Self {
+            rate,
+            frames,
+            format,
+            decoder,
+            track,
+            buffer: Vec::new(),
+            start: 0,
+        })
     }
 }
 impl Reader {

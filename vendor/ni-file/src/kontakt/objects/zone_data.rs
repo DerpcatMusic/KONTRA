@@ -1,6 +1,6 @@
 use std::io::Cursor;
 
-use crate::{Error, kontakt::structured_object::StructuredObject, read_bytes::ReadBytesExt};
+use crate::{kontakt::structured_object::StructuredObject, read_bytes::ReadBytesExt, Error};
 
 #[derive(Debug)]
 pub struct Zone(pub StructuredObject);
@@ -51,7 +51,9 @@ impl Zone {
     /// Sample reference from the common zone prefix, independent of later
     /// version-specific public parameters.
     pub fn filename_id(&self) -> Result<i32, Error> {
-        if !self.has_sample()? { return Ok(-1); }
+        if !self.has_sample()? {
+            return Ok(-1);
+        }
         let at = if self.0.version >= 0x9a { 48 } else { 42 };
         let bytes = self
             .0
@@ -67,11 +69,17 @@ impl Zone {
         if !matches!(self.0.version, 0x92..=0x95 | 0x97..=0x9c) {
             return Err(Error::Static("Unsupported zone version"));
         }
-        if self.0.version < 0x9a { return Ok(true); }
-        let prefix = self.0.public_data.get(42..48)
+        if self.0.version < 0x9a {
+            return Ok(true);
+        }
+        let prefix = self
+            .0
+            .public_data
+            .get(42..48)
             .ok_or(Error::Static("Truncated zone sample-presence prefix"))?;
         match prefix.get(1) {
-            Some(0) => Ok(false), Some(1) => Ok(true),
+            Some(0) => Ok(false),
+            Some(1) => Ok(true),
             Some(_) => Err(Error::Static("Invalid zone sample-presence flag")),
             None => Err(Error::Static("Truncated zone sample-presence flag")),
         }
@@ -119,7 +127,11 @@ impl Zone {
             params.num_channels = reader.read_u8()?;
             params.num_frames = reader.read_i32_le()?;
             params.reserved1 = reader.read_i32_le()?;
-            params.reserved2 = if self.0.version < 0x96 { Some(reader.read_i32_le()?) } else { None };
+            params.reserved2 = if self.0.version < 0x96 {
+                Some(reader.read_i32_le()?)
+            } else {
+                None
+            };
             params.root_note = reader.read_i32_le()?;
             params.tuning = reader.read_f32_le()?;
             params.reserved3 = reader.read_u8()?;

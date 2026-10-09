@@ -1037,9 +1037,16 @@ fn host_owned_notes_follow_zone_bends_transposition_and_pedals() {
     apply(&mut mpe, &mut rt, bend(0, 16383)).unwrap();
     assert_eq!(expression(&rt, note).pitch_semitones, pitch(16383, 2.0));
     mpe.transpose(&mut rt, -12.0).unwrap();
-    assert_eq!(expression(&rt, note).pitch_semitones, pitch(16383, 2.0) - 12.0);
+    assert_eq!(
+        expression(&rt, note).pitch_semitones,
+        pitch(16383, 2.0) - 12.0
+    );
     apply(&mut mpe, &mut rt, bend(0, 8192)).unwrap();
-    assert_eq!(expression(&rt, note).pitch_semitones, -12.0, "bends keep the offset");
+    assert_eq!(
+        expression(&rt, note).pitch_semitones,
+        -12.0,
+        "bends keep the offset"
+    );
     assert_eq!(
         apply(&mut mpe, &mut rt, packet(0xb0, 0, 64, 127)).unwrap(),
         Applied::Pedal
@@ -1070,7 +1077,10 @@ fn midi2_messages_play_the_zone_at_full_precision() {
     // A quarter-step 32-bit bend over the default 2 semitones.
     midi2(&mut mpe, &mut rt, 0xe0, 0, 0, 0xa000_0000).unwrap();
     let pitch = expression(&rt, note).pitch_semitones;
-    assert!((pitch - 2.0 * f64::from(0x2000_0000u32) / f64::from(0x7fff_ffffu32)).abs() < 1e-12, "{pitch}");
+    assert!(
+        (pitch - 2.0 * f64::from(0x2000_0000u32) / f64::from(0x7fff_ffffu32)).abs() < 1e-12,
+        "{pitch}"
+    );
     // Pressure keeps all 32 bits.
     midi2(&mut mpe, &mut rt, 0xd0, 0, 0, 0x1234_5678).unwrap();
     assert_eq!(expression(&rt, note).pressure, 0x1234_5678);

@@ -72,7 +72,10 @@ impl LoFi {
                     rng ^= rng >> 17;
                     rng ^= rng << 5;
                     let white = rng as i32 as f32 * (1.0 / 2_147_483_648.0);
-                    retained[2 + ch] = super::kernels::biased_one_pole32(retained[2 + ch], self.color * (white - retained[2 + ch]));
+                    retained[2 + ch] = super::kernels::biased_one_pole32(
+                        retained[2 + ch],
+                        self.color * (white - retained[2 + ch]),
+                    );
                     y += self.noise * retained[2 + ch];
                 }
                 block[ch][i] = f64::from(y);
@@ -202,20 +205,47 @@ mod frozen_kernel_tests {
     #[test]
     fn shared_lofi_matches_frozen_pcm_and_state_bits() {
         for rate in [44100, 48000, 96000] {
-            let kernel = LoFiSettings { bits: 0.17, frequency: 0.37, noise: 0.63, color: 0.7 }.compile(rate);
+            let kernel = LoFiSettings {
+                bits: 0.17,
+                frequency: 0.37,
+                noise: 0.63,
+                color: 0.7,
+            }
+            .compile(rate);
             for len in [0, 1, 3, 4, 17, super::super::BLOCK] {
-                let (mut state, mut expected_state) = (ProcessorState::default(), ProcessorState::default());
+                let (mut state, mut expected_state) =
+                    (ProcessorState::default(), ProcessorState::default());
                 for block_index in 0..8 {
-                    let mut actual = std::array::from_fn(|c| std::array::from_fn(|i| match block_index {
-                        0 => if i == 0 { 1. } else { 0. },
-                        1 => ((i + 11 * c) as f64 * 0.31).sin() * 0.1,
-                        _ => if i % 2 == 0 { -0. } else { f64::from_bits(1) },
-                    }));
+                    let mut actual = std::array::from_fn(|c| {
+                        std::array::from_fn(|i| match block_index {
+                            0 => {
+                                if i == 0 {
+                                    1.
+                                } else {
+                                    0.
+                                }
+                            }
+                            1 => ((i + 11 * c) as f64 * 0.31).sin() * 0.1,
+                            _ => {
+                                if i % 2 == 0 {
+                                    -0.
+                                } else {
+                                    f64::from_bits(1)
+                                }
+                            }
+                        })
+                    });
                     let mut expected = actual;
                     kernel.process(&mut state, &mut actual, len);
                     frozen_process(&kernel, &mut expected_state, &mut expected, len);
-                    assert_eq!(actual.map(|c| c.map(f64::to_bits)), expected.map(|c| c.map(f64::to_bits)));
-                    assert_eq!(state.aux.map(f64::to_bits), expected_state.aux.map(f64::to_bits));
+                    assert_eq!(
+                        actual.map(|c| c.map(f64::to_bits)),
+                        expected.map(|c| c.map(f64::to_bits))
+                    );
+                    assert_eq!(
+                        state.aux.map(f64::to_bits),
+                        expected_state.aux.map(f64::to_bits)
+                    );
                     assert_eq!(state.delay_position, expected_state.delay_position);
                 }
             }
