@@ -1,47 +1,29 @@
-# Reader-lane consolidation
+# Consolidated Kontakt reader validation
 
 W6 `v2/fix-tester-reader-versions` (`d372a4f9` fixtures, `ac3b55a7` source)
-is superseded by W12. Do not validate or integrate that branch separately.
-Validated W12 format slice remains `4fb8bd5f` + `7bc29b21` after `c1359117`.
+is superseded by this W12 slice. Do not integrate or validate it separately.
+Prerequisites remain `c1359117`, `4fb8bd5f`, and `7bc29b21`.
 
-| W6 change | W12 disposition |
+The former HOLD fixtures `f3519531` and `4b8a8293` now have recorded RED→GREEN
+validation. Receipts: `/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w12-reader-extras-20261009`.
+
+| Area | Established behavior |
 | --- | --- |
-| Arrays v0x11 | Covered by validated W12; retain both bounded native framing variants. Do not replace with W6's presence-only bounded reader. |
-| External v0x100 / internal v0x80 nullable names | Covered by W12; add W6 internal/unassigned-source fixture cases. |
-| AHDSR v0x10 | Use validated c1359117, drop W6 duplicate envelope hunk. Add opaque negative-zero/NaN tail-bit fixture; known parameter NaNs remain rejected. |
-| Boolean error field context | Extra W6 fixture requires context. Owned pending patch adds context without admitting invalid booleans. |
-| Compact group snapshots v1..v4 | Unique source extension, retained as one owned pending two-file patch. Its adjacent-record/source-revision matrix supplies failing-first coverage. |
+| Fixed arrays | Revisions 0x10..0x13 preserve high physical slots and reject truncation/invalid presence. The two bounded v11 layouts remain distinct. |
+| Modulation | Legacy nullable assignment names retain alignment; invalid booleans remain rejected with target/field context. |
+| AHDSR v0x10 | Opaque negative-zero/NaN tail bits roundtrip and survive edits; known parameter validation remains strict. |
+| Compact snapshots | Adjacent records cover v1..v4 × source revisions 0x100/102/104/106 × sampler/DFD modes: 32 combinations, with roundtrip and every truncation boundary checked. |
+| Existing v4 wavetable snapshots | The established 99-byte mode9 boundary and counted 64-slot external rack remain intact. An existing guard caught a two-byte candidate overread before integration. |
+| Unsupported FX diagnostics | Keep builtin, revision, length, physical slot and typed reason; omit public hex heads and parameter debug payloads. |
 
-`vendor/ni-file/tests/reader_versions.rs` preserves W6's four authored test
-families: all array revisions/high physical slots/truncation/invalid presence;
-legacy nullable internal and unassigned external assignments; opaque AHDSR tail
-bits and edit preservation; adjacent compact groups for versions1..4, source
-versions0x100/102/104/106, sampler/DFD modes, and malformed/truncated records.
-No native bytes or names were added. These extra fixtures are **UNRUN**, outside
-READY7bc29b21. They are committed locally for the next W12 turn, not pushed as a
-new READY. The earlier root no-run receipt applies only to the validated SHA.
+RED: reader fixtures had 2 passed/2 failed (compact count and Boolean2 context),
+privacy failed 1/1. Final GREEN: reader fixtures 4/4, ni-file snapshot guards 5/5,
+snapshot translation 1/1 (2 native exploratory tests ignored), privacy 1/1.
+Area no-run and plugin/shot-enabled root no-run both pass through the normal
+`kontakto-heavy` FIFO. No W6 duplicate implementation or native render was run.
 
-The production snapshot changes and three strict diagnostic-context additions
-remain owned patches under
-`/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w12-format-revisions/`:
-`w6-compact-snapshot-source.patch`, `w6-modulation-context-source.patch`.
-Both pass `git apply --check` against READY7bc29b21. No duplicate arrays/names or
-envelope hunks are present. Shared callers were inspected: ni-file Snapshot
-read/write/modulation chunks and sampler-kontakt snapshot translation. Full
-source bounds are handled by the existing BParSrcMode codec; raw bytes remain
-in memory and writer roundtrips retain the source/group trailer.
+Exact tester-library audio parity remains unverified. SendLevels cached payload
+length/list counts remain UNKNOWN; this slice does not change its DSP admission.
+No decrypted library data or samples were written.
 
-Validation plan: on the next direct W12 machine turn, run reader_versions RED,
-apply both owned patches, run one W12 focused GREEN plus affected snapshot
-unit guards and root no-run. Do not run the W6 branch or repeat native renders.
-W6 currently owns the machine; W12 has no heavy job, queue ticket or request.
-
-Generic unsupported-effect diagnostics currently append public-payload hex heads.
-A new authored fixture requires equal builtin/revision/length diagnostics for two
-different payloads, preserving slot/reason while exposing no payload bytes.
-`effect-diagnostic-privacy-source.patch` removes the hex head and parameter debug
-payload; it is pending baseline RED in the same future W12 turn. No native read
-is required. Cached SendLevels lengths/list counts remain UNKNOWN; the v0x50
-revision itself is not excluded by the strict two-list reader.
-
-NEXT: consolidated W12 reader/privacy RED→GREEN at the next direct release.
+NEXT: held_key audition validity and independent-family boundary.
