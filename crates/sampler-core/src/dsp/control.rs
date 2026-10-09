@@ -68,6 +68,12 @@ impl Parameter {
     }
 }
 
+#[cfg(test)]
+std::thread_local! {
+    pub(super) static PARAMETER_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(super) static RAMP_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum PreparedParameter {
     Constant(f64),
@@ -91,6 +97,7 @@ impl PreparedParameter {
         at: u64,
         expression: Option<&crate::Expression>,
     ) -> f64 {
+        #[cfg(test)] PARAMETER_READS.with(|n| n.set(n.get() + 1));
         match self {
             Self::Constant(value) => value,
             Self::Control(lane) => parameters[lane].value(at),
@@ -160,6 +167,7 @@ impl ControlRamp {
         (at.saturating_sub(self.start) >= u64::from(self.frames)).then(|| self.value(at))
     }
     pub(crate) fn value(self, at: u64) -> f64 {
+        #[cfg(test)] RAMP_READS.with(|n| n.set(n.get() + 1));
         let elapsed = at.saturating_sub(self.start);
         let value = if elapsed >= u64::from(self.frames) {
             self.target
