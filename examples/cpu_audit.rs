@@ -105,7 +105,12 @@ impl Player {
         self.0.voices().active
     }
     fn problems(&self) -> Value {
-        serde_json::to_value(self.0.problems(0)).unwrap()
+        let mut problems = serde_json::to_value(self.0.problems(0)).unwrap();
+        if let Some(stats) = self.0.scan_runtime_stats(0) {
+            problems["v1_control_starts"] = stats.v1_control_starts.into();
+            problems["v1_control_blocks"] = stats.v1_control_blocks.into();
+        }
+        problems
     }
 }
 include!("../tools/cpu-audit-common.rs");

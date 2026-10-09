@@ -313,6 +313,7 @@ pub(super) struct PreparedVoiceChain {
 }
 
 pub(super) struct RenderContext<'a> {
+    pub controls: Option<crate::whole_voice::Render<'a>>,
     pub amplifier: Option<crate::voice_mod::Ramp>,
     pub expression: Frame,
     pub delay: &'a mut [[f64; 2]],
@@ -565,7 +566,9 @@ impl PreparedVoiceChain {
             let at = context.at + (chunk_index * BLOCK) as u64;
             let (pre, post) = states.split_at_mut(self.pre.len());
             let mut fault = self.process_section::<TRACE>(true, pre, &mut block, len, begun.held, at, &mut context);
-            let levels = levels(voice, len, begun.held);
+            let levels = if let Some(controls) = context.controls.as_mut() {
+                controls.levels(voice, len, begun.held)
+            } else { levels(voice, len, begun.held) };
             let before_amp = if TRACE { block } else { [[0.; BLOCK]; 2] };
             let [left, right] = &mut block;
             for (i, ((l, r), level)) in left[..len].iter_mut().zip(&mut right[..len]).zip(&levels).enumerate() {
