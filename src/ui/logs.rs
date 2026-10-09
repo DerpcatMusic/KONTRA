@@ -892,8 +892,9 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
                 .gap(SPACE).align(Align::Center).h(ROW).pad((INSET, 2.)).shrink(0);
             let mut parts = vec![header];
             if selected {
-                parts.push(col![body(entry.detail.clone()).text_size(TEXT).w(Len::Pct(100.)).shrink(0).id(format!("report-full-{index}"))]
-                    .align(Align::Stretch).pad(INSET).h(details_h).scroll().captures_wheel().shrink(0).id(format!("report-detail-{index}")));
+                parts.push(stack![col![body(entry.detail.clone()).text_size(TEXT).w(Len::Pct(100.)).shrink(0).id(format!("report-full-{index}"))]
+                    .align(Align::Stretch).pad(INSET).h(details_h).scroll().id(format!("report-detail-{index}"))]
+                    .h(details_h).captures_wheel().shrink(0).id(format!("report-detail-boundary-{index}")));
             }
             items.push(interactive(col(parts).gap(0).align(Align::Stretch).w(Len::Pct(100.)).shrink(0)
                 .when(selected, |e| e.fill(Role::Raised)).focusable().a11y(A11y::Button)
@@ -930,11 +931,12 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
             if copy { ui.set_clipboard(full.to_string()); }
             let (scope, scope_el) = action(ui, "logs-this-load", "This load", false);
             if scope && let Some(load) = &event.load_id { state.search = format!("load:{load}"); state.levels = [true; 4]; }
-            parts.push(col![
+            parts.push(stack![col![
                 row![section("Event details"), spacer(), scope_el.when(event.load_id.is_none(), El::disabled), copy_el]
                     .gap(SPACE).wrap().shrink(0),
                 body(full).text_size(TEXT).w(Len::Pct(100.)).shrink(0).id("logs-full-message")
-            ].gap(SPACE).align(Align::Stretch).pad(INSET).h(details_h).scroll().captures_wheel().shrink(0).id("logs-details"));
+            ].gap(SPACE).align(Align::Stretch).pad(INSET).h(details_h).scroll().id("logs-details")]
+                .h(details_h).captures_wheel().shrink(0).id("logs-details-boundary"));
         }
         items.push(interactive(col(parts).gap(0).align(Align::Stretch).w(Len::Pct(100.)).shrink(0)
             .when(selected, |e| e.fill(Role::Raised)).focusable().a11y(A11y::Button)
