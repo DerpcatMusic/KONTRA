@@ -25,6 +25,8 @@ pub struct Environment {
     pub slot: u8,
     pub engine_values: BTreeMap<[i32; 4], i32>,
     pub engine_lookups: Vec<sampler_core::EngineLookup>,
+    /// Physical source zone id -> group, low key, high key.
+    pub zones: BTreeMap<u32, [i32; 3]>,
     /// The Creator Tools performance view (`.nckp`, see [`crate::nckp`]) the
     /// script loads with `load_performance_view`. Names the script uses but
     /// it lacks stay unbound script handles, with a diagnostic.
