@@ -730,6 +730,13 @@ impl Ui {
         self.keys.clear();
         self.typed.clear();
         self.delivered.clear();
+        // Render closures belong to the GUI thread, which may not drop the model.
+        TREES.with(|trees| trees.borrow_mut().retain(|(ui, _), _| *ui != self.me));
+        self.kept.clear();
+        self.memo_ids.clear();
+        self.scene = None;
+        self.ghosts.clear();
+        self.resolver = Resolver::default();
         std::mem::take(&mut self.edits)
     }
     /// The smallest the last resolved tree can be squeezed to, for a host that

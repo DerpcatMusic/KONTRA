@@ -433,6 +433,7 @@ impl Driver {
         }
         self.pointer = PointerInput::default();
         s.view.cancel(&s.ui);
+        s.ui.close();
     }
 
     /// Files dragged to `at`, window points. Moves the hover; returns
