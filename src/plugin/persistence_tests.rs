@@ -348,3 +348,24 @@ fn corpus_project_save_reload_compares_every_persistent_and_ui_value() {
         "project save/reopen changed persistent or UI values"
     );
 }
+
+#[cfg(feature = "shots")]
+#[test]
+#[ignore = "requires installed Kontakt corpus"]
+fn conflux_builtin_report_contexts() {
+    let root = std::env::var_os("KONTRA_PERSISTENCE_CORPUS").map(PathBuf::from).unwrap();
+    let params = SamplerParams::new();
+    params.selection.write().unwrap().parts = vec![Part {
+        path: root.join("Conflux 1.1.0 [Native Instruments]/Instruments/Conflux.nki").display().to_string(),
+        ..Default::default()
+    }];
+    assert!(load_part(&params, 0, None));
+    let view = params.shared.view.lock().unwrap();
+    let instrument = view.parts[0].instrument.as_ref().unwrap();
+    let commands = ["get_menu_item_value", "get_menu_item_str", "get_zone_par", "set_event_par_arr", "ignore_controller"];
+    let unresolved: std::collections::BTreeSet<_> = commands.into_iter().filter(|command|
+        instrument.unsupported.iter().any(|missing| missing.feature == format!("script Unsupported: {command}"))
+    ).collect();
+    println!("CONFLUX_UNKNOWN_COMMANDS {}", unresolved.len());
+    assert!(unresolved.is_empty(), "unresolved builtins: {unresolved:?}");
+}
