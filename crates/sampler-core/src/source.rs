@@ -995,9 +995,8 @@ impl Cursor {
             _ => 0,
         };
         let margin = radius as usize + width - taps + fade + 2;
-        if let Some(room) = contiguous.checked_sub(margin) {
-            count = count.min((room as f64 / self.step()) as usize);
-        }
+        let Some(room) = contiguous.checked_sub(margin) else { return 0; };
+        count = count.min((room as f64 / self.step()) as usize);
         // Upper bound on the frames advanced by `count` steps.
         let advance = (count as f64 * self.step()).ceil() as i64 + 1;
         let position = i128::from(self.position);
@@ -1036,7 +1035,8 @@ impl Cursor {
             None => return 0,
         };
         let output = &mut output[..count];
-        if kernel.uses_cubic(self.step()) && output.len() >= 4 {
+        if kernel.uses_cubic(self.step()) && output.len() >= 4
+            && !(self.step().fract() == 0.0 && self.fraction == 0.0) {
             sampler_simd::dispatch(#[inline(always)] || {
                 self.run_cubic(span, width, output, envelope, gain, gains, kernel)
             });
