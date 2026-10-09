@@ -156,6 +156,7 @@ moose-vst3 = { path = "vendor/moose-vst3" }
 [patch."https://github.com/Matari-Audio/MUI"]
 moose-baseview = { path = "vendor/moose-baseview" }
 vello = { path = "vendor/vello" }
+mui-vello = { path = "vendor/mui-vello" }
 # moose-mui uses the distinct local kontra-native-host package. Keep upstream
 # mui-baseview available for its shared native accessibility and IME bridges.
 
@@ -163,7 +164,7 @@ vello = { path = "vendor/vello" }
 symphonia-format-riff = { path = "vendor/symphonia-format-riff" }
 
 [workspace]
-members = [".", "crates/sampler-core", "crates/sampler-native", "crates/sampler-perf", "crates/sampler-midi", "crates/sampler-ksp", "crates/sampler-kontakt", "crates/sampler-ui-ir", "crates/sampler-ir", "crates/sampler-simd", "crates/sampler-pool", "crates/sampler-uvi", "tools/corpus-health", "vendor/moose-mui", "vendor/moose-params", "vendor/moose-derive", "vendor/moose-clap", "vendor/moose-vst3", "vendor/mui-baseview"]
+members = ["vendor/mui-vello", ".", "crates/sampler-core", "crates/sampler-native", "crates/sampler-perf", "crates/sampler-midi", "crates/sampler-ksp", "crates/sampler-kontakt", "crates/sampler-ui-ir", "crates/sampler-ir", "crates/sampler-simd", "crates/sampler-pool", "crates/sampler-uvi", "tools/corpus-health", "vendor/moose-mui", "vendor/moose-params", "vendor/moose-derive", "vendor/moose-clap", "vendor/moose-vst3", "vendor/mui-baseview"]
 exclude = ["vendor/ni-file", "vendor/ncw", "vendor/vello", "vendor/moose-baseview", "vendor/xim-rs", "vendor/symphonia-format-riff", "vendor/derpcat-flight-recorder", "vendor/buffr-durable-file"]
 resolver = "3"
 
