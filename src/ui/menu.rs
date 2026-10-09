@@ -320,7 +320,7 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             if !multi {
                 items.push(act("Load into new slot", "", Command::OpenNew(path.clone())));
             }
-            let favorite = cx.selection.favorites.contains(path);
+            let favorite = cx.is_favorite(path);
             items.extend([
                 Item::Rule,
                 act(
