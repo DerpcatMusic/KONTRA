@@ -98,6 +98,8 @@ pub struct CachedInit {
     performance_view: crate::model::PerformanceView,
     engine_values: Vec<([i32; 4], i32)>,
     engine_lookups: Vec<sampler_core::EngineLookup>,
+    #[serde(default)]
+    zones: Vec<(u32, [i32; 3])>,
     state: Box<serde_json::value::RawValue>,
     cells: u32,
     texts: u32,
@@ -211,6 +213,12 @@ impl Initialized {
                 .map(|(k, v)| (*k, *v))
                 .collect(),
             engine_lookups: self.environment.engine_lookups.clone(),
+            zones: self
+                .environment
+                .zones
+                .iter()
+                .map(|(id, values)| (*id, *values))
+                .collect(),
             state: serde_json::value::to_raw_value(&NativeValues(self)).ok()?,
             cells: self.hir.cells,
             texts: self.hir.texts,
@@ -417,6 +425,7 @@ pub fn restore_initialized(
         performance_view: cached.performance_view,
         engine_values: cached.engine_values.into_iter().collect(),
         engine_lookups: cached.engine_lookups,
+        zones: cached.zones.into_iter().collect(),
         ..Default::default()
     };
     #[cfg(feature = "scan")]
@@ -504,6 +513,7 @@ on persistence_changed inc($calls) wait(1000) inc($done) end on";
         let source = "on init\nend on";
         let mut environment = crate::Environment::default();
         environment.engine_values.insert([9, 2, 0, 0], 12345);
+        environment.zones.insert(73, [7, 12, 94]);
         environment.engine_lookups.push(sampler_core::EngineLookup {
             group: 2,
             owner: 0,
@@ -522,6 +532,7 @@ on persistence_changed inc($calls) wait(1000) inc($done) end on";
             restored.environment.engine_lookups,
             environment.engine_lookups
         );
+        assert_eq!(restored.environment.zones, environment.zones);
         let midi = crate::initialize(
             "on init\nmf_set_buffer_size(2)\nend on",
             crate::Limits::LIBRARY,
