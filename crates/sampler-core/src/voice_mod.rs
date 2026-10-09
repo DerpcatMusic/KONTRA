@@ -94,7 +94,7 @@ impl ModSource {
 /// Destination and law; `v` is the route's transformed source value and `u`
 /// its unipolar view ((v + 1) / 2 for bipolar sources).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ModTarget {
+pub(crate) enum CompiledTarget {
     /// gain × (1 − depth·(1 − u)).
     Attenuate,
     /// gain × 10^(depth·v / 20); depth in decibels.
@@ -119,6 +119,27 @@ pub enum ModTarget {
     Tone,
     /// Start offset of depth·u × the region's start range, at voice start only.
     SampleStart,
+    Control(usize),
+}
+
+/// Open, plan-local destination identity. Legacy constructors preserve native laws.
+pub type ModTarget = crate::ParameterAddress;
+
+impl crate::ParameterAddress {
+    pub(crate) fn compiled(self) -> Option<CompiledTarget> {
+        if self.scope != crate::ParameterScope::Voice { return None; }
+        use CompiledTarget as T;
+        Some(match (self.node, u32::MAX - self.parameter) {
+            (0, 0) => T::Attenuate, (0, 1) => T::Decibels,
+            (0, 2) => T::Pan, (0, 3) => T::Pitch,
+            (0, 4) => T::Cutoff, (0, 5) => T::Resonance,
+            (i, 6) => T::ProcessorCutoff(i), (i, 7) => T::ProcessorResonance(i),
+            (i, 8) => T::ProcessorNativeCutoff(i), (i, 9) => T::ProcessorNativeResonance(i),
+            (i, 10) => T::ProcessorNativeGain(i),
+            (0, 11) => T::Tone, (0, 12) => T::SampleStart,
+            _ => return None,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -213,11 +234,13 @@ struct Program {
     envelopes: Box<[Envelope]>,
     breakpoints: Box<[Breakpoints]>,
     routes: Box<[ModRoute]>,
+    targets: Box<[CompiledTarget]>,
     shapes: Box<[Shape]>,
     /// Whether any route reaches each kind of output, so unused work is skipped.
     filter: bool,
     tone: bool,
     start: bool,
+    control: bool,
     /// v1 settled-result reuse, restricted to sources without clocks or lag.
     cacheable: bool,
 }
@@ -245,6 +268,10 @@ pub(crate) struct ModShape {
 }
 
 impl VoiceModulation {
+    pub(crate) fn has_control_targets(&self) -> bool {
+        self.programs.iter().any(|p| p.control)
+    }
+
     pub fn shape(&self) -> ModShape {
         ModShape {
             empty: self.is_empty(),
@@ -270,10 +297,18 @@ impl VoiceModulation {
             + self.routes * size_of::<f64>()
             + self.envelopes * size_of::<EnvelopeState>()
     }
+    #[cfg(test)]
     pub fn new(
         programs: Vec<ModProgram>,
         regions: Vec<Option<usize>>,
         start_ranges: Vec<u32>,
+    ) -> Result<Self, Error> {
+        Self::new_resolved(programs, regions, start_ranges, |_| None)
+    }
+
+    pub(crate) fn new_resolved(
+        programs: Vec<ModProgram>, regions: Vec<Option<usize>>, start_ranges: Vec<u32>,
+        resolve: impl Fn(crate::ParameterAddress) -> Option<usize>,
     ) -> Result<Self, Error> {
         if start_ranges.len() != regions.len()
             || regions.iter().flatten().any(|p| *p >= programs.len())
@@ -376,6 +411,10 @@ impl VoiceModulation {
                 filter: reaches(&[ModTarget::Cutoff, ModTarget::Resonance]),
                 tone: reaches(&[ModTarget::Tone]),
                 start: reaches(&[ModTarget::SampleStart]),
+                targets: program.routes.iter().map(|r| r.target.compiled()
+                    .or_else(|| resolve(r.target).map(CompiledTarget::Control))
+                    .ok_or(Error::InvalidInput)).collect::<Result<_, _>>()?,
+                control: program.routes.iter().any(|r| r.target.compiled().is_none()),
                 routes: program.routes.into_boxed_slice(),
                 shapes: shapes.into_boxed_slice(),
             });
@@ -796,22 +835,22 @@ impl VoiceModState {
         if let Some(program) = self.program(voice) {
             let p = &modulation.programs[program as usize];
             let offset = voice * self.routes;
-            for (i, route) in p.routes.iter().enumerate() {
+            for (i, target) in p.targets.iter().enumerate() {
                 let value = (self.processor_values[offset + i]
                     + self.previous_processor_values[offset + i])
                     * 0.5;
-                match route.target {
-                    ModTarget::ProcessorCutoff(index) => factors[index as usize][0] += value,
-                    ModTarget::ProcessorResonance(index) => factors[index as usize][1] += value,
-                    ModTarget::ProcessorNativeCutoff(index) => {
+                match *target {
+                    CompiledTarget::ProcessorCutoff(index) => factors[index as usize][0] += value,
+                    CompiledTarget::ProcessorResonance(index) => factors[index as usize][1] += value,
+                    CompiledTarget::ProcessorNativeCutoff(index) => {
                         factors[index as usize][0] += value;
                         factors[index as usize][3] = ((factors[index as usize][3] as u8) | 1) as f64;
                     }
-                    ModTarget::ProcessorNativeResonance(index) => {
+                    CompiledTarget::ProcessorNativeResonance(index) => {
                         factors[index as usize][1] += value;
                         factors[index as usize][3] = ((factors[index as usize][3] as u8) | 2) as f64;
                     }
-                    ModTarget::ProcessorNativeGain(index) => {
+                    CompiledTarget::ProcessorNativeGain(index) => {
                         factors[index as usize][2] += value;
                         factors[index as usize][3] = ((factors[index as usize][3] as u8) | 4) as f64;
                     }
@@ -841,6 +880,28 @@ impl VoiceModState {
 
     /// Bind a starting voice and compute its first control point, so the first
     /// chunk ramps from the onset values rather than from unity.
+    /// A lane-local copy retains the shared base ramp and every voice's own offsets.
+    pub(crate) fn project_parameters(
+        &self, modulation: &VoiceModulation, voice: usize,
+        base: &[crate::dsp::control::ControlRamp], bindings: &[crate::ControlRange],
+        span: std::ops::Range<usize>, scratch: &mut [crate::dsp::control::ControlRamp],
+    ) -> bool {
+        let Some(program) = self.program(voice) else { return false; };
+        let p = &modulation.programs[program as usize];
+        if !p.control { return false; }
+        scratch[span.clone()].copy_from_slice(&base[span.clone()]);
+        let offset = voice * self.routes;
+        for (i, target) in p.targets.iter().enumerate() {
+            if let CompiledTarget::Control(lane) = *target {
+                if !span.contains(&lane) { continue; }
+                let delta = (self.previous_processor_values[offset + i] + self.processor_values[offset + i]) * 0.5;
+                scratch[lane].add_modulation(delta, bindings[lane]);
+            }
+        }
+        true
+    }
+
+
     pub fn start(
         &mut self,
         modulation: &VoiceModulation,
@@ -1027,18 +1088,18 @@ impl VoiceModState {
             if onset {
                 previous_processor_values[i] = processor_values[i];
             }
-            match route.target {
-                ModTarget::Attenuate => gain *= 1.0 - d * (1.0 - unipolar(v, bipolar)),
-                ModTarget::Decibels => decibels += d * v,
-                ModTarget::Pan => pan += d * v,
-                ModTarget::Pitch => out.pitch += d * v,
-                ModTarget::Cutoff => cutoff += d * v,
-                ModTarget::Resonance => resonance += d * v,
-                ModTarget::Tone => out.tone += d * v,
-                ModTarget::SampleStart => {}
-                ModTarget::ProcessorCutoff(_) | ModTarget::ProcessorResonance(_)
-                | ModTarget::ProcessorNativeCutoff(_) | ModTarget::ProcessorNativeResonance(_)
-                | ModTarget::ProcessorNativeGain(_) => {}
+            match p.targets[i] {
+                CompiledTarget::Attenuate => gain *= 1.0 - d * (1.0 - unipolar(v, bipolar)),
+                CompiledTarget::Decibels => decibels += d * v,
+                CompiledTarget::Pan => pan += d * v,
+                CompiledTarget::Pitch => out.pitch += d * v,
+                CompiledTarget::Cutoff => cutoff += d * v,
+                CompiledTarget::Resonance => resonance += d * v,
+                CompiledTarget::Tone => out.tone += d * v,
+                CompiledTarget::SampleStart => {}
+                CompiledTarget::ProcessorCutoff(_) | CompiledTarget::ProcessorResonance(_)
+                | CompiledTarget::ProcessorNativeCutoff(_) | CompiledTarget::ProcessorNativeResonance(_)
+                | CompiledTarget::ProcessorNativeGain(_) | CompiledTarget::Control(_) => {}
             }
         }
         let gain = (gain * 10f64.powf(decibels / 20.0)).max(0.0);
@@ -1167,6 +1228,26 @@ impl crate::Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn addressed_projection_averages_each_route_before_saved_order_reduction() {
+        let modulation = VoiceModulation::new(vec![ModProgram {
+            sources: vec![ModSource::Constant],
+            routes: (0..3).map(|_| ModRoute::new(0, ModTarget::ProcessorNativeCutoff(0), 1.)).collect(),
+            ..Default::default()
+        }], vec![Some(0)], vec![0]).unwrap();
+        let mut state = VoiceModState::new(&modulation, 1).unwrap();
+        state.program[0] = Some(0);
+        let tiny = 2f64.powi(-54);
+        state.previous_processor_values[..3].copy_from_slice(&[1., tiny, -1.]);
+        state.processor_values[..3].copy_from_slice(&[-1., tiny, 1.]);
+        let mut projected = [[0.; 4]];
+        state.fill_filter_factors(&modulation, 0, &mut projected, |_| true);
+        assert_eq!(projected[0].map(f64::to_bits), [tiny, 0., 0., 1.].map(f64::to_bits));
+        // Reducing endpoints first loses the small contribution; this is a PCM-preservation rule.
+        let sum = |values: &[f64]| values.iter().fold(0., |sum, value| sum + value);
+        assert_eq!((sum(&state.previous_processor_values) + sum(&state.processor_values)) * 0.5, 0.);
+    }
 
     #[test]
     fn native_knob_projection_preserves_cancellation_enabled_flags_and_voice_reuse() {
