@@ -1876,7 +1876,7 @@ fn native_primary_fixture() -> ir::Instrument {
     };
     ir.source_indices.modulators.push(ir::SourceModulator {
         group: 0, slot: 7, external: false, name: "primary".into(),
-        runtime: Some(ir::ModulatorRef(0)),
+        runtime: Some(ir::ModulatorRef(0)), settings: None,
     });
     ir.source_indices.ahdsrs.push(ir::SourceAhdsr {
         group: 0, slot: 7, attack_ms: 125.01293, attack_curve: -1.,
