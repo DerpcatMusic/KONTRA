@@ -1542,10 +1542,6 @@ impl BackgroundTask for Load {
             // New trees: route their nodes and size their settings.
             route(params);
             push_mix();
-            // Port from v1 0cb7a8a0:src/audio.rs: return freed load arenas off audio.
-            #[cfg(all(target_os = "linux", target_env = "gnu"))]
-            // SAFETY: glibc's malloc_trim is thread-safe and has no preconditions.
-            unsafe { libc::malloc_trim(0); }
         }
         refresh_problems(shared);
     }
