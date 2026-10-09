@@ -18,8 +18,11 @@ fn run_in(source: &str, environment: sampler_ksp::Environment) -> Runtime {
     run_shaped(source, environment, Ok)
 }
 
-fn run_shaped(source: &str, environment: sampler_ksp::Environment,
-    shape: impl FnOnce(Prepared) -> Result<Prepared, sampler_core::Error>) -> Runtime {
+fn run_shaped(
+    source: &str,
+    environment: sampler_ksp::Environment,
+    shape: impl FnOnce(Prepared) -> Result<Prepared, sampler_core::Error>,
+) -> Runtime {
     let script = sampler_ksp::compile_with(
         source,
         48000,
@@ -314,8 +317,18 @@ fn runtime_menu_getters_read_authored_and_live_items() {
         end on", &[]);
     assert_eq!(cell(&rt, 0), 17);
     assert_eq!(cell(&rt, 1), 93);
-    assert_eq!(rt.script_text(rt.active_plan(), ScriptInstanceId(0), 0).unwrap().as_str(), "first");
-    assert_eq!(rt.script_text(rt.active_plan(), ScriptInstanceId(0), 1).unwrap().as_str(), "changed");
+    assert_eq!(
+        rt.script_text(rt.active_plan(), ScriptInstanceId(0), 0)
+            .unwrap()
+            .as_str(),
+        "first"
+    );
+    assert_eq!(
+        rt.script_text(rt.active_plan(), ScriptInstanceId(0), 1)
+            .unwrap()
+            .as_str(),
+        "changed"
+    );
 }
 
 #[test]
@@ -332,11 +345,16 @@ fn runtime_menu_add_and_invalid_indexes_follow_native_defaults() {
             $visible := get_menu_item_visibility(get_ui_id($m),0)
             @text := \"prefix:\" & get_menu_item_str(get_ui_id($m),0) & get_menu_item_str(get_ui_id($m),5)
         end on", &[]);
-    assert_eq!(cell(&rt,0),1);
-    assert_eq!(cell(&rt,1),i64::from(i32::MIN));
-    assert_eq!(cell(&rt,2),0);
-    assert_eq!(cell(&rt,3),1);
-    assert_eq!(rt.script_text(rt.active_plan(),ScriptInstanceId(0),0).unwrap().as_str(),"prefix:added");
+    assert_eq!(cell(&rt, 0), 1);
+    assert_eq!(cell(&rt, 1), i64::from(i32::MIN));
+    assert_eq!(cell(&rt, 2), 0);
+    assert_eq!(cell(&rt, 3), 1);
+    assert_eq!(
+        rt.script_text(rt.active_plan(), ScriptInstanceId(0), 0)
+            .unwrap()
+            .as_str(),
+        "prefix:added"
+    );
 }
 
 #[test]
@@ -354,29 +372,45 @@ fn runtime_zone_getter_preserves_source_ids_and_dynamic_parameter_identity() {
                 envelope:Envelope::default(),playback:Playback::default()
             }],128)?.with_groups(3,vec![Some(2)])?.with_source_zones(vec![73])
         });
-    assert_eq!(cell(&rt,0),2);
-    assert_eq!(cell(&rt,1),7);
-    assert_eq!(cell(&rt,2),94);
-    assert_eq!(cell(&rt,3),0,"source hole must not resolve to runtime region zero");
+    assert_eq!(cell(&rt, 0), 2);
+    assert_eq!(cell(&rt, 1), 7);
+    assert_eq!(cell(&rt, 2), 94);
+    assert_eq!(
+        cell(&rt, 3),
+        0,
+        "source hole must not resolve to runtime region zero"
+    );
 }
 
 #[test]
 fn init_zone_getter_reads_authored_physical_zone_fields() {
-    let rt=run_in("on init declare $g := get_zone_par(73,$ZONE_PAR_GROUP) declare $lo := get_zone_par(73,$ZONE_PAR_LOW_KEY) declare $hi := get_zone_par(73,$ZONE_PAR_HIGH_KEY) declare $missing := get_zone_par(1,$ZONE_PAR_HIGH_KEY) end on",
-        sampler_ksp::Environment { zones: [(73,[2,7,94])].into(), ..Default::default() });
-    assert_eq!([cell(&rt,0),cell(&rt,1),cell(&rt,2),cell(&rt,3)],[2,7,94,0]);
+    let rt = run_in(
+        "on init declare $g := get_zone_par(73,$ZONE_PAR_GROUP) declare $lo := get_zone_par(73,$ZONE_PAR_LOW_KEY) declare $hi := get_zone_par(73,$ZONE_PAR_HIGH_KEY) declare $missing := get_zone_par(1,$ZONE_PAR_HIGH_KEY) end on",
+        sampler_ksp::Environment {
+            zones: [(73, [2, 7, 94])].into(),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        [cell(&rt, 0), cell(&rt, 1), cell(&rt, 2), cell(&rt, 3)],
+        [2, 7, 94, 0]
+    );
 }
 
 #[test]
 fn v1_midi_bytes_and_signed_zero_are_executable_in_callbacks() {
-    let rt = run("on init declare $msb declare $lsb declare $negative declare ~zero := -0.0 end on
-        on note $msb := msb(16383) $lsb := lsb(130) $negative := signbit(~zero) end on", &[]);
+    let rt = run(
+        "on init declare $msb declare $lsb declare $negative declare ~zero := -0.0 end on
+        on note $msb := msb(16383) $lsb := lsb(130) $negative := signbit(~zero) end on",
+        &[],
+    );
     assert_eq!((cell(&rt, 0), cell(&rt, 1), cell(&rt, 2)), (127, 2, 1));
 }
 
 #[test]
 fn ui_command_readback_is_current_before_host_effects_are_drained() {
-    let rt = run("on init declare ui_knob $knob(0,100,1)
+    let rt = run(
+        "on init declare ui_knob $knob(0,100,1)
         declare $hidden declare $default declare $layer
         declare @text declare @label declare @help end on
         on note
@@ -392,16 +426,24 @@ fn ui_command_readback_is_current_before_host_effects_are_drained() {
             @text := get_control_par_str(get_ui_id($knob),$CONTROL_PAR_TEXT)
             @label := get_control_par_str(get_ui_id($knob),$CONTROL_PAR_LABEL)
             @help := get_control_par_str(get_ui_id($knob),$CONTROL_PAR_HELP)
-        end on", &[]);
+        end on",
+        &[],
+    );
     assert_eq!((cell(&rt, 0), cell(&rt, 1), cell(&rt, 2)), (16, 31, 3));
     for (index, expected) in ["changed", "label", "help"].into_iter().enumerate() {
-        assert_eq!(rt.script_text(rt.active_plan(), ScriptInstanceId(0), index as u32).unwrap().as_str(), expected);
+        assert_eq!(
+            rt.script_text(rt.active_plan(), ScriptInstanceId(0), index as u32)
+                .unwrap()
+                .as_str(),
+            expected
+        );
     }
 }
 
 #[test]
 fn menu_control_properties_report_selected_index_and_live_item_count() {
-    let rt = run("on init declare ui_menu $m add_menu_item($m,\"first\",17) add_menu_item($m,\"second\",93)
+    let rt = run(
+        "on init declare ui_menu $m add_menu_item($m,\"first\",17) add_menu_item($m,\"second\",93)
         $m := 93 declare $id declare $selected declare $count declare $index declare $changed end on
         on note
             $id := get_ui_id($m)
@@ -410,19 +452,27 @@ fn menu_control_properties_report_selected_index_and_live_item_count() {
             $index := get_control_par($id,$CONTROL_PAR_SELECTED_ITEM_IDX)
             set_menu_item_value($id,1,101)
             $changed := get_control_par($id,$CONTROL_PAR_VALUE)
-        end on", &[]);
-    assert_eq!((cell(&rt, 1), cell(&rt, 2), cell(&rt, 3), cell(&rt, 4)), (1, 2, 1, -1));
+        end on",
+        &[],
+    );
+    assert_eq!(
+        (cell(&rt, 1), cell(&rt, 2), cell(&rt, 3), cell(&rt, 4)),
+        (1, 2, 1, -1)
+    );
 }
 
 #[test]
 fn real_xy_getters_read_authored_and_live_indexed_values() {
-    let rt = run("on init declare ui_xy ?xy[2] declare ~before declare ~after
+    let rt = run(
+        "on init declare ui_xy ?xy[2] declare ~before declare ~after
         set_control_par_real_arr(get_ui_id(?xy),$CONTROL_PAR_VALUE,0.25,0) end on
         on note
             ~before := get_control_par_real_arr(get_ui_id(?xy),$CONTROL_PAR_VALUE,0)
             set_control_par_real_arr(get_ui_id(?xy),$CONTROL_PAR_VALUE,0.75,1)
             ~after := get_control_par_real_arr(get_ui_id(?xy),$CONTROL_PAR_VALUE,1)
-        end on", &[]);
+        end on",
+        &[],
+    );
     assert_eq!(f64::from_bits(cell(&rt, 2) as u64), 0.25);
     assert_eq!(f64::from_bits(cell(&rt, 3) as u64), 0.75);
 }
@@ -432,15 +482,49 @@ fn init_font_ids_keep_v1_numeric_and_invalid_name_semantics() {
     let rt = run("on init declare $font declare $empty declare $path declare $out
         $font := get_font_id(\"12\") $empty := get_font_id(\"\") $path := get_font_id(\"foo/bar\") end on
         on note $out := $font end on", &[]);
-    assert_eq!((cell(&rt, 0), cell(&rt, 1), cell(&rt, 2), cell(&rt, 3)), (12, 0, 0, 12));
+    assert_eq!(
+        (cell(&rt, 0), cell(&rt, 1), cell(&rt, 2), cell(&rt, 3)),
+        (12, 0, 0, 12)
+    );
 }
 
 #[test]
 fn init_menu_control_value_reports_index_without_changing_item_value() {
-    let rt = run("on init declare ui_menu $m add_menu_item($m,\"first\",17) add_menu_item($m,\"second\",93)
+    let rt = run(
+        "on init declare ui_menu $m add_menu_item($m,\"first\",17) add_menu_item($m,\"second\",93)
         $m := 93 declare $index := get_control_par(get_ui_id($m),$CONTROL_PAR_VALUE)
         declare $selected := get_control_par(get_ui_id($m),$CONTROL_PAR_SELECTED_ITEM_IDX)
         declare $raw declare $count := get_control_par(get_ui_id($m),$CONTROL_PAR_NUM_ITEMS) end on
-        on note $raw := $m end on", &[]);
-    assert_eq!((cell(&rt, 0), cell(&rt, 1), cell(&rt, 2), cell(&rt, 3)), (1, 1, 93, 2));
+        on note $raw := $m end on",
+        &[],
+    );
+    assert_eq!(
+        (cell(&rt, 0), cell(&rt, 1), cell(&rt, 2), cell(&rt, 3)),
+        (1, 1, 93, 2)
+    );
+}
+
+#[test]
+fn named_ui_text_read_modify_write_emits_the_same_value_it_stores() {
+    let mut rt = run(
+        "on init declare ui_knob $knob(0,100,1) set_text($knob,\"A\") declare @text end on
+        on note set_text($knob,get_control_par_str(get_ui_id($knob),$CONTROL_PAR_TEXT) & \"!\")
+        @text := get_control_par_str(get_ui_id($knob),$CONTROL_PAR_TEXT) end on",
+        &[],
+    );
+    assert_eq!(
+        rt.script_text(rt.active_plan(), ScriptInstanceId(0), 0)
+            .unwrap()
+            .as_str(),
+        "A!"
+    );
+    let mut effects = 0;
+    rt.drain_effects(|effect| {
+        if let Some(text) = &effect.text {
+            assert_eq!(text.as_str(), "A!");
+            effects += 1;
+        }
+        true
+    });
+    assert_eq!(effects, 1);
 }
