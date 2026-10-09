@@ -1,0 +1,9 @@
+pages,phase,median_us,p99_us,heap_calls
+768,fill,0.060,1.600,0
+768,churn,0.100,0.250,0
+768,protected_churn,0.060,0.150,0
+768,idle_worker,0.020,0.020,0
+6144,fill,0.130,1.680,0
+6144,churn,0.120,0.440,0
+6144,protected_churn,0.110,0.280,0
+6144,idle_worker,0.020,0.030,0

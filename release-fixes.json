@@ -3853,6 +3853,141 @@
       "category": "Fixed",
       "accepted": true,
       "validation": "Owner nested idle-runner RED\u2192GREEN; real sibling workloads remain CONTENDED. Synthetic observer coverage only. W0 combined source46c899a9: workspace1956PASS/0FAIL/219ignored, scan scheduler48PASS, reader45PASS/1ignored, standalone+workspace no-run and GPU gates PASS; native15loads/15audible, existing Vista image reference remains open. Publication requires completion of the held 72-cell playback and hosted checks."
+    },
+    {
+      "id": "exclusive-midi-learn-ownership",
+      "summary": "Cancel MIDI learn when its owning control disappears and keep one active owner.",
+      "release_note": "Cancel MIDI learn when its owning control disappears and keep one active owner.",
+      "source_commits": [
+        "34d2e4edd17464bd7f17c33cf3c43ecb32ec0ced",
+        "60d761560261ddda426a516343857309ff912e2d",
+        "a295bc7aae711ffa670cb62d4c46db28e24e592f"
+      ],
+      "validation": "W0 stable f1a067a1 full workspace2074PASS/0FAIL/261ignored; scheduler48PASS, reader45PASS/1ignored, workspace+standalone no-run and GPU gates PASS. Native15 loads/audible15/15; Original12 and retained Vista image-reference limit unchanged. Strict quick72 retry matches published381:72loads/68audible, no new stage/audibility/fault/stuck-note failures, audio heap0/nonfinite0. Initial parallel Pacific missing-page failures retained; both traced and uninstrumented serial pairs match381 peaks with zero underruns. No CPU/load/RSS/underrun or complete widget/audio parity acceptance.",
+      "accepted": true,
+      "category": "Fixed"
+    },
+    {
+      "id": "report-detail-scroll-boundary",
+      "summary": "Keep Report details scrolling inside the enclosing workspace.",
+      "release_note": "Keep Report details scrolling inside the enclosing workspace.",
+      "source_commits": [
+        "861e8c0d9dc32bf46cf62135f658a59eb3a9e3dd",
+        "1f2eeb5157fdcec778668c2af62a5cc0ebb3a525"
+      ],
+      "validation": "W0 stable f1a067a1 full workspace2074PASS/0FAIL/261ignored; scheduler48PASS, reader45PASS/1ignored, workspace+standalone no-run and GPU gates PASS. Native15 loads/audible15/15; Original12 and retained Vista image-reference limit unchanged. Strict quick72 retry matches published381:72loads/68audible, no new stage/audibility/fault/stuck-note failures, audio heap0/nonfinite0. Initial parallel Pacific missing-page failures retained; both traced and uninstrumented serial pairs match381 peaks with zero underruns. No CPU/load/RSS/underrun or complete widget/audio parity acceptance.",
+      "accepted": true,
+      "category": "Fixed"
+    },
+    {
+      "id": "uvi-catalog-loading-status",
+      "summary": "Show catalogued UVI banks with loading limits and their declared reasons.",
+      "release_note": "Show catalogued UVI banks with loading limits and their declared reasons.",
+      "source_commits": [
+        "eb56c1e3f5daad4c7da6bb4de4d61becf64cf2ca"
+      ],
+      "validation": "W0 stable f1a067a1 full workspace2074PASS/0FAIL/261ignored; scheduler48PASS, reader45PASS/1ignored, workspace+standalone no-run and GPU gates PASS. Native15 loads/audible15/15; Original12 and retained Vista image-reference limit unchanged. Strict quick72 retry matches published381:72loads/68audible, no new stage/audibility/fault/stuck-note failures, audio heap0/nonfinite0. Initial parallel Pacific missing-page failures retained; both traced and uninstrumented serial pairs match381 peaks with zero underruns. No CPU/load/RSS/underrun or complete widget/audio parity acceptance.",
+      "accepted": true,
+      "category": "Fixed"
+    },
+    {
+      "id": "restored-state-off-audio-retirement",
+      "summary": "Retire restored CLAP and VST3 state buffers away from the audio thread.",
+      "release_note": "Retire restored CLAP and VST3 state buffers away from the audio thread.",
+      "source_commits": [
+        "3a2888979a2c33e4247537bfb0a55f2aa4545a64"
+      ],
+      "validation": "W0 stable f1a067a1 full workspace2074PASS/0FAIL/261ignored; scheduler48PASS, reader45PASS/1ignored, workspace+standalone no-run and GPU gates PASS. Native15 loads/audible15/15; Original12 and retained Vista image-reference limit unchanged. Strict quick72 retry matches published381:72loads/68audible, no new stage/audibility/fault/stuck-note failures, audio heap0/nonfinite0. Initial parallel Pacific missing-page failures retained; both traced and uninstrumented serial pairs match381 peaks with zero underruns. No CPU/load/RSS/underrun or complete widget/audio parity acceptance.",
+      "accepted": true,
+      "category": "Fixed"
+    },
+    {
+      "id": "native-editor-child-factory-retention",
+      "summary": "Release Native UI child factories after resolving their graph.",
+      "release_note": "Release Native UI child factories after resolving their graph.",
+      "source_commits": [
+        "af053742fb4889155ab46a2aaf8e8ee8585637f4"
+      ],
+      "validation": "W0 stable f1a067a1 full workspace2074PASS/0FAIL/261ignored; scheduler48PASS, reader45PASS/1ignored, workspace+standalone no-run and GPU gates PASS. Native15 loads/audible15/15; Original12 and retained Vista image-reference limit unchanged. Strict quick72 retry matches published381:72loads/68audible, no new stage/audibility/fault/stuck-note failures, audio heap0/nonfinite0. Initial parallel Pacific missing-page failures retained; both traced and uninstrumented serial pairs match381 peaks with zero underruns. No CPU/load/RSS/underrun or complete widget/audio parity acceptance.",
+      "accepted": true,
+      "category": "Fixed"
+    },
+    {
+      "id": "webp-final-pixel-allocation",
+      "summary": "Reserve the final WebP pixels once when preparing artwork.",
+      "release_note": "Reserve the final WebP pixels once when preparing artwork.",
+      "source_commits": [
+        "af053742fb4889155ab46a2aaf8e8ee8585637f4"
+      ],
+      "validation": "W0 stable f1a067a1 full workspace2074PASS/0FAIL/261ignored; scheduler48PASS, reader45PASS/1ignored, workspace+standalone no-run and GPU gates PASS. Native15 loads/audible15/15; Original12 and retained Vista image-reference limit unchanged. Strict quick72 retry matches published381:72loads/68audible, no new stage/audibility/fault/stuck-note failures, audio heap0/nonfinite0. Initial parallel Pacific missing-page failures retained; both traced and uninstrumented serial pairs match381 peaks with zero underruns. No CPU/load/RSS/underrun or complete widget/audio parity acceptance.",
+      "accepted": true,
+      "category": "Fixed"
+    },
+    {
+      "id": "native-editor-layout-allocation",
+      "summary": "Reuse Native layout flags during repeated layout traversal.",
+      "release_note": "Reuse Native layout flags during repeated layout traversal.",
+      "source_commits": [
+        "9e4ea4164c74386d442fa88b49c04d9f25776423"
+      ],
+      "validation": "W0 stable f1a067a1 full workspace2074PASS/0FAIL/261ignored; scheduler48PASS, reader45PASS/1ignored, workspace+standalone no-run and GPU gates PASS. Native15 loads/audible15/15; Original12 and retained Vista image-reference limit unchanged. Strict quick72 retry matches published381:72loads/68audible, no new stage/audibility/fault/stuck-note failures, audio heap0/nonfinite0. Initial parallel Pacific missing-page failures retained; both traced and uninstrumented serial pairs match381 peaks with zero underruns. No CPU/load/RSS/underrun or complete widget/audio parity acceptance.",
+      "accepted": true,
+      "category": "Fixed"
+    },
+    {
+      "id": "uvi-cold-held-note-allocation",
+      "summary": "Prepare UVI held-note queues before the first audio callback.",
+      "release_note": "Prepare UVI held-note queues before the first audio callback.",
+      "source_commits": [
+        "a29acaa69d21feee0be39087cb431cf949a2f32c"
+      ],
+      "validation": "W0 stable f1a067a1 full workspace2074PASS/0FAIL/261ignored; scheduler48PASS, reader45PASS/1ignored, workspace+standalone no-run and GPU gates PASS. Native15 loads/audible15/15; Original12 and retained Vista image-reference limit unchanged. Strict quick72 retry matches published381:72loads/68audible, no new stage/audibility/fault/stuck-note failures, audio heap0/nonfinite0. Initial parallel Pacific missing-page failures retained; both traced and uninstrumented serial pairs match381 peaks with zero underruns. No CPU/load/RSS/underrun or complete widget/audio parity acceptance.",
+      "accepted": true,
+      "category": "Fixed"
+    },
+    {
+      "id": "authored-engine-getter-fallback",
+      "summary": "Use authored source values for engine getters when no live owner overrides them.",
+      "release_note": "Use authored source values for engine getters when no live owner overrides them.",
+      "source_commits": [
+        "9e81c4a46e749a0c469902e61bd6934438db7d00"
+      ],
+      "validation": "W0 stable f1a067a1 full workspace2074PASS/0FAIL/261ignored; scheduler48PASS, reader45PASS/1ignored, workspace+standalone no-run and GPU gates PASS. Native15 loads/audible15/15; Original12 and retained Vista image-reference limit unchanged. Strict quick72 retry matches published381:72loads/68audible, no new stage/audibility/fault/stuck-note failures, audio heap0/nonfinite0. Initial parallel Pacific missing-page failures retained; both traced and uninstrumented serial pairs match381 peaks with zero underruns. No CPU/load/RSS/underrun or complete widget/audio parity acceptance.",
+      "accepted": true,
+      "category": "Fixed"
+    },
+    {
+      "id": "restored-kontakt-single-initialization",
+      "summary": "Apply restored Kontakt host controls during one initializer pass.",
+      "release_note": "Apply restored Kontakt host controls during one initializer pass.",
+      "source_commits": [
+        "6f51dd071ecb63b2cc5def48658f72917c90b042"
+      ],
+      "validation": "W0 stable f1a067a1 full workspace2074PASS/0FAIL/261ignored; scheduler48PASS, reader45PASS/1ignored, workspace+standalone no-run and GPU gates PASS. Native15 loads/audible15/15; Original12 and retained Vista image-reference limit unchanged. Strict quick72 retry matches published381:72loads/68audible, no new stage/audibility/fault/stuck-note failures, audio heap0/nonfinite0. Initial parallel Pacific missing-page failures retained; both traced and uninstrumented serial pairs match381 peaks with zero underruns. No CPU/load/RSS/underrun or complete widget/audio parity acceptance.",
+      "accepted": true,
+      "category": "Fixed"
+    },
+    {
+      "id": "load-audit-resource-count-classification",
+      "summary": "Separate untranslated features from missing sample and impulse resources in load diagnostics.",
+      "release_note": "Separate untranslated features from missing sample and impulse resources in load diagnostics.",
+      "source_commits": [
+        "b7d9a1147ada3d9000c387210b9097e90e254dba"
+      ],
+      "validation": "W0 stable f1a067a1 full workspace2074PASS/0FAIL/261ignored; scheduler48PASS, reader45PASS/1ignored, workspace+standalone no-run and GPU gates PASS. Native15 loads/audible15/15; Original12 and retained Vista image-reference limit unchanged. Strict quick72 retry matches published381:72loads/68audible, no new stage/audibility/fault/stuck-note failures, audio heap0/nonfinite0. Initial parallel Pacific missing-page failures retained; both traced and uninstrumented serial pairs match381 peaks with zero underruns. No CPU/load/RSS/underrun or complete widget/audio parity acceptance.",
+      "accepted": true,
+      "category": "Fixed"
+    },
+    {
+      "id": "filecontainer-exact-member-precedence",
+      "summary": "Prefer an exact embedded sample member before suffix or basename fallback.",
+      "release_note": "Load exact FileContainer sample members even when another member shares their suffix.",
+      "source_commits": [
+        "85d15c65047684e4041e907b4659995eef37ad91"
+      ],
+      "validation": "Codex P2 authored exact/suffix collision RED1\u2192GREEN3 monolith tests; Kontakt lib97PASS/5ignored and area no-run PASS. Case and separator normalization retained; ambiguous fallback still fails closed. Existing full f1 workspace/native regression receipts precede this isolated correction.",
+      "accepted": true,
+      "category": "Fixed"
     }
   ]
 }

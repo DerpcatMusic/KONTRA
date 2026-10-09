@@ -272,14 +272,23 @@ impl<'a> Sema<'a, '_> {
                 {
                     let index = self.expr(index)?;
                     let value = self.expr(value)?;
-                    return Ok(Some(StmtKind::Builtin(Builtin::SetEventParArr, vec![
-                        Arg::Expr(Expr { ty: Ty::Int, span: target.span,
-                            kind: ExprKind::Sys(builtins::SysVar::EventId) }),
-                        Arg::Expr(Expr { ty: Ty::Int, span: target.span,
-                            kind: ExprKind::Int(builtins::event_par::CUSTOM) }),
-                        Arg::Expr(self.coerce(value, Ty::Int)?),
-                        Arg::Expr(self.coerce(index, Ty::Int)?),
-                    ])));
+                    return Ok(Some(StmtKind::Builtin(
+                        Builtin::SetEventParArr,
+                        vec![
+                            Arg::Expr(Expr {
+                                ty: Ty::Int,
+                                span: target.span,
+                                kind: ExprKind::Sys(builtins::SysVar::EventId),
+                            }),
+                            Arg::Expr(Expr {
+                                ty: Ty::Int,
+                                span: target.span,
+                                kind: ExprKind::Int(builtins::event_par::CUSTOM),
+                            }),
+                            Arg::Expr(self.coerce(value, Ty::Int)?),
+                            Arg::Expr(self.coerce(index, Ty::Int)?),
+                        ],
+                    )));
                 }
                 if let A::Var(sym, Some(index)) = &target.kind
                     && self.resolve(*sym).is_none()
@@ -435,7 +444,12 @@ impl<'a> Sema<'a, '_> {
         Ok(())
     }
 
-    fn performance_widget(&mut self, c: &PerformanceControl, span: Span, unresolved: bool) -> Result<VarId> {
+    fn performance_widget(
+        &mut self,
+        c: &PerformanceControl,
+        span: Span,
+        unresolved: bool,
+    ) -> Result<VarId> {
         let (ty, array) = prefix_type(&c.name);
         let expected = match c.kind {
             WidgetKind::Table => (Ty::Int, true),

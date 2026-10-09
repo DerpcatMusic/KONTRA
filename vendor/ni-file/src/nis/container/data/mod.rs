@@ -52,14 +52,29 @@ impl ItemData {
 
     pub fn read<R: ReadBytesExt>(mut reader: R) -> Result<Self, Error> {
         let at = reader.stream_position()?;
-        let header = ItemDataHeader::read(&mut reader).map_err(|e| Error::context(format!("NIS data header at offset {at}, expected 20 bytes/version 1"), e))?;
+        let header = ItemDataHeader::read(&mut reader).map_err(|e| {
+            Error::context(
+                format!("NIS data header at offset {at}, expected 20 bytes/version 1"),
+                e,
+            )
+        })?;
         let length = header
             .length
             .checked_sub(20)
             .and_then(|n| usize::try_from(n).ok())
             .ok_or(Error::Static("Invalid NIS item data length"))?;
 
-        let body = reader.read_bytes(length).map_err(|e| Error::context(format!("NIS {:?} data body at offset {}, declared length {length}/version {}", header.item_type(), at + 20, header.version), e))?;
+        let body = reader.read_bytes(length).map_err(|e| {
+            Error::context(
+                format!(
+                    "NIS {:?} data body at offset {}, declared length {length}/version {}",
+                    header.item_type(),
+                    at + 20,
+                    header.version
+                ),
+                e,
+            )
+        })?;
         if header.item_type() == ItemType::Item {
             return Ok(Self {
                 header,
@@ -74,7 +89,14 @@ impl ItemData {
 
     pub(crate) fn read_cursor(reader: &mut Cursor<&[u8]>) -> Result<Self, Error> {
         let at = reader.position();
-        let header = ItemDataHeader::read(&mut *reader).map_err(|e| Error::context(format!("NIS data header at body-relative offset {at}, expected 20 bytes/version 1"), e))?;
+        let header = ItemDataHeader::read(&mut *reader).map_err(|e| {
+            Error::context(
+                format!(
+                    "NIS data header at body-relative offset {at}, expected 20 bytes/version 1"
+                ),
+                e,
+            )
+        })?;
         let length = header
             .length
             .checked_sub(20)

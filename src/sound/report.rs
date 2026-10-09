@@ -68,11 +68,16 @@ pub struct Decoded {
 pub fn mpe_summary(m: &sampler_core::lower::MpeDefaults) -> String {
     let mut parts = vec!["per-note bend".to_owned()];
     if m.pressure_db != 0.0 {
-        parts.push(format!("pressure raises the level up to {:+.1} dB", m.pressure_db));
+        parts.push(format!(
+            "pressure raises the level up to {:+.1} dB",
+            m.pressure_db
+        ));
     }
     use sampler_core::lower::TimbreTarget::*;
     match m.timbre {
-        Controller(cc) => parts.push(format!("timbre (CC74) sets each note's CC{cc} dynamics position")),
+        Controller(cc) => parts.push(format!(
+            "timbre (CC74) sets each note's CC{cc} dynamics position"
+        )),
         Cutoff => parts.push("timbre (CC74) opens and closes the filter cutoff".to_owned()),
         Tone if m.timbre_semitones != 0.0 => parts.push(format!(
             "timbre (CC74) darkens the tone below centre, down to {:.0} semitones under open",
@@ -92,13 +97,20 @@ impl Decoded {
 
 /// The keys `instrument`'s zones map, one bit per MIDI key.
 pub fn key_bits(instrument: &sampler_ir::Instrument) -> u128 {
-    instrument.zones.iter().fold(0, |bits, z| bits | range_bits(z.keys.low, z.keys.high))
+    instrument
+        .zones
+        .iter()
+        .fold(0, |bits, z| bits | range_bits(z.keys.low, z.keys.high))
 }
 
 /// Keys `low..=high` as bits; none when the range is empty.
 pub fn range_bits(low: u8, high: u8) -> u128 {
     let (low, high) = (low.min(127), high.min(127));
-    if low > high { 0 } else { (u128::MAX >> (127 - high)) & (u128::MAX << low) }
+    if low > high {
+        0
+    } else {
+        (u128::MAX >> (127 - high)) & (u128::MAX << low)
+    }
 }
 
 /// Preallocated RT-to-loader fault transport; messages are resolved only by the loader.
@@ -108,15 +120,23 @@ pub struct FaultInbox {
     dropped: std::sync::atomic::AtomicU64,
 }
 impl Default for FaultInbox {
-    fn default() -> Self { Self { queue: crossbeam_queue::ArrayQueue::new(256), dropped: Default::default() } }
+    fn default() -> Self {
+        Self {
+            queue: crossbeam_queue::ArrayQueue::new(256),
+            dropped: Default::default(),
+        }
+    }
 }
 impl FaultInbox {
     pub(crate) fn record(&self, program: usize, outcome: sampler_core::Outcome) {
         if self.queue.push((program, outcome)).is_err() {
-            self.dropped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.dropped
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
     }
-    pub(crate) fn take_dropped(&self) -> u64 { self.dropped.swap(0, std::sync::atomic::Ordering::Relaxed) }
+    pub(crate) fn take_dropped(&self) -> u64 {
+        self.dropped.swap(0, std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 /// Problems while playing, cumulative since the part was installed.
@@ -225,7 +245,9 @@ impl LoadReport {
             decoded: Decoded {
                 format: match &instrument.source {
                     sampler_ir::SourceFormat::Native => "Native".into(),
-                    sampler_ir::SourceFormat::Kontakt { version } => format!("Kontakt (v{version:#x})"),
+                    sampler_ir::SourceFormat::Kontakt { version } => {
+                        format!("Kontakt (v{version:#x})")
+                    }
                     sampler_ir::SourceFormat::Sfz => "SFZ".into(),
                     sampler_ir::SourceFormat::Uvi => "UVI".into(),
                 },
@@ -276,16 +298,26 @@ mod tests {
     fn audit_counts_separate_resource_failures_from_untranslated_features() {
         let mut report = super::LoadReport::default();
         let entry = |feature: &str| super::Missing {
-            location: "authored fixture".into(), feature: feature.into(), value: String::new(),
+            location: "authored fixture".into(),
+            feature: feature.into(),
+            value: String::new(),
             reason: super::MissingReason::NotModeled,
         };
-        report.missing = ["effect", "Filter: filter type", "source mode (played as a sampler)"]
-            .into_iter().map(entry).collect();
+        report.missing = [
+            "effect",
+            "Filter: filter type",
+            "source mode (played as a sampler)",
+        ]
+        .into_iter()
+        .map(entry)
+        .collect();
         let counts = report.audit_counts();
         assert_eq!(counts["untranslated_features"], 3);
         assert_eq!(counts["sample_resource_failures"], 0);
         assert_eq!(counts["impulse_resource_failures"], 0);
-        report.missing.extend([entry("missing sample"), entry("impulse response")]);
+        report
+            .missing
+            .extend([entry("missing sample"), entry("impulse response")]);
         let counts = report.audit_counts();
         assert_eq!(counts["missing"], 5, "legacy total remains compatible");
         assert_eq!(counts["sample_resource_failures"], 1);
@@ -297,7 +329,12 @@ mod tests {
     fn fault_transport_is_bounded_and_does_not_allocate_on_audio() {
         let inbox = super::FaultInbox::default();
         let allocations = crate::plugin::tests::allocations(|| {
-            for program in 0..300 { inbox.record(program, sampler_core::Outcome::Fault(sampler_core::Error::InvalidInput)); }
+            for program in 0..300 {
+                inbox.record(
+                    program,
+                    sampler_core::Outcome::Fault(sampler_core::Error::InvalidInput),
+                );
+            }
         });
         assert_eq!(allocations, 0);
         assert_eq!(inbox.take_dropped(), 44);
@@ -308,18 +345,35 @@ mod tests {
     #[test]
     fn the_mpe_mapping_is_stated_in_the_report() {
         let text = super::mpe_summary(&sampler_core::lower::MpeDefaults::default());
-        assert_eq!(text, "per-note bend · pressure raises the level up to +6.0 dB · timbre (CC74) darkens the tone below centre, down to 60 semitones under open");
-        let off = sampler_core::lower::MpeDefaults { pressure_db: 0.0, timbre_semitones: 0.0, ..Default::default() };
+        assert_eq!(
+            text,
+            "per-note bend · pressure raises the level up to +6.0 dB · timbre (CC74) darkens the tone below centre, down to 60 semitones under open"
+        );
+        let off = sampler_core::lower::MpeDefaults {
+            pressure_db: 0.0,
+            timbre_semitones: 0.0,
+            ..Default::default()
+        };
         assert_eq!(super::mpe_summary(&off), "per-note bend");
         use sampler_core::lower::TimbreTarget::*;
-        let on = |timbre| super::mpe_summary(&sampler_core::lower::MpeDefaults { timbre, ..Default::default() });
-        assert!(on(Controller(1)).ends_with("timbre (CC74) sets each note's CC1 dynamics position"));
+        let on = |timbre| {
+            super::mpe_summary(&sampler_core::lower::MpeDefaults {
+                timbre,
+                ..Default::default()
+            })
+        };
+        assert!(
+            on(Controller(1)).ends_with("timbre (CC74) sets each note's CC1 dynamics position")
+        );
         assert!(on(Cutoff).ends_with("timbre (CC74) opens and closes the filter cutoff"));
     }
 
     #[test]
     fn key_bits_cover_each_zone_range() {
-        let d = super::Decoded { keys: super::range_bits(60, 64), ..Default::default() };
+        let d = super::Decoded {
+            keys: super::range_bits(60, 64),
+            ..Default::default()
+        };
         assert!(!d.maps(59) && d.maps(60) && d.maps(64) && !d.maps(65) && !d.maps(200));
         assert_eq!(super::range_bits(0, 255), u128::MAX);
         assert_eq!(super::range_bits(70, 60), 0);

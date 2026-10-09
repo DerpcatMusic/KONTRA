@@ -13,8 +13,20 @@ pub struct Delay {
 }
 
 impl Delay {
-    pub(crate) fn trace_frames(&self) -> u32 { if self.dry==0. {self.frames}else{0} }
-    pub(crate) fn trace_parameters(&self) -> [(&'static str, f64); 7] { [("delay_frames",self.frames as f64),("dry",self.dry),("wet",self.wet),("feedback_ll",self.feedback[0][0]),("feedback_lr",self.feedback[0][1]),("feedback_rl",self.feedback[1][0]),("feedback_rr",self.feedback[1][1])] }
+    pub(crate) fn trace_frames(&self) -> u32 {
+        if self.dry == 0. { self.frames } else { 0 }
+    }
+    pub(crate) fn trace_parameters(&self) -> [(&'static str, f64); 7] {
+        [
+            ("delay_frames", self.frames as f64),
+            ("dry", self.dry),
+            ("wet", self.wet),
+            ("feedback_ll", self.feedback[0][0]),
+            ("feedback_lr", self.feedback[0][1]),
+            ("feedback_rl", self.feedback[1][0]),
+            ("feedback_rr", self.feedback[1][1]),
+        ]
+    }
     pub fn new(frames: u32, feedback: [[f64; 2]; 2], dry: f64, wet: f64) -> Result<Self, Error> {
         if frames == 0
             || !dry.is_finite()

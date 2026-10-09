@@ -103,7 +103,14 @@ pub struct NodeMix {
 
 impl Default for NodeMix {
     fn default() -> Self {
-        Self { gain: 0.0, pan: 0.0, mute: false, solo: false, output: NodeOutput::Parent, manual: false }
+        Self {
+            gain: 0.0,
+            pan: 0.0,
+            mute: false,
+            solo: false,
+            output: NodeOutput::Parent,
+            manual: false,
+        }
     }
 }
 
@@ -138,13 +145,15 @@ pub fn audible(tree: &MixTree, mixes: &[NodeMix], out: &mut [bool]) {
 
 /// Whether some soloed node has `n` on its path to the root.
 fn carries_solo(tree: &MixTree, n: usize, soloed: &dyn Fn(usize) -> bool) -> bool {
-    (1..tree.nodes.len()).filter(|&s| soloed(s)).any(|mut s| loop {
-        if s == n {
-            break true;
-        }
-        match tree.nodes[s].parent {
-            Some(p) => s = p,
-            None => break false,
+    (1..tree.nodes.len()).filter(|&s| soloed(s)).any(|mut s| {
+        loop {
+            if s == n {
+                break true;
+            }
+            match tree.nodes[s].parent {
+                Some(p) => s = p,
+                None => break false,
+            }
         }
     })
 }
@@ -154,14 +163,21 @@ mod tests {
     use super::*;
 
     fn node(name: &str, parent: usize) -> MixNode {
-        MixNode { name: name.into(), kind: NodeKind::Bus, parent: Some(parent), inserts: vec![], sends: vec![] }
+        MixNode {
+            name: name.into(),
+            kind: NodeKind::Bus,
+            parent: Some(parent),
+            inserts: vec![],
+            sends: vec![],
+        }
     }
 
     #[test]
     fn solo_keeps_the_soloed_path_and_its_children() {
         let mut tree = MixTree::instrument("piano");
         // 1 close, 2 room, 3 close/hammer
-        tree.nodes.extend([node("close", 0), node("room", 0), node("hammer", 1)]);
+        tree.nodes
+            .extend([node("close", 0), node("room", 0), node("hammer", 1)]);
         assert_eq!(tree.depth(3), 2);
         assert_eq!(tree.children(0).collect::<Vec<_>>(), [1, 2]);
         let mut mixes = vec![NodeMix::default(); 3];
@@ -175,6 +191,15 @@ mod tests {
         mixes[2].solo = true;
         audible(&tree, &mixes, &mut out);
         assert_eq!(out, [true, true, false, true]);
-        assert_eq!(stereo_gain(&NodeMix { mute: true, ..NodeMix::default() }, true), [0.0; 2]);
+        assert_eq!(
+            stereo_gain(
+                &NodeMix {
+                    mute: true,
+                    ..NodeMix::default()
+                },
+                true
+            ),
+            [0.0; 2]
+        );
     }
 }
