@@ -1674,6 +1674,25 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_effect_diagnostics_group_without_public_payload_bytes() {
+        let mut values = Vec::new();
+        for byte in [0xa1, 0xb2] {
+            let mut authored = slot(0xfe, vec![byte; 64], 1.0);
+            authored.slot = 6;
+            let out = chain(&[authored], Scope::Voice);
+            let (physical_slot, feature, value, reason) = out.notes.iter()
+                .find(|(_, feature, _, _)| feature == "effect").expect("missing effect diagnostic");
+            assert_eq!((*physical_slot, feature.as_str(), *reason),
+                (6, "effect", sampler_ir::Reason::NotModeled));
+            assert!(value.contains("unknown effect 0xfe") && value.contains("v0x50"));
+            assert!(value.contains("len 64"));
+            assert!(!value.contains("head") && !value.contains(&format!("{byte:02x}")));
+            values.push(value.clone());
+        }
+        assert_eq!(values[0], values[1], "diagnostic groups must not depend on payload content");
+    }
+
+    #[test]
     fn authored_lofi_slot_is_an_executable_processor_in_both_scopes() {
         let mut payload: Vec<u8> = [0.4f32, 0.2, 0.0]
             .into_iter().flat_map(f32::to_le_bytes).collect();
