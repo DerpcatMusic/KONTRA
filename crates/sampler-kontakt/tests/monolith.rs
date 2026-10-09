@@ -344,6 +344,47 @@ fn embedded_wav_aiff_ncw_share_translation_and_random_access_playback() {
 }
 
 #[test]
+fn exact_monolith_member_precedes_ambiguous_suffixes() {
+    let root = std::env::temp_dir().join(format!("kontra-monolith-exact-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("Exact.nki");
+    let audio = wav();
+    for (reference, member) in [
+        ("tone.wav", "tone.wav"),
+        ("Samples\\tone.wav", "Samples/tone.wav"),
+        ("backup|samples|TONE.wav", "Backup/Samples/tone.wav"),
+    ] {
+        let patch = preset(reference, false);
+        std::fs::write(
+            &path,
+            file_container(&[
+                ("Instrument.nki", &patch),
+                ("tone.wav", &audio),
+                ("Samples|tone.wav", &audio),
+                ("Backup|Samples|tone.wav", &audio),
+            ]),
+        )
+        .unwrap();
+        let loaded = read(&path).expect("an exact member wins over suffix matches");
+        assert_eq!(loaded.locations, [path.join(member)]);
+    }
+    let patch = preset("old/tone.wav", false);
+    std::fs::write(
+        &path,
+        file_container(&[
+            ("Instrument.nki", &patch),
+            ("tone.wav", &audio),
+            ("Samples/tone.wav", &audio),
+        ]),
+    )
+    .unwrap();
+    assert!(
+        read(&path).is_err(),
+        "ambiguous fallback still fails closed"
+    );
+}
+
+#[test]
 fn aiff_rejects_bad_lengths_offsets_rates_codecs_and_truncated_audio() {
     let audio = aiff(None, 16, &16384i16.to_be_bytes(), false);
     assert_eq!(decode(&audio).unwrap().frames[0], [0.5, 0.5]);
