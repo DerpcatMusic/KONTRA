@@ -636,6 +636,11 @@ impl Default for Frames {
         }
     }
 }
+impl Frames {
+    pub(crate) fn callers(&self) -> &[u32] {
+        &self.returns[..usize::from(self.depth)]
+    }
+}
 
 pub(crate) struct OpState {
     pub effects: std::collections::VecDeque<Effect>,
