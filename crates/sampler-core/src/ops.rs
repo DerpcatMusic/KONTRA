@@ -913,7 +913,13 @@ impl Runtime {
                 let job=i32_of(self.reg(id,local)?)?;let plan=self.behavior_plan(owner)?;
                 if self.plans.get(plan.0).ok_or(Error::StaleHandle)?.midi_object.jobs.iter().any(|j|j.id==job) {
                     let c=self.behaviors.get_mut(id.0).ok_or(Error::StaleHandle)?;
-                    if !c.disable_wait {c.waiting=true;c.async_wait=Some(job);return Ok(true);}
+                    if !c.disable_wait {
+                        c.waiting=true;
+                        c.async_wait=Some(job);
+                        // An admitted async wait also ends continuous preemption.
+                        c.yielded_at=None;
+                        return Ok(true);
+                    }
                 }
             }
             Op::MidiFilename { text } => {
