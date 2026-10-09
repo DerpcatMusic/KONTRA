@@ -74,10 +74,9 @@ pub(super) struct ReleaseTimes {
 
 impl ReleaseTimes {
     pub(super) fn counter(&self, key_down: bool, now: u64) -> u64 {
-        if key_down { now } else { self.key_at }.saturating_sub(self.counter_at.unwrap_or(self.admitted_at))
+        if key_down { now } else { self.key_at }
+            .saturating_sub(self.counter_at.unwrap_or(self.admitted_at))
     }
-
-
 }
 
 pub(super) fn validate_velocity(velocity: Option<f64>) -> Result<(), Error> {
@@ -96,7 +95,11 @@ impl Runtime {
 
     pub fn reset_release_counter(&mut self, id: NoteId) -> Result<(), Error> {
         let note = self.notes.get(id.0).ok_or(Error::StaleHandle)?;
-        self.release_times[id.0.index].counter_at = Some(if note.key_down() { self.now } else { self.release_times[id.0.index].key_at });
+        self.release_times[id.0.index].counter_at = Some(if note.key_down() {
+            self.now
+        } else {
+            self.release_times[id.0.index].key_at
+        });
         Ok(())
     }
 
@@ -117,7 +120,9 @@ impl Runtime {
             note.input_down = false;
         }
         if note.key_down() {
-            if !cause.musical() { self.stop_held_onsets(id); }
+            if !cause.musical() {
+                self.stop_held_onsets(id);
+            }
             let note = self.notes.get_mut(id.0).unwrap();
             // A source stop before attack forwarding consumes that pending attack.
             // Physical key-up retains the native deferred-attack rejection policy.

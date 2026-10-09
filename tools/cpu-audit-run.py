@@ -14,6 +14,7 @@ p.add_argument('binary', type=Path)
 p.add_argument('out', type=Path)
 p.add_argument('--cold', action='store_true')
 p.add_argument('--profile', action='store_true')
+p.add_argument('--frequency', type=int, choices=[499, 1999, 9999], default=499)
 p.add_argument('--block', type=int, choices=[32, 64, 256])
 p.add_argument('--only', choices=['piano', 'strings', 'fx'])
 a = p.parse_args()
@@ -57,7 +58,7 @@ for name, (library, instrument) in scenarios.items():
                     time.sleep(.1)
                 if ready.exists():
                     # Leaf IPs only: no copied user stack or decoded sample bytes.
-                    prof = subprocess.Popen(['perf', 'record', '-F', '499', '-e', 'cycles:u', '-p', ready.read_text(), '-o', str(a.out/f'{tag}.perf.data')], stdout=subprocess.DEVNULL, stderr=err)
+                    prof = subprocess.Popen(['perf', 'record', '-F', str(a.frequency), '-e', 'cycles:u', '-p', ready.read_text(), '-o', str(a.out/f'{tag}.perf.data')], stdout=subprocess.DEVNULL, stderr=err)
                 while not finished.exists() and job.poll() is None:
                     time.sleep(.01)
                 if prof and prof.poll() is None:

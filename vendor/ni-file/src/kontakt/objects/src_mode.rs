@@ -2,7 +2,7 @@
 //! Field order: DSP_FORMAT_SPECIFICATION.md, Kontakt object framing, and
 //! native source reader/writer 0x140d03aa0 / 0x140d12910. Unassigned controls
 //! are named by byte offset; they are not guessed display/DSP parameters.
-use crate::{Error, read_bytes::ReadBytesExt};
+use crate::{read_bytes::ReadBytesExt, Error};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SourceValue {

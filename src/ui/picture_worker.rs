@@ -115,9 +115,10 @@ impl Preparation {
                         if canceled() {
                             continue;
                         }
-                        let bytes = font.as_ref().map_or(0, |f| f.as_ref().len()) + picture
-                            .as_ref()
-                            .map_or(0, |p| p.frames.iter().map(|i| i.rgba.len()).sum());
+                        let bytes = font.as_ref().map_or(0, |f| f.as_ref().len())
+                            + picture
+                                .as_ref()
+                                .map_or(0, |p| p.frames.iter().map(|i| i.rgba.len()).sum());
                         if done
                             .send(Result {
                                 key: request.key,
@@ -177,9 +178,19 @@ impl Preparation {
     }
     #[cfg(feature = "shots")]
     pub fn completed_key_bytes(&self) -> Vec<(String, usize)> {
-        self.wanted.iter().filter_map(|key| self.decoded_bytes.get(key).map(|bytes| {
-            (blake3::hash(format!("{key:?}").as_bytes()).to_hex().to_string(), *bytes)
-        })).collect()
+        self.wanted
+            .iter()
+            .filter_map(|key| {
+                self.decoded_bytes.get(key).map(|bytes| {
+                    (
+                        blake3::hash(format!("{key:?}").as_bytes())
+                            .to_hex()
+                            .to_string(),
+                        *bytes,
+                    )
+                })
+            })
+            .collect()
     }
     pub fn prepare(
         &mut self,
@@ -201,7 +212,8 @@ impl Preparation {
                         .is_some_and(|a| key.identity == format!("{}:{:?}", a.path, a.kind))
             });
             #[cfg(feature = "shots")]
-            self.decoded_bytes.retain(|key, _| self.cache.contains_key(key));
+            self.decoded_bytes
+                .retain(|key, _| self.cache.contains_key(key));
             self.bytes = self.cache.values().map(|e| e.bytes).sum();
             // Identity keys keep unchanged assets reusable across a sparse publication.
             self.assets = face.assets.clone();
@@ -225,7 +237,10 @@ impl Preparation {
         if let Some(p) = face.pages.get(page.0)
             && let Some(a) = p.background.image
         {
-            let y = p.background.origin_y.saturating_add(p.background.offset_y.max(0) as u32);
+            let y = p
+                .background
+                .origin_y
+                .saturating_add(p.background.offset_y.max(0) as u32);
             let size = match face.assets[a.0].kind {
                 ir::AssetKind::Image(m) => m.size,
                 _ => None,
@@ -300,7 +315,12 @@ impl Preparation {
                 let target = size.map(|n| (n as f64 * factor).ceil().max(1.) as u32);
                 add(image.asset, frame, target, None);
             }
-            for s in w.style.into_iter().chain(w.state_styles.into_iter().flatten()).filter_map(|s| face.styles.get(s.0)) {
+            for s in w
+                .style
+                .into_iter()
+                .chain(w.state_styles.into_iter().flatten())
+                .filter_map(|s| face.styles.get(s.0))
+            {
                 match s.font {
                     ir::Font::Bitmap(a) if presentation == ir::Presentation::Bitmap => {
                         add(a, 0, [u32::MAX; 2], None)
@@ -319,16 +339,24 @@ impl Preparation {
             ))
         });
         wanted.dedup();
-        if self.wanted != wanted {self.cache.retain(|_, entry| !entry.limited);}
+        if self.wanted != wanted {
+            self.cache.retain(|_, entry| !entry.limited);
+        }
         self.wanted = wanted;
         while let Ok(mut result) = self.results.try_recv() {
             self.pending.remove(&result.key);
-            if result.epoch != epoch {continue;}
+            if result.epoch != epoch {
+                continue;
+            }
             #[cfg(feature = "shots")]
             {
                 result.scan.preparation_completed = self.scan.preparation_completed + 1;
-                result.scan.preparation_completed_bytes = self.scan.preparation_completed_bytes.saturating_add(result.bytes);
-                result.scan.preparation_max_key_bytes = self.scan.preparation_max_key_bytes.max(result.bytes);
+                result.scan.preparation_completed_bytes = self
+                    .scan
+                    .preparation_completed_bytes
+                    .saturating_add(result.bytes);
+                result.scan.preparation_max_key_bytes =
+                    self.scan.preparation_max_key_bytes.max(result.bytes);
                 result.scan.preparation_wanted_peak_bytes = self.scan.preparation_wanted_peak_bytes;
                 result.scan.preparation_oversized = self.scan.preparation_oversized;
                 result.scan.preparation_key_budget = self.scan.preparation_key_budget;
@@ -337,11 +365,15 @@ impl Preparation {
                 self.scan = result.scan;
                 self.decoded_bytes.insert(result.key.clone(), result.bytes);
             }
-            if let Some(old) = self.cache.remove(&result.key) {self.bytes -= old.bytes;}
+            if let Some(old) = self.cache.remove(&result.key) {
+                self.bytes -= old.bytes;
+            }
             let mut limited = result.bytes > BUDGET;
             if limited {
                 #[cfg(feature = "shots")]
-                {self.scan.preparation_oversized += 1;}
+                {
+                    self.scan.preparation_oversized += 1;
+                }
             }
             while !limited && self.bytes.saturating_add(result.bytes) > BUDGET {
                 let Some(key) = self
@@ -353,17 +385,25 @@ impl Preparation {
                 else {
                     limited = true;
                     #[cfg(feature = "shots")]
-                    {self.scan.preparation_key_budget += 1;}
+                    {
+                        self.scan.preparation_key_budget += 1;
+                    }
                     break;
                 };
                 if let Some(old) = self.cache.remove(&key) {
                     self.bytes -= old.bytes;
                     #[cfg(feature = "shots")]
-                    {self.scan.preparation_evicted += 1;}
+                    {
+                        self.scan.preparation_evicted += 1;
+                    }
                 }
             }
             // Failed admissions are terminal for this wanted set, not decode retries.
-            if limited {result.picture = None; result.font = None; result.bytes = 0;}
+            if limited {
+                result.picture = None;
+                result.font = None;
+                result.bytes = 0;
+            }
             self.bytes += result.bytes;
             self.cache.insert(
                 result.key,
@@ -377,7 +417,15 @@ impl Preparation {
             );
         }
         #[cfg(feature = "shots")]
-        {self.scan.preparation_wanted_peak_bytes = self.scan.preparation_wanted_peak_bytes.max(self.wanted.iter().filter_map(|key| self.decoded_bytes.get(key)).copied().sum());}
+        {
+            self.scan.preparation_wanted_peak_bytes = self.scan.preparation_wanted_peak_bytes.max(
+                self.wanted
+                    .iter()
+                    .filter_map(|key| self.decoded_bytes.get(key))
+                    .copied()
+                    .sum(),
+            );
+        }
         let batch = self
             .wanted
             .iter()
@@ -390,7 +438,12 @@ impl Preparation {
             .collect::<Vec<_>>();
         if !batch.is_empty() && self.jobs.try_send(batch.clone()).is_ok() {
             #[cfg(feature = "shots")]
-            {self.scan.preparation_requeued += batch.iter().filter(|r| self.decoded_bytes.contains_key(&r.key)).count();}
+            {
+                self.scan.preparation_requeued += batch
+                    .iter()
+                    .filter(|r| self.decoded_bytes.contains_key(&r.key))
+                    .count();
+            }
             self.pending.extend(batch.into_iter().map(|r| r.key));
         }
         self.wanted
@@ -415,14 +468,21 @@ mod tests {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", "ui::picture_worker::tests::poisoned_decode_permit_does_not_strand_later_original_art", "--nocapture"])
                 .env(CHILD, "1").env("KONTRA_DISABLE_NETWORK", "1").output().unwrap();
-            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
             return;
         }
         let permit = DECODE.get_or_init(|| Mutex::new(()));
-        assert!(std::panic::catch_unwind(|| {
-            let _guard = permit.lock().unwrap();
-            panic!("synthetic decoder permit fault");
-        }).is_err());
+        assert!(
+            std::panic::catch_unwind(|| {
+                let _guard = permit.lock().unwrap();
+                panic!("synthetic decoder permit fault");
+            })
+            .is_err()
+        );
         assert!(permit.is_poisoned());
         prepares_one_frame_off_thread_and_releases_vector_strips();
         assert!(!permit.is_poisoned());
@@ -439,20 +499,52 @@ mod tests {
         let (jobs, requests) = mpsc::sync_channel(1);
         let (done, results) = mpsc::channel();
         let mut worker = Preparation {
-            path: "synthetic.nki".into(), jobs, results,
-            epoch: Arc::new(AtomicU64::new(0)), cache: HashMap::new(),
-            pending: HashSet::new(), wanted: Vec::new(), assets: Vec::new(),
-            presentation: Default::default(), tick: 0, bytes: 0,
+            path: "synthetic.nki".into(),
+            jobs,
+            results,
+            epoch: Arc::new(AtomicU64::new(0)),
+            cache: HashMap::new(),
+            pending: HashSet::new(),
+            wanted: Vec::new(),
+            assets: Vec::new(),
+            presentation: Default::default(),
+            tick: 0,
+            bytes: 0,
             #[cfg(feature = "shots")]
             scan: Default::default(),
             #[cfg(feature = "shots")]
             decoded_bytes: HashMap::new(),
         };
-        let mut face = ir::Interface {pages: vec![ir::Page {size: ir::Size {width: 1, height: 1}, ..Default::default()}], ..Default::default()};
+        let mut face = ir::Interface {
+            pages: vec![ir::Page {
+                size: ir::Size {
+                    width: 1,
+                    height: 1,
+                },
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
         for asset in 0..sizes.len() {
-            face.assets.push(ir::Asset {path: format!("synthetic-{asset}.png"), kind: ir::AssetKind::Image(ir::ImageMeta {size: Some(ir::Size {width: 1, height: 1}), ..Default::default()})});
-            let mut widget = ir::Widget::new(format!("synthetic-{asset}"), ir::PageRef(0), ir::Rect::new(0, 0, 1, 1), ir::Kind::Image);
-            widget.images.push(ir::ImageUse::new(ir::AssetRef(asset), ir::Role::Background));
+            face.assets.push(ir::Asset {
+                path: format!("synthetic-{asset}.png"),
+                kind: ir::AssetKind::Image(ir::ImageMeta {
+                    size: Some(ir::Size {
+                        width: 1,
+                        height: 1,
+                    }),
+                    ..Default::default()
+                }),
+            });
+            let mut widget = ir::Widget::new(
+                format!("synthetic-{asset}"),
+                ir::PageRef(0),
+                ir::Rect::new(0, 0, 1, 1),
+                ir::Kind::Image,
+            );
+            widget
+                .images
+                .push(ir::ImageUse::new(ir::AssetRef(asset), ir::Role::Background));
             face.widgets.push(widget);
         }
         face.validate().unwrap();
@@ -460,45 +552,98 @@ mod tests {
         worker.prepare(&face, ir::PageRef(0), ir::Presentation::Bitmap, 1., &values);
         for request in requests.try_recv().unwrap() {
             let asset_index = request.key.asset;
-            done.send(Result {bytes: sizes[request.key.asset], key: request.key, epoch: request.epoch,
-                picture: Some(Arc::new(Picture::new(vec![Arc::new(moose::mui::mui::scene::Image::rgba(1, 1, vec![0; 4]).unwrap())]))), font: None,
+            done.send(Result {
+                bytes: sizes[request.key.asset],
+                key: request.key,
+                epoch: request.epoch,
+                picture: Some(Arc::new(Picture::new(vec![Arc::new(
+                    moose::mui::mui::scene::Image::rgba(1, 1, vec![0; 4]).unwrap(),
+                )]))),
+                font: None,
                 #[cfg(feature = "shots")]
-                scan: super::super::pictures::Scan {lookups: asset_index + 1, lookup_ok: asset_index + 1, decodes: asset_index + 1, decode_ok: asset_index + 1, ..Default::default()},
-            }).unwrap();
+                scan: super::super::pictures::Scan {
+                    lookups: asset_index + 1,
+                    lookup_ok: asset_index + 1,
+                    decodes: asset_index + 1,
+                    decode_ok: asset_index + 1,
+                    ..Default::default()
+                },
+            })
+            .unwrap();
         }
         worker.prepare(&face, ir::PageRef(0), ir::Presentation::Bitmap, 1., &values);
-        assert_eq!(worker.pending(), 0, "an uncacheable result must settle as a terminal limit");
+        assert_eq!(
+            worker.pending(),
+            0,
+            "an uncacheable result must settle as a terminal limit"
+        );
         worker.prepare(&face, ir::PageRef(0), ir::Presentation::Bitmap, 1., &values);
-        assert!(requests.try_recv().is_err(), "the unchanged face must not decode again");
+        assert!(
+            requests.try_recv().is_err(),
+            "the unchanged face must not decode again"
+        );
         assert!(worker.bytes() <= BUDGET);
-        assert_eq!(worker.cache.values().filter(|entry| entry.limited).count(), 1);
+        assert_eq!(
+            worker.cache.values().filter(|entry| entry.limited).count(),
+            1
+        );
         #[cfg(feature = "shots")]
         {
             assert_eq!(worker.scan.preparation_completed, sizes.len());
             assert_eq!(worker.scan.preparation_requeued, 0);
-            assert_eq!(worker.scan.preparation_oversized, usize::from(sizes.len() == 1));
-            assert_eq!(worker.scan.preparation_key_budget, usize::from(sizes.len() > 1));
+            assert_eq!(
+                worker.scan.preparation_oversized,
+                usize::from(sizes.len() == 1)
+            );
+            assert_eq!(
+                worker.scan.preparation_key_budget,
+                usize::from(sizes.len() > 1)
+            );
             assert_eq!(worker.scan.lookups, sizes.len());
             assert_eq!(worker.completed_key_bytes().len(), sizes.len());
         }
         #[cfg(feature = "shots")]
-        println!("PICTURE_QUEUE completed={} bytes={} max_key_bytes={} wanted_peak_bytes={} oversized={} key_budget={} evicted={} requeued={}", worker.scan.preparation_completed, worker.scan.preparation_completed_bytes, worker.scan.preparation_max_key_bytes, worker.scan.preparation_wanted_peak_bytes, worker.scan.preparation_oversized, worker.scan.preparation_key_budget, worker.scan.preparation_evicted, worker.scan.preparation_requeued);
+        println!(
+            "PICTURE_QUEUE completed={} bytes={} max_key_bytes={} wanted_peak_bytes={} oversized={} key_budget={} evicted={} requeued={}",
+            worker.scan.preparation_completed,
+            worker.scan.preparation_completed_bytes,
+            worker.scan.preparation_max_key_bytes,
+            worker.scan.preparation_wanted_peak_bytes,
+            worker.scan.preparation_oversized,
+            worker.scan.preparation_key_budget,
+            worker.scan.preparation_evicted,
+            worker.scan.preparation_requeued
+        );
         if sizes.len() > 1 {
             face.widgets.drain(..sizes.len() - 1);
             worker.prepare(&face, ir::PageRef(0), ir::Presentation::Bitmap, 1., &values);
             let request = requests.try_recv().unwrap().pop().unwrap();
             assert_eq!(request.key.asset, sizes.len() - 1);
-            done.send(Result {bytes: sizes[sizes.len() - 1], key: request.key, epoch: request.epoch,
-                picture: None, font: None,
+            done.send(Result {
+                bytes: sizes[sizes.len() - 1],
+                key: request.key,
+                epoch: request.epoch,
+                picture: None,
+                font: None,
                 #[cfg(feature = "shots")]
                 scan: Default::default(),
-            }).unwrap();
+            })
+            .unwrap();
             worker.prepare(&face, ir::PageRef(0), ir::Presentation::Bitmap, 1., &values);
             assert_eq!(worker.pending(), 0);
-            assert!(!worker.cache.values().any(|entry| entry.limited), "a smaller wanted set may retry the formerly rejected key");
+            assert!(
+                !worker.cache.values().any(|entry| entry.limited),
+                "a smaller wanted set may retry the formerly rejected key"
+            );
             assert!(worker.bytes() <= BUDGET);
             #[cfg(feature = "shots")]
-            assert_eq!((worker.scan.preparation_evicted, worker.scan.preparation_requeued), (1, 1));
+            assert_eq!(
+                (
+                    worker.scan.preparation_evicted,
+                    worker.scan.preparation_requeued
+                ),
+                (1, 1)
+            );
         }
     }
 

@@ -19,10 +19,12 @@ fn read_slice<'a>(
     let end = start
         .checked_add(length)
         .ok_or(crate::Error::Static("NIS body length overflow"))?;
-    let bytes = reader
-        .get_ref()
-        .get(start..end)
-        .ok_or_else(|| crate::Error::Generic(format!("Truncated NIS body at relative offset {start}: declared {length} bytes, available {}", reader.get_ref().len().saturating_sub(start))))?;
+    let bytes = reader.get_ref().get(start..end).ok_or_else(|| {
+        crate::Error::Generic(format!(
+            "Truncated NIS body at relative offset {start}: declared {length} bytes, available {}",
+            reader.get_ref().len().saturating_sub(start)
+        ))
+    })?;
     reader.set_position(end as u64);
     Ok(bytes)
 }

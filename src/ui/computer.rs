@@ -13,8 +13,24 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 /// Semitones above the octave's C, key by key.
 const KEYS: [(char, u8); 18] = [
-    ('a', 0), ('w', 1), ('s', 2), ('e', 3), ('d', 4), ('f', 5), ('t', 6), ('g', 7), ('y', 8),
-    ('h', 9), ('u', 10), ('j', 11), ('k', 12), ('o', 13), ('l', 14), ('p', 15), (';', 16), ('\'', 17),
+    ('a', 0),
+    ('w', 1),
+    ('s', 2),
+    ('e', 3),
+    ('d', 4),
+    ('f', 5),
+    ('t', 6),
+    ('g', 7),
+    ('y', 8),
+    ('h', 9),
+    ('u', 10),
+    ('j', 11),
+    ('k', 12),
+    ('o', 13),
+    ('l', 14),
+    ('p', 15),
+    (';', 16),
+    ('\'', 17),
 ];
 /// The octave whose C the A key plays: 5 is MIDI 60.
 const OCTAVE: u8 = 5;
@@ -77,14 +93,17 @@ impl Computer {
             'z' => step(&self.octave, &|o| o.saturating_sub(1)),
             'x' => step(&self.octave, &|o| (o + 1).min(MAX_OCTAVE)),
             'c' => step(&self.velocity, &|v| v.saturating_sub(VELOCITY_STEP).max(1)),
-            'v' => step(&self.velocity, &|v| v.saturating_add(VELOCITY_STEP).min(127)),
+            'v' => step(&self.velocity, &|v| {
+                v.saturating_add(VELOCITY_STEP).min(127)
+            }),
             _ => {
                 let Some(&(_, semitone)) = KEYS.iter().find(|(k, _)| *k == c) else {
                     return false;
                 };
                 let note = self.octave.load(Ordering::Relaxed) * 12 + semitone;
                 let slot = p.shared.selected.load(Ordering::Relaxed) as usize;
-                p.shared.press_key(slot, note, self.velocity.load(Ordering::Relaxed));
+                p.shared
+                    .press_key(slot, note, self.velocity.load(Ordering::Relaxed));
                 held.insert(event.code, note);
             }
         }
