@@ -1,5 +1,7 @@
 //! Runtime strings: names built while a callback runs reach group lookup,
 //! `find_mod` and `set_text`, in bounded text cells.
+#[path = "../../sampler-core/tests/support/mod.rs"]
+mod support;
 use sampler_core::{
     Envelope, Input, Limits, Pcm, Playback, Prepared, Protocol, Region, Runtime, ScriptInstanceId,
 };
@@ -13,6 +15,11 @@ fn run(source: &str, groups: &[&str]) -> Runtime {
 }
 
 fn run_in(source: &str, environment: sampler_ksp::Environment) -> Runtime {
+    run_shaped(source, environment, Ok)
+}
+
+fn run_shaped(source: &str, environment: sampler_ksp::Environment,
+    shape: impl FnOnce(Prepared) -> Result<Prepared, sampler_core::Error>) -> Runtime {
     let script = sampler_ksp::compile_with(
         source,
         48000,
@@ -42,6 +49,7 @@ fn run_in(source: &str, environment: sampler_ksp::Environment) -> Runtime {
         .unwrap()
         .with_engine_parameters(vec![], environment.engine_lookups.clone())
         .unwrap();
+    let prepared = shape(prepared).unwrap();
     let note_cells = script.note_cells() * 8;
     let plan = script.bind(prepared).unwrap();
     let behavior_cells = plan.behavior_local_count() * 8;
@@ -71,8 +79,10 @@ fn run_in(source: &str, environment: sampler_ksp::Environment) -> Runtime {
         key: 60,
         external_id: Some(60),
     };
-    rt.trigger(input, 60, 1.).unwrap();
-    rt.render(&mut [[0.; 2]; 64]).unwrap();
+    support::without_heap(|| {
+        rt.trigger(input, 60, 1.).unwrap();
+        rt.render(&mut [[0.; 2]; 64]).unwrap();
+    });
     rt
 }
 
@@ -289,4 +299,70 @@ fn another_events_key_and_velocity_read_through_its_id() {
         &[],
     );
     assert_eq!((cell(&rt, 1), cell(&rt, 2)), (61, 100));
+}
+
+#[test]
+fn runtime_menu_getters_read_authored_and_live_items() {
+    let rt = run("on init declare $before declare $after declare @before declare @after declare ui_menu $m add_menu_item($m,\"first\",17) end on
+        on note
+            $before := get_menu_item_value(get_ui_id($m),0)
+            @before := get_menu_item_str(get_ui_id($m),0)
+            set_menu_item_value(get_ui_id($m),0,93)
+            set_menu_item_str(get_ui_id($m),0,\"changed\")
+            $after := get_menu_item_value(get_ui_id($m),0)
+            @after := get_menu_item_str(get_ui_id($m),0)
+        end on", &[]);
+    assert_eq!(cell(&rt, 0), 17);
+    assert_eq!(cell(&rt, 1), 93);
+    assert_eq!(rt.script_text(rt.active_plan(), ScriptInstanceId(0), 0).unwrap().as_str(), "first");
+    assert_eq!(rt.script_text(rt.active_plan(), ScriptInstanceId(0), 1).unwrap().as_str(), "changed");
+}
+
+#[test]
+fn runtime_menu_add_and_invalid_indexes_follow_native_defaults() {
+    let rt = run("on init declare $count declare $value declare $invalid declare $visible declare @text declare ui_menu $m end on
+        on note
+            add_menu_item($m,\"added\",-2147483648)
+            set_menu_item_value(get_ui_id($m),-1,73)
+            set_menu_item_str(get_ui_id($m),5,\"invalid\")
+            set_menu_item_visibility(get_ui_id($m),0,7)
+            $count := get_num_menu_items(get_ui_id($m))
+            $value := get_menu_item_value(get_ui_id($m),0)
+            $invalid := get_menu_item_value(get_ui_id($m),-1)
+            $visible := get_menu_item_visibility(get_ui_id($m),0)
+            @text := \"prefix:\" & get_menu_item_str(get_ui_id($m),0) & get_menu_item_str(get_ui_id($m),5)
+        end on", &[]);
+    assert_eq!(cell(&rt,0),1);
+    assert_eq!(cell(&rt,1),i64::from(i32::MIN));
+    assert_eq!(cell(&rt,2),0);
+    assert_eq!(cell(&rt,3),1);
+    assert_eq!(rt.script_text(rt.active_plan(),ScriptInstanceId(0),0).unwrap().as_str(),"prefix:added");
+}
+
+#[test]
+fn runtime_zone_getter_preserves_source_ids_and_dynamic_parameter_identity() {
+    let rt = run_shaped("on init declare $group declare $low declare $high declare $missing declare $parameter declare %pars[3] := ($ZONE_PAR_GROUP,$ZONE_PAR_LOW_KEY,$ZONE_PAR_HIGH_KEY) end on
+        on note
+            $parameter := %pars[0]
+            $group := get_zone_par(73,$parameter)
+            $low := get_zone_par(73,%pars[1])
+            $high := get_zone_par(73,%pars[2])
+            $missing := get_zone_par(1,$ZONE_PAR_HIGH_KEY)
+        end on", sampler_ksp::Environment::default(), |_| {
+            Prepared::new(48000,vec![Pcm::new(48000,Box::from([[1.;2];64])).unwrap()],vec![Region {
+                sample:0,key_low:7,key_high:94,root_key:None,velocity_low:0.,velocity_high:1.,gain:1.,
+                envelope:Envelope::default(),playback:Playback::default()
+            }],128)?.with_groups(3,vec![Some(2)])?.with_source_zones(vec![73])
+        });
+    assert_eq!(cell(&rt,0),2);
+    assert_eq!(cell(&rt,1),7);
+    assert_eq!(cell(&rt,2),94);
+    assert_eq!(cell(&rt,3),0,"source hole must not resolve to runtime region zero");
+}
+
+#[test]
+fn init_zone_getter_reads_authored_physical_zone_fields() {
+    let rt=run_in("on init declare $g := get_zone_par(73,$ZONE_PAR_GROUP) declare $lo := get_zone_par(73,$ZONE_PAR_LOW_KEY) declare $hi := get_zone_par(73,$ZONE_PAR_HIGH_KEY) declare $missing := get_zone_par(1,$ZONE_PAR_HIGH_KEY) end on",
+        sampler_ksp::Environment { zones: [(73,[2,7,94])].into(), ..Default::default() });
+    assert_eq!([cell(&rt,0),cell(&rt,1),cell(&rt,2),cell(&rt,3)],[2,7,94,0]);
 }
