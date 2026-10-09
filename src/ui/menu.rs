@@ -90,6 +90,7 @@ pub enum Command {
     ResetLibraryOrder,
     /// How the browser lists the libraries; a library pinned above the rest, by folder.
     SortLibraries(crate::library::Sort),
+    BrowseSource(Option<super::browser::Source>),
     Pin(String),
     SaveMulti,
     Browser,
@@ -204,7 +205,7 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             }
             if !items.is_empty() { items.push(Item::Rule); }
             items.push(check("Original instrument", part.snapshot.is_empty(), Command::SelectSnapshot { slot: *slot, source: part.source(), path: String::new() }));
-            items.push(act("Load snapshot…", "", Command::LoadSnapshot(*slot)));
+            items.push(act("Load preset…", "", Command::LoadSnapshot(*slot)));
             items
         }
         Target::View(slot) => {
@@ -289,10 +290,16 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             ]);
             items
         }
-        Target::LibrarySort => crate::library::Sort::ALL
-            .into_iter()
-            .map(|sort| check(sort.label(), cx.settings.sort == sort, Command::SortLibraries(sort)))
-            .collect(),
+        Target::LibrarySort => {
+            use super::browser::Source;
+            let mut items: Vec<_> = crate::library::Sort::ALL.into_iter()
+                .map(|sort| check(sort.label(), cx.settings.sort == sort, Command::SortLibraries(sort))).collect();
+            items.extend([Item::Rule, Item::Info("Show presets".into()),
+                check("All libraries", cx.state.source.is_none(), Command::BrowseSource(None)),
+                check("Favorites", cx.state.source == Some(Source::Favorites), Command::BrowseSource(Some(Source::Favorites))),
+                check("Recent", cx.state.source == Some(Source::Recent), Command::BrowseSource(Some(Source::Recent)))]);
+            items
+        }
         Target::Libraries => {
             let mut items = vec![
                 act("Add folder of libraries…", "", Command::AddFolder(false)),
@@ -360,7 +367,7 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 Item::Rule,
             ]);
             if cx.selection.auto_align {timing_items(cx,slot,&mut items);}
-            if part.snapshot_base() { items.insert(1, act("Load snapshot…", "", Command::LoadSnapshot(slot))); }
+            if part.snapshot_base() { items.insert(1, act("Load preset…", "", Command::LoadSnapshot(slot))); }
             items.extend([Item::Info("MPE".into()),
                 check("MPE off", !part.mpe, Command::MpeZone(slot, 0)),
                 check("Lower zone", part.mpe && !part.mpe_upper, Command::MpeZone(slot, 1)),
@@ -691,7 +698,7 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
             if cx.selection.parts.get(slot).is_some_and(|part| part.source() == source) {
                 cx.snapshot(slot, path);
             } else {
-                cx.state.notice = "Snapshot ignored: the base instrument changed while its menu was open.".into();
+                cx.state.notice = "Preset ignored: the base instrument changed while its menu was open.".into();
             }
         }
         Command::LoadSnapshot(slot) => {
@@ -700,7 +707,7 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
                     .parent().unwrap_or(Path::new(".")).to_path_buf();
                 let ask = super::picker::Ask::Snapshot { slot, source: part.source(), from };
                 if !cx.state.picker.ask(ask) {
-                    cx.state.notice = "No file dialog here: drop a .nksn snapshot onto this instrument's header.".into();
+                    cx.state.notice = "No file dialog here: drop a .nksn preset onto this instrument's header.".into();
                 }
             }
         }
@@ -718,6 +725,11 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
             }
         }
         Command::Rescan => shared.libraries.rescan(),
+        Command::BrowseSource(source) => {
+            cx.state.source = source;
+            cx.state.cursor = None;
+            cx.p.shared.libraries.edit(|settings| { settings.last_library.clear(); settings.last_row.clear(); });
+        }
         Command::SortLibraries(sort) => shared.libraries.edit(|s| s.sort = sort),
         Command::Pin(dir) => shared.libraries.edit(|s| match s.pinned.iter().position(|d| *d == dir) {
             Some(at) => {

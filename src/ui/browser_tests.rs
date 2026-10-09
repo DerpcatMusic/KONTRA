@@ -241,7 +241,7 @@ fn w14_library_artwork_fills_the_browser_width() {
         h.idle(30);
         let scene = h.ui.scene().unwrap();
         let card = scene.surface("library-0").unwrap().frame;
-        assert!(card.size.height > 80., "full-width artwork and its label must fit: {card:?}");
+        assert!((card.size.height - (card.size.width - 2. * TIGHT) / browser::BANNER_RATIO - 2. * TIGHT).abs() < 0.5, "the standard banner and its padding fill the card: {card:?}");
         let viewport = scene.surface("browser-sources-false").unwrap().frame;
         assert!(card.y >= viewport.y - 0.5 && card.y + card.size.height <= viewport.y + viewport.size.height + 0.5,
             "the chosen library panel is fully visible at {width}: {card:?}, {viewport:?}");
@@ -249,7 +249,7 @@ fn w14_library_artwork_fills_the_browser_width() {
         assert!(artwork.disabled, "decorative artwork leaves pointer gestures to its library card");
         let image = artwork.frame;
         assert!(image.size.width > 250.);
-        assert!((image.size.width / image.size.height - 4.).abs() < 0.01, "the full artwork keeps its aspect ratio");
+        assert!((image.size.width / image.size.height - browser::BANNER_RATIO).abs() < 0.01, "cover-cropping keeps the standard banner ratio");
     }
 }
 
@@ -303,7 +303,7 @@ fn w14_real_library_art_shots() {
 }
 
 #[test]
-fn oversized_library_panel_reveals_its_top() {
+fn portrait_library_art_uses_the_standard_banner_height() {
     let p = catalog();
     p.shared.view.lock().unwrap().artwork.insert("Library 00".into(), Arc::new(
         moose::mui::mui::scene::Image::rgba(256, 512, [40, 60, 80, 255].repeat(256 * 512)).unwrap()));
@@ -313,7 +313,9 @@ fn oversized_library_panel_reveals_its_top() {
     let scene = h.ui.scene().unwrap();
     let card = scene.surface("library-0").unwrap().frame;
     let viewport = scene.surface("browser-sources-false").unwrap().frame;
-    assert!((card.y - viewport.y).abs() < 0.5, "an oversized panel must reveal its top: {card:?}, {viewport:?}");
+    assert!(card.y >= viewport.y - 0.5 && card.y + card.size.height <= viewport.y + viewport.size.height + 0.5, "the selected portrait artwork fits its banner: {card:?}, {viewport:?}");
+    let art = scene.surface("library-0-art").unwrap().frame;
+    assert!((art.size.width / art.size.height - browser::BANNER_RATIO).abs() < 0.01);
 }
 
 #[test]
@@ -403,5 +405,188 @@ fn w10_uvi_dangling_library_paths_survive_scan_and_show_root_reasons() {
     h.press("menu-item-5");
     for n in 0..4 {
         assert!(h.ui.scene().unwrap().surface(&format!("root-bank-problem-{n}")).is_some(), "root {n} must report its skipped paths");
+    }
+}
+
+fn redesign_catalog(real_art: bool) -> Arc<SamplerParams> {
+    let p = Arc::new(SamplerParams::new());
+    let kontakt = PathBuf::from("/mnt/MAIN_STORAGE/Libraries/Kontakt");
+    let libraries = vec![
+        crate::library::Library { dir: kontakt.join("Afflatus Chapter II Brass"), name: "Afflatus Chapter II Brass".into(), instruments: 2, ..Default::default() },
+        crate::library::Library { dir: kontakt.join("Areia 1.2.0 [Audio Imperia]"), name: "Areia".into(), vendor: "Audio Imperia".into(), instruments: 2, ..Default::default() },
+        crate::library::Library { dir: "/virtual/UVI/Analog".into(), name: "Analog".into(), instruments: 1, ..Default::default() },
+    ];
+    let files = vec![
+        libraries[0].dir.join("Instruments/Brass 01.nki"),
+        libraries[0].dir.join("Instruments/Brass 02.nki"),
+        libraries[1].dir.join("Instruments/Strings 01.nki"),
+        libraries[1].dir.join("Instruments/Strings 02.nki"),
+        libraries[2].dir.join("Bank.ufs/Presets/Pad.uvip"),
+    ];
+    let mut shelf = crate::library::Shelf::new(libraries.clone());
+    shelf.snapshots.insert(files[0].clone(), crate::library::Snapshots {
+        instrument: "Brass 01".into(), paths: vec![libraries[0].dir.join("Snapshots/Warm/Warm preset.nksn")]
+    });
+    let mut view = p.shared.view.lock().unwrap();
+    view.shelf = Arc::new(shelf);
+    view.files = Arc::new(files);
+    view.scanned = p.shared.libraries.wanted();
+    for (library, (w, h)) in libraries.iter().zip([(905, 99), (521, 98), (256, 512)]) {
+        view.artwork.insert(library.name.clone(), Arc::new(moose::mui::mui::scene::Image::rgba(w, h,
+            [70, 95, 130, 255].repeat((w * h) as usize)).unwrap()));
+    }
+    if real_art {
+        let art = crate::artwork::scan(&libraries[..2]);
+        assert_eq!(art.len(), 2, "both official library banners must resolve");
+        view.artwork.extend(art);
+    }
+    drop(view);
+    p
+}
+
+#[test]
+fn smart_browser_has_one_header_search_and_funnel() {
+    for (width, height) in [(900., 600.), (1180., 900.)] {
+        let p = redesign_catalog(false);
+        let mut h = Harness::new(&p, width, height);
+        let scene = h.ui.scene().unwrap();
+        assert!(scene.surface("library-filter").is_none() && scene.surface("library-sort").is_none());
+        let browser = scene.surface("browser").unwrap().frame;
+        let search = scene.surface("search").unwrap().frame;
+        let funnel = scene.surface("browser-filter").expect("shared funnel menu").frame;
+        assert!((search.y - browser.y - SPACE).abs() < 0.5, "search leads the browser");
+        assert!(search.x + search.size.width <= funnel.x + 0.5);
+        assert!(scene.surface("browser-sort-label").unwrap().frame.size.height < search.size.height);
+        h.press("browser-filter");
+        h.press("menu-item-2");
+        assert_eq!(p.shared.libraries.settings().sort, crate::library::Sort::Recent);
+        for (item, count) in [("menu-item-7", "0"), ("menu-item-6", "5"), ("menu-item-8", "0"), ("menu-item-6", "5")] {
+            h.press("browser-filter");
+            h.press(item);
+            assert_eq!(h.ui.scene().unwrap().surface("browser-count").unwrap().text_value.as_deref(), Some(count),
+                "the funnel switches the preset source");
+        }
+        h.ui.focus("search");
+        h.tick(Input { text: "Areia".into(), ..Default::default() });
+        h.idle(3);
+        for _ in 0..2 {
+            h.tick(Input { keys: vec![KeyPress { key: Key::Char('f'), mods: Mods { ctrl: true, ..Default::default() } }], ..Default::default() });
+            h.idle(2);
+            assert_eq!(h.ui.focus_key(), Some("search"), "Ctrl+F always addresses the single query");
+        }
+        h.tick(Input { keys: vec![KeyPress { key: Key::Tab, mods: Mods::default() }], ..Default::default() });
+        h.idle(2);
+        assert_eq!(h.ui.focus_key(), Some("search-clear"), "the clear action remains keyboard accessible");
+        h.tick(Input { keys: vec![KeyPress { key: Key::Tab, mods: Mods::default() }], ..Default::default() });
+        h.idle(2);
+        assert_eq!(h.ui.focus_key(), Some("browser-filter"), "the funnel follows the search controls in the tab order");
+    }
+}
+
+#[test]
+fn smart_browser_query_matches_library_vendor_preset_folder_and_nksn() {
+    for (width, height) in [(900., 600.), (1180., 900.)] {
+        for (query, expected, path) in [
+            ("Areia Strings 02", "library-1", "Strings 02.nki"),
+            ("Audio Imperia 01", "library-1", "Strings 01.nki"),
+            ("Afflatus Brass 01", "library-0", "Brass 01.nki"),
+            ("Warm preset", "library-0", "Warm preset.nksn"),
+        ] {
+            let p = redesign_catalog(false);
+            let mut h = Harness::new(&p, width, height);
+            h.ui.focus("search");
+            h.tick(Input { text: query.into(), ..Default::default() });
+            h.idle(3);
+            h.idle(20);
+            let scene = h.ui.scene().unwrap();
+            assert!(scene.surface(expected).is_some(), "matching library stays visible for {query}");
+            let other = if expected == "library-0" { "library-1" } else { "library-0" };
+            assert!(scene.surface(other).is_none(), "unrelated library is filtered by {query}");
+            let item = scene.surface("instrument-0").expect("matching preset");
+            assert!(item.tip.as_deref().is_some_and(|tip| tip.contains(path)), "smart search preserves source identity for {query}: {:?}", item.tip);
+        }
+    }
+}
+
+#[test]
+fn library_cards_use_one_banner_ratio_with_the_name_and_count_inside() {
+    for (width, height) in [(900., 600.), (1180., 900.)] {
+        let p = redesign_catalog(false);
+        let mut h = Harness::new(&p, width, height);
+        h.idle(20);
+        let scene = h.ui.scene().unwrap();
+        let mut heights = Vec::new();
+        assert_eq!(scene.surface("browser-count").unwrap().text_value.as_deref(), Some("5"), "the provider count includes native presets");
+        assert_eq!(scene.surface("library-0-count").unwrap().text_value.as_deref(), Some("3"));
+        for (n, label) in [(0, "Afflatus Chapter II Brass"), (1, "Areia")] {
+            let card = scene.surface(&format!("library-{n}")).unwrap().frame;
+            let art = scene.surface(&format!("library-{n}-art")).unwrap();
+            let name = scene.surface(&format!("library-{n}-name")).expect("literal banner label");
+            let count = scene.surface(&format!("library-{n}-count")).unwrap().frame;
+            assert_eq!(name.text_value.as_deref(), Some(label));
+            assert!((art.frame.size.width / art.frame.size.height - 905. / 99.).abs() < 0.01);
+            assert!(art.disabled, "visual artwork does not consume card pointer gestures");
+            for frame in [name.frame, count] {
+                assert!(frame.y >= art.frame.y - 0.5 && frame.y + frame.size.height <= art.frame.y + art.frame.size.height + 0.5,
+                    "labels live inside the banner");
+            }
+            assert!((card.size.height - art.frame.size.height - TIGHT * 2.).abs() < 0.5, "no separate name row");
+            heights.push(card.size.height);
+        }
+        assert_eq!(heights[0], heights[1], "different official artwork dimensions use equal cards");
+    }
+}
+
+#[test]
+fn empty_browser_uses_only_the_plus_action_and_presets_are_named_presets() {
+    for (width, height) in [(900., 600.), (1180., 900.)] {
+        let p = Arc::new(SamplerParams::new());
+        let h = Harness::new(&p, width, height);
+        assert!(h.ui.scene().unwrap().surface("empty-add-many").is_none());
+        assert!(h.ui.scene().unwrap().surface("empty-add-one").is_none());
+        assert!(h.ui.scene().unwrap().surface("libraries-add").is_some());
+        let p = redesign_catalog(false);
+        let mut h = Harness::new(&p, width, height);
+        h.press("library-0");
+        h.idle(20);
+        let scene = h.ui.scene().unwrap();
+        assert!(scene.surfaces().any(|s| s.text_value.as_deref() == Some("Presets")));
+        assert!(!scene.surfaces().any(|s| s.text_value.as_deref() == Some("Snapshots")));
+        h.press("folder-4");
+        assert_eq!(h.ui.scene().unwrap().surface("crumb-0").unwrap().tip.as_deref(), Some("Back to Presets"));
+        h.press("crumb-0");
+        assert!(h.ui.scene().unwrap().surface("crumb-0").is_none(), "the renamed crumb returns to the actual preset category");
+    }
+}
+
+#[test]
+#[cfg(feature = "shots")]
+fn browser_redesign_shots() {
+    let Some(out) = std::env::var_os("KONTRA_REDESIGN_SHOTS").map(PathBuf::from) else { return };
+    std::fs::create_dir_all(&out).unwrap();
+    for (width, height) in [(900, 600), (1180, 900)] {
+        let real_art = std::env::var_os("KONTRA_REDESIGN_REAL_ART").is_some();
+        let p = redesign_catalog(real_art);
+        let mut h = Harness::new(&p, width as f64, height as f64);
+        let save = |name: &str, h: &mut Harness| {
+            h.idle(30);
+            moose::core::screenshot::save_png(&out.join(format!("{name}-{width}.png")), &pixels(&h.ui, width, height), width.into(), height.into());
+        };
+        save("libraries", &mut h);
+        h.ui.focus("search");
+        h.tick(Input { text: "Areia Strings 02".into(), ..Default::default() });
+        h.idle(3);
+        save("search", &mut h);
+        h.ui.focus("search");
+        h.tick(Input { keys: vec![KeyPress { key: Key::Escape, mods: Mods::default() }], ..Default::default() });
+        h.idle(3);
+        h.press("library-0");
+        save("presets", &mut h);
+        let sort = if h.ui.scene().unwrap().surface("library-sort").is_some() { "library-sort" } else { "browser-filter" };
+        h.press(sort);
+        save("sort", &mut h);
+        let p = Arc::new(SamplerParams::new());
+        let mut h = Harness::new(&p, width as f64, height as f64);
+        save("empty", &mut h);
     }
 }
