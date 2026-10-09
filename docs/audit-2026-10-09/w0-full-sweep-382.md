@@ -26,7 +26,7 @@ Twelve integration failures were reproduced and corrected: event/physical voice 
 
 The first parallel quick run had two low-output Pacific cells with missing streaming pages. Frozen before/current signal-graph and plain serial pairs both sounded at identical plain peaks (-52.57619748 and -53.87774526 dB), with zero underruns or script faults; numeric graph reports were complete with zero dropped records. No product change or threshold waiver followed. The unchanged two-worker 72-cell retry passed; the first failure and all follow-up receipts remain available. These unpaced probes do not certify real-host timing or streaming deadlines.
 
-Main eb55fa78 and integrate 54d9a5c5 have identical trees. An ancestry reconciliation preserves the exact tested candidate tree; only this validation document and ledger evidence change afterward. Shipping artifacts and hosted checks require their own receipts.
+Main eb55fa78 and integrate 54d9a5c5 have identical trees. An ancestry reconciliation preserves the exact tested candidate tree; Later CI-only fixes cover missing ripgrep in the isolated fixture and apt-owned package cache permissions (11 workflow checks and actionlint pass). Codex then identified exact embedded-member paths wrongly rejected by suffix ambiguity. Its authored regression failed, and exact container-relative precedence now passes all three monolith tests, 97 Kontakt unit tests and area no-run. Ambiguous fallback still fails closed; this completes the existing FileContainer defect rather than adding a new ledger entry. The full suite/native receipts above identify f1; this later reader change has its separate targeted receipt. Shipping artifacts and hosted checks require their own receipts.
 
 ## Limits and next batch
 
