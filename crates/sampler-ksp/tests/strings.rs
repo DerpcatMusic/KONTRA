@@ -434,3 +434,13 @@ fn init_font_ids_keep_v1_numeric_and_invalid_name_semantics() {
         on note $out := $font end on", &[]);
     assert_eq!((cell(&rt, 0), cell(&rt, 1), cell(&rt, 2), cell(&rt, 3)), (12, 0, 0, 12));
 }
+
+#[test]
+fn init_menu_control_value_reports_index_without_changing_item_value() {
+    let rt = run("on init declare ui_menu $m add_menu_item($m,\"first\",17) add_menu_item($m,\"second\",93)
+        $m := 93 declare $index := get_control_par(get_ui_id($m),$CONTROL_PAR_VALUE)
+        declare $selected := get_control_par(get_ui_id($m),$CONTROL_PAR_SELECTED_ITEM_IDX)
+        declare $raw declare $count := get_control_par(get_ui_id($m),$CONTROL_PAR_NUM_ITEMS) end on
+        on note $raw := $m end on", &[]);
+    assert_eq!((cell(&rt, 0), cell(&rt, 1), cell(&rt, 2), cell(&rt, 3)), (1, 1, 93, 2));
+}
