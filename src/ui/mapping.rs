@@ -2,7 +2,10 @@
 use super::{Cx, theme::*};
 use moose::mui::mui::prelude::*;
 use sampler_ir as ir;
-use std::sync::{Arc, Weak};
+use std::{
+    collections::HashSet,
+    sync::{Arc, Weak},
+};
 
 #[derive(Default)]
 pub(super) struct State {
@@ -11,6 +14,7 @@ pub(super) struct State {
     links: Vec<Vec<usize>>,
     source_ids: Vec<u32>,
     bounds: (u8, u8),
+    rectangles: Arc<[(usize, u8, u8, u8, u8)]>,
     selected: usize,
     stack: Vec<usize>,
     audition: Option<Audition>,
@@ -138,6 +142,56 @@ fn point(at: Point, size: Size, bounds: (u8, u8)) -> Option<(u8, u8)> {
     Some((key, vel))
 }
 
+fn fit(inst: &ir::Instrument, picked: Option<usize>) -> (u8, u8) {
+    let (mut low, mut high) = (127, 0);
+    for z in inst
+        .zones
+        .iter()
+        .filter(|z| picked.is_none_or(|g| group(z, inst) == g))
+    {
+        low = low.min(z.keys.low);
+        high = high.max(z.keys.high);
+    }
+    if low > high {
+        (0, 127)
+    } else {
+        (
+            low / 12 * 12,
+            (u16::from(high) / 12 * 12 + 11).min(127) as u8,
+        )
+    }
+}
+fn window(center: u8, width: u16) -> (u8, u8) {
+    let width = width.clamp(12, 128) as i16;
+    let low = (i16::from(center) - width / 2).clamp(0, 128 - width);
+    (low as u8, (low + width - 1) as u8)
+}
+fn pan(bounds: (u8, u8), direction: i16) -> (u8, u8) {
+    let width = i16::from(bounds.1) - i16::from(bounds.0) + 1;
+    let low = (i16::from(bounds.0) + direction * width / 2).clamp(0, 128 - width);
+    (low as u8, (low + width - 1) as u8)
+}
+fn rectangles(inst: &ir::Instrument) -> Arc<[(usize, u8, u8, u8, u8)]> {
+    // Overlapping takes share paint geometry; their identities remain in the IR and stack.
+    let mut rectangles = inst
+        .zones
+        .iter()
+        .map(|z| {
+            (
+                group(z, inst),
+                z.keys.low,
+                z.keys.high,
+                z.velocities.low,
+                z.velocities.high,
+            )
+        })
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    rectangles.sort_unstable();
+    rectangles.into()
+}
+
 pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrument>) -> El {
     let compact = ui
         .scene()
@@ -154,20 +208,10 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
         .is_none_or(|old| !Arc::ptr_eq(old, inst));
     if changed {
         let mut counts = vec![0; inst.groups.len() + 1];
-        let (mut low, mut high) = (127, 0);
         for z in &inst.zones {
             counts[group(z, inst)] += 1;
-            low = low.min(z.keys.low);
-            high = high.max(z.keys.high);
         }
-        let bounds = if low > high {
-            (0, 127)
-        } else {
-            (
-                low / 12 * 12,
-                (u16::from(high) / 12 * 12 + 11).min(127) as u8,
-            )
-        };
+        let bounds = fit(inst, None);
         let st = cx.state.inside.entry(slot).or_default();
         st.group = None;
         st.mapping = State {
@@ -175,9 +219,11 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
             counts,
             links: links(inst),
             source_ids: crate::sound::waveform::source_ids(inst),
+            rectangles: rectangles(inst),
             bounds,
             ..Default::default()
         };
+        ui.set_scroll(format!("map-stack-{slot}"), [0., 0.]);
         if let Some(z) = inst.zones.first() {
             let (k, v) = midpoint(z);
             st.mapping.stack = stack(inst, None, k, v);
@@ -295,10 +341,12 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
         }
     }
     if picked != cx.state.inside[&slot].group {
+        ui.set_scroll(format!("map-stack-{slot}"), [0., 0.]);
         let st = cx.state.inside.get_mut(&slot).unwrap();
         st.group = picked;
         st.mapping.audition = None;
         st.mapping.cell = None;
+        st.mapping.bounds = fit(inst, picked);
         if let Some((n, z)) = inst
             .zones
             .iter()
@@ -310,6 +358,46 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
             st.mapping.stack = stack(inst, picked, k, v);
         }
     }
+    let mut navigation = Vec::new();
+    for (suffix, label, name) in [
+        ("pan-left", "<", "Pan keys left"),
+        ("zoom-in", "+", "Zoom keys in"),
+        ("zoom-out", "−", "Zoom keys out"),
+        ("pan-right", ">", "Pan keys right"),
+        ("fit", "Fit", "Fit the visible groups"),
+    ] {
+        let st = &mut cx.state.inside.get_mut(&slot).unwrap().mapping;
+        let width = u16::from(st.bounds.1) - u16::from(st.bounds.0) + 1;
+        let disabled = match suffix {
+            "zoom-in" => width <= 12,
+            "zoom-out" => width == 128,
+            "pan-left" => st.bounds.0 == 0,
+            "pan-right" => st.bounds.1 == 127,
+            _ => false,
+        };
+        let (hit, el) = match suffix {
+            "pan-left" => icon_button(ui, format!("map-{suffix}-{slot}"), Icon::Left, name, false),
+            "pan-right" => {
+                icon_button(ui, format!("map-{suffix}-{slot}"), Icon::Right, name, false)
+            }
+            _ => super::theme::action(ui, format!("map-{suffix}-{slot}"), label, false),
+        };
+        if hit && !disabled {
+            let center = st
+                .cell
+                .filter(|c| (st.bounds.0..=st.bounds.1).contains(&c.0))
+                .map_or((u16::from(st.bounds.0) + width / 2).min(127) as u8, |c| c.0);
+            st.bounds = match suffix {
+                "zoom-in" => window(center, width / 2),
+                "zoom-out" => window(center, width * 2),
+                "pan-left" => pan(st.bounds, -1),
+                "pan-right" => pan(st.bounds, 1),
+                _ => fit(inst, picked),
+            };
+        }
+        navigation.push(el.named(name).tip(name).when(disabled, |e| e.disabled()));
+    }
+    let navigation = row(navigation).gap(0).shrink(0);
     let map_id = format!("map-{slot}");
     let bounds = cx.state.inside[&slot].mapping.bounds;
     let r = ui.get(map_id.as_str());
@@ -332,6 +420,7 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
             } else {
                 0
             };
+            ui.set_scroll(format!("map-stack-{slot}"), [0., (n % 32) as f64 * 22.]);
             st.cell = Some((key, vel));
             st.selected = hit[n];
             st.stack = hit;
@@ -345,7 +434,11 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
         }
     }
     let selected = cx.state.inside[&slot].mapping.selected;
-    let zones = inst.clone();
+    let geometry = cx.state.inside[&slot].mapping.rectangles.clone();
+    let selected_zone = inst
+        .zones
+        .get(selected)
+        .map(|z| (z.keys.low, z.keys.high, z.velocities.low, z.velocities.high));
     let map = canvas(move |s| {
         let keys = f64::from(bounds.1 - bounds.0 + 1);
         let x = |k: u16| (f64::from(k) - f64::from(bounds.0)) / keys * s.width;
@@ -368,40 +461,35 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
         for v in [32, 64, 96] {
             out.push(Draw::fill(rect(0., y(v).round(), s.width, 1.), hairline()));
         }
-        for (n, z) in zones
-            .zones
+        let box_ = |low: u8, high: u8, bottom: u8, top: u8| {
+            rect(
+                x(low.into()),
+                y(u16::from(top) + 1),
+                x(u16::from(high) + 1) - x(low.into()),
+                y(bottom.into()) - y(u16::from(top) + 1),
+            )
+        };
+        for &(g, low, high, bottom, top) in geometry
             .iter()
-            .enumerate()
-            .filter(|(n, _)| *n != selected)
-            .chain(zones.zones.get(selected).map(|z| (selected, z)))
+            .filter(|r| r.2 >= bounds.0 && r.1 <= bounds.1)
         {
-            let g = group(z, &zones);
             let shown = picked.is_none_or(|p| p == g);
-            let box_ = rect(
-                x(z.keys.low.into()),
-                y(u16::from(z.velocities.high) + 1),
-                x(u16::from(z.keys.high) + 1) - x(z.keys.low.into()),
-                y(z.velocities.low.into()) - y(u16::from(z.velocities.high) + 1),
-            );
+            let r = box_(low, high, bottom, top);
             out.push(Draw::fill(
-                box_.clone(),
+                r.clone(),
                 color(g).with_alpha(if shown { 0.18 } else { 0.025 }),
             ));
             if shown {
-                out.push(Draw::stroke(
-                    box_,
-                    if n == selected {
-                        Fill::from(Role::Ink)
-                    } else {
-                        Fill::from(color(g).with_alpha(0.65))
-                    },
-                    if n == selected { 2. } else { 1. },
-                ));
+                out.push(Draw::stroke(r, color(g).with_alpha(0.65), 1.));
             }
         }
+        if let Some((low, high, bottom, top)) = selected_zone {
+            out.push(Draw::stroke(box_(low, high, bottom, top), Role::Ink, 2.));
+        }
+
         out
     })
-    .h(if compact { 72. } else { 144. })
+    .h(if compact { 64. } else { 144. })
     .w(Len::Pct(100.))
     .min_w(0)
     .clip()
@@ -410,31 +498,49 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
         "Key and velocity zone map; click and hold to audition; repeat a cell to cycle its stack",
     )
     .id(map_id);
-    let scale = row((bounds.0..=bounds.1)
-        .filter(|k| k % 12 == 0)
-        .map(|k| {
-            caption(note_name(k))
+    let width = u16::from(bounds.1) - u16::from(bounds.0) + 1;
+    let first = u16::from(bounds.0).div_ceil(12) * 12;
+    let mut ticks = vec![
+        block(0., 0.)
+            .w(Len::Pct(
+                (first - u16::from(bounds.0)) as f64 / f64::from(width) * 100.,
+            ))
+            .shrink(0),
+    ];
+    for k in (first..=u16::from(bounds.1)).step_by(12) {
+        ticks.push(
+            caption(note_name(k as u8))
                 .fill(secondary())
                 .text_size(SMALL)
-                .flex(1)
+                .w(Len::Pct(
+                    f64::from((k + 12).min(u16::from(bounds.1) + 1) - k) / f64::from(width) * 100.,
+                ))
+                .shrink(0)
                 .min_w(0)
-        })
-        .collect::<Vec<_>>())
-    .gap(0);
+                .id(format!("map-scale-{slot}-{k}")),
+        );
+    }
+    let scale = row(ticks).gap(0);
     let mut layers = Vec::new();
     let stack = cx.state.inside[&slot].mapping.stack.clone();
-    // ponytail: show the first 64 overlapping zones; cycle the map to inspect later ones.
-    for &n in stack
-        .iter()
-        .take(64)
-        .chain(stack.iter().filter(|&&n| n == selected).skip(
-            if stack.iter().take(64).any(|&n| n == selected) {
-                1
-            } else {
-                0
-            },
-        ))
-    {
+    let mut page = stack.iter().position(|&n| n == selected).unwrap_or(0) / 32;
+    let mut pages = Vec::new();
+    for (suffix, label, next) in [
+        ("prev", "Previous", page.saturating_sub(1)),
+        ("next", "Next", page + 1),
+    ] {
+        let disabled = next == page || next * 32 >= stack.len();
+        let (hit, el) =
+            super::theme::action(ui, format!("map-stack-{suffix}-{slot}"), label, false);
+        if hit && !disabled {
+            page = next;
+            cx.state.inside.get_mut(&slot).unwrap().mapping.selected = stack[page * 32];
+            ui.set_scroll(format!("map-stack-{slot}"), [0., 0.]);
+        }
+        pages.push(el.when(disabled, |e| e.disabled()));
+    }
+    let selected = cx.state.inside[&slot].mapping.selected;
+    for &n in stack.iter().skip(page * 32).take(32) {
         let z = &inst.zones[n];
         let on = n == selected;
         let id = format!("map-zone-{slot}-{n}");
@@ -470,34 +576,49 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
     let head = row![
         section("Mapping"),
         caption(format!(
-            "{} zones · {} groups",
+            "{} zones · {} {}",
             inst.zones.len(),
-            inst.groups.len()
+            inst.groups.len(),
+            if inst.groups.len() == 1 {
+                "group"
+            } else {
+                "groups"
+            }
         ))
         .fill(secondary()),
         spacer(),
-        caption("Read only").fill(secondary())
+        caption(format!("{}–{}", note_name(bounds.0), note_name(bounds.1)))
+            .fill(secondary())
+            .id(format!("map-range-{slot}")),
+        navigation
     ]
     .gap(SPACE)
     .align(Align::Center);
-    let instructions =
-        caption("Hold a cell to audition · repeat to cycle overlapping zones")
-            .fill(secondary())
-            .lines(1)
-            .min_w(0);
+    let instructions = caption("Hold a cell to audition · repeat to cycle overlapping zones")
+        .fill(secondary())
+        .lines(1)
+        .min_w(0);
     let grid = row![
         col(groups)
             .gap(1)
             .w(156.)
-            .h(if compact { 100. } else { 172. })
+            .h(if compact { 92. } else { 172. })
             .scroll()
             .shrink(0),
         col![
             row![
-                col![caption("127").fill(secondary()), spacer(), caption("1").fill(secondary())].w(20.).h(if compact {72.} else {144.}).align(Align::End),
+                col![
+                    caption("127").fill(secondary()),
+                    spacer(),
+                    caption("1").fill(secondary())
+                ]
+                .w(20.)
+                .h(if compact { 64. } else { 144. })
+                .align(Align::End),
                 col![map, scale].gap(TIGHT).flex(1).min_w(0)
             ]
-            .gap(TIGHT).align(Align::Start),
+            .gap(TIGHT)
+            .align(Align::Start),
             instructions
         ]
         .gap(TIGHT)
@@ -506,16 +627,19 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
     ]
     .gap(SPACE)
     .align(Align::Start);
-    let stack_head = caption(format!(
-        "Overlapping zones · {}{}",
-        stack.len(),
-        if stack.len() > 64 {
-            " (first 64 shown)"
+    let stack_head = row![
+        caption(format!("Overlapping zones · {}", stack.len())).fill(secondary()),
+        spacer(),
+        caption(if stack.is_empty() {
+            "0".into()
         } else {
-            ""
-        }
-    ))
-    .fill(secondary());
+            format!("{}–{}", page * 32 + 1, ((page + 1) * 32).min(stack.len()))
+        })
+        .fill(secondary()),
+        row(pages).gap(0)
+    ]
+    .gap(TIGHT)
+    .align(Align::Center);
     let inspector = inspector(ui, cx, slot, inst, compact);
     col![
         head,
@@ -671,9 +795,15 @@ fn inspector(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument, compa
         r.held,
     );
     col![
-        row![body(format!("{} · {}",sample(inst, z),takes(inst,z))).lines(1).flex(1).min_w(0), aud]
-            .gap(SPACE)
-            .align(Align::Center),
+        row![
+            body(format!("{} · {}", sample(inst, z), takes(inst, z)))
+                .lines(1)
+                .flex(1)
+                .min_w(0),
+            aud
+        ]
+        .gap(SPACE)
+        .align(Align::Center),
         caption(info).lines(1).min_w(0),
         wave,
         caption(marks)
@@ -681,7 +811,9 @@ fn inspector(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument, compa
             .lines(1)
             .min_w(0)
             .tip("Read-only source frames; white: start/end, coloured: loop boundaries"),
-        caption(status).fill(secondary()).id(format!("map-wave-status-{slot}"))
+        caption(status)
+            .fill(secondary())
+            .id(format!("map-wave-status-{slot}"))
     ]
     .gap(TIGHT)
     .id(format!("map-inspector-{slot}-{n}"))
@@ -691,9 +823,49 @@ fn inspector(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument, compa
 mod tests {
     use super::*;
     #[test]
+    fn mapping_zoom_and_pan_keep_every_key_reachable() {
+        assert_eq!(window(0, 12), (0, 11));
+        assert_eq!(window(127, 12), (116, 127));
+        assert_eq!(window(60, 256), (0, 127));
+        for center in 0..128 {
+            for width in [12, 24, 64, 128] {
+                let b = window(center, width);
+                assert_eq!(u16::from(b.1) - u16::from(b.0) + 1, width);
+                assert!((b.0..=b.1).contains(&center));
+                for direction in [-1, 1] {
+                    let p = pan(b, direction);
+                    assert_eq!(p.1 - p.0, b.1 - b.0);
+                }
+            }
+        }
+        assert_eq!(pan((116, 127), 1), (116, 127));
+        assert_eq!(pan((0, 11), -1), (0, 11));
+        assert_eq!(
+            point(Point::new(0., 0.), Size::new(12., 128.), (116, 127)),
+            Some((116, 127))
+        );
+    }
+    #[test]
+    fn mapping_paint_cache_preserves_all_overlapping_identities() {
+        let mut inst = ir::Instrument::default();
+        for _ in 0..1024 {
+            inst.zones.push(ir::Zone::new(ir::AssetRef(0)));
+        }
+        assert_eq!(rectangles(&inst).len(), 1);
+        assert_eq!(stack(&inst, None, 60, 64), (0..1024).collect::<Vec<_>>());
+        inst.groups.push(ir::Group::default());
+        inst.zones[1023].group = Some(ir::GroupRef(0));
+        inst.zones[1023].keys = ir::KeyRange { low: 60, high: 72 };
+        assert_eq!(rectangles(&inst).len(), 2);
+        assert_eq!(fit(&inst, Some(0)), (60, 83));
+        assert_eq!(stack(&inst, Some(0), 60, 64), vec![1023]);
+    }
+    #[test]
     fn mapping_group_hues_respect_the_existing_palette_for_native_group_counts() {
-        for group in 0..65_536 { assert!(!orange(golden_hue(200.,group)), "group {group}"); }
-        assert!((golden_hue(200.,7)-38.76).abs()<0.01);
+        for group in 0..65_536 {
+            assert!(!orange(golden_hue(200., group)), "group {group}");
+        }
+        assert!((golden_hue(200., 7) - 38.76).abs() < 0.01);
     }
     #[test]
     fn map_cell_edges_and_overlapping_identity_are_inclusive() {
