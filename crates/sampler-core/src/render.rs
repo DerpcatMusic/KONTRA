@@ -605,8 +605,8 @@ impl Runtime {
                 if exponent != v.mod_pitch.0 {
                     v.mod_pitch = (exponent, exponent.exp2());
                 }
-                (v.base_step * expression.rendered.ratio * v.mod_pitch.1)
-                    .clamp(super::resample::MIN_STEP, super::resample::MAX_STEP)
+                let step = v.base_step * expression.rendered.ratio * v.mod_pitch.1;
+                if v.cursor.wavetable().is_some() { step } else { step.clamp(super::resample::MIN_STEP, super::resample::MAX_STEP) }
             }
         });
         Some(Prelude {

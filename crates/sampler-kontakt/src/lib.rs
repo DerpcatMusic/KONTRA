@@ -19,6 +19,7 @@ mod effects;
 mod header_cache;
 pub mod keyswitch;
 mod keyswitch_ui;
+mod wavetable;
 mod library;
 mod load;
 mod mapping;

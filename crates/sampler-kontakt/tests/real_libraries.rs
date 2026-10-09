@@ -283,8 +283,9 @@ fn conflux_renders_its_tracked_zones_within_the_runtime_pitch_range() {
     assert!(
         ir.unsupported
             .iter()
-            .any(|u| u.feature == "wavetable source")
+            .all(|u| u.feature != "wavetable source")
     );
+    assert_eq!(ir.groups.iter().filter(|g| g.wavetable.is_some()).count(), 1);
     assert!(peak > 0.01, "audible: peak {peak}");
 }
 
