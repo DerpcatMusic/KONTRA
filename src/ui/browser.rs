@@ -704,7 +704,8 @@ fn list(
     // Its name or its folders hold every word.
     let hit = |path: &Path, folders: &str| {
         words.is_empty() || {
-            let hay = format!("{} {folders}", stem(path)).to_lowercase();
+            let provider = if is_uvi(path) { "UVI" } else { "" };
+            let hay = format!("{} {folders} {provider}", stem(path)).to_lowercase();
             words.iter().all(|w| hay.contains(w))
         }
     };
