@@ -648,7 +648,9 @@ pub fn constant(name: &str) -> Option<i32> {
         "$MIDI_COMMAND_MONO_AT" => Some(208),
         "$MIDI_COMMAND_PITCH_BEND" => Some(224),
         _ => None,
-    } { return Some(value); }
+    } {
+        return Some(value);
+    }
     if let Some(event) = sampler_core::WidgetEventType::ksp_constant(name) {
         return Some(event as i32);
     }

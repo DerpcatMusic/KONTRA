@@ -13,7 +13,9 @@ pub struct KontaktChunks(pub Vec<Chunk>);
 impl KontaktChunks {
     /// Write every raw chunk in original order, including repeated and unknown IDs.
     pub fn write<W: std::io::Write>(&self, mut writer: W) -> Result<(), Error> {
-        for chunk in &self.0 { chunk.write(&mut writer)?; }
+        for chunk in &self.0 {
+            chunk.write(&mut writer)?;
+        }
         Ok(())
     }
 
@@ -23,7 +25,9 @@ impl KontaktChunks {
         let position = reader.stream_position()?;
         let end = reader.seek(std::io::SeekFrom::End(0))?;
         reader.seek(std::io::SeekFrom::Start(position))?;
-        while reader.stream_position()? < end { objects.push(Chunk::read(&mut reader)?); }
+        while reader.stream_position()? < end {
+            objects.push(Chunk::read(&mut reader)?);
+        }
 
         Ok(Self(objects))
     }

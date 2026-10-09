@@ -418,14 +418,13 @@ fn effect_slot_writes_drive_a_bus_mix_block() {
         )],
         GroupParams::default(),
         |p| {
-            let mut controls=p.controls().to_vec();
+            let mut controls = p.controls().to_vec();
             controls.extend([
                 definition(SlotKind::Dry, 0.),
                 definition(SlotKind::Output, 1.),
                 definition(SlotKind::Bypass, 0.),
             ]);
-            p.with_controls(controls)?
-            .with_buses(
+            p.with_controls(controls)?.with_buses(
                 vec![Bus {
                     processors: vec![
                         Processor::Mix {

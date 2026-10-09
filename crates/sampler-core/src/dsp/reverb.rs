@@ -237,7 +237,10 @@ impl Reverb {
         hadamard(&mut mix);
         let row = &mut self.lines[pos & mask];
         for (i, (y, damped)) in row.iter_mut().zip(&mut self.damp_state).enumerate() {
-            *damped = super::kernels::biased_one_pole32(*damped, (mix[i] * self.feedback[i] - *damped) * self.damp_coef);
+            *damped = super::kernels::biased_one_pole32(
+                *damped,
+                (mix[i] * self.feedback[i] - *damped) * self.damp_coef,
+            );
             *y = *damped + diffused[i % 2];
         }
         let l = (taps[0] - taps[2] + taps[4] - taps[6]) * 0.5;
@@ -392,19 +395,43 @@ mod frozen_kernel_tests {
     #[test]
     fn shared_reverb_matches_frozen_pcm_and_state_bits() {
         for rate in [44100, 48000, 96000] {
-            let settings = ReverbSettings { low_shelf_db: -12., size: 0.05, ..super::tests::settings(1.1) };
+            let settings = ReverbSettings {
+                low_shelf_db: -12.,
+                size: 0.05,
+                ..super::tests::settings(1.1)
+            };
             let mut actual = Reverb::new(&settings, rate).unwrap();
             let mut expected = Reverb::new(&settings, rate).unwrap();
             for i in 0..8192 {
-                let x = if i == 0 { [1., -0.5] } else if i < 2048 { [(i as f32 * 0.137).sin() * 0.2, 0.] } else { [-0., f32::from_bits(1)] };
+                let x = if i == 0 {
+                    [1., -0.5]
+                } else if i < 2048 {
+                    [(i as f32 * 0.137).sin() * 0.2, 0.]
+                } else {
+                    [-0., f32::from_bits(1)]
+                };
                 let lfo = [(i as f32 * 0.003).sin(), (i as f32 * 0.003).cos()];
-                assert_eq!(actual.tick(x, lfo).map(f32::to_bits), frozen_tick(&mut expected, x, lfo).map(f32::to_bits));
-                assert_eq!(actual.input_state.map(f32::to_bits), expected.input_state.map(f32::to_bits));
-                assert_eq!(actual.damp_state.map(f32::to_bits), expected.damp_state.map(f32::to_bits));
-                assert_eq!(actual.shelf_state.map(f32::to_bits), expected.shelf_state.map(f32::to_bits));
+                assert_eq!(
+                    actual.tick(x, lfo).map(f32::to_bits),
+                    frozen_tick(&mut expected, x, lfo).map(f32::to_bits)
+                );
+                assert_eq!(
+                    actual.input_state.map(f32::to_bits),
+                    expected.input_state.map(f32::to_bits)
+                );
+                assert_eq!(
+                    actual.damp_state.map(f32::to_bits),
+                    expected.damp_state.map(f32::to_bits)
+                );
+                assert_eq!(
+                    actual.shelf_state.map(f32::to_bits),
+                    expected.shelf_state.map(f32::to_bits)
+                );
                 assert_eq!(actual.pos, expected.pos);
             }
-            for (a, b) in actual.lines.iter().zip(expected.lines.iter()) { assert_eq!(a.map(f32::to_bits), b.map(f32::to_bits)); }
+            for (a, b) in actual.lines.iter().zip(expected.lines.iter()) {
+                assert_eq!(a.map(f32::to_bits), b.map(f32::to_bits));
+            }
         }
     }
 }

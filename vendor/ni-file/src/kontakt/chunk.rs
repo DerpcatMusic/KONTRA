@@ -19,7 +19,8 @@ pub struct Chunk {
 impl Chunk {
     /// Write the raw chunk without interpreting or discarding unknown bytes.
     pub fn write<W: std::io::Write>(&self, mut writer: W) -> Result<(), Error> {
-        let length = u32::try_from(self.data.len()).map_err(|_| Error::Static("Kontakt chunk too large"))?;
+        let length =
+            u32::try_from(self.data.len()).map_err(|_| Error::Static("Kontakt chunk too large"))?;
         writer.write_all(&self.id.to_le_bytes())?;
         writer.write_all(&length.to_le_bytes())?;
         writer.write_all(&self.data)?;
@@ -28,9 +29,24 @@ impl Chunk {
 
     pub fn read<R: ReadBytesExt>(mut reader: R) -> Result<Self, Error> {
         let at = reader.stream_position()?;
-        let id = reader.read_u16_le().map_err(|e| Error::context(format!("Kontakt chunk ID at offset {at}"), e))?;
-        let length = reader.read_u32_le().map_err(|e| Error::context(format!("Kontakt chunk 0x{id:04x} length at offset {}", at + 2), e))? as usize;
-        let data = reader.read_bytes(length).map_err(|e| Error::context(format!("Kontakt chunk 0x{id:04x} body at offset {}, declared length {length}", at + 6), e))?;
+        let id = reader
+            .read_u16_le()
+            .map_err(|e| Error::context(format!("Kontakt chunk ID at offset {at}"), e))?;
+        let length = reader.read_u32_le().map_err(|e| {
+            Error::context(
+                format!("Kontakt chunk 0x{id:04x} length at offset {}", at + 2),
+                e,
+            )
+        })? as usize;
+        let data = reader.read_bytes(length).map_err(|e| {
+            Error::context(
+                format!(
+                    "Kontakt chunk 0x{id:04x} body at offset {}, declared length {length}",
+                    at + 6
+                ),
+                e,
+            )
+        })?;
         Ok(Self { id, data })
     }
 

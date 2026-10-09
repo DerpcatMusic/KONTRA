@@ -12,13 +12,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some((path, member)) = item.split_once("::") {
         let ir = sampler_uvi::Bank::open_metadata(Path::new(path))
             .map_err(|_| "uvi-bank-directory")
-            .and_then(|bank| sampler_uvi::translate_program(&bank, member)
-                .map_err(|_| "uvi-program-translate"));
+            .and_then(|bank| {
+                sampler_uvi::translate_program(&bank, member).map_err(|_| "uvi-program-translate")
+            });
         let ir = match ir {
             Ok(ir) => ir,
             Err(stage) => {
-                println!("{}", json!({"basis":"untimed-native-slot-census", "programs":[],
-                    "error":"native-slot-census-failed", "stage":stage}));
+                println!(
+                    "{}",
+                    json!({"basis":"untimed-native-slot-census", "programs":[],
+                    "error":"native-slot-census-failed", "stage":stage})
+                );
                 return Ok(());
             }
         };
