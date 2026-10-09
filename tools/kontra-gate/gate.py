@@ -102,7 +102,7 @@ def summarize(run, complete=False):
                 totals[version]['original_ok'] += row.get('ui') == 'original-ok'
                 totals[version]['audible'] += row.get('plays_note') == 'yes'
             ui = 'UNKNOWN' if not new else 'PASS' if new.get('ui') == 'original-ok' else 'FAIL'
-            audible = 'UNKNOWN' if not new or new.get('audition_status') in ['audition-mismatch', 'fallback-note', 'not-auditioned'] else 'PASS' if new.get('plays_note') == 'yes' else 'FAIL'
+            audible = 'UNKNOWN' if not new or new.get('audition_status') in ['audition-mismatch', 'invalid-note-plan', 'fallback-note', 'not-auditioned'] else 'PASS' if new.get('plays_note') == 'yes' else 'FAIL'
             from adapters import gesture_cell
             gesture = gesture_cell(gestures.get('cells', []), item, condition)
             from presented import presented_cell
