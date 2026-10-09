@@ -19,6 +19,7 @@ pub(super) struct State {
     stack: Vec<usize>,
     audition: Option<Audition>,
     cell: Option<(u8, u8)>,
+    wave: Option<(usize, (u64, u64))>,
 }
 struct Audition {
     params: Weak<crate::plugin::SamplerParams>,
@@ -197,6 +198,19 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
         .scene()
         .and_then(|s| s.surface("editor-root"))
         .is_some_and(|s| s.frame.size.height < 700.);
+    // Keep the inspector inside both the resized part and the keyboard boundary.
+    let map_height = ui
+        .scene()
+        .and_then(|scene| {
+            let map = scene.surface(&format!("map-{slot}"))?.frame;
+            let status = scene.surface(&format!("map-wave-status-{slot}"))?.frame;
+            let part = scene.surface(&format!("part-{slot}"))?.frame;
+            let rack = scene.surface("rack-view")?.frame;
+            let bottom = (part.y + part.size.height - 1.).min(rack.y + rack.size.height) - INSET;
+            Some(map.size.height + bottom - (status.y + status.size.height.max(SMALL + 2.)))
+        })
+        .unwrap_or(if compact { 64. } else { 144. })
+        .clamp(32., if compact { 64. } else { 144. });
     let changed = cx
         .state
         .inside
@@ -489,7 +503,7 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
 
         out
     })
-    .h(if compact { 64. } else { 144. })
+    .h(map_height)
     .w(Len::Pct(100.))
     .min_w(0)
     .clip()
@@ -602,7 +616,7 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
         col(groups)
             .gap(1)
             .w(156.)
-            .h(if compact { 92. } else { 172. })
+            .h(map_height + 28.)
             .scroll()
             .shrink(0),
         col![
@@ -613,7 +627,7 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
                     caption("1").fill(secondary())
                 ]
                 .w(20.)
-                .h(if compact { 64. } else { 144. })
+                .h(map_height)
                 .align(Align::End),
                 col![map, scale].gap(TIGHT).flex(1).min_w(0)
             ]
@@ -657,13 +671,96 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
     .min_w(0)
 }
 
-fn loops(playback: &ir::Playback) -> Vec<ir::LoopRange> {
-    match playback.looping {
-        ir::Looping::Continuous(r) | ir::Looping::UntilRelease(r) => vec![r],
-        ir::Looping::Slots(slots) => slots.into_iter().flatten().map(|s| s.range).collect(),
+struct LoopMark {
+    slot: usize,
+    range: ir::LoopRange,
+    release: Option<u64>,
+    fades: Option<[(u64, u64); 2]>,
+}
+fn loop_marks(playback: &ir::Playback, rate: u32) -> Vec<LoopMark> {
+    let slots = match playback.looping {
+        ir::Looping::Continuous(r) => vec![(1, r, false)],
+        ir::Looping::UntilRelease(r) => vec![(1, r, true)],
+        ir::Looping::Slots(slots) => slots
+            .into_iter()
+            .enumerate()
+            .filter_map(|(n, s)| s.map(|s| (n + 1, s.range, s.until_release)))
+            .collect(),
         _ => vec![],
+    };
+    slots
+        .into_iter()
+        .map(|(slot, range, release)| {
+            let fade = range.crossfade.frames(f64::from(rate));
+            // Same source-rate conversion and ping-pong precedence as core lowering.
+            let fades = if fade == 0 || range.alternating {
+                None
+            } else if playback.reverse {
+                range
+                    .start
+                    .checked_add(fade)
+                    .zip(range.end.checked_add(fade))
+                    .map(|(a, b)| [(range.start, a), (range.end, b)])
+            } else {
+                range
+                    .end
+                    .checked_sub(fade)
+                    .zip(range.start.checked_sub(fade))
+                    .map(|(a, b)| [(a, range.end), (b, range.start)])
+            };
+            LoopMark {
+                slot,
+                range,
+                release: release.then_some(if playback.reverse {
+                    range.start
+                } else {
+                    range.end
+                }),
+                fades,
+            }
+        })
+        .collect()
+}
+fn sample_window(low: u64, width: u64, total: u64) -> (u64, u64) {
+    if total == 0 {
+        return (0, 0);
+    }
+    let width = width.clamp(1, total);
+    let low = low.min(total - width);
+    (low, low + width)
+}
+fn sample_zoom(bounds: (u64, u64), total: u64, zoom_in: bool, anchor: f64) -> (u64, u64) {
+    let width = bounds.1 - bounds.0;
+    let next = if zoom_in {
+        width / 2
+    } else {
+        width.saturating_mul(2)
+    }
+    .clamp(1, total.max(1));
+    let anchor = anchor.clamp(0., 1.);
+    let low = (bounds.0 as f64 + width as f64 * anchor - next as f64 * anchor).max(0.) as u64;
+    sample_window(low, next, total)
+}
+fn sample_pan(bounds: (u64, u64), total: u64, delta: i64) -> (u64, u64) {
+    sample_window(
+        bounds.0.saturating_add_signed(delta),
+        bounds.1 - bounds.0,
+        total,
+    )
+}
+fn sample_x(frame: u64, bounds: (u64, u64), width: f64) -> Option<f64> {
+    ((bounds.0..=bounds.1).contains(&frame) && bounds.0 < bounds.1).then(|| {
+        ((frame - bounds.0) as f64 / (bounds.1 - bounds.0) as f64 * width).min((width - 1.).max(0.))
+    })
+}
+fn sample_start(playback: &ir::Playback, frames: u64) -> u64 {
+    if playback.reverse {
+        playback.end.unwrap_or(frames).saturating_sub(1)
+    } else {
+        playback.start
     }
 }
+
 fn inspector(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument, compact: bool) -> El {
     let st = &cx.state.inside[&slot].mapping;
     let n = st.selected;
@@ -675,11 +772,93 @@ fn inspector(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument, compa
         .scene()
         .and_then(|s| s.surface(&id))
         .map_or(512, |s| s.frame.size.width.ceil().clamp(1., 4096.) as usize);
-    let envelope = st.source_ids.get(n).and_then(|&zone| {
-        cx.p.shared
-            .part(slot)?
-            .zone_waveform(zone, cx.view.parts[slot].generation, bins)
-    });
+    let source = st.source_ids.get(n).copied();
+    let part = cx.p.shared.part(slot);
+    let epoch = cx.view.parts[slot].generation;
+    let full = source.and_then(|zone| part.as_ref()?.zone_waveform(zone, epoch, bins));
+    let total = full.as_ref().map_or(0, |e| e.frames);
+    let st = &mut cx.state.inside.get_mut(&slot).unwrap().mapping;
+    if st.wave.is_none_or(|(zone, _)| zone != n) {
+        st.wave = Some((n, (0, total)));
+    }
+    let (_, mut bounds) = st.wave.unwrap();
+    if bounds.0 >= bounds.1 && total > 0 {
+        bounds = (0, total);
+    }
+    let mut navigation = Vec::new();
+    for (suffix, label, name) in [
+        ("pan-left", "", "Pan sample left"),
+        ("zoom-in", "+", "Zoom sample in"),
+        ("zoom-out", "−", "Zoom sample out"),
+        ("pan-right", "", "Pan sample right"),
+        ("fit", "Fit", "Fit the whole sample"),
+    ] {
+        let width = bounds.1 - bounds.0;
+        let disabled = total == 0
+            || match suffix {
+                "pan-left" => bounds.0 == 0,
+                "pan-right" => bounds.1 == total,
+                "zoom-in" => width <= 1,
+                "zoom-out" => width >= total,
+                _ => false,
+            };
+        let id = format!("map-wave-{suffix}-{slot}");
+        let (hit, el) = match suffix {
+            "pan-left" => icon_button(ui, id, Icon::Left, name, false),
+            "pan-right" => icon_button(ui, id, Icon::Right, name, false),
+            _ => super::theme::action(ui, id, label, false),
+        };
+        if hit && !disabled {
+            bounds = match suffix {
+                "zoom-in" => sample_zoom(bounds, total, true, 0.5),
+                "zoom-out" => sample_zoom(bounds, total, false, 0.5),
+                "pan-left" => sample_pan(
+                    bounds,
+                    total,
+                    -((width / 2).max(1).min(i64::MAX as u64) as i64),
+                ),
+                "pan-right" => sample_pan(
+                    bounds,
+                    total,
+                    (width / 2).max(1).min(i64::MAX as u64) as i64,
+                ),
+                _ => (0, total),
+            };
+        }
+        navigation.push(el.named(name).tip(name).when(disabled, |e| e.disabled()));
+    }
+    if let Some(wheel) = ui
+        .wheel(id.as_str())
+        .filter(|w| w.x.is_finite() && w.y.is_finite())
+        && total > 0
+    {
+        let width = ui
+            .scene()
+            .and_then(|s| s.surface(&id))
+            .map_or(1., |s| s.frame.size.width.max(1.));
+        if wheel.x != 0. {
+            bounds = sample_pan(
+                bounds,
+                total,
+                (wheel.x / width * (bounds.1 - bounds.0) as f64) as i64,
+            );
+        }
+        if wheel.y != 0. {
+            let anchor = ui.local(id.as_str()).map_or(0.5, |p| p.x / width);
+            bounds = sample_zoom(bounds, total, wheel.y < 0., anchor);
+        }
+    }
+    st.wave = Some((n, bounds));
+    let navigation = row(navigation).gap(0).shrink(0);
+    let envelope = if bounds == (0, total) {
+        full.clone()
+    } else {
+        source.and_then(|zone| {
+            part.as_ref()?
+                .zone_waveform_window(zone, epoch, bins, Some(bounds))
+        })
+    };
+    let envelope = envelope.filter(|e| e.range == bounds);
     let root = match z.pitch {
         ir::KeyTracking::Tracked { root } | ir::KeyTracking::Scaled { root, .. } => Some(root),
         ir::KeyTracking::Fixed => inst.assets.get(z.asset.0).and_then(|a| a.root_key),
@@ -700,14 +879,22 @@ fn inspector(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument, compa
         root.map_or_else(|| "— (fixed pitch)".into(), note_name),
         z.tune.semitones() * 100.
     );
-    let playback = z.playback.clone();
-    let ranges = loops(&playback);
+    let playback = z.playback;
+    let ranges = loop_marks(&playback, full.as_ref().map_or(0, |e| e.sample_rate));
     let marks = format!(
         "Start {} · End {}{}{}",
-        playback.start,
-        playback
-            .end
-            .map_or_else(|| "sample end".into(), |e| e.to_string()),
+        if total > 0 {
+            sample_start(&playback, total)
+        } else {
+            playback.start
+        },
+        if playback.reverse {
+            playback.start.to_string()
+        } else {
+            playback
+                .end
+                .map_or_else(|| "sample end".into(), |e| e.to_string())
+        },
         if playback.reverse { " · Reverse" } else { "" },
         if ranges.is_empty() {
             " · No loop".into()
@@ -716,17 +903,46 @@ fn inspector(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument, compa
                 " · Loop {}",
                 ranges
                     .iter()
-                    .map(|r| format!("{}–{}", r.start, r.end))
+                    .map(|r| format!(
+                        "{}: {}–{}{}{}",
+                        r.slot,
+                        r.range.start,
+                        r.range.end,
+                        r.release
+                            .map_or(String::new(), |f| format!("; release exit {f}")),
+                        r.fades.map_or(String::new(), |f| format!(
+                            "; fade {}–{} + {}–{}",
+                            f[0].0, f[0].1, f[1].0, f[1].1
+                        ))
+                    ))
                     .collect::<Vec<_>>()
                     .join(", ")
             )
         }
     );
-    let status = envelope
+    let status = full
         .as_ref()
         .map_or("Waveform not yet available".into(), |e| {
-            format!("{:.2} s · {} Hz", e.duration_us as f64 / 1e6, e.sample_rate)
+            format!(
+                "View {}–{} frames · {:.2} s · {} Hz{}",
+                bounds.0,
+                bounds.1,
+                e.duration_us as f64 / 1e6,
+                e.sample_rate,
+                if envelope.is_none() {
+                    " · Loading peaks"
+                } else {
+                    ""
+                }
+            )
         });
+    let marks_tip = format!(
+        "{marks}. Trim {}–{} (exclusive upper bound). Authored source frames; white: start/end, purple: loop, green: release exit, shaded: both crossfade legs. Envelope release is note-relative, not a fixed source frame.",
+        playback.start,
+        playback
+            .end
+            .map_or_else(|| "sample end".into(), |f| f.to_string())
+    );
     let wave = canvas(move |s| {
         let mut draws = vec![
             Draw::fill(rect(0., 0., s.width, s.height), Role::Field),
@@ -746,33 +962,27 @@ fn inspector(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument, compa
                     Role::Ink.alpha(0.6),
                 ));
             }
-            let x = |frame: u64| {
-                (frame as f64 / e.frames as f64).clamp(0., 1.) * (s.width - 1.).max(0.)
-            };
-            for range in &ranges {
-                draws.push(Draw::fill(
-                    rect(
-                        x(range.start),
-                        0.,
-                        (x(range.end) - x(range.start)).max(1.),
-                        s.height,
-                    ),
-                    color(1).with_alpha(0.13),
-                ));
-                for f in [range.start, range.end] {
-                    draws.push(Draw::fill(rect(x(f), 0., 1., s.height), color(1)));
-                }
+        }
+        if total>0 {
+            let x=|frame:u64| (frame as f64-bounds.0 as f64)/(bounds.1-bounds.0).max(1) as f64*s.width;
+            for r in &ranges {
+                draws.push(Draw::fill(rect(x(r.range.start),0.,x(r.range.end)-x(r.range.start),s.height),color(1).with_alpha(0.10)));
+                if let Some(fades)=r.fades {for (a,b) in fades {draws.push(Draw::fill(rect(x(a),0.,x(b)-x(a),s.height),color(0).with_alpha(0.25)));}}
+                for f in [r.range.start,r.range.end] {if let Some(x)=sample_x(f,bounds,s.width) {draws.push(Draw::fill(rect(x,0.,1.,s.height),color(1)));}}
+                if let Some(f)=r.release && let Some(x)=sample_x(f,bounds,s.width) {draws.push(Draw::fill(rect(x,0.,2.,s.height),color(2)));}
+                if let Some(fades)=r.fades {for (a,b) in fades {for f in [a,b] {if let Some(x)=sample_x(f,bounds,s.width) {draws.push(Draw::fill(rect(x,0.,1.,s.height),color(0)));}}}}
             }
-            for f in [playback.start, playback.end.unwrap_or(e.frames)] {
-                draws.push(Draw::fill(rect(x(f), 0., 1., s.height), Role::Ink));
+            for f in [sample_start(&playback,total),if playback.reverse {playback.start} else {playback.end.unwrap_or(total)}] {
+                if let Some(x)=sample_x(f,bounds,s.width) {draws.push(Draw::fill(rect(x,0.,1.,s.height),Role::Ink));}
             }
         }
+
         draws
     })
     .h(if compact { 40. } else { 64. })
     .w(Len::Pct(100.))
     .clip()
-    .named("Sample waveform with playback and loop boundaries")
+    .named("Sample waveform with source-frame playback, loop, release-exit and crossfade boundaries; wheel to zoom, horizontal scroll to pan")
     .id(id);
     let aud_id = format!("map-audition-{slot}");
     let r = ui.get(aud_id.as_str());
@@ -800,6 +1010,7 @@ fn inspector(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument, compa
                 .lines(1)
                 .flex(1)
                 .min_w(0),
+            navigation,
             aud
         ]
         .gap(SPACE)
@@ -810,10 +1021,13 @@ fn inspector(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument, compa
             .id(format!("map-boundaries-{slot}"))
             .lines(1)
             .min_w(0)
-            .tip("Read-only source frames; white: start/end, coloured: loop boundaries"),
-        caption(status)
+            .tip(marks_tip),
+        caption(status.clone())
             .fill(secondary())
             .id(format!("map-wave-status-{slot}"))
+            .lines(1)
+            .min_w(0)
+            .tip(status.clone())
     ]
     .gap(TIGHT)
     .id(format!("map-inspector-{slot}-{n}"))
@@ -822,6 +1036,68 @@ fn inspector(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument, compa
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mapping_sample_markers_match_source_loop_and_reverse_boundaries() {
+        let range = ir::LoopRange {
+            start: 12000,
+            end: 34000,
+            crossfade: ir::Span::Time(ir::Time::Milliseconds(10.)),
+            alternating: false,
+        };
+        let mut p = ir::Playback {
+            start: 2000,
+            end: Some(45000),
+            looping: ir::Looping::UntilRelease(range),
+            ..Default::default()
+        };
+        let a = loop_marks(&p, 48000);
+        assert_eq!(a[0].release, Some(34000));
+        assert_eq!(a[0].fades, Some([(33520, 34000), (11520, 12000)]));
+        assert_eq!(sample_start(&p, 48000), 2000);
+        assert_eq!(sample_x(12000, (10000, 34000), 240.), Some(20.));
+        assert_eq!(
+            sample_x(2000, (10000, 34000), 240.),
+            None,
+            "out-of-view markers never clamp to a false boundary"
+        );
+        p.reverse = true;
+        let a = loop_marks(&p, 48000);
+        assert_eq!(sample_start(&p, 48000), 44999);
+        assert_eq!(a[0].release, Some(12000));
+        assert_eq!(a[0].fades, Some([(12000, 12480), (34000, 34480)]));
+        let mut slots = [None; 8];
+        slots[3] = Some(ir::LoopSlot {
+            range: ir::LoopRange {
+                alternating: true,
+                ..range
+            },
+            count: 0,
+            tuning: 1.,
+            until_release: true,
+        });
+        p.looping = ir::Looping::Slots(slots);
+        let a = loop_marks(&p, 48000);
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0].slot, 4);
+        assert_eq!(
+            a[0].fades, None,
+            "ping-pong takes precedence over authored crossfade, as in lowering"
+        );
+        assert_eq!(a[0].release, Some(12000));
+    }
+    #[test]
+    fn mapping_sample_viewport_retains_exact_frame_anchor_and_clamps_pan() {
+        assert_eq!(sample_zoom((0, 48000), 48000, true, 0.5), (12000, 36000));
+        assert_eq!(
+            sample_zoom((10000, 34000), 48000, true, 0.25),
+            (13000, 25000)
+        );
+        assert_eq!(sample_pan((12000, 36000), 48000, 12000), (24000, 48000));
+        assert_eq!(sample_pan((12000, 36000), 48000, -20000), (0, 24000));
+        assert_eq!(sample_zoom((3, 4), 8, true, 0.5), (3, 4));
+        assert_eq!(sample_window(u64::MAX, u64::MAX, 48000), (0, 48000));
+        assert_eq!(sample_window(0, 0, 0), (0, 0));
+    }
     #[test]
     fn mapping_zoom_and_pan_keep_every_key_reachable() {
         assert_eq!(window(0, 12), (0, 11));
