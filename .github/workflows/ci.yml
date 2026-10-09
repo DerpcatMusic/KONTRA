@@ -167,7 +167,7 @@ jobs:
   editor:
     needs: [changes, linux]
     if: needs.changes.outputs.code == 'true'
-    uses: Matari-Audio/MUI/.github/workflows/plugin-ui.yml@dcf0796082feec053af1418e3a38a302ee61da0a
+    uses: ./.github/workflows/plugin-ui.yml
     with:
       artifact-name: kontra-vst3-ui
       plugin-path: KONTRA.vst3
