@@ -67,6 +67,11 @@ pub use stream::{
     AssetSource, DISK_READ, SampleReader, StreamPolicy, StreamReport, Streamed, Streamer,
 };
 
+/// Increment when protected catalog metadata decoding changes, for cache invalidation.
+pub const LIBRARY_ACCESS_REVISION: u32 = 1;
+/// Whether this build can read protected metadata, including unified dependency features.
+pub const LIBRARY_ACCESS_ENABLED: bool = cfg!(feature = "library-access");
+
 /// Without the `library-access` feature, encrypted content is refused.
 #[cfg(not(feature = "library-access"))]
 pub fn library_key(

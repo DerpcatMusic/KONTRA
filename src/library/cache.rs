@@ -7,11 +7,14 @@ pub(super) enum Metadata {
     Bank(Vec<String>, Option<String>, [u8; 16]),
     Snapshot(String),
     Instrument(String),
+    Failed { reason: String, unsupported: bool },
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Entry {
     stamp: (u64, u128),
+    #[serde(default)]
+    access: Option<(u32, bool)>,
     metadata: Option<Metadata>,
 }
 
@@ -76,14 +79,34 @@ impl Cache {
 
     pub fn observe(&mut self, path: &Path) -> Option<()> {
         let stamp = stamp(path)?;
+        let access = path.extension().and_then(|e| {
+            if e.eq_ignore_ascii_case("ufs") {
+                Some((
+                    sampler_uvi::LIBRARY_ACCESS_REVISION,
+                    sampler_uvi::LIBRARY_ACCESS_ENABLED,
+                ))
+            } else if e.eq_ignore_ascii_case("nki") || e.eq_ignore_ascii_case("nksn") {
+                Some((
+                    sampler_kontakt::LIBRARY_ACCESS_REVISION,
+                    sampler_kontakt::LIBRARY_ACCESS_ENABLED,
+                ))
+            } else {
+                None
+            }
+        });
         self.seen.insert(path.into());
-        if self.entries.get(path).is_some_and(|e| e.stamp == stamp) {
+        if self
+            .entries
+            .get(path)
+            .is_some_and(|e| e.stamp == stamp && e.access == access)
+        {
             self.stats.reused += 1;
         } else {
             self.entries.insert(
                 path.into(),
                 Entry {
                     stamp,
+                    access,
                     metadata: None,
                 },
             );
@@ -145,6 +168,61 @@ impl Cache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn protected_catalog_access_state_invalidates_cached_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = dir.path().join("index.json");
+        for (name, revision, enabled) in [
+            (
+                "Bank.ufs",
+                sampler_uvi::LIBRARY_ACCESS_REVISION,
+                sampler_uvi::LIBRARY_ACCESS_ENABLED,
+            ),
+            (
+                "Base.nki",
+                sampler_kontakt::LIBRARY_ACCESS_REVISION,
+                sampler_kontakt::LIBRARY_ACCESS_ENABLED,
+            ),
+            (
+                "Snapshot.nksn",
+                sampler_kontakt::LIBRARY_ACCESS_REVISION,
+                sampler_kontakt::LIBRARY_ACCESS_ENABLED,
+            ),
+        ] {
+            let file = dir.path().join(name);
+            std::fs::write(&file, b"same file").unwrap();
+            for value in [
+                Metadata::Bank(vec!["Old.uvip".into()], None, [1; 16]),
+                Metadata::Failed {
+                    reason: "prior failure".into(),
+                    unsupported: true,
+                },
+            ] {
+                let mut cache = Cache::default();
+                cache.memo(&file, || Some(value.clone())).unwrap();
+                cache.save(Some(&index)).unwrap();
+                let saved: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&index).unwrap()).unwrap();
+                for access in [
+                    serde_json::json!([revision + 1, enabled]),
+                    serde_json::json!([revision, !enabled]),
+                ] {
+                    let mut prior = saved.clone();
+                    prior["entries"][file.to_string_lossy().as_ref()]["access"] = access;
+                    std::fs::write(&index, serde_json::to_vec(&prior).unwrap()).unwrap();
+                    let mut cache = Cache::load(Some(&index));
+                    let next = Metadata::Bank(vec!["Current.uvip".into()], None, [2; 16]);
+                    assert_eq!(
+                        cache.memo(&file, || Some(next.clone())),
+                        Some(next),
+                        "reader revision or feature changes retry both success and failure outcomes"
+                    );
+                    assert_eq!((cache.stats.changed, cache.stats.reads), (1, 1));
+                }
+            }
+        }
+    }
 
     #[test]
     fn persisted_metadata_skips_reads_and_invalidates_changed_removed_and_corrupt_files() {
