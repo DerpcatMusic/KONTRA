@@ -39,6 +39,107 @@ fn source_rect(
     Some([x, y, w, h])
 }
 
+// Port v1 0cb7a8a0:src/artwork.rs coverage and alpha math; keep only one output row.
+struct Reduction {
+    rect: [u32; 4],
+    width: u32,
+    height: u32,
+    row: u32,
+    sums: Vec<[f64; 5]>,
+    rgba: Vec<u8>,
+}
+impl Reduction {
+    fn new(rect: [u32; 4], width: u32, height: u32) -> Option<Self> {
+        let mut rgba = Vec::new();
+        rgba.try_reserve_exact(width as usize * height as usize * 4)
+            .ok()?;
+        let mut sums = Vec::new();
+        if [width, height] != [rect[2], rect[3]] {
+            sums.try_reserve_exact(width as usize).ok()?;
+            sums.resize(width as usize, [0.; 5]);
+        }
+        Some(Self {
+            rect,
+            width,
+            height,
+            row: 0,
+            sums,
+            rgba,
+        })
+    }
+    fn row(&mut self, sy: u32, bytes: &[u8], channels: usize) {
+        let [x, y, w, h] = self.rect;
+        if sy < y || sy >= y + h {
+            return;
+        }
+        let pixel = |sx: u32| {
+            let c = &bytes[sx as usize * channels..][..channels];
+            match channels {
+                4 => [c[0], c[1], c[2], c[3]],
+                3 => [c[0], c[1], c[2], 255],
+                2 => [c[0], c[0], c[0], c[1]],
+                _ => [c[0], c[0], c[0], 255],
+            }
+        };
+        if self.sums.is_empty() {
+            for sx in x..x + w {
+                self.rgba.extend(pixel(sx));
+            }
+            self.row += 1;
+            return;
+        }
+        while self.row < self.height {
+            let (top, bottom) = (
+                f64::from(y) + f64::from(self.row) * f64::from(h) / f64::from(self.height),
+                f64::from(y) + f64::from(self.row + 1) * f64::from(h) / f64::from(self.height),
+            );
+            if top >= f64::from(sy + 1) {
+                break;
+            }
+            for (ox, sum) in self.sums.iter_mut().enumerate() {
+                let (left, right) = (
+                    f64::from(x) + ox as f64 * f64::from(w) / f64::from(self.width),
+                    f64::from(x) + (ox + 1) as f64 * f64::from(w) / f64::from(self.width),
+                );
+                for sx in left as u32..(right.ceil() as u32).min(x + w) {
+                    let c = pixel(sx);
+                    let weight = (bottom.min(f64::from(sy + 1)) - top.max(f64::from(sy)))
+                        * (right.min(f64::from(sx + 1)) - left.max(f64::from(sx)));
+                    let alpha = f64::from(c[3]) * weight;
+                    for k in 0..3 {
+                        sum[k] += f64::from(c[k]) * alpha;
+                    }
+                    sum[3] += alpha;
+                    sum[4] += weight;
+                }
+            }
+            if bottom > f64::from(sy + 1) {
+                break;
+            }
+            for sum in &mut self.sums {
+                let rgb = if sum[3] > 0. {
+                    [sum[0], sum[1], sum[2]].map(|s| s / sum[3])
+                } else {
+                    [0.; 3]
+                };
+                self.rgba.extend(
+                    rgb.into_iter()
+                        .chain([sum[3] / sum[4]])
+                        .map(|v| (v + 1e-9).clamp(0., 255.) as u8),
+                );
+                *sum = [0.; 5];
+            }
+            self.row += 1;
+        }
+    }
+    fn finish(self) -> Option<Image> {
+        if self.row != self.height {
+            return None;
+        }
+        Image::rgba(self.width, self.height, self.rgba)
+    }
+}
+
 /// Non-streamable codecs have a bounded atlas; retain only the requested view.
 fn selected(
     image: Image,
@@ -60,20 +161,15 @@ fn selected(
     if len > PIXELS * 4 {
         return None;
     }
-    let mut rgba = vec![0; len];
-    for oy in 0..th {
+    let mut reduced = Reduction::new([x, y, w, h], tw, th)?;
+    for sy in y..y + h {
         if canceled() {
             return None;
         }
-        let sy = y + ((u64::from(oy) * u64::from(h)) / u64::from(th)) as u32;
-        for ox in 0..tw {
-            let sx = x + ((u64::from(ox) * u64::from(w)) / u64::from(tw)) as u32;
-            let from = (sy as usize * image.width as usize + sx as usize) * 4;
-            let at = (oy as usize * tw as usize + ox as usize) * 4;
-            rgba[at..at + 4].copy_from_slice(&image.rgba[from..from + 4]);
-        }
+        let start = sy as usize * image.width as usize * 4;
+        reduced.row(sy, &image.rgba[start..start + image.width as usize * 4], 4);
     }
-    Image::rgba(tw, th, rgba)
+    reduced.finish()
 }
 
 /// One source rectangle, shrunk to the requested device pixels. No atlas copy.
@@ -111,19 +207,7 @@ pub(super) fn png(
         png::ColorType::Grayscale => 1,
         _ => return None,
     };
-    let mut rgba = vec![0; len];
-    let put = |dest: &mut [u8], row: &[u8], ox: u32, oy: u32| {
-        let at = (x + (u64::from(ox) * u64::from(w) / u64::from(tw)) as u32) as usize * channels;
-        let c = &row[at..at + channels];
-        let c = match channels {
-            4 => [c[0], c[1], c[2], c[3]],
-            3 => [c[0], c[1], c[2], 255],
-            2 => [c[0], c[0], c[0], c[1]],
-            _ => [c[0], c[0], c[0], 255],
-        };
-        let at = (oy as usize * tw as usize + ox as usize) * 4;
-        dest[at..at + 4].copy_from_slice(&c);
-    };
+    let mut reduced = Reduction::new([x, y, w, h], tw, th)?;
     if reader.info().interlaced {
         // Adam7 needs reconstruction. Bound its entire transient atlas separately.
         let len = reader.output_buffer_size()?;
@@ -132,36 +216,26 @@ pub(super) fn png(
         }
         let mut atlas = vec![0; len];
         reader.next_frame(&mut atlas).ok()?;
-        for oy in 0..th {
+        for sy in y..y + h {
             if canceled() {
                 return None;
             }
-            let sy = y + (u64::from(oy) * u64::from(h) / u64::from(th)) as u32;
-            let row = &atlas[sy as usize * width as usize * channels
-                ..(sy + 1) as usize * width as usize * channels];
-            for ox in 0..tw {
-                put(&mut rgba, row, ox, oy);
-            }
+            let start = sy as usize * width as usize * channels;
+            reduced.row(
+                sy,
+                &atlas[start..start + width as usize * channels],
+                channels,
+            );
         }
     } else {
-        let mut oy = 0;
         for sy in 0..y + h {
             if canceled() {
                 return None;
             }
-            let row = reader.next_row().ok()??;
-            while oy < th && y + (u64::from(oy) * u64::from(h) / u64::from(th)) as u32 == sy {
-                for ox in 0..tw {
-                    put(&mut rgba, row.data(), ox, oy);
-                }
-                oy += 1;
-            }
-        }
-        if oy != th {
-            return None;
+            reduced.row(sy, reader.next_row().ok()??.data(), channels);
         }
     }
-    Image::rgba(tw, th, rgba)
+    reduced.finish()
 }
 
 #[cfg(test)]
@@ -171,24 +245,51 @@ mod tests {
     fn shrinking_authored_frames_matches_v1_fractional_coverage_pixels() {
         // v1 0cb7a8a0:src/artwork.rs fractional coverage and transparent-edge oracle.
         for (width, pixels, target, expected) in [
-            (8, (0..8).flat_map(|x| [if x % 2 == 0 { 0 } else { 255 }, if x % 2 == 0 { 0 } else { 255 }, if x % 2 == 0 { 0 } else { 255 }, 255]).collect::<Vec<_>>(), 7,
-                [31, 191, 95, 127, 159, 63, 223].into_iter().flat_map(|c| [c, c, c, 255]).collect::<Vec<_>>()),
-            (2, vec![255, 80, 20, 255, 0, 0, 0, 0], 1, vec![255, 80, 20, 127]),
+            (
+                8,
+                (0..8)
+                    .flat_map(|x| {
+                        [
+                            if x % 2 == 0 { 0 } else { 255 },
+                            if x % 2 == 0 { 0 } else { 255 },
+                            if x % 2 == 0 { 0 } else { 255 },
+                            255,
+                        ]
+                    })
+                    .collect::<Vec<_>>(),
+                7,
+                [31, 191, 95, 127, 159, 63, 223]
+                    .into_iter()
+                    .flat_map(|c| [c, c, c, 255])
+                    .collect::<Vec<_>>(),
+            ),
+            (
+                2,
+                vec![255, 80, 20, 255, 0, 0, 0, 0],
+                1,
+                vec![255, 80, 20, 127],
+            ),
         ] {
             for vertical in [false, true] {
-                let (w,h) = if vertical {(1,width)} else {(width,1)};
-                let to = if vertical {[1,target]} else {[target,1]};
-                let image = Image::rgba(w,h,pixels.clone()).unwrap();
+                let (w, h) = if vertical { (1, width) } else { (width, 1) };
+                let to = if vertical { [1, target] } else { [target, 1] };
+                let image = Image::rgba(w, h, pixels.clone()).unwrap();
                 let mut bytes = Vec::new();
                 {
-                    let mut e=png::Encoder::new(&mut bytes,w,h);
+                    let mut e = png::Encoder::new(&mut bytes, w, h);
                     e.set_color(png::ColorType::Rgba);
                     e.set_depth(png::BitDepth::Eight);
                     e.write_header().unwrap().write_image_data(&pixels).unwrap();
                 }
-                for shrunk in [selected(image,Default::default(),0,to,None,||false).unwrap(),
-                    png(&bytes,Default::default(),0,to,None,||false).unwrap()] {
-                    assert_eq!(shrunk.rgba.as_ref(), expected, "v1 authored picture coverage");
+                for shrunk in [
+                    selected(image, Default::default(), 0, to, None, || false).unwrap(),
+                    png(&bytes, Default::default(), 0, to, None, || false).unwrap(),
+                ] {
+                    assert_eq!(
+                        shrunk.rgba.as_ref(),
+                        expected,
+                        "v1 authored picture coverage"
+                    );
                 }
             }
         }
@@ -305,7 +406,7 @@ mod tests {
         let image = Image::rgba(6, 4, pixels).unwrap();
         for (axis, expected) in [
             (ir::Orientation::Horizontal, [10, 16]),
-            (ir::Orientation::Vertical, [13, 14]),
+            (ir::Orientation::Vertical, [16, 17]),
         ] {
             let meta = ir::ImageMeta {
                 frames: 2,
