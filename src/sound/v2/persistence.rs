@@ -314,6 +314,34 @@ impl Part {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unchanged_persistent_array_is_not_recaptured_or_published() {
+        let prepared = sampler_core::Prepared::new(48000, vec![], vec![], 0)
+            .unwrap()
+            .with_script_instances(vec![vec![17; 32768]])
+            .unwrap();
+        let runtime = Runtime::new(prepared, sampler_core::Limits {
+            notes: 1, channels: 0, performances: 1, families: 0,
+            expressions: 1, voices: 0, decisions: 0, commands: 1,
+            behaviors: 1, behavior_fuel: 16, behavior_cells: 1, note_cells: 0,
+        }).unwrap();
+        let mut state = ScriptStateBuffer {
+            values: (0..32768).map(|index| ScriptStateEntry {
+                address: Address::Cell { instance: sampler_core::ScriptInstanceId(0), index },
+                value: Value::Cell(0),
+            }).collect(),
+            callbacks: vec![],
+        };
+        runtime.capture_script_state(runtime.active_plan(), &mut state).unwrap();
+        let snapshot = Snapshot::new("large-array".into(), &state);
+        let mut persistence = Persistence { state, snapshot };
+        let slot = persistence.snapshot.published.load(Ordering::SeqCst);
+        // Poison only the staging buffer: an unchanged block must never visit it.
+        persistence.state.values[0].value = Value::Cell(-123);
+        persistence.publish(&runtime);
+        assert_eq!(persistence.state.values[0].value, Value::Cell(-123));
+        assert_eq!(persistence.snapshot.published.load(Ordering::SeqCst), slot);
+    }
     fn values(value: i64) -> ScriptStateBuffer {
         ScriptStateBuffer {
             values: vec![
