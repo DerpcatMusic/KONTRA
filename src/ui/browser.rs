@@ -199,7 +199,17 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             .filter(|p| import::is_multi(p) || is_uvi(p) == uvi)
             .collect()
     };
-    let (favorites, recent) = (kind(&cx.selection.favorites), kind(&cx.selection.recent));
+    // Upgrade current v2 path stars only while their catalogued source is still available.
+    cx.selection.favorites.retain(|path| {
+        let Some(source) = crate::plugin::UviFavorite::at(Path::new(path), &catalog) else { return true };
+        if !cx.selection.uvi_favorites.iter().any(|old| old.same_program(&source)) { cx.selection.uvi_favorites.push(source); }
+        false
+    });
+    let mut favorites = kind(&cx.selection.favorites);
+    let recent = kind(&cx.selection.recent);
+    if uvi {
+        favorites.extend(cx.selection.uvi_favorites.iter_mut().filter_map(|source| source.resolve(&catalog, &presets)));
+    }
     // How far each library's loading parts are, averaged.
     let mut loading: BTreeMap<String, (f64, usize)> = BTreeMap::new();
     for (slot, part) in cx.selection.parts.iter().enumerate() {
@@ -1325,7 +1335,7 @@ fn preset(ui: &mut Ui, cx: &mut Cx, n: usize, path: &Path, depth: usize, under: 
     if ui.get(star_id.as_str()).activated() {
         cx.toggle_favorite(&text);
     }
-    let favorite = cx.selection.favorites.contains(&text);
+    let favorite = cx.is_favorite(&text);
     let hover = ui.state(id.as_str()).hover.max(ui.state(star_id.as_str()).hover);
     let star_hover = ui.state(star_id.as_str()).hover as f32;
     let star = stack![glyph(

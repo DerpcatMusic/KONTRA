@@ -569,8 +569,23 @@ impl Cx<'_> {
         recent.truncate(6);
     }
 
+    fn is_favorite(&self, path: &str) -> bool {
+        crate::plugin::UviFavorite::at(Path::new(path), &self.view.shelf)
+            .is_some_and(|source| self.selection.uvi_favorites.iter().any(|old| old.same_program(&source)))
+            || self.selection.favorites.iter().any(|old| old == path)
+    }
+
     /// Star `path`, or unstar it.
     fn toggle_favorite(&mut self, path: &str) {
+        // Port from v1 4bffbb18:src/ui/mod.rs::toggle_uvi_favorite; locator is not identity.
+        if let Some(source) = crate::plugin::UviFavorite::at(Path::new(path), &self.view.shelf) {
+            match self.selection.uvi_favorites.iter().position(|old| old.same_program(&source)) {
+                Some(at) => { self.selection.uvi_favorites.remove(at); }
+                None => self.selection.uvi_favorites.push(source),
+            }
+            self.selection.favorites.retain(|old| old != path);
+            return;
+        }
         let favorites = &mut self.selection.favorites;
         match favorites.iter().position(|p| p == path) {
             Some(at) => {
