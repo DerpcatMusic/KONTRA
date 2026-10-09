@@ -147,3 +147,35 @@ The reported Linux unclean exit has no stack or signal identifying its cause.
 These checks establish scan survival for the fixtures, not attribution or
 reproduction of that tester's crash. The existing merged nightly gates are not
 repeated for this follow-up.
+
+## Metadata-only native slot census
+
+`Bank::open_metadata` opens the same validated directory as the full bank opener,
+but leaves content access unprepared. The native slot worker uses this route
+because program translation needs neither scripts nor samples. Clear and metadata
+members can be read; content-protected members still require supplied access.
+The full playback opener retains its existing content preparation behavior.
+
+An authored encoded-directory fixture has an accessible metadata program and an
+unrelated content member. Its census first failed at content setup, before reading
+the accessible program; metadata opening passes without granting access to that
+content member or to a content-protected program. The worker now preserves a fixed
+`uvi-bank-directory` or `uvi-program-translate` failure stage in its JSON result,
+with an error and empty programs, so unavailable inventories stay UNKNOWN. It
+never exports the raw native error through this result.
+
+The installed directory check opens **26/26 banks and lists 660 programs**.
+All 660 program entries declare content protection; the bounded raw-prefix check
+finds **0 recognised XML or ZIP headers**. Metadata-only reads refuse all 660 for
+lack of supplied content access. Those inventories remain unavailable, rather than
+being reported as measured: **0 before / 0 after**. The authored accessible
+program instead moves **0 before / 1 complete inventory after**.
+
+The original census used source `5172a9ef` and discarded native stderr. Its exact
+historical failure stage is therefore unproven. An isolated, reader-unavailable
+preflight reproduces reader-resolution failure on the authored encoded-directory
+fixture and all 26 installed banks; the current metadata opener opens those
+same directories. This controlled result does not establish the historical
+worker environment or any bank's licensing status. Installed-bank checks never
+prepare content access, decode member payloads, or read samples; receipts retain
+only hashed bank identifiers and aggregate counts.
