@@ -40,9 +40,11 @@ def events(program, seconds):
     """Gate CC/key/velocity/keyswitch choices, repeated at exact sample positions."""
     key, velocity = program['key'], program['velocity']
     switch = program.get('keyswitch')
+    held = program.get('held_key')
     assert isinstance(key, int) and 0 <= key < 128
     assert isinstance(velocity, int) and 1 <= velocity < 128
     assert switch is None or isinstance(switch, int) and 0 <= switch < 128
+    assert held is None or type(held) is int and 0 <= held < 128 and held not in (key, switch)
     cc1 = program.get('cc1', 100)
     assert type(cc1) is int and 0 <= cc1 < 128
     result = [(0, 0xb0, 1, cc1), (0, 0xb0, 11, 127)]
@@ -51,7 +53,10 @@ def events(program, seconds):
         result += [(0, 0x90, switch, 64), (128, 0x80, switch, 0)]
         at = 128
     for start in range(at, int((seconds - 1) * 48000), 48000):
-        result += [(start, 0x90, key, velocity), (start + 24000, 0x80, key, 0)]
+        offset = 128 if held is not None else 0
+        if held is not None:
+            result += [(start, 0x90, held, velocity), (start + offset + 24128, 0x80, held, 0)]
+        result += [(start + offset, 0x90, key, velocity), (start + offset + 24000, 0x80, key, 0)]
     return sorted(result, key=lambda e: e[0])
 
 
