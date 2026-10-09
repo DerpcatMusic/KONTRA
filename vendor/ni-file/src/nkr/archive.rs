@@ -22,6 +22,8 @@ pub struct Entry {
 #[derive(Debug)]
 pub struct Archive {
     pub entries: HashMap<String, Entry>,
+    // Only case collisions need extra storage; ordinary indexes keep their existing size.
+    case_variants: HashMap<String, Entry>,
     /// Archive file length in bytes.
     pub length: u64,
     pub issues: Vec<String>,
@@ -31,10 +33,10 @@ impl Archive {
     pub fn read<R: Read + Seek>(reader: R) -> Result<Self, Error> {
         let mut reader = BufReader::new(reader);
         let mut archive = Self::read_index(&mut reader)?;
-        for e in archive.entries.values_mut() {
+        for e in archive.entries.values_mut().chain(archive.case_variants.values_mut()) {
             check(&mut reader, e, archive.length)?;
         }
-        let invalid_headers = archive.entries.values().filter(|entry| !entry.valid).count();
+        let invalid_headers = archive.members().filter(|entry| !entry.valid).count();
         if invalid_headers > 0 {
             archive.issues.push(format!("{invalid_headers} archive members have missing/corrupt headers"));
         }
@@ -47,10 +49,12 @@ impl Archive {
         let mut reader = BufReader::new(reader);
         let length = reader.seek(SeekFrom::End(0))?;
         let mut entries = HashMap::new();
+        let mut case_variants = HashMap::new();
+        let mut member_count = 0;
         let mut visited = HashSet::new();
         let mut issues = Vec::new();
-        directory(&mut reader, 0, "", length, &mut visited, &mut entries, &mut issues, 0)?;
-        Ok(Self { entries, length, issues })
+        directory(&mut reader, 0, "", length, &mut visited, &mut entries, &mut case_variants, &mut member_count, &mut issues, 0)?;
+        Ok(Self { entries, case_variants, length, issues })
     }
     /// The entry for `name` with its header validated (read from `reader` if
     /// the archive was indexed lazily).
@@ -62,8 +66,14 @@ impl Archive {
         }
         Ok(Some(e))
     }
+    /// Every distinct exact path, including case variants. Identical paths are last-wins.
+    pub fn members(&self) -> impl Iterator<Item = &Entry> {
+        self.entries.values().chain(self.case_variants.values())
+    }
+    /// Exact case first; an absent exact spelling uses the last folded directory entry.
     pub fn find(&self, name: &str) -> Option<&Entry> {
-        self.entries.get(&name.replace('\\', "/").to_lowercase())
+        let name = name.replace('\\', "/");
+        self.case_variants.get(&name).or_else(|| self.entries.get(&name.to_lowercase()))
     }
     pub fn read_entry<R: Read + Seek>(&self, mut reader: R, name: &str) -> Result<Vec<u8>, Error> {
         self.read_entry_with_key(&mut reader, name, None)
@@ -103,6 +113,8 @@ fn directory<R: ReadBytesExt>(
     length: u64,
     visited: &mut HashSet<u64>,
     entries: &mut HashMap<String, Entry>,
+    case_variants: &mut HashMap<String, Entry>,
+    member_count: &mut usize,
     issues: &mut Vec<String>,
     depth: usize,
 ) -> Result<(), Error> {
@@ -179,13 +191,16 @@ fn directory<R: ReadBytesExt>(
                 length,
                 visited,
                 entries,
+                case_variants,
+                member_count,
                 issues,
                 depth + 1,
             )?,
             0 | 2 | 4 => {
-                if entries.len() >= 1_000_000 || entries.contains_key(&full.to_lowercase()) {
-                    return Err(invalid("Duplicate or excessive NKX member"));
+                if *member_count >= 1_000_000 {
+                    return Err(invalid("Excessive NKX member"));
                 }
+                *member_count += 1;
                 let file_offset = if kind == 2 {
                     reference ^ 0x1f4e0c8d
                 } else {
@@ -202,7 +217,12 @@ fn directory<R: ReadBytesExt>(
                     checked: false,
                     issue: None,
                 };
-                entries.insert(full.to_lowercase(), e);
+                case_variants.remove(&full);
+                if let Some(previous) = entries.insert(full.to_lowercase(), e) {
+                    if previous.name != full {
+                        case_variants.insert(previous.name.clone(), previous);
+                    }
+                }
             }
             _ => return Err(invalid("Unknown NKX entry kind")),
         }
@@ -254,4 +274,32 @@ fn check<R: Read + Seek>(r: &mut R, e: &mut Entry, length: u64) -> Result<(), Er
     };
     e.valid = e.issue.is_none();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn repeated_records_cannot_bypass_the_global_member_limit() {
+        let mut bytes = 0x5e70ac54u32.to_le_bytes().to_vec();
+        bytes.extend(0x110u16.to_le_bytes());
+        bytes.extend([0; 8]);
+        bytes.extend(2u32.to_le_bytes());
+        bytes.extend([0; 4]);
+        for _ in 0..2 {
+            bytes.extend(12u16.to_le_bytes());
+            bytes.extend(80u32.to_le_bytes());
+            bytes.extend(0u16.to_le_bytes());
+            bytes.extend([b'a', 0, 0, 0]);
+        }
+        let mut entries = HashMap::new();
+        let mut count = 999_999;
+        let error = directory(&mut Cursor::new(bytes), 0, "", 46, &mut HashSet::new(),
+            &mut entries, &mut HashMap::new(), &mut count, &mut Vec::new(), 0).unwrap_err();
+        assert!(error.to_string().contains("Excessive NKX member"));
+        assert_eq!(count, 1_000_000);
+        assert_eq!(entries.len(), 1);
+    }
 }
