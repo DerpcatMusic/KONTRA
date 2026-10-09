@@ -1,0 +1,26 @@
+<UVI4><Program Name="Authored Falcon feature fixture"><EventProcessors><ScriptProcessor Name="UI"><script><![CDATA[setSize(320,140)
+local p=Panel{'Fixture',bounds={0,0,320,140}}
+local label=p:Label{'Status',bounds={10,10,300,25},text='Ready'}
+local button=p:Button{'Fire',bounds={10,50,100,25}}
+button.changed=function() label.text='Clicked' end
+function onNote(e) playNote(e.note,e.velocity,-1) end
+]]></script></ScriptProcessor></EventProcessors><Layers><Layer Name="Left" Gain="0.1"><Keygroups><Keygroup Name="Low" LowKey="48" HighKey="59" LowVelocity="1" HighVelocity="127">
+<ControlSignalSources><DAHDSR Name="Amp" AttackTime="0.01" DecayTime="0.02" SustainLevel="0.6" ReleaseTime="0.05"/></ControlSignalSources>
+<Connections><SignalConnection Source="Amp" Destination="Gain"/></Connections>
+<Oscillators><SamplePlayer Name="Tone" SamplePath="note.wav" BaseNote="60"><PlaybackOptions Start="0" Stop="48000"><Loop Start="12000" End="24000" Type="0"/></PlaybackOptions></SamplePlayer></Oscillators>
+</Keygroup>
+<Keygroup Name="High" LowKey="60" HighKey="84" LowVelocity="1" HighVelocity="127">
+<ControlSignalSources><DAHDSR Name="Amp" AttackTime="0.01" DecayTime="0.02" SustainLevel="0.6" ReleaseTime="0.05"/></ControlSignalSources>
+<Connections><SignalConnection Source="Amp" Destination="Gain"/></Connections>
+<Oscillators><SamplePlayer Name="Tone" SamplePath="note.wav" BaseNote="60"><PlaybackOptions Start="0" Stop="48000"><Loop Start="12000" End="24000" Type="0"/></PlaybackOptions></SamplePlayer></Oscillators>
+</Keygroup></Keygroups></Layer>
+<Layer Name="Right" Gain="0.1"><Keygroups><Keygroup Name="Low" LowKey="48" HighKey="59" LowVelocity="1" HighVelocity="127">
+<ControlSignalSources><DAHDSR Name="Amp" AttackTime="0.01" DecayTime="0.02" SustainLevel="0.6" ReleaseTime="0.05"/></ControlSignalSources>
+<Connections><SignalConnection Source="Amp" Destination="Gain"/></Connections>
+<Oscillators><SamplePlayer Name="Tone" SamplePath="note.wav" BaseNote="60"><PlaybackOptions Start="0" Stop="48000"><Loop Start="12000" End="24000" Type="0"/></PlaybackOptions></SamplePlayer></Oscillators>
+</Keygroup>
+<Keygroup Name="High" LowKey="60" HighKey="84" LowVelocity="1" HighVelocity="127">
+<ControlSignalSources><DAHDSR Name="Amp" AttackTime="0.01" DecayTime="0.02" SustainLevel="0.6" ReleaseTime="0.05"/></ControlSignalSources>
+<Connections><SignalConnection Source="Amp" Destination="Gain"/></Connections>
+<Oscillators><SamplePlayer Name="Tone" SamplePath="note.wav" BaseNote="60"><PlaybackOptions Start="0" Stop="48000"><Loop Start="12000" End="24000" Type="0"/></PlaybackOptions></SamplePlayer></Oscillators>
+</Keygroup></Keygroups></Layer></Layers></Program></UVI4>
