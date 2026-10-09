@@ -2279,3 +2279,75 @@ fn mapping_analog_waveform_worker_probe_skips_only_when_library_is_missing() {
     }
     assert!(p.shared.keyboard.pop().is_none(),"waveform inspection dispatches no instrument audio");
 }
+
+
+fn mapping_linked_fixture() -> (Arc<crate::plugin::SamplerParams>, Arc<sampler_ir::Instrument>) {
+    use sampler_ir as I;
+    let mut inst=I::Instrument {name:"Linked groups (synthetic metadata fixture)".into(),..Default::default()};
+    for (n,(group,art)) in [("Close room","Sustain"),("Far room","Tremolo")].into_iter().enumerate() {
+        inst.groups.push(I::Group {name:group.into(),start:vec![I::GroupStart {slot:0,test:I::StartTest::Key {low:24+n as u8,high:24+n as u8},next:I::StartJoin::And}],..Default::default()});
+        inst.articulations.push(I::Articulation {source:format!("native:fixture:{n}"),name:art.into(),switch_keys:vec![24+n as u8],default:n==0,..Default::default()});
+        let mut zone=I::Zone::new(I::AssetRef(0));zone.group=Some(I::GroupRef(n));zone.keys=I::KeyRange {low:48,high:72};inst.zones.push(zone);
+    }
+    let source=Arc::new(inst);let p=Arc::new(crate::plugin::SamplerParams::new());
+    let ids=crate::sound::articulation::identities(&source.articulations);
+    let mut part=crate::plugin::Part {path:"/synthetic/Linked groups.nki".into(),..Default::default()};
+    part.articulation_overlay.set(&ids[1],crate::sound::articulation::Input::Keys(vec![49]));
+    part.articulation_overlay.move_to(&source.articulations,&ids[1],0);
+    p.selection.write().unwrap().parts.push(part);
+    {let mut v=p.shared.view.lock().unwrap();v.parts[0].instrument=Some(source.clone());v.parts[0].active=source.name.clone();}
+    (p,source)
+}
+
+#[test]
+fn mapping_group_search_keeps_selection_and_offers_empty_recovery() {
+    let (p,source)=mapping_linked_fixture();let before=(*source).clone();
+    for (w,h) in [(1180,780),(900,640)] {
+        let mut ui=Harness::new(&p,w as f64,h as f64);ui.press("view-0-Sound");ui.press("sound-tab-0-Mapping");
+        assert!(ui.ui.scene().unwrap().surface("map-search-0").is_some(),"Mapping needs its own group/articulation search");
+        let scene=ui.ui.scene().unwrap();let field=scene.surface("map-search-0").unwrap().frame;let rail=scene.surface("map-groups-0").unwrap().frame;
+        assert!(field.x >= rail.x + theme::CONTROL,"search glyph has its own space before the editable text canvas");
+        let at=Point::new(rail.x+theme::SPACE,field.y+field.size.height/2.);
+        for buttons in [Buttons::PRIMARY,Buttons::default()] {ui.tick(Input {pointer:PointerInput {pos:Some(at),buttons,..Default::default()},..Default::default()});}ui.idle(2);
+        assert!(ui.ui.focused("map-search-0"),"the leading icon area still focuses the shared search field");
+        ui.press("map-group-0-1");ui.ui.focus("map-search-0");ui.tick(Input {text:" TrEmOlO ".into(),..Default::default()});ui.idle(3);
+        assert!(ui.ui.scene().unwrap().surface("map-group-0-0").is_none());
+        assert!(ui.ui.scene().unwrap().surface("map-group-0-1").is_some(),"articulation names find their source groups, ignoring case and surrounding space");
+        assert!(ui.ui.scene().unwrap().surface("map-inspector-0-1").is_some());
+        if let Some(dir)=std::env::var_os("KONTAKTO_MAPPING_SHOTS") {let path=Path::new(&dir).join(format!("mapping-search-{w}x{h}.png"));std::fs::create_dir_all(path.parent().unwrap()).unwrap();moose::core::screenshot::save_png(&path,&pixels(&ui.ui,w,h),w as u32,h as u32);}
+        ui.press("map-search-0-clear");ui.ui.focus("map-search-0");ui.tick(Input {text:"missing group".into(),..Default::default()});ui.idle(3);
+        assert!(ui.ui.scene().unwrap().surface("map-no-groups-0").is_some(),"empty search has visible recovery guidance");
+        assert!(ui.ui.scene().unwrap().surface("map-inspector-0-1").is_some(),"search never changes the selected source or group filter");
+        ui.press("map-search-0-clear");
+        assert!(ui.ui.scene().unwrap().surface("map-group-0-0").is_some());
+        assert!(ui.ui.scene().unwrap().surface("map-group-0-1").is_some());
+        assert!(ui.ui.scene().unwrap().surface("map-inspector-0-1").is_some());
+        assert!(p.shared.keyboard.pop().is_none() && p.shared.articulation_edits.pop().is_none(),"search dispatches no musical input");
+    }
+    assert_eq!(*source,before,"search leaves source predicates, zone ranges and articulation identities untouched");
+}
+
+#[test]
+fn mapping_art_link_selection_tracks_keyswitch_identity() {
+    let (p,source)=mapping_linked_fixture();let before=(*source).clone();let ids=crate::sound::articulation::identities(&source.articulations);
+    for (w,h) in [(1180,780),(900,640)] {
+        let mut ui=Harness::new(&p,w as f64,h as f64);ui.press("view-0-Mapping");
+        ui.press("map-art-0-1-1");
+        assert_eq!(p.shared.articulation_edits.pop(),Some((0,1)),"link selects source identity despite overlay reorder/remap");
+        // The metadata-only fixture models the engine acknowledging its queued selection.
+        let runtime=p.shared.part(0).unwrap();runtime.articulation.store(1,std::sync::atomic::Ordering::Relaxed);ui.idle(3);
+        let link=ui.ui.scene().unwrap().surface("map-art-0-1-1").unwrap();
+        assert!(matches!(link.semantics.as_ref().unwrap().role,A11y::Toggle {on:true}),"Mapping announces and paints the same selected articulation as the keyswitch panel");
+        assert!(link.tip.as_deref().unwrap().contains("C#2"),"link shows the effective remapped trigger");
+        runtime.articulation.store(u32::MAX,std::sync::atomic::Ordering::Relaxed);
+        ui.press("view-0-Articulations");
+        let row=format!("{}-name",super::inside::row_id(0,&ids[1]));
+        assert!(matches!(ui.ui.scene().unwrap().surface(&row).unwrap().semantics.as_ref().unwrap().role,A11y::Toggle {on:true}),"shared selection survives chrome navigation");
+        if let Some(dir)=std::env::var_os("KONTAKTO_MAPPING_SHOTS") {let path=Path::new(&dir).join(format!("keyswitch-linked-{w}x{h}.png"));std::fs::create_dir_all(path.parent().unwrap()).unwrap();moose::core::screenshot::save_png(&path,&pixels(&ui.ui,w,h),w as u32,h as u32);}
+        runtime.articulation.store(0,std::sync::atomic::Ordering::Relaxed);ui.idle(3);
+        let first=format!("{}-name",super::inside::row_id(0,&ids[0]));
+        assert!(matches!(ui.ui.scene().unwrap().surface(&first).unwrap().semantics.as_ref().unwrap().role,A11y::Toggle {on:true}),"engine feedback remains authoritative over the fallback UI selection");
+        assert!(p.shared.keyboard.pop().is_none(),"direct articulation selection does not synthesize a note");
+    }
+    assert_eq!(*source,before);
+}
