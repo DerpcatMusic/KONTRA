@@ -23,6 +23,7 @@ impl<'de> Deserialize<'de> for crate::model::Request {
 #[derive(Serialize, Deserialize)]
 pub(crate) enum CachedCompletion {
     NotPresent,
+    Scheduled,
     Completed,
     Failed {
         category: crate::model::EvaluationFailure,
@@ -35,6 +36,7 @@ impl From<crate::model::PersistenceCompletion> for CachedCompletion {
         use crate::model::PersistenceCompletion as C;
         match value {
             C::NotPresent => Self::NotPresent,
+            C::Scheduled => Self::Scheduled,
             C::Completed => Self::Completed,
             C::Failed {
                 category,
@@ -53,6 +55,7 @@ impl TryFrom<CachedCompletion> for crate::model::PersistenceCompletion {
     fn try_from(value: CachedCompletion) -> Result<Self, String> {
         Ok(match value {
             CachedCompletion::NotPresent => Self::NotPresent,
+            CachedCompletion::Scheduled => Self::Scheduled,
             CachedCompletion::Completed => Self::Completed,
             CachedCompletion::Failed {
                 category,
@@ -433,6 +436,23 @@ pub fn restore_initialized(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cached_waiting_persistence_starts_once_on_live_activation() {
+        let source = "on init declare $calls declare $done end on
+on persistence_changed inc($calls) wait(1000) inc($done) end on";
+        let init = crate::initialize(source, crate::Limits::LIBRARY, &Default::default()).unwrap();
+        let bytes = serde_json::to_vec(&init.capture_initialized().unwrap()).unwrap();
+        let restored = super::restore_initialized(source, crate::Limits::LIBRARY, serde_json::from_slice(&bytes).unwrap()).unwrap();
+        let script = crate::compile_initialized(source, 48000, crate::Limits::LIBRARY, &[], restored).unwrap();
+        assert_eq!(script.model().persistence_completion, crate::model::PersistenceCompletion::Scheduled);
+        let plan = script.bind(sampler_core::Prepared::new(48000, vec![], vec![], 0).unwrap()).unwrap();
+        let limits = sampler_core::Limits::for_plan(&plan, 4, 4);
+        let mut runtime = sampler_core::Runtime::new(plan, limits).unwrap();
+        let plan = runtime.active_plan();
+        for _ in 0..2 { runtime.render(&mut [[0.; 2]; 64]).unwrap(); }
+        assert_eq!(runtime.script_cell(plan, sampler_core::ScriptInstanceId(0), 0), Ok(1));
+        assert_eq!(runtime.script_cell(plan, sampler_core::ScriptInstanceId(0), 1), Ok(1));
+    }
     #[test]
     fn cached_initializer_preserves_native_state_model_and_engine_without_reinit() {
         let source = "on init\ndeclare ui_knob $k(0,100,1)\n$k := 37\ndeclare %a[2] := (4,9)\ndeclare @text\n@text := \"restored\"\nset_engine_par($ENGINE_PAR_VOLUME,12345,-1,-1,-1)\nend on\non note\nmessage(@text)\nend on";
