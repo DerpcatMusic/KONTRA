@@ -56,7 +56,8 @@ from live_host import private_settings
 with tempfile.TemporaryDirectory(dir='/dev/shm') as temp:
     config = Path(temp) / 'config'
     private_settings(config)
-    assert json.loads((config / 'kontra/settings.json').read_text()) == {'version': 2, 'imported': True, 'roots': []}
+    assert json.loads((config / 'kontra/settings.json').read_text())['uvi_imported'] is True, 'no first-run UVI import/opener'
+    assert json.loads((config / 'kontra/settings.json').read_text()) == {'version': 2, 'imported': True, 'uvi_imported': True, 'roots': []}
 
 # 0.3.152 native Selection omits root; keyed fields avoid positional shifts.
 persist = native[36:]; at = 4 + 4 + len(b'selection')
