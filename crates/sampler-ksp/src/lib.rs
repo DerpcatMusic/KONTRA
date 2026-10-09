@@ -1296,6 +1296,54 @@ fn compile_initialized_inner(
     let mut texts = init.texts.clone();
     texts.resize(texts.len() + unit.scratch as usize, String::new());
     let mut store = Vec::new();
+    let mut text_properties: Vec<_> = init
+        .text_properties
+        .iter()
+        .map(|(&(id, par), text)| ([id, par, PROPERTY_TAG, PROPERTY_TAG], text.clone()))
+        .collect();
+    for (ui, definition) in hir.uis.iter().enumerate() {
+        let id = builtins::FIRST_UI_ID + ui as i32;
+        let mut properties = vec![(builtins::CONTROL_PAR_TYPE, definition.kind.control_type())];
+        if let Some((low, high)) = eval::declared_range(definition) {
+            properties.extend([
+                (builtins::CONTROL_PAR_MIN_VALUE, low),
+                (builtins::CONTROL_PAR_MAX_VALUE, high),
+            ]);
+        }
+        for (parameter, value) in properties {
+            if !init.properties.contains_key(&(id, parameter)) {
+                store.push((
+                    [id, parameter, PROPERTY_TAG, PROPERTY_TAG],
+                    i64::from(value),
+                ));
+            }
+        }
+        if definition.kind != model::WidgetKind::Menu {
+            continue;
+        }
+        let items = init
+            .model
+            .interface
+            .widgets
+            .get(ui)
+            .map_or(&[][..], |widget| widget.menu.as_slice());
+        store.push((
+            [id, lower::MENU_COUNT, -1, lower::MENU_TAG],
+            items.len() as i64,
+        ));
+        for (index, item) in items.iter().enumerate() {
+            for (field, value) in [
+                (lower::MENU_VALUE, i64::from(item.value)),
+                (lower::MENU_VISIBLE, i64::from(item.visible)),
+            ] {
+                store.push(([id, field, index as i32, lower::MENU_TAG], value));
+            }
+            text_properties.push((
+                [id, lower::MENU_TEXT, index as i32, lower::MENU_TAG],
+                item.text.clone(),
+            ));
+        }
+    }
     for (&(id, par), &value) in &init.properties {
         store.push(([id, par, PROPERTY_TAG, PROPERTY_TAG], i64::from(value)));
     }
@@ -1331,11 +1379,7 @@ fn compile_initialized_inner(
     let store_capacity = store.len() + 4096;
     let resources = ScriptResources {
         texts,
-        text_properties: init
-            .text_properties
-            .iter()
-            .map(|(&(id, par), text)| ([id, par, PROPERTY_TAG, PROPERTY_TAG], text.clone()))
-            .collect(),
+        text_properties,
         store,
         store_capacity,
         controls: ids.clone(),
