@@ -841,6 +841,35 @@ pub fn pending_incident() -> Option<CrashIncident> {
     REPORTER.pending.lock_unpoisoned().clone()
 }
 
+pub(super) fn install_standalone_capture() {
+    let marker = REPORTER.marker.lock_unpoisoned().clone();
+    #[cfg(target_os = "linux")]
+    if let Some(marker) = &marker {
+        if let Err(error) = super::standalone::install(&marker.session_id, marker.pid,
+            marker.started_at, &marker.host_process, &marker.build_id) {
+            eprintln!("KONTRA native crash capture unavailable: {error}");
+        }
+    }
+    // A standalone owns its panic hook; hosts retain their process-wide hook.
+    let previous = std::panic::take_hook();
+    let captured = AtomicBool::new(false);
+    std::panic::set_hook(Box::new(move |info| {
+        if !captured.swap(true, Ordering::Relaxed) {
+            let panic = PanicMarker {
+                at: now_unix(),
+                thread: std::thread::current().name().unwrap_or("unnamed").to_owned(),
+                message: format!("{info}\n{}", std::backtrace::Backtrace::force_capture()),
+                location: info.location().map_or_else(String::new, |v| v.to_string()),
+                images: Vec::new(),
+            };
+            if !persist_json(&panic_marker_path(std::process::id()), &panic) {
+                eprintln!("KONTRA panic evidence: {}", panic.message);
+            }
+        }
+        previous(info);
+    }));
+}
+
 /// Starts one-shot work that waits on the user or the network (a file dialog, a licence
 /// request, a report, an update check), which unload must never wait for, so nothing joins it.
 /// The task must own, or hold `Arc`s to, everything it touches, never the instance, and report
@@ -870,6 +899,16 @@ fn pin_module_containing(address: *const std::ffi::c_void) -> Result<(), String>
         let mut info: libc::Dl_info = std::mem::zeroed();
         if libc::dladdr(address, &mut info) == 0 || info.dli_fname.is_null() {
             return Err("dladdr found no module".to_owned());
+        }
+        #[cfg(target_os = "linux")]
+        {
+            // The kernel identifies the executable even when argv[0] is relative or cwd changed.
+            let mut executable: libc::Dl_info = std::mem::zeroed();
+            if libc::dladdr(libc::getauxval(libc::AT_PHDR) as *const _, &mut executable) != 0
+                && executable.dli_fbase == info.dli_fbase
+            {
+                return Ok(());
+            }
         }
         // The reference taken here is never released: that is the pin.
         let flags = libc::RTLD_NOW | libc::RTLD_NOLOAD | libc::RTLD_NODELETE;
@@ -2197,7 +2236,7 @@ fn incident_id(marker: &SessionMarker) -> String {
     blake3::hash(marker.session_id.as_bytes()).to_hex()[..16].to_string()
 }
 
-fn reports_dir() -> PathBuf {
+pub(super) fn reports_dir() -> PathBuf {
     let base = super::support_cache_path();
     base.parent().map_or_else(
         || std::env::temp_dir().join("kontra-crash-reports"),
