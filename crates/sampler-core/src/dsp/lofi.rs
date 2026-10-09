@@ -72,7 +72,7 @@ impl LoFi {
                     rng ^= rng >> 17;
                     rng ^= rng << 5;
                     let white = rng as i32 as f32 * (1.0 / 2_147_483_648.0);
-                    retained[2 + ch] += self.color * (white - retained[2 + ch]) + 1e-20;
+                    retained[2 + ch] = super::kernels::biased_one_pole32(retained[2 + ch], self.color * (white - retained[2 + ch]));
                     y += self.noise * retained[2 + ch];
                 }
                 block[ch][i] = f64::from(y);
