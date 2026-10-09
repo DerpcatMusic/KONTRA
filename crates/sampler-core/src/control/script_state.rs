@@ -122,15 +122,24 @@ impl Runtime {
     /// Register the value-only snapshot domain during off-thread preparation.
     /// Unregistered plans conservatively track every script write.
     pub fn watch_script_state_values(&mut self, plan: PlanId, values: &[ScriptStateEntry]) -> Result<(), Error> {
+        self.watch_script_state_addresses(plan, &values.iter().map(|entry| entry.address).collect::<Vec<_>>())
+    }
+
+    /// Register compact addresses without a text-sized value buffer.
+    pub fn watch_script_state_addresses(
+        &mut self,
+        plan: PlanId,
+        addresses: &[ScriptStateAddress],
+    ) -> Result<(), Error> {
         // Validate the entire request before changing the existing capture domain.
-        for entry in values {
-            self.script_state_value(plan, entry.address)?;
+        for &address in addresses {
+            self.script_state_value(plan, address)?;
         }
         let generation = self.plans.get_mut(plan.0).ok_or(Error::StaleHandle)?;
         let mut masks: Vec<Box<[u64]>> = generation.scripts.iter()
             .map(|bank| vec![0; bank.cells.len().div_ceil(64)].into_boxed_slice()).collect();
-        for entry in values {
-            if let ScriptStateAddress::Cell { instance, index } = entry.address {
+        for &address in addresses {
+            if let ScriptStateAddress::Cell { instance, index } = address {
                 masks[usize::from(instance.0)][index as usize / 64] |= 1 << (index % 64);
             }
         }

@@ -92,6 +92,14 @@ impl Atom {
     }
 }
 
+fn live_value(runtime: &Runtime, plan: sampler_core::PlanId, address: Address) -> Result<Value, sampler_core::Error> {
+    Ok(match address {
+        Address::Control(id) => Value::Control(runtime.control_base_value(plan, id)?),
+        Address::Cell { instance, index } => Value::Cell(runtime.script_cell(plan, instance, index)?),
+        Address::Text { instance, index } => Value::Text(runtime.script_text(plan, instance, index)?),
+    })
+}
+
 pub(super) struct Snapshot {
     schema: String,
     published: AtomicUsize,
@@ -105,36 +113,42 @@ pub(super) struct Snapshot {
     slots: [Box<[AtomicU64]>; 3],
 }
 impl Snapshot {
+    #[cfg(test)]
     fn new(schema: String, state: &ScriptStateBuffer) -> Arc<Self> {
+        Self::from_addresses(schema, state.values.iter().map(|entry| entry.address).collect(), |address| {
+            Ok(state.values[state.values.binary_search_by_key(&address, |entry| entry.address).unwrap()].value)
+        }).unwrap()
+    }
+    fn from_addresses(
+        schema: String,
+        addresses: Box<[Address]>,
+        read: impl Fn(Address) -> Result<Value, sampler_core::Error>,
+    ) -> Result<Arc<Self>, sampler_core::Error> {
         let mut size = 0;
-        let atoms = state
-            .values
-            .iter()
-            .map(|entry| {
-                let atom = Atom::new(entry.value, size);
-                size += atom.len;
-                atom
-            })
-            .collect();
+        let atoms = addresses.iter().map(|&address| {
+            let atom = Atom::new(read(address)?, size);
+            size += atom.len;
+            Ok(atom)
+        }).collect::<Result<Vec<_>, sampler_core::Error>>()?;
+        let dynamic = addresses.iter().enumerate().filter_map(|(index, address)|
+            (!matches!(address, Address::Cell { .. })).then_some(index)).collect();
         let snapshot = Arc::new(Self {
             schema,
             published: AtomicUsize::new(0),
             reading: AtomicUsize::new(usize::MAX),
             read_lock: Mutex::new(()),
             atoms,
-            addresses: state.values.iter().map(|entry| entry.address).collect(),
-            dynamic: state.values.iter().enumerate().filter_map(|(index, entry)|
-                (!matches!(entry.address, Address::Cell { .. })).then_some(index)).collect(),
+            addresses,
+            dynamic,
             #[cfg(test)]
             captured_values: AtomicUsize::new(0),
             slots: std::array::from_fn(|_| (0..size).map(|_| AtomicU64::new(0)).collect()),
         });
-        for slot in &snapshot.slots {
-            for (atom, entry) in snapshot.atoms.iter().zip(&state.values) {
-                atom.write(slot, &entry.value);
-            }
+        for (atom, &address) in snapshot.atoms.iter().zip(&snapshot.addresses) {
+            let value = read(address)?;
+            for slot in &snapshot.slots { atom.write(slot, &value); }
         }
-        snapshot
+        Ok(snapshot)
     }
     fn next_slot(&self) -> usize {
         let current = self.published.load(Ordering::SeqCst);
@@ -158,11 +172,7 @@ impl Snapshot {
         self.captured_values.store(0, Ordering::Relaxed);
         let capture = |index: usize| -> Result<(), sampler_core::Error> {
             let address = self.addresses.get(index).ok_or(sampler_core::Error::InvalidInput)?;
-            let value = match *address {
-                Address::Control(id) => Value::Control(runtime.control_base_value(plan, id)?),
-                Address::Cell { instance, index } => Value::Cell(runtime.script_cell(plan, instance, index)?),
-                Address::Text { instance, index } => Value::Text(runtime.script_text(plan, instance, index)?),
-            };
+            let value = live_value(runtime, plan, *address)?;
             self.atoms[index].write(&self.slots[next], &value);
             #[cfg(test)]
             self.captured_values.fetch_add(1, Ordering::Relaxed);
@@ -232,15 +242,12 @@ impl Persistence {
     ) -> Result<Self, CoreError> {
         let core = |error| CoreError::Invalid(format!("Script persistence: {error:?}"));
         let plan = runtime.active_plan();
-        let mut state = sampler_ksp::persistent_state_buffer(views).map_err(core)?;
+        let (mut addresses, callbacks) = sampler_ksp::persistent_state_layout(views).map_err(core)?;
         // Widget values also survive recall when the author omitted make_persistent.
         for widget in runtime.widget_definitions(plan).map_err(core)? {
             let (offset, len, text) = match widget.storage {
                 sampler_core::WidgetStorage::Control(id) => {
-                    state.values.push(ScriptStateEntry {
-                        address: Address::Control(id),
-                        value: Value::Control(ControlValue::Integer(0)),
-                    });
+                    addresses.push(Address::Control(id));
                     continue;
                 }
                 sampler_core::WidgetStorage::Cells { offset, len, .. } => (offset, len, false),
@@ -252,39 +259,26 @@ impl Persistence {
                     .checked_add(len)
                     .ok_or_else(|| core(sampler_core::Error::Capacity))?
             {
-                state.values.push(ScriptStateEntry {
-                    address: if text {
-                        Address::Text {
-                            instance: widget.instance,
-                            index,
-                        }
-                    } else {
-                        Address::Cell {
-                            instance: widget.instance,
-                            index,
-                        }
-                    },
-                    value: if text {
-                        Value::Text(Default::default())
-                    } else {
-                        Value::Cell(0)
-                    },
+                addresses.push(if text {
+                    Address::Text { instance: widget.instance, index }
+                } else {
+                    Address::Cell { instance: widget.instance, index }
                 });
             }
         }
-        state.values.sort_by_key(|entry| entry.address);
-        state.values.dedup_by_key(|entry| entry.address);
-        runtime
-            .capture_script_state(plan, &mut state)
-            .map_err(core)?;
+        addresses.sort_unstable();
+        addresses.dedup();
         let mut hash = blake3::Hasher::new();
         for view in views {
             hash.update(format!("{:?}", view.model().persistent).as_bytes());
         }
-        for entry in &state.values {
-            hash.update(
-                format!("{:?}:{}", entry.address, Atom::new(entry.value, 0).kind).as_bytes(),
-            );
+        use std::fmt::Write as _;
+        let mut key = String::new();
+        for &address in &addresses {
+            key.clear();
+            write!(&mut key, "{:?}:{}", address, Atom::new(live_value(runtime, plan, address).map_err(core)?, 0).kind)
+                .expect("format persistence schema");
+            hash.update(key.as_bytes());
         }
         for widget in runtime.widget_definitions(plan).map_err(core)? {
             hash.update(
@@ -295,11 +289,18 @@ impl Persistence {
         if !saved.is_empty() {
             let saved: Saved = serde_json::from_str(saved)
                 .map_err(|_| CoreError::Invalid("Saved script state is malformed".into()))?;
-            if saved.schema != schema || saved.values.len() != state.values.len() {
+            if saved.schema != schema || saved.values.len() != addresses.len() {
                 return Err(CoreError::Invalid(
                     "Saved script state schema changed".into(),
                 ));
             }
+            // ponytail: recall keeps wide batch storage until core accepts compact validated restores.
+            let mut state = ScriptStateBuffer {
+                values: addresses.iter().map(|&address| Ok(ScriptStateEntry {
+                    address, value: live_value(runtime, plan, address)?,
+                })).collect::<Result<_, sampler_core::Error>>().map_err(core)?,
+                callbacks,
+            };
             for (entry, value) in state.values.iter_mut().zip(saved.values) {
                 entry.value = match (entry.value, value) {
                     (Value::Control(ControlValue::Integer(_)), SavedValue::Integer(v)) => {
@@ -323,15 +324,13 @@ impl Persistence {
             runtime
                 .restore_script_state(plan, None, &mut state)
                 .map_err(core)?;
-            runtime
-                .capture_script_state(plan, &mut state)
-                .map_err(core)?;
         }
-        runtime.watch_script_state_values(plan, &state.values).map_err(core)?;
-        let snapshot = Snapshot::new(schema, &state);
+        runtime.watch_script_state_addresses(plan, &addresses).map_err(core)?;
+        let snapshot = Snapshot::from_addresses(schema, addresses.into_boxed_slice(), |address|
+            live_value(runtime, plan, address)).map_err(core)?;
         let revision = (plan, runtime.script_state_revision(plan).map_err(core)?);
         Ok(Self {
-            pending_cells: std::array::from_fn(|_| vec![0; state.values.len().div_ceil(64)].into_boxed_slice()),
+            pending_cells: std::array::from_fn(|_| vec![0; snapshot.addresses.len().div_ceil(64)].into_boxed_slice()),
             revision,
             snapshot,
         })
@@ -482,6 +481,69 @@ mod tests {
         assert!(persistence.snapshot.captured_values.load(Ordering::Relaxed) <= 16384);
         let saved: Saved = serde_json::from_str(&persistence.snapshot.save()).unwrap();
         assert!(matches!(saved.values[32767], SavedValue::Cell(99)));
+    }
+    #[test]
+    fn compact_preparation_preserves_legacy_schema_and_restore_callbacks() {
+        let script = sampler_ksp::compile(
+            "on init\n declare $saved := 17\n make_persistent($saved)\n declare %array[2] := (2,3)\n make_persistent(%array)\n declare @text := \"声\"\n make_persistent(@text)\n declare ui_knob $knob(0,127,1)\n make_persistent($knob)\n end on\n on persistence_changed\n inc($saved)\n end on\n",
+            48000, sampler_ksp::Limits::LIBRARY, &[],
+        ).unwrap();
+        let view = script.view();
+        let plan = script.bind(Prepared::new(48000, vec![], vec![], 1).unwrap()).unwrap();
+        let limits = sampler_core::Limits::for_plan(&plan, 128, 8);
+        let mut part = Part::new(Runtime::new(plan, limits).unwrap(), MixTree::instrument("s")).unwrap();
+        let plan = part.runtime.active_plan();
+        let mut legacy = sampler_ksp::persistent_state_buffer(std::slice::from_ref(&view)).unwrap();
+        part.runtime.capture_script_state(plan, &mut legacy).unwrap();
+        let mut hash = blake3::Hasher::new();
+        hash.update(format!("{:?}", view.model().persistent).as_bytes());
+        for entry in &legacy.values {
+            hash.update(format!("{:?}:{}", entry.address, Atom::new(entry.value, 0).kind).as_bytes());
+        }
+        for widget in part.runtime.widget_definitions(plan).unwrap() {
+            hash.update(format!("{:?}:{:?}:{:?}", widget.id, widget.instance, widget.storage).as_bytes());
+        }
+        let expected = Snapshot::new(hash.finalize().to_hex().to_string(), &legacy).save();
+        part.prepare_persistence(std::slice::from_ref(&view), "").unwrap();
+        let snapshot = &part.persistence.as_ref().unwrap().snapshot;
+        assert_eq!(snapshot.save(), expected, "existing host schema and initial values must stay exact");
+        let mut saved: Saved = serde_json::from_str(&expected).unwrap();
+        for value in &mut saved.values {
+            match value {
+                SavedValue::Cell(cell) => *cell = 41,
+                SavedValue::Text(text) => *text = "🎹 restored 声".into(),
+                _ => {},
+            }
+        }
+        let recall = serde_json::to_string(&saved).unwrap();
+        part.prepare_persistence(std::slice::from_ref(&view), &recall).unwrap();
+        let snapshot = &part.persistence.as_ref().unwrap().snapshot;
+        let first = legacy.values.iter().position(|entry| matches!(entry.address, Address::Cell { index: 0, .. })).unwrap();
+        saved.values[first] = SavedValue::Cell(42);
+        let expected = serde_json::to_string(&saved).unwrap();
+        assert_eq!(snapshot.save(), expected, "restore callback runs once after the entire batch");
+        for slot in &snapshot.slots {
+            let seeded = Saved { schema: snapshot.schema.clone(), values: snapshot.atoms.iter().map(|atom| atom.read(slot)).collect() };
+            assert_eq!(serde_json::to_string(&seeded).unwrap(), expected, "every sparse slot starts coherent");
+        }
+        saved.values[first] = SavedValue::Text("wrong type".into());
+        assert!(part.prepare_persistence(std::slice::from_ref(&view), &serde_json::to_string(&saved).unwrap()).is_err());
+        assert_eq!(part.persistence.as_ref().unwrap().snapshot.save(), expected, "rejected recall cannot replace the published host state");
+    }
+    #[cfg(feature = "plugin")]
+    #[test]
+    fn numeric_persistence_preparation_does_not_stage_inline_text() {
+        let script = sampler_ksp::compile(
+            "on init\n declare %saved[32768]\n make_persistent(%saved)\n end on\n",
+            48000, sampler_ksp::Limits::LIBRARY, &[],
+        ).unwrap();
+        let view = script.view();
+        let plan = script.bind(Prepared::new(48000, vec![], vec![], 1).unwrap()).unwrap();
+        let limits = sampler_core::Limits::for_plan(&plan, 128, 8);
+        let mut part = Part::new(Runtime::new(plan, limits).unwrap(), MixTree::instrument("s")).unwrap();
+        let peak = crate::plugin::tests::peak_allocated(|| part.prepare_persistence(&[view], "").unwrap());
+        assert!(peak <= 128 * 32768,
+            "fresh preparation must not stage inline text for numeric cells: {peak} bytes");
     }
     #[test]
     fn numeric_persistence_keeps_compact_storage() {
