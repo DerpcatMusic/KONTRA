@@ -542,3 +542,40 @@ fn computed_ui_ids_read_the_declared_control_type_and_range() {
     );
     assert_eq!((cell(&rt, 1), cell(&rt, 2), cell(&rt, 3)), (2, -4, 101));
 }
+
+#[test]
+fn menu_value_read_modify_write_emits_the_same_value_it_stores() {
+    let mut rt = run(
+        "on init declare ui_menu $m add_menu_item($m,\"first\",17) declare $value end on
+        on note set_menu_item_value(get_ui_id($m),0,get_menu_item_value(get_ui_id($m),0)+1)
+            $value := get_menu_item_value(get_ui_id($m),0) end on",
+        &[],
+    );
+    assert_eq!(cell(&rt, 0), 18);
+    let mut effects = 0;
+    rt.drain_effects(|effect| {
+        assert_eq!(effect.args()[2], 18);
+        effects += 1;
+        true
+    });
+    assert_eq!(effects, 1);
+}
+
+#[test]
+fn control_property_read_modify_write_emits_the_same_value_it_stores() {
+    let mut rt = run(
+        "on init declare ui_knob $k(0,100,1) set_knob_defval($k,31) declare $value end on
+        on note set_control_par(get_ui_id($k),$CONTROL_PAR_DEFAULT_VALUE,
+            get_control_par(get_ui_id($k),$CONTROL_PAR_DEFAULT_VALUE)+1)
+            $value := get_control_par(get_ui_id($k),$CONTROL_PAR_DEFAULT_VALUE) end on",
+        &[],
+    );
+    assert_eq!(cell(&rt, 0), 32);
+    let mut effects = 0;
+    rt.drain_effects(|effect| {
+        assert_eq!(effect.args()[2], 32);
+        effects += 1;
+        true
+    });
+    assert_eq!(effects, 1);
+}
