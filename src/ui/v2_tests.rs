@@ -1254,9 +1254,21 @@ fn keyswitch_learn_port_change_retires_a_pending_note() {
     p.shared.record_learn(0, 0, 62);
     p.selection.write().unwrap().parts[0].port = 1;
     h.idle(3);
-    assert!(p.selection.read().unwrap().parts[0].articulation_overlay.inputs.is_empty(), "a pending note belongs to the retired MIDI port");
+    assert!(
+        p.selection.read().unwrap().parts[0]
+            .articulation_overlay
+            .inputs
+            .is_empty(),
+        "a pending note belongs to the retired MIDI port"
+    );
     assert_eq!(p.shared.learn_target.load(Ordering::Relaxed), 0);
-    assert_eq!(*p.shared.view.lock().unwrap().parts[0].instrument.clone().unwrap(), *source);
+    assert_eq!(
+        *p.shared.view.lock().unwrap().parts[0]
+            .instrument
+            .clone()
+            .unwrap(),
+        *source
+    );
 }
 
 #[test]
@@ -1268,7 +1280,13 @@ fn keyswitch_learn_channel_change_retires_a_pending_note() {
     p.shared.record_learn(0, 5, 62);
     p.selection.write().unwrap().parts[0].channel = 6;
     h.idle(3);
-    assert!(p.selection.read().unwrap().parts[0].articulation_overlay.inputs.is_empty(), "a pending note belongs to the retired MIDI channel");
+    assert!(
+        p.selection.read().unwrap().parts[0]
+            .articulation_overlay
+            .inputs
+            .is_empty(),
+        "a pending note belongs to the retired MIDI channel"
+    );
     assert_eq!(p.shared.learn_target.load(Ordering::Relaxed), 0);
 }
 
@@ -1288,11 +1306,22 @@ fn keyswitch_learn_filters_port_channel_and_invalid_notes() {
     }
     h.idle(3);
     assert_eq!(p.shared.learned_note.load(Ordering::Relaxed), learned);
-    assert!(p.selection.read().unwrap().parts[0].articulation_overlay.inputs.is_empty());
+    assert!(
+        p.selection.read().unwrap().parts[0]
+            .articulation_overlay
+            .inputs
+            .is_empty()
+    );
     assert_ne!(p.shared.learn_target.load(Ordering::Relaxed), 0);
     p.shared.record_learn(2, 5, 62);
     h.idle(3);
-    assert_eq!(p.selection.read().unwrap().parts[0].articulation_overlay.inputs["axis:main:Sustain#0"].keys, Some(vec![62]));
+    assert_eq!(
+        p.selection.read().unwrap().parts[0]
+            .articulation_overlay
+            .inputs["axis:main:Sustain#0"]
+            .keys,
+        Some(vec![62])
+    );
     assert_eq!(p.shared.learn_target.load(Ordering::Relaxed), 0);
 }
 
@@ -1303,7 +1332,13 @@ fn keyswitch_learn_omni_accepts_any_valid_channel() {
     keyswitch_begin_learn(&mut h, 0);
     p.shared.record_learn(0, 15, 62);
     h.idle(3);
-    assert_eq!(p.selection.read().unwrap().parts[0].articulation_overlay.inputs["axis:main:Sustain#0"].keys, Some(vec![62]));
+    assert_eq!(
+        p.selection.read().unwrap().parts[0]
+            .articulation_overlay
+            .inputs["axis:main:Sustain#0"]
+            .keys,
+        Some(vec![62])
+    );
     assert_eq!(p.shared.learn_target.load(Ordering::Relaxed), 0);
 }
 
@@ -1312,8 +1347,10 @@ fn keyswitch_learn_conflict_cancel_keeps_both_assignments() {
     let (p, source) = keyswitch_learn_fixture();
     let mut instrument = (*source).clone();
     instrument.articulations.push(sampler_ir::Articulation {
-        source: "axis:main:Legato".into(), name: "Legato".into(),
-        switch_keys: vec![25], ..Default::default()
+        source: "axis:main:Legato".into(),
+        name: "Legato".into(),
+        switch_keys: vec![25],
+        ..Default::default()
     });
     let source = Arc::new(instrument);
     p.shared.view.lock().unwrap().parts[0].instrument = Some(source.clone());
@@ -1322,13 +1359,29 @@ fn keyswitch_learn_conflict_cancel_keeps_both_assignments() {
     p.shared.record_learn(0, 0, 25);
     h.idle(3);
     assert!(h.ui.scene().unwrap().surface("art-swap-0").is_some());
-    assert!(p.selection.read().unwrap().parts[0].articulation_overlay.inputs.is_empty());
+    assert!(
+        p.selection.read().unwrap().parts[0]
+            .articulation_overlay
+            .inputs
+            .is_empty()
+    );
     h.press("art-cancel-0");
     assert_eq!(p.shared.learn_target.load(Ordering::Relaxed), 0);
     p.shared.record_learn(0, 0, 62);
     h.idle(3);
-    assert!(p.selection.read().unwrap().parts[0].articulation_overlay.inputs.is_empty());
-    assert_eq!(*p.shared.view.lock().unwrap().parts[0].instrument.clone().unwrap(), *source);
+    assert!(
+        p.selection.read().unwrap().parts[0]
+            .articulation_overlay
+            .inputs
+            .is_empty()
+    );
+    assert_eq!(
+        *p.shared.view.lock().unwrap().parts[0]
+            .instrument
+            .clone()
+            .unwrap(),
+        *source
+    );
 }
 
 #[test]
