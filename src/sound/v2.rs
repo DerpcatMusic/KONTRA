@@ -42,6 +42,10 @@ use super::{
     RACK_SLOTS, Rendered, Voices,
 };
 
+#[cfg(test)]
+mod pressed_tests;
+mod persistence;
+
 /// Host notes tracked for ownership and NOTE_END across the rack.
 const HELD: usize = 1024;
 /// Notes a part holds at once, sounding or awaiting NOTE_END.
@@ -55,6 +59,7 @@ const WIRE: ChannelAddress = ChannelAddress { protocol: Protocol::Midi1, port: 0
 /// One playable part: its runtime, the MIDI zone in front of it and its tree.
 pub struct Part {
     runtime: Runtime,
+    persistence: Option<persistence::Persistence>,
     tone: sampler_core::OutputLowPass,
     tone_history: [[[f64; 2]; 2]; BUSES + 1],
     pub(crate) epoch: u64,
@@ -74,6 +79,7 @@ pub struct Part {
     /// DAW pairs some node plays to directly, as a bit set.
     direct: u32,
     problems: RuntimeProblems,
+    pub(crate) fault_inbox: Arc<super::report::FaultInbox>,
     /// Velocity, channel, CC or program selecting articulations, when not keys.
     articulator: Option<Articulator>,
     /// The part's switching for each driver, from its instrument, and which
@@ -204,11 +210,12 @@ impl Part {
             epoch: 0,
             engine_bindings,
             waveform_sources: Default::default(),
-            ui_controls: Some(ControlIngress { client, plan, context, definitions, widgets, widget_values, captures, capturing:false, revision, pending_widgets: Default::default(), pending: Default::default() }),
+            ui_controls: Some(ControlIngress { client, plan, context, definitions, widgets, widget_values, captures, capturing:false, midi_requests:Default::default(), revision, pending_widgets: Default::default(), pending: Default::default(), persistence: None }),
             runtime,
             tone,
             tone_history: [[[0.; 2]; 2]; BUSES + 1],
             editor_offsets:None,
+            persistence: None,
             mpe,
             force_articulation_once: false,
             tune: 0.0,
@@ -218,6 +225,7 @@ impl Part {
             audible: vec![true; count].into_boxed_slice(),
             direct: 0,
             problems: RuntimeProblems::default(),
+            fault_inbox: Arc::new(super::report::FaultInbox::default()),
             articulator,
             drivers: Vec::new(),
             switching: 0,
@@ -239,9 +247,14 @@ impl Part {
     // Mix changes frequently while dragging faders. Reuse the worker's
     // immutable sparse layer and rebind only when its contents actually change.
     fn apply_editor_offsets(&mut self,offsets:&Arc<[sampler_core::EngineParameterOffset]>) {
-        if self.editor_offsets.as_deref()!=Some(offsets.as_ref()) && self.runtime.set_engine_offsets(offsets).is_ok() {
-            self.editor_offsets=Some(offsets.clone());
+        if self.editor_offsets.as_deref() != Some(offsets.as_ref())
+            && self.runtime.set_engine_offsets(offsets).is_err()
+        {
+            self.editor_offsets = None;
+            return;
         }
+        // Adopt the current Mix's owner before the shell retires the previous Mix.
+        self.editor_offsets = Some(offsets.clone());
     }
 
     /// Follow the part's tuning, MPE and bend range settings.
@@ -365,10 +378,30 @@ pub(crate) struct ControlIngress {
     pending: std::collections::BTreeMap<sampler_ui_ir::ControlId, (u64, f64)>,
     captures:std::collections::VecDeque<Vec<sampler_core::WidgetEdit>>,
     capturing:bool,
+    midi_requests:std::collections::VecDeque<sampler_core::ControlRequest>,
     revision:u64,
+    persistence: Option<Arc<persistence::Snapshot>>,
 }
 
 impl ControlIngress {
+    pub(crate) fn save_script_state(&self) -> Option<String> { self.persistence.as_ref().map(|state|state.save()) }
+    pub(crate) fn service_midi(&mut self,effect:&sampler_core::Effect)->bool {
+        if effect.service!=sampler_core::MIDI_SERVICE {return false;}
+        let Some(instance)=effect.instance else {return false;};
+        let mut output=if effect.args[0]==4 {sampler_core::MidiCompletion::capture(effect.args[1] as i32,instance)}
+            else {sampler_core::MidiCompletion::empty(effect.args[1] as i32,instance)};
+        output.path=effect.text.unwrap_or_default();
+        if effect.args[0]==3 {let path=output.path;output.read_file(path.as_str());}
+        let operation=if effect.args[0]==4 {sampler_core::ControlOperation::MidiCapture(output)} else {sampler_core::ControlOperation::MidiComplete(output)};
+        self.midi_requests.push_back(sampler_core::ControlRequest {plan:effect.plan,expected_revision:None,operation});
+        self.flush_midi();true
+    }
+    fn flush_midi(&mut self) {
+        while let Some(command)=self.midi_requests.pop_front() {
+            if let Err(rejected)=self.client.submit(command) {self.midi_requests.push_front(rejected.command);break;}
+        }
+    }
+
     pub(crate) fn plan(&self) -> sampler_core::PlanId { self.plan }
     pub(crate) fn submit_host_parameter(&mut self, address: u16, value: f64) -> bool {
         if address >= super::HOST_AUTOMATION_SLOTS || !value.is_finite() || !(0.0..=1.0).contains(&value) { return false; }
@@ -473,6 +506,15 @@ impl ControlIngress {
     pub(crate) fn settle(&mut self) -> bool {
         let mut changed = false;
         while let Some(reply) = self.client.reply() {
+            if matches!(&reply.command.operation,sampler_core::ControlOperation::MidiCapture(_) | sampler_core::ControlOperation::MidiComplete(_)) {
+                if reply.result==Err(sampler_core::Error::Capacity) {self.midi_requests.push_back(reply.command);continue;}
+                if let sampler_core::ControlOperation::MidiCapture(mut output)=reply.command.operation {
+                    output.success=reply.result.is_ok() && output.save_file(output.path.as_str()).is_ok();
+                    self.midi_requests.push_back(sampler_core::ControlRequest {plan:reply.command.plan,expected_revision:None,operation:sampler_core::ControlOperation::MidiComplete(output)});
+                }
+                continue;
+            }
+
             if let Ok((_,revision))=reply.result {self.revision=revision;}
             if let sampler_core::ControlOperation::Invoke(_, write) = &reply.command.operation {
                 let id = sampler_ui_ir::ControlId(write.id.0);
@@ -502,6 +544,7 @@ impl ControlIngress {
                 crate::diagnostics::event(crate::diagnostics::LogLevel::Warning, "ui", "control_rejected", serde_json::json!({"request": reply.request, "reason": format!("{error:?}")}));
             }
         }
+        self.flush_midi();
         changed
     }
 
@@ -566,6 +609,27 @@ fn widget_value(runtime: &Runtime, plan: sampler_core::PlanId, widget: &sampler_
 }
 
 impl V2Core {
+    pub(crate) fn release_all_notes(&mut self) {
+        for (index, part) in self.parts.iter_mut().enumerate() {
+            let Some(part) = part else { continue };
+            // Lua note-off services use the same host identities as ordinary release.
+            for held in self.held.iter().filter(|h| h.part == index) {
+                if let Some(script) = part.script.as_mut() { let _ = script.note_off(&mut part.runtime, held.note.key); }
+            }
+            packet(part, index, &self.held, [0x20b0_4000, 0]); // MIDI 1 CC64 up
+            packet(part, index, &self.held, [0x20b0_4200, 0]); // MIDI 1 CC66 up
+            part.runtime.release_all_notes();
+        }
+    }
+    pub(crate) fn pressed_keys(&self, keys: &mut [u8; 128]) -> bool {
+        keys.fill(0);
+        let mut loaded = false;
+        for part in self.parts.iter().flatten() {
+            loaded = true;
+            part.runtime.pressed_keys(keys);
+        }
+        loaded
+    }
     /// Called at the DAW event's sample boundary, on the runtime owner.
     pub(crate) fn host_parameter(&mut self, address: u16, value: f64) -> bool {
         if address >= super::HOST_AUTOMATION_SLOTS || !value.is_finite() || !(0.0..=1.0).contains(&value) { return false; }
@@ -598,6 +662,28 @@ impl Default for V2Core {
 
 #[cfg(feature = "shots")]
 impl V2Core {
+    pub fn scan_record_selections(&mut self, part: usize, enabled: bool) {
+        if let Some(Some(p)) = self.parts.get_mut(part) { p.runtime.record_selections(enabled); }
+    }
+    pub fn scan_selections(&mut self, part: usize) -> Vec<sampler_core::SelectionRecord> {
+        self.parts.get_mut(part).and_then(Option::as_mut).map(|p|p.runtime.take_selection_records()).unwrap_or_default()
+    }
+    #[cfg(test)]
+    pub(crate) fn widget_gate_behavior_progress(&self, part: usize, visit: impl FnMut(sampler_core::BehaviorProgress<'_>)) {
+        if let Some(Some(part)) = self.parts.get(part) { part.runtime.visit_behavior_progress(visit); }
+    }
+    #[cfg(test)]
+    pub(crate) fn widget_gate_preemptions(&self, part: usize) -> u64 {
+        self.parts.get(part).and_then(Option::as_ref).map_or(0, |part| part.runtime.preemptions())
+    }
+    #[cfg(test)]
+    pub(crate) fn widget_gate_values(&self, part: usize) -> std::collections::BTreeMap<sampler_ui_ir::ControlId, sampler_ui_ir::Value> {
+        let Some(Some(part)) = self.parts.get(part) else { return Default::default() };
+        let plan = part.runtime.active_plan();
+        part.runtime.widget_definitions(plan).unwrap_or_default().iter()
+            .filter_map(|widget| widget_value(&part.runtime, plan, widget)
+                .map(|value| (sampler_ui_ir::ControlId(widget.id.0), value))).collect()
+    }
     pub fn scan_runtime_faults(&mut self,part:usize)->Vec<(usize,sampler_core::Outcome)> {
         let mut out=Vec::new();if let Some(Some(p))=self.parts.get_mut(part){p.runtime.flush_behaviors_at(|_,_,outcome,program|{if matches!(outcome,sampler_core::Outcome::Fault(_)|sampler_core::Outcome::FuelExhausted){out.push((program,outcome));}true});}out
     }
@@ -1003,6 +1089,9 @@ impl V2Core {
                 *m = m.max(peak(&signal[..n]));
             }
         }
+        for part in self.parts.iter_mut().flatten() {
+            if let Some(state) = part.persistence.as_mut() { state.publish(&part.runtime); }
+        }
         Rendered { buses: &self.buses, live: self.written }
     }
 
@@ -1229,6 +1318,9 @@ impl Core for V2Core {
         for (index, part) in parts.iter_mut().enumerate() {
             let Some(part) = part else { continue };
             part.runtime.flush_behaviors_at(|_, _, outcome, program| {
+                if matches!(outcome, sampler_core::Outcome::Fault(_) | sampler_core::Outcome::FuelExhausted) {
+                    part.fault_inbox.record(program, outcome);
+                }
                 if let sampler_core::Outcome::Fault(error) = outcome {
                     part.problems.fault_program = program as u64 + 1;
                     part.problems.fault_error = sampler_core::Error::ALL.iter().position(|e| *e == error).unwrap_or(0) as u64;
@@ -1527,6 +1619,7 @@ fn insert_names(instrument: &ir::Instrument, chain: Option<ir::ChainRef>) -> Vec
             ir::Processor::Gainer { .. } => "Gainer",
             ir::Processor::StereoModeller { .. } => "Stereo Modeller",
             ir::Processor::Pan(_) => "Pan",
+            ir::Processor::LoFi { .. } => "LoFi",
             ir::Processor::StereoMatrix(_) => "Stereo",
             ir::Processor::Reverb(_) => "Reverb",
             ir::Processor::Compressor(_) => "Compressor",
@@ -1728,7 +1821,10 @@ fn uvi(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
     drop(span);
     let span = sampler_kontakt::audit::Span::new("uvi_lua_init");
     let rate = request.sample_rate as u32;
-    let attached = t.attach_script_with_ui_state(rate, sampler_uvi::script::Config::realtime(), request.uvi_state.clone()).map_err(|e| load(&e))?;
+    let config = sampler_uvi::script::Config::realtime();
+    #[cfg(feature = "shots")]
+    let config = sampler_uvi::script::Config { audit_seed: sampler_uvi::script::audit_seed().map_err(|e| load(&e))?, ..config };
+    let attached = t.attach_script_with_ui_state(rate, config, request.uvi_state.clone()).map_err(|e| load(&e))?;
     drop(span);
     let mut report = LoadReport::of(&t.instrument, &request.path, t.locations.len());
     if let Some(a) = &attached { report.uvi_faults = a.driver.ui().fault_counts(); }
@@ -1892,6 +1988,11 @@ impl V2Loader {
             prepared, limits, 2, 1, limits.notes.min(INITIAL_NOTE_PARAMS),
         ).map_err(core)?;
         let mut runtime = runtime.with_threads(render_threads(request));
+        #[cfg(feature = "shots")]
+        if let Some(seed) = sampler_uvi::script::audit_seed().map_err(CoreError::Invalid)? {
+            runtime.seed_random(u64::from(seed));
+            runtime.reset_native_cycles(u64::from(seed));
+        }
         // A source whose first window is not resident starts silent and fades in
         // rather than being refused NotReady.
         runtime.set_cold_starts(true);
@@ -2678,6 +2779,34 @@ mod tests {
     }
 
     #[test]
+    fn midi_file_service_uses_the_host_control_queue_and_completes_its_source_slot() {
+        let dir=tempfile::tempdir().unwrap();let path=dir.path().join("own-fixture.mid");
+        let source=format!(r#"on init mf_set_buffer_size(1)
+          declare $event:=mf_insert_event(0,0,$MIDI_COMMAND_NOTE_ON,60,100)
+          mf_set_event_par($event,$EVENT_PAR_NOTE_LENGTH,96)
+          declare $job declare $status end on
+          on note $job:=save_midi_file("{}") end on
+          on async_complete $status:=$NI_ASYNC_EXIT_STATUS end on"#,path.display());
+        let script=sampler_ksp::compile(&source,48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
+        let plan=script.bind(Prepared::new(48000,vec![],vec![],1).unwrap()).unwrap();
+        let runtime_limits=limits(&plan).0;
+        let runtime=Runtime::new(plan,runtime_limits).unwrap();
+        let mut part=Part::new(runtime,MixTree::instrument("midi")).unwrap();
+        let mut ingress=part.ui_controls.take().unwrap();
+        part.runtime.trigger(sampler_core::Input {protocol:sampler_core::Protocol::Native,port:0,group:0,channel:0,key:60,external_id:None},60,1.).unwrap();
+        let mut effects=Vec::new();part.runtime.drain_effects(|e|{effects.push(*e);true});
+        assert_eq!(effects.len(),1);assert!(ingress.service_midi(&effects[0]));
+        while part.runtime.poll_control_update().unwrap().is_some() {}
+        ingress.settle();
+        assert!(path.exists());
+        while part.runtime.poll_control_update().unwrap().is_some() {}
+        ingress.settle();
+        assert_eq!(part.runtime.script_cell(part.runtime.active_plan(),sampler_core::ScriptInstanceId(0),2),Ok(1));
+        let mut loaded=sampler_core::MidiObject::default();loaded.insert_file(path.to_str().unwrap(),[0,0,0]).unwrap();
+        loaded.first(0);assert_eq!(loaded.apply(sampler_core::MidiAction::Get(sampler_core::midi_par::LENGTH),&[],None),Ok(96));
+    }
+
+    #[test]
     fn typed_capture_reads_callback_changes_and_rejected_edits_roll_back() {
         let source="on init declare ui_knob $k(0,100,1) declare ui_table %t[4](1,1,100) declare ui_xy ?xy[2] declare ui_text_edit @text end on on ui_control($k) %t[1] := $k @text := \"live callback\" ?xy[0] := 0.25 end on";
         let script=sampler_ksp::compile(source,48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
@@ -3329,6 +3458,64 @@ fn snapshot_binding_name<'a>(names: &'a (String, String), base: Option<&Path>) -
 }
 
 #[cfg(test)]
+mod editor_reload_tests {
+    use super::*;
+    use sampler_core::{EngineParameterAddress,EngineParameterLaw,EngineParameterBinding,EngineParameterOffset,ControlId};
+    #[test]
+    fn v1_editor_mix_before_load_and_reload_keeps_the_saved_offset() {
+        let address=EngineParameterAddress{parameter:sampler_core::engine_parameter_id("ENGINE_PAR_CUTOFF").unwrap(),group:0,slot:3,generic:-1};
+        let id=ControlId(10);let law=EngineParameterLaw::Exponential{low:10.,high:10000.};
+        let make=|| {
+            let plan=Prepared::new(48000,vec![],vec![],0).unwrap().with_controls(vec![ControlDefinition{id,domain:ControlDomain::Real{min:10.,max:10000.},default:ControlValue::Real(100.)}]).unwrap().with_engine_parameters(vec![EngineParameterBinding{address,control:id,law}],vec![]).unwrap();
+            let limits=Limits::for_plan(&plan,128,16);Part::new(Runtime::new(plan,limits).unwrap(),MixTree::instrument("Reload")).unwrap()
+        };
+        let mut c=V2Core::with_parts(1,48000.);let mut mix=Mix::default();
+        mix.editor_offsets=vec![Arc::from([EngineParameterOffset{address,offset:0.1}])];
+        c.set_mix(&mix);
+        for _ in 0..2 {
+            let _old=c.install(0,Some(Box::new(make())));
+            let rt=&c.parts[0].as_ref().unwrap().runtime;
+            assert_eq!(rt.control_base_value(rt.active_plan(),id).unwrap(),ControlValue::Real(100.));
+            assert_eq!(rt.control_value(rt.active_plan(),id).unwrap(),ControlValue::Real(law.decode(law.encode(100.)+100000)),"loading applies the already saved editor layer");
+        }
+    }
+    #[test]
+    fn equal_offset_arcs_follow_mix_ownership_and_failed_updates_drop_the_cache() {
+        let address = EngineParameterAddress { parameter: sampler_core::engine_parameter_id("ENGINE_PAR_CUTOFF").unwrap(), group:0, slot:3, generic:-1 };
+        let id = ControlId(10);
+        let law = EngineParameterLaw::Exponential { low:10., high:10000. };
+        let plan = Prepared::new(48000, vec![], vec![], 0).unwrap()
+            .with_controls(vec![ControlDefinition { id, domain:ControlDomain::Real { min:10., max:10000. }, default:ControlValue::Real(100.) }]).unwrap()
+            .with_engine_parameters(vec![EngineParameterBinding { address, control:id, law }], vec![]).unwrap();
+        let limits = Limits::for_plan(&plan,128,16);
+        let mut part = Part::new(Runtime::new(plan,limits).unwrap(),MixTree::instrument("Ownership")).unwrap();
+        let offsets = |offset| Arc::<[EngineParameterOffset]>::from([EngineParameterOffset { address, offset }]);
+        let a = offsets(0.1); let b = offsets(0.1); let c = offsets(0.2);
+        part.apply_editor_offsets(&a);
+        let plan = part.runtime.active_plan();
+        let revision = part.runtime.control_revision(plan).unwrap();
+        assert!(!Arc::ptr_eq(&a,&b));
+        part.apply_editor_offsets(&b);
+        assert!(Arc::ptr_eq(part.editor_offsets.as_ref().unwrap(),&b), "equal contents must adopt the latest worker-owned Mix Arc");
+        assert_eq!(part.runtime.control_revision(plan).unwrap(),revision, "equal contents must not call the engine setter");
+        part.apply_editor_offsets(&c);
+        assert!(Arc::ptr_eq(part.editor_offsets.as_ref().unwrap(),&c));
+        assert_eq!(part.runtime.control_value(plan,id).unwrap(),ControlValue::Real(law.decode(law.encode(100.)+200000)));
+        let revision = part.runtime.control_revision(plan).unwrap();
+        let invalid = offsets(f32::NAN);
+        part.apply_editor_offsets(&invalid);
+        assert!(part.editor_offsets.is_none(), "a failed update must release the older cache while the old Mix still retains it");
+        assert_eq!(part.runtime.control_revision(plan).unwrap(),revision);
+        part.apply_editor_offsets(&c);
+        assert!(Arc::ptr_eq(part.editor_offsets.as_ref().unwrap(),&c), "valid retry must restore cache ownership");
+        let d = offsets(0.3); part.apply_editor_offsets(&d);
+        assert!(Arc::ptr_eq(part.editor_offsets.as_ref().unwrap(),&d));
+        assert_eq!(part.runtime.control_value(plan,id).unwrap(),ControlValue::Real(law.decode(law.encode(100.)+300000)));
+    }
+
+}
+
+#[cfg(test)]
 mod timing_parity_tests {
     use super::*;
     fn aligned_core() -> V2Core {
@@ -3405,26 +3592,3 @@ mod timing_parity_tests {
     }
 }
 
-#[cfg(test)]
-mod editor_reload_tests {
-    use super::*;
-    use sampler_core::{EngineParameterAddress,EngineParameterLaw,EngineParameterBinding,EngineParameterOffset,ControlId};
-    #[test]
-    fn v1_editor_mix_before_load_and_reload_keeps_the_saved_offset() {
-        let address=EngineParameterAddress{parameter:sampler_core::engine_parameter_id("ENGINE_PAR_CUTOFF").unwrap(),group:0,slot:3,generic:-1};
-        let id=ControlId(10);let law=EngineParameterLaw::Exponential{low:10.,high:10000.};
-        let make=|| {
-            let plan=Prepared::new(48000,vec![],vec![],0).unwrap().with_controls(vec![ControlDefinition{id,domain:ControlDomain::Real{min:10.,max:10000.},default:ControlValue::Real(100.)}]).unwrap().with_engine_parameters(vec![EngineParameterBinding{address,control:id,law}],vec![]).unwrap();
-            let limits=Limits::for_plan(&plan,128,16);Part::new(Runtime::new(plan,limits).unwrap(),MixTree::instrument("Reload")).unwrap()
-        };
-        let mut c=V2Core::with_parts(1,48000.);let mut mix=Mix::default();
-        mix.editor_offsets=vec![Arc::from([EngineParameterOffset{address,offset:0.1}])];
-        c.set_mix(&mix);
-        for _ in 0..2 {
-            let _old=c.install(0,Some(Box::new(make())));
-            let rt=&c.parts[0].as_ref().unwrap().runtime;
-            assert_eq!(rt.control_base_value(rt.active_plan(),id).unwrap(),ControlValue::Real(100.));
-            assert_eq!(rt.control_value(rt.active_plan(),id).unwrap(),ControlValue::Real(law.decode(law.encode(100.)+100000)),"loading applies the already saved editor layer");
-        }
-    }
-}

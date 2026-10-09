@@ -328,6 +328,7 @@ pub fn lower_with(
     };
     let mut regions = Vec::with_capacity(instrument.zones.len());
     let mut chains = Vec::new();
+    let mut known_chains = std::collections::HashMap::new();
     let mut chain_of = Vec::with_capacity(instrument.zones.len());
     let mut candidates = 0usize;
     for (i, zone) in instrument.zones.iter().enumerate() {
@@ -341,8 +342,21 @@ pub fn lower_with(
         candidates += usize::from(zone.keys.high - zone.keys.low) + 1;
         regions.push(region);
         chain_of.push(chain.map(|chain| {
-            chains.push(chain);
-            chains.len() - 1
+            let group = lowering.group(zone);
+            let gain = zone.gain.linear() * group.map_or(1.0, |g| g.gain.linear());
+            let pan = zone.pan.position + group.map_or(0.0, |g| g.pan.position);
+            // V1 keeps settings per group; attenuation still belongs to each region.
+            let key = (
+                zone.group,
+                zone.chain,
+                gain.max(1.0).to_bits(),
+                pan.clamp(-1.0, 1.0).to_bits(),
+                zone.pan.law as u8,
+            );
+            *known_chains.entry(key).or_insert_with(|| {
+                chains.push(chain);
+                chains.len() - 1
+            })
         }));
     }
     let mut plan = Prepared::new(rate, pcm.clone(), regions, candidates)
@@ -405,14 +419,41 @@ pub fn lower_with(
     }
     // Only source modulators that actually own an amplitude envelope get lanes.
     // Muted/unmodeled names remain findable without inventing a DSP consumer.
+    let mut envelopes = Vec::new();
     for source in &instrument.source_indices.modulators {
-        let Some(modulator) = source.runtime else { continue };
-        let runtime_group = instrument.source_indices.groups.get(source.group).copied().flatten().unwrap_or(ir::GroupRef(source.group));
-        if source.external || !instrument.zones.iter().any(|z|z.group == Some(runtime_group) && z.amplitude == Some(modulator)) { continue }
-        let ir::ModulationSource::Envelope(envelope) = &instrument.modulators[modulator.0].source else { continue };
-        let authored=lowering.adsr("source amplitude envelope",envelope,false)?;
-        plan=plan.with_group_envelope_parameters(runtime_group.0 as u32,source.group as i32,source.slot as i32,authored).map_err(core(Stage::Envelope,"source amplitude envelope"))?;
+        let Some(modulator) = source.runtime else {
+            continue;
+        };
+        let runtime_group = instrument
+            .source_indices
+            .groups
+            .get(source.group)
+            .copied()
+            .flatten()
+            .unwrap_or(ir::GroupRef(source.group));
+        if source.external
+            || !instrument
+                .zones
+                .iter()
+                .any(|z| z.group == Some(runtime_group) && z.amplitude == Some(modulator))
+        {
+            continue;
+        }
+        let ir::ModulationSource::Envelope(envelope) = &instrument.modulators[modulator.0].source
+        else {
+            continue;
+        };
+        let authored = lowering.adsr("source amplitude envelope", envelope, false)?;
+        envelopes.push((
+            runtime_group.0 as u32,
+            source.group as i32,
+            source.slot as i32,
+            authored,
+        ));
     }
+    plan = plan
+        .with_group_envelope_parameters_batch(envelopes)
+        .map_err(core(Stage::Envelope, "source amplitude envelope"))?;
     if instrument.voice_limit.is_some() || !instrument.voice_limits.is_empty() {
         let limit = |l: &ir::VoiceLimit| crate::VoiceLimit {
             voices: l.voices,
@@ -978,6 +1019,13 @@ impl Lowering<'_> {
                         unsupported(owner.clone(), Feature::ModulationRoute(route.target))
                     })?;
                     match (parameter, depth) {
+                        (parameter, ir::Depth::Normalized(d))
+                            if matches!(**processor, ir::Processor::LadderLP4(_) | ir::Processor::Daft(_)) => {
+                            (match parameter { ir::ProcessorParameter::Cutoff => ModTarget::ProcessorNativeCutoff(first),
+                                ir::ProcessorParameter::Resonance => ModTarget::ProcessorNativeResonance(first),
+                                ir::ProcessorParameter::Gain => ModTarget::ProcessorNativeGain(first),
+                                _ => return Err(unsupported(owner, Feature::ModulationRoute(route.target))), }, d)
+                        }
                         (ir::ProcessorParameter::Cutoff, ir::Depth::Pitch(p)) => {
                             (ModTarget::ProcessorCutoff(first), p.semitones())
                         }
@@ -1051,6 +1099,9 @@ impl Lowering<'_> {
                 let target = match native.target {
                     ModTarget::ProcessorCutoff(_) => ModTarget::ProcessorCutoff(index),
                     ModTarget::ProcessorResonance(_) => ModTarget::ProcessorResonance(index),
+                    ModTarget::ProcessorNativeCutoff(_) => ModTarget::ProcessorNativeCutoff(index),
+                    ModTarget::ProcessorNativeResonance(_) => ModTarget::ProcessorNativeResonance(index),
+                    ModTarget::ProcessorNativeGain(_) => ModTarget::ProcessorNativeGain(index),
                     _ => unreachable!(),
                 };
                 program.routes.push(ModRoute { target, ..native });
@@ -1136,6 +1187,7 @@ impl Lowering<'_> {
             }
             ir::ModulationSource::Lfo(lfo) => ModSource::Lfo(Lfo {
                 shape: match lfo.shape {
+                    ir::LfoShape::Zero => LfoShape::Zero,
                     ir::LfoShape::Sine => LfoShape::Sine,
                     ir::LfoShape::Triangle => LfoShape::Triangle,
                     ir::LfoShape::Square => LfoShape::Square,
@@ -1445,6 +1497,7 @@ impl Lowering<'_> {
                 Processor::LadderLP4(crate::LadderSettings { cutoff: parameter(0, d.cutoff),
                     resonance: parameter(1, d.resonance), gain: parameter(2, d.gain), record_version: d.record_version })
             },
+            ir::Processor::LoFi { bits, frequency, noise, color } => Processor::LoFi(crate::LoFiSettings { bits, frequency, noise, color }),
             ir::Processor::Rectify(mode) => Processor::Rectify(match mode {
                 ir::Rectifier::Full => Rectifier::Full,
                 ir::Rectifier::Half => Rectifier::Half,
@@ -1998,4 +2051,62 @@ pub(crate) fn resample(x: &[f32], from: u32, to: u32) -> Vec<f32> {
             sum as f32
         })
         .collect()
+}
+
+#[cfg(test)]
+mod chain_sharing_tests {
+    use super::*;
+
+    #[test]
+    fn repeated_chains_share_without_merging_authored_owners_or_pan_gain() {
+        let mut instrument = ir::Instrument {
+            assets: vec![ir::Asset {
+                location: ir::AssetLocation::Path("synthetic.wav".into()),
+                encoding: ir::Encoding::Wav,
+                root_key: None,
+                loops: vec![],
+            }],
+            groups: vec![ir::Group::default()],
+            chains: (0..2)
+                .map(|_| ir::Chain {
+                    scope: ir::Scope::Voice,
+                    pre_amplitude: vec![ir::Processor::Gain(ir::Gain::Linear(0.5))],
+                    post_amplitude: vec![],
+                })
+                .collect(),
+            zones: (0..7)
+                .map(|_| ir::Zone {
+                    chain: Some(ir::ChainRef(0)),
+                    pitch: ir::KeyTracking::Fixed,
+                    ..ir::Zone::new(ir::AssetRef(0))
+                })
+                .collect(),
+            ..Default::default()
+        };
+        instrument.zones[2].chain = Some(ir::ChainRef(1));
+        instrument.zones[3].pan.position = 0.5;
+        instrument.zones[4].gain = ir::Gain::Linear(2.0);
+        instrument.zones[5].gain = ir::Gain::Linear(0.4);
+        instrument.zones[6].group = Some(ir::GroupRef(0));
+        let plan = lower(
+            &instrument,
+            48000,
+            vec![Pcm::new(48000, vec![[0.1; 2]; 64].into_boxed_slice()).unwrap()],
+            |_, plan| Ok(plan),
+        )
+        .unwrap();
+        assert_eq!(plan.voice_chains.len(), 5);
+        assert_eq!(
+            (0..7).map(|i| plan.region_chain(i)).collect::<Vec<_>>(),
+            vec![
+                Some(0),
+                Some(0),
+                Some(1),
+                Some(2),
+                Some(3),
+                Some(0),
+                Some(4)
+            ]
+        );
+    }
 }

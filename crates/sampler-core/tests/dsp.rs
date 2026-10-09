@@ -73,6 +73,27 @@ fn close(actual: [f32; 2], expected: f32) {
 }
 
 #[test]
+fn lofi_voice_state_processes_and_recycles_without_audio_heap_calls() {
+    let processor = Processor::LoFi(sampler_core::LoFiSettings {
+        bits: 0.1, frequency: 0.2, noise: 0.6, color: 0.7,
+    });
+    let mut rt = Runtime::new(plan(vec![processor], vec![], 0, Envelope::default(), 128), limits()).unwrap();
+    let mut first = [[0.; 2]; 128];
+    let mut second = first;
+    support::without_heap(|| {
+        for (id, output) in [(1, &mut first), (2, &mut second)] {
+            let note = rt.trigger(input(id), 60, 1.).unwrap();
+            for chunk in output.chunks_mut(7) { rt.render(chunk).unwrap(); }
+            rt.key_up(note, None).unwrap();
+            rt.flush_ended(|_| true);
+        }
+    });
+    assert_eq!(first, second);
+    assert!(first.iter().flatten().all(|v| v.is_finite()));
+    assert!(first.iter().flatten().any(|v| v.abs() > 1e-5));
+}
+
+#[test]
 fn voice_chain_order_tails_muting_and_slot_reuse_are_sample_exact_without_heap() {
     for block in [1, 2, 7, 64] {
         for pre in [true, false] {

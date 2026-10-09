@@ -35,7 +35,7 @@ pub enum Source {
 }
 
 /// The upper pane's share of the browser's height.
-pub const SPLIT: f64 = 0.36;
+pub const SPLIT: f64 = 0.55;
 pub const SPLIT_MIN: f64 = 0.14;
 pub const SPLIT_MAX: f64 = 0.7;
 
@@ -52,6 +52,7 @@ const INDENT: f64 = TEXT;
 /// The browser's own state between frames.
 #[derive(Default)]
 pub struct Browse {
+    positions: [Position; 2],
     /// The quick filter over the libraries, and as it was last drawn.
     pub filter: String,
     filtered: String,
@@ -61,7 +62,7 @@ pub struct Browse {
     /// What the lower pane lists, hashed: it starts at the top when this changes.
     listing: u64,
     /// Bring the chosen library, and the cursor's row, into view.
-    reveal_source: bool,
+    reveal_source: u8,
     reveal_row: bool,
     /// The library and row last shown were put back.
     restored: bool,
@@ -76,6 +77,22 @@ pub struct Browse {
     pub renaming: Option<(String, String)>,
 }
 
+#[derive(Default)]
+struct Position {
+    source: Option<Source>,
+    cursor: Option<String>,
+    search: String,
+    filter: String,
+    sources_y: f64,
+    list_y: f64,
+    listing: u64,
+}
+
+fn is_uvi(path: &Path) -> bool {
+    path.extension().is_some_and(|e| e.eq_ignore_ascii_case("uvip") || e.eq_ignore_ascii_case("ufs"))
+        || path.components().any(|c| Path::new(c.as_os_str()).extension().is_some_and(|e| e.eq_ignore_ascii_case("ufs")))
+}
+
 impl Browse {
     /// Esc this frame was meant for one of the browser's fields.
     pub fn typing(&self) -> bool {
@@ -88,7 +105,7 @@ impl Browse {
 enum Row {
     Folder { path: String, name: String, depth: usize, count: usize, open: bool },
     /// `under` is its folder, shown under its name in a flat list.
-    Preset { path: PathBuf, depth: usize, under: String },
+    Preset { path: PathBuf, depth: usize, under: String, index: usize },
 }
 
 impl Row {
@@ -116,7 +133,7 @@ impl Row {
     fn id(&self, n: usize) -> String {
         match self {
             Row::Folder { .. } => format!("folder-{n}"),
-            Row::Preset { .. } => format!("instrument-{n}"),
+            Row::Preset { index, .. } => format!("instrument-{index}"),
         }
     }
 }
@@ -131,15 +148,15 @@ struct Listed {
 }
 
 impl Listed {
-    fn new(rows: Vec<Row>) -> Self {
+    fn new(mut rows: Vec<Row>) -> Self {
         let mut tops = Vec::with_capacity(rows.len() + 1);
         let mut indices = HashMap::with_capacity(rows.len());
         let (mut y, mut presets) = (0., 0);
-        for (n, row) in rows.iter().enumerate() {
+        for (n, row) in rows.iter_mut().enumerate() {
             tops.push(y);
             y += row.height();
             indices.entry(row.key()).or_insert(n);
-            presets += usize::from(matches!(row, Row::Preset { .. }));
+            if let Row::Preset { index, .. } = row { *index = presets; presets += 1; }
         }
         tops.push(y);
         Self { rows, tops, indices, presets }
@@ -153,21 +170,24 @@ struct LibraryDrag(String);
 pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     let catalog = cx.view.shelf.clone();
     let presets = cx.view.files.clone();
-    let multis = cx.state.multis;
+    let settings = cx.settings.clone();
+    if !cx.state.browse.restored && let Some(library) = catalog.libraries.iter().find(|l| l.dir == Path::new(&settings.last_library)) {
+        cx.state.uvi = presets.iter().find(|p| p.starts_with(&library.dir)).is_some_and(|p| is_uvi(p));
+    }
+    let uvi = cx.state.uvi;
     // Which library each file is in, worked out once per scan.
     let (files, shelf, kind, grouped) = &mut cx.state.libraries;
     let scanned = Arc::as_ptr(&catalog) as usize;
-    if !files.upgrade().is_some_and(|f| Arc::ptr_eq(&f, &presets)) || *shelf != scanned || *kind != multis {
+    if !files.upgrade().is_some_and(|f| Arc::ptr_eq(&f, &presets)) || *shelf != scanned || *kind != uvi {
         let mut by: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-        for (n, file) in presets.iter().enumerate().filter(|(_, f)| import::is_multi(f) == multis) {
+        for (n, file) in presets.iter().enumerate().filter(|(_, f)| import::is_multi(f) || is_uvi(f) == uvi) {
             if let Some(library) = catalog.of(file) {
                 by.entry(library.name.clone()).or_default().push(n);
             }
         }
-        (*files, *shelf, *kind, *grouped) = (Arc::downgrade(&presets), scanned, multis, Arc::new(by));
+        (*files, *shelf, *kind, *grouped) = (Arc::downgrade(&presets), scanned, uvi, Arc::new(by));
     }
     let grouped = grouped.clone();
-    let settings = cx.settings.clone();
     // The libraries as listed: pinned ones, then by the sort chosen.
     let arranged: Vec<&Library> = settings.arrange(grouped.keys().filter_map(|name| catalog.named(name)));
     let dirs: Vec<String> = arranged.iter().map(|l| l.dir.to_string_lossy().into_owned()).collect();
@@ -176,7 +196,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         paths
             .iter()
             .map(PathBuf::from)
-            .filter(|p| import::is_multi(p) == multis)
+            .filter(|p| import::is_multi(p) || is_uvi(p) == uvi)
             .collect()
     };
     let (favorites, recent) = (kind(&cx.selection.favorites), kind(&cx.selection.recent));
@@ -195,7 +215,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         if let (None, Some(at)) = (&cx.state.source, at) {
             cx.state.source = Some(Source::Library(arranged[at].name.clone()));
             cx.state.cursor = (!settings.last_row.is_empty()).then(|| settings.last_row.clone());
-            (cx.state.browse.reveal_source, cx.state.browse.reveal_row) = (true, true);
+            (cx.state.browse.reveal_source, cx.state.browse.reveal_row) = (2, true);
         }
     }
 
@@ -209,12 +229,30 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     }
     let mut kinds = Vec::new();
     for (multi, label, id) in [
-        (false, "Instruments", "picker-instruments"),
-        (true, "Multis", "picker-multis"),
+        (false, "Kontakt", "bank-kontakt"),
+        (true, "Falcon / UVI", "bank-uvi"),
     ] {
-        let (hit, el) = tab(ui, id, label, multis == multi);
+        let (hit, el) = tab(ui, id, label, uvi == multi);
         if hit {
-            cx.state.multis = multi;
+            if cx.state.uvi != multi {
+                let browse = &mut cx.state.browse;
+                browse.positions[uvi as usize] = Position {
+                    source: cx.state.source.take(), cursor: cx.state.cursor.take(), search: std::mem::take(&mut cx.state.search),
+                    filter: std::mem::take(&mut browse.filter),
+                    sources_y: browse.sources_y, list_y: browse.list_y, listing: browse.listing,
+                };
+                let position = std::mem::take(&mut browse.positions[multi as usize]);
+                cx.state.source = position.source;
+                cx.state.cursor = position.cursor;
+                cx.state.search = position.search;
+                (browse.sources_y, browse.list_y, browse.listing) = (position.sources_y, position.list_y, position.listing);
+                browse.filter = position.filter;
+                browse.filtered = browse.filter.clone();
+                browse.restored = true;
+                browse.reveal_source = 0;
+                cx.state.uvi = multi;
+                return sidebar(ui, cx);
+            }
         }
         kinds.push(el);
     }
@@ -273,7 +311,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             cx.state.source = Some(first.clone());
             cx.state.cursor = None;
         }
-        cx.state.browse.reveal_source = true;
+        cx.state.browse.reveal_source = 2;
     }
     if cx.state.source.as_ref().is_some_and(|s| matches!(s, Source::Library(name) if !grouped.contains_key(name))) {
         cx.state.source = None;
@@ -292,10 +330,11 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         if let Some(next) = step(at, k.key, sources.len()).filter(|_| !sources.is_empty()) {
             cx.state.source = Some(sources[next].1.clone());
             cx.state.cursor = None;
-            cx.state.browse.reveal_source = true;
+            cx.state.browse.reveal_source = 2;
         }
         if k.key == Key::Enter && at.is_some() {
             enter = true;
+            cx.state.browse.reveal_source = 2;
             keep_place(cx);
         }
     }
@@ -311,12 +350,14 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             // A second click lets the library go: the search spans them all.
             cx.state.source = (cx.state.source.as_ref() != Some(source)).then(|| source.clone());
             cx.state.cursor = None;
+            cx.state.browse.reveal_source = 2;
             keep_place(cx);
         }
         if !editing && r.key_activated {
             cx.state.source = Some(source.clone());
             cx.state.cursor = None;
             enter = true;
+            cx.state.browse.reveal_source = 2;
             keep_place(cx);
         }
         if let (true, Source::Library(name)) = (r.clicked_with(Button::Secondary), source) {
@@ -327,7 +368,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             if let Some(next) = walked.filter(|&next| next != n) {
                 cx.state.source = Some(sources[next].1.clone());
                 cx.state.cursor = None;
-                cx.state.browse.reveal_source = true;
+                cx.state.browse.reveal_source = 2;
                 focus_to = Some(sources[next].0.clone());
             }
         }
@@ -346,23 +387,27 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             }
             over = r.drop_target && dragging.as_ref().is_some_and(|from| from != dir);
         }
-        let (label, count, thumb) = match source {
-            Source::Favorites => ("Favorites".to_owned(), favorites.len(), symbol(Icon::Star)),
-            Source::Recent => ("Recent".to_owned(), recent.len(), symbol(Icon::Recent)),
-            Source::Library(name) => (
-                catalog.named(name).map_or_else(|| library_label(name), |l| settings.library_name(l)),
-                grouped[name].len(),
-                match cx.looks(name).and_then(|l| l.thumb.clone()) {
-                    Some(image) => block(THUMB.0, THUMB.1)
-                        .fill(Fill::Image(image, Fit::Cover))
-                        .shrink(0),
-                    None => symbol(Icon::Sidebar),
-                },
-            ),
+        let (label, count, thumb, height, card) = match source {
+            Source::Favorites => ("Favorites".to_owned(), favorites.len(), symbol(Icon::Star), SOURCE_ROW, false),
+            Source::Recent => ("Recent".to_owned(), recent.len(), symbol(Icon::Recent), SOURCE_ROW, false),
+            Source::Library(name) => {
+                // Own panels are already decoded by the import worker.
+                let image = catalog.named(name).filter(|l| !settings.covers.contains_key(l.dir.to_string_lossy().as_ref()))
+                    .and_then(|_| cx.view.artwork.get(name)).cloned()
+                    .or_else(|| cx.looks(name).and_then(|l| l.thumb.clone()));
+                let width = (cx.state.sidebar - 2. * TIGHT).max(1.);
+                let height = image.as_ref().map_or(width / 4., |i| width * f64::from(i.height) / f64::from(i.width));
+                let art = match image {
+                    Some(image) => block(Len::Pct(100.), height).fill(Fill::Image(image, Fit::Contain)),
+                    None => stack![glyph(Icon::Sidebar, TEXT, secondary()).centered()].w(Len::Pct(100.)).h(height).fill(Role::Raised),
+                }.id(format!("{id}-art")).disabled().shrink(0);
+                (catalog.named(name).map_or_else(|| library_label(name), |l| settings.library_name(l)),
+                    grouped[name].len(), art, height + SOURCE_ROW + 2. * TIGHT, true)
+            },
         };
         let chosen = cx.state.source.as_ref() == Some(source);
         if chosen {
-            chosen_at = Some((top, top + SOURCE_ROW));
+            chosen_at = Some((top, top + height));
         }
         let progress = match source {
             Source::Library(name) => loading.get(name).map(|(sum, n)| sum / *n as f64),
@@ -373,13 +418,13 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             _ => None,
         };
         let edit = dir.as_deref().and_then(|dir| library_name(ui, cx, dir));
-        let el = source_row(id, label, count, thumb, chosen, progress, about, edit);
+        let el = source_row(id, label, count, thumb, height, card, chosen, progress, about, edit);
         rows.push(if over {
             stack![el, block(Len::Pct(100.), 2).fill(accent()).anchor(Align::Start, Align::Start)].shrink(0)
         } else {
             el
         });
-        top += SOURCE_ROW;
+        top += height;
         // A rule under Recent, and under the pinned libraries.
         let last_pinned = dir.as_deref().is_some_and(pinned)
             && sources.get(n + 1).is_some_and(|(_, s)| match s {
@@ -387,7 +432,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
                 _ => false,
             });
         if source == &Source::Recent || last_pinned {
-            rows.push(rule().pad((TIGHT, INSET)));
+            rows.push(col![rule()].pad((TIGHT, INSET)).shrink(0));
             top += SOURCE_RULE;
         }
     }
@@ -406,38 +451,47 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         top += CONTROL;
     }
     let scanning = cx.p.shared.libraries.scanning();
-    if arranged.is_empty() && scanning.is_none() {
+    let bank_problem = uvi && !catalog.bank_issues.is_empty();
+    if bank_problem {
+        let count: usize = catalog.bank_issues.iter().map(|i| i.locations.len()).sum();
+        let unsupported: usize = catalog.bank_issues.iter().filter(|i| i.unsupported).map(|i| i.locations.len()).sum();
+        let mut message = if unsupported > 0 { format!("Protected library: not supported ({unsupported} banks). ") } else { String::new() };
+        if count > unsupported { message.push_str(&format!("{} UVI banks could not be read. ", count - unsupported)); }
+        message.push_str("See Logs for the affected locations.");
+        rows.insert(0, hint(&message).id("uvi-bank-problem"));
+    }
+    if !bank_problem && arranged.is_empty() && scanning.is_none() {
         if presets.is_empty() {
             // First, so its buttons are in view above favorites and recent.
             rows.insert(0, empty_state(ui, cx));
         } else {
-            rows.push(hint(if multis { "No multis in these libraries." } else { "No instruments in these libraries." }));
+            rows.push(hint(if uvi { "No Falcon / UVI libraries." } else { "No Kontakt libraries." }));
         }
-    } else if sources.is_empty() {
+    } else if !bank_problem && sources.is_empty() {
         rows.push(hint("No library matches that filter."));
     }
-    let reveal = chosen_at.filter(|_| cx.state.browse.reveal_source);
-    let sources_id = format!("browser-sources-{multis}");
+    let reveal = chosen_at.filter(|_| cx.state.browse.reveal_source > 0);
+    let sources_id = format!("browser-sources-{uvi}");
     // The rows are summed above; the empty state and hints are measured.
     let measured = ui.scene().and_then(|s| s.surface("browser-sources-content")).map_or(0., |s| s.frame.size.height);
     let (sources_y, sources_bar, revealed) =
         slide(ui, &sources_id, &mut cx.state.browse.sources_y, measured.max(top + TIGHT), reveal, false);
-    if revealed || chosen_at.is_none() {
-        cx.state.browse.reveal_source = false;
-    }
+    // Selection changes the lower header: reveal again against its settled viewport.
+    if chosen_at.is_none() { cx.state.browse.reveal_source = 0; }
+    else if revealed { cx.state.browse.reveal_source = cx.state.browse.reveal_source.saturating_sub(1); }
 
     // The lower pane: the chosen source's presets, the search filtering them.
     let search = search_field(
         ui,
         "search",
         &mut cx.state.search,
-        if multis { "Search multis" } else { "Search instruments" },
+        "Search presets",
         "Search presets",
     );
     let needle = cx.state.search.to_lowercase();
     let made_of = {
         let mut h = DefaultHasher::new();
-        (Arc::as_ptr(&presets) as usize, presets.len(), Arc::as_ptr(&catalog) as usize, multis).hash(&mut h);
+        (Arc::as_ptr(&presets) as usize, presets.len(), Arc::as_ptr(&catalog) as usize, uvi).hash(&mut h);
         (&cx.state.source, &needle, &favorites, &recent, &dirs, &settings.folders, &settings.names).hash(&mut h);
         h.finish()
     };
@@ -449,7 +503,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     let listed_rows = &listed.rows;
     let listing = {
         let mut h = DefaultHasher::new();
-        (&cx.state.source, &needle, multis).hash(&mut h);
+        (&cx.state.source, &needle, uvi).hash(&mut h);
         h.finish()
     };
     let fresh = cx.state.browse.listing != listing;
@@ -464,7 +518,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         None if !needle.is_empty() => "Nothing matches that search.",
         None => "Choose a library above, or search them all.",
     };
-    let list_id = "browser-list";
+    let list_id = if uvi { "browser-list-uvi" } else { "browser-list" };
     let view_h = ui.scene().and_then(|s| s.surface(list_id)).map_or(0., |s| s.frame.size.height);
     walk(ui, cx, &listed, ((view_h / ROW) as usize).max(1), &mut focus_to);
     // Into the presets, at the cursor (the first row when none), brought into view.
@@ -500,6 +554,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         && let Some(library) = catalog.named(name)
     {
         let size = cx.p.shared.libraries.size(&library.dir);
+        if size.is_none() && ui.get("library-size").activated() { cx.p.shared.libraries.measure_size(&library.dir); }
         above.push(library_heading(library, settings.library_name(library), size));
         if needle.is_empty() {
             above.extend(crumbs(ui, cx, library, &listed));
@@ -525,7 +580,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     for n in first..last.max(first) {
         items.push(match &listed_rows[n] {
             Row::Folder { .. } => folder(ui, cx, n, &listed_rows[n]),
-            Row::Preset { path, depth, under } => preset(ui, cx, n, path, *depth, under),
+            Row::Preset { path, depth, under, index } => preset(ui, cx, *index, path, *depth, under),
         });
     }
     items.push(block(1, y - tops[last.max(first)]).shrink(0));
@@ -545,7 +600,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     let counted = caption(count.to_string())
         .text_size(SMALL)
         .fill(secondary())
-        .tip(format!("{count} {}", if multis { "multis" } else { "instruments" }))
+        .tip(format!("{count} presets"))
         .id("browser-count");
     let scan_line = scan_line(ui, cx, scanning);
     let split = split_divider(ui, cx);
@@ -644,11 +699,18 @@ fn list(
                 (true, false, true) => library,
                 _ => folders,
             };
-            Row::Preset { path: path.to_path_buf(), depth: 0, under }
+            Row::Preset { path: path.to_path_buf(), depth: 0, under, index: 0 }
         })
     };
     let files = |name: &str| -> Vec<&Path> {
-        grouped.get(name).into_iter().flatten().map(|&n| view.files[n].as_path()).collect()
+        let mut paths: Vec<_> = grouped.get(name).into_iter().flatten().map(|&n| view.files[n].as_path()).collect();
+        if let Some(library) = view.shelf.named(name) {
+            paths.extend(view.shelf.snapshots.iter().filter(|(base, _)| view.shelf.of(base).is_some_and(|l| l.dir == library.dir))
+                .flat_map(|(_, snapshots)| snapshots.paths.iter().map(PathBuf::as_path)));
+        }
+        paths.sort_by_cached_key(|p| import::natural(&p.to_string_lossy()));
+        paths.dedup();
+        paths
     };
     match &cx.state.source {
         Some(Source::Favorites) => favorites.iter().filter_map(|p| flat(p, true)).collect(),
@@ -657,10 +719,7 @@ fn list(
         Some(Source::Library(name)) => {
             let Some(library) = view.shelf.named(name) else { return Vec::new() };
             let paths = files(name);
-            let tree = Folder::tree(&library.dir, paths.iter().copied());
-            let mut out = Vec::new();
-            flatten(&tree, 0, &cx.settings.folders, &paths, &mut out);
-            out
+            categories(library, &paths, &cx.settings.folders)
         }
         None if !words.is_empty() => arranged
             .iter()
@@ -671,15 +730,46 @@ fn list(
     }
 }
 
+fn categories(library: &Library, paths: &[&Path], open: &BTreeMap<String, bool>) -> Vec<Row> {
+    let mut out = Vec::new();
+    for name in ["Instruments", "Multis", "Presets", "Snapshots"] {
+        let mut selected: Vec<&Path> = paths.iter().copied().filter(|p| {
+            let category = if import::is_multi(p) || p.extension().is_some_and(|e| e.eq_ignore_ascii_case("nkm")) { "Multis" }
+                else if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("nksn")) { "Snapshots" }
+                else if is_uvi(p) { "Presets" } else { "Instruments" };
+            category == name
+        }).collect();
+        if selected.is_empty() { continue; }
+        selected.sort_by_cached_key(|p| import::natural(&p.to_string_lossy()));
+        let mut root = library.dir.clone();
+        // Bank members keep their source identity while hiding the container wrapper.
+        if name == "Presets" && let Some(first) = selected[0].strip_prefix(&root).ok().and_then(|p| p.components().next()) {
+            let bank = root.join(first.as_os_str());
+            if bank.extension().is_some_and(|e| e.eq_ignore_ascii_case("ufs")) && selected.iter().all(|p| p.starts_with(&bank)) { root = bank; }
+        }
+        let category = root.join(name);
+        if selected.iter().all(|p| p.starts_with(&category)) { root = category; }
+        let key = library.dir.join(name).to_string_lossy().into_owned();
+        let opened = open.get(&key).copied().unwrap_or(name == "Instruments" || name == "Presets");
+        out.push(Row::Folder { path: key, name: name.into(), depth: 0, count: selected.len(), open: opened });
+        if opened { flatten(&Folder::tree(&root, selected.iter().copied()), 1, open, &selected, &mut out); }
+    }
+    out
+}
+
 /// `folder`'s rows: its folders, each followed by its own rows when open,
 /// then its presets. A folder that is all its parent holds starts open.
 fn flatten(folder: &Folder, depth: usize, open: &BTreeMap<String, bool>, paths: &[&Path], out: &mut Vec<Row>) {
     let only = folder.folders.len() == 1 && folder.presets.is_empty();
     for sub in &folder.folders {
+        if folder.name.to_ascii_lowercase().ends_with(".ufs") && sub.name.eq_ignore_ascii_case("Presets") {
+            flatten(sub, depth, open, paths, out);
+            continue;
+        }
         let is_open = open.get(&sub.path).copied().unwrap_or(only);
         out.push(Row::Folder {
             path: sub.path.clone(),
-            name: sub.name.clone(),
+            name: sub.name.strip_suffix(".ufs").unwrap_or(&sub.name).to_owned(),
             depth,
             count: sub.count,
             open: is_open,
@@ -689,7 +779,7 @@ fn flatten(folder: &Folder, depth: usize, open: &BTreeMap<String, bool>, paths: 
         }
     }
     for &n in &folder.presets {
-        out.push(Row::Preset { path: paths[n].to_path_buf(), depth, under: String::new() });
+        out.push(Row::Preset { path: paths[n].to_path_buf(), depth, under: String::new(), index: 0 });
     }
 }
 
@@ -800,6 +890,8 @@ fn source_row(
     label: String,
     count: usize,
     thumb: El,
+    height: f64,
+    card: bool,
     chosen: bool,
     loading: Option<f64>,
     about: Option<String>,
@@ -818,16 +910,15 @@ fn source_row(
         ),
         None => (name.flex(1), caption(count.to_string()).text_size(SMALL).fill(secondary())),
     };
-    let el = row![
-        block(2, THUMB.1).fill(if chosen { Fill::from(accent()) } else { Role::Ink.alpha(0.) }),
-        thumb,
-        name,
-        count,
-    ]
-    .gap(SPACE)
-    .align(Align::Center)
-    .pad(edges(0., INSET, 0., 0.))
-    .h(SOURCE_ROW)
+    let mark = block(2, THUMB.1).fill(if chosen { Fill::from(accent()) } else { Role::Ink.alpha(0.) });
+    let el = if card {
+        col![thumb, row![mark, name, count].gap(SPACE).align(Align::Center)
+            .pad(edges(0., INSET, 0., 0.)).h(SOURCE_ROW)]
+            .gap(0).align(Align::Stretch).pad((TIGHT, TIGHT)).h(height)
+    } else {
+        row![mark, thumb, name, count].gap(SPACE).align(Align::Center)
+            .pad(edges(0., INSET, 0., 0.)).h(height)
+    }
     .when(chosen, |e| e.fill(Role::Raised))
     .focusable()
     .a11y(A11y::Button)
@@ -869,13 +960,17 @@ fn library_heading(library: &Library, name: String, size: Option<u64>) -> El {
     facts.push(match size {
         Some(bytes) if bytes >= 1 << 30 => format!("{:.1} GB", bytes as f64 / f64::from(1 << 30)),
         Some(bytes) => format!("{:.0} MB", bytes as f64 / f64::from(1 << 20)),
-        None => "measuring size".into(),
+        None => "Calculate size".into(),
     });
-    let mut lines = vec![body(name).text_size(TEXT).lines(1).min_w(0)];
+    let mut lines = vec![body(name.clone()).text_size(TEXT).lines(1).min_w(0).tip(name)];
     if !library.vendor.is_empty() {
         lines.push(caption(library.vendor.clone()).fill(secondary()).lines(1).min_w(0));
     }
-    lines.push(caption(facts.join(" · ")).fill(secondary()).lines(1).min_w(0));
+    let facts = caption(facts.join(" · ")).fill(secondary()).lines(1).min_w(0);
+    lines.push(if size.is_none() {
+        interactive(facts.focusable().a11y(A11y::Button).named("Calculate library size")
+            .tip("Count file sizes in the background").id("library-size"), false)
+    } else { facts });
     col(lines).gap(2).align(Align::Start).pad(edges(TIGHT, INSET, SPACE, INSET)).shrink(0)
 }
 
@@ -961,14 +1056,8 @@ fn empty_state(ui: &mut Ui, cx: &mut Cx) -> El {
     }
     col![
         body("No libraries yet").text_size(TEXT).lines(1),
-        caption(
-            "Add the folder that holds your Kontakt libraries: each library in it is found, \
-             with or without a library file. Or add one library's own folder."
-        )
-        .fill(secondary())
-        .lines(5),
-        many_el,
-        one_el,
+        many_el.tip("Add the folder that holds your libraries; each library is found, with or without a library file."),
+        one_el.tip("Add one library's own folder."),
     ]
     .gap(SPACE)
     .align(Align::Start)
@@ -1023,8 +1112,8 @@ fn split_divider(ui: &mut Ui, cx: &mut Cx) -> El {
     let height = ui
         .scene()
         .and_then(|s| {
-            Some(s.surface(&format!("browser-sources-{}", cx.state.multis))?.frame.size.height
-                + s.surface("browser-list")?.frame.size.height)
+            Some(s.surface(&format!("browser-sources-{}", cx.state.uvi))?.frame.size.height
+                + s.surface(if cx.state.uvi { "browser-list-uvi" } else { "browser-list" })?.frame.size.height)
         })
         .unwrap_or(600.);
     if r.dragged {
@@ -1311,6 +1400,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn categories_separate_native_multis_snapshots_and_natural_order() {
+        let library = Library { dir: "/lib".into(), ..Default::default() };
+        let paths = ["/lib/Patch 10.nki", "/lib/Patch 2.nki", "/lib/Rack.nkm", "/lib/Scene.kontra-multi", "/lib/Snap.nksn"];
+        let paths: Vec<_> = paths.iter().map(Path::new).collect();
+        let rows = categories(&library, &paths, &BTreeMap::new());
+        let names: Vec<_> = rows.iter().filter_map(|r| match r { Row::Folder { name, .. } => Some(name.as_str()), _ => None }).collect();
+        assert_eq!(names, ["Instruments", "Multis", "Snapshots"]);
+        let files: Vec<_> = rows.iter().filter_map(|r| match r { Row::Preset { path, .. } => Some(path.as_path()), _ => None }).collect();
+        assert_eq!(files, [Path::new("/lib/Patch 2.nki"), Path::new("/lib/Patch 10.nki")]);
+        let rows = categories(&library, &paths, &BTreeMap::from([("/lib/Multis".into(), true)]));
+        assert!(rows.iter().any(|r| matches!(r, Row::Preset { path, .. } if path.ends_with("Rack.nkm"))));
+    }
+
+    #[test]
     fn cached_rows_preserve_scroll_offsets_counts_and_cursor_positions() {
         let mut rows = vec![Row::Folder {
             path: "/virtual/Large/Instruments".into(),
@@ -1322,6 +1425,7 @@ mod tests {
         rows.extend((0..10_000).map(|n| Row::Preset {
             path: format!("/virtual/Large/Instruments/Patch {n:05}.nki").into(),
             depth: 1,
+            index: 0,
             under: if n % 2 == 0 { "Instruments".into() } else { String::new() },
         }));
         // Duplicate favorites historically resolve to the first matching row.

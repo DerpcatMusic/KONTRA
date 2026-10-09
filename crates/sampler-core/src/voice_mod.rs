@@ -17,6 +17,8 @@ type Shape = Box<[(f32, f32)]>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LfoShape {
+    /// Bipolar zero, including every phase, delay and fade state.
+    Zero,
     Sine,
     Triangle,
     Square,
@@ -108,6 +110,10 @@ pub enum ModTarget {
     /// Actual compiled filter index, preserving the addressed source stage.
     ProcessorCutoff(u32),
     ProcessorResonance(u32),
+    /// Add normalized depth to the native filter's saved cutoff knob.
+    ProcessorNativeCutoff(u32),
+    ProcessorNativeResonance(u32),
+    ProcessorNativeGain(u32),
     /// A per-voice low-pass, open (bypassed) at 0, closing by depth·v semitones
     /// below the open cutoff when the sum is negative.
     Tone,
@@ -212,6 +218,8 @@ struct Program {
     filter: bool,
     tone: bool,
     start: bool,
+    /// v1 settled-result reuse, restricted to sources without clocks or lag.
+    cacheable: bool,
 }
 
 /// Immutable per-plan programs and region bindings.
@@ -355,6 +363,13 @@ impl VoiceModulation {
                 |targets: &[ModTarget]| program.routes.iter().any(|r| targets.contains(&r.target));
             compiled.push(Program {
                 bipolar: program.sources.iter().map(ModSource::bipolar).collect(),
+                cacheable: sources.iter().all(|s| {
+                    matches!(s,
+                        Prepared::Velocity | Prepared::Key | Prepared::Controller(_)
+                        | Prepared::Pressure | Prepared::Timbre | Prepared::Random
+                        | Prepared::Constant | Prepared::Script(_) | Prepared::PitchBend
+                    )
+                }) && program.routes.iter().all(|r| r.lag == 0),
                 sources,
                 envelopes: envelopes.into_boxed_slice(),
                 breakpoints: program.breakpoints.into_boxed_slice(),
@@ -515,6 +530,7 @@ fn wave(shape: LfoShape, phase: f64, seed: u64) -> f64 {
     let cycle = phase.floor();
     let t = phase - cycle;
     match shape {
+        LfoShape::Zero => 0.,
         LfoShape::Sine => (t * std::f64::consts::TAU).sin(),
         LfoShape::Triangle => {
             if t < 0.25 {
@@ -772,9 +788,11 @@ impl VoiceModState {
         &self,
         modulation: &VoiceModulation,
         voice: usize,
-        factors: &mut [[f64; 2]],
+        // Native: cutoff/Q/Gain deltas and enabled bits; SVF: cutoff/Q factors.
+        factors: &mut [[f64; 4]],
+        normalized: impl Fn(usize) -> bool,
     ) {
-        factors.fill([0.0; 2]);
+        factors.fill([0.0; 4]);
         if let Some(program) = self.program(voice) {
             let p = &modulation.programs[program as usize];
             let offset = voice * self.routes;
@@ -785,16 +803,29 @@ impl VoiceModState {
                 match route.target {
                     ModTarget::ProcessorCutoff(index) => factors[index as usize][0] += value,
                     ModTarget::ProcessorResonance(index) => factors[index as usize][1] += value,
+                    ModTarget::ProcessorNativeCutoff(index) => {
+                        factors[index as usize][0] += value;
+                        factors[index as usize][3] = ((factors[index as usize][3] as u8) | 1) as f64;
+                    }
+                    ModTarget::ProcessorNativeResonance(index) => {
+                        factors[index as usize][1] += value;
+                        factors[index as usize][3] = ((factors[index as usize][3] as u8) | 2) as f64;
+                    }
+                    ModTarget::ProcessorNativeGain(index) => {
+                        factors[index as usize][2] += value;
+                        factors[index as usize][3] = ((factors[index as usize][3] as u8) | 4) as f64;
+                    }
                     _ => {}
                 }
             }
         }
-        for factor in factors {
+        for (index, factor) in factors.iter_mut().enumerate() {
+            if normalized(index) { continue; }
             let deltas = *factor;
-            *factor = [1.; 2];
+            *factor = [1., 1., 0., 0.];
             // v1 0cb7a8a0:src/engine/filter.rs skips neutral modulation deltas.
             for (n, (v, d)) in factor
-                .iter_mut()
+                .iter_mut().take(2)
                 .zip(&deltas)
                 .enumerate()
                 .filter(|(_, (_, d))| **d != 0.0)
@@ -917,8 +948,10 @@ impl VoiceModState {
         self.age[voice] = age;
         let values = &mut self.values[voice * self.sources..][..p.sources.len()];
         let phases = &mut self.phase[voice * self.sources..][..p.sources.len()];
+        let mut changed = onset;
         for (i, source) in p.sources.iter().enumerate() {
-            values[i] = match *source {
+            let value = match *source {
+                Prepared::Lfo(lfo) if lfo.shape == LfoShape::Zero => 0.,
                 Prepared::Lfo(lfo) => {
                     let hz = match lfo.rate {
                         LfoRate::Hertz(hz) => hz,
@@ -957,6 +990,17 @@ impl VoiceModState {
                 ),
                 other => other.input(inputs, seed, i),
             };
+            if p.cacheable {
+                changed |= values[i].to_bits() != value.to_bits();
+            }
+            values[i] = value;
+        }
+        let processor_values = &mut self.processor_values[voice * self.routes..][..p.routes.len()];
+        let previous_processor_values =
+            &mut self.previous_processor_values[voice * self.routes..][..p.routes.len()];
+        previous_processor_values.copy_from_slice(processor_values);
+        if p.cacheable && !changed {
+            return self.outputs[voice];
         }
         let mut gain = 1.0;
         let mut decibels = 0.0;
@@ -965,10 +1009,6 @@ impl VoiceModState {
         let mut resonance = 0.0;
         let mut cutoff = 0.0;
         let lagged = &mut self.lagged[voice * self.routes..][..p.routes.len()];
-        let processor_values = &mut self.processor_values[voice * self.routes..][..p.routes.len()];
-        let previous_processor_values =
-            &mut self.previous_processor_values[voice * self.routes..][..p.routes.len()];
-        previous_processor_values.copy_from_slice(processor_values);
         for (i, (route, lagged)) in p.routes.iter().zip(lagged).enumerate() {
             let bipolar = p.bipolar[route.source];
             let mut v = p.transform(route, values[route.source], bipolar);
@@ -996,7 +1036,9 @@ impl VoiceModState {
                 ModTarget::Resonance => resonance += d * v,
                 ModTarget::Tone => out.tone += d * v,
                 ModTarget::SampleStart => {}
-                ModTarget::ProcessorCutoff(_) | ModTarget::ProcessorResonance(_) => {}
+                ModTarget::ProcessorCutoff(_) | ModTarget::ProcessorResonance(_)
+                | ModTarget::ProcessorNativeCutoff(_) | ModTarget::ProcessorNativeResonance(_)
+                | ModTarget::ProcessorNativeGain(_) => {}
             }
         }
         let gain = (gain * 10f64.powf(decibels / 20.0)).max(0.0);
@@ -1127,6 +1169,73 @@ mod tests {
     use super::*;
 
     #[test]
+    fn native_knob_projection_preserves_cancellation_enabled_flags_and_voice_reuse() {
+        let program = ModProgram { sources: vec![ModSource::Constant], routes: vec![
+            ModRoute::new(0, ModTarget::ProcessorNativeCutoff(0), 1.),
+            ModRoute::new(0, ModTarget::ProcessorNativeResonance(0), 1.),
+            ModRoute::new(0, ModTarget::ProcessorNativeGain(0), 1.),
+            ModRoute::new(0, ModTarget::ProcessorNativeGain(0), 1.),
+        ], ..Default::default() };
+        let modulation = VoiceModulation::new(vec![program], vec![Some(0)], vec![0]).unwrap();
+        let mut state = VoiceModState::new(&modulation, 2).unwrap();
+        state.program[0] = Some(0);
+        state.processor_values[..4].copy_from_slice(&[0., 0.25, 0.5, -0.5]);
+        state.previous_processor_values[..4].copy_from_slice(&[0., 0.25, 0.5, -0.5]);
+        let mut actual = [[9.; 4]; 2];
+        state.fill_filter_factors(&modulation, 0, &mut actual, |_| true);
+        assert_eq!(actual, [[0., 0.25, 0., 7.], [0.; 4]]);
+        state.fill_filter_factors(&modulation, 1, &mut actual, |_| true);
+        assert_eq!(actual, [[0.; 4]; 2]);
+    }
+
+    #[test]
+    fn held_controller_updates_addressed_filter_ramp_after_transition() {
+        let program = ModProgram {
+            sources: vec![ModSource::Controller(1)],
+            routes: vec![ModRoute::new(0, ModTarget::ProcessorCutoff(0), 12.0)],
+            ..Default::default()
+        };
+        let other = ModProgram {
+            routes: vec![ModRoute::new(0, ModTarget::ProcessorCutoff(0), 6.0)],
+            ..program.clone()
+        };
+        let modulation = VoiceModulation::new(
+            vec![program, other], vec![Some(0), Some(1)], vec![0, 0],
+        ).unwrap();
+        let mut state = VoiceModState::new(&modulation, 1).unwrap();
+        let low = [0; 128];
+        let mut high = low;
+        high[1] = u32::MAX;
+        let script = Default::default();
+        let low_inputs = Inputs {
+            velocity: 1.0, key: 0.5, pressure: 0, timbre: 0,
+            controllers: &low, held: 0, script: &script, bend: 0.0,
+        };
+        let clock = |now| Clock { rate: 48000.0, tempo: 120.0, now };
+        state.start(&modulation, 0, 0, &low_inputs, clock(0), 7);
+        // A CC transition moves half an octave in its first cell, then holds
+        // the complete octave. A cache hit must not repeat the transition.
+        for (now, controls, factor) in [
+            (0, &low, 1.0), (64, &high, 2f64.sqrt()), (128, &high, 2.0),
+            (192, &low, 2f64.sqrt()), (256, &low, 1.0),
+        ] {
+            let inputs = Inputs { controllers: controls, ..low_inputs };
+            state.advance(&modulation, 0, &inputs, clock(now));
+            let mut factors = [[0.0; 4]; 1];
+            state.fill_filter_factors(&modulation, 0, &mut factors, |_| false);
+            assert!((factors[0][0] - factor).abs() < 1e-15, "{now}: {factors:?}");
+            assert_eq!(factors[0][1], 1.0);
+        }
+        let high_inputs = Inputs { controllers: &high, ..low_inputs };
+        state.start(&modulation, 0, 0, &high_inputs, clock(320), 7);
+        // Reusing a voice with the same source but another route resets its result.
+        state.start(&modulation, 0, 1, &high_inputs, clock(384), 7);
+        let mut factors = [[0.0; 4]; 1];
+        state.fill_filter_factors(&modulation, 0, &mut factors, |_| false);
+        assert!((factors[0][0] - 2f64.sqrt()).abs() < 1e-15);
+    }
+
+    #[test]
     fn factor_projection_preserves_units_cancellation_and_reused_voice_scratch() {
         let program = ModProgram {
             sources: vec![ModSource::Velocity],
@@ -1142,24 +1251,24 @@ mod tests {
         let modulation = VoiceModulation::new(vec![program], vec![Some(0)], vec![0]).unwrap();
         let mut state = VoiceModState::new(&modulation, 2).unwrap();
         state.program[0] = Some(0);
-        let mut actual = [[9., 9.]; 4];
+        let mut actual = [[9.; 4]; 4];
         for delta in [-24., -0., 0., 6., 20.] {
             state.processor_values[..5].copy_from_slice(&[12., -12., delta, 9., 127.]);
             state.previous_processor_values[..5].copy_from_slice(&[12., -12., delta, 3., -127.]);
-            state.fill_filter_factors(&modulation, 0, &mut actual);
+            state.fill_filter_factors(&modulation, 0, &mut actual, |_| false);
             let expected = [
-                [1., 1.],
-                [1., 10f64.powf(delta / 20.)],
-                [(6f64 / 12.).exp2(), 1.],
-                [1., 1.],
+                [1., 1., 0., 0.],
+                [1., 10f64.powf(delta / 20.), 0., 0.],
+                [(6f64 / 12.).exp2(), 1., 0., 0.],
+                [1., 1., 0., 0.],
             ];
             assert_eq!(
                 actual.map(|v| v.map(f64::to_bits)),
                 expected.map(|v| v.map(f64::to_bits))
             );
-            state.fill_filter_factors(&modulation, 1, &mut actual);
+            state.fill_filter_factors(&modulation, 1, &mut actual, |_| false);
             assert_eq!(
-                actual, [[1.; 2]; 4],
+                actual, [[1., 1., 0., 0.]; 4],
                 "unbound voice must clear the previous voice's factors"
             );
         }

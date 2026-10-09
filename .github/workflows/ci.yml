@@ -25,6 +25,8 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  APP_GIT_REVISION: ${{ github.sha }}
+  MUI_REPORTING_DISABLED: "1"
   CARGO_TARGET_DIR: target
   # Snapshots call this same workflow at their exact source commit, in release mode.
   CI_PROFILE: ${{ inputs.release_validation && 'release' || 'ci' }}
@@ -50,6 +52,14 @@ jobs:
         run: |
           python3 tools/version.py check
           python3 tools/version.py self-test
+          python3 - <<'PYDEPS'
+          import pathlib, tomllib
+          packages = tomllib.loads(pathlib.Path('Cargo.lock').read_text())['package']
+          windows = lambda package: next(d for d in package['dependencies'] if d.startswith('windows '))
+          allocator = next(p for p in packages if p['name'] == 'gpu-allocator')
+          for hal in (p for p in packages if p['name'] == 'wgpu-hal'):
+              assert windows(allocator) == windows(hal), 'DX12 allocator and wgpu-hal must share Windows interface types'
+          PYDEPS
       - name: Classify changes
         id: changes
         env:
@@ -68,9 +78,10 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    # Cold release-profile test executables exhausted the former 40-minute job.
+    timeout-minutes: 90
     concurrency:
-      group: ci-linux-${{ github.workflow }}-${{ github.ref }}
+      group: ci-linux-${{ github.workflow }}-${{ inputs.release_validation && github.sha || github.ref }}
       cancel-in-progress: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -131,13 +142,40 @@ jobs:
           xvfb-run -a cargo test --locked --profile "$CI_PROFILE" \
             -p kontra-native-host --test x11_visibility -- --ignored --test-threads=1
 
+      - name: Build VST3 for native editor validation
+        run: |
+          python3 - <<'PYPIN'
+          import pathlib, re, tomllib
+          revision = re.search(r'config.mui_revision = "([0-9a-f]{40})"', pathlib.Path('src/ui/mod.rs').read_text()).group(1)
+          sources = {p['source'].split('#')[-1] for p in tomllib.loads(pathlib.Path('Cargo.lock').read_text())['package'] if 'Matari-Audio/MUI' in p.get('source', '')}
+          assert sources == {revision}, f'MUI reporting identity differs from compiled sources: {sources}'
+          PYPIN
+          cargo build --locked --profile "$CI_PROFILE" --lib
+          mkdir -p ui-plugin/KONTRA.vst3/Contents/x86_64-linux
+          cp "target/$CI_PROFILE/libkontakto.so" ui-plugin/KONTRA.vst3/Contents/x86_64-linux/KONTRA.so
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: kontra-vst3-ui
+          path: ui-plugin/
+          retention-days: 7
+          if-no-files-found: error
+
+  editor:
+    needs: [changes, linux]
+    if: needs.changes.outputs.code == 'true'
+    uses: Matari-Audio/MUI/.github/workflows/plugin-ui.yml@dcf0796082feec053af1418e3a38a302ee61da0a
+    with:
+      artifact-name: kontra-vst3-ui
+      plugin-path: KONTRA.vst3
+      require-mui-diagnostics: true
+
   windows:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: windows-2025
     timeout-minutes: 25
     concurrency:
-      group: ci-windows-${{ github.workflow }}-${{ github.ref }}
+      group: ci-windows-${{ github.workflow }}-${{ inputs.release_validation && github.sha || github.ref }}
       cancel-in-progress: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -164,6 +202,11 @@ jobs:
       - name: check
         shell: bash
         run: cargo check --locked --profile "$CI_PROFILE" --all-targets --features standalone
+      - name: Native protected-format fixtures
+        shell: bash
+        run: |
+          cargo test --locked --profile "$CI_PROFILE" -p sampler-uvi --lib bank::tests
+          cargo test --locked --profile "$CI_PROFILE" -p sampler-kontakt --lib access::tests
 
   macos:
     needs: changes
@@ -171,7 +214,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 25
     concurrency:
-      group: ci-macos-${{ github.workflow }}-${{ github.ref }}
+      group: ci-macos-${{ github.workflow }}-${{ inputs.release_validation && github.sha || github.ref }}
       cancel-in-progress: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -206,7 +249,7 @@ jobs:
   required:
     name: CI required
     if: always()
-    needs: [changes, linux, windows, macos]
+    needs: [changes, linux, windows, macos, editor]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -217,15 +260,18 @@ jobs:
           LINUX: ${{ needs.linux.result }}
           WINDOWS: ${{ needs.windows.result }}
           MACOS: ${{ needs.macos.result }}
+          EDITOR: ${{ needs.editor.result }}
         run: |
           test "$CHANGES" = success
           if [ "$CODE" = true ]; then
             test "$LINUX" = success
             test "$WINDOWS" = success
             test "$MACOS" = success
+            test "$EDITOR" = success
           else
             test "$CODE" = false
             test "$LINUX" = skipped
             test "$WINDOWS" = skipped
             test "$MACOS" = skipped
+            test "$EDITOR" = skipped
           fi
