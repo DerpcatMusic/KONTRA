@@ -1073,7 +1073,10 @@ impl crate::Runtime {
         let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
         let object = &generation.midi_object;
         if !object.jobs.iter().any(|j| {
-            j.id == output.job && j.instance == output.instance && j.action == MidiAction::SaveFile
+            !j.initial
+                && j.id == output.job
+                && j.instance == output.instance
+                && j.action == MidiAction::SaveFile
         }) {
             return Err(Error::StaleHandle);
         }
@@ -1097,7 +1100,7 @@ impl crate::Runtime {
             .midi_object
             .jobs
             .iter()
-            .position(|j| j.id == output.job && j.instance == output.instance)
+            .position(|j| !j.initial && j.id == output.job && j.instance == output.instance)
             .ok_or(Error::StaleHandle)?;
         let job = generation.midi_object.jobs[index];
         let callback = generation
