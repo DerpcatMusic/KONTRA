@@ -984,22 +984,7 @@ pub(crate) fn chain_with(
             out.notes.push((
                 fx.slot,
                 "effect".into(),
-                format!(
-                    "{name} v{:#x} {params:?}{}",
-                    fx.version,
-                    // An unparsed payload: keep its head so a survey can group the layouts.
-                    if params.is_none() {
-                        let head: String = fx
-                            .public
-                            .iter()
-                            .take(40)
-                            .map(|b| format!("{b:02x}"))
-                            .collect();
-                        format!(" len {} head {head}", fx.public.len())
-                    } else {
-                        String::new()
-                    }
-                ),
+                format!("{name} v{:#x} len {}", fx.version, fx.public.len()),
                 sampler_ir::Reason::NotModeled,
             ));
         }
