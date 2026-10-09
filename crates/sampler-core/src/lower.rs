@@ -589,6 +589,19 @@ pub fn lower_with(
         }
     }
     engine_bindings.extend(native.into_values());
+    for alias in &instrument.source_indices.control_aliases {
+        let control = &instrument.controls[alias.control.0];
+        let ir::ControlValue::Continuous { min, max, .. } = control.value else {
+            return Err(unsupported(&control.key, Feature::Controls));
+        };
+        let parameter = crate::engine_parameter_id(&alias.parameter)
+            .ok_or_else(|| unsupported(&control.key, Feature::Controls))?;
+        engine_bindings.push(crate::EngineParameterBinding {
+            address: crate::EngineParameterAddress { parameter, group: alias.address.group,
+                slot: alias.address.slot, generic: alias.address.generic },
+            control: ir_control_id(&control.key), law: crate::EngineParameterLaw::Linear { low: min, high: max },
+        });
+    }
     plan = plan
         .with_engine_parameters(engine_bindings, source_engine_lookups(&instrument.source_indices))
         .map_err(core(Stage::Controls, "source engine lookups"))?;
@@ -1355,6 +1368,9 @@ impl Lowering<'_> {
             (Processor::LadderLP4(filter), Cutoff) => filter.cutoff = parameter,
             (Processor::LadderLP4(filter), Resonance) => filter.resonance = parameter,
             (Processor::Gainer { gain, .. }, Gain) => *gain = parameter,
+            (Processor::PeakingEq(eq), Gain) => eq.gain_db = parameter,
+            (Processor::PeakingEq(eq), Cutoff) => eq.frequency = parameter,
+            (Processor::PeakingEq(eq), Resonance) => eq.bandwidth = parameter,
             (Processor::StereoModeller(settings), Width) => settings.width = parameter,
             (Processor::StereoModeller(settings), Pan) => settings.pan = parameter,
             _ => return Ok(false),
@@ -1425,7 +1441,12 @@ impl Lowering<'_> {
         let mut starts = Vec::with_capacity(listed.len() + 1);
         for (index, p) in listed.iter().enumerate() {
             starts.push(processors.len());
-            let mut stages = self.processors(owner, **p)?;
+            let mut stages = if let ir::Processor::Filter(ir::Filter { kind: ir::FilterKind::Peak { gain }, cutoff: ir::Frequency::Hertz(hz), resonance: ir::Resonance::Q(q) }) = **p
+                && self.ir.processor_controls.iter().any(|b| b.chain == chain && b.index == start + index) {
+                vec![Processor::PeakingEq(crate::PeakingEq { frequency: Parameter::Constant(((hz / 20.).log10() / 3.).clamp(0., 1.)),
+                    bandwidth: Parameter::Constant(((2. * (0.5 / q).asinh() / std::f64::consts::LN_2 - 0.3) / 2.7).clamp(0., 1.)),
+                    gain_db: Parameter::Constant(20. * gain.linear().log10()) })]
+            } else { self.processors(owner, **p)? };
             // A physical native owner already binds these fields to the shared
             // service; replacing them would leave writes on an unused mirror.
             if matches!(**p, ir::Processor::LadderLP4(d) if d.address.is_some())
