@@ -32,4 +32,6 @@ Bounded live-window raw RSS (MiB), same host binary SHA256 `c8dec626b2a42b82c1b5
 
 These observations retain the same plugin/audio engine with no MIDI. The four-second settle is a fixed wall delay, not an exported authored-UI/package readiness witness. RSS after destroy cannot distinguish allocator/driver capacity from remaining live owners. In W3's separate four-cycle frozen381 Conflux host, closed RSS grew 247.30→416.59 MiB while live malloc grew only about 0.40 MiB and free arenas grew 83.15→256.12 million bytes; this supports freed allocator capacity as the main observed growth, rather than one live editor-sized owner retained per cycle. Its instrumentation and protocol are separate and raw, without quiet admission: `/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w3-editor-cycles-344/frozen381-Conflux-cycles/metrics.json`. W3 owns candidate and owner-release follow-up.
 
-NEXT: root no-run, push READY; exact frozen-artifact CLAP 64/32/256 afterward in an admitted quiet window.
+Validation: synthetic readiness/RSS/viewport self-check GREEN; four native lifecycle viewport checks GREEN; root `cargo test --profile ci --features shots --no-run` GREEN through kontakto-heavy in 44.11 seconds, using W13's cached target with this branch's manifest. The ordinary RGB pixel mode and broad suite were not rerun. No plugin build, install or timing admission was performed.
+
+NEXT: W0 integrate the own-branch READY tools; exact frozen-artifact CLAP 64/32/256 afterward in an admitted quiet window.
