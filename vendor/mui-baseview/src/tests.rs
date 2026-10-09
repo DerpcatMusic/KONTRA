@@ -5,6 +5,39 @@ use mui::Ui;
 use mui::prelude::{El, Input, knob};
 
 #[test]
+fn close_cycles_release_gui_thread_render_trees_before_model_drop() {
+    struct Memo(std::sync::Weak<Vec<u8>>);
+    impl View for Memo {
+        fn build(&mut self, ui: &mut Ui, _: &Input) -> El {
+            ui.memo("cycle-canvas", 0, |_| {
+                let art = Arc::new(vec![0u8; 8 << 20]);
+                self.0 = Arc::downgrade(&art);
+                mui::prelude::canvas(move |_| {
+                    std::hint::black_box(&art);
+                    Vec::new()
+                }).w(64.).h(64.)
+            })
+        }
+        fn changed(&mut self) -> bool { false }
+        fn request_resize(&mut self, _: u32, _: u32) -> bool { false }
+    }
+    let mut owners = Vec::new();
+    for cycle in 0..4 {
+        let shared = Arc::new(Mutex::new(Shared { ui: Ui::default(), view: Memo(Default::default()) }));
+        let mut h = Handler::new(shared.clone(), Arc::default(), (64, 64), 1.);
+        h.step();
+        let owner = lock(&shared).view.0.clone();
+        assert!(owner.upgrade().is_some(), "opened canvas must own its art");
+        h.on_event_inner(&Event::Window(WindowEvent::WillClose));
+        drop(h);
+        std::thread::spawn(move || drop(shared)).join().unwrap();
+        owners.push(owner);
+        let retained: usize = owners.iter().filter_map(|owner| owner.upgrade()).map(|art| art.len()).sum();
+        assert_eq!(retained, 0, "closed render bytes grew after cycle {cycle}");
+    }
+}
+
+#[test]
 fn native_accessibility_stays_on_the_window_thread() {
     static_assertions::assert_not_impl_any!(NativeAccessibility: Send, Sync);
     static_assertions::assert_not_impl_any!(A11y: Send, Sync);
