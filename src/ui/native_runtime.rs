@@ -78,6 +78,11 @@ impl Images {
 }
 impl Package {
     #[cfg(test)]
+    pub(super) fn audit_bytes(&self) -> usize {
+        self.members.values().map(|b| b.len()).sum::<usize>()
+            + self.fonts.values().map(|f| f.as_ref().len()).sum::<usize>()
+    }
+    #[cfg(test)]
     pub(super) fn audit_token_count(&self, token: &str) -> usize {
         self.members.values().filter_map(|bytes| std::str::from_utf8(bytes).ok())
             .map(|source| source.matches(token).count()).sum()
@@ -796,6 +801,28 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn editor_memory_drops_unresolved_child_factories() {
+        let lua = Lua::new();
+        lua.load("package={loaded={}} ").exec().unwrap();
+        lua.load(include_str!("native_runtime/runtime.lua")).exec().unwrap();
+        let (graph, watched): (Table, Table) = lua.load(r#"
+            local watched=setmetatable({}, {__mode='v'})
+            local function root()
+                local child=__node('Text',function() return {text='visible'} end)
+                watched[1]=child
+                return __node('VStack',function() return {[1]=child, [3]=__node('Text',function() return {text='sparse'} end)} end)
+            end
+            return __render(root),watched
+        "#).eval().unwrap();
+        lua.gc_collect().unwrap();
+        assert!(watched.get::<LuaValue>(1).unwrap().is_nil(), "resolved graph retained an unused child factory");
+        let children: Table = graph.get("children").unwrap();
+        assert_eq!(children.raw_len(), 2);
+        for (n,text) in [(1,"visible"),(2,"sparse")] {
+            assert_eq!(children.get::<Table>(n).unwrap().get::<Table>("props").unwrap().get::<String>("text").unwrap(),text);
+        }
+    }
     #[test]
     fn legacy_component_reads_the_published_ir_and_produces_a_typed_edit() {
         assert_eq!(Package::load_cancel(Path::new("/unopened/synthetic.nki"),||true)

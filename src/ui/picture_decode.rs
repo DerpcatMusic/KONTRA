@@ -137,6 +137,22 @@ pub(super) fn png(
 mod tests {
     use super::*;
     #[test]
+    fn editor_memory_webp_rgb_expansion_stays_below_nine_bytes_per_pixel() {
+        let side = 512;
+        let pixels = side as usize * side as usize;
+        let mut encoded = Vec::new();
+        image_webp::WebPEncoder::new(&mut encoded)
+            .encode(&[19,29,39].repeat(pixels),side,side,image_webp::ColorType::Rgb).unwrap();
+        assert!(!image_webp::WebPDecoder::new(Cursor::new(&encoded)).unwrap().has_alpha());
+        let mut image = None;
+        let peak = crate::plugin::tests::peak_allocated(|| {
+            image = decode(&encoded,Default::default(),0,[side,side],None,||false);
+        });
+        let image = image.unwrap();
+        assert!(image.rgba.chunks_exact(4).all(|p|p==[19,29,39,255]));
+        assert!(peak <= pixels*9+16384, "RGB expansion used {peak} bytes for {pixels} pixels");
+    }
+    #[test]
     fn poisoned_codec_permit_keeps_valid_original_art_decodable() {
         const CHILD: &str = "KONTRA_CODEC_POISON_CHILD";
         if std::env::var_os(CHILD).is_none() {
