@@ -138,7 +138,7 @@ pub(crate) mod tests {
                 },
                 control: sampler_core::lower::ir_control_id(&key),
                 name: "same label for every role".into(),
-                role: Some(role),
+                role,
                 unit: ParameterUnit::Normalized,
                 range: [0., 1.],
                 default: 0.5,
