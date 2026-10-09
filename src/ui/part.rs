@@ -484,27 +484,13 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
         let scale = scale_to_fit(Size::new(avail, room), authored, cx.settings.view_scale);
         let view = native.view(ui, slot, scale, &face.face, &face.values, &face.input);
         for edit in native.edits() {
-            let widget = if edit.source == face.face.source {
-                face.face.widgets.get(edit.widget.0)
-            } else {
-                face.from
-                    .iter()
-                    .find(|f| f.source == edit.source)
-                    .and_then(|f| f.widgets.get(edit.widget.0))
-            };
-            let admitted = widget.is_some_and(|widget| {
-                let source_slot = match edit.source {
-                    ir::Source::Ksp { slot } => slot,
-                    _ => 0,
-                };
-                cx.p.shared.set_widget_at(
-                    slot,
-                    generation,
-                    source_slot,
-                    widget,
-                    edit.index,
-                    edit.value.clone(),
-                )
+            let widget=if edit.source==face.face.source {face.face.widgets.get(edit.widget.0)} else {face.from.iter().find(|f|f.source==edit.source).and_then(|f|f.widgets.get(edit.widget.0))};
+            let admitted=widget.is_some_and(|widget| {
+                let source_slot=match edit.source {ir::Source::Ksp{slot}=>slot,_=>0};
+                let admitted = cx.p.shared.set_widget_at(slot,generation,source_slot,widget,edit.index,edit.value.clone());
+                #[cfg(all(test, feature = "shots"))]
+                if admitted && slot == 0 { super::widget_gate::submitted_widget(widget); }
+                admitted
             });
             if !admitted {
                 cx.state.notice = "This authored widget edit could not be applied.".into();
@@ -549,33 +535,23 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
     }
     let mut edited_controls = std::collections::HashSet::new();
     for (n, (edits, interaction)) in edits {
-        let Some(widget) = face.face.widgets.get(n.0) else {
-            continue;
-        };
-        if let ir::Binding::Control(id) = widget.binding {
-            edited_controls.insert(id);
-        }
-        let source_slot = match face.face.source {
-            ir::Source::Ksp { slot } => slot,
-            _ => 0,
-        };
-        if !cx.p.shared.set_widget_batch_at(
-            slot,
-            generation,
-            source_slot,
-            widget,
-            edits.into_iter().collect(),
-            interaction,
-        ) {
-            face.input.values.remove(&n);
-        }
+        let Some(widget) = face.face.widgets.get(n.0) else { continue };
+        if let ir::Binding::Control(id) = widget.binding { edited_controls.insert(id); }
+        let source_slot=match face.face.source {ir::Source::Ksp{slot}=>slot,_=>0};
+        let admitted = cx.p.shared.set_widget_batch_at(slot, generation, source_slot, widget, edits.into_iter().collect(), interaction);
+        #[cfg(all(test, feature = "shots"))]
+        if admitted && slot == 0 { super::widget_gate::submitted_widget(widget); }
+        if !admitted { face.input.values.remove(&n); }
     }
     for &(id, was) in &current {
         if let Some(&now) = face.values.get(&id)
             && now != was
             && !edited_controls.contains(&id)
         {
-            cx.p.shared.set_control_at(slot, generation, id, now);
+            let admitted = cx.p.shared.set_control_at(slot, generation, id, now);
+            #[cfg(all(test, feature = "shots"))]
+            if admitted && slot == 0 { super::widget_gate::submitted_control(id); }
+            let _ = admitted;
         }
     }
     Some(
