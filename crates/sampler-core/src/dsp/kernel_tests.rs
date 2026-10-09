@@ -194,3 +194,39 @@ fn shared_svf_matches_frozen_pcm_and_state_bits() {
         }
     }
 }
+
+#[test]
+fn settled_slot_evaluations_do_not_scale_with_block_length() {
+    let stages = [PreparedProcessor::Mix { count: 1, lanes: [0, 1, 2] }, PreparedProcessor::Gain(3.)];
+    for bypass in [0., 1.] {
+        let parameters = [0.25, 0.75, bypass].map(|v| ControlRamp::test_ramp(v, v, 0, 0));
+        for len in [1, 7, BLOCK] {
+            let mut bank = FilterBank::new(&[], 0).unwrap();
+            let mut block = [[0.5; BLOCK]; 2];
+            control::EVALUATIONS.with(|count| count.set(0));
+            assert!(!super::process::<false>(&stages, &mut [ProcessorState::default(); 2],
+                &mut block, len, &parameters, 0, &mut [], &mut FilterContext {
+                    bank: &mut bank, expression: None, reverbs: &mut [], convolutions: &mut [] }, None));
+            let scalar = control::EVALUATIONS.with(|count| count.get());
+            let batch = Batch { count: VOICES, expressions: [None; VOICES], ends: [len; lanes::LANES], len };
+            let mut cells: Cells<'_> = std::array::from_fn(|_| None);
+            let mut block = [[0.5; lanes::LANES]; BLOCK];
+            control::EVALUATIONS.with(|count| count.set(0));
+            lanes::process(&stages, 0, &mut cells, &batch, &mut block, &parameters, 0, &mut bank);
+            let lanes = control::EVALUATIONS.with(|count| count.get());
+            assert!(scalar <= 3, "scalar len={len}: {scalar} ramp evaluations");
+            assert!(lanes <= 3, "lanes len={len}: {lanes} ramp evaluations");
+        }
+    }
+}
+
+#[test]
+fn settled_and_retargeted_slot_mix_matches_frozen_bits() {
+    let stages = [PreparedProcessor::Mix { count: 1, lanes: [0, 1, 2] }, PreparedProcessor::Gain(-0.75)];
+    for values in [[0.25, 0.75, 0.], [0., -0., 0.], [1., 1., 1.]] {
+        for frames in [0, 17, 64, 193] {
+            let parameters = values.map(|v| ControlRamp::test_ramp(0., v, 5, frames));
+            check(&stages, &[], &parameters);
+        }
+    }
+}

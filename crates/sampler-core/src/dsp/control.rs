@@ -153,6 +153,8 @@ impl ControlRamp {
         Self { from, target, start, frames }
     }
     pub(crate) fn value(self, at: u64) -> f64 {
+        #[cfg(test)]
+        EVALUATIONS.with(|count| count.set(count.get() + 1));
         let elapsed = at.saturating_sub(self.start);
         if elapsed >= u64::from(self.frames) {
             self.target
@@ -169,6 +171,11 @@ impl ControlRamp {
             self.frames = frames;
         }
     }
+}
+
+#[cfg(test)]
+std::thread_local! {
+    pub(super) static EVALUATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 impl Prepared {
