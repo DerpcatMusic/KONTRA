@@ -436,3 +436,51 @@ fn file_export_keeps_empty_tracks_and_malformed_files_fail_explicitly() {
     }
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn unpublished_init_completion_is_rejected_when_adoption_has_a_full_effect_queue() {
+    let prepare = |source| {
+        sampler_ksp::compile(source, 48000, sampler_ksp::Limits::LIBRARY, &[])
+            .unwrap()
+            .bind(Prepared::new(48000, vec![], vec![], 0).unwrap())
+            .unwrap()
+    };
+    let old = prepare("on init declare $i declare $job declare $status while ($i<256) $job:=mf_reset() inc($i) end while end on on async_complete $status:=$NI_ASYNC_EXIT_STATUS end on");
+    let limits = Limits::for_plan(&old, 4, 4);
+    let (mut rt, mut control) = Runtime::with_plan_updates(old, limits, 2, 1).unwrap();
+    let old_id = rt.active_plan();
+    let next = prepare("on init declare $i declare $job:=mf_reset() declare $status end on on async_complete $status:=$NI_ASYNC_EXIT_STATUS end on");
+    let request = control.submit(Box::new(next)).unwrap();
+    support::without_heap(|| assert_eq!(rt.poll_plan_update(), Ok(Some(request))));
+    let new_id = rt.active_plan();
+    assert_ne!(new_id, old_id);
+    let mut unpublished = MidiCompletion::empty(1, ScriptInstanceId(0));
+    support::without_heap(|| {
+        assert_eq!(
+            rt.complete_midi(new_id, &mut unpublished),
+            Err(Error::StaleHandle)
+        )
+    });
+    let mut old_effects = 0;
+    support::without_heap(|| {
+        rt.drain_effects(|e| {
+            assert_eq!(e.plan, old_id);
+            old_effects += 1;
+            true
+        })
+    });
+    assert_eq!(old_effects, EFFECT_CAPACITY);
+    support::without_heap(|| rt.render(&mut [[0.; 2]; 1]).unwrap());
+    let mut published = None;
+    rt.drain_effects(|e| {
+        published = Some(*e);
+        true
+    });
+    assert_eq!(published.unwrap().plan, new_id);
+    support::without_heap(|| rt.complete_midi(new_id, &mut unpublished).unwrap());
+    assert_eq!(rt.script_cell(new_id, ScriptInstanceId(0), 2), Ok(1));
+    assert_eq!(rt.collect_retired_plans(), 0);
+    support::without_heap(|| rt.panic());
+    support::without_heap(|| assert_eq!(rt.collect_retired_plans(), 1));
+    assert!(control.retired().is_some());
+}
