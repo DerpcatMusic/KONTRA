@@ -4,6 +4,9 @@ use std::path::Path;
 /// Feature-off stand-in: the public bank API stays available and refuses access.
 pub struct Bank;
 impl Bank {
+    pub fn catalog(_: &Path) -> Result<Vec<String>, AccessError> {
+        Err(AccessError::Disabled)
+    }
     pub fn open(_: &Path) -> Result<Self, AccessError> {
         Err(AccessError::Disabled)
     }
