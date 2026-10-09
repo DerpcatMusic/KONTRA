@@ -579,3 +579,47 @@ fn control_property_read_modify_write_emits_the_same_value_it_stores() {
     });
     assert_eq!(effects, 1);
 }
+
+#[test]
+fn control_text_read_modify_write_emits_the_same_value_it_stores() {
+    let mut rt = run(
+        "on init declare ui_knob $k(0,100,1) set_text($k,\"A\") declare @value end on
+        on note set_control_par_str(get_ui_id($k),$CONTROL_PAR_TEXT,
+            get_control_par_str(get_ui_id($k),$CONTROL_PAR_TEXT) & \"!\")
+            @value := get_control_par_str(get_ui_id($k),$CONTROL_PAR_TEXT) end on",
+        &[],
+    );
+    assert_eq!(
+        rt.script_text(rt.active_plan(), ScriptInstanceId(0), 0)
+            .unwrap()
+            .as_str(),
+        "A!"
+    );
+    let mut effects = 0;
+    rt.drain_effects(|effect| {
+        assert_eq!(effect.text.as_ref().unwrap().as_str(), "A!");
+        effects += 1;
+        true
+    });
+    assert_eq!(effects, 1);
+}
+
+#[test]
+fn xy_value_read_modify_write_emits_the_same_value_it_stores() {
+    let mut rt = run(
+        "on init declare ui_xy ?xy[2] declare ~value
+        set_control_par_real_arr(get_ui_id(?xy),$CONTROL_PAR_VALUE,0.25,0) end on
+        on note set_control_par_real_arr(get_ui_id(?xy),$CONTROL_PAR_VALUE,
+            get_control_par_real_arr(get_ui_id(?xy),$CONTROL_PAR_VALUE,0)+0.25,0)
+            ~value := get_control_par_real_arr(get_ui_id(?xy),$CONTROL_PAR_VALUE,0) end on",
+        &[],
+    );
+    assert_eq!(f64::from_bits(cell(&rt, 2) as u64), 0.5);
+    let mut effects = 0;
+    rt.drain_effects(|effect| {
+        assert_eq!(f64::from_bits(effect.args()[2] as u64), 0.5);
+        effects += 1;
+        true
+    });
+    assert_eq!(effects, 1);
+}
