@@ -1985,6 +1985,18 @@ mod tests {
 
     #[test]
     fn journal_contract_bounds_rotates_recovers_and_exports_private_reports() {
+        const CHILD: &str = "KONTRA_JOURNAL_CONTRACT_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let directory = tempfile::tempdir().unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "diagnostics::tests::journal_contract_bounds_rotates_recovers_and_exports_private_reports", "--test-threads=1"])
+                .env(CHILD, "1")
+                .env("KONTRA_REPORT_DIR", directory.path().join("private-cache"))
+                .env("KONTRA_DISABLE_NETWORK", "1")
+                .status().unwrap();
+            assert!(status.success());
+            return;
+        }
         let directory = std::env::temp_dir().join(format!(
             "kontra-diagnostic-contract-{}-{}",
             std::process::id(),
