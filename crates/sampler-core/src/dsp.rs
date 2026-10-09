@@ -219,6 +219,7 @@ impl Processor {
 }
 
 mod compressor;
+mod kernels;
 #[cfg(test)]
 mod kernel_tests;
 pub(super) mod control;
@@ -890,12 +891,8 @@ pub(super) fn process<const TRACE: bool>(
                     for i in 0..len {
                         let t = at + i as u64;
                         let b = bypass.value(t);
-                        let wet_part = if off {
-                            0.
-                        } else {
-                            wet.value(t) * (1. - b) * block[c][i]
-                        };
-                        block[c][i] = (dry.value(t) * (1. - b) + b) * dry_block[c][i] + wet_part;
+                        let gains = kernels::mix_gains(dry.value(t), wet.value(t), b);
+                        block[c][i] = kernels::mix(dry_block[c][i], block[c][i], gains, off);
                     }
                 }
             }
@@ -978,23 +975,23 @@ pub(super) fn process<const TRACE: bool>(
                     if state.aux[0] == 0. {
                         (current, state.aux[0]) = (target, 1.);
                     }
-                    let m = dry + f64::from(current);
-                    *l *= m;
-                    *r *= m;
-                    current += (target - current) * *k as f32;
+                    let (m, next) = kernels::gainer(current, target, *dry, *k as f32);
+                    *l = kernels::gain(*l, m);
+                    *r = kernels::gain(*r, m);
+                    current = next;
                 }
                 state.z[0][0] = f64::from(current);
             }
             PreparedProcessor::Gain(gain) => {
                 applied = [*gain; 2];
                 for channel in block.iter_mut() {
-                    channel[..len].iter_mut().for_each(|v| *v *= gain);
+                    channel[..len].iter_mut().for_each(|v| *v = kernels::gain(*v, *gain));
                 }
             }
             PreparedProcessor::StereoMatrix(m) => {
                 let [left, right] = block;
                 for (l, r) in left[..len].iter_mut().zip(&mut right[..len]) {
-                    (*l, *r) = (m[0][0] * *l + m[0][1] * *r, m[1][0] * *l + m[1][1] * *r);
+                    [*l, *r] = kernels::matrix([*l, *r], *m);
                 }
             }
             PreparedProcessor::ControlGain(lane) => {
@@ -1004,8 +1001,8 @@ pub(super) fn process<const TRACE: bool>(
                 for (i, (l, r)) in left[..len].iter_mut().zip(&mut right[..len]).enumerate() {
                     let gain = ramp.value(at + i as u64);
                     if TRACE { for mean in &mut applied { *mean += gain / len.max(1) as f64; } }
-                    *l *= gain;
-                    *r *= gain;
+                    *l = kernels::gain(*l, gain);
+                    *r = kernels::gain(*r, gain);
                 }
             }
             PreparedProcessor::Biquad(filter) => {
