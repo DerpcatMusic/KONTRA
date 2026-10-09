@@ -360,6 +360,10 @@ impl Kernel {
         step: f64,
         mut read: impl FnMut(i64) -> [f32; 2],
     ) -> [f32; 2] {
+        // v1's whole-step kernel reads the centre tap, preserving signed zeros.
+        if self.uses_cubic(step) && step.fract() == 0.0 && fraction == 0.0 {
+            return read(0);
+        }
         if let Some(bank) = self.polyphase(step) {
             let radius = bank.radius as i64;
             let mut window = [[0.0; 2]; MAX_WIDTH];
@@ -413,6 +417,18 @@ mod tests {
         }
         assert!(kernel.polyphase(8.0001).is_some());
         assert!(kernel.polyphase(MAX_STEP).is_some());
+    }
+
+    #[test]
+    fn v1_whole_steps_preserve_centre_taps_without_polynomial_overflow() {
+        let kernel = Kernel::new(ResampleQuality::Realtime);
+        for step in [1., 2., 4., 8.] {
+            let centre = [-0.0, f32::MAX];
+            let actual = kernel.sample(0., step, |offset| {
+                if offset == 0 { centre } else { [f32::MAX, -f32::MAX] }
+            });
+            assert_eq!(actual.map(f32::to_bits), centre.map(f32::to_bits));
+        }
     }
 
     #[test]
