@@ -148,6 +148,9 @@ pub(crate) struct ControlRamp {
     frames: u32,
 }
 impl ControlRamp {
+    pub(crate) fn settled(self, at: u64) -> Option<f64> {
+        (at.saturating_sub(self.start) >= u64::from(self.frames)).then_some(self.target)
+    }
     #[cfg(test)]
     pub(super) fn test_ramp(from: f64, target: f64, start: u64, frames: u32) -> Self {
         Self { from, target, start, frames }
