@@ -387,6 +387,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             }
             over = r.drop_target && dragging.as_ref().is_some_and(|from| from != dir);
         }
+        let needs_access = dir.as_deref().is_some_and(|dir| catalog.bank_status.keys().any(|bank| bank.starts_with(dir)));
         let (label, count, thumb, height, card) = match source {
             Source::Favorites => ("Favorites".to_owned(), favorites.len(), symbol(Icon::Star), SOURCE_ROW, false),
             Source::Recent => ("Recent".to_owned(), recent.len(), symbol(Icon::Recent), SOURCE_ROW, false),
@@ -418,7 +419,8 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             _ => None,
         };
         let edit = dir.as_deref().and_then(|dir| library_name(ui, cx, dir));
-        let el = source_row(id, label, count, thumb, height, card, chosen, progress, about, edit);
+        let status = needs_access.then_some("Catalogued · loading limited");
+        let el = source_row(id, label, count, thumb, height, card, chosen, progress, about, edit, status);
         rows.push(if over {
             stack![el, block(Len::Pct(100.), 2).fill(accent()).anchor(Align::Start, Align::Start)].shrink(0)
         } else {
@@ -562,6 +564,15 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         let size = cx.p.shared.libraries.size(&library.dir);
         if size.is_none() && ui.get("library-size").activated() { cx.p.shared.libraries.measure_size(&library.dir); }
         above.push(library_heading(library, settings.library_name(library), size));
+        let statuses: Vec<_> = catalog.bank_status.iter().filter(|(bank, _)| bank.starts_with(&library.dir))
+            .enumerate().map(|(n, (bank, reason))| {
+                let message = format!("{}: catalogued\n{reason}", bank.file_name().unwrap_or_default().to_string_lossy());
+                hint(&message).tip(message.clone()).id(format!("uvi-bank-status-{n}"))
+            }).collect();
+        if !statuses.is_empty() {
+            let many = statuses.len() > 1;
+            above.push(col(statuses).gap(0).when(many, |e| e.h(80)).scroll().id("uvi-bank-statuses"));
+        }
         if needle.is_empty() {
             above.extend(crumbs(ui, cx, library, &listed));
         }
@@ -902,13 +913,18 @@ fn source_row(
     loading: Option<f64>,
     about: Option<String>,
     edit: Option<El>,
+    status: Option<&str>,
 ) -> El {
     let name = edit.unwrap_or_else(|| body(label.clone())
         .text_size(TEXT)
         .fill(if chosen || loading.is_some() { Fill::from(Role::Ink) } else { secondary() })
         .lines(1)
         .min_w(0));
-    let named = format!("{label}, {count} presets");
+    let thumb = if let Some(status) = status {
+        stack![thumb, col![caption(status).text_size(SMALL).id(format!("{id}-status"))]
+            .pad((TIGHT, SPACE)).fill(Role::Raised).anchor(Align::Start, Align::Start)].w(Len::Pct(100.))
+    } else { thumb };
+    let named = format!("{label}, {count} presets{}", status.map_or(String::new(), |s| format!(", {s}")));
     let (name, count) = match loading {
         Some(done) => (
             col![name, progress_bar(done)].gap(3).align(Align::Start).flex(1).min_w(0),
