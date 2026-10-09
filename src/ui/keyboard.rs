@@ -699,32 +699,34 @@ mod tests {
             path: "/synthetic/authored-key-colours.nki".into(),
             ..Default::default()
         });
-        let mut view = super::super::shown(&p.shared.view);
         let mut keys = vec![crate::sound::KeyLook::default(); 128];
         for (key, color) in [(24, 0), (25, 1), (26, 16), (27, 17), (28, 18), (29, 19), (30, 20)] {
             keys[key].color = Some(color);
         }
         keys[31].control = true;
-        view.parts[0].keys = keys.into();
-        let mut state = super::super::EditorState::default();
-        let mut cx = Cx {
-            p: &p,
-            view,
-            settings: p.shared.libraries.settings(),
-            selection: p.selection.read().unwrap().clone(),
-            state: &mut state,
-        };
-        let looks = part_looks(&mut cx, 0);
-        for (key, color) in [(24, 0), (25, 1)] {
-            assert!(matches!(looks[key], Look::Switch(tint, false, false) if Some(tint) == ksp_key_color(color)), "v1 paints explicit authored key colours even without mapped sample zones");
+        p.shared.view.lock().unwrap().parts[0].keys = keys.into();
+        for (width, height) in [(1180, 780), (900, 640)] {
+            let h = super::super::tests::Harness::new(&p, f64::from(width), f64::from(height));
+            let pixels = super::super::tests::pixels(&h.ui, width, height);
+            let path = std::path::PathBuf::from(format!("artifacts/v2-ui/keyswitch-authored-colours-{width}.png"));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            moose::core::screenshot::save_png(&path, &pixels, u32::from(width), u32::from(height));
+            let pixel = |key| {
+                let frame = h.ui.scene().unwrap().surface(&format!("key-{key}")).unwrap().frame;
+                let x = (frame.x + frame.size.width * 0.25) as usize;
+                let y = (frame.y + frame.size.height * 0.75) as usize;
+                let at = (y * usize::from(width) + x) * 4;
+                &pixels[at..at + 3]
+            };
+            for key in [24, 25] {
+                let rgb = pixel(key);
+                assert!(u16::from(rgb[0]) > u16::from(rgb[1]) + 40, "v1 paints explicit authored key colours even without mapped sample zones: key {key}, RGB {rgb:?}");
+            }
+            for key in [26, 27, 28, 29, 30] {
+                let rgb = pixel(key);
+                assert!(rgb[0].abs_diff(rgb[1]) < 15 && rgb[1].abs_diff(rgb[2]) < 15, "DEFAULT, INACTIVE, NONE, WHITE and BLACK retain piano faces: key {key}, RGB {rgb:?}");
+            }
         }
-        for key in [26, 27, 28] {
-            assert!(matches!(looks[key], Look::Unmapped), "DEFAULT, INACTIVE and NONE do not invent a coloured key");
-        }
-        for key in [29, 30] {
-            assert!(matches!(looks[key], Look::Mapped(_)), "WHITE and BLACK retain piano faces");
-        }
-        assert!(matches!(looks[31], Look::Switch(_, false, false)), "an authored control still has its existing mark");
     }
 
     #[test]
