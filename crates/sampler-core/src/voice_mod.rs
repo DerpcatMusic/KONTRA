@@ -532,7 +532,11 @@ fn unipolar(v: f64, bipolar: bool) -> f64 {
 }
 
 fn evaluate(points: &[(f32, f32)], x: f32) -> f32 {
-    let after = points.partition_point(|p| p.0 < x);
+    let after = points.partition_point(|p| {
+        #[cfg(test)]
+        SHAPE_PROBES.set(SHAPE_PROBES.get() + 1);
+        p.0 < x
+    });
     match after {
         0 => points[0].1,
         n if n == points.len() => points[n - 1].1,
@@ -1226,8 +1230,19 @@ impl crate::Runtime {
 }
 
 #[cfg(test)]
+thread_local! { static SHAPE_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uniform_shaper_uses_v1_index_instead_of_binary_search() {
+        let points: Vec<_> = (0..128).map(|i| ((i as f64 / 127.) as f32, i as f32 / 127.)).collect();
+        SHAPE_PROBES.set(0);
+        std::hint::black_box(evaluate(&points, std::hint::black_box(0.43)));
+        assert!(SHAPE_PROBES.get() <= 3, "uniform lookup used {} probes", SHAPE_PROBES.get());
+    }
 
     #[test]
     fn addressed_projection_averages_each_route_before_saved_order_reduction() {
