@@ -75,6 +75,7 @@ fn effect(
         Some(&mut source),
         Some((-1, -1)),
         (-1, -1),
+        &[],
     );
     let at = format!("{scope} slot {}", fx.slot);
     let failures = actual
