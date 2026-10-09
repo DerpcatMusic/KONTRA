@@ -520,17 +520,30 @@ fn native_file_drop_reaches_editor_callback() {
     });
     let shared = &mut *lock(&editor.shared);
     let paths = vec![std::path::PathBuf::from("instrument.nki")];
-    assert!(shared.view.drop_files(&shared.ui, Point::new(10.,20.), &paths, false));
-    assert!(shared.view.drop_files(&shared.ui, Point::new(10.,20.), &paths, true));
+    assert!(
+        shared
+            .view
+            .drop_files(&shared.ui, Point::new(10., 20.), &paths, false)
+    );
+    assert!(
+        shared
+            .view
+            .drop_files(&shared.ui, Point::new(10., 20.), &paths, true)
+    );
     assert_eq!(calls.lock().unwrap().len(), 2);
     assert!(calls.lock().unwrap()[1].2);
 }
 
 #[test]
 fn cancellation_reaches_editor_callback() {
-    let params=Arc::new(Synth::new());let called=Arc::new(std::sync::atomic::AtomicBool::new(false));let record=called.clone();
-    let editor=editor(&params).on_cancel(move |_|record.store(true,std::sync::atomic::Ordering::Relaxed));
-    let shared=&mut *lock(&editor.shared);shared.view.cancel(&shared.ui);assert!(called.load(std::sync::atomic::Ordering::Relaxed));
+    let params = Arc::new(Synth::new());
+    let called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let record = called.clone();
+    let editor = editor(&params)
+        .on_cancel(move |_| record.store(true, std::sync::atomic::Ordering::Relaxed));
+    let shared = &mut *lock(&editor.shared);
+    shared.view.cancel(&shared.ui);
+    assert!(called.load(std::sync::atomic::Ordering::Relaxed));
 }
 
 #[test]
@@ -543,7 +556,11 @@ fn closing_the_editor_reaches_the_cancel_callback() {
         record.fetch_add(1, Ordering::Relaxed);
     });
     editor.close();
-    assert_eq!(called.load(Ordering::Relaxed), 1, "a close releases app-owned gestures");
+    assert_eq!(
+        called.load(Ordering::Relaxed),
+        1,
+        "a close releases app-owned gestures"
+    );
 }
 
 #[test]
@@ -552,16 +569,25 @@ fn user_zoom_is_independent_of_host_dpi_and_resize() {
     let params = Arc::new(Synth::default());
     let zoom = Arc::new(AtomicU64::new(1.5f64.to_bits()));
     let value = zoom.clone();
-    let mut e = editor(&params).fixed_zoom().resizable((200, 150))
+    let mut e = editor(&params)
+        .fixed_zoom()
+        .resizable((200, 150))
         .user_zoom(move |_| f64::from_bits(value.load(Ordering::Relaxed)));
     for dpi in [1.0, 1.5, 2.0] {
-        assert_eq!(zoom_at(&e, ((400.0 * dpi) as u32, (300.0 * dpi) as u32), dpi), 1.5);
+        assert_eq!(
+            zoom_at(&e, ((400.0 * dpi) as u32, (300.0 * dpi) as u32), dpi),
+            1.5
+        );
     }
     assert!(e.set_size(700, 500));
     assert_eq!(e.size(), (700, 500), "host geometry retains precedence");
     assert_eq!(zoom_at(&e, (1400, 1000), 2.0), 1.5);
     zoom.store(2.0f64.to_bits(), Ordering::Relaxed);
-    assert_eq!(zoom_at(&e, (1400, 1000), 2.0), 2.0, "user zoom updates live");
+    assert_eq!(
+        zoom_at(&e, (1400, 1000), 2.0),
+        2.0,
+        "user zoom updates live"
+    );
     for invalid in [f64::NAN, 0.0, -1.0] {
         zoom.store(invalid.to_bits(), Ordering::Relaxed);
         assert_eq!(zoom_at(&e, (1400, 1000), 2.0), 1.0);

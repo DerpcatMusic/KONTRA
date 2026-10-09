@@ -30,7 +30,10 @@ thread_local! {
     static EVENT_ERRORS: Cell<u64> = const { Cell::new(0) };
 }
 // SAFETY: forwards every call unchanged to System; only counts on the thread that asked.
-#[allow(unsafe_code, reason = "Counting allocator forwards unchanged to System to count audio-thread heap calls")]
+#[allow(
+    unsafe_code,
+    reason = "Counting allocator forwards unchanged to System to count audio-thread heap calls"
+)]
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if COUNTING.get() {
@@ -100,9 +103,18 @@ fn legato() -> Vec<Message> {
 /// A new key every 0.2 s over five octaves: each starts a sample not yet played.
 fn sweep() -> Vec<Message> {
     let mut m = expression();
-    let n = std::env::var("PERF_SWEEP_N").ok().and_then(|v| v.parse().ok()).unwrap_or(50);
+    let n = std::env::var("PERF_SWEEP_N")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(50);
     for i in 0..n {
-        on_off(&mut m, 36 + i as u8 + i as u8 / 2, 60 + (i % 7) as u8 * 9, f64::from(i) * 0.2, 1.2);
+        on_off(
+            &mut m,
+            36 + i as u8 + i as u8 / 2,
+            60 + (i % 7) as u8 * 9,
+            f64::from(i) * 0.2,
+            1.2,
+        );
     }
     m
 }
@@ -119,11 +131,43 @@ const KONTAKT: &str = "KONTRA_KONTAKT_LIBRARIES";
 const UVI: &str = "KONTRA_UVI_LIBRARIES";
 
 const SCENARIOS: &[Scenario] = &[
-    Scenario { name: "dense-strings", source: Source::Kontakt("Performance Samples Vista/Instruments/Vista - 5 Violins.nki"), seconds: 8.0, notes: dense },
-    Scenario { name: "scripted-legato", source: Source::Kontakt("Pacific Ensemble Strings/Instruments/10 Cellos/Pacific - Ens Strings - 10 Cellos - Legato Sustains.nki"), seconds: 8.0, notes: legato },
-    Scenario { name: "streaming-sweep", source: Source::Kontakt("Areia 1.2.0 [Audio Imperia]/Instruments/01 Core Technique Patches/01 Areia - 16 Violins - Core Techniques.nki"), seconds: 11.0, notes: sweep },
-    Scenario { name: "convolution-pads", source: Source::Kontakt("ANALOG STRINGS/Instruments/ANALOG STRINGS.nki"), seconds: 8.0, notes: dense },
-    Scenario { name: "uvi-scripted-pad", source: Source::Uvi("UVI - Augmented Orchestra v1.1.2-R2R/Augmented Orchestra.ufs", "PAD Angela.uvip"), seconds: 8.0, notes: pad },
+    Scenario {
+        name: "dense-strings",
+        source: Source::Kontakt("Performance Samples Vista/Instruments/Vista - 5 Violins.nki"),
+        seconds: 8.0,
+        notes: dense,
+    },
+    Scenario {
+        name: "scripted-legato",
+        source: Source::Kontakt(
+            "Pacific Ensemble Strings/Instruments/10 Cellos/Pacific - Ens Strings - 10 Cellos - Legato Sustains.nki",
+        ),
+        seconds: 8.0,
+        notes: legato,
+    },
+    Scenario {
+        name: "streaming-sweep",
+        source: Source::Kontakt(
+            "Areia 1.2.0 [Audio Imperia]/Instruments/01 Core Technique Patches/01 Areia - 16 Violins - Core Techniques.nki",
+        ),
+        seconds: 11.0,
+        notes: sweep,
+    },
+    Scenario {
+        name: "convolution-pads",
+        source: Source::Kontakt("ANALOG STRINGS/Instruments/ANALOG STRINGS.nki"),
+        seconds: 8.0,
+        notes: dense,
+    },
+    Scenario {
+        name: "uvi-scripted-pad",
+        source: Source::Uvi(
+            "UVI - Augmented Orchestra v1.1.2-R2R/Augmented Orchestra.ufs",
+            "PAD Angela.uvip",
+        ),
+        seconds: 8.0,
+        notes: pad,
+    },
 ];
 
 fn root(var: &str, default: &str) -> PathBuf {
@@ -133,7 +177,16 @@ fn root(var: &str, default: &str) -> PathBuf {
 fn proc_value(file: &str, key: &str) -> u64 {
     std::fs::read_to_string(file)
         .ok()
-        .and_then(|s| s.lines().find_map(|l| l.strip_prefix(key)?.trim().split_whitespace().next()?.parse().ok()))
+        .and_then(|s| {
+            s.lines().find_map(|l| {
+                l.strip_prefix(key)?
+                    .trim()
+                    .split_whitespace()
+                    .next()?
+                    .parse()
+                    .ok()
+            })
+        })
         .unwrap_or(0)
 }
 
@@ -143,12 +196,21 @@ fn wakeups() -> u64 {
         .into_iter()
         .flatten()
         .flatten()
-        .map(|t| proc_value(&format!("{}/status", t.path().display()), "voluntary_ctxt_switches:"))
+        .map(|t| {
+            proc_value(
+                &format!("{}/status", t.path().display()),
+                "voluntary_ctxt_switches:",
+            )
+        })
         .sum()
 }
 
 enum Player {
-    Midi { rt: Runtime, ingress: Ingress, horizon: Option<u32> },
+    Midi {
+        rt: Runtime,
+        ingress: Ingress,
+        horizon: Option<u32>,
+    },
     Uvi(Box<sampler_uvi::scripted::Player>),
 }
 
@@ -178,41 +240,117 @@ fn load(s: &Scenario, messages: &[Message], block: usize) -> Result<Loaded, Stri
                 library: Some(path.clone()),
                 ..Default::default()
             };
-            let streamed = sampler_kontakt::load_streamed(&path, &options, &sampler_kontakt::StreamPolicy { voices: std::env::var("PERF_STREAM_VOICES").ok().and_then(|v| v.parse().ok()).unwrap_or(2048), block_frames: block, ..Default::default() }, |_| {}).map_err(fail)?;
-            let sampler_kontakt::Streamed { loaded, cache, report, streamer, assets } = streamed;
+            let streamed = sampler_kontakt::load_streamed(
+                &path,
+                &options,
+                &sampler_kontakt::StreamPolicy {
+                    voices: std::env::var("PERF_STREAM_VOICES")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(2048),
+                    block_frames: block,
+                    ..Default::default()
+                },
+                |_| {},
+            )
+            .map_err(fail)?;
+            let sampler_kontakt::Streamed {
+                loaded,
+                cache,
+                report,
+                streamer,
+                assets,
+            } = streamed;
             let impulses = loaded.instrument.impulses.len();
             let plan = loaded.plan;
             // Generous fixed capacities, so no event is refused for room.
-            let limits = Limits { families: 4096, decisions: 4096, commands: 4096, behavior_fuel: std::env::var("PERF_FUEL").ok().and_then(|v| v.parse().ok()).unwrap_or(1 << 20), behaviors: std::env::var("PERF_BEHAVIORS").ok().and_then(|v| v.parse().ok()).unwrap_or(2048), ..Limits::for_plan(&plan, 2048, 2048) };
+            let limits = Limits {
+                families: 4096,
+                decisions: 4096,
+                commands: 4096,
+                behavior_fuel: std::env::var("PERF_FUEL")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(1 << 20),
+                behaviors: std::env::var("PERF_BEHAVIORS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(2048),
+                ..Limits::for_plan(&plan, 2048, 2048)
+            };
             // Dense chords re-trigger scripts faster than their release tails end: Limits::script_capacity (about 4 per stage per key) is too small for 30 notes every half beat.
-            let limits = Limits { behavior_cells: plan.behavior_local_count().saturating_mul(limits.behaviors), ..limits };
+            let limits = Limits {
+                behavior_cells: plan.behavior_local_count().saturating_mul(limits.behaviors),
+                ..limits
+            };
             if std::env::var_os("PERF_DEBUG").is_some() {
-                eprintln!("limits: behaviors {} behavior_cells {} voices {} (stages {}, locals {})", limits.behaviors, limits.behavior_cells, limits.voices, plan.stage_count(), plan.behavior_local_count());
+                eprintln!(
+                    "limits: behaviors {} behavior_cells {} voices {} (stages {}, locals {})",
+                    limits.behaviors,
+                    limits.behavior_cells,
+                    limits.voices,
+                    plan.stage_count(),
+                    plan.behavior_local_count()
+                );
             }
             let horizon = (report.head_frames.max(sampler_core::PAGE_FRAMES) + 512) as u32;
-            let mut rt = Runtime::new(plan, limits).map_err(fail)?.with_stream_cache(cache);
+            let mut rt = Runtime::new(plan, limits)
+                .map_err(fail)?
+                .with_stream_cache(cache);
             rt.set_cold_starts(true);
-            if let Some(fuel) = std::env::var("PERF_BLOCK_FUEL").ok().and_then(|v| v.parse().ok()) {
+            if let Some(fuel) = std::env::var("PERF_BLOCK_FUEL")
+                .ok()
+                .and_then(|v| v.parse().ok())
+            {
                 rt.set_behavior_block_fuel(fuel);
             }
-            rt.set_voice_stealing(Some(Stealing::for_limits(RATE, limits.voices))).map_err(fail)?;
+            rt.set_voice_stealing(Some(Stealing::for_limits(RATE, limits.voices)))
+                .map_err(fail)?;
             let mut groups = [None; 16];
             groups[0] = Some(Version::Midi1);
             Ok(Loaded {
-                player: Player::Midi { rt, ingress: Ingress::new(0, groups), horizon: Some(horizon) },
+                player: Player::Midi {
+                    rt,
+                    ingress: Ingress::new(0, groups),
+                    horizon: Some(horizon),
+                },
                 stream_bytes: report.head_bytes as u64,
                 impulses,
                 _keep: Some(Box::new((streamer, assets))),
             })
         }
         Source::Uvi(bank, program) => {
-            let bank = sampler_uvi::Bank::open(&root(UVI, "/mnt/MAIN_STORAGE/Libraries/UVI").join(bank)).map_err(fail)?;
-            let options = sampler_kontakt::Options { rate: RATE, ..Default::default() };
-            let program = sampler_uvi::load_program_scripted_with_options(&bank, program, &options).map_err(fail)?;
+            let bank =
+                sampler_uvi::Bank::open(&root(UVI, "/mnt/MAIN_STORAGE/Libraries/UVI").join(bank))
+                    .map_err(fail)?;
+            let options = sampler_kontakt::Options {
+                rate: RATE,
+                ..Default::default()
+            };
+            let program = sampler_uvi::load_program_scripted_with_options(&bank, program, &options)
+                .map_err(fail)?;
             let impulses = program.instrument.impulses.len();
-            let limits = Limits { notes: 64, channels: 16, performances: 1, expressions: 64, families: 256, decisions: 256, voices: 512, commands: 256, behaviors: 16, behavior_fuel: 1 << 20, behavior_cells: 0, note_cells: 0 };
+            let limits = Limits {
+                notes: 64,
+                channels: 16,
+                performances: 1,
+                expressions: 64,
+                families: 256,
+                decisions: 256,
+                voices: 512,
+                commands: 256,
+                behaviors: 16,
+                behavior_fuel: 1 << 20,
+                behavior_cells: 0,
+                note_cells: 0,
+            };
             let player = sampler_uvi::scripted::Player::new(program, limits, RATE).map_err(fail)?;
-            Ok(Loaded { player: Player::Uvi(Box::new(player)), stream_bytes: 0, impulses, _keep: None })
+            Ok(Loaded {
+                player: Player::Uvi(Box::new(player)),
+                stream_bytes: 0,
+                impulses,
+                _keep: None,
+            })
         }
     }
 }
@@ -232,17 +370,28 @@ struct Cell_ {
 fn play(p: &mut Player, messages: &[Message], block: usize, frames: usize) -> Cell_ {
     let words: Vec<[u32; 1]> = messages
         .iter()
-        .map(|&(_, [s, a, b])| [0x2000_0000 | u32::from(s) << 16 | u32::from(a) << 8 | u32::from(b)])
+        .map(|&(_, [s, a, b])| {
+            [0x2000_0000 | u32::from(s) << 16 | u32::from(a) << 8 | u32::from(b)]
+        })
         .collect();
     let packets: Vec<(usize, TimedPacket<'_>)> = messages
         .iter()
         .zip(&words)
         .map(|(&(at, _), w)| {
             let packet = Packets::new(w).next().unwrap().unwrap();
-            ((at * f64::from(RATE)).round() as usize, TimedPacket { offset: 0, packet })
+            (
+                (at * f64::from(RATE)).round() as usize,
+                TimedPacket { offset: 0, packet },
+            )
         })
         .collect();
-    let mut cell = Cell_ { times: Vec::with_capacity(frames / block + 1), service: Vec::with_capacity(frames / block + 1), allocations: 0, peak: 0.0, audible: None };
+    let mut cell = Cell_ {
+        times: Vec::with_capacity(frames / block + 1),
+        service: Vec::with_capacity(frames / block + 1),
+        allocations: 0,
+        peak: 0.0,
+        audible: None,
+    };
     let (mut buffer, mut next) = (vec![[0.0f32; 2]; block], 0);
     let mut batch: Vec<TimedPacket<'_>> = Vec::with_capacity(64);
     let start = Instant::now();
@@ -250,7 +399,10 @@ fn play(p: &mut Player, messages: &[Message], block: usize, frames: usize) -> Ce
     for begin in (0..frames).step_by(block) {
         batch.clear();
         while next < packets.len() && packets[next].0 < begin + block {
-            batch.push(TimedPacket { offset: packets[next].0 - begin, ..packets[next].1 });
+            batch.push(TimedPacket {
+                offset: packets[next].0 - begin,
+                ..packets[next].1
+            });
             next += 1;
         }
         let before = CALLS.get();
@@ -263,12 +415,24 @@ fn play(p: &mut Player, messages: &[Message], block: usize, frames: usize) -> Ce
         if std::env::var_os("PERF_DEBUG").is_some() {
             let now = stats(p).stream_underruns;
             if now != last_underruns {
-                eprintln!("underruns {last_underruns} -> {now} at {:.3}s ({} events in block)", begin as f64 / f64::from(RATE), batch.len());
+                eprintln!(
+                    "underruns {last_underruns} -> {now} at {:.3}s ({} events in block)",
+                    begin as f64 / f64::from(RATE),
+                    batch.len()
+                );
                 last_underruns = now;
             }
         }
         cell.allocations += CALLS.get() - before;
-        if std::env::var_os("PERF_SLOW").is_some() && took.as_micros() > 3000 { eprintln!("slow block at {:.3}s: {} us (service {} us, {} events)", begin as f64 / f64::from(RATE), took.as_micros(), service / 1000, batch.len()); }
+        if std::env::var_os("PERF_SLOW").is_some() && took.as_micros() > 3000 {
+            eprintln!(
+                "slow block at {:.3}s: {} us (service {} us, {} events)",
+                begin as f64 / f64::from(RATE),
+                took.as_micros(),
+                service / 1000,
+                batch.len()
+            );
+        }
         cell.times.push(took.as_nanos() as u64);
         let top = buffer.iter().flatten().fold(0.0f32, |m, x| m.max(x.abs()));
         cell.peak = cell.peak.max(top);
@@ -285,24 +449,55 @@ fn play(p: &mut Player, messages: &[Message], block: usize, frames: usize) -> Ce
     cell
 }
 
-fn render(p: &mut Player, buffer: &mut [Frame], batch: &[TimedPacket<'_>], _: &[Message], _: usize, _: &mut usize) -> u64 {
+fn render(
+    p: &mut Player,
+    buffer: &mut [Frame],
+    batch: &[TimedPacket<'_>],
+    _: &[Message],
+    _: usize,
+    _: &mut usize,
+) -> u64 {
     let mut service = 0;
     match p {
-        Player::Midi { rt, ingress, horizon } => {
+        Player::Midi {
+            rt,
+            ingress,
+            horizon,
+        } => {
             if let Some(h) = horizon {
                 let t = Instant::now();
                 let r = rt.service_streaming(*h);
                 service = t.elapsed().as_nanos() as u64;
-                match r { Err(e) if std::env::var_os("PERF_DEBUG").is_some() => eprintln!("service_streaming: {e:?} voices {}", rt.voice_count()), _ => {} }
+                match r {
+                    Err(e) if std::env::var_os("PERF_DEBUG").is_some() => {
+                        eprintln!("service_streaming: {e:?} voices {}", rt.voice_count())
+                    }
+                    _ => {}
+                }
             }
             if std::env::var_os("PERF_VOICES").is_some() {
                 thread_local! { static LAST: Cell<usize> = const { Cell::new(0) }; static T: Cell<usize> = const { Cell::new(0) }; }
                 T.set(T.get() + buffer.len());
                 let n = rt.voice_count() / 5;
-                if n != LAST.replace(n) { eprintln!("t {:.3}s voices {} stolen {} events {}", T.get() as f64 / 48000., rt.voice_count(), rt.stolen_voices(), batch.len()); }
+                if n != LAST.replace(n) {
+                    eprintln!(
+                        "t {:.3}s voices {} stolen {} events {}",
+                        T.get() as f64 / 48000.,
+                        rt.voice_count(),
+                        rt.stolen_voices(),
+                        batch.len()
+                    );
+                }
             }
             let mut errors = 0;
-            let _ = ingress.render(rt, buffer, batch, batch.len().max(64), |i, r| { if let Err(e) = r { errors += 1; if std::env::var_os("PERF_DEBUG").is_some() && errors < 4 && batch.len() > 0 { eprintln!("event {i} of block ({} events): {e:?}", batch.len()); } } });
+            let _ = ingress.render(rt, buffer, batch, batch.len().max(64), |i, r| {
+                if let Err(e) = r {
+                    errors += 1;
+                    if std::env::var_os("PERF_DEBUG").is_some() && errors < 4 && batch.len() > 0 {
+                        eprintln!("event {i} of block ({} events): {e:?}", batch.len());
+                    }
+                }
+            });
             EVENT_ERRORS.set(EVENT_ERRORS.get() + errors);
             rt.flush_behaviors(|_, _, _| true);
             rt.flush_ended(|_| true);
@@ -323,7 +518,11 @@ fn uvi_events(p: &mut Player, messages: &[Message], from: usize, to: usize) {
         for &(at, [status, key, velocity]) in messages {
             let frame = (at * f64::from(RATE)).round() as usize;
             if (from..to).contains(&frame) {
-                let _ = if status & 0xf0 == 0x90 { player.note_on(key, f64::from(velocity) / 127.0) } else { player.note_off(key) };
+                let _ = if status & 0xf0 == 0x90 {
+                    player.note_on(key, f64::from(velocity) / 127.0)
+                } else {
+                    player.note_off(key)
+                };
             }
         }
     }
@@ -344,7 +543,15 @@ fn percentile(sorted: &[u64], p: f64) -> u64 {
 fn counted<T>(f: impl FnOnce() -> T) -> (T, Value) {
     let file = std::env::temp_dir().join(format!("sampler-perf-{}.csv", std::process::id()));
     let child = Command::new("perf")
-        .args(["stat", "-x,", "-e", EVENTS, "-p", &std::process::id().to_string(), "-o"])
+        .args([
+            "stat",
+            "-x,",
+            "-e",
+            EVENTS,
+            "-p",
+            &std::process::id().to_string(),
+            "-o",
+        ])
         .arg(&file)
         .stderr(Stdio::null())
         .spawn()
@@ -353,26 +560,41 @@ fn counted<T>(f: impl FnOnce() -> T) -> (T, Value) {
     let out = f();
     let mut counters = serde_json::Map::new();
     if let Some(mut child) = child {
-        let _ = Command::new("kill").args(["-INT", &child.id().to_string()]).status();
+        let _ = Command::new("kill")
+            .args(["-INT", &child.id().to_string()])
+            .status();
         let _ = child.wait();
         for line in std::fs::read_to_string(&file).unwrap_or_default().lines() {
             let f: Vec<&str> = line.split(',').collect();
-            if let (Some(value), Some(event)) = (f.first().and_then(|v| v.parse::<f64>().ok()), f.get(2)) {
+            if let (Some(value), Some(event)) =
+                (f.first().and_then(|v| v.parse::<f64>().ok()), f.get(2))
+            {
                 counters.insert(event.trim_end_matches(":u").to_string(), json!(value));
             }
         }
         let _ = std::fs::remove_file(&file);
     }
-    if let (Some(c), Some(i)) = (counters.get("cycles").and_then(Value::as_f64), counters.get("instructions").and_then(Value::as_f64)) {
+    if let (Some(c), Some(i)) = (
+        counters.get("cycles").and_then(Value::as_f64),
+        counters.get("instructions").and_then(Value::as_f64),
+    ) {
         counters.insert("ipc".into(), json!(i / c.max(1.0)));
     }
     (out, Value::Object(counters))
 }
 
-fn run_scenario(s: &Scenario, seconds: Option<f64>, cores: usize, only_cell: Option<(usize, usize)>) -> Result<(Vec<Value>, Value), String> {
+fn run_scenario(
+    s: &Scenario,
+    seconds: Option<f64>,
+    cores: usize,
+    only_cell: Option<(usize, usize)>,
+) -> Result<(Vec<Value>, Value), String> {
     let messages = {
         let mut m = (s.notes)();
-        m.sort_by(|a, b| a.0.total_cmp(&b.0).then((a.1[0] & 0xf0 == 0x90).cmp(&(b.1[0] & 0xf0 == 0x90))));
+        m.sort_by(|a, b| {
+            a.0.total_cmp(&b.0)
+                .then((a.1[0] & 0xf0 == 0x90).cmp(&(b.1[0] & 0xf0 == 0x90)))
+        });
         m
     };
     let started = Instant::now();
@@ -418,7 +640,11 @@ fn run_scenario(s: &Scenario, seconds: Option<f64>, cores: usize, only_cell: Opt
                 play(&mut loaded.player, &[], block, RATE as usize);
             }
             EVENT_ERRORS.set(0);
-            let (rss, io0, rchar0) = (proc_value("/proc/self/status", "VmRSS:"), proc_value("/proc/self/io", "read_bytes:"), proc_value("/proc/self/io", "rchar:"));
+            let (rss, io0, rchar0) = (
+                proc_value("/proc/self/status", "VmRSS:"),
+                proc_value("/proc/self/io", "read_bytes:"),
+                proc_value("/proc/self/io", "rchar:"),
+            );
             let (cell, counters) = counted(|| {
                 if matches!(loaded.player, Player::Uvi(_)) {
                     play_uvi(&mut loaded.player, &messages, block, frames)
@@ -469,15 +695,31 @@ fn run_scenario(s: &Scenario, seconds: Option<f64>, cores: usize, only_cell: Opt
                 "core_render_peak_us": st.render_nanos_peak as f64 / 1e3,
                 "voice_capacity": st.voice_capacity, "voice_drops": st.voice_drops,
             }));
-            eprintln!("{} block {block} threads {t}: core render peak {:.0} us; p50 {:.0} us p99 {:.0} us max {:.0} us", s.name, st.render_nanos_peak as f64 / 1e3, percentile(&times, 0.5) as f64 / 1e3, percentile(&times, 0.99) as f64 / 1e3, *times.last().unwrap() as f64 / 1e3);
+            eprintln!(
+                "{} block {block} threads {t}: core render peak {:.0} us; p50 {:.0} us p99 {:.0} us max {:.0} us",
+                s.name,
+                st.render_nanos_peak as f64 / 1e3,
+                percentile(&times, 0.5) as f64 / 1e3,
+                percentile(&times, 0.99) as f64 / 1e3,
+                *times.last().unwrap() as f64 / 1e3
+            );
         }
     }
-    Ok((cells, json!({ "load": load_info, "idle_wakeups_per_second": idle })))
+    Ok((
+        cells,
+        json!({ "load": load_info, "idle_wakeups_per_second": idle }),
+    ))
 }
 
 /// [`play`] for a script-hosted program: notes go to the player between blocks.
 fn play_uvi(p: &mut Player, messages: &[Message], block: usize, frames: usize) -> Cell_ {
-    let mut cell = Cell_ { times: Vec::with_capacity(frames / block + 1), service: Vec::with_capacity(frames / block + 1), allocations: 0, peak: 0.0, audible: None };
+    let mut cell = Cell_ {
+        times: Vec::with_capacity(frames / block + 1),
+        service: Vec::with_capacity(frames / block + 1),
+        allocations: 0,
+        peak: 0.0,
+        audible: None,
+    };
     let mut buffer = vec![[0.0f32; 2]; block];
     let start = Instant::now();
     for begin in (0..frames).step_by(block) {
@@ -515,7 +757,10 @@ fn run(args: &[String]) -> Result<(), String> {
             "--only" => only = Some(v.split(',').map(String::from).collect::<Vec<_>>()),
             "--cell" => {
                 let (b, t) = v.split_once(',').ok_or("--cell BLOCK,THREADS")?;
-                cell = Some((b.parse::<usize>().map_err(fail)?, t.parse::<usize>().map_err(fail)?));
+                cell = Some((
+                    b.parse::<usize>().map_err(fail)?,
+                    t.parse::<usize>().map_err(fail)?,
+                ));
             }
             "--seconds" => seconds = Some(v.parse::<f64>().map_err(fail)?),
             _ => return Err(format!("unknown option {a}")),
@@ -523,7 +768,10 @@ fn run(args: &[String]) -> Result<(), String> {
     }
     let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
     let (mut cells, mut extra, mut skipped) = (Vec::new(), Vec::new(), Vec::new());
-    for s in SCENARIOS.iter().filter(|s| only.as_ref().is_none_or(|o| o.iter().any(|n| n == s.name))) {
+    for s in SCENARIOS
+        .iter()
+        .filter(|s| only.as_ref().is_none_or(|o| o.iter().any(|n| n == s.name)))
+    {
         match run_scenario(s, seconds, cores, cell) {
             Ok((c, e)) => {
                 cells.extend(c);
@@ -537,7 +785,14 @@ fn run(args: &[String]) -> Result<(), String> {
     }
     let model = std::fs::read_to_string("/proc/cpuinfo")
         .ok()
-        .and_then(|c| c.lines().find_map(|l| l.strip_prefix("model name")?.split(':').nth(1).map(|s| s.trim().to_string())))
+        .and_then(|c| {
+            c.lines().find_map(|l| {
+                l.strip_prefix("model name")?
+                    .split(':')
+                    .nth(1)
+                    .map(|s| s.trim().to_string())
+            })
+        })
         .unwrap_or_default();
     let result = json!({
         "format": 1, "rate": RATE, "cores": cores, "cpu": model,
@@ -549,9 +804,15 @@ fn run(args: &[String]) -> Result<(), String> {
         Some(path) => std::fs::write(path, text).map_err(fail)?,
         None => println!("{text}"),
     }
-    let failed = result["cells"].as_array().map_or(0, |c| c.iter().filter(|c| c["failures"].as_array().is_some_and(|f| !f.is_empty())).count());
+    let failed = result["cells"].as_array().map_or(0, |c| {
+        c.iter()
+            .filter(|c| c["failures"].as_array().is_some_and(|f| !f.is_empty()))
+            .count()
+    });
     if failed > 0 {
-        return Err(format!("{failed} cells failed (silent, refused events or underruns)"));
+        return Err(format!(
+            "{failed} cells failed (silent, refused events or underruns)"
+        ));
     }
     Ok(())
 }
@@ -560,17 +821,26 @@ fn run(args: &[String]) -> Result<(), String> {
 const WATCHED: &[(&str, &str)] = &[("p50_us", "p50"), ("p99_us", "p99"), ("rss_kb", "resident")];
 
 fn key(c: &Value) -> String {
-    format!("{} block {} threads {}", c["scenario"].as_str().unwrap_or("?"), c["block"], c["threads"])
+    format!(
+        "{} block {} threads {}",
+        c["scenario"].as_str().unwrap_or("?"),
+        c["block"],
+        c["threads"]
+    )
 }
 
 fn compare(args: &[String]) -> Result<bool, String> {
-    let [base, new, rest @ ..] = args else { return Err("usage: compare BASE.json NEW.json [--threshold PERCENT]".into()) };
+    let [base, new, rest @ ..] = args else {
+        return Err("usage: compare BASE.json NEW.json [--threshold PERCENT]".into());
+    };
     let threshold = match rest {
         [] => 10.0,
         [flag, v] if flag == "--threshold" => v.parse::<f64>().map_err(fail)?,
         _ => return Err("usage: compare BASE.json NEW.json [--threshold PERCENT]".into()),
     };
-    let read = |p: &String| -> Result<Value, String> { serde_json::from_str(&std::fs::read_to_string(p).map_err(fail)?).map_err(fail) };
+    let read = |p: &String| -> Result<Value, String> {
+        serde_json::from_str(&std::fs::read_to_string(p).map_err(fail)?).map_err(fail)
+    };
     let (base, new) = (read(base)?, read(new)?);
     let empty = Vec::new();
     let old_cells = base["cells"].as_array().unwrap_or(&empty);
@@ -579,16 +849,29 @@ fn compare(args: &[String]) -> Result<bool, String> {
         // Hard checks on the new run alone: it must sound, refuse no event, never underrun and never miss a deadline.
         let mut hard = Vec::new();
         if c["peak"].as_f64().unwrap_or(0.0) < f64::from(SILENT) {
-            hard.push(format!("silent (peak {:.5})", c["peak"].as_f64().unwrap_or(0.0)));
+            hard.push(format!(
+                "silent (peak {:.5})",
+                c["peak"].as_f64().unwrap_or(0.0)
+            ));
         }
-        for (field, what) in [("event_errors", "event errors"), ("stream_underruns", "stream underruns"), ("misses", "deadline misses")] {
+        for (field, what) in [
+            ("event_errors", "event errors"),
+            ("stream_underruns", "stream underruns"),
+            ("misses", "deadline misses"),
+        ] {
             if c[field].as_f64().unwrap_or(0.0) > 0.0 {
                 hard.push(format!("{} {what}", c[field]));
             }
         }
         if !hard.is_empty() {
             regressions += 1;
-            println!("FAILED {}: {} (max block {:.0} us, deadline {:.0} us)", key(c), hard.join("; "), c["max_us"].as_f64().unwrap_or(0.0), c["deadline_us"].as_f64().unwrap_or(0.0));
+            println!(
+                "FAILED {}: {} (max block {:.0} us, deadline {:.0} us)",
+                key(c),
+                hard.join("; "),
+                c["max_us"].as_f64().unwrap_or(0.0),
+                c["deadline_us"].as_f64().unwrap_or(0.0)
+            );
         }
         let Some(o) = old_cells.iter().find(|o| key(o) == key(c)) else {
             println!("{}: new cell, no baseline", key(c));
@@ -597,17 +880,32 @@ fn compare(args: &[String]) -> Result<bool, String> {
         let mut notes = Vec::new();
         let mut check = |label: &str, old: f64, now: f64| {
             if old > 0.0 && (now - old) / old * 100.0 > threshold {
-                notes.push(format!("{label} {old:.1} -> {now:.1} (+{:.0}%)", (now - old) / old * 100.0));
+                notes.push(format!(
+                    "{label} {old:.1} -> {now:.1} (+{:.0}%)",
+                    (now - old) / old * 100.0
+                ));
             }
         };
         for (field, label) in WATCHED {
-            check(label, o[field].as_f64().unwrap_or(0.0), c[field].as_f64().unwrap_or(0.0));
+            check(
+                label,
+                o[field].as_f64().unwrap_or(0.0),
+                c[field].as_f64().unwrap_or(0.0),
+            );
         }
         for event in ["cycles", "instructions", "cache-misses", "branch-misses"] {
-            check(event, o["perf"][event].as_f64().unwrap_or(0.0), c["perf"][event].as_f64().unwrap_or(0.0));
+            check(
+                event,
+                o["perf"][event].as_f64().unwrap_or(0.0),
+                c["perf"][event].as_f64().unwrap_or(0.0),
+            );
         }
         let more = |f: &str| c[f].as_f64().unwrap_or(0.0) > o[f].as_f64().unwrap_or(0.0);
-        for (f, label) in [("misses", "deadline misses"), ("audio_thread_allocations", "audio-thread allocations"), ("stream_underruns", "underruns")] {
+        for (f, label) in [
+            ("misses", "deadline misses"),
+            ("audio_thread_allocations", "audio-thread allocations"),
+            ("stream_underruns", "underruns"),
+        ] {
             if more(f) {
                 notes.push(format!("{label} {} -> {}", o[f], c[f]));
             }
