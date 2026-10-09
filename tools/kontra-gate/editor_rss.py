@@ -76,7 +76,7 @@ def observe(host, plugin, item, folder):
                    settle_seconds=4, sample_count_per_step=10, sample_interval_seconds=.1,
                    close='hide + destroy; plugin/audio engine retained', explicit_gc=False,
                    malloc_trim=False, pixel_readback=False, audio='48kHz/64 frames paced; no MIDI',
-                   timing_claim=False, source_artifact_feature_matched_to_stage_probe=False)
+                   timing_claim=False, rss_gate_admission='UNKNOWN: functional run has no quiet witness', source_artifact_feature_matched_to_stage_probe=False)
     with tempfile.TemporaryDirectory(prefix='kontra-editor-rss-', dir='/dev/shm') as root:
         root = Path(root); private_settings(root/'config')
         settings = root/'config/kontra/settings.json'
