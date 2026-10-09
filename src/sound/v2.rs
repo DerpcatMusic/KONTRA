@@ -1937,15 +1937,14 @@ impl V2Loader {
         report.decoded.script_callbacks = limits.behaviors;
         let voices = limits.voices;
         let mut waveform_sources = std::collections::HashMap::new();
-        if interfaces.iter().any(|face| face.widgets.iter().any(|w| matches!(w.kind, sampler_ui_ir::Kind::Waveform))) {
-            if let Some(inst) = &instrument {
-                for id in 1..=inst.source_indices.zones.len() {
-                    let Some(id) = u32::try_from(id).ok() else { break; };
-                    if let Some(pcm) = prepared.source_zone_region(id).and_then(|region| prepared.region_asset(region)) {
-                        waveform_sources.insert(id, super::waveform::Source {
-                            pcm: pcm.clone(), stream: stream.as_ref().and_then(|stream| stream.streamer.source(pcm.asset_id())),
-                        });
-                    }
+        // Both Original waveform widgets and the chrome Mapping view use this worker.
+        if let Some(inst) = &instrument {
+            for (zone, id) in super::waveform::source_ids(inst).into_iter().enumerate() {
+                // Lowering keeps one region per IR zone in order; IDs remain physical where present.
+                if let Some(pcm) = prepared.region_asset(zone) {
+                    waveform_sources.insert(id, super::waveform::Source {
+                        pcm: pcm.clone(), stream: stream.as_ref().and_then(|stream| stream.streamer.source(pcm.asset_id())),
+                    });
                 }
             }
         }
