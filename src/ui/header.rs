@@ -1,6 +1,6 @@
 //! The top bar: browser toggle, wordmark, what is loading, engine readouts,
 //! master volume with its meter and the global actions; plus the library
-//! folder setting and the load indicator under it.
+//! Settings workspace and the load indicator under it.
 
 use super::{Cx, View, menu, theme::*};
 use crate::plugin::{P, SamplerParams};
@@ -168,9 +168,7 @@ fn meter_bar(level: f32) -> El {
     .named("Output level")
 }
 
-/// The library folders, managed under the top bar: each with what was
-/// found in it and a remove button; adding one, picked or typed; scanning
-/// them again.
+/// Preferences occupy the rack workspace; the browser and keyboard remain available.
 pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
     let libraries = &cx.p.shared.libraries;
     let scanned = cx.view.scanned == libraries.wanted();
@@ -189,8 +187,8 @@ pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
         let kind = if root.single { "Library" } else { "Folder of libraries" };
         rows.push(
             row![
-                body(root.path.clone()).text_size(TEXT).lines(1).flex(1).min_w(0).tip(root.path.clone()),
-                caption(format!("{kind} · {found}")).fill(secondary()).lines(1).shrink(0),
+                col![body(root.path.clone()).text_size(TEXT).w(Len::Pct(100.)),
+                    caption(format!("{kind} · {found}")).fill(secondary())].gap(TIGHT).flex(1).min_w(0),
                 remove_el
             ]
             .gap(SPACE)
@@ -199,7 +197,7 @@ pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
             .shrink(0),
         );
         if scanned && let Some(problem) = cx.view.shelf.bank_problem(std::path::Path::new(&root.path)) {
-            rows.push(caption(problem.clone()).lines(3).tip(problem)
+            rows.push(caption(problem.clone()).w(Len::Pct(100.)).tip(problem)
                 .pad(edges(0., SPACE, SPACE, INSET)).shrink(0).id(format!("root-bank-problem-{n}")));
         }
     }
@@ -228,39 +226,29 @@ pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
     if close {
         cx.state.settings = false;
     }
-    let mut body = vec![
-        row![section("Library folders").flex(1),
-            many_el.tip("Add the folder that holds your libraries; each library is found, with or without a library file."),
-            one_el.tip("Add one library's own folder."), import_el, scan_el, close_el]
-            .gap(SPACE)
-            .align(Align::Center)
-            .pad(edges(SPACE, SPACE, 0., INSET))
-            .shrink(0),
-    ];
+    let toolbar = section_bar("Settings", vec![close_el]);
+    let mut body = vec![section("Library folders").id("settings-libraries"),
+        row![many_el.tip("Add the folder that holds your libraries; each library is found, with or without a library file."), one_el.tip("Add one library’s own folder."), import_el.tip("Import installed Kontakt libraries and find supported library banks."), scan_el].gap(SPACE).wrap().w(Len::Pct(100.)).shrink(0)];
+    if rows.is_empty() {
+        body.push(caption("Add a folder to make its libraries available in the browser.").fill(secondary()).w(Len::Pct(100.)));
+    }
     body.extend(rows);
-    body.push(
-        row![
-            field.el.flex(1).min_w(0).h(CONTROL).named("A folder to add, typed"),
-            add_el
-        ]
-        .gap(SPACE)
-        .align(Align::Center)
-        .pad(edges(0., SPACE, 0., INSET))
-        .shrink(0),
-    );
-    body.push(interface_settings(ui, cx));
-    body.push(view_settings(ui, cx));
-    body.push(new_part_settings(ui, cx));
-    let toolbar = body.remove(0);
-    let window_height = ui.scene().and_then(|s| s.surface("editor-root")).map_or(760., |s| s.frame.size.height);
-    // Keep the keyboard and browser usable at the minimum window size.
-    let available = (window_height - 600. + CONTROL * 2.).clamp(CONTROL * 2., CONTROL * 8.);
-    let preferences = col(body).gap(TIGHT).align(Align::Stretch)
-        .max_size(Size::new(1e6, available)).scroll().shrink(0).id("settings-body");
-    col![toolbar, preferences, rule()]
-        .gap(TIGHT)
-        .shrink(0)
-        .fill(Role::Surface)
+    let (typed_hit, typed_el) = action(ui, "root-typed-toggle", "Enter a folder path…", cx.state.root_typing);
+    if typed_hit { cx.state.root_typing ^= true; }
+    body.push(row![typed_el].shrink(0));
+    if cx.state.root_typing {
+        body.push(col![caption("Folder path").fill(secondary()),
+            row![field.el.flex(1).min_w(0).h(CONTROL).named("A folder to add, typed"), add_el]
+                .gap(SPACE).align(Align::Center).w(Len::Pct(100.))].gap(TIGHT).shrink(0));
+    }
+    body.extend([rule(), section("Interface").id("settings-interface"),
+        interface_settings(ui, cx), view_settings(ui, cx),
+        rule(), section("MIDI / Output").id("settings-midi"), new_part_settings(ui, cx),
+        rule(), section("Performance").id("settings-performance"), thread_settings(ui, cx)]);
+    let preferences = col(body).gap(SPACE).align(Align::Stretch).pad(INSET)
+        .scroll().flex(1).min_h(0).min_w(0).id("settings-body");
+    col![toolbar, rule(), preferences].gap(0).align(Align::Stretch)
+        .flex(1).min_h(0).min_w(0).fill(Role::Surface).id("settings-panel")
 }
 
 /// Which performance view parts show unless they choose, and the scale of
@@ -275,10 +263,10 @@ fn interface_settings(ui: &mut Ui, cx: &mut Cx) -> El {
     }
     let (reset, reset_el) = action(ui, "ui-scale-reset", "Reset", false);
     if reset { cx.p.shared.libraries.edit(|s| s.ui_scale = 1.0); }
-    row![caption("Interface scale").fill(secondary()).lines(1).shrink(0),
+    row![caption("Interface scale").fill(secondary()).w(Len::Pct(100.)),
         segmented(choices), reset_el,
         caption("Window size is remembered").fill(secondary()).lines(1).flex(1).min_w(0)]
-        .gap(SPACE).align(Align::Center).pad(edges(TIGHT, SPACE, SPACE, INSET)).shrink(0)
+        .gap(SPACE).wrap().align(Align::Center).w(Len::Pct(100.)).shrink(0)
 }
 
 fn view_settings(ui: &mut Ui, cx: &mut Cx) -> El {
@@ -301,14 +289,15 @@ fn view_settings(ui: &mut Ui, cx: &mut Cx) -> El {
         scales.push(el);
     }
     row![
-        caption("Performance view").fill(secondary()).lines(1).shrink(0),
+        caption("Default instrument view").fill(secondary()).w(Len::Pct(100.)),
         segmented(views),
         caption("Scale").fill(secondary()).lines(1).shrink(0),
         segmented(scales),
     ]
     .gap(SPACE)
     .align(Align::Center)
-    .pad(edges(TIGHT, SPACE, SPACE, INSET))
+    .wrap()
+    .w(Len::Pct(100.))
     .shrink(0)
 }
 
@@ -355,6 +344,18 @@ fn new_part_settings(ui: &mut Ui, cx: &mut Cx) -> El {
         outputs.push(el);
     }
     items.extend([caption("Output").fill(secondary()).lines(1).shrink(0), segmented(outputs)]);
+    if let Some(bus) = output {
+        let (to, down, up) = step(ui, "new-bus", usize::from(bus), crate::sound::BUSES);
+        if let Some(n) = to {
+            libraries.edit(|s| s.new_output = Some(n as u8));
+        }
+        items.push(cluster(vec![down, caption(format!("st.{}", bus + 1)).reserve("st.16").justify(Justify::Center), up]));
+    }
+    row(items).gap(SPACE).wrap().align(Align::Center).w(Len::Pct(100.)).shrink(0)
+}
+
+fn thread_settings(ui: &mut Ui, cx: &mut Cx) -> El {
+    let libraries = &cx.p.shared.libraries;
     use crate::library::ThreadSetting as T;
     let threads = cx.settings.threads;
     let mut choices = Vec::new();
@@ -365,19 +366,12 @@ fn new_part_settings(ui: &mut Ui, cx: &mut Cx) -> El {
         }
         choices.push(el);
     }
-    items.extend([caption("Threads (next load)").fill(secondary()).lines(1).shrink(0), segmented(choices)]);
-    if let Some(bus) = output {
-        let (to, down, up) = step(ui, "new-bus", usize::from(bus), crate::sound::BUSES);
-        if let Some(n) = to {
-            libraries.edit(|s| s.new_output = Some(n as u8));
-        }
-        items.push(cluster(vec![down, caption(format!("st.{}", bus + 1)).reserve("st.16").justify(Justify::Center), up]));
-    }
-    row(items).gap(SPACE).align(Align::Center).pad(edges(TIGHT, SPACE, SPACE, INSET)).shrink(0)
+    col![caption("Threads (applies to the next load)").fill(secondary()),
+        row![segmented(choices)].shrink(0)].gap(TIGHT).align(Align::Stretch).shrink(0)
 }
 
 /// Ask for a library folder (`single`) or a folder of libraries to add;
-/// with no file dialog to ask, the library folders strip takes it typed.
+/// with no file dialog to ask, the Settings accepts a typed path.
 pub fn add_folder(cx: &mut Cx, single: bool) {
     let from = (cx.settings.roots.first())
         .map(|r| std::path::PathBuf::from(&r.path))
@@ -385,6 +379,7 @@ pub fn add_folder(cx: &mut Cx, single: bool) {
         .unwrap_or_default();
     if !cx.state.picker.ask(super::picker::Ask::Folder { from, single }) {
         cx.state.settings = true;
+        cx.state.root_typing = true;
     }
 }
 
