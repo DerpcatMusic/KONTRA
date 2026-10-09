@@ -8,6 +8,8 @@ mod export;
 pub(crate) use export::export_crash_evidence;
 mod platform;
 mod report;
+#[cfg(target_os = "linux")]
+mod standalone;
 pub(crate) use crash::flush_journal;
 pub use crash::{CrashIncident, CrashSessionGuard, pending_incident};
 pub(crate) use report::public_issue_url;
@@ -172,6 +174,17 @@ pub fn register_crash_session() -> CrashSessionGuard {
         try_auto_report_pending_incident();
     }
     session
+}
+
+/// Standalone entry point only: a plug-in must never replace its host's handlers.
+pub fn start_standalone_session() -> CrashSessionGuard {
+    let host = std::env::current_exe().ok()
+        .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()));
+    record_host_identity("standalone", host.as_deref());
+    let mut guard = register_crash_session();
+    guard.mark_initializing("standalone", host.as_deref());
+    crash::install_standalone_capture();
+    guard
 }
 
 /// Off audio: each plugin's retained state owns one marker, before it constructs its rack.

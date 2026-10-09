@@ -12,9 +12,15 @@ fn main() {
         }
         _ => {}
     }
-    let _diagnostics = kontakto::diagnostics::acquire();
-    prefer_sound_server();
-    moose_standalone::run::<kontakto::Plugin>();
+    let _crash = kontakto::support::start_standalone_session();
+    if std::panic::catch_unwind(|| {
+        let _diagnostics = kontakto::diagnostics::acquire();
+        prefer_sound_server();
+        moose_standalone::run::<kontakto::Plugin>();
+    }).is_err() {
+        // Retain the crash session and panic marker rather than marking this exit clean.
+        std::process::exit(101);
+    }
 }
 
 /// cpal's default ALSA device (and the PipeWire one at small buffers) fails
