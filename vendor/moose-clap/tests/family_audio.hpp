@@ -48,13 +48,16 @@ struct FamilyAudio {
         std::printf("{\"kind\":\"family_audio\",\"window_frames\":%zu,\"onset_frame\":%lld,\"length_frames\":%lld,\"peak\":%.9g,\"rms\":%.9g,\"spectrum\":[", pcm.size(), (long long)full.onset, (long long)(full.last < 0 ? 0 : full.last - full.onset + 1), full.peak, full.rms);
         for (size_t band = 0; band < full.spectrum.size(); ++band) std::printf("%s%.9g", band ? "," : "", full.spectrum[band]);
         std::puts("]}");
+        size_t cached_begin = pcm.size(), cached_end = pcm.size();
+        Metrics cached;
         for (size_t note = 0; note < events.size(); ++note) {
             const auto& event = events[note];
             if ((event.status & 0xf0) != 0x90 || event.b == 0 || event.frame >= pcm.size()) continue;
             size_t end = pcm.size();
-            for (size_t next = note + 1; next < events.size(); ++next) if ((events[next].status & 0xf0) == 0x90 && events[next].b > 0) { end = std::min(end, size_t(events[next].frame)); break; }
+            for (size_t next = note + 1; next < events.size(); ++next) if ((events[next].status & 0xf0) == 0x90 && events[next].b > 0 && events[next].frame > event.frame) { end = std::min(end, size_t(events[next].frame)); break; }
             if (end <= event.frame) continue;
-            auto m = measure(pcm, event.frame, end);
+            if (cached_begin != event.frame || cached_end != end) { cached = measure(pcm, event.frame, end); cached_begin = event.frame; cached_end = end; }
+            const auto& m = cached;
             std::printf("{\"kind\":\"note_audio\",\"event_index\":%zu,\"key\":%u,\"velocity\":%u,\"start_frame\":%llu,\"window_frames\":%zu,\"onset_frame\":%lld,\"length_frames\":%lld,\"peak\":%.9g,\"rms\":%.9g,\"spectrum\":[", note, event.a, event.b, (unsigned long long)event.frame, end - event.frame, (long long)m.onset, (long long)(m.last < 0 ? 0 : m.last - m.onset + 1), m.peak, m.rms);
             for (size_t band = 0; band < m.spectrum.size(); ++band) std::printf("%s%.9g", band ? "," : "", m.spectrum[band]);
             std::puts("]}");
