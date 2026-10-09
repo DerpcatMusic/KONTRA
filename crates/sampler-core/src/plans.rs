@@ -45,6 +45,7 @@ pub struct PlanTransfer {
 }
 
 pub(super) struct Generation {    pub request: u64,
+    pub script_revision: u64,
     pub prepared: Box<Prepared>,
     pub notes: usize,
     pub callbacks: usize,
@@ -388,6 +389,7 @@ impl Runtime {
             let Some(generation) = self.plans.take(id) else {
                 continue;
             };
+            let script_revision = generation.script_revision;
             match queues.retired.push(PlanTransfer {
                 request: generation.request,
                 prepared: generation.prepared,
@@ -407,6 +409,7 @@ impl Runtime {
                     self.plans.restore(
                         id,
                         Generation {
+                            script_revision,
                             native_cycle: 0,
                             native_seed: 0,                            request: plan.request,
                             prepared: plan.prepared,
@@ -457,6 +460,7 @@ impl Runtime {
         self.active_plan = PlanId(
             self.plans
                 .insert(Generation {
+                            script_revision: 0,
                             native_cycle: 0,
                             native_seed: 0,                    request,
                     prepared: plan.prepared,

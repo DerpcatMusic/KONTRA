@@ -15,7 +15,7 @@ const SLOTS: usize = 32;
 ///
 /// Type:           Chunk<StructuredObject>
 /// SerType:        0x3C
-/// Versions:       0x10, 0x12, 0x13
+/// Versions:       0x10, 0x11, 0x12, 0x13
 /// Kontakt 7:      BParameterArraySerBParExternalMod32
 #[derive(Debug)]
 pub struct ExternalModArray32(pub StructuredObject);

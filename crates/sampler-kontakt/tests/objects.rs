@@ -205,10 +205,10 @@ fn source_versions_and_modes_consume_only_their_bounded_record() {
 
 #[test]
 fn zone_metadata_versions_and_loop_slot_identity_are_retained() {
-    for version in [0x95, 0x96, 0x98, 0x99, 0x9a, 0x9c] {
+    for version in [0x95, 0x97, 0x98, 0x99, 0x9a, 0x9c] {
         let mut b = vec![0; 42];
         if version >= 0x9a {
-            b.extend([1, 2, 3, 4, 5, 6]);
+            b.extend([1, 1, 3, 4, 5, 6]);
         }
         for v in [7i32, 3, 48000] {
             b.extend(v.to_le_bytes());
@@ -240,7 +240,7 @@ fn zone_metadata_versions_and_loop_slot_identity_are_retained() {
         assert_eq!(p.reserved2, (version < 0x96).then_some(123));
         assert_eq!(
             p.filename_prefix,
-            (version >= 0x9a).then_some([1, 2, 3, 4, 5, 6])
+            (version >= 0x9a).then_some([1, 1, 3, 4, 5, 6])
         );
         assert_eq!(p.unknown_tail, [0xDE, 0xAD]);
         for end in 0..len {

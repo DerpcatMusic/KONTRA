@@ -108,6 +108,7 @@ class Gates(unittest.TestCase):
         self.assertEqual(ci.count("python3 tools/version.py nightly-dirty"), 3)
         self.assertEqual(ci.count("if: inputs.release_validation || github.event_name == 'pull_request'"), 3)
         self.assertIn("    if: always()\n    needs: [changes, linux, windows, macos, editor]", ci)
+        self.assertIn("    uses: ./.github/workflows/plugin-ui.yml", ci)
         self.assertNotIn("cargo test --release --features library-access", ci)
 
 

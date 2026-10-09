@@ -310,6 +310,102 @@ fn nkx_directory_errors_distinguish_signature_offset_and_truncation() {
 }
 
 #[test]
+fn nkx_directory_accepts_repeated_aliases_and_preserves_case_distinct_members() {
+    fn index(names: &[(&str, u32, u16)]) -> Vec<u8> {
+        let mut bytes = 0x5e70ac54u32.to_le_bytes().to_vec();
+        bytes.extend(0x110u16.to_le_bytes());
+        bytes.extend([0; 8]);
+        bytes.extend((names.len() as u32).to_le_bytes());
+        bytes.extend([0; 4]);
+        for &(name, offset, kind) in names {
+            let name: Vec<u8> = name.encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect();
+            bytes.extend(((name.len() + 8) as u16).to_le_bytes());
+            bytes.extend((if kind == 2 { offset ^ 0x1f4e0c8d } else { offset }).to_le_bytes());
+            bytes.extend(kind.to_le_bytes());
+            bytes.extend(name);
+        }
+        bytes.resize(1024, 0);
+        for (offset, value) in [(512, 0x11), (768, 0x22), (900, 0x33)] {
+            bytes[offset..offset + 4].copy_from_slice(&0x2ae905fau32.to_le_bytes());
+            bytes[offset + 4..offset + 6].copy_from_slice(&0x110u16.to_le_bytes());
+            bytes[offset + 10..offset + 14].copy_from_slice(&0xffu32.to_le_bytes());
+            bytes[offset + 14..offset + 18].copy_from_slice(&1u32.to_le_bytes());
+            bytes[offset + 22] = value;
+        }
+        bytes
+    }
+    // NKX kind 2 encodes the same reference that kinds 0/4 store directly.
+    let bytes = index(&[("clarinet.ncw", 512, 0), ("clarinet.ncw", 512, 2), ("CLARINET.NCW", 512, 4)]);
+    let archive = Archive::read_index(Cursor::new(bytes)).unwrap();
+    assert_eq!(archive.entries.len(), 1);
+    assert_eq!(archive.find("ClArInEt.NcW").unwrap().header_offset, 512);
+
+    let bytes = index(&[("Clarinet.ncw", 512, 0), ("clarinet.ncw", 768, 0), ("other.ncw", 900, 0)]);
+    let archive = Archive::read_index(Cursor::new(&bytes)).unwrap();
+    assert_eq!(archive.read_entry(Cursor::new(&bytes), "Clarinet.ncw").unwrap(), [0x11]);
+    assert_eq!(archive.read_entry(Cursor::new(&bytes), "clarinet.ncw").unwrap(), [0x22]);
+    let checked = Archive::read(Cursor::new(&bytes)).unwrap();
+    assert!(checked.issues.is_empty());
+    assert!(checked.find("Clarinet.ncw").unwrap().checked);
+    assert_eq!(checked.read_entry(Cursor::new(&bytes), "Clarinet.ncw").unwrap(), [0x11]);
+    assert_eq!(archive.members().count(), 3, "both case-distinct members remain enumerable");
+    assert_eq!(archive.find("Clarinet.ncw").unwrap().header_offset, 512);
+    assert_eq!(archive.find("clarinet.ncw").unwrap().header_offset, 768);
+    assert_eq!(archive.find("CLARINET.NCW").unwrap().header_offset, 768, "folded fallback is directory-order last-wins");
+    assert_eq!(archive.find("OTHER.NCW").unwrap().header_offset, 900);
+
+    let bytes = index(&[("clarinet.ncw", 512, 0), ("clarinet.ncw", 768, 0), ("other.ncw", 900, 0)]);
+    let archive = Archive::read_index(Cursor::new(bytes)).unwrap();
+    assert_eq!(archive.find("clarinet.ncw").unwrap().header_offset, 768, "identical names are directory-order last-wins");
+    assert!(archive.find("other.ncw").is_some(), "a conflict must not reject unrelated members");
+
+    let bytes = index(&[("Clarinet.ncw", 512, 0), ("clarinet.ncw", 768, 0), ("Clarinet.ncw", 900, 0)]);
+    let archive = Archive::read_index(Cursor::new(bytes)).unwrap();
+    assert_eq!(archive.find("Clarinet.ncw").unwrap().header_offset, 900);
+    assert_eq!(archive.find("clarinet.ncw").unwrap().header_offset, 768);
+    assert_eq!(archive.find("CLARINET.NCW").unwrap().header_offset, 900);
+
+    // Separate directories containing the same basename are independent.
+    let root = index(&[("Woodwinds", 128, 1), ("Brass", 256, 1)]);
+    let winds = index(&[("voice.ncw", 512, 0)]);
+    let brass = index(&[("voice.ncw", 768, 0)]);
+    let mut bytes = root;
+    bytes[128..128 + 50].copy_from_slice(&winds[..50]);
+    bytes[256..256 + 50].copy_from_slice(&brass[..50]);
+    let archive = Archive::read_index(Cursor::new(&bytes)).unwrap();
+    assert_eq!(archive.find(r"Woodwinds\voice.ncw").unwrap().header_offset, 512);
+    assert_eq!(archive.find("BRASS/VOICE.NCW").unwrap().header_offset, 768);
+
+    bytes[14..18].copy_from_slice(&1_000_001u32.to_le_bytes());
+    assert!(Archive::read_index(Cursor::new(bytes)).unwrap_err().to_string().contains("Invalid NKX directory size"));
+}
+
+#[test]
+#[ignore = "directory-only local corpus probe; requires KONTRA_NKX_PATHS"]
+fn local_nkx_directory_corpus_probe() {
+    let paths = std::fs::read_to_string(std::env::var_os("KONTRA_NKX_PATHS").expect("set KONTRA_NKX_PATHS")).unwrap();
+    for (index, path) in paths.lines().enumerate() {
+        let result = std::fs::File::open(path).map_err(ni_file::Error::from).and_then(Archive::read_index);
+        match result {
+            Ok(archive) => println!("NKX_SCAN\t{index}\tloaded\t{}\t{}", archive.members().count(), archive.issues.len()),
+            Err(error) => {
+                let message = error.to_string();
+                let class = if message.contains("Duplicate or excessive NKX member") { "duplicate_or_excessive" }
+                    else if message.contains("Excessive NKX member") { "member_limit" }
+                    else if message.contains("Invalid NKX directory size") { "directory_limit" }
+                    else if message.contains("signature") { "signature" }
+                    else if message.contains("version") { "version" }
+                    else if message.contains("Truncated") { "truncated" }
+                    else if message.contains("filename") { "filename" }
+                    else { "other" };
+                // Persist only numeric counters and a class, never authored member names.
+                println!("NKX_SCAN\t{index}\t{class}\t0\t0");
+            }
+        }
+    }
+}
+
+#[test]
 fn clear_nkx_member_and_bad_sibling_are_independent() {
     let mut b = Vec::new();
     b.extend(0x5e70ac54u32.to_le_bytes());
@@ -849,6 +945,40 @@ fn nis_and_raw_chunks_roundtrip_without_losing_opaque_metadata() {
         bytes.extend(expanded.to_le_bytes());
         bytes.extend(packed.to_le_bytes());
         assert!(SubtreeItem::read(Cursor::new(bytes)).is_err());
+    }
+}
+
+#[test]
+fn ahdsr_legacy_and_current_layouts_keep_their_versions() {
+    use ni_file::kontakt::{Chunk, objects::EnvelopeAhdsr};
+    for (version, tail) in [(0x10u16, 16), (0x11, 52), (0x11, 55)] {
+        let mut data = vec![0];
+        data.extend(version.to_le_bytes());
+        for value in [-0.0f32, 10.0, 500.0, 20.0, 300.0, 0.5] {
+            data.extend(value.to_le_bytes());
+        }
+        data.push(0x93);
+        data.extend(0..tail);
+        let original = Chunk { id: 0x3f, data };
+        let mut envelope = EnvelopeAhdsr::try_from(&original).unwrap();
+        assert_eq!(envelope.to_chunk().unwrap().data, original.data);
+        assert_eq!(envelope.hold_ms, 20.0);
+        envelope.attack_ms = 1234.5;
+        let edited = envelope.to_chunk().unwrap();
+        assert_eq!(&edited.data[1..3], &version.to_le_bytes());
+        assert_eq!(EnvelopeAhdsr::try_from(&edited).unwrap(), envelope);
+        let minimum = if version == 0x10 { 44 } else { 80 };
+        for end in 0..minimum {
+            assert!(EnvelopeAhdsr::try_from(&Chunk { id: 0x3f, data: original.data[..end].to_vec() }).is_err());
+        }
+        let mut wrong = original.data.clone();
+        wrong[1] = if version == 0x10 { 0x11 } else { 0x10 };
+        assert!(EnvelopeAhdsr::try_from(&Chunk { id: 0x3f, data: wrong }).is_err());
+        let mut unknown = original.data.clone();
+        unknown[1] = 0x12;
+        assert!(EnvelopeAhdsr::try_from(&Chunk { id: 0x3f, data: unknown }).is_err());
+        envelope.sustain = f32::NAN;
+        assert!(envelope.to_chunk().is_err());
     }
 }
 

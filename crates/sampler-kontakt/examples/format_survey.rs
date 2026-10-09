@@ -629,7 +629,7 @@ impl Survey {
             );
             // Header offsets preserve disk locality; HashMap iteration makes
             // a whole-archive census needlessly seek across sample payloads.
-            let mut members: Vec<_> = archive.entries.values().collect();
+            let mut members: Vec<_> = archive.members().collect();
             members.sort_unstable_by_key(|entry| entry.header_offset);
             for indexed in members {
                 if let Some(entry) = archive.member(&mut file, &indexed.name)? {
@@ -1055,6 +1055,7 @@ fn scalar_fields(s: &mut Survey, id: &str, v: &str, chunk: &OwnedChunk) {
                 s.field(id, v, "zone_pan", p.zone_pan != 0.0);
                 s.field(id, v, "zone_tune", p.zone_tune != 1.0);
                 s.field(id, v, "filename_id", p.filename_id != 0);
+                s.field(id, v, "sample_present", !p.sample_present);
                 s.field(id, v, "sample_data_type", p.sample_data_type != 0);
                 s.field(id, v, "sample_rate", p.sample_rate != 0);
                 s.field(id, v, "num_channels", p.num_channels != 0);
