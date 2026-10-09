@@ -368,14 +368,24 @@ display decoder/cache. Artwork scanning does not open UFS payloads or substitute
 instrument panels for a bank cover.
 
 
-### Open v1 UX parity gap: favourites after a bank moves (low priority)
+### UVI favourites follow bank UUID/member identity
 
-V1's UVI favourites retain bank UUID and member identity as well as a locator.
-Current v2 favourites retain the full virtual bank/member path, so changing the
-bank's library location leaves that favourite pointing at its former path.
-Same-name presets and current v2 state roundtrips are covered; UUID-based
-relocation is not. Track this after the authored CPU gate. Migration of saved
-v1 state is N/A by product policy; the remaining gap is current v2 UX.
+Ported v1 `4bffbb18:src/library.rs::UviSource` and
+`src/ui/mod.rs::toggle_uvi_favorite` into the v2 state codec. Stars retain the
+bank UUID, member and last bank locator. Catalog scans and their persistent
+metadata cache retain UUIDs without preparing or reading program/sample payloads;
+cache version 3 rebuilds earlier directory-only metadata once.
+
+After a move and native state reload, a star resolves the same member in the
+unique bank with its saved UUID. A different bank replacing the old locator
+cannot steal it. Missing members and ambiguous relocated UUID copies leave the
+saved identity intact and produce no substitute favourite row. A still-valid
+saved locator wins over duplicate copies. Row and context-menu stars use the
+same identity; removing a relocated star persists through another reload.
+
+Current v2 path-only stars acquire UUID identity when their original source is
+still catalogued. A path-only save whose bank already moved cannot recover an
+identity it never stored. Saved v1 state migration remains N/A by product policy.
 
 ### Authored CPU receipt and MIDI/Lua coverage
 

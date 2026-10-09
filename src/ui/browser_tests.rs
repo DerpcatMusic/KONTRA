@@ -892,3 +892,57 @@ fn w10_uvi_search_and_favorites_keep_the_bank_member_identity() {
         "favourites retain bank/member identity after state reload"
     );
 }
+
+#[test]
+#[cfg(feature = "library-access")]
+fn w10_uvi_favorite_follows_bank_uuid_after_move_and_state_reload() {
+    use moose::core::custom_state::State;
+    let tmp = tempfile::tempdir().unwrap();
+    let original = tmp.path().join("Original.ufs");
+    crate::library::tests::clear_sample_bank_xml(&original, b"", b"<UVI4><Program/></UVI4>");
+    let mut bytes = std::fs::read(&original).unwrap();
+    bytes[8..24].fill(1);
+    std::fs::write(&original, &bytes).unwrap();
+    let roots = [crate::library::Root { path: tmp.path().to_string_lossy().into_owned(), single: false }];
+    let publish = |p: &Arc<SamplerParams>| {
+        let (shelf, files) = crate::library::scan(&roots, &crate::library::Progress::default()).unwrap();
+        let mut view = p.shared.view.lock().unwrap();
+        view.shelf = Arc::new(shelf);
+        view.files = Arc::new(files);
+        view.scanned = p.shared.libraries.wanted();
+    };
+    let p = Arc::new(SamplerParams::new());
+    publish(&p);
+    let saved = {
+        let mut h = Harness::new(&p, 900., 600.);
+        h.press("bank-uvi");
+        h.press("library-0");
+        h.press("star-0");
+        p.selection.read().unwrap().serialize()
+    };
+    let moved = tmp.path().join("Moved.ufs");
+    std::fs::rename(&original, &moved).unwrap();
+    // Another bank replaces the old locator; its same-named member is not our favourite.
+    bytes[8..24].fill(2);
+    std::fs::write(&original, &bytes).unwrap();
+    let restored = Arc::new(SamplerParams::new());
+    *restored.selection.write().unwrap() = crate::plugin::Selection::deserialize(&saved).unwrap();
+    publish(&restored);
+    let mut h = Harness::new(&restored, 900., 600.);
+    h.press("bank-uvi");
+    h.press("source-favorites");
+    h.press("instrument-0");
+    assert_eq!(restored.selection.read().unwrap().parts[0].path, moved.join("preset.uvip").to_string_lossy(), "the favourite row must load the moved bank; a replaced locator cannot steal the star");
+    h.press("star-0");
+    h.idle(3);
+    assert!(h.ui.scene().unwrap().surface("instrument-0").is_none(), "unstarring a relocated favourite removes its browser row");
+    let saved = restored.selection.read().unwrap().serialize();
+    let reopened = Arc::new(SamplerParams::new());
+    *reopened.selection.write().unwrap() = crate::plugin::Selection::deserialize(&saved).unwrap();
+    assert!(reopened.selection.read().unwrap().uvi_favorites.is_empty(), "unstarring survives another state reload");
+    publish(&reopened);
+    let mut h = Harness::new(&reopened, 900., 600.);
+    h.press("bank-uvi");
+    h.press("source-favorites");
+    assert!(h.ui.scene().unwrap().surface("instrument-0").is_none(), "reopened favourites stay empty after unstarring");
+}
