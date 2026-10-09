@@ -71,6 +71,35 @@ fn play(duration: u32) -> Instruction {
 }
 
 #[test]
+fn progress_keeps_wait_preemption_and_call_path_without_consuming_the_owner() {
+    let mut rt = runtime(vec![
+        Instruction::Op(sampler_core::Op::Call { target: 2 }),
+        Instruction::End,
+        Instruction::Wait(20),
+        Instruction::Jump { target: 3 },
+    ], limits());
+    let note = rt.note_on(input(), 60, 1.).unwrap();
+    let id = rt.start_behavior(note, 0).unwrap();
+    let snapshot = |rt: &Runtime| {
+        let mut observed = None;
+        support::without_heap(|| rt.visit_behavior_progress(|p| {
+            assert_eq!(p.owner, sampler_core::BehaviorOwner::Note(note));
+            observed = Some((p.program, p.pc, p.waiting, p.yielded_at, p.outcome,
+                p.callers.len(), p.callers.first().copied()));
+        }));
+        observed
+    };
+    assert_eq!(snapshot(&rt), Some((0, 3, true, None, None, 1, Some(1))));
+    rt.render(&mut [[0.; 2]; 21]).unwrap();
+    assert_eq!(snapshot(&rt), Some((0, 3, false, Some(20), None, 1, Some(1))));
+    assert_eq!(rt.behavior_outcome(id), Ok(None));
+    rt.cancel_behavior(id).unwrap();
+    assert_eq!(snapshot(&rt).unwrap().4, Some(Outcome::Cancelled));
+    rt.flush_behaviors(|_, _, _| true);
+    assert_eq!(snapshot(&rt), None);
+}
+
+#[test]
 fn native_waits_generated_notes_and_terminal_backpressure_are_sample_exact() {
     for block in 1..=32 {
         let mut rt = runtime(
