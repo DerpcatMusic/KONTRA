@@ -3,6 +3,7 @@ use super::{
     ir_view::{Picture, Values},
     pictures::Source,
 };
+use crate::support::MutexExt;
 use moose::mui::mui::prelude::Font;
 use sampler_ui_ir as ir;
 use std::{
@@ -95,9 +96,7 @@ impl Preparation {
                         if canceled() {
                             continue;
                         }
-                        let Ok(_permit) = DECODE.get_or_init(|| Mutex::new(())).lock() else {
-                            return;
-                        };
+                        let _permit = DECODE.get_or_init(|| Mutex::new(())).lock_unpoisoned();
                         let (picture, font) = if request.asset.kind == ir::AssetKind::TrueTypeFont {
                             (None, source.font(&request.asset))
                         } else {
