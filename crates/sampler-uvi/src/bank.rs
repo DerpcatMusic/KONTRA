@@ -25,10 +25,15 @@ pub struct Bank {
     paths: HashMap<String, Option<usize>>,
 }
 
-/// `uvi_reader` from the player's settings, as v1's catalog passes it.
+/// `uvi_reader` from the player's version-2 settings.
 pub(crate) fn configured_reader() -> Option<PathBuf> {
-    let settings = std::fs::read(dirs::config_dir()?.join("kontra/settings.json")).ok()?;
+    configured_reader_in(&dirs::config_dir()?)
+}
+
+fn configured_reader_in(config: &Path) -> Option<PathBuf> {
+    let settings = std::fs::read(config.join("kontra/settings.json")).ok()?;
     let value: serde_json::Value = serde_json::from_slice(&settings).ok()?;
+    if value.get("version")?.as_u64()? != 2 { return None; }
     value.get("uvi_reader")?.as_str().map(PathBuf::from)
 }
 
@@ -501,5 +506,23 @@ mod tests {
         assert_eq!(ui_candidates("Presets/Strings/p.uvip", "Resources/knob.png").unwrap(),
             ["Presets/Strings/Resources/knob.png", "Resources/knob.png"]);
         assert!(ui_candidates("Presets/p.uvip", "/Scripts/../../escape.png").is_err());
+    }
+}
+
+#[cfg(test)]
+mod reader_settings_test {
+    use super::*;
+    #[test]
+    fn configured_reader_uses_only_v2_settings() {
+        let dir = std::env::temp_dir().join(format!("kontra-reader-settings-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("kontra")).unwrap();
+        let settings = dir.join("kontra/settings.json");
+        std::fs::write(&settings, serde_json::to_vec(&serde_json::json!({"version":2,"uvi_reader":"v2-reader"})).unwrap()).unwrap();
+        assert_eq!(configured_reader_in(&dir), Some(PathBuf::from("v2-reader")));
+        for json in [serde_json::json!({"uvi_reader":"legacy-reader"}), serde_json::json!({"version":1,"uvi_reader":"legacy-reader"})] {
+            std::fs::write(&settings, serde_json::to_vec(&json).unwrap()).unwrap();
+            assert_eq!(configured_reader_in(&dir), None, "legacy reader settings are never reused");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

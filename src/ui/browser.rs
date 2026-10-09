@@ -35,7 +35,7 @@ pub enum Source {
 }
 
 /// The upper pane's share of the browser's height.
-pub const SPLIT: f64 = 0.36;
+pub const SPLIT: f64 = 0.55;
 pub const SPLIT_MIN: f64 = 0.14;
 pub const SPLIT_MAX: f64 = 0.7;
 
@@ -62,7 +62,7 @@ pub struct Browse {
     /// What the lower pane lists, hashed: it starts at the top when this changes.
     listing: u64,
     /// Bring the chosen library, and the cursor's row, into view.
-    reveal_source: bool,
+    reveal_source: u8,
     reveal_row: bool,
     /// The library and row last shown were put back.
     restored: bool,
@@ -215,7 +215,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         if let (None, Some(at)) = (&cx.state.source, at) {
             cx.state.source = Some(Source::Library(arranged[at].name.clone()));
             cx.state.cursor = (!settings.last_row.is_empty()).then(|| settings.last_row.clone());
-            (cx.state.browse.reveal_source, cx.state.browse.reveal_row) = (true, true);
+            (cx.state.browse.reveal_source, cx.state.browse.reveal_row) = (2, true);
         }
     }
 
@@ -249,6 +249,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
                 browse.filter = position.filter;
                 browse.filtered = browse.filter.clone();
                 browse.restored = true;
+                browse.reveal_source = 0;
                 cx.state.uvi = multi;
                 return sidebar(ui, cx);
             }
@@ -310,7 +311,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             cx.state.source = Some(first.clone());
             cx.state.cursor = None;
         }
-        cx.state.browse.reveal_source = true;
+        cx.state.browse.reveal_source = 2;
     }
     if cx.state.source.as_ref().is_some_and(|s| matches!(s, Source::Library(name) if !grouped.contains_key(name))) {
         cx.state.source = None;
@@ -329,10 +330,11 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         if let Some(next) = step(at, k.key, sources.len()).filter(|_| !sources.is_empty()) {
             cx.state.source = Some(sources[next].1.clone());
             cx.state.cursor = None;
-            cx.state.browse.reveal_source = true;
+            cx.state.browse.reveal_source = 2;
         }
         if k.key == Key::Enter && at.is_some() {
             enter = true;
+            cx.state.browse.reveal_source = 2;
             keep_place(cx);
         }
     }
@@ -348,12 +350,14 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             // A second click lets the library go: the search spans them all.
             cx.state.source = (cx.state.source.as_ref() != Some(source)).then(|| source.clone());
             cx.state.cursor = None;
+            cx.state.browse.reveal_source = 2;
             keep_place(cx);
         }
         if !editing && r.key_activated {
             cx.state.source = Some(source.clone());
             cx.state.cursor = None;
             enter = true;
+            cx.state.browse.reveal_source = 2;
             keep_place(cx);
         }
         if let (true, Source::Library(name)) = (r.clicked_with(Button::Secondary), source) {
@@ -364,7 +368,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             if let Some(next) = walked.filter(|&next| next != n) {
                 cx.state.source = Some(sources[next].1.clone());
                 cx.state.cursor = None;
-                cx.state.browse.reveal_source = true;
+                cx.state.browse.reveal_source = 2;
                 focus_to = Some(sources[next].0.clone());
             }
         }
@@ -383,23 +387,27 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             }
             over = r.drop_target && dragging.as_ref().is_some_and(|from| from != dir);
         }
-        let (label, count, thumb) = match source {
-            Source::Favorites => ("Favorites".to_owned(), favorites.len(), symbol(Icon::Star)),
-            Source::Recent => ("Recent".to_owned(), recent.len(), symbol(Icon::Recent)),
-            Source::Library(name) => (
-                catalog.named(name).map_or_else(|| library_label(name), |l| settings.library_name(l)),
-                grouped[name].len(),
-                match cx.looks(name).and_then(|l| l.thumb.clone()) {
-                    Some(image) => block(THUMB.0, THUMB.1)
-                        .fill(Fill::Image(image, Fit::Cover))
-                        .shrink(0),
-                    None => symbol(Icon::Sidebar),
-                },
-            ),
+        let (label, count, thumb, height, card) = match source {
+            Source::Favorites => ("Favorites".to_owned(), favorites.len(), symbol(Icon::Star), SOURCE_ROW, false),
+            Source::Recent => ("Recent".to_owned(), recent.len(), symbol(Icon::Recent), SOURCE_ROW, false),
+            Source::Library(name) => {
+                // Own panels are already decoded by the import worker.
+                let image = catalog.named(name).filter(|l| !settings.covers.contains_key(l.dir.to_string_lossy().as_ref()))
+                    .and_then(|_| cx.view.artwork.get(name)).cloned()
+                    .or_else(|| cx.looks(name).and_then(|l| l.thumb.clone()));
+                let width = (cx.state.sidebar - 2. * TIGHT).max(1.);
+                let height = image.as_ref().map_or(width / 4., |i| width * f64::from(i.height) / f64::from(i.width));
+                let art = match image {
+                    Some(image) => block(Len::Pct(100.), height).fill(Fill::Image(image, Fit::Contain)),
+                    None => stack![glyph(Icon::Sidebar, TEXT, secondary()).centered()].w(Len::Pct(100.)).h(height).fill(Role::Raised),
+                }.id(format!("{id}-art")).disabled().shrink(0);
+                (catalog.named(name).map_or_else(|| library_label(name), |l| settings.library_name(l)),
+                    grouped[name].len(), art, height + SOURCE_ROW + 2. * TIGHT, true)
+            },
         };
         let chosen = cx.state.source.as_ref() == Some(source);
         if chosen {
-            chosen_at = Some((top, top + SOURCE_ROW));
+            chosen_at = Some((top, top + height));
         }
         let progress = match source {
             Source::Library(name) => loading.get(name).map(|(sum, n)| sum / *n as f64),
@@ -410,13 +418,13 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             _ => None,
         };
         let edit = dir.as_deref().and_then(|dir| library_name(ui, cx, dir));
-        let el = source_row(id, label, count, thumb, chosen, progress, about, edit);
+        let el = source_row(id, label, count, thumb, height, card, chosen, progress, about, edit);
         rows.push(if over {
             stack![el, block(Len::Pct(100.), 2).fill(accent()).anchor(Align::Start, Align::Start)].shrink(0)
         } else {
             el
         });
-        top += SOURCE_ROW;
+        top += height;
         // A rule under Recent, and under the pinned libraries.
         let last_pinned = dir.as_deref().is_some_and(pinned)
             && sources.get(n + 1).is_some_and(|(_, s)| match s {
@@ -424,7 +432,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
                 _ => false,
             });
         if source == &Source::Recent || last_pinned {
-            rows.push(rule().pad((TIGHT, INSET)));
+            rows.push(col![rule()].pad((TIGHT, INSET)).shrink(0));
             top += SOURCE_RULE;
         }
     }
@@ -453,15 +461,15 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     } else if sources.is_empty() {
         rows.push(hint("No library matches that filter."));
     }
-    let reveal = chosen_at.filter(|_| cx.state.browse.reveal_source);
+    let reveal = chosen_at.filter(|_| cx.state.browse.reveal_source > 0);
     let sources_id = format!("browser-sources-{uvi}");
     // The rows are summed above; the empty state and hints are measured.
     let measured = ui.scene().and_then(|s| s.surface("browser-sources-content")).map_or(0., |s| s.frame.size.height);
     let (sources_y, sources_bar, revealed) =
         slide(ui, &sources_id, &mut cx.state.browse.sources_y, measured.max(top + TIGHT), reveal, false);
-    if revealed || chosen_at.is_none() {
-        cx.state.browse.reveal_source = false;
-    }
+    // Selection changes the lower header: reveal again against its settled viewport.
+    if chosen_at.is_none() { cx.state.browse.reveal_source = 0; }
+    else if revealed { cx.state.browse.reveal_source = cx.state.browse.reveal_source.saturating_sub(1); }
 
     // The lower pane: the chosen source's presets, the search filtering them.
     let search = search_field(
@@ -873,6 +881,8 @@ fn source_row(
     label: String,
     count: usize,
     thumb: El,
+    height: f64,
+    card: bool,
     chosen: bool,
     loading: Option<f64>,
     about: Option<String>,
@@ -891,16 +901,15 @@ fn source_row(
         ),
         None => (name.flex(1), caption(count.to_string()).text_size(SMALL).fill(secondary())),
     };
-    let el = row![
-        block(2, THUMB.1).fill(if chosen { Fill::from(accent()) } else { Role::Ink.alpha(0.) }),
-        thumb,
-        name,
-        count,
-    ]
-    .gap(SPACE)
-    .align(Align::Center)
-    .pad(edges(0., INSET, 0., 0.))
-    .h(SOURCE_ROW)
+    let mark = block(2, THUMB.1).fill(if chosen { Fill::from(accent()) } else { Role::Ink.alpha(0.) });
+    let el = if card {
+        col![thumb, row![mark, name, count].gap(SPACE).align(Align::Center)
+            .pad(edges(0., INSET, 0., 0.)).h(SOURCE_ROW)]
+            .gap(0).align(Align::Stretch).pad((TIGHT, TIGHT)).h(height)
+    } else {
+        row![mark, thumb, name, count].gap(SPACE).align(Align::Center)
+            .pad(edges(0., INSET, 0., 0.)).h(height)
+    }
     .when(chosen, |e| e.fill(Role::Raised))
     .focusable()
     .a11y(A11y::Button)

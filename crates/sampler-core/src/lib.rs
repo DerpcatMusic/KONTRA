@@ -76,7 +76,7 @@ pub use resample::{ResampleQuality, read_radius};
 mod dsp;
 pub use dsp::{
     Biquad, LoFiSettings, CompressorSettings, ControlRange, ConvolutionUpload, DaftSettings, Decimator, Delay,
-    FilterKind, Impulse, LadderSettings, MAX_IMPULSE_FRAMES, Parameter, Processor, Rectifier, ReverbSettings,
+    FilterKind, Impulse, LadderSettings, MAX_IMPULSE_FRAMES, OutputLowPass, Parameter, Processor, Rectifier, ReverbSettings,
     StateVariableFilter, StereoSettings, SvfMode, VoiceChain, VoiceSendPosition, VoiceSendTap,
 };
 mod envelope;
@@ -727,6 +727,7 @@ impl<T> Arena<T> {
 /// existing slot, so a full command queue cannot discard its cleanup or notification.
 pub struct Runtime {
     rate: u32,
+    fallback_envelope: Option<[u32; 2]>,
     /// Quarter notes per minute for tempo-synced modulation.
     tempo: f64,
     plans: Arena<Generation>,
@@ -919,6 +920,7 @@ impl Runtime {
         let mut runtime = Self {
             signal_trace,
             rate,
+            fallback_envelope: None,
             tempo: 120.0,
             plans,
             active_plan,
@@ -1207,6 +1209,35 @@ impl Runtime {
             linked_release,
             inheritance,
         )
+    }
+
+    /// Admit a script-generated root without owning a physical input key.
+    pub fn generated_note(
+        &mut self,
+        address: ChannelAddress,
+        key: u8,
+        velocity: f64,
+    ) -> Result<NoteId, Error> {
+        self.apply_due();
+        if address.channel >= 16 || address.group >= 16 {
+            return Err(Error::InvalidInput);
+        }
+        self.performance(0)?;
+        self.admit(
+            NoteOrigin::Generated(self.active_plan, address, 0),
+            NotePitch::Key(key),
+            velocity,
+        )
+    }
+
+    /// Retire an admitted source-owned note after its voices, tails and work finish.
+    pub fn retire_when_silent(&mut self, note: NoteId) -> Result<(), Error> {
+        let state = self.notes.get_mut(note.0).ok_or(Error::StaleHandle)?;
+        if state.input.is_some() || state.attack == AttackStatus::Pending {
+            return Err(Error::InvalidInput);
+        }
+        state.retire_when_silent = true;
+        Ok(())
     }
 
     pub fn child_pitched(

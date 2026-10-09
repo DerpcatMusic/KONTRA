@@ -329,3 +329,34 @@ fn host_parameter_callback_changes_audio_at_the_exact_host_sample_offset() {
     assert!(left[7..].iter().all(|sample|*sample>0.));
     assert_eq!(left,right);
 }
+
+#[test]
+fn v1_global_host_parameters_drive_plugin_audio_without_allocations() {
+    use sampler_core::{Envelope, Limits, Pcm, Playback, Prepared, Region, Runtime};
+    let pcm = Pcm::new(48_000, vec![[0.5; 2]; 48_000].into_boxed_slice()).unwrap();
+    let region = Region { sample: 0, key_low: 60, key_high: 60, root_key: None,
+        velocity_low: 0., velocity_high: 1., gain: 1., envelope: Envelope::default(), playback: Playback::default() };
+    let plan = Prepared::new(48_000, vec![pcm], vec![region], 1).unwrap().with_fallback_envelopes(vec![true]).unwrap();
+    let limits = Limits::for_plan(&plan, 4, 4);
+    let part = crate::sound::v2::Part::new(Runtime::new(plan, limits).unwrap(), MixTree::instrument("fallback")).unwrap();
+    let p = SamplerParams::new(); p.shared.ensure_parts(1);
+    let mut dsp = Dsp::default(); dsp.core.install(0, Some(Box::new(part)));
+    let mut events = EventList::with_capacity(4);
+    events.push(Event::new(0, EventBody::ParamChange { id: p.attack.id(), value: 0.1 }));
+    events.push(Event::new(0, EventBody::ParamChange { id: p.release.id(), value: 0.2 }));
+    events.push(Event::new(1, EventBody::NoteOn { group: 0, channel: 0, note: 60, velocity: 127 }));
+    events.push(Event::new(7, EventBody::ParamChange { id: p.cutoff.id(), value: 20. }));
+    let mut output_events = EventList::with_capacity(8);
+    let transport = TransportInfo::default();
+    let mut cx = ProcessContext::new(&transport, 48_000., 128, &mut output_events);
+    let (mut left, mut right) = ([0f32; 128], [0f32; 128]);
+    let mut channels = [left.as_mut_slice(), right.as_mut_slice()];
+    let mut buffer = AudioBuffer::from_slices_checked(&[], &mut channels, 128);
+    assert_eq!(tests::allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0);
+    assert_eq!((p.attack.raw_target(), p.release.raw_target(), p.cutoff.raw_target()), (0.1, 0.2, 20.));
+    assert_eq!(left[0], 0.);
+    assert!(left[6] > 0. && left[6] < 0.001, "host Attack precedes the note at sample1: {left:?}");
+    assert!(left[127] > left[6] && left[127] < 0.01, "Tone's sample7 change filters the continuing ramp");
+    assert_eq!(left, right);
+    assert_eq!(dsp.unsupported, 0);
+}

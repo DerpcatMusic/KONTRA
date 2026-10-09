@@ -108,7 +108,7 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
     )
     .gap(INSET)
     .align(Align::Center)
-    .pad(edges(TIGHT, TIGHT, TIGHT, INSET))
+    .pad(edges(TIGHT, INSET, TIGHT, INSET))
     .shrink(0);
     let first_note = (cx.state.octave * 12) as u8;
     let shown = first_note..first_note + (OCTAVES * 12) as u8;

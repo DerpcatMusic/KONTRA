@@ -199,11 +199,11 @@ pub(crate) fn recover_content_key(path: &Path, bank: &Ufs, directory: &Directory
 
 /// Bounded installed-reader discovery; configured paths and environment overrides remain authoritative.
 pub(crate) fn reader_path(configured: Option<&Path>) -> Result<PathBuf> {
-    if let Some(path) = configured {
-        return Ok(path.to_owned());
-    }
     if let Some(path) = std::env::var_os("KONTRA_UVI_READER") {
         return Ok(path.into());
+    }
+    if let Some(path) = configured {
+        return Ok(path.to_owned());
     }
     let relative = Path::new("drive_c/Program Files/UVI Workstation/UVIWorkstationx64.exe");
     let mut candidates = Vec::new();
@@ -322,10 +322,6 @@ mod tests {
         directory.files[0].name = "unsupported.bin".into();
         assert!(recover_content_key(&path, &bank, &directory).is_err());
         assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
-        assert_eq!(
-            reader_path(Some(Path::new("configured-reader"))).unwrap(),
-            Path::new("configured-reader")
-        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -503,5 +499,26 @@ mod reader_memory_test {
         let expected:[u8;32]=Sha256::digest(&bytes).into();
         assert_eq!(reader_digest(BoundedRead(std::io::Cursor::new(bytes)),128*1024).unwrap(),expected);
         assert!(reader_digest(std::io::Cursor::new(vec![0;17]),16).is_err());
+    }
+}
+
+#[cfg(test)]
+mod reader_precedence_test {
+    use super::*;
+    #[test]
+    fn environment_reader_overrides_configured_reader() {
+        const CHILD: &str = "KONTRA_READER_PRECEDENCE_TEST";
+        if let Ok(expected) = std::env::var(CHILD) {
+            assert_eq!(reader_path(Some(Path::new("configured-reader"))).unwrap(), PathBuf::from(expected));
+            return;
+        }
+        for override_path in [Some("override-reader"), None] {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command.args(["access::reader_precedence_test::environment_reader_overrides_configured_reader", "--exact"])
+                .env(CHILD, override_path.unwrap_or("configured-reader"));
+            if let Some(path) = override_path { command.env("KONTRA_UVI_READER", path); }
+            else { command.env_remove("KONTRA_UVI_READER"); }
+            assert!(command.status().unwrap().success(), "reader precedence must hold in a fresh process");
+        }
     }
 }
