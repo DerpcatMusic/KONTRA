@@ -337,19 +337,19 @@ fn articulations(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument) -
     let capacity = if !cx.selection.parts[slot].articulation_overlay.valid() { Some("Invalid saved mappings; Reset mappings") } else { match mode { ir::Driver::Channel if arts.len() > 16 => Some("16 channels maximum"), ir::Driver::Velocity if arts.len() > 127 => Some("127 velocity partitions maximum"), ir::Driver::Controller | ir::Driver::Program if arts.len() > 128 => Some("128 values maximum"), _ => None } };
     let edit = cx.state.inside.entry(slot).or_default().edit.clone();
     let error = edit.as_ref().and_then(|e| e.error.clone()).or_else(|| capacity.map(String::from));
-    let mut head = vec![section("Articulations").shrink(0), caption(arts.len().to_string()).fill(secondary()).lines(1).shrink(0), spacer(), driver_el.h(CONTROL).shrink(0), more_el];
-    if let Some(error) = error { head.insert(2, caption(error.clone()).fill(Role::Danger).lines(1).min_w(0).tip(format!("{error}\nCorrect the trigger and press Enter")).id(format!("art-error-{slot}"))); }
+    let mut head = vec![caption(arts.len().to_string()).fill(secondary()).lines(1).shrink(0).tip(format!("{} articulations", arts.len())).id(format!("art-count-{slot}")), spacer(), driver_el.h(CONTROL).shrink(0), more_el];
+    if let Some(error) = error { head.insert(1, caption(error.clone()).fill(Role::Danger).lines(1).min_w(0).tip(format!("{error}\nCorrect the trigger and press Enter")).id(format!("art-error-{slot}"))); }
     if let Some(edit) = edit.as_ref().filter(|e| e.learn) {
         let message = format!("Learn {}…", arts[ids.iter().position(|id| id == &edit.source).unwrap_or(0)].name);
-        head.insert(2, caption(message.clone()).lines(1).min_w(0).tip(message).id(format!("art-learn-{slot}")));
+        head.insert(1, caption(message.clone()).lines(1).min_w(0).tip(message).id(format!("art-learn-{slot}")));
     }
     if let Some(edit) = edit.as_ref() && let Some((proposal, other)) = &edit.conflict {
         let other_name = ids.iter().position(|id| id == other).map(|n| arts[n].name.as_str()).unwrap_or("other row");
         let (swap, swap_el) = latch(ui, format!("art-swap-{slot}"), "Swap", &format!("Swap triggers with {other_name}"), false);
         let (cancel, cancel_el) = icon_button(ui, format!("art-cancel-{slot}"), Icon::Close, "Cancel trigger swap", false);
         let message = format!("Used by {other_name}");
-        head.insert(2, caption(message.clone()).lines(1).min_w(0).tip(message).id(format!("art-conflict-{slot}")));
-        head.insert(3, swap_el.h(CONTROL).shrink(0)); head.insert(4, cancel_el);
+        head.insert(1, caption(message.clone()).lines(1).min_w(0).tip(message).id(format!("art-conflict-{slot}")));
+        head.insert(2, swap_el.h(CONTROL).shrink(0)); head.insert(3, cancel_el);
         if swap {
             let n = ids.iter().position(|id| id == &edit.source).unwrap();
             let overlay = &mut cx.selection.parts[slot].articulation_overlay;
