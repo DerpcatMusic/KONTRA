@@ -691,6 +691,10 @@ impl V2Core {
             .filter_map(|widget| widget_value(&part.runtime, plan, widget)
                 .map(|value| (sampler_ui_ir::ControlId(widget.id.0), value))).collect()
     }
+    #[cfg(test)]
+    pub(crate) fn project_state_addresses(&self, part: usize) -> Vec<sampler_core::ScriptStateAddress> {
+        self.parts[part].as_ref().unwrap().persistence.as_ref().unwrap().addresses()
+    }
     pub fn scan_runtime_faults(&mut self,part:usize)->Vec<(usize,sampler_core::Outcome)> {
         let mut out=Vec::new();if let Some(Some(p))=self.parts.get_mut(part){p.runtime.flush_behaviors_at(|_,_,outcome,program|{if matches!(outcome,sampler_core::Outcome::Fault(_)|sampler_core::Outcome::FuelExhausted){out.push((program,outcome));}true});}out
     }
