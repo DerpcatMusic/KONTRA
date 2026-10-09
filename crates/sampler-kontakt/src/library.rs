@@ -440,6 +440,7 @@ fn translate(
         else {
             continue; // Muted group: never sounds.
         };
+        if !zone.sample_present { continue; } // Authored empty zone, no sample to resolve.
         let name = table.get(&(zone.file as u32)).ok_or_else(|| {
             invalid(&format!(
                 "zone {index} sample is absent from the file table"
@@ -1454,6 +1455,7 @@ impl Translation {
 
 /// One serialized zone: its group, mapping and sample reference.
 struct RawZone {
+    sample_present: bool,
     group: usize,
     start: u64,
     end: i32,
@@ -1470,6 +1472,28 @@ struct RawZone {
     loops: Vec<ni_file::kontakt::objects::Loop>,
     loop_slots: Vec<u8>,
     source: ir::kontakt::Zone,
+}
+
+#[cfg(test)]
+mod empty_zone_tests {
+    #[test]
+    fn tester_sampleless_zone_preserves_native_mapping_without_a_file_reference() {
+        use std::io::Cursor;
+        let mut public = vec![0;48];
+        public[16..18].copy_from_slice(&36i16.to_le_bytes());
+        public[18..20].copy_from_slice(&81i16.to_le_bytes());
+        let mut record = 2u32.to_le_bytes().to_vec();
+        record.extend([1,0x9a,0]); record.extend(0u32.to_le_bytes());
+        record.extend(48u32.to_le_bytes()); record.extend(public);
+        record.extend(0u32.to_le_bytes());
+        let mut cursor = Cursor::new(record.as_slice());
+        let zone = super::raw_zone(&mut cursor).unwrap();
+        assert!(!zone.sample_present);
+        assert_eq!((zone.group,zone.file),(2,-1));
+        assert_eq!((zone.source.low_key,zone.source.high_key),(36,81));
+        assert_eq!(zone.source.zone_tune,0.);
+        assert_eq!(cursor.position(),record.len() as u64);
+    }
 }
 
 /// Layout from the v1 importer: the owning group, then a structured zone whose
@@ -1505,6 +1529,7 @@ fn raw_zone(r: &mut Cursor<&[u8]>) -> Result<RawZone, String> {
     );
     let [lv, hv, lk, hk, f0, f1, f2, f3, root] = ranges;
     let midi = |value: i16, what| {
+        if !params.sample_present { return Ok(0); }
         u8::try_from(value)
             .ok()
             .filter(|v| *v < 128)
@@ -1521,11 +1546,11 @@ fn raw_zone(r: &mut Cursor<&[u8]>) -> Result<RawZone, String> {
             "inverted range: keys {lk}..={hk}, velocities {lv}..={hv}"
         ));
     }
-    if start < 0
+    if params.sample_present && (start < 0
         || end > 0
         || !gain.is_finite()
         || !pan.is_finite()
-        || !(tune.is_finite() && tune > 0.0)
+        || !(tune.is_finite() && tune > 0.0))
     {
         return Err(format!(
             "start {start}, end {end}, gain {gain}, pan {pan}, tune {tune}"
@@ -1539,8 +1564,10 @@ fn raw_zone(r: &mut Cursor<&[u8]>) -> Result<RawZone, String> {
             slots: Vec::new(),
         },
     };
+    let sample_present = params.sample_present;
     let source = crate::objects::zone(source_zone.0.version, group as u32, params, &loops);
     Ok(RawZone {
+        sample_present,
         group,
         start: start as u64,
         end,
