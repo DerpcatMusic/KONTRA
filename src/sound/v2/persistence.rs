@@ -409,7 +409,7 @@ mod tests {
                         },
                         control: owner,
                         name: "fixture DSP owner".into(),
-                        role: None,
+                        role: sampler_core::ParameterRole::Gain,
                         unit: sampler_core::ParameterUnit::Normalized,
                         range: [0., 1.],
                         default: 0.5,
