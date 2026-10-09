@@ -52,10 +52,13 @@ struct Host {
     std::thread::id main = std::this_thread::get_id();
     std::atomic<bool> callback{false};
     std::atomic<uint64_t> resize{0};
+    bool fixed_rss = false;
     clap_host_gui_t gui{[](const clap_host_t*) {},
         [](const clap_host_t* h, uint32_t w, uint32_t height) {
             if (!w || !height || w > 4096 || height > 2160) return false;
-            static_cast<Host*>(h->host_data)->resize = (uint64_t(w)<<32)|height; return true;
+            auto& host=*static_cast<Host*>(h->host_data);
+            if (host.fixed_rss && (w!=1180 || height!=760)) return false;
+            host.resize=(uint64_t(w)<<32)|height; return true;
         }, [](const clap_host_t*) { return true; }, [](const clap_host_t*) { return false; }, [](const clap_host_t*, bool) {}};
     clap_host_thread_check_t threads{
         [](const clap_host_t* h) { return std::this_thread::get_id() == static_cast<Host*>(h->host_data)->main; },
@@ -84,6 +87,11 @@ static Window open_editor(const clap_plugin_t* p, const clap_plugin_gui_t* gui, 
     const unsigned long pid = getpid();
     XChangeProperty(display, window, XInternAtom(display, "_NET_WM_PID", False), XA_CARDINAL, 32, PropModeReplace,
         reinterpret_cast<const unsigned char*>(&pid), 1);
+    if (rss) {
+        // Tiling WMs may replace the requested size on map; keep this measurement viewport fixed.
+        XSetWindowAttributes attributes{}; attributes.override_redirect=True;
+        XChangeWindowAttributes(display,window,CWOverrideRedirect,&attributes);
+    }
     XSelectInput(display, window, StructureNotifyMask);
     XStoreName(display, window, "KONTRA presented gate"); XMapRaised(display, window); XSync(display, False);
     clap_window_t parent{}; parent.api=CLAP_WINDOW_API_X11; parent.x11=window;
@@ -126,7 +134,7 @@ static void rss_lifecycle(const clap_plugin_t* p, const clap_plugin_gui_t* gui, 
         while (Clock::now()-start<std::chrono::seconds(4)) {
             pump(p,gui,host,display,window); std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
-        unsigned child_count=0; uint32_t parent_w=0,parent_h=0; Window root=0,parent=0,*children=nullptr;
+        unsigned child_count=0; uint32_t parent_w=0,parent_h=0,clap_w=0,clap_h=0; Window root=0,parent=0,*children=nullptr;
         if (window) {
             require(XQueryTree(display,window,&root,&parent,&children,&child_count) && child_count==1, "RSS editor child");
             XWindowAttributes attr{};
@@ -136,12 +144,15 @@ static void rss_lifecycle(const clap_plugin_t* p, const clap_plugin_gui_t* gui, 
             XFree(children);
             XWindowAttributes frame{}; require(XGetWindowAttributes(display,window,&frame),"RSS parent geometry");
             parent_w=frame.width; parent_h=frame.height;
+            require(gui->get_size(p,&clap_w,&clap_h),"RSS CLAP geometry");
+            require(parent_w==1180 && parent_h==760 && width==parent_w && height==parent_h
+                    && clap_w==parent_w && clap_h==parent_h,"RSS viewport agreement");
         }
         // No pixel readback allocations, explicit collection or heap trimming during RSS.
         for (int sample=0;sample<10;++sample) {
             pump(p,gui,host,display,window); const auto rss=memory();
-            std::printf("{\"phase\":\"%s\",\"sample\":%d,\"rss_kib\":%llu,\"hwm_kib\":%llu,\"swap_kib\":%llu,\"editor_children\":%u,\"width\":%u,\"height\":%u,\"parent_width\":%u,\"parent_height\":%u}\n",
-                phases[phase],sample,(unsigned long long)rss[0],(unsigned long long)rss[1],(unsigned long long)rss[2],child_count,window?width:0,window?height:0,parent_w,parent_h);
+            std::printf("{\"phase\":\"%s\",\"sample\":%d,\"rss_kib\":%llu,\"hwm_kib\":%llu,\"swap_kib\":%llu,\"editor_children\":%u,\"width\":%u,\"height\":%u,\"parent_width\":%u,\"parent_height\":%u,\"clap_width\":%u,\"clap_height\":%u}\n",
+                phases[phase],sample,(unsigned long long)rss[0],(unsigned long long)rss[1],(unsigned long long)rss[2],child_count,window?width:0,window?height:0,parent_w,parent_h,clap_w,clap_h);
             std::fflush(stdout); std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
     }
@@ -158,7 +169,7 @@ int main(int argc, char** argv) {
     require(entry && entry->init(argv[1]), "entry");
     auto* factory = static_cast<const clap_plugin_factory_t*>(entry->get_factory(CLAP_PLUGIN_FACTORY_ID));
     require(factory, "factory"); auto* descriptor = factory->get_plugin_descriptor(factory, 0); require(descriptor, "descriptor");
-    Host host; auto* p = factory->create_plugin(factory, &host.api, descriptor->id); require(p && p->init(p), "init");
+    Host host; host.fixed_rss=rss; auto* p = factory->create_plugin(factory, &host.api, descriptor->id); require(p && p->init(p), "init");
     if (bootstrap) {
         auto* state=static_cast<const clap_plugin_state_t*>(p->get_extension(p,CLAP_EXT_STATE));
         save_state(p,state,argv[3]); std::printf("{\"plugin_version\":\"%s\"}\n",descriptor->version);
