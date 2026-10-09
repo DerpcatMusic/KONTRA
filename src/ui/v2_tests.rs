@@ -729,6 +729,32 @@ fn keyswitch_learn_pending_replacement_does_not_write_the_new_overlay() {
 }
 
 #[test]
+fn keyswitch_learn_clear_is_an_explicit_cancellation() {
+    let (p, _) = keyswitch_learn_fixture();
+    let mut h = Harness::new(&p, 1180., 780.);
+    keyswitch_begin_learn(&mut h, 0);
+    let row = super::inside::row_id(0, "axis:main:Sustain#0");
+    h.press(&format!("{row}-more"));
+    h.press("menu-item-1");
+    assert_eq!(p.shared.learn_target.load(Ordering::Relaxed), 0, "Clear trigger cancels its pending learn");
+    p.shared.record_learn(0, 0, 62);
+    h.idle(3);
+    assert_eq!(p.selection.read().unwrap().parts[0].articulation_overlay.inputs["axis:main:Sustain#0"].keys, Some(vec![]));
+}
+
+#[test]
+fn keyswitch_learn_loader_epoch_cancels_before_new_view_publication() {
+    let (p, _) = keyswitch_learn_fixture();
+    let mut h = Harness::new(&p, 1180., 780.);
+    keyswitch_begin_learn(&mut h, 0);
+    p.shared.part(0).unwrap().generation.fetch_add(1, Ordering::AcqRel);
+    p.shared.record_learn(0, 0, 62);
+    h.idle(3);
+    assert!(p.selection.read().unwrap().parts[0].articulation_overlay.inputs.is_empty(), "loader retirement takes effect before its new view is published");
+    assert_eq!(p.shared.learn_target.load(Ordering::Relaxed), 0);
+}
+
+#[test]
 fn v1_mixer_view_controls_are_reachable() {
     let p = Arc::new(crate::plugin::SamplerParams::new());
     let mut h = Harness::new(&p, 1180., 780.);
