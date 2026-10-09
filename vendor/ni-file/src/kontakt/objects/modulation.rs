@@ -191,8 +191,9 @@ impl ExternalMod {
         }
 
         let mut reader = Cursor::new(self.0.private_data.as_slice());
-        let targets = read_targets(&mut reader)?;
-        let name = read_name(&mut reader)?;
+        let legacy_names = self.0.version == 0x100;
+        let targets = read_targets(&mut reader, legacy_names)?;
+        let name = read_assignment_name(&mut reader, legacy_names)?;
         let (source, unknown_len) = match reader.read_u32_le()? {
             1 => (read_source(&mut reader)?, 4),
             2 => (ModSource::Unassigned, 2),
@@ -264,7 +265,7 @@ fn read_source(reader: &mut Cursor<&[u8]>) -> Result<ModSource, Error> {
 
 /// Read a modulator's target list: all target headers first, then one
 /// shaper per target.
-pub(crate) fn read_targets(reader: &mut Cursor<&[u8]>) -> Result<Vec<ModTarget>, Error> {
+pub(crate) fn read_targets(reader: &mut Cursor<&[u8]>, legacy_names: bool) -> Result<Vec<ModTarget>, Error> {
     let count = reader.read_u32_le()?;
     if !(1..=MAX_TARGETS).contains(&count) {
         return Err(Error::Generic(format!(
@@ -282,13 +283,15 @@ pub(crate) fn read_targets(reader: &mut Cursor<&[u8]>) -> Result<Vec<ModTarget>,
         let unknown_i16 = reader.read_i16_le()?;
         let unknown_flags = reader.read_u8()?;
         let lag_ms = reader.read_u16_le()?;
-        let name = read_name(reader)?;
+        let name = read_assignment_name(reader, legacy_names)?;
         let slot = if GROUP_TARGETS.contains(&param.as_str()) {
             None
         } else {
             Some(reader.read_u8()?)
         };
-        let invert = read_flag(reader)?;
+        let invert = read_flag(reader).map_err(|error| {
+            Error::context(format!("Modulation target {param} invert"), error)
+        })?;
         targets.push(ModTarget {
             param,
             intensity,
@@ -302,7 +305,9 @@ pub(crate) fn read_targets(reader: &mut Cursor<&[u8]>) -> Result<Vec<ModTarget>,
         });
     }
     for target in &mut targets {
-        target.shaper = read_shaper(reader)?;
+        target.shaper = read_shaper(reader).map_err(|error| {
+            Error::context(format!("Modulation target {} shaper", target.param), error)
+        })?;
     }
     Ok(targets)
 }
@@ -349,7 +354,7 @@ pub fn read_param_slots(
     object: &StructuredObject,
     slots: usize,
 ) -> Result<Vec<(usize, Chunk)>, Error> {
-    if !matches!(object.version, 0x10 | 0x12 | 0x13) {
+    if !matches!(object.version, 0x10..=0x13) {
         return Err(Error::Generic(format!(
             "Unsupported parameter array version 0x{:X}",
             object.version
@@ -362,12 +367,24 @@ pub fn read_param_slots(
     }
     let mut items = Vec::new();
     for slot in 0..slots {
-        if read_flag(&mut reader)? {
+        if read_flag(&mut reader).map_err(|error| {
+            Error::context(format!("Parameter array 0x{:X} slot {slot} presence", object.version), error)
+        })? {
             items.push((slot, Chunk::read(&mut reader)?));
         }
     }
-    if object.version == 0x13 { ensure_consumed(&reader)?; }
+    if matches!(object.version, 0x11 | 0x13) { ensure_consumed(&reader)?; }
     Ok(items)
+}
+
+/// The legacy C-string reader uses -1 for an absent assignment/target name.
+pub(crate) fn read_assignment_name(reader: &mut Cursor<&[u8]>, legacy: bool) -> Result<String, Error> {
+    let at = reader.position();
+    if legacy && reader.read_i32_le()? == -1 {
+        return Ok(String::new());
+    }
+    reader.set_position(at);
+    read_name(reader)
 }
 
 /// Length-prefixed 8-bit string.
