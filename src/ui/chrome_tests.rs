@@ -51,6 +51,43 @@ fn specimen() -> Arc<SamplerParams> {
 }
 
 #[test]
+fn info_starts_with_the_file_and_keeps_the_name_in_the_header_tooltip() {
+    for (width, height) in [(900., 600.), (1180., 900.)] {
+        let p = specimen();
+        let mut h = Harness::new(&p, width, height);
+        h.press("view-0-Info");
+        h.idle(20);
+        let scene = h.ui.scene().unwrap();
+        let inside = scene.surface("inside-0").unwrap().frame;
+        let file = scene.surface("info-0-File").unwrap();
+        assert!((file.frame.y - inside.y - INSET).abs() < 0.5,
+            "the file is the first fact, without a repeated name row: {:?} in {inside:?}", file.frame);
+        assert!(scene.surface("info-0-Instrument").is_none());
+        let part = &p.selection.read().unwrap().parts[0];
+        assert_eq!(file.tip.as_deref(), Some(part.path.as_str()));
+        assert!(scene.surface("name-0").unwrap().tip.as_deref().unwrap().contains(&part.name));
+        let last = scene.surface("info-0-Keyswitches").unwrap().frame;
+        assert!(last.y + last.size.height <= inside.y + inside.size.height - INSET + 0.5,
+            "the last fact stays inside the panel inset");
+    }
+}
+
+#[test]
+#[cfg(feature = "shots")]
+fn info_distill_shots() {
+    let Some(out) = std::env::var_os("KONTRA_INFO_SHOTS").map(PathBuf::from) else { return };
+    std::fs::create_dir_all(&out).unwrap();
+    for (width, height) in [(900, 600), (1180, 900)] {
+        let p = specimen();
+        let mut h = Harness::new(&p, width as f64, height as f64);
+        h.press("view-0-Info");
+        h.idle(20);
+        moose::core::screenshot::save_png(&out.join(format!("info-{width}.png")),
+            &pixels(&h.ui, width, height), width.into(), height.into());
+    }
+}
+
+#[test]
 fn performance_dynamics_fit_the_minimum_rack() {
     let p = specimen();
     let h = Harness::new(&p, 900., 600.);
