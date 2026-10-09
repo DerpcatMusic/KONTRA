@@ -606,3 +606,198 @@ Synthetic preloaded source aggregates from3 alternating pairs; these are not col
 | 64 | paged | 16 | 2336.404 / 8905.688 | 649.143 / 3247.921 |
 
 64-voice paged medians improve at high rates, but8x p99 regresses2576.008→2847.683µs. Per-run records, including earlier single-probe outliers and setup times, remain in `~/.cache/kontakto-fix-cpu/streamed-resample-{micro,matrix}/` and streamed-resample-check.log. No rows are excluded.
+
+## Streamed high-rate prepared resampling (continuation)
+
+Extends the existing realtime polyphase bank through the admitted maximum16x rate. The original eight rows covering1–2x retain their exact coefficient bits. Above2x, sixteen stretches per octave preserve the existing passband limit; the provisional eight-stretch extension failed at step2.01 and was corrected rather than relaxing the test. Row preparation evaluates the existing Q32 reference impulse weights once, retains its f32 normalization rounding, and avoids the old quadratic impulse evaluation. Coefficients use4,388,800 shared bytes, allocated during control-side construction. High-quality conversion retains the long reference kernel. Narrow stack windows remain52frames; wider fallbacks are bounded at388frames.
+
+Scope: private resample.rs bank construction/selection; existing Cursor::sample, sample_window and render_run callers consume it unchanged; new paged_render PCM fixture; synthetic streamed_resample example. No public API, config, admission, DSP or residency changes. This accelerates the streamed high-rate source fallback; it does not yet provide resident octave levels to PagedFrames, so audit finding6 is only partly addressed.
+
+Verification:43 targeted checks pass (3 kernel units,3 cold-chain,19 paged-render,18 resample). The new fixture compares streamed and resident PCM over forward/reverse page and loop seams at2.01/2.5/4/8/16x, partitions1/7/64/128, with zero heap calls and underruns. Unit coverage checks each extended-bank boundary against the unchanged passband/alias thresholds and preserves all narrow-row bits. Default root cargo test --no-run passes. Evidence:~/.cache/kontakto-fix-cpu/streamed-resample-check.log.
+
+Before synthetic binary SHA256de85991754b29123bba7b158530574a17758d64c396d6d6b1f8004958fd852ea is preserved. Optimized after build and original piano/FX32/64/256 warm/cold A/B are pending. Vista remains W7's lifecycle dependency and is not scored as a CPU win. **HOLD; no v1 parity claim.**
+
+### High-rate candidate measurements
+
+Frozen original-cell candidate SHA256 `fd0f76a08aad65b12a9f8ddfc0c23f24c2ca97fb41c5845f3d3f3b74fd8e49d7`, source-probe SHA256 `e7dea035291f57b473f5aab5018d5158c58a54ee0dd0ebb8e1a439d90385c40e`. Before is `admission-idle-pool` /8c74dc71 (CPU SHA256 `8e69ea921f4dcddc14b0af51b43d502da966101c9a22e9cead6e497104330f44`). After source is4c3c8f07. The original cold helper verifies pages_after=0 before each cold launch; all40 library runs complete successfully and retain zero event/render heap calls.
+
+First matched original matrix, steady median / p99 in µs. Counters are before / after.
+
+| Cell | Before µs | After µs | Underruns | Deadline misses |
+|---|---:|---:|---:|---:|
+| piano-32-cold | 20.281 / 43.061 | 30.490 / 94.692 | 0 / 0 | 0 / 1 |
+| piano-32-warm | 28.991 / 55.181 | 30.431 / 126.682 | 0 / 0 | 2 / 1 |
+| piano-64-cold | 31.510 / 63.571 | 25.811 / 52.641 | 0 / 0 | 0 / 0 |
+| piano-64-warm | 27.260 / 48.711 | 26.260 / 51.951 | 0 / 0 | 0 / 0 |
+| piano-256-cold | 133.142 / 232.884 | 144.933 / 807.695 | 0 / 0 | 1 / 0 |
+| piano-256-warm | 147.753 / 482.449 | 161.213 / 295.336 | 0 / 0 | 0 / 0 |
+| fx-32-cold | 70.101 / 386.048 | 70.561 / 334.217 | 0 / 0 | 7 / 19 |
+| fx-32-warm | 57.451 / 133.683 | 70.141 / 260.185 | 0 / 0 | 7 / 5 |
+| fx-64-cold | 52.321 / 119.732 | 54.751 / 111.662 | 0 / 0 | 0 / 0 |
+| fx-64-warm | 52.101 / 131.932 | 59.971 / 131.863 | 0 / 0 | 0 / 0 |
+| fx-256-cold | 285.076 / 490.929 | 270.855 / 458.969 | 0 / 2 | 0 / 0 |
+| fx-256-warm | 236.605 / 444.718 | 264.355 / 594.481 | 0 / 0 | 0 / 0 |
+
+Alternating64-frame repeats; repeat2 reverses binary order. All failures remain counted.
+
+| Cell | Repeat | Before µs | After µs | Underruns | Deadline misses |
+|---|---:|---:|---:|---:|---:|
+| piano-64-cold | 1 | 31.510 / 63.571 | 25.811 / 52.641 | 0 / 0 | 0 / 0 |
+| piano-64-cold | 2 | 25.131 / 50.241 | 39.481 / 68.862 | 0 / 0 | 0 / 2 |
+| piano-64-cold | 3 | 25.610 / 45.531 | 26.361 / 55.791 | 0 / 0 | 0 / 0 |
+| piano-64-warm | 1 | 27.260 / 48.711 | 26.260 / 51.951 | 0 / 0 | 0 / 0 |
+| piano-64-warm | 2 | 37.590 / 75.592 | 26.651 / 52.111 | 0 / 0 | 0 / 0 |
+| piano-64-warm | 3 | 26.041 / 48.561 | 26.700 / 50.371 | 0 / 0 | 0 / 0 |
+| fx-64-cold | 1 | 52.321 / 119.732 | 54.751 / 111.662 | 0 / 0 | 0 / 0 |
+| fx-64-cold | 2 | 51.911 / 114.663 | 73.061 / 399.727 | 0 / 0 | 0 / 0 |
+| fx-64-cold | 3 | 51.901 / 122.153 | 54.571 / 114.552 | 0 / 0 | 0 / 0 |
+| fx-64-warm | 1 | 52.101 / 131.932 | 59.971 / 131.863 | 0 / 0 | 0 / 0 |
+| fx-64-warm | 2 | 52.741 / 117.632 | 52.711 / 111.582 | 0 / 0 | 0 / 0 |
+| fx-64-warm | 3 | 52.251 / 110.002 | 54.391 / 126.972 | 0 / 0 | 0 / 0 |
+
+Repeated aggregates (median of the three run medians / p99):
+
+| Cell | Before µs | After µs |
+|---|---:|---:|
+| piano-64-cold | 25.610 / 50.241 | 26.361 / 55.791 |
+| piano-64-warm | 27.260 / 48.711 | 26.651 / 51.951 |
+| fx-64-cold | 51.911 / 119.732 | 54.751 / 114.552 |
+| fx-64-warm | 52.251 / 117.632 | 54.391 / 126.972 |
+
+**FAIL/HOLD.** Piano64 cold aggregate regresses25.610/50.241→26.361/55.791µs; warm27.260/48.711→26.651/51.951(p99 worse). FX64 cold51.911/119.732→54.751/114.552(median worse); warm52.251/117.632→54.391/126.972(both worse). All40 library runs: before17 / after28 deadline misses; before0 / after2 storage underruns (the after coldFX256 cell). No scheduling-noise explanation or v1 parity claim. The favorable source medians cannot certify the release gate. Piano32 adverse cells and coldFX256 are being repeated, then matched cold piano32/64 audio-TID profiles will assess the tail.
+
+Synthetic preloaded source aggregates from3 alternating pairs; these are not cold-storage cells or native-host PCM comparisons. All120 records retain zero heap calls/underruns, stable voice counts and DC PCM.
+
+| Voices | Storage | Rate | Before median/p99 µs | After median/p99 µs |
+|---:|---|---:|---:|---:|
+| 8 | resident | 1.5 | 6.670 / 8.260 | 6.590 / 7.871 |
+| 8 | resident | 2.5 | 51.351 / 80.581 | 8.710 / 43.360 |
+| 8 | resident | 4 | 77.551 / 122.343 | 13.530 / 62.092 |
+| 8 | resident | 8 | 139.592 / 231.895 | 20.770 / 112.322 |
+| 8 | resident | 16 | 266.465 / 444.108 | 40.601 / 266.915 |
+| 8 | paged | 1.5 | 6.800 / 10.380 | 7.030 / 11.990 |
+| 8 | paged | 2.5 | 51.501 / 103.092 | 9.051 / 71.731 |
+| 8 | paged | 4 | 77.932 / 159.113 | 13.760 / 100.652 |
+| 8 | paged | 8 | 138.292 / 317.926 | 21.820 / 190.864 |
+| 8 | paged | 16 | 281.525 / 606.192 | 80.881 / 428.938 |
+| 64 | resident | 1.5 | 52.851 / 74.902 | 53.351 / 88.002 |
+| 64 | resident | 2.5 | 419.128 / 888.217 | 69.581 / 340.477 |
+| 64 | resident | 4 | 612.952 / 987.389 | 121.803 / 804.525 |
+| 64 | resident | 8 | 1102.080 / 1810.065 | 183.933 / 1630.720 |
+| 64 | resident | 16 | 2145.590 / 4870.142 | 371.637 / 2947.146 |
+| 64 | paged | 1.5 | 54.361 / 76.461 | 54.481 / 61.891 |
+| 64 | paged | 2.5 | 412.208 / 814.315 | 71.321 / 554.820 |
+| 64 | paged | 4 | 614.471 / 1268.614 | 133.752 / 1186.432 |
+| 64 | paged | 8 | 1122.472 / 2576.008 | 213.564 / 2847.683 |
+| 64 | paged | 16 | 2336.404 / 8905.688 | 649.143 / 3247.921 |
+
+64-voice paged medians improve at high rates, but8x p99 regresses2576.008→2847.683µs. Per-run records, including earlier single-probe outliers and setup times, remain in `~/.cache/kontakto-fix-cpu/streamed-resample-{micro,matrix}/` and streamed-resample-check.log. No rows are excluded.
+
+### Tail follow-up: repeated adverse cells and matched audio-TID profiles
+
+| Cell | Repeat | Before median/p99 µs | After median/p99 µs | Underruns before/after | Deadlines before/after |
+|---|---:|---:|---:|---:|---:|
+| v2-piano-32-cold | 2 | 16.891/34.111 | 18.770/37.080 | 0/0 | 0/0 |
+| v2-piano-32-cold | 3 | 18.531/36.121 | 17.771/36.701 | 0/0 | 0/0 |
+| v2-piano-32 | 2 | 16.271/33.060 | 17.820/38.081 | 0/0 | 0/0 |
+| v2-piano-32 | 3 | 20.550/45.601 | 18.080/47.041 | 0/0 | 0/0 |
+| v2-fx-256-cold | 2 | 180.623/261.055 | 176.073/287.836 | 0/0 | 0/0 |
+| v2-fx-256-cold | 3 | 175.253/266.025 | 179.734/250.645 | 0/0 | 0/0 |
+
+Repeated32-frame piano aggregate cold18.531/36.121→18.770/37.080µs; warm20.550/45.601→18.080/47.041. ColdFX256 aggregate180.623/266.025→179.734/287.836; its initial two after underruns remain counted even though repeats2/3 have none. The p99 gate remains failed.
+
+Matched piano cold profiles use9999Hz cycles:u with the exact audio TID and zero lost samples.32-frame approximate cycles382,861,145→415,606,759: sample_window5.70%→8.50%, new out-of-line polyphase1.72%.64-frame cycles314,831,920→310,651,961: sample_window8.98%→9.58%, polyphase2.19%. Profile median/p99 µs32:18.360/40.331→20.271/39.961;64:28.381/55.371→29.950/51.961. All profile heap/underrun/deadline counters zero. These explanatory profiles do not replace the unprofiled acceptance runs.
+
+Instruction annotation establishes a concrete added cost: the56-entry iter.find is fully unrolled into an approximately1.6KiB out-of-line function. Most sampled instructions are early quality/rate guards; the common narrow-rate loop now calls that function. This does not prove the95µs initial outlier is caused by lookup or exclude cache/page-fault effects. Evidence:~/.cache/kontakto-fix-cpu/high-rate-polyphase-annotate.txt and streamed-resample-profile/.
+
+ColdFX256 metadata tracing, three alternating pairs of frozen8c→4c binaries, reports no underruns or new stream error/capacity counters on either side; all diagnostic_stream_trace arrays are empty. Original underruns therefore remain unresolved. No reduced prefetch horizon or demand radius is introduced: demand uses the unchanged long48×step radius, which covers every new short-bank window including chunk padding. Runtime::new prepares the bank before timed note input; all measured first-note event/render heap counters are zero. Neither lazy first-note initialization nor audio allocation is established in this probe. Evidence:~/.cache/kontakto-fix-cpu/streamed-resample-underrun-trace/.
+
+Next candidate preserves the original inline eight-entry lookup through2x and isolates higher-rate selection in a non-inlined bounded binary search. Its new unit compares every bank boundary with the preceding linear selection (including invalid ratios) and asserts each padded read window fits the existing streaming demand radius.44 area checks and default root no-run pass. Optimized candidate and original40-cell gate are pending; **HOLD, no W0 release handoff.**
+
+### Lookup correction: original-instrument three-way rejection
+
+20 original cells per binary,60 runs total, with rotating baseline/before/after order. Baseline is frozen8c; before is4c; after is50b2b8db. After CPU SHA256 `df7ae1aa9ad77b644c81360f2fd1d87dc6caacc36506efef5a60d7b5b2211f06`. All runs return0 and all event/render heap counters are0;30 cold evictions verify pages_after=0.
+
+First complete matrix (steady median/p99 µs); each counter triplet is baseline /4c /50.
+
+| Cell | 8c baseline µs | 4c µs | 50 µs | Underruns | Deadlines |
+|---|---:|---:|---:|---:|---:|
+| piano-32-cold | 17.030/35.141 | 16.940/38.961 | 17.700/37.021 | 0 / 0 / 0 | 0 / 0 / 0 |
+| piano-32-warm | 16.440/36.111 | 17.530/39.411 | 16.620/35.800 | 0 / 0 / 0 | 0 / 0 / 0 |
+| piano-64-cold | 25.450/48.070 | 26.601/49.371 | 27.910/51.391 | 0 / 0 / 0 | 0 / 0 / 0 |
+| piano-64-warm | 26.050/45.110 | 27.221/52.041 | 25.931/45.861 | 0 / 0 / 0 | 0 / 0 / 0 |
+| piano-256-cold | 92.352/121.772 | 92.292/127.183 | 92.322/140.833 | 0 / 0 / 0 | 0 / 0 / 0 |
+| piano-256-warm | 89.072/149.973 | 92.012/144.882 | 91.252/114.213 | 0 / 0 / 0 | 0 / 0 / 0 |
+| fx-32-cold | 48.260/103.642 | 48.700/110.972 | 48.551/109.102 | 0 / 0 / 4 | 0 / 0 / 0 |
+| fx-32-warm | 50.271/109.232 | 48.131/111.962 | 46.691/111.272 | 0 / 0 / 0 | 0 / 0 / 0 |
+| fx-64-cold | 52.741/113.762 | 50.341/98.672 | 54.041/101.022 | 0 / 0 / 0 | 0 / 0 / 0 |
+| fx-64-warm | 53.651/112.032 | 52.211/116.023 | 53.291/113.872 | 0 / 0 / 0 | 0 / 0 / 0 |
+| fx-256-cold | 177.544/265.725 | 177.013/263.765 | 183.683/256.295 | 0 / 0 / 0 | 0 / 0 / 0 |
+| fx-256-warm | 178.183/266.235 | 179.543/272.295 | 184.343/300.875 | 0 / 0 / 0 | 0 / 0 / 0 |
+
+Three-run64-frame aggregates; full per-run JSON retained in resample-lookup-matrix/.
+
+| Cell | 8c baseline µs | 4c µs | 50 µs |
+|---|---:|---:|---:|
+| piano-64-cold | 25.450/46.201 | 26.601/53.451 | 27.381/50.911 |
+| piano-64-warm | 25.330/50.441 | 27.060/52.041 | 26.601/50.131 |
+| fx-64-cold | 52.741/113.762 | 50.341/116.792 | 53.531/106.612 |
+| fx-64-warm | 52.801/112.032 | 51.521/111.692 | 53.151/117.203 |
+
+**REJECT/HOLD.** Baseline and4c each have0 deadlines/underruns;50 has0 deadlines and4 underruns in first coldFX32.50 piano64 cold aggregate27.381/50.911 remains above baseline25.450/46.201, warm26.601/50.131 versus25.330/50.441 (median worse). FX64 cold53.531/106.612 versus52.741/113.762 (median worse); warm53.151/117.203 versus52.801/112.032. Restoring the narrow inline lookup removes an added instruction cost but does not solve the full instrument gate. Earlier4c failures remain recorded; this batch does not cancel them. No W0 release handoff.
+
+Source-only median preservation is separately measured in resample-lookup-micro/: three alternating4c→50 pairs,120 records. The source benchmark does not override the failed original-instrument gate.
+
+Splitting next: retain only the control-side quadratic-to-linear coefficient preparation as a trial, restoring the exact pre4c eight-entry bank,52-frame windows and render lookup. The extended bank, wider fallbacks and lookup change are removed from that trial. All experiment code remains reachable at4c3c8f07 and50b2b8db, and its receipts are preserved. The preparation-only part receives its own40 original-instrument runs before anything is retained.
+
+### Preparation-only split checkpoint
+
+The working branch restores the exact945098b2 render implementation, original eight bank entries and52-frame stack window. Its only production diff from945098b2 is linear control-side coefficient construction; the reference impulse-row test proves all eight banks'65 phases bit-exact. The extended bank, wider stack fallbacks and lookup correction remain rejected experiments reachable in the history, with all measurements retained.
+
+43 area checks and default root cargo test --no-run pass. Candidate CPU SHA256 `0adbdef8d357dafd379185509960eab21baaabf8230b237cf847e0633fbcb505`. The next rotating60-run original-instrument batch compares8c baseline,50 extended-bank experiment and preparation-only. Its two overlapping40-run comparisons isolate coefficient preparation (baseline→preparation-only) and the extended bank/window/lookup (preparation-only→50). No part is accepted from a source-only synthetic win. **HOLD pending that gate.**
+
+### Final component gates: reject every resampler production change
+
+Rotating three-way order, 60 original-instrument runs: 20 frozen baseline, 20 preparation-only and 20 extended-bank runs. These provide two overlapping 40-run component comparisons: baseline → preparation-only, then preparation-only → extended bank/window/lookup. All processes returned 0, all event/render heap counters were 0, and every one of the 30 cold evictions verified pages_after=0. All runs, including outliers, remain under `~/.cache/kontakto-fix-cpu/resample-preparation-matrix/`.
+
+| Cell | Repeat | 8c baseline median/p99 µs | 124 preparation median/p99 µs | 50 extended median/p99 µs | Underruns baseline/prep/extended | Deadlines baseline/prep/extended |
+|---|---:|---:|---:|---:|---:|---:|
+| fx-256 | 1 | 179.314/277.446 | 180.874/269.545 | 180.813/272.735 | 0 / 0 / 0 | 0 / 0 / 0 |
+| fx-256-cold | 1 | 178.744/343.327 | 177.833/275.865 | 177.394/268.615 | 0 / 0 / 0 | 0 / 0 / 0 |
+| fx-32 | 1 | 50.001/109.123 | 53.851/120.552 | 53.021/118.022 | 0 / 0 / 0 | 0 / 6 / 1 |
+| fx-32-cold | 1 | 48.951/104.962 | 47.181/100.642 | 48.801/109.682 | 0 / 0 / 0 | 1 / 0 / 0 |
+| fx-64 | 1 | 50.691/113.732 | 53.671/115.582 | 50.441/123.273 | 0 / 0 / 0 | 0 / 0 / 0 |
+| fx-64-cold | 1 | 72.392/194.784 | 52.151/123.152 | 52.221/127.283 | 0 / 0 / 2 | 0 / 0 / 0 |
+| piano-256 | 1 | 88.732/144.733 | 89.932/129.362 | 79.502/129.212 | 0 / 0 / 0 | 0 / 0 / 0 |
+| piano-256-cold | 1 | 88.402/129.592 | 89.932/111.802 | 91.672/141.673 | 0 / 0 / 0 | 0 / 0 / 0 |
+| piano-32 | 1 | 18.251/42.061 | 16.780/37.931 | 16.110/34.571 | 0 / 0 / 0 | 0 / 0 / 0 |
+| piano-32-cold | 1 | 16.100/37.190 | 16.520/37.170 | 17.290/36.451 | 0 / 0 / 0 | 0 / 0 / 0 |
+| piano-64 | 1 | 26.180/51.381 | 37.691/74.262 | 40.281/106.032 | 0 / 0 / 0 | 1 / 0 / 0 |
+| piano-64-cold | 1 | 25.250/45.131 | 36.651/147.313 | 26.140/54.251 | 0 / 0 / 0 | 0 / 0 / 0 |
+| fx-64 | 2 | 49.481/103.312 | 52.811/123.453 | 52.871/117.922 | 0 / 0 / 0 | 0 / 0 / 0 |
+| fx-64-cold | 2 | 49.461/118.052 | 53.181/130.363 | 50.421/113.442 | 0 / 0 / 1 | 0 / 0 / 0 |
+| piano-64 | 2 | 26.010/49.270 | 24.530/45.201 | 25.690/47.071 | 0 / 0 / 0 | 0 / 0 / 0 |
+| piano-64-cold | 2 | 25.330/45.800 | 24.030/48.380 | 26.000/51.631 | 0 / 0 / 0 | 0 / 0 / 0 |
+| fx-64 | 3 | 52.281/115.072 | 47.391/122.683 | 53.861/128.262 | 0 / 0 / 0 | 0 / 0 / 0 |
+| fx-64-cold | 3 | 54.061/136.853 | 72.621/249.944 | 51.430/123.353 | 0 / 0 / 0 | 0 / 0 / 0 |
+| piano-64 | 3 | 26.130/49.631 | 29.680/59.091 | 23.651/45.391 | 0 / 0 / 0 | 0 / 0 / 0 |
+| piano-64-cold | 3 | 24.940/44.011 | 24.510/48.091 | 27.091/48.281 | 0 / 0 / 0 | 0 / 0 / 0 |
+
+Three-run 64-frame aggregates (median of run medians / median of run p99s):
+
+| Cell | 8c baseline µs | 124 preparation µs | 50 extended µs |
+|---|---:|---:|---:|
+| piano-64-cold | 25.250/45.131 | 24.510/48.380 | 26.140/51.631 |
+| piano-64-warm | 26.130/49.631 | 29.680/59.091 | 25.690/47.071 |
+| fx-64-cold | 54.061/136.853 | 53.181/130.363 | 51.430/123.353 |
+| fx-64-warm | 50.691/113.732 | 52.811/122.683 | 52.871/123.273 |
+
+**REJECT/HOLD.** Baseline: 2 deadlines / 0 underruns; preparation-only: 6 / 0; extended bank: 1 / 3. Preparation-only piano64 cold aggregate 24.510/48.380 versus baseline 25.250/45.131µs, warm 29.680/59.091 versus 26.130/49.631. FX64 cold 53.181/130.363 versus 54.061/136.853, warm 52.811/122.683 versus 50.691/113.732. Favorable cells do not cancel regressions. No component passed every p99/deadline/underrun cell; no production part is retained or handed to W0 as an accepted improvement.
+
+The extended bank adds 3 storage underruns in FX64 cold (2 in repeat 1, 1 in repeat 2); this reinforces the streaming gate failure. The earlier FX256 cold underruns remain unresolved. The matched audio-TID profiles identified added lookup cost, but correcting it did not pass the real-instrument gate. Diagnostic tracing did not establish whether prefetch was starved; unchanged demand bounds do not prove storage scheduling is unaffected.
+
+Normalized disassembly for the preparation-only trial matches baseline in all 681 sample_window and 178 reference-window instruction strings after addresses/relocations are normalized. This establishes that coefficient preparation added no resampling-render instructions; it does not establish performance equivalence or explain the measured tails. Full listings are retained as prep-render-{sample_window,reference_window}-{baseline,candidate}.asm.txt in the cache.
+
+The final branch restores `crates/sampler-core/src/resample.rs` byte-for-byte from 945098b2. Experimental commits 4c3c8f07, 50b2b8db and 124ca53a remain reachable, with frozen binaries and all receipts preserved. The high-rate streamed/resident allocation-free PCM fixture and synthetic benchmark remain as regression/diagnostic coverage. This is rejection of the experiment, not completion of #6 or v1 CPU parity.
+
+Final restore validation: 42 targeted resampling/cold-chain/paged-render tests pass, including the retained high-rate streamed/resident allocation-free PCM fixture. Default root `cargo test --no-run` passes; existing warnings remain. `git diff 945098b2 -- crates/sampler-core/src/resample.rs` is empty, and the restored file SHA256 is `cc82a1c002ee59c40900ded23f2798b80f5cae95db4396af5457a4c2929bab40`. No release/install or fresh v1 parity gate was run in this rejection batch.
