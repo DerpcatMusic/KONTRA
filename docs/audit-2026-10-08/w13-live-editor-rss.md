@@ -30,6 +30,6 @@ Bounded live-window raw RSS (MiB), same host binary SHA256 `c8dec626b2a42b82c1b5
 | v1 BigScreen | 446.172 | 607.186 | 555.109 | 643.117 |
 | 381 BigScreen | 186.473 | 399.586 | 337.816 | 407.414 |
 
-These observations retain the same plugin/audio engine with no MIDI. The four-second settle is a fixed wall delay, not an exported authored-UI/package readiness witness. RSS after destroy cannot distinguish allocator/driver capacity from remaining live owners; W3 owns that N-cycle investigation in a separate copy.
+These observations retain the same plugin/audio engine with no MIDI. The four-second settle is a fixed wall delay, not an exported authored-UI/package readiness witness. RSS after destroy cannot distinguish allocator/driver capacity from remaining live owners. In W3's separate four-cycle frozen381 Conflux host, closed RSS grew 247.30→416.59 MiB while live malloc grew only about 0.40 MiB and free arenas grew 83.15→256.12 million bytes; this supports freed allocator capacity as the main observed growth, rather than one live editor-sized owner retained per cycle. Its instrumentation and protocol are separate and raw, without quiet admission: `/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w3-editor-cycles-344/frozen381-Conflux-cycles/metrics.json`. W3 owns candidate and owner-release follow-up.
 
-NEXT: fixed viewport GREEN, Big Screen lifecycle, root no-run, push READY; quiet CLAP 64/32/256 afterward.
+NEXT: root no-run, push READY; exact frozen-artifact CLAP 64/32/256 afterward in an admitted quiet window.
