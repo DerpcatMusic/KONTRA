@@ -15,6 +15,15 @@ impl Prepared {
         Ok(self)
     }
 
+    /// Retain physical source group indices without changing dense DSP membership.
+    pub fn with_source_groups(mut self, ids: Vec<u32>) -> Result<Self, Error> {
+        if ids.len() != self.group_count as usize || ids.iter().any(|&id| id > i32::MAX as u32) {
+            return Err(Error::InvalidInput);
+        }
+        self.group_source_ids = ids.into_boxed_slice();
+        Ok(self)
+    }
+
     pub fn with_source_zones(mut self, ids: Vec<u32>) -> Result<Self, Error> {
         if ids.len() != self.region_count() || ids.contains(&0) {
             return Err(Error::InvalidInput);

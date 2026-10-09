@@ -2598,6 +2598,7 @@ mod saved_tests {
             0,
             vec![String::new(); 8],
             &indices,
+            &[],
             Default::default(),
         );
         let writes =
@@ -2654,6 +2655,7 @@ mod saved_tests {
                     .map(|group| group.name.clone())
                     .collect(),
                 &instrument.source_indices,
+                &instrument.zones,
                 Default::default(),
             );
             environment.engine_values.clear();

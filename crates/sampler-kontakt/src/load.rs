@@ -625,6 +625,7 @@ pub(crate) fn script_environment(
     index: usize,
     groups: Vec<String>,
     source: &ir::SourceIndices,
+    zones: &[ir::Zone],
     performance_view: sampler_ksp::model::PerformanceView,
 ) -> sampler_ksp::Environment {
     sampler_ksp::Environment {
@@ -646,6 +647,25 @@ pub(crate) fn script_environment(
             })
             .collect(),
         engine_lookups: sampler_core::lower::source_engine_lookups(source),
+        zones: source
+            .zones
+            .iter()
+            .enumerate()
+            .filter_map(|(index, zone)| {
+                let zone = zones.get(zone.as_ref()?.0)?;
+                let group = zone.group.map_or(-1, |group| {
+                    source
+                        .groups
+                        .iter()
+                        .position(|entry| *entry == Some(group))
+                        .map_or(group.0 as i32, |index| index as i32)
+                });
+                Some((
+                    index as u32 + 1,
+                    [group, i32::from(zone.keys.low), i32::from(zone.keys.high)],
+                ))
+            })
+            .collect(),
         slot: behavior.slot.unwrap_or(index.min(u8::MAX.into()) as u8),
         control_values: Default::default(),
         persisted: behavior
@@ -747,6 +767,7 @@ pub(crate) fn initialize_scripts(
                 index,
                 groups.clone(),
                 &instrument.source_indices,
+                &instrument.zones,
                 performance_view,
             );
             environment.midi_object = midi_object.clone();
