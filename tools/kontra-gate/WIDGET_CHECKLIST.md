@@ -15,7 +15,7 @@ A source test alone does not certify the library or native-host acceptance axis.
 | Drag direction | Positive/negative movement follows the scripted axis and orientation; perpendicular motion does not alter the value. |
 | Drag speed | Measured value delta follows scripted sensitivity and remains consistent at editor/device scales; closed drags return to their start. |
 | Fine modifiers | Each supported platform modifier follows Kontakt/Falcon semantics and produces the expected smaller delta without a jump. |
-| Double click | Reset to the authored default for reset controls; value/text edits enter editing where authored. |
+| Double click | Unified numeric entry on Kontakt and Falcon controls; value/text edits enter editing where authored. Reset uses the source-format modifier map. |
 | Mouse wheel | Both directions, fine modifiers, steps, bounds and popup wheel capture work without changing a control underneath. |
 | Menus | Open, select every enabled choice, preserve item values/order, reject disabled choices, dismiss and navigate by keyboard. |
 | Buttons and switches | Latching, momentary, press/release, multistate and authored callbacks follow script semantics. |
@@ -37,7 +37,7 @@ Use source-specific conventions when testing modifiers and numeric entry:
 
 | Source | Fine drag | Reset | Numeric entry |
 | --- | --- | --- | --- |
-| Kontakt | Shift | Ctrl-click on Windows; Cmd-click on macOS | Double-click a value field |
+| Kontakt | Shift | Ctrl-click on Windows; Cmd-click on macOS | Unified double-click numeric entry, including value fields |
 | Falcon | Ctrl on Windows; Cmd on macOS | Alt-click on Windows; Option-click on macOS | Double-click a numeric control; Enter confirms and Escape cancels |
 
 These conventions come from the official [Kontakt interface manual](https://docs.native-instruments.com/ni-tech-manuals/kontakt-player-manual/en/user-interface-elements)
@@ -45,3 +45,6 @@ and [Falcon interface manual](https://manual.uvi.net/falcon/en/interface/).
 They define separate test obligations; support remains unverified until the
 actual input path has a witness. Authored script behavior still governs custom
 controls. Shared KONTRA modifiers must not silently replace Falcon semantics.
+
+One shared gesture engine selects its modifier map from the instrument source
+format. This is a common policy, not a per-widget or per-library override.
