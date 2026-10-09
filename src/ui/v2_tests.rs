@@ -6377,3 +6377,61 @@ fn keyswitch_real_analog_strings_does_not_invent_preset_browser_articulations() 
         "preset browser entries and zero-sized auxiliary controls must not become articulation rows"
     );
 }
+
+#[test]
+fn w10_scripted_uvi_strips_positions_and_callback_paint_authored_pixels() {
+    let dir = tempfile::tempdir().unwrap();
+    let colours = [[255,0,0,255],[0,255,0,255],[0,0,255,255],[255,255,0,255]];
+    for (name,width,height,horizontal) in [("h.png",32,8,true),("v.png",8,32,false)] {
+        let data: Vec<u8> = (0..height).flat_map(|y| (0..width).flat_map(move |x| colours[if horizontal {x/8} else {y/8}])).collect();
+        moose::core::screenshot::save_png(&dir.path().join(name),&data,width as u32,height as u32);
+    }
+    let xml = r#"<UVI4><Program><EventProcessors><ScriptProcessor><script><![CDATA[
+      require('uvi.ChordRec')
+      setSize(320,200); setHeight(160)
+      local p=Panel{'Root',bounds={10,20,300,120}}
+      local h=p:Knob{'Horizontal',0,0,1,bounds={20,0,32,32},showLabel=false,showValue=false}
+      h:setStripImage('h.png',4,true)
+      local v=p:Slider{'Vertical',0,0,1,false,true,bounds={80,0,32,32},showLabel=false,showValue=false}
+      v:setStripImage('v.png',4,false)
+      local label=p:Label{'State',bounds={130,0,150,32},text='Ready'}
+      local button=p:Button{'Fire',bounds={20,80,90,25}}
+      button.changed=function()
+        local root,kind=ChordRec.chordKind({60,64,67})
+        label.text=kind; h:setValue(1,false); v:setValue(1,false); setHeight(160)
+      end
+    ]]></script></ScriptProcessor></EventProcessors></Program></UVI4>"#;
+    let patch = dir.path().join("preset.uvip");
+    std::fs::write(&patch,xml).unwrap();
+    let mut host = sampler_uvi::script::ScriptHost::new(xml,(),Default::default()).unwrap();
+    assert!(host.findings().is_empty(),"{:?}",host.findings());
+    let mut assets = ir_view::Assets::default();
+    let mut values = ir_view::Values::default();
+    for (after,name,expected) in [(false,"uvi-scripted-before.png",colours[0]),(true,"uvi-scripted-after.png",colours[3])] {
+        if after { host.set_control(sampler_uvi::script::control_id(5,0),1.).unwrap(); }
+        let face=host.interface();
+        assert_eq!(face.page_rect(ir::WidgetRef(1)),ir::Rect::new(30,20,32,32));
+        assert_eq!(face.page_rect(ir::WidgetRef(2)),ir::Rect::new(90,20,32,32));
+        assert_eq!((face.pages[0].size.width,face.pages[0].size.height),(320,160));
+        for (control,value) in host.control_values() { values.insert(control,value); }
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+        loop {
+            assets.prepare(&patch,&face,ir::PageRef(0),ir::Presentation::Bitmap,1.,&values);
+            if assets.pending()==0 { break; }
+            assert!(std::time::Instant::now()<deadline,"authored asset preparation must finish");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let ui=settle(320.,160.,|ui| ir_view::view(ui,&face,ir::PageRef(0),&assets,ir::Presentation::Bitmap,1.,&mut values));
+        let data=pixels(&ui,320,160);
+        for x in [46,106] {
+            let at=(36*320+x)*4;
+            assert_eq!(&data[at..at+4],&expected,"{name}: authored strip frame at x={x}");
+        }
+        if after { assert_eq!(face.widgets[3].text,"M"); }
+        #[cfg(feature="shots")]
+        if let Some(out)=std::env::var_os("KONTRA_UVI_FIXTURE_SHOTS").map(std::path::PathBuf::from) {
+            std::fs::create_dir_all(&out).unwrap();
+            moose::core::screenshot::save_png(&out.join(name),&data,320,160);
+        }
+    }
+}
