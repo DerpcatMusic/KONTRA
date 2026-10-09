@@ -147,6 +147,24 @@ fn unsupported_uvi_banks_stay_visible_when_no_library_opens() {
 }
 
 #[test]
+fn native_uvi_content_failures_stay_visible_in_the_empty_catalog() {
+    let p = catalog();
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        let mut shelf = crate::library::Shelf::new(Vec::new());
+        view.files = Arc::new(Vec::new());
+        shelf.bank_issues.push(crate::library::BankIssue {
+            unsupported: false, message: "invalid PNG checksum".into(),
+            locations: vec![PathBuf::from("/virtual/UVI/Corrupt.ufs")],
+        });
+        view.shelf = Arc::new(shelf);
+    }
+    let mut h = Harness::new(&p, 900., 600.);
+    h.press("bank-uvi");
+    assert!(h.ui.scene().unwrap().surface("uvi-bank-problem").is_some());
+}
+
+#[test]
 fn format_tabs_retain_independent_preset_scroll_positions() {
     let p = catalog();
     {
