@@ -77,5 +77,24 @@ dependencies; neither replaces the full-editor UI witnesses above. Finish with
 root CI no-run before pushing. No new full-suite, native-host or timed-performance
 claim is made by this handoff.
 
-NEXT: live Effects adapter after W11 READY; MIDI-learn cancellation and exclusive
-ownership regressions remain the next independent W4 slice.
+## MIDI-learn follow-up READY
+
+The next independent W4 slice cancels MIDI learn when its editor owner retires:
+Escape wins an already observed note, Clear cancels, editor close disarms,
+leaving Articulations cancels, and source replacement or either loader/view
+generation change retires the draft. Beginning another edit replaces the prior
+owner across parts. These are transient UI ownership checks; source IR, overlay
+schema and engine routing are unchanged.
+
+Eight behavioral RED witnesses preceded their fixes. The final queued run passed
+**23 keyswitch checks**, including all eight regressions and the real Afflatus
+remap/clear/keep probe, and **17 Mapping checks**, including the real Analog and
+2 Horns probes. Root `cargo test --profile ci --no-run` also passed. Final logs are
+`learn-release-green.log`, `mapping-release-green.log` and
+`root-release-no-run.log` in the continuation receipt directory above. The first
+RED attempt had a fixture compile error; `learn-red-corrected.log` is the actual
+six-case RED, followed by the Clear RED in `learn-green.log` and the loader epoch
+RED in `learn-epoch-red.log`.
+
+NEXT: MIDI-learn port/channel and conflict-cancel regressions; live Effects
+adapter after W11's final validated READY.
