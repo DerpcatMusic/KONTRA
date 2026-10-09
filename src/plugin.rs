@@ -418,6 +418,7 @@ static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
 /// prepared Arc vector and never locks the growable registry.
 #[derive(Default)]
 pub(crate) struct PartShared {
+    effect_controls: Mutex<effect_controls::EffectControls>,
     pub(crate) generation: AtomicU64,
     pub(crate) scalar_revision: AtomicU64,
     pub(crate) native_revision: AtomicU64,
@@ -687,6 +688,7 @@ pub struct Shared {
 
 #[derive(Default, Clone)]
 pub(crate) struct PartView {
+    pub(crate) effects: Arc<[crate::sound::effect_controls::EffectSnapshot]>,
     pub(crate) program: u32,
     pub(crate) generation: u64,
     pub(crate) ui_revision: u64,
@@ -1725,6 +1727,7 @@ fn load_part(params: &SamplerParams, slot: usize, prepared: Option<crate::sound:
             v.interfaces = loaded.interfaces.into();
             if let Some(part) = loaded.part.as_mut() {
                 part.epoch = generation;
+                v.effects = atoms.publish_effect_controls(generation, part, loaded.instrument.as_deref());
                 *atoms.engine_bindings.lock_unpoisoned() = part.engine_bindings.clone();
                 if !part.waveform_sources.is_empty() && let Some(ingress) = &part.ui_controls {
                     let wake = Arc::downgrade(&atoms);
@@ -1735,6 +1738,8 @@ fn load_part(params: &SamplerParams, slot: usize, prepared: Option<crate::sound:
                     }).ok();
                 }
                 *atoms.ingress.lock_unpoisoned() = part.ui_controls.take();
+            } else {
+                *atoms.effect_controls.lock_unpoisoned() = effect_controls::EffectControls::default();
             }
             let nodes = v.tree.as_ref().map_or(1, |t| t.nodes.len());
             *atoms.node_meters.lock_unpoisoned() = (0..nodes).map(|_| Default::default()).collect();
@@ -2127,6 +2132,7 @@ impl PluginLogic for Sampler {
                 atoms.articulation.store(playing, Ordering::Relaxed);
                 if s.core.epoch(slot) == atoms.generation.load(Ordering::Acquire) {
                     atoms.refresh_controls(|id| s.core.control_value(slot, id));
+                    atoms.refresh_effect_controls(|address| s.core.effect_value(slot, address));
                     atoms.refresh_widget_meters(s.core.epoch(slot), |address| s.core.widget_meter(slot, address));
                 }
             }
@@ -2304,6 +2310,7 @@ impl PluginLogic for Sampler {
             let revision = s.core.ui_revision(slot);
             if atoms.generation.load(Ordering::Acquire) == epoch && revision != atoms.native_revision.load(Ordering::Relaxed) {
                 atoms.refresh_controls(|id| s.core.control_value(slot, id));
+                atoms.refresh_effect_controls(|address| s.core.effect_value(slot, address));
                 atoms.native_revision.store(revision, Ordering::Relaxed);
             }
             s.core.take_effects(slot, &mut |instance, effect| shared.effects.push((slot, epoch, instance, *effect)).is_ok());
@@ -2769,6 +2776,7 @@ mod uvi_save_tests;
 mod pressed_tests;
 #[cfg(test)]
 mod persistence_tests;
+mod effect_controls;
 
 #[cfg(test)]
 mod settings_parity_tests {
