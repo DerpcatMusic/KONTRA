@@ -91,4 +91,30 @@ There is no KSP engine-parameter service change.
 
 Bulk rewrites remain proportional to the number of changed values. This slice
 makes no claim that an arbitrary million-value restore meets an audio deadline.
-The sparse candidate's real-library onset results are pending.
+The frozen sparse candidate `323c5ccd` is QUIET for both cells:
+
+| Preset | Original installed-to-sound | Sparse installed-to-sound | Capture before sound | CPU editor RSS |
+|---|---:|---:|---:|---:|
+| Areia Full Ensemble | 517.556 ms | 11.648 ms | 0.332 ms | 556.473 MiB |
+| Dolce Violin 1 | 357.407 ms | 6.574 ms | 0.132 ms | 451.496 MiB |
+
+Each changed-block capture is approximately 0.06–0.10 ms. Both rows report zero
+runtime underruns, nonfinite frames and script overruns. Frozen v1 CPU editor RSS
+is about 916.7/540.4 MiB. The existing 8,192-instruction block allowance still
+spreads the note callback across six/three blocks, and the first streaming pages
+add one or more readiness horizons. Frozen v1's post-install onset is 1.739/1.721
+ms, so full onset parity remains open. These are two cells in the CPU editor
+harness, not live CLAP windows or an all-14 candidate gate. Numeric receipt:
+`SPARSE-RESULTS.json`; consolidated handoff: `READY-RECEIPT.md`.
+
+
+Scanner42 is complete: 42 positions, 39 executed and three frozen-v1 UVI cells
+unavailable under the third-party-opener restriction. The frozen scanner artifact
+is product `32179b75`, before the three onset fixes. Its before source is
+`f0c00ea2` (product `6a1e031c`). `SCANNER42-RECEIPT.{json,md}` contains per-preset
+load/peak-RSS deltas; only successful QUIET pairs are scored. Artifact and driver
+digests were rechecked. No UVI reader/opener or quiet-owner override was used.
+The retained all-14 stage receipt remains historical; it is not candidate parity.
+
+NEXT: remaining callback preemption/first streaming window and warm persistence
+preparation, including the wide initial state buffer and per-value schema hashing.
