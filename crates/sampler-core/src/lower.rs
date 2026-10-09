@@ -605,6 +605,16 @@ pub fn lower_with(
     plan = plan
         .with_engine_parameters(engine_bindings, source_engine_lookups(&instrument.source_indices))
         .map_err(core(Stage::Controls, "source engine lookups"))?;
+    plan = plan
+        .with_authored_engine_parameters(
+            instrument.source_indices.engine_values.iter().map(|value| {
+                (crate::EngineParameterAddress {
+                    parameter: value.parameter, group: value.group,
+                    slot: value.slot, generic: value.generic,
+                }, value.value)
+            }).collect(),
+        )
+        .map_err(core(Stage::Controls, "authored source engine values"))?;
     plan = lowering.parameter_registry(plan)?;
     plan = lowering.modulation(plan)?;
     if instrument.behaviors.is_empty() {

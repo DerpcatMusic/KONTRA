@@ -3,6 +3,45 @@ use sampler_core::lower::{Feature, LowerError, lower};
 use sampler_core::{Input, Limits, Pcm, Protocol, Runtime};
 use sampler_ir as ir;
 
+#[test]
+fn authored_inactive_envelope_values_remain_readable_without_a_dsp_write_owner() {
+    use sampler_core::{EngineParameterAddress, Error, engine_parameter_id};
+    let address = EngineParameterAddress { parameter: engine_parameter_id("ENGINE_PAR_ATTACK").unwrap(), group: 7, slot: 9, generic: -1 };
+    let mut instrument = ir::Instrument::default();
+    instrument.source_indices.engine_values.push(ir::SourceEngineValue {
+        parameter: address.parameter, group: address.group, slot: address.slot, generic: address.generic, value: 234567,
+    });
+    let plan = lower(&instrument, 48000, vec![], no_behaviors).unwrap();
+    assert!(plan.engine_parameter_bindings().is_empty());
+    let limits = Limits::for_plan(&plan, 4, 0);
+    let mut runtime = Runtime::new(plan, limits).unwrap();
+    support::without_heap(|| {
+        assert_eq!(runtime.engine_parameter(address), Ok(234567), "authored source value was dropped with its inactive DSP owner");
+        assert_eq!(runtime.set_engine_parameter(address, 765432), Err(Error::InvalidInput));
+        assert_eq!(runtime.engine_parameter(address), Ok(234567));
+        assert_eq!(runtime.engine_parameter(EngineParameterAddress { slot: 8, ..address }), Err(Error::InvalidInput));
+    });
+}
+
+#[test]
+fn live_envelope_owner_takes_precedence_over_authored_source_defaults() {
+    use sampler_core::{EngineParameterAddress, Envelope, engine_parameter_id};
+    let address = EngineParameterAddress { parameter: engine_parameter_id("ENGINE_PAR_ATTACK").unwrap(), group: 7, slot: 9, generic: -1 };
+    let mut instrument = ir::Instrument::default();
+    instrument.groups.push(ir::Group::default());
+    instrument.source_indices.engine_values.push(ir::SourceEngineValue {
+        parameter: address.parameter, group: address.group, slot: address.slot, generic: address.generic, value: 234567,
+    });
+    let plan = lower(&instrument, 48000, vec![], no_behaviors).unwrap()
+        .with_group_envelope_parameters(0, 7, 9, Envelope::default()).unwrap();
+    let limits = Limits::for_plan(&plan, 4, 0);
+    let mut runtime = Runtime::new(plan, limits).unwrap();
+    support::without_heap(|| {
+        runtime.set_engine_parameter(address, 765432).unwrap();
+        assert_eq!(runtime.engine_parameter(address), Ok(765432));
+    });
+}
+
 fn input(key: u8) -> Input {
     Input {
         protocol: Protocol::Native,
