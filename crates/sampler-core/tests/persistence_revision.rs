@@ -14,6 +14,10 @@ fn persistence_revision_tracks_fast_and_general_writes_but_not_reads_without_hea
                 index: 1,
                 local: 0,
             },
+            Instruction::Op(Op::TextIndex {
+                text: TextRef::Cell(0),
+                local: 0,
+            }),
         ],
         vec![
             Instruction::SetLocal {
