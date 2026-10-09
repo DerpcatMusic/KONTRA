@@ -84,6 +84,37 @@ fn persistence_waits_advance_the_clock_without_static_budget_warning_or_prefix_r
 }
 
 #[test]
+fn persistence_async_wait_suspends_until_its_live_job_completes() {
+    let script = compile(
+        "on init declare $calls declare $done declare $job end on
+        on persistence_changed inc($calls) $job:=mf_reset() wait_async($job) inc($done) end on",
+    );
+    assert_eq!(
+        script.model().persistence_completion,
+        PersistenceCompletion::Scheduled
+    );
+    let mut rt = runtime(script);
+    let plan = rt.active_plan();
+    support::without_heap(|| {
+        let mut job = None;
+        rt.drain_effects(|effect| {
+            assert_eq!(effect.args[0], 2);
+            assert!(job.replace(effect.args[1] as i32).is_none());
+            true
+        });
+        assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 0), Ok(1));
+        assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 1), Ok(0));
+        let mut output = MidiCompletion::empty(job.expect("live reset"), ScriptInstanceId(0));
+        rt.complete_midi(plan, &mut output).unwrap();
+        assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 1), Ok(1));
+        rt.flush_behaviors(|_, _, outcome| {
+            assert_eq!(outcome, Outcome::Finished);
+            true
+        });
+    });
+}
+
+#[test]
 fn init_async_completion_that_waits_runs_on_the_live_scheduler() {
     let script = compile(
         "on init declare $calls declare $done declare $id declare $status declare $empty
