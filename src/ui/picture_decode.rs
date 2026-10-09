@@ -168,6 +168,32 @@ pub(super) fn png(
 mod tests {
     use super::*;
     #[test]
+    fn shrinking_authored_frames_matches_v1_fractional_coverage_pixels() {
+        // v1 0cb7a8a0:src/artwork.rs fractional coverage and transparent-edge oracle.
+        for (width, pixels, target, expected) in [
+            (8, (0..8).flat_map(|x| [if x % 2 == 0 { 0 } else { 255 }, if x % 2 == 0 { 0 } else { 255 }, if x % 2 == 0 { 0 } else { 255 }, 255]).collect::<Vec<_>>(), 7,
+                [31, 191, 95, 127, 159, 63, 223].into_iter().flat_map(|c| [c, c, c, 255]).collect::<Vec<_>>()),
+            (2, vec![255, 80, 20, 255, 0, 0, 0, 0], 1, vec![255, 80, 20, 127]),
+        ] {
+            for vertical in [false, true] {
+                let (w,h) = if vertical {(1,width)} else {(width,1)};
+                let to = if vertical {[1,target]} else {[target,1]};
+                let image = Image::rgba(w,h,pixels.clone()).unwrap();
+                let mut bytes = Vec::new();
+                {
+                    let mut e=png::Encoder::new(&mut bytes,w,h);
+                    e.set_color(png::ColorType::Rgba);
+                    e.set_depth(png::BitDepth::Eight);
+                    e.write_header().unwrap().write_image_data(&pixels).unwrap();
+                }
+                for shrunk in [selected(image,Default::default(),0,to,None,||false).unwrap(),
+                    png(&bytes,Default::default(),0,to,None,||false).unwrap()] {
+                    assert_eq!(shrunk.rgba.as_ref(), expected, "v1 authored picture coverage");
+                }
+            }
+        }
+    }
+    #[test]
     fn editor_memory_webp_rgb_expansion_stays_below_nine_bytes_per_pixel() {
         let side = 512;
         let pixels = side as usize * side as usize;
