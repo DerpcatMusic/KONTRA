@@ -263,11 +263,7 @@ fn schema(
 impl Persistence {
     #[cfg(all(test, feature = "shots"))]
     pub(super) fn addresses(&self) -> Vec<Address> {
-        self.state
-            .values
-            .iter()
-            .map(|entry| entry.address)
-            .collect()
+        self.snapshot.addresses.to_vec()
     }
     #[cfg(test)]
     pub(super) fn values_len(&self) -> usize {
@@ -607,19 +603,17 @@ mod tests {
         let (mut current, views, owner) = make(true);
         let recalled = Persistence::new(&mut current, &views, &saved)
             .expect("adding DSP owners must preserve the exact previous v2 script save");
+        let restored: Saved = serde_json::from_str(&recalled.snapshot.save()).unwrap();
         assert!(
-            recalled
-                .state
+            restored
                 .values
                 .iter()
-                .any(|e| e.value == Value::Cell(837))
+                .any(|value| matches!(value, SavedValue::Cell(837)))
         );
         assert!(
-            recalled
-                .state
-                .values
-                .iter()
-                .any(|e| e.value == Value::Text(sampler_core::Text::new("legacy saved text")))
+            restored.values.iter().any(
+                |value| matches!(value, SavedValue::Text(text) if text == "legacy saved text")
+            )
         );
         assert_eq!(
             current.control_base_value(current.active_plan(), owner),
