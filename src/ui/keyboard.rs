@@ -472,12 +472,8 @@ fn part_looks(cx: &mut Cx, slot: usize) -> [Look; 128] {
             Some(19 | 20) => looks[key] = Look::Mapped(color), // WHITE/BLACK retain piano faces.
             _ => {
                 let tint = authored.color.and_then(ksp_key_color).unwrap_or(color);
-                if authored.control {
+                if authored.control || authored.color.and_then(ksp_key_color).is_some() {
                     looks[key] = Look::Switch(tint, false, false);
-                } else if authored.color.and_then(ksp_key_color).is_some()
-                    && matches!(looks[key], Look::Mapped(_))
-                {
-                    looks[key] = Look::Mapped(tint);
                 }
             }
         }
