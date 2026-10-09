@@ -140,10 +140,9 @@ pub fn handle_request<C: ClientCore>(
             input_context_id,
             preedit_string,
         } => {
-            let preedit_string =
-                xim_ctext::compound_text_to_utf8(&preedit_string).expect("Encoding error");
-            handler.handle_reset_ic(client, input_method_id, input_context_id, &preedit_string);
-            Ok(())
+            let preedit_string = xim_ctext::compound_text_to_utf8(&preedit_string)
+                .map_err(|_| ClientError::InvalidReply)?;
+            handler.handle_reset_ic(client, input_method_id, input_context_id, &preedit_string)
         }
         Request::Error { code, detail, .. } => Err(ClientError::XimError(code, detail)),
         Request::ForwardEvent {
@@ -202,7 +201,8 @@ pub fn handle_request<C: ClientCore>(
                     client,
                     input_method_id,
                     input_context_id,
-                    &xim_ctext::compound_text_to_utf8(&commited).expect("Encoding Error"),
+                    &xim_ctext::compound_text_to_utf8(&commited)
+                        .map_err(|_| ClientError::InvalidReply)?,
                 )?;
 
                 if syncronous {
@@ -253,8 +253,8 @@ pub fn handle_request<C: ClientCore>(
             status,
             feedbacks,
         } => {
-            let preedit_string =
-                xim_ctext::compound_text_to_utf8(&preedit_string).expect("Encoding Error");
+            let preedit_string = xim_ctext::compound_text_to_utf8(&preedit_string)
+                .map_err(|_| ClientError::InvalidReply)?;
             handler.handle_preedit_draw(
                 client,
                 input_method_id,
@@ -690,6 +690,53 @@ mod mui_tests {
             Ok(())
         }
     }
+    #[test]
+    fn invalid_compound_text_returns_an_error_without_committing_or_acknowledging() {
+        let mut client = TestClient::default();
+        let mut handler = Handler::default();
+        let result = handle_request(
+            &mut client,
+            &mut handler,
+            Request::Commit {
+                input_method_id: 3,
+                input_context_id: 7,
+                data: CommitData::Chars {
+                    commited: vec![0x1b, 0x25, 0x47, 0xff],
+                    syncronous: true,
+                },
+            },
+        );
+        assert!(matches!(result, Err(ClientError::InvalidReply)));
+        assert!(handler.commits.is_empty());
+        assert!(client.requests.is_empty());
+    }
+
+    #[test]
+    fn reset_handler_errors_are_propagated() {
+        struct RejectReset;
+        impl ClientHandler<TestClient> for RejectReset {
+            fn handle_reset_ic(
+                &mut self,
+                _: &mut TestClient,
+                _: u16,
+                _: u16,
+                _: &str,
+            ) -> Result<(), ClientError> {
+                Err(ClientError::UnsupportedTransport)
+            }
+        }
+        let result = handle_request(
+            &mut TestClient::default(),
+            &mut RejectReset,
+            Request::ResetIcReply {
+                input_method_id: 3,
+                input_context_id: 7,
+                preedit_string: b"a".to_vec(),
+            },
+        );
+        assert!(matches!(result, Err(ClientError::UnsupportedTransport)));
+    }
+
     #[test]
     fn both_commit_delivers_text_once_and_completes_sync_request() {
         let mut client = TestClient::default();

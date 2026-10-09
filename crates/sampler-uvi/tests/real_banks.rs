@@ -139,7 +139,10 @@ fn bartok_plays_one_oscillator_through_its_script() {
         .find(|p| p.trim_start_matches('/') == PROGRAMS[3].0)
         .unwrap();
     let (peak, report) = scripted_peak(&bank, &member, 60);
-    eprintln!("Bartok scripted peak {peak}; {} script findings", report.len());
+    eprintln!(
+        "Bartok scripted peak {peak}; {} script findings",
+        report.len()
+    );
     for line in &report {
         eprintln!("  {line}");
     }
@@ -159,6 +162,9 @@ fn vwinds_sounds_through_its_script() {
             .unwrap();
     let member = bank.programs().into_iter().next().unwrap();
     let (peak, report) = scripted_peak(&bank, &member, 60);
-    eprintln!("VWinds scripted peak {peak}; {} script findings", report.len());
+    eprintln!(
+        "VWinds scripted peak {peak}; {} script findings",
+        report.len()
+    );
     assert!(peak > 1e-3, "silent: {peak}");
 }

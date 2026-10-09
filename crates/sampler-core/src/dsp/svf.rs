@@ -57,17 +57,84 @@ impl StateVariableFilter {
                 }
             }
         }
-        Ok(PreparedFilter {
+        Ok(PreparedFilter::StateVariable(PreparedSvf {
             mode: self.mode,
             rate: f64::from(rate),
             cutoff: self.cutoff_hz.compile(bindings),
             q: self.q.compile(bindings),
+        }))
+    }
+}
+
+/// Summed-part Tone adapter for the shared one-pole, with caller-owned histories.
+pub struct OutputLowPass {
+    cache: FilterCache,
+    rate: u32,
+}
+impl OutputLowPass {
+    pub fn new(rate: u32) -> Result<Self, Error> {
+        let filter = StateVariableFilter {
+            mode: SvfMode::OnePoleLowPass,
+            cutoff_hz: Parameter::Constant(20_000f64.min(f64::from(rate) * 0.45)),
+            q: Parameter::Constant(1.),
+        }
+        .compile(rate, &mut Vec::new())?;
+        Ok(Self {
+            cache: FilterCache::new(filter),
+            rate,
         })
+    }
+
+    /// v1 Player::output: dry bypass tracks the last sample before filter enable.
+    pub fn process(
+        &mut self,
+        frames: &mut [crate::Frame],
+        state: &mut [[f64; 2]; 2],
+        cutoff: f64,
+        at: u64,
+    ) -> Result<(), Error> {
+        if !(20.0..=20_000.).contains(&cutoff) {
+            return Err(Error::InvalidInput);
+        }
+        if cutoff >= 20_000. {
+            if let Some(last) = frames.last() {
+                *state = [last.map(f64::from), [0.; 2]];
+            }
+            return Ok(());
+        }
+        self.cache.filter.cutoff =
+            PreparedParameter::Constant(cutoff.min(f64::from(self.rate) * 0.45));
+        for (chunk, frames) in frames.chunks_mut(BLOCK).enumerate() {
+            let mut block = [[0.; BLOCK]; 2];
+            for (n, frame) in frames.iter().enumerate() {
+                block[0][n] = f64::from(frame[0]);
+                block[1][n] = f64::from(frame[1]);
+            }
+            self.cache.process(
+                state,
+                &mut block,
+                frames.len(),
+                &[],
+                at + (chunk * BLOCK) as u64,
+                None,
+            );
+            for (n, frame) in frames.iter_mut().enumerate() {
+                *frame = [block[0][n] as f32, block[1][n] as f32];
+            }
+        }
+        Ok(())
     }
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct PreparedFilter {
+pub(crate) enum PreparedFilter {
+    StateVariable(PreparedSvf),
+    /// Addressed normalized knob deltas; no SVF coefficient cache.
+    NativeControl,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct PreparedSvf {
     mode: SvfMode,
     rate: f64,
     cutoff: PreparedParameter,
@@ -75,8 +142,14 @@ pub(crate) struct PreparedFilter {
 }
 
 impl PreparedFilter {
+    pub(crate) fn trace_parameters(&self) -> [(&'static str, PreparedParameter); 2] {
+        let Self::StateVariable(f) = self else {
+            unreachable!("native filter traces its own lanes")
+        };
+        [("cutoff_hz", f.cutoff), ("q", f.q)]
+    }
     pub fn requires_expression(self) -> bool {
-        self.cutoff.requires_expression() || self.q.requires_expression()
+        matches!(self, Self::StateVariable(f) if f.cutoff.requires_expression() || f.q.requires_expression())
     }
 }
 
@@ -115,7 +188,7 @@ impl Coefficients {
 /// calculate nothing. The window is keyed by its absolute start frame; render
 /// segmentation never presents more than [`BLOCK`] frames from one start.
 pub(crate) struct FilterCache {
-    filter: PreparedFilter,
+    filter: PreparedSvf,
     owner: Option<crate::ExpressionId>,
     start: Option<u64>,
     filled: usize,
@@ -127,6 +200,9 @@ pub(crate) struct FilterCache {
 }
 impl FilterCache {
     pub fn new(filter: PreparedFilter) -> Self {
+        let PreparedFilter::StateVariable(filter) = filter else {
+            unreachable!("native filter has no SVF cache")
+        };
         Self {
             filter,
             owner: None,
@@ -212,6 +288,28 @@ impl FilterCache {
 
 /// `y += (x - y) b` per channel in `state[0]`; the band-state row stays zero.
 #[inline(always)]
+pub(super) fn one_pole_sample(input: f64, state: f64, b: f64, high: bool) -> (f64, f64) {
+    let next = state + (input - state) * b;
+    (if high { input - next } else { next }, next)
+}
+
+#[inline(always)]
+pub(super) fn sample(
+    x: f64,
+    [ic1, ic2]: [f64; 2],
+    [a1, a2, a3, km]: [f64; 4],
+    [m0, m2]: [f64; 2],
+) -> (f64, [f64; 2]) {
+    let v3 = x - ic2;
+    let band = a1 * ic1 + a2 * v3;
+    let low = ic2 + a2 * ic1 + a3 * v3;
+    (
+        m0 * x + km * band + m2 * low,
+        [2. * band - ic1, 2. * low - ic2],
+    )
+}
+
+#[inline(always)]
 fn one_pole(
     state: &mut [[f64; 2]; 2],
     block: &mut Planar,
@@ -223,9 +321,8 @@ fn one_pole(
     let [left, right] = block;
     for (i, (l, r)) in left[..len].iter_mut().zip(&mut right[..len]).enumerate() {
         let b = b(i);
-        yl += (*l - yl) * b;
-        yr += (*r - yr) * b;
-        (*l, *r) = if high { (*l - yl, *r - yr) } else { (yl, yr) };
+        (*l, yl) = one_pole_sample(*l, yl, b, high);
+        (*r, yr) = one_pole_sample(*r, yr, b, high);
     }
     state[0] = [yl, yr].map(flush);
 }
@@ -244,13 +341,14 @@ fn run(
         let c = coefficients(i);
         let x = [*l, *r];
         let y: [f64; 2] = std::array::from_fn(|ch| {
-            let (ic1, ic2) = (s0[ch], s1[ch]);
-            let v3 = x[ch] - ic2;
-            let band = c.a1 * ic1 + c.a2 * v3;
-            let low = ic2 + c.a2 * ic1 + c.a3 * v3;
-            s0[ch] = 2. * band - ic1;
-            s1[ch] = 2. * low - ic2;
-            m0 * x[ch] + (mk * c.k) * band + m2 * low
+            let (y, next) = sample(
+                x[ch],
+                [s0[ch], s1[ch]],
+                [c.a1, c.a2, c.a3, mk * c.k],
+                [m0, m2],
+            );
+            (s0[ch], s1[ch]) = (next[0], next[1]);
+            y
         });
         (*l, *r) = (y[0], y[1]);
     }
@@ -287,6 +385,7 @@ impl SvfMode {
 enum Scope {
     Shared(usize),
     Expression(usize),
+    NativeControl,
 }
 
 /// Prepared caches, indexed by the actual owner rather than MIDI channel or key.
@@ -298,7 +397,8 @@ pub(crate) struct FilterBank {
     /// Cutoff and Q factors of the voice being rendered (per-voice modulation).
     /// Set around one voice's render; 1.0 uses the cached shared coefficients.
     pub modulation: [f64; 2],
-    addressed_modulation: Box<[[f64; 2]]>,
+    addressed_modulation: Box<[[f64; 4]]>,
+    modulation_program: Option<u32>,
 }
 impl FilterBank {
     pub fn new(filters: &[PreparedFilter], expressions: usize) -> Result<Self, Error> {
@@ -306,6 +406,10 @@ impl FilterBank {
         let mut shared = Vec::new();
         let mut per_expression = Vec::new();
         for &filter in filters {
+            if matches!(filter, PreparedFilter::NativeControl) {
+                scopes.push(Scope::NativeControl);
+                continue;
+            }
             scopes.push(if filter.requires_expression() {
                 let index = per_expression.len();
                 per_expression.push(filter);
@@ -331,7 +435,17 @@ impl FilterBank {
             expressions: caches.into_boxed_slice(),
             stride,
             modulation: [1.0; 2],
-            addressed_modulation: vec![[1.0; 2]; filters.len()].into_boxed_slice(),
+            modulation_program: None,
+            addressed_modulation: filters
+                .iter()
+                .map(|f| {
+                    if matches!(f, PreparedFilter::NativeControl) {
+                        [0.; 4]
+                    } else {
+                        [1., 1., 0., 0.]
+                    }
+                })
+                .collect(),
         })
     }
 }
@@ -358,7 +472,17 @@ impl FilterBank {
         state: &crate::voice_mod::VoiceModState,
         voice: usize,
     ) {
-        state.fill_filter_factors(modulation, voice, &mut self.addressed_modulation);
+        state.fill_filter_factors(
+            modulation,
+            voice,
+            &mut self.addressed_modulation,
+            &mut self.modulation_program,
+            |i| matches!(self.scopes[i], Scope::NativeControl),
+        );
+    }
+
+    pub(crate) fn native_knobs(&self, index: usize) -> [f64; 4] {
+        self.addressed_modulation[index]
     }
     /// Fill `index`'s coefficients for one voice's block; see [`FilterContext::process`].
     pub(super) fn prepare(
@@ -370,6 +494,7 @@ impl FilterBank {
         expression: Option<(crate::ExpressionId, crate::Expression)>,
     ) -> CacheRef {
         let cache = match self.scopes[index] {
+            Scope::NativeControl => unreachable!("native filter prepares its own coefficients"),
             Scope::Shared(index) => CacheRef::Shared(index),
             Scope::Expression(index) => {
                 let (id, _) = expression.expect("prepared voice-scoped filter");
@@ -410,6 +535,7 @@ impl FilterContext<'_> {
         at: u64,
     ) {
         let cache = match self.bank.scopes[index] {
+            Scope::NativeControl => unreachable!("native filter processes its own coefficients"),
             Scope::Shared(index) => &mut self.bank.shared[index],
             Scope::Expression(index) => {
                 let (id, _) = self.expression.expect("prepared voice-scoped filter");
@@ -441,7 +567,14 @@ impl FilterContext<'_> {
             }
             return;
         }
-        cache.process(state, block, len, parameters, at, expression);
+        let filter = cache.filter;
+        if filter.cutoff.projected(parameters) || filter.q.projected(parameters) {
+            // Voice offsets must neither reuse nor overwrite a sibling's coefficients.
+            let mut projected = FilterCache::new(PreparedFilter::StateVariable(filter));
+            projected.process(state, block, len, parameters, at, expression);
+        } else {
+            cache.process(state, block, len, parameters, at, expression);
+        }
     }
 }
 

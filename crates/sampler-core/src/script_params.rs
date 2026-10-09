@@ -317,6 +317,14 @@ impl EngineLayers {
             })
     }
 
+    /// Script group gain can live on a bus instead of each voice. Include that
+    /// zero in v1's audible-voice predicate without counting post-FX signal.
+    pub fn fader_muted(&self, group: Option<u32>) -> bool {
+        group
+            .and_then(|g| self.fader(g as usize))
+            .is_some_and(|(_, gain)| gain as f32 == 0.0)
+    }
+
     /// The bus fader level (linear) group `group`'s script volume sets, if
     /// its volume lives on a bus fader.
     fn fader(&self, group: usize) -> Option<(usize, f64)> {
@@ -334,6 +342,101 @@ pub(crate) struct NoteParams {
     pub transition: Option<(Layer, u64)>,
     pub fade: Option<Fade>,
     pub mods: ModValues,
+}
+
+const NOTE_PAGE: usize = 128;
+
+/// Control-owned pages keep existing note addresses stable across growth.
+pub(crate) struct NoteParamsPool {
+    pages: Box<[Option<Box<[NoteParams]>>]>,
+    capacity: usize,
+    ceiling: usize,
+}
+
+pub(crate) struct NoteParamsGrowth {
+    from: usize,
+    pub capacity: usize,
+    pages: Box<[Option<Box<[NoteParams]>>]>,
+}
+
+impl NoteParamsGrowth {
+    pub fn build(from: usize, wanted: usize, ceiling: usize) -> Result<Self, Error> {
+        if wanted <= from || wanted > ceiling {
+            return Err(Error::Capacity);
+        }
+        let capacity = wanted
+            .div_ceil(NOTE_PAGE)
+            .saturating_mul(NOTE_PAGE)
+            .min(ceiling);
+        let pages = (from.div_ceil(NOTE_PAGE)..capacity.div_ceil(NOTE_PAGE))
+            .map(|page| {
+                Some(
+                    vec![NoteParams::default(); (ceiling - page * NOTE_PAGE).min(NOTE_PAGE)]
+                        .into_boxed_slice(),
+                )
+            })
+            .collect();
+        Ok(Self {
+            from,
+            capacity,
+            pages,
+        })
+    }
+}
+
+impl NoteParamsPool {
+    pub fn new(ceiling: usize, initial: usize) -> Self {
+        let capacity = initial
+            .div_ceil(NOTE_PAGE)
+            .saturating_mul(NOTE_PAGE)
+            .min(ceiling);
+        let pages = (0..ceiling.div_ceil(NOTE_PAGE))
+            .map(|page| {
+                (page * NOTE_PAGE < capacity).then(|| {
+                    vec![NoteParams::default(); (ceiling - page * NOTE_PAGE).min(NOTE_PAGE)]
+                        .into_boxed_slice()
+                })
+            })
+            .collect();
+        Self {
+            pages,
+            capacity,
+            ceiling,
+        }
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    pub fn adopt(&mut self, growth: &mut NoteParamsGrowth) -> bool {
+        if growth.from != self.capacity || growth.capacity > self.ceiling {
+            return false;
+        }
+        let begin = self.capacity.div_ceil(NOTE_PAGE);
+        for (slot, page) in self.pages[begin..].iter_mut().zip(growth.pages.iter_mut()) {
+            std::mem::swap(slot, page);
+        }
+        self.capacity = growth.capacity;
+        true
+    }
+}
+
+impl std::ops::Index<usize> for NoteParamsPool {
+    type Output = NoteParams;
+    fn index(&self, index: usize) -> &NoteParams {
+        &self.pages[index / NOTE_PAGE]
+            .as_ref()
+            .expect("admitted note page")[index % NOTE_PAGE]
+    }
+}
+
+impl std::ops::IndexMut<usize> for NoteParamsPool {
+    fn index_mut(&mut self, index: usize) -> &mut NoteParams {
+        &mut self.pages[index / NOTE_PAGE]
+            .as_mut()
+            .expect("admitted note page")[index % NOTE_PAGE]
+    }
 }
 
 impl NoteParams {

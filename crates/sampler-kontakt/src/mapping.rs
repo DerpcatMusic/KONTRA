@@ -31,7 +31,7 @@ impl<'a> Group<'a> {
         if record.group.is_some() {
             return Err(object.raw().error(ErrorKind::UnsupportedLayout));
         }
-        if object.version != 0x95 {
+        if !matches!(object.version, 0x95 | 0x96) {
             return Err(object
                 .raw()
                 .error(ErrorKind::UnsupportedVersion(u32::from(object.version))));
@@ -93,7 +93,7 @@ impl<'a> Zone<'a> {
         let group = record
             .group
             .ok_or_else(|| object.raw().error(ErrorKind::UnsupportedLayout))?;
-        if !matches!(object.version, 0x95 | 0x98 | 0x9a) {
+        if !matches!(object.version, 0x95 | 0x98 | 0x99 | 0x9a | 0x9c) {
             return Err(object
                 .raw()
                 .error(ErrorKind::UnsupportedVersion(u32::from(object.version))));
@@ -112,7 +112,7 @@ impl<'a> Zone<'a> {
             gain: r.f32()?,
             pan: r.f32()?,
             tune: r.f32()?,
-            filename_prefix: if object.version == 0x9a {
+            filename_prefix: if object.version >= 0x9a {
                 Some(r.take(6)?)
             } else {
                 None

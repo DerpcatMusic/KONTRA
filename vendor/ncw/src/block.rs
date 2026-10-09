@@ -92,7 +92,9 @@ pub(crate) fn read_block<R: Read>(
             // Unpacked straight into the end of `out`.
             let start = out.len();
             out.resize(start + SAMPLES_PER_BLOCK, 0);
-            let values = (&mut out[start..]).try_into().expect("resized to one block");
+            let values = (&mut out[start..])
+                .try_into()
+                .expect("resized to one block");
             // Positive: delta encoded, each value the difference to the next
             // sample. Negative: bit truncated, raw samples at `bits` bits each.
             let base = (block.bits > 0).then_some(block.base_value);

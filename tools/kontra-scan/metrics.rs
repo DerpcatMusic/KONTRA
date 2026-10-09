@@ -124,7 +124,31 @@ pub fn planned_keyswitch(program: u32) -> Option<Option<u8>> {
     let path = std::env::var_os("KONTRA_SCAN_NOTE_PLAN")?;
     let value: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
     let key = value["programs"][program.to_string()].get("keyswitch")?;
-    Some(if key.is_null() { None } else { Some(u8::try_from(key.as_u64()?).ok()?.min(127)) })
+    Some(if key.is_null() {
+        None
+    } else {
+        Some(u8::try_from(key.as_u64()?).ok()?.min(127))
+    })
+}
+
+/// Explicit held input from the native-intent audition plan; never guess a neighbor.
+pub fn planned_held_key(program: u32) -> Result<Option<u8>, &'static str> {
+    let Some(path) = std::env::var_os("KONTRA_SCAN_NOTE_PLAN") else {
+        return Ok(None);
+    };
+    let bytes = std::fs::read(path).map_err(|_| "invalid-note-plan")?;
+    let value: Value = serde_json::from_slice(&bytes).map_err(|_| "invalid-note-plan")?;
+    held_key(&value["programs"][program.to_string()])
+}
+fn held_key(program: &Value) -> Result<Option<u8>, &'static str> {
+    match program.get("held_key") {
+        None | Some(Value::Null) => Ok(None),
+        Some(key) => key
+            .as_u64()
+            .filter(|key| *key < 128)
+            .map(|key| Some(key as u8))
+            .ok_or("invalid-held-key"),
+    }
 }
 
 pub fn background(rgba: &[u8], colour: Option<[u8; 4]>) -> Value {
@@ -154,9 +178,25 @@ pub fn budget(raw: &str) -> bool {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn held_note_plan_rejects_malformed_midi_instead_of_clamping() {
+        use serde_json::json;
+        assert_eq!(super::held_key(&json!({})), Ok(None));
+        assert_eq!(super::held_key(&json!({"held_key":null})), Ok(None));
+        assert_eq!(super::held_key(&json!({"held_key":61})), Ok(Some(61)));
+        for key in [json!(-1), json!(128), json!(true), json!("61"), json!(61.5)] {
+            assert_eq!(
+                super::held_key(&json!({"held_key":key})),
+                Err("invalid-held-key")
+            );
+        }
+    }
+
+    #[test]
     fn scanner_metrics_skip_source_text_and_detect_uniform_render() {
-        assert_eq!(super::fallback_note(&Default::default()), Some((60,64)));
-        assert_eq!(super::fallback_note(&[60].into()), Some((59,64)));
+        assert_eq!(super::fallback_note(&Default::default()), Some((60, 64)));
+        assert!(!super::nonzero([0., -0., f32::NAN, f32::INFINITY]));
+        assert!(super::nonzero([0., 1e-12]));
+        assert_eq!(super::fallback_note(&[60].into()), Some((59, 64)));
         assert_eq!(super::fallback_note(&(0..=127).collect()), None);
         let c = super::symbols(
             "{ui_knob $CONTROL_PAR_HIDE} \"ui_slider\" declare ui_knob $k\nset_control_par($k,$CONTROL_PAR_HIDE,0)",
@@ -185,14 +225,28 @@ mod tests {
     #[test]
     fn scanner_observes_compiler_and_lua_phases() {
         let mut table = u32::MAX.to_le_bytes().to_vec();
-        table.extend([0;3]);table.extend(0u32.to_le_bytes());
-        table.extend(u32::MAX.to_le_bytes());table.extend(u32::MAX.to_le_bytes());
-        assert_eq!(crate::ui::scan::strict_table(&table,0x50).0,"absent");
-        table.extend(1u32.to_le_bytes());table.extend(2u32.to_le_bytes());table.extend(b"!x");
-        let parsed=crate::ui::scan::strict_table(&table,0x50);
-        assert_eq!(parsed.0,"decoded");assert_eq!(parsed.1.get("!"),Some(&1));
-        table.pop();assert_eq!(crate::ui::scan::strict_table(&table,0x50).0,"malformed");
+        table.extend([0; 3]);
+        table.extend(0u32.to_le_bytes());
+        table.extend(u32::MAX.to_le_bytes());
+        table.extend(u32::MAX.to_le_bytes());
+        assert_eq!(crate::ui::scan::strict_table(&table, 0x50).0, "absent");
+        table.extend(1u32.to_le_bytes());
+        table.extend(2u32.to_le_bytes());
+        table.extend(b"!x");
+        let parsed = crate::ui::scan::strict_table(&table, 0x50);
+        assert_eq!(parsed.0, "decoded");
+        assert_eq!(parsed.1.get("!"), Some(&1));
+        table.pop();
+        assert_eq!(crate::ui::scan::strict_table(&table, 0x50).0, "malformed");
         sampler_ksp::scan::begin();
+        // Full-suite peers also compile scripts into the process-wide capture.
+        sampler_ksp::scan::attempt("scanner-phase-test");
+        let take = || {
+            sampler_ksp::scan::take()
+                .into_iter()
+                .filter(|o| o.attempt == "scanner-phase-test")
+                .collect::<Vec<_>>()
+        };
         sampler_ksp::compile(
             "on init\ndeclare $x := 1\nend on",
             48000,
@@ -200,13 +254,15 @@ mod tests {
             &[],
         )
         .unwrap();
-        let ok = sampler_ksp::scan::take();
+        let ok = take();
+        assert_eq!(ok.len(), 1);
         assert!(ok.iter().any(|o| o.compile_ok && o.init_ok == Some(true)));
         assert!(
             sampler_ksp::compile("this is not KSP", 48000, sampler_ksp::Limits::LIBRARY, &[])
                 .is_err()
         );
-        let failed = sampler_ksp::scan::take();
+        let failed = take();
+        assert_eq!(failed.len(), 1);
         assert!(failed.iter().any(|o| !o.compile_ok && o.init_ok.is_none()));
         sampler_ksp::compile(
             "on init\ndeclare $x\nend on\non persistence_changed\nwhile(1)\nend while\nend on",
@@ -215,7 +271,8 @@ mod tests {
             &[],
         )
         .unwrap();
-        let callback = sampler_ksp::scan::take();
+        let callback = take();
+        assert_eq!(callback.len(), 1);
         assert_eq!(callback[0].init.completion, "completed");
         assert_eq!(callback[0].persistence_changed.completion, "failed");
         assert_eq!(
@@ -227,6 +284,7 @@ mod tests {
                 .category,
             "fuel-budget"
         );
+        sampler_ksp::scan::attempt("standalone");
         let xml = "<UVI4><Program><ScriptProcessor><script><![CDATA[function onInit() error('private init') end function onNote(e) error('private runtime') end]]></script></ScriptProcessor></Program></UVI4>";
         let mut host = sampler_uvi::script::ScriptHost::new(xml, (), Default::default()).unwrap();
         assert_eq!(host.scan_faults().init_count, 1);
@@ -239,4 +297,9 @@ mod tests {
         assert_eq!(host.scan_faults().native_valid_keys, vec![60]);
         assert_eq!(host.scan_faults().native_invalid_keys, vec![40]);
     }
+}
+
+// Onset uses exact finite nonzero output; audible audition retains its separate 1e-5 threshold.
+pub fn nonzero(samples: impl IntoIterator<Item = f32>) -> bool {
+    samples.into_iter().any(|x| x.is_finite() && x != 0.)
 }

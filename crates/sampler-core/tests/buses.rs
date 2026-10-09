@@ -911,31 +911,179 @@ fn voice_send_taps_preserve_amplifier_position_and_sum_before_return_dsp_without
 fn voice_modulation_gain_is_at_the_amplifier_between_send_taps() {
     for block in [1, 7, 64, 129] {
         let prepared = plan(vec![[1.0; 2]; 256], 1)
-            .with_buses(vec![
-                Bus { processors: vec![], sends: vec![send(None, 1.0)], tail_frames: 0 },
-                Bus { processors: vec![], sends: vec![send(None, 1.0)], tail_frames: 0 },
-            ], vec![None]).unwrap()
-            .with_voice_chains(vec![VoiceChain::new(
-                vec![Processor::Gain(2.0)],
-                vec![Processor::Gain(3.0), Processor::Gain(0.0)], 0,
-            ).unwrap().with_taps(vec![
-                VoiceSendTap { position: VoiceSendPosition::BeforeAmplitude(1), bus: 0, gain: Parameter::Constant(1.0), bypass: Parameter::Constant(0.0) },
-                VoiceSendTap { position: VoiceSendPosition::AfterAmplitude(1), bus: 1, gain: Parameter::Constant(1.0), bypass: Parameter::Constant(0.0) },
-            ]).unwrap()], vec![Some(0)]).unwrap()
-            .with_voice_modulation(vec![ModProgram {
-                breakpoints: vec![],
-                sources: vec![ModSource::Envelope(Envelope::new(64, 0, 0, 1.0, 0).unwrap())],
-                routes: vec![ModRoute::new(0, ModTarget::Attenuate, 1.0)],
-                shapes: vec![],
-            }], vec![Some(0)], vec![0]).unwrap();
+            .with_buses(
+                vec![
+                    Bus {
+                        processors: vec![],
+                        sends: vec![send(None, 1.0)],
+                        tail_frames: 0,
+                    },
+                    Bus {
+                        processors: vec![],
+                        sends: vec![send(None, 1.0)],
+                        tail_frames: 0,
+                    },
+                ],
+                vec![None],
+            )
+            .unwrap()
+            .with_voice_chains(
+                vec![
+                    VoiceChain::new(
+                        vec![Processor::Gain(2.0)],
+                        vec![Processor::Gain(3.0), Processor::Gain(0.0)],
+                        0,
+                    )
+                    .unwrap()
+                    .with_taps(vec![
+                        VoiceSendTap {
+                            position: VoiceSendPosition::BeforeAmplitude(1),
+                            bus: 0,
+                            gain: Parameter::Constant(1.0),
+                            bypass: Parameter::Constant(0.0),
+                        },
+                        VoiceSendTap {
+                            position: VoiceSendPosition::AfterAmplitude(1),
+                            bus: 1,
+                            gain: Parameter::Constant(1.0),
+                            bypass: Parameter::Constant(0.0),
+                        },
+                    ])
+                    .unwrap(),
+                ],
+                vec![Some(0)],
+            )
+            .unwrap()
+            .with_voice_modulation(
+                vec![ModProgram {
+                    breakpoints: vec![],
+                    sources: vec![ModSource::Envelope(
+                        Envelope::new(64, 0, 0, 1.0, 0).unwrap(),
+                    )],
+                    routes: vec![ModRoute::new(0, ModTarget::Attenuate, 1.0)],
+                    shapes: vec![],
+                }],
+                vec![Some(0)],
+                vec![0],
+            )
+            .unwrap();
         let mut runtime = Runtime::new(prepared, limits()).unwrap();
         let mut audio = [[0.0; 2]; 128];
         support::without_heap(|| {
             runtime.trigger(input(1), 60, 1.0).unwrap();
-            for chunk in audio.chunks_mut(block) { runtime.render(chunk).unwrap(); }
+            for chunk in audio.chunks_mut(block) {
+                runtime.render(chunk).unwrap();
+            }
         });
         for (i, sample) in audio.into_iter().enumerate() {
             near(sample, [2.0 + 6.0 * ((i + 1) as f32 / 64.0).min(1.0); 2]);
+        }
+    }
+}
+
+#[test]
+fn settled_mix_and_retargeted_ramps_match_the_blend_equation_without_heap() {
+    let ids = [ControlId(400), ControlId(401), ControlId(402)];
+    let range = |control| ControlRange {
+        control,
+        low: 0.,
+        high: 1.,
+        ramp_frames: 8,
+    };
+    for bus in [false, true] {
+        for (voices, block) in [(1, 64), (3, 1), (3, 7), (3, 64)] {
+            let stages = vec![
+                Processor::Mix {
+                    count: 1,
+                    dry: range(ids[0]),
+                    wet: range(ids[1]),
+                    bypass: range(ids[2]),
+                },
+                Processor::Gain(3.),
+            ];
+            let prepared = plan(vec![[0.125, -0.25]; 256], 1)
+                .with_controls(
+                    ids.into_iter()
+                        .zip([0., 1., 0.])
+                        .map(|(id, value)| ControlDefinition {
+                            id,
+                            domain: ControlDomain::Real { min: 0., max: 1. },
+                            default: ControlValue::Real(value),
+                        })
+                        .collect(),
+                )
+                .unwrap();
+            let prepared = if bus {
+                prepared
+                    .with_buses(
+                        vec![Bus {
+                            processors: stages,
+                            sends: vec![send(None, 1.)],
+                            tail_frames: 0,
+                        }],
+                        vec![Some(0)],
+                    )
+                    .unwrap()
+            } else {
+                prepared
+                    .with_voice_chains(
+                        vec![VoiceChain::new(stages, vec![], 0).unwrap()],
+                        vec![Some(0)],
+                    )
+                    .unwrap()
+            };
+            let mut rt = Runtime::new(prepared, limits()).unwrap();
+            let owner = rt.active_plan();
+            support::without_heap(|| {
+                for id in 0..voices {
+                    rt.trigger(input(id + 1), 60, 1.).unwrap();
+                }
+            });
+            let mut from = [0., 1., 0.];
+            for (phase, target, frames) in [
+                (0, [0., 1., 0.], 20),
+                (1, [0.5, 0.25, 0.5], 13),
+                (2, [1., 0., 1.], 13),
+                (3, [0., 1., 0.], 29),
+            ] {
+                let mut audio = vec![[0.; 2]; frames];
+                support::without_heap(|| {
+                    if phase != 0 {
+                        for (id, value) in ids.into_iter().zip(target) {
+                            rt.edit_controls(
+                                owner,
+                                None,
+                                &[ControlWrite {
+                                    id,
+                                    value: ControlValue::Real(value),
+                                }],
+                            )
+                            .unwrap();
+                        }
+                    }
+                    for chunk in audio.chunks_mut(block) {
+                        rt.render(chunk).unwrap();
+                    }
+                });
+                for (i, actual) in audio.into_iter().enumerate() {
+                    let [dry, wet, bypass] = std::array::from_fn::<_, 3, _>(|j| {
+                        if phase == 0 || i >= 8 {
+                            target[j]
+                        } else {
+                            from[j] + (target[j] - from[j]) * (i as f64 / 8.)
+                        }
+                    });
+                    let expected = [0.125, -0.25].map(|x| {
+                        let x = x * f64::from(voices);
+                        ((dry * (1. - bypass) + bypass) * x + wet * (1. - bypass) * (3. * x)) as f32
+                    });
+                    assert_eq!(
+                        actual, expected,
+                        "bus {bus}, voices {voices}, block {block}, phase {phase}, frame {i}"
+                    );
+                }
+                from = target;
+            }
         }
     }
 }

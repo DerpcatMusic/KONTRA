@@ -46,14 +46,23 @@ fn proc_field(file: &str, key: &str) -> u64 {
 fn faults() -> (u64, u64) {
     let stat = std::fs::read_to_string("/proc/self/stat").unwrap_or_default();
     let rest = stat.rsplit_once(')').map_or("", |x| x.1);
-    let f: Vec<u64> = rest.split_whitespace().skip(7).take(3).filter_map(|v| v.parse().ok()).collect();
-    (f.first().copied().unwrap_or(0), f.get(2).copied().unwrap_or(0))
+    let f: Vec<u64> = rest
+        .split_whitespace()
+        .skip(7)
+        .take(3)
+        .filter_map(|v| v.parse().ok())
+        .collect();
+    (
+        f.first().copied().unwrap_or(0),
+        f.get(2).copied().unwrap_or(0),
+    )
 }
 
 /// Start a fresh measurement window: peak RSS and peak heap restart here.
 
 const HOLD_SECONDS: f64 = 1.5;
 const TAIL_SECONDS: f64 = 0.5;
+const MAX_TAIL_SECONDS: f64 = 5.0;
 const VELOCITY: u8 = 64;
 
 #[derive(Clone, Debug)]
@@ -61,8 +70,14 @@ enum Item {
     Kontakt(PathBuf),
     Multi(PathBuf),
     /// One program of a multi (internal: a multi is checked program by program).
-    MultiProgram { path: PathBuf, index: usize },
-    UviProgram { bank: PathBuf, program: String },
+    MultiProgram {
+        path: PathBuf,
+        index: usize,
+    },
+    UviProgram {
+        bank: PathBuf,
+        program: String,
+    },
     UviLoose(PathBuf),
 }
 
@@ -143,9 +158,18 @@ static BANKS: Mutex<BTreeMap<PathBuf, BankSlot>> = Mutex::new(BTreeMap::new());
 /// A bank opened once per process and shared by every program of it: opening
 /// decodes the directory (and a content key), far dearer than one program.
 fn bank(path: &Path) -> Result<Arc<sampler_uvi::Bank>, Arc<sampler_uvi::AccessError>> {
-    let slot = BANKS.lock().unwrap().entry(path.to_owned()).or_default().clone();
-    slot.get_or_init(|| sampler_uvi::Bank::open(path).map(Arc::new).map_err(Arc::new))
-        .clone()
+    let slot = BANKS
+        .lock()
+        .unwrap()
+        .entry(path.to_owned())
+        .or_default()
+        .clone();
+    slot.get_or_init(|| {
+        sampler_uvi::Bank::open(path)
+            .map(Arc::new)
+            .map_err(Arc::new)
+    })
+    .clone()
 }
 
 /// `items`, remembered for a day in `~/.cache/kontakto-corpus/items.tsv`
@@ -170,7 +194,10 @@ fn cached_items(explicit: &[String]) -> Vec<Item> {
                     "uvi-loose" => Item::UviLoose(id.into()),
                     "uvi-program" => {
                         let (bank, program) = id.split_once("::")?;
-                        Item::UviProgram { bank: bank.into(), program: program.into() }
+                        Item::UviProgram {
+                            bank: bank.into(),
+                            program: program.into(),
+                        }
                     }
                     _ => return None,
                 })
@@ -182,7 +209,10 @@ fn cached_items(explicit: &[String]) -> Vec<Item> {
     }
     let items = items(&roots(explicit));
     if explicit.is_empty() {
-        let text: String = items.iter().map(|i| format!("{}\t{}\n", i.kind(), i.id())).collect();
+        let text: String = items
+            .iter()
+            .map(|i| format!("{}\t{}\n", i.kind(), i.id()))
+            .collect();
         let _ = std::fs::write(&cache, text);
     }
     items
@@ -220,10 +250,12 @@ fn items(roots: &[PathBuf]) -> Vec<Item> {
             "nkm" => items.push(Item::Multi(path.clone())),
             "uvip" => items.push(Item::UviLoose(path.clone())),
             "ufs" => match bank(path) {
-                Ok(bank) => items.extend(bank.programs().into_iter().map(|program| Item::UviProgram {
-                    bank: path.clone(),
-                    program,
-                })),
+                Ok(bank) => {
+                    items.extend(bank.programs().into_iter().map(|program| Item::UviProgram {
+                        bank: path.clone(),
+                        program,
+                    }))
+                }
                 // An unopenable bank is one failed item.
                 Err(_) => items.push(Item::UviLoose(path.clone())),
             },
@@ -320,13 +352,25 @@ fn pick_key(ir: &sampler_ir::Instrument) -> Option<Pick> {
     velocities.sort_by_key(|v| (v.abs_diff(VELOCITY), *v));
     for v in &velocities {
         if let Some(key) = best(*v, false) {
-            return Some(Pick { key, velocity: *v, switch: None });
+            return Some(Pick {
+                key,
+                velocity: *v,
+                switch: None,
+            });
         }
     }
-    let first = ir.articulations.iter().flat_map(|a| a.switch_keys.iter().copied()).next()?;
+    let first = ir
+        .articulations
+        .iter()
+        .flat_map(|a| a.switch_keys.iter().copied())
+        .next()?;
     for v in &velocities {
         if let Some(key) = best(*v, true) {
-            return Some(Pick { key, velocity: *v, switch: Some(first) });
+            return Some(Pick {
+                key,
+                velocity: *v,
+                switch: Some(first),
+            });
         }
     }
     None
@@ -341,7 +385,9 @@ fn kind_of(debug: &str) -> String {
 }
 
 fn categories(unsupported: &[sampler_ir::Unsupported]) -> BTreeMap<String, usize> {
-    sampler_ir::rank_features(unsupported.iter().map(|u| u.feature.as_str())).into_iter().collect()
+    sampler_ir::rank_features(unsupported.iter().map(|u| u.feature.as_str()))
+        .into_iter()
+        .collect()
 }
 
 type Loading = (Value, Option<(Subject, Pick)>);
@@ -467,10 +513,13 @@ fn stage_name(s: sampler_kontakt::Stage) -> &'static str {
 /// the error carries them.
 /// `crates/sampler-kontakt/src/load.rs` as `sampler_kontakt::load`.
 fn module_of(file: &str) -> String {
-    let (krate, rest) = file
-        .split_once("crates/")
-        .map_or(("", file), |(_, r)| r.split_once("/src/").unwrap_or(("", r)));
-    let module = rest.trim_end_matches(".rs").trim_end_matches("/mod").replace('/', "::");
+    let (krate, rest) = file.split_once("crates/").map_or(("", file), |(_, r)| {
+        r.split_once("/src/").unwrap_or(("", r))
+    });
+    let module = rest
+        .trim_end_matches(".rs")
+        .trim_end_matches("/mod")
+        .replace('/', "::");
     format!("{}::{module}", krate.replace('-', "_"))
 }
 
@@ -515,7 +564,6 @@ fn failed(stage: &str, kind: &str, reason: String) -> Loading {
     )
 }
 
-
 /// Per-reason counts over every candidate region, plus the first records.
 fn selection_summary(records: Vec<sampler_core::SelectionRecord>) -> Value {
     let mut counts = BTreeMap::<String, usize>::new();
@@ -524,7 +572,9 @@ fn selection_summary(records: Vec<sampler_core::SelectionRecord>) -> Value {
         suppressed += usize::from(r.suppressed);
         unmapped += usize::from(r.candidates.is_empty() && !r.suppressed);
         for c in &r.candidates {
-            let reason = c.rejected.map_or("accepted".to_string(), |x| format!("{x:?}"));
+            let reason = c
+                .rejected
+                .map_or("accepted".to_string(), |x| format!("{x:?}"));
             *counts.entry(reason).or_default() += 1;
         }
     }
@@ -613,7 +663,6 @@ fn new_ingress() -> Ingress {
     Ingress::new(0, groups)
 }
 
-
 /// Controllers a player would have up: mod wheel, expression and CC2 high,
 /// plus every plain controller the instrument's modulators read. (Controllers
 /// scripts read directly are not listed in the IR, so they are not covered.)
@@ -626,7 +675,8 @@ fn musical_ccs(ir: &sampler_ir::Instrument, dynamics: &[(u8, f64)]) -> Vec<(u8, 
     }
     for m in &ir.modulators {
         if let sampler_ir::ModulationSource::Controller(n) = m.source {
-            let plain = n < 120 && ![0, 6, 32, 38, 64, 65, 66, 67, 68, 69, 98, 99, 100, 101].contains(&n);
+            let plain =
+                n < 120 && ![0, 6, 32, 38, 64, 65, 66, 67, 68, 69, 98, 99, 100, 101].contains(&n);
             if plain && !ccs.iter().any(|c| c.0 == n) {
                 ccs.push((n, 100));
             }
@@ -707,7 +757,12 @@ fn has_word(text: &str, words: &[&str]) -> bool {
 fn without_repeat(name: &str) -> String {
     let t = name.to_lowercase();
     let t = t.replace("rr", "");
-    t.chars().filter(|c| !c.is_ascii_digit()).collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ")
+    t.chars()
+        .filter(|c| !c.is_ascii_digit())
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Heuristic "this probably does not play the way its name says": the name
@@ -716,28 +771,49 @@ fn without_repeat(name: &str) -> String {
 /// articulations across round-robin repeats. Lists, never fails.
 fn suspect(patch: &str, articulation: &str, takes: &[Take]) -> Vec<String> {
     const LONG: &[&str] = &["sustain", "legato", "long", " sus"];
-    const SHORT: &[&str] = &["staccato", "marcato", "spiccato", "short", "stacc", "spicc", "pizz"];
+    const SHORT: &[&str] = &[
+        "staccato", "marcato", "spiccato", "short", "stacc", "spicc", "pizz",
+    ];
     const OFFSET: &[&str] = &["reverse", "swell", "offset", "rise", "rev ", "backward"];
     let name = format!("{patch} {articulation}");
     let (name_long, name_short) = (has_word(&name, LONG), has_word(&name, SHORT));
     let mut out = Vec::new();
     // A repeat that selected nothing is silence, not another articulation.
     let takes: Vec<&Take> = takes.iter().filter(|t| !t.voices.is_empty()).collect();
-    let Some(first) = takes.first().copied() else { return out };
+    let Some(first) = takes.first().copied() else {
+        return out;
+    };
     let groups = first.groups();
     let group_short = |g: &String| has_word(g, SHORT) || has_word(g, &["rev"]);
     if name_long && !name_short && groups.iter().any(group_short) {
-        out.push(format!("name says long, voices from short groups: {}", groups.iter().filter(|g| group_short(g)).cloned().collect::<Vec<_>>().join(", ")));
+        out.push(format!(
+            "name says long, voices from short groups: {}",
+            groups
+                .iter()
+                .filter(|g| group_short(g))
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
     }
     if name_short && !name_long && !groups.is_empty() && groups.iter().all(|g| has_word(g, LONG)) {
-        out.push(format!("name says short, voices from long groups: {}", groups.join(", ")));
+        out.push(format!(
+            "name says short, voices from long groups: {}",
+            groups.join(", ")
+        ));
     }
     if !has_word(&name, OFFSET) {
         if let Some(v) = first.voices.iter().find(|v| v.reverse) {
-            out.push(format!("reverse playback in group {} of a patch not named reverse", v.group));
+            out.push(format!(
+                "reverse playback in group {} of a patch not named reverse",
+                v.group
+            ));
         }
         if let Some(v) = first.voices.iter().find(|v| v.start > 0) {
-            out.push(format!("sample start offset {} (+{} modulated) in group {} of a patch not named for it", v.start, v.start_range, v.group));
+            out.push(format!(
+                "sample start offset {} (+{} modulated) in group {} of a patch not named for it",
+                v.start, v.start_range, v.group
+            ));
         }
     }
     let norm = |t: &Take| {
@@ -807,11 +883,11 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
             rt.set_cold_starts(std::env::var_os("CH_NOCOLD").is_none());
         }
         if std::env::var_os("CH_STEAL").is_some() {
-        rt.set_voice_stealing(Some(sampler_core::Stealing::for_limits(
-            rt.sample_rate(),
-            limits.voices,
-        )))
-        .map_err(|e| format!("prepare: runtime: {e}"))?;
+            rt.set_voice_stealing(Some(sampler_core::Stealing::for_limits(
+                rt.sample_rate(),
+                limits.voices,
+            )))
+            .map_err(|e| format!("prepare: runtime: {e}"))?;
         }
         Ok(Box::new(rt))
     };
@@ -819,9 +895,16 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
     let (patch_name, default_articulation, zone_table) = {
         let ir = subject.instrument();
         let key = pick.key;
-        let at_key: Vec<(usize, &sampler_ir::Zone)> =
-            ir.zones.iter().enumerate().filter(|(_, z)| z.keys.low <= key && key <= z.keys.high).collect();
-        let mut layers: Vec<(u8, u8)> = at_key.iter().map(|(_, z)| (z.velocities.low, z.velocities.high)).collect();
+        let at_key: Vec<(usize, &sampler_ir::Zone)> = ir
+            .zones
+            .iter()
+            .enumerate()
+            .filter(|(_, z)| z.keys.low <= key && key <= z.keys.high)
+            .collect();
+        let mut layers: Vec<(u8, u8)> = at_key
+            .iter()
+            .map(|(_, z)| (z.velocities.low, z.velocities.high))
+            .collect();
         layers.sort_unstable();
         layers.dedup();
         let table: Vec<(usize, VoiceInfo)> = at_key
@@ -832,13 +915,36 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
                     sampler_ir::Looping::OneShot => "one-shot",
                     sampler_ir::Looping::Continuous(_) => "continuous",
                     sampler_ir::Looping::UntilRelease(_) => "until-release",
+                    sampler_ir::Looping::Slots(_) => "slots",
                 };
-                let group = z.group.and_then(|g| ir.groups.get(g.0)).map_or_else(String::new, |g| g.name.clone());
-                let layer = layers.iter().position(|l| *l == (z.velocities.low, z.velocities.high)).unwrap_or(0);
-                (*i, VoiceInfo { zone: *i, group, start: z.playback.start, start_range: z.playback.start_range, reverse: z.playback.reverse, looping, velocity_layer: layer })
+                let group = z
+                    .group
+                    .and_then(|g| ir.groups.get(g.0))
+                    .map_or_else(String::new, |g| g.name.clone());
+                let layer = layers
+                    .iter()
+                    .position(|l| *l == (z.velocities.low, z.velocities.high))
+                    .unwrap_or(0);
+                (
+                    *i,
+                    VoiceInfo {
+                        zone: *i,
+                        group,
+                        start: z.playback.start,
+                        start_range: z.playback.start_range,
+                        reverse: z.playback.reverse,
+                        looping,
+                        velocity_layer: layer,
+                    },
+                )
             })
             .collect();
-        let articulation = ir.articulations.iter().find(|a| a.default).map(|a| a.name.clone()).unwrap_or_default();
+        let articulation = ir
+            .articulations
+            .iter()
+            .find(|a| a.default)
+            .map(|a| a.name.clone())
+            .unwrap_or_default();
         (ir.name.clone(), articulation, table)
     };
     let horizon_of = |head: usize| (head.max(sampler_core::PAGE_FRAMES) + 4096) as u32;
@@ -892,7 +998,10 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
     };
     let frame = |seconds: f64| (seconds * f64::from(rate)).round() as usize;
     let release_at = frame(HOLD_SECONDS);
-    let total = release_at + frame(TAIL_SECONDS);
+    let minimum = release_at + frame(TAIL_SECONDS);
+    let total = release_at + frame(MAX_TAIL_SECONDS);
+    let mut tail_blocks = std::collections::VecDeque::with_capacity(frame(0.25).div_ceil(64) + 1);
+    let mut rendered_frames = 0;
     let key = pick.key;
     let on = [0x2090_0000 | u32::from(key) << 8 | u32::from(pick.velocity)];
     let off = [0x2080_0000 | u32::from(key) << 8];
@@ -971,22 +1080,16 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
                     let _ = rt.service_streaming(*h);
                 }
                 ingress
-                    .render(
-                        rt,
-                        &mut buffer[..len],
-                        &batch,
-                        batch.len(),
-                        |i, result| {
-                            if begin == 0 && i == note_index {
-                                // No allocation on the started path: the
-                                // allocation counter covers this closure.
-                                note_started = matches!(result, Ok(Applied::Started(_)));
-                                if !note_started {
-                                    note_other = Some(format!("{result:?}"));
-                                }
+                    .render(rt, &mut buffer[..len], &batch, batch.len(), |i, result| {
+                        if begin == 0 && i == note_index {
+                            // No allocation on the started path: the
+                            // allocation counter covers this closure.
+                            note_started = matches!(result, Ok(Applied::Started(_)));
+                            if !note_started {
+                                note_other = Some(format!("{result:?}"));
                             }
-                        },
-                    )
+                        }
+                    })
                     .map_err(|e| format!("render: {e:?}"))?;
             }
             Rig::Scripted {
@@ -997,12 +1100,18 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
             } => {
                 if begin == 0 {
                     let mut cc_ingress = new_ingress();
-                    for word in pre_words.iter().filter(|_| std::env::var_os("CH_NOPRE").is_none()) {
+                    for word in pre_words
+                        .iter()
+                        .filter(|_| std::env::var_os("CH_NOPRE").is_none())
+                    {
                         if let Some(Ok(packet)) = Packets::new(word).next() {
                             let _ = cc_ingress.apply(rt, packet);
                         }
                     }
-                    for &(cc, value) in ccs.iter().filter(|_| std::env::var_os("CH_NODRV").is_none()) {
+                    for &(cc, value) in ccs
+                        .iter()
+                        .filter(|_| std::env::var_os("CH_NODRV").is_none())
+                    {
                         driver.input(
                             rt,
                             sampler_uvi::scripted::HostInput::Controller {
@@ -1020,7 +1129,11 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
                         key,
                         external_id: None,
                     };
-                    let velocity = std::env::var("CH_VEL").ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(f64::from(pick.velocity)) / 127.0;
+                    let velocity = std::env::var("CH_VEL")
+                        .ok()
+                        .and_then(|v| v.parse::<f64>().ok())
+                        .unwrap_or(f64::from(pick.velocity))
+                        / 127.0;
                     note = match rt
                         .note_on(input, key, velocity)
                         .and_then(|n| driver.note_on(rt, n, key, velocity))
@@ -1032,22 +1145,42 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
                 (t0, a0) = (Instant::now(), heap::calls());
                 let mut cost = AudioCost::default();
                 let cut = if has_release { release_at - begin } else { len };
-                scripted_render(rt, driver, *horizon, &mut feed, &mut buffer[..cut], &mut cost)
-                    .map_err(|e| format!("render: {e:?}"))?;
+                scripted_render(
+                    rt,
+                    driver,
+                    *horizon,
+                    &mut feed,
+                    &mut buffer[..cut],
+                    &mut cost,
+                )
+                .map_err(|e| format!("render: {e:?}"))?;
                 if cut < len {
                     driver
                         .note_off(rt, key)
                         .map_err(|e| format!("release: {e:?}"))?;
-                    scripted_render(rt, driver, *horizon, &mut feed, &mut buffer[cut..len], &mut cost)
-                        .map_err(|e| format!("render: {e:?}"))?;
+                    scripted_render(
+                        rt,
+                        driver,
+                        *horizon,
+                        &mut feed,
+                        &mut buffer[cut..len],
+                        &mut cost,
+                    )
+                    .map_err(|e| format!("render: {e:?}"))?;
                 }
                 script_allocs += (heap::calls() - a0).saturating_sub(cost.allocs);
                 script_seconds += t0.elapsed().as_secs_f64() - cost.seconds;
                 audio_cost = Some(cost);
             }
         }
-        block_times.push(audio_cost.as_ref().map_or_else(|| t0.elapsed().as_secs_f64(), |c| c.seconds));
-        let used = audio_cost.as_ref().map_or_else(|| heap::calls() - a0, |c| c.allocs);
+        block_times.push(
+            audio_cost
+                .as_ref()
+                .map_or_else(|| t0.elapsed().as_secs_f64(), |c| c.seconds),
+        );
+        let used = audio_cost
+            .as_ref()
+            .map_or_else(|| heap::calls() - a0, |c| c.allocs);
         if begin == 0 && matches!(rig, Rig::Midi { .. }) {
             note = if note_started {
                 "started".into()
@@ -1081,15 +1214,25 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
             });
             rt.flush_ended(|_| true);
         }
+        let mut block_peak = 0.0f32;
         for x in buffer[..len].iter().flatten() {
             finite &= x.is_finite();
             peak = peak.max(x.abs());
-            // The last quarter second of the tail.
-            if begin + len > total - frame(0.25) {
-                tail_peak = tail_peak.max(x.abs());
-            }
+            block_peak = block_peak.max(x.abs());
+        }
+        tail_blocks.push_back(block_peak);
+        if tail_blocks.len() > frame(0.25).div_ceil(buffer.len()) {
+            tail_blocks.pop_front();
+        }
+        rendered_frames = begin + len;
+        let voices = match &rig {
+            Rig::Midi { rt, .. } | Rig::Scripted { rt, .. } => rt.voice_count(),
+        };
+        if rendered_frames >= minimum && voices == 0 {
+            break;
         }
     }
+    tail_peak = tail_blocks.into_iter().fold(tail_peak, f32::max);
     block_times.sort_by(f64::total_cmp);
     let q = |f: f64| block_times[((block_times.len() - 1) as f64 * f) as usize];
     let mut why_silent = None;
@@ -1107,6 +1250,8 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
     let st = rt.stats();
     let perf = json!({
         "block_frames": buffer.len(),
+        "release_drain_seconds": (rendered_frames - release_at) as f64 / f64::from(rate),
+        "release_drain_max_seconds": MAX_TAIL_SECONDS,
         "deadline_ms": deadline * 1e3,
         "block_p50_ms": q(0.5) * 1e3,
         "block_p99_ms": q(0.99) * 1e3,
@@ -1131,7 +1276,14 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
     // "Plays correctly": repeat the note with selection recording on, after the
     // measured pass so its allocations stay out of the audio counters.
     let mut selection = selection;
-    if !diagnose && let Rig::Midi { rt, ingress, horizon, .. } = &mut rig {
+    if !diagnose
+        && let Rig::Midi {
+            rt,
+            ingress,
+            horizon,
+            ..
+        } = &mut rig
+    {
         rt.record_selections(true);
         let mut block = [[0.0f32; 2]; 64];
         for _ in 0..4 {
@@ -1155,7 +1307,12 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
                     .candidates
                     .iter()
                     .filter(|c| c.rejected.is_none())
-                    .filter_map(|c| zone_table.iter().find(|(i, _)| *i == c.region).map(|(_, v)| v.clone()))
+                    .filter_map(|c| {
+                        zone_table
+                            .iter()
+                            .find(|(i, _)| *i == c.region)
+                            .map(|(_, v)| v.clone())
+                    })
                     .collect(),
             })
             .collect();
@@ -1182,7 +1339,6 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
         why_silent,
     })
 }
-
 
 fn scripts(subject: &Subject) -> Value {
     let ir = subject.instrument();
@@ -1219,9 +1375,7 @@ fn load_item(item: &Item, ctx: &Ctx) -> Loading {
         decoders: 2,
         ..Default::default()
     };
-    let ok = |pick: Pick, ir: &sampler_ir::Instrument| {
-        json!({"ok": true, "key": pick.key, "velocity": pick.velocity, "warning": pick.warning(), "zones": ir.zones.len()})
-    };
+    let ok = |pick: Pick, ir: &sampler_ir::Instrument| json!({"ok": true, "key": pick.key, "velocity": pick.velocity, "warning": pick.warning(), "zones": ir.zones.len()});
     let no_zone = || {
         failed(
             "note-on/selection",
@@ -1248,7 +1402,11 @@ fn load_item(item: &Item, ctx: &Ctx) -> Loading {
             let pick_ms = t.elapsed().as_millis() as u64 - read_ms;
             let parse_only = ctx.tier == Tier::Parse;
             let options = sampler_kontakt::Options {
-                keys: if parse_only { 0..=127 } else { pick.key..=pick.key },
+                keys: if parse_only {
+                    0..=127
+                } else {
+                    pick.key..=pick.key
+                },
                 scripts: true,
                 library: Some(path.clone()),
                 ..Default::default()
@@ -1263,8 +1421,9 @@ fn load_item(item: &Item, ctx: &Ctx) -> Loading {
                 } = kontakt;
                 let kept = instrument.retain_zones(|_| true);
                 // One buffer, shared by every asset (clones share the samples).
-                let silence = sampler_core::Pcm::new(48000, vec![[0.0f32; 2]; 8192].into_boxed_slice())
-                    .expect("placeholder audio");
+                let silence =
+                    sampler_core::Pcm::new(48000, vec![[0.0f32; 2]; 8192].into_boxed_slice())
+                        .expect("placeholder audio");
                 let pcm = kept.iter().map(|_| silence.clone()).collect();
                 let labels = kept
                     .iter()
@@ -1274,7 +1433,8 @@ fn load_item(item: &Item, ctx: &Ctx) -> Loading {
                     Ok(l) => {
                         let mut record = ok(pick, &l.instrument);
                         let lower_ms = t.elapsed().as_millis() as u64 - read_ms - pick_ms;
-                        record["phases_ms"] = json!({"read": read_ms, "pick": pick_ms, "lower": lower_ms});
+                        record["phases_ms"] =
+                            json!({"read": read_ms, "pick": pick_ms, "lower": lower_ms});
                         (record, Some((Subject::Plan(Box::new(l)), pick)))
                     }
                     Err(e) => load_failure(&e, "prepare"),
@@ -1283,7 +1443,10 @@ fn load_item(item: &Item, ctx: &Ctx) -> Loading {
             stage("load");
             if std::env::var_os("CH_NOSTREAM").is_some() {
                 return match sampler_kontakt::load(path, &options, |_| {}) {
-                    Ok(l) => (ok(pick, &l.instrument), Some((Subject::Plan(Box::new(l)), pick))),
+                    Ok(l) => (
+                        ok(pick, &l.instrument),
+                        Some((Subject::Plan(Box::new(l)), pick)),
+                    ),
                     Err(e) => load_failure(&e, "load"),
                 };
             }
@@ -1295,7 +1458,10 @@ fn load_item(item: &Item, ctx: &Ctx) -> Loading {
                 Err(e) => load_failure(&e, "load"),
             }
         }
-        Item::UviProgram { bank: bank_path, program } => {
+        Item::UviProgram {
+            bank: bank_path,
+            program,
+        } => {
             stage("container/decrypt");
             let bank = match bank(bank_path) {
                 Ok(b) => b,
@@ -1375,7 +1541,6 @@ fn load_item(item: &Item, ctx: &Ctx) -> Loading {
     }
 }
 
-
 /// reached. Stages inside `sampler_kontakt::load` are not separable until its
 /// errors carry them, so those report as `load`.
 /// The tail is measured 4 to 5 s after release: a stored release that long
@@ -1405,7 +1570,11 @@ fn stage_of(r: &Value) -> &'static str {
     }
     let s = &r["sound"];
     if let Some(e) = s["error"].as_str() {
-        return if e.starts_with("prepare") { "prepare" } else { "render" };
+        return if e.starts_with("prepare") {
+            "prepare"
+        } else {
+            "render"
+        };
     }
     if s["sounds"] != true && r["musical"]["sounds"] == true {
         return "needs-controller";
@@ -1441,7 +1610,15 @@ fn check_multi(item: &Item, path: &Path, ctx: &Ctx) -> Value {
             Tier::Parse => 1, // each program re-reads the whole multi
         };
         let subs: Vec<Value> = (0..programs.min(cap))
-            .map(|index| check_one(&Item::MultiProgram { path: path.into(), index }, ctx))
+            .map(|index| {
+                check_one(
+                    &Item::MultiProgram {
+                        path: path.into(),
+                        index,
+                    },
+                    ctx,
+                )
+            })
             .collect();
         let loudness = |r: &Value| r["sound"]["peak_db"].as_f64().unwrap_or(f64::NEG_INFINITY);
         let best = subs
@@ -1451,9 +1628,17 @@ fn check_multi(item: &Item, path: &Path, ctx: &Ctx) -> Value {
         // A rack slot may hold no instrument: a program with no zones is empty, not broken.
         let empty = |r: &Value| r["load"]["kind"] == "NoZone";
         let subs: Vec<Value> = subs;
-        let ok = |r: &Value| matches!(r["stage"].as_str(), Some("ok" | "needs-controller")) || empty(r);
-        let stage = subs.iter().find(|r| !ok(r)).map_or("ok", |r| r["stage"].as_str().unwrap_or("load")).to_string();
-        let load_ms: u64 = subs.iter().map(|r| r["load_ms"].as_u64().unwrap_or(0)).sum();
+        let ok =
+            |r: &Value| matches!(r["stage"].as_str(), Some("ok" | "needs-controller")) || empty(r);
+        let stage = subs
+            .iter()
+            .find(|r| !ok(r))
+            .map_or("ok", |r| r["stage"].as_str().unwrap_or("load"))
+            .to_string();
+        let load_ms: u64 = subs
+            .iter()
+            .map(|r| r["load_ms"].as_u64().unwrap_or(0))
+            .sum();
         let summary = json!({
             "programs": programs,
             "checked": subs.len(),
@@ -1519,15 +1704,26 @@ fn check_one(item: &Item, ctx: &Ctx) -> Value {
         record["unsupported"] = json!(categories(&subject.instrument().unsupported));
         record["unsupported_total"] = json!(subject.instrument().unsupported.len());
         record["unsupported_ranked"] = json!(
-            sampler_ir::rank_features(subject.instrument().unsupported.iter().map(|u| u.feature.as_str()))
-                .into_iter()
-                .take(10)
-                .collect::<Vec<_>>()
+            sampler_ir::rank_features(
+                subject
+                    .instrument()
+                    .unsupported
+                    .iter()
+                    .map(|u| u.feature.as_str())
+            )
+            .into_iter()
+            .take(10)
+            .collect::<Vec<_>>()
         );
         let dynamics: Vec<(u8, f64)> = subject.loaded().map(|l| l.dynamics()).unwrap_or_default();
         if let Some(l) = subject.loaded() {
             record["needs_controller"] = json!(l.needs_controller());
-            record["dynamics"] = json!(dynamics.iter().map(|d| json!([d.0, d.1])).collect::<Vec<_>>());
+            record["dynamics"] = json!(
+                dynamics
+                    .iter()
+                    .map(|d| json!([d.0, d.1]))
+                    .collect::<Vec<_>>()
+            );
         }
         // Longest release any envelope stores: a tail up to that long is data.
         record["stored_release_s"] = json!(
@@ -1561,7 +1757,10 @@ fn check_one(item: &Item, ctx: &Ctx) -> Value {
             };
             let first = play(subject, pick, false, &[]);
             let first = match first {
-                Ok(mut s) if silent(&s) && matches!(item, Item::Kontakt(_) | Item::MultiProgram { .. }) => {
+                Ok(mut s)
+                    if silent(&s)
+                        && matches!(item, Item::Kontakt(_) | Item::MultiProgram { .. }) =>
+                {
                     // Selection records allocate, so they only run on a second
                     // pass over an item that was silent.
                     if let Some(d) = reload(&[], true) {
@@ -1601,7 +1800,12 @@ fn check_one(item: &Item, ctx: &Ctx) -> Value {
                 // Five full loads per probe: one instrument in eight (by id hash),
                 // or all with CH_MPE=all.
                 let sampled = std::env::var_os("CH_MPE").is_some()
-                    || item.id().bytes().fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(u32::from(b))) % 8 == 0;
+                    || item
+                        .id()
+                        .bytes()
+                        .fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(u32::from(b)))
+                        % 8
+                        == 0;
                 if ctx.tier == Tier::Full
                     && sampled
                     && std::env::var_os("CH_NOMPE").is_none()
@@ -1663,7 +1867,6 @@ fn check_one(item: &Item, ctx: &Ctx) -> Value {
     record
 }
 
-
 fn read_records(path: &Path) -> Vec<Value> {
     std::fs::read_to_string(path)
         .unwrap_or_default()
@@ -1716,7 +1919,15 @@ fn tree_hash() -> String {
         git(&["rev-parse", "HEAD:crates"]),
         git(&["rev-parse", "HEAD:tools/corpus-health"])
     );
-    if git(&["status", "--porcelain", "crates", "tools/corpus-health", "vendor"]).is_empty() {
+    if git(&[
+        "status",
+        "--porcelain",
+        "crates",
+        "tools/corpus-health",
+        "vendor",
+    ])
+    .is_empty()
+    {
         tree
     } else {
         // Uncommitted edits: never reuse results across them.
@@ -1772,7 +1983,8 @@ impl Budget {
             .unwrap_or(0.0);
         let others = (load - running as f64).max(0.0);
         let room = ((cores * 1.5 - others) / (cores * 1.5)).clamp(0.0, 1.0);
-        2.max((self.workers as f64 * room).round() as usize).min(self.workers)
+        2.max((self.workers as f64 * room).round() as usize)
+            .min(self.workers)
     }
 
     fn acquire(&self, need: u64) -> u64 {
@@ -1788,7 +2000,11 @@ impl Budget {
                 state.1 += 1;
                 return need;
             }
-            state = self.wake.wait_timeout(state, std::time::Duration::from_millis(500)).unwrap().0;
+            state = self
+                .wake
+                .wait_timeout(state, std::time::Duration::from_millis(500))
+                .unwrap()
+                .0;
         }
     }
     fn release(&self, need: u64) {
@@ -1816,9 +2032,14 @@ fn install_panic_hook() {
         let function = trace
             .lines()
             .filter_map(|l| l.trim().split_once(": ").map(|x| x.1))
-            .find(|f| (f.starts_with("sampler_") || f.starts_with("corpus_health")) && !f.contains("panic"))
+            .find(|f| {
+                (f.starts_with("sampler_") || f.starts_with("corpus_health"))
+                    && !f.contains("panic")
+            })
             .map(|f| f.rsplit_once("::h").map_or(f, |x| x.0).to_string());
-        let location = info.location().map(|l| format!("{}:{}", module_of(l.file()), l.line()));
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}", module_of(l.file()), l.line()));
         let at = match (function, location) {
             (Some(f), Some(l)) => format!("{f} ({l})"),
             (Some(f), None) => f,
@@ -1926,17 +2147,22 @@ fn watchdog(pool: &Arc<Pool>) {
         std::thread::sleep(std::time::Duration::from_secs(1));
         let mut hung = Vec::new();
         for (w, slot) in pool.running.lock().unwrap().iter_mut().enumerate() {
-            if slot.as_ref().is_some_and(|j| j.since.elapsed() > pool.timeout) {
+            if slot
+                .as_ref()
+                .is_some_and(|j| j.since.elapsed() > pool.timeout)
+            {
                 hung.push((w, slot.take().unwrap()));
             }
         }
         for (w, job) in hung {
             job.abandoned.store(true, Ordering::Relaxed);
             let at = current_stage(w);
-            pool.write(&json!({"id": job.id, "kind": "unknown", "status": "timeout", "worker": w,
+            pool.write(
+                &json!({"id": job.id, "kind": "unknown", "status": "timeout", "worker": w,
                 "stage": at, "load": {"ok": false, "stage": at, "kind": "Timeout",
                 "where": format!("worker {w} stuck in stage {at}"),
-                "error": format!("no result after {} s", pool.timeout.as_secs())}}));
+                "error": format!("no result after {} s", pool.timeout.as_secs())}}),
+            );
             pool.budget.release(job.held);
             let n = pool.completed.fetch_add(1, Ordering::Relaxed) + 1;
             eprintln!("[{n}/{total}] w{w} TIMEOUT in {at}: {}", job.id);
@@ -2001,16 +2227,26 @@ fn run(out: &Path, opts: &Opts) -> i32 {
         spawned: AtomicUsize::new(0),
         running: Mutex::new((0..64).map(|_| None).collect()),
         file: Mutex::new(file),
-        budget: Budget { state: Mutex::new((0, 0)), wake: Condvar::new(), workers },
+        budget: Budget {
+            state: Mutex::new((0, 0)),
+            wake: Condvar::new(),
+            workers,
+        },
         ctx: Ctx { tier, workers },
-        timeout: std::time::Duration::from_secs(opts.timeout.unwrap_or(if tier == Tier::Parse { 300 } else { 600 })),
+        timeout: std::time::Duration::from_secs(opts.timeout.unwrap_or(if tier == Tier::Parse {
+            300
+        } else {
+            600
+        })),
     };
     // An item that was started twice and never finished took the process down.
     for (id, n) in &starts {
         if !finished.contains(id) && *n >= 2 {
-            pool.write(&json!({"id": id, "kind": "unknown", "status": "crash", "stage": "crash",
+            pool.write(
+                &json!({"id": id, "kind": "unknown", "status": "crash", "stage": "crash",
                 "load": {"ok": false, "stage": "crash", "kind": "Crash", "where": "process",
-                "error": "process died twice on this item (abort, OOM or hang)"}}));
+                "error": "process died twice on this item (abort, OOM or hang)"}}),
+            );
             finished.insert(id.clone());
         }
     }
@@ -2039,14 +2275,23 @@ fn run(out: &Path, opts: &Opts) -> i32 {
         let hint = prior
             .get(&id)
             .and_then(|p| p["perf"]["peak_heap_bytes"].as_u64())
-            .unwrap_or(if tier == Tier::Parse { 256 << 20 } else { 1 << 30 })
+            .unwrap_or(if tier == Tier::Parse {
+                256 << 20
+            } else {
+                1 << 30
+            })
             .min(8 << 30);
         queue.push((item, key, hint));
     }
     // Biggest first, so the long jobs start early and the pool drains evenly.
     // UVI programs last: their banks open in the background meanwhile, and
     // opening a cold bank takes up to a minute.
-    queue.sort_by_key(|q| (matches!(q.0, Item::UviProgram { .. }), std::cmp::Reverse(q.2)));
+    queue.sort_by_key(|q| {
+        (
+            matches!(q.0, Item::UviProgram { .. }),
+            std::cmp::Reverse(q.2),
+        )
+    });
     let banks: Vec<PathBuf> = queue
         .iter()
         .filter_map(|q| match &q.0 {
@@ -2088,14 +2333,22 @@ fn quick_ids() -> HashSet<String> {
     let text = std::env::var_os("CH_QUICK_FILE")
         .and_then(|p| std::fs::read_to_string(p).ok())
         .unwrap_or_else(|| QUICK.to_string());
-    text.lines().filter(|l| !l.is_empty() && !l.starts_with('#')).map(String::from).collect()
+    text.lines()
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(String::from)
+        .collect()
 }
 
 /// `quick [--workers N] [--baseline RUN]`: run the fixed sample, keep it as
 /// `current.jsonl` (the last run becomes `previous.jsonl`), and print what
 /// changed against the previous run (or `--baseline`).
 fn quick(extra: &[String]) -> i32 {
-    let flag = |name: &str| extra.iter().position(|a| a == name).and_then(|i| extra.get(i + 1));
+    let flag = |name: &str| {
+        extra
+            .iter()
+            .position(|a| a == name)
+            .and_then(|i| extra.get(i + 1))
+    };
     let dir = dirs_home().join(".cache/kontakto-corpus/quick");
     std::fs::create_dir_all(&dir).expect("quick dir");
     let (cur, prev) = (dir.join("current.jsonl"), dir.join("previous.jsonl"));
@@ -2114,10 +2367,15 @@ fn quick(extra: &[String]) -> i32 {
     let load = std::fs::read_to_string("/proc/loadavg").unwrap_or_default();
     println!(
         "quick tier: {} items, {wall} s wall (target 180 s), load average at end {}",
-        all_records(&cur).iter().filter(|r| r["status"] != "started").count(),
+        all_records(&cur)
+            .iter()
+            .filter(|r| r["status"] != "started")
+            .count(),
         load.split_whitespace().next().unwrap_or("?")
     );
-    let against = flag("--baseline").map(PathBuf::from).or_else(|| prev.exists().then(|| prev.clone()));
+    let against = flag("--baseline")
+        .map(PathBuf::from)
+        .or_else(|| prev.exists().then(|| prev.clone()));
     match against {
         Some(old) => diff(&old, &cur),
         None => {
@@ -2129,7 +2387,9 @@ fn quick(extra: &[String]) -> i32 {
 }
 
 fn dirs_home() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default()
 }
 
 /// `quick-list RUN...`: the fixed sample, from finished runs (oldest first).
@@ -2178,8 +2438,17 @@ fn quick_list(runs: &[String]) {
     let mut modes = BTreeMap::<(String, String, String), Vec<String>>::new();
     for (id, r) in &latest {
         if is_failure(r) && !r["kind"].as_str().is_some_and(|k| k == "kontakt-multi") {
-            let why = r["load"]["error"].as_str().or(r["sound"]["error"].as_str()).unwrap_or("").chars().take(60).collect();
-            modes.entry((library(id), r["stage"].as_str().unwrap_or("").into(), why)).or_default().push(id.clone());
+            let why = r["load"]["error"]
+                .as_str()
+                .or(r["sound"]["error"].as_str())
+                .unwrap_or("")
+                .chars()
+                .take(60)
+                .collect();
+            modes
+                .entry((library(id), r["stage"].as_str().unwrap_or("").into(), why))
+                .or_default()
+                .push(id.clone());
         }
     }
     for members in modes.values() {
@@ -2374,7 +2643,9 @@ fn summary(out: &Path, md: &Path) {
     let (mut sw, mut mig, mut mpe_n, mut pitch, mut press) = (0, 0, 0, 0, 0);
     let (mut misses, mut allocs, mut loads) = (0, 0, Vec::<f64>::new());
     for r in &records {
-        *stages.entry(r["stage"].as_str().unwrap_or("(none)").to_string()).or_default() += 1;
+        *stages
+            .entry(r["stage"].as_str().unwrap_or("(none)").to_string())
+            .or_default() += 1;
         sw += r["articulation"]["switches_found"].as_u64().unwrap_or(0);
         mig += r["articulation"]["migrated"].as_u64().unwrap_or(0);
         if r["mpe"]["pitch_ratio"].is_number() {
@@ -2391,7 +2662,12 @@ fn summary(out: &Path, md: &Path) {
     }
     text += &top(&stages, 20);
     loads.sort_by(f64::total_cmp);
-    let q = |f: f64| loads.get(((loads.len().max(1) - 1) as f64 * f) as usize).copied().unwrap_or(0.0);
+    let q = |f: f64| {
+        loads
+            .get(((loads.len().max(1) - 1) as f64 * f) as usize)
+            .copied()
+            .unwrap_or(0.0)
+    };
     text += &format!(
         "\n\n## Probes and performance\n\n- keyswitch articulations found {sw}, migrated to zone selectors {mig}\n- MPE (instruments probed {mpe_n}): pitch responds {pitch}, pressure responds {press}\n- instruments with at least one 64-frame deadline miss: {misses} (timing is only evidence when `loadavg1` is low)\n- instruments allocating on the audio thread: {allocs}\n- load time p50 {:.0} ms, p99 {:.0} ms, max {:.0} ms\n",
         q(0.5),
@@ -2405,10 +2681,14 @@ fn summary(out: &Path, md: &Path) {
 fn allocs(r: &Value) -> u64 {
     let p = &r["perf"]["render"];
     p["audio_thread_allocs"].as_u64().unwrap_or_else(|| {
-        ["audio_allocs_note_on", "audio_allocs_release", "audio_allocs_steady"]
-            .iter()
-            .map(|k| p[*k].as_u64().unwrap_or(0))
-            .sum()
+        [
+            "audio_allocs_note_on",
+            "audio_allocs_release",
+            "audio_allocs_steady",
+        ]
+        .iter()
+        .map(|k| p[*k].as_u64().unwrap_or(0))
+        .sum()
     })
 }
 
@@ -2418,7 +2698,9 @@ fn misses(r: &Value) -> u64 {
 
 /// Heuristic flags on how the probed note played (see [`suspect`]).
 fn suspects(r: &Value) -> usize {
-    r["sound"]["selection"]["suspect"].as_array().map_or(0, Vec::len)
+    r["sound"]["selection"]["suspect"]
+        .as_array()
+        .map_or(0, Vec::len)
 }
 
 fn finite_ok(r: &Value) -> bool {
@@ -2435,7 +2717,11 @@ fn median(mut v: Vec<f64>) -> f64 {
 }
 
 fn pct(old: f64, new: f64) -> String {
-    if old > 0.0 { format!("{:+.0}%", (new / old - 1.0) * 100.0) } else { "n/a".into() }
+    if old > 0.0 {
+        format!("{:+.0}%", (new / old - 1.0) * 100.0)
+    } else {
+        "n/a".into()
+    }
 }
 
 /// `diff OLD NEW`: totals of NEW, then what a change fixed, broke or made
@@ -2462,12 +2748,17 @@ fn diff(old: &Path, new: &Path) {
             .or(r["sound"]["script_faults"][0].as_str())
             .unwrap_or("");
         let at = r["load"]["where"].as_str().unwrap_or("");
-        format!("{at} {text}").trim().chars().take(110).collect::<String>()
+        format!("{at} {text}")
+            .trim()
+            .chars()
+            .take(110)
+            .collect::<String>()
     };
     let (old, new) = (index(old), index(new));
     // A part that sounds once its controllers are up is working.
     let good = |s: &str| matches!(s, "ok" | "needs-controller");
-    let (mut fixed, mut regressed, mut added, mut moved, mut flags) = (vec![], vec![], vec![], vec![], vec![]);
+    let (mut fixed, mut regressed, mut added, mut moved, mut flags) =
+        (vec![], vec![], vec![], vec![], vec![]);
     let (mut slow, mut quick_load, mut fat) = (vec![], vec![], vec![]);
     let mut common = vec![];
     for (id, n) in &new {
@@ -2491,7 +2782,10 @@ fn diff(old: &Path, new: &Path) {
                     flags.push(format!("{id}  stopped sounding"));
                 }
                 if suspects(o) == 0 && suspects(n) > 0 {
-                    flags.push(format!("{id}  suspect: {}", n["sound"]["selection"]["suspect"][0].as_str().unwrap_or("")));
+                    flags.push(format!(
+                        "{id}  suspect: {}",
+                        n["sound"]["selection"]["suspect"][0].as_str().unwrap_or("")
+                    ));
                 }
                 if misses(o) == 0 && misses(n) > 0 {
                     flags.push(format!("{id}  deadline misses 0 -> {}", misses(n)));
@@ -2499,7 +2793,10 @@ fn diff(old: &Path, new: &Path) {
                 if allocs(o) == 0 && allocs(n) > 0 {
                     flags.push(format!("{id}  audio-thread allocations 0 -> {}", allocs(n)));
                 }
-                let (a, b) = (o["perf"]["load_ms"].as_f64().or(o["load_ms"].as_f64()), n["perf"]["load_ms"].as_f64().or(n["load_ms"].as_f64()));
+                let (a, b) = (
+                    o["perf"]["load_ms"].as_f64().or(o["load_ms"].as_f64()),
+                    n["perf"]["load_ms"].as_f64().or(n["load_ms"].as_f64()),
+                );
                 if let (Some(a), Some(b)) = (a, b) {
                     if b > a * 1.25 && b - a > 50.0 {
                         slow.push(format!("{id}  load {a:.0} -> {b:.0} ms"));
@@ -2507,14 +2804,24 @@ fn diff(old: &Path, new: &Path) {
                         quick_load.push(format!("{id}  load {a:.0} -> {b:.0} ms"));
                     }
                 }
-                if let (Some(a), Some(b)) = (o["perf"]["peak_heap_bytes"].as_f64(), n["perf"]["peak_heap_bytes"].as_f64())
-                    && b > a * 1.25 && b - a > 64.0 * 1048576.0 {
-                        fat.push(format!("{id}  heap {:.0} -> {:.0} MiB", a / 1048576.0, b / 1048576.0));
-                    }
+                if let (Some(a), Some(b)) = (
+                    o["perf"]["peak_heap_bytes"].as_f64(),
+                    n["perf"]["peak_heap_bytes"].as_f64(),
+                ) && b > a * 1.25
+                    && b - a > 64.0 * 1048576.0
+                {
+                    fat.push(format!(
+                        "{id}  heap {:.0} -> {:.0} MiB",
+                        a / 1048576.0,
+                        b / 1048576.0
+                    ));
+                }
             }
         }
     }
-    let count = |m: &BTreeMap<String, Value>, f: &dyn Fn(&Value) -> bool| m.values().filter(|r| f(r)).count();
+    let count = |m: &BTreeMap<String, Value>, f: &dyn Fn(&Value) -> bool| {
+        m.values().filter(|r| f(r)).count()
+    };
     let line = |m: &BTreeMap<String, Value>| {
         format!(
             "{} items: ok {} (incl. needs-controller), sounding {}, non-finite {}, deadline-miss {}, audio-alloc {}, suspect {}",
@@ -2544,23 +2851,61 @@ fn diff(old: &Path, new: &Path) {
         }
     }
     let load = |side: &dyn Fn(&(&Value, &Value)) -> Value| -> Vec<f64> {
-        common.iter().filter_map(|c| side(c)["perf"]["load_ms"].as_f64().or(side(c)["load_ms"].as_f64())).collect()
+        common
+            .iter()
+            .filter_map(|c| {
+                side(c)["perf"]["load_ms"]
+                    .as_f64()
+                    .or(side(c)["load_ms"].as_f64())
+            })
+            .collect()
     };
     let heap = |side: &dyn Fn(&(&Value, &Value)) -> Value| -> Vec<f64> {
-        common.iter().filter_map(|c| side(c)["perf"]["peak_heap_bytes"].as_f64()).collect()
+        common
+            .iter()
+            .filter_map(|c| side(c)["perf"]["peak_heap_bytes"].as_f64())
+            .collect()
     };
     let p99 = |side: &dyn Fn(&(&Value, &Value)) -> Value| -> Vec<f64> {
-        common.iter().filter_map(|c| side(c)["perf"]["render"]["block_p99_ms"].as_f64()).collect()
+        common
+            .iter()
+            .filter_map(|c| side(c)["perf"]["render"]["block_p99_ms"].as_f64())
+            .collect()
     };
-    let (o, n): (&dyn Fn(&(&Value, &Value)) -> Value, &dyn Fn(&(&Value, &Value)) -> Value) = (&|c| c.0.clone(), &|c| c.1.clone());
+    let (o, n): (
+        &dyn Fn(&(&Value, &Value)) -> Value,
+        &dyn Fn(&(&Value, &Value)) -> Value,
+    ) = (&|c| c.0.clone(), &|c| c.1.clone());
     let (lo, ln) = (load(o), load(n));
     println!("\nperf delta over {} items present in both:", common.len());
-    println!("  load ms     median {:.0} -> {:.0} ({}), total {:.1} -> {:.1} s", median(lo.clone()), median(ln.clone()), pct(median(lo.clone()), median(ln.clone())), lo.iter().sum::<f64>() / 1e3, ln.iter().sum::<f64>() / 1e3);
+    println!(
+        "  load ms     median {:.0} -> {:.0} ({}), total {:.1} -> {:.1} s",
+        median(lo.clone()),
+        median(ln.clone()),
+        pct(median(lo.clone()), median(ln.clone())),
+        lo.iter().sum::<f64>() / 1e3,
+        ln.iter().sum::<f64>() / 1e3
+    );
     let (ho, hn) = (heap(o), heap(n));
-    println!("  peak heap   median {:.0} -> {:.0} MiB, max {:.0} -> {:.0} MiB", median(ho.clone()) / 1048576.0, median(hn.clone()) / 1048576.0, ho.iter().copied().fold(0.0, f64::max) / 1048576.0, hn.iter().copied().fold(0.0, f64::max) / 1048576.0);
+    println!(
+        "  peak heap   median {:.0} -> {:.0} MiB, max {:.0} -> {:.0} MiB",
+        median(ho.clone()) / 1048576.0,
+        median(hn.clone()) / 1048576.0,
+        ho.iter().copied().fold(0.0, f64::max) / 1048576.0,
+        hn.iter().copied().fold(0.0, f64::max) / 1048576.0
+    );
     let (po, pn) = (p99(o), p99(n));
-    println!("  block p99   median {:.3} -> {:.3} ms ({})", median(po.clone()), median(pn.clone()), pct(median(po), median(pn)));
-    for (name, list) in [("load time up", &slow), ("load time down", &quick_load), ("peak heap up", &fat)] {
+    println!(
+        "  block p99   median {:.3} -> {:.3} ms ({})",
+        median(po.clone()),
+        median(pn.clone()),
+        pct(median(po), median(pn))
+    );
+    for (name, list) in [
+        ("load time up", &slow),
+        ("load time down", &quick_load),
+        ("peak heap up", &fat),
+    ] {
         println!("  {name}: {}", list.len());
         for l in list.iter().take(10) {
             println!("    {l}");
@@ -2569,7 +2914,12 @@ fn diff(old: &Path, new: &Path) {
     let failing: Vec<_> = new.iter().filter(|(_, r)| !good(&stage(r))).collect();
     println!("\nfailing now: {}", failing.len());
     for (id, r) in failing.iter().take(40) {
-        println!("  [{}] {}  {}", stage(r), id.rsplit('/').next().unwrap_or(id), why(r));
+        println!(
+            "  [{}] {}  {}",
+            stage(r),
+            id.rsplit('/').next().unwrap_or(id),
+            why(r)
+        );
     }
 }
 
@@ -2636,23 +2986,91 @@ fn main() {
 mod tests {
     use super::*;
 
+    #[test]
+    fn authored_release_sample_drains_beyond_the_old_half_second_window() {
+        let rate = 48000;
+        let frames = (f64::from(rate) * 0.748) as usize;
+        let mut zone = sampler_ir::Zone::new(sampler_ir::AssetRef(0));
+        zone.keys = sampler_ir::KeyRange { low: 60, high: 60 };
+        zone.trigger = sampler_ir::Trigger::KeyRelease;
+        zone.playback.looping = sampler_ir::Looping::OneShot;
+        let instrument = sampler_ir::Instrument {
+            assets: vec![sampler_ir::Asset {
+                location: sampler_ir::AssetLocation::Path("synthetic".into()),
+                encoding: Default::default(),
+                root_key: None,
+                loops: vec![],
+            }],
+            zones: vec![zone],
+            ..Default::default()
+        };
+        let pcm = sampler_core::Pcm::new(rate, vec![[0.25; 2]; frames].into_boxed_slice()).unwrap();
+        let loaded = sampler_kontakt::prepare(instrument, vec![pcm], &Default::default()).unwrap();
+        let sound = play(
+            Subject::Plan(Box::new(loaded)),
+            Pick {
+                key: 60,
+                velocity: 64,
+                switch: None,
+            },
+            false,
+            &[],
+        )
+        .unwrap();
+        assert!(sound.peak > 0.);
+        assert_eq!(sound.stuck_voices, 0);
+        let drain = sound.perf["release_drain_seconds"].as_f64().unwrap();
+        assert!((0.748..0.751).contains(&drain), "{drain}");
+        assert_eq!(sound.perf["audio_thread_allocs"], 0);
+    }
+
     fn voice(group: &str, start: u64, reverse: bool) -> VoiceInfo {
-        VoiceInfo { zone: 0, group: group.into(), start, start_range: 0, reverse, looping: "none", velocity_layer: 0 }
+        VoiceInfo {
+            zone: 0,
+            group: group.into(),
+            start,
+            start_range: 0,
+            reverse,
+            looping: "none",
+            velocity_layer: 0,
+        }
     }
 
     #[test]
     fn flags_a_sustain_that_plays_short_samples_and_stray_offsets() {
-        let sus = Take { voices: vec![voice("Violins Sustain RR1", 0, false)] };
+        let sus = Take {
+            voices: vec![voice("Violins Sustain RR1", 0, false)],
+        };
         assert!(suspect("Areia - Violins - Sustain", "Sustain", &[sus.clone()]).is_empty());
-        let marcato = Take { voices: vec![voice("Marcato Attack", 0, false)] };
-        assert_eq!(suspect("Areia - Violins - Sustain", "Sustain", &[marcato]).len(), 1);
-        let rev = Take { voices: vec![voice("Violins Sustain", 900, true)] };
+        let marcato = Take {
+            voices: vec![voice("Marcato Attack", 0, false)],
+        };
+        assert_eq!(
+            suspect("Areia - Violins - Sustain", "Sustain", &[marcato]).len(),
+            1
+        );
+        let rev = Take {
+            voices: vec![voice("Violins Sustain", 900, true)],
+        };
         assert_eq!(suspect("Violins - Sustain", "", &[rev.clone()]).len(), 2);
         assert!(suspect("Violins - Reverse Swell", "", &[rev]).is_empty());
-        let rr2 = Take { voices: vec![voice("Violins Sustain RR2", 0, false)] };
-        assert!(suspect("Violins - Sustain", "", &[sus.clone(), rr2]).is_empty(), "round robins are not a different articulation");
-        let other = Take { voices: vec![voice("Violins Tremolo", 0, false)] };
-        assert!(suspect("Violins - Sustain", "", &[sus.clone(), other.clone()]).is_empty(), "the first note may differ");
-        assert_eq!(suspect("Violins - Sustain", "", &[sus.clone(), sus, other]).len(), 1);
+        let rr2 = Take {
+            voices: vec![voice("Violins Sustain RR2", 0, false)],
+        };
+        assert!(
+            suspect("Violins - Sustain", "", &[sus.clone(), rr2]).is_empty(),
+            "round robins are not a different articulation"
+        );
+        let other = Take {
+            voices: vec![voice("Violins Tremolo", 0, false)],
+        };
+        assert!(
+            suspect("Violins - Sustain", "", &[sus.clone(), other.clone()]).is_empty(),
+            "the first note may differ"
+        );
+        assert_eq!(
+            suspect("Violins - Sustain", "", &[sus.clone(), sus, other]).len(),
+            1
+        );
     }
 }

@@ -168,10 +168,11 @@ impl Window {
         drop(self)
     }
 
-    /// Closes an X11 editor without waiting forever for a stalled render thread.
+    /// Requests an X11 close with a bounded wait where ownership permits.
     ///
-    /// After `timeout`, the window thread is detached only if its plug-in image
-    /// can be pinned and no host callbacks were registered. The handler may
+    /// After `timeout`, a floating window's thread may detach if its plug-in image
+    /// can be pinned and no host callbacks were registered. Embedded windows always
+    /// wait for teardown so the host can safely destroy its parent. The handler may
     /// finish its current callback; X11 enters no more after observing the
     /// revocation. Call this only after revoking the handler's host
     /// state; ordinary [`close`](Self::close) remains synchronous.
