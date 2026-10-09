@@ -911,7 +911,7 @@ impl Translation {
                     chain = Some(ir::ChainRef(self.ir.chains.len() - 1));
                     for &(slot, processor) in &filter_slots {
                         if slots.iter().find(|s| s.slot == slot).is_some_and(|s|
-                            matches!(s.params(), Some(crate::effects::Params::Filter { kind: 2, .. }))) {
+                            matches!(s.params(), Some(crate::effects::Params::Filter { kind: 2 | 3, .. }))) {
                             self.cutoff_octaves.insert((chain.unwrap().0, processor), crate::effects::LEGACY_CUTOFF_OCTAVES);
                         }
                     }
