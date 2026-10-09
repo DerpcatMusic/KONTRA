@@ -43,11 +43,11 @@ fn program_paths(directory: &Directory) -> Vec<String> {
 impl Bank {
     /// List program paths using directory metadata only, without preparing or reading payloads.
     pub fn catalog(path: &Path) -> Result<Vec<String>, AccessError> {
-        Self::catalog_status(path).map(|(programs, _)| programs)
+        Self::catalog_status(path).map(|(programs, _, _)| programs)
     }
 
-    /// Directory-only catalog and declared program access requirements; no payload reads.
-    pub fn catalog_status(path: &Path) -> Result<(Vec<String>, Option<String>), AccessError> {
+    /// Directory-only catalog, declared access requirements and bank UUID; no payload reads.
+    pub fn catalog_status(path: &Path) -> Result<(Vec<String>, Option<String>, [u8; 16]), AccessError> {
         let bank_error = |e| AccessError::Bank(access::failure_reason(&e));
         let ufs = Ufs::open(path).map_err(bank_error)?;
         let directory = ufs.decode_directory(&Namespaces::native().metadata).map_err(bank_error)?;
@@ -63,7 +63,7 @@ impl Bank {
         if unknown > 0 {
             reasons.push(format!("{unknown} of {} presets use an unsupported protection mode.", programs.len()));
         }
-        Ok((programs, (!reasons.is_empty()).then(|| reasons.join(" "))))
+        Ok((programs, (!reasons.is_empty()).then(|| reasons.join(" ")), ufs.header.uuid))
     }
 
     /// Open a bank for programs, scripts and samples, preparing content access.
