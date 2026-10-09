@@ -2042,7 +2042,7 @@ fn mapping_waveform_worker_reads_falcon_without_original_waveform_widget() {
     let (inst,epoch)={let v=p.shared.view.lock().unwrap();let v=&v.parts[0];(v.instrument.clone().unwrap_or_else(||panic!("{}",v.status)),v.generation)};
     assert_eq!(inst.source,sampler_ir::SourceFormat::Uvi);
     assert_eq!(inst.zones.len(),3);
-    assert!(inst.source_indices.zones.is_empty(),"Falcon uses runtime zone ordinals");
+    assert_eq!(crate::sound::waveform::source_ids(&inst), vec![1, 2, 3], "Falcon player source identities match these fixture zones");
     let part=p.shared.part(0).unwrap();
     let envelope=(0..200).find_map(|_|{let e=part.zone_waveform(1,epoch,512);if e.is_none(){std::thread::sleep(std::time::Duration::from_millis(5));}e}).expect("Mapping resolves full admitted PCM without Original widgets");
     assert_eq!(envelope.frames,48000);assert_eq!(envelope.sample_rate,48000);
