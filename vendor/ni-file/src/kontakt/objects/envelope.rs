@@ -8,6 +8,8 @@ use crate::{
 
 const CHUNK_ID: u16 = 0x3F;
 const VERSION: u16 = 0x11;
+// Older v0x10 presets retain 16 opaque bytes instead of v0x11's packed records.
+const AHDSR_TAIL_V10: usize = 16;
 // Corpus-inferred v0x11 minimum: four packed 13-byte records.
 // Preserve additional opaque bytes rather than imposing an exact-size cap.
 const AHDSR_TAIL: usize = 52;
@@ -19,7 +21,7 @@ const AHDSR_TAIL: usize = 52;
 ///
 /// Type:           Chunk (unstructured)
 /// SerType:        0x3F
-/// Versions:       0x11
+/// Versions:       0x10, 0x11
 /// Kontakt 7:      BParEnv_AHDSR
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -40,8 +42,8 @@ pub struct EnvelopeAhdsr {
     /// Consumers still validate the mode and independent source/target flags.
     #[cfg_attr(feature = "serde", serde(default))]
     pub unknown_flag: u8,
-    /// At least 52 trailing bytes: four `(f32, f32, f32, bool)` records
-    /// of unknown meaning, plus any opaque extension bytes.
+    /// Version 0x10: 16 opaque bytes. Version 0x11: at least 52 bytes,
+    /// including four `(f32, f32, f32, bool)` records and opaque extensions.
     #[cfg_attr(feature = "serde", serde(default))]
     pub unknown_tail: Vec<u8>,
 }
@@ -49,7 +51,7 @@ pub struct EnvelopeAhdsr {
 impl EnvelopeAhdsr {
     fn validate(&self) -> Result<(), Error> {
         let times = [self.attack_ms, self.decay_ms, self.hold_ms, self.release_ms];
-        if self.unknown_tail.len() < AHDSR_TAIL {
+        if self.unknown_tail.len() != AHDSR_TAIL_V10 && self.unknown_tail.len() < AHDSR_TAIL {
             return Err(Error::Static("Incomplete AHDSR opaque metadata"));
         }
         if !(-1.0..=1.0).contains(&self.attack_curve)
@@ -74,7 +76,9 @@ impl EnvelopeAhdsr {
         let mut data = Vec::new();
         data.try_reserve_exact(length as usize)
             .map_err(|_| Error::Static("AHDSR allocation failed"))?;
-        data.extend_from_slice(&[0, VERSION as u8, 0]);
+        let version = if self.unknown_tail.len() == AHDSR_TAIL_V10 { 0x10 } else { VERSION };
+        data.push(0);
+        data.extend_from_slice(&version.to_le_bytes());
         for value in [
             self.attack_curve,
             self.attack_ms,
@@ -112,7 +116,7 @@ impl TryFrom<&Chunk> for EnvelopeAhdsr {
             return Err(Error::Static("Structured AHDSR envelope is not supported"));
         }
         let version = reader.read_u16_le()?;
-        if version != VERSION {
+        if !matches!(version, 0x10 | VERSION) {
             return Err(Error::VersionMismatch {
                 expected: VERSION.into(),
                 got: version.into(),
@@ -130,6 +134,11 @@ impl TryFrom<&Chunk> for EnvelopeAhdsr {
             unknown_tail: reader.read_all()?,
         };
 
+        if (version == 0x10 && envelope.unknown_tail.len() != AHDSR_TAIL_V10)
+            || (version == VERSION && envelope.unknown_tail.len() < AHDSR_TAIL)
+        {
+            return Err(Error::Static("Incomplete AHDSR versioned metadata"));
+        }
         envelope.validate()?;
         Ok(envelope)
     }
