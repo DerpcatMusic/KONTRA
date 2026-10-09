@@ -2582,6 +2582,8 @@ fn script_value_changes_wake_an_idle_editor() {
     assert!(watch.changed(&params, &meters, &computer));
     assert!(!watch.changed(&params, &meters, &computer));
     params.shared.part(0).unwrap().scalar_revision.fetch_add(1, Ordering::Release);
+    // Script readouts join the existing bounded editor poll.
+    watch.cpu_at = None;
     assert!(watch.changed(&params, &meters, &computer));
     assert!(!watch.changed(&params, &meters, &computer));
 }

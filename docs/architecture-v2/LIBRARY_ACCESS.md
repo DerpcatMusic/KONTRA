@@ -206,6 +206,12 @@ same message. Index schema 2 rebuilds the disposable catalog from older indexes;
 user settings and presets are unaffected. Clear banks receive no access warning.
 The authored clear-bank playback test embeds a sine sample, deletes its loose
 source, then uses the product's catalog, V2 loader, MIDI note and audio output.
+
+## Historical access validation, 2026-10-06
+
+These earlier owner-access receipts describe that date’s environment. The current
+660-program protected inventory remains parked; they are not a new release gate.
+
 Protected and clear XML share the parser and byte bounds: `9309bf5a`.
 Missing lossless audio references can resolve to a unique member with the same
 directory and sample stem; exact paths take priority and ambiguity is rejected
