@@ -10,6 +10,39 @@ fn host(script: &str) -> ScriptHost {
 }
 
 #[test]
+fn v1_set_height_keeps_width_and_loads_following_widgets() {
+    let h = host("setSize(600,300); setHeight(240); Label('AfterHeight'); loaded=true");
+    assert!(h.findings().is_empty(), "{:?}", h.findings());
+    assert_eq!(h.global_text("loaded"), "true");
+    let face = h.interface();
+    let size = face.pages[0].size;
+    assert_eq!((size.width, size.height), (600, 240));
+    assert_eq!(face.widgets[0].name, "AfterHeight");
+}
+
+#[test]
+fn v1_button_push_calls_changed_with_optional_modifiers_without_latching() {
+    let mut h = host(r#"
+      calls=0; modifiers='unset'
+      local b=Button('Trigger')
+      b.changed=function(self,mods) calls=calls+1; modifiers=mods end
+      b:push(false); assert(calls==0)
+      b:push(true,7); assert(calls==1 and modifiers==7)
+      b:push(true); assert(calls==2 and modifiers==nil)
+      assert(not pcall(function() b:push() end))
+      assert(not pcall(function() Knob('K'):push(true) end))
+      loaded=true
+    "#);
+    assert!(h.findings().is_empty(), "{:?}", h.findings());
+    assert_eq!(h.global_text("loaded"), "true");
+    h.set_control(control_id(1, 0), 1.).unwrap();
+    h.set_control(control_id(1, 0), 0.).unwrap();
+    h.set_control(control_id(1, 0), 1.).unwrap();
+    assert_eq!(h.global_text("calls"), "4");
+    assert_eq!(h.interface().widgets[0].initial_value, 0.);
+}
+
+#[test]
 fn geometry_and_typed_edits_reach_the_script_and_parameters() {
     let mut h = host(
         r#"
