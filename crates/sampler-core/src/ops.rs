@@ -313,6 +313,12 @@ pub enum Op {
         local: u16,
         write: bool,
     },
+    ZoneParameter {
+        zone: u16,
+        parameter: u16,
+        selectors: [Option<i32>; 3],
+        local: u16,
+    },
     EngineDisplay {
         address: u16,
         value: Option<u16>,
@@ -382,6 +388,12 @@ impl Op {
             Self::EngineParameter { address, local, .. } => {
                 (usize::from(*address) + 4).max(usize::from(*local) + 1)
             }
+            Self::ZoneParameter {
+                zone,
+                parameter,
+                local,
+                ..
+            } => usize::from((*zone).max(*parameter).max(*local)) + 1,
             Self::EngineDisplay {
                 address,
                 value,
@@ -1271,6 +1283,35 @@ impl Runtime {
                         .map_or(Text::default(), |(_, v)| *v);
                     *bank.texts.get_mut(cell).ok_or(Error::InvalidInput)? = value;
                 }
+            }
+            Op::ZoneParameter {
+                zone,
+                parameter,
+                selectors,
+                local,
+            } => {
+                let parameter = self.reg(id, parameter)?;
+                let parameter = selectors
+                    .iter()
+                    .position(|selector| selector.map(i64::from) == Some(parameter))
+                    .map(|index| {
+                        [
+                            crate::ZoneParameter::Group,
+                            crate::ZoneParameter::LowKey,
+                            crate::ZoneParameter::HighKey,
+                        ][index]
+                    });
+                let plan = self.behavior_plan(owner)?;
+                let value = parameter
+                    .and_then(|parameter| {
+                        let zone = u32::try_from(self.reg(id, zone).ok()?).ok()?;
+                        self.plans
+                            .get(plan.0)?
+                            .prepared
+                            .source_zone_parameter(zone, parameter)
+                    })
+                    .unwrap_or(0);
+                self.set_reg(id, local, i64::from(value))?;
             }
             Op::EngineParameter {
                 address,
