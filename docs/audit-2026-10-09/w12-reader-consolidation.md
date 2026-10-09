@@ -36,4 +36,12 @@ apply both owned patches, run one W12 focused GREEN plus affected snapshot
 unit guards and root no-run. Do not run the W6 branch or repeat native renders.
 W6 currently owns the machine; W12 has no heavy job, queue ticket or request.
 
-NEXT: one consolidated W12 RED→GREEN validation when the machine is released.
+Generic unsupported-effect diagnostics currently append public-payload hex heads.
+A new authored fixture requires equal builtin/revision/length diagnostics for two
+different payloads, preserving slot/reason while exposing no payload bytes.
+`effect-diagnostic-privacy-source.patch` removes the hex head and parameter debug
+payload; it is pending baseline RED in the same future W12 turn. No native read
+is required. Cached SendLevels lengths/list counts remain UNKNOWN; the v0x50
+revision itself is not excluded by the strict two-list reader.
+
+NEXT: consolidated W12 reader/privacy RED→GREEN at the next direct release.
