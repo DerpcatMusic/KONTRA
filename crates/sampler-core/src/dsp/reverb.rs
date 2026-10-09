@@ -339,3 +339,74 @@ mod tests {
         assert!((energy(&x) - before).abs() < 1e-5);
     }
 }
+
+#[cfg(test)]
+mod frozen_kernel_tests {
+    use super::*;
+    fn frozen_tick(rv: &mut Reverb, input: [f32; 2], [sin, cos]: [f32; 2]) -> [f32; 2] {
+        let pos = rv.pos;
+        rv.pos = pos.wrapping_add(1);
+        // The input sums to mono; the network decorrelates the outputs.
+        rv.predelay.write(pos, 0.5 * (input[0] + input[1]));
+        let dry = rv.predelay.read(pos, rv.predelay_len);
+        let mut diffused = [0.0; 2];
+        for (ch, out) in diffused.iter_mut().enumerate() {
+            let state = &mut rv.input_state[ch];
+            *state += (dry - *state) * rv.input_coef + 1e-20;
+            let mut x = *state;
+            for (line, &len) in rv.allpass[ch].iter_mut().zip(&rv.allpass_len) {
+                let delayed = line.read(pos, len);
+                let v = x + rv.diffusion * delayed;
+                line.write(pos, v);
+                x = delayed - rv.diffusion * v;
+            }
+            *out = x;
+        }
+        // Quadrature LFOs on alternate lines decorrelate modes without pitch wobble.
+        let lfo = [sin, cos, -sin, -cos, sin, cos, -sin, -cos];
+        let mask = rv.lines.len() - 1;
+        let taps: [f32; LINES] = std::array::from_fn(|i| {
+            let d = rv.delay[i] + rv.mod_depth * (0.5 + 0.5 * lfo[i]);
+            let whole = d as usize;
+            let frac = d - whole as f32;
+            let a = rv.lines[pos.wrapping_sub(whole) & mask][i];
+            let b = rv.lines[pos.wrapping_sub(whole + 1) & mask][i];
+            a + (b - a) * frac
+        });
+        let mut mix = taps;
+        hadamard(&mut mix);
+        let row = &mut rv.lines[pos & mask];
+        for (i, (y, damped)) in row.iter_mut().zip(&mut rv.damp_state).enumerate() {
+            *damped += (mix[i] * rv.feedback[i] - *damped) * rv.damp_coef + 1e-20;
+            *y = *damped + diffused[i % 2];
+        }
+        let l = (taps[0] - taps[2] + taps[4] - taps[6]) * 0.5;
+        let r = (taps[1] - taps[3] + taps[5] - taps[7]) * 0.5;
+        let (mid, side) = (0.5 * (l + r), 0.5 * (l - r) * rv.width);
+        let mut out = [mid + side, mid - side];
+        for (ch, v) in out.iter_mut().enumerate() {
+            let low = &mut rv.shelf_state[ch];
+            *low += (*v - *low) * rv.shelf_coef;
+            *v += *low * rv.shelf_gain;
+        }
+        out
+    }
+    #[test]
+    fn shared_reverb_matches_frozen_pcm_and_state_bits() {
+        for rate in [44100, 48000, 96000] {
+            let settings = ReverbSettings { low_shelf_db: -12., size: 0.05, ..super::tests::settings(1.1) };
+            let mut actual = Reverb::new(&settings, rate).unwrap();
+            let mut expected = Reverb::new(&settings, rate).unwrap();
+            for i in 0..8192 {
+                let x = if i == 0 { [1., -0.5] } else if i < 2048 { [(i as f32 * 0.137).sin() * 0.2, 0.] } else { [-0., f32::from_bits(1)] };
+                let lfo = [(i as f32 * 0.003).sin(), (i as f32 * 0.003).cos()];
+                assert_eq!(actual.tick(x, lfo).map(f32::to_bits), frozen_tick(&mut expected, x, lfo).map(f32::to_bits));
+                assert_eq!(actual.input_state.map(f32::to_bits), expected.input_state.map(f32::to_bits));
+                assert_eq!(actual.damp_state.map(f32::to_bits), expected.damp_state.map(f32::to_bits));
+                assert_eq!(actual.shelf_state.map(f32::to_bits), expected.shelf_state.map(f32::to_bits));
+                assert_eq!(actual.pos, expected.pos);
+            }
+            for (a, b) in actual.lines.iter().zip(expected.lines.iter()) { assert_eq!(a.map(f32::to_bits), b.map(f32::to_bits)); }
+        }
+    }
+}
