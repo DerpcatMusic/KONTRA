@@ -384,6 +384,24 @@ struct Shared {
     cc: RefCell<[u8; 128]>,
 }
 
+struct InspectionBudget<'a> {
+    shared: &'a Shared,
+    saved: Option<(u64, bool, Option<Instant>)>,
+}
+
+impl Drop for InspectionBudget<'_> {
+    fn drop(&mut self) {
+        if let Some((work, exhausted, deadline)) = self.saved {
+            if self.shared.work_exhausted.get() {
+                self.shared.find("lua error", "work budget exceeded during UI snapshot");
+            }
+            self.shared.remaining_work.set(work);
+            self.shared.work_exhausted.set(exhausted);
+            self.shared.deadline.set(deadline);
+        }
+    }
+}
+
 #[cfg(feature = "scan")]
 struct ApiTimer<'a>(&'a Shared, &'static str, Option<Instant>);
 #[cfg(feature = "scan")]
@@ -397,8 +415,18 @@ impl Drop for ApiTimer<'_> {
         }
     }
 }
-#[cfg(feature = "scan")]
 impl Shared {
+    fn inspection_budget(&self) -> InspectionBudget<'_> {
+        // Readback gets load-sized work without spending or refilling live work.
+        let saved = (!self.initializing.get()).then(|| (
+            self.remaining_work.replace(self.config.load_work),
+            self.work_exhausted.replace(false),
+            self.deadline.replace(Some(Instant::now() + self.config.load)),
+        ));
+        InspectionBudget { shared: self, saved }
+    }
+
+    #[cfg(feature = "scan")]
     fn api_timer(&self, name: &'static str) -> ApiTimer<'_> {
         ApiTimer(self, name, (self.audit_init && self.initializing.get()).then(Instant::now))
     }
@@ -1889,6 +1917,37 @@ mod tests {
         h.shared.arm(std::time::Duration::from_secs(20), 100);
         assert_eq!(h.shared.remaining_work.get(), 100);
         assert!(!h.shared.work_exhausted.get());
+    }
+
+    #[test]
+    fn ui_inspection_preserves_live_work_and_exhaustion() {
+        let h = super::ScriptHost::new("<UVI4><Program><EventProcessors><ScriptProcessor><script>Knob('K',1,0,127)</script></ScriptProcessor></EventProcessors></Program></UVI4>", (), super::Config::default()).unwrap();
+        let deadline = h.shared.deadline.get();
+        for (work, exhausted) in [(1, false), (0, true)] {
+            h.shared.remaining_work.set(work);
+            h.shared.work_exhausted.set(exhausted);
+            let face=h.interface();
+            assert_eq!(face.widgets[0].name,"K");
+            assert_eq!(face.widgets[0].initial_value,1.);
+            assert_eq!(h.shared.remaining_work.get(),work);
+            assert_eq!(h.shared.work_exhausted.get(),exhausted);
+            assert_eq!(h.shared.deadline.get(),deadline);
+        }
+        h.shared.remaining_work.set(7);
+        h.shared.work_exhausted.set(false);
+        {
+            let _inspection = h.shared.inspection_budget();
+            h.shared.remaining_work.set(0);
+            assert!(h.shared.consume_work().is_err());
+        }
+        assert_eq!(h.shared.remaining_work.get(), 7);
+        assert!(!h.shared.work_exhausted.get());
+        assert_eq!(h.fault_counts().runtime.get(&super::FaultCategory::Budget), Some(&1));
+        h.shared.initializing.set(true);
+        h.shared.remaining_work.set(0);
+        { let _inspection=h.shared.inspection_budget();
+          assert_eq!(h.shared.remaining_work.get(),0); }
+        assert_eq!(h.shared.remaining_work.get(),0);
     }
 
     use super::*;
