@@ -1409,6 +1409,7 @@ impl Runtime {
             return 0;
         };
         let mut steps = 0;
+        let mut wrote_script = false;
         macro_rules! local {
             ($l:expr) => {
                 match locals.get_mut(usize::from($l)) {
@@ -1507,6 +1508,7 @@ impl Runtime {
                 Instruction::WriteScriptCell { cell, local } => {
                     let value = *local!(local);
                     *cell!(cell) = value;
+                    wrote_script = true;
                 }
                 Instruction::ReadScriptArray {
                     array,
@@ -1529,11 +1531,15 @@ impl Runtime {
                     };
                     let value = *local!(local);
                     *cell!(at) = value;
+                    wrote_script = true;
                 }
                 _ => break,
             }
             pc = next;
             steps += 1;
+        }
+        if wrote_script {
+            generation.script_revision = generation.script_revision.wrapping_add(1);
         }
         if steps > 0 {
             self.behaviors.get_mut(id.0).unwrap().pc = pc;
@@ -2085,7 +2091,7 @@ impl Runtime {
                 self.note_values[index] = *self.local_cell_mut(id, local)?;
             }
             Instruction::ReadScriptCell { local, cell } => {
-                let value = *self.behavior_script_cell_mut(id, cell)?;
+                let value = *self.behavior_script_cell(id, cell)?;
                 *self.local_cell_mut(id, local)? = value;
             }
             Instruction::WriteScriptCell { cell, local } => {
@@ -2101,7 +2107,7 @@ impl Runtime {
                 // there instead of failing the callback (Dolce's rr table is read
                 // one past its end).
                 let value = match array.cell(*self.local_cell_mut(id, index)?) {
-                    Ok(cell) => *self.behavior_script_cell_mut(id, cell)?,
+                    Ok(cell) => *self.behavior_script_cell(id, cell)?,
                     Err(_) => 0,
                 };
                 *self.local_cell_mut(id, local)? = value;
