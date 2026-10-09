@@ -470,10 +470,16 @@ mod tests {
         assert_eq!(persistence.state.values[0].value, Value::Cell(-123));
         assert_eq!(persistence.snapshot.published.load(Ordering::SeqCst), slot);
         persistence.state.values[0].value = Value::Cell(101);
-        runtime
-            .restore_script_state(runtime.active_plan(), None, &mut persistence.state)
-            .unwrap();
-        persistence.publish(&runtime);
+        let mut restore_and_publish = || {
+            runtime
+                .restore_script_state(runtime.active_plan(), None, &mut persistence.state)
+                .unwrap();
+            persistence.publish(&runtime);
+        };
+        #[cfg(feature = "plugin")]
+        assert_eq!(crate::plugin::tests::allocations(restore_and_publish), 0);
+        #[cfg(not(feature = "plugin"))]
+        restore_and_publish();
         assert_eq!(persistence.state.values[0].value, Value::Cell(101));
         let slot = persistence.snapshot.published.load(Ordering::SeqCst);
         assert_eq!(
