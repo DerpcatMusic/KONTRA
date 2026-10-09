@@ -1,0 +1,68 @@
+{
+  "status": "READY_LIVE_WAVETABLE_AMOUNTS",
+  "utc": "2026-10-09T16:19:26.385108+00:00",
+  "source_sha": "35ded542766c80e2e614515b1aa2e5409d652611",
+  "base_sha": "61158054b809bb89f650e6659b32798517a33c21",
+  "branch": "v2/w5-wavetable-live-381",
+  "v1_reference": "0cb7a8a0:src/engine/voice.rs::window reads current bank group wavetable settings before rendering",
+  "scope": [
+    "ENGINE_PAR_WT_POSITION",
+    "ENGINE_PAR_WT_FORM",
+    "ENGINE_PAR_WT_FORM2"
+  ],
+  "address": "original physical group, slot=-1, generic=-1; existing packed engine_parameter_control IDs and Linear0..1 laws",
+  "red": {
+    "passed": 0,
+    "failed": 1,
+    "reason": "previous live write at sparse physical group7 returns InvalidInput"
+  },
+  "green": {
+    "core_tests": 6,
+    "production_tests": 1,
+    "exact_live_pcm_scenarios": 12,
+    "voices_per_scenario": 64,
+    "audio_thread_heap_calls": 0,
+    "phase_reset": false,
+    "dense_address_aliases_sparse_owner": false,
+    "incompatible_control_schema_rejected": true,
+    "real_conflux_physical_owners": 3,
+    "affected_no_run": [
+      "sampler-core",
+      "sampler-kontakt"
+    ]
+  },
+  "render_paths": [
+    "scalar",
+    "scalar batch",
+    "parallel single",
+    "parallel batch"
+  ],
+  "logs": {
+    "red.log": {
+      "path": "/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w5-wavetable-live-381/red.log",
+      "sha256": "a2d44f03cb8232d049ff732305f66fc3a387816710ceaee595ee4c81cc18c0cd"
+    },
+    "final-core.log": {
+      "path": "/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w5-wavetable-live-381/final-core.log",
+      "sha256": "5bead4a79f6589bd494bd66a50a105a249db216ab890a5b12ae15045fd1ab07c"
+    },
+    "production.log": {
+      "path": "/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w5-wavetable-live-381/production.log",
+      "sha256": "39ce5385cd3636156d3d5726873bbe50c5df58eee45fd6c099505ee6b8f929c6"
+    },
+    "no-run.log": {
+      "path": "/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w5-wavetable-live-381/no-run.log",
+      "sha256": "44b86fd14ea339b5e0a48c19ade0ed5d2fbb6ca5d1528c84cb687fd62b4ffe6b"
+    }
+  },
+  "unmeasured": [
+    "native Kontakt live audio parity",
+    "full scanner and suite (coordinator batch)",
+    "CPU and onset timing"
+  ],
+  "remaining": [
+    "WT phase and mode writes are explicitly unbound",
+    "W8 per-host-block time/instruction-budget port"
+  ],
+  "next": "port v1 per-host-block shared elapsed-time/instruction scheduling on W8 snapshot base323c5ccd; preserve bounded admission and validate30-note deadline"
+}
