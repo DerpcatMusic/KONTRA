@@ -236,6 +236,7 @@ pub struct EngineParameterBinding {
     pub control: ControlId,
     pub law: EngineParameterLaw,
 }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EngineLookup {
     pub group: i32,

@@ -93,6 +93,8 @@ pub struct CachedInit {
     groups: Vec<String>,
     slot: u8,
     performance_view: crate::model::PerformanceView,
+    engine_values: Vec<([i32; 4], i32)>,
+    engine_lookups: Vec<sampler_core::EngineLookup>,
     state: Box<serde_json::value::RawValue>,
     cells: u32,
     texts: u32,
@@ -189,10 +191,16 @@ impl Initialized {
     /// Capture off audio using native owned-buffer entries, without materializing
     /// one fixed-capacity Text union for every integer cell.
     pub fn capture_initialized(&self) -> Option<CachedInit> {
+        // ponytail: fall back to fresh init until the cache carries owned MIDI jobs/events.
+        if self.init.midi_object != Default::default() || self.environment.midi_object != Default::default() {
+            return None;
+        }
         Some(CachedInit {
             groups: self.environment.groups.clone(),
             slot: self.environment.slot,
             performance_view: self.environment.performance_view.clone(),
+            engine_values: self.environment.engine_values.iter().map(|(k, v)| (*k, *v)).collect(),
+            engine_lookups: self.environment.engine_lookups.clone(),
             state: serde_json::value::to_raw_value(&NativeValues(self)).ok()?,
             cells: self.hir.cells,
             texts: self.hir.texts,
@@ -345,6 +353,7 @@ pub fn restore_initialized(
     // Every restored initializer owns fresh zero/empty banks. Native entry
     // addresses therefore need only describe the nonzero post-init values.
     let mut init = crate::eval::Initial {
+        midi_object: Default::default(),
         cells: vec![0; hir.cells as usize],
         texts: vec![String::new(); hir.texts as usize],
         controls: vec![0; hir.uis.len()],
@@ -390,6 +399,8 @@ pub fn restore_initialized(
         groups: cached.groups,
         slot: cached.slot,
         performance_view: cached.performance_view,
+        engine_values: cached.engine_values.into_iter().collect(),
+        engine_lookups: cached.engine_lookups,
         ..Default::default()
     };
     #[cfg(feature = "scan")]
@@ -434,6 +445,20 @@ mod tests {
         );
         assert!(script.cells.contains(&9));
         assert!(script.resources.texts.iter().any(|t| t == "restored"));
+    }
+    #[test]
+    fn cached_initializer_retains_engine_environment_and_declines_midi_state() {
+        let source = "on init\nend on";
+        let mut environment = crate::Environment::default();
+        environment.engine_values.insert([9, 2, 0, 0], 12345);
+        environment.engine_lookups.push(sampler_core::EngineLookup {group: 2, owner: 0, target: false, name: "ENV_AHDSR".into(), index: 3});
+        let init = crate::initialize(source, crate::Limits::LIBRARY, &environment).unwrap();
+        let cached = init.capture_initialized().unwrap();
+        let restored = super::restore_initialized(source, crate::Limits::LIBRARY, cached).unwrap();
+        assert_eq!(restored.environment.engine_values, environment.engine_values);
+        assert_eq!(restored.environment.engine_lookups, environment.engine_lookups);
+        let midi = crate::initialize("on init\nmf_set_buffer_size(2)\nend on", crate::Limits::LIBRARY, &Default::default()).unwrap();
+        assert!(midi.capture_initialized().is_none());
     }
     #[test]
     fn rejects_incomplete_unordered_and_wrong_type_native_entries() {
