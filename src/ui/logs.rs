@@ -53,11 +53,15 @@ pub struct State {
     filtered: Option<(u64, Option<PathBuf>, usize, String, [bool; 4])>,
     matches: Vec<usize>,
     selected: Option<u64>,
+    load_selected: Option<usize>,
+    load_report: Option<super::load_report::Report>,
+    load_entries: Vec<super::load_report::Entry>,
     detail: Option<(u64, Arc<str>)>,
     pub(super) about: bool,
     y: f64,
     reveal: bool,
     anchor: Option<(u64, f64)>,
+    filters: bool,
     preview: bool,
     destination: String,
     redact: bool,
@@ -88,11 +92,15 @@ impl Default for State {
             filtered: None,
             matches: Vec::new(),
             selected: None,
+            load_selected: None,
+            load_report: None,
+            load_entries: Vec::new(),
             detail: None,
             about: false,
             y: 0.,
             reveal: false,
             anchor: None,
+            filters: false,
             preview: false,
             destination: String::new(),
             redact: true,
@@ -148,6 +156,11 @@ impl State {
             Some(ReportReceipt { status, issue_url })
         });
         self.receipt_snapshot = Some(snapshot.clone());
+    }
+
+    pub(super) fn show_entries(&mut self) {
+        self.about = false;
+        self.preview = false;
     }
 
     pub(super) fn for_load(&mut self, load: &str) {
@@ -301,6 +314,14 @@ impl State {
 }
 
 pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
+    let report = cx.part().map(|_| super::bridge::report(cx, cx.state.selected));
+    if report != cx.state.logs.load_report {
+        let selected = cx.state.logs.load_selected.and_then(|n| cx.state.logs.load_entries.get(n)).map(|entry| entry.title.clone());
+        let same_instrument = report.as_ref().zip(cx.state.logs.load_report.as_ref()).is_some_and(|(a,b)| a.instrument == b.instrument);
+        cx.state.logs.load_entries = report.as_ref().map(super::load_report::entries).unwrap_or_default();
+        cx.state.logs.load_selected = same_instrument.then(|| selected.and_then(|title| cx.state.logs.load_entries.iter().position(|entry| entry.title == title))).flatten();
+        cx.state.logs.load_report = report;
+    }
     cx.state.logs.refresh(cx.p);
     draw(ui, &mut cx.state.logs, cx.p)
 }
@@ -400,7 +421,7 @@ fn script_context(data: &serde_json::Value, source_expected: bool) -> String {
 fn details(event: &LogEvent) -> String {
     let record = serde_json::to_string_pretty(event).unwrap_or_else(|_| "Could not format this event.".into());
     let context = script_context(&event.details, event.script_slot.is_some() || event.stage.as_deref() == Some("scripts"));
-    format!("{}\n\n{context}\nComplete event record\n{record}", event.reason.as_deref().unwrap_or(&event.event))
+    format!("Full message: {}\nLevel: {}\nTime: {}\nSource: {}\nStage: {}\nFile: {}\n\n{context}\nComplete event record\n{record}", event.reason.as_deref().unwrap_or(&event.event), level_name(event.level), time(event.timestamp_ms), event.module, event.stage.as_deref().unwrap_or("—"), event.path.as_deref().unwrap_or("—"))
 }
 
 fn event_heading(event: &serde_json::Value) -> String {
@@ -465,7 +486,7 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
         state.requested = None;
         state.refresh(params);
     }
-    let (open, open_el) = action(ui, "logs-folder", "Open log folder", false);
+    let (open, open_el) = action(ui, "logs-folder", "Log folder", false);
     let path = status
         .and_then(|s| s.log_path.clone())
         .or_else(diagnostics::log_path);
@@ -479,7 +500,7 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
     let (preview, export_el) = action(
         ui,
         "logs-export-preview",
-        "Export support report…",
+        "Export…",
         state.preview,
     );
     if preview {
@@ -501,7 +522,7 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
                 .into_owned();
         }
     }
-    let (copy, copy_el) = action(ui, "logs-copy-all", "Copy all diagnostics", false);
+    let (copy, copy_el) = action(ui, "logs-copy-all", "Copy all", false);
     if copy && state.copy_thread.is_none() {
         let params = params.clone();
         let answer = state.copy_answer.clone();
@@ -522,15 +543,18 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
             }
         }
     }
-    let mut content = vec![section_bar("Logs", vec![copy_el.when(state.copy_thread.is_some(), El::disabled), export_el, open_el, refresh_el])];
+    let (about, about_el) = action(ui, "logs-about-button", "About…", state.about);
+    if about { state.about ^= true; state.preview = false; }
+    let mut content = vec![row![copy_el.when(state.copy_thread.is_some(), El::disabled), export_el, open_el, refresh_el, spacer(), about_el]
+        .gap(SPACE).wrap().pad((INSET, TIGHT)).shrink(0)];
     for (index, report) in sampler_core::trace_report::reports().iter().enumerate() {
         let (show, button) = action(ui, format!("logs-signal-trace-{index}"), "Open signal chart", false);
         if show { state.folder_picker.ask(picker::Ask::Reveal(report.chart.clone())); }
         let (show_json, json_button) = action(ui, format!("logs-signal-json-{index}"), "Open trace JSON", false);
         if show_json { state.folder_picker.ask(picker::Ask::Reveal(report.json.clone())); }
-        content.push(section_bar("Signal trace", vec![button,json_button]));
-        content.push(caption(format!("{} records · {} dropped · {}", report.records, report.dropped,
-            report.error.as_deref().unwrap_or(if report.complete { "complete" } else { "recording" }))).fill(secondary()).lines(2));
+        let status = format!("{} records · {} dropped · {}", report.records, report.dropped,
+            report.error.as_deref().unwrap_or(if report.complete { "complete" } else { "recording" }));
+        content.push(row![button.tip(status.clone()), json_button.tip(status)].gap(SPACE).wrap().pad((INSET, TIGHT)).shrink(0));
     }
     if let Some(receipt) = &state.receipt {
         let mut summary = vec![
@@ -722,7 +746,7 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
         );
     }
     if state.preview {
-        let (back, back_el) = action(ui, "logs-back", "Back to logs", false);
+        let (back, back_el) = action(ui, "logs-back", "Back to Report", false);
         if back {
             state.preview = false;
         }
@@ -736,18 +760,15 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
             .min_w(0)
             .id("logs-panel");
     }
-    content.push(
-        row![field(
-            ui,
-            "logs-search",
-            &mut state.search,
-            "Search diagnostics: message, library, patch, stage or load ID"
-        )]
-        .pad((INSET, TIGHT))
-        .shrink(0),
-    );
-    let mut levels = Vec::new();
-    for (n, level) in [
+    let (filters, filters_el) = action(ui, "logs-filters", "Filters", state.filters);
+    if filters { state.filters ^= true; }
+    let (clear, clear_el) = action(ui, "logs-clear-filters", "Reset", false);
+    if clear { state.search.clear(); state.levels = [true; 4]; }
+    content.push(row![text_input(ui, "logs-search", &mut state.search).el.named("Search reports").h(CONTROL).flex(1).min_w(0), filters_el, clear_el]
+        .gap(SPACE).pad((INSET, TIGHT)).shrink(0));
+    if state.filters {
+        let mut levels = Vec::new();
+        for (n, level) in [
         LogLevel::Debug,
         LogLevel::Info,
         LogLevel::Warning,
@@ -770,48 +791,20 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
         }
         levels.push(el);
     }
-    let (clear, clear_el) = action(ui, "logs-clear-filters", "Reset filters", false);
-    if clear {
-        state.search.clear();
-        state.levels = [true; 4];
+        content.push(row![segmented(levels)].pad((INSET, TIGHT)).shrink(0));
     }
-    content.push(
-        row![segmented(levels), spacer(), clear_el]
-            .gap(SPACE)
-            .pad((INSET, TIGHT))
-            .shrink(0),
-    );
-    let Some(snapshot) = snapshot else {
-        content.push(
-            col![
-                body(if state.read_error.is_some() {
-                    "The journal is unavailable. Refresh to retry."
-                } else {
-                    "Reading the diagnostic journal…"
-                })
-                .lines(3)
-            ]
-            .pad(INSET)
-            .flex(1)
-            .min_h(0)
-            .id("logs-loading"),
-        );
-        return col(content)
-            .gap(0)
-            .align(Align::Stretch)
-            .flex(1)
-            .min_h(0)
-            .min_w(0);
-    };
+    if snapshot.is_none() {
+        content.push(caption(if state.read_error.is_some() { "Journal unavailable. Refresh to retry." } else { "Reading the journal…" })
+            .fill(secondary()).w(Len::Pct(100.)).pad((INSET,TIGHT)).shrink(0).id("logs-loading"));
+    }
+    let snapshot = snapshot.unwrap_or_else(|| Arc::new(DiagnosticSnapshot {
+        revision: 0, events: Vec::new(), status: Default::default(), build: serde_json::Value::Null,
+    }));
     let fresh = state.filter(&snapshot);
     content.push(
         row![caption(format!(
-            "{} matching / {} retained (up to {}) · {} session events · {} write errors · UTC",
-            state.matches.len(),
-            snapshot.events.len(),
-            diagnostics::HISTORY_LIMIT,
-            snapshot.status.total_events,
-            snapshot.status.write_errors
+            "{} matching events · {} retained · UTC",
+            state.matches.len(), snapshot.events.len()
         ))
         .fill(secondary())
         .lines(2)].justify(Justify::Start)
@@ -828,231 +821,135 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
             .fill(secondary()).lines(2)].justify(Justify::Start).pad((INSET, TIGHT)).shrink(0));
     }
     content.push(rule());
-    let view_h = ui
-        .scene()
-        .and_then(|s| s.surface("logs-list"))
-        .map_or(300., |s| s.frame.size.height);
-    let mut at = state.selected.and_then(|seq| {
-        state
-            .matches
-            .iter()
-            .position(|&n| snapshot.events[n].sequence == seq)
-    });
-    if ui
-        .focus_key()
-        .is_some_and(|id| id == "logs-list" || id.starts_with("log-event-"))
-    {
+    let view_h = ui.scene().and_then(|s| s.surface("logs-list")).map_or(300., |s| s.frame.size.height);
+    let words: Vec<_> = state.search.to_lowercase().split_whitespace().map(str::to_owned).collect();
+    let load_matches: Vec<_> = state.load_entries.iter().enumerate().filter_map(|(n, entry)| {
+        let text = format!("{} {}", entry.title, entry.detail).to_lowercase();
+        words.iter().all(|word| text.contains(word)).then_some(n)
+    }).collect();
+    let prefix = load_matches.len();
+    let count = prefix + state.matches.len();
+    let mut at = state.load_selected.and_then(|n| load_matches.iter().position(|&v| v == n))
+        .or_else(|| state.selected.and_then(|seq| state.matches.iter().position(|&n| snapshot.events[n].sequence == seq)).map(|n| n + prefix));
+    let details_h = (view_h - ROW * 2.).clamp(120., 240.);
+    if ui.focus_key().is_some_and(|id| id == "logs-list" || id.starts_with("log-event-") || id.starts_with("report-entry-")) {
         for key in ui.shortcuts() {
-            let last = state.matches.len().saturating_sub(1);
+            let last = count.saturating_sub(1);
             let page = (view_h / ROW).max(1.) as usize;
             at = match key.key {
                 Key::Down => Some(at.map_or(0, |n| (n + 1).min(last))),
                 Key::Up => Some(at.map_or(last, |n| n.saturating_sub(1))),
-                Key::Home => Some(0),
-                Key::End => Some(last),
+                Key::Home => Some(0), Key::End => Some(last),
                 Key::PageDown => Some(at.map_or(0, |n| (n + page).min(last))),
                 Key::PageUp => Some(at.map_or(0, |n| n.saturating_sub(page))),
                 _ => continue,
             };
-            if let Some(event) = at
-                .and_then(|n| state.matches.get(n))
-                .map(|&n| &snapshot.events[n])
-            {
-                state.selected = Some(event.sequence);
+            if let Some(n) = at.filter(|&n| n < count) {
+                state.load_selected = load_matches.get(n).copied();
+                state.selected = n.checked_sub(prefix).and_then(|n| state.matches.get(n)).map(|&n| snapshot.events[n].sequence);
                 state.reveal = true;
             }
         }
     }
-    let from = state.y;
-    if let Some(wheel) = ui.wheel("logs-list") {
-        state.y += wheel.y;
+    let top = |n: usize| n as f64 * ROW + if at.is_some_and(|open| n > open) { details_h } else { 0. };
+    let total = top(count);
+    if fresh && state.y > 0. && let Some((seq, offset)) = state.anchor
+        && let Some(n) = state.matches.iter().position(|&n| snapshot.events[n].sequence == seq) {
+        state.y = top(prefix + n) + offset;
     }
-    let total = state.matches.len() as f64 * ROW;
+    let from = state.y;
+    if let Some(wheel) = ui.wheel("logs-list") { state.y += wheel.y; }
     bar_drag(ui, "logs-list-bar", &mut state.y, view_h, total);
     if state.reveal {
-        if let Some(at) = at {
-            let top = at as f64 * ROW;
-            if top < state.y {
-                state.y = top;
-            } else if top + ROW > state.y + view_h {
-                state.y = top + ROW - view_h;
-            }
+        if let Some(n) = at {
+            let start = top(n);
+            let end = start + ROW + details_h;
+            if start < state.y { state.y = start; }
+            else if end > state.y + view_h { state.y = (end - view_h).min(start); }
         }
         state.reveal = false;
     }
     state.y = state.y.clamp(0., (total - view_h).max(0.));
-    let drawn = glide(
-        ui,
-        "logs-list",
-        state.y,
-        fresh || leaps(from, state.y) || ui.get("logs-list-bar").held,
-    );
-    let first = (drawn / ROW) as usize;
-    let last = ((drawn + view_h) / ROW).ceil() as usize;
-    state.anchor = state
-        .matches
-        .get(first)
-        .map(|&n| (snapshot.events[n].sequence, drawn - first as f64 * ROW));
-    let range = first.min(state.matches.len())..last.min(state.matches.len());
-    let mut items = vec![block(1, range.start as f64 * ROW).shrink(0)];
-    for i in range.clone() {
-        let event = &snapshot.events[state.matches[i]];
+    let drawn = glide(ui, "logs-list", state.y, fresh || leaps(from, state.y) || ui.get("logs-list-bar").held);
+    let first = (0..count).find(|&n| top(n + 1) > drawn).unwrap_or(count);
+    let last = (first..count).find(|&n| top(n) >= drawn + view_h).unwrap_or(count);
+    state.anchor = first.checked_sub(prefix).and_then(|n| state.matches.get(n))
+        .map(|&n| (snapshot.events[n].sequence, drawn - top(first)));
+    let mut items = vec![block(1, top(first)).shrink(0)];
+    for n in first..last {
+        if let Some(&index) = load_matches.get(n) {
+            let entry = &state.load_entries[index];
+            let id = format!("report-entry-{index}");
+            let title_id = format!("{id}-title");
+            let selected = state.load_selected == Some(index);
+            if [id.as_str(), title_id.as_str()].iter().any(|target| ui.get(*target).activated()) {
+                state.load_selected = if selected { None } else { Some(index) };
+                state.selected = None;
+            }
+            let header = row![glyph(if selected { Icon::Down } else { Icon::Right }, TEXT, secondary()),
+                body(format!("{} · {}", state.load_report.as_ref().map_or("Instrument", |r| r.instrument.as_str()), entry.title)).text_size(TEXT).lines(1).flex(1).min_w(0).id(title_id)]
+                .gap(SPACE).align(Align::Center).h(ROW).pad((INSET, 2.)).shrink(0);
+            let mut parts = vec![header];
+            if selected {
+                parts.push(col![body(entry.detail.clone()).text_size(TEXT).w(Len::Pct(100.)).shrink(0).id(format!("report-full-{index}"))]
+                    .align(Align::Stretch).pad(INSET).h(details_h).scroll().captures_wheel().shrink(0).id(format!("report-detail-{index}")));
+            }
+            items.push(interactive(col(parts).gap(0).align(Align::Stretch).w(Len::Pct(100.)).shrink(0)
+                .when(selected, |e| e.fill(Role::Raised)).focusable().a11y(A11y::Button)
+                .named(entry.title.clone()).tip(entry.title.clone()).id(id), selected));
+            continue;
+        }
+        let event = &snapshot.events[state.matches[n - prefix]];
         let id = format!("log-event-{}", event.sequence);
         let title_id = format!("{id}-title");
         let reason_id = format!("{id}-reason");
-        // Named text surfaces are hit targets in MUI; activation does not
-        // bubble. Both text lines belong to this same selectable event row.
-        if [id.as_str(), title_id.as_str(), reason_id.as_str()]
-            .iter()
-            .any(|target| ui.get(*target).activated())
-        {
-            state.selected = Some(event.sequence);
-        }
         let selected = state.selected == Some(event.sequence);
-        let stage = event.stage.as_deref().unwrap_or(&event.module);
-        let code = event.code.as_deref().unwrap_or(&event.event);
-        let patch = event.path.as_deref().map(filename)
-            .or(event.library.as_deref()).unwrap_or("Application");
-        let title = format!("{} · {patch} · {stage} / {code}", level_name(event.level));
-        items.push(interactive(
-            col![
-                row![caption(title)
-                    .fill(if event.level == LogLevel::Error {
-                        Fill::from(Role::Warning)
-                    } else {
-                        secondary()
-                    })
-                    .lines(1)
-                    .min_w(0)
-                    .id(title_id)].justify(Justify::Start).w(Len::Pct(100.)).min_w(0),
-                row![body(event.reason.as_deref().unwrap_or(&event.event))
-                    .text_size(TEXT)
-                    .lines(1)
-                    .min_w(0)
-                    .id(reason_id)].justify(Justify::Start).w(Len::Pct(100.)).min_w(0),
-            ]
-            .gap(0)
-            .align(Align::Start)
-            .h(ROW)
-            .pad((INSET, 2.))
-            .clip()
-            .shrink(0)
-            .when(selected, |e| e.fill(Role::Raised))
-            .focusable()
-            .a11y(A11y::Button)
-            .named(format!(
-                "{}: {}",
-                level_name(event.level),
-                event.reason.as_deref().unwrap_or(&event.event)
-            ))
-            .tip(match diagnostics::excerpt_text(&event.details) {
-                Some(excerpt) => format!("{}\n\nScript source context\n{excerpt}", event.reason.as_deref().unwrap_or(&event.event)),
-                None => event.reason.as_deref().unwrap_or(&event.event).to_owned(),
-            })
-            .id(id),
-            selected,
-        ));
+        if [id.as_str(), title_id.as_str(), reason_id.as_str()].iter().any(|target| ui.get(*target).activated()) {
+            state.selected = if selected { None } else { Some(event.sequence) };
+            state.load_selected = None;
+        }
+        let patch = event.path.as_deref().map(filename).or(event.library.as_deref()).unwrap_or("Application");
+        let title = format!("{} · {patch} · {}", level_name(event.level), time(event.timestamp_ms));
+        let header = col![
+            row![caption(title).fill(if event.level == LogLevel::Error { Fill::from(Role::Warning) } else { secondary() })
+                .lines(1).min_w(0).id(title_id)].justify(Justify::Start).w(Len::Pct(100.)).min_w(0),
+            row![body(event.reason.as_deref().unwrap_or(&event.event)).text_size(TEXT).lines(1).min_w(0).id(reason_id)]
+                .justify(Justify::Start).w(Len::Pct(100.)).min_w(0)
+        ].gap(0).align(Align::Start).h(ROW).pad((INSET, 2.)).clip().shrink(0);
+        let mut parts = vec![header];
+        if selected {
+            if state.detail.as_ref().is_none_or(|(seq, _)| *seq != event.sequence) {
+                state.detail = Some((event.sequence, details(event).into()));
+            }
+            let full = state.detail.as_ref().unwrap().1.clone();
+            let (copy, copy_el) = action(ui, "logs-copy", "Copy details", false);
+            if copy { ui.set_clipboard(full.to_string()); }
+            let (scope, scope_el) = action(ui, "logs-this-load", "This load", false);
+            if scope && let Some(load) = &event.load_id { state.search = format!("load:{load}"); state.levels = [true; 4]; }
+            parts.push(col![
+                row![section("Event details"), spacer(), scope_el.when(event.load_id.is_none(), El::disabled), copy_el]
+                    .gap(SPACE).wrap().shrink(0),
+                body(full).text_size(TEXT).w(Len::Pct(100.)).shrink(0).id("logs-full-message")
+            ].gap(SPACE).align(Align::Stretch).pad(INSET).h(details_h).scroll().captures_wheel().shrink(0).id("logs-details"));
+        }
+        items.push(interactive(col(parts).gap(0).align(Align::Stretch).w(Len::Pct(100.)).shrink(0)
+            .when(selected, |e| e.fill(Role::Raised)).focusable().a11y(A11y::Button)
+            .named(format!("{}: {}", level_name(event.level), event.reason.as_deref().unwrap_or(&event.event)))
+            .tip(event.reason.as_deref().unwrap_or(&event.event).to_owned()).id(id), selected));
     }
-    items.push(block(1, (state.matches.len() - range.end) as f64 * ROW).shrink(0));
-    if state.matches.is_empty() {
-        items.push(
-            body(if snapshot.events.is_empty() {
-                "No diagnostic events yet. Load an instrument to record its stages."
-            } else {
-                "No events match these filters. Reset filters to see the retained history."
-            })
-            .lines(4)
-            .pad(INSET)
-            .shrink(0),
-        );
+    items.push(block(1, (total - top(last)).max(0.)).shrink(0));
+    if count == 0 {
+        items.push(body(if snapshot.events.is_empty() {
+            "No reports yet. Load an instrument to see its results."
+        } else { "No reports match. Reset filters to see retained entries." }).w(Len::Pct(100.)).pad(INSET).shrink(0));
     }
-    let list = col(items)
-        .gap(0)
-        .align(Align::Stretch)
-        .w(Len::Pct(100.))
-        .h(Len::Pct(100.))
-        .scroll()
-        .no_scrollbar()
-        .scrolled(0., drawn)
-        .focusable()
-        .a11y(A11y::Group)
-        .named("Diagnostic events")
-        .id("logs-list");
+    let list = col(items).gap(0).align(Align::Stretch).w(Len::Pct(100.)).h(Len::Pct(100.))
+        .scroll().no_scrollbar().scrolled(0., drawn).focusable().a11y(A11y::Group).named("Report entries").id("logs-list");
     let mut layers = vec![list];
     if total > view_h {
-        layers.push(
-            scrollbar(
-                ui,
-                "logs-list-bar",
-                "Scroll diagnostic events",
-                drawn,
-                view_h,
-                total,
-            )
-            .anchor(Align::End, Align::Start),
-        );
+        layers.push(scrollbar(ui, "logs-list-bar", "Scroll reports", drawn, view_h, total).anchor(Align::End, Align::Start));
     }
     content.push(stack(layers).flex(1).min_h(80.).min_w(0));
-    if let Some(event) = state
-        .selected
-        .and_then(|seq| snapshot.events.iter().find(|e| e.sequence == seq))
-    {
-        let (copy, copy_el) = action(ui, "logs-copy", "Copy event details", false);
-        if state
-            .detail
-            .as_ref()
-            .is_none_or(|(seq, _)| *seq != event.sequence)
-        {
-            state.detail = Some((event.sequence, details(event).into()));
-        }
-        let full = state.detail.as_ref().unwrap().1.clone();
-        if copy {
-            ui.set_clipboard(full.to_string());
-        }
-        let (scope, scope_el) = action(ui, "logs-this-load", "This load", false);
-        if scope && let Some(load) = &event.load_id {
-            state.for_load(load);
-        }
-        content.push(rule());
-        content.push(section_bar(
-            "Event details",
-            vec![
-                scope_el.when(event.load_id.is_none(), El::disabled),
-                copy_el,
-            ],
-        ));
-        let width = ui
-            .scene()
-            .and_then(|s| s.surface("logs-details"))
-            .map_or(550., |s| s.frame.size.width - 2. * INSET);
-        content.push(
-            col![
-                body(full)
-                    .text_size(TEXT)
-                    .w(width.max(100.))
-                    .shrink(0)
-            ]
-            .pad(INSET)
-            .h(if diagnostics::excerpt_text(&event.details).is_some() { 200. } else { 120. })
-            .shrink(0)
-            .scroll()
-            .id("logs-details"),
-        );
-    } else {
-        content.push(rule());
-        content.push(section_bar("Event details", Vec::new()));
-        content.push(
-            col![
-                caption("Select an event to inspect its complete record or copy it.")
-                    .fill(secondary())
-                    .lines(3)
-            ]
-            .pad(INSET)
-            .h(120.)
-            .shrink(0)
-            .id("logs-details"),
-        );
-    }
     col(content)
         .gap(0)
         .align(Align::Stretch)
@@ -1165,6 +1062,14 @@ mod tests {
         assert!(detail.y >= entry.y && detail.y + detail.size.height <= entry.y + entry.size.height + 0.5,
             "details expand within their entry: {detail:?} in {entry:?}");
         assert!(state.detail.as_ref().unwrap().1.contains(&"Full error detail ".repeat(80)));
+        let full = scene.surface("logs-full-message").unwrap().frame;
+        assert!(full.size.width <= detail.size.width - 2. * INSET + 0.5, "the full message wraps inside its entry");
+        assert!(full.size.height > detail.size.height, "long details are retained in the scrollable expansion");
+        let at = Point::new(detail.x + detail.size.width / 2., detail.y + detail.size.height / 2.);
+        let outer = state.y;
+        tick(&mut ui, &mut state, &params, Input { wheel: Vec2::new(0., 1000.), pointer: PointerInput { pos: Some(at), ..Default::default() }, ..Default::default() });
+        assert_eq!(state.y, outer, "scrolling full detail does not scroll the entry list behind it");
+        assert!(ui.scroll("logs-details")[1] > 0., "all lines can be reached by scrolling the expansion");
         press(&mut ui, &mut state, &params, "log-event-1-title");
         assert!(ui.scene().unwrap().surface("logs-details").is_none(), "clicking again collapses the entry");
     }
@@ -1402,6 +1307,7 @@ mod tests {
         assert!(ui.scene().unwrap().surface("log-event-3").is_some(),
             "oldest selected event remains in the viewport: list={:?}, y={}, matches={}",
             ui.scene().unwrap().surface("logs-list").map(|s| s.frame), state.y, state.matches.len());
+        press(&mut ui, &mut state, &params, "logs-filters");
         press(&mut ui, &mut state, &params, "logs-level-1");
         type_into(&mut ui, &mut state, &params, "logs-search", "Marker 1001 Fixture Strings Violin samples load:15");
         assert_eq!(
@@ -1439,6 +1345,8 @@ mod tests {
             tick(&mut ui, &mut state, &params, Input::default());
             assert_eq!(state.selected, Some(1002), "clicking event {target} selects the whole row");
         }
+        press(&mut ui, &mut state, &params, "log-event-1002");
+        assert_eq!(state.selected, None, "a second activation collapses the entry");
         press(&mut ui, &mut state, &params, "log-event-1002");
         assert_eq!(state.selected, Some(1002));
         assert!(ui.scene().unwrap().surface("logs-copy").is_some());
