@@ -1960,6 +1960,20 @@ fn native_primary_requires_unique_physical_identity_and_rejects_bad_coefficients
     assert!(lower(&malformed, 48000, vec![constant(1.)], no_behaviors).is_err());
 }
 
+// V1's eight-frame affine kernel rounds at fragment boundaries. Match the existing 64-frame control grid.
+fn render_v1_on_core_grid(state: &mut sampler_core::v1_voice_controls::ControlState,
+    plan: &sampler_core::v1_voice_controls::ControlPlan, now: u64,
+    amplitude: &mut [f32], mut flex: Option<&mut [f32]>) {
+    let mut offset = 0;
+    while offset < amplitude.len() {
+        let n = (64 - ((now as usize + offset) % 64)).min(amplitude.len() - offset);
+        let mut positions = [0;64];
+        state.render(plan,120.,1.,&mut amplitude[offset..offset+n],
+            flex.as_deref_mut().map(|f| &mut f[offset..offset+n]),None,&mut positions[..n]).unwrap();
+        offset += n;
+    }
+}
+
 #[test]
 fn lowered_whole_voice_uses_v1_ordinary_amplitude_clock() {
     use sampler_core::v1_voice_controls::{Ahdsr, ControlDescription, ControlPlan, ControlState};
@@ -1974,13 +1988,12 @@ fn lowered_whole_voice_uses_v1_ordinary_amplitude_clock() {
     support::without_heap(|| { rt.trigger(input(60), 60, 1.).unwrap(); });
     let mut output = [[0.; 2]; 64];
     let mut amp = [0.; 64];
-    let mut positions = [0; 64];
     for (block, n) in [1, 7, 31, 32, 33, 64, 17, 3].into_iter().enumerate() {
         if block == 5 {
             oracle.release(&plan);
             support::without_heap(|| { rt.note_off(input(60), None).unwrap(); });
         }
-        oracle.render(&plan, 120., 1., &mut amp[..n], None, None, &mut positions[..n]).unwrap();
+        render_v1_on_core_grid(&mut oracle,&plan,rt.now(),&mut amp[..n],None);
         support::without_heap(|| rt.render(&mut output[..n]).unwrap());
         for (i, (frame, value)) in output[..n].iter().zip(&amp).enumerate() {
             assert_eq!(frame.map(f32::to_bits), [value.to_bits(); 2], "whole voice block={block} frame={i}");
@@ -2118,18 +2131,7 @@ fn lowered_whole_voice_flex_is_bit_exact_through_dsp_release_and_reuse() {
                 let mut out = [[0.; 2]; 64];
                 let mut amp = [0.; 64];
                 let mut flex = [0.; 64];
-                let mut positions = [0; 64];
-                oracle
-                    .render(
-                        &plan,
-                        120.,
-                        1.,
-                        &mut amp[..n],
-                        Some(&mut flex[..n]),
-                        None,
-                        &mut positions[..n],
-                    )
-                    .unwrap();
+                render_v1_on_core_grid(&mut oracle,&plan,rt.now(),&mut amp[..n],Some(&mut flex[..n]));
                 support::without_heap(|| rt.render(&mut out[..n]).unwrap());
                 for i in 0..n {
                     assert_eq!(
