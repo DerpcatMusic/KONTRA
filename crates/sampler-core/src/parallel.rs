@@ -370,6 +370,7 @@ impl View<'_> {
         let n = self.notes.get(f.note.0).unwrap();
         let expression = self.expressions.get(n.expression.0).unwrap();
         let plan = self.plans.get(n.plan.0).unwrap();
+        plan.project_wavetable(&mut v.cursor, v.group);
         let prelude = self.preps[i];
         // A prepared voice had its step set with its modulation.
         if prelude.is_none() {
@@ -474,6 +475,7 @@ impl View<'_> {
             gains[k] = expression.rendered.gains;
             v.cursor = v.cursor.with_step(v.base_step * expression.rendered.ratio);
             let plan = self.plans.get(n.plan.0).unwrap();
+            plan.project_wavetable(&mut v.cursor, v.group);
             plan_id = Some(n.plan.0);
             let chain = &plan.prepared.voice_chains[v.chain.unwrap()];
             let asset = &plan.prepared.pcm[v.sample];

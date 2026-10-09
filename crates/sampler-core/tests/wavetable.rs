@@ -282,3 +282,85 @@ fn ir_lowering_reaches_the_oscillator_with_tune_and_ignores_saved_root_and_loops
         "authored +12 semitones gives880Hz, crossings{rises}"
     );
 }
+
+fn addressed_wave_plan(data: &[[f32; 2]], source: Wavetable, chain: bool) -> Prepared {
+    use sampler_ir as ir;
+    let mut zone = ir::Zone::new(ir::AssetRef(0));
+    zone.group = Some(ir::GroupRef(0));
+    zone.velocity = ir::VelocityResponse::None;
+    let mut instrument = ir::Instrument {
+        assets: vec![ir::Asset { location: ir::AssetLocation::Path("synthetic.wav".into()),
+            encoding: ir::Encoding::Wav, root_key: None, loops: vec![] }],
+        groups: vec![ir::Group { wavetable: Some(source), ..Default::default() }],
+        zones: vec![zone], ..Default::default()
+    };
+    instrument.source_indices.groups = vec![None; 8];
+    instrument.source_indices.groups[7] = Some(ir::GroupRef(0));
+    let plan = sampler_core::lower::lower(&instrument, 48000,
+        vec![Pcm::new(48000, data.to_vec().into_boxed_slice()).unwrap()], |_, p| Ok(p)).unwrap();
+    if chain {
+        plan.with_voice_chains(vec![sampler_core::VoiceChain::new(
+            vec![sampler_core::Processor::Gain(1.)], vec![], 0).unwrap()], vec![Some(0)]).unwrap()
+    } else { plan }
+}
+fn wave_address(name: &str, group: i32) -> sampler_core::EngineParameterAddress {
+    sampler_core::EngineParameterAddress { parameter: sampler_core::engine_parameter_id(name).unwrap(),
+        group, slot: -1, generic: -1 }
+}
+#[test]
+fn live_wave_writes_reach_active_voices_in_single_batch_and_parallel_paths_without_resetting_phase() {
+    use sampler_core::Threads;
+    let data: Vec<_> = (0..2*CYCLE).map(|i| [
+        (std::f32::consts::TAU * (i % CYCLE) as f32 / CYCLE as f32).sin()
+            * if i < CYCLE { 1. } else { 0.25 }; 2]).collect();
+    for threads in [1, 2] {
+        for chain in [false, true] {
+            for (name, value) in [("ENGINE_PAR_WT_POSITION", 730_000),
+                ("ENGINE_PAR_WT_FORM", 230_000), ("ENGINE_PAR_WT_FORM2", 870_000)] {
+                let mut source = Wavetable { phase: 0.17, form1_type: 16, form1: 0.5,
+                    form2_type: 16, form2: 0.5, ..Default::default() };
+                let plan = addressed_wave_plan(&data, source, chain);
+                let address = wave_address(name, 7);
+                let mut rt = Runtime::new(plan, Limits { notes: 64, performances: 1,
+                    families: 64, expressions: 64, voices: 64, commands: 4, channels: 0,
+                    decisions: 0, behaviors: 0, behavior_fuel: 0, behavior_cells: 0, note_cells: 0 }).unwrap()
+                    .with_threads(Threads::Fixed(threads));
+                let mut first = [[0.; 2]; 64];
+                support::without_heap(|| {
+                    for id in 0..64 {
+                        let mut note = input(69); note.external_id = Some(id);
+                        rt.trigger(note, 69, 1.).unwrap();
+                    }
+                    rt.render(&mut first).unwrap();
+                    assert!(rt.set_engine_parameter(wave_address(name, 0), value).is_err(), "dense address must not alias physical7");
+                    rt.set_engine_parameter(address, value).unwrap();
+                    assert_eq!(rt.engine_parameter(address).unwrap(), value);
+                });
+                match name { "ENGINE_PAR_WT_POSITION" => source.position = 0.73,
+                    "ENGINE_PAR_WT_FORM" => source.form1 = 0.23, _ => source.form2 = 0.87 }
+                let step = 440. * CYCLE as f64 / 48000.;
+                let mut phase = f64::from(source.phase) * CYCLE as f64;
+                for _ in 0..64 { phase = (phase + step).rem_euclid(CYCLE as f64); }
+                let mut expected = [[0.; 2]; 64];
+                oracle(&data, source, phase, step, &mut expected);
+                for frame in &mut expected { for value in frame { let single = *value; *value = 0.;
+                    for _ in 0..64 { *value += single; } } }
+                let mut actual = [[0.; 2]; 64];
+                support::without_heap(|| rt.render(&mut actual).unwrap());
+                assert_eq!(actual, expected, "{name} chain{chain} threads{threads}");
+                if threads == 2 { assert!(rt.parallel_blocks() > 0); }
+            }
+        }
+    }
+}
+
+#[test]
+fn wave_control_schema_cannot_replace_amounts_with_integer_values() {
+    let data = vec![[0.; 2]; CYCLE];
+    let plan = addressed_wave_plan(&data, Wavetable::default(), false);
+    assert_eq!(plan.engine_parameter_bindings().len(), 3);
+    let mut controls = plan.controls().to_vec();
+    controls[0].domain = sampler_core::ControlDomain::Integer { min: 0, max: 1 };
+    controls[0].default = sampler_core::ControlValue::Integer(0);
+    assert!(plan.with_controls(controls).is_err());
+}

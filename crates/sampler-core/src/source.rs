@@ -323,6 +323,13 @@ struct ReadAddress {
 
 impl Cursor {
     pub(super) fn wavetable(&self) -> Option<crate::Wavetable> { self.wavetable }
+    pub(super) fn set_wavetable_controls(&mut self, [position, form1, form2]: [f32; 3]) {
+        if let Some(source) = &mut self.wavetable {
+            source.position = position;
+            source.form1 = form1;
+            source.form2 = form2;
+        }
+    }
     /// Start within the original view, measured in source time, never pitch time.
     /// Offsets at/past the view end are silent. Starting past a loop's outward
     /// edge bypasses it; starting inside retains its original boundaries/count.
