@@ -1,8 +1,8 @@
 //! Plan-local parameter identities and immutable editor metadata. Names never
 //! enter rendering; preparation resolves addresses to existing control owners.
 use crate::{ControlId, EngineParameterAddress, Error};
-use std::collections::BTreeMap;
 pub use sampler_ir::ProcessorParameter as ParameterRole;
+use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ParameterScope {

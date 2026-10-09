@@ -136,9 +136,14 @@ mod tests {
             ("Release", 0x36ae7e, 0.001, 10., 0.15),
             ("Tone", 0x62f120, 20., 20_000., 20_000.),
         ] {
-            let info = infos.iter().find(|p| p.name == name).expect("v1 global host parameter");
+            let info = infos
+                .iter()
+                .find(|p| p.name == name)
+                .expect("v1 global host parameter");
             assert_eq!(info.id, id);
-            assert!(matches!(info.range, ParamRange::Logarithmic { min: a, max: b } if a == min && b == max));
+            assert!(
+                matches!(info.range, ParamRange::Logarithmic { min: a, max: b } if a == min && b == max)
+            );
             assert_eq!(info.default_plain, default);
             assert_eq!(HostAutomation::address(id), None);
             params.set_plain(id, min);
@@ -149,7 +154,13 @@ mod tests {
         }
         assert_eq!(params.volume.id(), 0xe0698f);
         for address in 0..crate::sound::HOST_AUTOMATION_SLOTS {
-            assert_eq!(infos.iter().filter(|p| p.id == BASE + u32::from(address)).count(), 1);
+            assert_eq!(
+                infos
+                    .iter()
+                    .filter(|p| p.id == BASE + u32::from(address))
+                    .count(),
+                1
+            );
         }
     }
 }

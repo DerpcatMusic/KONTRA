@@ -1,9 +1,9 @@
 use std::io::Cursor;
 
 use crate::{
-    Error,
-    kontakt::{Chunk, KontaktError, objects::voice_limit::VoiceLimit},
+    kontakt::{objects::voice_limit::VoiceLimit, Chunk, KontaktError},
     read_bytes::ReadBytesExt,
+    Error,
 };
 
 use super::VoiceGroup;
@@ -150,16 +150,14 @@ mod tests {
         let mut empty = inline_limit("", 0);
         empty.extend([0; 16]);
         assert_eq!(empty.len(), 38);
-        assert!(
-            VoiceGroups::try_from(&Chunk {
-                id: 0x32,
-                data: empty
-            })
-            .unwrap()
-            .groups
-            .iter()
-            .all(Option::is_none)
-        );
+        assert!(VoiceGroups::try_from(&Chunk {
+            id: 0x32,
+            data: empty
+        })
+        .unwrap()
+        .groups
+        .iter()
+        .all(Option::is_none));
         let mut full = inline_limit("", 0);
         full.extend([0xff; 16]);
         for index in 0..128 {
@@ -236,13 +234,11 @@ mod tests {
         let mut stream = Cursor::new([data.as_slice(), &[0xaa]].concat());
         VoiceGroups::read(&mut stream).unwrap();
         assert_eq!(stream.position(), data.len() as u64);
-        assert!(
-            VoiceGroups::try_from(&Chunk {
-                id: 0x33,
-                data: vec![]
-            })
-            .is_err()
-        );
+        assert!(VoiceGroups::try_from(&Chunk {
+            id: 0x33,
+            data: vec![]
+        })
+        .is_err());
 
         let standalone = Chunk {
             id: 0x2b,
@@ -255,13 +251,11 @@ mod tests {
         );
         assert!(standalone.into_object().is_ok());
         for end in 0..standalone.data.len() {
-            assert!(
-                VoiceGroup::try_from(&Chunk {
-                    id: 0x2b,
-                    data: standalone.data[..end].to_vec()
-                })
-                .is_err()
-            );
+            assert!(VoiceGroup::try_from(&Chunk {
+                id: 0x2b,
+                data: standalone.data[..end].to_vec()
+            })
+            .is_err());
         }
         let mut bad = Chunk {
             id: 0x2b,

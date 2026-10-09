@@ -56,7 +56,12 @@ impl Outputs {
 fn loaded(sel: &Selection) -> Vec<usize> {
     let used = |s: usize| sel.parts.get(s).is_some_and(|p| !p.path.is_empty());
     let mut slots = Vec::new();
-    for s in sel.order.iter().map(|&s| s as usize).chain(0..sel.parts.len()) {
+    for s in sel
+        .order
+        .iter()
+        .map(|&s| s as usize)
+        .chain(0..sel.parts.len())
+    {
         if used(s) && !slots.contains(&s) {
             slots.push(s);
         }
@@ -66,7 +71,9 @@ fn loaded(sel: &Selection) -> Vec<usize> {
 
 /// The nodes "One per mic" gives a pair of their own: the root's buses.
 fn mic(tree: &MixTree, node: usize) -> bool {
-    tree.nodes.get(node).is_some_and(|n| n.kind == NodeKind::Bus && n.parent == Some(0))
+    tree.nodes
+        .get(node)
+        .is_some_and(|n| n.kind == NodeKind::Bus && n.parent == Some(0))
 }
 
 fn pair(mix: &NodeMix) -> Option<usize> {
@@ -87,7 +94,8 @@ pub fn apply(sel: &mut Selection, trees: &[Option<std::sync::Arc<MixTree>>]) {
     for &s in &slots {
         let p = &mut sel.parts[s];
         if let Some(t) = tree(s) {
-            p.nodes.resize(t.nodes.len().saturating_sub(1), NodeMix::default());
+            p.nodes
+                .resize(t.nodes.len().saturating_sub(1), NodeMix::default());
         }
         if p.output_manual {
             claimed[usize::from(p.output).min(BUSES - 1)] = true;
@@ -137,7 +145,9 @@ pub fn apply(sel: &mut Selection, trees: &[Option<std::sync::Arc<MixTree>>]) {
             // ponytail: past 16 pairs a part shares the one it had.
             None => p.output = free.map_or(p.output, |b| b as u8),
             // Past 16, a mic plays with its instrument.
-            Some(n) => p.nodes[n].output = free.map_or(NodeOutput::Parent, |b| NodeOutput::Pair(b as u8)),
+            Some(n) => {
+                p.nodes[n].output = free.map_or(NodeOutput::Parent, |b| NodeOutput::Pair(b as u8))
+            }
         }
     }
 }
@@ -184,7 +194,10 @@ fn common(names: &[String]) -> String {
         [first, rest @ ..] => {
             let words: Vec<&str> = first.split_whitespace().collect();
             let shared = (0..words.len())
-                .take_while(|&i| rest.iter().all(|n| n.split_whitespace().nth(i) == Some(words[i])))
+                .take_while(|&i| {
+                    rest.iter()
+                        .all(|n| n.split_whitespace().nth(i) == Some(words[i]))
+                })
                 .count();
             if shared > 0 {
                 words[..shared].join(" ")
@@ -197,7 +210,10 @@ fn common(names: &[String]) -> String {
 
 /// What each pair plays, by name: empty when nothing is routed to it.
 /// `trees` name the parts' nodes; without one a node is "Out N".
-pub fn auto_names_with(sel: &Selection, trees: &[Option<std::sync::Arc<MixTree>>]) -> [String; BUSES] {
+pub fn auto_names_with(
+    sel: &Selection,
+    trees: &[Option<std::sync::Arc<MixTree>>],
+) -> [String; BUSES] {
     let mut sources: [Vec<String>; BUSES] = Default::default();
     for s in loaded(sel) {
         let p = &sel.parts[s];
@@ -206,7 +222,9 @@ pub fn auto_names_with(sel: &Selection, trees: &[Option<std::sync::Arc<MixTree>>
         for (n, node) in p.nodes.iter().enumerate() {
             if let Some(b) = pair(node) {
                 let tree = trees.get(s).and_then(Option::as_deref);
-                let mic = tree.and_then(|t| t.nodes.get(n + 1)).map_or(format!("Out {}", n + 2), |m| m.name.clone());
+                let mic = tree
+                    .and_then(|t| t.nodes.get(n + 1))
+                    .map_or(format!("Out {}", n + 2), |m| m.name.clone());
                 sources[b].push(mic_label(&name, &mic));
             }
         }
@@ -240,7 +258,10 @@ pub fn port_names(sel: &Selection, trees: &[Option<std::sync::Arc<MixTree>>]) ->
         let names: Vec<String> = (0..BUSES)
             .filter(|&n| {
                 let b = sel.bus(n);
-                let to = usize::try_from(b.port).ok().filter(|&p| p < BUSES).unwrap_or(n);
+                let to = usize::try_from(b.port)
+                    .ok()
+                    .filter(|&p| p < BUSES)
+                    .unwrap_or(n);
                 to == port && (!b.name.is_empty() || !auto[n].is_empty())
             })
             .map(|n| label_with(sel, &auto, n))
@@ -368,7 +389,11 @@ mod tests {
     fn one_per_instrument_is_the_default_and_stable() {
         let mut sel = rack(&["Harp", "Celli", "Horns"]);
         apply_now(&mut sel);
-        assert_eq!(outputs(&sel), [0, 1, 2], "each instrument on its own pair by default");
+        assert_eq!(
+            outputs(&sel),
+            [0, 1, 2],
+            "each instrument on its own pair by default"
+        );
         // Remove the middle one: the others keep their pairs.
         sel.parts[1] = Part::default();
         sel.order.retain(|&s| s != 1);
@@ -379,9 +404,15 @@ mod tests {
         apply_now(&mut sel);
         assert_eq!((sel.parts[0].output, sel.parts[2].output), (0, 2));
         // A new part takes the free pair, a duplicate in rack order gets its own.
-        sel.parts[1] = Part { path: "/lib/Flute.nki".into(), ..Default::default() };
+        sel.parts[1] = Part {
+            path: "/lib/Flute.nki".into(),
+            ..Default::default()
+        };
         sel.order.push(1);
-        let dup = Part { output: 2, ..sel.parts[2].clone() };
+        let dup = Part {
+            output: 2,
+            ..sel.parts[2].clone()
+        };
         sel.parts.push(dup);
         sel.order.push(3);
         apply_now(&mut sel);
@@ -393,7 +424,11 @@ mod tests {
         let names = port_names(&sel, &[]);
         assert_eq!(&names[..5], ["Harp", "Flute", "Horns", "Horns", "st.5"]);
         to_stereo(&mut sel);
-        assert_eq!(outputs(&sel), [0, 0, 0, 0], "choosing stereo: everything on 1-2");
+        assert_eq!(
+            outputs(&sel),
+            [0, 0, 0, 0],
+            "choosing stereo: everything on 1-2"
+        );
         apply_now(&mut sel);
         assert_eq!(outputs(&sel), [0, 0, 0, 0], "and it stays there");
     }
@@ -409,7 +444,11 @@ mod tests {
         assert_eq!(outputs(&sel), [2, 3, 1]);
         to_stereo(&mut sel);
         apply_now(&mut sel);
-        assert_eq!(outputs(&sel), [0, 0, 1], "stereo mix keeps a hand-picked route");
+        assert_eq!(
+            outputs(&sel),
+            [0, 0, 1],
+            "stereo mix keeps a hand-picked route"
+        );
         reset(&mut sel);
         apply_now(&mut sel);
         assert_eq!(outputs(&sel), [0, 0, 0]);
@@ -417,30 +456,56 @@ mod tests {
 
     #[test]
     fn mic_buses_get_pairs_and_names_groups_stay_inside() {
-        let node = |name: &str, kind, parent| MixNode { name: name.into(), kind, parent: Some(parent), inserts: vec![], sends: vec![] };
+        let node = |name: &str, kind, parent| MixNode {
+            name: name.into(),
+            kind,
+            parent: Some(parent),
+            inserts: vec![],
+            sends: vec![],
+        };
         let mut harp = MixTree::instrument("Harp");
-        harp.nodes.extend([node("Close", NodeKind::Bus, 0), node("Tree", NodeKind::Bus, 0), node("Pluck", NodeKind::Group, 1)]);
+        harp.nodes.extend([
+            node("Close", NodeKind::Bus, 0),
+            node("Tree", NodeKind::Bus, 0),
+            node("Pluck", NodeKind::Group, 1),
+        ]);
         let trees = [Some(std::sync::Arc::new(harp)), None];
         let mut sel = rack(&["Harp", "Celli"]);
         sel.outputs = Outputs::Mic as u8;
         apply(&mut sel, &trees);
         assert_eq!(outputs(&sel), [0, 1]);
         let pairs: Vec<_> = sel.parts[0].nodes.iter().map(|n| n.output).collect();
-        assert_eq!(pairs, [NodeOutput::Pair(2), NodeOutput::Pair(3), NodeOutput::Parent]);
+        assert_eq!(
+            pairs,
+            [NodeOutput::Pair(2), NodeOutput::Pair(3), NodeOutput::Parent]
+        );
         let names = port_names(&sel, &trees);
-        assert_eq!(&names[..5], ["Harp", "Celli", "Harp Close", "Harp Tree", "st.5"]);
+        assert_eq!(
+            &names[..5],
+            ["Harp", "Celli", "Harp Close", "Harp Tree", "st.5"]
+        );
         // A node routed by hand keeps its pair; the rest go home with one per instrument.
-        sel.parts[0].nodes[2] = NodeMix { output: NodeOutput::Pair(9), manual: true, ..NodeMix::default() };
+        sel.parts[0].nodes[2] = NodeMix {
+            output: NodeOutput::Pair(9),
+            manual: true,
+            ..NodeMix::default()
+        };
         sel.outputs = Outputs::Instrument as u8;
         apply(&mut sel, &trees);
         let pairs: Vec<_> = sel.parts[0].nodes.iter().map(|n| n.output).collect();
-        assert_eq!(pairs, [NodeOutput::Parent, NodeOutput::Parent, NodeOutput::Pair(9)]);
+        assert_eq!(
+            pairs,
+            [NodeOutput::Parent, NodeOutput::Parent, NodeOutput::Pair(9)]
+        );
     }
 
     #[test]
     fn names_and_channels() {
         assert_eq!(common(&["Violins 1".into(), "Violins 2".into()]), "Violins");
-        assert_eq!(common(&["Harp".into(), "Celli".into(), "Flute".into()]), "Harp +2");
+        assert_eq!(
+            common(&["Harp".into(), "Celli".into(), "Flute".into()]),
+            "Harp +2"
+        );
         let mut sel = rack(&["Violins 1", "Violins 2", "Harp"]);
         to_stereo(&mut sel);
         assert_eq!(port_names(&sel, &[])[0], "Violins 1 +2");
@@ -456,7 +521,10 @@ mod tests {
         name_outputs(&mut sel);
         assert_eq!(sel.bus(1).name, "Harp");
         own_channels(&mut sel);
-        assert_eq!(sel.parts.iter().map(|p| p.channel).collect::<Vec<_>>(), [0, 1, 2]);
+        assert_eq!(
+            sel.parts.iter().map(|p| p.channel).collect::<Vec<_>>(),
+            [0, 1, 2]
+        );
         all_omni(&mut sel);
         assert!(sel.parts.iter().all(|p| p.channel == -1 && p.port == 0));
     }
@@ -471,10 +539,16 @@ mod tests {
         assert!(!names.offer(harp.clone(), t + SETTLE / 2));
         let mut celli = harp.clone();
         celli[1] = "Celli".into();
-        assert!(!names.offer(celli.clone(), t + SETTLE), "a change starts the wait again");
+        assert!(
+            !names.offer(celli.clone(), t + SETTLE),
+            "a change starts the wait again"
+        );
         assert!(!names.offer(celli.clone(), t + SETTLE + SETTLE / 2));
         assert!(names.offer(celli.clone(), t + SETTLE * 2));
         assert_eq!(names.published[1], "Celli");
-        assert!(!names.offer(celli, t + SETTLE * 3), "unchanged: nothing to tell");
+        assert!(
+            !names.offer(celli, t + SETTLE * 3),
+            "unchanged: nothing to tell"
+        );
     }
 }

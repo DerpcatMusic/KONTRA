@@ -35,7 +35,16 @@ impl Spec {
     /// A number standing for every pixel it renders to.
     pub fn key(&self, w: u32, h: u32, title: bool) -> u64 {
         let mut hasher = std::hash::DefaultHasher::new();
-        (VERSION, &self.name, &self.vendor, self.hue.to_bits(), w, h, title).hash(&mut hasher);
+        (
+            VERSION,
+            &self.name,
+            &self.vendor,
+            self.hue.to_bits(),
+            w,
+            h,
+            title,
+        )
+            .hash(&mut hasher);
         hasher.finish()
     }
 }
@@ -46,7 +55,9 @@ const VERSION: u32 = 1;
 /// A stable hue for `name`, spread over the circle with orange cut out.
 pub fn hue_of(name: &str) -> f32 {
     // FNV-1a: the same on every machine and every run.
-    let hash = name.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3));
+    let hash = name.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3)
+    });
     let t = (hash >> 11) as f64 / (1u64 << 53) as f64;
     let arc = 360. - (ORANGE.end - ORANGE.start);
     (ORANGE.end + (t * f64::from(arc)) as f32) % 360.
@@ -72,7 +83,11 @@ pub fn background(hue: f32) -> Color {
 /// White or near-black, whichever stands out more from `bg`.
 pub fn ink(bg: Color) -> Color {
     let (light, dark) = (Color::oklch(0.985, 0., 0.), Color::oklch(0.17, 0., 0.));
-    if bg.contrast(light) >= bg.contrast(dark) { light } else { dark }
+    if bg.contrast(light) >= bg.contrast(dark) {
+        light
+    } else {
+        dark
+    }
 }
 
 fn rgb(c: Color) -> [f32; 3] {
@@ -129,16 +144,25 @@ struct Raster {
 
 impl Raster {
     fn new(w: usize, h: usize) -> Self {
-        Self { w, h, a: vec![0.; w * h + 2] }
+        Self {
+            w,
+            h,
+            a: vec![0.; w * h + 2],
+        }
     }
 
     fn line(&mut self, p0: (f32, f32), p1: (f32, f32)) {
-        let clamp = |(x, y): (f32, f32)| (x.clamp(0., self.w as f32 - 1.), y.clamp(0., self.h as f32));
+        let clamp =
+            |(x, y): (f32, f32)| (x.clamp(0., self.w as f32 - 1.), y.clamp(0., self.h as f32));
         let (p0, p1) = (clamp(p0), clamp(p1));
         if (p0.1 - p1.1).abs() <= f32::EPSILON {
             return;
         }
-        let (dir, p0, p1) = if p0.1 < p1.1 { (1., p0, p1) } else { (-1., p1, p0) };
+        let (dir, p0, p1) = if p0.1 < p1.1 {
+            (1., p0, p1)
+        } else {
+            (-1., p1, p0)
+        };
         let dxdy = (p1.0 - p0.0) / (p1.1 - p0.1);
         let mut x = p0.0;
         for y in p0.1 as usize..self.h.min(p1.1.ceil() as usize) {
@@ -179,8 +203,12 @@ impl Raster {
 
     /// `text` at `size` px with its baseline starting at `x`, `y`.
     fn text(&mut self, text: &str, size: f64, axes: &[(&str, f32)], x: f64, y: f64) {
-        let Ok(run) = mui_text::text_run(font(), text, size, axes, 0.05) else { return };
-        let Ok(contours) = run.path.flatten(0.05, 1 << 20) else { return };
+        let Ok(run) = mui_text::text_run(font(), text, size, axes, 0.05) else {
+            return;
+        };
+        let Ok(contours) = run.path.flatten(0.05, 1 << 20) else {
+            return;
+        };
         for contour in contours {
             let at = |p: &moose::mui::mui::geometry::Point| ((p.x + x) as f32, (p.y + y) as f32);
             for pair in contour.windows(2) {
@@ -218,7 +246,10 @@ pub fn render(spec: &Spec, w: u32, h: u32, title: bool) -> Option<Image> {
         // The vendor, small and in capitals, when there is room for it.
         let small = (hf * 0.085).round();
         let vendor = spec.vendor.to_uppercase();
-        let top = if !vendor.is_empty() && small >= 10. && measure(&vendor, &LABEL) * small / 100. <= room {
+        let top = if !vendor.is_empty()
+            && small >= 10.
+            && measure(&vendor, &LABEL) * small / 100. <= room
+        {
             label.text(&vendor, small, &LABEL, pad, pad + small * 0.8);
             pad + small * 1.6
         } else {
@@ -246,11 +277,22 @@ pub fn render(spec: &Spec, w: u32, h: u32, title: bool) -> Option<Image> {
                 }
             }
             _ => {
-                let initials: String =
-                    words.iter().filter_map(|w| w.chars().find(|c| c.is_alphanumeric())).take(2).collect();
-                let size = (hf * 0.46).min(wf * 0.8 / (initials.chars().count().max(1) as f64 * 0.62)).floor();
+                let initials: String = words
+                    .iter()
+                    .filter_map(|w| w.chars().find(|c| c.is_alphanumeric()))
+                    .take(2)
+                    .collect();
+                let size = (hf * 0.46)
+                    .min(wf * 0.8 / (initials.chars().count().max(1) as f64 * 0.62))
+                    .floor();
                 let width = measure(&initials, &TITLE) * size / 100.;
-                text.text(&initials, size, &TITLE, ((wf - width) / 2.).round(), ((hf + size * 0.7) / 2.).round());
+                text.text(
+                    &initials,
+                    size,
+                    &TITLE,
+                    ((wf - width) / 2.).round(),
+                    ((hf + size * 0.7) / 2.).round(),
+                );
             }
         }
     }
@@ -268,7 +310,11 @@ pub fn render(spec: &Spec, w: u32, h: u32, title: bool) -> Option<Image> {
 
 fn cache_dir() -> Option<PathBuf> {
     if cfg!(test) {
-        return Some(std::env::temp_dir().join(format!("kontra-test-{}", std::process::id())).join("covers"));
+        return Some(
+            std::env::temp_dir()
+                .join(format!("kontra-test-{}", std::process::id()))
+                .join("covers"),
+        );
     }
     Some(dirs::cache_dir()?.join("kontra").join("covers"))
 }
@@ -276,7 +322,10 @@ fn cache_dir() -> Option<PathBuf> {
 /// [`render`], from the app's cache when drawn before; drawn, it is kept there.
 pub fn cached(spec: &Spec, w: u32, h: u32, title: bool) -> Option<Image> {
     let path = cache_dir().map(|d| d.join(format!("{:016x}.png", spec.key(w, h, title))));
-    if let Some(image) = (path.as_ref()).and_then(|p| std::fs::read(p).ok()).and_then(|b| crate::artwork::decode(&b)) {
+    if let Some(image) = (path.as_ref())
+        .and_then(|p| std::fs::read(p).ok())
+        .and_then(|b| crate::artwork::decode(&b))
+    {
         return Some(image);
     }
     let image = render(spec, w, h, title)?;
@@ -285,7 +334,6 @@ pub fn cached(spec: &Spec, w: u32, h: u32, title: bool) -> Option<Image> {
     }
     Some(image)
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -297,21 +345,40 @@ mod tests {
         let a = render(&spec, 240, 140, true).unwrap();
         let b = render(&spec, 240, 140, true).unwrap();
         assert_eq!(a.rgba, b.rgba, "deterministic");
-        assert_eq!(spec.hue, Spec::new("Pacific Ensemble Strings", "", None).hue, "the hue is the name's");
+        assert_eq!(
+            spec.hue,
+            Spec::new("Pacific Ensemble Strings", "", None).hue,
+            "the hue is the name's"
+        );
         for n in 0..500 {
             assert!(!ORANGE.contains(&hue_of(&format!("Library {n}"))));
         }
-        assert!(!ORANGE.contains(&Spec::new("x", "", Some(60.)).hue), "an orange picture moves off orange");
-        assert_eq!(Spec::new("x", "", Some(200.)).hue, 200., "any other keeps its hue");
+        assert!(
+            !ORANGE.contains(&Spec::new("x", "", Some(60.)).hue),
+            "an orange picture moves off orange"
+        );
+        assert_eq!(
+            Spec::new("x", "", Some(200.)).hue,
+            200.,
+            "any other keeps its hue"
+        );
         // The name is drawn: ink covers some of it, the color the rest.
         let px = a.rgba.as_chunks::<4>().0;
         let plain = px[0];
         let inked = px.iter().filter(|p| **p != plain).count();
-        assert!(inked > px.len() / 50 && inked < px.len() / 2, "{inked} of {}", px.len());
+        assert!(
+            inked > px.len() / 50 && inked < px.len() / 2,
+            "{inked} of {}",
+            px.len()
+        );
         // Cached, it comes back the same.
         let cached = cached(&spec, 240, 140, true).unwrap();
         assert_eq!(cached.rgba, a.rgba);
-        assert_eq!(super::cached(&spec, 240, 140, true).unwrap().rgba, a.rgba, "read back from the cache");
+        assert_eq!(
+            super::cached(&spec, 240, 140, true).unwrap().rgba,
+            a.rgba,
+            "read back from the cache"
+        );
     }
 
     #[test]
@@ -324,7 +391,10 @@ mod tests {
             assert!(bg.contrast(ink) >= 4.5, "hue {hue}: {}", bg.contrast(ink));
         }
         assert_eq!(ink(Color::oklch(0.3, 0.1, 260.)), white);
-        assert!(ink(Color::oklch(0.9, 0.1, 110.)).lightness() < 0.2, "dark text on a light cover");
+        assert!(
+            ink(Color::oklch(0.9, 0.1, 110.)).lightness() < 0.2,
+            "dark text on a light cover"
+        );
         // Rendered: the text pixels are the ink, not a tint of the cover.
         let spec = Spec::new("Kinder Piano", "", Some(260.));
         let image = render(&spec, 200, 120, true).unwrap();
@@ -340,6 +410,16 @@ mod tests {
         let px = thumb.rgba.as_chunks::<4>().0;
         let inked = px.iter().filter(|p| **p != px[0]).count();
         assert!(inked > 40, "initials drawn: {inked}");
-        assert_eq!(render(&spec, 72, 42, false).unwrap().rgba.as_chunks::<4>().0.iter().filter(|p| **p != px[0]).count(), 0);
+        assert_eq!(
+            render(&spec, 72, 42, false)
+                .unwrap()
+                .rgba
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|p| **p != px[0])
+                .count(),
+            0
+        );
     }
 }

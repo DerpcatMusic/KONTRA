@@ -52,7 +52,10 @@ fn settings(link: bool) -> CompressorSettings {
 fn reference(input: &[[f32; 2]], s: CompressorSettings) -> Vec<[f64; 2]> {
     let [threshold, ratio, attack, release] =
         [s.threshold_db, s.ratio, s.attack_seconds, s.release_seconds].map(|p| {
-            let Parameter::Constant(v) = p else { panic!("reference constants"); }; v
+            let Parameter::Constant(v) = p else {
+                panic!("reference constants");
+            };
+            v
         });
     let (a, r) = (
         (-1. / (attack * f64::from(RATE))).exp(),

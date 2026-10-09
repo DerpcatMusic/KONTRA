@@ -651,12 +651,9 @@ impl MidiObject {
         Ok(id)
     }
     pub fn finish_initial(&mut self, slot: u8, id: i32, defer_callback: bool) -> Option<i32> {
-        let index = self
-            .jobs
-            .iter()
-            .position(|j| {
-                j.initial && j.completed.is_none() && j.id == id && j.instance.0 == u16::from(slot)
-            })?;
+        let index = self.jobs.iter().position(|j| {
+            j.initial && j.completed.is_none() && j.id == id && j.instance.0 == u16::from(slot)
+        })?;
         let job = self.jobs[index];
         let result = match job.action {
             MidiAction::InsertFile => self.insert_file(

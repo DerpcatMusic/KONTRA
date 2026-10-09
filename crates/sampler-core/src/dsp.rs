@@ -30,16 +30,19 @@ impl Biquad {
         (y, [b1 * input - a1 * y + z1, b2 * input - a2 * y])
     }
 
-    pub(crate) fn trace_coefficients(&self) -> [f64; 5] { [self.b[0],self.b[1],self.b[2],self.a[0],self.a[1]] }
+    pub(crate) fn trace_coefficients(&self) -> [f64; 5] {
+        [self.b[0], self.b[1], self.b[2], self.a[0], self.a[1]]
+    }
     /// Static response from the coefficients playback consumes. Port from v1
     /// filter::magnitude, for the sound editor; no second filter kernel.
     pub fn magnitude(self, hz: f64) -> f64 {
-        let w=std::f64::consts::TAU*hz/f64::from(self.rate);
-        let norm=|c:[f64;3]| {
-            let re=c[0]+c[1]*w.cos()+c[2]*(2.*w).cos();
-            let im=-c[1]*w.sin()-c[2]*(2.*w).sin(); re*re+im*im
+        let w = std::f64::consts::TAU * hz / f64::from(self.rate);
+        let norm = |c: [f64; 3]| {
+            let re = c[0] + c[1] * w.cos() + c[2] * (2. * w).cos();
+            let im = -c[1] * w.sin() - c[2] * (2. * w).sin();
+            re * re + im * im
         };
-        (norm(self.b)/norm([1.,self.a[0],self.a[1]])).sqrt()
+        (norm(self.b) / norm([1., self.a[0], self.a[1]])).sqrt()
     }
     /// Prepare coefficients off audio. Frequency is strictly between DC and Nyquist;
     /// Q is positive, including for shelves: Q = 1/sqrt(2) gives RBJ shelf slope S=1.
@@ -222,13 +225,13 @@ impl Processor {
 }
 
 mod compressor;
-mod kernels;
-#[cfg(test)]
-mod kernel_tests;
 pub(super) mod control;
 mod convolution;
 mod daft;
 mod eq;
+#[cfg(test)]
+mod kernel_tests;
+mod kernels;
 pub use eq::PeakingEq;
 mod ladder_kernel;
 mod lofi;
@@ -278,7 +281,10 @@ pub(super) enum PreparedProcessor {
     Decimate(Decimator),
     LoFi(lofi::LoFi),
     Daft(daft::Daft),
-    LadderLP4 { ladder: ladder::Ladder, offset: usize },
+    LadderLP4 {
+        ladder: ladder::Ladder,
+        offset: usize,
+    },
     StereoModeller {
         stereo: stereo::Stereo,
         offset: usize,
@@ -503,7 +509,9 @@ pub(super) fn compile_processors(
                     }
                     PreparedProcessor::Biquad(filter)
                 }
-                Processor::PeakingEq(settings) => PreparedProcessor::PeakingEq(settings.compile(rate, bindings)?),
+                Processor::PeakingEq(settings) => {
+                    PreparedProcessor::PeakingEq(settings.compile(rate, bindings)?)
+                }
                 Processor::ControlGain(binding) => {
                     let lane = bindings.len();
                     bindings.push(binding);
@@ -524,8 +532,12 @@ impl PreparedVoiceChain {
                 PreparedProcessor::StateVariable(filter) if stages.contains(&i) => {
                     u32::try_from(*filter).ok()
                 }
-                PreparedProcessor::Daft(daft) if stages.contains(&i) => u32::try_from(daft.modulation_index).ok(),
-                PreparedProcessor::LadderLP4 { ladder, .. } if stages.contains(&i) => u32::try_from(ladder.modulation_index).ok(),
+                PreparedProcessor::Daft(daft) if stages.contains(&i) => {
+                    u32::try_from(daft.modulation_index).ok()
+                }
+                PreparedProcessor::LadderLP4 { ladder, .. } if stages.contains(&i) => {
+                    u32::try_from(ladder.modulation_index).ok()
+                }
                 _ => None,
             })
             .collect()
@@ -558,26 +570,79 @@ impl PreparedVoiceChain {
                 rendered += len;
                 continue;
             }
-            if TRACE { if let Some(t) = context.trace.as_mut() {
-                t.identity.source_metrics=crate::trace::metrics(&block,len);
-                t.record(t.nodes.source, &block, &block, len, [1.; 2], context.parameters);
-            } }
+            if TRACE {
+                if let Some(t) = context.trace.as_mut() {
+                    t.identity.source_metrics = crate::trace::metrics(&block, len);
+                    t.record(
+                        t.nodes.source,
+                        &block,
+                        &block,
+                        len,
+                        [1.; 2],
+                        context.parameters,
+                    );
+                }
+            }
             let at = context.at + (chunk_index * BLOCK) as u64;
             let (pre, post) = states.split_at_mut(self.pre.len());
-            let mut fault = self.process_section::<TRACE>(true, pre, &mut block, len, begun.held, at, &mut context);
+            let mut fault = self.process_section::<TRACE>(
+                true,
+                pre,
+                &mut block,
+                len,
+                begun.held,
+                at,
+                &mut context,
+            );
             let levels = levels(voice, len, begun.held);
             let before_amp = if TRACE { block } else { [[0.; BLOCK]; 2] };
             let [left, right] = &mut block;
-            for (i, ((l, r), level)) in left[..len].iter_mut().zip(&mut right[..len]).zip(&levels).enumerate() {
-                let gains = context.amplifier.map_or([1.0; 2], |r| r.gains_at(at + i as u64 + 1));
+            for (i, ((l, r), level)) in left[..len]
+                .iter_mut()
+                .zip(&mut right[..len])
+                .zip(&levels)
+                .enumerate()
+            {
+                let gains = context
+                    .amplifier
+                    .map_or([1.0; 2], |r| r.gains_at(at + i as u64 + 1));
                 *l *= level * f64::from(gains[0]);
                 *r *= level * f64::from(gains[1]);
             }
-            if TRACE { if let Some(t) = context.trace.as_mut() {
-                t.record(t.nodes.amp, &before_amp, &block, len,
-                    std::array::from_fn(|c| levels[..len].iter().enumerate().map(|(i,l)| l * f64::from(context.amplifier.map_or([1.;2],|r|r.gains_at(at+i as u64+1))[c])).sum::<f64>() / len.max(1) as f64), context.parameters);
-            } }
-            fault |= self.process_section::<TRACE>(false, post, &mut block, len, begun.held, at, &mut context);
+            if TRACE {
+                if let Some(t) = context.trace.as_mut() {
+                    t.record(
+                        t.nodes.amp,
+                        &before_amp,
+                        &block,
+                        len,
+                        std::array::from_fn(|c| {
+                            levels[..len]
+                                .iter()
+                                .enumerate()
+                                .map(|(i, l)| {
+                                    l * f64::from(
+                                        context
+                                            .amplifier
+                                            .map_or([1.; 2], |r| r.gains_at(at + i as u64 + 1))[c],
+                                    )
+                                })
+                                .sum::<f64>()
+                                / len.max(1) as f64
+                        }),
+                        context.parameters,
+                    );
+                }
+            }
+            fault |= self.process_section::<TRACE>(
+                false,
+                post,
+                &mut block,
+                len,
+                begun.held,
+                at,
+                &mut context,
+            );
             let finish_fault = self.finish(
                 voice,
                 begun,
@@ -588,22 +653,43 @@ impl PreparedVoiceChain {
                 chunk,
             );
             faults += u64::from(finish_fault);
-            if TRACE { if let Some(t) = context.trace.as_mut() {
-                let mut final_block = block;
-                for c in 0..2 { for i in begun.held..len {
-                    let fade = voice.dsp_fade.map_or(1., |(total, initial)| {
-                        // Held startup frames do not consume the fade clock.
-                        let remaining = voice.tail_remaining.unwrap_or(0) + (len - i) as u32;
-                        f64::from(initial) * f64::from(remaining) / f64::from(total)
-                    });
-                    final_block[c][i] *= f64::from(context.expression[c]) * fade;
-                    if finish_fault { final_block[c][i] = 0.; }
-                } }
-                t.record(t.nodes.output, &block, &final_block, len, context.expression.map(f64::from), context.parameters);
-                if t.graph.nodes[t.nodes.output].bus.is_none() {
-                    t.record(t.graph.master, &final_block, &final_block, len, [1.; 2], context.parameters);
+            if TRACE {
+                if let Some(t) = context.trace.as_mut() {
+                    let mut final_block = block;
+                    for c in 0..2 {
+                        for i in begun.held..len {
+                            let fade = voice.dsp_fade.map_or(1., |(total, initial)| {
+                                // Held startup frames do not consume the fade clock.
+                                let remaining =
+                                    voice.tail_remaining.unwrap_or(0) + (len - i) as u32;
+                                f64::from(initial) * f64::from(remaining) / f64::from(total)
+                            });
+                            final_block[c][i] *= f64::from(context.expression[c]) * fade;
+                            if finish_fault {
+                                final_block[c][i] = 0.;
+                            }
+                        }
+                    }
+                    t.record(
+                        t.nodes.output,
+                        &block,
+                        &final_block,
+                        len,
+                        context.expression.map(f64::from),
+                        context.parameters,
+                    );
+                    if t.graph.nodes[t.nodes.output].bus.is_none() {
+                        t.record(
+                            t.graph.master,
+                            &final_block,
+                            &final_block,
+                            len,
+                            [1.; 2],
+                            context.parameters,
+                        );
+                    }
                 }
-            } }
+            }
             rendered += len;
         }
         (rendered, faults)
@@ -626,7 +712,9 @@ impl PreparedVoiceChain {
         }
         let mut raw = [[0.; 2]; BLOCK];
         let waiting = voice.cursor.waiting();
-        let active = voice.envelope.remaining()
+        let active = voice
+            .envelope
+            .remaining()
             .min(voice.tail_remaining.map_or(usize::MAX, |n| n as usize));
         // A finite unity hold clocks only frames the cursor advances, including silent misses.
         let mut unity = EnvelopeState::new(if waiting {
@@ -639,16 +727,15 @@ impl PreparedVoiceChain {
         let produced = if voice.cursor.done() || voice.envelope.done() {
             0
         } else {
-            voice.cursor.render(
-                pcm,
-                &mut raw[..count],
-                &mut unity,
-                1.0,
-                [1.; 2],
-                kernel,
-            )
+            voice
+                .cursor
+                .render(pcm, &mut raw[..count], &mut unity, 1.0, [1.; 2], kernel)
         };
-        let held = if waiting { produced - (remaining - unity.remaining()) } else { 0 };
+        let held = if waiting {
+            produced - (remaining - unity.remaining())
+        } else {
+            0
+        };
         let tail = voice
             .tail_remaining
             .or_else(|| (produced < frames).then_some(self.tail_frames));
@@ -762,12 +849,13 @@ pub(super) struct Begun {
 pub(super) fn levels(voice: &mut Voice, len: usize, held: usize) -> [f64; BLOCK] {
     let mut levels = [0.; BLOCK];
     for level in &mut levels[held..len] {
-        *level = f64::from(voice.gain) * f64::from(
-            voice
-                .envelope
-                .constant_level()
-                .unwrap_or_else(|| voice.envelope.next()),
-        );
+        *level = f64::from(voice.gain)
+            * f64::from(
+                voice
+                    .envelope
+                    .constant_level()
+                    .unwrap_or_else(|| voice.envelope.next()),
+            );
     }
     levels
 }
@@ -853,8 +941,16 @@ pub(super) fn process<const TRACE: bool>(
                     at,
                     delay_samples,
                     filters,
-                    if TRACE { trace.as_mut().map(|t| crate::trace::Section {
-                        recorder: &mut *t.recorder, graph: t.graph, nodes: &t.nodes[inner.clone()], identity: t.identity }) } else { None },
+                    if TRACE {
+                        trace.as_mut().map(|t| crate::trace::Section {
+                            recorder: &mut *t.recorder,
+                            graph: t.graph,
+                            nodes: &t.nodes[inner.clone()],
+                            identity: t.identity,
+                        })
+                    } else {
+                        None
+                    },
                 );
                 if let Some((entering, sum)) = split.as_mut() {
                     for c in 0..2 {
@@ -862,7 +958,10 @@ pub(super) fn process<const TRACE: bool>(
                             sum[c][i] += gain * block[c][i];
                         }
                     }
-                    if TRACE { trace_output = Some(*sum); applied = [*gain; 2]; }
+                    if TRACE {
+                        trace_output = Some(*sum);
+                        applied = [*gain; 2];
+                    }
                     *block = if *last { *sum } else { *entering };
                 }
                 if *last {
@@ -880,9 +979,15 @@ pub(super) fn process<const TRACE: bool>(
                 let dry_block = *block;
                 enabled = !off;
                 applied = [if off { 1. } else { wet.value(at) }; 2];
-                if TRACE && off { if let Some(t) = trace.as_mut() {
-                    for skipped in inner.clone() { t.record(skipped, &dry_block, &dry_block, len, [1.; 2], false, parameters); }
-                } }
+                if TRACE && off {
+                    if let Some(t) = trace.as_mut() {
+                        for skipped in inner.clone() {
+                            t.record(
+                                skipped, &dry_block, &dry_block, len, [1.; 2], false, parameters,
+                            );
+                        }
+                    }
+                }
                 if !off {
                     fault |= process::<TRACE>(
                         &stages[inner.clone()],
@@ -893,16 +998,42 @@ pub(super) fn process<const TRACE: bool>(
                         at,
                         delay_samples,
                         filters,
-                        if TRACE { trace.as_mut().map(|t| crate::trace::Section {
-                            recorder: &mut *t.recorder, graph: t.graph, nodes: &t.nodes[inner.clone()], identity: t.identity }) } else { None },
+                        if TRACE {
+                            trace.as_mut().map(|t| crate::trace::Section {
+                                recorder: &mut *t.recorder,
+                                graph: t.graph,
+                                nodes: &t.nodes[inner.clone()],
+                                identity: t.identity,
+                            })
+                        } else {
+                            None
+                        },
                     );
                 }
-                for c in 0..2 {
-                    for i in 0..len {
-                        let t = at + i as u64;
-                        let b = bypass.value(t);
-                        let gains = kernels::mix_gains(dry.value(t), wet.value(t), b);
-                        block[c][i] = kernels::mix(dry_block[c][i], block[c][i], gains, off);
+                let held = dry
+                    .held(at, len)
+                    .zip(wet.held(at, len))
+                    .zip(bypass.held(at, len));
+                if let Some(((dry, wet), bypass)) = held {
+                    let gains = kernels::mix_gains(dry, wet, bypass);
+                    sampler_simd::dispatch(
+                        #[inline(always)]
+                        || {
+                            for (channel, input) in block.iter_mut().zip(&dry_block) {
+                                for (out, dry) in channel[..len].iter_mut().zip(input) {
+                                    *out = kernels::mix(*dry, *out, gains, off);
+                                }
+                            }
+                        },
+                    );
+                } else {
+                    for c in 0..2 {
+                        for i in 0..len {
+                            let t = at + i as u64;
+                            let b = bypass.value(t);
+                            let gains = kernels::mix_gains(dry.value(t), wet.value(t), b);
+                            block[c][i] = kernels::mix(dry_block[c][i], block[c][i], gains, off);
+                        }
                     }
                 }
             }
@@ -951,14 +1082,29 @@ pub(super) fn process<const TRACE: bool>(
                     len,
                 );
             }
-            PreparedProcessor::Compressor(compressor) => compressor.process(state, parameters, block, len, at),
+            PreparedProcessor::Compressor(compressor) => {
+                compressor.process(state, parameters, block, len, at)
+            }
             PreparedProcessor::Decimate(decimator) => decimator.process(state, block, len),
             PreparedProcessor::LoFi(lofi) => lofi.process(state, block, len),
-            PreparedProcessor::Daft(daft) => daft.process(state, parameters, block, len, at,
-                filters.bank.native_knobs(daft.modulation_index)),
+            PreparedProcessor::Daft(daft) => daft.process(
+                state,
+                parameters,
+                block,
+                len,
+                at,
+                filters.bank.native_knobs(daft.modulation_index),
+            ),
             PreparedProcessor::LadderLP4 { ladder, offset } => {
-                fault |= ladder.process(state, &mut delay_samples[*offset..*offset + ladder::CELLS], parameters, block, len, at,
-                    filters.bank.native_knobs(ladder.modulation_index));
+                fault |= ladder.process(
+                    state,
+                    &mut delay_samples[*offset..*offset + ladder::CELLS],
+                    parameters,
+                    block,
+                    len,
+                    at,
+                    filters.bank.native_knobs(ladder.modulation_index),
+                );
             }
             PreparedProcessor::StereoModeller { stereo, offset } => {
                 stereo.process(
@@ -995,7 +1141,9 @@ pub(super) fn process<const TRACE: bool>(
             PreparedProcessor::Gain(gain) => {
                 applied = [*gain; 2];
                 for channel in block.iter_mut() {
-                    channel[..len].iter_mut().for_each(|v| *v = kernels::gain(*v, *gain));
+                    channel[..len]
+                        .iter_mut()
+                        .for_each(|v| *v = kernels::gain(*v, *gain));
                 }
             }
             PreparedProcessor::StereoMatrix(m) => {
@@ -1006,11 +1154,17 @@ pub(super) fn process<const TRACE: bool>(
             }
             PreparedProcessor::ControlGain(lane) => {
                 let ramp = parameters[*lane];
-                if TRACE { applied = [0.; 2]; }
+                if TRACE {
+                    applied = [0.; 2];
+                }
                 let [left, right] = block;
                 for (i, (l, r)) in left[..len].iter_mut().zip(&mut right[..len]).enumerate() {
                     let gain = ramp.value(at + i as u64);
-                    if TRACE { for mean in &mut applied { *mean += gain / len.max(1) as f64; } }
+                    if TRACE {
+                        for mean in &mut applied {
+                            *mean += gain / len.max(1) as f64;
+                        }
+                    }
                     *l = kernels::gain(*l, gain);
                     *r = kernels::gain(*r, gain);
                 }
@@ -1026,16 +1180,32 @@ pub(super) fn process<const TRACE: bool>(
                 state.z = [zl.map(flush), zr.map(flush)];
             }
         }
-        if TRACE { if let Some(t) = trace.as_mut() {
-            if !matches!(stage, PreparedProcessor::Gain(_) | PreparedProcessor::ControlGain(_) | PreparedProcessor::Mix { .. } | PreparedProcessor::Branch { .. }) {
-                for c in 0..2 {
-                    let a: f64 = input[c][..len].iter().map(|v| v*v).sum();
-                    let b: f64 = block[c][..len].iter().map(|v| v*v).sum();
-                    applied[c] = if a > 0. { (b/a).sqrt() } else { 0. };
+        if TRACE {
+            if let Some(t) = trace.as_mut() {
+                if !matches!(
+                    stage,
+                    PreparedProcessor::Gain(_)
+                        | PreparedProcessor::ControlGain(_)
+                        | PreparedProcessor::Mix { .. }
+                        | PreparedProcessor::Branch { .. }
+                ) {
+                    for c in 0..2 {
+                        let a: f64 = input[c][..len].iter().map(|v| v * v).sum();
+                        let b: f64 = block[c][..len].iter().map(|v| v * v).sum();
+                        applied[c] = if a > 0. { (b / a).sqrt() } else { 0. };
+                    }
                 }
+                t.record(
+                    index,
+                    &input,
+                    trace_output.as_ref().unwrap_or(block),
+                    len,
+                    applied,
+                    enabled,
+                    parameters,
+                );
             }
-            t.record(index, &input, trace_output.as_ref().unwrap_or(block), len, applied, enabled, parameters);
-        } }
+        }
     }
     fault
 }
@@ -1104,13 +1274,28 @@ impl DspState {
             ),
             delay_samples: Slab::new(allocate(delay_count)?, delay_stride),
             modulated_parameters: {
-                let stride = if plan.voice_modulation.has_control_targets() { plan.dsp_bindings.len() } else { 0 };
-                Slab::new(allocate(stride.checked_mul(lanes.clamp(1, MAX_LANES)).ok_or(Error::Capacity)?)?, stride)
+                let stride = if plan.voice_modulation.has_control_targets() {
+                    plan.dsp_bindings.len()
+                } else {
+                    0
+                };
+                Slab::new(
+                    allocate(
+                        stride
+                            .checked_mul(lanes.clamp(1, MAX_LANES))
+                            .ok_or(Error::Capacity)?,
+                    )?,
+                    stride,
+                )
             },
             parameters: control::initial_parameters(plan, &plan.dsp_bindings),
             buses: crate::bus::BusState::new(plan)?,
             feeds: allocate(feeds)?,
-            trace: plan.signal_trace.as_ref().map(|t| t.recorder()).transpose()?,
+            trace: plan
+                .signal_trace
+                .as_ref()
+                .map(|t| t.recorder())
+                .transpose()?,
         })
     }
     /// Per-voice chain state and delay line sizes (`stride`, `delay_stride`).
@@ -1201,12 +1386,24 @@ mod tests {
     #[test]
     fn native_gain_and_non_pseudo_stereo_have_lane_kernels() {
         for pseudo in [false, true] {
-            let chain = VoiceChain::new(vec![
-                Processor::Gainer { dry: 0.1, gain: Parameter::Constant(0.8) },
-                Processor::StereoModeller(StereoSettings {
-                    width: Parameter::Constant(0.7), pan: Parameter::Constant(-0.2), pseudo,
-                }),
-            ], Vec::new(), 0).unwrap().compile(48000, &mut Vec::new(), &mut Vec::new()).unwrap();
+            let chain = VoiceChain::new(
+                vec![
+                    Processor::Gainer {
+                        dry: 0.1,
+                        gain: Parameter::Constant(0.8),
+                    },
+                    Processor::StereoModeller(StereoSettings {
+                        width: Parameter::Constant(0.7),
+                        pan: Parameter::Constant(-0.2),
+                        pseudo,
+                    }),
+                ],
+                Vec::new(),
+                0,
+            )
+            .unwrap()
+            .compile(48000, &mut Vec::new(), &mut Vec::new())
+            .unwrap();
             assert_eq!(chain.batches(), !pseudo);
         }
     }
@@ -1214,10 +1411,22 @@ mod tests {
     #[test]
     fn live_eq_keeps_other_stages_in_the_lane_path() {
         for gain in [-12., 0., 12.] {
-            let chain = VoiceChain::new(vec![Processor::PeakingEq(PeakingEq {
-                frequency: Parameter::Constant((1000f64 / 20.).log10() / 3.), bandwidth: Parameter::Constant((1. - 0.3) / 2.7), gain_db: Parameter::Constant(gain),
-            })], Vec::new(), 0).unwrap().compile(48000, &mut Vec::new(), &mut Vec::new()).unwrap();
-            assert!(chain.batches(), "live EQ must not force unrelated stages out of the lane path");
+            let chain = VoiceChain::new(
+                vec![Processor::PeakingEq(PeakingEq {
+                    frequency: Parameter::Constant((1000f64 / 20.).log10() / 3.),
+                    bandwidth: Parameter::Constant((1. - 0.3) / 2.7),
+                    gain_db: Parameter::Constant(gain),
+                })],
+                Vec::new(),
+                0,
+            )
+            .unwrap()
+            .compile(48000, &mut Vec::new(), &mut Vec::new())
+            .unwrap();
+            assert!(
+                chain.batches(),
+                "live EQ must not force unrelated stages out of the lane path"
+            );
         }
     }
 
@@ -1423,27 +1632,121 @@ mod tests {
 }
 
 impl PreparedVoiceChain {
-    pub(crate) fn trace_graph(&self, plan: &Prepared, graph: &mut crate::trace::TraceGraph,
-        zone: u32, group: Option<u32>, bus: Option<usize>, initial: &[ControlRamp]) -> crate::trace::VoiceNodes {
-        let source = graph.node("sample_source", "resampler", Some(zone), group, bus, vec![], 0);
-        let amp = graph.node("amplifier", "envelope_velocity_gain", Some(zone), group, bus, vec![], 0);
-        let output = graph.node("voice_output", "expression_fade", Some(zone), group, bus, vec![], 0);
-        let pre: Vec<_> = self.pre.iter().map(|s| graph.stage(s, "group_fx_pre", Some(zone), group, bus, plan, &plan.dsp_bindings, initial)).collect();
-        let post: Vec<_> = self.post.iter().map(|s| graph.stage(s, "group_fx_post", Some(zone), group, bus, plan, &plan.dsp_bindings, initial)).collect();
+    pub(crate) fn trace_graph(
+        &self,
+        plan: &Prepared,
+        graph: &mut crate::trace::TraceGraph,
+        zone: u32,
+        group: Option<u32>,
+        bus: Option<usize>,
+        initial: &[ControlRamp],
+    ) -> crate::trace::VoiceNodes {
+        let source = graph.node(
+            "sample_source",
+            "resampler",
+            Some(zone),
+            group,
+            bus,
+            vec![],
+            0,
+        );
+        let amp = graph.node(
+            "amplifier",
+            "envelope_velocity_gain",
+            Some(zone),
+            group,
+            bus,
+            vec![],
+            0,
+        );
+        let output = graph.node(
+            "voice_output",
+            "expression_fade",
+            Some(zone),
+            group,
+            bus,
+            vec![],
+            0,
+        );
+        let pre: Vec<_> = self
+            .pre
+            .iter()
+            .map(|s| {
+                graph.stage(
+                    s,
+                    "group_fx_pre",
+                    Some(zone),
+                    group,
+                    bus,
+                    plan,
+                    &plan.dsp_bindings,
+                    initial,
+                )
+            })
+            .collect();
+        let post: Vec<_> = self
+            .post
+            .iter()
+            .map(|s| {
+                graph.stage(
+                    s,
+                    "group_fx_post",
+                    Some(zone),
+                    group,
+                    bus,
+                    plan,
+                    &plan.dsp_bindings,
+                    initial,
+                )
+            })
+            .collect();
         let parent = graph.connect(&self.pre, &pre, source);
         graph.edge(parent, amp, "serial");
         let parent = graph.connect(&self.post, &post, amp);
         graph.edge(parent, output, "serial");
-        graph.edge(output, bus.map_or(graph.master, |b| graph.buses[b].input), "sum");
-        let taps = self.taps.iter().map(|tap| {
-            let (kind, parent) = match tap.position {
-                VoiceSendPosition::BeforeAmplitude(n) => ("send_pre", if n == 0 { source } else { pre[n-1] }),
-                VoiceSendPosition::AfterAmplitude(n) => ("send_post", if n == 0 { amp } else { post[n-1] }),
-            };
-            let parameters=vec![graph.parameter("level",tap.gain,plan,&plan.dsp_bindings,initial),graph.parameter("bypass",tap.bypass,plan,&plan.dsp_bindings,initial)];
-            let id = graph.node(kind, "send_level_bypass", Some(zone), group, Some(tap.bus), parameters, 0);
-            graph.edge(parent, id, "tap"); graph.edge(id, graph.buses[tap.bus].input, "send"); id
-        }).collect();
-        crate::trace::VoiceNodes { source, amp, output, pre, post, taps, region:0 }
+        graph.edge(
+            output,
+            bus.map_or(graph.master, |b| graph.buses[b].input),
+            "sum",
+        );
+        let taps = self
+            .taps
+            .iter()
+            .map(|tap| {
+                let (kind, parent) = match tap.position {
+                    VoiceSendPosition::BeforeAmplitude(n) => {
+                        ("send_pre", if n == 0 { source } else { pre[n - 1] })
+                    }
+                    VoiceSendPosition::AfterAmplitude(n) => {
+                        ("send_post", if n == 0 { amp } else { post[n - 1] })
+                    }
+                };
+                let parameters = vec![
+                    graph.parameter("level", tap.gain, plan, &plan.dsp_bindings, initial),
+                    graph.parameter("bypass", tap.bypass, plan, &plan.dsp_bindings, initial),
+                ];
+                let id = graph.node(
+                    kind,
+                    "send_level_bypass",
+                    Some(zone),
+                    group,
+                    Some(tap.bus),
+                    parameters,
+                    0,
+                );
+                graph.edge(parent, id, "tap");
+                graph.edge(id, graph.buses[tap.bus].input, "send");
+                id
+            })
+            .collect();
+        crate::trace::VoiceNodes {
+            source,
+            amp,
+            output,
+            pre,
+            post,
+            taps,
+            region: 0,
+        }
     }
 }

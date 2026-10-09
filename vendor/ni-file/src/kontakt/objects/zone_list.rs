@@ -18,7 +18,10 @@ const CHUNK_ID: u16 = 0x34;
 /// - KontaktIO:      ZoneList<K4PL_Zone<K4PO::K4PL_ZoneDataV95>>
 ///
 #[derive(Debug)]
-pub struct ZoneList { zones: Vec<Zone>, pub group_ids: Vec<u32> }
+pub struct ZoneList {
+    zones: Vec<Zone>,
+    pub group_ids: Vec<u32>,
+}
 
 impl ZoneList {
     pub fn read<R: ReadBytesExt>(mut reader: R) -> Result<Self, Error> {

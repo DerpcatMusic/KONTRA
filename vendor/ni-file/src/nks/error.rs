@@ -26,6 +26,9 @@ pub enum NKSError {
 
 impl NKSError {
     pub(crate) fn context(context: String, source: impl Into<Self>) -> Self {
-        Self::Context { context, source: Box::new(source.into()) }
+        Self::Context {
+            context,
+            source: Box::new(source.into()),
+        }
     }
 }
