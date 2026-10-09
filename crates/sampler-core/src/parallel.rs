@@ -393,7 +393,10 @@ impl View<'_> {
                 &plan.prepared.dsp_bindings, chain.map_or(0..0, |c| c.parameter_span.clone()), scratch,
             ) { &scratch[..] } else { &plan.dsp.parameters[..] }
         } else { &plan.dsp.parameters[..] };
+        let mut native = plan.modulation.native.claim(i);
+        let controls = native.get_mut(0).and_then(|state| plan.modulation.native_render(&plan.prepared.voice_modulation, i, state));
         let context = RenderContext {
+            controls,
             trace: None,
             amplifier: chain.and(prelude.and_then(|p| p.points)),
             delay: &mut delay[..chain.map_or(0, |c| c.delay_frames)],

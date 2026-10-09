@@ -1293,6 +1293,9 @@ mod lfo {
     }
 }
 impl Mod {
+    pub(crate) fn follow_value(&self, value: &mut f32, input: f32, frames: usize, rate: f32) {
+        approach(value, self.shape(input), self.lag, frames, rate);
+    }
     /// Shaped value at note start; zero for unmodelled sources.
     pub fn start_value(&self, input: &Inputs) -> f32 {
         self.route
@@ -1410,11 +1413,14 @@ impl ModTable {
     }
     /// Initial per-voice values: every source at its current value, unlagged.
     pub(crate) fn start(&self, input: &Inputs, bend_pitch: Option<f32>) -> [f32; VOICE_MODS] {
+        self.start_read(|s, t| input.read_mod(s, t, bend_pitch))
+    }
+    pub(crate) fn start_read(&self, read: impl Fn(Source, Target) -> f32) -> [f32; VOICE_MODS] {
         let mut values = [0.0; VOICE_MODS];
         for (value, &i) in values.iter_mut().zip(&self.voiced) {
             let m = &self.mods[i as usize];
             if let Some((source, target)) = m.route {
-                *value = m.shape(input.read_mod(source, target, bend_pitch));
+                *value = m.shape(read(source, target));
             }
         }
         values
@@ -1438,6 +1444,10 @@ impl ModTable {
         rate: f32,
         bend_pitch: Option<f32>,
     ) -> (f32, f32, bool) {
+        self.modulate_read(values, |s, t| input.read_mod(s, t, bend_pitch), frames, rate)
+    }
+    pub(crate) fn modulate_read(&self, values: &mut [f32; VOICE_MODS],
+        read: impl Fn(Source, Target) -> f32, frames: usize, rate: f32) -> (f32, f32, bool) {
         let (mut gain, mut semitones, mut settled) = (1.0, 0.0, true);
         for (value, &i) in values.iter_mut().zip(&self.voiced) {
             let m = &self.mods[i as usize];
@@ -1445,7 +1455,7 @@ impl ModTable {
                 continue;
             };
             if source.live() {
-                let x = m.shape(input.read_mod(source, target, bend_pitch));
+                let x = m.shape(read(source, target));
                 approach(value, x, m.lag, frames, rate);
                 settled &= *value == x;
             }
@@ -1751,22 +1761,27 @@ impl ControlState {
         input: &Inputs<'_>,
         frames: usize,
     ) -> (f32, f32, bool) {
-        if self.settled != Some(input.stamp) {
-            let (gain, pitch, settled) = plan.description.mods.modulate(
-                &mut self.mods,
-                input,
-                frames,
-                self.rate,
-                input.bend_pitch,
+        self.plan_controls_read(plan, |s, t| input.read_mod(s, t, input.bend_pitch), input.stamp, frames)
+    }
+    pub(crate) fn reset_read(&mut self, plan: &ControlPlan, read: impl Fn(Source, Target) -> f32, start: u64) {
+        *self = Self::new(plan);
+        self.start_frame = start;
+        self.mods = plan.description.mods.start_read(read);
+    }
+    pub(crate) fn plan_controls_read(&mut self, plan: &ControlPlan,
+        read: impl Fn(Source, Target) -> f32, stamp: u32, frames: usize) -> (f32, f32, bool) {
+        if self.settled != Some(stamp) {
+            let (gain, pitch, settled) = plan.description.mods.modulate_read(
+                &mut self.mods, read, frames, self.rate,
             );
             self.modulated = (gain, pitch);
-            self.settled = settled.then_some(input.stamp);
+            self.settled = settled.then_some(stamp);
         }
         let (gain, mut semitones) = self.modulated;
         for (params, state) in plan.description.pitch_envelopes.iter().zip(&mut self.pitch) {
             semitones += params.pitch(state, frames, self.rate);
         }
-        (gain, semitones, self.settled == Some(input.stamp))
+        (gain, semitones, self.settled == Some(stamp))
     }
     /// Read the already advanced voiced target by its original assignment index.
     pub fn modulation_value(&self, plan: &ControlPlan, index: u16) -> Option<f32> {
@@ -1784,6 +1799,10 @@ impl ControlState {
             .iter()
             .position(|p| p.index == index)
             .map(|i| self.pitch[i].level())
+    }
+    pub(crate) fn invalidate_inputs(&mut self) { self.settled = None; }
+    pub(crate) fn amplitude(&self) -> Primary {
+        Primary { value: self.amplitude, rate: self.rate }
     }
     pub fn amplitude_level(&self) -> f32 {
         self.amplitude.level()
@@ -1856,13 +1875,7 @@ impl ControlState {
         {
             return Err(Error::InvalidInput);
         }
-        self.amplitude.render(amplitude, None, self.rate);
-        if let Some(out) = flex.as_deref_mut() {
-            match &mut self.flex {
-                Some(e) => e.render(out, plan.description.flex.as_ref(), self.rate),
-                None => out.fill(1.),
-            }
-        }
+        self.render_levels(plan, amplitude, flex.as_deref_mut());
         Ok(self.lfo.positions(
             &plan.description.pitch_lfos,
             &plan.description.volume_lfos,
@@ -1872,6 +1885,18 @@ impl ControlState {
             positions,
             volume,
         ))
+    }
+    /// Audio adapter when the cursor owns positions and no LFO is admitted.
+    pub(crate) fn render_levels(&mut self, plan: &ControlPlan, amplitude: &mut [f32], flex: Option<&mut [f32]>) {
+        debug_assert!(amplitude.len() <= MAX_BLOCK);
+        debug_assert!(flex.as_ref().is_none_or(|f| f.len() == amplitude.len()));
+        self.amplitude.render(amplitude, None, self.rate);
+        if let Some(out) = flex {
+            match &mut self.flex {
+                Some(e) => e.render(out, plan.description.flex.as_ref(), self.rate),
+                None => out.fill(1.),
+            }
+        }
     }
     /// Call after plan_controls for muted/laned voices, not as a second render.
     pub fn skip(
@@ -1899,4 +1924,28 @@ impl ControlState {
             None,
         ))
     }
+}
+
+// Copyable lifetime view of the primary inside the whole-voice control owner.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Primary {
+    value: Amplitude,
+    rate: f32,
+}
+impl Primary {
+    pub(crate) fn new(params: &Ahdsr, rate: f32, native: bool) -> Self {
+        Self { value: Amplitude::new(params, rate, native), rate }
+    }
+    pub(crate) fn release(&mut self) { self.value.release(None); }
+    pub(crate) fn done(&self) -> bool { self.value.done() }
+    pub(crate) fn level(&self) -> f32 { self.value.level() }
+    pub(crate) fn phase(&self) -> Phase { self.value.phase() }
+    pub(crate) fn remaining(&self) -> usize {
+        match &self.value {
+            Amplitude::Native(n) => n.remaining(),
+            Amplitude::Ordinary(e) => if e.done() { 0 } else { usize::MAX },
+        }
+    }
+    pub(crate) fn skip(&mut self, n: usize) { self.value.skip(n, None, self.rate); }
+    pub(crate) fn render(&mut self, out: &mut [f32]) { self.value.render(out, None, self.rate); }
 }

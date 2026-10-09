@@ -7,6 +7,9 @@ use super::{Error, Frame, Runtime, VoiceId, dsp::lanes::VOICES};
 pub struct RuntimeStats {
     /// Voices that ran out of resident stream pages and faded out.
     pub stream_underruns: u64,
+    /// Starts and rendered chunks using the admitted pinned whole-voice controls.
+    pub v1_control_starts: u64,
+    pub v1_control_blocks: u64,
     /// Voice starts rejected because every voice was busy and audible.
     pub voice_drops: u64,
     /// Voice starts refused after preflight (source not resident, pool full).
@@ -48,6 +51,8 @@ impl Runtime {
     pub fn stats(&self) -> RuntimeStats {
         RuntimeStats {
             stream_underruns: self.stream_underruns,
+            v1_control_starts: self.plans.slots.iter().filter_map(|s| s.value.as_ref()).map(|g| g.modulation.native_starts).sum(),
+            v1_control_blocks: self.plans.slots.iter().filter_map(|s| s.value.as_ref()).map(|g| g.modulation.native_blocks.load(std::sync::atomic::Ordering::Relaxed)).sum(),
             voice_drops: self.voice_drops,
             refused_starts: self.refused_starts,
             cold_starts: self.cold_started,
@@ -645,7 +650,10 @@ impl Runtime {
                 &plan.prepared.dsp_bindings, chain.map_or(0..0, |c| c.parameter_span.clone()), scratch,
             ) { &scratch[..] } else { &plan.dsp.parameters[..] }
         } else { &plan.dsp.parameters[..] };
+        let mut native = plan.modulation.native.claim(i);
+        let controls = native.get_mut(0).and_then(|state| plan.modulation.native_render(&plan.prepared.voice_modulation, i, state));
         let context = super::dsp::RenderContext {
+            controls,
             trace,
             amplifier: chain.and(points),
             delay: &mut delay[..chain.map_or(0, |c| c.delay_frames)],
@@ -682,7 +690,7 @@ impl Runtime {
             };
             render_source::<TRACE>(v, &source, segment, chain, states, context, &self.kernel)
         };
-        drop((claimed, delay, parameter_scratch));
+        drop((claimed, delay, parameter_scratch, native));
         if let (Some(ramp), Some(target)) = (points, mixed) {
             let ramp = if chain.is_some() { ramp.without_gains() } else { ramp };
             plan.dsp.filters.as_mut_slice()[0].modulation = [1.0; 2];
@@ -748,13 +756,28 @@ pub(super) fn render_source<const TRACE: bool>(
     output: &mut [Frame],
     chain: Option<&super::dsp::PreparedVoiceChain>,
     states: &mut [super::dsp::ProcessorState],
-    context: super::dsp::RenderContext<'_>,
+    mut context: super::dsp::RenderContext<'_>,
     kernel: &super::resample::Kernel,
 ) -> (usize, bool, u64, bool) {
     let was_starved = voice.cursor.starved();
     let (produced, done, faults) = if let Some(chain) = chain {
         let (produced, faults) = chain.render::<TRACE>(voice, source, output, states, context, kernel);
         (produced, chain.done(voice), faults)
+    } else if let Some(controls) = context.controls.as_mut() {
+        let waiting = voice.cursor.waiting();
+        let active = voice.envelope.remaining();
+        let mut unity = crate::envelope::EnvelopeState::new(if waiting {
+            crate::Envelope::one_shot(0, active.min(super::dsp::BLOCK + 1) as u32, 0)
+        } else { crate::Envelope::default() });
+        let remaining = unity.remaining();
+        let count = if waiting { output.len() } else { output.len().min(active) };
+        let produced = voice.cursor.render(source, &mut output[..count], &mut unity, 1., [1.; 2], kernel);
+        let held = if waiting { produced - (remaining - unity.remaining()) } else { 0 };
+        let levels = controls.levels(voice, produced, held);
+        for (i, frame) in output[..produced].iter_mut().enumerate() {
+            for c in 0..2 { frame[c] = (f64::from(frame[c]) * levels[i] * f64::from(context.expression[c])) as f32; }
+        }
+        (produced, voice.cursor.done() || voice.envelope.done() || controls.state.done(), 0)
     } else {
         let produced = voice.cursor.render(
             source,
