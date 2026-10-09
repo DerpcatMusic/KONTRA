@@ -2587,6 +2587,7 @@ fn stream_policy(request: &LoadRequest) -> sampler_kontakt::StreamPolicy {
         head_budget: resident_budget.unwrap_or(8 << 20),
         block_frames: super::MAX_BLOCK,
         max_step: 16.0,
+        voices: MAX_VOICES,
         ..Default::default()
     }
 }
@@ -2617,8 +2618,8 @@ const INITIAL_NOTE_PARAMS: usize = 4096;
 const VOICE_OVERHEAD: usize = 4096;
 
 /// Capacities of a part, sized for its plan's script state and voice cost, and
-/// the voice count the pool may grow to. Notes, families and decisions are
-/// sized for that ceiling so growing voices is not capped by them.
+/// the voice count the pool may grow to. Notes, families and decisions keep
+/// v1's event capacity independently of the streaming voice ceiling.
 #[cfg(test)]
 fn limits(plan: &Prepared) -> (Limits, usize) {
     budgeted_limits(plan, None)
@@ -2634,8 +2635,8 @@ fn budgeted_limits(plan: &Prepared, stream_voices: Option<usize>) -> (Limits, us
     // Capped: script cells are allocated per note.
     let notes = INITIAL_NOTE_PARAMS;
     let mut limits = Limits {
-        families: (ceiling / 2).clamp(256, notes),
-        decisions: (ceiling / 2).clamp(256, notes),
+        families: notes,
+        decisions: notes,
         ..Limits::for_plan(plan, notes, voices)
     };
     // Script release reserves share the same ceiling as ordinary voices.
