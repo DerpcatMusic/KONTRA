@@ -334,6 +334,12 @@ pub enum Instruction {
         info: super::EventInfo,
         local: u16,
     },
+    /// Read an event field selected by a runtime native parameter number.
+    ReadEventParameter {
+        event: u16,
+        parameter: u16,
+        local: u16,
+    },
     /// Read a script layer's own value, in `WriteParam` units.
     ReadParam {
         scope: super::ParamScope,
@@ -721,7 +727,8 @@ impl Program {
                 locals = locals.max(usize::from(index.max(local)) + 1);
             }
             if let Instruction::WriteModValue { event, id, local }
-            | Instruction::ReadModValue { event, id, local } = *op
+            | Instruction::ReadModValue { event, id, local }
+            | Instruction::ReadEventParameter { event, parameter: id, local } = *op
             {
                 locals = locals.max(usize::from(event.max(id).max(local)) + 1);
             }
@@ -2254,6 +2261,31 @@ impl Runtime {
                 let plan = self.behavior_plan(owner)?;
                 let event = *self.local_cell_mut(id, event)?;
                 *self.local_cell_mut(id, local)? = self.read_event_info(plan, event, info)?;
+            }
+            Instruction::ReadEventParameter { event, parameter, local } => {
+                let plan = self.behavior_plan(owner)?;
+                let event = *self.local_cell_mut(id, event)?;
+                let parameter = *self.local_cell_mut(id, parameter)?;
+                // v1 calls.rs dispatches the numeric selector, including user tags.
+                let value = match parameter {
+                    0..=3 => self.read_mod_value(plan, event, i64::from(super::USER_EVENT_PAR) + parameter)?,
+                    4..=6 => self.read_param(plan, super::ParamScope::Note, event, match parameter {
+                        4 => super::ModTarget::Decibels, 5 => super::ModTarget::Pitch, _ => super::ModTarget::Pan,
+                    })?,
+                    7 | 8 if owner.note().ok().is_some_and(|note| self.note_events[note.0.index].source_id_is(event)) => {
+                        let note = self.note_event_at(owner.note()?, self.behavior_stage(id)?)?
+                            .ok_or(Error::InvalidInput)?;
+                        if parameter == 7 { i64::from(note.pitch.key()) }
+                        else { (note.velocity * 127.).round() as i64 }
+                    }
+                    7 | 8 | 10 | 11 | 13 | 15 => self.read_event_info(plan, event, match parameter {
+                        7 => super::EventInfo::Key, 8 => super::EventInfo::Velocity,
+                        10 => super::EventInfo::ZoneId, 11 => super::EventInfo::Source,
+                        13 => super::EventInfo::MidiChannel, _ => super::EventInfo::ReleaseVelocity,
+                    })?,
+                    _ => 0,
+                };
+                *self.local_cell_mut(id, local)? = value;
             }
             Instruction::ReadParam {
                 scope,
