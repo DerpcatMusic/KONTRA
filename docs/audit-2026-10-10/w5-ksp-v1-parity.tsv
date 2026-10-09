@@ -5,14 +5,14 @@ attach_level_meter	unconsumed-effect	I I I I I 0 Void	I I I I I 0 Void	0	0	Emitt
 attach_zone	unconsumed-effect	V I I 0 Void	V I I 0 Void	0	0	Emitted to host outbox; apply_ui_effect/plugin consumers do not execute this command. Check init resource boundary separately.
 fs_get_filename	routed-unverified	I I 0 Str	I I 0 Str	6	3	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
 fs_navigate	unconsumed-effect	I I 0 Void	I I 0 Void	0	0	Emitted to host outbox; apply_ui_effect/plugin consumers do not execute this command. Check init resource boundary separately.
-get_control_par	routed-unverified	I I 0 Int	I I 0 Int	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+get_control_par	different/partial	I I 0 Int	I I 0 Int	0	0	v2 menu VALUE returns item value instead of selected index; NUM_ITEMS/SELECTED_ITEM_IDX do not read live menus. Dynamic TYPE lacks authored schema seeding.
 get_control_par_arr	routed-unverified	I I I 0 Int	I I I 0 Int	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
 get_control_par_real	callback-default	I I 0 Real	I I 0 Real	0	0	Callback lowering has no executable route; numeric zero or empty text. Init support does not establish callback support.
 get_control_par_real_arr	callback-default	I I I 0 Real	I I I 0 Real	0	0	Callback lowering has no executable route; numeric zero or empty text. Init support does not establish callback support.
 get_control_par_str	routed-unverified	I I 0 Str	I I 0 Str	60	30	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
 get_control_par_str_arr	callback-default	I I I 0 Str	I I I 0 Str	0	0	Callback lowering has no executable route; numeric zero or empty text. Init support does not establish callback support.
-get_folder	callback-default	I 0 Str	I 0 Str	0	0	Callback lowering has no executable route; numeric zero or empty text. Init support does not establish callback support.
-get_font_id	init-only	S 0 Int	S 0 Int	0	0	v2 runs in static init; callback use defaults/ignores. v1 has a shared executable builtin route; context validity must be tested.
+get_folder	init-gap	I 0 Str	I 0 Str	0	0	v1 returns library/patch folders during init; v2 always empty. Both return empty in callbacks.
+get_font_id	different/partial	S 0 Int	S 0 Int	0	0	v1 preserves numeric IDs and rejects empty/path names; v2 init registers every string. Both limit new named-font registration to init.
 get_menu_item_str	callback-default	I I 0 Str	I I 0 Str	642	33	Callback lowering has no executable route; numeric zero or empty text. Init support does not establish callback support.
 get_menu_item_value	callback-default	I I 0 Int	I I 0 Int	930	30	Callback lowering has no executable route; numeric zero or empty text. Init support does not establish callback support.
 get_menu_item_visibility	callback-default	I I 0 Int	I I 0 Int	0	0	Callback lowering has no executable route; numeric zero or empty text. Init support does not establish callback support.
@@ -92,7 +92,7 @@ get_keyrange_min_note	absent	I 0 Int	absent	0	0	v1 key-range lookup is executabl
 get_keyrange_name	absent	I 0 Str	absent	0	0	v1 key-range lookup is executable; v2 rejects the name.
 get_mod_idx	different/partial	I S 0 Int	I S 0 Int	0	0	v1 exact name, with find_* miss 0 and get_* miss -1; v2 case-insensitive, all misses -1. Real physical lookup tables exist.
 get_num_zones	callback-default	 0 Int	 0 Int	0	0	Callback lowering has no executable route; numeric zero or empty text. Init support does not establish callback support.
-get_purge_state	different/partial	I 0 Int	I 0 Int	0	0	Runtime implementation exists; init evaluator always returns zero.
+get_purge_state	v2-additional	I 0 Int	I 0 Int	0	0	v1 always returns 1 and purge is a completion-only no-op; v2 runtime reads real mute state. Init still returns 0.
 get_target_idx	different/partial	I I S 0 Int	I I S 0 Int	0	0	v1 exact name, with find_* miss 0 and get_* miss -1; v2 case-insensitive, all misses -1. Real physical lookup tables exist.
 get_voice_limit	v1-limited/noop	I 0 Int	I 0 Int	0	0	v1 also limits/ignores the service; no completed v1 feature inferred from the signature.
 get_zone_id	callback-default	I 0 Int	I 0 Int	0	0	Callback lowering has no executable route; numeric zero or empty text. Init support does not establish callback support.
