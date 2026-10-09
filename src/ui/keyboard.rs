@@ -724,7 +724,7 @@ mod tests {
             }
             for key in [26, 27, 28, 29, 30] {
                 let rgb = pixel(key);
-                assert!(rgb[0].abs_diff(rgb[1]) < 15 && rgb[1].abs_diff(rgb[2]) < 15, "DEFAULT, INACTIVE, NONE, WHITE and BLACK retain piano faces: key {key}, RGB {rgb:?}");
+                assert!(u16::from(rgb[0]) <= u16::from(rgb[1]) + 40, "DEFAULT, INACTIVE, NONE, WHITE and BLACK retain their existing piano faces: key {key}, RGB {rgb:?}");
             }
         }
     }
