@@ -964,6 +964,73 @@ fn w15_render_one_authored_zone(mut library: sampler_kontakt::Kontakt, mut zone:
 
 #[test]
 #[ignore = "requires installed Vista Harp; run through kontakto-heavy"]
+fn vista_harp_mode3_nulls_against_frozen_v1() {
+    use sampler_ir as ir;
+    let path = find("Performance Samples Vista/Instruments/Bonus/Vista - Harp.nki")
+        .expect("installed Vista Harp is required");
+    let reference = std::fs::read(std::env::var_os("KONTRA_W15_V1_REFERENCE")
+        .expect("frozen v1 --dry --no-script group 0, key 60, velocity 127 reference")).unwrap();
+    assert_eq!(&reference[..4], b"RIFF");
+    assert_eq!(&reference[8..12], b"WAVE");
+    let mut offset = 12;
+    let mut format = None;
+    let mut data = None;
+    while offset + 8 <= reference.len() {
+        let size = u32::from_le_bytes(reference[offset + 4..offset + 8].try_into().unwrap()) as usize;
+        let body = reference.get(offset + 8..offset + 8 + size).expect("complete WAV chunk");
+        match &reference[offset..offset + 4] {
+            b"fmt " => format = Some(body),
+            b"data" => data = Some(body),
+            _ => {}
+        }
+        offset += 8 + size + (size & 1);
+    }
+    let format = format.expect("WAV format");
+    assert!(format.len() >= 16);
+    assert_eq!(u16::from_le_bytes(format[..2].try_into().unwrap()), 3, "float PCM");
+    assert_eq!(u16::from_le_bytes(format[2..4].try_into().unwrap()), 2);
+    assert_eq!(u32::from_le_bytes(format[4..8].try_into().unwrap()), reference::RATE);
+    assert_eq!(u16::from_le_bytes(format[14..16].try_into().unwrap()), 32);
+    let data = data.expect("WAV data");
+    assert!(data.len() >= 24_000 * 8 && data.len() % 8 == 0);
+    let mut library = sampler_kontakt::read(&path).unwrap();
+    let objects = library.instrument.kontakt_objects.as_ref().unwrap();
+    assert_eq!(objects.groups.len(), 20);
+    assert!(objects.groups.iter().all(|g| g.source.as_ref().is_some_and(|s| s.mode == 3)));
+    library.instrument.zones.retain(|z| z.group == Some(ir::GroupRef(0)));
+    for group in &mut library.instrument.groups {
+        group.output = ir::Output::Master;
+        group.sends.clear();
+    }
+    library.instrument.buses.clear();
+    library.instrument.input_bus = None;
+    let loaded = sampler_kontakt::load_read(library, &sampler_kontakt::Options {
+        keys: 60..=60, scripts: false, mpe: None, ..Default::default()
+    }, |_| {}, || false).unwrap();
+    let mut runtime = Runtime::new(loaded.plan, limits()).unwrap();
+    runtime.trigger(input(60), 60, 1.).unwrap();
+    let mut out = vec![[0.; 2]; 24_000];
+    heap::without_heap(|| runtime.render(&mut out).unwrap());
+    let mut peak = 0f64;
+    let mut residual = 0f64;
+    let mut power = 0f64;
+    for (got, bytes) in out.iter().flatten().zip(data.chunks_exact(4)) {
+        // v1's CLI applies a final 0.25 gain outside its engine.
+        let want = f64::from(f32::from_le_bytes(bytes.try_into().unwrap())) * 4.;
+        assert!(want.is_finite() && got.is_finite());
+        let difference = f64::from(*got) - want;
+        peak = peak.max(difference.abs());
+        residual += difference * difference;
+        power += want * want;
+    }
+    assert!(power > 1e-8, "the reference must sound");
+    println!("W15_HARP_MODE3 peak_error={peak} residual_db={} voices={}",
+        10. * (residual / power).log10(), runtime.voice_count());
+    assert!(peak <= 1e-6, "mode-3 playback must null against frozen v1");
+}
+
+#[test]
+#[ignore = "requires installed Vista Harp; run through kontakto-heavy"]
 fn vista_legacy_lowpass_filters_the_authored_damping_release() {
     use sampler_ir as ir;
     let path = find("Performance Samples Vista/Instruments/Bonus/Vista - Harp.nki")
