@@ -280,11 +280,13 @@ def observe(host, plugin, state, plan, block, seconds, folder, version, *, cpu_a
                 for stage in ['native CLAP state load', 'native CLAP state save', 'matched zero-dB master', 'bounded load/readiness wait', 'dlopen plugin']:
                     if 'FAIL: ' + stage in errors: live['host_failure'] = stage
                 saved = readback.read_bytes() if readback.exists() else b''
+                verified = verify_native_state(state, saved)
                 live.update(version=version, returncode=job.returncode, plugin_sha256=sha(plugin),
                             host_sha256=sha(host), state_sha256=hashlib.sha256(state).hexdigest(),
                             render_threads_setting='Single (private Settings default)',
                             render_threads_environment=env.get('KONTRA_THREADS'),
-                            native_state_verified=verify_native_state(state, saved),
+                            native_state_verified=verified,
+                            native_selection_sha256=hashlib.sha256(repr(native_selection(state)).encode()).hexdigest() if verified else None,
                             native_state_readback_sha256=hashlib.sha256(saved).hexdigest(),
                             audition_sha256=sha(schedule), stdout_sha256=hashlib.sha256(raw).hexdigest(),
                             perf_view=views, streaming_io=io, underruns=views[-1]['underruns'] if views else frozen_underruns(rows))
