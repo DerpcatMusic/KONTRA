@@ -695,12 +695,24 @@ mod tests {
     #[test]
     fn keyswitch_keyboard_preserves_authored_colours_without_mapped_samples() {
         let p = std::sync::Arc::new(crate::plugin::SamplerParams::new());
-        p.selection.write().unwrap().parts.push(crate::plugin::Part {
-            path: "/synthetic/authored-key-colours.nki".into(),
-            ..Default::default()
-        });
+        p.selection
+            .write()
+            .unwrap()
+            .parts
+            .push(crate::plugin::Part {
+                path: "/synthetic/authored-key-colours.nki".into(),
+                ..Default::default()
+            });
         let mut keys = vec![crate::sound::KeyLook::default(); 128];
-        for (key, color) in [(24, 0), (25, 1), (26, 16), (27, 17), (28, 18), (29, 19), (30, 20)] {
+        for (key, color) in [
+            (24, 0),
+            (25, 1),
+            (26, 16),
+            (27, 17),
+            (28, 18),
+            (29, 19),
+            (30, 20),
+        ] {
             keys[key].color = Some(color);
         }
         keys[31].control = true;
@@ -708,11 +720,18 @@ mod tests {
         for (width, height) in [(1180, 780), (900, 640)] {
             let h = super::super::tests::Harness::new(&p, f64::from(width), f64::from(height));
             let pixels = super::super::tests::pixels(&h.ui, width, height);
-            let path = std::path::PathBuf::from(format!("artifacts/v2-ui/keyswitch-authored-colours-{width}.png"));
+            let path = std::path::PathBuf::from(format!(
+                "artifacts/v2-ui/keyswitch-authored-colours-{width}.png"
+            ));
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             moose::core::screenshot::save_png(&path, &pixels, u32::from(width), u32::from(height));
             let pixel = |key| {
-                let frame = h.ui.scene().unwrap().surface(&format!("key-{key}")).unwrap().frame;
+                let frame =
+                    h.ui.scene()
+                        .unwrap()
+                        .surface(&format!("key-{key}"))
+                        .unwrap()
+                        .frame;
                 let x = (frame.x + frame.size.width * 0.25) as usize;
                 let y = (frame.y + frame.size.height * 0.75) as usize;
                 let at = (y * usize::from(width) + x) * 4;
@@ -720,11 +739,17 @@ mod tests {
             };
             for key in [24, 25] {
                 let rgb = pixel(key);
-                assert!(u16::from(rgb[0]) > u16::from(rgb[1]) + 40, "v1 paints explicit authored key colours even without mapped sample zones: key {key}, RGB {rgb:?}");
+                assert!(
+                    u16::from(rgb[0]) > u16::from(rgb[1]) + 40,
+                    "v1 paints explicit authored key colours even without mapped sample zones: key {key}, RGB {rgb:?}"
+                );
             }
             for key in [26, 27, 28, 29, 30] {
                 let rgb = pixel(key);
-                assert!(u16::from(rgb[0]) <= u16::from(rgb[1]) + 40, "DEFAULT, INACTIVE, NONE, WHITE and BLACK retain their existing piano faces: key {key}, RGB {rgb:?}");
+                assert!(
+                    u16::from(rgb[0]) <= u16::from(rgb[1]) + 40,
+                    "DEFAULT, INACTIVE, NONE, WHITE and BLACK retain their existing piano faces: key {key}, RGB {rgb:?}"
+                );
             }
         }
     }
