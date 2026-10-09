@@ -179,3 +179,19 @@ same directories. This controlled result does not establish the historical
 worker environment or any bank's licensing status. Installed-bank checks never
 prepare content access, decode member payloads, or read samples; receipts retain
 only hashed bank identifiers and aggregate counts.
+
+
+## Catalogued UVI programs with load requirements
+
+The browser retains every directory-listed preset, including protected programs.
+Each affected library card says “Catalogued · loading limited”; selecting it shows
+its bank name and the number of presets that need content access before loading.
+Unknown protection modes receive their own reason. These are declared directory
+requirements, not a claim that program loading was attempted or that a license is
+missing. Scanning never prepares content access or reads sample/program payloads.
+
+The metadata index stores bank status with program paths, so a warm scan keeps the
+same message. Index schema 2 rebuilds the disposable catalog from older indexes;
+user settings and presets are unaffected. Clear banks receive no access warning.
+The authored clear-bank playback test embeds a sine sample, deletes its loose
+source, then uses the product's catalog, V2 loader, MIDI note and audio output.
