@@ -390,6 +390,8 @@ impl Cursor {
 
     pub(super) fn step(&self) -> f64 {
         if let Some(loops) = self.loops {
+            #[cfg(test)]
+            native_slot_tests::STEP_READS.with(|reads| reads.set(reads.get() + 1));
             let (local, position) = self.segment(i128::from(self.position));
             if let Some(r) = local.loop_range
                 && position >= i128::from(local.first_boundary(r))
@@ -1771,6 +1773,9 @@ impl ReadFrames for PagedFrames<'_> {
 #[cfg(test)]
 mod native_slot_tests {
     use super::*;
+    std::thread_local! {
+        pub(super) static STEP_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
     struct ProbeFrames<'a> {
         frames: &'a [Frame],
         bulk: bool,
@@ -1804,7 +1809,9 @@ mod native_slot_tests {
         let reader = ProbeFrames { frames: &frames, bulk: true, missing: None, reads: Default::default() };
         let mut output = [[0.; 2]; 64];
         let mut envelope = EnvelopeState::new(crate::Envelope::default());
+        STEP_READS.with(|reads| reads.set(0));
         assert_eq!(cursor.render(&reader, &mut output, &mut envelope, 0.731, [0.7, -0.2], &Kernel::new(crate::ResampleQuality::Realtime)), 64);
+        assert!(STEP_READS.with(|reads| reads.get()) <= 4, "a bounded native run repeatedly resolved its rate");
         assert_eq!(reader.reads.get(), 0, "native loop interior fell back to per-tap reads");
         assert!(output.iter().any(|frame| *frame != [0.; 2]));
     }
