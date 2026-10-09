@@ -57,6 +57,33 @@ fn pixels_state(face: &Interface, input: &mut InputState) -> Vec<u8> {
 }
 
 #[test]
+fn authored_square_slider_axis_and_knob_type_change_pixels() {
+    let paint = |declaration: &str, behavior: i32| {
+        let source = format!(
+            "on init\nmake_perfview\nset_ui_width_px(160)\nset_ui_height_px(120)\n{declaration}\n$x := 50\nmove_control_px($x,10,10)\nset_control_par(get_ui_id($x),$CONTROL_PAR_WIDTH,64)\nset_control_par(get_ui_id($x),$CONTROL_PAR_HEIGHT,64)\nset_control_par(get_ui_id($x),$CONTROL_PAR_HIDE,6)\nset_control_par(get_ui_id($x),$CONTROL_PAR_MOUSE_BEHAVIOUR,{behavior})\nend on"
+        );
+        let script =
+            sampler_ksp::compile(&source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+        pixels(&resolved(&script.ui(&|_| None).unwrap()))
+    };
+    let horizontal = paint("declare ui_slider $x(0,100)", 1000);
+    let vertical = paint("declare ui_slider $x(0,100)", -1000);
+    let knob = paint("declare ui_knob $x(0,100,1)", 1000);
+    println!(
+        "AUTHORED_CONTROL_PIXELS horizontal={} vertical={} knob={}",
+        blake3::hash(&horizontal),
+        blake3::hash(&vertical),
+        blake3::hash(&knob)
+    );
+    assert!(
+        horizontal != vertical,
+        "scripted slider axis changes the track"
+    );
+    assert!(horizontal != knob, "square ui_slider remains a slider");
+    assert!(vertical != knob, "ui_knob alone selects the dial");
+}
+
+#[test]
 fn waveform_uses_current_envelope_duration_cursor_and_source_colour() {
     let mut face = face(Kind::Waveform);
     face.widgets[0].waveform = Some(ir::Waveform {
