@@ -841,6 +841,36 @@ pub fn pending_incident() -> Option<CrashIncident> {
     REPORTER.pending.lock_unpoisoned().clone()
 }
 
+pub(super) fn install_standalone_capture() {
+    #[cfg(target_os = "linux")]
+    let marker = REPORTER.marker.lock_unpoisoned().clone();
+    #[cfg(target_os = "linux")]
+    if let Some(marker) = &marker {
+        if let Err(error) = super::standalone::install(&marker.session_id, marker.pid,
+            marker.started_at, &marker.host_process, &marker.build_id) {
+            eprintln!("KONTRA native crash capture unavailable: {error}");
+        }
+    }
+    // A standalone owns its panic hook; hosts retain their process-wide hook.
+    let previous = std::panic::take_hook();
+    let captured = AtomicBool::new(false);
+    std::panic::set_hook(Box::new(move |info| {
+        if !captured.swap(true, Ordering::Relaxed) {
+            let panic = PanicMarker {
+                at: now_unix(),
+                thread: std::thread::current().name().unwrap_or("unnamed").to_owned(),
+                message: format!("{info}\nRust backtrace:\n{}", std::backtrace::Backtrace::force_capture()),
+                location: info.location().map_or_else(String::new, |v| v.to_string()),
+                images: Vec::new(),
+            };
+            if !persist_json(&panic_marker_path(std::process::id()), &panic) {
+                eprintln!("KONTRA panic evidence: {}", panic.message);
+            }
+        }
+        previous(info);
+    }));
+}
+
 /// Starts one-shot work that waits on the user or the network (a file dialog, a licence
 /// request, a report, an update check), which unload must never wait for, so nothing joins it.
 /// The task must own, or hold `Arc`s to, everything it touches, never the instance, and report
@@ -858,7 +888,7 @@ pub(crate) fn spawn_detached(
 }
 
 /// Keeps the module holding KONTRA's code loaded for the life of the process.
-fn pin_own_module() -> Result<(), String> {
+pub(super) fn pin_own_module() -> Result<(), String> {
     pin_module_containing(pin_own_module as *const std::ffi::c_void)
 }
 
@@ -871,6 +901,16 @@ fn pin_module_containing(address: *const std::ffi::c_void) -> Result<(), String>
         if libc::dladdr(address, &mut info) == 0 || info.dli_fname.is_null() {
             return Err("dladdr found no module".to_owned());
         }
+        #[cfg(target_os = "linux")]
+        {
+            // The kernel identifies the executable even when argv[0] is relative or cwd changed.
+            let mut executable: libc::Dl_info = std::mem::zeroed();
+            if libc::dladdr(libc::getauxval(libc::AT_PHDR) as *const _, &mut executable) != 0
+                && executable.dli_fbase == info.dli_fbase
+            {
+                return Ok(());
+            }
+        }
         // The reference taken here is never released: that is the pin.
         let flags = libc::RTLD_NOW | libc::RTLD_NOLOAD | libc::RTLD_NODELETE;
         if !libc::dlopen(info.dli_fname, flags).is_null() {
@@ -880,6 +920,10 @@ fn pin_module_containing(address: *const std::ffi::c_void) -> Result<(), String>
             std::ffi::CStr::from_ptr(info.dli_fname).to_bytes(),
         ))
     };
+    #[cfg(target_os = "linux")]
+    if main_executable_contains(address) {
+        return Ok(());
+    }
     // The executable itself (a test binary, a standalone build) is never unloaded.
     let canonical = |path: &std::path::Path| path.canonicalize().ok();
     if canonical(&path).is_some()
@@ -888,6 +932,27 @@ fn pin_module_containing(address: *const std::ffi::c_void) -> Result<(), String>
         return Ok(());
     }
     Err(format!("dlopen refused {}", path.display()))
+}
+
+#[cfg(target_os = "linux")]
+fn main_executable_contains(address: *const std::ffi::c_void) -> bool {
+    unsafe extern "C" fn visit(info: *mut libc::dl_phdr_info, _: usize, data: *mut std::ffi::c_void) -> i32 {
+        // SAFETY: dl_iterate_phdr supplies live loader records; data points to our address.
+        unsafe {
+            let info = &*info;
+            if info.dlpi_name.is_null() || *info.dlpi_name != 0 { return 0; }
+            let address = *data.cast::<usize>();
+            for header in std::slice::from_raw_parts(info.dlpi_phdr, usize::from(info.dlpi_phnum)) {
+                if header.p_type != libc::PT_LOAD { continue; }
+                let start = (info.dlpi_addr as usize).saturating_add(header.p_vaddr as usize);
+                if address >= start && address < start.saturating_add(header.p_memsz as usize) { return 1; }
+            }
+            0
+        }
+    }
+    let mut address = address as usize;
+    // SAFETY: the callback only reads loader records and this stack-local address.
+    unsafe { libc::dl_iterate_phdr(Some(visit), (&mut address as *mut usize).cast()) == 1 }
 }
 
 #[cfg(target_os = "windows")]
@@ -1429,7 +1494,7 @@ fn retire_acknowledged_copy(
 }
 
 #[cfg(test)]
-fn detect_stale_sessions(stopping: &AtomicBool) -> Option<CrashIncident> {
+pub(super) fn detect_stale_sessions(stopping: &AtomicBool) -> Option<CrashIncident> {
     find_stale_candidate(stopping, false)?.consume(stopping)
 }
 
@@ -1551,7 +1616,7 @@ fn find_stale_candidate(stopping: &AtomicBool, confirmed_only: bool) -> Option<R
 
         let detected_at = now_unix();
         let started_at = marker.started_at.min(detected_at);
-        let evidence = if marker.schema >= 4 || panic.is_some() {
+        let mut evidence = if marker.schema >= 4 || panic.is_some() {
             if stopping.load(Ordering::Acquire) {
                 return None;
             }
@@ -1565,6 +1630,13 @@ fn find_stale_candidate(stopping: &AtomicBool, confirmed_only: bool) -> Option<R
         } else {
             super::platform::CrashEvidence::default()
         };
+        #[cfg(target_os = "linux")]
+        if let Some(native) = super::standalone::evidence(&marker.session_id, marker.pid,
+            started_at, detected_at, &marker.host_process) {
+            evidence.disposition = native.disposition;
+            evidence.signature = native.signature;
+            evidence.text = format!("{}\n{}", native.text, evidence.text);
+        }
         if stopping.load(Ordering::Acquire) {
             return None;
         }
@@ -2172,7 +2244,7 @@ fn incident_id(marker: &SessionMarker) -> String {
     blake3::hash(marker.session_id.as_bytes()).to_hex()[..16].to_string()
 }
 
-fn reports_dir() -> PathBuf {
+pub(super) fn reports_dir() -> PathBuf {
     let base = super::support_cache_path();
     base.parent().map_or_else(
         || std::env::temp_dir().join("kontra-crash-reports"),
@@ -4652,6 +4724,36 @@ mod tests {
                 Ok(())
             );
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn standalone_module_detection_uses_loaded_addresses_not_argv_or_cwd() {
+        assert!(main_executable_contains(pin_own_module as *const std::ffi::c_void));
+        assert!(!main_executable_contains(libc::getpid as *const std::ffi::c_void));
+        assert!(!main_executable_contains(std::ptr::null()));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn standalone_delivery_worker_survives_bare_argv0_and_changed_directory() {
+        const TEST: &str = "support::crash::tests::standalone_delivery_worker_survives_bare_argv0_and_changed_directory";
+        const CHILD: &str = "KONTRA_PIN_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            use std::os::unix::process::CommandExt;
+            let directory = tempfile::tempdir().unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .arg0("kontakto-standalone")
+                .current_dir(directory.path())
+                .env(CHILD, "1")
+                .args(["--exact", TEST, "--test-threads=1"])
+                .output().unwrap();
+            assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            return;
+        }
+        let (sent, received) = mpsc::channel();
+        spawn_detached("standalone-delivery-test", move || { let _ = sent.send(()); }).unwrap();
+        received.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
     }
 
     /// Unload returns while work that waits on the user (an open file dialog) is still blocked.

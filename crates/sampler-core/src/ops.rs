@@ -814,13 +814,29 @@ impl Runtime {
             .ok_or(Error::InvalidInput)
     }
 
-    fn behavior_bank(&mut self, id: BehaviorId) -> Result<&mut ScriptBank, Error> {
+    fn behavior_bank(&self, id: BehaviorId) -> Result<&ScriptBank, Error> {
+        let c = *self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
+        let plan = self.behavior_plan(c.owner)?;
+        let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
+        let instance = generation.prepared.programs[c.program]
+            .script_instance
+            .ok_or(Error::InvalidInput)?;
+        generation
+            .scripts
+            .get(usize::from(instance.0))
+            .ok_or(Error::InvalidInput)
+    }
+
+    fn behavior_bank_mut(&mut self, id: BehaviorId) -> Result<&mut ScriptBank, Error> {
         let c = *self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
         let plan = self.behavior_plan(c.owner)?;
         let generation = self.plans.get_mut(plan.0).ok_or(Error::StaleHandle)?;
         let instance = generation.prepared.programs[c.program]
             .script_instance
             .ok_or(Error::InvalidInput)?;
+        // ponytail: any mutable script storage invalidates the full snapshot;
+        // track persistent addresses if frequently-written large tables remain costly.
+        generation.script_revision = generation.script_revision.wrapping_add(1);
         generation
             .scripts
             .get_mut(usize::from(instance.0))
@@ -897,14 +913,20 @@ impl Runtime {
                 let job=i32_of(self.reg(id,local)?)?;let plan=self.behavior_plan(owner)?;
                 if self.plans.get(plan.0).ok_or(Error::StaleHandle)?.midi_object.jobs.iter().any(|j|j.id==job) {
                     let c=self.behaviors.get_mut(id.0).ok_or(Error::StaleHandle)?;
-                    if !c.disable_wait {c.waiting=true;c.async_wait=Some(job);return Ok(true);}
+                    if !c.disable_wait {
+                        c.waiting=true;
+                        c.async_wait=Some(job);
+                        // An admitted async wait also ends continuous preemption.
+                        c.yielded_at=None;
+                        return Ok(true);
+                    }
                 }
             }
             Op::MidiFilename { text } => {
                 let plan=self.behavior_plan(owner)?;
                 let value=self.plans.get(plan.0).ok_or(Error::StaleHandle)?.midi_object.filename;
                 let cell=self.text_cell(id,text)?;
-                self.behavior_bank(id)?.texts[cell].push(value.as_str());
+                self.behavior_bank_mut(id)?.texts[cell].push(value.as_str());
             }
             Op::Real {
                 lhs,
@@ -985,7 +1007,7 @@ impl Runtime {
             }
             Op::TextClear { text } => {
                 let cell = self.text_cell(id, text)?;
-                self.behavior_bank(id)?
+                self.behavior_bank_mut(id)?
                     .texts
                     .get_mut(cell)
                     .ok_or(Error::InvalidInput)?
@@ -1011,6 +1033,7 @@ impl Runtime {
                     let program = &generation.prepared.programs[c.program];
                     let source = program.texts.get(index).ok_or(Error::InvalidInput)?;
                     let instance = program.script_instance.ok_or(Error::InvalidInput)?;
+                    generation.script_revision = generation.script_revision.wrapping_add(1);
                     let target = generation
                         .scripts
                         .get_mut(usize::from(instance.0))
@@ -1042,7 +1065,7 @@ impl Runtime {
                     TextPart::Constant(_) | TextPart::Table { .. } => {}
                 }
                 let target = self
-                    .behavior_bank(id)?
+                    .behavior_bank_mut(id)?
                     .texts
                     .get_mut(cell)
                     .ok_or(Error::InvalidInput)?;
@@ -1123,7 +1146,7 @@ impl Runtime {
                     *v = self.reg(id, key + i as u16)? as i32;
                 }
                 let cell = self.text_cell(id, text)?;
-                let bank = self.behavior_bank(id)?;
+                let bank = self.behavior_bank_mut(id)?;
                 if write {
                     let value = *bank.texts.get(cell).ok_or(Error::InvalidInput)?;
                     if let Some((_, v)) = bank.text_properties.iter_mut().find(|(key, _)| *key == k)
@@ -1221,7 +1244,7 @@ impl Runtime {
                     }
                 }
                 *self
-                    .behavior_bank(id)?
+                    .behavior_bank_mut(id)?
                     .texts
                     .get_mut(cell)
                     .ok_or(Error::InvalidInput)? = result;
@@ -1291,7 +1314,7 @@ impl Runtime {
                 }
                 if write {
                     let value = self.reg(id, local)?;
-                    self.behavior_bank(id)?.store.set(k, value);
+                    self.behavior_bank_mut(id)?.store.set(k, value);
                 } else if let Some(value) = self.behavior_bank(id)?.store.get(k) {
                     self.set_reg(id, local, value)?;
                 }
@@ -1379,7 +1402,7 @@ impl Runtime {
                     _ => return Err(Error::InvalidInput),
                 });
                 let cell = self.text_cell(id, text)?;
-                self.behavior_bank(id)?.texts[cell] = result;
+                self.behavior_bank_mut(id)?.texts[cell] = result;
             }
             Op::ReadCallbackUiId { local } => {
                 let ui = self.callback_ui_id(id)?;
@@ -1418,7 +1441,7 @@ impl Runtime {
                 let index =
                     usize::try_from(self.reg(id, index)?).map_err(|_| Error::InvalidInput)?;
                 let path = if let Some(drop) = self.callback_drop_storage(id, ui)? {
-                    let bank = self.behavior_bank(id)?;
+                    let bank = self.behavior_bank_mut(id)?;
                     if index >= bank.cells[drop.counts as usize + kind as usize] as usize {
                         Text::default()
                     } else {
@@ -1430,7 +1453,7 @@ impl Runtime {
                     Text::default()
                 };
                 let cell = self.text_cell(id, text)?;
-                self.behavior_bank(id)?.texts[cell] = path;
+                self.behavior_bank_mut(id)?.texts[cell] = path;
             }
             Op::ReadWidgetEventParameter { local } => {
                 let index =

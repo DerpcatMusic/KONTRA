@@ -144,3 +144,57 @@ ran serially through `/home/derpcat/.cache/kontakto-heavy` in the owned
 No new dependency, public API, importer law, control binding, CPU artifact or
 release/install change. Corpus/native parity and callback timing are not
 measured by this slice. Next: W8 direct handoff, frozen CPU window, then W13.
+
+## Remaining consolidation slice (READY)
+
+Implementation `494bb088`, test-only checkpoints `a6b17c70` / `a4c9e2cd`.
+The remaining eight scalar/lane sample-math sites now call shared primitives:
+constant/control gain, stereo matrix, Gainer multiplier/smoothing, Stereo
+balance/advance, wet/dry/bypass mixing, float64 OnePole and TPT SVF.
+Layouts, initialisation markers, coefficient preparation, lane end masks,
+pseudo delay histories, control cadence and flush points stay with their callers.
+`ControlRamp::settled` and coefficient hoisting are outside this slice (W9).
+
+Float32 `one_pole32` is shared by Gainer, Stereo width and reverb's output shelf.
+The biased primitive accepts a precomputed increment, so Lo-Fi keeps
+coefficient-first multiplication while reverb keeps difference-first multiplication.
+Its addition is explicitly `state + (increment + 1e-20)`; it is not
+`(state + increment) + 1e-20`. The float64 OnePole remains distinct.
+
+Independent frozen-608a oracles cover all scoped dispatchers, output guards,
+retained states and ended voices. Dispatch cases include seven lengths
+(0/1/3/4/5/17/64), uniform/masked ends, batches of 1/3/8 voices, four successive
+input blocks (impulse, sine, signed zero/subnormal), control trajectories and
+fresh/retained smoother state. SVF adds seven modes, three rates, three Q values,
+and settled/moving cutoff. Additional oracles cover Lo-Fi's noise RNG/state,
+reverb's three one-poles and feedback lines (8192 ticks at each of three rates),
+and Stereo's pseudo ring/odd-block cadence (both pseudo settings, 32 calls).
+
+Baseline gate on test-only `a4c9e2cd`: optimized `cargo test --locked --release
+-p sampler-core --lib shared_` PASS (9 tests; five new frozen oracles plus four
+existing shared tests), before validating the extracted math. Logs:
+`~/.cache/kontakto-w6/universal-dsp/remaining-baseline.log`.
+Post-extraction validation at `b2fe9e77` passed on 2026-10-09 after W12's
+direct machine release, serially through `kontakto-heavy`:
+
+- Release area no-run for core lib and DSP/SVF/Gainer/control/compressor tests: PASS.
+- Five independent frozen PCM/state bit oracles: 5 PASS.
+- Compressor static-transfer sweep and invalid-input checks: 2 PASS.
+- Existing DSP/SVF/Gainer/control/compressor integration and allocator checks:
+  20 PASS, including zero callback heap-allocation assertions.
+- Clean source and `git diff --check`: PASS.
+
+Receipt and logs: `/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w6-universal-dsp/`.
+This establishes refactor parity with the existing core equations. It does
+not establish native DSP fidelity or a CPU improvement.
+
+`CompressorSettings::transfer_db(input_db)` returns `(output_db, reduction_db)`
+using playback's shared detector/gain law. It is an off-audio static detector
+curve; attack/release history and channel linking remain outside that curve.
+Zero makeup produces negative-infinity output. No live gain-reduction meter
+is exported; the existing hard-knee law remains a native-unverified approximation.
+
+CPU acceptance continues to use the unchanged frozen exact-5fc artifact.
+Updated quiet order: W8 → W9 → W12 format validation → W6 → W13 → W11.
+W6 starts only after W12's direct release, validates the source slice before
+any timing, and publishes READY independently of the frozen CPU verdict.

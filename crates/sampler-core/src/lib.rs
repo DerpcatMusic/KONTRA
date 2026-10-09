@@ -96,7 +96,7 @@ pub use engine_parameters::{
 mod steal;
 mod parameter_registry;
 pub use parameter_registry::{ParameterAddress, ParameterDescriptor, ParameterDisplay, ParameterLaw,
-    ParameterRegistry, ParameterScope, ParameterUnit, PreparedParameterRegistry};
+    ParameterRegistry, ParameterRole, ParameterScope, ParameterUnit, PreparedParameterRegistry};
 mod voice_mod;
 pub use plan_programs::{PlanProgram, SignalProgram};
 pub use script_params::{EnvelopeStage, GroupParams, ParamScope};
@@ -903,6 +903,7 @@ impl Runtime {
         let rate = plan.rate;
         let mut plans = Arena::new(id, 1);
         let active_plan = PlanId(plans.insert(Generation {
+            script_revision: 0,
             native_cycle: 0,
             native_seed: 0,
             request: 0,
