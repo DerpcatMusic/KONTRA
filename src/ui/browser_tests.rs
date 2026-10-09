@@ -122,6 +122,43 @@ fn w14_format_tabs_separate_libraries() {
 }
 
 #[test]
+fn uvi_scan_publication_populates_the_falcon_tab_after_an_empty_start() {
+    for (width, height) in [(900., 600.), (1180., 900.)] {
+        let p = catalog();
+        {
+            let mut view = p.shared.view.lock().unwrap();
+            view.shelf = Arc::new(crate::library::Shelf::new(Vec::new()));
+            view.files = Arc::new(Vec::new());
+        }
+        let mut h = Harness::new(&p, width, height);
+        h.press("bank-uvi");
+        assert!(h.ui.scene().unwrap().surface("library-0").is_none());
+        let bank = PathBuf::from("/virtual/UVI/Published Bank.UFS");
+        let preset = bank.join("Piano.uvip");
+        {
+            let mut view = p.shared.view.lock().unwrap();
+            view.shelf = Arc::new(crate::library::Shelf::new(vec![crate::library::Library {
+                dir: bank.clone(), name: "Published Falcon bank".into(), instruments: 1,
+                ..Default::default()
+            }]));
+            view.files = Arc::new(vec![preset.clone()]);
+        }
+        h.idle(5);
+        assert!(h.ui.scene().unwrap().surface("library-0").is_some(),
+            "a newly published bank appears without reopening the browser");
+        h.press("library-0");
+        assert!(h.ui.scene().unwrap().surface("instrument-0").is_some(),
+            "the scan's bank member is browseable");
+        h.press("bank-kontakt");
+        assert!(h.ui.scene().unwrap().surface("library-0").is_none(),
+            "the UVI bank belongs only to the Falcon tab");
+        h.press("bank-uvi");
+        assert!(h.ui.scene().unwrap().surface("instrument-0").is_some(),
+            "the Falcon selection survives changing tabs");
+    }
+}
+
+#[test]
 fn unsupported_uvi_banks_stay_visible_when_no_library_opens() {
     let p = catalog();
     {
