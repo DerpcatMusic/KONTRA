@@ -35,7 +35,16 @@ fn preset(sample: &str, multi: bool) -> Vec<u8> {
     for x in [1f32, 0., 1.] {
         zone.extend(x.to_le_bytes());
     }
-    zone.extend([0; 6]);
+    zone.extend([0, 1, 0, 0, 0, 0]); // v0x9a sample-presence flag.
+    zone.extend(0i32.to_le_bytes()); // Filename index.
+    zone.extend(0i32.to_le_bytes()); // Sample data type.
+    zone.extend(48000i32.to_le_bytes());
+    zone.push(1); // Mono.
+    for value in [4096i32, 0, 60] {
+        zone.extend(value.to_le_bytes());
+    }
+    zone.extend(0f32.to_le_bytes());
+    zone.push(0);
     zone.extend(0i32.to_le_bytes());
     let mut zones = 1u32.to_le_bytes().to_vec();
     zones.extend(0u32.to_le_bytes());
