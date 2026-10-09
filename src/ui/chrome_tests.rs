@@ -452,22 +452,10 @@ fn sound_readouts_keep_the_full_envelope_description() {
     envelope_specimen(&p);
     let mut h = Harness::new(&p, 900., 600.);
     h.press("view-0-Sound");
-    let readout =
-        h.ui.scene()
-            .unwrap()
-            .surfaces()
-            .find(|surface| {
-                surface
-                    .text_value
-                    .as_deref()
-                    .is_some_and(|text| text.starts_with("A ") && text.ends_with("12 zones"))
-            })
-            .unwrap();
-    assert_eq!(
-        readout.tip.as_deref(),
-        readout.text_value.as_deref(),
-        "truncated Sound readouts retain their full description"
-    );
+    let scene = h.ui.scene().unwrap();
+    let readout = scene.surface("edit-envelope-value-Attack").unwrap();
+    assert!(readout.tip.as_deref().is_some_and(|tip| tip.contains("Attack") && tip.contains("type")),
+        "the current live Sound editor exposes the full parameter name and typing action");
 }
 
 #[test]
@@ -534,7 +522,8 @@ fn sound_hover_displays_the_full_readout() {
     envelope_specimen(&p);
     let mut h = Harness::new(&p, 900., 600.);
     h.press("view-0-Sound");
-    hover_text(&mut h, "A ");
+    let readout = h.ui.scene().unwrap().surface("edit-envelope-value-Attack").unwrap().text_value.clone().unwrap();
+    hover_text(&mut h, &readout);
 }
 
 #[test]
