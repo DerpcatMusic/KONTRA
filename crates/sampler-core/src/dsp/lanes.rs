@@ -415,7 +415,7 @@ mod tests {
                             ends: std::array::from_fn(|k| len.saturating_sub(k / 2)), len };
                         let mut bank = FilterBank::new(&[], 0).unwrap();
                         for gain in [12., 0., -12.] {
-                            let eq = super::super::PeakingEq { frequency_hz: hz, bandwidth_octaves: width,
+                            let eq = super::super::PeakingEq { frequency: super::super::Parameter::Constant(((hz / 20f64).log10() / 3.).clamp(0., 1.)), bandwidth: super::super::Parameter::Constant(((width - 0.3f64) / 2.7).clamp(0., 1.)),
                                 gain_db: super::super::Parameter::Constant(gain) }.compile(rate, &mut Vec::new()).unwrap();
                             let mut block: LaneBlock = std::array::from_fn(|i| std::array::from_fn(|k|
                                 ((i + k) as f64 * 0.137).sin() * 0.2));
