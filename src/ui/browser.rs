@@ -459,12 +459,6 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         if count > unsupported { message.push_str(&format!("{} UVI banks could not be read. ", count - unsupported)); }
         message.push_str("See Logs for the affected locations.");
         rows.insert(0, hint(&message).id("uvi-bank-problem"));
-        for (n, root) in settings.roots.iter().enumerate().rev() {
-            if let Some(problem) = catalog.bank_problem(Path::new(&root.path)) {
-                let message = format!("{}\n{problem}", root.path);
-                rows.insert(1, hint(&message).tip(message.clone()).id(format!("uvi-bank-root-{n}")));
-            }
-        }
     }
     if !bank_problem && arranged.is_empty() && scanning.is_none() {
         if presets.is_empty() {
@@ -475,6 +469,12 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         }
     } else if !bank_problem && sources.is_empty() {
         rows.push(hint("No library matches that filter."));
+    }
+    for (n, root) in settings.roots.iter().enumerate().rev() {
+        if let Some(problem) = catalog.root_problem(Path::new(&root.path)) {
+            let message = format!("{}\n{problem}", root.path);
+            rows.insert(usize::from(bank_problem), hint(&message).tip(message.clone()).id(format!("uvi-bank-root-{n}")));
+        }
     }
     let reveal = chosen_at.filter(|_| cx.state.browse.reveal_source > 0);
     let sources_id = format!("browser-sources-{uvi}");
