@@ -1585,8 +1585,8 @@ fn poll_libraries(shared: &Shared) {
             view.status = format!("{} libraries · {} presets", scanned.shelf.libraries.len(), scanned.files.len());
             if let Some(imported) = &scanned.imported {
                 view.status += &match imported.len() {
-                    0 => " · nothing new from Kontakt".to_owned(),
-                    n => format!(" · {n} folders from Kontakt"),
+                    0 => " · no new installed libraries".to_owned(),
+                    n => format!(" · {n} installed library folders"),
                 };
             }
             view.shelf = scanned.shelf;
