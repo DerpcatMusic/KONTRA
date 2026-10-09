@@ -163,6 +163,12 @@ impl Prepared {
         }
         for binding in &self.engine_parameters {self.control_index(binding.control)?;}
         for control in self.envelope_controls.iter().flatten().flatten() {self.control_index(*control)?;}
+        for control in self.wavetable_controls.iter().flatten().flatten() {
+            let index = self.control_index(*control)?;
+            if self.controls[index].domain != (ControlDomain::Real { min: 0., max: 1. }) {
+                return Err(Error::InvalidInput);
+            }
+        }
         Ok(self)
     }
 
@@ -219,6 +225,18 @@ impl Prepared {
             }
         }
         Ok(())
+    }
+}
+
+impl crate::Generation {
+    pub(super) fn project_wavetable(&self, cursor: &mut crate::source::Cursor, group: Option<u32>) {
+        if cursor.wavetable().is_none() { return; }
+        let Some(Some(lanes)) = group.and_then(|g| self.prepared.wavetable_controls.get(g as usize)) else { return; };
+        cursor.set_wavetable_controls(lanes.map(|id| {
+            let ControlValue::Real(value) = self.controls.values[self.prepared.control_index(id).unwrap()]
+                else { unreachable!("wavetable lanes are real controls") };
+            value as f32
+        }));
     }
 }
 

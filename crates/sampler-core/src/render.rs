@@ -356,6 +356,7 @@ impl Runtime {
             v.last_gains = gains[lane].map(|g| g * v.gain);
             v.cursor = v.cursor.with_step(v.base_step * expression.rendered.ratio);
             let plan = self.plans.get(n.plan.0).unwrap();
+            plan.project_wavetable(&mut v.cursor, v.group);
             plan_id = Some(n.plan.0);
             let chain = &plan.prepared.voice_chains[v.chain.unwrap()];
             let asset = &plan.prepared.pcm[v.sample];
@@ -486,6 +487,7 @@ impl Runtime {
         let n = self.notes.get(f.note.0).unwrap();
         let expression = self.expressions.get(n.expression.0).unwrap();
         let plan = self.plans.get_mut(n.plan.0).unwrap();
+        plan.project_wavetable(&mut v.cursor, v.group);
         let modulated = plan.modulation.program(i).is_some();
         let mut filter = None;
         let points = plan.modulation.program(i).map(|_| {

@@ -1155,3 +1155,39 @@ fn w15_authored_native_q_gain_offline_ab_reaches_ladder_and_daft() {
       }
     }
 }
+
+#[test]
+fn conflux_production_load_binds_live_wave_controls_to_the_authored_group() {
+    let Some(path) = find("Conflux 1.1.0 [Native Instruments]/Instruments/Conflux.nki") else { return; };
+    let loaded = sampler_kontakt::load(&path, &reference::options(60..=60), |_| {}).unwrap();
+    let mut owners = Vec::new();
+    for (group, authored) in loaded.instrument.groups.iter().enumerate() {
+        let Some(wave) = authored.wavetable else { continue; };
+        let physical = loaded.instrument.source_indices.groups.iter()
+            .position(|g| *g == Some(sampler_ir::GroupRef(group))).unwrap() as i32;
+        for (name, default) in [("ENGINE_PAR_WT_POSITION", wave.position),
+            ("ENGINE_PAR_WT_FORM", wave.form1), ("ENGINE_PAR_WT_FORM2", wave.form2)] {
+            let address = sampler_core::EngineParameterAddress {
+                parameter: sampler_core::engine_parameter_id(name).unwrap(),
+                group: physical, slot: -1, generic: -1 };
+            let binding = loaded.plan.engine_parameter_bindings().iter().find(|b| b.address == address).unwrap();
+            assert_eq!(binding.control, sampler_core::engine_parameter_control(address));
+            owners.push((address, binding.law.encode(f64::from(default))));
+        }
+    }
+    assert_eq!(owners.len(), 3, "one authored Conflux wave group owns all three lanes");
+    assert!(!loaded.instrument.unsupported.iter().any(|u| u.feature == "wavetable live engine parameters"));
+    let limits = Limits::for_plan(&loaded.plan, 256, 64);
+    let mut rt = Runtime::new(loaded.plan, limits).unwrap();
+    for (address, default) in owners {
+        assert_eq!(rt.engine_parameter(address).unwrap(), default);
+        rt.set_engine_parameter(address, 370_000).unwrap();
+        assert_eq!(rt.engine_parameter(address).unwrap(), 370_000);
+        for name in ["ENGINE_PAR_WT_PHASE", "ENGINE_PAR_WT_FORM_MODE", "ENGINE_PAR_WT_FORM2_MODE"] {
+            let unbound = sampler_core::EngineParameterAddress {
+                parameter: sampler_core::engine_parameter_id(name).unwrap(), ..address };
+            assert!(rt.set_engine_parameter(unbound, 0).is_err());
+        }
+    }
+    println!("CONFLUX_LIVE_WAVE physical_owners=3 phase_mode_unbound=true");
+}

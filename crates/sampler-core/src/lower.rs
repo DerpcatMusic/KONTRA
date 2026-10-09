@@ -38,6 +38,27 @@ fn ladder_lanes(d: ir::LadderLP4) -> Vec<(ControlDefinition, crate::EngineParame
     }).collect()
 }
 
+/// Port v1 group settings: physical source lanes feed the oscillator every block.
+fn wavetable_lanes(instrument: &ir::Instrument, group: usize, wave: ir::Wavetable)
+    -> Result<[(ControlDefinition, crate::EngineParameterBinding); 3], LowerError>
+{
+    let physical = if instrument.source_indices.groups.is_empty() { group } else {
+        instrument.source_indices.groups.iter().position(|g| *g == Some(ir::GroupRef(group)))
+            .ok_or_else(|| core(Stage::Controls, format!("group {group} source identity"))(Error::InvalidInput))?
+    };
+    let physical = i32::try_from(physical)
+        .map_err(|_| core(Stage::Controls, "source group identity")(Error::InvalidInput))?;
+    Ok([("ENGINE_PAR_WT_POSITION", wave.position), ("ENGINE_PAR_WT_FORM", wave.form1),
+        ("ENGINE_PAR_WT_FORM2", wave.form2)].map(|(name, value)| {
+        let address = crate::EngineParameterAddress { parameter: crate::engine_parameter_id(name).unwrap(),
+            group: physical, slot: -1, generic: -1 };
+        let id = crate::engine_parameter_control(address);
+        (ControlDefinition { id, domain: ControlDomain::Real { min: 0., max: 1. },
+            default: ControlValue::Real(f64::from(value)) }, crate::EngineParameterBinding {
+            address, control: id, law: crate::EngineParameterLaw::Linear { low: 0., high: 1. } })
+    }))
+}
+
 /// Seed for random sequences; fixed so renders are reproducible.
 const SEED: u64 = 0x5eed_1a7e;
 /// Decay allowance for bus filters after their input stops, in seconds.
@@ -383,11 +404,26 @@ pub fn lower_with(
     // Before the voice chains, which validate the controls they bind.
     let mut slots = lowering.slot_controls();
     slots.extend(lowering.controls()?);
+    let mut wave_bindings = Vec::new();
+    let mut wave_controls = if instrument.groups.iter().any(|g| g.wavetable.is_some()) {
+        vec![None; instrument.groups.len()]
+    } else { Vec::new() };
+    for (group, authored) in instrument.groups.iter().enumerate() {
+        if let Some(wave) = authored.wavetable {
+            let lanes = wavetable_lanes(instrument, group, wave)?;
+            wave_controls[group] = Some(lanes.map(|(control, _)| control.id));
+            for (control, binding) in lanes {
+                slots.push(control);
+                wave_bindings.push(binding);
+            }
+        }
+    }
     if !slots.is_empty() {
         plan = plan
             .with_controls(slots)
             .map_err(core(Stage::Regions, "slot controls"))?;
     }
+    plan.wavetable_controls = wave_controls.into_boxed_slice();
     if !instrument.groups.is_empty() {
         // Group membership and authored values for script group edits
         // (`purge_group`, `set_engine_par`); selection is unaffected.
@@ -589,6 +625,7 @@ pub fn lower_with(
         }
     }
     engine_bindings.extend(native.into_values());
+    engine_bindings.extend(wave_bindings);
     for alias in &instrument.source_indices.control_aliases {
         let control = &instrument.controls[alias.control.0];
         let ir::ControlValue::Continuous { min, max, .. } = control.value else {

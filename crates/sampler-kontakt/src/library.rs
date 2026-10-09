@@ -866,7 +866,6 @@ impl Translation {
                             else { self.unsupported(&at, "wavetable phase form write", value, ir::Reason::NotModeled); }
                         }
                     }
-                    if self.dynamic { self.unsupported(&at, "wavetable live engine parameters", source.mode, not_modeled); }
                 } else { self.unsupported(&at, "wavetable source", source.mode, not_modeled); }
             }
             // v1 plays every other mode as a sampler, with an explicit limitation.
