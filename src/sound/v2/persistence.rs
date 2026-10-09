@@ -98,6 +98,7 @@ pub(super) struct Snapshot {
     reading: AtomicUsize,
     read_lock: Mutex<()>,
     atoms: Vec<Atom>,
+    addresses: Box<[Address]>,
     slots: [Box<[AtomicU64]>; 3],
 }
 impl Snapshot {
@@ -118,21 +119,40 @@ impl Snapshot {
             reading: AtomicUsize::new(usize::MAX),
             read_lock: Mutex::new(()),
             atoms,
+            addresses: state.values.iter().map(|entry| entry.address).collect(),
             slots: std::array::from_fn(|_| (0..size).map(|_| AtomicU64::new(0)).collect()),
         });
         snapshot.publish(state);
         snapshot
     }
-    fn publish(&self, state: &ScriptStateBuffer) {
+    fn next_slot(&self) -> usize {
         let current = self.published.load(Ordering::SeqCst);
         let mut next = (current + 1) % 3;
         if next == self.reading.load(Ordering::SeqCst) {
             next = (next + 1) % 3;
         }
+        next
+    }
+    fn publish(&self, state: &ScriptStateBuffer) {
+        let next = self.next_slot();
         for (atom, entry) in self.atoms.iter().zip(&state.values) {
             atom.write(&self.slots[next], &entry.value);
         }
         self.published.store(next, Ordering::SeqCst);
+    }
+    fn capture(&self, runtime: &Runtime, plan: sampler_core::PlanId) -> Result<(), sampler_core::Error> {
+        let next = self.next_slot();
+        for (atom, address) in self.atoms.iter().zip(&self.addresses) {
+            let value = match *address {
+                Address::Control(id) => Value::Control(runtime.control_base_value(plan, id)?),
+                Address::Cell { instance, index } => Value::Cell(runtime.script_cell(plan, instance, index)?),
+                Address::Text { instance, index } => Value::Text(runtime.script_text(plan, instance, index)?),
+            };
+            atom.write(&self.slots[next], &value);
+        }
+        // A rejected capture leaves the previous coherent slot published.
+        self.published.store(next, Ordering::SeqCst);
+        Ok(())
     }
     pub(super) fn save(&self) -> String {
         // Only save readers contend; audio always has one unpinned slot to publish.
@@ -159,15 +179,18 @@ impl Snapshot {
 }
 
 pub(super) struct Persistence {
-    state: ScriptStateBuffer,
     revision: (sampler_core::PlanId, (u64, u64)),
     pub(super) snapshot: Arc<Snapshot>,
 }
 impl Persistence {
     #[cfg(test)]
-    pub(super) fn values_len(&self) -> usize { self.state.values.len() }
+    pub(super) fn values_len(&self) -> usize { self.snapshot.addresses.len() }
     #[cfg(test)]
-    pub(super) fn values_bytes(&self) -> usize { self.state.values.capacity() * std::mem::size_of::<ScriptStateEntry>() }
+    pub(super) fn values_bytes(&self) -> usize {
+        self.snapshot.addresses.len() * std::mem::size_of::<Address>()
+            + self.snapshot.atoms.capacity() * std::mem::size_of::<Atom>()
+            + self.snapshot.slots.iter().map(|slot| slot.len() * std::mem::size_of::<AtomicU64>()).sum::<usize>()
+    }
     fn new(
         runtime: &mut Runtime,
         views: &[sampler_ksp::ScriptView],
@@ -274,7 +297,6 @@ impl Persistence {
         let snapshot = Snapshot::new(schema, &state);
         let revision = (plan, runtime.script_state_revision(plan).map_err(core)?);
         Ok(Self {
-            state,
             revision,
             snapshot,
         })
@@ -287,11 +309,7 @@ impl Persistence {
         if self.revision == (plan, revision) {
             return;
         }
-        if runtime
-            .capture_script_state(runtime.active_plan(), &mut self.state)
-            .is_ok()
-        {
-            self.snapshot.publish(&self.state);
+        if self.snapshot.capture(runtime, plan).is_ok() {
             self.revision = (plan, revision);
         }
     }
@@ -334,6 +352,36 @@ impl Part {
 mod tests {
     use super::*;
     #[test]
+    fn numeric_persistence_keeps_compact_storage() {
+        let script = sampler_ksp::compile(
+            "on init\n declare %saved[32768]\n make_persistent(%saved)\n end on\n",
+            48000, sampler_ksp::Limits::LIBRARY, &[],
+        ).unwrap();
+        let view = script.view();
+        let plan = script.bind(Prepared::new(48000, vec![], vec![], 1).unwrap()).unwrap();
+        let limits = sampler_core::Limits::for_plan(&plan, 128, 8);
+        let mut part = Part::new(Runtime::new(plan, limits).unwrap(), MixTree::instrument("s")).unwrap();
+        part.prepare_persistence(&[view], "").unwrap();
+        let persistence = part.persistence.as_ref().unwrap();
+        assert_eq!(persistence.values_len(), 32768);
+        assert!(persistence.values_bytes() <= 96 * persistence.values_len(),
+            "numeric persistence must not reserve inline text storage per cell: {} bytes",
+            persistence.values_bytes());
+    }
+    #[test]
+    fn rejected_live_capture_keeps_previous_snapshot() {
+        let plan = Prepared::new(48000, vec![], vec![], 0).unwrap()
+            .with_script_instances(vec![vec![42]]).unwrap();
+        let limits = sampler_core::Limits::for_plan(&plan, 1, 1);
+        let runtime = Runtime::new(plan, limits).unwrap();
+        let snapshot = Snapshot::new("test".into(), &values(17));
+        let published = snapshot.published.load(Ordering::SeqCst);
+        let saved = snapshot.save();
+        assert!(snapshot.capture(&runtime, runtime.active_plan()).is_err());
+        assert_eq!(snapshot.published.load(Ordering::SeqCst), published);
+        assert_eq!(snapshot.save(), saved);
+    }
+    #[test]
     fn temporary_script_writes_do_not_recapture_persistent_values() {
         let script = sampler_ksp::compile(
             "on init\n declare $saved := 17\n make_persistent($saved)\n declare $temporary := 0\n end on\n on note\n $temporary := $EVENT_NOTE\n if ($EVENT_NOTE = 61)\n $saved := 61\n end if\n ignore_event($EVENT_ID)\n end on\n",
@@ -345,9 +393,8 @@ mod tests {
         let mut part = Part::new(Runtime::new(plan, limits).unwrap(), MixTree::instrument("s")).unwrap();
         part.prepare_persistence(&[view], "").unwrap();
         let persistence = part.persistence.as_mut().unwrap();
-        assert_eq!(persistence.state.values.len(), 1);
+        assert_eq!(persistence.values_len(), 1);
         let slot = persistence.snapshot.published.load(Ordering::SeqCst);
-        persistence.state.values[0].value = Value::Cell(-123);
         part.runtime.trigger(sampler_core::Input {
             protocol: sampler_core::Protocol::Native, port: 0, group: 0,
             channel: 0, key: 60, external_id: None,
@@ -356,15 +403,12 @@ mod tests {
         assert_eq!(crate::plugin::tests::allocations(|| persistence.publish(&part.runtime)), 0);
         #[cfg(not(feature = "plugin"))]
         persistence.publish(&part.runtime);
-        assert_eq!(persistence.state.values[0].value, Value::Cell(-123),
-            "a callback's temporary variable must not recapture the saved array");
         assert_eq!(persistence.snapshot.published.load(Ordering::SeqCst), slot);
         part.runtime.trigger(sampler_core::Input {
             protocol: sampler_core::Protocol::Native, port: 0, group: 0,
             channel: 0, key: 61, external_id: None,
         }, 61, 1.).unwrap();
         persistence.publish(&part.runtime);
-        assert_eq!(persistence.state.values[0].value, Value::Cell(61));
         let saved: Saved = serde_json::from_str(&persistence.snapshot.save()).unwrap();
         assert!(matches!(saved.values.as_slice(), [SavedValue::Cell(61)]));
     }
@@ -412,7 +456,6 @@ mod tests {
         };
         let snapshot = Snapshot::new("dsp-only".into(), &state);
         let mut persistence = Persistence {
-            state,
             snapshot,
             revision: (plan, runtime.script_state_revision(plan).unwrap()),
         };
@@ -486,7 +529,6 @@ mod tests {
             .unwrap();
         let snapshot = Snapshot::new("large-array".into(), &state);
         let mut persistence = Persistence {
-            state,
             snapshot,
             revision: (
                 runtime.active_plan(),
@@ -496,8 +538,6 @@ mod tests {
             ),
         };
         let slot = persistence.snapshot.published.load(Ordering::SeqCst);
-        // Poison only the staging buffer: an unchanged block must never visit it.
-        persistence.state.values[0].value = Value::Cell(-123);
         #[cfg(feature = "plugin")]
         assert_eq!(
             crate::plugin::tests::allocations(|| persistence.publish(&runtime)),
@@ -505,12 +545,11 @@ mod tests {
         );
         #[cfg(not(feature = "plugin"))]
         persistence.publish(&runtime);
-        assert_eq!(persistence.state.values[0].value, Value::Cell(-123));
         assert_eq!(persistence.snapshot.published.load(Ordering::SeqCst), slot);
-        persistence.state.values[0].value = Value::Cell(101);
+        state.values[0].value = Value::Cell(101);
         let mut restore_and_publish = || {
             runtime
-                .restore_script_state(runtime.active_plan(), None, &mut persistence.state)
+                .restore_script_state(runtime.active_plan(), None, &mut state)
                 .unwrap();
             persistence.publish(&runtime);
         };
@@ -518,7 +557,6 @@ mod tests {
         assert_eq!(crate::plugin::tests::allocations(restore_and_publish), 0);
         #[cfg(not(feature = "plugin"))]
         restore_and_publish();
-        assert_eq!(persistence.state.values[0].value, Value::Cell(101));
         let slot = persistence.snapshot.published.load(Ordering::SeqCst);
         assert_eq!(
             persistence.snapshot.slots[slot][0].load(Ordering::SeqCst),
