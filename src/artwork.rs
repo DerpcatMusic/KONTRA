@@ -113,14 +113,13 @@ fn cached_header(path: &Path, decode: impl FnOnce() -> Option<Image>) -> Option<
     CACHE.lock().unwrap_or_else(|e| e.into_inner()).insert(key, image.clone());
     Some(image)
 }
-// Library-file identity plus reader configuration invalidates protected-bank results.
+// Library-file identity plus native access revision invalidates protected-bank results.
 fn display_path(key: &impl std::hash::Hash) -> Option<PathBuf> {
     use std::hash::{Hash, Hasher};
     if cfg!(test) || std::env::var_os("KONTRA_SCAN_ACTIVE").is_some() { return None; }
     let mut hash = std::hash::DefaultHasher::new();
     key.hash(&mut hash);
-    let reader = sampler_uvi::installed_reader();
-    reader.as_ref().map(|p| (p, p.metadata().ok().map(|m| (m.len(), m.modified().ok())))).hash(&mut hash);
+    sampler_uvi::LIBRARY_ACCESS_REVISION.hash(&mut hash);
     Some(dirs::cache_dir()?.join("kontra/library-art").join(format!("{:016x}.png", hash.finish())))
 }
 

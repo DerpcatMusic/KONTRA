@@ -1580,6 +1580,7 @@ pub(super) fn menu_popup(
     let h = (rows.len() as f64 * CONTROL * scale).min(height);
     let x = ax.clamp(0., (width - w).max(0.));
     let y = (ay + ah).clamp(0., (height - h).max(0.));
+    ui.capture_popup_wheel(popup.clone());
     Some(
         col(rows)
             .gap(0)

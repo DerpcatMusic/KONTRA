@@ -13,77 +13,8 @@ import zipfile
 import base64
 from release_notes import generate, render
 
-# A release needs reviewed deltas and full shipped context even without Git history.
-previous_notes = '## 0.3.0 — unreleased\n### Added\n- Existing wrapped\n  feature.\n### Fixed\n- Old fix.\n'
-current_notes = previous_notes.replace('Existing wrapped\n  feature.', 'Existing wrapped feature.') + '\n- New fix.\n### Changed\n- New behavior.\n### Known limits\n- Runtime limitation remains.\n'
-current_notes += '\n### Reviewed source changes\n> Exact authored source message.\n### Candidates — not shipped\n- Untested future feature.\n'
-commit = dict(sha='a'*40, commit=dict(message='fix: complete title\n\nExact explanation.'))
-followup = dict(sha='d'*40, commit=dict(message='test: retain complete validation context'))
-merged = dict(number=13, title='Reviewed batch', html_url='https://example/13', body='All reviewed details.', merged_at='2026-10-02', merge_commit_sha='a'*40)
-previous = dict(target_commitish='b'*40)
-def notes_api(path, *args):
-    if path.startswith('contents/'): return dict(content=base64.b64encode(previous_notes.encode()).decode())
-    if path.startswith('compare/'): return [dict(status='ahead', total_commits=2, commits=[commit]), dict(commits=[followup])]
-    if '/pulls?' in path: return [[merged, dict(merged, number=14, merged_at=None), dict(merged, number=15, merge_commit_sha='c'*40)]]
-    return commit
-notes = generate(notes_api, 'example/KONTRA', 'a'*40, '0.3.1-nightly.test', previous, current_notes)
-assert 'New fix.' in notes and 'New behavior.' in notes and 'Runtime limitation remains.' in notes
-assert '- Existing wrapped feature.' not in notes and '- Old fix.' not in notes
-assert 'Exact explanation.' in notes and 'All reviewed details.' in notes and 'Complete public comparison' in notes
-assert notes.count('#### [Reviewed batch]') == 1
-assert 'Exact authored source message.' in notes and 'Untested future feature.' not in notes
-assert 'test: retain complete validation context' in notes
-# The reviewed 64 -> 83 batch used two human-readable headings. Neither may
-# silently disappear from structured notes even though PR descriptions survive.
-ledger = json.loads(Path(__file__).resolve().parents[2].joinpath('release-fixes.json').read_text())['fixes']
-start = next(i for i, fix in enumerate(ledger) if fix['id'] == 'modern-signed-pitch-depth')
-end = next(i for i, fix in enumerate(ledger) if fix['id'] == 'required-macos-notarization-gate')
-reviewed = ledger[start:end + 1]
-assert len(reviewed) == 19 and all(fix['accepted'] for fix in reviewed)
-aliased = '## Unreleased\n### Verified processing and diagnostics follow-ups\n'
-aliased += '\n'.join('- ' + fix['summary'] for fix in reviewed[3:])
-aliased += '\n### Fixed after 0.3.64\n' + '\n'.join('- ' + fix['summary'] for fix in reviewed[:3])
-aliased += '\n### Known limits\n- Partial compatibility remains.\n'
-structured = render('example/KONTRA', 'a'*40, '0.3.83-nightly.test', 'a'*40,
-                    aliased, previous_notes, previous, [commit], [])
-assert all(fix['summary'] in structured for fix in reviewed)
-assert all(fix['summary'] in structured.split('### Fixed', 1)[1] for fix in reviewed[:3])
-assert all(fix['summary'] in structured.split('### Changed', 1)[1].split('### Fixed', 1)[0]
-           for fix in reviewed[3:])
-assert 'No reviewed changes in this category' not in structured.split('### Changed', 1)[1]
-# The actual 123 -> 141 chapter has versioned Added/Fixed/Known limits
-# headings. Every reviewed outcome and limitation must survive in its category.
-changelog = Path(__file__).resolve().parents[2].joinpath('CHANGELOG.md').read_text()
-batch = changelog.split('## Accepted 0.3.141', 1)[1].split('### Fixed after 0.3.115', 1)[0]
-versioned = render('example/KONTRA', 'a'*40, '0.3.141-nightly.test', 'a'*40,
-                   '## Unreleased\n' + batch + '\n### Changed after 0.3.123\n- Authored metadata change.\n',
-                   previous_notes, previous, [commit], [])
-for category, count in (('Added', 3), ('Fixed', 15), ('Known limits', 5)):
-    block = re.search(r'(?ms)^### ' + category + r' (?:after|for) [^\n]+\n(.*?)(?=^### |\Z)', batch).group(1)
-    bullets = re.findall(r'^- .+$', block, re.M)
-    assert len(bullets) == count
-    rendered = versioned.split('### ' + category + '\n', 1)[1].split('\n### ', 1)[0]
-    assert all(bullet in rendered for bullet in bullets), category
-assert 'Authored metadata change.' in versioned.split('### Changed\n', 1)[1].split('\n### ', 1)[0]
-bootstrap = generate(notes_api, 'example/KONTRA', 'a'*40, '0.3.1-nightly.test', None, current_notes)
-assert 'First published snapshot' in bootstrap and 'Existing wrapped feature.' in bootstrap
-def missing_old_notes(path, *args):
-    if path.startswith('contents/'):
-        raise subprocess.CalledProcessError(1, ['gh'], stderr=b'gh: Not Found (HTTP 404)')
-    return notes_api(path, *args)
-assert 'previous source has no changelog' in generate(missing_old_notes, 'example/KONTRA', 'a'*40, '0.3.1-nightly.test', previous, current_notes)
-try:
-    render('example/KONTRA', 'a'*40, '0.3.1', 'a'*40, '', '', None, [commit], [])
-except AssertionError:
-    pass
-else:
-    raise AssertionError('Empty reviewed notes accepted')
-try:
-    render('example/KONTRA', 'a'*40, '0.3.1', 'a'*40, '## 0.3.1 — date\nWrong checkpoint', '', None, [commit], [])
-except AssertionError:
-    pass
-else:
-    raise AssertionError('Wrong frozen checkpoint accepted')
+# Focused regression tests cover ledger notes, permanent history and lean staging.
+subprocess.run(["python3",str(Path(__file__).with_name("test_release_packaging.py"))],check=True)
 
 workflow = Path(__file__).with_name("nightly.yml").read_text()
 publish_step, cleanup_step = workflow.split("      - name: Publish the experimental nightly\n", 1)[1].split("      - name: Remove released Actions artifacts\n", 1)
@@ -95,8 +26,9 @@ for platform in platforms:
     assert f"name: {platform}" in workflow
     assert (f"releases/latest/download/KONTRA-nightly-{platform}.zip" in readme) != platform.startswith("macos-")
 assert "releases/latest/download/KONTRA-nightly-macos-universal.pkg" in readme
-assert "nightly-build-${{ matrix.name }}\n      cancel-in-progress: true" in workflow
+assert "nightly-build-${{ matrix.name }}-${{ github.sha }}\n      cancel-in-progress: true" in workflow
 assert "nightly-publish\n      cancel-in-progress: false" in workflow
+assert "queue: max" in workflow.split("  release:\n",1)[1]
 assert "retention-days: 1" in workflow
 assert "if: success()" in cleanup_step
 assert "continue-on-error: true" in cleanup_step
@@ -232,11 +164,18 @@ def save(): p.write_text(json.dumps(s))
 if a[0]=="api":
     path=next(v for v in a if v.startswith("repos/example/KONTRA/")).split("repos/example/KONTRA/",1)[1]
     if path=="releases": out=json.dumps([s["releases"]])
+    elif path.startswith("contents/release-fixes.json?"): out=json.dumps({"content":base64.b64encode(b'{"fixes":[]}').decode()})
     elif path.startswith("contents/CHANGELOG.md?"): out=json.dumps({"content":base64.b64encode("## Previous — unreleased\n### Added\n- Previous feature.\n".encode()).decode()})
-    elif path.startswith("compare/"): out=json.dumps([{"status":"ahead","total_commits":1,"commits":[{"sha":sha,"commit":{"message":"fix: reviewed snapshot\n\nComplete shipped detail."}}]}])
+    elif path.startswith("compare/"):
+        base,head=path.split("/",1)[1].split("?",1)[0].split("...")
+        comparison=dict(status="identical" if base==head else "behind" if s["case"]=="late-source" and base=="f"*40 and head==sha else "ahead",total_commits=1,commits=[dict(sha=sha,commit=dict(message="fixture"))])
+        out=json.dumps([comparison] if "--slurp" in a else comparison)
     elif path.startswith("commits/") and "/pulls?" in path: out="[[]]"
     elif path.startswith("commits/"): out=json.dumps({"sha":sha,"commit":{"message":"fix: reviewed snapshot\n\nComplete shipped detail."}})
-    elif path=="releases/latest": out=json.dumps(next(r for r in s["releases"] if r["id"]==s["latest"]))
+    elif path=="releases/latest":
+        if s["latest"] is None:
+            save();print("gh: Not Found (HTTP 404)",file=sys.stderr);sys.exit(1)
+        out=json.dumps(next(r for r in s["releases"] if r["id"]==s["latest"]))
     elif path=="git/ref/heads/main":
         s["heads"]+=1
         stale=s["case"]=="stale-before" or (s["case"]=="stale-after" and s["heads"]==2)
@@ -264,7 +203,7 @@ if a[0]=="api":
 elif a[:2]==["release","create"]:
     assert len(Path("notes.md").read_text()) <= 125000, "GitHub release body exceeds 125000 characters"
     assert a[2]=="v"+os.environ["TEST_VERSION"] and "--draft" in a and "--prerelease" not in a
-    assert len([r for r in s["releases"] if not r["draft"]]) in (0,2,3)
+    assert len([r for r in s["releases"] if not r["draft"]]) in (0,3,4)
     s["published"]=False
     assets=[]
     for file in a:
@@ -279,17 +218,15 @@ elif a[:2]==["release","download"]:
 elif a[:2]==["release","delete"]:
     r=next(r for r in s["releases"] if r["tag_name"]==a[2])
     if not r["draft"]:
-        assert s["published"], "rollback deleted before verified publication"
-        if s["case"]=="rotation-fails" and not s.get("rotation_failed"):
-            s["rotation_failed"]=True;save();sys.exit(1)
+        raise AssertionError("Published releases must never be deleted")
     s["releases"].remove(r)
     if "--cleanup-tag" in a: s["refs"].pop(a[2],None)
 elif a[:2]==["release","edit"]:
     r=next(r for r in s["releases"] if r["tag_name"]==a[2])
     assert r["target_commitish"]==sha, "GITHUB_TOKEN cannot edit historical workflow releases"
-    assert "--prerelease=false" in a and "--latest=true" in a
+    assert "--prerelease=false" in a and ("--latest=true" in a or "--latest=false" in a)
     if "--draft=false" in a:
-        assert s["heads"]>=2
+        assert s["heads"]>=1
         r["draft"]=False; s["published"]=True
         s["refs"][r["tag_name"]]=r["target_commitish"]
     if "--tag" in a:
@@ -297,7 +234,9 @@ elif a[:2]==["release","edit"]:
         tag=arg("--tag")
         assert not any(other["tag_name"]==tag for other in s["releases"] if other is not r)
         r["tag_name"]=tag;s["refs"][tag]=arg("--target")
-    r["prerelease"]=False;s["latest"]=r["id"];s["promoted"]=True
+    r["prerelease"]=False
+    if "--latest=true" in a:s["latest"]=r["id"]
+    s["promoted"]=True
 else: raise AssertionError(a)
 save(); print(out,end="" if a[:2]==["release","download"] else "\n"); sys.exit(status)
 '''
@@ -318,7 +257,7 @@ def universal_fixture(root, version, revision, case="current"):
     if case=="missing-universal": package.unlink()
     if case=="changed-installer": package.write_bytes(b"xar!changed-installer")
 
-cases=("current","first","oversized-notes","bad-digest","stale-before","stale-after","upload-fails","missing-asset","bad-checksum","wrong-format","cleanup-fails","rotation-fails","missing-font-license","missing-legal-review","missing-notices","missing-mpl-source","missing-patched-mpl-source","missing-notarization","rejected-notarization","changed-notarized-product","missing-universal","changed-installer","rejected-installer","wrong-installer-source","missing-package-types")
+cases=("current","first","oversized-notes","bad-digest","stale-before","stale-after","upload-fails","missing-asset","bad-checksum","wrong-format","cleanup-fails","late-source","missing-font-license","missing-legal-review","missing-notices","missing-mpl-source","missing-patched-mpl-source","missing-notarization","rejected-notarization","changed-notarized-product","missing-universal","changed-installer","rejected-installer","wrong-installer-source","missing-package-types")
 for case in cases:
     with tempfile.TemporaryDirectory(prefix="kontra-nightly-check-") as directory:
         root=Path(directory); root.joinpath("gh").write_text(mock_gh); root.joinpath("gh").chmod(0o755); root.joinpath("dist").mkdir()
@@ -365,6 +304,30 @@ for case in cases:
                     if case=="changed-notarized-product": receipt["sha256"]["KONTRA.app/Contents/MacOS/KONTRA"]="0"*64
                     if case!="missing-notarization": z.writestr(f"KONTRA-nightly-{platform}/notarization.json", json.dumps(receipt))
             archive=root/f"dist/KONTRA-nightly-{platform}.zip"
+            if not platform.startswith("macos-"):
+                import sys
+                sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"scripts"))
+                from stage_nightly import LEGAL, BUNDLE_LEGAL, SOURCES_ASSET
+                with zipfile.ZipFile(archive) as z: entries={name:z.read(name) for name in z.namelist()}
+                prefix=f"KONTRA-nightly-{platform}/"
+                builds={fmt:json.loads(entries[prefix+name]) for fmt,name in (("clap","clap-build-info.json"),("vst3","vst3-build-info.json"),("standalone","build-info.json"))}
+                extra={"crates/sampler-uvi/assets/assistant/OFL.txt","crates/sampler-kontakt/FASTLZ_NOTICE.txt","licenses/BUFFR/LICENSE","licenses/BUFFR/SOURCE.md"}
+                texts={name:entries[prefix+name].decode() if prefix+name in entries else "fixture" for name in (*LEGAL, *("licenses/"+name for name in BUNDLE_LEGAL)) if prefix+name in entries or name in extra}
+                ext="ps1" if platform.startswith("windows-") else "sh"
+                products={name:entries[prefix+name] for name in binaries}
+                products.update({"README.txt":b"fixture install/uninstall/log help","install."+ext:b"fixture installer","uninstall."+ext:b"fixture uninstaller",
+                                 "LICENSES.txt":("\n".join("===== "+name+" =====\n"+text for name,text in texts.items())).encode()})
+                source_names={"symphonia-0.5.5.crate","symphonia-format-riff-0.5.5.crate","option-ext-0.2.0.crate"}
+                metadata=dict(revision="a"*40,version=version,platform=platform,builds=builds,
+                              files={name:hashlib.sha256(data).hexdigest() for name,data in products.items()},license_sections=list(texts),
+                              covered_sources={name:hashlib.sha256(b"fixture").hexdigest() for name in source_names})
+                archive.with_suffix(".build.json").write_text(json.dumps(metadata))
+                with zipfile.ZipFile(archive,"w") as z:
+                    for name,data in products.items():z.writestr(prefix+name,data)
+                if platform=="linux-x86_64":
+                    with zipfile.ZipFile(root/"dist"/SOURCES_ASSET,"w") as z:
+                        for name in source_names:
+                            if prefix+"licenses/sources/"+name in entries:z.writestr("sources/"+name,b"fixture")
             digest=hashlib.sha256(archive.read_bytes()).hexdigest()
             archive.with_suffix(".zip.sha256").write_text(("0"*64 if case=="bad-checksum" else digest)+"  "+archive.name+"\n")
         universal_fixture(root, version, "a"*40, case)
@@ -381,22 +344,19 @@ for case in cases:
             orphan="v0.2.0-nightly.20261001.g777777777777"
             old.append(dict(id=6,tag_name=orphan,draft=True));refs[orphan]="7"*40
         refs["nightly-staging-other"]="e"*40
-        initial=dict(case=case,releases=old,refs=refs,heads=0,published=False,promoted=False,latest=None,calls=[],deleted=[],manifests={})
+        if case=="late-source":old[2]["target_commitish"]="f"*40;refs["v1.0.0"]="f"*40
+        initial=dict(case=case,releases=old,refs=refs,heads=0,published=False,promoted=False,latest=3 if case=="late-source" else None,calls=[],deleted=[],manifests={})
         root.joinpath("state.json").write_text(json.dumps(initial)); output=root/"outputs"; output.touch()
         env=dict(os.environ,PATH=f"{root}:{os.environ['PATH']}",GITHUB_SHA="a"*40,GH_REPO="example/KONTRA",GITHUB_RUN_ID="7",GITHUB_OUTPUT=str(output),TEST_VERSION=version)
         def run(command): return subprocess.run(["bash","--noprofile","--norc","-e","-o","pipefail","-c",command],cwd=root,env=env,capture_output=True,text=True)
         result=run(publish); state=json.loads(root.joinpath("state.json").read_text())
-        assert result.returncode==(1 if case in ("upload-fails","missing-asset","rotation-fails","bad-digest","bad-checksum","wrong-format","missing-font-license","missing-legal-review","missing-notices","missing-mpl-source","missing-patched-mpl-source","missing-notarization","rejected-notarization","changed-notarized-product","missing-universal","changed-installer","rejected-installer","wrong-installer-source","missing-package-types") else 0),(case,result.stderr)
-        if case=="rotation-fails":
-            assert state["published"] and len(state["releases"])==4 and state["latest"] is not None
-            result=run(publish); assert result.returncode==0,result.stderr
-            state=json.loads(root.joinpath("state.json").read_text())
-        promoted=case in ("current","first","oversized-notes","cleanup-fails","rotation-fails")
+        assert result.returncode==(1 if case in ("upload-fails","missing-asset","bad-digest","bad-checksum","wrong-format","missing-font-license","missing-legal-review","missing-notices","missing-mpl-source","missing-patched-mpl-source","missing-notarization","rejected-notarization","changed-notarized-product","missing-universal","changed-installer","rejected-installer","wrong-installer-source","missing-package-types") else 0),(case,result.stderr)
+        promoted=case in ("current","first","oversized-notes","cleanup-fails","late-source","stale-before","stale-after")
         assert state["promoted"]==promoted,(case,state)
         assert state["refs"]["nightly-staging-other"]=="e"*40
         assert not any(r["draft"] for r in state["releases"]),(case,state)
         if promoted:
-            assert len(state["releases"])==(1 if case=="first" else 2)
+            assert len(state["releases"])==(1 if case=="first" else 4)
             newest=next(r for r in state["releases"] if r["tag_name"]=="v"+version)
             assert newest["target_commitish"]=="a"*40 and newest["name"]=="KONTRA "+version
             if case=="oversized-notes":
@@ -406,13 +366,14 @@ for case in cases:
                 assert "release-notes.md" in newest["body"]
                 assert any(a["name"]=="release-notes.md" for a in newest["assets"])
             assert not any(a["name"].startswith(("KONTRA-nightly-macos-arm64","KONTRA-nightly-macos-x86_64")) for a in newest["assets"]), "macOS ships only the universal installer"
-            assert state["refs"]["v"+version]=="a"*40 and not newest["prerelease"] and state["latest"]==newest["id"]
+            assert state["refs"]["v"+version]=="a"*40 and not newest["prerelease"]
+            assert state["latest"]==(3 if case=="late-source" else newest["id"])
             if case!="first":
                 assert state["refs"]["nightly"]=="b"*40
                 assert next(r for r in state["releases"] if r["id"]==1)==initial["releases"][0], "Previous release must remain unchanged"
-                assert state["refs"]["v1.0.0"]=="d"*40
-                assert not any(r["tag_name"]=="v1.0.0" for r in state["releases"])
-            assert len([tag for tag in state["refs"] if tag.startswith(("v","legacy-g")) and tag!="v1.0.0"])==1
+                assert state["refs"]["v1.0.0"]==("f"*40 if case=="late-source" else "d"*40)
+                assert next(r for r in state["releases"] if r["id"]==3)==initial["releases"][2]
+            assert len([tag for tag in state["refs"] if tag.startswith(("v","legacy-g")) and tag!="v1.0.0"])==(1 if case=="first" else 3)
             if case=="current":
                 # Recover the real legacy staging failure, using its existing source tag.
                 newest["tag_name"]="nightly-staging";newest["prerelease"]=True
@@ -424,8 +385,8 @@ for case in cases:
                 env["GITHUB_SHA"]="a"*40
                 result=run(publish);assert result.returncode==0,result.stderr
                 state=json.loads(root.joinpath("state.json").read_text())
-                assert len(state["releases"])==2 and state["latest"]==newest["id"]
-            # A rerun must leave the same rollback and published release identities.
+                assert len(state["releases"])==4 and state["latest"]==newest["id"]
+            # A rerun must leave all published release identities unchanged.
             before=state["releases"]
             result=run(publish); assert result.returncode==0,result.stderr
             state=json.loads(root.joinpath("state.json").read_text()); assert state["releases"]==before
@@ -450,15 +411,19 @@ for case in cases:
                                 data=("f"*40+"\n").encode()
                             z.writestr(name,data)
                     path.with_suffix(".zip.sha256").write_text(hashlib.sha256(path.read_bytes()).hexdigest()+"  "+path.name+"\n")
+                    if not platform.startswith("macos-"):
+                        sidecar=path.with_suffix(".build.json");metadata=json.loads(sidecar.read_text());metadata.update(version=next_version,revision="f"*40)
+                        for build in metadata["builds"].values():build.update(version=next_version,revision="f"*40)
+                        sidecar.write_text(json.dumps(metadata))
                 universal_fixture(root, next_version, "f"*40)
                 result=run(publish);assert result.returncode==0,result.stderr
                 state=json.loads(root.joinpath("state.json").read_text())
-                assert len(state["releases"])==2
+                assert len(state["releases"])==5
                 assert state["refs"]["v"+next_version]=="f"*40 and state["refs"]["v"+version]=="a"*40
-                assert "nightly" not in state["refs"]
-                assert {r["tag_name"] for r in state["releases"]}=={"v"+version,"v"+next_version}
+                assert state["refs"]["nightly"]=="b"*40
+                assert {r["tag_name"] for r in state["releases"]}=={"nightly","nightly-previous","v1.0.0","v"+version,"v"+next_version}
                 assert "legacy-g"+"b"*12 not in state["refs"]
-                assert state["refs"]["v1.0.0"]=="d"*40
+                assert state["refs"]["v1.0.0"]==("f"*40 if case=="late-source" else "d"*40)
                 before=state["releases"]
             result=run(cleanup); state=json.loads(root.joinpath("state.json").read_text())
             assert result.returncode==(1 if case=="cleanup-fails" else 0),(case,result.stderr)
@@ -473,4 +438,4 @@ for case in cases:
                 state=json.loads(root.joinpath("state.json").read_text())
                 assert state["deleted"]==[100,101,102,103] and state["releases"]==before
         assert ("published=true" in output.read_text())==promoted,case
-print("Nightly checks passed: reviewed delta/history/bootstrap notes, format selection/plist checks, 25 retention/rerun/upload/checksum/cleanup/legal-bundle/notarization/installer/body-limit scenarios and the stable README links.")
+print("Nightly checks passed: ledger notes/lean staging, format selection/plists, permanent history/reruns/out-of-order publication/checksums/legal sources/notarization/installer scenarios and stable README links.")

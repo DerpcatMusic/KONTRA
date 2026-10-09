@@ -81,7 +81,7 @@ jobs:
     # Cold release-profile test executables exhausted the former 40-minute job.
     timeout-minutes: 90
     concurrency:
-      group: ci-linux-${{ github.workflow }}-${{ github.ref }}
+      group: ci-linux-${{ github.workflow }}-${{ inputs.release_validation && github.sha || github.ref }}
       cancel-in-progress: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -175,7 +175,7 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 25
     concurrency:
-      group: ci-windows-${{ github.workflow }}-${{ github.ref }}
+      group: ci-windows-${{ github.workflow }}-${{ inputs.release_validation && github.sha || github.ref }}
       cancel-in-progress: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -202,6 +202,11 @@ jobs:
       - name: check
         shell: bash
         run: cargo check --locked --profile "$CI_PROFILE" --all-targets --features standalone
+      - name: Native protected-format fixtures
+        shell: bash
+        run: |
+          cargo test --locked --profile "$CI_PROFILE" -p sampler-uvi --lib bank::tests
+          cargo test --locked --profile "$CI_PROFILE" -p sampler-kontakt --lib access::tests
 
   macos:
     needs: changes
@@ -209,7 +214,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 25
     concurrency:
-      group: ci-macos-${{ github.workflow }}-${{ github.ref }}
+      group: ci-macos-${{ github.workflow }}-${{ inputs.release_validation && github.sha || github.ref }}
       cancel-in-progress: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

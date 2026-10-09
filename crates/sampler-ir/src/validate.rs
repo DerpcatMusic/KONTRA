@@ -295,6 +295,7 @@ impl Instrument {
             ir: self,
             owner: String::new(),
         };
+        if let Some(bus) = self.input_bus { check.output(Output::Bus(bus))?; }
         for (source, zone) in self.source_indices.zones.iter().enumerate() {
             check.owner = format!("source zone {source}");
             if let Some(zone) = zone {

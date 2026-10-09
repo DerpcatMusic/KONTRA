@@ -11,10 +11,11 @@ from pathlib import Path
 import signal
 import shutil
 import subprocess
-import time
 import sys
+import time
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from native_family import compare as family_compare
+from grouped_diagnostics import aggregate as grouped_diagnostics
 
 NOTE_ROOT = Path(os.environ.get('KONTRA_SCAN_NOTE_ROOT', Path.home()/'.cache/kontra-scan/notes'))
 SIDECAR = Path(os.environ.get('KONTRA_SCAN_SIDECAR', NOTE_ROOT.parent/'bin/kontra-scan-v1-uvi'))
@@ -56,6 +57,7 @@ def signature(item, revision):
     identity += ['native-fidelity-v1',os.environ.get('KONTRA_SCAN_FAMILY_REPEATS','0')]
     identity += ['declared-keys-then-zone-v1', hashlib.sha256(plan.read_bytes()).hexdigest() if plan.exists() else 'unplanned']
     if os.environ.get('KONTRA_GATE_ACTIVITY') == '1': identity += ['gate-contention-v1']
+    if 'KONTRA_UVI_AUDIT_SEED' in os.environ: identity += ['uvi-audit-owner-clock-v1', os.environ['KONTRA_UVI_AUDIT_SEED']]
     return hashlib.sha256(json.dumps(identity).encode()).hexdigest()
 
 
@@ -68,6 +70,7 @@ def atomic(path, value):
 def extra_columns(r):
     """Unknown is distinct from zero, including old cache records and failed admissions."""
     programs = r.get('programs', [])
+    r['diagnostic_groups'] = grouped_diagnostics([r]).report() if r.get('path') else []
     family = [family_compare(p.get('family_native'),p.get('family_takes',[])) for p in programs]
     r['family_match'] = 'MISMATCH' if any(f['verdict']=='MISMATCH' for f in family) else 'MATCH' if family and all(f['verdict']=='MATCH' for f in family) else 'UNKNOWN'
     r['family_script_driven_count'] = sum(f['script_driven_count'] for f in family) if family else 'unknown'
@@ -235,6 +238,11 @@ def export(out, revision):
         for r in sorted(records, key=lambda r: r['path']):
             writer.writerow([str(r.get(k, '')).replace('\t', ' ').replace('\n', ' ') for k in COLUMNS])
     tmp.replace(out / 'results.tsv')
+    diagnostics = grouped_diagnostics(records)
+    atomic(out / 'diagnostics-locations.json', {'schema':'grouped-diagnostics-v1','locations':diagnostics.sidecar()})
+    atomic(out / 'diagnostics.json', {'schema':'grouped-diagnostics-v1','revision':revision,
+        'items':len(records),'native_inventory_items':sum(bool(r.get('programs')) and all(p.get('dsp_slots',{}).get('complete') is True for p in r['programs']) for r in records),
+        'groups':diagnostics.report(),'locations_sidecar':'diagnostics-locations.json'})
     return len(records)
 
 
@@ -270,9 +278,6 @@ def probe(engine, item, work, timeout, shots):
         cache_stats = {'condition': condition, 'before_files': len(files), 'before_bytes': sum(p.stat().st_size for p in files), 'writable': True}
     plan_path=note_path(item)
     if plan_path.exists(): env['KONTRA_SCAN_NOTE_PLAN']=str(plan_path)
-    reader = Path('/home/derpcat/.codex/cache/kontakto-uvi-official-reader/app/UVIWorkstationx64.exe')
-    if reader.is_file():
-        env.setdefault('KONTRA_UVI_READER', str(reader))
     if shots:
         env['KONTRA_SCAN_SHOTS'] = '1'
     worker=engine
@@ -358,6 +363,7 @@ def probe(engine, item, work, timeout, shots):
     else: r['audition_status']='not-auditioned'
     # stdout is metrics only; keep one canonical cached record, not a second copy.
     (work / 'stdout.json').unlink(missing_ok=True)
+    if 'KONTRA_UVI_AUDIT_SEED' in env: r['audit_seed']=int(env['KONTRA_UVI_AUDIT_SEED'])
     (work / 'progress.json').unlink(missing_ok=True)
     if capture and capture.activity: r['contention'] = capture.activity.result['status']
     return r
@@ -372,10 +378,14 @@ def main():
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--budget-seconds', type=float, default=235)
     parser.add_argument('--timeout-seconds', type=float, default=90)
+    parser.add_argument('--audit-seed', type=int, default=os.environ.get('KONTRA_UVI_AUDIT_SEED'), help='audit-only UVI Lua/engine seed and owner-clock barrier (scan builds)')
     parser.add_argument('--shots', action='store_true', help='retain small screenshots of OUR Original renderer')
     args = parser.parse_args()
     if args.start < 0 or args.count < 0 or not 0 < args.budget_seconds <= 240:
         parser.error('start/count must be nonnegative; shard budget must be in (0,240]')
+    if args.audit_seed is not None:
+        if not 0 <= args.audit_seed <= 0xffffffff: parser.error('audit seed must fit u32')
+        os.environ['KONTRA_UVI_AUDIT_SEED']=str(args.audit_seed)
     engine = Path(args.engine).resolve()
     revision = hashlib.sha256(engine.read_bytes()).hexdigest()
     args.out.mkdir(parents=True, exist_ok=True)
