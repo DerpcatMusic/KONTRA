@@ -11,7 +11,11 @@ from pathlib import Path
 import signal
 import shutil
 import subprocess
+import sys
 import time
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from native_family import compare as family_compare
+from grouped_diagnostics import aggregate as grouped_diagnostics
 
 NOTE_ROOT = Path(os.environ.get('KONTRA_SCAN_NOTE_ROOT', Path.home()/'.cache/kontra-scan/notes'))
 SIDECAR = Path(os.environ.get('KONTRA_SCAN_SIDECAR', NOTE_ROOT.parent/'bin/kontra-scan-v1-uvi'))
@@ -21,7 +25,7 @@ V2_SHA = hashlib.sha256(V2_ENGINE.read_bytes()).hexdigest() if V2_ENGINE.is_file
 
 def note_path(item): return NOTE_ROOT/(hashlib.sha256(item.encode()).hexdigest()+'.json')
 
-COLUMNS = ['path', 'library', 'loads', 'ui', 'controls_bound', 'plays_note', 'load_ms', 'peak_rss_mb', 'reason', 'lua_init_faults', 'lua_init_first', 'lua_runtime_faults', 'lua_runtime_first', 'lua_budget_hits', 'controls_declared', 'controls_bound_declared', 'asset_lookup_requested', 'asset_lookup_ok', 'asset_decode_requested', 'asset_decode_ok', 'font_declared', 'font_success', 'paint_ok', 'paint_error', 'load_path', 'sample_resident_bytes', 'underruns', 'ksp_compile_ok', 'ksp_init_ok', 'first_script_error', 'active_script_slots', 'compiled_script_slots', 'clean_compiled_slots', 'init_callbacks_completed', 'persistence_changed_completed', 'load_fault_records', 'disabled_block_errors', 'widget_kind_counts', 'ui_api_refs', 'bypassed_ui_api_refs', 'saved_entry_sigils', 'custom_font_uses', 'picture_strips', 'picture_frames', 'picture_margins', 'resource_failure_reasons', 'page_background_rgba', 'plain_background_fraction', 'note_picked', 'note_policy', 'audition_status', 'pick_source', 'native_valid_keys', 'native_key_conflicts', 'native_preferred_note', 'slots_seen', 'slots_decode_failed', 'slots_bypassed', 'slots_inline_nonempty', 'slots_linked_only', 'slots_empty', 'admitted_saved_entry_sigils', 'ksp_runtime_fault_records', 'sample_zone_count', 'zero_zone_reason', 'fallback_note', 'keyswitch_picked', 'bound_typed', 'phantom_free_controls', 'first_audio_ms', 'ui_first_frame_ms', 'cache_state', 'contention']
+COLUMNS = ['path', 'library', 'loads', 'ui', 'controls_bound', 'plays_note', 'load_ms', 'peak_rss_mb', 'reason', 'lua_init_faults', 'lua_init_first', 'lua_runtime_faults', 'lua_runtime_first', 'lua_budget_hits', 'controls_declared', 'controls_bound_declared', 'asset_lookup_requested', 'asset_lookup_ok', 'asset_decode_requested', 'asset_decode_ok', 'font_declared', 'font_success', 'paint_ok', 'paint_error', 'load_path', 'sample_resident_bytes', 'underruns', 'ksp_compile_ok', 'ksp_init_ok', 'first_script_error', 'active_script_slots', 'compiled_script_slots', 'clean_compiled_slots', 'init_callbacks_completed', 'persistence_changed_completed', 'load_fault_records', 'disabled_block_errors', 'widget_kind_counts', 'ui_api_refs', 'bypassed_ui_api_refs', 'saved_entry_sigils', 'custom_font_uses', 'picture_strips', 'picture_frames', 'picture_margins', 'resource_failure_reasons', 'page_background_rgba', 'plain_background_fraction', 'note_picked', 'note_policy', 'audition_status', 'pick_source', 'native_valid_keys', 'native_key_conflicts', 'native_preferred_note', 'slots_seen', 'slots_decode_failed', 'slots_bypassed', 'slots_inline_nonempty', 'slots_linked_only', 'slots_empty', 'admitted_saved_entry_sigils', 'ksp_runtime_fault_records', 'sample_zone_count', 'zero_zone_reason', 'fallback_note', 'keyswitch_picked', 'bound_typed', 'phantom_free_controls', 'first_audio_ms', 'ui_first_frame_ms', 'cache_state', 'contention', 'fx_slots_dropped', 'filter_slots_dropped', 'mod_slots_dropped', 'family_match', 'family_match_reason', 'family_script_driven_count']
 
 
 def library(item):
@@ -50,8 +54,10 @@ def signature(item, revision):
         identity = [item, 'absent', revision]
     if '::' in item and SIDECAR_SHA: identity += [SIDECAR_SHA]
     plan=note_path(item)
+    identity += ['native-fidelity-v1',os.environ.get('KONTRA_SCAN_FAMILY_REPEATS','0')]
     identity += ['declared-keys-then-zone-v1', hashlib.sha256(plan.read_bytes()).hexdigest() if plan.exists() else 'unplanned']
     if os.environ.get('KONTRA_GATE_ACTIVITY') == '1': identity += ['gate-contention-v1']
+    if 'KONTRA_UVI_AUDIT_SEED' in os.environ: identity += ['uvi-audit-owner-clock-v1', os.environ['KONTRA_UVI_AUDIT_SEED']]
     return hashlib.sha256(json.dumps(identity).encode()).hexdigest()
 
 
@@ -64,6 +70,17 @@ def atomic(path, value):
 def extra_columns(r):
     """Unknown is distinct from zero, including old cache records and failed admissions."""
     programs = r.get('programs', [])
+    r['diagnostic_groups'] = grouped_diagnostics([r]).report() if r.get('path') else []
+    family = [family_compare(p.get('family_native'),p.get('family_takes',[])) for p in programs]
+    r['family_match'] = 'MISMATCH' if any(f['verdict']=='MISMATCH' for f in family) else 'MATCH' if family and all(f['verdict']=='MATCH' for f in family) else 'UNKNOWN'
+    r['family_script_driven_count'] = sum(f['script_driven_count'] for f in family) if family else 'unknown'
+    r['family_match_reason'] = json.dumps([f['reason'] for f in family],separators=(',',':')) if family else 'independent-native-reader-absent'
+    for metric in ['fx_slots_dropped', 'filter_slots_dropped', 'mod_slots_dropped']:
+        counts = [p.get('dsp_slots', {}).get('counts', {}).get(metric) for p in programs]
+        complete = bool(programs) and all(p.get('dsp_slots', {}).get('complete') is True for p in programs)
+        valid = complete and all(isinstance(c, dict) and all(type(c.get(k)) is int and c[k] >= 0 for k in ['enabled', 'bypassed']) for c in counts)
+        r[metric] = json.dumps({k:sum(c[k] for c in counts) for k in ['enabled', 'bypassed']}, separators=(',', ':')) if valid else 'unknown'
+
     for p in programs:
         if p.get('loaded') is True and 'pick' in p and p['pick'] is None:p['plays_note']='no'
     if r.get('loads')=='yes' and programs and all('pick' in p and p['pick'] is None for p in programs):
@@ -126,16 +143,20 @@ def extra_columns(r):
     r['first_script_error']=next((x['first_error'] for x in ksp if x.get('first_error')), next((f.get('core_error') or f.get('category','runtime-fault') for p in programs for f in p.get('ksp_runtime_faults',[])),r.get('first_script_error','')))
     paths=sorted({p['load_path'] for p in programs if p.get('load_path')})
     r['load_path']=' + '.join(paths) or 'unknown'
-    errors=[x for x in renders if x.get('ok') is False]
+    incomplete=[x for x in renders+views if x.get('incomplete')]
+    errors=[x for x in renders if x.get('ok') is False and not x.get('incomplete')]
     # v1's retained full-editor render is itself the render record.
-    errors += [v for v in views if v.get('ok') is False]
+    errors += [v for v in views if v.get('ok') is False and not v.get('incomplete')]
     if any(x.get('budget_hit') for x in errors): r['ui']='budget-hit'
+    if incomplete:
+        r['incomplete']=True
+        if not errors and r.get('ui') not in {'error','budget-hit'}: r['ui']='incomplete'
     font_failures=count(views,'missing_fonts')
     if not errors and r.get('ui') in {'original-ok','missing-images','missing_font'} and isinstance(font_failures,(int,float)) and font_failures>0:
         r['ui']='missing_font'
-    r['paint_ok']='no' if errors else 'yes' if renders or any(v.get('ok') is True for v in views) else 'no-ui' if r.get('ui')=='no-ui' else 'unknown'
+    r['paint_ok']='no' if errors else 'unknown' if incomplete else 'yes' if renders or any(v.get('ok') is True for v in views) else 'no-ui' if r.get('ui')=='no-ui' else 'unknown'
     r['paint_error']=next((x.get('reason','paint error') for x in errors),'')
-    native_failures=[v for v in views if v.get('native_diagnostic') or (v.get('source_presentation')=='native-package' and v.get('font_declared') is None)]
+    native_failures=[v for v in views if v.get('native_diagnostic') or (v.get('source_presentation')=='native-package' and v.get('font_declared') is None and not v.get('incomplete') and not any(x.get('incomplete') for x in v.get('renders',[])))]
     if native_failures:
         r['ui']='budget-hit' if r.get('ui')=='budget-hit' or any('budget' in str(v.get('native_diagnostic','')).lower() for v in native_failures) else 'error'
         r['paint_ok']='no'
@@ -217,6 +238,11 @@ def export(out, revision):
         for r in sorted(records, key=lambda r: r['path']):
             writer.writerow([str(r.get(k, '')).replace('\t', ' ').replace('\n', ' ') for k in COLUMNS])
     tmp.replace(out / 'results.tsv')
+    diagnostics = grouped_diagnostics(records)
+    atomic(out / 'diagnostics-locations.json', {'schema':'grouped-diagnostics-v1','locations':diagnostics.sidecar()})
+    atomic(out / 'diagnostics.json', {'schema':'grouped-diagnostics-v1','revision':revision,
+        'items':len(records),'native_inventory_items':sum(bool(r.get('programs')) and all(p.get('dsp_slots',{}).get('complete') is True for p in r['programs']) for r in records),
+        'groups':diagnostics.report(),'locations_sidecar':'diagnostics-locations.json'})
     return len(records)
 
 
@@ -252,9 +278,6 @@ def probe(engine, item, work, timeout, shots):
         cache_stats = {'condition': condition, 'before_files': len(files), 'before_bytes': sum(p.stat().st_size for p in files), 'writable': True}
     plan_path=note_path(item)
     if plan_path.exists(): env['KONTRA_SCAN_NOTE_PLAN']=str(plan_path)
-    reader = Path('/home/derpcat/.codex/cache/kontakto-uvi-official-reader/app/UVIWorkstationx64.exe')
-    if reader.is_file():
-        env.setdefault('KONTRA_UVI_READER', str(reader))
     if shots:
         env['KONTRA_SCAN_SHOTS'] = '1'
     worker=engine
@@ -296,9 +319,17 @@ def probe(engine, item, work, timeout, shots):
             r = json.loads((work / 'progress.json').read_text())
         except (ValueError, OSError):
             r = {}
-        r.update(loads='no', plays_note='no')
-        r.setdefault('ui', 'error')
-        r['reason'] = ('timeout' if timed_out else f'worker exit {child.returncode}') + ' at ' + r.get('stage', 'start')
+        if not timed_out:
+            r.update(loads='no', plays_note='no')
+            r.setdefault('ui', 'error')
+            r['reason'] = f'worker exit {child.returncode} at ' + r.get('stage', 'start')
+    if timed_out:
+        r['stage'] = r.get('stage', 'worker-start')
+        r.update(incomplete=True, ui='incomplete')
+        for key in ['loads', 'plays_note']:
+            if r.get(key) != 'yes': r[key] = 'incomplete'
+        r['operational_timeout'] = {'stage': r['stage'], 'timeout_seconds': timeout}
+        r['reason'] = 'incomplete: operational timeout at ' + r['stage']
     if cache_stats is not None:
         files = [p for p in cache.rglob('*') if p.is_file()]
         cache_stats.update(after_files=len(files), after_bytes=sum(p.stat().st_size for p in files))
@@ -332,6 +363,7 @@ def probe(engine, item, work, timeout, shots):
     else: r['audition_status']='not-auditioned'
     # stdout is metrics only; keep one canonical cached record, not a second copy.
     (work / 'stdout.json').unlink(missing_ok=True)
+    if 'KONTRA_UVI_AUDIT_SEED' in env: r['audit_seed']=int(env['KONTRA_UVI_AUDIT_SEED'])
     (work / 'progress.json').unlink(missing_ok=True)
     if capture and capture.activity: r['contention'] = capture.activity.result['status']
     return r
@@ -346,10 +378,14 @@ def main():
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--budget-seconds', type=float, default=235)
     parser.add_argument('--timeout-seconds', type=float, default=90)
+    parser.add_argument('--audit-seed', type=int, default=os.environ.get('KONTRA_UVI_AUDIT_SEED'), help='audit-only UVI Lua/engine seed and owner-clock barrier (scan builds)')
     parser.add_argument('--shots', action='store_true', help='retain small screenshots of OUR Original renderer')
     args = parser.parse_args()
     if args.start < 0 or args.count < 0 or not 0 < args.budget_seconds <= 240:
         parser.error('start/count must be nonnegative; shard budget must be in (0,240]')
+    if args.audit_seed is not None:
+        if not 0 <= args.audit_seed <= 0xffffffff: parser.error('audit seed must fit u32')
+        os.environ['KONTRA_UVI_AUDIT_SEED']=str(args.audit_seed)
     engine = Path(args.engine).resolve()
     revision = hashlib.sha256(engine.read_bytes()).hexdigest()
     args.out.mkdir(parents=True, exist_ok=True)

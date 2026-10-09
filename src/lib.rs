@@ -21,6 +21,10 @@ mod routing;
 mod ui;
 #[cfg(feature="plugin")]
 pub use plugin::Plugin;
+#[cfg(feature="plugin")]
+pub fn export_multi_state(multi: &std::path::Path, destination: &std::path::Path) -> anyhow::Result<()> {
+    plugin::export_multi_state(multi, destination)
+}
 /// The library folders the player scans, from its settings.
 #[cfg(feature="plugin")]
 pub fn library_roots() -> Vec<std::path::PathBuf> {

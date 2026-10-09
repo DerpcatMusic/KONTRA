@@ -108,7 +108,7 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
     )
     .gap(INSET)
     .align(Align::Center)
-    .pad(edges(TIGHT, TIGHT, TIGHT, INSET))
+    .pad(edges(TIGHT, INSET, TIGHT, INSET))
     .shrink(0);
     let first_note = (cx.state.octave * 12) as u8;
     let shown = first_note..first_note + (OCTAVES * 12) as u8;
@@ -126,9 +126,9 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
             if ui.get(format!("key-{note}")).clicked_with(Button::Secondary) {
                 super::menu::open(ui, cx, super::menu::Target::Key(note));
             }
-            let lit = cx.p.shared.played[note as usize]
-                .load(Ordering::Relaxed)
-                .max(cx.p.shared.heard[note as usize].load(Ordering::Relaxed));
+            let heard = cx.p.shared.heard[note as usize].load(Ordering::Relaxed);
+            let lit = if cx.p.shared.engine_keys.load(Ordering::Acquire) { heard }
+                else { heard.max(cx.p.shared.played[note as usize].load(Ordering::Relaxed)) };
             key(ui, cx.p, note, black, looks[note as usize], lit)
         };
         let whites =
@@ -277,29 +277,8 @@ fn span_in_octave(n: i16) -> (f64, f64) {
 /// A thin bar over the keys: where the instrument plays, and its colored keys.
 fn range_strip(looks: [Look; 128], octave: i16) -> El {
     canvas(move |s| {
-        let octave_w = (s.width - f64::from(OCTAVES - 1)) / f64::from(OCTAVES);
-        let mut draw = vec![Draw::fill(
-            rect(0., 0., s.width, s.height),
-            Role::Ink.alpha(0.06),
-        )];
-        {
-            for o in 0..OCTAVES {
-                for n in 0..12 {
-                    let note = ((octave + o) * 12 + n) as usize;
-                    let Some(look) = looks.get(note) else {
-                        continue;
-                    };
-                    let Look::Mapped(hue) = look else { continue };
-                    let fill = Fill::from(Color::oklch(0.66, 0.1, *hue));
-                    let (x, w) = span_in_octave(n);
-                    let left = f64::from(o) * (octave_w + 1.) + x * octave_w;
-                    draw.push(Draw::fill(
-                        rect(left.floor(), 0., (w * octave_w).ceil() + 1., s.height),
-                        fill,
-                    ));
-                }
-            }
-        }
+        let mut draw = vec![Draw::fill(rect(0., 0., s.width, s.height), Role::Ink.alpha(0.06))];
+        draw.extend(range_draw(&looks, octave, s, 0.));
         draw
     })
     .w(Len::Pct(100.))
@@ -308,13 +287,26 @@ fn range_strip(looks: [Look; 128], octave: i16) -> El {
     .named("Key range")
 }
 
-/// Where `note` sits across a strip `width` wide showing `OCTAVES` from
-/// `octave`: its left edge and width, as the keys under it lie.
-fn key_x(note: usize, octave: i16, width: f64) -> (f64, f64) {
-    let octave_w = (width - f64::from(OCTAVES - 1)) / f64::from(OCTAVES);
-    let o = note as f64 / 12. - f64::from(octave);
-    let (x, w) = span_in_octave((note % 12) as i16);
-    (o.floor() * (octave_w + 1.) + x * octave_w, w * octave_w)
+// Port from v1 0cb7a8a0:src/ui/keyboard.rs: paint mapped ranges before control colours.
+fn range_draw(looks: &[Look; 128], octave: i16, size: Size, y: f64) -> Vec<Draw> {
+    let octave_w = (size.width - f64::from(OCTAVES - 1)) / f64::from(OCTAVES);
+    let mut draw = Vec::new();
+    for pass in [false, true] {
+        for o in 0..OCTAVES {
+            for n in 0..12 {
+                let note = ((octave + o) * 12 + n) as usize;
+                let Some(look) = looks.get(note) else { continue };
+                let color = match (pass, look) {
+                    (false, Look::Mapped(color)) | (true, Look::Switch(color, _, false)) => *color,
+                    _ => continue,
+                };
+                let (x, w) = span_in_octave(n);
+                let left = f64::from(o) * (octave_w + 1.) + x * octave_w;
+                draw.push(Draw::fill(rect(left.floor(), y, (w * octave_w).ceil() + 1., 3.), color));
+            }
+        }
+    }
+    draw
 }
 
 /// The parts the keys show: the selected one or, with none selected, every
@@ -333,33 +325,25 @@ fn mapped(cx: &Cx, slot: usize) -> [bool; 128] {
     std::array::from_fn(|k| report.is_some_and(|r| r.decoded.maps(k as u8)))
 }
 
-/// With several parts shown: a thin bar per part in its color from its
-/// lowest playable key to its highest, parts whose ranges overlap on rows of
-/// their own.
+/// With several parts shown: one coloured range row per instrument in rack order.
 fn part_strips(cx: &mut Cx, shown: &[usize]) -> El {
     const ROW: f64 = 3.;
-    let mut rows: Vec<Vec<(usize, usize, usize)>> = Vec::new();
+    let mut rows = Vec::new();
     let mut tip = Vec::new();
     for &slot in shown {
         let looks = part_looks(cx, slot);
-        let Some((low, high)) = playable(&looks) else { continue };
-        tip.push(format!("{}: {} – {}", super::rack::name(cx, slot), note_name(low as u8), note_name(high as u8)));
-        match rows.iter_mut().find(|r| r.iter().all(|&(_, l, h)| high < l || low > h)) {
-            Some(r) => r.push((slot, low, high)),
-            None => rows.push(vec![(slot, low, high)]),
+        if let Some((low, high)) = playable(&looks) {
+            tip.push(format!("{}: {} – {}", super::rack::name(cx, slot), note_name(low as u8), note_name(high as u8)));
+        } else {
+            tip.push(super::rack::name(cx, slot));
         }
+        rows.push(looks);
     }
     let (octave, count) = (cx.state.octave, rows.len().max(1));
-    let (first, last) = ((octave * 12) as usize, ((octave + OCTAVES) * 12 - 1) as usize);
     canvas(move |s| {
         let mut draw = Vec::new();
-        for (n, r) in rows.iter().enumerate() {
-            let y = n as f64 * (ROW + 1.);
-            for &(slot, low, high) in r.iter().filter(|(_, l, h)| *h >= first && *l <= last) {
-                let (left, _) = key_x(low.max(first), octave, s.width);
-                let (right, w) = key_x(high.min(last), octave, s.width);
-                draw.push(Draw::fill(rect(left.floor(), y, (right + w).ceil() - left.floor(), ROW), part_color(slot)));
-            }
+        for (n, looks) in rows.iter().enumerate() {
+            draw.extend(range_draw(looks, octave, s, n as f64 * (ROW + 1.)));
         }
         draw
     })
@@ -376,10 +360,17 @@ fn part_strips(cx: &mut Cx, shown: &[usize]) -> El {
 enum Look {
     Unmapped,
     /// Plays, tinted in its part's hue.
-    Mapped(f32),
+    Mapped(Color),
     /// Switches articulation: deep in its part's hue, brighter while the
     /// articulation it picks is the one playing.
     Switch(Color, bool, bool),
+}
+
+impl Look {
+    // Port from v1: a control wins over another part's playable range.
+    fn rank(self) -> u8 {
+        match self { Self::Unmapped => 0, Self::Mapped(_) => 1, Self::Switch(_, _, _) => 2 }
+    }
 }
 
 /// The lowest and highest keys that play notes.
@@ -392,11 +383,20 @@ fn playable(looks: &[Look; 128]) -> Option<(usize, usize)> {
 /// Part `slot`'s keys: those its zones map play, in its hue; its
 /// articulations' switch keys stand out in it.
 fn part_looks(cx: &mut Cx, slot: usize) -> [Look; 128] {
-    let hue = part_color(slot).hue();
-    let mut looks = mapped(cx, slot).map(|m| if m { Look::Mapped(hue) } else { Look::Unmapped });
+    let color = part_color(slot);
+    let mut looks = mapped(cx, slot).map(|m| if m { Look::Mapped(color) } else { Look::Unmapped });
     for (key, authored) in cx.view.parts[slot].keys.iter().enumerate().take(128) {
-        if let Some(color) = authored.color.and_then(ksp_key_color) {
-            looks[key] = Look::Switch(color, false, false);
+        match authored.color {
+            Some(17) => looks[key] = Look::Unmapped, // KEY_COLOR_INACTIVE
+            Some(19 | 20) => looks[key] = Look::Mapped(color), // WHITE/BLACK retain piano faces.
+            _ => {
+                let tint = authored.color.and_then(ksp_key_color).unwrap_or(color);
+                if authored.control {
+                    looks[key] = Look::Switch(tint, false, false);
+                } else if authored.color.and_then(ksp_key_color).is_some() && matches!(looks[key], Look::Mapped(_)) {
+                    looks[key] = Look::Mapped(tint);
+                }
+            }
         }
     }
     if let Some(inst) = super::inside::switch_keys(cx, slot) {
@@ -427,7 +427,7 @@ fn looks(cx: &mut Cx, shown: &[usize]) -> [Look; 128] {
     let mut looks = [Look::Unmapped; 128];
     for &slot in shown {
         for (look, part) in looks.iter_mut().zip(part_looks(cx, slot)) {
-            if *look == Look::Unmapped {
+            if part.rank() > look.rank() {
                 *look = part;
             }
         }
@@ -522,8 +522,8 @@ fn key(
     let name = note_name(note);
     let face = match (look, black) {
         // A key that plays is tinted in its part's hue: faintly on white, deeper on black.
-        (Look::Mapped(hue), false) => Color::oklch(0.93, 0.035, hue),
-        (Look::Mapped(hue), true) => Color::oklch(0.33, 0.075, hue),
+        (Look::Mapped(color), false) => Color::oklch(0.93, 0.035, color.hue()),
+        (Look::Mapped(color), true) => Color::oklch(0.33, 0.075, color.hue()),
         (Look::Unmapped, false) => Color::oklch(0.56, 0., 0.),
         (Look::Unmapped, true) => Color::oklch(0.24, 0., 0.),
         (Look::Switch(color, on, outlined), _) => color.with_alpha(if outlined { 0.25 } else if on { 1. } else { 0.8 }),

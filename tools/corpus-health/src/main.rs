@@ -54,6 +54,7 @@ fn faults() -> (u64, u64) {
 
 const HOLD_SECONDS: f64 = 1.5;
 const TAIL_SECONDS: f64 = 0.5;
+const MAX_TAIL_SECONDS: f64 = 5.0;
 const VELOCITY: u8 = 64;
 
 #[derive(Clone, Debug)]
@@ -893,7 +894,10 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
     };
     let frame = |seconds: f64| (seconds * f64::from(rate)).round() as usize;
     let release_at = frame(HOLD_SECONDS);
-    let total = release_at + frame(TAIL_SECONDS);
+    let minimum = release_at + frame(TAIL_SECONDS);
+    let total = release_at + frame(MAX_TAIL_SECONDS);
+    let mut tail_blocks = std::collections::VecDeque::with_capacity(frame(0.25).div_ceil(64) + 1);
+    let mut rendered_frames = 0;
     let key = pick.key;
     let on = [0x2090_0000 | u32::from(key) << 8 | u32::from(pick.velocity)];
     let off = [0x2080_0000 | u32::from(key) << 8];
@@ -1082,15 +1086,19 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
             });
             rt.flush_ended(|_| true);
         }
+        let mut block_peak = 0.0f32;
         for x in buffer[..len].iter().flatten() {
             finite &= x.is_finite();
             peak = peak.max(x.abs());
-            // The last quarter second of the tail.
-            if begin + len > total - frame(0.25) {
-                tail_peak = tail_peak.max(x.abs());
-            }
+            block_peak = block_peak.max(x.abs());
         }
+        tail_blocks.push_back(block_peak);
+        if tail_blocks.len() > frame(0.25).div_ceil(buffer.len()) { tail_blocks.pop_front(); }
+        rendered_frames = begin + len;
+        let voices = match &rig { Rig::Midi { rt, .. } | Rig::Scripted { rt, .. } => rt.voice_count() };
+        if rendered_frames >= minimum && voices == 0 { break; }
     }
+    tail_peak = tail_blocks.into_iter().fold(tail_peak, f32::max);
     block_times.sort_by(f64::total_cmp);
     let q = |f: f64| block_times[((block_times.len() - 1) as f64 * f) as usize];
     let mut why_silent = None;
@@ -1108,6 +1116,8 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
     let st = rt.stats();
     let perf = json!({
         "block_frames": buffer.len(),
+        "release_drain_seconds": (rendered_frames - release_at) as f64 / f64::from(rate),
+        "release_drain_max_seconds": MAX_TAIL_SECONDS,
         "deadline_ms": deadline * 1e3,
         "block_p50_ms": q(0.5) * 1e3,
         "block_p99_ms": q(0.99) * 1e3,
@@ -2636,6 +2646,31 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn authored_release_sample_drains_beyond_the_old_half_second_window() {
+        let rate = 48000;
+        let frames = (f64::from(rate) * 0.748) as usize;
+        let mut zone = sampler_ir::Zone::new(sampler_ir::AssetRef(0));
+        zone.keys = sampler_ir::KeyRange { low: 60, high: 60 };
+        zone.trigger = sampler_ir::Trigger::KeyRelease;
+        zone.playback.looping = sampler_ir::Looping::OneShot;
+        let instrument = sampler_ir::Instrument {
+            assets: vec![sampler_ir::Asset {
+                location: sampler_ir::AssetLocation::Path("synthetic".into()),
+                encoding: Default::default(), root_key: None, loops: vec![],
+            }],
+            zones: vec![zone], ..Default::default()
+        };
+        let pcm = sampler_core::Pcm::new(rate, vec![[0.25; 2]; frames].into_boxed_slice()).unwrap();
+        let loaded = sampler_kontakt::prepare(instrument, vec![pcm], &Default::default()).unwrap();
+        let sound = play(Subject::Plan(Box::new(loaded)), Pick { key: 60, velocity: 64, switch: None }, false, &[]).unwrap();
+        assert!(sound.peak > 0.);
+        assert_eq!(sound.stuck_voices, 0);
+        let drain = sound.perf["release_drain_seconds"].as_f64().unwrap();
+        assert!((0.748..0.751).contains(&drain), "{drain}");
+        assert_eq!(sound.perf["audio_thread_allocs"], 0);
+    }
 
     fn voice(group: &str, start: u64, reverse: bool) -> VoiceInfo {
         VoiceInfo { zone: 0, group: group.into(), start, start_range: 0, reverse, looping: "none", velocity_layer: 0 }

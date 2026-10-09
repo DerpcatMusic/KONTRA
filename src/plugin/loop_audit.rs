@@ -5,6 +5,31 @@ impl PartShared {
     }
 }
 
+impl Shared {
+    pub(crate) fn widget_gate_install(&self, core: &mut V2Core) {
+        while let Some((slot, _, part)) = self.ready.pop() { core.install(slot, part); }
+    }
+    /// Same audio readback/effect publication as Process, for Original gestures.
+    pub(crate) fn widget_gate_readback(&self, core: &mut V2Core) {
+        for slot in 0..core.parts() {
+            let Some(atoms) = self.part(slot) else { continue };
+            atoms.refresh_controls(|id| core.control_value(slot, id));
+            let epoch = core.epoch(slot);
+            core.take_effects(slot, &mut |instance, effect| self.effects.push((slot, epoch, instance, *effect)).is_ok());
+        }
+        self.apply_effects();
+    }
+}
+
+impl PartShared {
+    pub(crate) fn widget_gate_callback(&self, program: usize) -> String {
+        sampler_ksp::callback_of(&self.scripts.lock().unwrap().views, program)
+    }
+    pub(crate) fn widget_gate_uvi_value(&self, id: sampler_ui_ir::ControlId) -> Option<f64> {
+        self.scripts.lock().unwrap().uvi.as_ref().and_then(|uvi| uvi.value(id))
+    }
+}
+
 use super::*;
 
 impl ControlCell {

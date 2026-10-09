@@ -1,17 +1,16 @@
-//! Programs and samples inside an installed UFS bank. Reader namespaces come
-//! from the user's hash-verified official UVI Workstation. Recovered content
-//! access and decoded bytes live only in this process; nothing is persisted.
+//! Programs and samples inside an installed UFS bank. Namespaces use the native
+//! format tables; recovered content access and decoded bytes stay in memory.
 
 use crate::{
     AccessError,
-    access::{self, ReaderNamespaces},
+    access::{self, Namespaces},
     crypto,
     ufs::{Directory, Member, Protection, Ufs},
 };
 use anyhow::{Context, Result, ensure};
 use std::{
     collections::HashMap,
-    path::{Path, PathBuf},
+    path::Path,
     sync::Arc,
 };
 
@@ -25,48 +24,27 @@ pub struct Bank {
     paths: HashMap<String, Option<usize>>,
 }
 
-/// `uvi_reader` from the player's settings, as v1's catalog passes it.
-pub(crate) fn configured_reader() -> Option<PathBuf> {
-    let settings = std::fs::read(dirs::config_dir()?.join("kontra/settings.json")).ok()?;
-    let value: serde_json::Value = serde_json::from_slice(&settings).ok()?;
-    value.get("uvi_reader")?.as_str().map(PathBuf::from)
-}
-
-/// Clear and ZIP-wrapped programs need no installed reader; protected ones do.
+/// Decode clear and protected programs through the native PasswordV2 path.
 pub(crate) fn program_text(bytes: &[u8]) -> Result<String, AccessError> {
-    let program_error = |e| AccessError::Program(access::failure_reason(&e));
-    match crypto::decode_program_bytes(bytes, &[]) {
-        Ok(text) => Ok(text),
-        Err(error) if error.is::<crypto::NeedsProgramNamespace>() => {
-            let reader_error = |e| AccessError::Reader(access::failure_reason(&e));
-            let reader =
-                access::reader_path(configured_reader().as_deref()).map_err(reader_error)?;
-            let namespaces = ReaderNamespaces::open(&reader).map_err(reader_error)?;
-            crypto::decode_program_bytes(bytes, &namespaces.program).map_err(program_error)
-        }
-        Err(error) => Err(program_error(error)),
-    }
+    let namespaces = Namespaces::native();
+    crypto::decode_program_bytes(bytes, &namespaces.program)
+        .map_err(|e| AccessError::Program(access::failure_reason(&e)))
 }
 
 impl Bank {
     /// Open and decode the directory of the bank at `path`.
     pub fn open(path: &Path) -> Result<Self, AccessError> {
-        let reader_error = |e| AccessError::Reader(access::failure_reason(&e));
         let bank_error = |e| AccessError::Bank(access::failure_reason(&e));
         let content_error = |e| AccessError::Content(access::failure_reason(&e));
         let span = sampler_kontakt::audit::Span::new("uvi_ufs_header");
         let ufs = Ufs::open(path).map_err(bank_error)?;
         drop(span);
         let span = sampler_kontakt::audit::Span::new("uvi_directory_namespace");
-        let (directory, program_namespace) = match ufs.decode_directory(&[]) {
-            Ok(directory) => (directory, Vec::new()),
-            Err(error) if error.is::<crate::ufs::NeedsMetadataNamespace>() => {
-                let reader = access::reader_path(configured_reader().as_deref()).map_err(reader_error)?;
-                let namespaces = ReaderNamespaces::open(&reader).map_err(reader_error)?;
-                (ufs.decode_directory(&namespaces.metadata).map_err(bank_error)?, namespaces.program)
-            }
-            Err(error) => return Err(bank_error(error)),
-        };
+        let namespaces = Namespaces::native();
+        let directory = ufs
+            .decode_directory(&namespaces.metadata)
+            .map_err(bank_error)?;
+        let program_namespace = namespaces.program;
         drop(span);
         let span = sampler_kontakt::audit::Span::new("uvi_content_setup");
         // Only banks with encrypted members need a content state prepared.
@@ -157,11 +135,7 @@ impl Bank {
             "UVI program exceeds 32 MiB"
         );
         let bytes = self.read(member)?;
-        let text = if self.program_namespace.is_empty() {
-            program_text(&bytes)?
-        } else {
-            crypto::decode_program_bytes(&bytes, &self.program_namespace)?
-        };
+        let text = crypto::decode_program_bytes(&bytes, &self.program_namespace)?;
         let path = member
             .path
             .clone()
@@ -407,7 +381,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn clear_bank_and_program_load_without_an_installed_reader() {
+    fn standalone_passwordv2_program_text_uses_native_namespace() {
+        use base64::Engine as _;
+
+        let namespace = Namespaces::native().program;
+        let mut password = b"native standalone fixture password\0".to_vec();
+        let mut program = b"<Program Name=\"Native standalone fixture\"/>".to_vec();
+        program.resize(program.len().div_ceil(8) * 8, 0);
+        crypto::transform(
+            &mut program,
+            crypto::key_from_string(&password[..password.len() - 1]),
+            0,
+        );
+        crypto::transform(&mut password, crypto::key_from_string(&namespace), 0);
+        let wrapper = format!(
+            "<UVI4><Program PasswordV2=\"{}\">{}</Program></UVI4>",
+            base64::engine::general_purpose::STANDARD.encode(password),
+            base64::engine::general_purpose::STANDARD.encode(program),
+        );
+        assert_eq!(
+            program_text(wrapper.as_bytes()).unwrap(),
+            "<Program Name=\"Native standalone fixture\"/>"
+        );
+    }
+
+    #[test]
+    fn clear_bank_and_program_load_with_native_namespaces() {
         fn append(bytes: &mut Vec<u8>, payload: &[u8]) -> u64 {
             let pointer = bytes.len() as u64 + 8;
             bytes.extend((payload.len() as u64).to_le_bytes());
@@ -451,7 +450,7 @@ mod tests {
         let path = std::env::temp_dir().join(format!("kontra-clear-bank-{}.ufs", std::process::id()));
         std::fs::write(&path, bytes).unwrap();
         let mut bank = Bank::open(&path).unwrap();
-        assert!(bank.program_namespace.is_empty());
+        assert_eq!(bank.program_namespace.len(), 39);
         assert_eq!(bank.programs(), ["preset.uvip"]);
         assert_eq!(bank.program("preset.uvip").unwrap(),
             (std::str::from_utf8(xml).unwrap().to_owned(), "preset.uvip".to_owned()));

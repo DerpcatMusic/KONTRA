@@ -1,4 +1,4 @@
-//! Read local library artwork once, on the import worker. No copies on disk.
+//! Library artwork on the import worker; only bounded display copies are cached on disk.
 use moose::mui::mui::scene::Image;
 use std::{
     collections::{HashMap, VecDeque},
@@ -8,49 +8,77 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-/// Each library's own artwork, by library name: a `wallpaper.png`, else
-/// the product wallpaper in its `.nicnt`, else a panel-sized picture in a
-/// resource container (`.nkr`) beside it.
-pub fn scan(libraries: &[crate::library::Library]) -> HashMap<String, Arc<Image>> {
-    libraries
-        .iter()
-        .filter_map(|library| {
-            let (name, folder) = (library.name.clone(), &library.dir);
-            let mut candidates = vec![folder.join("wallpaper.png")];
-            if let Ok(entries) = std::fs::read_dir(&folder) {
-                let mut containers: Vec<_> = entries
-                    .flatten()
-                    .map(|e| e.path())
-                    .filter(|p| {
-                        p.extension().is_some_and(|e| {
-                            e.eq_ignore_ascii_case("nicnt") || e.eq_ignore_ascii_case("nkr")
-                        })
-                    })
-                    .collect();
-                containers.sort_by_key(|p| {
-                    (
-                        !p.extension()
-                            .is_some_and(|e| e.eq_ignore_ascii_case("nicnt")),
-                        p.clone(),
-                    )
-                });
-                candidates.extend(containers);
-            }
-            for path in candidates {
-                if let Some(image) = cached_header(&path, || {
-                    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("nicnt") || e.eq_ignore_ascii_case("nkr")) {
-                        return nicnt_picture(&path);
-                    }
-                    let image = decode_header(&read_file(&path).ok()?)?;
-                    (image.width >= 180 && image.height >= 60).then_some(image)
-                }) {
-                    return Some((name, image));
-                }
-            }
-            None
-        })
-        .collect()
+#[cfg(test)]
+#[test]
+fn library_artwork_searches_nested_resources_after_a_bad_wallpaper() {
+    let dir = std::env::temp_dir().join(format!("kontra-library-art-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("Resources/pictures")).unwrap();
+    std::fs::write(dir.join("wallpaper.png"), b"damaged image").unwrap();
+    let path = dir.join("Resources/pictures/library-cover.png");
+    let mut encoder = png::Encoder::new(std::fs::File::create(&path).unwrap(), 512, 128);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.write_header().unwrap().write_image_data(&[40, 70, 90, 255].repeat(512 * 128)).unwrap();
+    let library = crate::library::Library { name: "Artwork fixture".into(), dir: dir.clone(), ..Default::default() };
+    let artwork = scan(&[library]);
+    assert_eq!(artwork.get("Artwork fixture").map(|i| (i.width, i.height)), Some((512, 128)));
+    std::fs::remove_dir_all(dir).unwrap();
 }
+
+/// Library panels, including nested loose artwork and UVI bank resources.
+pub fn scan(libraries: &[crate::library::Library]) -> HashMap<String, Arc<Image>> {
+    libraries.iter().filter_map(|library| {
+        let mut candidates: Vec<PathBuf> = walkdir::WalkDir::new(&library.dir).follow_links(false).into_iter()
+            .filter_entry(|e| !(e.depth() > 0 && e.file_type().is_dir() && {
+                let name = e.file_name().to_string_lossy().to_ascii_lowercase();
+                name == "samples" || name.starts_with('.')
+            })).flatten().filter(|e| e.file_type().is_file()).map(|e| e.into_path())
+            .filter(|p| p.extension().is_some_and(|e| ["png", "jpg", "jpeg", "nicnt", "nkr", "ufs"].iter().any(|ext| e.eq_ignore_ascii_case(ext))))
+            .collect();
+        candidates.sort_by_key(|p| {
+            let ext = p.extension().unwrap_or_default().to_string_lossy().to_ascii_lowercase();
+            let name = p.file_name().unwrap_or_default().to_string_lossy().to_ascii_lowercase();
+            let priority = if name == "wallpaper.png" { 0 }
+                else if name.contains("libbrowser") { 1 }
+                else if ext == "nicnt" { 2 } else if ext == "nkr" { 3 } else if ext == "ufs" { 4 }
+                else { 5 + ["cover", "artwork", "banner", "logo", "background"].iter().position(|word| name.contains(word)).unwrap_or(5) };
+            (priority, p.clone())
+        });
+        for path in candidates {
+            if let Some(image) = cached_header(&path, || {
+                let ext = path.extension()?.to_string_lossy().to_ascii_lowercase();
+                let image = match ext.as_str() {
+                    "nicnt" | "nkr" => nicnt_picture(&path),
+                    "ufs" => ufs_picture(&path),
+                    _ => decode_header(&read_file(&path).ok()?),
+                }?;
+                (image.width >= 180 && image.height >= 60).then_some(image)
+            }) { return Some((library.name.clone(), image)); }
+        }
+        None
+    }).collect()
+}
+
+fn ufs_picture(path: &Path) -> Option<Image> {
+    #[cfg(feature = "library-access")]
+    {
+        let bank = sampler_uvi::Bank::open(path).ok()?;
+        let mut names: Vec<_> = bank.members().into_iter().filter(|n| {
+            let n = n.to_ascii_lowercase(); n.ends_with(".png") || n.ends_with(".jpg") || n.ends_with(".jpeg")
+        }).collect();
+        names.sort_by_key(|name| {
+            let lower = name.to_ascii_lowercase();
+            (["libbrowser", "wallpaper", "cover", "artwork", "banner", "logo", "background"].iter().position(|word| lower.contains(word)).unwrap_or(7), name.clone())
+        });
+        names.iter().find_map(|name| {
+            let image = decode_header(&bank.ui_resource_result("", name).ok()??)?;
+            (image.width >= 180 && image.height >= 60).then_some(image)
+        })
+    }
+    #[cfg(not(feature = "library-access"))]
+    { let _ = path; None }
+}
+
 // Library scanning already runs on its import worker (library::Index::rescan).
 // Keep small display copies there, never full wallpapers in the editor cache.
 const HEADER_CACHE_BYTES: usize = 8 << 20;
@@ -81,10 +109,35 @@ fn cached_header(path: &Path, decode: impl FnOnce() -> Option<Image>) -> Option<
     let key = (path.canonicalize().ok()?, meta.len(), meta.modified().ok()?);
     if let Some(image) = CACHE.lock().unwrap_or_else(|e| e.into_inner()).get(&key) { return Some(image); }
     // Decode outside the cache lock; scans and instances do not block each other.
-    let image = Arc::new(header_size(decode()?)?);
+    let image = Arc::new(disk_header(display_path(&key).as_deref(), decode)?);
     CACHE.lock().unwrap_or_else(|e| e.into_inner()).insert(key, image.clone());
     Some(image)
 }
+// Library-file identity plus native access revision invalidates protected-bank results.
+fn display_path(key: &impl std::hash::Hash) -> Option<PathBuf> {
+    use std::hash::{Hash, Hasher};
+    if cfg!(test) || std::env::var_os("KONTRA_SCAN_ACTIVE").is_some() { return None; }
+    let mut hash = std::hash::DefaultHasher::new();
+    key.hash(&mut hash);
+    sampler_uvi::LIBRARY_ACCESS_REVISION.hash(&mut hash);
+    Some(dirs::cache_dir()?.join("kontra/library-art").join(format!("{:016x}.png", hash.finish())))
+}
+
+fn disk_header(path: Option<&Path>, decode: impl FnOnce() -> Option<Image>) -> Option<Image> {
+    if let Some(path) = path {
+        if path.with_extension("absent").is_file() { return None; }
+        if let Some(image) = read_file(path).ok().and_then(|bytes| decode_header(&bytes)) { return Some(image); }
+    }
+    let image = decode().and_then(header_size);
+    if let Some(path) = path {
+        if let Some(image) = &image { let _ = save_display(image, path); }
+        else if path.parent().is_some_and(|p| std::fs::create_dir_all(p).is_ok()) {
+            let _ = std::fs::write(path.with_extension("absent"), []);
+        }
+    }
+    image
+}
+
 fn header_size(image: Image) -> Option<Image> {
     let scale = (1024. / f64::from(image.width)).min(512. / f64::from(image.height)).min(1.);
     if scale == 1. { return Some(image); }
@@ -209,6 +262,24 @@ fn nicnt_picture(nicnt: &Path) -> Option<Image> {
 /// artwork: loose pictures in its `Resources` folders, else those in a
 /// resource container it can read. At most a dozen are looked at.
 pub fn own_hue(dir: &Path) -> Option<f32> {
+    let mut stamps: Vec<_> = walkdir::WalkDir::new(dir).follow_links(false).into_iter()
+        .filter_entry(|e| !(e.depth() > 0 && e.file_type().is_dir() && {
+            let name = e.file_name().to_string_lossy().to_ascii_lowercase(); name == "samples" || name.starts_with('.')
+        })).flatten().filter(|e| e.file_type().is_file())
+        .filter(|e| e.path().extension().is_some_and(|ext| ext.eq_ignore_ascii_case("png") || ext.eq_ignore_ascii_case("nkr")))
+        .filter_map(|e| { let m=e.metadata().ok()?; Some((e.into_path(),m.len(),m.modified().ok()?)) }).collect();
+    stamps.sort();
+    let cache = display_path(&("hue", dir, stamps)).map(|p| p.with_extension("json"));
+    if let Some(value) = cache.as_ref().and_then(|p| std::fs::read(p).ok())
+        .and_then(|bytes| serde_json::from_slice::<Option<f32>>(&bytes).ok()) { return value; }
+    let hue = own_hue_uncached(dir);
+    if let Some(path) = cache && path.parent().is_some_and(|p| std::fs::create_dir_all(p).is_ok()) {
+        if let Ok(bytes) = serde_json::to_vec(&hue) { let _ = std::fs::write(path, bytes); }
+    }
+    hue
+}
+
+fn own_hue_uncached(dir: &Path) -> Option<f32> {
     let mut pictures: Vec<PathBuf> = ["Resources/pictures", "resources/pictures", "Resources", "resources"]
         .iter()
         .flat_map(|sub| std::fs::read_dir(dir.join(sub)).into_iter().flatten().flatten())
@@ -711,4 +782,33 @@ mod tests {
         let grey: Vec<u8> = px([128, 128, 128], 100).collect();
         assert_eq!(super::tint(&super::Image::rgba(100, 1, grey).unwrap()), None);
     }
+}
+
+pub(crate) fn save_display(image: &Image, path: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(path.parent().unwrap_or(path))?;
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let tmp = path.with_extension(format!("png.tmp{}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+    {
+        let mut e = png::Encoder::new(std::io::BufWriter::new(std::fs::File::create(&tmp)?), image.width, image.height);
+        e.set_color(png::ColorType::Rgba);
+        let mut w = e.write_header().map_err(std::io::Error::other)?;
+        w.write_image_data(&image.rgba).map_err(std::io::Error::other)?;
+    }
+    std::fs::rename(tmp, path)
+}
+
+#[cfg(test)]
+#[test]
+fn display_cache_reuses_pixels_and_remembers_absence() {
+    let dir = std::env::temp_dir().join(format!("kontra-display-cache-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("panel.png");
+    let image = Image::rgba(512, 128, [20, 40, 60, 255].repeat(512 * 128)).unwrap();
+    let first = disk_header(Some(&path), || Some(image)).unwrap();
+    let second = disk_header(Some(&path), || panic!("unchanged library resources must not be reopened")).unwrap();
+    assert_eq!(first.rgba, second.rgba);
+    let absent = dir.join("absent.png");
+    assert!(disk_header(Some(&absent), || None).is_none());
+    assert!(disk_header(Some(&absent), || panic!("unchanged missing panel must not be searched again")).is_none());
+    std::fs::remove_dir_all(dir).unwrap();
 }

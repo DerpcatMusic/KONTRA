@@ -7,3 +7,7 @@ Original licenses and attribution are retained.
 The only source departures are whitespace normalization in
 `xim-parser/Cargo.toml` (extra final blank line) and
 `xim-parser/xim-format.yaml` (trailing whitespace). No IME behavior changes.
+
+Malformed compound text returns `InvalidReply` before commit or synchronous
+acknowledgement; reset callbacks propagate their errors. The client regression
+tests cover both trust boundaries.

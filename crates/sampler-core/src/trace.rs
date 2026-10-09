@@ -836,6 +836,8 @@ impl TraceGraph {
                 vec![constant("period", d.period), constant("blend", d.blend)],
                 0,
             ),
+            PreparedProcessor::LoFi(d) => ("lofi", d.trace_parameters().into_iter()
+                .map(|(n, v)| constant(n, v)).collect(), 0),
             PreparedProcessor::Rectify(_) => ("rectifier", vec![], 0),
             PreparedProcessor::Reverb(i) => (
                 "reverb",

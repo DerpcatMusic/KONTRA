@@ -189,23 +189,13 @@ pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
         let kind = if root.single { "Library" } else { "Folder of libraries" };
         rows.push(
             row![
-                body(root.path.clone()).text_size(TEXT).lines(1).flex(1).min_w(0),
+                body(root.path.clone()).text_size(TEXT).lines(1).flex(1).min_w(0).tip(root.path.clone()),
                 caption(format!("{kind} · {found}")).fill(secondary()).lines(1).shrink(0),
                 remove_el
             ]
             .gap(SPACE)
             .align(Align::Center)
             .pad(edges(0., SPACE, 0., INSET))
-            .shrink(0),
-        );
-    }
-    if cx.settings.roots.is_empty() {
-        rows.push(
-            col![caption("No library folders yet. Add the folder that holds your Kontakt libraries, or one library's own folder.")
-                .fill(secondary())
-                .lines(2)]
-            .align(Align::Start)
-            .pad(edges(0., INSET, 0., INSET))
             .shrink(0),
         );
     }
@@ -235,7 +225,9 @@ pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
         cx.state.settings = false;
     }
     let mut body = vec![
-        row![section("Library folders").flex(1), many_el, one_el, import_el, scan_el, close_el]
+        row![section("Library folders").flex(1),
+            many_el.tip("Add the folder that holds your libraries; each library is found, with or without a library file."),
+            one_el.tip("Add one library's own folder."), import_el, scan_el, close_el]
             .gap(SPACE)
             .align(Align::Center)
             .pad(edges(SPACE, SPACE, 0., INSET))
@@ -255,8 +247,14 @@ pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
     body.push(interface_settings(ui, cx));
     body.push(view_settings(ui, cx));
     body.push(new_part_settings(ui, cx));
-    col![col(body).gap(TIGHT).align(Align::Stretch), rule()]
-        .gap(0)
+    let toolbar = body.remove(0);
+    let window_height = ui.scene().and_then(|s| s.surface("editor-root")).map_or(760., |s| s.frame.size.height);
+    // Keep the keyboard and browser usable at the minimum window size.
+    let available = (window_height - 600. + CONTROL * 2.).clamp(CONTROL * 2., CONTROL * 8.);
+    let preferences = col(body).gap(TIGHT).align(Align::Stretch)
+        .max_size(Size::new(1e6, available)).scroll().shrink(0).id("settings-body");
+    col![toolbar, preferences, rule()]
+        .gap(TIGHT)
         .shrink(0)
         .fill(Role::Surface)
 }

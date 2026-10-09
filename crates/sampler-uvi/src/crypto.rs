@@ -14,7 +14,7 @@ pub(crate) const PROGRAM_NODE_LIMIT: u32 = 250_000;
 pub(crate) struct NeedsProgramNamespace;
 impl std::fmt::Display for NeedsProgramNamespace {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("PasswordV2 requires a local reader program namespace")
+        f.write_str("PasswordV2 requires the native program namespace")
     }
 }
 impl std::error::Error for NeedsProgramNamespace {}
@@ -350,7 +350,7 @@ fn decode_base64(text: &str, limit: usize) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Decode a PasswordV2 Program wrapper using the caller's local reader namespace.
+/// Decode a PasswordV2 Program wrapper using the supplied namespace.
 /// Clear Program/UVI4 XML passes through; unsupported legacy protection is explicit.
 pub fn decode_program(text: &str, namespace: &[u8]) -> Result<String> {
     ensure!(

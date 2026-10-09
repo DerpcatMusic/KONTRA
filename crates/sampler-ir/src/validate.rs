@@ -213,6 +213,11 @@ impl Check<'_> {
                     self.within(pan, -1.0..=1.0, "stereo pan")?;
                 }
                 Processor::Pan(pan) => self.pan(pan, "pan")?,
+                Processor::LoFi { bits, frequency, noise, color } => {
+                    for (v, field) in [(bits, "lofi bits"), (frequency, "lofi frequency"), (noise, "lofi noise"), (color, "lofi color")] {
+                        self.within(f64::from(v), 0.0..=1.0, field)?;
+                    }
+                }
                 Processor::Rectify(_) => {}
                 Processor::SendReturnGate { .. } => {}
                 Processor::Branch { gain, .. } => self.gain(gain, "branch gain")?,

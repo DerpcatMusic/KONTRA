@@ -56,7 +56,7 @@ pub use switching::{Driver, Selector, Switch, SwitchKeys, Switching};
 mod behavior;
 use behavior::Continuation;
 pub use behavior::{
-    BehaviorId, BehaviorOwner, Comparison, Duration, DurationValue, Instruction, Outcome, Program,
+    BehaviorId, BehaviorOwner, BehaviorProgress, Comparison, Duration, DurationValue, Instruction, Outcome, Program,
     Velocity, WaitLifetime,
 };
 mod stages;
@@ -75,7 +75,7 @@ pub use bus::{Bus, BusMix, BusSend, GroupFader};
 pub use resample::{ResampleQuality, read_radius};
 mod dsp;
 pub use dsp::{
-    Biquad, CompressorSettings, ControlRange, ConvolutionUpload, DaftSettings, Decimator, Delay,
+    Biquad, LoFiSettings, CompressorSettings, ControlRange, ConvolutionUpload, DaftSettings, Decimator, Delay,
     FilterKind, Impulse, LadderSettings, MAX_IMPULSE_FRAMES, OutputLowPass, Parameter, Processor, Rectifier, ReverbSettings,
     StateVariableFilter, StereoSettings, SvfMode, VoiceChain, VoiceSendPosition, VoiceSendTap,
 };
@@ -136,6 +136,8 @@ mod integer;
 pub mod lower;
 pub use integer::{IntegerBinary, IntegerUnary};
 mod ops;
+mod midi_object;
+pub use midi_object::{MidiAction, MidiObject, MidiObjectEvent, MidiExportArea, MidiCompletion, midi_par, MIDI_CURRENT_EVENT, MIDI_ALL_EVENTS, MIDI_TRACK_FLAG, MIDI_MARKS_FLAG, MIDI_SERVICE, MIDI_ASYNC_SIGNAL, MIDI_MAX_EVENTS};
 mod script;
 pub use ops::{
     CALL_DEPTH, EFFECT_ARGS, EFFECT_CAPACITY, Effect, HOST_VALUES, IntegerExtra, Op, RealBinary,
@@ -216,6 +218,29 @@ pub struct RegionVerdict {
     pub region: usize,
     pub group: Option<u32>,
     pub rejected: Option<Rejection>,
+    /// Actual admitted source, after script offsets and start modulation.
+    pub started: Option<SelectedSource>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelectedSource {
+    /// One-based original zone identity (the KSP zone ID).
+    pub zone: u32,
+    pub sample: usize,
+    pub frame: u64,
+    pub direction: Direction,
+    pub loops: [Option<SelectedLoop>; 8],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelectedLoop {
+    pub start: usize,
+    pub end: usize,
+    pub until_release: bool,
+    pub alternating: bool,
+    pub crossfade: usize,
+    pub count: u32,
+    pub tuning_bits: u64,
 }
 
 /// One selection's diagnostic: every region mapped to the key with its verdict.
@@ -223,6 +248,8 @@ pub struct RegionVerdict {
 /// script-suppressed attack has `suppressed` set and no candidates.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SelectionRecord {
+    pub event: u64,
+    pub parent_event: Option<u64>,
     pub at: u64,
     pub key: u8,
     pub velocity: f64,
@@ -447,6 +474,8 @@ struct Voice {
     sample: usize,
     cursor: source::Cursor,
     base_step: f64,
+    /// v1 Voice::pitch: cache the exact modulation exponent and its ratio.
+    mod_pitch: (f64, f64),
     chain: Option<usize>,
     bus: Option<usize>,
     tail_remaining: Option<u32>,
@@ -877,6 +906,7 @@ impl Runtime {
             sequences: variation::SequenceState::new(&plan),
             controls: control::ControlState::new(&plan),
             scripts: plan.script_initial.iter().map(ops::ScriptInitial::bank).collect(),
+            midi_object: plan.midi_object.clone(),
             dsp: dsp::DspState::new(&plan, limits.voices, limits.expressions, 1)?,
             groups: groups::GroupState::new(plan.group_count, limits.notes, plan.stages.len())?,
             controllers: controller_event::ControllerState::new(&plan, limits.performances)?,
@@ -1183,6 +1213,35 @@ impl Runtime {
         )
     }
 
+    /// Admit a script-generated root without owning a physical input key.
+    pub fn generated_note(
+        &mut self,
+        address: ChannelAddress,
+        key: u8,
+        velocity: f64,
+    ) -> Result<NoteId, Error> {
+        self.apply_due();
+        if address.channel >= 16 || address.group >= 16 {
+            return Err(Error::InvalidInput);
+        }
+        self.performance(0)?;
+        self.admit(
+            NoteOrigin::Generated(self.active_plan, address, 0),
+            NotePitch::Key(key),
+            velocity,
+        )
+    }
+
+    /// Retire an admitted source-owned note after its voices, tails and work finish.
+    pub fn retire_when_silent(&mut self, note: NoteId) -> Result<(), Error> {
+        let state = self.notes.get_mut(note.0).ok_or(Error::StaleHandle)?;
+        if state.input.is_some() || state.attack == AttackStatus::Pending {
+            return Err(Error::InvalidInput);
+        }
+        state.retire_when_silent = true;
+        Ok(())
+    }
+
     pub fn child_pitched(
         &mut self,
         parent: NoteId,
@@ -1391,6 +1450,20 @@ impl Runtime {
         Ok((n.pitch.key(), n.velocity, n.gate()))
     }
 
+    /// Merge live engine gates, including generated notes; release tails are unpressed.
+    pub fn pressed_keys(&self, keys: &mut [u8; 128]) {
+        let mut next = self.notes.first;
+        while let Some(index) = next {
+            let slot = &self.notes.slots[index];
+            next = slot.next;
+            let note = slot.value.as_ref().unwrap();
+            if note.gate() {
+                let key = &mut keys[usize::from(note.pitch.key())];
+                *key = (*key).max((note.velocity * 127.).round().clamp(1., 127.) as u8);
+            }
+        }
+    }
+
     pub fn note_pitch(&self, id: NoteId) -> Result<NotePitch, Error> {
         Ok(self.notes.get(id.0).ok_or(Error::StaleHandle)?.pitch)
     }
@@ -1561,6 +1634,7 @@ impl Runtime {
             sample,
             cursor: if cold && !self.offline { cursor.cold() } else { cursor },
             base_step,
+            mod_pitch: (f64::NAN, 1.0),
             chain: None,
             bus: None,
             tail_remaining: None,
@@ -1608,6 +1682,15 @@ impl Runtime {
     pub fn release(&mut self, id: NoteId) -> Result<(), Error> {
         self.apply_due();
         self.release_now(id, ReleaseCause::Explicit)
+    }
+
+    fn discard_note(&mut self, id: NoteId) -> Result<(), Error> {
+        let note = self.notes.get_mut(id.0).ok_or(Error::StaleHandle)?;
+        note.attack = AttackStatus::Suppressed;
+        note.sostenuto = false;
+        self.close_gate(id, ReleaseCause::Discarded);
+        self.cleanup_closed_notes();
+        Ok(())
     }
 
     fn release_now(&mut self, id: NoteId, cause: ReleaseCause) -> Result<(), Error> {
@@ -1675,6 +1758,8 @@ impl Runtime {
             }
         }
         for generation in self.plans.slots.iter_mut().filter_map(|s| s.value.as_mut()) {
+            generation.callbacks=generation.callbacks.saturating_sub(generation.midi_object.jobs.iter().filter(|j|!j.initial).count());
+            generation.midi_object.jobs.clear();
             generation.dsp.buses.reset();
         }
         self.cleanup_closed_notes();
@@ -1696,6 +1781,16 @@ impl Runtime {
         while let Some(note) = self.closed_notes.pop() {
             let n = self.notes.get(note.0).unwrap();
             let cause = self.release_times[note.0.index].cleanup.take().unwrap();
+            if cause == ReleaseCause::Discarded {
+                for slot in &mut self.behaviors.slots {
+                    if let Some(callback) = &mut slot.value
+                        && callback.owner == BehaviorOwner::Note(note)
+                        && callback.outcome.is_none()
+                    {
+                        callback.outcome = Some(Outcome::Cancelled);
+                    }
+                }
+            }
             let child_cause = if cause.musical() {
                 ReleaseCause::Parent
             } else {
@@ -1717,7 +1812,9 @@ impl Runtime {
             while let Some(index) = family {
                 let state = self.families.at_mut(index);
                 family = state.siblings.next;
-                if state.trigger == Trigger::Attack || !cause.musical() {
+                if cause == ReleaseCause::Discarded {
+                    self.choke_family_now(FamilyId(self.families.id(index.get())), 0);
+                } else if state.trigger == Trigger::Attack || !cause.musical() {
                     self.release_family_now(FamilyId(self.families.id(index.get())));
                 }
             }

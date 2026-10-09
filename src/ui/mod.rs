@@ -54,9 +54,11 @@ pub(crate) mod picker;
 mod rack;
 mod spectrum;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 #[cfg(test)]
 mod v2_tests;
+#[cfg(all(test, feature = "shots"))]
+mod widget_gate;
 mod theme;
 
 use crate::library;
@@ -72,6 +74,12 @@ use std::time::{Duration, Instant};
 use theme::*;
 
 pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
+    let mut config = mui::diagnostics::Config::new("kontra", env!("CARGO_PKG_VERSION"));
+    config.build = option_env!("APP_GIT_REVISION").unwrap_or("unknown").into();
+    config.mui_revision = "dcf0796082feec053af1418e3a38a302ee61da0a".into();
+    let reporter = mui::diagnostics::Reporter::start(config)
+        .inspect_err(|error| eprintln!("KONTRA MUI reporting: {error}"))
+        .ok();
     let meters = Arc::new(Meters::default());
     let computer = Arc::new(computer::Computer::default());
     #[cfg(target_os = "linux")]
@@ -97,7 +105,8 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
     let parent_picker = Arc::clone(&picker);
     let last_size = AtomicU64::new(0);
     let editor = MuiEditor::new(params, theme::ui(), size, build)
-        .on_log(|line| {
+        .on_log(move |line| {
+            let _reporter = &reporter;
             let failed = line.contains("unavailable") || line.contains("failed") || line.contains("panic");
             crate::diagnostics::event(if failed { crate::diagnostics::LogLevel::Warning } else { crate::diagnostics::LogLevel::Info },
                 "renderer", "native_window", serde_json::json!({"stage":"renderer", "reason":line}));
@@ -360,7 +369,7 @@ struct EditorState {
     /// share of the height.
     pane: Option<browser::Pane>,
     split: f64,
-    multis: bool,
+    uvi: bool,
     tab: Tab,
     settings: bool,
     /// The name a "Save multi…" is typing, and why the last try failed.
@@ -913,7 +922,7 @@ fn build(
             s if s > 0. => f64::from(s).clamp(browser::SPLIT_MIN, browser::SPLIT_MAX),
             _ => browser::SPLIT,
         },
-        multis: false,
+        uvi: false,
         tab: Tab::Rack,
         settings: false,
         saving: None,
@@ -1339,6 +1348,16 @@ impl Cx<'_> {
 pub use ir_view::uvi_ui_health;
 #[cfg(test)]
 mod loop_audit;
+#[cfg(test)]
+mod browser_tests;
+#[cfg(test)]
+mod chrome_tests;
+#[cfg(test)]
+mod keyboard_tests;
+#[cfg(test)]
+mod popup_tests;
+#[cfg(test)]
+mod distill_tests;
 #[cfg(test)]
  pub(crate) fn audit_frames(p: &Arc<SamplerParams>) -> serde_json::Value { tests::audit_frames(p) }
 #[cfg(all(test, feature = "library-access"))]
