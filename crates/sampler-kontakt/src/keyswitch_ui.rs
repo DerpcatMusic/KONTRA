@@ -28,7 +28,7 @@ pub(crate) fn normalize(instrument: &mut ir::Instrument, interfaces: &[Interface
         let mut runs: Vec<Vec<&Widget>> = Vec::new();
         for w in choices {
             let (x, y, width, height) = position(w);
-            if width < height * 3 { continue; }
+            if height == 0 || width < height * 3 { continue; }
             // Hidden overlays at a visible row's position are alternate faces, not extra rows.
             if w.hidden && ui.widgets.iter().any(|o| !o.hidden && o.page == w.page && o.parent == w.parent && position(o) == position(w)) { continue; }
             let joins = runs.last().and_then(|r| r.last()).is_some_and(|last| {
@@ -38,6 +38,7 @@ pub(crate) fn normalize(instrument: &mut ir::Instrument, interfaces: &[Interface
             if joins { runs.last_mut().unwrap().push(w); } else { runs.push(vec![w]); }
         }
         for run in runs.into_iter().filter(|r| r.len() >= 3 && r.iter().filter(|w| !w.hidden).count() >= 2) {
+            let first = found.len();
             for w in run {
                 let (x, y, width, height) = position(w);
                 let labels: Vec<_> = ui.widgets.iter().filter(|l| matches!(l.kind, Kind::Label | Kind::TextEdit) && l.page == w.page && l.parent == w.parent && l.hidden == w.hidden && !l.text.trim().is_empty()).filter(|l| {
@@ -51,6 +52,8 @@ pub(crate) fn normalize(instrument: &mut ir::Instrument, interfaces: &[Interface
                 let source = format!("ksp-control:{:032x}", control.0);
                 found.push(ir::Articulation { source, control: Some(control.0), name: name.into(), switch_keys: key.into_iter().collect(), ..Default::default() });
             }
+            // Preset browsers have the same geometry; require switching evidence within this list.
+            if !found[first..].iter().any(|row| !row.switch_keys.is_empty()) { found.truncate(first); }
         }
     }
     if instrument.articulations.is_empty() {
@@ -138,5 +141,19 @@ mod tests {
         for (after,before) in inst.articulations.iter_mut().zip(&before.articulations) { after.name.clone_from(&before.name); }
         assert_eq!(inst,before,"source IDs, ranges, controls, defaults and alternatives do not change");
     }
-
+    #[test]
+    fn keyswitch_shape_only_lists_are_not_articulations() {
+        for (height,keyed) in [(0,true),(24,false),(24,true)] {
+            let mut ui=Interface::default();
+            for n in 0..4 {
+                let mut button=Widget::new(format!("$item{n}"),PageRef(0),Rect::new(10,n*height as i32,160,height),Kind::Button {momentary:false});
+                button.binding=Binding::Control(ControlId(100+n as u128));button.text="PRESET 001".into();ui.widgets.push(button);
+            }
+            if keyed {
+                let mut label=Widget::new("$note",PageRef(0),Rect::new(180,0,40,height),Kind::Label);label.text="C0".into();ui.widgets.push(label);
+            }
+            let mut inst=ir::Instrument::default();normalize(&mut inst,&[ui],&[]);
+            assert_eq!(inst.articulations.len(),if height>0 && keyed {4} else {0},"height {height}, keyed {keyed}: require visible geometry and switching evidence, retaining keyless rows in a keyed list");
+        }
+    }
 }
