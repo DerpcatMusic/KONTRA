@@ -174,3 +174,20 @@ with tempfile.TemporaryDirectory() as tmp:
     finally:
         scanner.NOTE_ROOT=previous_root
 print('PASS: required held input is part of plan identity')
+
+# Rejected held-note plans must be retried instead of reusing invalid receipts.
+from unittest.mock import patch
+with tempfile.TemporaryDirectory() as tmp:
+    root=Path(tmp); item=str(root/'performance.nki'); Path(item).touch()
+    engine=root/'engine'; engine.write_text('synthetic worker identity')
+    manifest=root/'items.tsv'; manifest.write_text('kontakt\t'+item+'\n')
+    out=root/'out'; (out/'cache').mkdir(parents=True)
+    revision=scanner.hashlib.sha256(engine.read_bytes()).hexdigest()
+    cached=out/'cache'/(scanner.signature(item,revision)+'.json')
+    argv=[str(driver),'--engine',str(engine),'--list',str(manifest),'--count','1','--out',str(out)]
+    for status, calls in [('invalid-note-plan',1),('audition-mismatch',1),('matched-note-plan',0)]:
+        scanner.atomic(cached,{'audition_status':status})
+        with patch.object(sys,'argv',argv), patch.object(scanner,'probe',return_value={'loads':'yes','ui':'original-ok','programs':[]}) as probe, patch.object(scanner,'export',return_value=1):
+            assert scanner.main()==0
+            assert probe.call_count==calls, status
+print('PASS: invalid held-note plans are retried')
