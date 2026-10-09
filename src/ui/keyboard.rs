@@ -20,7 +20,10 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
     let parts = shown_parts(cx);
     let looks = looks(cx, &parts);
     // Center the keys on a newly shown instrument's range.
-    let shown = parts.first().and_then(|&s| cx.selection.parts.get(s)).map(|p| (p.path.clone(), p.program));
+    let shown = parts
+        .first()
+        .and_then(|&s| cx.selection.parts.get(s))
+        .map(|p| (p.path.clone(), p.program));
     let used = |l: &Look| !matches!(l, Look::Unmapped);
     let span = looks
         .iter()
@@ -74,7 +77,9 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
         note_name((first + OCTAVES * 12 - 1) as u8)
     );
     let plays = match playable(&looks) {
-        _ if cx.state.chosen().is_none() => "Every part · the keys play channel 1 or Omni · click a part to focus it".to_owned(),
+        _ if cx.state.chosen().is_none() => {
+            "Every part · the keys play channel 1 or Omni · click a part to focus it".to_owned()
+        }
         Some((low, high)) => format!("Plays {} – {}", note_name(low as u8), note_name(high as u8)),
         None => String::new(),
     };
@@ -89,26 +94,24 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
         );
         caption(text).text_size(SMALL).fill(secondary()).shrink(0)
     });
-    let bar = row(
-        [
-            section("Keyboard"),
-            caption(shown_range).text_size(SMALL).reserve("C#-2 – C#-2"),
-            caption(plays)
-                .text_size(SMALL)
-                .fill(secondary())
-                .lines(1)
-                .flex(1)
-                .min_w(0),
-        ]
-        .into_iter()
-        .chain(qwerty)
-        .chain(all_el)
-        .chain([cluster(vec![down_el, up_el, toggle_el])])
-        .collect::<Vec<_>>(),
-    )
+    let bar = row([
+        section("Keyboard"),
+        caption(shown_range).text_size(SMALL).reserve("C#-2 – C#-2"),
+        caption(plays)
+            .text_size(SMALL)
+            .fill(secondary())
+            .lines(1)
+            .flex(1)
+            .min_w(0),
+    ]
+    .into_iter()
+    .chain(qwerty)
+    .chain(all_el)
+    .chain([cluster(vec![down_el, up_el, toggle_el])])
+    .collect::<Vec<_>>())
     .gap(INSET)
     .align(Align::Center)
-    .pad(edges(TIGHT, TIGHT, TIGHT, INSET))
+    .pad(edges(TIGHT, INSET, TIGHT, INSET))
     .shrink(0);
     let first_note = (cx.state.octave * 12) as u8;
     let shown = first_note..first_note + (OCTAVES * 12) as u8;
@@ -123,12 +126,18 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
     for octave in cx.state.octave..cx.state.octave + OCTAVES {
         let mut make = |n: i16, black: bool| {
             let note = (octave * 12 + n) as u8;
-            if ui.get(format!("key-{note}")).clicked_with(Button::Secondary) {
+            if ui
+                .get(format!("key-{note}"))
+                .clicked_with(Button::Secondary)
+            {
                 super::menu::open(ui, cx, super::menu::Target::Key(note));
             }
-            let lit = cx.p.shared.played[note as usize]
-                .load(Ordering::Relaxed)
-                .max(cx.p.shared.heard[note as usize].load(Ordering::Relaxed));
+            let heard = cx.p.shared.heard[note as usize].load(Ordering::Relaxed);
+            let lit = if cx.p.shared.engine_keys.load(Ordering::Acquire) {
+                heard
+            } else {
+                heard.max(cx.p.shared.played[note as usize].load(Ordering::Relaxed))
+            };
             key(ui, cx.p, note, black, looks[note as usize], lit)
         };
         let whites =
@@ -189,13 +198,21 @@ fn wheels(ui: &mut Ui, p: &SamplerParams, slot: usize, held: &mut Option<f64>) -
         at = 0.;
     }
     if at != before {
-        p.shared.bend(slot, (8192. + at * 8192.).round().clamp(0., 16383.) as u16);
+        p.shared
+            .bend(slot, (8192. + at * 8192.).round().clamp(0., 16383.) as u16);
     }
     // A drag keeps its unrounded value between frames, so moves finer than
     // a step (a Shift drag) add up; MIDI moving the wheel meanwhile wins.
     let sent = f64::from(p.shared.modulation.load(Ordering::Relaxed).min(127));
     let mut depth = held.filter(|v| v.round() == sent).unwrap_or(sent);
-    let modulation = wheel(ui, "wheel-mod", "Modulation (CC1)", &mut depth, 0.0..=127.0, 0.);
+    let modulation = wheel(
+        ui,
+        "wheel-mod",
+        "Modulation (CC1)",
+        &mut depth,
+        0.0..=127.0,
+        0.,
+    );
     *held = ui.get("wheel-mod").held.then_some(depth);
     if depth.round() != sent {
         p.shared.modulate(slot, depth.round() as u8);
@@ -205,11 +222,21 @@ fn wheels(ui: &mut Ui, p: &SamplerParams, slot: usize, held: &mut Option<f64>) -
 
 /// A narrow vertical wheel over `range`, filled from `origin`: drag it,
 /// scroll it, step it with the arrows; double-click returns it to `origin`.
-fn wheel(ui: &mut Ui, id: &str, name: &str, value: &mut f64, range: RangeInclusive<f64>, origin: f64) -> El {
+fn wheel(
+    ui: &mut Ui,
+    id: &str,
+    name: &str,
+    value: &mut f64,
+    range: RangeInclusive<f64>,
+    origin: f64,
+) -> El {
     let (lo, hi) = (*range.start(), *range.end());
     let r = ui.get(id);
     // The thumb follows the pointer: the wheel's own height is its travel.
-    let travel = ui.scene().and_then(|s| s.surface(id)).map_or(CONTROL * 3., |s| s.frame.size.height);
+    let travel = ui
+        .scene()
+        .and_then(|s| s.surface(id))
+        .map_or(CONTROL * 3., |s| s.frame.size.height);
     ui.drag(id, value, range.clone(), travel, true);
     if let Some(wheel) = ui.wheel(id) {
         *value = (*value - wheel.y.signum() * (hi - lo) / 50.).clamp(lo, hi);
@@ -227,19 +254,39 @@ fn wheel(ui: &mut Ui, id: &str, name: &str, value: &mut f64, range: RangeInclusi
         let y = |u: f64| (s.height - thumb) * (1. - u);
         let mid = (s.width / 2.).round();
         let mut draw = vec![
-            Draw::fill(rect(0., 0., s.width, s.height), Role::Ink.alpha(0.08 + 0.04 * lift)),
+            Draw::fill(
+                rect(0., 0., s.width, s.height),
+                Role::Ink.alpha(0.08 + 0.04 * lift),
+            ),
             Draw::fill(rect(mid - 1., 0., 2., s.height), Role::Ink.alpha(0.14)),
         ];
-        let (a, b) = if at > from { (y(at), y(from)) } else { (y(from), y(at)) };
+        let (a, b) = if at > from {
+            (y(at), y(from))
+        } else {
+            (y(from), y(at))
+        };
         if b - a > 0.5 {
-            draw.push(Draw::fill(rect(mid - 1., a + thumb / 2., 2., b - a), Role::Ink.alpha(0.6)));
+            draw.push(Draw::fill(
+                rect(mid - 1., a + thumb / 2., 2., b - a),
+                Role::Ink.alpha(0.6),
+            ));
         }
         if origin > lo {
-            draw.push(Draw::fill(rect(0., (y(from) + thumb / 2.).round(), s.width, 1.), Role::Ink.alpha(0.3)));
+            draw.push(Draw::fill(
+                rect(0., (y(from) + thumb / 2.).round(), s.width, 1.),
+                Role::Ink.alpha(0.3),
+            ));
         }
-        draw.push(Draw::fill(rect(0., y(at).round(), s.width, thumb), Role::Ink.alpha(0.75 + 0.2 * lift)));
+        draw.push(Draw::fill(
+            rect(0., y(at).round(), s.width, thumb),
+            Role::Ink.alpha(0.75 + 0.2 * lift),
+        ));
         if focused {
-            draw.push(Draw::stroke(rect(0.5, 0.5, s.width - 1., s.height - 1.), Role::Primary.alpha(0.9), 1.));
+            draw.push(Draw::stroke(
+                rect(0.5, 0.5, s.width - 1., s.height - 1.),
+                Role::Primary.alpha(0.9),
+                1.,
+            ));
         }
         draw
     })
@@ -248,7 +295,11 @@ fn wheel(ui: &mut Ui, id: &str, name: &str, value: &mut f64, range: RangeInclusi
     .shrink(0)
     .cursor(Cursor::ResizeV)
     .focusable()
-    .a11y(A11y::Slider { value: *value, min: lo, max: hi })
+    .a11y(A11y::Slider {
+        value: *value,
+        min: lo,
+        max: hi,
+    })
     .named(name.to_owned())
     .tip(format!("{name}: drag up or down"))
     .id(id.to_owned())
@@ -277,29 +328,11 @@ fn span_in_octave(n: i16) -> (f64, f64) {
 /// A thin bar over the keys: where the instrument plays, and its colored keys.
 fn range_strip(looks: [Look; 128], octave: i16) -> El {
     canvas(move |s| {
-        let octave_w = (s.width - f64::from(OCTAVES - 1)) / f64::from(OCTAVES);
         let mut draw = vec![Draw::fill(
             rect(0., 0., s.width, s.height),
             Role::Ink.alpha(0.06),
         )];
-        {
-            for o in 0..OCTAVES {
-                for n in 0..12 {
-                    let note = ((octave + o) * 12 + n) as usize;
-                    let Some(look) = looks.get(note) else {
-                        continue;
-                    };
-                    let Look::Mapped(hue) = look else { continue };
-                    let fill = Fill::from(Color::oklch(0.66, 0.1, *hue));
-                    let (x, w) = span_in_octave(n);
-                    let left = f64::from(o) * (octave_w + 1.) + x * octave_w;
-                    draw.push(Draw::fill(
-                        rect(left.floor(), 0., (w * octave_w).ceil() + 1., s.height),
-                        fill,
-                    ));
-                }
-            }
-        }
+        draw.extend(range_draw(&looks, octave, s, 0.));
         draw
     })
     .w(Len::Pct(100.))
@@ -308,22 +341,47 @@ fn range_strip(looks: [Look; 128], octave: i16) -> El {
     .named("Key range")
 }
 
-/// Where `note` sits across a strip `width` wide showing `OCTAVES` from
-/// `octave`: its left edge and width, as the keys under it lie.
-fn key_x(note: usize, octave: i16, width: f64) -> (f64, f64) {
-    let octave_w = (width - f64::from(OCTAVES - 1)) / f64::from(OCTAVES);
-    let o = note as f64 / 12. - f64::from(octave);
-    let (x, w) = span_in_octave((note % 12) as i16);
-    (o.floor() * (octave_w + 1.) + x * octave_w, w * octave_w)
+// Port from v1 0cb7a8a0:src/ui/keyboard.rs: paint mapped ranges before control colours.
+fn range_draw(looks: &[Look; 128], octave: i16, size: Size, y: f64) -> Vec<Draw> {
+    let octave_w = (size.width - f64::from(OCTAVES - 1)) / f64::from(OCTAVES);
+    let mut draw = Vec::new();
+    for pass in [false, true] {
+        for o in 0..OCTAVES {
+            for n in 0..12 {
+                let note = ((octave + o) * 12 + n) as usize;
+                let Some(look) = looks.get(note) else {
+                    continue;
+                };
+                let color = match (pass, look) {
+                    (false, Look::Mapped(color)) | (true, Look::Switch(color, _, false)) => *color,
+                    _ => continue,
+                };
+                let (x, w) = span_in_octave(n);
+                let left = f64::from(o) * (octave_w + 1.) + x * octave_w;
+                draw.push(Draw::fill(
+                    rect(left.floor(), y, (w * octave_w).ceil() + 1., 3.),
+                    color,
+                ));
+            }
+        }
+    }
+    draw
 }
 
 /// The parts the keys show: the selected one or, with none selected, every
 /// loaded part on any port or channel, in rack order.
 fn shown_parts(cx: &Cx) -> Vec<usize> {
-    let loaded = |slot: usize| cx.selection.parts.get(slot).is_some_and(|p| !p.path.is_empty());
+    let loaded = |slot: usize| {
+        cx.selection
+            .parts
+            .get(slot)
+            .is_some_and(|p| !p.path.is_empty())
+    };
     match cx.state.chosen() {
         Some(slot) => loaded(slot).then_some(slot).into_iter().collect(),
-        None => (cx.selection.order.iter().map(|&s| s as usize)).filter(|&slot| loaded(slot)).collect(),
+        None => (cx.selection.order.iter().map(|&s| s as usize))
+            .filter(|&slot| loaded(slot))
+            .collect(),
     }
 }
 
@@ -333,33 +391,30 @@ fn mapped(cx: &Cx, slot: usize) -> [bool; 128] {
     std::array::from_fn(|k| report.is_some_and(|r| r.decoded.maps(k as u8)))
 }
 
-/// With several parts shown: a thin bar per part in its color from its
-/// lowest playable key to its highest, parts whose ranges overlap on rows of
-/// their own.
+/// With several parts shown: one coloured range row per instrument in rack order.
 fn part_strips(cx: &mut Cx, shown: &[usize]) -> El {
     const ROW: f64 = 3.;
-    let mut rows: Vec<Vec<(usize, usize, usize)>> = Vec::new();
+    let mut rows = Vec::new();
     let mut tip = Vec::new();
     for &slot in shown {
         let looks = part_looks(cx, slot);
-        let Some((low, high)) = playable(&looks) else { continue };
-        tip.push(format!("{}: {} – {}", super::rack::name(cx, slot), note_name(low as u8), note_name(high as u8)));
-        match rows.iter_mut().find(|r| r.iter().all(|&(_, l, h)| high < l || low > h)) {
-            Some(r) => r.push((slot, low, high)),
-            None => rows.push(vec![(slot, low, high)]),
+        if let Some((low, high)) = playable(&looks) {
+            tip.push(format!(
+                "{}: {} – {}",
+                super::rack::name(cx, slot),
+                note_name(low as u8),
+                note_name(high as u8)
+            ));
+        } else {
+            tip.push(super::rack::name(cx, slot));
         }
+        rows.push(looks);
     }
     let (octave, count) = (cx.state.octave, rows.len().max(1));
-    let (first, last) = ((octave * 12) as usize, ((octave + OCTAVES) * 12 - 1) as usize);
     canvas(move |s| {
         let mut draw = Vec::new();
-        for (n, r) in rows.iter().enumerate() {
-            let y = n as f64 * (ROW + 1.);
-            for &(slot, low, high) in r.iter().filter(|(_, l, h)| *h >= first && *l <= last) {
-                let (left, _) = key_x(low.max(first), octave, s.width);
-                let (right, w) = key_x(high.min(last), octave, s.width);
-                draw.push(Draw::fill(rect(left.floor(), y, (right + w).ceil() - left.floor(), ROW), part_color(slot)));
-            }
+        for (n, looks) in rows.iter().enumerate() {
+            draw.extend(range_draw(looks, octave, s, n as f64 * (ROW + 1.)));
         }
         draw
     })
@@ -376,10 +431,21 @@ fn part_strips(cx: &mut Cx, shown: &[usize]) -> El {
 enum Look {
     Unmapped,
     /// Plays, tinted in its part's hue.
-    Mapped(f32),
+    Mapped(Color),
     /// Switches articulation: deep in its part's hue, brighter while the
     /// articulation it picks is the one playing.
-    Switch(f32, bool),
+    Switch(Color, bool, bool),
+}
+
+impl Look {
+    // Port from v1: a control wins over another part's playable range.
+    fn rank(self) -> u8 {
+        match self {
+            Self::Unmapped => 0,
+            Self::Mapped(_) => 1,
+            Self::Switch(_, _, _) => 2,
+        }
+    }
 }
 
 /// The lowest and highest keys that play notes.
@@ -392,13 +458,56 @@ fn playable(looks: &[Look; 128]) -> Option<(usize, usize)> {
 /// Part `slot`'s keys: those its zones map play, in its hue; its
 /// articulations' switch keys stand out in it.
 fn part_looks(cx: &mut Cx, slot: usize) -> [Look; 128] {
-    let hue = part_color(slot).hue();
-    let mut looks = mapped(cx, slot).map(|m| if m { Look::Mapped(hue) } else { Look::Unmapped });
+    let color = part_color(slot);
+    let mut looks = mapped(cx, slot).map(|m| {
+        if m {
+            Look::Mapped(color)
+        } else {
+            Look::Unmapped
+        }
+    });
+    for (key, authored) in cx.view.parts[slot].keys.iter().enumerate().take(128) {
+        match authored.color {
+            Some(17) => looks[key] = Look::Unmapped, // KEY_COLOR_INACTIVE
+            Some(19 | 20) => looks[key] = Look::Mapped(color), // WHITE/BLACK retain piano faces.
+            _ => {
+                let tint = authored.color.and_then(ksp_key_color).unwrap_or(color);
+                if authored.control {
+                    looks[key] = Look::Switch(tint, false, false);
+                } else if authored.color.and_then(ksp_key_color).is_some()
+                    && matches!(looks[key], Look::Mapped(_))
+                {
+                    looks[key] = Look::Mapped(tint);
+                }
+            }
+        }
+    }
     if let Some(inst) = super::inside::switch_keys(cx, slot) {
         let active = super::inside::active(cx, slot);
-        for (n, a) in inst.articulations.iter().enumerate() {
-            for &k in &a.switch_keys {
-                looks[usize::from(k & 127)] = Look::Switch(hue, active == Some(n));
+        let ids = crate::sound::articulation::identities(&inst.articulations);
+        let overlay = &cx.selection.parts[slot].articulation_overlay;
+        for (n, (a, source)) in inst.articulations.iter().zip(&ids).enumerate() {
+            let color = super::inside::articulation_color(cx, slot, &source, a);
+            let crate::sound::articulation::Input::Keys(keys) =
+                overlay.input(&source, a, sampler_ir::Driver::Keys)
+            else {
+                unreachable!()
+            };
+            for &key in &a.switch_keys {
+                let moved = !keys.contains(&key);
+                looks[usize::from(key)] =
+                    Look::Switch(color, active == Some(n), moved && !overlay.keep_originals);
+            }
+        }
+        // Assigned keys win over dimmed originals, including swapped assignments.
+        for (n, (a, source)) in inst.articulations.iter().zip(&ids).enumerate() {
+            let color = super::inside::articulation_color(cx, slot, source, a);
+            if let crate::sound::articulation::Input::Keys(keys) =
+                overlay.input(source, a, sampler_ir::Driver::Keys)
+            {
+                for key in keys.into_iter().filter(|k| *k < 128) {
+                    looks[usize::from(key)] = Look::Switch(color, active == Some(n), false);
+                }
             }
         }
     }
@@ -410,7 +519,7 @@ fn looks(cx: &mut Cx, shown: &[usize]) -> [Look; 128] {
     let mut looks = [Look::Unmapped; 128];
     for &slot in shown {
         for (look, part) in looks.iter_mut().zip(part_looks(cx, slot)) {
-            if *look == Look::Unmapped {
+            if part.rank() > look.rank() {
                 *look = part;
             }
         }
@@ -486,14 +595,7 @@ fn key_under(ui: &Ui, notes: std::ops::Range<u8>) -> Option<(u8, u8)> {
     })
 }
 
-fn key(
-    ui: &mut Ui,
-    p: &SamplerParams,
-    note: u8,
-    black: bool,
-    look: Look,
-    lit: u8,
-) -> El {
+fn key(ui: &mut Ui, p: &SamplerParams, note: u8, black: bool, look: Look, lit: u8) -> El {
     let id = format!("key-{note}");
     if ui.get(id.as_str()).key_activated {
         p.shared.audition(Some(note));
@@ -505,11 +607,17 @@ fn key(
     let name = note_name(note);
     let face = match (look, black) {
         // A key that plays is tinted in its part's hue: faintly on white, deeper on black.
-        (Look::Mapped(hue), false) => Color::oklch(0.93, 0.035, hue),
-        (Look::Mapped(hue), true) => Color::oklch(0.33, 0.075, hue),
+        (Look::Mapped(color), false) => Color::oklch(0.93, 0.035, color.hue()),
+        (Look::Mapped(color), true) => Color::oklch(0.33, 0.075, color.hue()),
         (Look::Unmapped, false) => Color::oklch(0.56, 0., 0.),
         (Look::Unmapped, true) => Color::oklch(0.24, 0., 0.),
-        (Look::Switch(hue, on), _) => Color::oklch(if on { 0.8 } else { 0.6 }, 0.13, hue),
+        (Look::Switch(color, on, outlined), _) => color.with_alpha(if outlined {
+            0.25
+        } else if on {
+            1.
+        } else {
+            0.8
+        }),
     };
     // A sounding key lights like an LED under its top edge: neutral, strong
     // there and fading down the key, stronger the harder it is played. Dark
@@ -529,7 +637,11 @@ fn key(
         ))
         .opacity(if held { 1. } else { 0. })
         // Lit at once, fading out when let go.
-        .animate_with(if held { Spring::instant() } else { Spring::new(0.35, 1.) });
+        .animate_with(if held {
+            Spring::instant()
+        } else {
+            Spring::new(0.35, 1.)
+        });
     let mut parts = vec![spacer()];
     if note.is_multiple_of(12) {
         parts.push(
@@ -541,15 +653,30 @@ fn key(
         );
     }
     let label = name.clone();
-    let text = col(parts).pad((2, 3)).align(Align::Center).w(Len::Pct(100.)).h(Len::Pct(100.));
+    let text = col(parts)
+        .pad((2, 3))
+        .align(Align::Center)
+        .w(Len::Pct(100.))
+        .h(Len::Pct(100.));
     stack![led, text]
         .fill(face)
+        .when(matches!(look, Look::Switch(_, _, true)), |e| {
+            if let Look::Switch(color, _, _) = look {
+                e.stroke(color).stroke_width(1)
+            } else {
+                e
+            }
+        })
         .on(State::Hover, move |s| {
             if held || !over {
                 s
             } else {
                 let lift = if black { 0.12 } else { -0.06 };
-                s.fill(Color::oklch((face.lightness() + lift).clamp(0., 1.), face.chroma(), face.hue()))
+                s.fill(Color::oklch(
+                    (face.lightness() + lift).clamp(0., 1.),
+                    face.chroma(),
+                    face.hue(),
+                ))
             }
         })
         // Pressed is the LED's to show, on whichever key sounds.

@@ -75,3 +75,25 @@ defines MIDI_MPE as raw MIDI with polyphonic expression. The real exported
 factory/state/process gate is `tools/test_native_clap.py ... --require-mpe`;
 it checks every input and output port and plays an original tone through
 configured lower-zone member/manager bend and pedal routing.
+
+## Restored state retires off the audio thread
+
+CLAP and VST3 share `moose-state-queue.rs`: the latest pending restore stays in
+one slot; the audio consumer applies it by reference and transfers ownership
+to two retirement slots. Host/editor publication, inactive drains and main
+callbacks destroy consumed blobs. A full retirement queue leaves the pending
+restore for the next callback rather than freeing it on audio. The restore
+scope also retires ownership if authored `load_state` panics.
+
+CLAP requests its existing main-thread callback after applying a restore.
+VST3 reuses the shim's main-thread restart drain (including its macOS wake),
+without changing the Rust/C++ ABI. On Linux with the editor closed, a host
+that does not poll parameters can retain at most two consumed blobs until
+the next recall, main-thread poll or deactivation. The realtime guard now
+starts before deferred restore application; custom `load_state` allocations
+are observable as realtime violations. Persist parsing remains on the host.
+
+The shared large-state fixture fails on the previous handoff with three audio
+frees and passes with zero; order, concurrent recalls, newest-wins and panic
+retirement have targeted tests in both wrapper crates. This is ownership
+validation, not a native DAW recall or whole-process C++ allocation claim.

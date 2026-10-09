@@ -1,74 +1,425 @@
-//! Read local library artwork once, on the import worker. No copies on disk.
+//! Library artwork on the import worker; only bounded display copies are cached on disk.
 use moose::mui::mui::scene::Image;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fs::File,
     io::{Cursor, Read},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
-/// Each library's own artwork, by library name: a `wallpaper.png`, else
-/// the product wallpaper in its `.nicnt`, else a panel-sized picture in a
-/// resource container (`.nkr`) beside it.
+#[cfg(test)]
+#[test]
+fn library_artwork_searches_nested_resources_after_a_bad_wallpaper() {
+    let dir = std::env::temp_dir().join(format!("kontra-library-art-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("Resources/pictures")).unwrap();
+    std::fs::write(dir.join("wallpaper.png"), b"damaged image").unwrap();
+    let path = dir.join("Resources/pictures/library-cover.png");
+    let mut encoder = png::Encoder::new(std::fs::File::create(&path).unwrap(), 512, 128);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder
+        .write_header()
+        .unwrap()
+        .write_image_data(&[40, 70, 90, 255].repeat(512 * 128))
+        .unwrap();
+    let library = crate::library::Library {
+        name: "Artwork fixture".into(),
+        dir: dir.clone(),
+        ..Default::default()
+    };
+    let artwork = scan(&[library]);
+    assert_eq!(
+        artwork.get("Artwork fixture").map(|i| (i.width, i.height)),
+        Some((512, 128))
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(test)]
+#[test]
+fn w10_uvi_bank_art_uses_its_named_sidecar() {
+    let dir = tempfile::tempdir().unwrap();
+    let bank = dir.path().join("Authored.ufs");
+    std::fs::write(&bank, b"not opened for artwork").unwrap();
+    std::fs::write(bank.with_extension("png"), b"bad png").unwrap();
+    let mut encoded = Vec::new();
+    let mut encoder = png::Encoder::new(&mut encoded, 512, 128);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder
+        .write_header()
+        .unwrap()
+        .write_image_data(&[40, 70, 90, 255].repeat(512 * 128))
+        .unwrap();
+    // Decode fallback is exercised with PNG bytes in the named JPEG sidecar.
+    std::fs::write(bank.with_extension("jpg"), encoded).unwrap();
+    let library = crate::library::Library {
+        name: "Authored".into(),
+        dir: bank,
+        ..Default::default()
+    };
+    let art = scan(&[library]);
+    assert_eq!(
+        art.get("Authored").map(|i| (i.width, i.height)),
+        Some((512, 128))
+    );
+}
+
+/// Library panels from nested loose artwork; UVI banks use named cover sidecars.
 pub fn scan(libraries: &[crate::library::Library]) -> HashMap<String, Arc<Image>> {
+    let (mut sidecar_bytes, mut sidecar_pixels) = (64usize << 20, 16usize << 20);
     libraries
         .iter()
         .filter_map(|library| {
-            let (name, folder) = (library.name.clone(), &library.dir);
-            let mut candidates = vec![folder.join("wallpaper.png")];
-            if let Ok(entries) = std::fs::read_dir(&folder) {
-                let mut containers: Vec<_> = entries
-                    .flatten()
-                    .map(|e| e.path())
-                    .filter(|p| {
-                        p.extension().is_some_and(|e| {
-                            e.eq_ignore_ascii_case("nicnt") || e.eq_ignore_ascii_case("nkr")
-                        })
-                    })
-                    .collect();
-                containers.sort_by_key(|p| {
-                    (
-                        !p.extension()
-                            .is_some_and(|e| e.eq_ignore_ascii_case("nicnt")),
-                        p.clone(),
-                    )
+            // Port v1's bank-cover selection: an instrument panel is not bank artwork.
+            if library.dir.is_file()
+                && library
+                    .dir
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("ufs"))
+            {
+                return ["png", "jpg", "jpeg"].into_iter().find_map(|ext| {
+                    let path = library.dir.with_extension(ext);
+                    let image = cached_header(&path, || {
+                        let image = sidecar_header(&path, &mut sidecar_bytes)?;
+                        (image.width >= 180 && image.height >= 60).then_some(image)
+                    })?;
+                    let pixels = image.width as usize * image.height as usize;
+                    if pixels > sidecar_pixels {
+                        return None;
+                    }
+                    sidecar_pixels -= pixels;
+                    Some((library.name.clone(), image))
                 });
-                candidates.extend(containers);
             }
+            let mut candidates: Vec<PathBuf> = walkdir::WalkDir::new(&library.dir)
+                .follow_links(false)
+                .into_iter()
+                .filter_entry(|e| {
+                    !(e.depth() > 0 && e.file_type().is_dir() && {
+                        let name = e.file_name().to_string_lossy().to_ascii_lowercase();
+                        name == "samples" || name.starts_with('.')
+                    })
+                })
+                .flatten()
+                .filter(|e| e.file_type().is_file())
+                .map(|e| e.into_path())
+                .filter(|p| {
+                    p.extension().is_some_and(|e| {
+                        ["png", "jpg", "jpeg", "nicnt", "nkr"]
+                            .iter()
+                            .any(|ext| e.eq_ignore_ascii_case(ext))
+                    })
+                })
+                .collect();
+            candidates.sort_by_key(|p| {
+                let ext = p
+                    .extension()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_ascii_lowercase();
+                let name = p
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_ascii_lowercase();
+                let priority = if name == "wallpaper.png" {
+                    0
+                } else if name.contains("libbrowser") {
+                    1
+                } else if ext == "nicnt" {
+                    2
+                } else if ext == "nkr" {
+                    3
+                } else {
+                    5 + ["cover", "artwork", "banner", "logo", "background"]
+                        .iter()
+                        .position(|word| name.contains(word))
+                        .unwrap_or(5)
+                };
+                (priority, p.clone())
+            });
             for path in candidates {
-                // A `.nicnt` names its pictures: the library's browser image,
-                // else its artwork, plugin picture or logo, read in memory.
-                if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("nicnt")) {
-                    if let Some(image) = nicnt_picture(&path) {
-                        return Some((name, Arc::new(image)));
-                    }
-                    continue;
-                }
-                let mut bytes = Vec::new();
-                if File::open(path)
-                    .and_then(|mut f| f.read_to_end(&mut bytes))
-                    .is_err()
-                {
-                    continue;
-                }
-                // NICNT product wallpaper is a complete PNG following the product metadata.
-                for (start, _) in bytes
-                    .windows(8)
-                    .enumerate()
-                    .filter(|(_, b)| *b == b"\x89PNG\r\n\x1a\n")
-                {
-                    if let Some(image) = decode(&bytes[start..]) {
-                        if image.width >= 180 && image.height >= 60 {
-                            return Some((name, Arc::new(image)));
-                        }
-                    }
+                if let Some(image) = cached_header(&path, || {
+                    let ext = path.extension()?.to_string_lossy().to_ascii_lowercase();
+                    let image = match ext.as_str() {
+                        "nicnt" | "nkr" => nicnt_picture(&path),
+                        _ => decode_header(&read_file(&path).ok()?),
+                    }?;
+                    (image.width >= 180 && image.height >= 60).then_some(image)
+                }) {
+                    return Some((library.name.clone(), image));
                 }
             }
             None
         })
         .collect()
 }
+
+// v1's nonblocking, bounded sidecar read with the existing v2 display decoder.
+fn sidecar_header(path: &Path, remaining: &mut usize) -> Option<Image> {
+    let limit = (*remaining).min(32 << 20);
+    if limit == 0 {
+        return None;
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let mut file = options.open(path).ok()?;
+    let metadata = file.metadata().ok()?;
+    if !metadata.is_file() || metadata.len() > limit as u64 {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    let result = file
+        .by_ref()
+        .take((limit + 1) as u64)
+        .read_to_end(&mut bytes);
+    *remaining = remaining.saturating_sub(bytes.len());
+    if result.is_err() || bytes.len() > limit {
+        return None;
+    }
+    decode_header(&bytes)
+}
+
+// Library scanning already runs on its import worker (library::Index::rescan).
+// Keep small display copies there, never full wallpapers in the editor cache.
+const HEADER_CACHE_BYTES: usize = 8 << 20;
+type HeaderKey = (PathBuf, u64, std::time::SystemTime);
+#[derive(Default)]
+struct HeaderCache(VecDeque<(HeaderKey, Arc<Image>)>);
+impl HeaderCache {
+    fn get(&mut self, key: &HeaderKey) -> Option<Arc<Image>> {
+        let at = self.0.iter().position(|(k, _)| k == key)?;
+        let entry = self.0.remove(at)?;
+        let image = entry.1.clone();
+        self.0.push_back(entry);
+        Some(image)
+    }
+    fn insert(&mut self, key: HeaderKey, image: Arc<Image>) {
+        let bytes = image.rgba.len();
+        if bytes > HEADER_CACHE_BYTES {
+            return;
+        }
+        self.0.retain(|(k, _)| k.0 != key.0);
+        while self.0.iter().map(|(_, i)| i.rgba.len()).sum::<usize>() + bytes > HEADER_CACHE_BYTES {
+            self.0.pop_front();
+        }
+        self.0.push_back((key, image));
+    }
+}
+fn cached_header(path: &Path, decode: impl FnOnce() -> Option<Image>) -> Option<Arc<Image>> {
+    static CACHE: Mutex<HeaderCache> = Mutex::new(HeaderCache(VecDeque::new()));
+    let meta = std::fs::metadata(path).ok()?;
+    let key = (path.canonicalize().ok()?, meta.len(), meta.modified().ok()?);
+    if let Some(image) = CACHE.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return Some(image);
+    }
+    // Decode outside the cache lock; scans and instances do not block each other.
+    let image = Arc::new(disk_header(display_path(&key).as_deref(), decode)?);
+    CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key, image.clone());
+    Some(image)
+}
+// Library-file identity plus native access revision invalidates protected-bank results.
+fn display_path(key: &impl std::hash::Hash) -> Option<PathBuf> {
+    use std::hash::{Hash, Hasher};
+    if cfg!(test) || std::env::var_os("KONTRA_SCAN_ACTIVE").is_some() {
+        return None;
+    }
+    let mut hash = std::hash::DefaultHasher::new();
+    key.hash(&mut hash);
+    sampler_uvi::LIBRARY_ACCESS_REVISION.hash(&mut hash);
+    Some(
+        dirs::cache_dir()?
+            .join("kontra/library-art")
+            .join(format!("{:016x}.png", hash.finish())),
+    )
+}
+
+fn disk_header(path: Option<&Path>, decode: impl FnOnce() -> Option<Image>) -> Option<Image> {
+    if let Some(path) = path {
+        if path.with_extension("absent").is_file() {
+            return None;
+        }
+        if let Some(image) = read_file(path).ok().and_then(|bytes| decode_header(&bytes)) {
+            return Some(image);
+        }
+    }
+    let image = decode().and_then(header_size);
+    if let Some(path) = path {
+        if let Some(image) = &image {
+            let _ = save_display(image, path);
+        } else if path
+            .parent()
+            .is_some_and(|p| std::fs::create_dir_all(p).is_ok())
+        {
+            let _ = std::fs::write(path.with_extension("absent"), []);
+        }
+    }
+    image
+}
+
+fn header_size(image: Image) -> Option<Image> {
+    let scale = (1024. / f64::from(image.width))
+        .min(512. / f64::from(image.height))
+        .min(1.);
+    if scale == 1. {
+        return Some(image);
+    }
+    resample(
+        &image,
+        (f64::from(image.width) * scale).round().max(1.) as u32,
+        (f64::from(image.height) * scale).round().max(1.) as u32,
+        0.,
+        0.,
+        f64::from(image.width),
+        f64::from(image.height),
+    )
+}
+
+fn decode_header(bytes: &[u8]) -> Option<Image> {
+    if bytes.len() > 32 << 20 {
+        return None;
+    }
+    if bytes.starts_with(b"\x89PNG") {
+        return decode_header_png(bytes);
+    }
+    if bytes.starts_with(&[0xff, 0xd8]) {
+        use zune_jpeg::zune_core::{
+            bytestream::ZCursor, colorspace::ColorSpace, options::DecoderOptions,
+        };
+        let options = DecoderOptions::default()
+            .jpeg_set_out_colorspace(ColorSpace::RGBA)
+            .set_max_width(8192)
+            .set_max_height(8192);
+        let mut decoder = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(bytes), options);
+        decoder.decode_headers().ok()?;
+        let info = decoder.info()?;
+        if usize::from(info.width) * usize::from(info.height) > 8 << 20 {
+            return None;
+        }
+        return header_size(Image::rgba(
+            info.width.into(),
+            info.height.into(),
+            decoder.decode().ok()?,
+        )?);
+    }
+    None
+}
+
+/// Reduce PNG scanlines directly into the display copy, retaining fractional
+/// coverage and premultiplied alpha without allocating the source wallpaper.
+fn decode_header_png(bytes: &[u8]) -> Option<Image> {
+    let mut decoder =
+        png::Decoder::new_with_limits(Cursor::new(bytes), png::Limits { bytes: 16 << 20 });
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = decoder.read_info().ok()?;
+    let (sw, sh) = (reader.info().width, reader.info().height);
+    if sw == 0 || sh == 0 || sw > 65536 || sh > 1048576 {
+        return None;
+    }
+    let scale = (1024. / f64::from(sw)).min(512. / f64::from(sh)).min(1.);
+    let (w, h) = (
+        (f64::from(sw) * scale).round().max(1.) as u32,
+        (f64::from(sh) * scale).round().max(1.) as u32,
+    );
+    let (kind, depth) = reader.output_color_type();
+    if depth != png::BitDepth::Eight {
+        return None;
+    }
+    let channels = match kind {
+        png::ColorType::Rgba => 4,
+        png::ColorType::Rgb => 3,
+        png::ColorType::GrayscaleAlpha => 2,
+        png::ColorType::Grayscale => 1,
+        _ => return None,
+    };
+    let pixel = |row: &[u8], x: usize| {
+        let c = &row[x * channels..(x + 1) * channels];
+        match channels {
+            4 => [c[0], c[1], c[2], c[3]],
+            3 => [c[0], c[1], c[2], 255],
+            2 => [c[0], c[0], c[0], c[1]],
+            _ => [c[0], c[0], c[0], 255],
+        }
+    };
+    // ponytail: Adam7 reconstructs at most 8 MiB; a larger interlaced cover
+    // needs a decoder exposing source coordinates rather than a full atlas.
+    let atlas = if reader.info().interlaced {
+        let size = reader.output_buffer_size()?;
+        if size > 8 << 20 {
+            return None;
+        }
+        let mut data = vec![0; size];
+        reader.next_frame(&mut data).ok()?;
+        Some(data)
+    } else {
+        None
+    };
+    let mut rgba = vec![0; w as usize * h as usize * 4];
+    let mut sums = if scale < 1. {
+        vec![[0f64; 4]; w as usize * h as usize]
+    } else {
+        Vec::new()
+    };
+    let (dx, dy) = (f64::from(sw) / f64::from(w), f64::from(sh) / f64::from(h));
+    for sy in 0..sh {
+        let streamed;
+        let row = if let Some(data) = &atlas {
+            &data[sy as usize * sw as usize * channels..(sy + 1) as usize * sw as usize * channels]
+        } else {
+            streamed = reader.next_row().ok()??;
+            streamed.data()
+        };
+        if row.len() != sw as usize * channels {
+            return None;
+        }
+        if scale == 1. {
+            for x in 0..w as usize {
+                let at = (sy as usize * w as usize + x) * 4;
+                rgba[at..at + 4].copy_from_slice(&pixel(row, x));
+            }
+            continue;
+        }
+        let top = f64::from(sy);
+        for y in (top / dy) as usize..(((top + 1.) / dy).ceil() as usize).min(h as usize) {
+            let yw = ((top + 1.).min((y + 1) as f64 * dy) - top.max(y as f64 * dy)).max(0.);
+            for x in 0..w as usize {
+                let (left, right) = (x as f64 * dx, (x + 1) as f64 * dx);
+                let sum = &mut sums[y * w as usize + x];
+                for sx in left as usize..(right.ceil() as usize).min(sw as usize) {
+                    let c = pixel(row, sx);
+                    let alpha =
+                        f64::from(c[3]) * yw * (right.min(sx as f64 + 1.) - left.max(sx as f64));
+                    for k in 0..3 {
+                        sum[k] += f64::from(c[k]) * alpha;
+                    }
+                    sum[3] += alpha;
+                }
+            }
+        }
+    }
+    for (out, sum) in rgba.chunks_exact_mut(4).zip(sums) {
+        for k in 0..3 {
+            out[k] = if sum[3] > 0. {
+                (sum[k] / sum[3] + 1e-9).clamp(0., 255.) as u8
+            } else {
+                0
+            };
+        }
+        out[3] = (sum[3] / (dx * dy) + 1e-9).clamp(0., 255.) as u8;
+    }
+    Image::rgba(w, h, rgba)
+}
+
 /// The widest wallpaper-sized picture `nicnt` names, preferring its browser image.
 fn nicnt_picture(nicnt: &Path) -> Option<Image> {
     let mut container = sampler_kontakt::ResourceContainer::open(nicnt).ok()?;
@@ -80,11 +431,14 @@ fn nicnt_picture(nicnt: &Path) -> Option<Image> {
         .collect();
     let rank = |n: &str| {
         let n = n.to_ascii_lowercase();
-        ["libbrowser", "artwork", "plugin", "logo"].iter().position(|k| n.contains(k)).unwrap_or(4)
+        ["libbrowser", "artwork", "plugin", "logo"]
+            .iter()
+            .position(|k| n.contains(k))
+            .unwrap_or(4)
     };
     names.sort_by_key(|n| (rank(n), n.clone()));
     names.iter().find_map(|n| {
-        let image = decode(&container.read(n).ok()??)?;
+        let image = decode_header(&container.read(n).ok()??)?;
         (image.width >= 180 && image.height >= 60).then_some(image)
     })
 }
@@ -93,15 +447,72 @@ fn nicnt_picture(nicnt: &Path) -> Option<Image> {
 /// artwork: loose pictures in its `Resources` folders, else those in a
 /// resource container it can read. At most a dozen are looked at.
 pub fn own_hue(dir: &Path) -> Option<f32> {
-    let mut pictures: Vec<PathBuf> = ["Resources/pictures", "resources/pictures", "Resources", "resources"]
-        .iter()
-        .flat_map(|sub| std::fs::read_dir(dir.join(sub)).into_iter().flatten().flatten())
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("png")))
+    let mut stamps: Vec<_> = walkdir::WalkDir::new(dir)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| {
+            !(e.depth() > 0 && e.file_type().is_dir() && {
+                let name = e.file_name().to_string_lossy().to_ascii_lowercase();
+                name == "samples" || name.starts_with('.')
+            })
+        })
+        .flatten()
+        .filter(|e| e.file_type().is_file())
+        .filter(|e| {
+            e.path().extension().is_some_and(|ext| {
+                ext.eq_ignore_ascii_case("png") || ext.eq_ignore_ascii_case("nkr")
+            })
+        })
+        .filter_map(|e| {
+            let m = e.metadata().ok()?;
+            Some((e.into_path(), m.len(), m.modified().ok()?))
+        })
         .collect();
+    stamps.sort();
+    let cache = display_path(&("hue", dir, stamps)).map(|p| p.with_extension("json"));
+    if let Some(value) = cache
+        .as_ref()
+        .and_then(|p| std::fs::read(p).ok())
+        .and_then(|bytes| serde_json::from_slice::<Option<f32>>(&bytes).ok())
+    {
+        return value;
+    }
+    let hue = own_hue_uncached(dir);
+    if let Some(path) = cache
+        && path
+            .parent()
+            .is_some_and(|p| std::fs::create_dir_all(p).is_ok())
+    {
+        if let Ok(bytes) = serde_json::to_vec(&hue) {
+            let _ = std::fs::write(path, bytes);
+        }
+    }
+    hue
+}
+
+fn own_hue_uncached(dir: &Path) -> Option<f32> {
+    let mut pictures: Vec<PathBuf> = [
+        "Resources/pictures",
+        "resources/pictures",
+        "Resources",
+        "resources",
+    ]
+    .iter()
+    .flat_map(|sub| {
+        std::fs::read_dir(dir.join(sub))
+            .into_iter()
+            .flatten()
+            .flatten()
+    })
+    .map(|e| e.path())
+    .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("png")))
+    .collect();
     pictures.sort();
     pictures.dedup();
-    let loose = pictures.iter().take(12).filter_map(|p| decode(&read_file(p).ok()?));
+    let loose = pictures
+        .iter()
+        .take(12)
+        .filter_map(|p| decode_header(&read_file(p).ok()?));
     let mut hues: Vec<f32> = loose.filter_map(|i| tint(&i)).collect();
     if hues.is_empty() {
         let mut nkrs: Vec<PathBuf> = std::fs::read_dir(dir)
@@ -114,24 +525,32 @@ pub fn own_hue(dir: &Path) -> Option<f32> {
         nkrs.sort();
         for nkr in nkrs.iter().take(2) {
             let Ok(mut f) = File::open(nkr) else { continue };
-            let Ok(mut archive) = ni_file::nkr::Archive::read_index(&mut f) else { continue };
+            let Ok(archive) = ni_file::nkr::Archive::read_index(&mut f) else {
+                continue;
+            };
             // Only what reads without a key.
-            let mut names: Vec<String> = (archive.entries.keys())
-                .filter(|n| n.ends_with(".png"))
-                .cloned()
+            let mut names: Vec<String> = archive
+                .members()
+                .filter(|e| e.name.to_lowercase().ends_with(".png"))
+                .map(|e| e.name.clone())
                 .collect();
             names.sort();
             let mut eligible = 0;
             for name in names {
-                let Ok(Some(entry)) = archive.member(&mut f, &name) else { continue };
-                if !entry.valid || entry.encoded || entry.size >= 4 << 20 { continue; }
-                archive.entries.insert(name.clone(), entry);
+                let Ok(Some(entry)) = archive.member(&mut f, &name) else {
+                    continue;
+                };
+                if !entry.valid || entry.encoded || entry.size >= 4 << 20 {
+                    continue;
+                }
                 eligible += 1;
                 let bytes = archive.read_entry(&mut f, &name);
                 if let Ok(bytes) = bytes {
-                    hues.extend(decode(&bytes).and_then(|i| tint(&i)));
+                    hues.extend(decode_header(&bytes).and_then(|i| tint(&i)));
                 }
-                if eligible == 12 { break; }
+                if eligible == 12 {
+                    break;
+                }
             }
         }
     }
@@ -141,40 +560,46 @@ pub fn own_hue(dir: &Path) -> Option<f32> {
 }
 
 fn read_file(path: &Path) -> Result<Vec<u8>, String> {
-    std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))
+    let mut file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let size = file.metadata().map_err(|e| e.to_string())?.len();
+    if size > 32 << 20 {
+        return Err("Artwork exceeds 32 MiB".into());
+    }
+    let mut bytes = Vec::with_capacity(size as usize + 1);
+    file.by_ref()
+        .take((32 << 20) + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    if bytes.len() > 32 << 20 {
+        return Err("Artwork exceeds 32 MiB".into());
+    }
+    Ok(bytes)
 }
 
 /// A PNG or JPEG picture the player chose, at most 32 MiB.
 pub fn decode_file(path: &Path) -> Option<Image> {
-    decode_report(&read_file(path).ok()?).ok()
+    decode_header(&read_file(path).ok()?)
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 pub(crate) fn decode(bytes: &[u8]) -> Option<Image> {
     decode_report(bytes).ok()
 }
 fn decode_report(bytes: &[u8]) -> Result<Image, String> {
-    if bytes.starts_with(b"\x89PNG") { return decode_png_report(bytes); }
+    if bytes.starts_with(b"\x89PNG") {
+        return decode_png_report(bytes);
+    }
     if bytes.starts_with(&[0xff, 0xd8]) {
-        use zune_jpeg::zune_core::{bytestream::ZCursor, colorspace::ColorSpace, options::DecoderOptions};
+        use zune_jpeg::zune_core::{
+            bytestream::ZCursor, colorspace::ColorSpace, options::DecoderOptions,
+        };
         let options = DecoderOptions::default()
             .jpeg_set_out_colorspace(ColorSpace::RGBA)
             .set_max_width(usize::MAX)
             .set_max_height(usize::MAX);
         let mut decoder = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(bytes), options);
-        decoder.decode_headers().map_err(|e| format!("JPEG header: {e}"))?;
+        decoder
+            .decode_headers()
+            .map_err(|e| format!("JPEG header: {e}"))?;
         let info = decoder.info().ok_or("JPEG dimensions are missing")?;
         let rgba = decoder.decode().map_err(|e| format!("JPEG pixels: {e}"))?;
         return Image::rgba(u32::from(info.width), u32::from(info.height), rgba)
@@ -183,26 +608,42 @@ fn decode_report(bytes: &[u8]) -> Result<Image, String> {
     Err("Unsupported image format: expected PNG or JPEG".into())
 }
 fn decode_png_report(bytes: &[u8]) -> Result<Image, String> {
-    let mut decoder = png::Decoder::new_with_limits(Cursor::new(bytes), png::Limits { bytes: usize::MAX });
+    let mut decoder =
+        png::Decoder::new_with_limits(Cursor::new(bytes), png::Limits { bytes: usize::MAX });
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
-    let mut reader = decoder.read_info().map_err(|e| format!("PNG header: {e}"))?;
-    let size = reader.output_buffer_size().ok_or("PNG dimensions overflow")?;
+    let mut reader = decoder
+        .read_info()
+        .map_err(|e| format!("PNG header: {e}"))?;
+    let size = reader
+        .output_buffer_size()
+        .ok_or("PNG dimensions overflow")?;
     let mut data = Vec::new();
-    data.try_reserve_exact(size).map_err(|e| format!("PNG pixel allocation ({size} bytes): {e}"))?;
+    data.try_reserve_exact(size)
+        .map_err(|e| format!("PNG pixel allocation ({size} bytes): {e}"))?;
     data.resize(size, 0);
-    let info = reader.next_frame(&mut data).map_err(|e| format!("PNG pixels: {e}"))?;
+    let info = reader
+        .next_frame(&mut data)
+        .map_err(|e| format!("PNG pixels: {e}"))?;
     data.truncate(info.buffer_size());
     let channels = match info.color_type {
         png::ColorType::Rgba => 4,
         png::ColorType::Rgb => 3,
         png::ColorType::Grayscale => 1,
         png::ColorType::GrayscaleAlpha => 2,
-        _ => return Err(format!("Unsupported PNG colour type: {:?}", info.color_type)),
+        _ => {
+            return Err(format!(
+                "Unsupported PNG colour type: {:?}",
+                info.color_type
+            ));
+        }
     };
     if channels != 4 {
         let pixels = data.len() / channels;
-        let size = pixels.checked_mul(4).ok_or("PNG RGBA dimensions overflow")?;
-        data.try_reserve_exact(size - data.len()).map_err(|e| format!("PNG RGBA allocation ({size} bytes): {e}"))?;
+        let size = pixels
+            .checked_mul(4)
+            .ok_or("PNG RGBA dimensions overflow")?;
+        data.try_reserve_exact(size - data.len())
+            .map_err(|e| format!("PNG RGBA allocation ({size} bytes): {e}"))?;
         data.resize(size, 0);
         // Expand backwards in the decode buffer: no second full pixel copy.
         for i in (0..pixels).rev() {
@@ -215,7 +656,8 @@ fn decode_png_report(bytes: &[u8]) -> Result<Image, String> {
             data[i * 4..i * 4 + 4].copy_from_slice(&c);
         }
     }
-    Image::rgba(info.width, info.height, data).ok_or_else(|| "Invalid PNG dimensions or RGBA length".into())
+    Image::rgba(info.width, info.height, data)
+        .ok_or_else(|| "Invalid PNG dimensions or RGBA length".into())
 }
 /// `image` cropped to cover `w` × `h` from its middle and shrunk to it by
 /// area averaging, once, so a list of thumbnails scales nothing per frame.
@@ -233,17 +675,32 @@ pub fn thumbnail(image: &Image, w: u32, h: u32) -> Option<Image> {
 fn resample(image: &Image, w: u32, h: u32, x0: f64, y0: f64, cw: f64, ch: f64) -> Option<Image> {
     let px = image.rgba.as_chunks::<4>().0;
     let mut rgba = Vec::new();
-    rgba.try_reserve_exact((w as usize).checked_mul(h as usize)?.checked_mul(4)?).ok()?;
+    rgba.try_reserve_exact((w as usize).checked_mul(h as usize)?.checked_mul(4)?)
+        .ok()?;
     for y in 0..h {
-        let (top, bottom) = (y0 + f64::from(y) * ch / f64::from(h), y0 + f64::from(y + 1) * ch / f64::from(h));
+        let (top, bottom) = (
+            y0 + f64::from(y) * ch / f64::from(h),
+            y0 + f64::from(y + 1) * ch / f64::from(h),
+        );
         for x in 0..w {
-            let (left, right) = (x0 + f64::from(x) * cw / f64::from(w), x0 + f64::from(x + 1) * cw / f64::from(w));
+            let (left, right) = (
+                x0 + f64::from(x) * cw / f64::from(w),
+                x0 + f64::from(x + 1) * cw / f64::from(w),
+            );
             // Fractional coverage matters: merely touching a pixel must not give
             // it a full vote. Accumulate premultiplied RGB, then restore straight
             // RGBA so transparent sprite edges retain their visible color.
             let (mut sum, mut area) = ([0f64; 4], 0f64);
-            for sy in top as usize..(bottom.ceil() as usize).min(image.height as usize).max(top as usize + 1) {
-                for sx in left as usize..(right.ceil() as usize).min(image.width as usize).max(left as usize + 1) {
+            for sy in top as usize
+                ..(bottom.ceil() as usize)
+                    .min(image.height as usize)
+                    .max(top as usize + 1)
+            {
+                for sx in left as usize
+                    ..(right.ceil() as usize)
+                        .min(image.width as usize)
+                        .max(left as usize + 1)
+                {
                     let c = px[sy * image.width as usize + sx];
                     let weight = (bottom.min(sy as f64 + 1.) - top.max(sy as f64))
                         * (right.min(sx as f64 + 1.) - left.max(sx as f64));
@@ -253,10 +710,18 @@ fn resample(image: &Image, w: u32, h: u32, x0: f64, y0: f64, cw: f64, ch: f64) -
                     area += weight;
                 }
             }
-            let rgb = if sum[3] > 0. { [sum[0], sum[1], sum[2]].map(|s| s / sum[3]) } else { [0.; 3] };
+            let rgb = if sum[3] > 0. {
+                [sum[0], sum[1], sum[2]].map(|s| s / sum[3])
+            } else {
+                [0.; 3]
+            };
             // Retain byte truncation without losing one unit to floating-point
             // error (in particular, an opaque area's alpha must stay 255).
-            rgba.extend(rgb.into_iter().chain([sum[3] / area]).map(|v| (v + 1e-9).clamp(0., 255.) as u8));
+            rgba.extend(
+                rgb.into_iter()
+                    .chain([sum[3] / area])
+                    .map(|v| (v + 1e-9).clamp(0., 255.) as u8),
+            );
         }
     }
     Image::rgba(w, h, rgba)
@@ -275,7 +740,11 @@ pub fn banner(image: &Image, w: u32, h: u32, blurred: bool) -> Option<Image> {
     const COLOR: f32 = 0.55;
     const PEAK: f32 = 96.;
     let crop = thumbnail(image, w, h)?;
-    let crop = if blurred { blur(&crop, (h / 24).max(2) as usize, 3)? } else { crop };
+    let crop = if blurred {
+        blur(&crop, (h / 24).max(2) as usize, 3)?
+    } else {
+        crop
+    };
     let luma = |c: [f32; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
     let pixels = crop.rgba.as_chunks::<4>().0;
     let rgb = |c: &[u8; 4]| [0, 1, 2].map(|k| f32::from(c[k]));
@@ -315,7 +784,13 @@ pub fn backdrop(image: &Image, blurred: bool) -> Option<Image> {
     let small = thumbnail(image, w, h)?;
     let small = if blurred { blur(&small, 1, 2)? } else { small };
     // Every backdrop settles at the same dim average, bright artwork or dark.
-    let px: Vec<[f32; 3]> = small.rgba.as_chunks::<4>().0.iter().map(|c| [0, 1, 2].map(|k| f32::from(c[k]))).collect();
+    let px: Vec<[f32; 3]> = small
+        .rgba
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| [0, 1, 2].map(|k| f32::from(c[k])))
+        .collect();
     let luma = |[r, g, b]: [f32; 3]| 0.2126 * r + 0.7152 * g + 0.0722 * b;
     let mean = px.iter().map(|p| luma(*p)).sum::<f32>() / px.len() as f32;
     let gain = (30. / mean.max(1.)).min(1.);
@@ -334,7 +809,13 @@ pub fn backdrop(image: &Image, blurred: bool) -> Option<Image> {
 /// then down: three passes are near enough a Gaussian. Edges repeat.
 fn blur(image: &Image, radius: usize, passes: usize) -> Option<Image> {
     let (w, h) = (image.width as usize, image.height as usize);
-    let mut px: Vec<[f32; 4]> = image.rgba.as_chunks::<4>().0.iter().map(|c| c.map(f32::from)).collect();
+    let mut px: Vec<[f32; 4]> = image
+        .rgba
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| c.map(f32::from))
+        .collect();
     let scale = 1. / (2 * radius + 1) as f32;
     for _ in 0..passes {
         for across in [true, false] {
@@ -360,7 +841,10 @@ fn blur(image: &Image, radius: usize, passes: usize) -> Option<Image> {
             }
         }
     }
-    let rgba: Vec<u8> = px.iter().flat_map(|c| c.map(|v| v.round().clamp(0., 255.) as u8)).collect();
+    let rgba: Vec<u8> = px
+        .iter()
+        .flat_map(|c| c.map(|v| v.round().clamp(0., 255.) as u8))
+        .collect();
     Image::rgba(w as u32, h as u32, rgba)
 }
 
@@ -424,12 +908,97 @@ fn oklab(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn header_decode_does_not_allocate_a_full_wallpaper() {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut bytes, 4096, 4097);
+            encoder.set_color(png::ColorType::Grayscale);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(&vec![123; 4096 * 4097]).unwrap();
+        }
+        let peak = crate::plugin::tests::peak_allocated(|| {
+            let image = super::decode_header(&bytes).unwrap();
+            assert_eq!((image.width, image.height), (512, 512));
+            assert!(
+                image
+                    .rgba
+                    .chunks_exact(4)
+                    .all(|p| p == [123, 123, 123, 255])
+            );
+        });
+        assert!(peak < 32 << 20, "header transient allocation: {peak}");
+        eprintln!("header transient allocation: {peak}");
+    }
+
+    #[test]
+    fn header_scanlines_preserve_fractional_coverage_and_alpha() {
+        for (kind, channels) in [
+            (png::ColorType::Rgba, 4),
+            (png::ColorType::Rgb, 3),
+            (png::ColorType::GrayscaleAlpha, 2),
+            (png::ColorType::Grayscale, 1),
+        ] {
+            let data: Vec<u8> = (0..2053 * 3 * channels)
+                .map(|i| ((i * 37 + i / channels * 11) % 256) as u8)
+                .collect();
+            let mut bytes = Vec::new();
+            {
+                let mut encoder = png::Encoder::new(&mut bytes, 2053, 3);
+                encoder.set_color(kind);
+                let mut writer = encoder.write_header().unwrap();
+                writer.write_image_data(&data).unwrap();
+            }
+            let expected = super::header_size(super::decode(&bytes).unwrap()).unwrap();
+            let actual = super::decode_header(&bytes).unwrap();
+            assert_eq!(
+                (actual.width, actual.height),
+                (expected.width, expected.height)
+            );
+            assert!(
+                actual
+                    .rgba
+                    .iter()
+                    .zip(expected.rgba.iter())
+                    .all(|(a, b)| a.abs_diff(*b) <= 1),
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn header_artwork_is_downscaled_and_cache_bytes_are_bounded() {
+        let large = super::Image::rgba(2048, 1024, vec![255; 2048 * 1024 * 4]).unwrap();
+        let small = std::sync::Arc::new(super::header_size(large).unwrap());
+        assert_eq!((small.width, small.height), (1024, 512));
+        let mut cache = super::HeaderCache::default();
+        for i in 0..8 {
+            cache.insert(
+                (format!("{i}").into(), 1, std::time::UNIX_EPOCH),
+                small.clone(),
+            );
+        }
+        assert_eq!(cache.0.len(), 4);
+        assert!(
+            cache
+                .0
+                .iter()
+                .map(|(_, image)| image.rgba.len())
+                .sum::<usize>()
+                <= super::HEADER_CACHE_BYTES
+        );
+        assert!(cache.get(&("0".into(), 1, std::time::UNIX_EPOCH)).is_none());
+    }
+
     /// Set `KONTRA_KONTAKT_LIBRARIES` to library roots to run; skips otherwise.
     #[test]
     fn a_nicnt_names_its_library_picture() {
         let relative = "Afflatus Chapter II Brass/Afflatus Chapter II Brass.nicnt";
         let roots = std::env::var_os("KONTRA_KONTAKT_LIBRARIES").unwrap_or_default();
-        let Some(path) = std::env::split_paths(&roots).map(|r| r.join(relative)).find(|p| p.is_file()) else {
+        let Some(path) = std::env::split_paths(&roots)
+            .map(|r| r.join(relative))
+            .find(|p| p.is_file())
+        else {
             eprintln!("skipped: {relative} is not installed");
             return;
         };
@@ -452,9 +1021,13 @@ mod tests {
         );
         assert!(super::decode(&bytes[..12]).is_none());
         assert!(super::decode(b"not an image").is_none());
-        assert!(super::decode_report(b"not an image").err().unwrap().starts_with("Unsupported image format:"));
+        assert!(
+            super::decode_report(b"not an image")
+                .err()
+                .unwrap()
+                .starts_with("Unsupported image format:")
+        );
     }
-
 
     #[test]
     fn png_filmstrips_have_no_fixed_size_ceiling() {
@@ -464,15 +1037,14 @@ mod tests {
             let mut e = png::Encoder::new(&mut bytes, w, h);
             e.set_color(png::ColorType::Grayscale);
             let mut e = e.write_header().unwrap();
-            e.write_image_data(&vec![123; w as usize * h as usize]).unwrap();
+            e.write_image_data(&vec![123; w as usize * h as usize])
+                .unwrap();
         }
         let image = super::decode_report(&bytes).unwrap();
         assert_eq!(image.rgba.len(), w as usize * h as usize * 4);
         assert_eq!(&image.rgba[..4], &[123, 123, 123, 255]);
         assert_eq!(&image.rgba[image.rgba.len() - 4..], &[123, 123, 123, 255]);
     }
-
-
 
     #[test]
     fn thumbnails_cover_from_the_middle() {
@@ -488,7 +1060,11 @@ mod tests {
         let image = super::Image::rgba(60, 20, rgba).unwrap();
         let t = super::thumbnail(&image, 2, 2).unwrap();
         assert_eq!((t.width, t.height), (2, 2));
-        assert_eq!(&t.rgba[..4], &[0, 255, 0, 255], "a square crop keeps the middle");
+        assert_eq!(
+            &t.rgba[..4],
+            &[0, 255, 0, 255],
+            "a square crop keeps the middle"
+        );
     }
 
     #[test]
@@ -497,8 +1073,15 @@ mod tests {
         for blurred in [false, true] {
             let b = super::banner(&white, 20, 4, blurred).unwrap();
             let px = b.rgba.as_chunks::<4>().0;
-            assert_eq!((px[0][3], px[19][3]), (255, 0), "opaque at the left, gone at the right");
-            assert!(px.iter().all(|p| p[..3].iter().all(|&c| c < 110)), "white artwork dims under a title");
+            assert_eq!(
+                (px[0][3], px[19][3]),
+                (255, 0),
+                "opaque at the left, gone at the right"
+            );
+            assert!(
+                px.iter().all(|p| p[..3].iter().all(|&c| c < 110)),
+                "white artwork dims under a title"
+            );
         }
     }
 
@@ -516,12 +1099,27 @@ mod tests {
 
     #[test]
     fn blur_spreads_an_edge() {
-        let half: Vec<u8> = (0..10).flat_map(|x| if x < 5 { [0u8, 0, 0, 255] } else { [200, 200, 200, 255] }).collect();
+        let half: Vec<u8> = (0..10)
+            .flat_map(|x| {
+                if x < 5 {
+                    [0u8, 0, 0, 255]
+                } else {
+                    [200, 200, 200, 255]
+                }
+            })
+            .collect();
         let image = super::Image::rgba(10, 1, half).unwrap();
         let b = super::blur(&image, 2, 3).unwrap();
         let px = b.rgba.as_chunks::<4>().0;
-        assert!(px[4][0] > 40 && px[5][0] < 160, "the edge softens: {:?}", &px[3..7]);
-        assert!(px[0][0] < 40 && px[9][0] > 160 && px[0][3] == 255, "the ends keep their color: {px:?}");
+        assert!(
+            px[4][0] > 40 && px[5][0] < 160,
+            "the edge softens: {:?}",
+            &px[3..7]
+        );
+        assert!(
+            px[0][0] < 40 && px[9][0] > 160 && px[0][3] == 255,
+            "the ends keep their color: {px:?}"
+        );
     }
 
     #[test]
@@ -537,6 +1135,55 @@ mod tests {
         let hue = super::tint(&image).unwrap();
         assert!((250.0..275.0).contains(&hue), "blue, not {hue}");
         let grey: Vec<u8> = px([128, 128, 128], 100).collect();
-        assert_eq!(super::tint(&super::Image::rgba(100, 1, grey).unwrap()), None);
+        assert_eq!(
+            super::tint(&super::Image::rgba(100, 1, grey).unwrap()),
+            None
+        );
     }
+}
+
+pub(crate) fn save_display(image: &Image, path: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(path.parent().unwrap_or(path))?;
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let tmp = path.with_extension(format!(
+        "png.tmp{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    {
+        let mut e = png::Encoder::new(
+            std::io::BufWriter::new(std::fs::File::create(&tmp)?),
+            image.width,
+            image.height,
+        );
+        e.set_color(png::ColorType::Rgba);
+        let mut w = e.write_header().map_err(std::io::Error::other)?;
+        w.write_image_data(&image.rgba)
+            .map_err(std::io::Error::other)?;
+    }
+    std::fs::rename(tmp, path)
+}
+
+#[cfg(test)]
+#[test]
+fn display_cache_reuses_pixels_and_remembers_absence() {
+    let dir = std::env::temp_dir().join(format!("kontra-display-cache-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("panel.png");
+    let image = Image::rgba(512, 128, [20, 40, 60, 255].repeat(512 * 128)).unwrap();
+    let first = disk_header(Some(&path), || Some(image)).unwrap();
+    let second = disk_header(Some(&path), || {
+        panic!("unchanged library resources must not be reopened")
+    })
+    .unwrap();
+    assert_eq!(first.rgba, second.rgba);
+    let absent = dir.join("absent.png");
+    assert!(disk_header(Some(&absent), || None).is_none());
+    assert!(
+        disk_header(Some(&absent), || panic!(
+            "unchanged missing panel must not be searched again"
+        ))
+        .is_none()
+    );
+    std::fs::remove_dir_all(dir).unwrap();
 }

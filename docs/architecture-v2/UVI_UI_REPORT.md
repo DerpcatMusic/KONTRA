@@ -66,11 +66,12 @@ residual failures are pending. This is a progress report, not a completion claim
 
 Run builds and every census shard through `~/.cache/kontakto-heavy` from this
 worktree. Use the wrapper's per-worktree target, without setting target variables
-or slot counts. The cached verified reader must be selected with
+or slot counts. At this report's revision, the collector selected the cached verified reader with
 `KONTRA_UVI_READER=~/.codex/cache/kontakto-uvi-official-reader/app/UVIWorkstationx64.exe`.
 Its SHA-256 is the loader-verified official Workstation 4.0.9 hash. An initial
 40-item after run without this selection had only reader-access failures and is
-excluded from UI coverage. Compile the native render collector with:
+excluded from UI coverage. The current runtime uses bundled native namespaces
+and no longer reads this executable. Compile the native render collector with:
 
 ```sh
 ~/.cache/kontakto-heavy cargo build --profile ci --example uvi_ui_health --features shots

@@ -8,31 +8,47 @@
 #[cfg(feature = "library-access")]
 mod access;
 mod automation;
-pub use automation::{program_automation, AutomationRecord};
+pub use automation::{AutomationRecord, program_automation};
+pub mod audit;
+mod cache;
+mod cache_zones;
 mod container;
+#[cfg(feature = "scan")]
+mod coverage;
 mod effects;
+mod header_cache;
 pub mod keyswitch;
+mod keyswitch_ui;
 mod library;
 mod load;
 mod mapping;
 mod metadata;
 pub mod nis;
 mod nks;
+mod objects;
+mod pcm;
 mod persistence;
 mod resource_container;
 mod resources;
 mod samples;
 mod script;
 mod snapshot;
+mod source_parameters;
 mod stream;
 #[cfg(feature = "library-access")]
 pub use access::library_key;
 pub use container::{Multi, read_chunks, read_multi};
-pub use library::{Kontakt, read, read_program, read_with_snapshot};
+pub use library::{
+    Kontakt, read, read_program, read_program_with_controls, read_with_controls,
+    read_with_snapshot, read_with_snapshot_and_controls,
+};
+#[cfg(feature = "scan")]
+pub use load::take_script_init_runs;
 // Stage and Kind are defined below with LoadError.
 pub use load::{
-    ArticulationMigration, Loaded, Options, Progress, articulation_migration, finish, load,
-    compile_ui, load_cancelable, load_read, load_read_streamed, load_streamed, prepare, stream_instrument,
+    ArticulationMigration, Loaded, Options, Progress, articulation_migration, compile_ui, finish,
+    load, load_cancelable, load_read, load_read_streamed, load_read_streamed_cancelable,
+    load_streamed, prepare, stream_instrument,
 };
 pub use mapping::{Group, LoopSlot, Loops, Zone};
 pub use metadata::{
@@ -46,7 +62,9 @@ pub use resources::Resources;
 pub use samples::{Decoded, Samples, Source, decode};
 pub use script::{Script, Strings};
 pub use snapshot::{GroupState, SnapshotState, apply_snapshot, read_snapshot};
-pub use stream::{AssetSource, SampleReader, StreamPolicy, StreamReport, Streamed, Streamer};
+pub use stream::{
+    AssetSource, DISK_READ, SampleReader, StreamPolicy, StreamReport, Streamed, Streamer,
+};
 
 /// Without the `library-access` feature, encrypted content is refused.
 #[cfg(not(feature = "library-access"))]

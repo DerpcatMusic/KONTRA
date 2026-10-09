@@ -63,6 +63,7 @@ impl DaftSettings {
             lanes: self.parameters().map(|p| p.compile(bindings)),
             // About 2 ms of input frames, in whole control quanta.
             ramp_quanta: ((0.002 * f64::from(rate) / QUANTUM as f64).ceil() as u32).max(1),
+            modulation_index: usize::MAX,
         }
     }
 }
@@ -73,6 +74,7 @@ pub(crate) struct Daft {
     rate: f64,
     lanes: [PreparedParameter; 4],
     ramp_quanta: u32,
+    pub(crate) modulation_index: usize,
 }
 
 // Layout of `ProcessorState::aux`.
@@ -92,6 +94,14 @@ struct Coefficients {
 }
 
 impl Daft {
+    pub(crate) fn trace_parameters(&self) -> [(&'static str, PreparedParameter); 4] {
+        std::array::from_fn(|i| {
+            (
+                ["gain", "cutoff", "resonance", "response"][i],
+                self.lanes[i],
+            )
+        })
+    }
     /// The four ramped quantities for the normalized controls.
     fn targets(x: [f64; 4]) -> [f64; 4] {
         let x = x.map(|v| if v.is_nan() { 0. } else { v.clamp(0., 1.) });
@@ -127,8 +137,17 @@ impl Daft {
         c.amplitude * ((1. - c.high) * low + c.high * high)
     }
 
-    fn control(&self, state: &mut ProcessorState, parameters: &[ControlRamp], at: u64) {
-        let x = self.lanes.map(|lane| lane.value(parameters, at, None));
+    fn control(
+        &self,
+        state: &mut ProcessorState,
+        parameters: &[ControlRamp],
+        at: u64,
+        modulation: [f64; 4],
+    ) {
+        let mut x = self.lanes.map(|lane| lane.value(parameters, at, None));
+        x[0] += modulation[2];
+        x[1] += modulation[0];
+        x[2] += modulation[1];
         let target = Self::targets(x);
         let a = &mut state.aux;
         if a[STARTED] == 0. {
@@ -168,12 +187,13 @@ impl Daft {
         block: &mut Planar,
         len: usize,
         at: u64,
+        modulation: [f64; 4],
     ) {
         let mut i = 0;
         while i < len {
             let t = at + i as u64;
             if t % QUANTUM == 0 || state.aux[STARTED] == 0. {
-                self.control(state, parameters, t);
+                self.control(state, parameters, t, modulation);
             }
             let run = ((QUANTUM - t % QUANTUM) as usize).min(len - i);
             let ramping = state.aux[DELTA..DELTA + 4].iter().any(|d| *d != 0.);
@@ -207,7 +227,11 @@ impl Daft {
 
 /// Unity-slope soft limit to +-1 (a rational tanh).
 fn soft(x: f64) -> f64 {
-    if x.abs() >= 3. { x.signum() } else { x * (27. + x * x) / (27. + 9. * x * x) }
+    if x.abs() >= 3. {
+        x.signum()
+    } else {
+        x * (27. + x * x) / (27. + 9. * x * x)
+    }
 }
 
 #[cfg(test)]
@@ -238,14 +262,24 @@ mod tests {
     #[test]
     fn ramp_length_follows_the_sample_rate() {
         // Ramp countdown at a 32-frame quantum, from the same table.
-        for (rate, quanta) in [(8_000, 1), (44_100, 3), (48_000, 3), (96_000, 6), (192_000, 12)] {
+        for (rate, quanta) in [
+            (8_000, 1),
+            (44_100, 3),
+            (48_000, 3),
+            (96_000, 6),
+            (192_000, 12),
+        ] {
             let s = DaftSettings {
                 gain: Parameter::Constant(0.),
                 cutoff: Parameter::Constant(0.),
                 resonance: Parameter::Constant(0.),
                 response: Parameter::Constant(0.),
             };
-            assert_eq!(s.compile(rate, &mut Vec::new()).ramp_quanta, quanta, "{rate}");
+            assert_eq!(
+                s.compile(rate, &mut Vec::new()).ramp_quanta,
+                quanta,
+                "{rate}"
+            );
         }
     }
 }

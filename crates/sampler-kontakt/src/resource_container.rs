@@ -71,7 +71,7 @@ impl ResourceContainer {
     /// All authored resource names, including picture layout `.txt` companions.
     pub fn names(&self) -> Vec<&str> {
         let mut names: Vec<_> = match &self.index {
-            Index::Archive(archive) => archive.entries.values().map(|e| e.name.as_str()).collect(),
+            Index::Archive(archive) => archive.members().map(|e| e.name.as_str()).collect(),
             Index::Files(files) => files.items.iter().map(|e| e.filename.as_str()).collect(),
         };
         names.sort_unstable();
@@ -83,7 +83,7 @@ impl ResourceContainer {
     /// Names are case insensitive; NICNT's `|` separators also accept `/`.
     pub fn read(&mut self, name: &str) -> Result<Option<Vec<u8>>, LoadError> {
         use std::io::{Read, Seek, SeekFrom};
-        let (offset, size) = match &self.index {
+        let (offset, size) = match &mut self.index {
             Index::Archive(archive) => {
                 let Some(entry) = archive
                     .member(&mut self.file, name)
@@ -111,6 +111,7 @@ impl ResourceContainer {
                         }
                     })?);
                 }
+                archive.entries.insert(entry.name.to_lowercase(), entry);
                 return archive
                     .read_entry_with_key(&mut self.file, name, self.key.as_deref())
                     .map(Some)

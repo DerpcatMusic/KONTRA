@@ -191,7 +191,11 @@ impl Run {
 
 fn limits(plan: &sampler_core::Prepared, voices: usize, fixed: bool) -> Limits {
     let limits = Limits::for_plan(plan, 64, voices);
-    if fixed { Limits { voices, ..limits } } else { limits }
+    if fixed {
+        Limits { voices, ..limits }
+    } else {
+        limits
+    }
 }
 
 /// `sampler_kontakt::load` with the instrument's scripts replaced by `source`.
@@ -204,6 +208,7 @@ fn with_script(
         mut instrument,
         locations,
         mut samples,
+        ..
     } = sampler_kontakt::read(path).unwrap();
     instrument.behaviors = vec![sampler_ir::Behavior {
         name: "pedal test".into(),
@@ -1003,7 +1008,11 @@ fn voice_limit(setup: Setup) {
     } else {
         2 * two.peak_voices.max(2)
     };
-    let setup = Setup { voices, fixed: true, ..setup };
+    let setup = Setup {
+        voices,
+        fixed: true,
+        ..setup
+    };
     let keys = [a, a + 2, a + 4, a + 7];
     let mut events = vec![(0.0, Cc(0, 64, 127))];
     for (i, &key) in keys.iter().enumerate() {
