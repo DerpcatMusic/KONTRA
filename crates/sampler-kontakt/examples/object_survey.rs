@@ -100,9 +100,13 @@ impl Survey {
         if let Some(c) = p.0.find_first(0x32) {
             self.field(file, "0x32", 0x60, "payload_bytes", c.data.len(), 0);
             let voices = VoiceGroups::try_from(c)?;
-            for (object, q) in std::iter::once(("0x32/program", &voices.voice_limit))
-                .chain(voices.groups.iter().flatten().map(|v| ("0x32/0x2b", &v.voice_limit)))
-            {
+            for (object, q) in std::iter::once(("0x32/program", &voices.voice_limit)).chain(
+                voices
+                    .groups
+                    .iter()
+                    .flatten()
+                    .map(|v| ("0x32/0x2b", &v.voice_limit)),
+            ) {
                 macro_rules! vf { ($($field:ident = $default:expr),* $(,)?) => { $(self.field(file,object,0x60,stringify!($field),q.$field,$default);)* }; }
                 vf!(
                     kill_mode = 1,
@@ -242,7 +246,14 @@ impl Survey {
             for zone in z.zones() {
                 let v = zone.0.version;
                 let q = zone.params()?;
-                self.field(file, "0x34/0x2c", v, "sample_present", q.sample_present, true);
+                self.field(
+                    file,
+                    "0x34/0x2c",
+                    v,
+                    "sample_present",
+                    q.sample_present,
+                    true,
+                );
                 self.field(file, "0x34/0x2c", v, "filename_id", q.filename_id, -1);
                 self.field(
                     file,

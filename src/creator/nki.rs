@@ -13,8 +13,8 @@
 //! - a zone's cached sample format (`sample_data_type`): 6 in every
 //!   24-bit stereo zone seen, taken here as bytes per frame.
 
-use sampler_ir::{Group, Zone};
 use anyhow::{Context, Result, ensure};
+use sampler_ir::{Group, Zone};
 use std::path::Path;
 
 /// One sample file as the zones refer to it.
@@ -42,8 +42,17 @@ pub struct Program<'a> {
 }
 
 pub fn write(path: &Path, program: &Program) -> Result<()> {
-    std::fs::write(path, container(program, path.file_name().context("preset has no file name")?.to_string_lossy().as_ref())?)
-        .with_context(|| format!("Writing {}", path.display()))
+    std::fs::write(
+        path,
+        container(
+            program,
+            path.file_name()
+                .context("preset has no file name")?
+                .to_string_lossy()
+                .as_ref(),
+        )?,
+    )
+    .with_context(|| format!("Writing {}", path.display()))
 }
 
 // --- primitives ------------------------------------------------------------
@@ -74,7 +83,10 @@ fn structured(version: u16, private: &[u8], public: &[u8], children: &[u8]) -> V
 }
 
 fn hex(s: &str) -> Vec<u8> {
-    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+        .collect()
 }
 
 // --- preset chunks ---------------------------------------------------------
@@ -98,7 +110,8 @@ const GROUP_TAIL_DEFAULT: &str = "00000401030000000000803f000100000000000080bf00
 /// follow `AHDSR_AT` (attack curve, attack, decay, hold, release, sustain).
 const GROUP_MODS_DEFAULT: &str = "001200010d00c4000000018100460000000100000006000000766f6c756d650000803fffff10000010000000454e565f41484453525f564f4c554d450000000001000000000009000000454e565f414844535202000000000000006f000000070069000000019000000000000400000000000000560000003f0050000000001100000028bd000000001650c34600000000409e48440000803f00000080bf000000000000803f00000080bf000000000000803f00000080bf000000000000803f00000080bf000000000000803f00000000000000000000000000000000";
 const AHDSR_AT: &str = "3f0050000000001100";
-const GROUP_EXTERNAL_MODS: &str = "0012000000000000000000000000000000000000000000000000000000000000000000";
+const GROUP_EXTERNAL_MODS: &str =
+    "0012000000000000000000000000000000000000000000000000000000000000000000";
 const ZONE_PRIVATE_DEFAULT: &str = "ffffffff000000000110040400000040cdcccc3e0000010000000000803fffffffffffffffffffffffffffffffff00000000000000000000000000000000000000000000000000000000000000000001000000b5010000";
 const ZONE_RAW: &str = "00100000ffffffff00000000";
 
@@ -132,20 +145,29 @@ fn program_chunk(p: &Program, total_bytes: u64) -> Result<Vec<u8>> {
         bus.extend(1.0f32.to_le_bytes());
         bus.extend(0.0f32.to_le_bytes());
         bus.extend((-1i32).to_le_bytes());
-        children.extend(chunk(0x45, &structured(0x11, &[], &bus, &chunk(0x3a, &hex(EMPTY_FX)))));
+        children.extend(chunk(
+            0x45,
+            &structured(0x11, &[], &bus, &chunk(0x3a, &hex(EMPTY_FX))),
+        ));
     }
     for slot in 0..5 {
-        children.extend(chunk(6, &match (slot, p.script) {
-            (0, Some(source)) => script(source, "Round Robin"),
-            _ => hex(EMPTY_SCRIPT),
-        }));
+        children.extend(chunk(
+            6,
+            &match (slot, p.script) {
+                (0, Some(source)) => script(source, "Round Robin"),
+                _ => hex(EMPTY_SCRIPT),
+            },
+        ));
     }
     children.extend(chunk(0x4e, &hex(QUICK_BROWSE)));
     children.extend(chunk(0x3a, &hex(EMPTY_FX)));
     children.extend(chunk(0x32, &hex(VOICE_GROUPS_DEFAULT)));
     children.extend(chunk(0x33, &groups(p.groups)?));
     children.extend(chunk(0x34, &zones(p)?));
-    Ok(chunk(0x28, &structured(0xae, &hex(PROGRAM_PRIVATE_DEFAULT), &public, &children)))
+    Ok(chunk(
+        0x28,
+        &structured(0xae, &hex(PROGRAM_PRIVATE_DEFAULT), &public, &children),
+    ))
 }
 
 /// A script slot (v0x60, unstructured) holding `source`.
@@ -178,7 +200,11 @@ fn groups(groups: &[Group]) -> Result<Vec<u8>> {
 
     let mods = hex(GROUP_MODS_DEFAULT);
     let anchor = hex(AHDSR_AT);
-    let at = mods.windows(anchor.len()).position(|w| w == anchor).expect("AHDSR in the group template") + anchor.len();
+    let at = mods
+        .windows(anchor.len())
+        .position(|w| w == anchor)
+        .expect("AHDSR in the group template")
+        + anchor.len();
 
     let mut out = (groups.len() as u32).to_le_bytes().to_vec();
     for g in groups {
@@ -217,13 +243,26 @@ fn zones(p: &Program) -> Result<Vec<u8>> {
     let mut out = (p.zones.len() as u32).to_le_bytes().to_vec();
     for (n, z) in p.zones.iter().enumerate() {
         let file = z.asset.0;
-        ensure!(file < p.samples.len(), "Zone sample is not in the file table");
+        ensure!(
+            file < p.samples.len(),
+            "Zone sample is not in the file table"
+        );
         let s = &p.samples[file];
         let mut public = Vec::new();
         public.extend((z.playback.start as i32).to_le_bytes());
         public.extend(z.playback.end.map_or(-1i32, |e| e as i32).to_le_bytes());
         public.extend((-1i32).to_le_bytes());
-        for v in [z.velocities.low, z.velocities.high, z.keys.low, z.keys.high, z.fades.velocity_in, z.fades.velocity_out, z.fades.key_in, z.fades.key_out, super::root(z)] {
+        for v in [
+            z.velocities.low,
+            z.velocities.high,
+            z.keys.low,
+            z.keys.high,
+            z.fades.velocity_in,
+            z.fades.velocity_out,
+            z.fades.key_in,
+            z.fades.key_out,
+            super::root(z),
+        ] {
             public.extend(i16::from(v).to_le_bytes());
         }
         public.extend((z.gain.linear() as f32).to_le_bytes());
@@ -273,7 +312,10 @@ fn zones(p: &Program) -> Result<Vec<u8>> {
 
 /// A file name as path segments: `..` (3), folders (2), the file (4).
 fn file_name(out: &mut Vec<u8>, relative: &str) {
-    let parts: Vec<&str> = relative.split('/').filter(|s| !s.is_empty() && *s != ".").collect();
+    let parts: Vec<&str> = relative
+        .split('/')
+        .filter(|s| !s.is_empty() && *s != ".")
+        .collect();
     out.extend((parts.len() as i32).to_le_bytes());
     for (n, part) in parts.iter().enumerate() {
         if *part == ".." {
@@ -317,7 +359,9 @@ const ITEM: &str = "01000000";
 fn layers(list: &[([u8; 4], u32, Vec<u8>)]) -> Vec<u8> {
     let mut inner = Vec::new();
     for (domain, id, data) in list.iter().rev() {
-        let mut out = ((20 + inner.len() + data.len()) as u64).to_le_bytes().to_vec();
+        let mut out = ((20 + inner.len() + data.len()) as u64)
+            .to_le_bytes()
+            .to_vec();
         out.extend(domain);
         out.extend(id.to_le_bytes());
         out.extend(1u32.to_le_bytes());
@@ -340,7 +384,10 @@ fn uuid() -> [u8; 16] {
 }
 
 /// An item: header, data layers (ending in the plain `Item` layer), children.
-fn item(mut list: Vec<([u8; 4], u32, Vec<u8>)>, children: &[(u32, [u8; 4], u32, Vec<u8>)]) -> Vec<u8> {
+fn item(
+    mut list: Vec<([u8; 4], u32, Vec<u8>)>,
+    children: &[(u32, [u8; 4], u32, Vec<u8>)],
+) -> Vec<u8> {
     list.push((NISD, 1, hex(ITEM)));
     let data = layers(&list);
     let mut table = 1u32.to_le_bytes().to_vec();
@@ -351,7 +398,9 @@ fn item(mut list: Vec<([u8; 4], u32, Vec<u8>)>, children: &[(u32, [u8; 4], u32, 
         table.extend(id.to_le_bytes());
         table.extend(child);
     }
-    let mut out = ((40 + data.len() + table.len()) as u64).to_le_bytes().to_vec();
+    let mut out = ((40 + data.len() + table.len()) as u64)
+        .to_le_bytes()
+        .to_vec();
     out.extend(1u32.to_le_bytes());
     out.extend(b"hsin");
     out.extend(1u32.to_le_bytes());
@@ -380,7 +429,15 @@ fn sound_info(name: &str) -> Vec<u8> {
     out.extend(1u32.to_le_bytes());
     wstr(&mut out, "KontaktInstrument");
     out.extend(0u32.to_le_bytes());
-    let properties = [("\\@color", "0"), ("\\@devicetypeflags", "1"), ("\\@soundtype", "7"), ("\\@tempo", "0"), ("\\@verl", "1.0.0"), ("\\@verm", "1.0.0"), ("\\@visib", "0")];
+    let properties = [
+        ("\\@color", "0"),
+        ("\\@devicetypeflags", "1"),
+        ("\\@soundtype", "7"),
+        ("\\@tempo", "0"),
+        ("\\@verl", "1.0.0"),
+        ("\\@verm", "1.0.0"),
+        ("\\@visib", "0"),
+    ];
     out.extend((properties.len() as u32).to_le_bytes());
     for (key, value) in properties {
         wstr(&mut out, key);
@@ -399,7 +456,9 @@ fn sound_header(p: &Program, chunks: &[u8], total_bytes: u64) -> Vec<u8> {
     out.extend(1u16.to_le_bytes()); // an instrument
     out.extend([0xff, 1, 7, 6]); // saved by 6.7.1
     out.extend(b"6noK"); // "Kon6", stored reversed
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
     out.extend((now as u32).to_le_bytes());
     out.extend(0u32.to_le_bytes());
     out.extend((p.zones.len() as u16).to_le_bytes());
@@ -427,7 +486,11 @@ fn sound_header(p: &Program, chunks: &[u8], total_bytes: u64) -> Vec<u8> {
 }
 
 fn container(p: &Program, preset_name: &str) -> Result<Vec<u8>> {
-    let total_bytes: u64 = p.samples.iter().map(|s| s.frames * u64::from(s.channels) * u64::from(s.bits.div_ceil(8))).sum();
+    let total_bytes: u64 = p
+        .samples
+        .iter()
+        .map(|s| s.frames * u64::from(s.channels) * u64::from(s.bits.div_ceil(8)))
+        .sum();
     let mut chunks = program_chunk(p, total_bytes)?;
     chunks.extend(chunk(0x47, &hex(SAVE_SETTINGS_DEFAULT)));
     chunks.extend(chunk(0x4b, &file_table(p, preset_name)));
@@ -437,9 +500,14 @@ fn container(p: &Program, preset_name: &str) -> Result<Vec<u8>> {
     preset_chunk.extend(&chunks);
     preset_chunk.extend(0u32.to_le_bytes());
     preset_chunk.extend(hex("0d626585"));
-    let inner = item(vec![], &[(0, NISD, 0x6d, item(vec![(NISD, 0x6d, preset_chunk)], &[]))]);
+    let inner = item(
+        vec![],
+        &[(0, NISD, 0x6d, item(vec![(NISD, 0x6d, preset_chunk)], &[]))],
+    );
     let mut packed = vec![0; inner.len() + inner.len() / 16 + 128];
-    let packed = fastlz::compress(&inner, &mut packed).map_err(|()| anyhow::anyhow!("FastLZ compression failed"))?.to_vec();
+    let packed = fastlz::compress(&inner, &mut packed)
+        .map_err(|()| anyhow::anyhow!("FastLZ compression failed"))?
+        .to_vec();
     let mut subtree = 1u32.to_le_bytes().to_vec();
     subtree.push(1);
     subtree.extend((inner.len() as u32).to_le_bytes());
@@ -448,14 +516,29 @@ fn container(p: &Program, preset_name: &str) -> Result<Vec<u8>> {
 
     let sound_info = item(vec![(NISD, 0x6c, sound_info(p.name))], &[]);
     let controllers = item(vec![(NISD, 0x79, hex("010000000100000000000000"))], &[]);
-    let encryption = item(vec![(NISD, 0x74, hex("0100000000")), (NISD, 0x73, subtree)], &[]);
+    let encryption = item(
+        vec![(NISD, 0x74, hex("0100000000")), (NISD, 0x73, subtree)],
+        &[],
+    );
     let header = item(vec![(NIK4, 4, sound_header(p, &chunks, total_bytes))], &[]);
     let preset = item(
-        vec![(NIK4, 3, vec![0, 0]), (NISD, 0x65, preset_properties()), (NISD, 0x6a, hex("0100000002000000"))],
-        &[(0, NISD, 0x6c, sound_info), (2, NISD, 0x79, controllers), (1, NISD, 0x74, encryption), (1001, NIK4, 4, header)],
+        vec![
+            (NIK4, 3, vec![0, 0]),
+            (NISD, 0x65, preset_properties()),
+            (NISD, 0x6a, hex("0100000002000000")),
+        ],
+        &[
+            (0, NISD, 0x6c, sound_info),
+            (2, NISD, 0x79, controllers),
+            (1, NISD, 0x74, encryption),
+            (1001, NIK4, 4, header),
+        ],
     );
     Ok(item(
-        vec![(NISD, 0x76, hex(REPOSITORY_ROOT_DEFAULT)), (NISD, 0x6a, hex(AUTHORIZATION_DEFAULT))],
+        vec![
+            (NISD, 0x76, hex(REPOSITORY_ROOT_DEFAULT)),
+            (NISD, 0x6a, hex(AUTHORIZATION_DEFAULT)),
+        ],
         &[(0, NIK4, 3, preset)],
     ))
 }
@@ -476,10 +559,13 @@ pub(crate) fn crc32(data: &[u8]) -> u32 {
 /// MD5 (RFC 1321).
 pub(crate) fn md5(data: &[u8]) -> [u8; 16] {
     const S: [u32; 64] = [
-        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
-        4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5,
+        9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10,
+        15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
     ];
-    let k: Vec<u32> = (0..64).map(|i| ((i as f64 + 1.0).sin().abs() * 4_294_967_296.0) as u32).collect();
+    let k: Vec<u32> = (0..64)
+        .map(|i| ((i as f64 + 1.0).sin().abs() * 4_294_967_296.0) as u32)
+        .collect();
     let mut msg = data.to_vec();
     msg.push(0x80);
     while msg.len() % 64 != 56 {
@@ -488,7 +574,10 @@ pub(crate) fn md5(data: &[u8]) -> [u8; 16] {
     msg.extend(((data.len() as u64).wrapping_mul(8)).to_le_bytes());
     let mut h = [0x6745_2301u32, 0xefcd_ab89, 0x98ba_dcfe, 0x1032_5476];
     for block in msg.chunks(64) {
-        let m: Vec<u32> = block.chunks(4).map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]])).collect();
+        let m: Vec<u32> = block
+            .chunks(4)
+            .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
+            .collect();
         let [mut a, mut b, mut c, mut d] = h;
         for i in 0..64 {
             let (f, g) = match i / 16 {
@@ -520,7 +609,10 @@ mod tests {
     fn checksums_match_their_references() {
         let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
         assert_eq!(hex(&super::md5(b"")), "d41d8cd98f00b204e9800998ecf8427e");
-        assert_eq!(hex(&super::md5(b"The quick brown fox jumps over the lazy dog")), "9e107d9d372bb6826bd81d3542a419d6");
+        assert_eq!(
+            hex(&super::md5(b"The quick brown fox jumps over the lazy dog")),
+            "9e107d9d372bb6826bd81d3542a419d6"
+        );
         assert_eq!(super::crc32(b"123456789"), 0xcbf4_3926);
     }
 }

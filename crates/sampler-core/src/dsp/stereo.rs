@@ -34,10 +34,24 @@ pub(crate) struct Stereo {
     rate: f32,
 }
 impl Stereo {
-    pub(crate) fn trace_parameters(&self) -> [(&'static str, PreparedParameter); 3] { [("width",self.width),("pan",self.pan),("pseudo",PreparedParameter::Constant(f64::from(self.pseudo)))] }
-    pub(super) fn batches(&self) -> bool { !self.pseudo }
+    pub(crate) fn trace_parameters(&self) -> [(&'static str, PreparedParameter); 3] {
+        [
+            ("width", self.width),
+            ("pan", self.pan),
+            (
+                "pseudo",
+                PreparedParameter::Constant(f64::from(self.pseudo)),
+            ),
+        ]
+    }
+    pub(super) fn batches(&self) -> bool {
+        !self.pseudo
+    }
     pub(super) fn targets(&self, parameters: &[ControlRamp], at: u64) -> [f32; 2] {
-        [self.width.value(parameters, at, None) as f32, self.pan.value(parameters, at, None) as f32]
+        [
+            self.width.value(parameters, at, None) as f32,
+            self.pan.value(parameters, at, None) as f32,
+        ]
     }
     pub(super) fn process(
         &self,
@@ -74,7 +88,8 @@ impl Stereo {
                 matrix(l, r, width)
             };
             [left[i], right[i]] = balance(l, r, pan);
-            [width, pan, pan_delta] = advance([width, pan, pan_delta], [target_width, target_pan], i, len);
+            [width, pan, pan_delta] =
+                advance([width, pan, pan_delta], [target_width, target_pan], i, len);
         }
         (state.aux[0], state.aux[1]) = (f64::from(width), f64::from(pan));
     }
@@ -82,11 +97,19 @@ impl Stereo {
 
 #[inline(always)]
 pub(super) fn balance(l: f32, r: f32, pan: f32) -> [f64; 2] {
-    [f64::from(l * (1.0 - pan.max(0.0))), f64::from(r * (1.0 + pan.min(0.0)))]
+    [
+        f64::from(l * (1.0 - pan.max(0.0))),
+        f64::from(r * (1.0 + pan.min(0.0))),
+    ]
 }
 
 #[inline(always)]
-pub(super) fn advance([width, mut pan, mut delta]: [f32; 3], [tw, tp]: [f32; 2], i: usize, len: usize) -> [f32; 3] {
+pub(super) fn advance(
+    [width, mut pan, mut delta]: [f32; 3],
+    [tw, tp]: [f32; 2],
+    i: usize,
+    len: usize,
+) -> [f32; 3] {
     let width = super::kernels::one_pole32(width, tw, 1.0f32 / 180.0);
     // Native SIMD reuses the third delta on the fourth sample; groups restart per call.
     if i >= len / 4 * 4 || i % 4 != 3 {
@@ -100,7 +123,10 @@ pub(super) fn advance([width, mut pan, mut delta]: [f32; 3], [tw, tp]: [f32; 2],
 pub(super) fn matrix(l: f32, r: f32, width: f32) -> (f32, f32) {
     if width >= 0.5 {
         let spread = 2.0 * width - 1.0;
-        ((1.0 + spread) * l - spread * r, (1.0 + spread) * r - spread * l)
+        (
+            (1.0 + spread) * l - spread * r,
+            (1.0 + spread) * r - spread * l,
+        )
     } else {
         let a = 0.5 - width;
         (l + a * (r - l), r + a * (l - r))
@@ -206,21 +232,52 @@ mod frozen_kernel_tests {
     fn shared_stereo_pseudo_matches_frozen_pcm_and_state_bits() {
         for pseudo in [false, true] {
             for len in [0, 1, 3, 4, 5, 17, super::super::BLOCK] {
-                let (mut state, mut expected_state) = (ProcessorState::default(), ProcessorState::default());
+                let (mut state, mut expected_state) =
+                    (ProcessorState::default(), ProcessorState::default());
                 let (mut ring, mut expected_ring) = ([[0.; 2]; 1024], [[0.; 2]; 1024]);
                 for block_index in 0..32 {
-                    let stereo = StereoSettings { width: Parameter::Constant(if block_index < 3 { 0.1 } else { 0.9 }),
-                        pan: Parameter::Constant(if block_index < 2 { -0.8 } else { 0.7 }), pseudo }.compile(48000, &mut Vec::new());
-                    let mut actual = std::array::from_fn(|c| std::array::from_fn(|i| if block_index == 0 {
-                        if i == 0 { 1. } else { 0. }
-                    } else { ((i + 11 * c) as f64 * 0.31).sin() * 0.1 }));
+                    let stereo = StereoSettings {
+                        width: Parameter::Constant(if block_index < 3 { 0.1 } else { 0.9 }),
+                        pan: Parameter::Constant(if block_index < 2 { -0.8 } else { 0.7 }),
+                        pseudo,
+                    }
+                    .compile(48000, &mut Vec::new());
+                    let mut actual = std::array::from_fn(|c| {
+                        std::array::from_fn(|i| {
+                            if block_index == 0 {
+                                if i == 0 { 1. } else { 0. }
+                            } else {
+                                ((i + 11 * c) as f64 * 0.31).sin() * 0.1
+                            }
+                        })
+                    });
                     let mut expected = actual;
                     stereo.process(&mut state, &[], &mut actual, len, 0, &mut ring);
-                    frozen_process(&stereo, &mut expected_state, &[], &mut expected, len, 0, &mut expected_ring);
-                    assert_eq!(actual.map(|c| c.map(f64::to_bits)), expected.map(|c| c.map(f64::to_bits)));
-                    assert_eq!(state.aux.map(f64::to_bits), expected_state.aux.map(f64::to_bits));
-                    assert_eq!((state.delay_position, state.delay_filled), (expected_state.delay_position, expected_state.delay_filled));
-                    assert_eq!(ring.map(|c| c.map(f64::to_bits)), expected_ring.map(|c| c.map(f64::to_bits)));
+                    frozen_process(
+                        &stereo,
+                        &mut expected_state,
+                        &[],
+                        &mut expected,
+                        len,
+                        0,
+                        &mut expected_ring,
+                    );
+                    assert_eq!(
+                        actual.map(|c| c.map(f64::to_bits)),
+                        expected.map(|c| c.map(f64::to_bits))
+                    );
+                    assert_eq!(
+                        state.aux.map(f64::to_bits),
+                        expected_state.aux.map(f64::to_bits)
+                    );
+                    assert_eq!(
+                        (state.delay_position, state.delay_filled),
+                        (expected_state.delay_position, expected_state.delay_filled)
+                    );
+                    assert_eq!(
+                        ring.map(|c| c.map(f64::to_bits)),
+                        expected_ring.map(|c| c.map(f64::to_bits))
+                    );
                 }
             }
         }

@@ -18,7 +18,7 @@
 //! mapper exactly. Constant sources (macros) fold into the zone's gain, tune or
 //! pan. What has no exact route is reported, never approximated.
 
-use crate::{number, path, Translation};
+use crate::{Translation, number, path};
 use roxmltree::Node;
 use sampler_ir as ir;
 
@@ -118,11 +118,7 @@ struct Mapper {
 
 impl Mapper {
     fn position(value: f64, bipolar: bool) -> f64 {
-        if bipolar {
-            (value + 1.0) * 0.5
-        } else {
-            value
-        }
+        if bipolar { (value + 1.0) * 0.5 } else { value }
     }
 
     fn apply(&self, value: f64, bipolar: bool) -> f64 {
@@ -191,7 +187,7 @@ fn smoothable(retrigger: bool, starts_at_zero: bool) -> Result<(), &'static str>
 
 impl Translation {
     fn gap(&mut self, connection: Node, gap: Gap) {
-        #[cfg(feature="scan")]
+        #[cfg(feature = "scan")]
         self.dropped_connections.insert(connection.id());
         let what = format!(
             "{} -> {}",
@@ -218,8 +214,18 @@ impl Translation {
         Ok(())
     }
 
-    pub(crate) fn connect_frequency(&mut self, connection: Node, chain: ir::ChainRef, index: usize, out: &mut Modulation) -> Result<(), String> {
-        let law = Law::Frequency(ir::Target::Processor { chain, index, parameter: ir::ProcessorParameter::Cutoff });
+    pub(crate) fn connect_frequency(
+        &mut self,
+        connection: Node,
+        chain: ir::ChainRef,
+        index: usize,
+        out: &mut Modulation,
+    ) -> Result<(), String> {
+        let law = Law::Frequency(ir::Target::Processor {
+            chain,
+            index,
+            parameter: ir::ProcessorParameter::Cutoff,
+        });
         if let Err(gap) = self.try_connect(connection, out, Some(law))? {
             self.gap(connection, gap);
         }
@@ -330,7 +336,12 @@ impl Translation {
                     Law::Add(_) => out.pan += ratio * value,
                     Law::Frequency(ir::Target::Processor { chain, index, .. }) => {
                         let chain = &mut self.ir.chains[chain.0];
-                        let processor = chain.pre_amplitude.iter_mut().chain(&mut chain.post_amplitude).nth(index).unwrap();
+                        let processor = chain
+                            .pre_amplitude
+                            .iter_mut()
+                            .chain(&mut chain.post_amplitude)
+                            .nth(index)
+                            .unwrap();
                         if let ir::Processor::Filter(filter) = processor {
                             if let ir::Frequency::Hertz(hz) = &mut filter.cutoff {
                                 *hz = (*hz * 1000f64.powf(ratio * value)).clamp(20.0, 20000.0);
@@ -408,7 +419,10 @@ impl Translation {
                         ir::Depth::Pitch(ir::Pitch::Semitones(ratio)),
                     ),
                     Law::Add(target) => (target, ir::Depth::Normalized(ratio)),
-                    Law::Frequency(target) => (target, ir::Depth::Pitch(ir::Pitch::Semitones(12.0 * 1000f64.log2() * ratio))),
+                    Law::Frequency(target) => (
+                        target,
+                        ir::Depth::Pitch(ir::Pitch::Semitones(12.0 * 1000f64.log2() * ratio)),
+                    ),
                 };
                 for (modulator, curve) in std::iter::once((modulator, curve)).chain(extra) {
                     let ir_bipolar = self.ir.modulators[modulator.0].source.bipolar();
@@ -1457,7 +1471,9 @@ mod tests {
             r#"<SignalConnection Source="$Program/E" Destination="Pitch" Ratio="12"/>"#,
         );
         let (_, source) = only_route(&ir);
-        let ir::ModulationSource::Envelope(e) = source else { panic!("not an envelope: {source:?}") };
+        let ir::ModulationSource::Envelope(e) = source else {
+            panic!("not an envelope: {source:?}")
+        };
         assert_eq!(e.sustain, 0.0);
         assert_eq!(e.hold, ir::Time::Seconds(0.02));
         assert_eq!(e.decay, ir::Time::Seconds(0.03));
