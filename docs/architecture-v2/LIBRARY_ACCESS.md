@@ -1,10 +1,28 @@
 # Library access in v2
 
-Branch: `v2/library-access`. Access to installed protected content is behind
+Branch: `v2/w0-native-provider` (recovered from `v2/linux-native-library-openers`). Access to installed protected content is behind
 `library-access`; disabling it retains APIs that return access-disabled errors.
 Library access state, decoded programs, pictures and sample data stay in memory.
-UVI reader values come from the user's hash-verified official installation;
-Kontakt access values come from the owning library's NICNT.
+Kontakt access values come from the owning library's NICNT. UVI UFS v3 and
+PasswordV2 namespaces are decoded natively; protected member keys are recovered
+from the bank's own encrypted content and verified before use. No Workstation
+executable, Wine installation or reader-path setting is needed.
+
+## Native provider validation
+
+The recovered implementation passes 103 UVI area tests and 75 Kontakt library
+tests, with 44 and 4 existing ignored tests respectively. Root library test
+compilation passes. Both format crates and their tests compile for Windows GNU;
+CI also executes the native UVI bank and Kontakt access fixtures on Windows.
+Hosted Windows execution is still pending at this checkpoint.
+
+The Linux installed-bank witness opens Augmented Orchestra with an isolated home,
+no Wine/Windows search paths and a deliberately nonexistent reader override. It
+loads 72 zones and renders 4,800 finite frames with 9,587 audible channel samples
+(peak 4.045137, RMS 0.900702). This proves native load/play admission, not native
+sound parity, full scripting coverage or quiet load-time/CPU performance. No
+library payload, recovered bank key or PCM file is persisted. Combined workspace
+and native quick regression checks remain the integration owner's next gate.
 
 ## Picture resolver API
 

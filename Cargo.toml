@@ -12,7 +12,7 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 
 [features]
 default = ["plugin", "clap", "vst3", "library-access"]
-# Opens encrypted library content with the library's own .nicnt access data.
+# Opens protected Kontakt and UVI library content through native readers.
 library-access = ["sampler-kontakt/library-access", "sampler-uvi/library-access"]
 plugin = ["sampler-kontakt/native-ui", "dep:moose", "dep:mui", "dep:png", "dep:rfd", "dep:mui-native-dialog", "dep:mui-text", "dep:zune-jpeg", "dep:mlua", "dep:image-webp", "dep:resvg"]
 clap = ["plugin", "dep:moose-clap", "dep:clap-sys"]
