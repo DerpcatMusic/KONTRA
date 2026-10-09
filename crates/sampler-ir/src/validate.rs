@@ -502,6 +502,18 @@ impl Instrument {
             })?;
             check.time(binding.ramp, "ramp")?;
         }
+        for (i, alias) in self.source_indices.control_aliases.iter().enumerate() {
+            check.owner = format!("source control alias {i}");
+            check.exists(Reference::Control(alias.control.0))?;
+            check.within(f64::from(alias.address.slot), 0.0..=f64::from(i32::MAX), "native module alias slot")?;
+            if !matches!(self.controls[alias.control.0].value, crate::ControlValue::Continuous { .. })
+                || !self.processor_controls.iter().any(|binding| binding.control == alias.control)
+            {
+                return Err(ValidationError::OutOfRange {
+                    owner: check.owner.clone(), field: "unbound native control alias", value: i as f64,
+                });
+            }
+        }
         for (i, tap) in self.voice_send_taps.iter().enumerate() {
             check.owner = format!("voice send tap {i}");
             check.exists(Reference::Chain(tap.chain.0))?;

@@ -474,6 +474,9 @@ impl<V: View> Handler<V> {
         if self.requests.redraw.swap(false, Ordering::AcqRel) {
             self.driver.redraw();
             self.unpainted = true;
+            if let Some(gpu) = &mut self.gpu {
+                gpu.invalidate();
+            }
             if let Some(software) = &mut self.software {
                 software.invalidate();
             }
@@ -727,6 +730,13 @@ impl<V: View> Handler<V> {
         self.scale = size.scale_factor;
         let physical = (size.physical.width, size.physical.height);
         self.driver.resized(physical, size.scale_factor);
+        self.unpainted = true;
+        if let Some(gpu) = &mut self.gpu {
+            gpu.invalidate();
+        }
+        if let Some(software) = &mut self.software {
+            software.invalidate();
+        }
         if let Some(capture) = &mut self.timing { capture.geometry(physical, size.scale_factor); }
     }
 
@@ -865,6 +875,9 @@ impl<V: View> Handler<V> {
             }
             Event::Window(WindowEvent::RedrawRequested) => {
                 self.unpainted = true;
+                if let Some(gpu) = &mut self.gpu {
+                    gpu.invalidate();
+                }
                 if let Some(software) = &mut self.software {
                     software.invalidate();
                 }

@@ -46,3 +46,12 @@ An empty ancestry is never visible, including after the host deletes its parent;
 floating windows also clear their visibility on destruction. The drawable's
 destructor does not destroy an already deleted server resource. KONTRA's root
 reparenting behavior remains intact.
+
+## Windows first expose (0.3.344 follow-up)
+
+The Windows message dispatcher previously omitted `WM_PAINT` and
+`WM_SHOWWINDOW`. It now consumes the update region with `BeginPaint`/`EndPaint`
+and sends `RedrawRequested`; showing a window also sends that event. The
+KONTRA native host invalidates its GPU cache for that event and for explicit
+full-redraw/resize requests. This gives a freshly shown/restored embedded editor
+a complete frame even when its model has not changed.

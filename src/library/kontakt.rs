@@ -94,6 +94,26 @@ pub fn roots(have: &[Root]) -> Vec<Root> {
     merge(have, grouped(libraries, folders))
 }
 
+/// UVI's documented Windows bank defaults; other platforms use selected roots.
+pub fn uvi_roots(have: &[Root]) -> Vec<Root> {
+    #[cfg(windows)]
+    let folders = [
+        ("ProgramFiles", r"C:\Program Files"),
+        ("ProgramW6432", r"C:\Program Files"),
+        ("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+    ].into_iter().map(|(var, fallback)| {
+        std::env::var_os(var).map_or_else(|| PathBuf::from(fallback), PathBuf::from).join("UVISoundBanks")
+    }).collect();
+    #[cfg(not(windows))]
+    let folders = Vec::new();
+    uvi_roots_in(have, folders)
+}
+
+fn uvi_roots_in(have: &[Root], folders: Vec<PathBuf>) -> Vec<Root> {
+    let folders = folders.into_iter().filter(|d| holds_libraries(d)).collect();
+    merge(have, grouped(Vec::new(), folders))
+}
+
 /// A folder is a library when it would be found as one by a scan.
 fn is_library(dir: &Path) -> bool {
     let l = list(dir);
@@ -446,6 +466,19 @@ pub fn place(raw: &str, wine: Option<&Path>) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn w10_uvi_default_soundbank_root_is_discovered_without_duplicate_saved_roots() {
+        let base = std::env::temp_dir().join(format!("kontra-uvi-default-{}", std::process::id()));
+        let folder = base.join("Program Files/UVISoundBanks");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("Owned.UFS"), b"filesystem-only fixture").unwrap();
+        let added = uvi_roots_in(&[], vec![folder.clone()]);
+        assert_eq!(added, [root(&folder, false)], "UVI defaults must be imported even with existing Kontakt settings");
+        assert!(uvi_roots_in(&added, vec![folder.clone()]).is_empty());
+        assert!(uvi_roots_in(&[root(&base, false)], vec![folder]).is_empty());
+        std::fs::remove_dir_all(base).unwrap();
+    }
 
     #[test]
     fn a_wine_hive_names_library_folders() {

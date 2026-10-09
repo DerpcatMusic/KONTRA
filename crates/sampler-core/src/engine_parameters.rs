@@ -118,7 +118,7 @@ impl EngineParameterLaw {
         }
     }
 
-    fn valid(self) -> bool {
+    pub(crate) fn valid(self) -> bool {
         match self {
             Self::SignedNormalized => true,
             Self::Linear { low, high } => low.is_finite() && high.is_finite() && high >= low,
