@@ -266,6 +266,18 @@ audio-thread CPU. This demonstrates time off CPU in these outliers; it does not
 prove whether each delay was preemption or a wait. The host/scheduler issue
 remains open; no CPU-axis pass is claimed.
 
+The authored `cpu_audit` probe can collect per-miss thread context-switch deltas
+with `KONTRA_HOST_SCHED_DIAGNOSTIC=1`, adapting W13's `d0c89ffb` host diagnostic.
+Counters bracket events/render, excluding the pacing sleep. Voluntary switches
+can narrow the wait hypothesis; involuntary switches can narrow preemption.
+Neither counter alone identifies the delayed call or proves its cause. Failed
+counter reads produce null deltas, never zero-switch evidence. Diagnostic runs
+mark timing `DIAGNOSTIC-NOT-ACCEPTANCE`; normal runs skip these extra syscalls.
+The probe's `--check` and root example no-run pass after the build hold lifted.
+Fresh deadline attribution still requires a frozen binary/fixture and an
+ordered authored diagnostic window; those timing results remain unmeasured.
+Exported-host confirmation still belongs to W13; the plugin seam is not CLAP/VST3.
+
 Those CPU cells exposed another coverage gap: incoming MIDI notes reached the
 MPE adapter but bypassed UVI `onNote`, while exact host notes used the Lua driver.
 The authored fixture now changes its label to `Played` from `onNote`, and the
