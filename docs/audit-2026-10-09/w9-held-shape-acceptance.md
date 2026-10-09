@@ -2,7 +2,7 @@
 
 Runtime source `ec75697e36556d48a6b3c9ac6b65202d97cf071e`, exact clean base `54d9a5c5`. Production port `27d7ccb0`; checked raw AHDSR preparation/support `6496f199` → `3bb384bc` → `de97ecce` → `2ecad6b0`. No fused native whole-voice caller is enabled. W6 support is the same patch as `4507cb1e`, not a second implementation.
 
-Original sound-seam audit schedule, 48 kHz, twelve notes 48–59 at velocity 100, CC1=110/11=127/64=127, note-off at 48,000, pedal-off at 144,000, total 192,000 frames. One cold and warm execution per side/cell, reversed warm side order. Active quantiles below cover frames 12,000–48,000 (562 blocks at 64; 141 at 256). Whole-run quantiles, startup deadline misses, cache eviction receipts and activity evidence remain in the numeric receipt. Cold describes sample-file cache eviction, not a native host measurement.
+Original sound-seam audit schedule, 48 kHz, twelve notes 48–59 at velocity 100, CC1=110/11=127/64=127, note-off at 48,000, pedal-off at 144,000, total 192,000 frames. One cold and warm execution per side/cell, reversed warm side order. Active quantiles below cover frames 12,000–48,000 (562 blocks at 64; 141 at 256). Whole-run quantiles, total deadline misses, cache eviction receipts and activity evidence remain in the numeric receipt. Cold describes sample-file cache eviction, not a native host measurement.
 
 | Cell | Temperature | v1 p50 / p99 µs | Base p50 / p99 µs | Candidate p50 / p99 µs | p50 / p99 change |
 |---|---|---:|---:|---:|---:|
@@ -13,7 +13,7 @@ Original sound-seam audit schedule, 48 kHz, twelve notes 48–59 at velocity 100
 | Morph256 | cold | 40.521 / 47.651 | 674.972 / 818.365 | UNKNOWN | UNKNOWN |
 | Morph256 | warm | UNKNOWN | UNKNOWN | UNKNOWN | UNKNOWN |
 
-Fourteen rows are admitted QUIET, with zero event/render heap calls and zero underruns. Candidate startup/whole-run deadline misses are Horns64 cold 3/warm 4, Horns256 0/0; the active maxima remain below their block deadlines. Active candidate p50 remains 9.3–12.7 times frozen v1. This is an improvement checkpoint, not the required v1 CPU parity.
+Fourteen rows are admitted QUIET, with zero event/render heap calls and zero underruns. Candidate whole-run deadline misses are Horns64 cold 3/warm 4, Horns256 0/0; the active maxima remain below their block deadlines. The frozen common probe does not identify each missed block, so the remaining total misses are not assigned to startup or another phase. Active candidate p50 remains 9.3–12.7 times frozen v1. This is an improvement checkpoint, not the required v1 CPU parity.
 
 The Morph cold candidate attempt was CONTENDED after a foreign compiler resumed. Every timing value from that attempt is excluded. Three remaining Morph rows were not run; no admitted Morph regression or win exists. No timing repeat followed the clear Horns whole-CPU HOLD verdict. Full-instrument frozen-v1 CLAP output remains UNKNOWN/unrun; W12’s exact `814b9b47` API/host and numeric-only protocol are prepared, with family capture excluded from CPU acceptance. No PCM was persisted and no Kontakt/native parity is claimed.
 
