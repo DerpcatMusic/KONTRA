@@ -102,7 +102,7 @@ impl Cursor {
     /// traversal direction, and the virtual offset of the cursor's window
     /// start, to recover first-use deadlines.
     pub(crate) fn linear_reach(&self, frames: u32) -> Option<(Range<usize>, Direction, f64)> {
-        if self.loops.is_some() {
+        if self.wavetable.is_some() || self.loops.is_some() {
             return None;
         }
         let radius = if self.step() == 1. && self.fraction == 0. {
@@ -142,7 +142,7 @@ impl Cursor {
     /// superset of `visit_demand`'s ranges, ignoring envelope ends; `None` for
     /// ping-pong loops and a loop exit within reach.
     pub(crate) fn loop_reach(&self, frames: u32) -> Option<LoopReach> {
-        if self.loops.is_some() {
+        if self.wavetable.is_some() || self.loops.is_some() {
             return None;
         }
         let r = self.loop_range?;
@@ -295,6 +295,9 @@ impl Cursor {
         mut envelope: EnvelopeState,
         mut accept: impl FnMut(u32, Range<usize>) -> bool,
     ) -> bool {
+        if self.wavetable.is_some() {
+            return frames == 0 || self.done() || envelope.done() || accept(0, self.start..self.end);
+        }
         let mut covered_end: Option<i128> = None;
         let mut previous_step = self.step();
         for offset in 0..frames {
