@@ -240,7 +240,9 @@ mod tests {
             bandwidth: PreparedParameter::Constant(0.4),
             gain: PreparedParameter::Constant(6.),
         };
-        let c = coefficients(48000, 0.6, 0.4, 6.);
+        // Evaluate the oracle's transcendental coefficients at runtime, like playback.
+        let [frequency, bandwidth, gain] = std::hint::black_box([0.6, 0.4, 6.]);
+        let c = coefficients(48000, frequency, bandwidth, gain);
         for len in [1, 2, 3, 7, 31, 32, 33, 63, 64] {
             let mut state = ProcessorState::default();
             state.z = [[0.11, -0.02], [0.21, -0.03]];
