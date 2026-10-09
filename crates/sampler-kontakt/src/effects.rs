@@ -527,6 +527,17 @@ fn sv_q(r: f32) -> f64 {
     1.0 / ((2.0 - 0.013) * (1.0 - f64::from(r)).powf(3.1) + 0.013)
 }
 
+pub(crate) const LEGACY_CUTOFF_OCTAVES: f64 = 8.96;
+
+// Port from v1 0cb7a8a0:src/engine/filter.rs::filter_settings and Unit::key.
+fn legacy_hertz(x: f32) -> f64 {
+    f64::from(43.6f32 * (LEGACY_CUTOFF_OCTAVES as f32 * x.clamp(0., 1.)).exp2())
+}
+
+fn legacy_q(r: f32) -> f64 {
+    f64::from(std::f32::consts::FRAC_1_SQRT_2 * 28f32.powf(r.clamp(0., 1.)))
+}
+
 /// The types with a map to a Kontakt 8 filter name (read from its GUI):
 /// 52 SV LP2, 54 SV HP2, 55 SV LP4, 57 SV HP4. Only SV LP2's laws were
 /// measured; the other three are taken to share them (same family, same
@@ -534,7 +545,17 @@ fn sv_q(r: f32) -> f64 {
 /// HP1" whose stored cutoff is 0 and which a modulator or script drives, 90 is
 /// Formant I (not a low pass), and 106 "AR LP2/4" has a cutoff law that
 /// differs from SV (stored 0.5135 reads 603 Hz, SV would give 774 Hz).
+/// Legacy type 2 retains the pinned v1 lowpass proxy and its own knob laws.
 const FILTER_TYPES: &[(i32, FilterType)] = &[
+    (
+        2,
+        FilterType {
+            // ponytail: v1's two-pole proxy; upgrade after native Legacy LP1 topology is measured.
+            kind: sampler_ir::FilterKind::LowPass { poles: 2 },
+            hertz: legacy_hertz,
+            q: legacy_q,
+        },
+    ),
     (
         52,
         FilterType {
@@ -1667,6 +1688,26 @@ mod tests {
                 .collect::<Vec<_>>(),
             raw
         );
+    }
+
+    #[test]
+    fn v1_legacy_lowpass_keeps_the_authored_slot_and_knob_laws() {
+        let mut payload = 2i32.to_le_bytes().repeat(2);
+        for value in [0.5996094f32, 0.] { payload.extend(value.to_le_bytes()); }
+        for scope in [Scope::Voice, Scope::Bus] {
+            let mut saved = slot(0x18, payload.clone(), 1.);
+            saved.slot = 5;
+            let out = chain(&[saved], scope);
+            assert!(!out.notes.iter().any(|(_, _, _, r)| *r == sampler_ir::Reason::NotModeled),
+                "v1 executes legacy type 2: {:?}", out.notes);
+            assert_eq!(out.filter_slots, [(5, 0)]);
+            let sampler_ir::Processor::Filter(filter) = out.processors[0] else { panic!("missing filter") };
+            assert_eq!(filter.kind, sampler_ir::FilterKind::LowPass { poles: 2 });
+            assert_eq!(filter.cutoff, sampler_ir::Frequency::Hertz(f64::from(43.6f32 * (8.96 * 0.5996094f32).exp2())));
+            assert_eq!(filter.resonance, sampler_ir::Resonance::Q(f64::from(std::f32::consts::FRAC_1_SQRT_2)));
+        }
+        let sampler_ir::Processor::Filter(filter) = filter(2, 0.4, 0.7).unwrap() else { panic!("missing filter") };
+        assert_eq!(filter.resonance, sampler_ir::Resonance::Q(f64::from(std::f32::consts::FRAC_1_SQRT_2 * 28f32.powf(0.7))));
     }
 
     #[test]
