@@ -153,7 +153,11 @@ mod tests {
         let (file, index) = (dir.join("Library.ufs"), dir.join("index.json"));
         std::fs::write(&file, b"catalog").unwrap();
         let mut cache = Cache::default();
-        let value = Metadata::Bank(vec!["Presets/Piano.uvip".into()], Some("Content access needed".into()), [1; 16]);
+        let value = Metadata::Bank(
+            vec!["Presets/Piano.uvip".into()],
+            Some("Content access needed".into()),
+            [1; 16],
+        );
         assert_eq!(
             cache.memo(&file, || Some(value.clone())),
             Some(value.clone())

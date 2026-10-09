@@ -224,11 +224,20 @@ impl Mpe {
     }
 
     /// Preserve MIDI pairing and gestures, leaving note attacks to a script owner.
-    pub fn apply_silent(&mut self, runtime: &mut Runtime, packet: Packet<'_>) -> Result<Applied, ApplyError> {
+    pub fn apply_silent(
+        &mut self,
+        runtime: &mut Runtime,
+        packet: Packet<'_>,
+    ) -> Result<Applied, ApplyError> {
         self.apply_with_attack(runtime, packet, true)
     }
 
-    fn apply_with_attack(&mut self, runtime: &mut Runtime, packet: Packet<'_>, silent: bool) -> Result<Applied, ApplyError> {
+    fn apply_with_attack(
+        &mut self,
+        runtime: &mut Runtime,
+        packet: Packet<'_>,
+        silent: bool,
+    ) -> Result<Applied, ApplyError> {
         if runtime.id() != self.runtime {
             return Err(Error::StaleHandle.into());
         }
@@ -430,9 +439,21 @@ impl Mpe {
         let mut expression = member.expression(self.controls[usize::from(self.zone.manager())]);
         expression.pitch_semitones += self.transpose;
         let note = if silent {
-            runtime.note_on_pitched_in(self.performance, input, NotePitch::Key(input.key), velocity, expression)
+            runtime.note_on_pitched_in(
+                self.performance,
+                input,
+                NotePitch::Key(input.key),
+                velocity,
+                expression,
+            )
         } else {
-            runtime.trigger_in(self.performance, input, NotePitch::Key(input.key), velocity, expression)
+            runtime.trigger_in(
+                self.performance,
+                input,
+                NotePitch::Key(input.key),
+                velocity,
+                expression,
+            )
         }?;
         self.bindings.push(Binding {
             note,

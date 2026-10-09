@@ -666,17 +666,27 @@ impl Cx<'_> {
     }
 
     fn is_favorite(&self, path: &str) -> bool {
-        crate::plugin::UviFavorite::at(Path::new(path), &self.view.shelf)
-            .is_some_and(|source| self.selection.uvi_favorites.iter().any(|old| old.same_program(&source)))
-            || self.selection.favorites.iter().any(|old| old == path)
+        crate::plugin::UviFavorite::at(Path::new(path), &self.view.shelf).is_some_and(|source| {
+            self.selection
+                .uvi_favorites
+                .iter()
+                .any(|old| old.same_program(&source))
+        }) || self.selection.favorites.iter().any(|old| old == path)
     }
 
     /// Star `path`, or unstar it.
     fn toggle_favorite(&mut self, path: &str) {
         // Port from v1 4bffbb18:src/ui/mod.rs::toggle_uvi_favorite; locator is not identity.
         if let Some(source) = crate::plugin::UviFavorite::at(Path::new(path), &self.view.shelf) {
-            match self.selection.uvi_favorites.iter().position(|old| old.same_program(&source)) {
-                Some(at) => { self.selection.uvi_favorites.remove(at); }
+            match self
+                .selection
+                .uvi_favorites
+                .iter()
+                .position(|old| old.same_program(&source))
+            {
+                Some(at) => {
+                    self.selection.uvi_favorites.remove(at);
+                }
                 None => self.selection.uvi_favorites.push(source),
             }
             self.selection.favorites.retain(|old| old != path);
@@ -743,8 +753,11 @@ impl Cx<'_> {
             .parts
             .get(slot)
             .is_some_and(|part| self.p.shared.queue_snapshot(slot, part, path));
-        if accepted { self.show(slot); }
-        else { self.state.notice = "Select a base NKI instrument before loading a preset.".into(); }
+        if accepted {
+            self.show(slot);
+        } else {
+            self.state.notice = "Select a base NKI instrument before loading a preset.".into();
+        }
     }
 
     /// Put another instrument (or a multi) in `slot`.
@@ -1339,7 +1352,10 @@ fn picked(cx: &mut Cx) {
                 .is_some_and(|p| p.source() == source)
             {
                 cx.snapshot(slot, path.to_string_lossy().into_owned());
-            } else { cx.state.notice = "Preset ignored: the base instrument changed while its dialog was open.".into(); }
+            } else {
+                cx.state.notice =
+                    "Preset ignored: the base instrument changed while its dialog was open.".into();
+            }
         }
         Some(picker::Picked::Multi(mut path)) => {
             if !library::is_multi(&path) {
@@ -1699,10 +1715,10 @@ impl Cx<'_> {
 
 #[cfg(feature = "shots")]
 pub use ir_view::uvi_ui_health;
-#[cfg(test)]
-mod browser_tests;
 #[cfg(all(test, feature = "shots"))]
 mod browser_perf_tests;
+#[cfg(test)]
+mod browser_tests;
 #[cfg(test)]
 mod chrome_tests;
 #[cfg(test)]

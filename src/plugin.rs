@@ -281,7 +281,9 @@ pub struct UviFavorite {
 
 impl UviFavorite {
     pub(crate) fn at(path: &Path, shelf: &library::Shelf) -> Option<Self> {
-        let (bank, uuid) = path.ancestors().find_map(|bank| shelf.bank_ids.get(bank).map(|uuid| (bank, uuid)))?;
+        let (bank, uuid) = path
+            .ancestors()
+            .find_map(|bank| shelf.bank_ids.get(bank).map(|uuid| (bank, uuid)))?;
         Some(Self {
             bank: bank.to_str()?.into(),
             member: path.strip_prefix(bank).ok()?.to_str()?.into(),
@@ -297,16 +299,34 @@ impl UviFavorite {
     /// `files` has the native path order emitted by library scans.
     pub(crate) fn resolve(&mut self, shelf: &library::Shelf, files: &[PathBuf]) -> Option<PathBuf> {
         let member = Path::new(&self.member);
-        if member.is_absolute() || member.components().any(|c| !matches!(c, std::path::Component::Normal(_))) { return None; }
-        let id_matches = |uuid: &[u8; 16]| self.high == u64::from_le_bytes(uuid[..8].try_into().unwrap())
-            && self.low == u64::from_le_bytes(uuid[8..].try_into().unwrap());
+        if member.is_absolute()
+            || member
+                .components()
+                .any(|c| !matches!(c, std::path::Component::Normal(_)))
+        {
+            return None;
+        }
+        let id_matches = |uuid: &[u8; 16]| {
+            self.high == u64::from_le_bytes(uuid[..8].try_into().unwrap())
+                && self.low == u64::from_le_bytes(uuid[8..].try_into().unwrap())
+        };
         let old = Path::new(&self.bank);
         let path = old.join(member);
-        if shelf.bank_ids.get(old).is_some_and(id_matches) && files.binary_search(&path).is_ok() { return Some(path); }
-        let mut matches = shelf.bank_ids.iter().filter(|(_, uuid)| id_matches(uuid))
-            .filter_map(|(bank, _)| { let path = bank.join(member); files.binary_search(&path).is_ok().then_some((bank, path)) });
+        if shelf.bank_ids.get(old).is_some_and(id_matches) && files.binary_search(&path).is_ok() {
+            return Some(path);
+        }
+        let mut matches = shelf
+            .bank_ids
+            .iter()
+            .filter(|(_, uuid)| id_matches(uuid))
+            .filter_map(|(bank, _)| {
+                let path = bank.join(member);
+                files.binary_search(&path).is_ok().then_some((bank, path))
+            });
         let (bank, path) = matches.next()?;
-        if matches.next().is_some() { return None; }
+        if matches.next().is_some() {
+            return None;
+        }
         self.bank = bank.to_str()?.into();
         Some(path)
     }
@@ -3426,34 +3446,61 @@ pub(crate) mod tests {
     #[test]
     fn w10_uvi_favorite_uuid_resolution_keeps_missing_and_ambiguous_identity() {
         let mut shelf = library::Shelf::default();
-        let (old, moved, copy) = (PathBuf::from("/banks/Old.ufs"), PathBuf::from("/banks/Moved.ufs"), PathBuf::from("/banks/Copy.ufs"));
+        let (old, moved, copy) = (
+            PathBuf::from("/banks/Old.ufs"),
+            PathBuf::from("/banks/Moved.ufs"),
+            PathBuf::from("/banks/Copy.ufs"),
+        );
         shelf.bank_ids.insert(old.clone(), [1; 16]);
         let mut star = UviFavorite::at(&old.join("Keys/Piano.uvip"), &shelf).unwrap();
         let saved = star.serialize();
         star = UviFavorite::deserialize(&saved).unwrap();
         shelf.bank_ids.insert(old.clone(), [2; 16]);
-        assert!(star.resolve(&shelf, &[old.join(&star.member)]).is_none(), "a replacement bank cannot steal an unresolved favourite");
+        assert!(
+            star.resolve(&shelf, &[old.join(&star.member)]).is_none(),
+            "a replacement bank cannot steal an unresolved favourite"
+        );
         assert_eq!(star.bank, old.to_str().unwrap());
         shelf.bank_ids.insert(moved.clone(), [1; 16]);
         shelf.bank_ids.insert(copy.clone(), [1; 16]);
-        let mut files = vec![old.join(&star.member), moved.join(&star.member), copy.join(&star.member)];
+        let mut files = vec![
+            old.join(&star.member),
+            moved.join(&star.member),
+            copy.join(&star.member),
+        ];
         files.sort();
-        assert!(star.resolve(&shelf, &files).is_none(), "two relocated UUID copies are ambiguous");
+        assert!(
+            star.resolve(&shelf, &files).is_none(),
+            "two relocated UUID copies are ambiguous"
+        );
         shelf.bank_ids.remove(&copy);
         assert_eq!(star.resolve(&shelf, &files), Some(moved.join(&star.member)));
         shelf.bank_ids.insert(copy.clone(), [1; 16]);
-        assert_eq!(star.resolve(&shelf, &files), Some(moved.join(&star.member)), "a still-valid saved locator wins over another copy");
+        assert_eq!(
+            star.resolve(&shelf, &files),
+            Some(moved.join(&star.member)),
+            "a still-valid saved locator wins over another copy"
+        );
         let same = UviFavorite::at(&copy.join(&star.member), &shelf).unwrap();
-        assert!(star.same_program(&same), "the locator does not change authored identity");
+        assert!(
+            star.same_program(&same),
+            "the locator does not change authored identity"
+        );
         let other = UviFavorite::at(&copy.join("Keys/EP.uvip"), &shelf).unwrap();
         assert!(!star.same_program(&other));
         let replaced = UviFavorite::at(&old.join(&star.member), &shelf).unwrap();
         assert!(!star.same_program(&replaced));
-        assert!(star.resolve(&shelf, &[]).is_none(), "a missing member cannot be synthesized");
+        assert!(
+            star.resolve(&shelf, &[]).is_none(),
+            "a missing member cannot be synthesized"
+        );
         for invalid in ["../Outside.uvip", "/Outside.uvip", "Keys/../Outside.uvip"] {
             let mut bad = same.clone();
             bad.member = invalid.into();
-            assert!(bad.resolve(&shelf, &files).is_none(), "saved members must stay inside their bank");
+            assert!(
+                bad.resolve(&shelf, &files).is_none(),
+                "saved members must stay inside their bank"
+            );
         }
     }
 
@@ -3488,7 +3535,12 @@ pub(crate) mod tests {
                 ..Default::default()
             }],
             outputs: 2,
-            uvi_favorites: vec![UviFavorite { bank: "/banks/Piano.ufs".into(), member: "Keys/Piano.uvip".into(), high: u64::MAX, low: 0x0123456789abcdef }],
+            uvi_favorites: vec![UviFavorite {
+                bank: "/banks/Piano.ufs".into(),
+                member: "Keys/Piano.uvip".into(),
+                high: u64::MAX,
+                low: 0x0123456789abcdef,
+            }],
             ..Default::default()
         };
         assert!(Selection::deserialize(&state.serialize()).unwrap() == state);
@@ -3904,11 +3956,26 @@ mod settings_parity_tests {
         assert_eq!(report["status"], "failed");
         assert!(report["failure"].is_string());
         crate::diagnostics::flush(std::time::Duration::from_secs(5)).unwrap();
-        assert!(crate::diagnostics::snapshot().events.iter().any(|event|
-            event.load_id.as_deref() == report["load_id"].as_str() && event.event == "load_finished"
-                && event.details["status"] == "failed"), "failed validation is retained in the diagnostic journal");
-        assert!(p.shared.view.lock_unpoisoned().parts[0].status.contains("Preset was not loaded"));
-        assert!(p.shared.queue_snapshot(0, &part, "/unavailable-kontakto/stale.nksn".into()));
+        assert!(
+            crate::diagnostics::snapshot()
+                .events
+                .iter()
+                .any(
+                    |event| event.load_id.as_deref() == report["load_id"].as_str()
+                        && event.event == "load_finished"
+                        && event.details["status"] == "failed"
+                ),
+            "failed validation is retained in the diagnostic journal"
+        );
+        assert!(
+            p.shared.view.lock_unpoisoned().parts[0]
+                .status
+                .contains("Preset was not loaded")
+        );
+        assert!(
+            p.shared
+                .queue_snapshot(0, &part, "/unavailable-kontakto/stale.nksn".into())
+        );
         p.selection.write_unpoisoned().parts[0].snapshot = "replacement.nksn".into();
         p.shared.view.lock_unpoisoned().parts[0].status = "replacement".into();
         assert!(prepare_snapshot(&p).is_none());
@@ -4309,6 +4376,4 @@ mod timing_loader_tests {
         drop(p);
         std::fs::remove_dir_all(dir).unwrap();
     }
-
-
 }

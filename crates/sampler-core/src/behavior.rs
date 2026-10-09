@@ -1419,7 +1419,13 @@ impl Runtime {
         let instance = generation.prepared.programs[program].script_instance;
         let (mut cells, captured_cells, mut dirty_cells) = instance
             .and_then(|i| generation.scripts.get_mut(usize::from(i.0)))
-            .map(|bank| (Some(&mut bank.cells[..]), bank.captured_cells.as_deref(), bank.dirty_cells.as_deref_mut()))
+            .map(|bank| {
+                (
+                    Some(&mut bank.cells[..]),
+                    bank.captured_cells.as_deref(),
+                    bank.dirty_cells.as_deref_mut(),
+                )
+            })
             .unwrap_or((None, None, None));
         let base = id.0.index * self.behavior_stride;
         let Some(locals) = self
@@ -1530,7 +1536,12 @@ impl Runtime {
                     let target = cell!(cell);
                     let changed = *target != value;
                     *target = value;
-                    wrote_script |= super::ops::mark_captured_cell(captured_cells, dirty_cells.as_deref_mut(), cell as usize, changed);
+                    wrote_script |= super::ops::mark_captured_cell(
+                        captured_cells,
+                        dirty_cells.as_deref_mut(),
+                        cell as usize,
+                        changed,
+                    );
                 }
                 Instruction::ReadScriptArray {
                     array,
@@ -1555,7 +1566,12 @@ impl Runtime {
                     let target = cell!(at);
                     let changed = *target != value;
                     *target = value;
-                    wrote_script |= super::ops::mark_captured_cell(captured_cells, dirty_cells.as_deref_mut(), at as usize, changed);
+                    wrote_script |= super::ops::mark_captured_cell(
+                        captured_cells,
+                        dirty_cells.as_deref_mut(),
+                        at as usize,
+                        changed,
+                    );
                 }
                 _ => break,
             }

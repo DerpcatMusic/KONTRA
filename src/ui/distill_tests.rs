@@ -8,9 +8,22 @@ fn empty_browser_keeps_help_on_its_action() {
         let p = Arc::new(SamplerParams::new());
         let h = Harness::new(&p, width, height);
         let scene = h.ui.scene().unwrap();
-        assert!(scene.surfaces().any(|s| s.text_value.as_deref() == Some("No libraries yet")));
-        assert!(scene.surface("empty-add-many").is_none() && scene.surface("empty-add-one").is_none());
-        assert!(scene.surface("libraries-add").unwrap().tip.as_deref().is_some_and(|tip| tip.contains("Add libraries")));
+        assert!(
+            scene
+                .surfaces()
+                .any(|s| s.text_value.as_deref() == Some("No libraries yet"))
+        );
+        assert!(
+            scene.surface("empty-add-many").is_none() && scene.surface("empty-add-one").is_none()
+        );
+        assert!(
+            scene
+                .surface("libraries-add")
+                .unwrap()
+                .tip
+                .as_deref()
+                .is_some_and(|tip| tip.contains("Add libraries"))
+        );
     }
 }
 

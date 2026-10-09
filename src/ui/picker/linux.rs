@@ -230,7 +230,9 @@ fn request(ask: &Ask, parent: Option<Parent>) -> Result<DialogRequest, String> {
             None,
         ),
         Ask::Snapshot { from, .. } => (
-            "Load a preset for this instrument", open, Some(from.clone()),
+            "Load a preset for this instrument",
+            open,
+            Some(from.clone()),
             Some(("Kontakt preset", vec!["nksn".into()])),
         ),
         Ask::Artwork { library } => (

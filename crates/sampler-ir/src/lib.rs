@@ -426,7 +426,8 @@ pub struct Wavetable {
 }
 impl Wavetable {
     pub fn valid(self) -> bool {
-        [self.position, self.phase, self.form1, self.form2].iter()
+        [self.position, self.phase, self.form1, self.form2]
+            .iter()
             .all(|v| v.is_finite() && (0. ..=1.).contains(v))
             && matches!(self.form1_type, 0 | 16)
             && matches!(self.form2_type, 0 | 16)

@@ -476,8 +476,22 @@ impl Shelf {
         let by_dir = (libraries.iter().enumerate())
             .map(|(n, l)| (l.dir.clone(), n))
             .collect();
-        let by_name = libraries.iter().enumerate().map(|(n, l)| (l.name.clone(), n)).collect();
-        Self { libraries, by_dir, by_name, per_root: Vec::new(), snapshots: HashMap::new(), bank_issues: Vec::new(), bank_status: BTreeMap::new(), bank_ids: BTreeMap::new(), path_issues: BTreeMap::new() }
+        let by_name = libraries
+            .iter()
+            .enumerate()
+            .map(|(n, l)| (l.name.clone(), n))
+            .collect();
+        Self {
+            libraries,
+            by_dir,
+            by_name,
+            per_root: Vec::new(),
+            snapshots: HashMap::new(),
+            bank_issues: Vec::new(),
+            bank_status: BTreeMap::new(),
+            bank_ids: BTreeMap::new(),
+            path_issues: BTreeMap::new(),
+        }
     }
 
     /// The library `path` is in: the nearest library folder above it.
@@ -1004,13 +1018,25 @@ fn cached_presets(
         } else if is_preset(path) {
             cache.observe(path);
             out.push(e.into_path());
-        } else if path.extension().is_some_and(|x| x.eq_ignore_ascii_case("ufs")) {
-            if let Some(cache::Metadata::Bank(members, status, uuid)) = cache.memo(path, || match sampler_uvi::Bank::catalog_status(path) {
-                Ok((members, status, uuid)) => Some(cache::Metadata::Bank(members, status, uuid)),
-                Err(e) => { progress.bank_issue(path, e); None }
-            }) {
+        } else if path
+            .extension()
+            .is_some_and(|x| x.eq_ignore_ascii_case("ufs"))
+        {
+            if let Some(cache::Metadata::Bank(members, status, uuid)) =
+                cache.memo(path, || match sampler_uvi::Bank::catalog_status(path) {
+                    Ok((members, status, uuid)) => {
+                        Some(cache::Metadata::Bank(members, status, uuid))
+                    }
+                    Err(e) => {
+                        progress.bank_issue(path, e);
+                        None
+                    }
+                })
+            {
                 lock(&progress.bank_ids).insert(path.into(), uuid);
-                if let Some(status) = status { lock(&progress.bank_status).insert(path.into(), status); }
+                if let Some(status) = status {
+                    lock(&progress.bank_status).insert(path.into(), status);
+                }
                 out.extend(members.into_iter().map(|member| path.join(member)));
             }
         }
@@ -1173,9 +1199,14 @@ fn cached_scan(
     shelf.path_issues = lock(&progress.path_issues).clone();
     shelf.bank_status = lock(&progress.bank_status).clone();
     shelf.bank_ids = lock(&progress.bank_ids).clone();
-    shelf.bank_issues = lock(&progress.bank_issues).iter().map(|((unsupported, message), locations)| BankIssue {
-        unsupported: *unsupported, message: message.clone(), locations: locations.iter().cloned().collect(),
-    }).collect();
+    shelf.bank_issues = lock(&progress.bank_issues)
+        .iter()
+        .map(|((unsupported, message), locations)| BankIssue {
+            unsupported: *unsupported,
+            message: message.clone(),
+            locations: locations.iter().cloned().collect(),
+        })
+        .collect();
     for issue in &shelf.bank_issues {
         crate::diagnostics::event(
             crate::diagnostics::LogLevel::Warning,
@@ -1896,7 +1927,10 @@ pub(crate) mod tests {
         let alpha = root.join("Alpha.ufs");
         let mut bytes = std::fs::read(&alpha).unwrap();
         bytes[8..24].fill(7);
-        let member = bytes.windows(4).position(|x| x == 0x675850e4u32.to_le_bytes()).unwrap();
+        let member = bytes
+            .windows(4)
+            .position(|x| x == 0x675850e4u32.to_le_bytes())
+            .unwrap();
         bytes[member + 276] = 2;
         std::fs::write(&alpha, bytes).unwrap();
         let roots = [Root {
@@ -1924,7 +1958,11 @@ pub(crate) mod tests {
         assert_eq!(warm.bank_ids, shelf.bank_ids);
         assert_eq!(warm.bank_ids.len(), 2);
         assert_eq!(warm.bank_ids.get(&alpha), Some(&[7; 16]));
-        assert_eq!(warm.bank_status.len(), 1, "clear bank must not receive an access warning");
+        assert_eq!(
+            warm.bank_status.len(),
+            1,
+            "clear bank must not receive an access warning"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

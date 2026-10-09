@@ -88,8 +88,14 @@ impl Harness {
     #[cfg(feature = "shots")]
     pub(crate) fn tick_cost(&mut self, input: Input) -> (usize, usize) {
         let mut root = None;
-        let build = crate::plugin::tests::allocations(|| root = Some((self.build)(&mut self.ui, &mut self.bridge)));
-        let frame = crate::plugin::tests::allocations(|| { self.ui.frame(root.unwrap(), Some(self.size), input, 1. / 60.).unwrap(); });
+        let build = crate::plugin::tests::allocations(|| {
+            root = Some((self.build)(&mut self.ui, &mut self.bridge))
+        });
+        let frame = crate::plugin::tests::allocations(|| {
+            self.ui
+                .frame(root.unwrap(), Some(self.size), input, 1. / 60.)
+                .unwrap();
+        });
         (build, frame)
     }
 
@@ -541,13 +547,29 @@ fn the_browser_finds_by_library_and_folder() {
     h.press("toggle-browser");
     h.idle(30);
     assert!(!shown(&h, "search"), "the browser shuts");
-    h.tick(key(Key::Char('f'), Mods { ctrl: true, ..Mods::default() }));
+    h.tick(key(
+        Key::Char('f'),
+        Mods {
+            ctrl: true,
+            ..Mods::default()
+        },
+    ));
     h.idle(30);
-    assert_eq!(h.ui.focus_key(), Some("search"), "Ctrl+F opens the browser on its single search");
+    assert_eq!(
+        h.ui.focus_key(),
+        Some("search"),
+        "Ctrl+F opens the browser on its single search"
+    );
     // 042 alone also matches Patch 042 in other libraries; another preset word disambiguates.
-    h.tick(Input { text: "lib 042 099".into(), ..Default::default() });
+    h.tick(Input {
+        text: "lib 042 099".into(),
+        ..Default::default()
+    });
     h.idle(2);
-    assert!(shown(&h, "library-42") && !shown(&h, "library-41"), "it narrows the libraries");
+    assert!(
+        shown(&h, "library-42") && !shown(&h, "library-41"),
+        "it narrows the libraries"
+    );
     // Search returns flat presets; choosing the card and clearing the query reveals its hierarchy.
     h.press("library-42");
     h.ui.focus("search");
@@ -555,7 +577,11 @@ fn the_browser_finds_by_library_and_folder() {
     tap(&mut h, Key::Escape);
     h.ui.focus("library-42");
     tap(&mut h, Key::Enter);
-    assert_eq!(h.ui.focus_key(), Some("folder-0"), "Enter opens the chosen library hierarchy");
+    assert_eq!(
+        h.ui.focus_key(),
+        Some("folder-0"),
+        "Enter opens the chosen library hierarchy"
+    );
     // Instruments, all the library holds, starts open over its four folders.
     assert!(shown(&h, "folder-4") && !shown(&h, "instrument-5"));
     tap(&mut h, Key::Down);
@@ -1320,24 +1346,48 @@ fn split_browser_keeps_both_panes_usable_across_resize_and_scale() {
                 h.size = size;
                 h.idle(3);
                 let scene = h.ui.scene().unwrap();
-                let frame = |id| scene.surface(id).unwrap_or_else(|| panic!("missing {id}")).frame;
+                let frame = |id| {
+                    scene
+                        .surface(id)
+                        .unwrap_or_else(|| panic!("missing {id}"))
+                        .frame
+                };
                 let (browser, sources, presets, search, divider) = (
-                    frame("browser"), frame("browser-sources-false"), frame("browser-list"),
-                    frame("search"), frame("browser-split"),
+                    frame("browser"),
+                    frame("browser-sources-false"),
+                    frame("browser-list"),
+                    frame("search"),
+                    frame("browser-split"),
                 );
-                assert!(presets.size.height >= TEXT * 6. + 8. - 0.5,
-                    "two tall preset rows must fit: split={split} scale={scale} size={size:?} presets={presets:?}");
-                assert!(sources.size.height >= browser::THUMB.1 + 2. * TIGHT - 0.5,
-                    "one library row must fit: split={split} scale={scale} sources={sources:?}");
+                assert!(
+                    presets.size.height >= TEXT * 6. + 8. - 0.5,
+                    "two tall preset rows must fit: split={split} scale={scale} size={size:?} presets={presets:?}"
+                );
+                assert!(
+                    sources.size.height >= browser::THUMB.1 + 2. * TIGHT - 0.5,
+                    "one library row must fit: split={split} scale={scale} sources={sources:?}"
+                );
                 assert!(search.y + search.size.height <= sources.y + 0.5);
                 assert!(sources.y + sources.size.height <= divider.y + 0.5);
                 assert!(divider.y + divider.size.height <= presets.y + 0.5);
-                assert!(presets.y + presets.size.height <= browser.y + browser.size.height + 0.5,
-                    "the preset pane stays inside the browser: split={split} scale={scale} size={size:?} browser={browser:?} sources={sources:?} presets={presets:?} search={search:?}");
-                assert!((presets.y + presets.size.height - browser.y - browser.size.height).abs() < 0.5,
-                    "constrained pane fractions consume the available height");
-                assert_eq!(read(&p.selection).browser_split, split as f32, "resize preserves the saved split");
-                let start = if scene.surface("instrument-99").is_some() { "instrument-99" } else { "instrument-0" };
+                assert!(
+                    presets.y + presets.size.height <= browser.y + browser.size.height + 0.5,
+                    "the preset pane stays inside the browser: split={split} scale={scale} size={size:?} browser={browser:?} sources={sources:?} presets={presets:?} search={search:?}"
+                );
+                assert!(
+                    (presets.y + presets.size.height - browser.y - browser.size.height).abs() < 0.5,
+                    "constrained pane fractions consume the available height"
+                );
+                assert_eq!(
+                    read(&p.selection).browser_split,
+                    split as f32,
+                    "resize preserves the saved split"
+                );
+                let start = if scene.surface("instrument-99").is_some() {
+                    "instrument-99"
+                } else {
+                    "instrument-0"
+                };
                 h.ui.focus(start);
                 h.tick(Input {
                     keys: vec![KeyPress {
@@ -3120,8 +3170,15 @@ fn library_rename_edits_only_the_display_name_and_filter_follows_it() {
     );
     drop(view);
     h.ui.focus("search");
-    h.tick(Input { text: "evening".into(), ..Default::default() }); h.idle(2);
-    assert!(h.ui.scene().unwrap().surface("library-0").is_some(), "the new name is searchable");
+    h.tick(Input {
+        text: "evening".into(),
+        ..Default::default()
+    });
+    h.idle(2);
+    assert!(
+        h.ui.scene().unwrap().surface("library-0").is_some(),
+        "the new name is searchable"
+    );
     h.press("library-0");
     assert!(
         h.ui.scene().unwrap().surface("instrument-0").is_some(),
