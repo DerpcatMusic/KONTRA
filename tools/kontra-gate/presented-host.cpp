@@ -57,7 +57,11 @@ struct Host {
         [](const clap_host_t* h, uint32_t w, uint32_t height) {
             if (!w || !height || w > 4096 || height > 2160) return false;
             auto& host=*static_cast<Host*>(h->host_data);
-            if (host.fixed_rss && (w!=1180 || height!=760)) return false;
+            const bool accepted=!host.fixed_rss || (w==1180 && height==760);
+            if (host.fixed_rss) {
+                std::printf("{\"kind\":\"resize_request\",\"width\":%u,\"height\":%u,\"accepted\":%s}\n",w,height,accepted?"true":"false"); std::fflush(stdout);
+            }
+            if (!accepted) return false;
             host.resize=(uint64_t(w)<<32)|height; return true;
         }, [](const clap_host_t*) { return true; }, [](const clap_host_t*) { return false; }, [](const clap_host_t*, bool) {}};
     clap_host_thread_check_t threads{
@@ -93,6 +97,10 @@ static Window open_editor(const clap_plugin_t* p, const clap_plugin_gui_t* gui, 
         XChangeWindowAttributes(display,window,CWOverrideRedirect,&attributes);
     }
     XSelectInput(display, window, StructureNotifyMask);
+    if (rss) {
+        XSync(display,False); XWindowAttributes attr{}; require(XGetWindowAttributes(display,window,&attr),"created parent geometry");
+        std::printf("{\"kind\":\"created_parent\",\"width\":%d,\"height\":%d,\"border\":%d,\"override_redirect\":%s}\n",attr.width,attr.height,attr.border_width,attr.override_redirect?"true":"false"); std::fflush(stdout);
+    }
     XStoreName(display, window, "KONTRA presented gate"); XMapRaised(display, window); XSync(display, False);
     clap_window_t parent{}; parent.api=CLAP_WINDOW_API_X11; parent.x11=window;
     require(gui->set_parent(p, &parent) && gui->show(p), "GUI attach/show");
@@ -105,8 +113,8 @@ static void pump(const clap_plugin_t* p, const clap_plugin_gui_t* gui, Host& hos
         XEvent event{}; XNextEvent(display, &event);
         if (window && event.type == ConfigureNotify && event.xconfigure.window == window) {
             uint32_t w=event.xconfigure.width,h=event.xconfigure.height;
-            if (host.fixed_rss && (w!=1180 || h!=760)) {
-                w=1180; h=760; XResizeWindow(display,window,w,h);
+            if (host.fixed_rss) {
+                std::printf("{\"kind\":\"parent_configure\",\"width\":%u,\"height\":%u,\"border\":%d,\"synthetic\":%s}\n",w,h,event.xconfigure.border_width,event.xconfigure.send_event?"true":"false"); std::fflush(stdout);
             }
             require(gui->set_size(p,w,h), "host resize");
         }
@@ -150,7 +158,7 @@ static void rss_lifecycle(const clap_plugin_t* p, const clap_plugin_gui_t* gui, 
             XWindowAttributes frame{}; require(XGetWindowAttributes(display,window,&frame),"RSS parent geometry");
             parent_w=frame.width; parent_h=frame.height;
             require(gui->get_size(p,&clap_w,&clap_h),"RSS CLAP geometry");
-            std::printf("{\"kind\":\"geometry\",\"phase\":\"%s\",\"child\":[%u,%u],\"parent\":[%u,%u],\"clap\":[%u,%u]}\n",phases[phase],width,height,parent_w,parent_h,clap_w,clap_h);
+            std::printf("{\"kind\":\"geometry\",\"phase\":\"%s\",\"child\":[%u,%u],\"parent\":[%u,%u],\"clap\":[%u,%u],\"parent_border\":%d,\"parent_override_redirect\":%s}\n",phases[phase],width,height,parent_w,parent_h,clap_w,clap_h,frame.border_width,frame.override_redirect?"true":"false");
             std::fflush(stdout);
             require(parent_w==1180 && parent_h==760 && width==parent_w && height==parent_h
                     && clap_w==parent_w && clap_h==parent_h,"RSS viewport agreement");
