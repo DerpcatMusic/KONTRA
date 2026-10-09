@@ -158,11 +158,11 @@ static void rss_lifecycle(const clap_plugin_t* p, const clap_plugin_gui_t* gui, 
             XWindowAttributes frame{}; require(XGetWindowAttributes(display,window,&frame),"RSS parent geometry");
             parent_w=frame.width; parent_h=frame.height;
             require(gui->get_size(p,&clap_w,&clap_h),"RSS CLAP geometry");
-            std::printf("{\"kind\":\"geometry\",\"phase\":\"%s\",\"child\":[%u,%u],\"parent\":[%u,%u],\"clap\":[%u,%u],\"parent_border\":%d,\"parent_override_redirect\":%s}\n",phases[phase],width,height,parent_w,parent_h,clap_w,clap_h,frame.border_width,frame.override_redirect?"true":"false");
+            std::printf("{\"kind\":\"geometry\",\"phase\":\"%s\",\"child\":[%u,%u],\"child_origin\":[%d,%d],\"parent\":[%u,%u],\"clap\":[%u,%u],\"parent_border\":%d,\"parent_override_redirect\":%s}\n",phases[phase],width,height,attr.x,attr.y,parent_w,parent_h,clap_w,clap_h,frame.border_width,frame.override_redirect?"true":"false");
             std::fflush(stdout);
             // Xwayland adds one pixel even to a plugin-less override-redirect parent.
             require(parent_w>=1179 && parent_w<=1181 && parent_h>=759 && parent_h<=761
-                    && width==parent_w && height==parent_h
+                    && attr.x==0 && attr.y==0 && width==parent_w && height==parent_h
                     && clap_w==parent_w && clap_h==parent_h,"RSS viewport agreement");
         }
         // No pixel readback allocations, explicit collection or heap trimming during RSS.
