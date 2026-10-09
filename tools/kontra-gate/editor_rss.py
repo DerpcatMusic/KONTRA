@@ -42,6 +42,7 @@ def summarize(rows):
 
 
 def author_state(template, item):
+    assert item.suffix.lower() != '.nkm' or item.name == 'Big Screen.nkm', 'only the inventoried two-part Big Screen multi is supported'
     programs = [0,1] if item.suffix.lower() == '.nkm' else [0]
     first = v1_state(template, str(item), 0)
     if len(programs) == 1: return first, programs
@@ -60,7 +61,7 @@ def observe(host, plugin, item, folder):
     folder.mkdir(parents=True, exist_ok=False)
     receipt = dict(plugin_path=str(plugin), plugin_sha256=sha(plugin), host_sha256=sha(host),
                    item_sha256=sha(item), display=os.environ.get('DISPLAY'), status='UNKNOWN',
-                   ui_selection='Original (private settings)', ui_scale=1, window=[1180, 760],
+                   ui_selection='Original (private settings)', ui_scale=1, window=[1180, 760], host_viewport='X11 override_redirect (fixed, mapped on real DISPLAY)', effective_device_scale='CLAP-requested 1; renderer internal scale not exported',
                    settle_seconds=4, sample_count_per_step=10, sample_interval_seconds=.1,
                    close='hide + destroy; plugin/audio engine retained', explicit_gc=False,
                    malloc_trim=False, pixel_readback=False, audio='48kHz/64 frames paced; no MIDI',
@@ -128,7 +129,7 @@ def observe(host, plugin, item, folder):
         finally:
             if job and job.poll() is None: job.kill(); job.wait()
             capture.stderr.flush(); capture.stderr.seek(0); errors = capture.stderr.read()
-            receipt['host_failures'] = [stage for stage in ('GUI create','GUI scale 1','GUI fixed size','matched GUI size','RSS editor child','RSS mapped bounded editor','GUI hide','load deadline','native state save','GUI attach/show') if ('presented-host failure: '+stage).encode() in errors]
+            receipt['host_failures'] = [stage for stage in ('GUI create','GUI scale 1','GUI fixed size','matched GUI size','RSS editor child','RSS mapped bounded editor','GUI hide','load deadline','native state save','GUI attach/show','RSS viewport agreement') if ('presented-host failure: '+stage).encode() in errors]
             capture.finish()
         diagnostics = (folder/'session' if (folder/'session').exists() else folder)/'plugin-diagnostics.json'
         values = json.loads(diagnostics.read_text()); values['plugin_host_run'] = True
