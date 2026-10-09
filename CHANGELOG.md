@@ -57,12 +57,11 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Known issues
 
-- Some Kontakt and Falcon effects, modulation and script actions remain incomplete.
+- Some Kontakt and Falcon effects, modulation and script actions remain incomplete; controls and artwork can differ from the original interface.
 - Saving and reopening a project may not restore every Kontakt script setting.
-- Some instrument controls and artwork may differ from the original interface.
+- Protected UVI banks can appear as catalogued with loading limits while their content remains unavailable.
 - Large libraries can use substantial memory, and performance may be worse than KONTRA v1.
-- Some Vista and Pacific features remain untranslated. All 56 installed NKI presets
-  resolve their required sample and impulse resources on source54d9; full audio parity remains unverified.
+- All 56 installed Vista and Pacific presets passed sample and impulse resource checks on 0.3.381. Some features remain untranslated; full audio parity remains unverified.
 
 ### Fixed after 0.3.224
 
