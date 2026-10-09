@@ -4,6 +4,7 @@ use crate::{
     BehaviorId, ControlId, ControlValue, Error, Outcome, PlanId, Runtime, ScriptInstanceId, Text,
 };
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ScriptStateAddress {
     Control(ControlId),
@@ -17,6 +18,7 @@ pub enum ScriptStateAddress {
     },
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ScriptStateValue {
     Control(ControlValue),
@@ -25,6 +27,7 @@ pub enum ScriptStateValue {
     Text(Text),
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ScriptStateEntry {
     pub address: ScriptStateAddress,
@@ -117,6 +120,78 @@ impl Runtime {
                 *outcome = c.outcome;
             }
         }
+    }
+
+    /// Register the value-only snapshot domain during off-thread preparation.
+    /// Unregistered plans conservatively track every script write.
+    pub fn watch_script_state_values(
+        &mut self,
+        plan: PlanId,
+        values: &[ScriptStateEntry],
+    ) -> Result<(), Error> {
+        // Validate the entire request before changing the existing capture domain.
+        for entry in values {
+            self.script_state_value(plan, entry.address)?;
+        }
+        let generation = self.plans.get_mut(plan.0).ok_or(Error::StaleHandle)?;
+        let mut masks: Vec<Box<[u64]>> = generation
+            .scripts
+            .iter()
+            .map(|bank| vec![0; bank.cells.len().div_ceil(64)].into_boxed_slice())
+            .collect();
+        for entry in values {
+            if let ScriptStateAddress::Cell { instance, index } = entry.address {
+                masks[usize::from(instance.0)][index as usize / 64] |= 1 << (index % 64);
+            }
+        }
+        for (bank, mask) in generation.scripts.iter_mut().zip(masks) {
+            bank.dirty_cells = Some(vec![0; mask.len()].into_boxed_slice());
+            bank.captured_cells = Some(mask);
+        }
+        generation.script_revision = generation.script_revision.wrapping_add(1);
+        Ok(())
+    }
+
+    /// Registered snapshot owner: visit changed captured cells without clearing them.
+    /// False means a plan has no complete registered domain and needs full capture.
+    pub fn visit_dirty_script_cells(
+        &self,
+        plan: PlanId,
+        mut visit: impl FnMut(ScriptStateAddress),
+    ) -> Result<bool, Error> {
+        let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
+        if generation
+            .scripts
+            .iter()
+            .any(|bank| bank.dirty_cells.is_none())
+        {
+            return Ok(false);
+        }
+        for (instance, bank) in generation.scripts.iter().enumerate() {
+            for (word, &bits) in bank.dirty_cells.as_deref().unwrap().iter().enumerate() {
+                let mut bits = bits;
+                while bits != 0 {
+                    let index = word * 64 + bits.trailing_zeros() as usize;
+                    bits &= bits - 1;
+                    visit(ScriptStateAddress::Cell {
+                        instance: ScriptInstanceId(instance as u16),
+                        index: index as u32,
+                    });
+                }
+            }
+        }
+        Ok(true)
+    }
+
+    /// Clear only after the registered snapshot owner successfully captured the batch.
+    pub fn clear_dirty_script_cells(&mut self, plan: PlanId) -> Result<(), Error> {
+        let generation = self.plans.get_mut(plan.0).ok_or(Error::StaleHandle)?;
+        for bank in &mut generation.scripts {
+            if let Some(dirty) = bank.dirty_cells.as_mut() {
+                dirty.fill(0);
+            }
+        }
+        Ok(())
     }
 
     /// Changes to captured cells/text and base controls, including DSP edits.
@@ -242,14 +317,23 @@ impl Runtime {
                 return Err(Error::InvalidInput);
             }
             prior_instance = Some(instance);
-            self.validate_plan_context(plan, callback.program, self.script_state_context(instance))?;
+            self.validate_plan_context(
+                plan,
+                callback.program,
+                self.script_state_context(instance),
+            )?;
         }
         for callback in &mut state.callbacks {
             let instance = self.plans.get(plan.0).unwrap().prepared.programs[callback.program]
-                .script_instance.unwrap();
+                .script_instance
+                .unwrap();
             callback.behavior = Some(
-                self.admit_plan_context(plan, callback.program, self.script_state_context(instance))
-                    .expect("preflighted persistence callback admission"),
+                self.admit_plan_context(
+                    plan,
+                    callback.program,
+                    self.script_state_context(instance),
+                )
+                .expect("preflighted persistence callback admission"),
             );
             callback.outcome = None;
             let generation = self.plans.get_mut(plan.0).unwrap();
@@ -267,10 +351,15 @@ impl Runtime {
                     generation.controls.base[index] = value;
                     let playing = generation.controls.playing(&generation.prepared, index);
                     generation.controls.values[index] = playing;
-                    generation.dsp.edit_control(&generation.prepared, index, playing, self.now);
+                    generation
+                        .dsp
+                        .edit_control(&generation.prepared, index, playing, self.now);
                 }
                 (ScriptStateAddress::Cell { instance, index }, ScriptStateValue::Cell(value)) => {
-                    generation.scripts[usize::from(instance.0)].cells[index as usize] = value
+                    let bank = &mut generation.scripts[usize::from(instance.0)];
+                    let changed = bank.cells[index as usize] != value;
+                    bank.cells[index as usize] = value;
+                    bank.mark_captured_cell(index as usize, changed);
                 }
                 (ScriptStateAddress::Text { instance, index }, ScriptStateValue::Text(value)) => {
                     generation.scripts[usize::from(instance.0)].texts[index as usize] = value

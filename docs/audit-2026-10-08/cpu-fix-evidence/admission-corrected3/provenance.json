@@ -1,0 +1,32 @@
+{
+  "before_binary_sha256": "9444810001a446a889c07e78558c1b42e466391428f62e759f32522ebe05790e",
+  "after_binary_sha256": "66e04227bcc50c0b1fb449f3b5867f24a74eabc0d07ce6221dea0e31c313dac6",
+  "after_source_base": "aaa811db",
+  "source_sha256": {
+    "crates/sampler-core/src/lib.rs": "42ddb20aa6be0c9396679fbbcbd12cd6c94c898c4f81ab208d0fe1d08f8ed869",
+    "crates/sampler-core/src/ownership.rs": "2e3e29d88afa3041648ac735fb20ceb20df83c50e983043f7a501b8310211792",
+    "crates/sampler-core/src/parallel.rs": "ccf0ff58e32ed211113b14c6eea71c55964dba5b4d90323d7586075285c49d4b",
+    "crates/sampler-core/src/prepare.rs": "e65c5d720855b7c28ef1a4268bf137fa05fd8f5be22484bcd4a1a0c277e7b4cb",
+    "crates/sampler-core/src/render.rs": "1baec27e024365fcede4213e0526b272bda6f81d8f6024c7b159d126ddfd36bf",
+    "crates/sampler-core/src/source/demand.rs": "4f78d19a3cba4d209df710b3b3ae5bbd6a275676efed26110d0bee053bb4b6d2",
+    "crates/sampler-core/src/stream.rs": "510af810b1e2043e56445d9395531e6a60bc3c5624fcb56a3aca1c82da63980e",
+    "crates/sampler-pool/src/lib.rs": "ad20c0bbfb21ef07d7acb3f937fecd41e5950c24ff365b728f66337c71efd8a4",
+    "crates/sampler-pool/src/snapshot.rs": "cd796d8f6b254063b1bd3a98ad72ee96f476f4da70382f39d0e63f47f76e599d",
+    "crates/sampler-kontakt/src/stream.rs": "3dbe02c14c17ec59f5bff0ca79d354174959244bb75a37591714fe0b619ec2cd"
+  },
+  "order": {
+    "1": [
+      "before",
+      "after"
+    ],
+    "2": [
+      "after",
+      "before"
+    ],
+    "3": [
+      "before",
+      "after"
+    ]
+  },
+  "acceptance": "HOLD: cold64 aggregate improves in matched window; individual repeat3 regresses, historical absolute and v1 CPU targets unmet"
+}

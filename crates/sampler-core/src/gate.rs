@@ -53,7 +53,10 @@ impl Runtime {
     pub fn release_all_notes(&mut self) {
         self.apply_due();
         for index in 0..self.notes.slots.len() {
-            if self.notes.slots[index].value.is_some_and(|n| n.input_down || n.key_down()) {
+            if self.notes.slots[index]
+                .value
+                .is_some_and(|n| n.input_down || n.key_down())
+            {
                 let note = NoteId(self.notes.id(index));
                 if let Some(input) = self.notes.get(note.0).and_then(|n| n.input) {
                     self.input_keys &= !(1 << (input.key & 127));
@@ -153,11 +156,17 @@ impl Runtime {
     }
 
     pub(super) fn missing_pedal_channels(&self, scope: ChannelScope) -> Result<u16, Error> {
-        let existing = self.channels.slots.iter().filter_map(|slot| slot.value)
+        let existing = self
+            .channels
+            .slots
+            .iter()
+            .filter_map(|slot| slot.value)
             .filter(|channel| scope.contains(channel.address))
             .fold(0u16, |mask, channel| mask | (1 << channel.address.channel));
         let missing = scope.channels & !existing;
-        if missing.count_ones() as usize > self.channels.available() { return Err(Error::Capacity); }
+        if missing.count_ones() as usize > self.channels.available() {
+            return Err(Error::Capacity);
+        }
         Ok(missing)
     }
 

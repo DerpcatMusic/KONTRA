@@ -6,6 +6,79 @@ with a short user-facing known-issues list and collapsed source/checksum details
 Each published release manifest also retains its versioned changelog. Frozen entries
 below record reviewed source checkpoints; they are not claims about pending work.
 
+## 0.3.393
+
+KONTRA 0.3.393 brings together a broad set of loading, sound, scripting and editor improvements. This is an experimental release; the remaining limits are listed below.
+
+### Loading & files
+
+- Load supported older Kontakt presets and samples stored inside the instrument file.
+- Open the requested embedded sample when several stored files have similar names.
+- Reuse library path lookups and saved loading information to reduce repeated work.
+- Preserve saved effect settings and signed modulation amounts in more Kontakt formats.
+- Discover libraries through native paths and explicitly configured content folders.
+
+### Sound/engine (v1 ports)
+
+- Bring KONTRA v1 envelope, modulation and filter calculations into the supported playback paths.
+- Use KONTRA v1's paired EQ processing and reuse unchanged effect controls.
+- Preserve the order of tone shaping, instrument effects and rack routing.
+- Keep larger note combinations within the engine's supported playback capacity.
+
+### KSP scripts
+
+- Read authored engine settings when a script asks for a value that has no live override.
+- Preserve scheduled script callbacks when reopening an instrument from saved loading information.
+- Restore saved Kontakt controls with one initialization pass instead of applying them twice.
+- Carry saved script text, arrays and callback state through supported project recall paths.
+
+### UVI
+
+- Show catalogued banks as “Catalogued · loading limited” when their content cannot be opened.
+- Display the affected bank, loading reason and available preset list.
+- Prepare held-note storage before the first audio callback.
+- Find named bank artwork and include UVI libraries in browser searches.
+
+### Saved projects
+
+- Release old restored-state buffers away from audio processing when reopening CLAP or VST3 projects.
+- Preserve engine-setting information in saved loading data.
+
+### Editor/UI
+
+- Group Report entries with labelled details that scroll inside the Report window.
+- Organize Settings into clearer sections and explain remembered window sizing on hover.
+- Cancel MIDI learn when its control disappears and keep only one active assignment at a time.
+- Keep instrument slots within the window and make keyboard shortcuts easier to discover.
+
+### Memory & CPU
+
+- Reduce repeated work for unchanged EQ and effect settings.
+- In the measured Horns test with 256-frame blocks, typical audio-processing time fell from 2,884 to 1,942 µs, about 33%; this is a scoped result, and KONTRA v1 remains faster.
+- Release temporary editor factories and avoid duplicate artwork pixel allocations.
+- Reuse layout information while drawing the Original interface.
+- Store repeated loading information more compactly.
+
+### Fixes
+
+- Decode embedded AIFF samples using the same checked layout as standalone samples.
+- Distinguish untranslated instrument features from missing samples or impulse files in load reports.
+- Prepare the Linux editor test display without downloading packages during display startup, with bounded retries if startup fails.
+
+### Known limits
+
+- Some Kontakt and Falcon effects, modulation, script actions, controls and artwork remain incomplete.
+- Protected UVI banks can be catalogued while their sample content remains unavailable.
+- All 56 checked Vista and Pacific presets had no translated sample or impulse resource failures; this does not establish complete sound or feature parity.
+- Some Kontakt script settings may still fail to restore fully when reopening a project.
+- Large libraries can still use substantial memory; CPU, loading speed and memory use are not yet equal to KONTRA v1.
+- The newer resampling experiment and full voice-engine replacement remain deferred; complete sound comparisons and real-host timing remain unverified.
+- Windows and macOS DAW compatibility and crash handling outside Linux remain unverified.
+
+### Evidence
+
+[Integration and validation](https://github.com/DerpcatMusic/KONTRA/blob/v2/w0-sweep-382/docs/audit-2026-10-09/w0-full-sweep-382.md) · [Horns CPU comparison](https://github.com/DerpcatMusic/KONTRA/blob/v2/w0-sweep-382/docs/audit-2026-10-09/w9-held-shape-acceptance.md) · [Vista and Pacific resource checks](https://github.com/DerpcatMusic/KONTRA/blob/v2/w0-sweep-382/docs/audit-2026-10-09/w12-vista-pacific-resources.md)
+
 ## Unreleased
 
 ### Fixed after 0.3.326
@@ -57,11 +130,11 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Known issues
 
-- Some Kontakt and Falcon effects, modulation and script actions remain incomplete.
+- Some Kontakt and Falcon effects, modulation and script actions remain incomplete; controls and artwork can differ from the original interface.
 - Saving and reopening a project may not restore every Kontakt script setting.
-- Some instrument controls and artwork may differ from the original interface.
+- Protected UVI banks can appear as catalogued with loading limits while their content remains unavailable.
 - Large libraries can use substantial memory, and performance may be worse than KONTRA v1.
-- Some Vista and Pacific patches cannot yet find all required sample resources.
+- All 56 installed Vista and Pacific presets passed sample and impulse resource checks on 0.3.381. Some features remain untranslated; full audio parity remains unverified.
 
 ### Fixed after 0.3.224
 
@@ -103,7 +176,9 @@ features and follow-up commits do not increment the version separately.
   widget, OS/DAW gesture or source resource. Unmatched requested-face controls use
   a provisional disconnected/inert policy.
 - Thirty of fifty audited multis retain 45 pre-existing KSP semantic/stage compile
-  faults. Vista/Pacific resource resolution is still incomplete.
+  faults. Earlier Vista/Pacific missing counts described untranslated features;
+  the source54d9 census finds no required sample or impulse resource failures
+  across7 Vista and49 Pacific installed NKI presets.
 - W9's predictive streaming stack is excluded: matched loaded RSS 819.92 MiB
   versus 380.16 MiB on its baseline. Native callback-context persistence 65e345e3
   is excluded because real Conflux recall rejects callbacks (InvalidInput).

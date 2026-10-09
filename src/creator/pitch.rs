@@ -22,8 +22,15 @@ pub fn detect(mono: &[f32], rate: u32) -> Option<(f32, f32)> {
     let mut confidence: Vec<f32> = found.iter().map(|f| f.1).collect();
     confidence.sort_by(f32::total_cmp);
     // Windows that disagree by more than a semitone cost confidence.
-    let agree = found.iter().filter(|f| (12.0 * (f.0 / hz).log2()).abs() < 0.5).count() as f32 / found.len() as f32;
-    Some((69.0 + 12.0 * (hz / 440.0).log2(), confidence[confidence.len() / 2] * agree))
+    let agree = found
+        .iter()
+        .filter(|f| (12.0 * (f.0 / hz).log2()).abs() < 0.5)
+        .count() as f32
+        / found.len() as f32;
+    Some((
+        69.0 + 12.0 * (hz / 440.0).log2(),
+        confidence[confidence.len() / 2] * agree,
+    ))
 }
 
 /// One YIN estimate over `x` (twice `w` long): (frequency, 1 - aperiodicity).
@@ -42,7 +49,11 @@ fn yin(x: &[f32], w: usize, rate: u32) -> Option<(f32, f32)> {
     let mut running = 0.0;
     for tau in 1..max_tau {
         running += d[tau];
-        cmnd[tau] = if running > 0.0 { d[tau] * tau as f32 / running } else { 1.0 };
+        cmnd[tau] = if running > 0.0 {
+            d[tau] * tau as f32 / running
+        } else {
+            1.0
+        };
     }
     // The first dip under the threshold, followed to its bottom; else the global minimum.
     let min_tau = (rate / 5000).max(2) as usize;
@@ -57,7 +68,11 @@ fn yin(x: &[f32], w: usize, rate: u32) -> Option<(f32, f32)> {
         .or_else(|| (min_tau..max_tau - 1).min_by(|&a, &b| cmnd[a].total_cmp(&cmnd[b])))?;
     // Parabolic interpolation around the dip.
     let (a, b, c) = (cmnd[tau - 1], cmnd[tau], cmnd[tau + 1]);
-    let shift = if a + c - 2.0 * b != 0.0 { 0.5 * (a - c) / (a + c - 2.0 * b) } else { 0.0 };
+    let shift = if a + c - 2.0 * b != 0.0 {
+        0.5 * (a - c) / (a + c - 2.0 * b)
+    } else {
+        0.0
+    };
     let period = tau as f32 + shift.clamp(-1.0, 1.0);
     Some((rate as f32 / period, (1.0 - b).clamp(0.0, 1.0)))
 }
@@ -71,14 +86,24 @@ mod tests {
             .map(|n| {
                 let t = n as f32 / rate as f32;
                 let p = std::f32::consts::TAU * hz * t;
-                if harmonics { 0.5 * p.sin() + 0.3 * (2.0 * p).sin() + 0.2 * (3.0 * p).sin() } else { 0.5 * p.sin() }
+                if harmonics {
+                    0.5 * p.sin() + 0.3 * (2.0 * p).sin() + 0.2 * (3.0 * p).sin()
+                } else {
+                    0.5 * p.sin()
+                }
             })
             .collect()
     }
 
     #[test]
     fn synthetic_tones_are_found() {
-        for (hz, midi) in [(65.41, 36.0), (110.0, 45.0), (261.63, 60.0), (440.0, 69.0), (1046.5, 84.0)] {
+        for (hz, midi) in [
+            (65.41, 36.0),
+            (110.0, 45.0),
+            (261.63, 60.0),
+            (440.0, 69.0),
+            (1046.5, 84.0),
+        ] {
             for harmonics in [false, true] {
                 let (note, confidence) = detect(&tone(hz, 44100, 0.5, harmonics), 44100).unwrap();
                 assert!((note - midi).abs() < 0.1, "{hz} Hz read as {note}");

@@ -2854,11 +2854,12 @@ pub fn derive_params(input: TokenStream) -> TokenStream {
             }
         }
     });
-    let output_port_names_revision_impl = struct_attrs.output_port_names_revision.as_ref().map(|m| {
-        quote! {
-            fn output_port_names_revision(&self) -> u64 { self.#m() }
-        }
-    });
+    let output_port_names_revision_impl =
+        struct_attrs.output_port_names_revision.as_ref().map(|m| {
+            quote! {
+                fn output_port_names_revision(&self) -> u64 { self.#m() }
+            }
+        });
 
     // Nothing to carry: leave the empty-`Vec` trait default so a plugin
     // without persisted config adds no bytes to its saved state. A

@@ -157,9 +157,18 @@ pub enum TextPart {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Op {
-    Midi { action: crate::MidiAction, args: u16, local: u16, text: Option<TextRef> },
-    MidiFilename { text: TextRef },
-    WaitMidi { local:u16 },
+    Midi {
+        action: crate::MidiAction,
+        args: u16,
+        local: u16,
+        text: Option<TextRef>,
+    },
+    MidiFilename {
+        text: TextRef,
+    },
+    WaitMidi {
+        local: u16,
+    },
     /// lhs := lhs op rhs.
     Real {
         lhs: u16,
@@ -338,14 +347,20 @@ impl Op {
             TextRef::Element { index, .. } => usize::from(index) + 1,
         };
         match self {
-            Self::Midi { action, args, local, text } => (usize::from(*args) + action.arguments()).max(usize::from(*local)+1).max(text.as_ref().map_or(0,reg)),
+            Self::Midi {
+                action,
+                args,
+                local,
+                text,
+            } => (usize::from(*args) + action.arguments())
+                .max(usize::from(*local) + 1)
+                .max(text.as_ref().map_or(0, reg)),
             Self::MidiFilename { text } => reg(text),
             Self::Real { lhs, rhs, .. }
             | Self::CompareReal { lhs, rhs, .. }
             | Self::Integer { lhs, rhs, .. }
             | Self::Random { lhs, rhs } => usize::from(*lhs.max(rhs)) + 1,
             Self::RealUnary { local, .. }
-
             | Self::WaitMidi { local }
             | Self::IntegerToReal { local }
             | Self::RealToInteger { local }
@@ -419,7 +434,11 @@ impl Op {
             TextRef::Element { array, .. } => array.end(),
         };
         Ok(match self {
-            Self::Midi {text:Some(text),..} | Self::MidiFilename {text} | Self::TextClear { text } => (cell(text)?, 0),
+            Self::Midi {
+                text: Some(text), ..
+            }
+            | Self::MidiFilename { text }
+            | Self::TextClear { text } => (cell(text)?, 0),
             Self::TextAppend { text, part } => match part {
                 TextPart::Constant(c) => (cell(text)?, usize::from(*c) + 1),
                 TextPart::Text(r) => (cell(text)?.max(cell(r)?), 0),
@@ -445,6 +464,8 @@ impl Op {
 }
 
 /// Fixed-capacity UTF-8 text.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "cache", serde(try_from = "String", into = "String"))]
 #[derive(Clone, Copy)]
 pub struct Text {
     len: u16,
@@ -571,11 +592,46 @@ impl Store {
 #[derive(Debug, Default)]
 pub(crate) struct ScriptBank {
     pub cells: Box<[i64]>,
+    pub captured_cells: Option<Box<[u64]>>,
+    pub dirty_cells: Option<Box<[u64]>>,
     pub texts: Box<[Text]>,
     pub store: Store,
     pub controls: Box<[Option<ControlId>]>,
     pub text_properties: Vec<([i32; STORE_KEY], Text)>,
     pub persistence_callback: Option<(BehaviorId, Option<crate::Outcome>)>,
+}
+
+#[inline]
+pub(super) fn captures_cell(mask: Option<&[u64]>, cell: usize) -> bool {
+    mask.is_none_or(|mask| {
+        mask.get(cell / 64)
+            .is_some_and(|word| word & (1 << (cell % 64)) != 0)
+    })
+}
+
+#[inline]
+pub(super) fn mark_captured_cell(
+    mask: Option<&[u64]>,
+    dirty: Option<&mut [u64]>,
+    cell: usize,
+    changed: bool,
+) -> bool {
+    let captured = changed && captures_cell(mask, cell);
+    if captured && let Some(dirty) = dirty {
+        dirty[cell / 64] |= 1 << (cell % 64);
+    }
+    captured
+}
+
+impl ScriptBank {
+    pub fn mark_captured_cell(&mut self, cell: usize, changed: bool) -> bool {
+        mark_captured_cell(
+            self.captured_cells.as_deref(),
+            self.dirty_cells.as_deref_mut(),
+            cell,
+            changed,
+        )
+    }
 }
 
 /// Immutable preparation keeps compact shared strings; only a live generation
@@ -592,9 +648,15 @@ pub(crate) struct ScriptInitial {
 impl ScriptInitial {
     pub fn bank(&self) -> ScriptBank {
         let mut text_properties = Vec::with_capacity(self.store.capacity);
-        text_properties.extend(self.text_properties.iter().map(|(key, text)| (*key, Text::new(text))));
+        text_properties.extend(
+            self.text_properties
+                .iter()
+                .map(|(key, text)| (*key, Text::new(text))),
+        );
         ScriptBank {
             cells: self.cells.clone(),
+            captured_cells: None,
+            dirty_cells: None,
             texts: self.texts.iter().map(|text| Text::new(text)).collect(),
             store: self.store.clone(),
             controls: self.controls.clone(),
@@ -617,7 +679,11 @@ pub struct ScriptResources {
 }
 impl ScriptResources {
     pub(crate) fn apply(self, bank: &mut ScriptInitial) -> Result<(), Error> {
-        bank.texts = self.texts.into_iter().map(|text| std::sync::Arc::from(Text::new(&text).as_str())).collect();
+        bank.texts = self
+            .texts
+            .into_iter()
+            .map(|text| std::sync::Arc::from(Text::new(&text).as_str()))
+            .collect();
         bank.store = Store::new(self.store, self.store_capacity)?;
         bank.controls = self.controls.into_boxed_slice();
         bank.text_properties = Vec::with_capacity(self.text_properties.len());
@@ -834,8 +900,8 @@ impl Runtime {
         let instance = generation.prepared.programs[c.program]
             .script_instance
             .ok_or(Error::InvalidInput)?;
-        // ponytail: any mutable script storage invalidates the full snapshot;
-        // track persistent addresses if frequently-written large tables remain costly.
+        // ponytail: text/store writes conservatively invalidate snapshots; filter their
+        // addresses too if measured text-heavy callbacks still copy large arrays.
         generation.script_revision = generation.script_revision.wrapping_add(1);
         generation
             .scripts
@@ -900,32 +966,72 @@ impl Runtime {
         op: Op,
     ) -> Result<bool, Error> {
         match op {
-            Op::Midi { action, args, local, text } => {
-                let mut values=[0;5];
-                for (index,value) in values.iter_mut().take(action.arguments()).enumerate() { *value=i32_of(self.reg(id,args+index as u16)?)?; }
-                let text=match text {Some(text)=>{let cell=self.text_cell(id,text)?;Some(*self.behavior_bank(id)?.texts.get(cell).ok_or(Error::InvalidInput)?)},None=>None};
-                let plan=self.behavior_plan(owner)?;
-                let value=if action.asynchronous() {self.request_midi(id,plan,action,values,text)?}
-                    else {self.plans.get_mut(plan.0).ok_or(Error::StaleHandle)?.midi_object.apply(action,&values,text)?};
-                self.set_reg(id,local,i64::from(value))?;
+            Op::Midi {
+                action,
+                args,
+                local,
+                text,
+            } => {
+                let mut values = [0; 5];
+                for (index, value) in values.iter_mut().take(action.arguments()).enumerate() {
+                    *value = i32_of(self.reg(id, args + index as u16)?)?;
+                }
+                let text = match text {
+                    Some(text) => {
+                        let cell = self.text_cell(id, text)?;
+                        Some(
+                            *self
+                                .behavior_bank(id)?
+                                .texts
+                                .get(cell)
+                                .ok_or(Error::InvalidInput)?,
+                        )
+                    }
+                    None => None,
+                };
+                let plan = self.behavior_plan(owner)?;
+                let value = if action.asynchronous() {
+                    self.request_midi(id, plan, action, values, text)?
+                } else {
+                    self.plans
+                        .get_mut(plan.0)
+                        .ok_or(Error::StaleHandle)?
+                        .midi_object
+                        .apply(action, &values, text)?
+                };
+                self.set_reg(id, local, i64::from(value))?;
             }
-            Op::WaitMidi {local} => {
-                let job=i32_of(self.reg(id,local)?)?;let plan=self.behavior_plan(owner)?;
-                if self.plans.get(plan.0).ok_or(Error::StaleHandle)?.midi_object.jobs.iter().any(|j|j.id==job) {
-                    let c=self.behaviors.get_mut(id.0).ok_or(Error::StaleHandle)?;
+            Op::WaitMidi { local } => {
+                let job = i32_of(self.reg(id, local)?)?;
+                let plan = self.behavior_plan(owner)?;
+                if self
+                    .plans
+                    .get(plan.0)
+                    .ok_or(Error::StaleHandle)?
+                    .midi_object
+                    .jobs
+                    .iter()
+                    .any(|j| j.id == job)
+                {
+                    let c = self.behaviors.get_mut(id.0).ok_or(Error::StaleHandle)?;
                     if !c.disable_wait {
-                        c.waiting=true;
-                        c.async_wait=Some(job);
+                        c.waiting = true;
+                        c.async_wait = Some(job);
                         // An admitted async wait also ends continuous preemption.
-                        c.yielded_at=None;
+                        c.yielded_at = None;
                         return Ok(true);
                     }
                 }
             }
             Op::MidiFilename { text } => {
-                let plan=self.behavior_plan(owner)?;
-                let value=self.plans.get(plan.0).ok_or(Error::StaleHandle)?.midi_object.filename;
-                let cell=self.text_cell(id,text)?;
+                let plan = self.behavior_plan(owner)?;
+                let value = self
+                    .plans
+                    .get(plan.0)
+                    .ok_or(Error::StaleHandle)?
+                    .midi_object
+                    .filename;
+                let cell = self.text_cell(id, text)?;
                 self.behavior_bank_mut(id)?.texts[cell].push(value.as_str());
             }
             Op::Real {
@@ -1484,10 +1590,21 @@ impl Runtime {
                 self.set_reg(id, local, value)?;
             }
             Op::ReadHost { local, slot } => {
-                let result=self.behaviors.get(id.0).ok_or(Error::StaleHandle)?.async_result;
-                let value=match (slot,result) {(6,Some((job,_)))=>i64::from(job),(7,Some((_,status)))=>i64::from(status),
-                    _=>*self.ops.host.get(usize::from(slot)).ok_or(Error::InvalidInput)?};
-                self.set_reg(id,local,value)?;
+                let result = self
+                    .behaviors
+                    .get(id.0)
+                    .ok_or(Error::StaleHandle)?
+                    .async_result;
+                let value = match (slot, result) {
+                    (6, Some((job, _))) => i64::from(job),
+                    (7, Some((_, status))) => i64::from(status),
+                    _ => *self
+                        .ops
+                        .host
+                        .get(usize::from(slot))
+                        .ok_or(Error::InvalidInput)?,
+                };
+                self.set_reg(id, local, value)?;
             }
             Op::ReadClock { local, micros } => {
                 let elapsed = u128::from(self.now) * 1_000_000
@@ -1554,12 +1671,20 @@ mod initial_text_tests {
     #[test]
     fn shared_initial_texts_make_independent_mutable_banks() {
         let mut initial = ScriptInitial::default();
-        ScriptResources { texts: vec!["seed".into()],
+        ScriptResources {
+            texts: vec!["seed".into()],
             text_properties: vec![([1, 0, 0, 0], "named".into())],
-            store_capacity: 4, ..Default::default() }.apply(&mut initial).unwrap();
+            store_capacity: 4,
+            ..Default::default()
+        }
+        .apply(&mut initial)
+        .unwrap();
         let clone = initial.clone();
         assert!(std::sync::Arc::ptr_eq(&initial.texts[0], &clone.texts[0]));
-        assert!(std::sync::Arc::ptr_eq(&initial.text_properties[0].1, &clone.text_properties[0].1));
+        assert!(std::sync::Arc::ptr_eq(
+            &initial.text_properties[0].1,
+            &clone.text_properties[0].1
+        ));
         let mut first = initial.bank();
         let second = clone.bank();
         first.texts[0].push(" changed");
@@ -1568,5 +1693,19 @@ mod initial_text_tests {
         assert_eq!(second.text_properties[0].1.as_str(), "named");
         assert!(first.text_properties.capacity() >= 4);
         assert_eq!(&*initial.texts[0], "seed");
+    }
+}
+
+#[cfg(feature = "cache")]
+impl From<Text> for String {
+    fn from(value: Text) -> Self {
+        value.as_str().to_owned()
+    }
+}
+#[cfg(feature = "cache")]
+impl TryFrom<String> for Text {
+    type Error = Error;
+    fn try_from(value: String) -> Result<Self, Error> {
+        Self::try_new(&value)
     }
 }

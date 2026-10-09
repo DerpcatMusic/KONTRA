@@ -152,7 +152,9 @@ impl<R: Read + Seek> NcwReader<R> {
             .copied()
             .unwrap_or(self.header.data_size);
         if end < offset || end > self.header.data_size {
-            return Err(Error::InvalidHeader("invalid block offsets or channel framing"));
+            return Err(Error::InvalidHeader(
+                "invalid block offsets or channel framing",
+            ));
         }
         // Consecutive blocks need no seek, which would discard a read buffer.
         let start = u64::from(self.header.data_offset) + u64::from(offset);
@@ -167,7 +169,8 @@ impl<R: Read + Seek> NcwReader<R> {
         for (channel_index, channel) in channels.iter_mut().enumerate() {
             let block_header = BlockHeader::read(&mut group).map_err(|error| match error {
                 Error::InvalidBlockSignature => Error::InvalidBlockSignatureAt {
-                    block: index, channel: channel_index,
+                    block: index,
+                    channel: channel_index,
                 },
                 other => other,
             })?;

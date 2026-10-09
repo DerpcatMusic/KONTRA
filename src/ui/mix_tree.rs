@@ -89,7 +89,11 @@ pub struct Tree {
 
 impl Tree {
     pub fn children(&self, n: usize) -> impl Iterator<Item = usize> + '_ {
-        self.nodes.iter().enumerate().filter(move |(_, c)| c.parent == Some(n)).map(|(i, _)| i)
+        self.nodes
+            .iter()
+            .enumerate()
+            .filter(move |(_, c)| c.parent == Some(n))
+            .map(|(i, _)| i)
     }
 
     pub fn depth(&self, mut n: usize) -> usize {
@@ -142,19 +146,37 @@ fn colour(tree: &Tree, n: usize, root_slot: &dyn Fn(usize) -> usize) -> Color {
         root = p;
     }
     let depth = tree.depth(n) as f32;
-    Color::oklch(0.7 - 0.07 * depth, 0.1 - 0.015 * depth, golden_hue(250., root_slot(root)))
+    Color::oklch(
+        0.7 - 0.07 * depth,
+        0.1 - 0.015 * depth,
+        golden_hue(250., root_slot(root)),
+    )
 }
 
 /// The mixer: `pairs` host stereo pairs; `height` the room for a top strip.
-pub fn view(ui: &mut Ui, tree: &mut Tree, state: &mut State, pairs: u8, height: f64, levels: Levels) -> El {
-    let roots: Vec<usize> = (0..tree.nodes.len()).filter(|&n| tree.nodes[n].parent.is_none()).collect();
+pub fn view(
+    ui: &mut Ui,
+    tree: &mut Tree,
+    state: &mut State,
+    pairs: u8,
+    height: f64,
+    levels: Levels,
+) -> El {
+    let roots: Vec<usize> = (0..tree.nodes.len())
+        .filter(|&n| tree.nodes[n].parent.is_none())
+        .collect();
     let slot = |n: usize| roots.iter().position(|&r| r == n).unwrap_or(0);
     let mut families = Vec::new();
     for &r in &roots {
         families.push(family(ui, tree, state, r, pairs, height, &levels, &slot));
     }
     if families.is_empty() {
-        families.push(caption("Load an instrument to give it a strip.").fill(secondary()).pad(INSET).shrink(0));
+        families.push(
+            caption("Load an instrument to give it a strip.")
+                .fill(secondary())
+                .pad(INSET)
+                .shrink(0),
+        );
     }
     row(families)
         .gap(SPACE)
@@ -184,15 +206,30 @@ fn family(
     let children: Vec<usize> = tree.children(n).collect();
     let folded = state.folded.contains(&tree.nodes[n].id);
     let colour = colour(tree, n, slot);
-    let mut parts = vec![strip(ui, tree, state, n, pairs, height, colour, children.len(), levels)];
+    let mut parts = vec![strip(
+        ui,
+        tree,
+        state,
+        n,
+        pairs,
+        height,
+        colour,
+        children.len(),
+        levels,
+    )];
     if !children.is_empty() && !folded {
-        let inner: Vec<El> =
-            children.iter().map(|&c| family(ui, tree, state, c, pairs, height - STEP, levels, slot)).collect();
+        let inner: Vec<El> = children
+            .iter()
+            .map(|&c| family(ui, tree, state, c, pairs, height - STEP, levels, slot))
+            .collect();
         parts.push(
-            col![block(Len::Pct(100.), BAR).fill(colour).shrink(0), row(inner).gap(1).align(Align::End)]
-                .gap(TIGHT)
-                .align(Align::Stretch)
-                .shrink(0),
+            col![
+                block(Len::Pct(100.), BAR).fill(colour).shrink(0),
+                row(inner).gap(1).align(Align::End)
+            ]
+            .gap(TIGHT)
+            .align(Align::Stretch)
+            .shrink(0),
         );
     }
     row(parts).gap(1).align(Align::End).shrink(0)
@@ -221,8 +258,14 @@ fn strip(
             state.folded.insert(key);
         }
         let el = row![
-            glyph(if folded { Icon::Right } else { Icon::Down }, TIGHT * 2.5, secondary()),
-            caption(children.to_string()).text_size(SMALL).fill(secondary())
+            glyph(
+                if folded { Icon::Right } else { Icon::Down },
+                TIGHT * 2.5,
+                secondary()
+            ),
+            caption(children.to_string())
+                .text_size(SMALL)
+                .fill(secondary())
         ]
         .gap(2)
         .align(Align::Center)
@@ -230,8 +273,16 @@ fn strip(
         .h(STRIP)
         .focusable()
         .a11y(A11y::Toggle { on: !folded })
-        .named(if folded { "Show its strips" } else { "Hide its strips" })
-        .tip(if folded { "Show its strips" } else { "Hide its strips" })
+        .named(if folded {
+            "Show its strips"
+        } else {
+            "Hide its strips"
+        })
+        .tip(if folded {
+            "Show its strips"
+        } else {
+            "Hide its strips"
+        })
         .id(id)
         .shrink(0);
         head.push(interactive(el, false));
@@ -242,21 +293,38 @@ fn strip(
     // Port v1 mixer title editing, retaining the tree's stable strip identity.
     if let Some((_, text)) = state.renaming.as_mut().filter(|(id, _)| *id == key) {
         let existed = ui.scene().and_then(|s| s.surface(&edit_id)).is_some();
-        if !existed { ui.focus(edit_id.as_str()); }
+        if !existed {
+            ui.focus(edit_id.as_str());
+        }
         let field = text_edit(ui, edit_id.as_str(), text, TextOpts::default());
-        let cancel = ui.keys(edit_id.as_str()).iter().any(|k| k.key == Key::Escape);
+        let cancel = ui
+            .keys(edit_id.as_str())
+            .iter()
+            .any(|k| k.key == Key::Escape);
         let done = field.changed.submitted || (existed && !ui.focused(edit_id.as_str()));
         head.push(field.el.h(STRIP).min_w(0));
-        if cancel { state.renaming = None; }
-        else if done {
-            tree.nodes[n].name = state.renaming.take().map(|(_, t)| t.trim().to_owned()).unwrap_or_default();
+        if cancel {
+            state.renaming = None;
+        } else if done {
+            tree.nodes[n].name = state
+                .renaming
+                .take()
+                .map(|(_, t)| t.trim().to_owned())
+                .unwrap_or_default();
             tree.nodes[n].renamed = true;
         }
     } else {
         if ui.get(name_id.as_str()).double_clicked && node.parent.is_none() {
             state.renaming = Some((key, node.name.clone()));
         }
-        head.push(body(node.name.clone()).text_size(SMALL).text_weight(Weight::SEMIBOLD).lines(2).min_w(0).id(name_id));
+        head.push(
+            body(node.name.clone())
+                .text_size(SMALL)
+                .text_weight(Weight::SEMIBOLD)
+                .lines(2)
+                .min_w(0)
+                .id(name_id),
+        );
     }
     let node = &tree.nodes[n];
     let header = col![
@@ -286,18 +354,42 @@ fn strip(
     let mut rows = vec![block(Len::Pct(100.), 2).fill(colour).shrink(0)];
     let inserts = state.wide.then(|| {
         let names = &tree.nodes[n].inserts;
-        col(names.iter().take(3).map(|name| caption(name.clone()).text_size(SMALL).lines(1).fill(secondary())))
-            .gap(0).h(SMALL * 3.).shrink(0).named("Inserts").id(format!("mt-inserts-{key}"))
+        col(names.iter().take(3).map(|name| {
+            caption(name.clone())
+                .text_size(SMALL)
+                .lines(1)
+                .fill(secondary())
+        }))
+        .gap(0)
+        .h(SMALL * 3.)
+        .shrink(0)
+        .named("Inserts")
+        .id(format!("mt-inserts-{key}"))
     });
     let send = tree.nodes[n].aux.map(|(aux, gain)| {
-        let to = if aux < 0 { "—".into() } else { format!("st.{}", aux + 1) };
-        let (_, el) = route(ui, format!("mt-aux-{key}"), Icon::AudioOut, &to, "st.16", "Send bus");
+        let to = if aux < 0 {
+            "—".into()
+        } else {
+            format!("st.{}", aux + 1)
+        };
+        let (_, el) = route(
+            ui,
+            format!("mt-aux-{key}"),
+            Icon::AudioOut,
+            &to,
+            "st.16",
+            "Send bus",
+        );
         let mut db = f64::from(gain);
         let level = send_level(ui, &format!("mt-send-{key}"), &mut db, aux >= 0);
         tree.nodes[n].aux = Some((aux, db as f32));
         col![el, level].gap(1).shrink(0)
     });
-    let mut controls = vec![header]; controls.extend(inserts); controls.extend([middle, row![switches].justify(Justify::Center).shrink(0)]); controls.push(send.unwrap_or_else(|| block(Len::Pct(100.), STRIP + SMALL + 3.).shrink(0))); controls.push(out);
+    let mut controls = vec![header];
+    controls.extend(inserts);
+    controls.extend([middle, row![switches].justify(Justify::Center).shrink(0)]);
+    controls.push(send.unwrap_or_else(|| block(Len::Pct(100.), STRIP + SMALL + 3.).shrink(0)));
+    controls.push(out);
     let body = col(controls)
         .gap(TIGHT)
         .align(Align::Stretch)
@@ -305,14 +397,27 @@ fn strip(
         .flex(1)
         .min_h(0);
     rows.push(body);
-    let el = col(rows).gap(0).align(Align::Stretch).w(if state.wide { WIDE } else { WIDTH }).h(height.max(CONTROL * 8.)).fill(Role::Surface).shrink(0);
+    let el = col(rows)
+        .gap(0)
+        .align(Align::Stretch)
+        .w(if state.wide { WIDE } else { WIDTH })
+        .h(height.max(CONTROL * 8.))
+        .fill(Role::Surface)
+        .shrink(0);
     // Below the top, a hairline in the parent's colour down the left edge
     // ties the strip to its bar even when the bar scrolls out of view.
     let el = match parent_colour {
-        Some(c) => row![block(1, Len::Pct(100.)).fill(c.with_alpha(0.6)).shrink(0), el].gap(0).shrink(0),
+        Some(c) => row![
+            block(1, Len::Pct(100.)).fill(c.with_alpha(0.6)).shrink(0),
+            el
+        ]
+        .gap(0)
+        .shrink(0),
         None => el,
     };
-    el.a11y(A11y::Group).named(tree.nodes[n].name.clone()).id(format!("mt-strip-{key}"))
+    el.a11y(A11y::Group)
+        .named(tree.nodes[n].name.clone())
+        .id(format!("mt-strip-{key}"))
 }
 
 /// Pan, the fader with its meter, and the readout.
@@ -322,28 +427,50 @@ fn level(ui: &mut Ui, tree: &mut Tree, n: usize, levels: &Levels) -> El {
     let mut pan = f64::from(node.pan);
     let pan_el = pan_wedge(ui, &format!("mt-pan-{key}"), &mut pan);
     let id = format!("mt-fader-{key}");
-    let travel = ui.scene().and_then(|s| s.surface(&id)).map_or(TRAVEL, |s| s.frame.size.height).max(CONTROL);
+    let travel = ui
+        .scene()
+        .and_then(|s| s.surface(&id))
+        .map_or(TRAVEL, |s| s.frame.size.height)
+        .max(CONTROL);
     let mut db = f64::from(node.gain_db);
     let held = drive(ui, &id, &mut db, &DB, travel, true, 0.);
     (node.pan, node.gain_db) = (pan as f32, db as f32);
     let lift = ui.state(id.as_str()).hover.max(if held { 1. } else { 0. }) as f32;
     let unit = |db: f64| ((db - DB.start()) / (DB.end() - DB.start())).clamp(0., 1.);
-    let fader = fader_face(unit(f64::from(node.gain_db)), 0., Some(unit(0.)), true, lift, ui.focus_visible(&id))
-        .w(CONTROL)
-        .h(Len::Pct(100.))
-        .shrink(0)
-        .cursor(Cursor::ResizeV)
-        .focusable()
-        .a11y(A11y::Slider { value: f64::from(node.gain_db), min: *DB.start(), max: *DB.end() })
-        .named("Level")
-        .tip("Level: drag, Shift for fine, double-click for 0 dB")
-        .id(id);
+    let fader = fader_face(
+        unit(f64::from(node.gain_db)),
+        0.,
+        Some(unit(0.)),
+        true,
+        lift,
+        ui.focus_visible(&id),
+    )
+    .w(CONTROL)
+    .h(Len::Pct(100.))
+    .shrink(0)
+    .cursor(Cursor::ResizeV)
+    .focusable()
+    .a11y(A11y::Slider {
+        value: f64::from(node.gain_db),
+        min: *DB.start(),
+        max: *DB.end(),
+    })
+    .named("Level")
+    .tip("Level: drag, Shift for fine, double-click for 0 dB")
+    .id(id);
     let levels = levels.clone();
     let meter = meter_v(move || levels(n));
     col![
         pan_el,
-        row![fader, meter].gap(TIGHT).justify(Justify::Center).flex(1).min_h(CONTROL * 2.),
-        caption(db_short(f64::from(node.gain_db))).text_size(SMALL).fill(secondary()).lines(1)
+        row![fader, meter]
+            .gap(TIGHT)
+            .justify(Justify::Center)
+            .flex(1)
+            .min_h(CONTROL * 2.),
+        caption(db_short(f64::from(node.gain_db)))
+            .text_size(SMALL)
+            .fill(secondary())
+            .lines(1)
     ]
     .gap(TIGHT)
     .align(Align::Center)
@@ -369,19 +496,30 @@ fn send_level(ui: &mut Ui, id: &str, db: &mut f64, on: bool) -> El {
     .flex(1)
     .min_w(0)
     .h(Len::Pct(100.));
-    let readout = caption(if on { db_short(*db) } else { String::new() }).fill(secondary()).lines(1).shrink(0).reserve("-00.0".to_owned());
+    let readout = caption(if on { db_short(*db) } else { String::new() })
+        .fill(secondary())
+        .lines(1)
+        .shrink(0)
+        .reserve("-00.0".to_owned());
     row![bar, readout]
         .gap(TIGHT)
         .align(Align::Center)
         .h(SMALL + 2.)
         .shrink(0)
-    .cursor(if on { Cursor::ResizeH } else { Cursor::Arrow })
-    .a11y(A11y::Slider { value: *db, min: -60., max: 6. })
-    .named("Send level")
-    .tip(if on { format!("Send level {text}: drag, double-click for 0 dB") } else { "Pick a send bus first".into() })
-    .id(id.to_owned())
+        .cursor(if on { Cursor::ResizeH } else { Cursor::Arrow })
+        .a11y(A11y::Slider {
+            value: *db,
+            min: -60.,
+            max: 6.,
+        })
+        .named("Send level")
+        .tip(if on {
+            format!("Send level {text}: drag, double-click for 0 dB")
+        } else {
+            "Pick a send bus first".into()
+        })
+        .id(id.to_owned())
 }
-
 
 fn output_text(o: Output) -> String {
     match o {
@@ -395,17 +533,39 @@ fn output_button(ui: &mut Ui, tree: &Tree, state: &mut State, n: usize, colour: 
     let to = output_text(node.output);
     let name = match node.output {
         Output::Parent => "Output: into its parent".to_owned(),
-        Output::Pair(p) => format!("Output: {}{}", if node.host { format!("host pair {to}") } else { format!("st.{}", p + 1) }, if node.output_set { "" } else { ", automatic" }),
+        Output::Pair(p) => format!(
+            "Output: {}{}",
+            if node.host {
+                format!("host pair {to}")
+            } else {
+                format!("st.{}", p + 1)
+            },
+            if node.output_set { "" } else { ", automatic" }
+        ),
     };
-    let (hit, el) = route(ui, format!("mt-out-{}", node.id), Icon::AudioOut, &to, "15/16", &name);
+    let (hit, el) = route(
+        ui,
+        format!("mt-out-{}", node.id),
+        Icon::AudioOut,
+        &to,
+        "15/16",
+        &name,
+    );
     if hit {
-        state.picking = if state.picking == Some(node.id) { None } else { Some(node.id) };
+        state.picking = if state.picking == Some(node.id) {
+            None
+        } else {
+            Some(node.id)
+        };
     }
     let chip = block(TIGHT, STRIP).fill(match node.output {
         Output::Parent => Fill::from(colour.with_alpha(0.4)),
         Output::Pair(_) => Fill::from(colour),
     });
-    row![chip.shrink(0), el.flex(1).min_w(0)].gap(0).align(Align::Center).shrink(0)
+    row![chip.shrink(0), el.flex(1).min_w(0)]
+        .gap(0)
+        .align(Align::Center)
+        .shrink(0)
 }
 
 /// The output choices in place of the fader while picking.
@@ -415,7 +575,16 @@ fn output_list(ui: &mut Ui, tree: &mut Tree, state: &mut State, n: usize, pairs:
     if tree.nodes[n].parent.is_some() {
         choices.push((Some(Output::Parent), "Into parent".into()));
     }
-    choices.extend((0..pairs).map(|p| (Some(Output::Pair(p)), if tree.nodes[n].host { format!("Host {}", port_text(usize::from(p))) } else { format!("Bus st.{}", p + 1) })));
+    choices.extend((0..pairs).map(|p| {
+        (
+            Some(Output::Pair(p)),
+            if tree.nodes[n].host {
+                format!("Host {}", port_text(usize::from(p)))
+            } else {
+                format!("Bus st.{}", p + 1)
+            },
+        )
+    }));
     if tree.nodes[n].parent.is_none() {
         choices.push((None, "Automatic".into()));
     }
@@ -423,7 +592,10 @@ fn output_list(ui: &mut Ui, tree: &mut Tree, state: &mut State, n: usize, pairs:
     for (k, (to, label)) in choices.into_iter().enumerate() {
         let node = &tree.nodes[n];
         let current = match to {
-            Some(o) => node.output_set && node.output == o || node.parent.is_some() && !node.output_set && o == Output::Parent,
+            Some(o) => {
+                node.output_set && node.output == o
+                    || node.parent.is_some() && !node.output_set && o == Output::Parent
+            }
             None => !node.output_set,
         };
         let (hit, el) = action(ui, format!("mt-pick-{key}-{k}"), &label, current);
@@ -437,7 +609,13 @@ fn output_list(ui: &mut Ui, tree: &mut Tree, state: &mut State, n: usize, pairs:
         }
         rows.push(el);
     }
-    col(rows).gap(1).align(Align::Stretch).scroll().flex(1).min_h(0).id(format!("mt-picks-{key}"))
+    col(rows)
+        .gap(1)
+        .align(Align::Stretch)
+        .scroll()
+        .flex(1)
+        .min_h(0)
+        .id(format!("mt-picks-{key}"))
 }
 
 /// Host stereo port `n` as a DAW lists it: "1/2", "3/4".
