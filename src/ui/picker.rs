@@ -16,7 +16,11 @@ pub(crate) use linux::Runtime;
 pub enum Ask {
     /// Ported v1 sample-folder creator; filesystem work stays on the picker worker.
     Samples { out: PathBuf },
-    Snapshot { slot: usize, source: (String, u32, String), from: PathBuf },
+    Snapshot {
+        slot: usize,
+        source: (String, u32, String),
+        from: PathBuf,
+    },
     /// Open a validated native folder/file path without a blocking UI call.
     Reveal(PathBuf),
     /// A library folder (`single`), or a folder of libraries, from `from`.
@@ -30,12 +34,19 @@ pub enum Ask {
 /// What came back.
 pub enum Picked {
     Created(Result<PathBuf, String>),
-    Snapshot { slot: usize, source: (String, u32, String), path: PathBuf },
+    Snapshot {
+        slot: usize,
+        source: (String, u32, String),
+        path: PathBuf,
+    },
     DialogError(String),
     Revealed(Result<(), String>),
     Folder(PathBuf, bool),
     Multi(PathBuf),
-    Artwork { library: PathBuf, picture: PathBuf },
+    Artwork {
+        library: PathBuf,
+        picture: PathBuf,
+    },
 }
 
 #[derive(Default)]
@@ -63,14 +74,20 @@ impl Drop for Picker {
         #[cfg(target_os = "linux")]
         self.close();
         #[cfg(not(target_os = "linux"))]
-        if let Some(worker) = super::lock(&self.worker).take() { let _ = worker.join(); }
+        if let Some(worker) = super::lock(&self.worker).take() {
+            let _ = worker.join();
+        }
     }
 }
 
 impl Picker {
     #[cfg(target_os = "linux")]
     pub(crate) fn with_runtime(runtime: Arc<Runtime>) -> Self {
-        Self { answer: Arc::default(), linux: linux::State::new(runtime), rows: Mutex::default() }
+        Self {
+            answer: Arc::default(),
+            linux: linux::State::new(runtime),
+            rows: Mutex::default(),
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -91,7 +108,7 @@ impl Picker {
         if !cfg!(target_os = "linux") {
             return true;
         }
-        
+
         std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some()
             || std::env::var_os("XDG_RUNTIME_DIR")
                 .is_some_and(|dir| PathBuf::from(dir).join("bus").exists())
@@ -111,20 +128,28 @@ impl Picker {
         return self.linux.start(ask, Arc::clone(&self.answer));
         #[cfg(not(target_os = "linux"))]
         {
-        if let Some(worker) = super::lock(&self.worker).take() { let _ = worker.join(); }
-        let answer = self.answer.clone();
-        let spawned = std::thread::Builder::new()
-            .name("kontakto-file-dialog".into())
-            .spawn(move || {
-                let picked = show(ask);
-                *super::lock(&answer.picked) = picked;
-                answer.open.store(false, Ordering::Release);
-                super::logs::wake_worker();
-            });
-        match spawned {
-            Ok(worker) => { *super::lock(&self.worker) = Some(worker); true }
-            Err(_) => { self.answer.open.store(false, Ordering::Release); false }
-        }
+            if let Some(worker) = super::lock(&self.worker).take() {
+                let _ = worker.join();
+            }
+            let answer = self.answer.clone();
+            let spawned = std::thread::Builder::new()
+                .name("kontakto-file-dialog".into())
+                .spawn(move || {
+                    let picked = show(ask);
+                    *super::lock(&answer.picked) = picked;
+                    answer.open.store(false, Ordering::Release);
+                    super::logs::wake_worker();
+                });
+            match spawned {
+                Ok(worker) => {
+                    *super::lock(&self.worker) = Some(worker);
+                    true
+                }
+                Err(_) => {
+                    self.answer.open.store(false, Ordering::Release);
+                    false
+                }
+            }
         }
     }
 
@@ -132,7 +157,9 @@ impl Picker {
     pub fn take(&self) -> Option<Picked> {
         #[cfg(target_os = "linux")]
         self.linux.poll(&self.answer);
-        if self.answer.open.load(Ordering::Acquire) { return None; }
+        if self.answer.open.load(Ordering::Acquire) {
+            return None;
+        }
         super::lock(&self.answer.picked).take()
     }
 
@@ -148,12 +175,18 @@ impl Picker {
 fn show(ask: Ask) -> Option<Picked> {
     match ask {
         Ask::Samples { out } => {
-            let source = rfd::FileDialog::new().set_title("A folder of WAV or AIFF samples").pick_folder()?;
+            let source = rfd::FileDialog::new()
+                .set_title("A folder of WAV or AIFF samples")
+                .pick_folder()?;
             Some(created(source, out))
         }
         Ask::Reveal(path) => Some(Picked::Revealed(super::menu::reveal(&path))),
         Ask::Folder { from, single } => rfd::FileDialog::new()
-            .set_title(if single { "A Kontakt library folder" } else { "A folder of Kontakt libraries" })
+            .set_title(if single {
+                "A Kontakt library folder"
+            } else {
+                "A folder of Kontakt libraries"
+            })
             .set_directory(from)
             .pick_folder()
             .map(|path| Picked::Folder(path, single)),
@@ -206,14 +239,20 @@ mod tests {
         picker.answer.open.store(true, Ordering::Release);
         assert!(!picker.ask(Ask::Reveal("/not-started".into())));
         picker.answer.open.store(false, Ordering::Release);
-        let missing = std::env::temp_dir().join(format!("kontra-reveal-missing-{}", std::process::id()));
-        assert!(picker.ask(Ask::Reveal(missing.clone())), "Reveal does not need a file-dialog backend");
+        let missing =
+            std::env::temp_dir().join(format!("kontra-reveal-missing-{}", std::process::id()));
+        assert!(
+            picker.ask(Ask::Reveal(missing.clone())),
+            "Reveal does not need a file-dialog backend"
+        );
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while !picker.ready() && std::time::Instant::now() < deadline {
             std::thread::yield_now();
         }
         assert!(!picker.answer.open.load(Ordering::Acquire));
-        let Some(Picked::Revealed(Err(error))) = picker.take() else { panic!("missing-path result was not delivered") };
+        let Some(Picked::Revealed(Err(error))) = picker.take() else {
+            panic!("missing-path result was not delivered")
+        };
         assert!(error.contains(&missing.display().to_string()));
         drop(picker);
     }
@@ -221,6 +260,15 @@ mod tests {
 
 /// Port from v1 picker::show: mapping and export run on the owned file worker.
 fn created(source: PathBuf, out: PathBuf) -> Picked {
-    let options = crate::creator::Options { source, name: String::new(), vendor: String::new(), out };
-    Picked::Created(crate::creator::create(&options, &|_| {}).map(|created| created.library).map_err(|e| format!("{e:#}")))
+    let options = crate::creator::Options {
+        source,
+        name: String::new(),
+        vendor: String::new(),
+        out,
+    };
+    Picked::Created(
+        crate::creator::create(&options, &|_| {})
+            .map(|created| created.library)
+            .map_err(|e| format!("{e:#}")),
+    )
 }

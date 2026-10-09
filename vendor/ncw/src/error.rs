@@ -34,7 +34,10 @@ impl Display for NcwError {
         match self {
             Self::InvalidFileSignature => write!(f, "invalid NCW file signature"),
             Self::InvalidBlockSignature => write!(f, "invalid NCW block signature"),
-            Self::InvalidBlockSignatureAt { block, channel } => write!(f, "invalid NCW block signature at block {block}, channel {channel}"),
+            Self::InvalidBlockSignatureAt { block, channel } => write!(
+                f,
+                "invalid NCW block signature at block {block}, channel {channel}"
+            ),
             Self::InvalidHeader(what) => write!(f, "invalid NCW header: {what}"),
             Self::UnsupportedBitDepth(bits) => write!(f, "unsupported block bit depth: {bits}"),
             Self::TruncatedData { expected, actual } => write!(

@@ -190,7 +190,9 @@ impl SequenceState {
                 let takes = sequence.spec.takes as usize;
                 for slot in 0..sequence.spec.capacity {
                     let start = sequence.shuffle_offset + slot * takes;
-                    for (i, take) in self.bags[start..start + takes].iter_mut().enumerate() { *take = i as u32; }
+                    for (i, take) in self.bags[start..start + takes].iter_mut().enumerate() {
+                        *take = i as u32;
+                    }
                 }
             }
         }

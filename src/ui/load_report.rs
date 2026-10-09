@@ -71,25 +71,46 @@ impl Area {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Missing {
     /// An effect module with no translation; its authored parameters.
-    Effect { module: String, location: String, params: Vec<(String, String)> },
+    Effect {
+        module: String,
+        location: String,
+        params: Vec<(String, String)>,
+    },
     /// A modulation source or law the runtime does not model.
     Modulation { law: String, location: String },
     /// A script that did not compile; it does not run.
-    ScriptError { script: String, line: u32, column: u32, message: String },
+    ScriptError {
+        script: String,
+        line: u32,
+        column: u32,
+        message: String,
+    },
     /// A script that runs without one builtin; calls to it do nothing.
-    ScriptBuiltin { script: String, name: String, line: u32, column: u32 },
+    ScriptBuiltin {
+        script: String,
+        name: String,
+        line: u32,
+        column: u32,
+    },
     /// A sample file that is not on disk; its zones are silent.
     Sample { path: String },
     /// Library content that could not be opened.
     Access { what: String, reason: String },
     /// Anything else the translator recorded (`sampler_ir::Unsupported`).
-    Other { location: String, feature: String, value: String },
+    Other {
+        location: String,
+        feature: String,
+        value: String,
+    },
 }
 
 impl Missing {
     /// Whether the instrument plays wrong because of it, not merely plainer.
     pub fn severe(&self) -> bool {
-        matches!(self, Self::ScriptError { .. } | Self::Sample { .. } | Self::Access { .. })
+        matches!(
+            self,
+            Self::ScriptError { .. } | Self::Sample { .. } | Self::Access { .. }
+        )
     }
 
     /// What rows of the same kind collapse under.
@@ -109,7 +130,9 @@ impl Missing {
     fn title(&self, n: usize) -> String {
         let s = if n == 1 { "" } else { "s" };
         match self {
-            Self::ScriptError { script, .. } => format!("Script \u{201c}{script}\u{201d} did not compile"),
+            Self::ScriptError { script, .. } => {
+                format!("Script \u{201c}{script}\u{201d} did not compile")
+            }
             Self::ScriptBuiltin { name, .. } => format!("Script function {name} not available"),
             Self::Sample { .. } => format!("{n} sample{s} missing"),
             Self::Access { what, .. } => format!("Could not open {what}"),
@@ -122,18 +145,45 @@ impl Missing {
     /// One line of detail for this occurrence.
     fn detail(&self) -> String {
         match self {
-            Self::ScriptError { line, column, message, .. } => format!("line {line}:{column}  {message}"),
-            Self::ScriptBuiltin { script, line, column: 0, .. } => format!("\u{201c}{script}\u{201d} line {line}"),
-            Self::ScriptBuiltin { script, line, column, .. } => format!("\u{201c}{script}\u{201d} line {line}:{column}"),
-            Self::Sample { path } => path.clone(),
-            Self::Access { reason, .. } => reason.clone(),
-            Self::Effect { location, params, .. } => {
+            Self::ScriptError {
+                line,
+                column,
+                message,
+                ..
+            } => format!("Line: {line}:{column}\nFull error: {message}"),
+            Self::ScriptBuiltin {
+                script,
+                line,
+                column: 0,
+                ..
+            } => format!("\u{201c}{script}\u{201d} line {line}"),
+            Self::ScriptBuiltin {
+                script,
+                line,
+                column,
+                ..
+            } => format!("\u{201c}{script}\u{201d} line {line}:{column}"),
+            Self::Sample { path } => format!("File: {path}"),
+            Self::Access { reason, .. } => format!("Reason: {reason}"),
+            Self::Effect {
+                location, params, ..
+            } => {
                 let params: Vec<String> = params.iter().map(|(k, v)| format!("{k} {v}")).collect();
-                if params.is_empty() { location.clone() } else { format!("{location}  ·  {}", params.join(" · ")) }
+                if params.is_empty() {
+                    format!("Location: {location}")
+                } else {
+                    format!("Location: {location}\nParameters: {}", params.join(" · "))
+                }
             }
-            Self::Modulation { location, .. } => location.clone(),
-            Self::Other { location, value, .. } => {
-                if value.is_empty() { location.clone() } else { format!("{location}  ·  {value}") }
+            Self::Modulation { location, .. } => format!("Location: {location}"),
+            Self::Other {
+                location, value, ..
+            } => {
+                if value.is_empty() {
+                    format!("Location: {location}")
+                } else {
+                    format!("Location: {location}\nValue: {value}")
+                }
             }
         }
     }
@@ -141,7 +191,9 @@ impl Missing {
     /// What it means for the sound, in one sentence.
     fn impact(&self) -> &'static str {
         match self {
-            Self::ScriptError { .. } => "The script does not run: its controls, keyswitches and note handling are missing.",
+            Self::ScriptError { .. } => {
+                "The script does not run: its controls, keyswitches and note handling are missing."
+            }
             Self::ScriptBuiltin { .. } => "Calls to it do nothing; the script runs otherwise.",
             Self::Sample { .. } => "Zones that use these samples are silent.",
             Self::Access { .. } => "Content behind it does not load.",
@@ -155,16 +207,30 @@ impl Missing {
 /// A problem while playing; counters are cumulative since the load.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Runtime {
-    ScriptBudget { overruns: u64 },
-    VoicesDropped { count: u64 },
-    StreamUnderruns { count: u64 },
-    NonFinite { count: u64 },
+    ScriptBudget {
+        overruns: u64,
+    },
+    VoicesDropped {
+        count: u64,
+    },
+    StreamUnderruns {
+        count: u64,
+    },
+    NonFinite {
+        count: u64,
+    },
     /// MIDI 2.0 values played at MIDI 1.0 precision.
-    InputNarrowed { count: u64 },
+    InputNarrowed {
+        count: u64,
+    },
     /// Messages the instrument does not play (per-note controllers, program changes).
-    InputIgnored { count: u64 },
+    InputIgnored {
+        count: u64,
+    },
     /// Voices faded out to make room at full polyphony.
-    VoicesStolen { count: u64 },
+    VoicesStolen {
+        count: u64,
+    },
 }
 
 impl Runtime {
@@ -174,9 +240,10 @@ impl Runtime {
                 format!("Scripts over their time budget {overruns} times"),
                 "Their work was deferred, so some notes may be late.".into(),
             ),
-            Self::VoicesDropped { count } => {
-                (format!("{count} notes dropped"), "The part ran out of voices.".into())
-            }
+            Self::VoicesDropped { count } => (
+                format!("{count} notes dropped"),
+                "The part ran out of voices.".into(),
+            ),
             Self::StreamUnderruns { count } => (
                 format!("{count} streaming underruns"),
                 "The disk did not keep up; those notes played silent for a moment.".into(),
@@ -195,7 +262,8 @@ impl Runtime {
             ),
             Self::VoicesStolen { count } => (
                 format!("{count} voices stolen"),
-                "Polyphony was full: released, then the quietest voices faded out to make room.".into(),
+                "Polyphony was full: released, then the quietest voices faded out to make room."
+                    .into(),
             ),
         }
     }
@@ -210,7 +278,17 @@ pub fn groups(missing: &[Missing]) -> Vec<Vec<&Missing>> {
             None => groups.push(vec![m]),
         }
     }
-    groups.sort_by_key(|g| (!g[0].severe(), if g[0].severe() { 0 } else { usize::MAX - g.len() }, g[0].key().0));
+    groups.sort_by_key(|g| {
+        (
+            !g[0].severe(),
+            if g[0].severe() {
+                0
+            } else {
+                usize::MAX - g.len()
+            },
+            g[0].key().0,
+        )
+    });
     groups
 }
 
@@ -220,8 +298,14 @@ pub fn verdict(r: &Report) -> String {
     let severe = r.missing.iter().any(Missing::severe);
     let mut out = match (gaps, severe) {
         (0, _) => "Plays as authored".to_owned(),
-        (_, true) => format!("Plays incompletely · {gaps} problem{}", if gaps == 1 { "" } else { "s" }),
-        _ => format!("Playing with {gaps} translation gap{}", if gaps == 1 { "" } else { "s" }),
+        (_, true) => format!(
+            "Plays incompletely · {gaps} problem{}",
+            if gaps == 1 { "" } else { "s" }
+        ),
+        _ => format!(
+            "Playing with {gaps} translation gap{}",
+            if gaps == 1 { "" } else { "s" }
+        ),
     };
     if !r.runtime.is_empty() {
         let n = r.runtime.len();
@@ -230,124 +314,119 @@ pub fn verdict(r: &Report) -> String {
     out
 }
 
-/// Rows a group shows before "Show all".
-const FIRST: usize = 3;
+/// A concise report row with its complete, labelled detail.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct Entry {
+    pub title: String,
+    pub detail: String,
+    pub severe: bool,
+}
 
-/// Which groups are open, by their heading.
+pub(super) fn entries(r: &Report) -> Vec<Entry> {
+    let mut rows = Vec::new();
+    for group in groups(&r.missing) {
+        rows.push(Entry {
+            title: group[0].title(group.len()),
+            severe: group[0].severe(),
+            detail: format!(
+                "Instrument: {}\nImpact: {}\n\nOccurrences ({}):\n{}",
+                r.instrument,
+                group[0].impact(),
+                group.len(),
+                group
+                    .iter()
+                    .map(|m| m.detail())
+                    .collect::<Vec<_>>()
+                    .join("\n\n")
+            ),
+        });
+    }
+    if let Some(why) = &r.why_silent {
+        rows.push(Entry {
+            title: "Last note was silent".into(),
+            severe: true,
+            detail: format!("Instrument: {}\nReason: {why}", r.instrument),
+        });
+    }
+    for fault in &r.faults {
+        rows.push(Entry {
+            title: "Script fault".into(),
+            severe: true,
+            detail: format!("Instrument: {}\nFull error: {fault}", r.instrument),
+        });
+    }
+    for runtime in &r.runtime {
+        let (title, impact) = runtime.text();
+        rows.push(Entry {
+            title,
+            severe: true,
+            detail: format!("Instrument: {}\nImpact: {impact}", r.instrument),
+        });
+    }
+    if !r.loaded.is_empty() {
+        rows.push(Entry {
+            title: verdict(r),
+            severe: false,
+            detail: format!(
+                "Instrument: {}\n\nLoaded:\n{}",
+                r.instrument,
+                r.loaded
+                    .iter()
+                    .map(|l| format!("{}: {}", l.area.label(), l.summary))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ),
+        });
+    }
+    rows
+}
+
 #[derive(Default)]
 pub struct State {
     open: HashSet<String>,
 }
 
 pub fn view(ui: &mut Ui, state: &mut State, r: &Report) -> El {
-    let coral = || Fill::from(Color::oklch(0.74, 0.14, 25.));
     let mut rows = vec![
-        row![
-            body(r.instrument.clone()).text_weight(Weight::SEMIBOLD).lines(1).min_w(0),
-            spacer(),
-            caption(verdict(r)).fill(if r.missing.iter().any(Missing::severe) { coral() } else { secondary() }).lines(1)
-        ]
-        .gap(SPACE)
-        .align(Align::Center)
-        .w(Len::Pct(100.))
-        .h(CONTROL)
-        .shrink(0),
+        body(r.instrument.clone())
+            .text_weight(Weight::SEMIBOLD)
+            .w(Len::Pct(100.)),
     ];
-    if !r.missing.is_empty() {
-        rows.push(section("Not playing as authored"));
-        for (n, g) in groups(&r.missing).into_iter().enumerate() {
-            let title = g[0].title(g.len());
-            let open = state.open.contains(&title);
-            let mut lines: Vec<El> = g
-                .iter()
-                .take(if open { usize::MAX } else { FIRST })
-                .map(|m| caption(m.detail()).fill(secondary()).lines(1).min_w(0))
-                .collect();
-            if g.len() > FIRST {
-                let label = if open { "Show fewer".to_owned() } else { format!("Show all {}", g.len()) };
-                let (hit, el) = action(ui, format!("report-more-{n}"), &label, false);
-                if hit && !state.open.remove(&title) {
-                    state.open.insert(title.clone());
-                }
-                lines.push(row![el].shrink(0));
-            }
-            rows.push(problem(g[0].severe().then(coral), title, g[0].impact(), lines));
+    for (n, entry) in entries(r).iter().enumerate() {
+        let open = state.open.contains(&entry.title);
+        let (hit, heading) = action(ui, format!("report-entry-{n}"), &entry.title, open);
+        if hit && !state.open.remove(&entry.title) {
+            state.open.insert(entry.title.clone());
         }
-    }
-    if r.why_silent.is_some() || !r.faults.is_empty() {
-        rows.push(section("Why silent"));
-        if let Some(w) = &r.why_silent {
-            rows.push(problem(Some(coral()), w.clone(), "The last note you played made no sound.", Vec::new()));
+        let mut row = vec![heading.when(entry.severe, |e| e.fill(Role::Warning))];
+        if state.open.contains(&entry.title) {
+            row.push(
+                body(entry.detail.clone())
+                    .text_size(TEXT)
+                    .w(Len::Pct(100.))
+                    .id(format!("report-detail-{n}")),
+            );
         }
-        for f in &r.faults {
-            rows.push(problem(Some(coral()), "Script fault".to_owned(), f, Vec::new()));
-        }
-    }
-    if !r.runtime.is_empty() {
-        rows.push(section("While playing"));
-        for p in &r.runtime {
-            let (title, impact) = p.text();
-            rows.push(problem(Some(coral()), title, &impact, Vec::new()));
-        }
-    }
-    if !r.loaded.is_empty() {
-        rows.push(section("Translated"));
         rows.push(
-            row(r
-                .loaded
-                .iter()
-                .map(|l| {
-                    row![
-                        glyph(Icon::Check, TEXT, secondary()),
-                        body(l.area.label()).text_size(SMALL).text_weight(Weight::SEMIBOLD),
-                        caption(l.summary.clone()).fill(secondary()).lines(1)
-                    ]
-                    .gap(TIGHT)
-                    .align(Align::Center)
-                    .shrink(0)
-                })
-                .collect::<Vec<_>>())
-            .gap(SPACE * 2.)
-            .wrap()
-            .w(Len::Pct(100.))
-            .shrink(0),
+            col(row)
+                .gap(SPACE)
+                .align(Align::Stretch)
+                .w(Len::Pct(100.))
+                .shrink(0),
         );
+        rows.push(rule());
     }
     col(rows)
-        .gap(TIGHT)
-        .align(Align::Start)
+        .gap(SPACE)
+        .align(Align::Stretch)
         .pad(INSET)
-        .fill(Role::Surface)
         .scroll()
         .flex(1)
         .min_h(0)
+        .min_w(0)
         .a11y(A11y::Group)
         .named("Load report")
         .id("load-report")
-}
-
-/// A problem: a dot (coral when severe), its heading and impact, and detail lines.
-fn problem(severe: Option<Fill>, title: String, impact: &str, details: Vec<El>) -> El {
-    let dot = canvas(move |s| {
-        let r = s.width.min(s.height) / 2.;
-        vec![match &severe {
-            Some(f) => Draw::fill(circle(r, r, r), f.clone()),
-            None => Draw::stroke(circle(r, r, r - 0.75), secondary(), 1.5),
-        }]
-    })
-    .square(TIGHT * 2.)
-    .shrink(0);
-    let mut text = vec![
-        body(title).text_size(TEXT).text_weight(Weight::SEMIBOLD).lines(2).min_w(0),
-        caption(impact.to_owned()).lines(2).min_w(0),
-    ];
-    text.extend(details);
-    row![col![dot].pad(edges(TIGHT + 1., 0., 0., 0.)).shrink(0), col(text).gap(2).align(Align::Start).flex(1).min_w(0)]
-        .gap(SPACE)
-        .align(Align::Start)
-        .pad((TIGHT, TIGHT))
-        .w(Len::Pct(100.))
-        .shrink(0)
 }
 
 #[cfg(test)]
@@ -355,19 +434,82 @@ mod tests {
     use super::*;
 
     #[test]
+    fn single_load_problem_expands_to_every_labelled_detail() {
+        let report = Report {
+            missing: vec![Missing::ScriptError {
+                script: "Main".into(),
+                line: 42,
+                column: 9,
+                message: "Long error detail ".repeat(80),
+            }],
+            ..Default::default()
+        };
+        let mut state = State::default();
+        let mut ui = super::super::theme::ui();
+        for _ in 0..3 {
+            let root = view(&mut ui, &mut state, &report).w(500.).h(400.);
+            ui.frame(
+                root,
+                Some(Size::new(500., 400.)),
+                Input::default(),
+                1. / 60.,
+            )
+            .unwrap();
+        }
+        assert!(
+            ui.scene().unwrap().surface("report-entry-0").is_some(),
+            "every problem is an expandable entry, including a single error"
+        );
+        assert!(ui.scene().unwrap().surface("report-detail-0").is_none());
+        ui.focus("report-entry-0");
+        for input in [
+            Input {
+                keys: vec![KeyPress {
+                    key: Key::Enter,
+                    mods: Mods::default(),
+                }],
+                ..Default::default()
+            },
+            Input::default(),
+            Input::default(),
+        ] {
+            let root = view(&mut ui, &mut state, &report).w(500.).h(400.);
+            ui.frame(root, Some(Size::new(500., 400.)), input, 1. / 60.)
+                .unwrap();
+        }
+        assert!(ui.scene().unwrap().surface("report-detail-0").is_some());
+    }
+
+    #[test]
     fn severe_groups_first_and_samples_collapse() {
         let missing = vec![
-            Missing::Effect { module: "Convolution".into(), location: "group 3".into(), params: vec![] },
-            Missing::Sample { path: "a.ncw".into() },
-            Missing::ScriptError { script: "Main".into(), line: 4, column: 2, message: "x".into() },
-            Missing::Sample { path: "b.ncw".into() },
+            Missing::Effect {
+                module: "Convolution".into(),
+                location: "group 3".into(),
+                params: vec![],
+            },
+            Missing::Sample {
+                path: "a.ncw".into(),
+            },
+            Missing::ScriptError {
+                script: "Main".into(),
+                line: 4,
+                column: 2,
+                message: "x".into(),
+            },
+            Missing::Sample {
+                path: "b.ncw".into(),
+            },
         ];
         let g = groups(&missing);
         assert_eq!(g.len(), 3);
         assert!(matches!(g[0][0], Missing::ScriptError { .. }));
         assert_eq!(g[1].len(), 2);
         assert_eq!(g[1][0].title(2), "2 samples missing");
-        let r = Report { missing, ..Report::default() };
+        let r = Report {
+            missing,
+            ..Report::default()
+        };
         assert_eq!(verdict(&r), "Plays incompletely · 3 problems");
     }
 }

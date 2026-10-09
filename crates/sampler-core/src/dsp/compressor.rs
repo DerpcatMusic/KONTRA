@@ -33,9 +33,17 @@ impl CompressorSettings {
     /// Zero makeup returns negative infinity for the output level.
     /// Resolve live controls to constants before evaluating this static curve.
     pub fn transfer_db(self, input_db: f64) -> Result<(f64, f64), crate::Error> {
-        if !self.valid() || !input_db.is_finite()
-            || ![self.threshold_db, self.ratio, self.attack_seconds, self.release_seconds]
-                .iter().all(|p| matches!(p, Parameter::Constant(_))) {
+        if !self.valid()
+            || !input_db.is_finite()
+            || ![
+                self.threshold_db,
+                self.ratio,
+                self.attack_seconds,
+                self.release_seconds,
+            ]
+            .iter()
+            .all(|p| matches!(p, Parameter::Constant(_)))
+        {
             return Err(crate::Error::InvalidInput);
         }
         let input = (input_db / DB_PER_NEPER).exp();
@@ -252,27 +260,46 @@ mod tests {
                 for ratio in [1., 1.01, 2., 4., 20.] {
                     for makeup in [0., 0.25, 1., 2.] {
                         for link in [false, true] {
-                            let settings = CompressorSettings { threshold_db: Parameter::Constant(threshold_db), ratio: Parameter::Constant(ratio), makeup, link,
-                                attack_seconds: Parameter::Constant(0.), release_seconds: Parameter::Constant(0.) };
+                            let settings = CompressorSettings {
+                                threshold_db: Parameter::Constant(threshold_db),
+                                ratio: Parameter::Constant(ratio),
+                                makeup,
+                                link,
+                                attack_seconds: Parameter::Constant(0.),
+                                release_seconds: Parameter::Constant(0.),
+                            };
                             let kernel = settings.prepare(rate, &mut Vec::new());
                             let mut state = ProcessorState::default();
                             // Both directions exercise attack/release branch selection.
                             for descending in [false, true] {
                                 for step in -480..=144 {
-                                    let input_db = if descending { -336 - step } else { step } as f64 * 0.25;
+                                    let input_db =
+                                        if descending { -336 - step } else { step } as f64 * 0.25;
                                     let input = (input_db / DB_PER_NEPER).exp();
                                     let mut block = [[0.; super::super::BLOCK]; 2];
-                                    block[0][0] = input; block[1][0] = input;
+                                    block[0][0] = input;
+                                    block[1][0] = input;
                                     kernel.process(&mut state, &[], &mut block, 1, 0);
-                                    let (output_db, reduction_db) = settings.transfer_db(input_db).unwrap();
+                                    let (output_db, reduction_db) =
+                                        settings.transfer_db(input_db).unwrap();
                                     for c in 0..2 {
-                                        assert_eq!(output_db.to_bits(), (DB_PER_NEPER * block[c][0].ln()).to_bits());
+                                        assert_eq!(
+                                            output_db.to_bits(),
+                                            (DB_PER_NEPER * block[c][0].ln()).to_bits()
+                                        );
                                         assert_eq!(reduction_db.to_bits(), state.z[c][0].to_bits());
                                     }
                                 }
                             }
-                            let timed = CompressorSettings { attack_seconds: Parameter::Constant(0.01), release_seconds: Parameter::Constant(0.1), ..settings };
-                            assert_eq!(timed.transfer_db(-6.).unwrap(), settings.transfer_db(-6.).unwrap());
+                            let timed = CompressorSettings {
+                                attack_seconds: Parameter::Constant(0.01),
+                                release_seconds: Parameter::Constant(0.1),
+                                ..settings
+                            };
+                            assert_eq!(
+                                timed.transfer_db(-6.).unwrap(),
+                                settings.transfer_db(-6.).unwrap()
+                            );
                         }
                     }
                 }
@@ -282,18 +309,55 @@ mod tests {
 
     #[test]
     fn transfer_db_rejects_invalid_settings_and_unrepresentable_levels() {
-        let settings = CompressorSettings { threshold_db: Parameter::Constant(-24.), ratio: Parameter::Constant(4.), makeup: 1., link: true,
-            attack_seconds: Parameter::Constant(0.), release_seconds: Parameter::Constant(0.) };
-        let live = CompressorSettings { threshold_db: Parameter::Control(ControlRange {
-            control: crate::ControlId(1), low: -60., high: 0., ramp_frames: 0,
-        }), ..settings };
+        let settings = CompressorSettings {
+            threshold_db: Parameter::Constant(-24.),
+            ratio: Parameter::Constant(4.),
+            makeup: 1.,
+            link: true,
+            attack_seconds: Parameter::Constant(0.),
+            release_seconds: Parameter::Constant(0.),
+        };
+        let live = CompressorSettings {
+            threshold_db: Parameter::Control(ControlRange {
+                control: crate::ControlId(1),
+                low: -60.,
+                high: 0.,
+                ramp_frames: 0,
+            }),
+            ..settings
+        };
         assert!(live.valid());
-        assert!(live.transfer_db(0.).is_err(), "a live binding has no resolved detector threshold");
-        for input in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, f64::MAX, -f64::MAX] {
+        assert!(
+            live.transfer_db(0.).is_err(),
+            "a live binding has no resolved detector threshold"
+        );
+        for input in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::MAX,
+            -f64::MAX,
+        ] {
             assert!(settings.transfer_db(input).is_err());
         }
-        for invalid in [CompressorSettings { ratio: Parameter::Constant(0.5), ..settings }, CompressorSettings { makeup: -1., ..settings },
-            CompressorSettings { attack_seconds: Parameter::Constant(-1.), ..settings }, CompressorSettings { threshold_db: Parameter::Constant(f64::NAN), ..settings }] {
+        for invalid in [
+            CompressorSettings {
+                ratio: Parameter::Constant(0.5),
+                ..settings
+            },
+            CompressorSettings {
+                makeup: -1.,
+                ..settings
+            },
+            CompressorSettings {
+                attack_seconds: Parameter::Constant(-1.),
+                ..settings
+            },
+            CompressorSettings {
+                threshold_db: Parameter::Constant(f64::NAN),
+                ..settings
+            },
+        ] {
             assert!(invalid.transfer_db(0.).is_err());
         }
     }

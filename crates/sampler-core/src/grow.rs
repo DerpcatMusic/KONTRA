@@ -77,8 +77,15 @@ impl Growth {
     }
 
     pub fn note_params(growth: crate::script_params::NoteParamsGrowth) -> Self {
-        Self { voices: 0, slots: Box::new([]), free: Box::new([]), activity: Box::new([]),
-            scratch: None, plans: Vec::new(), note_params: Some(growth) }
+        Self {
+            voices: 0,
+            slots: Box::new([]),
+            free: Box::new([]),
+            activity: Box::new([]),
+            scratch: None,
+            plans: Vec::new(),
+            note_params: Some(growth),
+        }
     }
 }
 
@@ -96,7 +103,9 @@ impl Runtime {
         self.voices.slots.len()
     }
 
-    pub fn note_params_capacity(&self) -> usize { self.note_params.capacity() }
+    pub fn note_params_capacity(&self) -> usize {
+        self.note_params.capacity()
+    }
 
     /// Control side: wake `thread` (an unpark, which is allocation free) when
     /// the voice pool fills up and when a growth comes back, so it can sleep
@@ -117,7 +126,9 @@ impl Runtime {
             return;
         };
         if self.grow_with(&mut growth) {
-            if growth.voices != 0 { self.voice_growths += 1; }
+            if growth.voices != 0 {
+                self.voice_growths += 1;
+            }
         } else {
             self.growth_failures += 1;
         }
@@ -134,7 +145,9 @@ impl Runtime {
     fn grow_with(&mut self, g: &mut Growth) -> bool {
         if let Some(params) = &mut g.note_params {
             let adopted = self.note_params.adopt(params);
-            if adopted { self.note_pressure.store(0, Ordering::Relaxed); }
+            if adopted {
+                self.note_pressure.store(0, Ordering::Relaxed);
+            }
             return adopted;
         }
         let old = self.voices.slots.len();
@@ -193,7 +206,9 @@ impl Runtime {
         if self.notes.occupied * 4 >= capacity * 3
             && self.note_pressure.swap(capacity, Ordering::Relaxed) != capacity
             && let Some(thread) = self.growth.as_ref().and_then(|q| q.waker.as_ref())
-        { thread.unpark(); }
+        {
+            thread.unpark();
+        }
     }
 }
 

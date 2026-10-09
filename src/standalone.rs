@@ -17,7 +17,9 @@ fn main() {
     if std::panic::catch_unwind(|| {
         let _diagnostics = kontakto::diagnostics::acquire();
         moose_standalone::run::<kontakto::Plugin>();
-    }).is_err() {
+    })
+    .is_err()
+    {
         // Retain the crash session and panic marker rather than marking this exit clean.
         std::process::exit(101);
     }

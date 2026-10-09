@@ -12,7 +12,8 @@ use crate::platform::{HostScale, ParentWindow};
 use crate::window::{self, Requests, Shared, View, lock};
 
 type Build<P> = Box<dyn FnMut(&mut Ui, &mut Bridge<P>) -> El + Send>;
-type FileDrop = Box<dyn FnMut(&Ui, mui::prelude::Point, &[std::path::PathBuf], bool) -> bool + Send>;
+type FileDrop =
+    Box<dyn FnMut(&Ui, mui::prelude::Point, &[std::path::PathBuf], bool) -> bool + Send>;
 type Changed = Box<dyn FnMut() -> bool + Send>;
 
 /// The model half: the app's build closure and the parameters it binds.
@@ -36,18 +37,33 @@ pub(crate) struct Session<P: Params> {
 impl<P: Params> View for Session<P> {
     fn log(&mut self, line: &str) {
         if let Some(log) = &self.log {
-            log.lock().unwrap_or_else(std::sync::PoisonError::into_inner)(line);
-        } else { eprintln!("{line}"); }
+            log.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)(line);
+        } else {
+            eprintln!("{line}");
+        }
     }
     fn build(&mut self, ui: &mut Ui, _: &Input) -> El {
         let root = (self.build)(ui, &mut self.bridge);
         self.bridge.end_unbound();
         root
     }
-    fn drop_files(&mut self, ui: &Ui, at: mui::prelude::Point, paths: &[std::path::PathBuf], dropped: bool) -> bool {
-        self.file_drop.as_mut().is_some_and(|f| f(ui, at, paths, dropped))
+    fn drop_files(
+        &mut self,
+        ui: &Ui,
+        at: mui::prelude::Point,
+        paths: &[std::path::PathBuf],
+        dropped: bool,
+    ) -> bool {
+        self.file_drop
+            .as_mut()
+            .is_some_and(|f| f(ui, at, paths, dropped))
     }
-    fn cancel(&mut self, ui: &Ui) {if let Some(f)=&mut self.cancel {f(ui);}}
+    fn cancel(&mut self, ui: &Ui) {
+        if let Some(f) = &mut self.cancel {
+            f(ui);
+        }
+    }
     fn changed(&mut self) -> bool {
         // Both run every tick: the bridge snapshots values as it compares.
         self.bridge.changed() | self.changed.as_mut().is_some_and(|f| f())
@@ -57,7 +73,11 @@ impl<P: Params> View for Session<P> {
             (window.width / d.width).min(window.height / d.height)
         });
         let user = self.user_zoom.as_ref().map_or(1.0, |f| f(window));
-        fit * if user.is_finite() && user > 0.0 { user } else { 1.0 }
+        fit * if user.is_finite() && user > 0.0 {
+            user
+        } else {
+            1.0
+        }
     }
     fn request_resize(&mut self, width: u32, height: u32) -> bool {
         self.bridge
@@ -197,7 +217,10 @@ impl<P: Params> MuiEditor<P> {
 
     /// Handle native file drags. Return true to accept; mutate only when `dropped`.
     #[must_use]
-    pub fn on_files(self, f: impl FnMut(&Ui, mui::prelude::Point, &[std::path::PathBuf], bool) -> bool + Send + 'static) -> Self {
+    pub fn on_files(
+        self,
+        f: impl FnMut(&Ui, mui::prelude::Point, &[std::path::PathBuf], bool) -> bool + Send + 'static,
+    ) -> Self {
         lock(&self.shared).view.file_drop = Some(Box::new(f));
         self
     }
@@ -213,7 +236,10 @@ impl<P: Params> MuiEditor<P> {
     /// the key from MUI and the host. Runs on the window's thread with the
     /// last frame's `Ui`.
     #[must_use]
-    pub fn on_key(mut self, f: impl FnMut(&Ui, &window::KeyEvent) -> bool + Send + 'static) -> Self {
+    pub fn on_key(
+        mut self,
+        f: impl FnMut(&Ui, &window::KeyEvent) -> bool + Send + 'static,
+    ) -> Self {
         self.keys = Some(Arc::new(Mutex::new(f)));
         self
     }
@@ -336,7 +362,9 @@ impl<P: Params> Editor for MuiEditor<P> {
             // And the app's own (a held note): the window's last event may
             // never come, and a host may build a fresh editor next time.
             s.view.cancel(&s.ui);
-            if let Some(f) = &mut s.view.closed { f(); }
+            if let Some(f) = &mut s.view.closed {
+                f();
+            }
         }
         self.close_window();
     }
@@ -378,7 +406,9 @@ impl<P: Params> Drop for MuiEditor<P> {
         {
             let mut s = lock(&self.shared);
             s.view.bridge.detach();
-            if let Some(f) = &mut s.view.closed { f(); }
+            if let Some(f) = &mut s.view.closed {
+                f();
+            }
         }
         self.close_window();
     }

@@ -145,29 +145,31 @@ pub(crate) fn record<T>(result: &Result<T, Error>, source: &str, slot: u8) {
         }
     };
     let phase = |name, present| {
-        PHASES.with(|p| match p.borrow().iter().find(|(n, _)| {
-            *n == name || name == "persistence_changed" && *n == "persistence_scheduled"
-        }) {
-            Some((phase, fault)) => Phase {
-                present,
-                completion: if *phase == "persistence_scheduled" {
-                    "scheduled"
-                } else if fault.is_none() {
-                    "completed"
-                } else {
-                    "failed"
+        PHASES.with(|p| {
+            match p.borrow().iter().find(|(n, _)| {
+                *n == name || name == "persistence_changed" && *n == "persistence_scheduled"
+            }) {
+                Some((phase, fault)) => Phase {
+                    present,
+                    completion: if *phase == "persistence_scheduled" {
+                        "scheduled"
+                    } else if fault.is_none() {
+                        "completed"
+                    } else {
+                        "failed"
+                    },
+                    fault: fault.map(|s| diag(name, s)),
                 },
-                fault: fault.map(|s| diag(name, s)),
-            },
-            None => Phase {
-                present,
-                completion: if present == Some(false) {
-                    "not_present"
-                } else {
-                    "not_reached"
+                None => Phase {
+                    present,
+                    completion: if present == Some(false) {
+                        "not_present"
+                    } else {
+                        "not_reached"
+                    },
+                    fault: None,
                 },
-                fault: None,
-            },
+            }
         })
     };
     let (ip, pp) = PRESENT.get();

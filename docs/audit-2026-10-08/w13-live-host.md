@@ -36,3 +36,28 @@ Resumed native readback follow-up (2026-10-08 22:38 UTC): native `state.load` su
 Native C++ compiled through `kontakto-heavy` with `-O2 -std=c++17 -Wall -Wextra -Werror`; its percentile/event/I/O/bounded-save self-check passed. All six Python self-check groups passed, including red→green version-2 private settings at the same `kontra/settings.json` path. The probe accepts hash-bound `ci` and authorized `release` artifacts, records thread-setting/environment policy, and does not build/install a plugin. No new timed cells or production ABI changes are claimed.
 
 NEXT: exact released artifact live-host cells after W0 exits the wrapper, in the W13→W9 quiet order.
+
+### Callback scheduling diagnostic (2026-10-09)
+
+`KONTRA_HOST_SCHED_DIAGNOSTIC=1` enables read-only `getrusage(RUSAGE_THREAD)`
+counts before/after each measured CLAP process bracket. `callback_scheduling`
+records the audio thread's actual scheduler policy/priority and total voluntary
+and involuntary switches. `deadline_switches` records frame, wall/thread CPU
+microseconds and switch deltas for the first 256 process deadline misses;
+`omitted_misses` reports truncation. Pacing sleeps are outside the brackets;
+clock reads are inside. No scheduler, affinity or OS settings are changed.
+
+Voluntary switches can indicate waiting and involuntary switches can indicate
+preemption within the bracket. Neither identifies a wait site; zero switches
+does not exclude interrupts or other delay. Diagnostic syscalls perturb the
+callback, so the driver always marks these runs UNKNOWN for CPU acceptance.
+The normal path makes no per-callback context-switch syscalls. Its original
+host binary/source and the instrumented host are frozen separately. Source
+hashes come from the binary's BUILD receipt, not the current checkout.
+
+Private host settings disable both first-run Kontakt and UVI import. The
+admission and UVI-import guards reproduced RED before the shared helper fixes.
+Native self-checks exercise synthetic deltas, monotonic kernel counters and
+read-only policy retrieval. Protected UVI remains parked; a future UVI host
+diagnostic may use only W10's clear authored fixture and exact frozen artifacts.
+No real-host scheduling diagnosis or new CPU verdict is claimed here.

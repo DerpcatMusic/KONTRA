@@ -1,4 +1,4 @@
-use crate::{Error, read_bytes::ReadBytesExt};
+use crate::{read_bytes::ReadBytesExt, Error};
 
 // TODO: change to Chunk reader
 

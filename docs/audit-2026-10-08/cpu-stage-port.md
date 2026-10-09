@@ -184,7 +184,7 @@ Profile samples v1/v2: 800/869. Three-run median of profiled block medians/p99s:
 
 Envelope/modulation is the largest identified v2 stage on piano and FX, excluding unattributed shared math. Piano64 cold is0.12→13.70µs/block, warm no v1 sample→13.82; FX64 cold1.07→13.05, warm1.36→12.69. The v2 fill_filter_factors loop clears and converts every filter entry for each voice, including neutral, unaddressed entries. It alone contributes a substantial share of the identified modulation samples; exp2/pow are also expensive in piano, but leaf-only profiles do not prove all of their callers. The observed profile gap is much larger than the earlier8µs estimate; no table is forced to sum to8.
 
-V1 `0cb7a8a0:src/engine/filter.rs:1382` applies only nonzero modulation deltas: its enumerate/filter loop skips normalized/stored conversions for neutral knobs. The first narrow port will copy that nonzero-delta iteration into v2 factor conversion, adapting neutral output to multiplicative1 and preserving cutoff/resonance units and existing errors. This targets the measured modulation path, with no resampler change. It will be accepted only if the separate40-run original-instrument before/after gate worsens no p99, deadline or underrun cell. Earlier neutral-factor work on v2/fix-cpu is not present at73e6089b; this is a pinned-baseline port trial, not a new resampler improvement.
+V1 `0cb7a8a0:src/engine/filter.rs:1382` applies only nonzero modulation deltas: its enumerate/filter loop skips normalized/stored conversions for neutral knobs. The first narrow port will copy that nonzero-delta iteration into v2 factor conversion, adapting neutral output to multiplicative1 and preserving cutoff/resonance units and existing errors. This targets the measured modulation path, with no resampler change. Acceptance uses the separate 40-run original-instrument before/after gate, with the coordinator's subsequent A/A calibration and quiet-machine underrun attribution rules described below. Earlier neutral-factor work on v2/fix-cpu is not present at73e6089b; this is a pinned-baseline port trial, not a new resampler improvement.
 
 ## Unprofiled v1 /73 original-instrument comparison
 
@@ -229,3 +229,235 @@ All40 counters: v1 10 deadlines/0 underruns; v2/73 5/1. This pinned-baseline com
 Copies v1's enumerate/filter nonzero-delta loop from `0cb7a8a0:src/engine/filter.rs`, adapting neutral modulation to multiplicative1 and converting only nonzero cutoff semitones / resonance dB. Caller remains FilterBank::set_addressed_modulation; no admission, storage, resampler or event behavior changes. The regression fixture checks bit-exact cutoff/resonance units, summed-route cancellation, positive/negative/signed-zero deltas, an unrelated pitch route, untouched filter entries and scratch reuse by an unbound voice.
 
 21 targeted voice-modulation/control-DSP checks pass, with one existing ignored test. Default root `cargo test --no-run` passes. Candidate debug/epoch probe SHA256 `0f9fbd59a0760f5d7899798c664f27c5ac1eee26ee938cccf4af48afd5837201`; matched before probe `d28557b00ec6d896a71617931ec9fe1613e36b2acf679d184a4ccc9ed1d60585`. Both use the same release-derived profile, line symbols and epoch-only probe change. The original40-run before/after gate is underway, with profiling disabled, before any acceptance or W0 handoff. Matched diagnostic profiles will separately assess whether the shared exp2/pow cost drops. **HOLD pending measurement.**
+
+
+## Neutral-delta original 40 and calibrated gate (pending)
+
+All 40 before/after runs completed; event/render heap calls are zero and all 20 cold mincore receipts verify pages_after=0. Before/after deadlines total 7/7, storage underruns 2/4. The final after FX64 warm run was delayed when the target disk dropped below the initial 18 GiB assertion; only that missing run was resumed after verifying frozen binaries and deleting this worktree's idle incremental directory. The failed driver status and its log remain retained; no completed run was replaced.
+
+| Cell | Before median/p99 µs | After median/p99 µs | Underruns before/after | Deadlines before/after |
+|---|---:|---:|---:|---:|
+| fx 32 warm | 50.861/104.642 | 60.801/129.452 | 0/0 | 1/2 |
+| fx 32 cold | 52.271/114.262 | 52.591/109.452 | 2/0 | 1/1 |
+| fx 64 warm | 54.321/118.102 | 55.072/120.082 | 0/4 | 0/0 |
+| fx 64 cold | 52.721/113.653 | 51.971/115.222 | 0/0 | 0/0 |
+| fx 256 warm | 193.204/273.695 | 201.434/296.096 | 0/0 | 0/0 |
+| fx 256 cold | 194.904/267.885 | 190.143/275.615 | 0/0 | 0/0 |
+| piano 32 warm | 36.581/54.141 | 21.911/42.560 | 0/0 | 1/1 |
+| piano 32 cold | 36.421/58.812 | 21.950/39.381 | 0/0 | 2/1 |
+| piano 64 warm | 45.251/76.051 | 30.611/53.061 | 0/0 | 0/0 |
+| piano 64 cold | 45.471/79.932 | 33.221/71.081 | 0/0 | 0/0 |
+| piano 256 warm | 180.093/269.855 | 115.422/160.953 | 0/0 | 1/1 |
+| piano 256 cold | 182.414/309.526 | 120.863/193.074 | 0/0 | 1/1 |
+
+64-frame entries summarize three runs (median of run medians / median of run p99s); 32/256 entries initially have one run each. All raw pairs remain included in `neutral-port-matrix/`.
+
+Matched three-pair piano64 profiles reproduce the libm hypothesis: cold unattributed libm drops 12.813→0.178 µs/block and envelope/mod 12.991→8.008; warm libm 13.880→0.415 and envelope/mod 12.219→7.771. These are exclusive sampled user-CPU estimates, not direct stage timers; unknown caller attribution remains explicit. All 12 diagnostic receipts and per-IP/source mappings are retained in `neutral-port-profiles/` and `neutral-port-attribution/`.
+
+The coordinator then refined acceptance to measure the A/A noise floor rather than rejecting every positive p99 delta. Three alternating baseline/baseline pairs are running on FX32 warm, FX64 cold/warm, and FX256 cold/warm. The protocol records maximum absolute paired p99 and deadline-count differences as the empirical spread and compares the candidate's paired losses; cells beyond it receive up to three additional A/B pairs. Underruns remain zero-tolerance in the release gate. When A/A itself reports storage underruns, the affected A/B cell is repeated with other heavy/census jobs inactive before attributing the fault to code. The original 40/profile runs lack contemporaneous heavy-unit snapshots; their quietness is unknown. New runs record timestamped `systemctl --user list-units 'kontakto-*' '*census*'` plus heavy/scanner process activity, with a two-second timeline covering the ongoing A/A run. No historical quietness is inferred.
+
+New gate receipts are symlinked to `/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w9-neutral-aa`; read-mostly gate runs may continue at root ≥16 GiB under the coordinator's instruction. **HOLD: calibration and quiet attribution are pending. No accepted SHA has been handed to W0.**
+
+
+## Calibrated neutral-port decision: ACCEPT for performance attribution; release HOLD
+
+The A/A set completed 30 runs: three alternating pairs on each of the five FX cells. All return 0, event/render heap counters are zero, and cold mincore checks report pages_after=0. Baseline itself reported 15 storage underruns (FX64 cold 5; FX256 cold 10). Maximum absolute paired p99 spreads were 23.460 µs at FX32 warm, 14.620/9.520 at FX64 cold/warm, and 47.130/66.481 at FX256 cold/warm. All initial candidate p99 losses fit those measured spreads except FX32 warm's 24.810 µs; its initial extra deadline also required repeats.
+
+After A/A, W9 created the authorized quiet request. Census granted it at 17:25:16 UTC. Twelve additional alternating pairs (repeats 4–6) covered FX32 warm, FX64 cold/warm and FX256 cold, with pre-pair guards, start/end activity snapshots and a two-second heavy/census/scanner timeline. All 24 probes returned 0 with no audio heap calls. The request was removed after the final run at 17:28 UTC, within the 45-minute cap. Two runs experienced a mid-run external build intrusion despite passing the pre-pair guard: repeat4 before FX64 cold overlapped W7's fix-render test, and repeat4 after FX256 cold overlapped W6's sampler-uvi no-run build. These runs remain in every raw/aggregate table and are not claimed quiet. The second had two candidate underruns; all uncontaminated candidate runs had zero. An uncontaminated baseline repeat5 FX256 cold itself reported four underruns. Candidate-only storage faults therefore did not repeat under the quiet attribution rule. The original four candidate FX64 warm underruns also did not repeat in any additional pair.
+
+| Additional cell (3 pairs) | Before median/p99 µs | After median/p99 µs | Underruns before/after | Deadlines before/after |
+|---|---:|---:|---:|---:|
+| FX 32 warm | 45.671/87.662 | 44.161/86.882 | 0/0 | 3/3 |
+| FX 64 warm | 52.161/107.842 | 49.341/98.432 | 0/0 | 0/0 |
+| FX 64 cold | 47.171/85.482 | 47.711/85.802 | 0/0 | 0/0 |
+| FX 256 cold | 178.674/262.175 | 180.633/258.185 | 4/2 | 0/0 |
+
+The extra FX32 warm deadline did not repeat: all three additional pairs have one deadline per side. Initial/additional combined aggregate p99 changes are FX32 warm −7.225 µs, FX64 warm −1.025, FX64 cold +9.536 (below its 14.620 A/A spread), and FX256 cold −4.800. FX256 warm's initial +22.401 fits its 66.481 spread and needed no extra pair. The raw FX32 total remains four before / five after deadlines over four pairs; its sole extra count is in the initial unobserved-contended run, not a repeated quiet loss. Maximum paired outliers remain visible (including the +28.420 µs repeat4 FX64 cold pair); final attribution uses the repeated aggregate evidence rather than permanently deciding from the first noisy maximum.
+
+Source commit `8b2929cd953038a9f4faf98717d826d53c0da0f0` was handed to W0 and the coordinator as the accepted narrow performance port under the updated A/A and quiet-attribution instructions. The source change preserves mathematical units, validation and callback/storage ownership, and the original piano improvements plus measured libm drop stand. **This is not a zero-underrun release pass: original, A/A and additional storage faults remain recorded, and v2 still trails v1. Global release HOLD remains.** A fresh full eight-cell matched v1/accepted-v2 stage profile is running before the separately gated mixing port.
+
+Receipts: `neutral-port-aa/`, `neutral-port-quiet/`, `neutral-port-calibration-summary.json`, `neutral-port-all-ab.json`, and per-run `quiet-validation.json`. New gate output directories are symlinked under the target volume; the root read-mostly floor is 16 GiB. Activity capture began after the coordinator's request; older runs do not acquire a retrospective quiet claim.
+
+
+## Post-acceptance stage table: v1 versus 8b2929cd
+
+Fresh 48-run matched rotation: three alternating pairs per original piano32/64 and FX64/256 cold/warm cell. Frozen binaries: v1 profile `5537c8fbfa29bb2b23860bf789d5122b313e78c614419bf870fbd3146907569f`; accepted v2 `0f9fbd59a0760f5d7899798c664f27c5ac1eee26ee938cccf4af48afd5837201`. All run/metadata receipts and per-IP source mappings are retained in `neutral-stage-profiles/` and `neutral-stage-attribution/`. Epoch/audio-TID/steady-window selection and exclusive attribution use the same method and limits as the first table. Shared libm and unknown/fused categories remain explicit; sampled stage costs are estimates, not a decomposition of timed median/p99. Each entry below is v1→v2 µs/block. Zero means no sampled cost, not proof of free work. Instrument voice/source semantics are unchanged within each engine, not asserted equivalent across engines.
+
+### piano 32 cold
+
+| Stage | v1→accepted v2 µs/block |
+|---|---:|
+| voice render | 0.356→3.912 |
+| resample | 0.267→4.712 |
+| envelope/mod | 0.119→8.090 |
+| filter | 0.889→0.059 |
+| FX | 2.282→0.207 |
+| mixing | 1.008→4.534 |
+| stream service | 0.030→0.919 |
+| callback/event | 0.415→0.296 |
+| fused resample/mix | 0.059→0.000 |
+| DSP dispatch/validation | 0.000→2.371 |
+| harness/timing | 0.207→0.089 |
+| unattributed libm | 0.000→0.178 |
+| unattributed other | 0.682→1.956 |
+
+v1: profiled median/p99 4.451/16.580 µs; underruns 0, deadlines 0.
+
+v2: profiled median/p99 22.970/44.451 µs; underruns 0, deadlines 4.
+### piano 32 warm
+
+| Stage | v1→accepted v2 µs/block |
+|---|---:|
+| voice render | 0.059→3.171 |
+| resample | 0.030→5.008 |
+| envelope/mod | 0.000→6.578 |
+| filter | 0.148→0.000 |
+| FX | 1.541→0.178 |
+| mixing | 0.326→4.356 |
+| stream service | 0.000→0.593 |
+| callback/event | 0.415→0.385 |
+| fused resample/mix | 0.000→0.000 |
+| DSP dispatch/validation | 0.000→2.726 |
+| harness/timing | 0.356→0.267 |
+| unattributed libm | 0.000→0.207 |
+| unattributed other | 0.622→1.689 |
+
+v1: profiled median/p99 4.330/14.060 µs; underruns 0, deadlines 0.
+
+v2: profiled median/p99 22.461/47.121 µs; underruns 0, deadlines 3.
+### piano 64 cold
+
+| Stage | v1→accepted v2 µs/block |
+|---|---:|
+| voice render | 0.297→3.678 |
+| resample | 0.237→6.584 |
+| envelope/mod | 0.059→7.830 |
+| filter | 0.534→0.059 |
+| FX | 1.957→0.178 |
+| mixing | 0.475→8.186 |
+| stream service | 0.000→0.534 |
+| callback/event | 0.297→0.534 |
+| fused resample/mix | 0.059→0.000 |
+| DSP dispatch/validation | 0.000→3.144 |
+| harness/timing | 0.237→0.059 |
+| unattributed libm | 0.000→0.119 |
+| unattributed other | 0.712→1.720 |
+
+v1: profiled median/p99 5.270/20.851 µs; underruns 0, deadlines 0.
+
+v2: profiled median/p99 30.801/53.661 µs; underruns 0, deadlines 0.
+### piano 64 warm
+
+| Stage | v1→accepted v2 µs/block |
+|---|---:|
+| voice render | 0.475→4.923 |
+| resample | 0.297→6.762 |
+| envelope/mod | 0.059→9.313 |
+| filter | 0.652→0.059 |
+| FX | 1.898→0.119 |
+| mixing | 0.534→7.474 |
+| stream service | 0.119→0.534 |
+| callback/event | 0.534→0.178 |
+| fused resample/mix | 0.000→0.000 |
+| DSP dispatch/validation | 0.000→3.025 |
+| harness/timing | 0.356→0.059 |
+| unattributed libm | 0.000→0.178 |
+| unattributed other | 1.246→1.542 |
+
+v1: profiled median/p99 6.210/21.790 µs; underruns 0, deadlines 0.
+
+v2: profiled median/p99 30.830/55.151 µs; underruns 0, deadlines 0.
+### fx 64 cold
+
+| Stage | v1→accepted v2 µs/block |
+|---|---:|
+| voice render | 4.627→5.932 |
+| resample | 0.830→0.297 |
+| envelope/mod | 1.008→14.058 |
+| filter | 10.677→0.652 |
+| FX | 5.695→4.567 |
+| mixing | 0.178→9.372 |
+| stream service | 0.415→12.397 |
+| callback/event | 13.702→0.771 |
+| fused resample/mix | 0.593→0.000 |
+| DSP dispatch/validation | 0.000→2.254 |
+| harness/timing | 5.398→0.237 |
+| unattributed libm | 1.483→0.356 |
+| unattributed other | 5.695→14.652 |
+
+v1: profiled median/p99 43.940/76.541 µs; underruns 0, deadlines 1.
+
+v2: profiled median/p99 54.741/119.422 µs; underruns 0, deadlines 3.
+### fx 64 warm
+
+| Stage | v1→accepted v2 µs/block |
+|---|---:|
+| voice render | 4.686→6.822 |
+| resample | 1.008→0.712 |
+| envelope/mod | 1.364→13.228 |
+| filter | 9.906→1.008 |
+| FX | 3.559→5.161 |
+| mixing | 0.000→7.415 |
+| stream service | 0.415→11.567 |
+| callback/event | 13.109→0.534 |
+| fused resample/mix | 0.771→0.000 |
+| DSP dispatch/validation | 0.000→2.135 |
+| harness/timing | 6.110→0.119 |
+| unattributed libm | 1.305→0.178 |
+| unattributed other | 5.635→12.575 |
+
+v1: profiled median/p99 44.751/78.982 µs; underruns 0, deadlines 1.
+
+v2: profiled median/p99 54.121/112.982 µs; underruns 0, deadlines 0.
+### fx 256 cold
+
+| Stage | v1→accepted v2 µs/block |
+|---|---:|
+| voice render | 19.624→24.589 |
+| resample | 2.601→1.655 |
+| envelope/mod | 4.492→58.398 |
+| filter | 46.813→3.783 |
+| FX | 18.678→9.457 |
+| mixing | 0.000→29.790 |
+| stream service | 1.891→22.224 |
+| callback/event | 45.395→2.128 |
+| fused resample/mix | 0.709→0.000 |
+| DSP dispatch/validation | 0.000→6.856 |
+| harness/timing | 16.787→0.473 |
+| unattributed libm | 6.856→1.891 |
+| unattributed other | 23.643→41.139 |
+
+v1: profiled median/p99 180.053/308.296 µs; underruns 0, deadlines 0.
+
+v2: profiled median/p99 201.923/308.966 µs; underruns 1, deadlines 0.
+### fx 256 warm
+
+| Stage | v1→accepted v2 µs/block |
+|---|---:|
+| voice render | 20.333→31.918 |
+| resample | 3.783→1.419 |
+| envelope/mod | 3.546→57.689 |
+| filter | 41.139→2.128 |
+| FX | 18.205→14.659 |
+| mixing | 0.236→32.864 |
+| stream service | 1.891→28.608 |
+| callback/event | 48.468→2.837 |
+| fused resample/mix | 1.419→0.000 |
+| DSP dispatch/validation | 0.000→11.349 |
+| harness/timing | 17.732→0.473 |
+| unattributed libm | 6.147→1.891 |
+| unattributed other | 19.151→52.488 |
+
+v1: profiled median/p99 179.323/300.186 µs; underruns 0, deadlines 0.
+
+v2: profiled median/p99 204.104/291.965 µs; underruns 1, deadlines 3.
+
+The updated piano64 cold gaps are mixing 0.475→8.186, resample 0.237→6.584, voice render 0.297→3.678, and DSP dispatch/validation 0→3.144. Unattributed libm is now 0→0.119. At FX256 cold, stream service is 1.891→22.224 µs/block and mixing 0→29.790; the accepted v2 profile still reports one storage underrun versus v1 zero. Quiet-baseline underruns are therefore not dismissed as contention: release tolerance remains zero.
+
+### Streaming comparison and diagnostic limits
+
+On original FX256 cold, v1's adapter reports preload4048 source frames, 514,033,080 resident sample/stream bytes, and 23,595 samples. `0cb7a8a0:src/engine/bank.rs` plans a 4096-frame source preload (MAX_BLOCK128 × MAX_STEP32), reducing it to fit the bank budget. `src/engine/stream.rs` uses RING8192 source frames, CHUNK2048, urgent lead4096, and serves urgent slots across all banks before speculative ring fill. Its worker-local reader cache retains 64 readers. V2 Auto uses lazy heads (0 resident head bytes at publication; measured head hint628 output frames in the original profile), an 8 MiB head budget, and service horizon max(head,4096)+128=4224 output frames; four workers retain 16 readers each. Source/output units differ with pitch; the numerical horizons are comparable at unity pitch only.
+
+An openat/close-only syscall diagnostic on each frozen engine's FX256 cold cell records no new OS opens during the four-second note sequence. This does not establish absence of reader churn: archive samples share already-open file handles while constructing new NCW readers. The diagnostic remains retained, records metadata only, and its traced CPU timings are not acceptance results. It cannot justify blindly raising the reader cache.
+
+W8 owns non-stream runtime/script UI RSS attribution; W9 has no active voice/FX/convolution allocation-sizing changes. Streaming reader/cache/head/page-pool sizing stays W9's. The mixing draft caches settled slot levels using the literal v1 slot loop, with the moving-ramp fallback and all validation retained; it has not been built, committed or gated yet.

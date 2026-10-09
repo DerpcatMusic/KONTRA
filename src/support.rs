@@ -29,7 +29,9 @@ pub(crate) trait MutexExt<T> {
 impl<T> MutexExt<T> for Mutex<T> {
     #[track_caller]
     fn lock_unpoisoned(&self) -> MutexGuard<'_, T> {
-        if POISON_PENDING.swap(false, Ordering::Relaxed) { report_poison(); }
+        if POISON_PENDING.swap(false, Ordering::Relaxed) {
+            report_poison();
+        }
         match self.lock() {
             Ok(guard) => guard,
             Err(error) => {
@@ -94,9 +96,18 @@ fn report_poison() {
     static REPORTED: AtomicBool = AtomicBool::new(false);
     if !REPORTED.swap(true, Ordering::Relaxed) {
         let location = std::panic::Location::caller().to_string();
-        let _ = std::io::Write::write_fmt(&mut std::io::stderr(), format_args!("KONTRA: recovered poisoned shared state at {location}; original panic evidence is separate\n"));
-        crate::diagnostics::try_event(crate::diagnostics::LogLevel::Warning, "support", "shared_lock_recovered",
-            serde_json::json!({"stage":"shared-state", "location":location, "reason":"Recovered poisoned lock without resetting its data; inspect the original panic"}));
+        let _ = std::io::Write::write_fmt(
+            &mut std::io::stderr(),
+            format_args!(
+                "KONTRA: recovered poisoned shared state at {location}; original panic evidence is separate\n"
+            ),
+        );
+        crate::diagnostics::try_event(
+            crate::diagnostics::LogLevel::Warning,
+            "support",
+            "shared_lock_recovered",
+            serde_json::json!({"stage":"shared-state", "location":location, "reason":"Recovered poisoned lock without resetting its data; inspect the original panic"}),
+        );
     }
 }
 
@@ -178,7 +189,8 @@ pub fn register_crash_session() -> CrashSessionGuard {
 
 /// Standalone entry point only: a plug-in must never replace its host's handlers.
 pub fn start_standalone_session() -> CrashSessionGuard {
-    let host = std::env::current_exe().ok()
+    let host = std::env::current_exe()
+        .ok()
         .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()));
     record_host_identity("standalone", host.as_deref());
     let mut guard = register_crash_session();
@@ -374,10 +386,26 @@ mod tests {
         const CHILD: &str = "KONTRA_PANIC_OBSERVER_CHILD";
         if std::env::var_os(CHILD).is_none() {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "support::tests::first_panic_hook_records_original_before_poison", "--nocapture"])
-                .env(CHILD, "1").env("KONTRA_DISABLE_NETWORK", "1").output().unwrap();
-            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-            assert_eq!(String::from_utf8_lossy(&output.stderr).matches("KONTRA: first panic").count(), 1);
+                .args([
+                    "--exact",
+                    "support::tests::first_panic_hook_records_original_before_poison",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env("KONTRA_DISABLE_NETWORK", "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&output.stderr)
+                    .matches("KONTRA: first panic")
+                    .count(),
+                1
+            );
             return;
         }
         let _lease = crate::diagnostics::acquire();
@@ -386,25 +414,50 @@ mod tests {
         let called = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let observed = called.clone();
         std::panic::set_hook(Box::new(move |_| {
-            if !original.is_poisoned() { observed.fetch_add(1, Ordering::Relaxed); }
+            if !original.is_poisoned() {
+                observed.fetch_add(1, Ordering::Relaxed);
+            }
         }));
         install_panic_observer();
         for _ in 0..2 {
-            assert!(std::panic::catch_unwind(|| {
-                let _guard = state.lock_unpoisoned();
-                panic!("synthetic first fault");
-            }).is_err());
+            assert!(
+                std::panic::catch_unwind(|| {
+                    let _guard = state.lock_unpoisoned();
+                    panic!("synthetic first fault");
+                })
+                .is_err()
+            );
             assert!(state.is_poisoned());
             assert_eq!(*state.lock_unpoisoned(), 41);
         }
-        assert_eq!(called.load(Ordering::Relaxed), 2, "previous host hook is chained before poisoning");
+        assert_eq!(
+            called.load(Ordering::Relaxed),
+            2,
+            "previous host hook is chained before poisoning"
+        );
         let snapshot = crate::diagnostics::snapshot();
-        let panics: Vec<_> = snapshot.events.iter().filter(|row| row.event == "panic_observed").collect();
+        let panics: Vec<_> = snapshot
+            .events
+            .iter()
+            .filter(|row| row.event == "panic_observed")
+            .collect();
         assert_eq!(panics.len(), 1);
         assert_eq!(panics[0].reason.as_deref(), Some("synthetic first fault"));
-        assert!(panics[0].details["location"].as_str().unwrap().contains("src/support.rs:"));
+        assert!(
+            panics[0].details["location"]
+                .as_str()
+                .unwrap()
+                .contains("src/support.rs:")
+        );
         assert_eq!(panics[0].stage.as_deref(), Some("panic-before-unwind"));
-        assert_eq!(snapshot.events.iter().filter(|row| row.event == "shared_lock_recovered").count(), 1);
+        assert_eq!(
+            snapshot
+                .events
+                .iter()
+                .filter(|row| row.event == "shared_lock_recovered")
+                .count(),
+            1
+        );
     }
 
     #[test]

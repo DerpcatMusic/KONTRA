@@ -72,9 +72,12 @@ impl NIFileType {
                         let at = reader.stream_position()?;
                         reader.seek(std::io::SeekFrom::Start(12))?;
                         let mut signature = [0; 4];
-                        let nis = reader.read_exact(&mut signature).is_ok() && &signature == b"hsin";
+                        let nis =
+                            reader.read_exact(&mut signature).is_ok() && &signature == b"hsin";
                         reader.seek(std::io::SeekFrom::Start(at))?;
-                        if nis { return Err(error); }
+                        if nis {
+                            return Err(error);
+                        }
                         NIFileType::Unknown
                     }
                 }
