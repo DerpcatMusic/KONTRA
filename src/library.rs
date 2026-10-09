@@ -443,6 +443,8 @@ pub struct Shelf {
     pub bank_issues: Vec<BankIssue>,
     /// Catalogued banks whose programs declare additional access requirements.
     pub bank_status: BTreeMap<PathBuf, String>,
+    /// Bank UUIDs from the directory-only catalog, retained on warm scans.
+    pub bank_ids: BTreeMap<PathBuf, [u8; 16]>,
     /// Unavailable filesystem entries retained for per-root diagnostics.
     pub path_issues: BTreeMap<PathBuf, String>,
     /// Prepared once by the library worker, never scanned during painting.
@@ -474,21 +476,8 @@ impl Shelf {
         let by_dir = (libraries.iter().enumerate())
             .map(|(n, l)| (l.dir.clone(), n))
             .collect();
-        let by_name = libraries
-            .iter()
-            .enumerate()
-            .map(|(n, l)| (l.name.clone(), n))
-            .collect();
-        Self {
-            libraries,
-            by_dir,
-            by_name,
-            per_root: Vec::new(),
-            snapshots: HashMap::new(),
-            bank_issues: Vec::new(),
-            bank_status: BTreeMap::new(),
-            path_issues: BTreeMap::new(),
-        }
+        let by_name = libraries.iter().enumerate().map(|(n, l)| (l.name.clone(), n)).collect();
+        Self { libraries, by_dir, by_name, per_root: Vec::new(), snapshots: HashMap::new(), bank_issues: Vec::new(), bank_status: BTreeMap::new(), bank_ids: BTreeMap::new(), path_issues: BTreeMap::new() }
     }
 
     /// The library `path` is in: the nearest library folder above it.
@@ -586,6 +575,7 @@ pub struct Progress {
     bank_issues: Mutex<BTreeMap<(bool, String), BTreeSet<PathBuf>>>,
     path_issues: Mutex<BTreeMap<PathBuf, String>>,
     bank_status: Mutex<BTreeMap<PathBuf, String>>,
+    bank_ids: Mutex<BTreeMap<PathBuf, [u8; 16]>>,
 }
 
 /// One catalog problem and every bank affected by it.
@@ -1014,22 +1004,13 @@ fn cached_presets(
         } else if is_preset(path) {
             cache.observe(path);
             out.push(e.into_path());
-        } else if path
-            .extension()
-            .is_some_and(|x| x.eq_ignore_ascii_case("ufs"))
-        {
-            if let Some(cache::Metadata::Bank(members, status)) =
-                cache.memo(path, || match sampler_uvi::Bank::catalog_status(path) {
-                    Ok((members, status)) => Some(cache::Metadata::Bank(members, status)),
-                    Err(e) => {
-                        progress.bank_issue(path, e);
-                        None
-                    }
-                })
-            {
-                if let Some(status) = status {
-                    lock(&progress.bank_status).insert(path.into(), status);
-                }
+        } else if path.extension().is_some_and(|x| x.eq_ignore_ascii_case("ufs")) {
+            if let Some(cache::Metadata::Bank(members, status, uuid)) = cache.memo(path, || match sampler_uvi::Bank::catalog_status(path) {
+                Ok((members, status, uuid)) => Some(cache::Metadata::Bank(members, status, uuid)),
+                Err(e) => { progress.bank_issue(path, e); None }
+            }) {
+                lock(&progress.bank_ids).insert(path.into(), uuid);
+                if let Some(status) = status { lock(&progress.bank_status).insert(path.into(), status); }
                 out.extend(members.into_iter().map(|member| path.join(member)));
             }
         }
@@ -1191,14 +1172,10 @@ fn cached_scan(
     shelf.snapshots = snapshots;
     shelf.path_issues = lock(&progress.path_issues).clone();
     shelf.bank_status = lock(&progress.bank_status).clone();
-    shelf.bank_issues = lock(&progress.bank_issues)
-        .iter()
-        .map(|((unsupported, message), locations)| BankIssue {
-            unsupported: *unsupported,
-            message: message.clone(),
-            locations: locations.iter().cloned().collect(),
-        })
-        .collect();
+    shelf.bank_ids = lock(&progress.bank_ids).clone();
+    shelf.bank_issues = lock(&progress.bank_issues).iter().map(|((unsupported, message), locations)| BankIssue {
+        unsupported: *unsupported, message: message.clone(), locations: locations.iter().cloned().collect(),
+    }).collect();
     for issue in &shelf.bank_issues {
         crate::diagnostics::event(
             crate::diagnostics::LogLevel::Warning,
@@ -1216,6 +1193,7 @@ fn cached_scan(
 /// Everything a finished scan hands the editor.
 pub struct Scanned {
     pub shelf: Arc<Shelf>,
+    /// Presets in native path order, for binary lookup without another index.
     pub files: Arc<Vec<PathBuf>>,
     pub artwork: HashMap<String, Arc<Image>>,
     /// Registered Kontakt and default UVI roots added by this scan.
@@ -1606,12 +1584,14 @@ impl Scanner {
                         let snapshots = std::mem::take(&mut shelf.snapshots);
                         let bank_issues = std::mem::take(&mut shelf.bank_issues);
                         let bank_status = std::mem::take(&mut shelf.bank_status);
+                        let bank_ids = std::mem::take(&mut shelf.bank_ids);
                         let path_issues = std::mem::take(&mut shelf.path_issues);
                         let mut shelf = Shelf::new(shelf.libraries);
                         shelf.per_root = per_root;
                         shelf.snapshots = snapshots;
                         shelf.bank_issues = bank_issues;
                         shelf.bank_status = bank_status;
+                        shelf.bank_ids = bank_ids;
                         shelf.path_issues = path_issues;
                         Scanned {
                             shelf: Arc::new(shelf),
@@ -1915,10 +1895,8 @@ pub(crate) mod tests {
         clear_bank(&root.join("Beta.UFS"));
         let alpha = root.join("Alpha.ufs");
         let mut bytes = std::fs::read(&alpha).unwrap();
-        let member = bytes
-            .windows(4)
-            .position(|x| x == 0x675850e4u32.to_le_bytes())
-            .unwrap();
+        bytes[8..24].fill(7);
+        let member = bytes.windows(4).position(|x| x == 0x675850e4u32.to_le_bytes()).unwrap();
         bytes[member + 276] = 2;
         std::fs::write(&alpha, bytes).unwrap();
         let roots = [Root {
@@ -1943,11 +1921,10 @@ pub(crate) mod tests {
             "unchanged banks retain their catalog and access status"
         );
         assert_eq!(warm.bank_status, shelf.bank_status);
-        assert_eq!(
-            warm.bank_status.len(),
-            1,
-            "clear bank must not receive an access warning"
-        );
+        assert_eq!(warm.bank_ids, shelf.bank_ids);
+        assert_eq!(warm.bank_ids.len(), 2);
+        assert_eq!(warm.bank_ids.get(&alpha), Some(&[7; 16]));
+        assert_eq!(warm.bank_status.len(), 1, "clear bank must not receive an access warning");
         std::fs::remove_dir_all(root).unwrap();
     }
 

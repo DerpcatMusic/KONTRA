@@ -12,6 +12,14 @@ default = ["library-access"]
 # Native readers for installed protected banks; without it, protected content is refused.
 library-access = ["sampler-kontakt/library-access", "dep:anyhow", "dep:base64", "dep:crc32fast", "dep:flate2", "dep:sha2", "dep:libc"]
 
+[[example]]
+name = "slot_inventory"
+required-features = ["library-access"]
+
+[[example]]
+name = "ui_health"
+required-features = ["library-access"]
+
 [dependencies]
 sampler-ir = { path = "../sampler-ir" }
 sampler-ui-ir = { path = "../sampler-ui-ir" }
