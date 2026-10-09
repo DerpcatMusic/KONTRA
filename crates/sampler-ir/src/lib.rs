@@ -388,8 +388,6 @@ pub enum Encoding {
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Group {
-    /// Strictly admitted Kontakt cycle oscillator, independent of sample root/rate.
-    pub wavetable: Option<Wavetable>,
     pub name: String,
     pub start: Vec<GroupStart>,
     pub gain: Gain,
@@ -409,26 +407,6 @@ pub struct Group {
     /// Set by [`Instrument::tap_group`]: the bus that carries this group's
     /// fader and sends.
     pub tap: Option<GroupTap>,
-}
-
-/// Saved controls for v1's admitted 2048-frame Kontakt wavetable subset.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Wavetable {
-    pub position: f32,
-    pub phase: f32,
-    pub form1: f32,
-    pub form2: f32,
-    /// Native phase-form IDs: 0 (identity) or 16 (ASYM2MP).
-    pub form1_type: u8,
-    pub form2_type: u8,
-}
-impl Wavetable {
-    pub fn valid(self) -> bool {
-        [self.position, self.phase, self.form1, self.form2].iter()
-            .all(|v| v.is_finite() && (0. ..=1.).contains(v))
-            && matches!(self.form1_type, 0 | 16)
-            && matches!(self.form2_type, 0 | 16)
-    }
 }
 
 /// Physical row and the logical operator connecting it to the following row.

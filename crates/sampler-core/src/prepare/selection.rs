@@ -615,7 +615,7 @@ impl Runtime {
             while let Some(c) = candidate {
                 if prepared.regions[c.region].take == choice.map(|c| c.take) {
                     let r = prepared.regions[c.region];
-                    let step = pitch.apply_source(prepared.step(c, note_pitch), r.cursor.cursor(&prepared.cursor_loops).wavetable().is_some())?;
+                    let step = pitch.apply(prepared.step(c, note_pitch))?;
                     let asset = &prepared.pcm[r.sample];
                     let cursor = r
                         .cursor
