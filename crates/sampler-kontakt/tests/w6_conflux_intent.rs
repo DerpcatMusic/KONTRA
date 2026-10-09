@@ -406,3 +406,34 @@ fn conflux_original_control_descriptors_cover_all_physical_sources() {
     assert_eq!(digital, 182, "both admitted and diagnosed Digital Multi clocks retained");
     println!("ORIGINAL_CONTROL_DESCRIPTORS internal={internal} external={external} targets={targets} digital={digital}");
 }
+
+#[test]
+#[ignore = "requires installed Conflux; run through kontakto-heavy"]
+fn conflux_source_module_intensity_preserves_destination_targets() {
+    let path = Path::new("/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Instruments/Conflux.nki");
+    let chunks = sampler_kontakt::read_chunks(path).unwrap();
+    let program = Program::try_from(chunks.find_first(0x28).unwrap()).unwrap();
+    let groups = GroupList::try_from(program.0.find_first(0x33).unwrap()).unwrap();
+    let mut kinds = BTreeMap::new();
+    let mut routes = 0;
+    for group in &groups.groups {
+        let internal = InternalModArray16::try_from(group.0.find_first(0x3b).unwrap()).unwrap();
+        let slots = internal.slots().unwrap().into_iter()
+            .map(|(slot, source)| (slot, source.params().unwrap())).collect::<BTreeMap<_, _>>();
+        let external = ExternalModArray32::try_from(group.0.find_first(0x3c).unwrap()).unwrap();
+        for (_, source) in external.slots().unwrap() {
+            let source = source.params().unwrap();
+            for target in source.targets.iter().filter(|t| t.param == "intensity" && t.intensity != 0.) {
+                let slot = usize::from(target.slot.expect("source intensity needs physical slot"));
+                let dest = slots.get(&slot).expect("intensity addresses internal source, not FX rack");
+                assert!(!dest.targets.is_empty());
+                count(&mut kinds, format!("source{:?} slot{slot} flags{} inverse{} shaper{} targets{}",
+                    source.source, target.unknown_flags, target.invert,
+                    target.shaper.as_ref().is_some_and(|s| s.enabled), dest.targets.len()));
+                routes += 1;
+            }
+        }
+    }
+    assert_eq!(routes, 198);
+    println!("INTENSITY_ROUTES {kinds:?}");
+}
