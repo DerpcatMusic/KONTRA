@@ -24,13 +24,13 @@ Cache identity includes binary SHA-256, item path, container byte size and mtime
 
 `path, library, loads, ui, controls_bound, plays_note, load_ms, peak_rss_mb, reason` (TAB-separated).
 
-- loads yes = importer and initial playable bank/plan construction returned successfully. For v1 this is its initial streaming bank (`Bank::load_bare`); v2 uses the production `V2Loader` streamed plan. This is load admission, separate from a complete working GUI or native sound parity. A worker timeout/exception is loads no with reason and stage; it is a bounded observation, not proof the instrument can never load. An empty/missing sample mapping can still be admitted; consult JSON and plays_note.
+- loads yes = importer and initial playable bank/plan construction returned successfully. For v1 this is its initial streaming bank (`Bank::load_bare`); v2 uses the production `V2Loader` streamed plan. This is load admission, separate from a complete working GUI or native sound parity. A worker timeout is an incomplete operational observation: preserve confirmed load/audio results and partial counters; otherwise loads/plays_note are incomplete, and UI is incomplete. Exceptions remain failed worker observations. An empty/missing sample mapping can still be admitted; consult JSON and plays_note.
 - ui judges ONLY Original bitmap authored view; vector never runs. Precedence: budget-hit > error > blank > missing_font > missing-images > no-ui > original-ok. original-ok means the authored view built/rendered and its requested pictures resolved; it DOES NOT certify every widget, typography, gesture or callback. Font failures are labeled `missing_font`; requested missing image and font identities remain separate in JSON. Font failures take precedence when both exist. Detailed counters live in JSON. v1 uses its production whole-editor Original layout; blank detection is authored visibility, not shell-pixel uniformity. V2 paints authored components and records pixel uniformity/white fraction. Geometric flags are candidates, not native-host-verified defects.
 - controls_bound = visible interactive runtime bindings / visible interactive widgets. V1 IDs route directly into its script runtime; v2 scalar IDs must read back from the installed Core. Array/service-backed widgets need additional semantics and can be unbound here.
 - plays_note = yes if any measured multi program emits finite audio above 1e-5; silent if admitted but not audible for one declared/covered or explicit safe fallback note in ~0.5 seconds with CC1=100, CC11=127; no if loading failed or every program has no safe audition key. This is an audition, not DSP/reference validation.
 - load_ms = import/script/sample-bank construction wall time (v1 excludes UI render; v2 loader includes asset metadata resolution), separate from process_ms and UI renders. v2 currently reports zero for failed loads; failure duration is in process_ms. Peak RSS covers the isolated worker, including assets/UI/audio.
 
-An installed official UVI 4.0.9 reader is selected if KONTRA_UVI_READER is unset; an explicit environment selection wins. UVI IDs in items.tsv are bank.ufs::program; the adapter uses the production bank.ufs/program virtual path.
+UVI libraries use the native bank reader and need no Workstation executable, Wine setup or reader environment setting. UVI IDs in items.tsv are bank.ufs::program; the adapter uses the production bank.ufs/program virtual path.
 
 ## Outputs and checks
 
@@ -108,3 +108,52 @@ On this checkpoint Native consumer attempts and decoded package font files are o
 The exporter treats a Native loading/error caption as authored UI failure even when its framebuffer paints successfully. A pending/unavailable Native package keeps asset/font counters unknown. `reason` appends only fixed UI categories and positive resource-failure counts. Missing first-frame timing is `unknown` in TSV, including a null sidecar field. These exporter rules apply to resumed cached metrics without rerunning a library.
 
 Keyswitch audition safety: `NI_KEY_TYPE_NONE` is a display hint, not a MIDI veto; scripts may leave that type on recoloured playable notes. The scanner first selects an enabled source articulation, excludes actual control/keyswitch and inactive keys, then chooses a covered musical note/velocity. Numeric program receipts expose `selected_articulation`.
+
+Native fidelity evidence: diagnostic builds retain `dsp_slots` per program,
+with every occupied FX/filter/modulator slot's physical address, enabled state,
+`implemented`/`approximated`/`dropped` disposition and typed reason. The three
+`*_slots_dropped` columns contain JSON `{enabled,bypassed}`; incomplete inventory
+is `unknown`. Both classes fail parity, with enabled drops ranked first.
+
+`family_native` contains native-reader numeric ranges, group criteria, cycle
+classes, starts, direction and loops; it contains no sample/audio/script payload.
+`native_family.py` is an independent reader/evaluator of this record, with no
+runtime selection calls. With `KONTRA_SCAN_FAMILY_REPEATS=32`, `family_takes`
+records actual admitted voices for repeated attack/release auditions, including
+original source IDs and final cursors/loops. Repeats are untimed fidelity work;
+keep timing/CPU/RSS runs separate. The cache signature includes this protocol.
+The family CSV verdict is `MATCH`, typed `MISMATCH`, or `UNKNOWN`;
+`family_script_driven_count` counts programs whose native script can select beyond
+static metadata. These stay UNKNOWN until independent native captures arrive.
+Unsupported native laws and incomplete repeated evidence also stay UNKNOWN.
+
+For slot receipts without audition/rendering, build the `sampler-uvi`
+`slot_inventory` example with `sampler-kontakt/scan,sampler-uvi/scan`, then run
+small shards with `tools/kontra-gate/slot-census.py` through `kontakto-heavy`.
+This uses the native importer's actual translation outcomes. Its counts are
+condition-independent authored topology evidence, not warm-cache execution proof.
+
+Each modulator slot also has `targets`: native target ordinal/parameter,
+serialized module slot, enabled state, disposition and reason. `module_basis`
+labels the physical insert lookup or native XML owner; a source-control target's
+slot namespace is unverified. Loss tallies group by the native parameter name.
+Kontakt target status joins the actual translator's route return by physical
+source address and ordinal; an admitted sibling is excluded from loss counts.
+`tools/kontra-gate/slot-report.py RECEIPT_DIRECTORY` aggregates both slot and
+per-target losses, with enabled/bypassed totals and engine SHA provenance.
+Keep before/after receipt directories separate for each product SHA.
+
+## Deterministic UVI audit renders
+
+Scan/shot builds accept `--audit-seed 42`, or per-job
+`KONTRA_UVI_AUDIT_SEED=42` (u32). This seeds Luau math before authored scripts,
+seeds runtime random operations/native cycles, and synchronizes the Lua owner at
+each audited virtual clock before draining generated commands. Due coroutines
+are drained at that clock, including command/event queue backpressure. Normal
+plugin builds and unseeded scan jobs keep their RNG and asynchronous scheduling.
+The seed is never a user preference or saved preset setting. Cache identity
+includes the seed, and records retain `audit_seed`. Frozen old adapters do not
+implement this protocol; do not infer seeded parity from their unchanged output.
+`uvi_audit_pcm` is a four-second numeric hash witness using the production loader;
+it never retains authored PCM. Other engine selection/modulation randomness is
+already deterministic from per-plan seeds and the virtual note/frame sequence.

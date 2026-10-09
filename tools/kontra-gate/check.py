@@ -3,6 +3,8 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent / "kontra-scan"))
 
 spec = importlib.util.spec_from_file_location('gate', Path(__file__).with_name('gate.py'))
 gate = importlib.util.module_from_spec(spec)
@@ -26,6 +28,8 @@ print('gate checks passed')
 import adapters
 assert adapters.CPU_V1 == Path.home() / '.cache/kontra-scan/cpu-v1/bin/cpu-audit-v1'
 adapters.HEAVY = Path('/usr/bin/env')
+assert adapters.QUIET_REQUEST == Path.home() / '.cache/kontra-quiet-request'
+adapters.QUIET_REQUEST = Path('/proc/self/kontra-test-quiet-absent')
 with tempfile.TemporaryDirectory() as tmp:
     root = Path(tmp)
     records, witness, raw = adapters.capture(['/usr/bin/python3', '-c', 'import sys; print("secret"); print("{\\"block\\":64}"); print("secret",file=sys.stderr)'], root / 'capture')
@@ -112,3 +116,27 @@ with tempfile.TemporaryDirectory(prefix='kontra-gate-cache-', dir='/dev/shm') as
     finally:
         os.environ.clear();os.environ.update(saved)
 print('empty cache, enabled warm reload, resume re-prime and zero-optimum checks passed')
+
+# Each condition/item uses its own receipt; a global Conflux PASS proves no other cell.
+with tempfile.TemporaryDirectory() as tmp:
+    run = Path(tmp)
+    item = adapters.hashlib.sha256(b'fixture').hexdigest()
+    record = {'item_sha256': item, 'condition': 'cold', 'status': 'PASS', 'passed': 2, 'total': 2, 'coverage_complete': True, 'programs': [0], 'faults': 0}
+    assert adapters.gesture_cell([record], item, 'cold')['status'] == 'PASS'
+    assert adapters.gesture_cell([record], item, 'product-warm')['status'] == 'UNKNOWN'
+    assert adapters.gesture_cell([dict(record, passed=1)], item, 'cold')['status'] == 'FAIL'
+    assert adapters.gesture_cell([dict(record, coverage_complete=False)], item, 'cold')['status'] == 'UNKNOWN'
+    assert adapters.gesture_cell([dict(record, faults=1)], item, 'cold')['status'] == 'FAIL'
+print('per-item gesture receipt checks passed')
+
+# A quiet request must prevent submitting a heavy job, including untimed gestures.
+from unittest.mock import patch
+with tempfile.TemporaryDirectory() as tmp:
+    root = Path(tmp); (root / '.cache').mkdir()
+    (root / '.cache/kontra-quiet-request').touch()
+    with patch('adapters.QUIET_REQUEST', root / '.cache/kontra-quiet-request'), patch('adapters.subprocess.run') as run:
+        records, witness, raw = adapters.capture(['unreachable'], root / 'quiet')
+        assert records == [] and raw == '' and witness['returncode'] == 75
+        assert witness['reason'] == 'quiet-request-active'
+        run.assert_not_called()
+print('quiet request admission check passed')

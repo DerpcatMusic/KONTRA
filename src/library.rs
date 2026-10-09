@@ -20,6 +20,7 @@
 
 
 mod kontakt;
+mod cache;
 use moose::mui::mui::scene::Image;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -62,13 +63,6 @@ pub struct Settings {
     pub view_mode: ViewMode,
     /// Saved view override by instrument path; rack overrides take precedence.
     pub instrument_views: BTreeMap<String, ViewMode>,
-    /// What an older version kept instead: true was KONTRA's controls.
-    /// Read once into `view_mode`, never written.
-    #[serde(skip_serializing)]
-    pub vector_view: bool,
-    /// Legacy dimmed-wallpaper preference; Vectorized keeps the library backdrop.
-    #[serde(skip_serializing)]
-    pub vector_backdrop: bool,
     /// The performance view's scale; 0 fits the available width and height.
     pub view_scale: f32,
     /// Overall interface zoom, independent of physical display DPI; 0 means 100%.
@@ -98,8 +92,7 @@ pub struct Settings {
     /// Voice-rendering threads for parts loaded from now on (`KONTRA_THREADS`
     /// overrides it).
     pub threads: ThreadSetting,
-    /// Settings this version does not know, such as KONTRA v1's `uvi_reader`:
-    /// both versions share the file, so a save must keep them.
+    /// Additional v2 preferences not interpreted by this version.
     #[serde(flatten)]
     pub other: serde_json::Map<String, serde_json::Value>,
 }
@@ -238,6 +231,13 @@ pub fn natural(text: &str) -> Vec<(u64, String)> {
     out
 }
 
+#[derive(Serialize, Deserialize)]
+struct SettingsFile<T> {
+    version: u32,
+    #[serde(flatten)]
+    settings: T,
+}
+
 impl Settings {
     /// Overall UI zoom; legacy/invalid values keep the default.
     pub fn editor_scale(&self) -> f64 {
@@ -255,11 +255,8 @@ impl Settings {
     }
 
     pub fn load(path: &Path) -> Option<Self> {
-        let mut s: Self = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
-        if std::mem::take(&mut s.vector_view) {
-            s.view_mode = ViewMode::Kontra;
-        }
-        Some(s)
+        let file: SettingsFile<Self> = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+        (file.version == 2).then_some(file.settings)
     }
 
     /// Browser text only: resource and source identities keep `Library::name`.
@@ -293,7 +290,7 @@ impl Settings {
                 Sort::Recent => (u64::MAX - self.used.get(dir.as_ref()).map_or(0, |&t| t + 1), String::new()),
                 Sort::Vendor => (u64::from(l.vendor.is_empty()), l.vendor.to_lowercase()),
             };
-            (!self.pinned.iter().any(|p| Path::new(p) == l.dir), rank, vendor, self.library_name(l).to_lowercase())
+            (!self.pinned.iter().any(|p| Path::new(p) == l.dir), rank, vendor, natural(&self.library_name(l)))
         });
         out
     }
@@ -323,7 +320,7 @@ impl Settings {
             std::fs::create_dir_all(dir)?;
         }
         let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(self)?)?;
+        std::fs::write(&tmp, serde_json::to_vec_pretty(&SettingsFile { version: 2, settings: self })?)?;
         std::fs::rename(tmp, path)
     }
 }
@@ -373,6 +370,7 @@ pub struct Snapshots {
 pub struct Shelf {
     pub libraries: Vec<Library>,
     pub snapshots: HashMap<PathBuf, Snapshots>,
+    pub bank_issues: Vec<BankIssue>,
     /// Prepared once by the library worker, never scanned during painting.
     /// Native path keys also equate Windows' slash and backslash separators.
     by_dir: HashMap<PathBuf, usize>,
@@ -403,7 +401,7 @@ impl Shelf {
             .map(|(n, l)| (l.dir.clone(), n))
             .collect();
         let by_name = libraries.iter().enumerate().map(|(n, l)| (l.name.clone(), n)).collect();
-        Self { libraries, by_dir, by_name, per_root: Vec::new(), snapshots: HashMap::new() }
+        Self { libraries, by_dir, by_name, per_root: Vec::new(), snapshots: HashMap::new(), bank_issues: Vec::new() }
     }
 
     /// The library `path` is in: the nearest library folder above it.
@@ -447,9 +445,24 @@ pub struct Progress {
     pub found: AtomicUsize,
     pub cancel: AtomicBool,
     pub running: AtomicBool,
+    bank_issues: Mutex<BTreeMap<(bool, String), BTreeSet<PathBuf>>>,
+}
+
+/// One catalog problem and every bank affected by it.
+#[derive(Debug)]
+pub struct BankIssue {
+    pub unsupported: bool,
+    pub message: String,
+    pub locations: Vec<PathBuf>,
 }
 
 impl Progress {
+    fn bank_issue(&self, path: &Path, error: sampler_uvi::AccessError) {
+        let unsupported = matches!(error, sampler_uvi::AccessError::Disabled);
+        let message = if unsupported { "protected library: not supported".into() } else { error.to_string() };
+        lock(&self.bank_issues).entry((unsupported, message)).or_default().insert(path.into());
+    }
+
     fn canceled(&self) -> bool {
         self.cancel.load(Ordering::Relaxed)
     }
@@ -668,6 +681,10 @@ pub fn is_preset(path: &Path) -> bool {
 
 /// Presets in a library folder, its sample folders left unread.
 fn presets(dir: &Path, progress: &Progress) -> (Vec<PathBuf>, HashMap<PathBuf, Snapshots>) {
+    cached_presets(dir, progress, &mut cache::Cache::default())
+}
+
+fn cached_presets(dir: &Path, progress: &Progress, cache: &mut cache::Cache) -> (Vec<PathBuf>, HashMap<PathBuf, Snapshots>) {
     let mut trace = crate::diagnostics::LoadTrace::new(dir, 0, None);
     trace.detail("operation", "preset_catalog");
     trace.stage("catalog");
@@ -693,17 +710,18 @@ fn presets(dir: &Path, progress: &Progress) -> (Vec<PathBuf>, HashMap<PathBuf, S
         let path = e.path();
         if !e.file_type().is_file() { continue; }
         if path.extension().is_some_and(|s| s.eq_ignore_ascii_case("nksn")) {
-            match crate::sound::v2::snapshot_instrument(path) {
-                Ok(name) => snapshots.entry(name).or_default().push(e.into_path()),
-                Err(error) => trace.issue("catalog", "snapshot_metadata_failed", format!("{}: {error:#}", path.display())),
-            }
+            if let Some(cache::Metadata::Snapshot(name)) = cache.memo(path, || match crate::sound::v2::snapshot_instrument(path) {
+                Ok(name) => Some(cache::Metadata::Snapshot(name)),
+                Err(error) => { trace.issue("catalog", "snapshot_metadata_failed", format!("{}: {error:#}", path.display())); None }
+            }) { snapshots.entry(name).or_default().push(e.into_path()); }
         } else if is_preset(path) {
+            cache.observe(path);
             out.push(e.into_path());
         } else if path.extension().is_some_and(|x| x.eq_ignore_ascii_case("ufs")) {
-            match sampler_uvi::Bank::open(path) {
-                Ok(bank) => out.extend(bank.programs().into_iter().map(|member| path.join(member))),
-                Err(e) => trace.issue("catalog", "bank_unreadable", e.to_string()),
-            }
+            if let Some(cache::Metadata::Bank(members)) = cache.memo(path, || match sampler_uvi::Bank::open(path) {
+                Ok(bank) => Some(cache::Metadata::Bank(bank.programs())),
+                Err(e) => { progress.bank_issue(path, e); None }
+            }) { out.extend(members.into_iter().map(|member| path.join(member))); }
         }
     }
     let mut matched = HashMap::new();
@@ -714,10 +732,10 @@ fn presets(dir: &Path, progress: &Progress) -> (Vec<PathBuf>, HashMap<PathBuf, S
         let mut bases: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
         for base in out.iter().filter(|p| p.extension().is_some_and(|s| s.eq_ignore_ascii_case("nki"))) {
             if progress.canceled() { break; }
-            match crate::sound::v2::snapshot_base_name(base) {
-                Ok(name) => bases.entry(name).or_default().push(base.clone()),
-                Err(error) => trace.issue("catalog", "snapshot_base_metadata_failed", format!("{}: {error:#}", base.display())),
-            }
+            if let Some(cache::Metadata::Instrument(name)) = cache.memo(base, || match crate::sound::v2::snapshot_base_name(base) {
+                Ok(name) => Some(cache::Metadata::Instrument(name)),
+                Err(error) => { trace.issue("catalog", "snapshot_base_metadata_failed", format!("{}: {error:#}", base.display())); None }
+            }) { bases.entry(name).or_default().push(base.clone()); }
         }
         for (name, bases) in bases {
             if let Some(paths) = snapshots.get(&name) {
@@ -738,6 +756,10 @@ fn presets(dir: &Path, progress: &Progress) -> (Vec<PathBuf>, HashMap<PathBuf, S
 
 /// Every library in `roots` and its presets; `None` once canceled.
 pub fn scan(roots: &[Root], progress: &Progress) -> Option<(Shelf, Vec<PathBuf>)> {
+    cached_scan(roots, progress, &mut cache::Cache::default())
+}
+
+fn cached_scan(roots: &[Root], progress: &Progress, cache: &mut cache::Cache) -> Option<(Shelf, Vec<PathBuf>)> {
     let mut libraries: Vec<Library> = Vec::new();
     let mut files = BTreeSet::new();
     let mut snapshots = HashMap::new();
@@ -753,7 +775,7 @@ pub fn scan(roots: &[Root], progress: &Progress) -> Option<(Shelf, Vec<PathBuf>)
             if !seen.insert(key) {
                 continue;
             }
-            let (found, matched) = presets(&c.dir, progress);
+            let (found, matched) = cached_presets(&c.dir, progress, cache);
             snapshots.extend(matched);
             if progress.canceled() {
                 trace.finish("canceled");
@@ -763,13 +785,16 @@ pub fn scan(roots: &[Root], progress: &Progress) -> Option<(Shelf, Vec<PathBuf>)
                 continue;
             }
             let (folder_name, bracket) = clean_name(&file_name(&c.dir));
-            let product = c.nicnt.as_deref().and_then(product);
+            let product = c.nicnt.as_deref().and_then(|path| cache.memo(path, || {
+                let (name, vendor) = product(path).unwrap_or_default();
+                Some(cache::Metadata::Product(name, vendor))
+            })).and_then(|m| match m { cache::Metadata::Product(name, vendor) => Some((name, vendor)), _ => None });
             let (name, company) = product.unwrap_or_default();
             let vendor = [company, bracket, c.vendor.unwrap_or_default()]
                 .into_iter()
                 .find(|v| !v.is_empty())
                 .unwrap_or_default();
-            let multis = found.iter().filter(|p| is_multi(p)).count();
+            let multis = found.iter().filter(|p| is_multi(p) || p.extension().is_some_and(|e| e.eq_ignore_ascii_case("nkm"))).count();
             libraries.push(Library {
                 name: if name.is_empty() { folder_name } else { name },
                 vendor,
@@ -788,6 +813,15 @@ pub fn scan(roots: &[Root], progress: &Progress) -> Option<(Shelf, Vec<PathBuf>)
     let mut shelf = Shelf::new(libraries);
     shelf.per_root = per_root;
     shelf.snapshots = snapshots;
+    shelf.bank_issues = lock(&progress.bank_issues).iter().map(|((unsupported, message), locations)| BankIssue {
+        unsupported: *unsupported, message: message.clone(), locations: locations.iter().cloned().collect(),
+    }).collect();
+    for issue in &shelf.bank_issues {
+        crate::diagnostics::event(crate::diagnostics::LogLevel::Warning, "library", "bank_unreadable", serde_json::json!({
+            "path": roots.first().map(|r| &r.path), "stage": "catalog", "unsupported": issue.unsupported,
+            "message": issue.message, "locations": issue.locations, "count": issue.locations.len(),
+        }));
+    }
     Some((shelf, files.into_iter().collect()))
 }
 
@@ -1066,7 +1100,12 @@ impl Scanner {
                 if let Some(multis) = multis {
                     roots.push(Root { path: multis.to_string_lossy().into_owned(), single: true });
                 }
-                let scanned = scan(&roots, &progress).map(|(mut shelf, files)| {
+                let cache_path = cache::Cache::path();
+                let mut cache = cache::Cache::load(cache_path.as_deref());
+                let scanned = cached_scan(&roots, &progress, &mut cache).map(|(mut shelf, files)| {
+                    if let Err(error) = cache.save(cache_path.as_deref()) {
+                        crate::diagnostics::resource(cache_path.as_deref().unwrap_or(Path::new("library index")), "library index", &error.to_string());
+                    }
                     let artwork = crate::artwork::scan(&shelf.libraries);
                     for library in &mut shelf.libraries {
                         if !artwork.contains_key(&library.name) && !progress.canceled() {
@@ -1075,9 +1114,11 @@ impl Scanner {
                     }
                     let per_root = std::mem::take(&mut shelf.per_root);
                     let snapshots = std::mem::take(&mut shelf.snapshots);
+                    let bank_issues = std::mem::take(&mut shelf.bank_issues);
                     let mut shelf = Shelf::new(shelf.libraries);
                     shelf.per_root = per_root;
                     shelf.snapshots = snapshots;
+                    shelf.bank_issues = bank_issues;
                     Scanned { shelf: Arc::new(shelf), files: Arc::new(files), artwork, imported }
                 });
                 let scanned = scanned.filter(|_| !progress.canceled());
@@ -1100,9 +1141,13 @@ impl Scanner {
         }
     }
 
-    /// `dir`'s size on disk once measured; the first ask measures it on a
-    /// thread of its own.
+    /// Cached size only: displaying a library must never walk its sample tree.
     pub fn size(&self, dir: &Path) -> Option<u64> {
+        lock(&self.sizes).get(dir).copied().flatten()
+    }
+
+    /// Explicit size measurement on its own worker.
+    pub fn measure_size(&self, dir: &Path) -> Option<u64> {
         let mut sizes = lock(&self.sizes);
         if let Some(size) = sizes.get(dir) {
             return *size;
@@ -1128,14 +1173,28 @@ impl Scanner {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn looking_up_library_size_does_not_walk_sample_directories() {
+        let scanner = super::Scanner::default();
+        assert_eq!(scanner.size(std::path::Path::new("/virtual/library")), None);
+        assert!(super::lock(&scanner.sizes).is_empty(), "a browser lookup must never start a sample-directory walk");
+    }
+
+    #[test]
+    fn library_names_sort_numbers_naturally() {
+        let libraries = ["Library 10", "Library 2"].map(|name| super::Library { name: name.into(), dir: name.into(), ..Default::default() });
+        let names: Vec<_> = super::Settings::default().arrange(&libraries).iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["Library 2", "Library 10"]);
+    }
+
+    #[test]
     fn a_save_keeps_settings_this_version_does_not_know() {
         let path = std::env::temp_dir().join(format!("kontra-settings-{}.json", std::process::id()));
-        std::fs::write(&path, r#"{"uvi_reader":"/x/UVIWorkstationx64.exe","ui_scale":1.5}"#).unwrap();
+        std::fs::write(&path, r#"{"version":2,"future_preference":"retained","ui_scale":1.5}"#).unwrap();
         let settings = super::Settings::load(&path).unwrap();
         settings.save(&path).unwrap();
         let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         std::fs::remove_file(&path).unwrap();
-        assert_eq!(saved["uvi_reader"], "/x/UVIWorkstationx64.exe");
+        assert_eq!(saved["future_preference"], "retained");
         assert_eq!(saved["ui_scale"], 1.5);
     }
 
@@ -1173,6 +1232,87 @@ mod tests {
         assert_eq!(files, [root.join("Instruments/Piano.nki")]);
         assert_eq!(shelf.libraries[0].instruments, 1);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn incremental_catalog_reuses_product_metadata_and_drops_removed_presets() {
+        let root = tree("incremental", &[("Product.nicnt", NICNT), ("Instruments/Piano.nki", "preset")]);
+        let roots = [Root { path: root.to_string_lossy().into_owned(), single: true }];
+        let index = root.join("index.json");
+        let mut cache = cache::Cache::default();
+        let (first, files) = cached_scan(&roots, &Progress::default(), &mut cache).unwrap();
+        assert_eq!(cache.stats.reads, 1);
+        cache.save(Some(&index)).unwrap();
+        let mut cache = cache::Cache::load(Some(&index));
+        let (second, next) = cached_scan(&roots, &Progress::default(), &mut cache).unwrap();
+        assert_eq!(files, next);
+        assert_eq!(first.libraries, second.libraries);
+        assert_eq!((cache.stats.changed, cache.stats.reads), (0, 0));
+        std::fs::remove_file(root.join("Instruments/Piano.nki")).unwrap();
+        std::fs::write(root.join("Instruments/Organ.nki"), b"new preset").unwrap();
+        let (_, changed) = cached_scan(&roots, &Progress::default(), &mut cache::Cache::load(Some(&index))).unwrap();
+        assert_eq!(changed, [root.join("Instruments/Organ.nki")]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn w10_catalog_bank_errors_are_grouped_with_all_locations() {
+        let _lease = crate::diagnostics::acquire();
+        let root = tree("bank-errors", &[("A/Bad.ufs", "broken"), ("B/Bad.ufs", "broken")]);
+        scan(&[Root { path: root.to_string_lossy().into_owned(), single: false }], &Progress::default()).unwrap();
+        let snapshot = crate::diagnostics::snapshot();
+        let records: Vec<_> = snapshot.events.iter().filter(|e| e.code.as_deref() == Some("bank_unreadable") && e.path.as_ref().is_some_and(|p| Path::new(p).starts_with(&root))).collect();
+        assert_eq!(records.len(), 1, "one grouped diagnostic must retain every failed bank location");
+        assert_eq!(records[0].details["locations"].as_array().unwrap().len(), 2);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn unsupported_bank_errors_share_one_record_without_reader_access() {
+        let progress = Progress::default();
+        progress.bank_issue(Path::new("/virtual/First.ufs"), sampler_uvi::AccessError::Disabled);
+        progress.bank_issue(Path::new("/virtual/Second.ufs"), sampler_uvi::AccessError::Disabled);
+        progress.bank_issue(Path::new("/virtual/First.ufs"), sampler_uvi::AccessError::Disabled);
+        let issues = lock(&progress.bank_issues);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues.keys().next().unwrap(), &(true, "protected library: not supported".into()));
+        assert_eq!(issues.values().next().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn native_content_failures_retain_their_cause_without_unsupported_label() {
+        let progress = Progress::default();
+        progress.bank_issue(Path::new("/virtual/Corrupt.ufs"), sampler_uvi::AccessError::Content("invalid PNG checksum".into()));
+        progress.bank_issue(Path::new("/virtual/Disabled.ufs"), sampler_uvi::AccessError::Disabled);
+        let issues = lock(&progress.bank_issues);
+        assert_eq!(issues.len(), 2);
+        let content = issues.iter().find(|((unsupported, _), _)| !unsupported).unwrap();
+        assert!(content.0.1.contains("invalid PNG checksum"));
+        assert!(!content.0.1.contains("not supported"));
+        assert_eq!(content.1.len(), 1);
+    }
+
+    #[test]
+    #[ignore = "local metadata-only warm-start receipt; set KONTRA_CATALOG_RECEIPT"]
+    fn w14_real_catalog_second_start() {
+        let out = PathBuf::from(std::env::var_os("KONTRA_CATALOG_RECEIPT").expect("receipt"));
+        let roots: Vec<Root> = ["/mnt/MAIN_STORAGE/Libraries/Kontakt", "/mnt/MAIN_STORAGE/Libraries/UVI"].into_iter()
+            .map(|p| Root { path: p.into(), single: false }).collect();
+        assert!(roots.iter().all(|r| Path::new(&r.path).is_dir()));
+        let rep = std::env::var("KONTRA_CATALOG_REP").unwrap_or_else(|_| "0".into());
+        let index = out.join(format!("library-index-v2-{rep}.json"));
+        let mode = std::env::var("KONTRA_CATALOG_MODE").expect("before or after");
+        let start: usize = std::env::var("KONTRA_CATALOG_START").unwrap().parse().unwrap();
+        assert!(matches!(mode.as_str(), "before" | "after") && start < 2);
+        let begin = std::time::Instant::now();
+        let mut cache = if mode == "before" || start == 0 { cache::Cache::default() } else { cache::Cache::load(Some(&index)) };
+        let (shelf, files) = cached_scan(&roots, &Progress::default(), &mut cache).unwrap();
+        let ms = begin.elapsed().as_secs_f64() * 1000.;
+        if mode == "after" { cache.save(Some(&index)).unwrap(); }
+        eprintln!("CATALOG mode={mode} rep={rep} start={start} libraries={} roots={:?} presets={} elapsed_ms={ms:.3} changed={} metadata_reads={} reused={}",
+            shelf.libraries.len(), shelf.per_root, files.len(), cache.stats.changed, cache.stats.reads, cache.stats.reused);
+        if mode == "after" && start == 1 { assert_eq!((cache.stats.changed, cache.stats.reads), (0, 0)); }
+
     }
 
 
@@ -1238,18 +1378,15 @@ mod tests {
     }
 
     #[test]
-    fn the_view_mode_survives_a_restart_and_the_old_switch_migrates() {
+    fn v2_view_mode_survives_restart_without_legacy_switch_migration() {
         let dir = tree("view-mode", &[]);
         let path = dir.join("settings.json");
-        std::fs::write(&path, r#"{"vector_view": true}"#).unwrap();
-        assert_eq!(Settings::load(&path).unwrap().view_mode, ViewMode::Kontra, "KONTRA's controls, as chosen before");
-        std::fs::write(&path, r#"{"vector_view": false}"#).unwrap();
+        std::fs::write(&path, r#"{"version":2,"vector_view":true,"vector_backdrop":true}"#).unwrap();
         assert_eq!(Settings::load(&path).unwrap().view_mode, ViewMode::Original);
-        let s = Settings { view_mode: ViewMode::Vectorized, ..Settings::default() };
-        s.save(&path).unwrap();
-        assert!(!std::fs::read_to_string(&path).unwrap().contains("vector_view"), "the old switch is not written");
-        assert_eq!(Settings::load(&path), Some(s));
-        let _ = std::fs::remove_dir_all(dir);
+        let settings = Settings { view_mode: ViewMode::Vectorized, ..Settings::default() };
+        settings.save(&path).unwrap();
+        assert_eq!(Settings::load(&path), Some(settings));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -1446,4 +1583,21 @@ mod thread_setting_tests {
         assert_eq!(serde_json::from_str::<Settings>(&kept).unwrap().threads, ThreadSetting::Fixed(4));
         assert_eq!(serde_json::from_str::<Settings>("{}").unwrap().threads, ThreadSetting::Single);
     }
+}
+
+#[cfg(test)]
+#[test]
+fn v2_settings_reject_legacy_and_unversioned_files() {
+    let path = std::env::temp_dir().join(format!("kontra-settings-version-{}.json", std::process::id()));
+    for json in [r#"{"view_mode":"Original"}"#, r#"{"version":1}"#, r#"{"version":3}"#] {
+        std::fs::write(&path, json).unwrap();
+        assert!(Settings::load(&path).is_none(), "only the version-2 document is accepted");
+    }
+    std::fs::write(&path, r#"{"roots":[{"path":"old-library","single":true}],"ui_scale":1.5,"vector_view":true,"future_preference":"retained"}"#).unwrap();
+    let settings = Settings::load(&path).unwrap_or_default();
+    assert_eq!(settings, Settings::default(), "legacy fields never seed v2 defaults");
+    settings.save(&path).unwrap();
+    let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(saved.get("version").and_then(|v| v.as_u64()), Some(2));
+    std::fs::remove_file(path).unwrap();
 }

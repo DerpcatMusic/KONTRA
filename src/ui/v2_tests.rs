@@ -1864,6 +1864,120 @@ fn widget_missing_feedback_keeps_current_authored_value_separate_from_reset_defa
     assert_eq!(values[&control],2.,"unrounded accumulator must eventually cross a step from authored current value");
 }
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#[test]
+fn native_ladder_editor_uses_hertz_for_readout_typing_and_graph() {
+    use sampler_core::{ControlId, EngineParameterAddress, EngineParameterBinding, EngineParameterLaw};
+    use sampler_ir as I;
+    use crate::sound::edits::{Edits, Param};
+    let owner = I::SlotAddress { group:0, slot:3, generic:-1 };
+    let mut instrument = I::Instrument::default();
+    instrument.groups.push(I::Group { chain:Some(I::ChainRef(0)), ..Default::default() });
+    instrument.chains.push(I::Chain { scope:I::Scope::Group(I::GroupRef(0)), pre_amplitude:vec![I::Processor::LadderLP4(I::LadderLP4 {
+        address:Some(owner), gain:0., cutoff:0.5, resonance:0.2, record_version:0x92,
+    })], post_amplitude:vec![] });
+    let bindings = ["ENGINE_PAR_CUTOFF", "ENGINE_PAR_RESONANCE"].map(|name| EngineParameterBinding {
+        address:EngineParameterAddress { parameter:sampler_core::engine_parameter_id(name).unwrap(), group:owner.group, slot:owner.slot, generic:owner.generic },
+        control:ControlId(if name == "ENGINE_PAR_CUTOFF" { 10 } else { 11 }),
+        law:EngineParameterLaw::Linear { low:0., high:1. },
+    });
+    let model = super::editor_model::Model::new(&instrument,0,&Edits::default(),&bindings,
+        &[(ir::ControlId(10),0.5),(ir::ControlId(11),0.2)],48000.);
+    let param = Param::Cutoff(3);
+    let expected = 2f32.powf((1481.8816 + 575. * 0.5) / 60. - 20.);
+    assert!((model.display(param,0.5) - expected).abs() < 0.2,"native normalized ladder cutoff must display in hertz");
+    let typed = model.typed(param,"1 kHz").unwrap();
+    assert!((model.display(param,typed) - 1000.).abs() < 0.5,"typing hertz must invert the native cutoff law");
+    let handle = super::viz::filter_handles(&model.playing).remove(0);
+    assert!((0.0..=1.0).contains(&handle.at[0]),"ladder handle belongs on the audible frequency axis");
+    assert!(model.playing.magnitude(100.) > model.playing.magnitude(10000.) * 10.,"the graph must include the native LP4 response");
+    let expected_scale = 1000f32.log2() / (575. / 60.);
+    assert!((handle.x.unwrap().1 - expected_scale).abs() < 0.001,"graph drag follows native frequency octaves");
+    let mut edits = Edits::default();
+    edits.set(crate::sound::edits::Override { group:None, param, offset:0.2 });
+    let changed = super::editor_model::Model::new(&instrument,0,&edits,&bindings,
+        &[(ir::ControlId(10),0.5),(ir::ControlId(11),0.2)],48000.);
+    assert_eq!(changed.base.magnitude(1000.),model.base.magnitude(1000.));
+    assert!(changed.playing.magnitude(1000.) > model.playing.magnitude(1000.) * 2.,"graph follows the native edit layer");
+    let mut with_gain = bindings.to_vec();
+    with_gain.push(EngineParameterBinding {
+        address:EngineParameterAddress { parameter:sampler_core::engine_parameter_id("ENGINE_PAR_GAIN").unwrap(), group:0, slot:3, generic:-1 },
+        control:ControlId(12), law:EngineParameterLaw::SignedNormalized,
+    });
+    let scripted = super::editor_model::Model::new(&instrument,0,&Edits::default(),&with_gain,
+        &[(ir::ControlId(10),0.5),(ir::ControlId(11),0.2),(ir::ControlId(12),0.5)],48000.);
+    assert!(scripted.base.magnitude(100.) > model.base.magnitude(100.) * 1.8,"graph includes the current native gain lane");
+    // Kontakt's group insert rack is a shared voice chain referenced by zones.
+    instrument.groups[0].chain = None;
+    instrument.chains[0].scope = I::Scope::Voice;
+    let mut zone = I::Zone::new(I::AssetRef(0));
+    zone.group = Some(I::GroupRef(0)); zone.chain = Some(I::ChainRef(0));
+    instrument.zones.extend([zone.clone(), zone]);
+    let voice = super::editor_model::Model::new(&instrument,0,&Edits::default(),&bindings,
+        &[(ir::ControlId(10),0.5),(ir::ControlId(11),0.2)],48000.);
+    assert_eq!(voice.display(param,0.5),model.display(param,0.5),"native zone voice-chain cutoff uses the same Hz law");
+    assert_eq!(voice.base.magnitude(1000.),model.base.magnitude(1000.),"a shared voice chain appears once, not once per zone");
+}
+
+#[test]
+fn native_voice_group_filter_graphs_deduplicate_and_keep_control_owners() {
+    use sampler_ir as I;
+    use sampler_core::{EngineParameterAddress, EngineParameterBinding, EngineParameterLaw};
+    use crate::sound::edits::{Edits, Override, Param};
+    let mut i = I::Instrument::default();
+    i.groups.push(I::Group { chain:Some(I::ChainRef(1)), ..Default::default() });
+    let filter = |hz| I::Processor::Filter(I::Filter { kind:I::FilterKind::LowPass { poles:2 },
+        cutoff:I::Frequency::Hertz(hz), resonance:I::Resonance::Q(std::f64::consts::FRAC_1_SQRT_2) });
+    for (scope, hz) in [(I::Scope::Voice,1000.),(I::Scope::Group(I::GroupRef(0)),2000.)] {
+        i.chains.push(I::Chain { scope, pre_amplitude:vec![filter(hz)], post_amplitude:vec![] });
+    }
+    let mut zone = I::Zone::new(I::AssetRef(0));
+    zone.group = Some(I::GroupRef(0)); zone.chain = Some(I::ChainRef(0));
+    i.zones.extend([zone.clone(),zone]);
+    let key = "native-group-filter".to_string();
+    let control = sampler_core::lower::ir_control_id(&key);
+    i.controls.push(I::Control { key, label:String::new(), value:I::ControlValue::Continuous {
+        min:20., max:20000., default:2000., unit:I::ControlUnit::Hertz }, automation:I::Automation::None });
+    i.processor_controls.push(I::ProcessorControl { control:I::ControlRef(0), chain:I::ChainRef(1),
+        index:0, parameter:I::ProcessorParameter::Cutoff, ramp:I::Time::Milliseconds(0.) });
+    let law = EngineParameterLaw::Exponential { low:20., high:20000. };
+    let binding = EngineParameterBinding { control, law, address:EngineParameterAddress {
+        parameter:sampler_core::engine_parameter_id("ENGINE_PAR_CUTOFF").unwrap(), group:0, slot:4, generic:-1 } };
+    let values = [(ir::ControlId(control.0),4000.)];
+    let model = super::editor_model::Model::new(&i,0,&Edits::default(),&[binding],&values,48000.);
+    let magnitude = |cutoff| sampler_core::Biquad::new(48000,sampler_core::FilterKind::LowPass,cutoff,
+        std::f64::consts::FRAC_1_SQRT_2).unwrap().magnitude(3000.) as f32;
+    assert!((model.base.magnitude(3000.) - magnitude(1000.)*magnitude(4000.)).abs() < 1e-6,
+        "shared zone chain appears once; group control updates its own filter after voice filters");
+    let mut edits = Edits::default(); edits.set(Override { group:None, param:Param::Cutoff(4), offset:0.1 });
+    let changed = super::editor_model::Model::new(&i,0,&edits,&[binding],&values,48000.);
+    let cutoff = law.decode(law.encode(4000.)+100000);
+    assert!((changed.playing.magnitude(3000.) - magnitude(1000.)*magnitude(cutoff)).abs() < 1e-6,
+        "native edit changes the intended group filter, preserving voice-chain ownership");
+}
+
 /// Sound's Mapping is the same read-only IR view as the chrome shortcut.
 #[test]
 fn mapping_sound_tabs_preserve_zone_identity_and_ir() {
@@ -1928,7 +2042,7 @@ fn mapping_waveform_worker_reads_falcon_without_original_waveform_widget() {
     let (inst,epoch)={let v=p.shared.view.lock().unwrap();let v=&v.parts[0];(v.instrument.clone().unwrap_or_else(||panic!("{}",v.status)),v.generation)};
     assert_eq!(inst.source,sampler_ir::SourceFormat::Uvi);
     assert_eq!(inst.zones.len(),3);
-    assert!(inst.source_indices.zones.is_empty(),"Falcon uses runtime zone ordinals");
+    assert_eq!(crate::sound::waveform::source_ids(&inst), vec![1, 2, 3], "Falcon player source identities match these fixture zones");
     let part=p.shared.part(0).unwrap();
     let envelope=(0..200).find_map(|_|{let e=part.zone_waveform(1,epoch,512);if e.is_none(){std::thread::sleep(std::time::Duration::from_millis(5));}e}).expect("Mapping resolves full admitted PCM without Original widgets");
     assert_eq!(envelope.frames,48000);assert_eq!(envelope.sample_rate,48000);
@@ -1998,6 +2112,69 @@ fn mapping_audition_editor_close_releases_held_note() {
         drop(editor);
         assert_eq!(p.shared.played[60].load(std::sync::atomic::Ordering::Relaxed),0,"native close/drop releases Mapping audition even when the build closure is retained");
         assert_eq!(p.shared.keyboard.pop(),Some((0,crate::plugin::Play::Note(60,0))));
+    }
+}
+
+#[test]
+fn v1_eq_handles_use_each_band_gain_and_graph_drag_scale() {
+    use sampler_core::{EngineParameterBinding, EngineParameterLaw};
+    use sampler_ir as I;
+    use crate::sound::edits::{Edits, Override, Param};
+    let mut i = I::Instrument::default();
+    i.groups.push(I::Group { chain:Some(I::ChainRef(0)), ..Default::default() });
+    let filter = |kind, hz| I::Processor::Filter(I::Filter { kind,
+        cutoff:I::Frequency::Hertz(hz), resonance:I::Resonance::Q(1.) });
+    i.chains.push(I::Chain { scope:I::Scope::Group(I::GroupRef(0)),
+        pre_amplitude:vec![filter(I::FilterKind::LowPass { poles:2 }, 500.),
+            filter(I::FilterKind::Peak { gain:I::Gain::Decibels(6.) }, 1000.),
+            filter(I::FilterKind::Peak { gain:I::Gain::Decibels(-6.) }, 2000.)],
+        post_amplitude:vec![] });
+    let mut bindings = Vec::new();
+    let mut values = Vec::new();
+    for (band, hz, db, range) in [(0, 1000., 6., 18.), (1, 2000., -6., 24.)] {
+        for (param, parameter, law, native) in [
+            (Param::Freq(3,band), I::ProcessorParameter::Cutoff,
+                EngineParameterLaw::Exponential { low:20., high:20000. }, hz),
+            (Param::Bandwidth(3,band), I::ProcessorParameter::Resonance,
+                EngineParameterLaw::Exponential { low:0.1, high:10. }, 1.),
+            (Param::Gain(3,band), I::ProcessorParameter::Gain,
+                EngineParameterLaw::DecibelGain { low_db:-range, high_db:range }, 10f64.powf(db/20.)),
+        ] {
+            let key = format!("eq-handle-{}", bindings.len());
+            let control = sampler_core::lower::ir_control_id(&key);
+            let reference = I::ControlRef(i.controls.len());
+            i.controls.push(I::Control { key, label:String::new(), value:I::ControlValue::Continuous {
+                min:law.decode(0), max:law.decode(1000000), default:native,
+                unit:I::ControlUnit::None }, automation:I::Automation::None });
+            i.processor_controls.push(I::ProcessorControl { control:reference, chain:I::ChainRef(0),
+                index:usize::from(band)+1, parameter, ramp:I::Time::Milliseconds(0.) });
+            bindings.push(EngineParameterBinding { control, law, address:param.address(0) });
+            values.push((ir::ControlId(control.0),native));
+        }
+    }
+    let make = |edits:&Edits| super::editor_model::Model::new(&i,0,edits,&bindings,&values,48000.);
+    let model = make(&Edits::default());
+    let handles = super::viz::filter_handles(&model.playing);
+    for (band, db, range) in [(0,6.,18.),(1,-6.,24.)] {
+        let param = Param::Gain(3,band);
+        let handle = handles.iter().find(|h| h.x.unwrap().0 == Param::Freq(3,band)).unwrap();
+        assert!((handle.at[1] - super::viz::db_y(db)).abs() < 1e-5,
+            "each EQ handle shows its own gain, independent of other bands and serial filters");
+        assert!((handle.y.unwrap().1 - 60./(2.*range)).abs() < 1e-5,
+            "vertical graph motion must use the admitted gain range");
+        assert_eq!(handle.wheel,Some(Param::Bandwidth(3,band)));
+        let typed = model.typed(param,&format!("{db} dB")).unwrap();
+        assert!((model.display(param,typed)-db).abs() < 0.001);
+        let mut edits = Edits::default();
+        edits.set(Override { group:None, param, offset:handle.y.unwrap().1*0.1 });
+        let changed = make(&edits);
+        let moved = super::viz::filter_handles(&changed.playing);
+        let moved = moved.iter().find(|h| h.x.unwrap().0 == Param::Freq(3,band)).unwrap();
+        assert!((moved.at[1]-handle.at[1]-0.1).abs() < 1e-5,
+            "dragging up one tenth of the graph raises the band's gain by 6 dB");
+        assert!(changed.base == model.base,"player edits preserve the script-set base");
+        edits.reset(param);
+        assert_eq!(super::viz::filter_handles(&make(&edits).playing),handles);
     }
 }
 

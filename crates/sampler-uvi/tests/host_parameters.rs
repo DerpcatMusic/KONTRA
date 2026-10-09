@@ -69,7 +69,7 @@ fn initialization_uses_the_load_budget_and_live_callbacks_keep_their_budget() {
       function onNote(e) for n=1,10000 do local x=n*n end; played=true end
     </script></ScriptProcessor></EventProcessors></Program></UVI4>"#;
     let mut host = ScriptHost::new(xml, (), Config {
-        callback: std::time::Duration::ZERO,
+        callback_work: 0,
         ..Config::default()
     }).unwrap();
     assert_eq!(host.global_text("initialized"), "true");
@@ -147,7 +147,7 @@ fn lua_faults_keep_the_first_message_and_count_each_phase_and_category() {
       function onInit() error('first init fault') end
       function onNote(e) if e.velocity>80 then while true do end else error('later runtime fault') end end
     </script></ScriptProcessor></EventProcessors></Program></UVI4>"#;
-    let mut h=ScriptHost::new(xml,(),Config {callback:std::time::Duration::from_millis(1),..Config::default()}).unwrap();
+    let mut h=ScriptHost::new(xml,(),Config {callback_work:1000,..Config::default()}).unwrap();
     h.note_on(1,60,64,0); h.note_on(2,60,64,0); h.note_on(3,60,100,0);
     let counts=h.fault_counts();
     assert_eq!(counts.first,Some(FaultCategory::Lua));
@@ -225,4 +225,13 @@ fn unused_leaf_collections_are_lazy_and_keep_identity_when_requested() {
     </script></ScriptProcessor></EventProcessors></Program></UVI4>"#;
     let h=ScriptHost::new(xml,(),Config::default()).unwrap();
     assert!(h.fault_counts().init.is_empty(),"{:?}",h.fault_counts());
+}
+
+#[test]
+fn finite_live_callback_survives_expired_elapsed_observation() {
+    let xml = "<UVI4><Program><EventProcessors><ScriptProcessor><script>function onNote(e) for n=1,10000 do local x=n*n end; played=true end</script></ScriptProcessor></EventProcessors></Program></UVI4>";
+    let mut h = ScriptHost::new(xml, (), Config { callback: std::time::Duration::ZERO, ..Config::default() }).unwrap();
+    h.note_on(1,60,64,0);
+    assert_eq!(h.global_text("played"), "true");
+    assert!(h.fault_counts().runtime.is_empty());
 }

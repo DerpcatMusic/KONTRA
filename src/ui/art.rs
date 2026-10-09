@@ -110,8 +110,8 @@ impl Art {
                                 made.insert(library, (from, Some(looks)));
                             }
                         }
-                        pending.fetch_sub(1, Ordering::AcqRel);
                         ready.store(true, Ordering::Release);
+                        pending.fetch_sub(1, Ordering::AcqRel);
                     }
                 });
             if spawned.is_err() {
@@ -129,8 +129,8 @@ impl Art {
 
 fn made_from(source: Source) -> Looks {
     match source {
-        Source::Image(image) => make(&image),
-        Source::File(path, _) => artwork::decode_file(&path).map(|i| make(&i)).unwrap_or_default(),
+        Source::Image(image) => make(image),
+        Source::File(path, _) => artwork::decode_file(&path).map(|i| make(Arc::new(i))).unwrap_or_default(),
         Source::Cover(mut spec, artwork) => {
             if let Some(hue) = artwork.as_deref().and_then(artwork::tint) {
                 spec = super::cover::Spec::new(&spec.name, &spec.vendor, Some(hue));
@@ -143,9 +143,9 @@ fn made_from(source: Source) -> Looks {
 /// A generated cover's looks: the thumbnail with the name on it; the
 /// banner and backdrop in its plain color, as the header names the part.
 fn cover(spec: &super::cover::Spec) -> Looks {
-    let (tw, th) = px(super::browser::THUMB);
+    let (tw, th) = px((super::theme::SIDEBAR_MAX, super::theme::SIDEBAR_MAX / 4.));
     let plain = super::cover::cached(spec, 64, 16, false);
-    let mut looks = plain.as_ref().map(make).unwrap_or_default();
+    let mut looks = plain.map(|i| make(Arc::new(i))).unwrap_or_default();
     looks.thumb = super::cover::cached(spec, tw, th, true).map(Arc::new);
     looks.tint = Some(spec.hue);
     looks
@@ -157,14 +157,13 @@ fn px((w, h): (f64, f64)) -> (u32, u32) {
 }
 
 /// Every look of `image`, at twice the size each is drawn for crispness.
-fn make(image: &Image) -> Looks {
-    let (tw, th) = px(super::browser::THUMB);
+fn make(image: Arc<Image>) -> Looks {
     let (bw, bh) = px(super::rack::BANNER);
-    let banner = |blurred| artwork::banner(image, bw, bh, blurred).map(Arc::new);
-    let backdrop = |blurred| artwork::backdrop(image, blurred).map(Arc::new);
+    let banner = |blurred| artwork::banner(&image, bw, bh, blurred).map(Arc::new);
+    let backdrop = |blurred| artwork::backdrop(&image, blurred).map(Arc::new);
     Looks {
-        tint: artwork::tint(image),
-        thumb: artwork::thumbnail(image, tw, th).map(Arc::new),
+        tint: artwork::tint(&image),
+        thumb: Some(image.clone()),
         banner: [banner(false), banner(true)],
         backdrop: [backdrop(false), backdrop(true)],
     }

@@ -192,6 +192,10 @@ impl Assets {
             .as_ref()
             .map_or(Vec::new(), |p| p.failures())
     }
+    #[cfg(feature = "shots")]
+    pub fn completed_key_bytes(&self) -> Vec<(String, usize)> {
+        self.preparation.as_ref().map_or_else(Vec::new, |p| p.completed_key_bytes())
+    }
     /// Loads what `presentation` draws and releases everything else.
     pub fn sync(
         &mut self,
@@ -1576,6 +1580,7 @@ pub(super) fn menu_popup(
     let h = (rows.len() as f64 * CONTROL * scale).min(height);
     let x = ax.clamp(0., (width - w).max(0.));
     let y = (ay + ah).clamp(0., (height - h).max(0.));
+    ui.capture_popup_wheel(popup.clone());
     Some(
         col(rows)
             .gap(0)

@@ -1187,3 +1187,26 @@ fn type_constants_outside_the_vendor_families_compile() {
         panic!("{error:?}");
     }
 }
+
+#[test]
+fn ui_callbacks_emit_reachable_functions_once_per_context() {
+    fn source(callbacks: usize) -> String {
+        let mut text = "on init declare $calls ".to_owned();
+        for i in 0..callbacks {
+            text += &format!("declare ui_button $b{i} ");
+        }
+        text += "end on function leaf ";
+        text += &"inc($calls) ".repeat(50);
+        text += "end function function parent call leaf end function ";
+        for i in 0..callbacks {
+            text += &format!("on ui_control($b{i}) call parent end on ");
+        }
+        text
+    }
+    let one = compile(&source(1), 48000, Limits::LIBRARY).unwrap();
+    let mut limits = Limits::LIBRARY;
+    limits.instructions = one.usage().instructions + 20;
+    let many = compile(&source(6), 48000, limits).unwrap();
+    assert_eq!(many.controls().len(), 6);
+    assert!(many.usage().instructions <= one.usage().instructions + 20);
+}

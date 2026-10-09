@@ -4,10 +4,8 @@
 //! `codex/uvi-latest-integration` (`src/uvi/program.rs`, `playback.rs`,
 //! `modulation.rs`). Clear `.uvip` with loose samples load through [`load`].
 //! With the `library-access` feature, installed UVI banks open through [`Bank`]
-//! (ported from v1 `src/uvi/{access,crypto,ufs}.rs` and `src/library/uvi.rs`):
-//! reader namespaces come from the user's own installed, hash-verified UVI
-//! Workstation and a bank's content state lives only in v1's owner-only private
-//! cache; neither is embedded, logged, printed or returned in an error. Every
+//! using the native UFS and PasswordV2 implementation. Recovered bank access
+//! state stays only in memory; it is never logged, printed or returned in an error. Every
 //! module this translator does not model is listed in `Instrument::unsupported`.
 
 #[cfg(feature = "library-access")]
@@ -19,6 +17,8 @@ mod bank;
 #[cfg(feature = "library-access")]
 mod crypto;
 mod inserts;
+#[cfg(feature = "scan")]
+mod coverage;
 mod engine_parameters;
 pub use inserts::InsertNode;
 mod modulation;
@@ -44,6 +44,9 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
 };
+
+/// Increment when native protected-library decoding changes, for cache invalidation.
+pub const LIBRARY_ACCESS_REVISION: u32 = 1;
 
 const XML_LIMIT: u64 = 32 << 20;
 
@@ -184,6 +187,22 @@ fn translate_bank(text: &str) -> Result<(ir::Instrument, Vec<String>), Translate
     translate_with(text, Source::Bank)
 }
 
+#[cfg(all(test, feature = "library-access"))]
+#[test]
+fn bank_volume_sample_reaches_the_bank_resource_resolver() {
+    let xml = r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators>
+        <SamplePlayer SamplePath="$Authored.ufs/Samples/note.wav"/>
+        </Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#;
+    let (bank, locations) = translate_bank(xml).unwrap();
+    assert_eq!(bank.zones.len(), 1, "bank authority resolves its own volume");
+    assert_eq!(locations, ["$Authored.ufs/Samples/note.wav"]);
+    let disk = translate(xml, Path::new(".")).unwrap();
+    assert!(
+        disk.instrument.zones.is_empty(),
+        "a loose file has no bank authority"
+    );
+}
+
 fn translate_with(text: &str, source: Source) -> Result<(ir::Instrument, Vec<String>), Translate> {
     translate_full(text, source).map(|(instrument, locations, ..)| (instrument, locations))
 }
@@ -237,6 +256,10 @@ fn translate_full(text: &str, source: Source) -> Result<FullTranslation, Transla
         shape_index: HashMap::new(),
         shared_sources: std::collections::HashSet::new(),
         used: Vec::new(),
+        #[cfg(feature="scan")]
+        dropped_connections: Default::default(),
+        #[cfg(feature="scan")]
+        native_player_ids: program.descendants().filter(|n|n.has_tag_name("SamplePlayer")).enumerate().map(|(i,n)|(n.id(),i)).collect(),
         osc_groups: Vec::new(),
         insert_nodes: Vec::new(),
         split: None,
@@ -265,6 +288,8 @@ fn translate_full(text: &str, source: Source) -> Result<FullTranslation, Transla
         }
     }
     engine_parameters::register(&mut out.ir, &doc, &out.insert_nodes);
+    #[cfg(feature = "scan")]
+    { out.ir.dsp_slots = Some(coverage::slots(&out, program)); out.ir.native_family = Some(coverage::native_family(program)); }
     out.ir
         .validate()
         .map_err(|e| Translate::Invalid(e.to_string()))?;
@@ -358,6 +383,10 @@ struct Translation {
     shared_sources: std::collections::HashSet<roxmltree::NodeId>,
     /// Nodes whose meaning was carried into the IR.
     used: Vec<roxmltree::NodeId>,
+    #[cfg(feature="scan")]
+    dropped_connections: std::collections::HashSet<roxmltree::NodeId>,
+    #[cfg(feature="scan")]
+    native_player_ids: HashMap<roxmltree::NodeId, usize>,
     osc_groups: Vec<OscGroup>,
     /// Where each insert element's processors sit, for script writes.
     insert_nodes: Vec<InsertNode>,
@@ -391,6 +420,8 @@ impl Translation {
         for connection in connections(scope) {
             if number(connection, "Bypass", 0.0)? == 0.0 && number(connection, "Ratio", 1.0)? != 0.0
             {
+                #[cfg(feature="scan")]
+                self.dropped_connections.insert(connection.id());
                 self.unsupported(
                     &path(connection),
                     "program or layer modulation",
@@ -711,6 +742,11 @@ impl Translation {
                     "",
                 );
             }
+            #[cfg(feature="scan")]
+            {
+                self.ir.source_indices.zones.resize(self.native_player_ids.len(), None);
+                self.ir.source_indices.zones[self.native_player_ids[&player.id()]] = Some(ir::ZoneRef(self.ir.zones.len()));
+            }
             self.ir.zones.push(ir::Zone {
                 group: Some(group),
                 keys: ir::KeyRange {
@@ -864,7 +900,9 @@ impl Translation {
             Some("ogg") => ir::Encoding::Ogg,
             _ => ir::Encoding::Unknown,
         };
-        if relative.starts_with('$') || relative.contains(".ufs/") {
+        if matches!(&self.source, Source::Disk(_))
+            && (relative.starts_with('$') || relative.contains(".ufs/"))
+        {
             self.unsupported(at, "sample outside the program's bank", sample);
             return None;
         }
@@ -956,7 +994,7 @@ impl Translation {
 
 /// Load a loose program, a virtual `bank.ufs/member.uvip` path, or the first
 /// program in a UFS bank. [`load_program`] selects a specific bank member.
-/// Protected programs use the installed reader behind `library-access`.
+/// Protected programs use the native reader behind `library-access`.
 pub fn load(path: &Path, rate: u32) -> Result<sampler_kontakt::Loaded, Box<dyn std::error::Error>> {
     assemble_translated(translate_path(path)?, rate)
 }
