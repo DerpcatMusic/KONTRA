@@ -190,7 +190,8 @@ impl Daft {
             let ramping = state.aux[DELTA..DELTA + 4].iter().any(|d| *d != 0.);
             let current = std::array::from_fn(|k| state.aux[CURRENT + k]);
             let mut coefficients = match cached {
-                Some((previous, coefficients)) if previous == current => coefficients,
+                Some((previous, coefficients))
+                    if previous.map(f64::to_bits) == current.map(f64::to_bits) => coefficients,
                 _ => self.coefficients(&current),
             };
             for n in i..i + run {
