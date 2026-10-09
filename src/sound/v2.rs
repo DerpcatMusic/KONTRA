@@ -1842,9 +1842,7 @@ impl V2Core {
         #[cfg(test)]
         let audit_start = self.onset_audit.map(|_| std::time::Instant::now());
         for part in self.parts.iter_mut().flatten() {
-            if let Some(state) = part.persistence.as_mut() {
-                state.publish(&part.runtime);
-            }
+            if let Some(state) = part.persistence.as_mut() { state.publish(&mut part.runtime); }
         }
         #[cfg(test)]
         if let (Some(t), Some(a)) = (audit_start, self.onset_audit.as_mut()) {
