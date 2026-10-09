@@ -1,0 +1,718 @@
+//! Read-only sample mapping from the worker-published IR; audition uses the keyboard queue.
+use super::{Cx, theme::*};
+use moose::mui::mui::prelude::*;
+use sampler_ir as ir;
+use std::sync::{Arc, Weak};
+
+#[derive(Default)]
+pub(super) struct State {
+    source: Option<Arc<ir::Instrument>>,
+    counts: Vec<usize>,
+    links: Vec<Vec<usize>>,
+    source_ids: Vec<u32>,
+    bounds: (u8, u8),
+    selected: usize,
+    stack: Vec<usize>,
+    audition: Option<Audition>,
+    cell: Option<(u8, u8)>,
+}
+struct Audition {
+    params: Weak<crate::plugin::SamplerParams>,
+    note: u8,
+    surface: String,
+}
+impl Drop for Audition {
+    fn drop(&mut self) {
+        if let Some(p) = self.params.upgrade() {
+            p.shared.release_key(self.note);
+        }
+    }
+}
+
+/// Runs even when a part closes or another chrome view hides the map.
+pub(super) fn release(ui: &Ui, cx: &mut Cx) {
+    for state in cx.state.inside.values_mut() {
+        if state
+            .mapping
+            .audition
+            .as_ref()
+            .is_some_and(|a| !ui.get(a.surface.as_str()).held)
+        {
+            state.mapping.audition = None;
+        }
+    }
+}
+fn group(z: &ir::Zone, inst: &ir::Instrument) -> usize {
+    z.group.map_or(inst.groups.len(), |g| g.0)
+}
+fn color(g: usize) -> Color {
+    Color::oklch(0.72, 0.09, golden_hue(200., g))
+}
+fn sample(inst: &ir::Instrument, z: &ir::Zone) -> String {
+    match inst.assets.get(z.asset.0).map(|a| &a.location) {
+        Some(ir::AssetLocation::Path(p)) => p.rsplit(['/', '\\']).next().unwrap_or(p).to_owned(),
+        Some(ir::AssetLocation::KontaktFile { id }) => format!("Container sample {id}"),
+        None => "Sample unavailable".into(),
+    }
+}
+/// Reference links only: composed predicates remain the core's selection authority.
+fn links(inst: &ir::Instrument) -> Vec<Vec<usize>> {
+    let mut links: Vec<Vec<usize>> = inst.groups.iter().map(|group| {
+        inst.articulations.iter().enumerate().filter(|(_, a)| group.start.iter().any(|s| matches!(s.test, ir::StartTest::Key {low, high} if a.switch_keys.iter().any(|k| (low..=high).contains(k))))).map(|(n, _)| n).collect()
+    }).chain(std::iter::once(Vec::new())).collect();
+    for z in &inst.zones {
+        if let Some(a) = z.articulation
+            && a.0 < inst.articulations.len()
+        {
+            let list = &mut links[group(z, inst)];
+            if !list.contains(&a.0) {
+                list.push(a.0);
+            }
+        }
+    }
+    links
+}
+fn takes(inst: &ir::Instrument, z: &ir::Zone) -> String {
+    let mut labels = Vec::new();
+    if let Some(s) = z.selection
+        && let Some(seq) = inst.sequences.get(s.sequence.0)
+    {
+        let mode = match seq.policy {
+            ir::SequencePolicy::RoundRobin => "RR",
+            ir::SequencePolicy::Random => "Random",
+            ir::SequencePolicy::RandomNoRepeat => "Random, no repeat",
+        };
+        labels.push(match s.take {
+            ir::Take::Index(n) => format!("{mode} {}/{total}", n + 1, total = seq.takes),
+            ir::Take::Probability { low, high } => format!("{mode} {low:.2}–{high:.2}"),
+        });
+    }
+    if let Some(g) = z.group.and_then(|g| inst.groups.get(g.0)) {
+        for s in &g.start {
+            if let ir::StartTest::RoundRobin(n) = s.test {
+                labels.push(format!("Native RR {n}"));
+            }
+        }
+    }
+    for pick in &z.axes {
+        if let Some(axis) = inst.axes.get(pick.axis)
+            && let Some(choice) = axis.choices.get(pick.choice)
+        {
+            labels.push(format!("{}: {}", axis.name, choice.name));
+        }
+    }
+    if labels.is_empty() {
+        "Layer".into()
+    } else {
+        labels.join(" · ")
+    }
+}
+fn stack(inst: &ir::Instrument, picked: Option<usize>, key: u8, vel: u8) -> Vec<usize> {
+    inst.zones
+        .iter()
+        .enumerate()
+        .filter(|(_, z)| {
+            picked.is_none_or(|g| group(z, inst) == g)
+                && (z.keys.low..=z.keys.high).contains(&key)
+                && (z.velocities.low..=z.velocities.high).contains(&vel)
+        })
+        .map(|(n, _)| n)
+        .collect()
+}
+fn midpoint(z: &ir::Zone) -> (u8, u8) {
+    (
+        ((u16::from(z.keys.low) + u16::from(z.keys.high)) / 2) as u8,
+        ((u16::from(z.velocities.low) + u16::from(z.velocities.high)) / 2) as u8,
+    )
+}
+fn point(at: Point, size: Size, bounds: (u8, u8)) -> Option<(u8, u8)> {
+    if size.width <= 0.
+        || size.height <= 0.
+        || !(0. ..size.width).contains(&at.x)
+        || !(0. ..size.height).contains(&at.y)
+    {
+        return None;
+    }
+    let key = bounds.0 + (at.x / size.width * f64::from(bounds.1 - bounds.0 + 1)).floor() as u8;
+    let vel = ((1. - at.y / size.height) * 128.).floor().clamp(1., 127.) as u8;
+    Some((key, vel))
+}
+
+pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrument>) -> El {
+    let compact = ui
+        .scene()
+        .and_then(|s| s.surface("editor-root"))
+        .is_some_and(|s| s.frame.size.height < 700.);
+    let changed = cx
+        .state
+        .inside
+        .entry(slot)
+        .or_default()
+        .mapping
+        .source
+        .as_ref()
+        .is_none_or(|old| !Arc::ptr_eq(old, inst));
+    if changed {
+        let mut counts = vec![0; inst.groups.len() + 1];
+        let (mut low, mut high) = (127, 0);
+        for z in &inst.zones {
+            counts[group(z, inst)] += 1;
+            low = low.min(z.keys.low);
+            high = high.max(z.keys.high);
+        }
+        let bounds = if low > high {
+            (0, 127)
+        } else {
+            (
+                low / 12 * 12,
+                (u16::from(high) / 12 * 12 + 11).min(127) as u8,
+            )
+        };
+        let st = cx.state.inside.entry(slot).or_default();
+        st.group = None;
+        st.mapping = State {
+            source: Some(inst.clone()),
+            counts,
+            links: links(inst),
+            source_ids: crate::sound::waveform::source_ids(inst),
+            bounds,
+            ..Default::default()
+        };
+        if let Some(z) = inst.zones.first() {
+            let (k, v) = midpoint(z);
+            st.mapping.stack = stack(inst, None, k, v);
+        }
+    }
+    let mut picked = cx.state.inside[&slot].group;
+    let (all, all_el) = latch(
+        ui,
+        format!("map-all-{slot}"),
+        "All groups",
+        "Show every group",
+        picked.is_none(),
+    );
+    if all {
+        picked = None;
+    }
+    let mut groups = vec![all_el.h(CONTROL)];
+    let ids = crate::sound::articulation::identities(&inst.articulations);
+    for g in 0..=inst.groups.len() {
+        let count = cx.state.inside[&slot].mapping.counts[g];
+        if count == 0 {
+            continue;
+        }
+        let name = inst
+            .groups
+            .get(g)
+            .filter(|g| !g.name.is_empty())
+            .map_or_else(
+                || {
+                    if g == inst.groups.len() {
+                        "No group".into()
+                    } else {
+                        format!("Group {}", g + 1)
+                    }
+                },
+                |g| g.name.clone(),
+            );
+        let id = format!("map-group-{slot}-{g}");
+        let on = picked == Some(g);
+        if ui.get(id.as_str()).activated() {
+            picked = if on { None } else { Some(g) };
+        }
+        groups.push(interactive(
+            row![
+                block(3., 16.).fill(color(g)).shrink(0),
+                body(name.clone()).lines(1).flex(1).min_w(0),
+                caption(count.to_string()).fill(secondary())
+            ]
+            .gap(TIGHT)
+            .h(CONTROL)
+            .pad((0, TIGHT))
+            .align(Align::Center)
+            .focusable()
+            .a11y(A11y::Toggle { on })
+            .named(name.clone())
+            .tip(name)
+            .id(id),
+            on,
+        ));
+        if let Some(group) = inst.groups.get(g) {
+            for n in cx.state.inside[&slot].mapping.links[g].clone() {
+                let a = &inst.articulations[n];
+                let id = format!("map-art-{slot}-{g}-{n}");
+                if ui.get(id.as_str()).activated() {
+                    cx.p.shared.select_articulation(slot, n);
+                }
+                let c = super::inside::articulation_color(cx, slot, &ids[n], a);
+                let input = cx.selection.parts[slot].articulation_overlay.input(
+                    &ids[n],
+                    a,
+                    super::inside::mode(cx, slot, inst),
+                );
+                let label = format!("{} · {}", a.name, super::inside::input_label(&input));
+                groups.push(
+                    row![
+                        block(3., 12.).fill(c).shrink(0),
+                        caption(label.clone()).lines(1).min_w(0).flex(1)
+                    ]
+                    .gap(TIGHT)
+                    .pad((0, SPACE))
+                    .h(20.)
+                    .focusable()
+                    .a11y(A11y::Button)
+                    .named(format!("Select {} articulation", a.name))
+                    .tip(format!("{label}; authored group conditions still apply"))
+                    .id(id),
+                );
+            }
+            let conditions = group
+                .start
+                .iter()
+                .map(|s| match s.test {
+                    ir::StartTest::Key { low, high } => {
+                        format!("Native KS {}–{}", note_name(low), note_name(high))
+                    }
+                    ir::StartTest::Controller {
+                        controller,
+                        low,
+                        high,
+                    } => format!("CC{controller} {low}–{high}"),
+                    ir::StartTest::RoundRobin(n) => format!("RR {n}"),
+                    ir::StartTest::Random => "Random".into(),
+                })
+                .collect::<Vec<_>>()
+                .join(" · ");
+            if !conditions.is_empty() {
+                groups.push(
+                    caption(conditions.clone())
+                        .fill(secondary())
+                        .lines(1)
+                        .tip(format!("Authored conditions: {:?}", group.start))
+                        .min_w(0),
+                );
+            }
+        }
+    }
+    if picked != cx.state.inside[&slot].group {
+        let st = cx.state.inside.get_mut(&slot).unwrap();
+        st.group = picked;
+        st.mapping.audition = None;
+        st.mapping.cell = None;
+        if let Some((n, z)) = inst
+            .zones
+            .iter()
+            .enumerate()
+            .find(|(_, z)| picked.is_none_or(|g| group(z, inst) == g))
+        {
+            st.mapping.selected = n;
+            let (k, v) = midpoint(z);
+            st.mapping.stack = stack(inst, picked, k, v);
+        }
+    }
+    let map_id = format!("map-{slot}");
+    let bounds = cx.state.inside[&slot].mapping.bounds;
+    let r = ui.get(map_id.as_str());
+    if r.pressed
+        && r.button == Some(Button::Primary)
+        && let Some(at) = ui.local(map_id.as_str())
+        && let Some(size) = ui
+            .scene()
+            .and_then(|s| s.surface(&map_id))
+            .map(|s| s.frame.size)
+        && let Some((key, vel)) = point(at, size, bounds)
+    {
+        let hit = stack(inst, picked, key, vel);
+        if !hit.is_empty() {
+            let st = &mut cx.state.inside.get_mut(&slot).unwrap().mapping;
+            let n = if hit == st.stack && st.cell == Some((key, vel)) {
+                hit.iter()
+                    .position(|&n| n == st.selected)
+                    .map_or(0, |n| (n + 1) % hit.len())
+            } else {
+                0
+            };
+            st.cell = Some((key, vel));
+            st.selected = hit[n];
+            st.stack = hit;
+            st.audition = None;
+            cx.p.shared.press_key(slot, key, vel);
+            st.audition = Some(Audition {
+                params: Arc::downgrade(cx.p),
+                note: key,
+                surface: map_id.clone(),
+            });
+        }
+    }
+    let selected = cx.state.inside[&slot].mapping.selected;
+    let zones = inst.clone();
+    let map = canvas(move |s| {
+        let keys = f64::from(bounds.1 - bounds.0 + 1);
+        let x = |k: u16| (f64::from(k) - f64::from(bounds.0)) / keys * s.width;
+        let y = |v: u16| (1. - f64::from(v) / 128.) * s.height;
+        let mut out = vec![Draw::fill(rect(0., 0., s.width, s.height), Role::Field)];
+        for k in bounds.0..=bounds.1 {
+            if matches!(k % 12, 1 | 3 | 6 | 8 | 10) {
+                out.push(Draw::fill(
+                    rect(x(k.into()), 0., s.width / keys, s.height),
+                    Role::Ink.alpha(0.025),
+                ));
+            }
+            if k % 12 == 0 {
+                out.push(Draw::fill(
+                    rect(x(k.into()).round(), 0., 1., s.height),
+                    hairline(),
+                ));
+            }
+        }
+        for v in [32, 64, 96] {
+            out.push(Draw::fill(rect(0., y(v).round(), s.width, 1.), hairline()));
+        }
+        for (n, z) in zones
+            .zones
+            .iter()
+            .enumerate()
+            .filter(|(n, _)| *n != selected)
+            .chain(zones.zones.get(selected).map(|z| (selected, z)))
+        {
+            let g = group(z, &zones);
+            let shown = picked.is_none_or(|p| p == g);
+            let box_ = rect(
+                x(z.keys.low.into()),
+                y(u16::from(z.velocities.high) + 1),
+                x(u16::from(z.keys.high) + 1) - x(z.keys.low.into()),
+                y(z.velocities.low.into()) - y(u16::from(z.velocities.high) + 1),
+            );
+            out.push(Draw::fill(
+                box_.clone(),
+                color(g).with_alpha(if shown { 0.18 } else { 0.025 }),
+            ));
+            if shown {
+                out.push(Draw::stroke(
+                    box_,
+                    if n == selected {
+                        Fill::from(Role::Ink)
+                    } else {
+                        Fill::from(color(g).with_alpha(0.65))
+                    },
+                    if n == selected { 2. } else { 1. },
+                ));
+            }
+        }
+        out
+    })
+    .h(if compact { 72. } else { 144. })
+    .w(Len::Pct(100.))
+    .min_w(0)
+    .clip()
+    .cursor(Cursor::Crosshair)
+    .named(
+        "Key and velocity zone map; click and hold to audition; repeat a cell to cycle its stack",
+    )
+    .id(map_id);
+    let scale = row((bounds.0..=bounds.1)
+        .filter(|k| k % 12 == 0)
+        .map(|k| {
+            caption(note_name(k))
+                .fill(secondary())
+                .text_size(SMALL)
+                .flex(1)
+                .min_w(0)
+        })
+        .collect::<Vec<_>>())
+    .gap(0);
+    let mut layers = Vec::new();
+    let stack = cx.state.inside[&slot].mapping.stack.clone();
+    // ponytail: show the first 64 overlapping zones; cycle the map to inspect later ones.
+    for &n in stack
+        .iter()
+        .take(64)
+        .chain(stack.iter().filter(|&&n| n == selected).skip(
+            if stack.iter().take(64).any(|&n| n == selected) {
+                1
+            } else {
+                0
+            },
+        ))
+    {
+        let z = &inst.zones[n];
+        let on = n == selected;
+        let id = format!("map-zone-{slot}-{n}");
+        if ui.get(id.as_str()).activated() {
+            cx.state.inside.get_mut(&slot).unwrap().mapping.selected = n;
+        }
+        let label = format!("{} · {}", sample(inst, z), takes(inst, z));
+        layers.push(interactive(
+            row![
+                block(3., 14.).fill(color(group(z, inst))).shrink(0),
+                caption(label.clone()).lines(1).min_w(0).flex(1),
+                caption(format!(
+                    "{}–{} / {}–{}",
+                    note_name(z.keys.low),
+                    note_name(z.keys.high),
+                    z.velocities.low,
+                    z.velocities.high
+                ))
+                .fill(secondary())
+                .lines(1)
+            ]
+            .gap(TIGHT)
+            .h(22.)
+            .pad((0, TIGHT))
+            .focusable()
+            .a11y(A11y::Toggle { on })
+            .named(label.clone())
+            .tip(label)
+            .id(id),
+            on,
+        ));
+    }
+    let head = row![
+        section("Mapping"),
+        caption(format!(
+            "{} zones · {} groups",
+            inst.zones.len(),
+            inst.groups.len()
+        ))
+        .fill(secondary()),
+        spacer(),
+        caption("Read only").fill(secondary())
+    ]
+    .gap(SPACE)
+    .align(Align::Center);
+    let instructions =
+        caption("Hold a cell to audition · repeat to cycle overlapping zones")
+            .fill(secondary())
+            .lines(1)
+            .min_w(0);
+    let grid = row![
+        col(groups)
+            .gap(1)
+            .w(156.)
+            .h(if compact { 100. } else { 172. })
+            .scroll()
+            .shrink(0),
+        col![
+            row![
+                col![caption("127").fill(secondary()), spacer(), caption("1").fill(secondary())].w(20.).h(if compact {72.} else {144.}).align(Align::End),
+                col![map, scale].gap(TIGHT).flex(1).min_w(0)
+            ]
+            .gap(TIGHT).align(Align::Start),
+            instructions
+        ]
+        .gap(TIGHT)
+        .flex(1)
+        .min_w(0)
+    ]
+    .gap(SPACE)
+    .align(Align::Start);
+    let stack_head = caption(format!(
+        "Overlapping zones · {}{}",
+        stack.len(),
+        if stack.len() > 64 {
+            " (first 64 shown)"
+        } else {
+            ""
+        }
+    ))
+    .fill(secondary());
+    let inspector = inspector(ui, cx, slot, inst, compact);
+    col![
+        head,
+        grid,
+        stack_head,
+        col(layers)
+            .gap(0)
+            .h(if compact { 22. } else { 44. })
+            .scroll()
+            .id(format!("map-stack-{slot}")),
+        inspector
+    ]
+    .gap(TIGHT)
+    .w(Len::Pct(100.))
+    .min_w(0)
+}
+
+fn loops(playback: &ir::Playback) -> Vec<ir::LoopRange> {
+    match playback.looping {
+        ir::Looping::Continuous(r) | ir::Looping::UntilRelease(r) => vec![r],
+        ir::Looping::Slots(slots) => slots.into_iter().flatten().map(|s| s.range).collect(),
+        _ => vec![],
+    }
+}
+fn inspector(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument, compact: bool) -> El {
+    let st = &cx.state.inside[&slot].mapping;
+    let n = st.selected;
+    let Some(z) = inst.zones.get(n) else {
+        return caption("No zones in this instrument").fill(secondary());
+    };
+    let id = format!("map-wave-{slot}");
+    let bins = ui
+        .scene()
+        .and_then(|s| s.surface(&id))
+        .map_or(512, |s| s.frame.size.width.ceil().clamp(1., 4096.) as usize);
+    let envelope = st.source_ids.get(n).and_then(|&zone| {
+        cx.p.shared
+            .part(slot)?
+            .zone_waveform(zone, cx.view.parts[slot].generation, bins)
+    });
+    let root = match z.pitch {
+        ir::KeyTracking::Tracked { root } | ir::KeyTracking::Scaled { root, .. } => Some(root),
+        ir::KeyTracking::Fixed => inst.assets.get(z.asset.0).and_then(|a| a.root_key),
+    };
+    let gain = 20. * z.gain.linear().log10();
+    let pan = z.pan.position;
+    let pan = if pan.abs() < 0.005 {
+        "C".into()
+    } else {
+        format!(
+            "{} {:.0}",
+            if pan < 0. { "L" } else { "R" },
+            pan.abs() * 100.
+        )
+    };
+    let info = format!(
+        "Root {} · Tune {:+.0} ct · Volume {gain:+.1} dB · Pan {pan}",
+        root.map_or_else(|| "— (fixed pitch)".into(), note_name),
+        z.tune.semitones() * 100.
+    );
+    let playback = z.playback.clone();
+    let ranges = loops(&playback);
+    let marks = format!(
+        "Start {} · End {}{}{}",
+        playback.start,
+        playback
+            .end
+            .map_or_else(|| "sample end".into(), |e| e.to_string()),
+        if playback.reverse { " · Reverse" } else { "" },
+        if ranges.is_empty() {
+            " · No loop".into()
+        } else {
+            format!(
+                " · Loop {}",
+                ranges
+                    .iter()
+                    .map(|r| format!("{}–{}", r.start, r.end))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
+    );
+    let status = envelope
+        .as_ref()
+        .map_or("Waveform not yet available".into(), |e| {
+            format!("{:.2} s · {} Hz", e.duration_us as f64 / 1e6, e.sample_rate)
+        });
+    let wave = canvas(move |s| {
+        let mut draws = vec![
+            Draw::fill(rect(0., 0., s.width, s.height), Role::Field),
+            Draw::fill(rect(0., s.height / 2., s.width, 1.), hairline()),
+        ];
+        if let Some(e) = &envelope {
+            let height = s.height / 2.;
+            let len = e.peaks.len();
+            for (n, &(lo, hi)) in e.peaks.iter().enumerate() {
+                draws.push(Draw::fill(
+                    rect(
+                        n as f64 / len as f64 * s.width,
+                        height - f64::from(hi) * height,
+                        (s.width / len as f64).max(1.),
+                        (f64::from(hi - lo) * height).max(1.),
+                    ),
+                    Role::Ink.alpha(0.6),
+                ));
+            }
+            let x = |frame: u64| {
+                (frame as f64 / e.frames as f64).clamp(0., 1.) * (s.width - 1.).max(0.)
+            };
+            for range in &ranges {
+                draws.push(Draw::fill(
+                    rect(
+                        x(range.start),
+                        0.,
+                        (x(range.end) - x(range.start)).max(1.),
+                        s.height,
+                    ),
+                    color(1).with_alpha(0.13),
+                ));
+                for f in [range.start, range.end] {
+                    draws.push(Draw::fill(rect(x(f), 0., 1., s.height), color(1)));
+                }
+            }
+            for f in [playback.start, playback.end.unwrap_or(e.frames)] {
+                draws.push(Draw::fill(rect(x(f), 0., 1., s.height), Role::Ink));
+            }
+        }
+        draws
+    })
+    .h(if compact { 40. } else { 64. })
+    .w(Len::Pct(100.))
+    .clip()
+    .named("Sample waveform with playback and loop boundaries")
+    .id(id);
+    let aud_id = format!("map-audition-{slot}");
+    let r = ui.get(aud_id.as_str());
+    if r.pressed && r.button == Some(Button::Primary) || r.key_activated {
+        let (key, vel) = midpoint(z);
+        let st = &mut cx.state.inside.get_mut(&slot).unwrap().mapping;
+        st.audition = None;
+        cx.p.shared.press_key(slot, key, vel);
+        st.audition = Some(Audition {
+            params: Arc::downgrade(cx.p),
+            note: key,
+            surface: aud_id.clone(),
+        });
+    }
+    let (_, aud) = latch(
+        ui,
+        aud_id,
+        "Audition",
+        "Hold to audition through the instrument's normal articulation and RR routing",
+        r.held,
+    );
+    col![
+        row![body(format!("{} · {}",sample(inst, z),takes(inst,z))).lines(1).flex(1).min_w(0), aud]
+            .gap(SPACE)
+            .align(Align::Center),
+        caption(info).lines(1).min_w(0),
+        wave,
+        caption(marks)
+            .id(format!("map-boundaries-{slot}"))
+            .lines(1)
+            .min_w(0)
+            .tip("Read-only source frames; white: start/end, coloured: loop boundaries"),
+        caption(status).fill(secondary()).id(format!("map-wave-status-{slot}"))
+    ]
+    .gap(TIGHT)
+    .id(format!("map-inspector-{slot}-{n}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn mapping_group_hues_respect_the_existing_palette_for_native_group_counts() {
+        for group in 0..65_536 { assert!(!orange(golden_hue(200.,group)), "group {group}"); }
+        assert!((golden_hue(200.,7)-38.76).abs()<0.01);
+    }
+    #[test]
+    fn map_cell_edges_and_overlapping_identity_are_inclusive() {
+        assert_eq!(
+            point(Point::new(0., 0.), Size::new(128., 128.), (0, 127)),
+            Some((0, 127))
+        );
+        assert_eq!(
+            point(Point::new(127.9, 127.9), Size::new(128., 128.), (0, 127)),
+            Some((127, 1))
+        );
+        assert_eq!(
+            point(Point::new(128., 40.), Size::new(128., 128.), (0, 127)),
+            None
+        );
+        let mut i = ir::Instrument::default();
+        for _ in 0..2 {
+            i.zones.push(ir::Zone::new(ir::AssetRef(0)));
+        }
+        assert_eq!(stack(&i, None, 60, 64), vec![0, 1]);
+    }
+}
