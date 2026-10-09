@@ -806,3 +806,29 @@ fn legacy_event_parameter_array_writes_share_custom_storage_and_validate_indexes
         (27, 931, 0, 0)
     );
 }
+
+#[test]
+fn conflux_mod_value_selectors_reach_all_marked_events_without_heap() {
+    let mut rt = runtime("on init declare $a declare $b declare $c declare $custom declare %ids[3] end on
+        on note %ids[$EVENT_NOTE-60] := $EVENT_ID if ($EVENT_NOTE # 61) set_event_mark($EVENT_ID,$MARK_1) end if end on
+        on controller
+            set_event_par_arr(by_marks($MARK_1),$EVENT_PAR_MOD_VALUE_ID,2000000,12)
+            set_event_par_arr($ALL_EVENTS,$EVENT_PAR_CUSTOM,-2147483648,15)
+            $a := get_event_par_arr(%ids[0],$EVENT_PAR_MOD_VALUE_ID,12)
+            $b := get_event_par_arr(%ids[1],$EVENT_PAR_MOD_VALUE_ID,12)
+            $c := get_event_par_arr(%ids[2],$EVENT_PAR_MOD_VALUE_ID,12)
+            $custom := get_event_par_arr(%ids[1],$EVENT_PAR_CUSTOM,15)
+        end on");
+    for key in 60..=62 { let mut address = input(i32::from(key)); address.key=key; rt.trigger(address,key,1.).unwrap(); }
+    let domain = rt.performance(0).unwrap();
+    support::without_heap(|| { rt.dispatch_controller(domain,input(1).channel_address(),1,1,1).unwrap(); });
+    assert_eq!([cell(&rt,0,0),cell(&rt,0,1),cell(&rt,0,2)],[1000000,0,1000000]);
+    assert_eq!(cell(&rt,0,3),i64::from(i32::MIN));
+}
+
+#[test]
+fn ignore_controller_outside_controller_is_a_context_warning_not_unknown_command() {
+    let script = compile("on note ignore_controller end on");
+    assert!(!script.warnings().iter().any(|w| w.kind == sampler_ksp::Kind::Unsupported && w.builtin == Some("ignore_controller")));
+    assert!(script.warnings().iter().any(|w| w.kind == sampler_ksp::Kind::Warning));
+}
