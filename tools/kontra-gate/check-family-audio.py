@@ -1,5 +1,10 @@
 from copy import deepcopy
-from family_audio import compare
+from family_audio import compare as compare_runs
+
+def compare(a,b):
+    a=dict(a,version='v1',plugin_sha256='20ff6b471069d6891d2847e72a4f863db5b50ce24265fda82d083b713b3496de',host_sha256='host',native_selection_sha256='source')
+    b=dict(b,version='v2',host_sha256='host',native_selection_sha256='source')
+    return compare_runs(a,b)
 
 note = dict(event_index=0,key=60,velocity=64,start_frame=0,window_frames=48000,onset_frame=48,length_frames=23952,peak=1,rms=.5,spectrum=[1.]+[0.]*31)
 base = dict(returncode=0,native_state_verified=True,nonfinite=0,underruns=0,events_dispatched=2,events_planned=2,audition_sha256='same',note_audio=[note],family_audio=deepcopy(note))
@@ -29,3 +34,13 @@ print('PASS: identity, silence, nonfinite, complete schedules, RR distributions'
 
 from live_host import measured_status
 assert measured_status(dict(base, family_observation=True))=='UNKNOWN'
+
+left=dict(base,version='v1',plugin_sha256='20ff6b471069d6891d2847e72a4f863db5b50ce24265fda82d083b713b3496de',host_sha256='host',native_selection_sha256='source')
+right=dict(base,version='v2',host_sha256='host',native_selection_sha256='source')
+for change in [dict(version='v1'),dict(host_sha256='other'),dict(native_selection_sha256='other')]:
+ try:compare_runs(left,dict(right,**change))
+ except AssertionError:pass
+ else:raise AssertionError('unmatched source/host/version admitted')
+try:compare_runs(dict(left,plugin_sha256='other'),right)
+except AssertionError:pass
+else:raise AssertionError('unfrozen v1 admitted')
