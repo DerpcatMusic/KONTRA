@@ -885,6 +885,7 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
             if [id.as_str(), title_id.as_str()].iter().any(|target| ui.get(*target).activated()) {
                 state.load_selected = if selected { None } else { Some(index) };
                 state.selected = None;
+                state.reveal = !selected;
             }
             let header = row![glyph(if selected { Icon::Down } else { Icon::Right }, TEXT, secondary()),
                 body(format!("{} · {}", state.load_report.as_ref().map_or("Instrument", |r| r.instrument.as_str()), entry.title)).text_size(TEXT).lines(1).flex(1).min_w(0).id(title_id)]
@@ -907,6 +908,7 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
         if [id.as_str(), title_id.as_str(), reason_id.as_str()].iter().any(|target| ui.get(*target).activated()) {
             state.selected = if selected { None } else { Some(event.sequence) };
             state.load_selected = None;
+            state.reveal = !selected;
         }
         let patch = event.path.as_deref().map(filename).or(event.library.as_deref()).unwrap_or("Application");
         let title = format!("{} · {patch} · {}", level_name(event.level), time(event.timestamp_ms));
