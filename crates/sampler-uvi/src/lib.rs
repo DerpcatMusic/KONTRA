@@ -295,6 +295,7 @@ fn translate_full(text: &str, source: Source) -> Result<FullTranslation, Transla
         }
     }
     engine_parameters::register(&mut out.ir, &doc, &out.insert_nodes);
+    out.ir.register_compressor_controls();
     #[cfg(feature = "scan")]
     { out.ir.dsp_slots = Some(coverage::slots(&out, program)); out.ir.native_family = Some(coverage::native_family(program)); }
     out.ir
