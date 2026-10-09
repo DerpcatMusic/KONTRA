@@ -1959,3 +1959,31 @@ fn native_primary_requires_unique_physical_identity_and_rejects_bad_coefficients
     malformed.source_indices.ahdsrs[0].attack_curve = f32::NAN;
     assert!(lower(&malformed, 48000, vec![constant(1.)], no_behaviors).is_err());
 }
+
+#[test]
+fn lowered_whole_voice_uses_v1_ordinary_amplitude_clock() {
+    use sampler_core::v1_voice_controls::{Ahdsr, ControlDescription, ControlPlan, ControlState};
+    let mut ir = native_primary_fixture();
+    ir.source_indices.ahdsrs[0].native_amplitude = false;
+    let plan = ControlPlan::prepare(ControlDescription {
+        amplitude: Ahdsr::from(&ir.source_indices.ahdsrs[0]),
+        native_amplitude: false, ..Default::default()
+    }, 48000.).unwrap();
+    let mut oracle = ControlState::new(&plan);
+    let mut rt = Runtime::new(lower(&ir, 48000, vec![constant(1.)], no_behaviors).unwrap(), limits()).unwrap();
+    support::without_heap(|| { rt.trigger(input(60), 60, 1.).unwrap(); });
+    let mut output = [[0.; 2]; 64];
+    let mut amp = [0.; 64];
+    let mut positions = [0; 64];
+    for (block, n) in [1, 7, 31, 32, 33, 64, 17, 3].into_iter().enumerate() {
+        if block == 5 {
+            oracle.release(&plan);
+            support::without_heap(|| { rt.note_off(input(60), None).unwrap(); });
+        }
+        oracle.render(&plan, 120., 1., &mut amp[..n], None, None, &mut positions[..n]).unwrap();
+        support::without_heap(|| rt.render(&mut output[..n]).unwrap());
+        for (i, (frame, value)) in output[..n].iter().zip(&amp).enumerate() {
+            assert_eq!(frame.map(f32::to_bits), [value.to_bits(); 2], "whole voice block={block} frame={i}");
+        }
+    }
+}
