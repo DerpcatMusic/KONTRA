@@ -22,6 +22,14 @@ pub struct Biquad {
     a: [f64; 2],
 }
 impl Biquad {
+    // Keep the operation order identical in scalar and batched render paths.
+    #[inline(always)]
+    fn sample(&self, input: f64, [z0, z1]: [f64; 2]) -> (f64, [f64; 2]) {
+        let ([b0, b1, b2], [a1, a2]) = (self.b, self.a);
+        let y = b0 * input + z0;
+        (y, [b1 * input - a1 * y + z1, b2 * input - a2 * y])
+    }
+
     pub(crate) fn trace_coefficients(&self) -> [f64; 5] { [self.b[0],self.b[1],self.b[2],self.a[0],self.a[1]] }
     /// Static response from the coefficients playback consumes. Port from v1
     /// filter::magnitude, for the sound editor; no second filter kernel.
@@ -999,16 +1007,11 @@ pub(super) fn process<const TRACE: bool>(
                 }
             }
             PreparedProcessor::Biquad(filter) => {
-                let ([b0, b1, b2], [a1, a2]) = (filter.b, filter.a);
                 let [mut zl, mut zr] = state.z;
                 let [left, right] = block;
                 for (l, r) in left[..len].iter_mut().zip(&mut right[..len]) {
-                    let (x, y) = (*l, b0 * *l + zl[0]);
-                    zl = [b1 * x - a1 * y + zl[1], b2 * x - a2 * y];
-                    *l = y;
-                    let (x, y) = (*r, b0 * *r + zr[0]);
-                    zr = [b1 * x - a1 * y + zr[1], b2 * x - a2 * y];
-                    *r = y;
+                    (*l, zl) = filter.sample(*l, zl);
+                    (*r, zr) = filter.sample(*r, zr);
                 }
                 state.z = [zl.map(flush), zr.map(flush)];
             }
