@@ -1108,14 +1108,9 @@ impl Cursor {
                 offset += whole as usize;
                 window
             });
-            let sources = crate::resample::cubic_four(windows, phases);
-            for (frame, source) in chunk.iter_mut().zip(sources) {
-                last = if source.iter().all(|value| value.is_finite()) { source } else { [0.; 2] };
-                let level = envelope.constant_level().unwrap_or_else(|| envelope.next());
-                for channel in 0..2 {
-                    frame[channel] += source[channel] * gain * gains[channel] * level;
-                }
-            }
+            let levels = std::array::from_fn(|_| envelope.constant_level().unwrap_or_else(|| envelope.next()));
+            let source = crate::resample::mix_four(windows, phases, levels, gain, gains, chunk);
+            last = if source.iter().all(|value| value.is_finite()) { source } else { [0.; 2] };
         }
         self.fraction = fraction;
         self.position += offset as u64;
