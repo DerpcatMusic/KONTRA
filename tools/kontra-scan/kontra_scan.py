@@ -270,9 +270,6 @@ def probe(engine, item, work, timeout, shots):
         cache_stats = {'condition': condition, 'before_files': len(files), 'before_bytes': sum(p.stat().st_size for p in files), 'writable': True}
     plan_path=note_path(item)
     if plan_path.exists(): env['KONTRA_SCAN_NOTE_PLAN']=str(plan_path)
-    reader = Path('/home/derpcat/.codex/cache/kontakto-uvi-official-reader/app/UVIWorkstationx64.exe')
-    if reader.is_file():
-        env.setdefault('KONTRA_UVI_READER', str(reader))
     if shots:
         env['KONTRA_SCAN_SHOTS'] = '1'
     worker=engine
