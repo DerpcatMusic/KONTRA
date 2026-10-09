@@ -622,6 +622,8 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, window: Size) -> Option<El> {
     } else {
         menu.at.y
     };
+    ui.capture_popup_wheel(ID);
+    ui.capture_popup_wheel("context-menu-backdrop");
     Some(stack![
         // A popup owns pointer hits outside its panel too. This retires the
         // underlying hover tooltip and consumes its dismissal click.
