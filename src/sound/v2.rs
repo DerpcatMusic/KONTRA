@@ -1595,7 +1595,7 @@ fn limits(plan: &Prepared) -> (Limits, usize) { budgeted_limits(plan, None) }
 fn budgeted_limits(plan: &Prepared, stream_voices: Option<usize>) -> (Limits, usize) {
     let cost = plan.voice_state_bytes().saturating_add(VOICE_OVERHEAD);
     let ceiling = (VOICE_BUDGET / cost).clamp(1, MAX_VOICES * GROWTH).min(stream_voices.unwrap_or(usize::MAX));
-    let voices = ceiling.min(MIN_VOICES);
+    let voices = ceiling.min(MAX_VOICES);
     // Notes outlive their voices only in release, and each holds a few voices.
     // Capped: script cells are allocated per note.
     let notes = INITIAL_NOTE_PARAMS;
