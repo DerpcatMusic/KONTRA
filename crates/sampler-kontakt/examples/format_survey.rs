@@ -629,7 +629,7 @@ impl Survey {
             );
             // Header offsets preserve disk locality; HashMap iteration makes
             // a whole-archive census needlessly seek across sample payloads.
-            let mut members: Vec<_> = archive.entries.values().collect();
+            let mut members: Vec<_> = archive.members().collect();
             members.sort_unstable_by_key(|entry| entry.header_offset);
             for indexed in members {
                 if let Some(entry) = archive.member(&mut file, &indexed.name)? {

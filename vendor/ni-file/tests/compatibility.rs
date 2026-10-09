@@ -348,6 +348,7 @@ fn nkx_directory_accepts_repeated_aliases_and_preserves_case_distinct_members() 
     assert!(checked.issues.is_empty());
     assert!(checked.find("Clarinet.ncw").unwrap().checked);
     assert_eq!(checked.read_entry(Cursor::new(&bytes), "Clarinet.ncw").unwrap(), [0x11]);
+    assert_eq!(archive.members().count(), 3, "both case-distinct members remain enumerable");
     assert_eq!(archive.find("Clarinet.ncw").unwrap().header_offset, 512);
     assert_eq!(archive.find("clarinet.ncw").unwrap().header_offset, 768);
     assert_eq!(archive.find("CLARINET.NCW").unwrap().header_offset, 768, "folded fallback is directory-order last-wins");
@@ -386,7 +387,7 @@ fn local_nkx_directory_corpus_probe() {
     for (index, path) in paths.lines().enumerate() {
         let result = std::fs::File::open(path).map_err(ni_file::Error::from).and_then(Archive::read_index);
         match result {
-            Ok(archive) => println!("NKX_SCAN\t{index}\tloaded\t{}\t{}", archive.entries.len(), archive.issues.len()),
+            Ok(archive) => println!("NKX_SCAN\t{index}\tloaded\t{}\t{}", archive.members().count(), archive.issues.len()),
             Err(error) => {
                 let message = error.to_string();
                 let class = if message.contains("Duplicate or excessive NKX member") { "duplicate_or_excessive" }
