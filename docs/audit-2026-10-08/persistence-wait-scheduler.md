@@ -35,7 +35,8 @@ settles runnable work. Suspended callbacks retain their continuation.
 ## Adaptation to v2
 
 Detect reachable suspension before evaluating a load callback, including
-calls through functions and waits nested in expressions. Schedule the whole
+calls through functions and nested branches. Wait builtins return no value;
+the semantic checker rejects their use inside expressions. Schedule the whole
 wait-capable persistence callback once through existing plan activation;
 never evaluate its prefix statically and replay it. Non-suspending callbacks
 retain the existing static model preparation used by compile-only UI clients.
@@ -51,7 +52,9 @@ initial-job queue and send a notification through existing host completion
 ingress. Notification kind 5 requires no file IO or MIDI operation replay;
 the completion uses its retained status, original async ID and source stage.
 Queue capacity, admission and retry rules remain in the existing service.
-Normal non-waiting init completion evaluation remains unchanged.
+Normal non-waiting init completion evaluation remains unchanged. Init
+`wait_async` completes MIDI work synchronously; it alone does not defer an
+init completion callback, preserving the existing recursion limit.
 
 ## Witnesses and validation
 
@@ -73,7 +76,41 @@ Builds are submitted through `kontakto-heavy`; the baseline fixture waits
 outside the heavy queue while W9's timed quiet request exists. No library load
 or CPU timing is part of this change.
 
-Validation pending; no READY or real-library parity claim yet.
+The pre-restart red receipt has five fixtures: one passes and four fail with
+static wait/budget warnings. The first candidate run exposed two fixture
+setup errors (a void wait used as a value, and insertion without resizing a
+reset MIDI buffer); both are corrected. The compatibility run caught
+over-deferral of synchronous init `wait_async`; that recursion guard is now
+preserved.
+
+`targeted-green.log` passes 48 tests: `audit_followup` 6, `callback_fuel` 2,
+`midi_object` 15, `params` 13, `persistence_waits` 7 (including scan), and
+`script_state` 5. The seven scheduler cases finish in 0.00 seconds of reported
+test runtime. These are functional witnesses, not quiet-machine performance
+measurements. Core/KSP/host no-run compilation passes in `no-run.log`:
+`cargo test --profile ci -p sampler-core -p sampler-ksp -p kontakto
+--features shots,sampler-ksp/scan --no-run`, through `kontakto-heavy` (exit 0).
+No real-library parity or census delta is claimed.
+
+The first host no-run found a base compile error: coverage's `chain_with`
+caller omitted the `live_eq` argument added by `8be442c7`. The one-line
+`&[]` fix is copied from current integration `0d3aa593`; it is already in
+0.3.355. `no-run-base-error.log` retains that diagnostic. No DSP behavior
+change is introduced by this coverage-probe compatibility backport.
+
+## Integration scope
+
+The base `0ad6b3f9` includes `60c33d9c` (positive-wait preemption age),
+`0ad6b3f9` (admitted MIDI-wait age), and `6cd368a8` (unpublished MIDI ingress).
+Keep those prerequisites; the production budget/watchdog remains unchanged.
+
+W15 `c49a329e` changes generated-note routing in `behavior.rs` and
+`prepare/selection.rs`; this change neither edits those paths nor depends on
+that commit. W15's NOIRE/Una attack, release and Cutoff work stays separate.
+W9's complete persistence stack has a semantic integration boundary:
+activation runs the scheduled initial persistence callback once, while an
+explicit state restore invokes it once for that restore. Retain the
+`script_state` callback-count and outcome tests when batching both stacks.
 
 ## Parked real-library attribution
 
