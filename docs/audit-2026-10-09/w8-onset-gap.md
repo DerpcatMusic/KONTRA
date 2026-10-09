@@ -43,6 +43,23 @@ Validation: both root regressions failed at their intended assertions before
 fixing. The targeted core revision/array tests, five host persistence tests,
 same-block readiness, delayed-storage offline PCM, widget callback and root
 no-run checks all pass. Callback writes and publication remain allocation-free.
-Candidate onset results are pending. Text/store invalidation and actual mutations
-of very large saved arrays can still force a full coherent copy. This document
+The frozen `6885c290` pair is QUIET: Areia's onset is 199.520 ms and Dolce's
+152.331 ms after installation, down from 517.556/357.407 ms. Capture still
+accounts for 190.132/147.140 ms before first sound. Both callbacks retain a
+771,751,936-byte producer allocation, dominated by inline text capacity even for
+numeric cells.
+
+The follow-up keeps only compact addresses, atom metadata and the existing three
+atomic snapshot slots after preparation. It captures live values straight into an
+unpinned slot and publishes only on complete success; host serialization and the
+snapshot schema are unchanged. It removes the wide intermediate copy and its
+retained allocation. The authored 32,768-cell memory regression fails before the
+change (12,058,624-byte producer allocation) and passes afterward (at most 96 bytes
+per value including all three slots). Seven persistence tests, core revision/array
+checks, readiness, offline exact PCM, widget and root no-run checks pass. Rejection
+after a partial capture leaves the old slot published. Numeric writes/publication
+remain allocation-free. The compact candidate timing is pending.
+
+Text/store invalidation and actual mutations of very large saved arrays still
+require a complete coherent capture. This document
 makes no full v1 parity, all-14 acceptance, or release claim.
