@@ -1022,9 +1022,7 @@ impl V2Core {
             let Some(part) = part else { continue };
             // Lua note-off services use the same host identities as ordinary release.
             for held in self.held.iter().filter(|h| h.part == index) {
-                if let Some(script) = part.script.as_mut() {
-                    let _ = script.note_off(&mut part.runtime, held.note.key);
-                }
+                if let Some(script) = part.script.as_mut() { let _ = script.note_off_note(&mut part.runtime, held.id, held.note.key); }
             }
             packet(part, index, &self.held, [0x20b0_4000, 0]); // MIDI 1 CC64 up
             packet(part, index, &self.held, [0x20b0_4200, 0]); // MIDI 1 CC66 up
@@ -1363,6 +1361,28 @@ fn packet(part: &mut Part, index: usize, held: &[Held], words: [u32; 2]) {
         word as u8 & 127,
     );
     let channel = (word >> 16) as u8 & 15;
+    if part.script.is_some() && matches!(kind, 2 | 4) && matches!(status, 0x80 | 0x90) {
+        // Only incoming notes enter Lua; script-generated MIDI stays on the direct wire path.
+        let mut words = [word, data];
+        if !articulated(part, &words[..if kind == 4 { 2 } else { 1 }]) { return; }
+        words[0] &= if part.mpe_zone { 0xf0ff_ffff } else { 0xf0f0_ffff };
+        if let Some(Ok(packet)) = Packets::new(&words[..if kind == 4 { 2 } else { 1 }]).next() {
+            match part.mpe.apply_silent(&mut part.runtime, packet) {
+                Ok(sampler_midi::Applied::Started(note)) => {
+                    let velocity = if kind == 4 { (f64::from((data >> 16) as u16) / 65535.).max(1. / 65535.) } else { f64::from(b) / 127. };
+                    if let Err(sampler_core::Error::Capacity) = part.script.as_mut().unwrap().note_on(&mut part.runtime, note, a, velocity) {
+                        part.problems.capacity_drops += 1;
+                    }
+                }
+                Ok(sampler_midi::Applied::Released { note, .. }) => {
+                    let _ = part.script.as_mut().unwrap().note_off_note(&mut part.runtime, note, a);
+                }
+                Err(ApplyError::Core(sampler_core::Error::Capacity)) => part.problems.capacity_drops += 1,
+                _ => {}
+            }
+        }
+        return;
+    }
     // Per-note messages reach held host notes on the key at full precision.
     let per_note = |part: &mut Part, expression: NoteExpression| {
         for h in held
@@ -1490,7 +1510,7 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
                 .filter(|h| h.part == index && pattern.matches(h.note))
             {
                 if let Some(script) = part.script.as_mut() {
-                    let _ = script.note_off(&mut part.runtime, h.note.key);
+                    let _ = script.note_off_note(&mut part.runtime, h.id, h.note.key);
                 }
                 let _ = part.runtime.note_off(h.input, None);
             }
@@ -3746,9 +3766,32 @@ mod tests {
             "embedded loops must sound beyond the sample end: {peak}/{late_peak}"
         );
         assert_eq!(core.problems(0).underruns, 0);
-        eprintln!(
-            "AUTHORED_UVI_FEATURES peak={peak} late_peak={late_peak} voice_peak={voice_peak} heap_calls={heap_calls} underruns=0"
-        );
+        assert!(ui.interfaces()[0].widgets.iter().any(|w| w.text == "Played"), "MIDI notes must invoke the authored Lua onNote handler");
+        eprintln!("AUTHORED_UVI_FEATURES peak={peak} late_peak={late_peak} voice_peak={voice_peak} heap_calls={heap_calls} underruns=0");
+    }
+
+    #[test]
+    #[cfg(feature = "library-access")]
+    fn w10_scripted_host_release_preserves_same_key_midi_gate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wav = tmp.path().join("note.wav");
+        sine(&wav);
+        let bank = tmp.path().join("Authored.ufs");
+        // Test physical gates independently of asynchronous script-generated children.
+        let xml = include_str!("../../tests/fixtures/uvi-clear-features.uvip").replace("playNote(e.note,e.velocity,-1)", "");
+        crate::library::tests::clear_sample_bank_xml(&bank, &std::fs::read(&wav).unwrap(), xml.as_bytes());
+        let mut core = V2Core::with_parts(1, 48000.);
+        core.install(0, load(&bank.join("preset.uvip")));
+        core.event(0, Event::midi1(0x90, 60, 100));
+        let host = HostNote { port: 0, channel: 0, key: 60, id: 7, clap: true };
+        core.event(0, on(host));
+        core.event(0, Event::NoteOff(HostPattern { port: -1, channel: -1, key: -1, id: 7, clap: true }));
+        let mut keys = [0; 128];
+        core.pressed_keys(&mut keys);
+        assert_ne!(keys[60], 0, "host release must leave the MIDI physical note held");
+        core.event(0, Event::midi1(0x80, 60, 0));
+        core.pressed_keys(&mut keys);
+        assert_eq!(keys[60], 0);
     }
 
     fn sine(path: &Path) {

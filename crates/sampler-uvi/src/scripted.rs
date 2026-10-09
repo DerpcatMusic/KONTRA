@@ -292,6 +292,18 @@ impl<S: Script> Driver<S> {
         let Some(id) = self.held.get_mut(&key).and_then(|ids| ids.pop_front()) else {
             return Ok(());
         };
+        self.release_id(rt, id, key)
+    }
+
+    /// Release the physical note paired by the MIDI adapter, across overlapping channels.
+    pub fn note_off_note(&mut self, rt: &mut Runtime, note: NoteId, key: u8) -> Result<(), Error> {
+        let Some(ids) = self.held.get_mut(&key) else { return Ok(()) };
+        let Some(at) = ids.iter().position(|id| self.notes.get(id) == Some(&note)) else { return Ok(()) };
+        let id = ids.remove(at).unwrap();
+        self.release_id(rt, id, key)
+    }
+
+    fn release_id(&mut self, rt: &mut Runtime, id: u64, key: u8) -> Result<(), Error> {
         self.host.set_time(self.now_ms(rt));
         self.host.note_off(id, key);
         // Plays made by onRelease must not be linked to the closing gate.
