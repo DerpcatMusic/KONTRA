@@ -419,43 +419,60 @@ pub fn callback_of(views: &[ScriptView], program: usize) -> String {
     format!("program {program}")
 }
 
-/// Prepare a live host-state capture off audio. Persistent locations are the
-/// actual bound banks; variable names and sigils stay in `ScriptView::model`.
-/// Instrument persistence includes both persistence kinds. Snapshot callers
-/// may filter instrument-only locations using that authored metadata.
-pub fn persistent_state_buffer(
+/// Prepare compact persistent addresses and recall callbacks off audio.
+/// Locations use the actual bound banks; names and sigils stay in the view.
+/// Both instrument and ordinary persistence locations are included.
+pub fn persistent_state_layout(
     views: &[ScriptView],
-) -> Result<sampler_core::ScriptStateBuffer, sampler_core::Error> {
-    use sampler_core::{ScriptStateAddress as A, ScriptStateValue as V};
-    let mut state = sampler_core::ScriptStateBuffer::default();
+) -> Result<(Vec<sampler_core::ScriptStateAddress>, Vec<sampler_core::ScriptStateCallback>), sampler_core::Error> {
+    use sampler_core::ScriptStateAddress as A;
+    let mut addresses = Vec::new();
+    let mut callbacks = Vec::new();
     let mut base = 0;
     for (i, view) in views.iter().enumerate() {
         let instance = ScriptInstanceId(u16::try_from(i).map_err(|_| sampler_core::Error::Capacity)?);
         for persistent in &view.model.persistent {
             match persistent.location {
-                model::Location::Control(id) => state.values.push(sampler_core::ScriptStateEntry {
-                    address: A::Control(id), value: V::Control(sampler_core::ControlValue::Integer(0)),
-                }),
+                model::Location::Control(id) => addresses.push(A::Control(id)),
                 model::Location::Cells { offset, len } => {
                     for index in offset..offset.checked_add(len).ok_or(sampler_core::Error::Capacity)? {
-                        state.values.push(sampler_core::ScriptStateEntry { address: A::Cell {instance,index}, value: V::Cell(0) });
+                        addresses.push(A::Cell { instance, index });
                     }
                 }
                 model::Location::Texts { offset, len } => {
                     for index in offset..offset.checked_add(len).ok_or(sampler_core::Error::Capacity)? {
-                        state.values.push(sampler_core::ScriptStateEntry { address: A::Text {instance,index}, value: V::Text(sampler_core::Text::new("")) });
+                        addresses.push(A::Text { instance, index });
                     }
                 }
             }
         }
         if let Some(entry) = view.entries.iter().find(|e| e.kind == EntryKind::PersistenceChanged) {
-            state.callbacks.push(sampler_core::ScriptStateCallback { program: base + entry.program, behavior: None, outcome: None });
+            callbacks.push(sampler_core::ScriptStateCallback { program: base + entry.program, behavior: None, outcome: None });
         }
         base += view.programs;
     }
-    state.values.sort_by_key(|entry| entry.address);
-    state.values.dedup_by_key(|entry| entry.address);
-    Ok(state)
+    addresses.sort_unstable();
+    addresses.dedup();
+    Ok((addresses, callbacks))
+}
+
+/// Prepare producer-owned storage for the validated capture/restore boundary.
+pub fn persistent_state_buffer(
+    views: &[ScriptView],
+) -> Result<sampler_core::ScriptStateBuffer, sampler_core::Error> {
+    use sampler_core::{ScriptStateAddress as A, ScriptStateValue as V};
+    let (addresses, callbacks) = persistent_state_layout(views)?;
+    Ok(sampler_core::ScriptStateBuffer {
+        values: addresses.into_iter().map(|address| sampler_core::ScriptStateEntry {
+            address,
+            value: match address {
+                A::Control(_) => V::Control(sampler_core::ControlValue::Integer(0)),
+                A::Cell { .. } => V::Cell(0),
+                A::Text { .. } => V::Text(sampler_core::Text::default()),
+            },
+        }).collect(),
+        callbacks,
+    })
 }
 
 /// Bind source modules in order through the shared native routing table.
