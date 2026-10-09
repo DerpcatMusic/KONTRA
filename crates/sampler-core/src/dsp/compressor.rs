@@ -23,6 +23,25 @@ pub struct CompressorSettings {
 }
 
 impl CompressorSettings {
+    /// Off-audio static playback curve: `(output_db, reduction_db)`.
+    /// `input_db` is the detector level; reduction is nonnegative, before makeup.
+    /// Attack/release history and channel linking are outside this static curve.
+    /// Reject invalid settings or a level outside positive finite f64 amplitude.
+    /// Zero makeup returns negative infinity for the output level.
+    pub fn transfer_db(self, input_db: f64) -> Result<(f64, f64), crate::Error> {
+        if !self.valid() || !input_db.is_finite() {
+            return Err(crate::Error::InvalidInput);
+        }
+        let input = (input_db / DB_PER_NEPER).exp();
+        if !input.is_finite() || input <= 0. {
+            return Err(crate::Error::InvalidInput);
+        }
+        let kernel = self.prepare(1);
+        let mut reduction = kernel.target(input);
+        let output = input * kernel.gain(&mut reduction);
+        Ok((DB_PER_NEPER * output.ln(), reduction))
+    }
+
     pub(super) fn valid(&self) -> bool {
         self.threshold_db.is_finite()
             && self.ratio.is_finite()
@@ -70,6 +89,26 @@ pub(crate) struct Compressor {
 const DB_PER_NEPER: f64 = 8.685_889_638_065_037;
 
 impl Compressor {
+    #[inline(always)]
+    fn target(&self, detected: f64) -> f64 {
+        if detected > self.threshold {
+            (DB_PER_NEPER * detected.ln() - self.threshold_db) * self.slope
+        } else {
+            0.
+        }
+    }
+
+    #[inline(always)]
+    fn gain(&self, reduction: &mut f64) -> f64 {
+        let mut gain = self.makeup;
+        if *reduction < 1e-12 {
+            *reduction = 0.;
+        } else {
+            gain *= (-*reduction / DB_PER_NEPER).exp();
+        }
+        gain
+    }
+
     pub(crate) fn trace_parameters(&self) -> [(&'static str, f64); 6] {
         [("threshold_db", self.threshold_db), ("ratio", 1. / (1. - self.slope)),
             ("attack_coefficient", self.attack), ("release_coefficient", self.release),
@@ -90,22 +129,14 @@ impl Compressor {
             };
             let mut gain = [self.makeup; 2];
             for c in 0..if self.link { 1 } else { 2 } {
-                let target = if detected[c] > self.threshold {
-                    (DB_PER_NEPER * detected[c].ln() - self.threshold_db) * self.slope
-                } else {
-                    0.
-                };
+                let target = self.target(detected[c]);
                 let coefficient = if target > reduction[c] {
                     self.attack
                 } else {
                     self.release
                 };
                 reduction[c] = target + coefficient * (reduction[c] - target);
-                if reduction[c] < 1e-12 {
-                    reduction[c] = 0.;
-                } else {
-                    gain[c] *= (-reduction[c] / DB_PER_NEPER).exp();
-                }
+                gain[c] = self.gain(&mut reduction[c]);
             }
             if self.link {
                 (reduction[1], gain[1]) = (reduction[0], gain[0]);
@@ -113,5 +144,58 @@ impl Compressor {
             (*l, *r) = (*l * gain[0], *r * gain[1]);
         }
         (state.z[0][0], state.z[1][0]) = (reduction[0], reduction[1]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transfer_db_matches_audio_curve_bits_on_a_sweep() {
+        for rate in [44100, 48000, 96000] {
+            for threshold_db in [-60., -24., 0.] {
+                for ratio in [1., 1.01, 2., 4., 20.] {
+                    for makeup in [0., 0.25, 1., 2.] {
+                        for link in [false, true] {
+                            let settings = CompressorSettings { threshold_db, ratio, makeup, link,
+                                attack_seconds: 0., release_seconds: 0. };
+                            let kernel = settings.prepare(rate);
+                            let mut state = ProcessorState::default();
+                            // Both directions exercise attack/release branch selection.
+                            for descending in [false, true] {
+                                for step in -480..=144 {
+                                    let input_db = if descending { -336 - step } else { step } as f64 * 0.25;
+                                    let input = (input_db / DB_PER_NEPER).exp();
+                                    let mut block = [[0.; super::super::BLOCK]; 2];
+                                    block[0][0] = input; block[1][0] = input;
+                                    kernel.process(&mut state, &mut block, 1);
+                                    let (output_db, reduction_db) = settings.transfer_db(input_db).unwrap();
+                                    for c in 0..2 {
+                                        assert_eq!(output_db.to_bits(), (DB_PER_NEPER * block[c][0].ln()).to_bits());
+                                        assert_eq!(reduction_db.to_bits(), state.z[c][0].to_bits());
+                                    }
+                                }
+                            }
+                            let timed = CompressorSettings { attack_seconds: 0.01, release_seconds: 0.1, ..settings };
+                            assert_eq!(timed.transfer_db(-6.).unwrap(), settings.transfer_db(-6.).unwrap());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn transfer_db_rejects_invalid_settings_and_unrepresentable_levels() {
+        let settings = CompressorSettings { threshold_db: -24., ratio: 4., makeup: 1., link: true,
+            attack_seconds: 0., release_seconds: 0. };
+        for input in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, f64::MAX, -f64::MAX] {
+            assert!(settings.transfer_db(input).is_err());
+        }
+        for invalid in [CompressorSettings { ratio: 0.5, ..settings }, CompressorSettings { makeup: -1., ..settings },
+            CompressorSettings { attack_seconds: -1., ..settings }, CompressorSettings { threshold_db: f64::NAN, ..settings }] {
+            assert!(invalid.transfer_db(0.).is_err());
+        }
     }
 }
