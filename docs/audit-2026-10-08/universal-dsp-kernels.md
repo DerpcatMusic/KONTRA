@@ -144,3 +144,41 @@ ran serially through `/home/derpcat/.cache/kontakto-heavy` in the owned
 No new dependency, public API, importer law, control binding, CPU artifact or
 release/install change. Corpus/native parity and callback timing are not
 measured by this slice. Next: W8 direct handoff, frozen CPU window, then W13.
+
+## Remaining consolidation slice (validation pending)
+
+Implementation `494bb088`, test-only checkpoints `a6b17c70` / `a4c9e2cd`.
+The remaining eight scalar/lane sample-math sites now call shared primitives:
+constant/control gain, stereo matrix, Gainer multiplier/smoothing, Stereo
+balance/advance, wet/dry/bypass mixing, float64 OnePole and TPT SVF.
+Layouts, initialisation markers, coefficient preparation, lane end masks,
+pseudo delay histories, control cadence and flush points stay with their callers.
+`ControlRamp::settled` and coefficient hoisting are outside this slice (W9).
+
+Float32 `one_pole32` is shared by Gainer, Stereo width and reverb's output shelf.
+The biased primitive accepts a precomputed increment, so Lo-Fi keeps
+coefficient-first multiplication while reverb keeps difference-first multiplication.
+Its addition is explicitly `state + (increment + 1e-20)`; it is not
+`(state + increment) + 1e-20`. The float64 OnePole remains distinct.
+
+Independent frozen-608a oracles cover all scoped dispatchers, output guards,
+retained states and ended voices. Dispatch cases include seven lengths
+(0/1/3/4/5/17/64), uniform/masked ends, batches of 1/3/8 voices, four successive
+input blocks (impulse, sine, signed zero/subnormal), control trajectories and
+fresh/retained smoother state. SVF adds seven modes, three rates, three Q values,
+and settled/moving cutoff. Additional oracles cover Lo-Fi's noise RNG/state,
+reverb's three one-poles and feedback lines (8192 ticks at each of three rates),
+and Stereo's pseudo ring/odd-block cadence (both pseudo settings, 32 calls).
+
+Baseline gate on test-only `a4c9e2cd`: optimized `cargo test --locked --release
+-p sampler-core --lib shared_` PASS (9 tests; five new frozen oracles plus four
+existing shared tests), before validating the extracted math. Logs:
+`~/.cache/kontakto-w6/universal-dsp/remaining-baseline.log`.
+Post-extraction bit checks, allocator gates and area no-run are pending the
+coordinator's serial validation slot at the start of W6's quiet window.
+Do not treat this second slice as READY until that receipt is appended.
+
+CPU acceptance continues to use the unchanged frozen exact-5fc artifact.
+Updated quiet order: W9 → W8 (six cells) → W5 (≤20 min) → W6 (42 CPU cells) → W13.
+W6 starts only after W5's direct release, validates the source slice before
+any timing, and publishes READY independently of the frozen CPU verdict.
