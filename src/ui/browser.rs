@@ -1144,7 +1144,9 @@ fn split_divider(ui: &mut Ui, cx: &mut Cx) -> El {
 
 /// A search field with its glyph, placeholder and clear button. The arrows
 /// and Enter still work from inside it.
-fn search_field(ui: &mut Ui, id: &str, text: &mut String, placeholder: &str, name: &str) -> El {
+pub(super) fn search_field(ui: &mut Ui, id: &str, text: &mut String, placeholder: &str, name: &str) -> El {
+    let box_id = format!("{id}-box");
+    if ui.get(box_id.as_str()).clicked { ui.focus(id); }
     let field = text_input(ui, id, text);
     let empty = text.is_empty() && !ui.focused(id);
     let (clear, clear_el) = icon_button(ui, format!("{id}-clear"), Icon::Close, "Clear", false);
@@ -1152,12 +1154,11 @@ fn search_field(ui: &mut Ui, id: &str, text: &mut String, placeholder: &str, nam
         text.clear();
     }
     let mut layers = vec![
-        field
-            .el
+        // The text canvas uses fixed internal insets; reserve glyph space in its parent.
+        row![field.el.flex(1).min_w(0).h(CONTROL + TIGHT).named(name.to_owned())]
             .w(Len::Pct(100.))
             .h(CONTROL + TIGHT)
-            .pad(edges(0., CONTROL + TIGHT, 0., CONTROL))
-            .named(name.to_owned()),
+            .pad(edges(0., CONTROL + TIGHT, 0., CONTROL)),
         glyph(Icon::Search, TEXT + 2., secondary())
             .anchor(Align::Start, Align::Center)
             .offset(SPACE, 0.),
@@ -1172,7 +1173,7 @@ fn search_field(ui: &mut Ui, id: &str, text: &mut String, placeholder: &str, nam
     if !text.is_empty() {
         layers.push(clear_el.anchor(Align::End, Align::Center));
     }
-    stack(layers).h(CONTROL + TIGHT).shrink(0)
+    stack(layers).h(CONTROL + TIGHT).fill(Role::Field).shrink(0).id(box_id)
 }
 
 /// The keys on the list: Up and Down (and the pages, Home and End) move the
