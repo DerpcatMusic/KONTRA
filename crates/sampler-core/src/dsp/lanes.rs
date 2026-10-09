@@ -78,12 +78,20 @@ pub(crate) fn process(
                         filters,
                     );
                 }
-                for (i, (x, d)) in block[..len].iter_mut().zip(&dry_block).enumerate() {
-                    let t = at + i as u64;
-                    let b = bypass.value(t);
-                    let gains = super::kernels::mix_gains(dry.value(t), wet.value(t), b);
-                    for (v, d) in x.iter_mut().zip(d) {
-                        *v = super::kernels::mix(*d, *v, gains, off);
+                let held = dry.held(at, len).zip(wet.held(at, len)).zip(bypass.held(at, len));
+                if let Some(((dry, wet), bypass)) = held {
+                    let gains = super::kernels::mix_gains(dry, wet, bypass);
+                    for (x, d) in block[..len].iter_mut().zip(&dry_block) {
+                        for (v, d) in x.iter_mut().zip(d) { *v = super::kernels::mix(*d, *v, gains, off); }
+                    }
+                } else {
+                    for (i, (x, d)) in block[..len].iter_mut().zip(&dry_block).enumerate() {
+                        let t = at + i as u64;
+                        let b = bypass.value(t);
+                        let gains = super::kernels::mix_gains(dry.value(t), wet.value(t), b);
+                        for (v, d) in x.iter_mut().zip(d) {
+                            *v = super::kernels::mix(*d, *v, gains, off);
+                        }
                     }
                 }
             }

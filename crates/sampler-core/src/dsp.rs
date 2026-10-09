@@ -897,12 +897,24 @@ pub(super) fn process<const TRACE: bool>(
                             recorder: &mut *t.recorder, graph: t.graph, nodes: &t.nodes[inner.clone()], identity: t.identity }) } else { None },
                     );
                 }
-                for c in 0..2 {
-                    for i in 0..len {
-                        let t = at + i as u64;
-                        let b = bypass.value(t);
-                        let gains = kernels::mix_gains(dry.value(t), wet.value(t), b);
-                        block[c][i] = kernels::mix(dry_block[c][i], block[c][i], gains, off);
+                let held = dry.held(at, len).zip(wet.held(at, len)).zip(bypass.held(at, len));
+                if let Some(((dry, wet), bypass)) = held {
+                    let gains = kernels::mix_gains(dry, wet, bypass);
+                    sampler_simd::dispatch(#[inline(always)] || {
+                        for (channel, input) in block.iter_mut().zip(&dry_block) {
+                            for (out, dry) in channel[..len].iter_mut().zip(input) {
+                                *out = kernels::mix(*dry, *out, gains, off);
+                            }
+                        }
+                    });
+                } else {
+                    for c in 0..2 {
+                        for i in 0..len {
+                            let t = at + i as u64;
+                            let b = bypass.value(t);
+                            let gains = kernels::mix_gains(dry.value(t), wet.value(t), b);
+                            block[c][i] = kernels::mix(dry_block[c][i], block[c][i], gains, off);
+                        }
                     }
                 }
             }
