@@ -195,3 +195,10 @@ impl crate::Prepared {
         Ok(self)
     }
 }
+
+impl crate::Runtime {
+    /// Immutable schema for an off-audio reader of the addressed generation.
+    pub fn parameter_registry(&self, plan: crate::PlanId) -> Result<&PreparedParameterRegistry, Error> {
+        Ok(&self.plans.get(plan.0).ok_or(Error::StaleHandle)?.prepared.parameter_registry)
+    }
+}
