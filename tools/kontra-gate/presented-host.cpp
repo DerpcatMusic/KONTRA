@@ -145,6 +145,8 @@ static void rss_lifecycle(const clap_plugin_t* p, const clap_plugin_gui_t* gui, 
             XWindowAttributes frame{}; require(XGetWindowAttributes(display,window,&frame),"RSS parent geometry");
             parent_w=frame.width; parent_h=frame.height;
             require(gui->get_size(p,&clap_w,&clap_h),"RSS CLAP geometry");
+            std::printf("{\"kind\":\"geometry\",\"phase\":\"%s\",\"child\":[%u,%u],\"parent\":[%u,%u],\"clap\":[%u,%u]}\n",phases[phase],width,height,parent_w,parent_h,clap_w,clap_h);
+            std::fflush(stdout);
             require(parent_w==1180 && parent_h==760 && width==parent_w && height==parent_h
                     && clap_w==parent_w && clap_h==parent_h,"RSS viewport agreement");
         }
