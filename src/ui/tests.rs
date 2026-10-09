@@ -85,6 +85,14 @@ impl Harness {
             .unwrap();
     }
 
+    #[cfg(feature = "shots")]
+    pub(crate) fn tick_cost(&mut self, input: Input) -> (usize, usize) {
+        let mut root = None;
+        let build = crate::plugin::tests::allocations(|| root = Some((self.build)(&mut self.ui, &mut self.bridge)));
+        let frame = crate::plugin::tests::allocations(|| { self.ui.frame(root.unwrap(), Some(self.size), input, 1. / 60.).unwrap(); });
+        (build, frame)
+    }
+
     /// Frames until the library artwork asked for is made and drawn.
     pub(super) fn settle_art(&mut self) {
         loop {
