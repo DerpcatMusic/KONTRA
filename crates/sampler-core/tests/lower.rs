@@ -2547,3 +2547,36 @@ fn compressor_descriptors_have_live_typed_physical_lanes() {
         );
     }
 }
+
+#[test]
+fn authored_zone_getters_keep_physical_group_holes_after_lowering() {
+    use sampler_core::ZoneParameter;
+    let mut instrument = ir::Instrument {
+        assets: vec![asset("tone")],
+        groups: vec![ir::Group::default()],
+        zones: vec![ir::Zone {
+            group: Some(ir::GroupRef(0)),
+            keys: ir::KeyRange { low: 12, high: 94 },
+            ..ir::Zone::new(ir::AssetRef(0))
+        }],
+        ..Default::default()
+    };
+    instrument.source_indices.groups = vec![None; 8];
+    instrument.source_indices.groups[7] = Some(ir::GroupRef(0));
+    instrument.source_indices.zones = vec![None; 73];
+    instrument.source_indices.zones[72] = Some(ir::ZoneRef(0));
+    let plan = lower(&instrument, 48000, vec![constant(1.)], no_behaviors).unwrap();
+    assert_eq!(
+        plan.source_zone_parameter(73, ZoneParameter::Group),
+        Some(7)
+    );
+    assert_eq!(
+        plan.source_zone_parameter(73, ZoneParameter::LowKey),
+        Some(12)
+    );
+    assert_eq!(
+        plan.source_zone_parameter(73, ZoneParameter::HighKey),
+        Some(94)
+    );
+    assert_eq!(plan.source_zone_parameter(1, ZoneParameter::Group), None);
+}
