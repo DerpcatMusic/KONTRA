@@ -441,9 +441,16 @@ impl TraceParameter {
         }
     }
 
-    pub(crate) fn envelope(name: &'static str, initial: f64, binding: Option<&crate::EngineParameterBinding>) -> Self {
+    pub(crate) fn envelope(
+        name: &'static str,
+        initial: f64,
+        binding: Option<&crate::EngineParameterBinding>,
+    ) -> Self {
         let mut p = Self::constant(name, initial);
-        if let Some(b) = binding { p.address = Some(b.address); p.law = Some(b.law); }
+        if let Some(b) = binding {
+            p.address = Some(b.address);
+            p.law = Some(b.law);
+        }
         p
     }
     pub(crate) fn constant(name: &'static str, initial: f64) -> Self {
@@ -519,10 +526,22 @@ impl TraceGraph {
             graph.edge(aux, graph.host[1 + port], "possible_host_route");
         }
         for port in 0..HOST_PORTS {
-            let output = graph.node("host_output", "physical_channel_sum", None, None, Some(port), vec![], 0);
+            let output = graph.node(
+                "host_output",
+                "physical_channel_sum",
+                None,
+                None,
+                Some(port),
+                vec![],
+                0,
+            );
             graph.host.push(output);
             for rack in 0..HOST_PORTS {
-                graph.edge(graph.host[1 + HOST_PORTS + rack], output, "possible_physical_route");
+                graph.edge(
+                    graph.host[1 + HOST_PORTS + rack],
+                    output,
+                    "possible_physical_route",
+                );
             }
         }
 
@@ -770,7 +789,7 @@ impl TraceGraph {
                 "compressor",
                 c.trace_parameters()
                     .into_iter()
-                    .map(|(n, v)| constant(n, v))
+                    .map(|(n, v)| parameter(n, v))
                     .collect(),
                 0,
             ),
@@ -783,6 +802,14 @@ impl TraceGraph {
                     .map(|(n, v)| constant(n, v))
                     .collect(),
                 delay.trace_frames(),
+            ),
+            PreparedProcessor::PeakingEq(eq) => (
+                "v1_peaking_eq",
+                eq.trace_parameters()
+                    .into_iter()
+                    .map(|(n, p)| parameter(n, p))
+                    .collect(),
+                0,
             ),
             PreparedProcessor::Biquad(b) => (
                 "biquad",
@@ -836,8 +863,14 @@ impl TraceGraph {
                 vec![constant("period", d.period), constant("blend", d.blend)],
                 0,
             ),
-            PreparedProcessor::LoFi(d) => ("lofi", d.trace_parameters().into_iter()
-                .map(|(n, v)| constant(n, v)).collect(), 0),
+            PreparedProcessor::LoFi(d) => (
+                "lofi",
+                d.trace_parameters()
+                    .into_iter()
+                    .map(|(n, v)| constant(n, v))
+                    .collect(),
+                0,
+            ),
             PreparedProcessor::Rectify(_) => ("rectifier", vec![], 0),
             PreparedProcessor::Reverb(i) => (
                 "reverb",
@@ -860,7 +893,9 @@ impl TraceGraph {
         };
         let id = self.node(kind, name, zone, group, bus, parameters, latency);
         self.nodes[id].gain_measurement = match stage {
-            PreparedProcessor::Gain(_) | PreparedProcessor::ControlGain(_) | PreparedProcessor::Branch { .. } => "scalar_multiplier",
+            PreparedProcessor::Gain(_)
+            | PreparedProcessor::ControlGain(_)
+            | PreparedProcessor::Branch { .. } => "scalar_multiplier",
             PreparedProcessor::Mix { .. } => "mix_coefficients",
             _ => "effective_energy_ratio",
         };
@@ -997,14 +1032,22 @@ impl crate::Runtime {
             applied,
             enabled,
             TraceIdentity {
-                external_port: (!matches!(stage, HostStage::PartFader | HostStage::AuxSend)).then_some(port),
-                output_channels: match stage {HostStage::Output(_, channels) => Some(channels), _ => None},
+                external_port: (!matches!(stage, HostStage::PartFader | HostStage::AuxSend))
+                    .then_some(port),
+                output_channels: match stage {
+                    HostStage::Output(_, channels) => Some(channels),
+                    _ => None,
+                },
                 routed_to: match stage {
-                    HostStage::PartFader | HostStage::AuxSend if port < HOST_PORTS => Some(trace.graph.host[1 + port]),
+                    HostStage::PartFader | HostStage::AuxSend if port < HOST_PORTS => {
+                        Some(trace.graph.host[1 + port])
+                    }
                     HostStage::RackBus(p) if p < HOST_PORTS => {
                         Some(trace.graph.host[1 + HOST_PORTS + p])
                     }
-                    HostStage::Master(_) if port < HOST_PORTS => Some(trace.graph.host[2 + 2 * HOST_PORTS + port]),
+                    HostStage::Master(_) if port < HOST_PORTS => {
+                        Some(trace.graph.host[2 + 2 * HOST_PORTS + port])
+                    }
                     _ => None,
                 },
                 ..Default::default()

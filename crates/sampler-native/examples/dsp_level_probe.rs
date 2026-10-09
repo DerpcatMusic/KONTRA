@@ -9,21 +9,33 @@ fn setter_sites(source: &str) -> serde_json::Value {
     let mut code = String::with_capacity(source.len());
     let (mut comment, mut quoted) = (0usize, false);
     for c in source.chars() {
-        if !quoted && c == '{' { comment += 1; }
+        if !quoted && c == '{' {
+            comment += 1;
+        }
         if comment > 0 {
-            if c == '}' { comment -= 1; }
+            if c == '}' {
+                comment -= 1;
+            }
             code.push(' ');
         } else if c == '"' {
             quoted = !quoted;
             code.push(' ');
-        } else { code.push(if quoted { ' ' } else { c }); }
+        } else {
+            code.push(if quoted { ' ' } else { c });
+        }
     }
     let mut targets = std::collections::BTreeMap::<String, usize>::new();
     let (mut total, mut dynamic, mut physical_slot) = (0, 0, 0);
     for (at, _) in code.match_indices("set_engine_par") {
-        if at > 0 && (code.as_bytes()[at - 1].is_ascii_alphanumeric() || code.as_bytes()[at - 1] == b'_') { continue; }
+        if at > 0
+            && (code.as_bytes()[at - 1].is_ascii_alphanumeric() || code.as_bytes()[at - 1] == b'_')
+        {
+            continue;
+        }
         let rest = code[at + "set_engine_par".len()..].trim_start();
-        if !rest.starts_with('(') { continue; }
+        if !rest.starts_with('(') {
+            continue;
+        }
         let mut depth = 0;
         let mut start = 1;
         let mut args = Vec::new();
@@ -32,18 +44,28 @@ fn setter_sites(source: &str) -> serde_json::Value {
                 '(' => depth += 1,
                 ')' => {
                     depth -= 1;
-                    if depth == 0 { args.push(rest[start..i].trim()); break; }
+                    if depth == 0 {
+                        args.push(rest[start..i].trim());
+                        break;
+                    }
                 }
-                ',' if depth == 1 => { args.push(rest[start..i].trim()); start = i + 1; }
+                ',' if depth == 1 => {
+                    args.push(rest[start..i].trim());
+                    start = i + 1;
+                }
                 _ => {}
             }
         }
-        if args.len() != 5 { continue; }
+        if args.len() != 5 {
+            continue;
+        }
         total += 1;
         if let Some(id) = engine_parameter_id(args[0]) {
             let name = sampler_core::engine_parameter_name(id).unwrap().to_owned();
             *targets.entry(name).or_default() += 1;
-        } else { dynamic += 1; }
+        } else {
+            dynamic += 1;
+        }
         if args[2] == "-1" && args[3] == "1" && matches!(args[4], "1" | "$NI_INSERT_BUS") {
             physical_slot += 1;
         }
@@ -62,8 +84,17 @@ fn main() {
     let path = args.next().expect("NKI path");
     let mode = args.next();
     if mode.as_deref() == Some("--layers") {
-        let loaded=sampler_kontakt::load(Path::new(&path),&sampler_kontakt::Options { keys:60..=60,library:Some(Path::new(&path).into()),..Default::default() }, |_|{}).expect("load");
-        let ir=&loaded.instrument;
+        let loaded = sampler_kontakt::load(
+            Path::new(&path),
+            &sampler_kontakt::Options {
+                keys: 60..=60,
+                library: Some(Path::new(&path).into()),
+                ..Default::default()
+            },
+            |_| {},
+        )
+        .expect("load");
+        let ir = &loaded.instrument;
         let candidates:Vec<_>=ir.zones.iter().enumerate().filter(|(_,z)|z.keys.low<=60 && z.keys.high>=60 && z.velocities.low<=100 && z.velocities.high>=100).map(|(i,z)| {
             let routes:Vec<_>=z.routes.iter().filter_map(|r| {
                 let r=&ir.routes[r.0];
@@ -84,7 +115,12 @@ fn main() {
             let numeric:Vec<f64>=u.value.split_whitespace().filter_map(|v|v.parse().ok()).collect();
             Some(serde_json::json!({"group":group,"slot":u.location.rsplit_once("slot ").and_then(|(_,s)|s.split_whitespace().next()).and_then(|n|n.trim_end_matches(':').parse::<usize>().ok()),"feature":u.feature,"target":if u.value.starts_with("filterCutoff"){Some("cutoff")}else{None},"numeric_values":numeric,"reason":format!("{:?}",u.reason)}))
         }).collect();
-        let shapes:Vec<_>=ir.shapes.iter().enumerate().map(|(i,s)|serde_json::json!({"index":i,"debug":format!("{:?}",s)})).collect();
+        let shapes: Vec<_> = ir
+            .shapes
+            .iter()
+            .enumerate()
+            .map(|(i, s)| serde_json::json!({"index":i,"debug":format!("{:?}",s)}))
+            .collect();
         let init_writes:Vec<_>=loaded.scripts.iter().flat_map(|view|view.model().requests.iter().filter(|r|r.command=="set_engine_par").filter_map(move |r| {
             let name=match r.args.first()? {sampler_ksp::model::Value::Text(n)=>n.clone(),sampler_ksp::model::Value::Int(v)=>view.symbol(*v)?,_=>return None};
             let id=engine_parameter_id(&name)?;
@@ -95,28 +131,73 @@ fn main() {
         let modulator_sources:Vec<_>=ir.source_indices.modulators.iter().filter(|m|candidates.iter().any(|c|c["group"].as_u64()==Some(m.group as u64))).map(|m| {
             serde_json::json!({"group":m.group,"slot":m.slot,"external":m.external,"source":m.runtime.and_then(|r|ir.modulators.get(r.0)).map(|m|format!("{:?}",m.source))})
         }).collect();
-        let host_volume=ir.host_volume.map(|v|serde_json::json!({"controller":v.controller,"saved_gain":v.saved}));
-        let group_count=ir.groups.len();
-        let plan=loaded.plan; let rate=plan.sample_rate();
-        let limits=Limits {notes:64,channels:16,performances:1,expressions:64,families:64,decisions:256,voices:512,commands:256,behaviors:16,behavior_fuel:1<<20,behavior_cells:plan.behavior_local_count()*16,note_cells:plan.note_cell_count()*64};
-        let mut rt=Runtime::new(plan,limits).unwrap();
-        let mut versions=[None;16];versions[0]=Some(Version::Midi1);let mut ingress=Ingress::new(0,versions);
-        let mut states=Vec::new();
-        for cc in [0u8,64,127] {
+        let host_volume = ir
+            .host_volume
+            .map(|v| serde_json::json!({"controller":v.controller,"saved_gain":v.saved}));
+        let group_count = ir.groups.len();
+        let plan = loaded.plan;
+        let rate = plan.sample_rate();
+        let limits = Limits {
+            notes: 64,
+            channels: 16,
+            performances: 1,
+            expressions: 64,
+            families: 64,
+            decisions: 256,
+            voices: 512,
+            commands: 256,
+            behaviors: 16,
+            behavior_fuel: 1 << 20,
+            behavior_cells: plan.behavior_local_count() * 16,
+            note_cells: plan.note_cell_count() * 64,
+        };
+        let mut rt = Runtime::new(plan, limits).unwrap();
+        let mut versions = [None; 16];
+        versions[0] = Some(Version::Midi1);
+        let mut ingress = Ingress::new(0, versions);
+        let mut states = Vec::new();
+        for cc in [0u8, 64, 127] {
             while rt.take_engine_parameter_outcome().is_some() {}
-            let word=[0x20b00100|u32::from(cc)];
-            let packet=TimedPacket {offset:0,packet:Packets::new(&word).next().unwrap().unwrap()};
-            ingress.render(&mut rt,&mut [[0.;2];64],&[packet],1,|_,r|assert!(r.is_ok())).unwrap();
-            rt.flush_behaviors(|_,_,_|true);
-            for _ in 0..rate/128 { ingress.render(&mut rt,&mut [[0.;2];64],&[],0,|_,r|assert!(r.is_ok())).unwrap();rt.flush_behaviors(|_,_,_|true); }
-            let mut writes=Vec::new();
-            while let Some(event)=rt.take_engine_parameter_outcome() {
-                if let Some(a)=event.address { if event.write { writes.push(serde_json::json!({"target":sampler_core::engine_parameter_name(a.parameter),"group":a.group,"slot":a.slot,"generic":a.generic,"succeeded":event.result.is_ok(),"value":rt.engine_parameter(a).ok()})); } }
+            let word = [0x20b00100 | u32::from(cc)];
+            let packet = TimedPacket {
+                offset: 0,
+                packet: Packets::new(&word).next().unwrap().unwrap(),
+            };
+            ingress
+                .render(&mut rt, &mut [[0.; 2]; 64], &[packet], 1, |_, r| {
+                    assert!(r.is_ok())
+                })
+                .unwrap();
+            rt.flush_behaviors(|_, _, _| true);
+            for _ in 0..rate / 128 {
+                ingress
+                    .render(&mut rt, &mut [[0.; 2]; 64], &[], 0, |_, r| {
+                        assert!(r.is_ok())
+                    })
+                    .unwrap();
+                rt.flush_behaviors(|_, _, _| true);
             }
-            let groups:Vec<_>=(0..group_count).filter_map(|g| {
-                let a=EngineParameterAddress {parameter:engine_parameter_id("ENGINE_PAR_VOLUME").unwrap(),group:g as i32,slot:-1,generic:-1};
-                rt.engine_parameter(a).ok().map(|value|serde_json::json!({"group":g,"volume":value}))
-            }).collect();
+            let mut writes = Vec::new();
+            while let Some(event) = rt.take_engine_parameter_outcome() {
+                if let Some(a) = event.address {
+                    if event.write {
+                        writes.push(serde_json::json!({"target":sampler_core::engine_parameter_name(a.parameter),"group":a.group,"slot":a.slot,"generic":a.generic,"succeeded":event.result.is_ok(),"value":rt.engine_parameter(a).ok()}));
+                    }
+                }
+            }
+            let groups: Vec<_> = (0..group_count)
+                .filter_map(|g| {
+                    let a = EngineParameterAddress {
+                        parameter: engine_parameter_id("ENGINE_PAR_VOLUME").unwrap(),
+                        group: g as i32,
+                        slot: -1,
+                        generic: -1,
+                    };
+                    rt.engine_parameter(a)
+                        .ok()
+                        .map(|value| serde_json::json!({"group":g,"volume":value}))
+                })
+                .collect();
             let volumes:Vec<_>=init_writes.iter().filter(|w|w["target"].as_str().is_some_and(|t|t.ends_with("ENGINE_PAR_VOLUME"))).map(|w| {
                 let a=EngineParameterAddress {parameter:engine_parameter_id("ENGINE_PAR_VOLUME").unwrap(),group:w["group"].as_i64().unwrap() as i32,slot:w["slot"].as_i64().unwrap() as i32,generic:w["generic"].as_i64().unwrap() as i32};
                 serde_json::json!({"group":a.group,"slot":a.slot,"generic":a.generic,"readback":rt.engine_parameter(a).ok()})
@@ -128,8 +209,13 @@ fn main() {
     }
     if mode.as_deref() == Some("--intent") {
         let mut kontakt = sampler_kontakt::read(Path::new(&path)).expect("read");
-        let (scripts, _, _) = sampler_kontakt::compile_ui(&mut kontakt.instrument,
-            &sampler_kontakt::Options { library: Some(Path::new(&path).into()), ..Default::default() });
+        let (scripts, _, _) = sampler_kontakt::compile_ui(
+            &mut kontakt.instrument,
+            &sampler_kontakt::Options {
+                library: Some(Path::new(&path).into()),
+                ..Default::default()
+            },
+        );
         let results: Vec<_> = scripts.iter().map(|script| {
             let widgets: Vec<_> = script.model().interface.widgets.iter()
                 .filter(|w| w.name.to_ascii_lowercase().contains("compressor"))
@@ -160,7 +246,8 @@ fn main() {
         return;
     }
     let static_address = mode.map(|group| sampler_ir::SlotAddress {
-        group: group.parse().unwrap(), slot: args.next().unwrap().parse().unwrap(),
+        group: group.parse().unwrap(),
+        slot: args.next().unwrap().parse().unwrap(),
         generic: args.next().unwrap().parse().unwrap(),
     });
     let mut results = Vec::new();
@@ -176,12 +263,25 @@ fn main() {
             let mut found = 0;
             for chain in &mut kontakt.instrument.chains {
                 for stages in [&mut chain.pre_amplitude, &mut chain.post_amplitude] {
-                    if let Some(i) = stages.iter().position(|p| matches!(p, Processor::Compressor(_))) {
-                        let Processor::StereoMatrix(m) = stages[i + 1] else { panic!("no output trim") };
+                    if let Some(i) = stages
+                        .iter()
+                        .position(|p| matches!(p, Processor::Compressor(_)))
+                    {
+                        let Processor::StereoMatrix(m) = stages[i + 1] else {
+                            panic!("no output trim")
+                        };
                         assert!(m[0][1] == 0.0 && m[1][0] == 0.0 && m[0][0] == m[1][1]);
                         stages.remove(i + 1);
-                        stages.insert(i, Processor::Mix { count: 1, address,
-                            dry: 0.0, wet: m[0][0], bypass: false });
+                        stages.insert(
+                            i,
+                            Processor::Mix {
+                                count: 1,
+                                address,
+                                dry: 0.0,
+                                wet: m[0][0],
+                                bypass: false,
+                            },
+                        );
                         found += 1;
                     }
                 }
@@ -189,12 +289,14 @@ fn main() {
             assert_eq!(found, 1);
         }
         let loaded = sampler_kontakt::load_read(
-            kontakt, &sampler_kontakt::Options {
+            kontakt,
+            &sampler_kontakt::Options {
                 keys: 60..=60,
                 library: Some(Path::new(&path).into()),
                 ..Default::default()
             },
-            |_| {}, || false,
+            |_| {},
+            || false,
         )
         .expect("load");
         let mut addresses = Vec::new();
@@ -220,9 +322,13 @@ fn main() {
         addresses.sort();
         addresses.dedup();
         if addresses.is_empty() {
-            let static_compressors = loaded.instrument.chains.iter()
+            let static_compressors = loaded
+                .instrument
+                .chains
+                .iter()
                 .flat_map(|c| c.pre_amplitude.iter().chain(&c.post_amplitude))
-                .filter(|p| matches!(p, Processor::Compressor(_))).count();
+                .filter(|p| matches!(p, Processor::Compressor(_)))
+                .count();
             results.push(serde_json::json!({"status":"no-addressed-compressors",
                 "static_compressors":static_compressors}));
             break;
@@ -266,10 +372,18 @@ fn main() {
                     if bypass {
                         runtime.set_engine_parameter(address, 1).unwrap();
                     } else {
-                        runtime.set_engine_parameter(EngineParameterAddress {
-                            parameter: engine_parameter_id("ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN").unwrap(),
-                            ..address
-                        }, 396_851).unwrap();
+                        runtime
+                            .set_engine_parameter(
+                                EngineParameterAddress {
+                                    parameter: engine_parameter_id(
+                                        "ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN",
+                                    )
+                                    .unwrap(),
+                                    ..address
+                                },
+                                396_851,
+                            )
+                            .unwrap();
                     }
                 }
             }
@@ -304,7 +418,9 @@ fn main() {
             runtime.flush_ended(|_| true);
             while let Some(event) = runtime.take_engine_parameter_outcome() {
                 if let Some(address) = event.address
-                    && address.group == -1 && address.slot == 1 && address.generic == 1
+                    && address.group == -1
+                    && address.slot == 1
+                    && address.generic == 1
                 {
                     slot_outcomes.push(serde_json::json!({"write":event.write,"succeeded":event.result.is_ok(),
                         "target":sampler_core::engine_parameter_name(address.parameter),"group":address.group,
@@ -327,11 +443,13 @@ fn main() {
 mod tests {
     #[test]
     fn setter_inventory_excludes_comments_text_and_nested_argument_commas() {
-        let sites = super::setter_sites(r#"{ set_engine_par($ENGINE_PAR_PAN, 1, -1, 1, 1) }
+        let sites = super::setter_sites(
+            r#"{ set_engine_par($ENGINE_PAR_PAN, 1, -1, 1, 1) }
             set_text($x, "set_engine_par($ENGINE_PAR_PAN, 1, -1, 1, 1)")
             _set_engine_par($ENGINE_PAR_PAN, 1, -1, 1, 1)
             set_engine_par ($ENGINE_PAR_EFFECT_BYPASS, f(1, 2), -1, 1, $NI_INSERT_BUS)
-            set_engine_par($dynamic, 2, 0, 1, -1)"#);
+            set_engine_par($dynamic, 2, 0, 1, -1)"#,
+        );
         assert_eq!(sites["set_engine_par_sites"], 2);
         assert_eq!(sites["dynamic_parameter_sites"], 1);
         assert_eq!(sites["literal_instrument_insert_slot_1_sites"], 1);

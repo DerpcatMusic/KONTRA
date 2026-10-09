@@ -83,6 +83,22 @@ class PackagingTests(unittest.TestCase):
         self.assertNotIn('Issue 5.',body);self.assertIn('<details>',body)
         self.assertNotIn('a'*40,body.split('<details>')[0])
 
+    def test_reviewed_version_notes_publish_verbatim_only_for_matching_version(self):
+        reviewed = '### Loading & files\n\n- Open embedded samples.\n\n### Known limits\n\n- Audio parity remains incomplete.\n\n### Evidence\n\n[Validation](https://example.com/validation).'
+        changelog = '## 0.3.393\n\n' + reviewed + '\n\n## Unreleased\n\n### Fixed\n\n- Future work.\n'
+        with tempfile.TemporaryDirectory() as d:
+            folder = Path(d)
+            folder.joinpath('release-fixes.json').write_text(json.dumps(dict(fixes=[dict(id='fix', summary='Fix sample loading', accepted=True)])))
+            with patch.object(release_notes, 'Path', side_effect=lambda p: folder / p):
+                body = release_notes.generate(lambda *a: None, 'example/KONTRA', 'a' * 40, '0.3.393-nightly.test', None, changelog)
+                other = release_notes.generate(lambda *a: None, 'example/KONTRA', 'a' * 40, '0.3.394-nightly.test', None, changelog)
+        self.assertIn(reviewed, body)
+        self.assertNotIn('Future work.', body)
+        self.assertNotIn('### Fixed', body)
+        self.assertNotIn('a' * 40, body.split('<details>')[0])
+        self.assertNotIn(reviewed, other)
+        self.assertIn('Fix sample loading.', other)
+
     def test_publication_queue_keeps_pending_pushes(self):
         workflow=Path(__file__).with_name('nightly.yml').read_text()
         publish=workflow.split('  release:\n',1)[1]
@@ -120,7 +136,8 @@ class PackagingTests(unittest.TestCase):
                 command=textwrap.dedent(workflow.split('      - name: Stage\n',1)[1].split('        run: |\n',1)[1].split('      - name: Verify Linux glibc baseline',1)[0])
                 command=command.replace('${{ matrix.name }}',platform).replace('${{ matrix.target }}',target)
                 env=dict(os.environ,RUNNER_OS='Windows' if windows else 'Linux',GITHUB_SHA='a'*40,GITHUB_ENV=str(root/'env'))
-                subprocess.run(['bash','-e','-o','pipefail','-c',command],cwd=root,env=env,check=True,capture_output=True)
+                staged=subprocess.run(['bash','-e','-o','pipefail','-c',command],cwd=root,env=env,check=True,capture_output=True,text=True)
+                self.assertIn('::warning::standalone: source provenance is dirty or unknown',staged.stdout)
                 metadata=json.loads(output.with_suffix('.build.json').read_text())
                 ext='ps1' if windows else 'sh';exe='kontakto-standalone.exe' if windows else 'kontakto-standalone'
                 self.assertEqual({p.name for p in output.iterdir()}, {'KONTRA.clap','KONTRA.vst3',exe,'README.txt','LICENSES.txt','install.'+ext,'uninstall.'+ext})

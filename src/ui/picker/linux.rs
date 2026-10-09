@@ -213,7 +213,12 @@ fn request(ask: &Ask, parent: Option<Parent>) -> Result<DialogRequest, String> {
     let open = DialogKind::OpenFile { multiple: false };
     let folder = DialogKind::PickFolder { multiple: false };
     let (title, kind, directory, filter): (_, _, _, Option<(&str, Vec<String>)>) = match ask {
-        Ask::Samples { out } => ("A folder of WAV or AIFF samples", folder, Some(out.clone()), None),
+        Ask::Samples { out } => (
+            "A folder of WAV or AIFF samples",
+            folder,
+            Some(out.clone()),
+            None,
+        ),
         Ask::Folder { from, single } => (
             if *single {
                 "A Kontakt library folder"
@@ -225,7 +230,9 @@ fn request(ask: &Ask, parent: Option<Parent>) -> Result<DialogRequest, String> {
             None,
         ),
         Ask::Snapshot { from, .. } => (
-            "Load a snapshot for this instrument", open, Some(from.clone()),
+            "Load a snapshot for this instrument",
+            open,
+            Some(from.clone()),
             Some(("Kontakt snapshot", vec!["nksn".into()])),
         ),
         Ask::Artwork { library } => (

@@ -8,6 +8,20 @@ use serde_json::{Value, json};
 use std::path::Path;
 
 struct Player(V2Core);
+impl Drop for Player {
+    fn drop(&mut self) {
+        if std::env::var_os("KONTRA_SIGNAL_TRACE").as_deref() == Some(std::ffi::OsStr::new("1")) {
+            // Finish the observation artifact after the measured player retires.
+            drop(std::mem::replace(
+                &mut self.0,
+                V2Core::with_parts(1, 48000.),
+            ));
+            assert!(sampler_core::trace_report::flush(
+                std::time::Duration::from_secs(30)
+            ));
+        }
+    }
+}
 fn cpu_checks() {
     use sampler_core::{Input, Instruction, Limits, Prepared, Program, Protocol, Runtime};
     let plan = Prepared::new(48000, vec![], vec![], 0)

@@ -8,11 +8,7 @@ use crate::{
     ufs::{Directory, Member, Protection, Ufs},
 };
 use anyhow::{Context, Result, ensure};
-use std::{
-    collections::HashMap,
-    path::Path,
-    sync::Arc,
-};
+use std::{collections::HashMap, path::Path, sync::Arc};
 
 /// An open bank. Deliberately not Debug: it holds access values.
 pub struct Bank {
@@ -31,11 +27,95 @@ pub(crate) fn program_text(bytes: &[u8]) -> Result<String, AccessError> {
         .map_err(|e| AccessError::Program(access::failure_reason(&e)))
 }
 
+fn program_paths(directory: &Directory) -> Vec<String> {
+    let mut programs: Vec<String> = directory
+        .files
+        .iter()
+        .filter_map(|m| m.path.clone())
+        .filter(|p| p.to_ascii_lowercase().ends_with(".uvip"))
+        .collect();
+    programs.sort();
+    programs
+}
+
 impl Bank {
-    /// Open and decode the directory of the bank at `path`.
-    pub fn open(path: &Path) -> Result<Self, AccessError> {
+    /// List program paths using directory metadata only, without preparing or reading payloads.
+    pub fn catalog(path: &Path) -> Result<Vec<String>, AccessError> {
+        Self::catalog_status(path).map(|(programs, _)| programs)
+    }
+
+    /// Directory-only catalog and declared program access requirements; no payload reads.
+    pub fn catalog_status(path: &Path) -> Result<(Vec<String>, Option<String>), AccessError> {
         let bank_error = |e| AccessError::Bank(access::failure_reason(&e));
+        let ufs = Ufs::open(path).map_err(bank_error)?;
+        let directory = ufs
+            .decode_directory(&Namespaces::native().metadata)
+            .map_err(bank_error)?;
+        let programs = program_paths(&directory);
+        let protected = directory
+            .files
+            .iter()
+            .filter(|m| {
+                m.path
+                    .as_ref()
+                    .is_some_and(|p| p.to_ascii_lowercase().ends_with(".uvip"))
+                    && m.mode == Protection::Content
+            })
+            .count();
+        let unknown = directory
+            .files
+            .iter()
+            .filter(|m| {
+                m.path
+                    .as_ref()
+                    .is_some_and(|p| p.to_ascii_lowercase().ends_with(".uvip"))
+                    && matches!(m.mode, Protection::Unknown(_))
+            })
+            .count();
+        let mut reasons = Vec::new();
+        if protected > 0 {
+            reasons.push(format!(
+                "{protected} of {} presets need content access before they can load.",
+                programs.len()
+            ));
+        }
+        if unknown > 0 {
+            reasons.push(format!(
+                "{unknown} of {} presets use an unsupported protection mode.",
+                programs.len()
+            ));
+        }
+        Ok((programs, (!reasons.is_empty()).then(|| reasons.join(" "))))
+    }
+
+    /// Open a bank for programs, scripts and samples, preparing content access.
+    pub fn open(path: &Path) -> Result<Self, AccessError> {
+        let mut bank = Self::open_metadata(path)?;
         let content_error = |e| AccessError::Content(access::failure_reason(&e));
+        let span = sampler_kontakt::audit::Span::new("uvi_content_setup");
+        // Only banks with encrypted members need a content state prepared.
+        let content_key = if bank
+            .directory
+            .files
+            .iter()
+            .any(|m| m.mode == Protection::Content)
+        {
+            Some(
+                access::recover_content_key(path, &bank.ufs, &bank.directory)
+                    .map_err(content_error)?,
+            )
+        } else {
+            None
+        };
+        drop(span);
+        bank.content_key = content_key;
+        Ok(bank)
+    }
+
+    /// Open directory metadata without preparing content access. Content-protected
+    /// members remain unavailable; clear and metadata members can be read.
+    pub fn open_metadata(path: &Path) -> Result<Self, AccessError> {
+        let bank_error = |e| AccessError::Bank(access::failure_reason(&e));
         let span = sampler_kontakt::audit::Span::new("uvi_ufs_header");
         let ufs = Ufs::open(path).map_err(bank_error)?;
         drop(span);
@@ -45,18 +125,6 @@ impl Bank {
             .decode_directory(&namespaces.metadata)
             .map_err(bank_error)?;
         let program_namespace = namespaces.program;
-        drop(span);
-        let span = sampler_kontakt::audit::Span::new("uvi_content_setup");
-        // Only banks with encrypted members need a content state prepared.
-        let content_key = if directory
-            .files
-            .iter()
-            .any(|m| m.mode == Protection::Content)
-        {
-            Some(access::recover_content_key(path, &ufs, &directory).map_err(content_error)?)
-        } else {
-            None
-        };
         drop(span);
         let mut paths = HashMap::with_capacity(directory.files.len());
         for (index, member) in directory.files.iter().enumerate() {
@@ -70,23 +138,15 @@ impl Bank {
         Ok(Self {
             ufs: Arc::new(ufs),
             directory,
-            content_key,
+            content_key: None,
             program_namespace,
             paths,
         })
     }
 
-    /// Program member paths (`*.uvip`), in directory order.
+    /// Program member paths (`*.uvip`), sorted.
     pub fn programs(&self) -> Vec<String> {
-        let mut programs: Vec<String> = self
-            .directory
-            .files
-            .iter()
-            .filter_map(|m| m.path.clone())
-            .filter(|p| p.to_ascii_lowercase().ends_with(".uvip"))
-            .collect();
-        programs.sort();
-        programs
+        program_paths(&self.directory)
     }
 
     fn read(&self, member: &Member) -> Result<Vec<u8>> {
@@ -153,11 +213,16 @@ impl Bank {
     }
 
     /// Same bank/script-origin authority as ui_resource, without erasing failure categories.
-    pub fn ui_resource_result(&self, program: &str, path: &str) -> std::result::Result<Option<Vec<u8>>, crate::ResourceError> {
+    pub fn ui_resource_result(
+        &self,
+        program: &str,
+        path: &str,
+    ) -> std::result::Result<Option<Vec<u8>>, crate::ResourceError> {
         use crate::ResourceError as E;
         crate::resources::validate_path(path)?;
         let path = path.replace('\\', "/");
-        let (program, path) = resource_base(program, &path, &self.ufs.header.bank_name).map_err(|_| E::InvalidPath)?;
+        let (program, path) = resource_base(program, &path, &self.ufs.header.bank_name)
+            .map_err(|_| E::InvalidPath)?;
         let candidates = ui_candidates(program, path).map_err(|_| E::InvalidPath)?;
         let mut member = None;
         for candidate in &candidates {
@@ -166,19 +231,33 @@ impl Bank {
                 break;
             }
         }
-        let member = if let Some(member) = member { member } else {
+        let member = if let Some(member) = member {
+            member
+        } else {
             let normalized = normalize(path).map_err(|_| E::InvalidPath)?;
             let suffix = format!("/{}", normalized.to_ascii_lowercase());
             let mut matches = self.directory.files.iter().filter(|m| {
-                m.path.as_ref().is_some_and(|p| p.to_ascii_lowercase().ends_with(&suffix))
+                m.path
+                    .as_ref()
+                    .is_some_and(|p| p.to_ascii_lowercase().ends_with(&suffix))
             });
-            let Some(first) = matches.next() else {return Ok(None)};
-            if matches.next().is_some() {return Err(E::Ambiguous)};
+            let Some(first) = matches.next() else {
+                return Ok(None);
+            };
+            if matches.next().is_some() {
+                return Err(E::Ambiguous);
+            };
             first
         };
-        if member.size > 32 << 20 {return Err(E::Limit)};
+        if member.size > 32 << 20 {
+            return Err(E::Limit);
+        };
         self.read(member).map(Some).map_err(|e| {
-            if e.downcast_ref::<std::io::Error>().is_some() {E::Read} else {E::Corrupt}
+            if e.downcast_ref::<std::io::Error>().is_some() {
+                E::Read
+            } else {
+                E::Corrupt
+            }
         })
     }
 
@@ -221,12 +300,15 @@ impl Bank {
         let parts = resources(program_path, path, |path| self.resolve(path))?
             .into_iter()
             .map(|member| {
-                let (offset, size, key) = self.ufs.locate(
-                    member,
-                    self.directory.metadata_key,
-                    self.content_key,
-                )?;
-                Ok(crate::stream::Origin::Member { ufs: self.ufs.clone(), offset, size, key })
+                let (offset, size, key) =
+                    self.ufs
+                        .locate(member, self.directory.metadata_key, self.content_key)?;
+                Ok(crate::stream::Origin::Member {
+                    ufs: self.ufs.clone(),
+                    offset,
+                    size,
+                    key,
+                })
             })
             .collect::<Result<Vec<_>>>()?;
         crate::stream::source(parts).map_err(anyhow::Error::msg)
@@ -258,15 +340,21 @@ fn ui_candidates(program: &str, path: &str) -> Result<Vec<String>> {
     let base = program.rsplit_once('/').map_or("", |(base, _)| base);
     let rooted = normalize(path)?;
     let mut out = Vec::new();
-    if !path.starts_with('/') { out.push(normalize(&format!("{base}/{path}"))?); }
-    if !out.contains(&rooted) { out.push(rooted.clone()); }
+    if !path.starts_with('/') {
+        out.push(normalize(&format!("{base}/{path}"))?);
+    }
+    if !out.contains(&rooted) {
+        out.push(rooted.clone());
+    }
     let parts: Vec<_> = rooted.split('/').collect();
     if let Some(scripts) = parts.iter().position(|p| p.eq_ignore_ascii_case("Scripts")) {
         // A module can live below nested package folders. The bank index is
         // authoritative; no filesystem or another bank participates.
         for start in scripts + 1..parts.len() {
             let candidate = parts[start..].join("/");
-            if !out.contains(&candidate) { out.push(candidate); }
+            if !out.contains(&candidate) {
+                out.push(candidate);
+            }
         }
     }
     Ok(out)
@@ -311,24 +399,58 @@ fn normalize(path: &str) -> Result<String> {
 }
 
 /// Exact paths take priority; a bare member name is usable only if unique.
+/// Some banks retain WAV references after replacing their members with FLAC.
+/// An alternate lossless format must have the same directory and sample stem.
 fn resolve<'a>(directory: &'a Directory, path: &str) -> Result<&'a Member> {
     let path = normalize(path)?;
     let exact: Vec<_> = directory
         .files
         .iter()
-        .filter(|m| m.path.as_ref().is_some_and(|p| p.eq_ignore_ascii_case(&path)))
+        .filter(|m| {
+            m.path
+                .as_ref()
+                .is_some_and(|p| p.eq_ignore_ascii_case(&path))
+        })
         .collect();
     if exact.len() == 1 {
         return Ok(exact[0]);
     }
     ensure!(exact.is_empty(), "Ambiguous UVI member path");
-    ensure!(
-        !path.contains('/'),
-        "UVI resource path is absent from this bank"
-    );
-    let named: Vec<_> = directory.files.iter().filter(|m| m.name.eq_ignore_ascii_case(&path)).collect();
-    ensure!(named.len() == 1, "UVI member name is absent or ambiguous");
-    Ok(named[0])
+    let bare = !path.contains('/');
+    if bare {
+        let named: Vec<_> = directory
+            .files
+            .iter()
+            .filter(|m| m.name.eq_ignore_ascii_case(&path))
+            .collect();
+        if named.len() == 1 {
+            return Ok(named[0]);
+        }
+        ensure!(named.is_empty(), "Ambiguous UVI member name");
+    }
+    if let Some(stem) = audio_stem(&path) {
+        let mut alternatives = directory.files.iter().filter(|member| {
+            let name = if bare {
+                Some(member.name.as_str())
+            } else {
+                member.path.as_deref()
+            };
+            name.and_then(audio_stem) == Some(stem)
+        });
+        if let Some(member) = alternatives.next() {
+            ensure!(alternatives.next().is_none(), "Ambiguous UVI audio format");
+            return Ok(member);
+        }
+    }
+    anyhow::bail!("UVI resource path is absent from this bank")
+}
+
+fn audio_stem(path: &str) -> Option<&str> {
+    let (stem, extension) = path.rsplit_once('.')?;
+    ["wav", "aif", "aiff", "flac"]
+        .iter()
+        .any(|format| extension.eq_ignore_ascii_case(format))
+        .then_some(stem)
 }
 
 fn resource<'a>(
@@ -405,8 +527,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn clear_bank_and_program_load_with_native_namespaces() {
+    fn clear_bank_fixture() -> (Vec<u8>, Vec<u8>) {
         fn append(bytes: &mut Vec<u8>, payload: &[u8]) -> u64 {
             let pointer = bytes.len() as u64 + 8;
             bytes.extend((payload.len() as u64).to_le_bytes());
@@ -443,37 +564,191 @@ mod tests {
         point(&mut leaf, 264, member);
         leaf[272..288].fill(255);
         let table = append(&mut bytes, &leaf);
-        for offset in [4, 12, 20] { point(&mut bytes, tree + offset, table); }
+        for offset in [4, 12, 20] {
+            point(&mut bytes, tree + offset, table);
+        }
         let payload = append(&mut bytes, xml);
         point(&mut bytes, member + 260, xml.len() as u64);
         point(&mut bytes, member + 268, payload);
-        let path = std::env::temp_dir().join(format!("kontra-clear-bank-{}.ufs", std::process::id()));
+        (bytes, xml.to_vec())
+    }
+
+    fn census_bank_fixture() -> (Vec<u8>, Vec<u8>) {
+        let (mut bytes, xml) = clear_bank_fixture();
+        let mut asset = vec![0; 289];
+        asset[..4].copy_from_slice(&0x675850e4u32.to_le_bytes());
+        asset[4..13].copy_from_slice(b"asset.bin");
+        asset[276] = 2;
+        bytes.extend((asset.len() as u64).to_le_bytes());
+        bytes.extend(asset);
+        bytes[304] = 1;
+        let key = crypto::metadata_key(&Namespaces::native().metadata, "Authored");
+        let mut at = 320;
+        while at < bytes.len() {
+            let length = u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap()) as usize;
+            let pointer = at + 8;
+            let tag = u32::from_le_bytes(bytes[pointer..pointer + 4].try_into().unwrap());
+            if matches!(tag, 0x2fba3632 | 0x675850e4) {
+                crypto::transform(
+                    &mut bytes[pointer + 4..pointer + 260],
+                    key,
+                    (pointer + 4) as u64,
+                );
+                if tag == 0x675850e4 && bytes[pointer + 276] == 0 {
+                    bytes[pointer + 276] = 1;
+                    let size =
+                        u64::from_le_bytes(bytes[pointer + 260..pointer + 268].try_into().unwrap())
+                            as usize;
+                    let offset =
+                        u64::from_le_bytes(bytes[pointer + 268..pointer + 276].try_into().unwrap())
+                            as usize;
+                    crypto::transform_blocks(&mut bytes[offset..offset + size], key, offset as u64);
+                }
+            } else if tag == 0x3ca86aaf {
+                let count = u32::from_le_bytes(bytes[pointer + 4..pointer + 8].try_into().unwrap())
+                    as usize;
+                for child in 0..count {
+                    let start = pointer + 8 + child * 264;
+                    crypto::transform(&mut bytes[start..start + 256], key, start as u64);
+                }
+            }
+            at += length + 8;
+        }
+        (bytes, xml)
+    }
+
+    #[test]
+    fn census_does_not_prepare_unrelated_content() {
+        let (bytes, xml) = census_bank_fixture();
+        let path =
+            std::env::temp_dir().join(format!("kontra-census-bank-{}.ufs", std::process::id()));
+        std::fs::write(&path, bytes).unwrap();
+        let mut bank =
+            Bank::open_metadata(&path).expect("census must not prepare unrelated content");
+        assert!(bank.content_key.is_none());
+        assert_eq!(bank.program("preset.uvip").unwrap().0.as_bytes(), xml);
+        assert!(crate::translate_program(&bank, "preset.uvip").is_ok());
+        assert!(
+            bank.read(&bank.directory.files[1]).is_err(),
+            "content access still requires a supplied key"
+        );
+        bank.directory.files[0].mode = Protection::Content;
+        assert!(
+            bank.program("preset.uvip").is_err(),
+            "metadata census must refuse content-protected programs"
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn clear_bank_and_program_load_with_native_namespaces() {
+        let (bytes, xml) = clear_bank_fixture();
+        let path =
+            std::env::temp_dir().join(format!("kontra-clear-bank-{}.ufs", std::process::id()));
         std::fs::write(&path, bytes).unwrap();
         let mut bank = Bank::open(&path).unwrap();
         assert_eq!(bank.program_namespace.len(), 39);
         assert_eq!(bank.programs(), ["preset.uvip"]);
-        assert_eq!(bank.program("preset.uvip").unwrap(),
-            (std::str::from_utf8(xml).unwrap().to_owned(), "preset.uvip".to_owned()));
+        assert_eq!(Bank::catalog(&path).unwrap(), bank.programs());
+        assert_eq!(
+            bank.program("preset.uvip").unwrap(),
+            (
+                std::str::from_utf8(&xml).unwrap().to_owned(),
+                "preset.uvip".to_owned()
+            )
+        );
         assert!(bank.directory.warnings.is_empty());
         use crate::ResourceError as E;
-        assert_eq!(bank.ui_resource_result("preset.uvip", "preset.uvip").unwrap(), Some(xml.to_vec()));
-        assert_eq!(bank.ui_resource_result("preset.uvip", "missing.png").unwrap(), None);
-        assert_eq!(bank.ui_resource_result("preset.uvip", "$Other.ufs/preset.uvip"), Err(E::InvalidPath));
-        let index=bank.paths["preset.uvip"].unwrap();
-        bank.paths.insert("preset.uvip".into(),None);
-        assert_eq!(bank.ui_resource_result("preset.uvip", "preset.uvip"), Err(E::Ambiguous));
-        bank.paths.insert("preset.uvip".into(),Some(index));
-        let member=&mut bank.directory.files[index];
-        let size=member.size;
-        member.size=(32<<20)+1;
-        assert_eq!(bank.ui_resource_result("preset.uvip", "preset.uvip"), Err(E::Limit));
-        bank.directory.files[index].size=size;
-        let offset=bank.directory.files[index].offset;
-        bank.directory.files[index].offset=u64::MAX;
-        assert_eq!(bank.ui_resource_result("preset.uvip", "preset.uvip"), Err(E::Corrupt));
-        bank.directory.files[index].offset=offset;
+        assert_eq!(
+            bank.ui_resource_result("preset.uvip", "preset.uvip")
+                .unwrap(),
+            Some(xml.to_vec())
+        );
+        assert_eq!(
+            bank.ui_resource_result("preset.uvip", "missing.png")
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            bank.ui_resource_result("preset.uvip", "$Other.ufs/preset.uvip"),
+            Err(E::InvalidPath)
+        );
+        let index = bank.paths["preset.uvip"].unwrap();
+        bank.paths.insert("preset.uvip".into(), None);
+        assert_eq!(
+            bank.ui_resource_result("preset.uvip", "preset.uvip"),
+            Err(E::Ambiguous)
+        );
+        bank.paths.insert("preset.uvip".into(), Some(index));
+        let member = &mut bank.directory.files[index];
+        let size = member.size;
+        member.size = (32 << 20) + 1;
+        assert_eq!(
+            bank.ui_resource_result("preset.uvip", "preset.uvip"),
+            Err(E::Limit)
+        );
+        bank.directory.files[index].size = size;
+        let offset = bank.directory.files[index].offset;
+        bank.directory.files[index].offset = u64::MAX;
+        assert_eq!(
+            bank.ui_resource_result("preset.uvip", "preset.uvip"),
+            Err(E::Corrupt)
+        );
+        bank.directory.files[index].offset = offset;
         std::fs::remove_file(path).unwrap();
-        assert_eq!(bank.ui_resource_result("preset.uvip", "preset.uvip"), Err(E::Read));
+        assert_eq!(
+            bank.ui_resource_result("preset.uvip", "preset.uvip"),
+            Err(E::Read)
+        );
+    }
+
+    #[test]
+    fn audio_format_fallback_preserves_the_sample_and_rejects_ambiguity() {
+        let mut directory = Directory {
+            files: ["Samples/tone-C1.flac", "Other/tone-C1.flac"]
+                .into_iter()
+                .map(|path| Member {
+                    record_offset: 0,
+                    name: path.rsplit('/').next().unwrap().into(),
+                    parent: None,
+                    path: Some(path.into()),
+                    size: 0,
+                    offset: 0,
+                    mode: Protection::Clear,
+                    footer: Vec::new(),
+                })
+                .collect(),
+            directories: Vec::new(),
+            records: Vec::new(),
+            warnings: Vec::new(),
+            metadata_key: 0,
+        };
+        assert_eq!(
+            resolve(&directory, "Samples/tone-C1.wav")
+                .unwrap()
+                .path
+                .as_deref(),
+            Some("Samples/tone-C1.flac")
+        );
+        assert!(resolve(&directory, "Samples/tone-C2.wav").is_err());
+        assert!(resolve(&directory, "Absent/tone-C1.wav").is_err());
+        assert!(resolve(&directory, "Samples/tone-C1.uvip").is_err());
+        assert!(resolve(&directory, "tone-C1.wav").is_err());
+        let mut member = directory.files[0].clone();
+        member.path = Some("Samples/tone-C1.aif".into());
+        member.name = "tone-C1.aif".into();
+        directory.files.push(member.clone());
+        assert!(resolve(&directory, "Samples/tone-C1.wav").is_err());
+        member.path = Some("Samples/tone-C1.wav".into());
+        member.name = "tone-C1.wav".into();
+        directory.files.push(member);
+        assert_eq!(
+            resolve(&directory, "Samples/tone-C1.wav")
+                .unwrap()
+                .path
+                .as_deref(),
+            Some("Samples/tone-C1.wav")
+        );
     }
 
     #[test]
@@ -495,10 +770,22 @@ mod tests {
 
     #[test]
     fn ui_candidates_keep_module_and_package_roots_in_order() {
-        assert_eq!(ui_candidates("Presets/Strings/p.uvip", "/Scripts/_ui/../Resources/knob.png").unwrap(),
-            ["Scripts/Resources/knob.png", "Resources/knob.png", "knob.png"]);
-        assert_eq!(ui_candidates("Presets/Strings/p.uvip", "Resources/knob.png").unwrap(),
-            ["Presets/Strings/Resources/knob.png", "Resources/knob.png"]);
+        assert_eq!(
+            ui_candidates(
+                "Presets/Strings/p.uvip",
+                "/Scripts/_ui/../Resources/knob.png"
+            )
+            .unwrap(),
+            [
+                "Scripts/Resources/knob.png",
+                "Resources/knob.png",
+                "knob.png"
+            ]
+        );
+        assert_eq!(
+            ui_candidates("Presets/Strings/p.uvip", "Resources/knob.png").unwrap(),
+            ["Presets/Strings/Resources/knob.png", "Resources/knob.png"]
+        );
         assert!(ui_candidates("Presets/p.uvip", "/Scripts/../../escape.png").is_err());
     }
 }

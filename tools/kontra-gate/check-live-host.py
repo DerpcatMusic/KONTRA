@@ -12,6 +12,16 @@ for bad in [{'key': 128, 'velocity': 64}, {'key': 60, 'velocity': 0}, {'key': 60
     try: events(bad, 6)
     except AssertionError: pass
     else: raise AssertionError('invalid audition accepted')
+# Performance trills require a held neighbor, repeated without stuck notes.
+paired = events({'key':60, 'velocity':64, 'keyswitch':12, 'held_key':61}, 6)
+assert (128,0x90,61,64) in paired and (256,0x90,60,64) in paired
+assert (24256,0x80,60,0) in paired and (24384,0x80,61,0) in paired
+assert len([e for e in paired if e[1]==0x90 and e[2] in (60,61)]) == 10
+assert all(e[0] < 6*48000 for e in paired)
+for held in [-1,128,True,60,12,'61']:
+    try: events({'key':60,'velocity':64,'keyswitch':12,'held_key':held},2)
+    except AssertionError: pass
+    else: raise AssertionError('invalid held audition accepted')
 template = b'OAST\x01\0\0\0' + b'\0' * 8 + struct.pack('<IQQ', 0, 0, 0)
 native = v1_state(template, '/generated/tone.nki', 3)
 assert native[:28] == template[:28] and len(native) > len(template)
@@ -25,6 +35,20 @@ assert measured_status(complete) == 'MEASURED'
 for change in [{'contention':'CONTENDED'}, {'contention':'UNKNOWN'}, {'peak':0}, {'nonfinite':1}, {'returncode':1}, {'events_dispatched':11}, {'native_state_verified':False}, {'native_state_verified':None}]:
     assert measured_status(dict(complete, **change)) == 'UNKNOWN'
 print('PASS: silent, incomplete and contended runs cannot certify live playback')
+audit = dict(complete, cpu_audit={'steady': {'blocks': 141}, 'steady_peak': .2}, underruns=0, profiled=False)
+assert measured_status(audit) == 'MEASURED'
+for change in [{'cpu_audit': {}}, {'cpu_audit': {'steady': {'blocks': 141}, 'steady_peak': 0}},
+               {'underruns': None}, {'profiled': True}, {'profiled': True, 'profiler_exit_code': 1}]:
+    assert measured_status(dict(audit, **change)) == 'UNKNOWN'
+for code in (0, -2):
+    assert measured_status(dict(audit, profiled=True, profiler_exit_code=code, profile_samples_steady=10)) == 'MEASURED'
+assert measured_status(dict(audit, profiled=True, profiler_exit_code=0, profile_samples_steady=0)) == 'UNKNOWN'
+print('PASS: audit requires audible steady window, underrun evidence and successful requested profiler')
+from live_host import steady_leaf_samples
+leaves = '\n'.join(f'100.{fraction}: 123 (fixture)' for fraction in ('249999999', '250000000', '999999999')) + '\n101.000000000: 123 (fixture)\n'
+assert len(steady_leaf_samples(leaves, 100_000_000_000)) == 2
+assert steady_leaf_samples(leaves + 'invalid timestamp\n', 100_000_000_000) == []
+print('PASS: realtime leaf-IP profile excludes attack, release and teardown')
 
 from pathlib import Path
 import json, tempfile
@@ -110,3 +134,23 @@ for stages in [None, [], 'malformed']:
     malformed = [dict(rows[0], data=dict(rows[0]['data'], stages_ms=stages))]
     assert load_observation([probe], malformed)['plugin_stages_ms'] == {}
 print('PASS: real RSS, first-audio and load fields reject missing, silent, malformed and ambiguous evidence')
+
+from live_host import load_audit
+audit = load_audit('noise\nAUDIT {"stage":"sample_source_resolve","ms":12.5,"rss_kb":200,"hwm_kb":220}\n'
+                   'AUDIT {"stage":"sample_header_cache","hit":true}\n'
+                   'AUDIT {"stage":"ksp_callback_lower","ms":3,"source":"private authored text","secret":42}\n')
+assert audit == {'records': [dict(stage='sample_source_resolve', ms=12.5, rss_kb=200, hwm_kb=220),
+                            dict(stage='sample_header_cache', hit=True), dict(stage='ksp_callback_lower', ms=3)],
+                 'dropped_records': 0}
+for payload in ['[]', 'null', '{"stage":"private authored text","ms":1}',
+                '{"stage":"ksp_frontend","ms":NaN}', '{"stage":"ksp_frontend","ms":true}',
+                '{"stage":"ksp_frontend","ms":-1}', '{"stage":"ksp_frontend","ms":"private"}',
+                '{"stage":"ksp_frontend","ms":' + '9' * 1000 + '}',
+                '{"stage":"ksp_frontend","ms":{}}', '{"stage":"ksp_frontend"}']:
+    assert not load_audit('AUDIT ' + payload)['records']
+bounded = load_audit('AUDIT {"stage":"ksp_frontend","ms":1}\n' * 4097)
+assert len(bounded['records']) == 4096 and bounded['dropped_records'] == 1
+assert load_audit('AUDIT ' + 'x' * 4097)['dropped_records'] == 1
+assert load_audit('AUDIT {"stage":"ksp_callback_program","ms":1,"context":"Note"}')['records'][0]['context'] == 'Note'
+assert load_audit('AUDIT {"stage":"ksp_callback_program","context":"private"}')['records'] == []
+print('PASS: bounded load audit preserves numeric substages without authored text or unknown fields')

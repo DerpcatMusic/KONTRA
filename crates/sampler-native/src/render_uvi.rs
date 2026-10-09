@@ -6,8 +6,9 @@ pub fn run(bank: &Path, program: &str, output: &Path, notes: &[Note]) -> io::Res
     let bank = sampler_uvi::Bank::open(bank).map_err(io::Error::other)?;
     // Scripts may play any key: every zone is present, its samples stream.
     let rate = sampler_kontakt::Options::default().rate;
-    let program = sampler_uvi::load_program_scripted_streamed(&bank, program, rate, &Default::default())
-        .map_err(|e| io::Error::other(e.to_string()))?;
+    let program =
+        sampler_uvi::load_program_scripted_streamed(&bank, program, rate, &Default::default())
+            .map_err(|e| io::Error::other(e.to_string()))?;
     let ir = &program.instrument;
     eprintln!(
         "{:?}: {} groups, {} zones, {} scripts, {} unsupported",
@@ -24,7 +25,7 @@ pub fn run(bank: &Path, program: &str, output: &Path, notes: &[Note]) -> io::Res
             item.feature, item.location
         );
     }
-        let limits = sampler_core::Limits {
+    let limits = sampler_core::Limits {
         notes: 64,
         channels: 16,
         performances: 1,
@@ -90,7 +91,9 @@ pub fn run(bank: &Path, program: &str, output: &Path, notes: &[Note]) -> io::Res
         eprintln!("  unmodeled script request: {item}");
     }
     drop(player);
-    if !sampler_core::trace_report::flush(std::time::Duration::from_secs(10)) { return Err(io::Error::other("signal trace report flush timed out")); }
+    if !sampler_core::trace_report::flush(std::time::Duration::from_secs(10)) {
+        return Err(io::Error::other("signal trace report flush timed out"));
+    }
     println!("rendered {count} frames at {rate} Hz, peak {peak:.3}");
     if peak == 0.0 {
         return Err(io::Error::other("the render is silent"));

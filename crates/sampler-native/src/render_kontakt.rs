@@ -381,7 +381,9 @@ pub fn render(
     }
     out.flush()?;
     drop(rt);
-    if !sampler_core::trace_report::flush(std::time::Duration::from_secs(10)) { return Err(io::Error::other("signal trace report flush timed out")); }
+    if !sampler_core::trace_report::flush(std::time::Duration::from_secs(10)) {
+        return Err(io::Error::other("signal trace report flush timed out"));
+    }
     println!("rendered {count} frames at {rate} Hz, peak {peak:.3}");
     if peak == 0.0 {
         return Err(io::Error::other("the render is silent"));

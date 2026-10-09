@@ -18,7 +18,8 @@ pub use validate::{Reference, ValidationError};
 macro_rules! reference {
     ($($(#[$doc:meta])* $name:ident),* $(,)?) => {$(
         $(#[$doc])*
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
         pub struct $name(pub usize);
     )*};
 }
@@ -48,6 +49,7 @@ reference! {
     ShapeRef,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Instrument {
     pub name: String,
@@ -94,6 +96,12 @@ pub struct Instrument {
     pub host_volume: Option<HostVolume>,
     /// Original Kontakt settings, including values not yet admitted by playback.
     pub kontakt_objects: Option<Box<kontakt::Objects>>,
+    /// Authored source modules and fields retained for format/DSP handoff.
+    /// Includes bypassed modules and unmodeled fields. Lowering does not execute
+    /// these records; executable semantics remain in processors/routes above.
+    // Source handoff records can contain opaque payloads; keep them in RAM only.
+    #[cfg_attr(feature = "cache", serde(skip))]
+    pub source_parameters: Vec<SourceParameterRecord>,
     /// Source meaning this description does not carry. Lowering never reads it;
     /// it exists so a caller can show or reject what was not translated.
     pub unsupported: Vec<Unsupported>,
@@ -105,11 +113,13 @@ pub struct Instrument {
     pub native_start_mod_groups: Option<Vec<u32>>,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct NativeFamily {
     pub zones: Vec<NativeFamilyZone>,
-    pub unknown: Option<&'static str>,
+    pub unknown: Option<String>,
 }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct NativeFamilyZone {
     pub id: u32,
@@ -123,6 +133,7 @@ pub struct NativeFamilyZone {
     pub reverse: bool,
     pub loops: Vec<NativeFamilyLoop>,
 }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct NativeFamilyLoop {
     pub slot: usize,
@@ -136,6 +147,7 @@ pub struct NativeFamilyLoop {
 }
 
 /// One occupied native slot; addresses never compact around holes.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DspSlot {
     pub kind: DspSlotKind,
@@ -147,6 +159,7 @@ pub struct DspSlot {
     pub targets: Vec<DspTarget>,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DspTarget {
     pub ordinal: usize,
@@ -158,9 +171,15 @@ pub struct DspTarget {
     pub disposition: DspDisposition,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DspSlotKind { Fx, Filter, Mod }
+pub enum DspSlotKind {
+    Fx,
+    Filter,
+    Mod,
+}
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DspDisposition {
     Implemented,
@@ -168,6 +187,7 @@ pub enum DspDisposition {
     Dropped(DspSlotReason),
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DspSlotReason {
     NotModeled,
@@ -181,18 +201,24 @@ pub enum DspSlotReason {
     ScopeNotInstantiated,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SourceIndices {
     pub groups: Vec<Option<GroupRef>>,
     pub zones: Vec<Option<ZoneRef>>,
     pub modulators: Vec<SourceModulator>,
+    /// Original Kontakt AHDSR setter values; normalized curves cannot recover v1 bits.
+    pub ahdsrs: Vec<SourceAhdsr>,
     /// Authored native mod/target names and physical lookup addresses, including omitted DSP.
     pub engine_lookups: Vec<SourceEngineLookup>,
     /// Authored normalized getter values before script initialization, at physical addresses.
     pub engine_values: Vec<SourceEngineValue>,
+    /// Native addresses aliasing real continuous processor controls.
+    pub control_aliases: Vec<SourceControlAlias>,
     pub slots: Vec<Option<usize>>,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct SourceModulator {
     pub group: usize,
@@ -202,6 +228,23 @@ pub struct SourceModulator {
     pub runtime: Option<ModulatorRef>,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SourceAhdsr {
+    pub group: usize,
+    pub slot: usize,
+    pub attack_ms: f32,
+    pub attack_curve: f32,
+    pub hold_ms: f32,
+    pub decay_ms: f32,
+    pub sustain: f32,
+    pub release_ms: f32,
+    pub ahd_only: bool,
+    /// Exact pinned primary amplitude geometry, validated while the raw wrapper exists.
+    pub native_amplitude: bool,
+}
+
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SourceEngineLookup {
     pub group: i32,
@@ -213,6 +256,16 @@ pub struct SourceEngineLookup {
     pub index: i32,
 }
 
+/// The native 0..1M knob maps linearly to the named control's Continuous range.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceControlAlias {
+    pub control: ControlRef,
+    pub parameter: String,
+    pub address: SlotAddress,
+}
+
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SourceEngineValue {
     pub parameter: u16,
@@ -222,9 +275,55 @@ pub struct SourceEngineValue {
     pub value: i32,
 }
 
+/// A version-pinned module record in the source format, identified by its
+/// original group/rack/physical slot path (not an index into prepared chains).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceParameterRecord {
+    pub location: String,
+    pub object_id: u16,
+    pub version: u16,
+    pub fields: Vec<SourceParameter>,
+}
+
+/// Names carry explicit units where established (`*_ms`, `*_hz`, `*_db`).
+/// Unnamed storage fields stay `unknown_*`; they are never presented as
+/// normalized engine controls or fabricated coefficients.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceParameter {
+    pub name: &'static str,
+    pub value: SourceParameterValue,
+}
+
+#[derive(Clone, PartialEq)]
+pub enum SourceParameterValue {
+    Number(f64),
+    Integer(i64),
+    Boolean(bool),
+    Text(String),
+    Numbers(Vec<f64>),
+    Records(Vec<Vec<SourceParameter>>),
+    /// Undecoded source bytes, retained in memory only. No playback meaning.
+    Opaque(Vec<u8>),
+}
+
+impl std::fmt::Debug for SourceParameterValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Number(v) => v.fmt(f),
+            Self::Integer(v) => v.fmt(f),
+            Self::Boolean(v) => v.fmt(f),
+            Self::Text(v) => v.fmt(f),
+            Self::Numbers(v) => v.fmt(f),
+            Self::Records(v) => v.fmt(f),
+            Self::Opaque(v) => write!(f, "<{} opaque bytes>", v.len()),
+        }
+    }
+}
+
 /// Instrument volume as a host parameter (Kontakt's CC7): it starts at the
 /// saved value and, when `controller` is received, becomes `(cc/127)^3`,
 /// replacing the saved value (measured, not multiplied in).
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HostVolume {
     pub controller: u8,
@@ -232,6 +331,7 @@ pub struct HostVolume {
     pub saved: f64,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum SourceFormat {
     #[default]
@@ -247,6 +347,7 @@ pub enum SourceFormat {
 
 // ---------------------------------------------------------------- assets
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Asset {
     pub location: AssetLocation,
@@ -257,6 +358,7 @@ pub struct Asset {
     pub loops: Vec<LoopRange>,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AssetLocation {
     /// Path as authored, relative to the instrument file unless absolute.
@@ -265,6 +367,7 @@ pub enum AssetLocation {
     KontaktFile { id: i32 },
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Encoding {
     #[default]
@@ -282,6 +385,7 @@ pub enum Encoding {
 /// A Kontakt group or other source-level layer: shared settings for its zones.
 /// SFZ `<group>`/`<master>` headers are inheritance, not scopes, so the SFZ
 /// translator resolves them into zones and emits no groups.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Group {
     pub name: String,
@@ -306,18 +410,21 @@ pub struct Group {
 }
 
 /// Physical row and the logical operator connecting it to the following row.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GroupStart {
     pub slot: u8,
     pub test: StartTest,
     pub next: StartJoin,
 }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StartJoin {
     And,
     AndNot,
     Or,
 }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StartTest {
     Key {
@@ -337,6 +444,7 @@ pub enum StartTest {
 /// Where a group's fader lives once it is tapped: `bus` outputs at the bus's
 /// `gain`, and so do its `sends` listed in `post` (the post-fader ones); the
 /// rest leave the bus before the fader.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct GroupTap {
     pub bus: BusRef,
@@ -344,6 +452,7 @@ pub struct GroupTap {
 }
 
 /// A group's send to a bus.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GroupSend {
     pub to: BusRef,
@@ -354,6 +463,7 @@ pub struct GroupSend {
 
 /// Past `voices` sounding voices, starting another fades one out over
 /// `fade`: a released one first when `prefer_released`, else by `kill`.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VoiceLimit {
     pub voices: u32,
@@ -362,6 +472,7 @@ pub struct VoiceLimit {
     pub fade: Time,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Kill {
     /// The quietest.
@@ -374,6 +485,7 @@ pub enum Kill {
     Lowest,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Zone {
     pub asset: AssetRef,
@@ -404,6 +516,85 @@ pub struct Zone {
 }
 
 impl Instrument {
+    /// Register physical compressor owners for editors, without claiming native
+    /// normalized laws. Existing authored bindings keep their identities.
+    pub fn register_compressor_controls(&mut self) {
+        let existing: std::collections::BTreeSet<_> = self
+            .processor_controls
+            .iter()
+            .map(|b| (b.chain.0, b.index, b.parameter as u8))
+            .collect();
+        for (chain, processors) in self.chains.iter().enumerate() {
+            for (index, processor) in processors
+                .pre_amplitude
+                .iter()
+                .chain(&processors.post_amplitude)
+                .enumerate()
+            {
+                let Processor::Compressor(c) = *processor else {
+                    continue;
+                };
+                for (parameter, label, default, low, high, unit) in [
+                    (
+                        ProcessorParameter::Threshold,
+                        "Threshold",
+                        c.threshold_db,
+                        -60_f64,
+                        0_f64,
+                        ControlUnit::Decibels,
+                    ),
+                    (
+                        ProcessorParameter::Ratio,
+                        "Ratio",
+                        c.ratio,
+                        1_f64,
+                        20_f64,
+                        ControlUnit::None,
+                    ),
+                    (
+                        ProcessorParameter::Attack,
+                        "Attack",
+                        c.attack.seconds(),
+                        0_f64,
+                        1_f64,
+                        ControlUnit::Seconds,
+                    ),
+                    (
+                        ProcessorParameter::Release,
+                        "Release",
+                        c.release.seconds(),
+                        0_f64,
+                        5_f64,
+                        ControlUnit::Seconds,
+                    ),
+                ] {
+                    if existing.contains(&(chain, index, parameter as u8)) {
+                        continue;
+                    }
+                    let control = ControlRef(self.controls.len());
+                    self.controls.push(Control {
+                        key: format!("compressor:{chain}:{index}:{label}"),
+                        label: label.into(),
+                        value: ControlValue::Continuous {
+                            min: low.min(default),
+                            max: high.max(default),
+                            default,
+                            unit,
+                        },
+                        automation: Automation::None,
+                    });
+                    self.processor_controls.push(ProcessorControl {
+                        control,
+                        chain: ChainRef(chain),
+                        index,
+                        parameter,
+                        ramp: Time::Milliseconds(10.),
+                    });
+                }
+            }
+        }
+    }
+
     /// The controllers that scale zone amplitude, most zones first (ties by
     /// number): the instrument's dynamics or volume sources, so a host can
     /// show "dynamics: CC1" and an expression layer can target it. Counts zones
@@ -556,6 +747,7 @@ impl Zone {
 }
 
 /// Velocity-to-amplitude response; selection always uses the raw velocity.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum VelocityResponse {
     /// Velocity does not change amplitude.
@@ -572,6 +764,7 @@ pub enum VelocityResponse {
 /// `L <= v <= L + F`; a fade-out over a high edge `H` mirrors it,
 /// `(H - v + 1) / (F + 1)`. Zero is no fade. The key and velocity gains
 /// multiply.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Fades {
     pub velocity_in: u8,
@@ -581,6 +774,7 @@ pub struct Fades {
 }
 
 /// Inclusive MIDI key range.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KeyRange {
     pub low: u8,
@@ -592,6 +786,7 @@ impl KeyRange {
 }
 
 /// Inclusive MIDI 1.0 velocity range.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VelocityRange {
     pub low: u8,
@@ -603,6 +798,7 @@ impl VelocityRange {
 }
 
 /// Plays only while a 7-bit controller is within an inclusive range.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ControllerRange {
     pub controller: u8,
@@ -610,6 +806,7 @@ pub struct ControllerRange {
     pub high: u8,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Trigger {
     #[default]
@@ -628,6 +825,7 @@ pub enum Trigger {
     Transition { low: i8, high: i8 },
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeyTracking {
     /// Pitch follows the played key relative to `root`, 100 cents per key.
@@ -639,12 +837,14 @@ pub enum KeyTracking {
 }
 
 /// The zone's place in a sequence of alternatives.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Selection {
     pub sequence: SequenceRef,
     pub take: Take,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Take {
     /// Zero-based position in a sequential or uniform-random sequence.
@@ -653,6 +853,7 @@ pub enum Take {
     Probability { low: f64, high: f64 },
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Sequence {
     pub policy: SequencePolicy,
@@ -662,6 +863,7 @@ pub struct Sequence {
     pub counter: CounterScope,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SequencePolicy {
     RoundRobin,
@@ -669,6 +871,7 @@ pub enum SequencePolicy {
     RandomNoRepeat,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CounterScope {
     Instrument,
@@ -682,12 +885,14 @@ pub enum CounterScope {
 /// zone lists the choices it sounds under ([`Zone::axes`]), so a tree (outer
 /// articulation, inner variant) is a zone naming one choice per level.
 /// Choice 0 is active before any switch is played. At most four axes.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Axis {
     pub name: String,
     pub choices: Vec<AxisChoice>,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AxisChoice {
     pub name: String,
@@ -696,6 +901,7 @@ pub struct AxisChoice {
 }
 
 /// A zone's requirement that `axes[axis]` has `choice` active.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AxisPick {
     pub axis: usize,
@@ -703,6 +909,7 @@ pub struct AxisPick {
 }
 
 /// A selectable articulation, switched by keys and/or an alternative driver.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Articulation {
     /// Stable source axis/group/control identity, independent of display order.
@@ -721,6 +928,7 @@ pub struct Articulation {
 
 /// Non-key inputs that select one articulation. Only the family named by
 /// [`Switching::driver`] is live; the others are kept for switching modes.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Alternatives {
     /// Note-on velocities that select it, then play the note.
@@ -734,6 +942,7 @@ pub struct Alternatives {
 
 /// How articulations are selected: who interprets a switch and which input
 /// drives it.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Switching {
     pub owner: SwitchOwner,
@@ -771,6 +980,7 @@ impl Switching {
     }
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SwitchOwner {
     /// The runtime holds the articulation; zones name the one they belong to.
@@ -781,6 +991,7 @@ pub enum SwitchOwner {
     Behavior,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Driver {
     #[default]
@@ -791,6 +1002,7 @@ pub enum Driver {
     Program,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SwitchKeys {
     /// Still switch, alongside the driver.
@@ -834,6 +1046,7 @@ impl Instrument {
     }
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Playback {
     pub start: SourceFrames,
@@ -846,6 +1059,7 @@ pub struct Playback {
     pub start_range: SourceFrames,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Looping {
     #[default]
@@ -859,6 +1073,7 @@ pub enum Looping {
     Slots([Option<LoopSlot>; 8]),
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LoopRange {
     pub start: SourceFrames,
@@ -868,6 +1083,7 @@ pub struct LoopRange {
     pub alternating: bool,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LoopSlot {
     pub range: LoopRange,
@@ -881,6 +1097,7 @@ pub struct LoopSlot {
 // ---------------------------------------------------------------- modulation
 
 /// Where state lives and what signal a processor or modulator sees.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scope {
     /// One instance per playing voice.
@@ -893,6 +1110,7 @@ pub enum Scope {
     Master,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Modulator {
     pub scope: Scope,
@@ -902,6 +1120,7 @@ pub struct Modulator {
 /// What a modulator reads. Unipolar sources produce 0..=1, bipolar ones -1..=1:
 /// envelopes, controllers, velocity, key, pressure, timbre, random and constant
 /// are unipolar; LFOs and pitch bend are bipolar.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub enum ModulationSource {
     Envelope(Envelope),
@@ -942,12 +1161,14 @@ impl ModulationSource {
 /// holds at `points[sustain]` while gated; a release glides from the current
 /// level through the points after `sustain` (jumping there when not yet
 /// reached) and the last level holds.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Breakpoints {
     pub points: Vec<Breakpoint>,
     pub sustain: Option<usize>,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Breakpoint {
     pub time: Time,
@@ -957,6 +1178,7 @@ pub struct Breakpoint {
 }
 
 /// Delay-attack-hold-decay-sustain-release.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Envelope {
     pub delay: Time,
@@ -991,6 +1213,7 @@ impl Default for Envelope {
     }
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Curve {
     #[default]
@@ -1001,6 +1224,7 @@ pub enum Curve {
     Step,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Lfo {
     pub shape: LfoShape,
@@ -1019,6 +1243,7 @@ pub struct Lfo {
     pub retrigger: bool,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LfoShape {
     /// A zero-weight Multi remains a bipolar source, with output 0.
@@ -1041,6 +1266,7 @@ pub enum LfoShape {
 
 /// A piecewise-linear transfer curve over 0..=1, as ascending `(input, output)`
 /// points. Bipolar values are mapped through `(v + 1) / 2` and back.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Shape {
     pub points: Vec<(f64, f64)>,
@@ -1061,6 +1287,7 @@ pub struct Shape {
 /// | SampleStart | `Normalized(d)` | start + d·u·`Playback::start_range`, at note start |
 ///
 /// The unipolar view of a bipolar value is (v + 1) / 2.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Route {
     pub source: ModulatorRef,
@@ -1077,6 +1304,7 @@ pub struct Route {
 /// The route's depth is multiplied by `shape(x)`, where `x` is the unipolar
 /// view of `source` ((v + 1) / 2 for bipolar sources) and no shape means `x`.
 /// The shape's output is used as-is, not mapped back to the source's range.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RouteScale {
     pub source: ModulatorRef,
@@ -1097,6 +1325,7 @@ impl Route {
     }
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Target {
     Amplitude,
@@ -1113,6 +1342,7 @@ pub enum Target {
     Control(ControlRef),
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProcessorParameter {
     Response,
@@ -1121,8 +1351,13 @@ pub enum ProcessorParameter {
     Cutoff,
     Resonance,
     Gain,
+    Threshold,
+    Ratio,
+    Attack,
+    Release,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Depth {
     Gain(Gain),
@@ -1135,6 +1370,7 @@ pub enum Depth {
 
 /// Serial processors in one scope. A voice chain splits around the amplitude
 /// envelope because nonlinear stages sound different on each side of it.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Chain {
     pub scope: Scope,
@@ -1142,6 +1378,7 @@ pub struct Chain {
     pub post_amplitude: Vec<Processor>,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Processor {
     Gain(Gain),
@@ -1173,14 +1410,21 @@ pub enum Processor {
     /// Memoryless rectification of both channels.
     Rectify(Rectifier),
     /// Pinned v1 Lo-Fi approximation; saved normalized controls.
-    LoFi { bits: f32, frequency: f32, noise: f32, color: f32 },
+    LoFi {
+        bits: f32,
+        frequency: f32,
+        noise: f32,
+        color: f32,
+    },
     /// Kontakt's Daft filter: normalized controls, laws in the engine.
     Daft(Daft),
     /// Native Ladder LP4. Values are normalized; the engine owns the laws.
     LadderLP4(LadderLP4),
     /// Mute a send return when its paired Mix slot is bypassed. Uses that
     /// slot's existing bypass control; insert bypass still passes dry audio.
-    SendReturnGate { address: SlotAddress },
+    SendReturnGate {
+        address: SlotAddress,
+    },
     /// One parallel branch of an effect rack. The next `count` processors (nested
     /// ones included) run on the signal that entered the group's first branch;
     /// `gain` times their output joins the sum, which the `last` branch leaves
@@ -1213,6 +1457,7 @@ pub enum Processor {
 
 /// Kontakt's Daft low or high pass. Every value is the stored 0..=1 control;
 /// the native engine owns the gain, cutoff and resonance laws.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Daft {
     pub gain: f64,
@@ -1221,6 +1466,7 @@ pub struct Daft {
     pub highpass: bool,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LadderLP4 {
     /// Physical native owner; absent for an authored standalone processor.
@@ -1231,6 +1477,7 @@ pub struct LadderLP4 {
     pub record_version: u16,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Rectifier {
     /// `|x|`.
@@ -1242,6 +1489,7 @@ pub enum Rectifier {
 /// A feed-forward compressor. The level law is the textbook hard-knee one;
 /// only the linked detector (signed channel mean) is recovered from Kontakt.
 // ponytail: unverified threshold/ratio/time laws, pending a rendering reference.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Compressor {
     pub threshold_db: f64,
@@ -1256,6 +1504,7 @@ pub struct Compressor {
 
 /// Where a script finds an effect slot: `set_engine_par`'s group, slot and
 /// generic arguments (-1 where they do not apply).
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SlotAddress {
     pub group: i32,
@@ -1263,12 +1512,14 @@ pub struct SlotAddress {
     pub generic: i32,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ImpulseRef(pub usize);
 
 /// A stereo impulse response, already shaped (reversed, predelayed, enveloped,
 /// gain-scaled) by the importing profile. A mono response repeats in both
 /// channels; the channels have the same length.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Impulse {
     pub rate: u32,
@@ -1282,6 +1533,7 @@ pub struct Impulse {
 
 /// Physical reverb settings; an importing profile maps its own controls
 /// here. Wet signal only: the dry path is the bus's other send.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Reverb {
     /// Seconds for the tail to fall 60 dB.
@@ -1300,6 +1552,7 @@ pub struct Reverb {
     pub width: f64,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Filter {
     pub kind: FilterKind,
@@ -1307,6 +1560,7 @@ pub struct Filter {
     pub resonance: Resonance,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum FilterKind {
     LowPass { poles: u8 },
@@ -1319,6 +1573,7 @@ pub enum FilterKind {
     HighShelf { gain: Gain },
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Output {
     #[default]
@@ -1326,6 +1581,7 @@ pub enum Output {
     Bus(BusRef),
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Bus {
     pub name: String,
@@ -1337,6 +1593,7 @@ pub struct Bus {
     pub gain: Gain,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Send {
     pub to: Output,
@@ -1344,6 +1601,7 @@ pub struct Send {
     pub position: SendPosition,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SendPosition {
     PreChain,
@@ -1352,7 +1610,10 @@ pub enum SendPosition {
 
 /// Format-neutral binding of one authored control to an actual processor field.
 /// The control's Continuous range is in the field's native units (Hz, linear
-/// gain, Q or normalized Daft units). Ramping uses the engine sample clock.
+/// gain, dB, Q or normalized knobs). A bound Peak uses dB Gain and 0..1
+/// Cutoff/Resonance knobs (20 Hz * 10^(3*x), 0.3 + 2.7*x octaves).
+/// Ramping uses the engine sample clock.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ProcessorControl {
     pub control: ControlRef,
@@ -1364,11 +1625,13 @@ pub struct ProcessorControl {
 
 /// Completed authored stages on the named side of the voice amplitude split.
 /// Lowering preserves this boundary when one stage expands to several kernels.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VoiceSendPosition {
     BeforeAmplitude(usize),
     AfterAmplitude(usize),
 }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VoiceSendTap {
     pub chain: ChainRef,
@@ -1385,6 +1648,7 @@ pub struct VoiceSendTap {
 
 // ---------------------------------------------------------------- controls
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Control {
     /// Stable identity from the source (script variable, opcode, parameter ID).
@@ -1394,6 +1658,7 @@ pub struct Control {
     pub automation: Automation,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub enum ControlValue {
     Continuous {
@@ -1416,6 +1681,7 @@ pub enum ControlValue {
     },
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ControlUnit {
     None,
@@ -1426,6 +1692,7 @@ pub enum ControlUnit {
     Percent,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Automation {
     #[default]
@@ -1435,6 +1702,7 @@ pub enum Automation {
 }
 
 /// Saved Kontakt script-slider assignment. Ordinals count only sliders, not all UI controls.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct ScriptAutomation {
     pub source: ScriptAutomationSource,
@@ -1444,13 +1712,18 @@ pub struct ScriptAutomation {
     pub high: f64,
     pub soft_takeover: bool,
 }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ScriptAutomationSource { Controller(u8), HostParameter(u16) }
+pub enum ScriptAutomationSource {
+    Controller(u8),
+    HostParameter(u16),
+}
 
 // ---------------------------------------------------------------- behavior
 
 /// A script that reacts to events. The IR carries it in its source language;
 /// lowering compiles it to the native behavior instruction set.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Behavior {
     pub name: String,
@@ -1464,6 +1737,7 @@ pub struct Behavior {
 }
 
 /// A persisted script variable's saved value.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub enum Saved {
     Int(i64),
@@ -1476,6 +1750,7 @@ pub enum Saved {
     Texts(Vec<String>),
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Language {
     Ksp,
@@ -1484,6 +1759,7 @@ pub enum Language {
 
 /// A runtime service a behavior needs; lowering rejects modules whose
 /// requirements the runtime cannot provide instead of running them partially.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Capability {
     NoteCallbacks,
@@ -1503,6 +1779,7 @@ pub enum Capability {
 // ---------------------------------------------------------------- report
 
 /// Source meaning with no IR representation. Location is in source terms.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Unsupported {
     /// e.g. `"<region> 12 (line 40)"` or `"zone 3"`.
@@ -1514,6 +1791,7 @@ pub struct Unsupported {
     pub reason: Reason,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reason {
     /// The translator does not recognize this feature.
@@ -1594,9 +1872,22 @@ mod ranking_tests {
 /// A Kontakt note name: MIDI 60 = C3, 0 = C-2. Strict bounds; no wrapping.
 pub fn parse_note(text: &str) -> Option<u8> {
     let mut chars = text.trim().chars();
-    let base = match chars.next()?.to_ascii_uppercase() { 'C' => 0, 'D' => 2, 'E' => 4, 'F' => 5, 'G' => 7, 'A' => 9, 'B' => 11, _ => return None };
+    let base = match chars.next()?.to_ascii_uppercase() {
+        'C' => 0,
+        'D' => 2,
+        'E' => 4,
+        'F' => 5,
+        'G' => 7,
+        'A' => 9,
+        'B' => 11,
+        _ => return None,
+    };
     let rest = chars.as_str();
-    let (offset, octave) = match rest.as_bytes().first() { Some(b'#') => (1, &rest[1..]), Some(b'b' | b'B') => (-1, &rest[1..]), _ => (0, rest) };
+    let (offset, octave) = match rest.as_bytes().first() {
+        Some(b'#') => (1, &rest[1..]),
+        Some(b'b' | b'B') => (-1, &rest[1..]),
+        _ => (0, rest),
+    };
     let note = (i32::from(octave.parse::<i16>().ok()?) + 2) * 12 + base + offset;
     u8::try_from(note).ok().filter(|n| *n < 128)
 }

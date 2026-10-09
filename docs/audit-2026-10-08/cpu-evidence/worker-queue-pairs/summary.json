@@ -1,0 +1,50 @@
+{
+  "piano-cold": {
+    "before": {
+      "median_p50": 39.9,
+      "median_p99": 144.803,
+      "underruns": 0
+    },
+    "after": {
+      "median_p50": 39.271,
+      "median_p99": 74.771,
+      "underruns": 0
+    }
+  },
+  "piano-warm": {
+    "before": {
+      "median_p50": 24.531,
+      "median_p99": 46.581,
+      "underruns": 0
+    },
+    "after": {
+      "median_p50": 26.371,
+      "median_p99": 47.051,
+      "underruns": 0
+    }
+  },
+  "fx-cold": {
+    "before": {
+      "median_p50": 77.371,
+      "median_p99": 141.162,
+      "underruns": 0
+    },
+    "after": {
+      "median_p50": 81.211,
+      "median_p99": 160.753,
+      "underruns": 8
+    }
+  },
+  "fx-warm": {
+    "before": {
+      "median_p50": 79.532,
+      "median_p99": 164.723,
+      "underruns": 0
+    },
+    "after": {
+      "median_p50": 74.722,
+      "median_p99": 149.953,
+      "underruns": 0
+    }
+  }
+}

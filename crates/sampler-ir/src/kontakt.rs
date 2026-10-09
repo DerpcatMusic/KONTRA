@@ -2,6 +2,7 @@
 //! semantics. Indices are original source indices, including muted/missing
 //! entries. The native lowerer does not consume these records automatically.
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Objects {
     pub program: Program,
@@ -10,6 +11,7 @@ pub struct Objects {
     pub zones: Vec<Zone>,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Program {
     pub version: u16,
@@ -41,6 +43,7 @@ pub struct Program {
     pub unknown_tail: Vec<u8>,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct VoiceLimit {
     pub name: String,
@@ -51,6 +54,7 @@ pub struct VoiceLimit {
     pub exclusion_group: i32,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct VoiceGroups {
     pub program: VoiceLimit,
@@ -58,6 +62,7 @@ pub struct VoiceGroups {
     pub groups: Vec<Option<VoiceLimit>>,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Group {
     pub version: u16,
@@ -85,6 +90,7 @@ pub struct Group {
     pub source_error: Option<String>,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Criterion {
     pub mode: i32,
@@ -100,6 +106,7 @@ pub struct Criterion {
     pub sequencer_only: bool,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Source {
     pub flag: u8,
@@ -111,13 +118,15 @@ pub struct Source {
     pub private_tail: Vec<u8>,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct SourceField {
     pub offset: u16,
-    pub name: &'static str,
+    pub name: std::borrow::Cow<'static, str>,
     pub value: SourceValue,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SourceValue {
     Float(f32),
@@ -125,6 +134,7 @@ pub enum SourceValue {
     Flag(bool),
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Zone {
     pub version: u16,
@@ -161,6 +171,7 @@ pub struct Zone {
     pub loops: Vec<Loop>,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Loop {
     pub slot: u8,

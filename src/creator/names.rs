@@ -37,8 +37,28 @@ impl Parsed {
 
 const DYNAMICS: [&str; 8] = ["ppp", "pp", "p", "mp", "mf", "f", "ff", "fff"];
 const MICS: [&str; 22] = [
-    "close", "cl", "near", "spot", "room", "amb", "ambient", "far", "mid", "overhead", "overheads", "oh", "tree",
-    "decca", "outrigger", "outriggers", "surround", "di", "amp", "mix", "stage", "hall",
+    "close",
+    "cl",
+    "near",
+    "spot",
+    "room",
+    "amb",
+    "ambient",
+    "far",
+    "mid",
+    "overhead",
+    "overheads",
+    "oh",
+    "tree",
+    "decca",
+    "outrigger",
+    "outriggers",
+    "surround",
+    "di",
+    "amp",
+    "mix",
+    "stage",
+    "hall",
 ];
 
 /// Parse `components`: folders from the sample root down, then the file
@@ -52,7 +72,9 @@ pub fn parse(components: &[&str]) -> Parsed {
             if !classify(&word, &mut out) {
                 // A bare number in the file name may be the note; elsewhere it is a name.
                 match word.parse::<i32>() {
-                    Ok(v) if last && (0..=127).contains(&v) && word.len() >= 2 => numbers.push(word),
+                    Ok(v) if last && (0..=127).contains(&v) && word.len() >= 2 => {
+                        numbers.push(word)
+                    }
                     _ => out.rest.push(word),
                 }
             }
@@ -80,7 +102,10 @@ fn words(part: &str) -> Vec<String> {
         let negative_octave = c == '-'
             && chars.peek().is_some_and(char::is_ascii_digit)
             && note_name(&format!("{word}0")).is_some();
-        if !negative_octave && (c.is_whitespace() || matches!(c, '_' | '-' | '.' | '(' | ')' | '[' | ']' | ',' | '+')) {
+        if !negative_octave
+            && (c.is_whitespace()
+                || matches!(c, '_' | '-' | '.' | '(' | ')' | '[' | ']' | ',' | '+'))
+        {
             out.push(String::new());
         } else {
             word.push(c);
@@ -106,7 +131,11 @@ fn classify(word: &str, out: &mut Parsed) -> bool {
     for prefix in ["velocity", "vel", "vl", "v"] {
         if let Some(v) = number_after(&lower, prefix) {
             // A small number is a layer; a large one a velocity.
-            let layer = if v > 16 { Velocity::Upper(v.clamp(1, 127) as u8) } else { Velocity::Ordinal(v as u32) };
+            let layer = if v > 16 {
+                Velocity::Upper(v.clamp(1, 127) as u8)
+            } else {
+                Velocity::Ordinal(v as u32)
+            };
             out.velocity = out.velocity.or(Some(layer));
             return true;
         }
@@ -123,7 +152,9 @@ fn classify(word: &str, out: &mut Parsed) -> bool {
     }
     // A lone letter a-h is a round robin take: "_a", "_b".
     if lower.len() == 1 && ('a'..='h').contains(&lower.chars().next().unwrap()) {
-        out.round_robin = out.round_robin.or(Some(lower.as_bytes()[0] as u32 - b'a' as u32 + 1));
+        out.round_robin = out
+            .round_robin
+            .or(Some(lower.as_bytes()[0] as u32 - b'a' as u32 + 1));
         return true;
     }
     if MICS.contains(&lower.as_str()) {
@@ -136,7 +167,8 @@ fn classify(word: &str, out: &mut Parsed) -> bool {
 /// `prefix` followed only by digits: their value.
 fn number_after(word: &str, prefix: &str) -> Option<i32> {
     let digits = word.strip_prefix(prefix)?;
-    (!digits.is_empty() && digits.len() <= 3 && digits.bytes().all(|b| b.is_ascii_digit())).then(|| digits.parse().ok())?
+    (!digits.is_empty() && digits.len() <= 3 && digits.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| digits.parse().ok())?
 }
 
 /// A note name with its octave: C3, c#3, Db3, F#-1, Bb2, Cs3. C3 is 60.
@@ -163,7 +195,10 @@ pub fn note_name(word: &str) -> Option<i32> {
     };
     let ok = !octave.is_empty()
         && octave.len() <= 2
-        && octave.trim_start_matches('-').bytes().all(|b| b.is_ascii_digit())
+        && octave
+            .trim_start_matches('-')
+            .bytes()
+            .all(|b| b.is_ascii_digit())
         && octave.trim_start_matches('-').len() == 1;
     let octave: i32 = octave.parse().ok().filter(|_| ok)?;
     let midi = (octave + 2) * 12 + class + shift;
@@ -178,19 +213,75 @@ mod tests {
     fn file_names_parse() {
         use Velocity::*;
         // (path components, note, velocity, round robin, mic, rest)
-        let cases: &[(&[&str], Option<i32>, Option<Velocity>, Option<u32>, Option<&str>, &str)] = &[
+        let cases: &[(
+            &[&str],
+            Option<i32>,
+            Option<Velocity>,
+            Option<u32>,
+            Option<&str>,
+            &str,
+        )] = &[
             (&["Piano_C3"], Some(60), None, None, None, "Piano"),
-            (&["Piano_C#3_v2"], Some(61), Some(Ordinal(2)), None, None, "Piano"),
-            (&["Piano Db3 pp"], Some(61), Some(Ordinal(1)), None, None, "Piano"),
+            (
+                &["Piano_C#3_v2"],
+                Some(61),
+                Some(Ordinal(2)),
+                None,
+                None,
+                "Piano",
+            ),
+            (
+                &["Piano Db3 pp"],
+                Some(61),
+                Some(Ordinal(1)),
+                None,
+                None,
+                "Piano",
+            ),
             (&["Cello_060_rr2"], Some(60), None, Some(2), None, "Cello"),
-            (&["Cello-MIDI60-vel127"], Some(60), Some(Upper(127)), None, None, "Cello"),
-            (&["Harp", "Close", "Harp_A2_ff_b"], Some(57), Some(Ordinal(6)), Some(2), Some("Close"), "Harp"),
+            (
+                &["Cello-MIDI60-vel127"],
+                Some(60),
+                Some(Upper(127)),
+                None,
+                None,
+                "Cello",
+            ),
+            (
+                &["Harp", "Close", "Harp_A2_ff_b"],
+                Some(57),
+                Some(Ordinal(6)),
+                Some(2),
+                Some("Close"),
+                "Harp",
+            ),
             (&["Bass_F#-1"], Some(18), None, None, None, "Bass"),
-            (&["Bells_Bb4_mf_RR3"], Some(82), Some(Ordinal(4)), Some(3), None, "Bells"),
+            (
+                &["Bells_Bb4_mf_RR3"],
+                Some(82),
+                Some(Ordinal(4)),
+                Some(3),
+                None,
+                "Bells",
+            ),
             (&["Kick"], None, None, None, None, "Kick"),
-            (&["Pad_Cs2_vl1_room"], Some(49), Some(Ordinal(1)), None, Some("room"), "Pad"),
+            (
+                &["Pad_Cs2_vl1_room"],
+                Some(49),
+                Some(Ordinal(1)),
+                None,
+                Some("room"),
+                "Pad",
+            ),
             (&["Glass_72_100"], Some(72), None, None, None, "Glass"),
-            (&["Strings", "Legato_E3"], Some(64), None, None, None, "Strings Legato"),
+            (
+                &["Strings", "Legato_E3"],
+                Some(64),
+                None,
+                None,
+                None,
+                "Strings Legato",
+            ),
         ];
         for (components, note, velocity, rr, mic, rest) in cases {
             let p = parse(components);
@@ -200,7 +291,11 @@ mod tests {
             assert_eq!(p.mic.as_deref(), *mic, "{components:?}");
             assert_eq!(p.rest.join(" "), *rest, "{components:?}");
         }
-        assert_eq!(parse(&["Glass_72_100"]).ambiguous, ["100"], "a second number is reported");
+        assert_eq!(
+            parse(&["Glass_72_100"]).ambiguous,
+            ["100"],
+            "a second number is reported"
+        );
         assert_eq!(note_name("B3"), Some(71));
         assert_eq!(note_name("b"), None, "a bare letter is not a note");
         assert_eq!(note_name("Bass"), None);

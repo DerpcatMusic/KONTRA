@@ -54,21 +54,29 @@ pub unsafe fn create(
         // KONTAKTO patch: keep the native failure reason in renderer diagnostics.
         let target = wgpu::SurfaceTargetUnsafe::from_display_and_window(window, window)
             .map_err(|e| format!("native window handles: {e}"))?;
-        instance.create_surface_unsafe(target).map_err(|e| format!("native GPU surface: {e}"))
+        instance
+            .create_surface_unsafe(target)
+            .map_err(|e| format!("native GPU surface: {e}"))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use raw_window_handle::{DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, WindowHandle};
+    use raw_window_handle::{
+        DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, WindowHandle,
+    };
 
     struct UnavailableWindow;
     impl HasDisplayHandle for UnavailableWindow {
-        fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> { Err(HandleError::Unavailable) }
+        fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> {
+            Err(HandleError::Unavailable)
+        }
     }
     impl HasWindowHandle for UnavailableWindow {
-        fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> { Err(HandleError::Unavailable) }
+        fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
+            Err(HandleError::Unavailable)
+        }
     }
 
     #[test]
@@ -78,7 +86,12 @@ mod tests {
         descriptor.backends = wgpu::Backends::empty();
         let instance = wgpu::Instance::new(descriptor);
         // SAFETY: this window has no handles and no surface can escape.
-        let error = unsafe { create(&instance, &UnavailableWindow) }.err().unwrap();
-        assert_eq!(error, format!("native window handles: {}", HandleError::Unavailable));
+        let error = unsafe { create(&instance, &UnavailableWindow) }
+            .err()
+            .unwrap();
+        assert_eq!(
+            error,
+            format!("native window handles: {}", HandleError::Unavailable)
+        );
     }
 }
