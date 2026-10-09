@@ -59,6 +59,44 @@ fn realtime(plan: Prepared) -> Runtime {
 }
 
 #[test]
+fn realtime_v1_interpolation_nulls_without_heap_and_is_partition_independent() {
+    let frames: Vec<[f32; 2]> = (0..16384).map(|i| {
+        let x = (i as f32 * 0.731).sin();
+        [x, (i as f32 * 0.317).cos()]
+    }).collect();
+    let pcm = Pcm::new(48000, frames.clone()).unwrap();
+    // Dyadic ratios have identical v1 32.32 and v2 traversal positions.
+    for step in [0.25_f64, 0.5, 0.75, 1., 1.25, 1.5, 2.5, 4., 8.] {
+        let expected: [[f32; 2]; 256] = std::array::from_fn(|i| {
+            let position = 512. + (128 + i) as f64 * step;
+            let j = position as usize;
+            let t = (((position.fract() * 4294967296.) as u64 as u32) >> 8) as f32 / 16777216.;
+            // Independent v1 0cb7a8a0:voice.rs::hermite scalar oracle.
+            std::array::from_fn(|c| {
+                let (xm1, x0, x1, x2) = (frames[j-1][c], frames[j][c], frames[j+1][c], frames[j+2][c]);
+                let c1 = 0.5 * (x1 - xm1);
+                let c2 = xm1 - 2.5 * x0 + 2. * x1 - 0.5 * x2;
+                let c3 = 0.5 * (x2 - xm1) + 1.5 * (x0 - x1);
+                ((c3 * t + c2) * t + c1) * t + x0
+            })
+        });
+        for partition in [1, 7, 64, 256] {
+            let playback = Playback { start: 512, transpose_semitones: 12. * step.log2(), ..Default::default() };
+            let mut rt = realtime(prepare(pcm.clone(), 48000, playback).unwrap());
+            let mut actual = [[0.; 2]; 256];
+            support::without_heap(|| {
+                rt.trigger(input(), 60, 1.).unwrap();
+                rt.render(&mut [[0.; 2]; 128]).unwrap();
+                for block in actual.chunks_mut(partition) { rt.render(block).unwrap(); }
+            });
+            for (a, b) in actual.iter().zip(expected) {
+                assert_eq!(a.map(f32::to_bits), b.map(f32::to_bits), "step={step} partition={partition}");
+            }
+        }
+    }
+}
+
+#[test]
 fn rates_and_transposition_follow_analytic_tones_without_heap_or_partition_drift() {
     for (source_rate, output_rate, semitones) in [
         (44100, 48000, 0.0),

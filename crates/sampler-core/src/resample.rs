@@ -1,7 +1,7 @@
 //! Control-prepared, table-interpolated low-pass kernel for resident rate conversion.
 use std::{f64::consts::PI, sync::OnceLock};
 mod cubic_block;
-pub(super) use cubic_block::cubic_four;
+pub(super) use cubic_block::mix_four;
 
 pub(super) const MIN_STEP: f64 = 1.0 / 256.0;
 pub(super) const MAX_STEP: f64 = 16.0;
@@ -17,9 +17,8 @@ pub fn read_radius(step: f64) -> usize {
 }
 const RESOLUTION: usize = 1024;
 
-/// Rate-conversion quality. Realtime interpolates upsampled and unity-rate
-/// voices with a four-point cubic and downsampled (pitched-up) voices with a
-/// short windowed sinc; High uses the long sinc for every non-unity ratio.
+/// Rate-conversion quality. Realtime uses v1 Hermite through three pitched-up
+/// octaves (8x), with the prepared sinc bank above 8x. High keeps the long sinc.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ResampleQuality {
     #[default]
@@ -129,13 +128,24 @@ pub(super) fn octaves(frames: &[[f32; 2]], depth: usize) -> Box<[Box<[[f32; 2]]>
 /// Four-point Catmull-Rom cubic between taps 0 and 1 at `fraction`.
 fn cubic(fraction: f64, mut read: impl FnMut(i64) -> [f32; 2]) -> [f32; 2] {
     let taps = [read(-1), read(0), read(1), read(2)];
-    let t = fraction;
+    hermite(&taps, phase(fraction))
+}
+
+/// v1 0cb7a8a0:src/engine/voice.rs::mix_body's upper 24 phase bits.
+#[inline(always)]
+fn phase(fraction: f64) -> f32 {
+    (((fraction * 4294967296.) as u64 as u32) >> 8) as f32 * (1. / 16777216.)
+}
+
+/// Ported unchanged from v1 0cb7a8a0:src/engine/voice.rs::hermite.
+#[inline(always)]
+fn hermite(q: &[crate::Frame; 4], t: f32) -> crate::Frame {
     std::array::from_fn(|c| {
-        let [xm1, x0, x1, x2] = taps.map(|frame| f64::from(frame[c]));
+        let (xm1, x0, x1, x2) = (q[0][c], q[1][c], q[2][c], q[3][c]);
         let c1 = 0.5 * (x1 - xm1);
         let c2 = xm1 - 2.5 * x0 + 2.0 * x1 - 0.5 * x2;
         let c3 = 0.5 * (x2 - xm1) + 1.5 * (x0 - x1);
-        (((c3 * t + c2) * t + c1) * t + x0) as f32
+        ((c3 * t + c2) * t + c1) * t + x0
     })
 }
 
@@ -297,7 +307,7 @@ pub(super) struct Kernel {
 
 impl Kernel {
     pub(super) fn uses_cubic(&self, step: f64) -> bool {
-        self.quality == ResampleQuality::Realtime && step <= 1.0
+        self.quality == ResampleQuality::Realtime && step <= 8.0
     }
     pub(super) fn new(quality: ResampleQuality) -> Self {
         static LONG: OnceLock<Table> = OnceLock::new();
@@ -317,10 +327,10 @@ impl Kernel {
         ((index + 1) as f64 / STRETCHES as f64).exp2()
     }
 
-    /// The bank entry for 1 < step <= MAX_STEP: the narrowest stretch at or above
+    /// The bank entry for 8 < step <= MAX_STEP: the narrowest stretch at or above
     /// step, so the band edge sits at most an eighth of an octave low.
     pub(super) fn polyphase(&self, step: f64) -> Option<&Polyphase> {
-        if self.quality != ResampleQuality::Realtime || step <= 1.0 || step > MAX_STEP {
+        if self.quality != ResampleQuality::Realtime || step <= 8.0 || step > MAX_STEP {
             return None;
         }
         self.bank.iter().find(|entry| entry.stretch >= step)
@@ -338,7 +348,7 @@ impl Kernel {
         }
         match self.quality {
             ResampleQuality::High => self.long.radius(step),
-            ResampleQuality::Realtime if step <= 1.0 => 2,
+            ResampleQuality::Realtime if step <= 8.0 => 2,
             ResampleQuality::Realtime => self.short.radius(step),
         }
     }
@@ -360,7 +370,7 @@ impl Kernel {
         }
         match self.quality {
             ResampleQuality::High => self.long.sample(fraction, step, read),
-            ResampleQuality::Realtime if step <= 1.0 => cubic(fraction, read),
+            ResampleQuality::Realtime if step <= 8.0 => cubic(fraction, read),
             ResampleQuality::Realtime => self.short.sample(fraction, step, read),
         }
     }
@@ -406,9 +416,9 @@ mod tests {
     }
 
     #[test]
-    fn realtime_polyphase_covers_every_supported_pitched_up_octave() {
+    fn realtime_polyphase_covers_extreme_pitched_up_octave() {
         let kernel = Kernel::new(ResampleQuality::Realtime);
-        for step in [1.0001, 2., 2.0001, 3., 4., 8., MAX_STEP] {
+        for step in [8.0001, 9., 12., MAX_STEP] {
             let bank = kernel.polyphase(step).expect("pitched-up realtime voice needs prepared taps");
             assert!(bank.stretch >= step && bank.stretch / step <= 2_f64.powf(1. / 8.));
             for fraction in [0., 0.125, 0.5, 0.999] {
@@ -487,13 +497,13 @@ mod tests {
                 let scale = step.max(1.0);
                 // Cubic loses under 0.2 dB at a tenth of the source rate; the
                 // short sinc keeps 0.3 of the output band within 0.1 dB.
-                let pass = if step <= 1.0 { 0.1 } else { 0.3 / scale };
-                let tolerance = if step <= 1.0 { 0.025 } else { 0.012 };
+                let pass = if kernel.uses_cubic(step) { 0.1 } else { 0.3 / scale };
+                let tolerance = if kernel.uses_cubic(step) { 0.025 } else { 0.012 };
                 assert!(
                     (tone(pass) - 1.0).abs() < tolerance,
                     "step={step} phase={fraction}"
                 );
-                if step > 1.0 {
+                if !kernel.uses_cubic(step) {
                     // At least 50 dB below the passband at the output Nyquist.
                     assert!(tone(0.5 / scale) < 0.0032, "step={step} phase={fraction}");
                 }
