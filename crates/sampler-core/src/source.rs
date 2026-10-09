@@ -730,6 +730,11 @@ impl Cursor {
 
     #[inline]
     fn span(&self) -> (usize, usize, Direction) {
+        if self.loops.is_some() {
+            let (mut local, position) = self.segment(i128::from(self.position));
+            local.position = position as u64;
+            return local.span();
+        }
         let length = (self.end - self.start) as u64;
         let mut direction = self.direction;
         let (offset, count) = if let Some(r) = self.loop_range {
@@ -967,7 +972,8 @@ impl Cursor {
         gains: [f32; 2],
         kernel: &Kernel,
     ) -> usize {
-        if self.loops.is_some() {
+        // Unity native cursors read one exact frame, including signed zero.
+        if self.loops.is_some() && self.step() == 1.0 && self.fraction == 0.0 {
             return 0;
         }
         if self.step() >= 2.0 && !pcm.levels().is_empty() {
@@ -1806,6 +1812,51 @@ mod native_slot_tests {
         assert_eq!(cursor.render(&reader, &mut output, &mut envelope, 0.731, [0.7, -0.2], &Kernel::new(crate::ResampleQuality::Realtime)), 64);
         assert_eq!(reader.reads.get(), 0, "native loop interior fell back to per-tap reads");
         assert!(output.iter().any(|frame| *frame != [0.; 2]));
+    }
+
+    #[test]
+    fn native_run_matches_scalar_at_boundaries_release_tuning_and_missing_frames() {
+        let frames: Vec<Frame> = (0..512).map(|i| {
+            if i % 11 == 0 { [-0., 0.] } else { [(i as f32 * 0.731).sin(), (i as f32 * 0.317).cos()] }
+        }).collect();
+        for direction in [Direction::Forward, Direction::Reverse] {
+            for shape in [LoopShape::Wrap, LoopShape::PingPong, LoopShape::Crossfade { frames: 8 }, LoopShape::EqualPowerCrossfade { frames: 8 }] {
+                for (step, tuning) in [(0.8, 1.), (0.8, 1.5), (1., 1.), (1.25, 0.75)] {
+                    for quality in [crate::ResampleQuality::Realtime, crate::ResampleQuality::High] {
+                        for missing in [None, Some(113)] {
+                            let mut slots = [None; 8];
+                            for (slot, start, end) in [(1, 32, 160), (7, 240, 384)] {
+                                slots[slot] = Some(LoopSlot { range: Loop {
+                                    start, end, mode: LoopMode::UntilRelease, shape,
+                                    passes: std::num::NonZeroU32::new(3),
+                                }, tuning });
+                            }
+                            let mut actual_cursor = Playback { direction, loop_slots: slots, ..Default::default() }.cursor(512, 48000, 48000).unwrap().with_step(step);
+                            let mut expected_cursor = actual_cursor;
+                            let mut actual_env = EnvelopeState::new(crate::Envelope::new(5, 2, 17, 0.4, 97).unwrap());
+                            let mut expected_env = actual_env;
+                            let fast = ProbeFrames { frames: &frames, bulk: true, missing, reads: Default::default() };
+                            let scalar = ProbeFrames { frames: &frames, bulk: false, missing, reads: Default::default() };
+                            let kernel = Kernel::new(quality);
+                            for block in 0..24 {
+                                if block == 12 { actual_cursor.release(); expected_cursor.release(); actual_env.release(); expected_env.release(); }
+                                let len = [1, 7, 32, 64][block % 4];
+                                let mut actual = vec![[0.123, -0.567]; len];
+                                let mut expected = actual.clone();
+                                let a = actual_cursor.render(&fast, &mut actual, &mut actual_env, 0.731, [0.7, -0.2], &kernel);
+                                let b = expected_cursor.render(&scalar, &mut expected, &mut expected_env, 0.731, [0.7, -0.2], &kernel);
+                                assert_eq!(a, b, "{direction:?} {shape:?} step={step} tuning={tuning} missing={missing:?} block={block}");
+                                assert_eq!(actual.iter().map(|f| f.map(f32::to_bits)).collect::<Vec<_>>(), expected.iter().map(|f| f.map(f32::to_bits)).collect::<Vec<_>>(), "{direction:?} {shape:?} step={step} tuning={tuning} missing={missing:?} block={block}");
+                                assert_eq!(format!("{actual_cursor:?}"), format!("{expected_cursor:?}"));
+                                assert_eq!(actual_env.remaining(), expected_env.remaining());
+                                let (mut a, mut b) = (actual_env, expected_env);
+                                for _ in 0..16 { assert_eq!(a.next().to_bits(), b.next().to_bits()); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]
