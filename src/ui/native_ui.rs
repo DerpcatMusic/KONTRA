@@ -1359,6 +1359,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn editor_memory_repeated_layout_queries_do_not_rewalk_the_subtree() {
+        let lua = mlua::Lua::new();
+        lua.set_memory_limit(128 << 20).unwrap();
+        let make: Function = lua.load(r#"
+            return function(fixed)
+                local frame=fixed and {width=20,height=20} or {max_width=math.huge,max_height=math.huge}
+                local root={kind='Spacer',props={},children={},modifiers={{name='frame',value=frame}}}
+                for _=1,64 do root={kind='VStack',props={},children={root},modifiers={}} end
+                return root
+            end
+        "#).eval().unwrap();
+        let graph: Table = make.call(false).unwrap();
+        assert_eq!(flexibility(&graph), (true,true));
+        let calls = crate::plugin::tests::allocations(|| {
+            for _ in 0..32 { assert_eq!(flexibility(&graph), (true,true)); }
+        });
+        assert!(calls < 512, "repeated layout queries made {calls} allocator calls");
+        let fresh: Table = make.call(true).unwrap();
+        assert_eq!(flexibility(&fresh), (false,false));
+    }
+
+    #[test]
     fn native_popover_keeps_its_geometry_and_pointer_target_while_capturing_wheel() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("Resources/native_ui")).unwrap();
