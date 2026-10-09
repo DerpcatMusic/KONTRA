@@ -18,6 +18,8 @@ use std::{
 };
 
 mod ui;
+#[cfg(feature = "scan")]
+pub mod diagnostics;
 #[path = "parameters.rs"]
 pub(crate) mod parameters;
 pub use ui::{UiState, SavedValue, control_id};
@@ -93,6 +95,9 @@ pub struct Config {
     /// Explicit audit seed; absent from normal builds and user preferences.
     #[cfg(feature = "scan")]
     pub audit_seed: Option<u32>,
+    /// Optional numeric progress observations, only for an explicitly seeded audit.
+    #[cfg(feature = "scan")]
+    pub audit_progress: bool,
 }
 
 /// Explicit scanner/test option, never read by ordinary plugin builds.
@@ -121,6 +126,8 @@ impl Default for Config {
             rate: 48000.0,
             #[cfg(feature = "scan")]
             audit_seed: None,
+            #[cfg(feature = "scan")]
+            audit_progress: false,
         }
     }
 }
@@ -334,6 +341,8 @@ struct Waiting {
 
 struct Shared {
     #[cfg(feature = "scan")]
+    progress: Option<std::sync::Arc<diagnostics::ScanProgress>>,
+    #[cfg(feature = "scan")]
     init_api: RefCell<BTreeMap<&'static str, (u64, Duration)>>,
     #[cfg(feature = "scan")]
     audit_init: bool,
@@ -398,6 +407,8 @@ impl Drop for InspectionBudget<'_> {
             self.shared.remaining_work.set(work);
             self.shared.work_exhausted.set(exhausted);
             self.shared.deadline.set(deadline);
+            #[cfg(feature = "scan")]
+            self.shared.observe_work();
         }
     }
 }
@@ -416,6 +427,13 @@ impl Drop for ApiTimer<'_> {
     }
 }
 impl Shared {
+    #[cfg(feature = "scan")]
+    fn observe_work(&self) {
+        if let Some(progress) = &self.progress {
+            progress.work(self.remaining_work.get(), self.vm_checkpoints.get(), self.work_exhausted.get());
+        }
+    }
+
     fn inspection_budget(&self) -> InspectionBudget<'_> {
         // Readback gets load-sized work without spending or refilling live work.
         let saved = (!self.initializing.get()).then(|| (
@@ -493,15 +511,21 @@ impl Shared {
             self.deadline.set(Some(Instant::now() + elapsed));
             self.remaining_work.set(work);
             self.work_exhausted.set(false);
+            #[cfg(feature = "scan")]
+            self.observe_work();
         }
     }
 
     fn consume_work(&self) -> mlua::Result<()> {
         if let Some(left) = self.remaining_work.get().checked_sub(1) {
             self.remaining_work.set(left);
+            #[cfg(feature = "scan")]
+            self.observe_work();
             Ok(())
         } else {
             self.work_exhausted.set(true);
+            #[cfg(feature = "scan")]
+            self.observe_work();
             Err(mlua::Error::runtime("work budget exceeded"))
         }
     }
@@ -744,6 +768,9 @@ impl ScriptHost {
         }
 
         let shared = Rc::new(Shared {
+            #[cfg(feature = "scan")]
+            progress: (config.audit_seed.is_some() && config.audit_progress)
+                .then(|| std::sync::Arc::new(diagnostics::ScanProgress::new(config.load_work))),
             #[cfg(feature = "scan")]
             init_api: RefCell::new(BTreeMap::new()),
             #[cfg(feature = "scan")]
@@ -1707,11 +1734,15 @@ impl ScriptHost {
             self.cycle();
         }
         self.shared.now.set(now_ms.max(self.shared.now.get()));
+        #[cfg(feature = "scan")]
+        if let Some(progress) = &self.shared.progress { progress.clock(self.shared.now.get()); }
     }
 
     /// Set the clock without resuming anything (a starting point).
     pub fn set_time(&mut self, now_ms: f64) {
         self.shared.now.set(now_ms);
+        #[cfg(feature = "scan")]
+        if let Some(progress) = &self.shared.progress { progress.clock(now_ms); }
     }
 
     /// The commands issued since the last call.
@@ -1776,6 +1807,14 @@ impl ScriptHost {
     }
     #[cfg(feature = "scan")]
     pub fn scan_faults(&self) -> ScanFaults { self.shared.scan.borrow().clone() }
+    #[cfg(feature = "scan")]
+    pub fn scan_progress(&self) -> Option<std::sync::Arc<diagnostics::ScanProgress>> {
+        self.shared.progress.clone()
+    }
+    #[cfg(feature = "scan")]
+    pub(crate) fn owner_phase(&self, phase: diagnostics::OwnerPhase) {
+        if let Some(progress) = &self.shared.progress { progress.phase(phase); }
+    }
 
     pub fn memory(&self) -> usize {
         self.lua.used_memory()
@@ -1783,6 +1822,8 @@ impl ScriptHost {
 }
 
 fn resume(shared: &Rc<Shared>, thread: Thread, args: MultiValue, note: Option<u64>) {
+    #[cfg(feature = "scan")]
+    if let Some(progress) = &shared.progress { progress.resume(shared.now.get()); }
     let before = shared.current.replace(note);
     let result = thread.resume::<MultiValue>(args);
     shared.current.set(before);
