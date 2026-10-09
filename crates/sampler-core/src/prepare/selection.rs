@@ -323,9 +323,7 @@ impl Runtime {
         if release_route {
             self.reserve_release_callbacks(note, release_entry);
         }
-        if routed {
-            self.begin_note_stages(note, entry);
-        } else if let Some(id) = defer {
+        if let Some(id) = defer {
             // Pending until the callback waits or ends, so it can still edit
             // the note's groups; `release` is recomputed then.
             let _ = release;
@@ -333,6 +331,16 @@ impl Runtime {
             n.work = n.work.checked_add(1).expect("bounded deferred attack pin");
             assert!(self.deferred.len() < self.deferred.capacity());
             self.deferred.push((id, note, entry));
+            if routed {
+                let count = self.plans.get(plan.0).unwrap().prepared.stages[entry..]
+                    .iter()
+                    .filter(|stage| stage.note.is_some())
+                    .count();
+                self.behaviors.reserve(count);
+                self.note_events[note.0.index].pending_callbacks = count;
+            }
+        } else if routed {
+            self.begin_note_stages(note, entry);
         } else {
             self.commit_attack(note, release, snapshot, entry);
             let end = self.plans.get(plan.0).unwrap().prepared.stages.len();
