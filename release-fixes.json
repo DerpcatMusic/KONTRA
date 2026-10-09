@@ -3680,7 +3680,8 @@
       "id": "held-note-audition-identity",
       "summary": "Carry required held notes through scanner/live-host audition identity",
       "source_commits": [
-        "50ea8c997a58be5e0eef0ac70d9c198dabe91de2"
+        "50ea8c997a58be5e0eef0ac70d9c198dabe91de2",
+        "d292a7e95a1086dcb599e30bc3301a154782a29b"
       ],
       "release_note": "Retain required held notes in audition plans and their comparison identity.",
       "category": "Fixed",
@@ -3730,6 +3731,29 @@
       "category": "Fixed",
       "accepted": true,
       "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim."
+    },
+    {
+      "id": "persistence-wait-live-scheduler",
+      "summary": "Run wait-capable persistence and init async callbacks on the live scheduler without replaying their prefixes",
+      "source_commits": [
+        "66b4e7dd550472063bc680d30f874af36f1ff925",
+        "56693d1dd40faf9420f7f2dcff35d34857616672"
+      ],
+      "release_note": "Schedule persistence callbacks that wait and preserve synchronous init MIDI completion.",
+      "category": "Fixed",
+      "accepted": true,
+      "validation": "Owner RED/GREEN and root no-run receipts reviewed. Combined W0 workspace, callback count/outcome, native quick and editor gates pending before publication; no real-library or performance parity claim."
+    },
+    {
+      "id": "sticky-rack-body-clipping",
+      "summary": "Clip scrolling rack bodies beneath sticky part headers after resize",
+      "source_commits": [
+        "4eecc0ab27b42e047bad7815534d1fe348f076b3"
+      ],
+      "release_note": "Keep rack contents beneath sticky headers when resizing the editor.",
+      "category": "Fixed",
+      "accepted": true,
+      "validation": "Owner RED/GREEN and root no-run receipts reviewed. Combined W0 workspace, callback count/outcome, native quick and editor gates pending before publication; no real-library or performance parity claim."
     }
   ]
 }
