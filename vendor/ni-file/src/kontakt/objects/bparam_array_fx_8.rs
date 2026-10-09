@@ -24,7 +24,7 @@ impl BParamArrayBParFX8 {
     pub fn read<R: ReadBytesExt>(mut reader: R, num_items: u32) -> Result<Self, Error> {
         let is_structured_data = reader.read_bool()?;
         let version = reader.read_u16_le()?;
-        if is_structured_data || !matches!(version, 0x10 | 0x12 | 0x13) {
+        if is_structured_data || !matches!(version, 0x10..=0x13) {
             return Err(NIFileError::Generic(format!(
                 "Unsupported BParamArrayBParFX8 v{version:x} (structured: {is_structured_data})"
             )));
@@ -80,8 +80,12 @@ impl std::convert::TryFrom<&Chunk> for BParamArrayBParFX8 {
             }
             .into());
         }
-        let reader = Cursor::new(&chunk.data);
-        Self::read(reader, 8)
+        let mut reader = Cursor::new(&chunk.data);
+        let array = Self::read(&mut reader, 8)?;
+        if array.version == 0x11 && reader.position() as usize != chunk.data.len() {
+            return Err(Error::Static("Trailing v0x11 parameter array data"));
+        }
+        Ok(array)
     }
 }
 
