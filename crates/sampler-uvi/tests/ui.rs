@@ -10,6 +10,27 @@ fn host(script: &str) -> ScriptHost {
 }
 
 #[test]
+fn v1_widgets_keep_script_coordinates_without_constructor_grid() {
+    let h = host(r#"
+      local p=Panel('Root')
+      local first=p:Knob('First')
+      local second=p:Knob('Second')
+      assert(first.x==0 and first.y==0 and second.x==0 and second.y==0)
+      p.position={40,60}; second.position={13,17}
+      Label{'Origin',x=0,y=0}
+      loaded=true
+    "#);
+    assert!(h.findings().is_empty(), "{:?}", h.findings());
+    assert_eq!(h.global_text("loaded"), "true");
+    let face=h.interface();
+    let first=face.page_rect(WidgetRef(1));
+    let second=face.page_rect(WidgetRef(2));
+    assert_eq!((first.x,first.y),(40,60));
+    assert_eq!((second.x,second.y),(53,77));
+    assert_eq!((face.widgets[3].rect.x,face.widgets[3].rect.y),(0,0));
+}
+
+#[test]
 fn v1_set_height_keeps_width_and_loads_following_widgets() {
     let h = host("setSize(600,300); setHeight(240); Label('AfterHeight'); loaded=true");
     assert!(h.findings().is_empty(), "{:?}", h.findings());
