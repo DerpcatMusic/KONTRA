@@ -717,6 +717,18 @@ fn keyswitch_learn_replacement_cancels_even_when_source_ids_match() {
 }
 
 #[test]
+fn keyswitch_learn_pending_replacement_does_not_write_the_new_overlay() {
+    let (p, _) = keyswitch_learn_fixture();
+    let mut h = Harness::new(&p, 1180., 780.);
+    keyswitch_begin_learn(&mut h, 0);
+    super::replace_part(&mut p.selection.write().unwrap().parts[0], "/synthetic/replacement.nki".into());
+    p.shared.record_learn(0, 0, 62);
+    h.idle(3);
+    assert!(p.selection.read().unwrap().parts[0].articulation_overlay.inputs.is_empty(), "old-view learn cannot alter a replacement waiting for its loader");
+    assert_eq!(p.shared.learn_target.load(Ordering::Relaxed), 0);
+}
+
+#[test]
 fn v1_mixer_view_controls_are_reachable() {
     let p = Arc::new(crate::plugin::SamplerParams::new());
     let mut h = Harness::new(&p, 1180., 780.);
