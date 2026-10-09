@@ -93,4 +93,42 @@ Frozen after test executable SHA256:
 The before executable is the intentionally failing fixture on source base
 `bc318a1f` with an empty settle seam; the after executable contains the correction.
 
-NEXT: quiet before/after snapshot scan-time receipt, then READY to W0.
+## Quiet timing and validation
+
+Code commit: `c643531d` (`port from v1 0cb7a8a0:src/engine/script.rs`).
+Targeted authored Areia test: **1 failing before → 1 passing after**.
+Root `ci` + `shots` library `--no-run`: PASS. The five timed before runs reproduce
+the same expected failure; all five after runs pass the visibility, runtime and
+streaming assertions. The original full KSP suite was not repeated for this
+scanner-only change.
+
+After W8's direct handoff, the timing runner alternated five runs per frozen test
+executable. The measured scan phase is **production preparation, installation
+and face snapshot**, excluding painting and audition. Each executable runs the
+same authored fixture; the before executable intentionally fails its post-snapshot
+visibility assertion. These are not end-to-end CLI or presented-plugin timings.
+
+| Milliseconds | Before median | After median | Delta |
+|---|---:|---:|---:|
+| Prepare and snapshot scan | 3,095.710 | 3,154.575 | +58.865 (+1.90%) |
+| Snapshot settle phase | 0.000 | 3.796 | +3.796 |
+| Whole test process | 3,129.830 | 3,186.231 | +56.402 |
+
+The timings are noisy: before scan range 2,971.672–8,830.450 ms, after range
+2,971.194–10,565.942 ms. Medians use all five runs per binary, without dropping
+outliers. No speedup or causal attribution for the total-time delta is claimed.
+The accepted repeat's activity observer records **QUIET**, 45 samples at one-second
+intervals, with no foreign heavy work or observer errors.
+
+The first timing batch is retained separately as **CONTENDED / UNKNOWN**:
+foreign cargo PID 2308769 and rustc PID 2308828 started during the request at
+08:58:03 UTC. It is excluded from the table. One clean repeat completed after
+those processes exited. No foreign processes were killed. The bounded window
+ended with removal of W5's request/grant and direct handoff to W6 and coordinator.
+
+Owned receipts: `areia-snapshot-timing.json`,
+`areia-snapshot-activity/activity.{json,jsonl}`, and
+`areia-snapshot-timing-contended.json` under the evidence directory above.
+No further builds or library probes followed the handoff.
+
+NEXT: W0 integration of the scanner fix and receipt; subscription stays parked.
