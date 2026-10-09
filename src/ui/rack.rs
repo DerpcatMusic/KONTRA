@@ -55,7 +55,7 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
     }
     let (view_h, content_h) = {
         let frame = |id: &str| ui.scene().and_then(|s| s.surface(id)).map(|s| s.frame);
-        (frame("rack-view").map_or(0., |f| f.size.height), frame("rack-content").map_or(0., |f| f.size.height))
+        (frame("rack-viewport").or_else(|| frame("rack-view")).map_or(0., |f| f.size.height), frame("rack-content").map_or(0., |f| f.size.height))
     };
     // Offscreen rows have no widget subtree or surface. Reconstruct their
     // positions from the same known body/fixed heights used by part(), rather
@@ -226,12 +226,33 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
         .no_scrollbar()
         .scrolled(0., y)
         .id("rack-view");
+    let (mut top_clip, mut bottom_clip) = (0.0f64, view_h);
+    for (i, _) in &headers {
+        let top = frames[*i].map_or(0., |f| f.0);
+        let at = place(*i, top, y);
+        if at > top - y + 0.5 {
+            top_clip = top_clip.max(at + SLIM);
+        } else if at < top - y - 0.5 {
+            bottom_clip = bottom_clip.min(at);
+        }
+    }
+    // Clip below sticky chrome, including its translucent rules, without moving the body.
+    let viewport = if view_h > 0. && (top_clip > 0. || bottom_clip < view_h) {
+        stack![viewport.h(view_h).at(0., -top_clip)]
+            .w(Len::Pct(100.))
+            .h((bottom_clip - top_clip).max(0.))
+            .min_h(0)
+            .at(0., top_clip)
+            .clip()
+    } else {
+        viewport
+    };
     let mut layers = vec![viewport];
     for (i, header) in headers {
         let top = frames[i].map_or(0., |f| f.0);
         layers.push(header.at(0., place(i, top, y).round()));
     }
-    let mut row_items = vec![stack(layers).flex(1).min_w(0).min_h(0).h(Len::Pct(100.)).clip()];
+    let mut row_items = vec![stack(layers).flex(1).min_w(0).min_h(0).h(Len::Pct(100.)).clip().id("rack-viewport")];
     if content_h > view_h + 0.5 && view_h > 0. {
         row_items.push(scrollbar(ui, "rack-bar", "Scroll the rack", y, view_h, content_h));
     } else {
