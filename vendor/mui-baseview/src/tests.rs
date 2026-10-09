@@ -236,6 +236,47 @@ fn handler(size: (u32, u32), scale: f64) -> Handler<Knob> {
     Handler::new(shared, Arc::default(), size, scale)
 }
 
+#[test]
+fn window_panic_recovery_preserves_state_and_stops_the_poison_storm() {
+    let mut h = handler((240, 200), 1.0);
+    assert!(guard(&mut h, |h| {
+        let mut state = lock(&h.shared);
+        state.view.value = 0.75;
+        panic!("synthetic original frame fault");
+    }).is_none());
+    assert!(!h.shared.is_poisoned(), "guard logging recovers the outer model lock");
+    for _ in 0..64 {
+        assert!(guard(&mut h, |h| h.step()).is_some());
+    }
+    assert_eq!(lock(&h.shared).view.value, 0.75);
+    assert!(h.last_panic.is_none());
+    assert!(lock(&h.shared).ui.scene().is_some(), "retry produces a scene without reopening the editor");
+}
+
+#[test]
+fn repeated_window_faults_log_once_until_a_successful_callback() {
+    struct Logged(Arc<Mutex<Vec<String>>>);
+    impl View for Logged {
+        fn log(&mut self, line: &str) { self.0.lock().unwrap().push(line.into()); }
+        fn build(&mut self, _: &mut Ui, _: &Input) -> El { mui::prelude::block(100., 100.).into() }
+        fn changed(&mut self) -> bool { false }
+        fn request_resize(&mut self, _: u32, _: u32) -> bool { false }
+    }
+    let lines = Arc::new(Mutex::new(Vec::new()));
+    let shared = Arc::new(Mutex::new(Shared { ui: Ui::default(), view: Logged(Arc::clone(&lines)) }));
+    let mut h = Handler::new(shared, Arc::default(), (240, 200), 1.0);
+    for _ in 0..64 {
+        assert!(guard(&mut h, |_| panic!("synthetic persistent frame fault")).is_none());
+        assert_eq!(h.last_panic.as_deref(), Some("synthetic persistent frame fault"));
+    }
+    assert_eq!(lines.lock().unwrap().len(), 1);
+    assert!(guard(&mut h, |_| ()).is_some());
+    assert!(h.last_panic.is_none());
+    assert!(guard(&mut h, |_| panic!("a new frame fault")).is_none());
+    assert_eq!(h.last_panic.as_deref(), Some("a new frame fault"));
+    assert_eq!(lines.lock().unwrap().len(), 2);
+}
+
 /// WGPU_BACKEND=metal on Linux exercises automatic fallback. Otherwise this
 /// forces CPU on the handler, without changing process environment in tests.
 #[cfg(target_os = "linux")]
