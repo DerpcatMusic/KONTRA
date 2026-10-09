@@ -758,7 +758,7 @@ fn original_widget_geometry() {
         serde_json::json!({"source": source, "pages": pages})
     }).collect();
     println!(
-        "{}",
+        "\n{}",
         serde_json::json!({"widget_geometry_schema": 1, "faces": faces})
     );
 }
