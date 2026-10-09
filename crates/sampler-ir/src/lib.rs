@@ -187,6 +187,8 @@ pub struct SourceIndices {
     pub engine_lookups: Vec<SourceEngineLookup>,
     /// Authored normalized getter values before script initialization, at physical addresses.
     pub engine_values: Vec<SourceEngineValue>,
+    /// Native addresses aliasing real continuous processor controls.
+    pub control_aliases: Vec<SourceControlAlias>,
     pub slots: Vec<Option<usize>>,
 }
 
@@ -208,6 +210,14 @@ pub struct SourceEngineLookup {
     pub name: String,
     /// Physical modulator slot or authored target ordinal, never a runtime DSP index.
     pub index: i32,
+}
+
+/// The native 0..1M knob maps linearly to the named control's Continuous range.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceControlAlias {
+    pub control: ControlRef,
+    pub parameter: String,
+    pub address: SlotAddress,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1349,7 +1359,7 @@ pub enum SendPosition {
 
 /// Format-neutral binding of one authored control to an actual processor field.
 /// The control's Continuous range is in the field's native units (Hz, linear
-/// gain, Q or normalized Daft units). Ramping uses the engine sample clock.
+/// gain, dB, Q or normalized Daft units). Ramping uses the engine sample clock.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ProcessorControl {
     pub control: ControlRef,

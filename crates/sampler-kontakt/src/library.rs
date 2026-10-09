@@ -205,6 +205,7 @@ fn translate(
         snapshot_groups: snapshot.map(|s| s.groups.clone()).unwrap_or_default(),
         engine: Vec::new(),
         dynamic: false,
+        eq_mod_slots: HashMap::new(),
         send_taps: Vec::new(),
         #[cfg(feature="scan")]
         target_outcomes: HashMap::new(),
@@ -524,9 +525,15 @@ struct Translation {
     engine: Vec<sampler_ksp::EnginePar>,
     /// A script writes effect slots while playing.
     dynamic: bool,
+    eq_mod_slots: HashMap<usize, Vec<usize>>,
     send_taps: Vec<(ir::ChainRef, crate::effects::SendTap)>,
     #[cfg(feature="scan")]
     target_outcomes: crate::coverage::Targets,
+}
+
+fn eq_gain_band(name: &str) -> Option<usize> {
+    name.strip_prefix("eqGain")?.parse::<u8>().ok()
+        .filter(|b| (1..=3).contains(b)).map(|b| usize::from(b - 1))
 }
 
 const VOICE_GROUPS: u16 = 0x32;
@@ -670,11 +677,44 @@ impl Translation {
                     names
                 };
                 for (slot, name, targets) in names {
+                    for target in &targets {
+                        if eq_gain_band(&target.param).is_some() && let Some(slot) = target.slot {
+                            let live = self.eq_mod_slots.entry(index).or_default();
+                            if !live.contains(&usize::from(slot)) { live.push(usize::from(slot)); }
+                        }
+                    }
                     self.source_modulator(index, slot, external, name, &targets);
                 }
             }
         }
+        let saved = self.snapshot_groups.get(index);
+        let rack = match saved {
+            Some(state) => Ok(ni_file::kontakt::objects::BParamArrayBParFX8 {
+                version: state.fx.0,
+                items: state.fx.1.iter().map(|slot| slot.as_ref().map(|(id, data)| ni_file::kontakt::Chunk { id: *id, data: data.clone() })).collect(),
+            }),
+            None => group.insert_fx(),
+        };
+        if let Ok(rack) = rack {
+            let slots = crate::effects::rack(&rack, |_, _| {});
+            self.source_eq_values(index, &slots);
+        }
         Ok(())
+    }
+
+    fn source_eq_values(&mut self, group: usize, slots: &[crate::effects::Slot]) {
+        for slot in slots {
+            if let Some(crate::effects::Params::Eq { bands }) = slot.params() {
+                for (band, [_, _, db]) in bands.iter().enumerate() {
+                    if !db.is_finite() { continue; }
+                    let parameter = sampler_core::engine_parameter_id(&format!("ENGINE_PAR_GAIN{}", band + 1)).unwrap();
+                    self.ir.source_indices.engine_values.push(ir::SourceEngineValue {
+                        parameter, group: group as i32, slot: slot.slot as i32, generic: -1,
+                        value: sampler_core::EngineParameterLaw::Linear { low: -18., high: 18. }.encode(f64::from(*db)),
+                    });
+                }
+            }
+        }
     }
 
     fn source_envelope(
@@ -836,8 +876,10 @@ impl Translation {
                 });
                 crate::effects::apply_writes(&mut slots, &self.engine, index as i32, -1);
                 let dynamic = self.dynamic.then_some((index as i32, -1));
-                let (c, boundary) =
-                    crate::effects::voice_chain(&slots, v.fx_idx_amp_split_point, dynamic, index as i32);
+                let live_eq = self.eq_mod_slots.get(&index).map(Vec::as_slice).unwrap_or(&[]);
+                let (c, boundary) = crate::effects::voice_chain(
+                    &slots, v.fx_idx_amp_split_point, dynamic, index as i32, live_eq,
+                );
                 let mut processors = c.processors;
                 filter_slots = c.filter_slots;
                 for (slot, feature, value, reason) in c.notes {
@@ -851,6 +893,7 @@ impl Translation {
                         post_amplitude,
                     });
                     chain = Some(ir::ChainRef(self.ir.chains.len() - 1));
+                    self.eq_gain_controls(index, chain.unwrap(), &filter_slots);
                     self.send_taps.extend(c.send_taps.into_iter().map(|tap| (chain.unwrap(), tap)));
                 }
             }
@@ -1115,6 +1158,33 @@ impl Translation {
             .map(|w| w.value)
     }
 
+    /// Port v1's normalized EQ gain knob onto a real dB processor lane.
+    fn eq_gain_controls(&mut self, group: usize, chain: ir::ChainRef, slots: &[(usize, usize)]) {
+        let mut bands = HashMap::<usize, usize>::new();
+        for &(slot, index) in slots {
+            let Some(ir::Processor::Filter(ir::Filter { kind: ir::FilterKind::Peak { gain }, .. })) =
+                self.ir.chains[chain.0].pre_amplitude.iter().chain(&self.ir.chains[chain.0].post_amplitude).nth(index)
+            else { continue; };
+            let band = bands.entry(slot).or_default();
+            let parameter = format!("ENGINE_PAR_GAIN{}", *band + 1);
+            let default = self.script_par(&parameter, group as i32, slot as i32, -1)
+                .map_or_else(|| 20. * gain.linear().log10(), |v| 36. * f64::from(v.clamp(0, 1_000_000)) / 1_000_000. - 18.)
+                .clamp(-18., 18.);
+            let control = ir::ControlRef(self.ir.controls.len());
+            self.ir.controls.push(ir::Control {
+                key: format!("kontakt/group/{group}/slot/{slot}/eq/band/{}/gain", *band + 1),
+                label: format!("EQ Band {} Gain", *band + 1),
+                value: ir::ControlValue::Continuous { min: -18., max: 18., default, unit: ir::ControlUnit::Decibels },
+                automation: ir::Automation::None,
+            });
+            self.ir.processor_controls.push(ir::ProcessorControl { control, chain, index,
+                parameter: ir::ProcessorParameter::Gain, ramp: ir::Time::ZERO });
+            self.ir.source_indices.control_aliases.push(ir::SourceControlAlias { control, parameter,
+                address: ir::SlotAddress { group: group as i32, slot: slot as i32, generic: -1 } });
+            *band += 1;
+        }
+    }
+
     /// The instrument bus a script routed group `index` to
     /// (`$ENGINE_PAR_OUTPUT_CHANNEL` = `$NI_BUS_OFFSET` + n).
     fn script_bus(&self, index: usize) -> Option<u8> {
@@ -1167,12 +1237,17 @@ impl Translation {
         // the generic filter fallback retains its octave law.
         let addressed = filters.and_then(|(chain, slots)| {
             let slot = target.slot?;
-            let (_, index) = slots.iter().find(|(s, _)| *s == usize::from(slot))?;
-            let native = self.ir.chains.get(chain.0).and_then(|c| c.pre_amplitude.iter()
-                .chain(&c.post_amplitude).nth(*index))
-                .is_some_and(|p| matches!(p, ir::Processor::LadderLP4(_) | ir::Processor::Daft(_)));
+            let band = eq_gain_band(&target.param);
+            let (_, index) = slots.iter().filter(|(s, _)| *s == usize::from(slot)).nth(band.unwrap_or(0))?;
+            let processor = self.ir.chains.get(chain.0)?.pre_amplitude.iter()
+                .chain(&self.ir.chains[chain.0].post_amplitude).nth(*index)?;
+            if band.is_some() {
+                return matches!(processor, ir::Processor::Filter(ir::Filter { kind: ir::FilterKind::Peak { .. }, .. }))
+                    .then_some((ir::Target::Processor { chain, index: *index, parameter: ir::ProcessorParameter::Gain }, ir::Depth::Normalized(i)));
+            }
+            let native = matches!(processor, ir::Processor::LadderLP4(_) | ir::Processor::Daft(_));
             let parameter = match target.param.as_str() {
-                "filterCutoff" => ir::ProcessorParameter::Cutoff,
+                "filterCutoff" if !matches!(processor, ir::Processor::Filter(ir::Filter { kind: ir::FilterKind::Peak { .. }, .. })) => ir::ProcessorParameter::Cutoff,
                 "filterQ" if native => ir::ProcessorParameter::Resonance,
                 "Gain" if native => ir::ProcessorParameter::Gain,
                 _ => return None,
@@ -2008,6 +2083,7 @@ mod modulation {
             snapshot_groups: Vec::new(),
             engine: Vec::new(),
             dynamic: false,
+            eq_mod_slots: HashMap::new(),
             send_taps: Vec::new(),
         #[cfg(feature="scan")]
         target_outcomes: HashMap::new(),
@@ -2199,6 +2275,9 @@ mod modulation {
             ..target("filterCutoff", 0.444)
         };
         let chain = ir::ChainRef(3);
+        let filter = ir::Processor::Filter(ir::Filter { kind: ir::FilterKind::LowPass { poles: 2 },
+            cutoff: ir::Frequency::Hertz(1000.), resonance: ir::Resonance::Q(1.) });
+        t.ir.chains = vec![ir::Chain { scope: ir::Scope::Voice, pre_amplitude: vec![filter; 2], post_amplitude: vec![] }; 4];
         t.route("g", source, true, &cutoff, Some((chain, &[(2, 1)])))
             .unwrap();
         assert_eq!(
@@ -2218,6 +2297,60 @@ mod modulation {
             t.route("g", source, true, &cutoff, Some((chain, &[])))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn eq_live_owner_clamps_saved_gain_like_v1_knobs() {
+        let mut t = translation();
+        t.ir.chains.push(ir::Chain { scope: ir::Scope::Voice, pre_amplitude: vec![ir::Processor::Filter(ir::Filter {
+            kind: ir::FilterKind::Peak { gain: ir::Gain::Decibels(24.) },
+            cutoff: ir::Frequency::Hertz(1000.), resonance: ir::Resonance::Q(1.),
+        })], post_amplitude: vec![] });
+        t.eq_gain_controls(7, ir::ChainRef(0), &[(5, 0)]);
+        assert!(matches!(t.ir.controls[0].value, ir::ControlValue::Continuous { default: 18., .. }),
+            "v1 clamps normalized EQ knobs before conversion; a saved outlier must not invalidate the instrument");
+    }
+
+    #[test]
+    fn eq_saved_gain_metadata_precedes_script_init() {
+        let mut public = Vec::new();
+        for kind in [24i32, 24] { public.extend(kind.to_le_bytes()); }
+        for values in [[300f32, 1., 0.], [1000., 1., 9.], [6000., 1., -18.]] {
+            for value in values { public.extend(value.to_le_bytes()); }
+        }
+        let slot = crate::effects::Slot { slot: 5, module: 0x18, version: 0x92,
+            bypass: false, output_gain: 1., dry_level: 0., output_set: false, public };
+        let mut t = translation();
+        t.source_eq_values(7, &[slot]);
+        let values = &t.ir.source_indices.engine_values;
+        assert_eq!(values.len(), 3);
+        for (band, expected) in [500000, 750000, 0].into_iter().enumerate() {
+            assert_eq!(values[band].value, expected);
+            assert_eq!((values[band].group, values[band].slot, values[band].generic), (7, 5, -1));
+            assert_eq!(sampler_core::engine_parameter_name(values[band].parameter), Some(["$ENGINE_PAR_GAIN1", "$ENGINE_PAR_GAIN2", "$ENGINE_PAR_GAIN3"][band]));
+        }
+    }
+
+    #[test]
+    fn eq_gain_routes_keep_band_and_physical_slot_identity() {
+        for (name, index) in [("eqGain1", 0), ("eqGain2", 1), ("eqGain3", 2)] {
+            let mut t = translation();
+            let peak = ir::Processor::Filter(ir::Filter {
+                kind: ir::FilterKind::Peak { gain: ir::Gain::Decibels(0.) },
+                cutoff: ir::Frequency::Hertz(1000.), resonance: ir::Resonance::Q(1.) });
+            t.ir.chains.push(ir::Chain { scope: ir::Scope::Voice, pre_amplitude: vec![peak; 3], post_amplitude: vec![] });
+            t.engine.push(sampler_ksp::EnginePar { parameter: "$ENGINE_PAR_GAIN2".into(), group: 7, slot: 5, generic: -1, value: 750000 });
+            t.eq_gain_controls(7, ir::ChainRef(0), &[(5, 0), (5, 1), (5, 2)]);
+            assert_eq!(t.ir.processor_controls.len(), 3);
+            assert_eq!(t.ir.source_indices.control_aliases[1].parameter, "ENGINE_PAR_GAIN2");
+            assert!(matches!(t.ir.controls[1].value, ir::ControlValue::Continuous { default: 9., unit: ir::ControlUnit::Decibels, .. }));
+            let target = ModTarget { slot: Some(5), ..target(name, -0.25) };
+            t.route("g", ir::ModulatorRef(0), true, &target, Some((ir::ChainRef(0), &[(5, 0), (5, 1), (5, 2)])))
+                .expect("authored EQ gain must reach its physical band");
+            assert_eq!(t.ir.routes[0].target, ir::Target::Processor {
+                chain: ir::ChainRef(0), index, parameter: ir::ProcessorParameter::Gain });
+            assert_eq!(t.ir.routes[0].depth, ir::Depth::Normalized(-0.25));
+        }
     }
 
     #[test]
