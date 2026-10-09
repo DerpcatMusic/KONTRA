@@ -97,6 +97,10 @@ impl Harness {
         }
     }
 
+    pub(super) fn resize(&mut self, size: Size) {
+        self.size = size;
+    }
+
     /// Focus `id` and press Enter, then let the result settle.
     pub(super) fn press(&mut self, id: &str) {
         self.ui.focus(id);
