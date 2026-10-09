@@ -364,3 +364,45 @@ fn conflux_digital_lfo_sources_are_retained() {
         "admitted sources keep their physical internal-slot identity"
     );
 }
+
+#[test]
+#[ignore = "requires installed Conflux; run through kontakto-heavy"]
+fn conflux_original_control_descriptors_cover_all_physical_sources() {
+    use sampler_ir::kontakt::{InternalSource, ModulationSource as Raw};
+    let path = Path::new("/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Instruments/Conflux.nki");
+    let chunks = sampler_kontakt::read_chunks(path).unwrap();
+    let program = Program::try_from(chunks.find_first(0x28).unwrap()).unwrap();
+    let groups = GroupList::try_from(program.0.find_first(0x33).unwrap()).unwrap();
+    let translated = sampler_kontakt::read(path).unwrap();
+    let rows = &translated.instrument.source_indices.modulators;
+    let (mut internal, mut external, mut targets, mut digital) = (0, 0, 0, 0);
+    for (group, g) in groups.groups.iter().enumerate() {
+        for (ext, id) in [(false, 0x3b), (true, 0x3c)] {
+            let Some(chunk) = g.0.find_first(id) else { continue };
+            let slots = if ext {
+                ExternalModArray32::try_from(chunk).unwrap().slots().unwrap().into_iter()
+                    .map(|(slot, m)| { let p = m.params().unwrap(); (slot, m.0.version, p.name, p.targets) }).collect::<Vec<_>>()
+            } else {
+                InternalModArray16::try_from(chunk).unwrap().slots().unwrap().into_iter()
+                    .map(|(slot, m)| { let p = m.params().unwrap(); (slot, m.0.version, p.name, p.targets) }).collect::<Vec<_>>()
+            };
+            for (slot, version, name, source_targets) in slots {
+                let mut matching = rows.iter().filter(|r| r.group == group && r.slot == slot && r.external == ext);
+                let row = matching.next().expect("one descriptor per physical source");
+                assert!(matching.next().is_none(), "physical identity must be unique");
+                let raw = row.settings.as_ref().expect("all decoded settings retained");
+                assert_eq!((row.name.as_str(), raw.version, raw.targets.len()), (name.as_str(), version, source_targets.len()));
+                if ext { external += 1; } else { internal += 1; }
+                if matches!(raw.source, Raw::Internal { source: InternalSource::Lfo(ref l), .. } if l.waveform == 6) { digital += 1; }
+                for (original, kept) in source_targets.iter().zip(&raw.targets) {
+                    assert_eq!((&original.param, original.slot, original.intensity.to_bits(), original.unknown_flags, original.lag_ms, original.invert),
+                        (&kept.param, kept.slot, kept.intensity.to_bits(), kept.flags, kept.lag_ms, kept.invert));
+                    targets += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(rows.len(), internal + external);
+    assert_eq!(digital, 182, "both admitted and diagnosed Digital Multi clocks retained");
+    println!("ORIGINAL_CONTROL_DESCRIPTORS internal={internal} external={external} targets={targets} digital={digital}");
+}

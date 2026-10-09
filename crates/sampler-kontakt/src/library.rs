@@ -671,7 +671,10 @@ impl Translation {
                     ExternalModArray32::try_from(chunk)?
                         .slots()?
                         .into_iter()
-                        .map(|(slot, m)| m.params().map(|p| (slot, p.name, p.targets)))
+                        .map(|(slot, m)| m.params().map(|p| {
+                            let settings = crate::modulation_objects::external(m.0.version, &p);
+                            (slot, p.name, p.targets, settings)
+                        }))
                         .collect::<Result<_, _>>()?
                 } else {
                     let mut names = Vec::new();
@@ -680,18 +683,19 @@ impl Translation {
                         if let Modulator::Ahdsr(envelope) = &params.modulator {
                             Self::source_envelope(&mut self.ir.source_indices, index, slot, envelope);
                         }
-                        names.push((slot, params.name, params.targets));
+                        let settings = crate::modulation_objects::internal(modulator.0.version, &params);
+                        names.push((slot, params.name, params.targets, settings));
                     }
                     names
                 };
-                for (slot, name, targets) in names {
+                for (slot, name, targets, settings) in names {
                     for target in &targets {
                         if eq_knob(&target.param).is_some() && let Some(slot) = target.slot {
                             let live = self.eq_mod_slots.entry(index).or_default();
                             if !live.contains(&usize::from(slot)) { live.push(usize::from(slot)); }
                         }
                     }
-                    self.source_modulator(index, slot, external, name, &targets);
+                    self.source_modulator(index, slot, external, name, &targets, Some(settings));
                 }
             }
         }
@@ -782,6 +786,7 @@ impl Translation {
     fn source_modulator(
         &mut self, group: usize, slot: usize, external: bool,
         name: String, targets: &[ni_file::kontakt::objects::ModTarget],
+        settings: Option<ir::kontakt::Modulation>,
     ) {
         self.ir.source_indices.engine_lookups.push(ir::SourceEngineLookup {
             group: group as i32, owner: -1, target: false,
@@ -794,7 +799,7 @@ impl Translation {
             });
         }
         self.ir.source_indices.modulators.push(ir::SourceModulator {
-            group, slot, external, name, runtime: None,
+            group, slot, external, name, runtime: None, settings,
         });
     }
 
@@ -2118,6 +2123,7 @@ mod saved_tests {
 
 #[cfg(test)]
 mod modulation {
+    include!("modulation_descriptor_tests.rs");
     use super::*;
     use ni_file::kontakt::objects::{Lfo, LfoRecord, ModTarget};
 
@@ -2186,8 +2192,8 @@ mod modulation {
         unnamed.name.clear();
         let mut named = target("not-modeled", 1.);
         named.name = "Cutoff".into();
-        out.source_modulator(7, 31, true, "Controller".into(), &[unnamed, named]);
-        out.source_modulator(7, 12, false, "Envelope".into(), &[]);
+        out.source_modulator(7, 31, true, "Controller".into(), &[unnamed, named], None);
+        out.source_modulator(7, 12, false, "Envelope".into(), &[], None);
         let lookups = &out.ir.source_indices.engine_lookups;
         assert_eq!(lookups.len(), 4);
         assert_eq!((lookups[0].group, lookups[0].owner, lookups[0].target, lookups[0].index), (7,-1,false,31));
@@ -2202,7 +2208,7 @@ mod modulation {
     #[test]
     fn authored_init_intensity_uses_the_same_physical_modulator_slot() {
         let mut out=translation();
-        out.source_modulator(7,31,true,"Controller".into(),&[]);
+        out.source_modulator(7,31,true,"Controller".into(),&[],None);
         out.engine.push(sampler_ksp::EnginePar { parameter:"$ENGINE_PAR_MOD_TARGET_INTENSITY".into(), group:7, slot:31, generic:-1, value:500000 });
         assert_eq!(out.script_intensity(7,"controller"),Some(0.5));
     }
