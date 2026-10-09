@@ -186,6 +186,8 @@ def frozen_underruns(rows):
 
 
 def measured_status(live):
+    if live.get('family_observation'):
+        return 'UNKNOWN'  # Opt-in audio capture is excluded from CPU/load acceptance.
     complete = (live.get('returncode') == 0 and live.get('events_dispatched', 0) > 0
                 and live.get('events_dispatched') == live.get('events_planned')
                 and live.get('peak', 0) > 0 and live.get('nonfinite') == 0
@@ -266,6 +268,9 @@ def observe(host, plugin, state, plan, block, seconds, folder, version, *, cpu_a
                 live.update(next((r for r in records if r.get('kind') == 'live_host'), {}))
                 if cpu_audit: live['cpu_audit'] = next((r for r in records if r.get('kind') == 'cpu_audit'), {})
                 if cpu_audit: live['profiled'] = profile
+                if os.environ.get('KONTRA_FAMILY_AUDIO'):
+                    live['family_observation'] = True
+                    live['note_audio'] = [r for r in records if r.get('kind') == 'note_audio']
                 views = [r for r in records if r.get('kind') == 'perf_view']
                 io = next((r for r in records if r.get('kind') == 'stream_io'), {})
                 rows = log_rows(capture.root)
