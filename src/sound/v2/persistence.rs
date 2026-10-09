@@ -196,6 +196,8 @@ impl Persistence {
             .map(|entry| entry.address)
             .collect()
     }
+    #[cfg(test)]
+    pub(super) fn values_len(&self) -> usize { self.state.values.len() }
     fn new(
         runtime: &mut Runtime,
         views: &[sampler_ksp::ScriptView],
