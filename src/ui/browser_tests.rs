@@ -122,6 +122,31 @@ fn w14_format_tabs_separate_libraries() {
 }
 
 #[test]
+fn unsupported_uvi_banks_stay_visible_when_no_library_opens() {
+    let p = catalog();
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        let mut shelf = crate::library::Shelf::new(Vec::new());
+        view.files = Arc::new(Vec::new());
+        shelf.bank_issues.push(crate::library::BankIssue {
+            unsupported: true, message: "protected library: not supported".into(),
+            locations: (0..26).map(|n| PathBuf::from(format!("/virtual/UVI/Bank{n}.ufs"))).collect(),
+        });
+        view.shelf = Arc::new(shelf);
+    }
+    for (width, height) in [(1180., 760.), (900., 600.)] {
+        let mut h = Harness::new(&p, width, height);
+        h.press("bank-uvi");
+        assert!(h.ui.scene().unwrap().surface("uvi-bank-problem").is_some());
+        assert!(h.ui.scene().unwrap().surface("uvi-reader-locate").is_none());
+        if let Some(out) = std::env::var_os("KONTRA_BROWSER_SHOTS").map(PathBuf::from) {
+            std::fs::create_dir_all(&out).unwrap();
+            moose::core::screenshot::save_png(&out.join(format!("uvi-unsupported-{width}.png")), &pixels(&h.ui, width as u16, height as u16), width as u32, height as u32);
+        }
+    }
+}
+
+#[test]
 fn format_tabs_retain_independent_preset_scroll_positions() {
     let p = catalog();
     {
