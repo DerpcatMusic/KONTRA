@@ -347,6 +347,14 @@ pub fn lower_with(
     }
     let mut plan = Prepared::new(rate, pcm.clone(), regions, candidates)
         .map_err(core(Stage::Regions, "zones"))?;
+    // Port v1 settings.envelope/flex: either authored amplitude source excludes defaults.
+    plan = plan.with_fallback_envelopes(instrument.zones.iter().map(|z| {
+        z.amplitude.is_none() && !z.routes.iter().any(|r| {
+            let r = &instrument.routes[r.0];
+            r.target == ir::Target::Amplitude && matches!(instrument.modulators[r.source.0].source,
+                ir::ModulationSource::Envelope(_) | ir::ModulationSource::Breakpoints(_))
+        })
+    }).collect()).map_err(core(Stage::Envelope, "fallback envelopes"))?;
     if !instrument.source_indices.zones.is_empty() {
         let mut ids: Vec<u32> = (1..=instrument.zones.len() as u32).collect();
         for (source, runtime) in instrument.source_indices.zones.iter().enumerate() {
@@ -997,6 +1005,13 @@ impl Lowering<'_> {
                         unsupported(owner.clone(), Feature::ModulationRoute(route.target))
                     })?;
                     match (parameter, depth) {
+                        (parameter, ir::Depth::Normalized(d))
+                            if matches!(**processor, ir::Processor::LadderLP4(_) | ir::Processor::Daft(_)) => {
+                            (match parameter { ir::ProcessorParameter::Cutoff => ModTarget::ProcessorNativeCutoff(first),
+                                ir::ProcessorParameter::Resonance => ModTarget::ProcessorNativeResonance(first),
+                                ir::ProcessorParameter::Gain => ModTarget::ProcessorNativeGain(first),
+                                _ => return Err(unsupported(owner, Feature::ModulationRoute(route.target))), }, d)
+                        }
                         (ir::ProcessorParameter::Cutoff, ir::Depth::Pitch(p)) => {
                             (ModTarget::ProcessorCutoff(first), p.semitones())
                         }
@@ -1070,6 +1085,9 @@ impl Lowering<'_> {
                 let target = match native.target {
                     ModTarget::ProcessorCutoff(_) => ModTarget::ProcessorCutoff(index),
                     ModTarget::ProcessorResonance(_) => ModTarget::ProcessorResonance(index),
+                    ModTarget::ProcessorNativeCutoff(_) => ModTarget::ProcessorNativeCutoff(index),
+                    ModTarget::ProcessorNativeResonance(_) => ModTarget::ProcessorNativeResonance(index),
+                    ModTarget::ProcessorNativeGain(_) => ModTarget::ProcessorNativeGain(index),
                     _ => unreachable!(),
                 };
                 program.routes.push(ModRoute { target, ..native });
@@ -1155,6 +1173,7 @@ impl Lowering<'_> {
             }
             ir::ModulationSource::Lfo(lfo) => ModSource::Lfo(Lfo {
                 shape: match lfo.shape {
+                    ir::LfoShape::Zero => LfoShape::Zero,
                     ir::LfoShape::Sine => LfoShape::Sine,
                     ir::LfoShape::Triangle => LfoShape::Triangle,
                     ir::LfoShape::Square => LfoShape::Square,

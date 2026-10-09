@@ -16,4 +16,17 @@ Validation: Kontakt/UVI coverage8/8; executed cursor2/2; root projection/lexer2/
 
 ResourceUnavailable means our translation failed to resolve the resource; it does not prove missing user data. Native Conflux containers are present. Missing DSP/target ranking handed to W15; recount only affected items after each READY SHA and block witness.
 
-NEXT: W15 alpha-port affected-item re-count after W0 release-build priority, then native Always compound-rule red→green.
+
+Post-W15 `ec4a79bb` atop `8f7980f5`, `f6116b1b`, `d4574125`: remeasured Conflux, Analog, Morphology and Big Screen (five programs); 18 unaffected item receipts retained. Authored slot/target identities and enabled states are unchanged; zero new slot or target drops.
+
+| Dropped slots | Baseline enabled/bypassed | After enabled/bypassed |
+| --- | ---: | ---: |
+| FX | 377/1521 | 100/1315 |
+| Filters | 2109/4962 | 1818/4770 |
+| Modulators | 20404/24478 | 18151/24478 |
+
+Recovered enabled cutoff routes: Ladder LP4 subtype33 **1264** (Conflux720, Big Screen program1 544); Daft70 **51** (Analog11, Big Screen program1 40); Daft71 **19** (Analog). Bypassed recovery0. Earlier pan recovery1185. Every recovered route remains **Approximated(NativeLawUnverified)**; native timing/PCM/CPU parity is unmeasured. Morphology's subtype33 still has native slot-admission loss.
+
+Stable after ledgers: `after-ec4a79bb/`, `recount-ec4a79bb-summary.json`, `target-summary-after-ec4a79bb.json`, `native-slot-metrics-after-ec4a79bb.json`. Reader source `3a849db5` is the isolated four-port stack; binary hash `477cfac0c37269896b64aa6aea818334ac10fb51160d3d69ba6b705d9d4cb7d5`. Comparison uses preserved baseline metadata hash `713e6dd4`; the retained diagnostic helper hash `8e3241ae` differs and was not rerun. Full provenance is `recount-ec4a79bb-provenance.json` beside the ledgers.
+
+NEXT: native Always compound-rule red→green; recount further W15 READY blocks without replacing the baseline.

@@ -1,6 +1,6 @@
 # v1 settings and feature parity
 
-Baseline: v1 **0cb7a8a0 (GAS)**; v2 **67dafc61**, `origin/integrate/core-v2` at the start of W4's resumed task. This is a source inventory of reachable product controls and behavior, not a performance certification. **Present** means the control and its backing path exist; **missing** means absent; **worse** means only a subset or read-only replacement exists. Runtime correctness still requires the unified release gate. No release build or install is authorized before that gate.
+Baseline: v1 **0cb7a8a0 (GAS)**; v2 **67dafc61**, `origin/integrate/core-v2` at the start of W4's resumed task. This is a source inventory of reachable product controls and behavior, not a performance certification. **Present** means the control and its backing path exist; **missing** means absent; **worse** means only a subset or read-only replacement exists. Runtime correctness still requires the unified release gate. The initial release hold is historical: the user's resumed alpha-release directive authorizes normal releases through W0 while parity work continues.
 
 The current implementation status is tracked below. Source references are relative to the named revision. CPU-relevant rows carry **W9**; this includes settings that affect load/RSS/disk work as well as render CPU. Authored library controls are data-driven and potentially unbounded: their entire supported widget/engine behavior is inventoried by kind, rather than treating one library's knobs as global settings.
 
@@ -24,6 +24,9 @@ The current implementation status is tracked below. Source references are relati
 | Appearance Plain / library color / artwork | ui/menu.rs:573 | Present: ui/menu.rs | W9 UI assets |
 | Artwork blur toggle; sticky part headers toggle | ui/menu.rs:585 | Present: ui/menu.rs | W9 UI |
 | Master volume drag / wheel / type / double-click reset, output meter | ui/header.rs:45 | Present, changed default/reset −12 dB → 0 dB (intentional v2 gain policy; compare at matched gains) | W9 matched benchmark |
+| Global host Attack, 0.1 ms–5 s, default 2 ms | plugin.rs:317–319; engine/mod.rs:1453–1464 | Missing at inventory baseline; now ported with stable ID 0x95b8fd, fallback-only scope | W9 voice DSP |
+| Global host Release, 1 ms–10 s, default 150 ms | plugin.rs:320–321; engine/mod.rs:1453–1464 | Missing at inventory baseline; now ported with stable ID 0x36ae7e, fallback-only scope | W9 voice count/CPU |
+| Global host Tone, 20 Hz–20 kHz, default dry bypass | plugin.rs:322–329; engine/mod.rs:1416 | Missing at inventory baseline; now present with stable ID 0x62f120; worse placement: post-FX instead of v1 pre-insert | W9 bus DSP |
 | MIDI Thru; QWERTY enabled; panic / all notes off | ui/header.rs:70 | Present: ui/header.rs; plugin.rs | — |
 | Save multi by typed name and native dialog; load saved rack + every part setting | ui/header.rs:401; plugin::SavedMulti | Present: version-2 multis only. Missing settings cannot yet round-trip | — |
 | Create library from sample folder, native dialog and CLI fallback | ui/menu.rs:282,795; creator.rs | Missing: creator and dialog removed | W9 load |
@@ -234,3 +237,25 @@ The master-trace fixture now combines both 64-frame trace records by frame count
 ## Rack-growth routing preservation (2026-10-08)
 
 `growth-route-red.log` reproduces a remapped trigger selecting saved default articulation 1 instead of articulation 0 after growing the rack and reloading the part. The direct v1 `src/plugin.rs:PreparedGrowth::preserve!(routers)` loop now preserves existing per-part routes in the larger worker-prepared vector before swapping storage. `growth-route-green.log`: **1 passed**, covering both native and script-owned switching, source reload, a later slot's new remap and zero allocations/frees during audio adoption. `growth-route-no-run.log`: root compile gate passed. W9: adoption swaps route storage without allocation or clone churn; no timed performance claim is made. Source IR and authored articulation identity stay unchanged.
+
+## Upper-MPE keyboard manager routing (2026-10-08)
+
+`upper-mpe-keyboard-red.log` establishes that a keyboard bend addressed to channel 1 misses the upper zone's manager and fails to reach held member notes. The v1 `src/engine/mod.rs:service_channel` selection is ported to direct part keyboard input using the loaded MIDI adapter's existing manager. MIDI1 and MIDI2 channel-voice input use that manager; exact host-note tuples and external port routing retain their identities. The adapter exposes its existing zone manager through a five-line getter, without another MPE model.
+
+`upper-mpe-keyboard-green.log`: **2 passed**, including both keyboard bend formats reaching two upper-zone members and an external member bend remaining isolated. `upper-mpe-keyboard-no-run.log`: root `cargo test --profile ci --no-run` passed. This is functional routing evidence; no timed CPU or native-host parity gate is claimed.
+
+## Sound-editor probe lifetime (2026-10-08)
+
+`editor-probe-close-red.log` establishes that closing the actual editor leaves `editor_watch=0`, so the audio thread continues publishing the closed Sound editor's taps. The v1 `src/ui/mod.rs` visible-only probe policy is extended to the existing close/drop hook: clear the owner with the same sentinel used when no Sound view is drawn. `editor-probe-close-green.log`: **1 passed**, exercising close, drop without close and a subsequent visible frame restoring ownership. `editor-probe-close-no-run.log`: required root compile gate passed. W9: closed-editor measurements must use the cleared owner; this functional test does not quantify CPU savings.
+
+## Global host Attack, Release and Tone (2026-10-08)
+
+W13's 84-row source inventory at `765c7769:docs/audit-2026-10-08/w13-settings-parity.md` exposed these three missing host controls. The declarations and fallback-default assignment are ported directly from `0cb7a8a0:src/plugin.rs:317–329,3683–3685` and `src/engine/mod.rs:228–233,1453–1464`, adapted to v2's existing envelope and shared DSP. Volume remains 0xe0698f; all 2,049 generic slot IDs remain 0x4b000000 through 0x4b000800. The host now exposes 2,053 parameters. Parameter values use the existing host state collection/restore path; source IR stays immutable.
+
+Attack and Release affect new fallback voices only. Authored AHDSR, FLEX and routed amplitude envelopes exclude those defaults. Host automation reaches the actual plugin process at the supplied sample offsets. Tone is a part/output-stage control, separate from the legacy per-voice Tone that W15 preserves. It uses the existing shared OnePoleLowPass kernel without changing that kernel. At 20 kHz the output is exactly dry and each stereo history tracks its last sample before enable. Each part and direct output pair has separate history.
+
+Failing-first evidence in `~/.cache/kontakto-fix-settings-parity/`: `global-host-params-red.log` has two metadata/count failures; `global-host-audio-red.log` has two actual-audio failures before backend wiring. `global-host-plugin-green.log`: **4 passed**, including real plugin host events and zero audio-thread allocations/frees. `global-host-count-green.log`: **2 passed**, including all generic IDs and state round-trip. `global-host-core-green2.log`: **2 passed**, covering authored-envelope exclusion, immutable IR, exact dry bypass, enable seeding, stereo histories and invalid input. Metadata coverage overlaps between the plugin and count receipts. `global-host-no-run.log`: root `cargo test --profile ci --no-run` passed. The shared f64 one-pole differs from the copied v1 f32 equation by at most **1.1920929e-7** in the synthetic stereo fixture; this is not a bit-exact claim.
+
+Known limitation, authorized for this slice by the coordinator/W15: Tone runs after native FX, before part faders/rack routing. v1 runs it before instrument inserts. A correct pre-FX port requires a cross-format IR input-bus marker: Kontakt's actual instrument-insert entry and UVI's actual program-output entry, which can follow auxiliary buses and is not necessarily bus 0. Direct-output paths also need provenance so a filtered descendant is not filtered twice. No CLAP/VST3 binary-host, real-library or timed performance claim follows from these functional tests. W9: record fallback times and Tone cutoff in performance cells; dry Tone only updates fixed histories, and wet Tone uses the shared preallocated filter cache. Fresh timing workers still use the existing source-default envelope outside the plugin; matching their default fallback to the host is a separate follow-up.
+
+NEXT: cross-format pre-insert Tone marker and direct-output coverage; preserve the independent legacy per-voice control.

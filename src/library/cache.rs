@@ -64,7 +64,7 @@ impl Cache {
         if cfg!(test) || std::env::var_os("KONTRA_SCAN_ACTIVE").is_some() {
             return None;
         }
-        Some(dirs::cache_dir()?.join("kontra/library-index-v2.json"))
+        Some(dirs::cache_dir()?.join("kontra/library-index.json"))
     }
 
     pub fn load(path: Option<&Path>) -> Self {
