@@ -90,12 +90,14 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - name: Nightly shipping identity
-        if: inputs.release_validation
+        if: inputs.release_validation || github.event_name == 'pull_request'
         shell: bash
         run: |
           export SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")
           echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" >> "$GITHUB_ENV"
+          python3 tools/test_version.py
           python3 tools/version.py nightly --write
+          python3 tools/version.py nightly-dirty
           echo "KONTRA_NIGHTLY_BUILD=1" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
         with:
@@ -187,12 +189,14 @@ jobs:
       - name: Portable license bundle checks
         run: python3 tools/licenses.py --self-test
       - name: Nightly shipping identity
-        if: inputs.release_validation
+        if: inputs.release_validation || github.event_name == 'pull_request'
         shell: bash
         run: |
           export SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")
           echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" >> "$GITHUB_ENV"
+          python3 tools/test_version.py
           python3 tools/version.py nightly --write
+          python3 tools/version.py nightly-dirty
           echo "KONTRA_NIGHTLY_BUILD=1" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
         with:
@@ -231,12 +235,14 @@ jobs:
           xcrun swiftc -typecheck .github/scripts/check_macos_bundles.swift
           xcrun swift .github/scripts/macos_package_preflight.swift
       - name: Nightly shipping identity
-        if: inputs.release_validation
+        if: inputs.release_validation || github.event_name == 'pull_request'
         shell: bash
         run: |
           export SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")
           echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" >> "$GITHUB_ENV"
+          python3 tools/test_version.py
           python3 tools/version.py nightly --write
+          python3 tools/version.py nightly-dirty
           echo "KONTRA_NIGHTLY_BUILD=1" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
         with:
