@@ -197,7 +197,7 @@ int main(int argc, char** argv) {
     wall.reserve(frames / block + 1); cpu.reserve(wall.capacity());
     steady_wall.reserve(wall.capacity()); steady_cpu.reserve(wall.capacity());
     FamilyAudio family;
-    if (std::getenv("KONTRA_FAMILY_AUDIO")) {
+    if (const char* flag = std::getenv("KONTRA_FAMILY_AUDIO"); flag && std::strcmp(flag, "1") == 0) {
         require(pcm[0].size() == 2, "stereo family fingerprint output");
         family.pcm.resize(frames);
     }

@@ -268,7 +268,7 @@ def observe(host, plugin, state, plan, block, seconds, folder, version, *, cpu_a
                 live.update(next((r for r in records if r.get('kind') == 'live_host'), {}))
                 if cpu_audit: live['cpu_audit'] = next((r for r in records if r.get('kind') == 'cpu_audit'), {})
                 if cpu_audit: live['profiled'] = profile
-                if os.environ.get('KONTRA_FAMILY_AUDIO'):
+                if os.environ.get('KONTRA_FAMILY_AUDIO') == '1':
                     live['family_observation'] = True
                     live['note_audio'] = [r for r in records if r.get('kind') == 'note_audio']
                 views = [r for r in records if r.get('kind') == 'perf_view']
