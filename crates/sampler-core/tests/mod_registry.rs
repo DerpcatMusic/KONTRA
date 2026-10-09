@@ -24,6 +24,7 @@ fn descriptor(scope: ParameterScope, node: u32, parameter: u32) -> ParameterDesc
                 },
         ),
         name: "custom level".into(),
+        role: sampler_core::ParameterRole::Gain,
         unit: ParameterUnit::Linear,
         range: [0., 2.],
         default: 1.,
