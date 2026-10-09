@@ -1,10 +1,10 @@
 use crate::{
-    Error,
-    kontakt::{Chunk, error::KontaktError, structured_object::StructuredObject},
+    kontakt::{error::KontaktError, structured_object::StructuredObject, Chunk},
     read_bytes::ReadBytesExt,
+    Error,
 };
 
-use super::{ExternalMod, modulation::read_param_slots};
+use super::{modulation::read_param_slots, ExternalMod};
 
 const CHUNK_ID: u16 = 0x3C;
 const SLOTS: usize = 32;
@@ -92,7 +92,7 @@ mod tests {
         let slots = array.slots().unwrap();
         assert_eq!(slots.len(), 1);
         assert_eq!(slots[0].0, 63);
-        assert_eq!(slots[0].1.0.public_data, [0xff, 0x39]);
+        assert_eq!(slots[0].1 .0.public_data, [0xff, 0x39]);
         // Raw chunks remain the lossless writer for unknown assignment fields.
         let mut bytes = Vec::new();
         chunk.write(&mut bytes).unwrap();
@@ -105,29 +105,23 @@ mod tests {
                 id: CHUNK_ID,
                 data: chunk.data[..end].to_vec(),
             };
-            assert!(
-                ExternalModArray32::try_from(&incomplete)
-                    .and_then(|a| a.slots())
-                    .is_err()
-            );
+            assert!(ExternalModArray32::try_from(&incomplete)
+                .and_then(|a| a.slots())
+                .is_err());
         }
         for count in [0u32, 33, 65, u32::MAX] {
             let mut data = chunk.data.clone();
             data[3..7].copy_from_slice(&count.to_le_bytes());
-            assert!(
-                ExternalModArray32::try_from(&Chunk { id: CHUNK_ID, data })
-                    .unwrap()
-                    .slots()
-                    .is_err()
-            );
+            assert!(ExternalModArray32::try_from(&Chunk { id: CHUNK_ID, data })
+                .unwrap()
+                .slots()
+                .is_err());
         }
         let mut data = chunk.data;
         data.push(0);
-        assert!(
-            ExternalModArray32::try_from(&Chunk { id: CHUNK_ID, data })
-                .unwrap()
-                .slots()
-                .is_err()
-        );
+        assert!(ExternalModArray32::try_from(&Chunk { id: CHUNK_ID, data })
+            .unwrap()
+            .slots()
+            .is_err());
     }
 }

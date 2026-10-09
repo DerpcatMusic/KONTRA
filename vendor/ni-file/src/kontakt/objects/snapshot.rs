@@ -2,9 +2,9 @@ use std::io::Cursor;
 
 use super::BParamArrayBParFX8;
 use crate::{
-    Error,
     kontakt::{Chunk, StructuredObject},
     read_bytes::ReadBytesExt,
+    Error,
 };
 
 /// Kontakt snapshot v1/v3: saved state for an existing instrument, without zones
@@ -216,13 +216,11 @@ mod tests {
         assert!(saved.effect_children.is_empty());
         assert_eq!(saved.persistent[2], ["$level 17", "@label saved"]);
         for end in 0..chunk.data.len() {
-            assert!(
-                Snapshot::try_from(&Chunk {
-                    id: chunk.id,
-                    data: chunk.data[..end].to_vec()
-                })
-                .is_err()
-            );
+            assert!(Snapshot::try_from(&Chunk {
+                id: chunk.id,
+                data: chunk.data[..end].to_vec()
+            })
+            .is_err());
         }
         for flags in [0u32, 1, 2, 4, u32::MAX] {
             let mut data = chunk.data.clone();

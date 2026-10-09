@@ -45,10 +45,15 @@ fn container_children_are_found_by_id_and_truncated_references_are_errors() {
         zone.0.public_data.pop();
         assert!(zone.filename_id().is_err());
     }
-    assert!(Zone(object(vec![], 0xa0, vec![0; 52])).filename_id().is_err());
+    assert!(
+        Zone(object(vec![], 0xa0, vec![0; 52]))
+            .filename_id()
+            .is_err()
+    );
 }
 
 #[test]
+#[cfg(feature = "library-access")]
 fn installed_multi_opens_without_single_instrument_translation() {
     let root = std::env::var_os("KONTRA_KONTAKT_LIBRARIES").and_then(|paths| {
         std::env::split_paths(&paths)

@@ -1037,9 +1037,16 @@ fn host_owned_notes_follow_zone_bends_transposition_and_pedals() {
     apply(&mut mpe, &mut rt, bend(0, 16383)).unwrap();
     assert_eq!(expression(&rt, note).pitch_semitones, pitch(16383, 2.0));
     mpe.transpose(&mut rt, -12.0).unwrap();
-    assert_eq!(expression(&rt, note).pitch_semitones, pitch(16383, 2.0) - 12.0);
+    assert_eq!(
+        expression(&rt, note).pitch_semitones,
+        pitch(16383, 2.0) - 12.0
+    );
     apply(&mut mpe, &mut rt, bend(0, 8192)).unwrap();
-    assert_eq!(expression(&rt, note).pitch_semitones, -12.0, "bends keep the offset");
+    assert_eq!(
+        expression(&rt, note).pitch_semitones,
+        -12.0,
+        "bends keep the offset"
+    );
     assert_eq!(
         apply(&mut mpe, &mut rt, packet(0xb0, 0, 64, 127)).unwrap(),
         Applied::Pedal
@@ -1070,11 +1077,45 @@ fn midi2_messages_play_the_zone_at_full_precision() {
     // A quarter-step 32-bit bend over the default 2 semitones.
     midi2(&mut mpe, &mut rt, 0xe0, 0, 0, 0xa000_0000).unwrap();
     let pitch = expression(&rt, note).pitch_semitones;
-    assert!((pitch - 2.0 * f64::from(0x2000_0000u32) / f64::from(0x7fff_ffffu32)).abs() < 1e-12, "{pitch}");
+    assert!(
+        (pitch - 2.0 * f64::from(0x2000_0000u32) / f64::from(0x7fff_ffffu32)).abs() < 1e-12,
+        "{pitch}"
+    );
     // Pressure keeps all 32 bits.
     midi2(&mut mpe, &mut rt, 0xd0, 0, 0, 0x1234_5678).unwrap();
     assert_eq!(expression(&rt, note).pressure, 0x1234_5678);
     // Registered Controller 0:0 sets the bend range: 12 semitones.
     midi2(&mut mpe, &mut rt, 0x20, 0, 0, 12 << 25).unwrap();
     assert_eq!(mpe.pitch_ranges().0, 12);
+}
+
+#[test]
+fn script_owned_attacks_keep_mpe_expression_pairing_and_release() {
+    let mut rt = runtime();
+    let mut mpe = Mpe::new(&rt, 7, 3, Zone::Lower, 2, 8).unwrap();
+    apply(&mut mpe, &mut rt, bend(0, 12288)).unwrap();
+    apply(&mut mpe, &mut rt, bend(1, 9216)).unwrap();
+    support::without_heap(|| {
+        let word = packet(0x90, 1, 60, 100);
+        let Applied::Started(note) = mpe
+            .apply_silent(&mut rt, Packets::new(&[word]).next().unwrap().unwrap())
+            .unwrap()
+        else {
+            panic!("silent note not admitted")
+        };
+        assert_eq!(rt.voice_count(), 0, "the Lua owner selects the attack");
+        assert_eq!(
+            expression(&rt, note).pitch_semitones,
+            pitch(12288, 2.0) + pitch(9216, 48.0)
+        );
+        rt.forward_attack(note).unwrap();
+        assert_eq!(rt.voice_count(), 1);
+        let off = packet(0x80, 1, 60, 0);
+        assert!(
+            matches!(mpe.apply_silent(&mut rt, Packets::new(&[off]).next().unwrap().unwrap()).unwrap(), Applied::Released { note: released, .. } if released == note)
+        );
+        assert!(!rt.key_down(note).unwrap());
+        rt.render(&mut [[0.; 2]; 512]).unwrap();
+        assert_eq!(rt.voice_count(), 0);
+    });
 }

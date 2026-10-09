@@ -7,7 +7,8 @@ const LIMIT: u64 = 32 << 20;
 
 // This authored host font is not a substitute for any other family or style.
 fn host_font(path: &str) -> Option<Vec<u8>> {
-    path.rsplit(['/', '\\']).next()
+    path.rsplit(['/', '\\'])
+        .next()
         .filter(|name| name.eq_ignore_ascii_case("Assistant-Regular.ttf"))
         .map(|_| include_bytes!("../assets/assistant/Assistant-Regular.ttf").to_vec())
 }
@@ -77,7 +78,9 @@ impl Resources {
         if let Some(bank) = &self.bank {
             let (bank, program) = bank.as_ref().map_err(|e| *e)?;
             // Bank authority, ambiguity and read failures still take precedence.
-            return bank.ui_resource_result(program, path).map(|bytes| bytes.or_else(|| host_font(path)));
+            return bank
+                .ui_resource_result(program, path)
+                .map(|bytes| bytes.or_else(|| host_font(path)));
         }
         #[cfg(not(feature = "library-access"))]
         if self

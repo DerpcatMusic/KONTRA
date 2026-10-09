@@ -846,8 +846,13 @@ pub(super) fn install_standalone_capture() {
     let marker = REPORTER.marker.lock_unpoisoned().clone();
     #[cfg(target_os = "linux")]
     if let Some(marker) = &marker {
-        if let Err(error) = super::standalone::install(&marker.session_id, marker.pid,
-            marker.started_at, &marker.host_process, &marker.build_id) {
+        if let Err(error) = super::standalone::install(
+            &marker.session_id,
+            marker.pid,
+            marker.started_at,
+            &marker.host_process,
+            &marker.build_id,
+        ) {
             eprintln!("KONTRA native crash capture unavailable: {error}");
         }
     }
@@ -858,8 +863,14 @@ pub(super) fn install_standalone_capture() {
         if !captured.swap(true, Ordering::Relaxed) {
             let panic = PanicMarker {
                 at: now_unix(),
-                thread: std::thread::current().name().unwrap_or("unnamed").to_owned(),
-                message: format!("{info}\nRust backtrace:\n{}", std::backtrace::Backtrace::force_capture()),
+                thread: std::thread::current()
+                    .name()
+                    .unwrap_or("unnamed")
+                    .to_owned(),
+                message: format!(
+                    "{info}\nRust backtrace:\n{}",
+                    std::backtrace::Backtrace::force_capture()
+                ),
                 location: info.location().map_or_else(String::new, |v| v.to_string()),
                 images: Vec::new(),
             };
@@ -936,16 +947,26 @@ fn pin_module_containing(address: *const std::ffi::c_void) -> Result<(), String>
 
 #[cfg(target_os = "linux")]
 fn main_executable_contains(address: *const std::ffi::c_void) -> bool {
-    unsafe extern "C" fn visit(info: *mut libc::dl_phdr_info, _: usize, data: *mut std::ffi::c_void) -> i32 {
+    unsafe extern "C" fn visit(
+        info: *mut libc::dl_phdr_info,
+        _: usize,
+        data: *mut std::ffi::c_void,
+    ) -> i32 {
         // SAFETY: dl_iterate_phdr supplies live loader records; data points to our address.
         unsafe {
             let info = &*info;
-            if info.dlpi_name.is_null() || *info.dlpi_name != 0 { return 0; }
+            if info.dlpi_name.is_null() || *info.dlpi_name != 0 {
+                return 0;
+            }
             let address = *data.cast::<usize>();
             for header in std::slice::from_raw_parts(info.dlpi_phdr, usize::from(info.dlpi_phnum)) {
-                if header.p_type != libc::PT_LOAD { continue; }
+                if header.p_type != libc::PT_LOAD {
+                    continue;
+                }
                 let start = (info.dlpi_addr as usize).saturating_add(header.p_vaddr as usize);
-                if address >= start && address < start.saturating_add(header.p_memsz as usize) { return 1; }
+                if address >= start && address < start.saturating_add(header.p_memsz as usize) {
+                    return 1;
+                }
             }
             0
         }
@@ -1340,16 +1361,17 @@ fn reporter_worker(
                         .join(format!("{incident_id}.json")),
                 ] {
                     if let Err(error) = retire_acknowledged_copy(&copy, &incident_id, &stopping)
-                        && error.kind() != std::io::ErrorKind::NotFound {
-                            retired = false;
-                            crate::diagnostics::event(
-                                crate::diagnostics::LogLevel::Error,
-                                "support",
-                                "acknowledged_report_cleanup_failed",
-                                serde_json::json!({"incident_id":incident_id,
+                        && error.kind() != std::io::ErrorKind::NotFound
+                    {
+                        retired = false;
+                        crate::diagnostics::event(
+                            crate::diagnostics::LogLevel::Error,
+                            "support",
+                            "acknowledged_report_cleanup_failed",
+                            serde_json::json!({"incident_id":incident_id,
                                 "reason":format!("Delivery was acknowledged, but a local queue copy could not be retired ({error}). Evidence remains local and may be retried; complete originals are retained.")}),
-                            );
-                        }
+                        );
+                    }
                 }
                 if retired {
                     let mut active = pending.lock_unpoisoned();
@@ -1631,8 +1653,13 @@ fn find_stale_candidate(stopping: &AtomicBool, confirmed_only: bool) -> Option<R
             super::platform::CrashEvidence::default()
         };
         #[cfg(target_os = "linux")]
-        if let Some(native) = super::standalone::evidence(&marker.session_id, marker.pid,
-            started_at, detected_at, &marker.host_process) {
+        if let Some(native) = super::standalone::evidence(
+            &marker.session_id,
+            marker.pid,
+            started_at,
+            detected_at,
+            &marker.host_process,
+        ) {
             evidence.disposition = native.disposition;
             evidence.signature = native.signature;
             evidence.text = format!("{}\n{}", native.text, evidence.text);
@@ -1950,11 +1977,11 @@ fn archive_original(
                     if let Some(expected) = expected.filter(|e| !e.blake3.is_empty())
                         && (total != expected.bytes
                             || hasher.finalize().to_hex().as_str() != expected.blake3.as_str())
-                        {
-                            return Err(std::io::Error::other(
-                                "original journal changed after capture; session source retained",
-                            ));
-                        }
+                    {
+                        return Err(std::io::Error::other(
+                            "original journal changed after capture; session source retained",
+                        ));
+                    }
                     return Ok(());
                 }
                 hasher.update(&buffer[..bytes]);
@@ -2849,9 +2876,10 @@ fn migrate_legacy_pending(stopping: &AtomicBool) -> bool {
                 },
             );
             if let Err(error) = publication
-                && error.kind() != std::io::ErrorKind::AlreadyExists {
-                    return Err(error);
-                }
+                && error.kind() != std::io::ErrorKind::AlreadyExists
+            {
+                return Err(error);
+            }
         }
         if stopping.load(Ordering::Acquire) {
             return Err(std::io::Error::from(std::io::ErrorKind::Interrupted));
@@ -4729,8 +4757,12 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn standalone_module_detection_uses_loaded_addresses_not_argv_or_cwd() {
-        assert!(main_executable_contains(pin_own_module as *const std::ffi::c_void));
-        assert!(!main_executable_contains(libc::getpid as *const std::ffi::c_void));
+        assert!(main_executable_contains(
+            pin_own_module as *const std::ffi::c_void
+        ));
+        assert!(!main_executable_contains(
+            libc::getpid as *const std::ffi::c_void
+        ));
         assert!(!main_executable_contains(std::ptr::null()));
     }
 
@@ -4747,13 +4779,24 @@ mod tests {
                 .current_dir(directory.path())
                 .env(CHILD, "1")
                 .args(["--exact", TEST, "--test-threads=1"])
-                .output().unwrap();
-            assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
             return;
         }
         let (sent, received) = mpsc::channel();
-        spawn_detached("standalone-delivery-test", move || { let _ = sent.send(()); }).unwrap();
-        received.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        spawn_detached("standalone-delivery-test", move || {
+            let _ = sent.send(());
+        })
+        .unwrap();
+        received
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
     }
 
     /// Unload returns while work that waits on the user (an open file dialog) is still blocked.

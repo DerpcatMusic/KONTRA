@@ -69,6 +69,75 @@ fn load(
 }
 
 #[test]
+fn high_rate_streamed_sources_match_resident_across_pages_and_loop_seams_without_heap() {
+    let data: Vec<Frame> = (0..PAGE_FRAMES * 4)
+        .map(|i| {
+            let phase = std::f64::consts::TAU * i as f64 / 512.;
+            [phase.sin() as f32, phase.cos() as f32]
+        })
+        .collect();
+    for step in [2.01_f64, 2.5, 4., 8., 16.] {
+        for direction in [Direction::Forward, Direction::Reverse] {
+            let mut baseline = [[0.; 2]; 768];
+            for partition in [1, 7, 64, 128] {
+                for streamed in [false, true] {
+                    let pcm = if streamed {
+                        Pcm::streamed(48000, data.len()).unwrap()
+                    } else {
+                        Pcm::new(48000, data.clone().into_boxed_slice()).unwrap()
+                    };
+                    let (mut cache, mut worker) = StreamCache::new(4).unwrap();
+                    if streamed {
+                        for page in 0..4 {
+                            load(&mut cache, &mut worker, &pcm, &data, page);
+                        }
+                    }
+                    let playback = Playback {
+                        start: 4096,
+                        end: Some(12288),
+                        direction,
+                        transpose_semitones: 12. * step.log2(),
+                        loop_range: Some(Loop {
+                            start: 4096,
+                            end: 12288,
+                            shape: LoopShape::Wrap,
+                            mode: LoopMode::Continuous,
+                            passes: None,
+                        }),
+                        ..Playback::default()
+                    };
+                    let mut rt = runtime(vec![pcm], vec![region(0, playback)]);
+                    if streamed {
+                        rt = rt.with_stream_cache(cache);
+                    }
+                    let mut audio = [[0.; 2]; 768];
+                    support::without_heap(|| {
+                        rt.trigger(input(), 60, 1.).unwrap();
+                        for block in audio.chunks_mut(partition) {
+                            rt.render(block).unwrap();
+                        }
+                        assert_eq!(rt.voice_count(), 1);
+                        assert_eq!(rt.stream_underruns(), 0);
+                    });
+                    if !streamed && partition == 1 {
+                        baseline = audio;
+                    }
+                    for (frame, expected) in audio.iter().zip(baseline) {
+                        for (value, expected) in frame.iter().zip(expected) {
+                            assert!(
+                                (value - expected).abs() < 1e-6,
+                                "step={step} {direction:?} partition={partition} streamed={streamed}"
+                            );
+                        }
+                    }
+                    assert!(audio.iter().flatten().any(|x| x.abs() > 0.5));
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn paged_audio_matches_resident_across_rates_boundaries_loops_release_and_partitions() {
     let data: Box<[Frame]> = (0..PAGE_FRAMES * 2 + 137)
         .map(|i| [(i as f32 * 0.071).sin(), (i as f32 * 0.013).cos()])
@@ -82,6 +151,7 @@ fn paged_audio_matches_resident_across_rates_boundaries_loops_release_and_partit
                 Some(LoopShape::Crossfade { frames: 17 }),
             ] {
                 let playback = Playback {
+                    wavetable: None,
                     loop_slots: [None; 8],
                     start: PAGE_FRAMES - 101,
                     end: Some(PAGE_FRAMES + 111),

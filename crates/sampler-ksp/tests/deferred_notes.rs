@@ -52,10 +52,13 @@ fn peak_with_later_slot(body: &str, later_slot: bool) -> f32 {
         .unwrap();
     let note_cells = script.note_cells() * 8;
     let plan = if later_slot {
-        let later = sampler_ksp::compile("on note end on", 48000,
-            sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+        let later =
+            sampler_ksp::compile("on note end on", 48000, sampler_ksp::Limits::LIBRARY, &[])
+                .unwrap();
         sampler_ksp::bind_modules(vec![script, later], prepared).unwrap()
-    } else { script.bind(prepared).unwrap() };
+    } else {
+        script.bind(prepared).unwrap()
+    };
     let behavior_cells = plan.behavior_local_count() * 8;
     let mut rt = Runtime::new(
         plan,
@@ -86,7 +89,9 @@ fn peak_with_later_slot(body: &str, later_slot: bool) -> f32 {
     let mut block = [[0.; 2]; 64];
     support::without_heap(|| {
         rt.trigger(input, 60, 1.).unwrap();
-        for chunk in block.chunks_mut(7) { rt.render(chunk).unwrap(); }
+        for chunk in block.chunks_mut(7) {
+            rt.render(chunk).unwrap();
+        }
     });
     block.iter().flatten().fold(0.0f32, |m, v| m.max(v.abs()))
 }
@@ -97,12 +102,16 @@ fn played_note_group_edits_reach_a_later_script_slot() {
     let quiet = peak_with_later_slot(
         "$id := play_note(61, 100, 0, 0)
          set_event_par_arr($id, $EVENT_PAR_ALLOW_GROUP, 0, $ALL_GROUPS)
-         set_event_par_arr($id, $EVENT_PAR_ALLOW_GROUP, 1, 1)", true);
+         set_event_par_arr($id, $EVENT_PAR_ALLOW_GROUP, 1, 1)",
+        true,
+    );
     assert!((quiet / all - 0.2).abs() < 0.02, "{quiet} of {all}");
     let late = peak_with_later_slot(
         "$id := play_note(61, 100, 0, 0)
          wait(100)
-         set_event_par_arr($id, $EVENT_PAR_ALLOW_GROUP, 0, $ALL_GROUPS)", true);
+         set_event_par_arr($id, $EVENT_PAR_ALLOW_GROUP, 0, $ALL_GROUPS)",
+        true,
+    );
     assert!((late - all).abs() < 0.02, "{late} vs {all}");
 }
 

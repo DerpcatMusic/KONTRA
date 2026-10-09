@@ -1,6 +1,7 @@
 // Real-time exported CLAP host. Reuses native_midi_audio.cpp's SDK/state path.
-// HOST PLUGIN STATE BLOCK SECONDS READY_FLAG EVENT_TSV EXPECTED_PARTS READBACK_STATE
+// HOST PLUGIN STATE BLOCK SECONDS READY_FLAG EVENT_TSV EXPECTED_PARTS READBACK_STATE [--cpu-audit]
 #include <clap/clap.h>
+#include "family_audio.hpp"
 #include <dlfcn.h>
 #include <algorithm>
 #include <array>
@@ -13,6 +14,10 @@
 #include <fstream>
 #include <thread>
 #include <sstream>
+#include <sys/syscall.h>
+#include <unistd.h>
+#include <sched.h>
+#include <sys/resource.h>
 #include <vector>
 
 using Clock = std::chrono::steady_clock;
@@ -124,9 +129,41 @@ static double quantile(const std::vector<double>& sorted, double q) {
     require(!sorted.empty(), "measured process calls");
     return sorted[std::min(sorted.size()-1, size_t(std::ceil(q * sorted.size())-1))];
 }
+// Match tools/cpu-audit-common.rs, including its floor-index p99.
+static double audit_quantile(const std::vector<double>& sorted, bool p99) {
+    require(!sorted.empty(), "audit process calls");
+    return sorted[p99 ? (sorted.size()-1)*99/100 : sorted.size()/2];
+}
+static uint32_t event_time(Midi event, uint64_t at, bool audit) {
+    require(event.frame >= at, "no late scheduled event");
+    return audit ? 0 : uint32_t(event.frame - at);
+}
+static rusage thread_usage() {
+    rusage value{};
+    require(getrusage(RUSAGE_THREAD, &value) == 0, "thread context switches");
+    return value;
+}
+static std::array<long,2> switches(const rusage& before, const rusage& after) {
+    require(after.ru_nvcsw >= before.ru_nvcsw && after.ru_nivcsw >= before.ru_nivcsw, "monotonic context switches");
+    return {after.ru_nvcsw-before.ru_nvcsw, after.ru_nivcsw-before.ru_nivcsw};
+}
+struct SwitchMiss { uint64_t frame; double wall, cpu; long voluntary, involuntary; };
+
 int main(int argc, char** argv) {
     if (argc == 2 && std::strcmp(argv[1], "--self-check") == 0) {
+        std::vector<std::array<float, 2>> samples(48000);
+        for (size_t i = 48; i < 24000; ++i) samples[i] = {float(std::cos(i * 2 * 3.141592653589793 / 48)), float(-std::cos(i * 2 * 3.141592653589793 / 48))};
+        auto fingerprint = FamilyAudio::measure(samples, 0, samples.size());
+        require(fingerprint.onset == 48 && fingerprint.last == 23999 && fingerprint.rms > .49 && fingerprint.rms < .51, "per-note onset, length and opposite-phase stereo energy");
+        double power = 0; for (double band : fingerprint.spectrum) { require(std::isfinite(band) && band >= 0, "finite spectrum fingerprint"); power += band; }
+        require(std::abs(power - 1) < 1e-10, "normalized spectrum fingerprint");
+        for (auto& sample : samples) sample = {0, 0};
+        fingerprint = FamilyAudio::measure(samples, 0, samples.size());
+        require(fingerprint.onset == -1 && fingerprint.last == -1 && fingerprint.rms == 0, "silent window has no onset or length");
         require(quantile({1, 2, 3, 4}, .5) == 2 && quantile({1, 2, 3, 4}, .99) == 4, "nearest-rank percentiles");
+        require(audit_quantile({1, 2, 3, 4}, false) == 3 && audit_quantile({1, 2, 3, 4}, true) == 3, "source audit percentiles");
+        require(event_time({48000, 0x80, 60, 0}, 47872, true) == 0
+            && event_time({48000, 0x80, 60, 0}, 47872, false) == 128, "audit block quantization preserves normal sample offsets");
         Events events; events.add({0, 0x90, 60, 100}, 17);
         require(events.in.size(&events.in) == 1 && events.in.get(&events.in, 0)->time == 17
             && events.in.get(&events.in, 1) == nullptr, "sample-exact bounded host events");
@@ -143,13 +180,19 @@ int main(int argc, char** argv) {
         SavedState saved;
         require(saved.api.write(&saved.api, "abc", 3) == 3 && saved.bytes == std::vector<char>({'a', 'b', 'c'})
             && saved.api.write(&saved.api, "x", 64 * 1024 * 1024) == -1, "bounded native state-save stream");
-        std::puts("PASS: percentiles, event input, stream I/O, process memory, first audio and native state save"); return 0;
+        rusage a{}, b{}; a.ru_nvcsw=3; a.ru_nivcsw=5; b.ru_nvcsw=4; b.ru_nivcsw=9;
+        require(switches(a,b) == std::array<long,2>{1,4}, "context switch deltas");
+        const auto u0=thread_usage(), u1=thread_usage();
+        switches(u0,u1); require(sched_getscheduler(0)>=0, "read-only scheduler policy");
+        std::puts("PASS: percentiles, event input, stream I/O, process memory, first audio, native state save and scheduler counters"); return 0;
     }
-    require(argc == 9, "PLUGIN STATE BLOCK SECONDS READY_FLAG EVENT_TSV EXPECTED_PARTS READBACK_STATE");
+    const bool audit = argc == 10 && std::strcmp(argv[9], "--cpu-audit") == 0;
+    require(argc == 9 || audit, "PLUGIN STATE BLOCK SECONDS READY_FLAG EVENT_TSV EXPECTED_PARTS READBACK_STATE [--cpu-audit]");
     const unsigned block = std::strtoul(argv[3], nullptr, 10);
     const double seconds = std::strtod(argv[4], nullptr);
     const unsigned parts = std::strtoul(argv[7], nullptr, 10);
     require(block > 0 && block <= 256 && std::isfinite(seconds) && seconds >= 1 && seconds <= 30 && parts > 0, "bounded host run");
+    require(!audit || ((block == 32 || block == 64 || block == 256) && seconds == 4), "four-second source audit cell");
     const auto plan = read_events(argv[6]);
     void* module = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL); require(module, "dlopen plugin");
     auto* entry = static_cast<const clap_plugin_entry_t*>(dlsym(module, "clap_entry"));
@@ -187,6 +230,7 @@ int main(int argc, char** argv) {
     std::vector<std::vector<float*>> pointers(n); std::vector<clap_audio_buffer_t> outputs(n);
     for (unsigned i = 0; i < n; ++i) {
         clap_audio_port_info_t info{}; require(ports->get(p, i, false, &info) && info.channel_count > 0 && info.channel_count <= 16, "port info");
+        require(!audit || i != 0 || info.channel_count == 2, "stereo audit main output");
         pcm[i].resize(info.channel_count); for (auto& c : pcm[i]) pointers[i].push_back(c.data());
         outputs[i] = {pointers[i].data(), nullptr, info.channel_count, 0, 0};
     }
@@ -200,45 +244,94 @@ int main(int argc, char** argv) {
     require(p->activate(p, 48000, block, block), "activate");
     auto perf = reinterpret_cast<ReadPerf>(dlsym(module, "__kontra_clap_perf"));
     std::atomic<bool> ready{false}, finished{false};
-    std::vector<double> wall, cpu; const uint64_t frames = uint64_t(seconds * 48000);
+    std::vector<double> wall, cpu, steady_wall, steady_cpu; const uint64_t frames = uint64_t(seconds * 48000);
     wall.reserve(frames / block + 1); cpu.reserve(wall.capacity());
+    steady_wall.reserve(wall.capacity()); steady_cpu.reserve(wall.capacity());
+    FamilyAudio family;
+    if (const char* flag = std::getenv("KONTRA_FAMILY_AUDIO"); flag && std::strcmp(flag, "1") == 0) {
+        require(pcm[0].size() == 2, "stereo family fingerprint output");
+        family.pcm.resize(frames);
+    }
     Io io_start{}, io_end{};
-    uint64_t misses = 0, wake_misses = 0, nonfinite = 0, dispatched = 0; double peak = 0;
+    uint64_t misses = 0, wake_misses = 0, nonfinite = 0, dispatched = 0, audit_epoch_ns = 0; double peak = 0, steady_peak = 0;
+    const auto* diagnostic_env=std::getenv("KONTRA_HOST_SCHED_DIAGNOSTIC");
+    const bool scheduling_diagnostic=diagnostic_env && std::strcmp(diagnostic_env,"1")==0;
+    int scheduler_policy=-1; sched_param scheduler_parameters{};
+    // ponytail: retain the first 256 misses; enlarge only if omitted_misses prevents diagnosis.
+    std::array<SwitchMiss,256> switch_misses{}; size_t recorded_misses=0;
+    uint64_t voluntary=0,involuntary=0;
     auto audio = std::thread([&] {
-        on_audio_thread = true; require(p->start_processing(p), "start processing");
+        on_audio_thread = true;
+        scheduler_policy=sched_getscheduler(0);
+        require(scheduler_policy>=0 && sched_getparam(0,&scheduler_parameters)==0, "callback scheduler policy");
+        require(p->start_processing(p), "start processing");
         const auto started = Clock::now(); auto deadline = started;
         bool measuring = false; uint64_t at = 0, warm = 0; size_t next = 0;
         while (!measuring || at < frames) {
             const auto period = std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(block / 48000.));
             std::this_thread::sleep_until(deadline);
             if (!measuring && ready.load(std::memory_order_acquire)) {
-                warm += block; if (warm >= 4800) { measuring = true; io_start = read_io(); deadline = Clock::now(); }
+                warm += block;
+                if (audit ? warm > 1000 * block : warm >= 4800) {
+                    measuring = true; io_start = read_io();
+                    if (audit) {
+                        if (const char* marker = std::getenv("CPU_AUDIT_READY")) {
+                            std::ofstream ready_file(marker); ready_file << syscall(SYS_gettid); ready_file.close();
+                            require(bool(ready_file), "profile audio TID marker");
+                            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+                        }
+                        audit_epoch_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+                    }
+                    deadline = Clock::now();
+                }
             }
             events.count = 0;
             if (measuring) while (next < plan.size() && plan[next].frame < at + block) {
-                require(plan[next].frame >= at, "no late scheduled event");
-                events.add(plan[next], uint32_t(plan[next].frame - at)); ++next; ++dispatched;
+                events.add(plan[next], event_time(plan[next], at, audit)); ++next; ++dispatched;
             }
+            auto scan_peak = [&] {
+                for (size_t i = 0; i < (audit ? 1 : pcm.size()); ++i) for (const auto& c : pcm[i]) for (unsigned f = 0; f < block; ++f) {
+                    const auto x = c[f]; nonfinite += !std::isfinite(x); if (std::isfinite(x)) peak = std::max(peak, double(std::abs(x)));
+                    if (audit && at >= 12000 && at < 48000 && std::isfinite(x)) steady_peak = std::max(steady_peak, double(std::abs(x)));
+                    if (load_probe && earlier_audio(x, at + f, first_audio_frame)) {
+                        first_audio_wall_ms = std::chrono::duration<double, std::milli>(Clock::now() - load_begin).count();
+                    }
+                }
+            };
+            rusage switches_before{};
+            if (scheduling_diagnostic && measuring) switches_before=thread_usage();
             timespec c0{}, c1{}; clock_gettime(CLOCK_THREAD_CPUTIME_ID, &c0);
             const auto before = Clock::now();
             require(p->process(p, &process) != CLAP_PROCESS_ERROR, "real CLAP process");
+            if (measuring && audit) scan_peak();
             const auto after = Clock::now(); clock_gettime(CLOCK_THREAD_CPUTIME_ID, &c1);
+            rusage switches_after{};
+            if (scheduling_diagnostic && measuring) switches_after=thread_usage();
             if (measuring) {
+                if (!family.pcm.empty()) for (unsigned f = 0; f < block && at + f < frames; ++f) family.pcm[at + f] = {pcm[0][0][f], pcm[0][1][f]};
                 const auto us = std::chrono::duration<double, std::micro>(after - before).count(); wall.push_back(us);
-                cpu.push_back((c1.tv_sec - c0.tv_sec) * 1e6 + (c1.tv_nsec - c0.tv_nsec) / 1e3);
-                misses += us > block * 1e6 / 48000.; wake_misses += before > deadline + period;
-                for (const auto& b : pcm) for (const auto& c : b) for (unsigned f = 0; f < block; ++f) {
-                    const auto x = c[f]; nonfinite += !std::isfinite(x); if (std::isfinite(x)) peak = std::max(peak, double(std::abs(x)));
-                    if (load_probe && earlier_audio(x, at + f, first_audio_frame)) {
-                        first_audio_wall_ms = std::chrono::duration<double, std::milli>(after - load_begin).count();
-                    }
+                const double cpu_us=(c1.tv_sec - c0.tv_sec) * 1e6 + (c1.tv_nsec - c0.tv_nsec) / 1e3;
+                cpu.push_back(cpu_us);
+                if (scheduling_diagnostic) {
+                    const auto delta=switches(switches_before,switches_after);
+                    voluntary+=delta[0]; involuntary+=delta[1];
+                    if (us>block*1e6/48000. && recorded_misses<switch_misses.size())
+                        switch_misses[recorded_misses++]={at,us,cpu_us,delta[0],delta[1]};
                 }
+                if (audit && at >= 12000 && at < 48000) { steady_wall.push_back(us); steady_cpu.push_back(cpu.back()); }
+                misses += us > block * 1e6 / 48000.; wake_misses += before > deadline + period;
+                if (!audit) scan_peak();
                 at += block;
             }
             process.steady_time += block;
             transport.song_pos_beats = int64_t(process.steady_time * (120. / 60. / 48000.) * CLAP_BEATTIME_FACTOR);
             deadline += period; // Absolute deadlines: a slow block does not stretch the audition timeline.
             require(Clock::now() - started < std::chrono::seconds(150), "bounded load/readiness wait");
+        }
+        if (audit) if (const char* marker = std::getenv("CPU_AUDIT_FINISHED")) {
+            std::ofstream finished_file(marker); finished_file << "done"; finished_file.close();
+            require(bool(finished_file), "profile finished marker");
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
         }
         io_end = read_io();
         p->stop_processing(p); finished.store(true, std::memory_order_release);
@@ -268,6 +361,16 @@ int main(int argc, char** argv) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     audio.join(); if (host.callback.exchange(false)) p->on_main_thread(p);
+    // Diagnostic syscalls bracket the clocks/process, not pacing sleeps; never CPU acceptance.
+    std::printf("{\"kind\":\"callback_scheduling\",\"diagnostic\":%s,\"policy\":%d,\"priority\":%d,\"voluntary_switches\":%llu,\"involuntary_switches\":%llu,\"recorded_misses\":%zu,\"omitted_misses\":%llu}\n",
+        scheduling_diagnostic?"true":"false",scheduler_policy,scheduler_parameters.sched_priority,
+        (unsigned long long)voluntary,(unsigned long long)involuntary,recorded_misses,
+        (unsigned long long)(scheduling_diagnostic?misses-recorded_misses:0));
+    for (size_t i=0;i<recorded_misses;++i) {
+        const auto& miss=switch_misses[i];
+        std::printf("{\"kind\":\"deadline_switches\",\"frame\":%llu,\"wall_us\":%.3f,\"thread_cpu_us\":%.3f,\"voluntary\":%ld,\"involuntary\":%ld}\n",
+            (unsigned long long)miss.frame,miss.wall,miss.cpu,miss.voluntary,miss.involuntary);
+    }
     if (load_probe) {
         const auto memory_done = read_memory();
         std::printf("{\"kind\":\"load_probe\",\"ready_ms\":%.6f,\"first_audio_wall_ms\":%.6f,\"first_audio_frame\":%lld,\"rss_before_kb\":%llu,\"rss_ready_kb\":%llu,\"rss_done_kb\":%llu,\"hwm_kb\":%llu,\"swap_kb\":%llu}\n",
@@ -275,6 +378,7 @@ int main(int argc, char** argv) {
             (unsigned long long)memory_before.rss, (unsigned long long)memory_ready.rss,
             (unsigned long long)memory_done.rss, (unsigned long long)memory_done.peak, (unsigned long long)memory_done.swap);
     }
+    if (!family.pcm.empty() && nonfinite == 0) family.report(plan);
     // State readback stays outside measured process calls and streaming deltas.
     SavedState saved;
     require(state->save(p, &saved.api) && !saved.bytes.empty(), "native CLAP state save");
@@ -284,6 +388,11 @@ int main(int argc, char** argv) {
     // Let the one-second frozen-v1 diagnostic snapshot reach its existing worker.
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     std::sort(wall.begin(), wall.end()); std::sort(cpu.begin(), cpu.end());
+    if (audit) {
+        std::sort(steady_wall.begin(), steady_wall.end()); std::sort(steady_cpu.begin(), steady_cpu.end());
+        std::printf("{\"kind\":\"cpu_audit\",\"profile_pace_unix_ns\":\"%llu\",\"steady_peak\":%.9g,\"all\":{\"blocks\":%zu,\"p50_us\":%.3f,\"p99_us\":%.3f},\"steady\":{\"blocks\":%zu,\"p50_us\":%.3f,\"p99_us\":%.3f},\"steady_thread_cpu\":{\"p50_us\":%.3f,\"p99_us\":%.3f}}\n",
+            (unsigned long long)audit_epoch_ns, steady_peak, wall.size(), audit_quantile(wall, false), audit_quantile(wall, true), steady_wall.size(), audit_quantile(steady_wall, false), audit_quantile(steady_wall, true), audit_quantile(steady_cpu, false), audit_quantile(steady_cpu, true));
+    }
     std::printf("{\"kind\":\"live_host\",\"block\":%u,\"seconds\":%.3f,\"blocks\":%zu,\"cpu_p50_us\":%.3f,\"cpu_p99_us\":%.3f,\"thread_cpu_p50_us\":%.3f,\"thread_cpu_p99_us\":%.3f,\"deadline_misses\":%llu,\"wake_deadline_misses\":%llu,\"peak\":%.9g,\"nonfinite\":%llu,\"events_dispatched\":%llu,\"events_planned\":%zu,\"perf_view_available\":%s}\n",
         block, seconds, wall.size(), quantile(wall, .5), quantile(wall, .99), quantile(cpu, .5), quantile(cpu, .99),
         (unsigned long long)misses, (unsigned long long)wake_misses, peak, (unsigned long long)nonfinite, (unsigned long long)dispatched, plan.size(), perf ? "true" : "false");
