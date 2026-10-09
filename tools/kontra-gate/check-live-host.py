@@ -120,3 +120,23 @@ for stages in [None, [], 'malformed']:
     malformed = [dict(rows[0], data=dict(rows[0]['data'], stages_ms=stages))]
     assert load_observation([probe], malformed)['plugin_stages_ms'] == {}
 print('PASS: real RSS, first-audio and load fields reject missing, silent, malformed and ambiguous evidence')
+
+from live_host import load_audit
+audit = load_audit('noise\nAUDIT {"stage":"sample_source_resolve","ms":12.5,"rss_kb":200,"hwm_kb":220}\n'
+                   'AUDIT {"stage":"sample_header_cache","hit":true}\n'
+                   'AUDIT {"stage":"ksp_callback_lower","ms":3,"source":"private authored text","secret":42}\n')
+assert audit == {'records': [dict(stage='sample_source_resolve', ms=12.5, rss_kb=200, hwm_kb=220),
+                            dict(stage='sample_header_cache', hit=True), dict(stage='ksp_callback_lower', ms=3)],
+                 'dropped_records': 0}
+for payload in ['[]', 'null', '{"stage":"private authored text","ms":1}',
+                '{"stage":"ksp_frontend","ms":NaN}', '{"stage":"ksp_frontend","ms":true}',
+                '{"stage":"ksp_frontend","ms":-1}', '{"stage":"ksp_frontend","ms":"private"}',
+                '{"stage":"ksp_frontend","ms":' + '9' * 1000 + '}',
+                '{"stage":"ksp_frontend","ms":{}}', '{"stage":"ksp_frontend"}']:
+    assert not load_audit('AUDIT ' + payload)['records']
+bounded = load_audit('AUDIT {"stage":"ksp_frontend","ms":1}\n' * 4097)
+assert len(bounded['records']) == 4096 and bounded['dropped_records'] == 1
+assert load_audit('AUDIT ' + 'x' * 4097)['dropped_records'] == 1
+assert load_audit('AUDIT {"stage":"ksp_callback_program","ms":1,"context":"Note"}')['records'][0]['context'] == 'Note'
+assert load_audit('AUDIT {"stage":"ksp_callback_program","context":"private"}')['records'] == []
+print('PASS: bounded load audit preserves numeric substages without authored text or unknown fields')
