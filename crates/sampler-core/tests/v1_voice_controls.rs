@@ -934,3 +934,27 @@ fn raw_ahdsr_forward_mapping_keeps_v1_native_setter_and_ordinary_conversion_dist
         assert_eq!(actual.amplitude_level().to_bits(), frozen.level().to_bits());
     });
 }
+
+#[test]
+fn original_flex_projection_uses_pinned_direction_curve_and_units() {
+    use sampler_ir::kontakt::FlexPoint as Raw;
+    let points = [Raw { time_ms: 125., level: 0.8, curve: 0.25 },
+        Raw { time_ms: 25., level: 0.3, curve: 0.75 },
+        Raw { time_ms: 0., level: 0.3, curve: 1. }];
+    let flex = Flex::from_kontakt(&points, 1).unwrap();
+    assert_eq!(flex.sustain, 1);
+    assert_eq!(flex.points.iter().map(|p| (p.seconds.to_bits(), p.level.to_bits(), p.curve.to_bits())).collect::<Vec<_>>(),
+        [(0.125f32.to_bits(), 0.8f32.to_bits(), (-0.5f32).to_bits()),
+         (0.025f32.to_bits(), 0.3f32.to_bits(), (-0.5f32).to_bits()),
+         (0f32.to_bits(), 0.3f32.to_bits(), 1f32.to_bits())]);
+    assert!(Flex::from_kontakt(&[], 0).is_err());
+    assert!(Flex::from_kontakt(&points, 3).is_err());
+    assert!(Flex::from_kontakt(&[points[0]; 33], 0).is_err());
+    for bad in [Raw { time_ms: f32::NAN, ..points[0] },
+        Raw { time_ms: f32::INFINITY, ..points[0] }, Raw { time_ms: -1., ..points[0] },
+        Raw { level: f32::NAN, ..points[0] }, Raw { level: 1.01, ..points[0] },
+        Raw { level: -0.01, ..points[0] }, Raw { curve: f32::INFINITY, ..points[0] },
+        Raw { curve: -0.01, ..points[0] }, Raw { curve: 1.01, ..points[0] }] {
+        assert!(Flex::from_kontakt(&[bad], 0).is_err());
+    }
+}
