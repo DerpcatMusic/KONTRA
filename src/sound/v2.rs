@@ -2194,6 +2194,81 @@ mod tests {
         eprintln!("CLEAR_UVI_END_TO_END peak={peak} underruns=0 voices_after_release=0");
     }
 
+    #[test]
+    #[cfg(feature = "library-access")]
+    fn w10_authored_uvi_features_play_and_release_without_callback_heap_calls() {
+        assert!(crate::plugin::tests::allocations(|| {
+            drop(std::hint::black_box(vec![0u8; 4096]));
+        }) >= 2, "allocation counter must observe both allocation and free");
+        let tmp = tempfile::tempdir().unwrap();
+        let wav = tmp.path().join("note.wav");
+        sine(&wav);
+        let bank = tmp.path().join("Authored.ufs");
+        let xml = include_bytes!("../../tests/fixtures/uvi-clear-features.uvip");
+        crate::library::tests::clear_sample_bank_xml(&bank, &std::fs::read(&wav).unwrap(), xml);
+        std::fs::remove_file(wav).unwrap();
+        if let Some(out) = std::env::var_os("KONTRA_UVI_FIXTURE_OUT") {
+            std::fs::copy(&bank, out).unwrap();
+        }
+        let loaded = V2Loader.prepare(&LoadRequest { path: bank.join("preset.uvip"), sample_rate: 48000., ..Default::default() }, &mut |_| {}, &|| false).unwrap();
+        assert!(loaded.report.missing.is_empty(), "{:?}", loaded.report.missing);
+        let instrument = loaded.instrument.as_ref().unwrap();
+        assert_eq!(instrument.zones.len(), 4);
+        assert!(instrument.zones.iter().all(|z| z.amplitude.is_some() && matches!(z.playback.looping, sampler_ir::Looping::Continuous(_))));
+        assert_eq!(loaded.interfaces.len(), 1);
+        let face = &loaded.interfaces[0];
+        assert!(face.widgets.iter().any(|w| w.name == "Fire"));
+        let sampler_ui_ir::Binding::Control(control) = face.widgets.iter().find(|w| w.name == "Fire").unwrap().binding else { panic!("button has no control binding") };
+        let mut ui = loaded.scripts;
+        let mut core = V2Core::with_parts(1, 48000.);
+        core.install(0, loaded.part);
+        assert!(core.set_control(0, control, 1.));
+        for _ in 0..20 {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            _ = core.render(128);
+        }
+        assert!(ui.interfaces()[0].widgets.iter().any(|w| w.text == "Clicked"), "Lua UI callback must publish its label change");
+        let mut peak = 0f32;
+        let mut late_peak = 0f32;
+        let mut voice_peak = 0;
+        // Count from the first note, including owner handoffs, loop crossings,
+        // sustain, release and repeated attacks; no audio-thread warmup exemption.
+        let heap_calls = crate::plugin::tests::allocations(|| {
+            for velocity in [40, 100] {
+                core.begin_block(&BlockInfo { frames: 128, offline: true, ..Default::default() });
+                core.event(0, Event::midi1(0xb0, 64, 127));
+                for key in [48, 52, 55, 60, 64, 67, 72, 76] {
+                    core.event(0, Event::midi1(0x90, key, velocity));
+                }
+                for block in 0..600 {
+                    if block % 8 == 0 { std::thread::sleep(std::time::Duration::from_millis(1)); }
+                    core.begin_block(&BlockInfo { frames: 128, offline: true, ..Default::default() });
+                    let out = core.render(128);
+                    for channel in &out.buses[0] {
+                        for &sample in &channel[..128] {
+                            assert!(sample.is_finite());
+                            peak = peak.max(sample.abs());
+                            if block > 400 { late_peak = late_peak.max(sample.abs()); }
+                        }
+                    }
+                    voice_peak = voice_peak.max(core.voices().active);
+                    core.end_block(128, &mut |_| true);
+                }
+                for key in [48, 52, 55, 60, 64, 67, 72, 76] { core.event(0, Event::midi1(0x80, key, 0)); }
+                for _ in 0..10 { _ = core.render(128); }
+                assert!(core.voices().active >= 16, "pedal must hold both authored layers");
+                core.event(0, Event::midi1(0xb0, 64, 0));
+                for _ in 0..100 { _ = core.render(128); }
+                assert_eq!(core.voices().active, 0, "DAHDSR release must retire looped voices");
+            }
+        });
+        assert_eq!(heap_calls, 0, "audio callbacks allocated or freed memory");
+        assert_eq!(voice_peak, 16, "each valid note must play both layers, selecting its keygroup");
+        assert!(peak > 0.01 && late_peak > 0.01, "embedded loops must sound beyond the sample end: {peak}/{late_peak}");
+        assert_eq!(core.problems(0).underruns, 0);
+        eprintln!("AUTHORED_UVI_FEATURES peak={peak} late_peak={late_peak} voice_peak={voice_peak} heap_calls={heap_calls} underruns=0");
+    }
+
     fn sine(path: &Path) {
         let spec = hound::WavSpec { channels: 1, sample_rate: 48000, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
         let mut w = hound::WavWriter::create(path, spec).unwrap();
