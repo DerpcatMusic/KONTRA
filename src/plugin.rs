@@ -685,6 +685,7 @@ pub struct Shared {
 
 #[derive(Default, Clone)]
 pub(crate) struct PartView {
+    pub(crate) effects: Arc<[crate::sound::effect_controls::EffectSnapshot]>,
     pub(crate) program: u32,
     pub(crate) generation: u64,
     pub(crate) ui_revision: u64,
@@ -2720,6 +2721,7 @@ mod uvi_save_tests;
 mod pressed_tests;
 #[cfg(test)]
 mod persistence_tests;
+mod effect_controls;
 
 #[cfg(test)]
 mod settings_parity_tests {
