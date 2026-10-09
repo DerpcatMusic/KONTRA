@@ -565,14 +565,19 @@ pub fn view_state(
             continue;
         }
         let r = face.page_rect(n);
+        let intersects = |clip: ir::Rect| {
+            i64::from(r.x) < i64::from(clip.x) + i64::from(clip.width)
+                && i64::from(r.y) < i64::from(clip.y) + i64::from(clip.height)
+                && i64::from(r.x) + i64::from(r.width) > i64::from(clip.x)
+                && i64::from(r.y) + i64::from(r.height) > i64::from(clip.y)
+        };
+        if r.width == 0
+            || r.height == 0
+            || !intersects(ir::Rect::new(0, 0, p.size.width, p.size.height))
+        {
+            continue;
+        }
         if face.source == ir::Source::FalconLua {
-            let intersects = |clip: ir::Rect| {
-                i64::from(r.x) < i64::from(clip.x) + i64::from(clip.width)
-                    && i64::from(r.y) < i64::from(clip.y) + i64::from(clip.height)
-                    && i64::from(r.x) + i64::from(r.width) > i64::from(clip.x)
-                    && i64::from(r.y) + i64::from(r.height) > i64::from(clip.y)
-            };
-            if !intersects(ir::Rect::new(0, 0, p.size.width, p.size.height)) { continue; }
             let mut parent = face.widgets[n.0].parent;
             let mut clipped = false;
             for _ in 0..face.widgets.len() {
@@ -636,17 +641,9 @@ pub fn view_state(
         })
 }
 
-/// The page's height, reaching down to its lowest visible control: a control
-/// the source placed past the page edge is drawn whole, not cut.
+/// The height declared by the script, after grid rows are resolved.
 pub fn height(face: &Interface, page: PageRef) -> u32 {
-    let bottom = face
-        .draw_order(page)
-        .into_iter()
-        .filter(|&n| face.visible(n))
-        .map(|n| face.page_rect(n))
-        .map(|r| (r.y + r.height as i32).max(0) as u32)
-        .max();
-    face.pages[page.0].size.height.max(bottom.unwrap_or(0))
+    face.pages[page.0].size.height
 }
 
 /// Axis and full-range travel in drawn pixels, independent of bitmap fallback.
