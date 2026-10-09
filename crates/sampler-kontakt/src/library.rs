@@ -675,10 +675,16 @@ impl Translation {
                         .collect::<Result<_, _>>()?
                 } else {
                     let mut names = Vec::new();
+                    let mut amplitude_seen = false;
                     for (slot, modulator) in InternalModArray16::try_from(chunk)?.slots()? {
                         let params = modulator.params()?;
                         if let Modulator::Ahdsr(envelope) = &params.modulator {
                             Self::source_envelope(&mut self.ir.source_indices, index, slot, envelope);
+                            if params.targets.iter().any(|t| t.param == "volume") && !amplitude_seen {
+                                amplitude_seen = true;
+                                self.ir.source_indices.ahdsrs.last_mut().unwrap().native_amplitude =
+                                    Self::native_primary_ahdsr(&modulator, &params, envelope);
+                            }
                         }
                         names.push((slot, params.name, params.targets));
                     }
@@ -731,12 +737,65 @@ impl Translation {
         }
     }
 
+    // Port from v1 0cb7a8a0:src/modulation.rs primary AHDSR admission.
+    fn native_primary_ahdsr(
+        modulator: &ni_file::kontakt::objects::InternalMod,
+        params: &ni_file::kontakt::objects::InternalModParams,
+        env: &ni_file::kontakt::objects::EnvelopeAhdsr,
+    ) -> bool {
+        let native_wrapper = modulator.0.private_data.ends_with(&2u32.to_le_bytes())
+            && modulator
+                .0
+                .find_first(7)
+                .and_then(|c| ni_file::kontakt::StructuredObject::try_from(c).ok())
+                .is_some_and(|w| {
+                    w.version == 0x90
+                        && w.private_data.is_empty()
+                        && w.public_data == [0; 4]
+                        && w.children.len() == 1
+                        && w.children[0].id == 0x3f
+                });
+        let default_time = env.unknown_tail.len() == 52
+            && env
+                .unknown_tail
+                .chunks_exact(13)
+                .all(|r| r == [0, 0, 128, 191, 0, 0, 0, 0, 0, 0, 128, 63, 0]);
+        native_wrapper
+            && params.targets.len() == 1
+            && params.targets.iter().all(|t| {
+                t.param == "volume"
+                    && t.slot.is_none()
+                    && t.intensity == 1.
+                    && t.unknown_i16 == -1
+                    && t.unknown_flags == 0x10
+                    && !t.invert
+                    && t.lag_ms == 0
+                    && !t.shaper.as_ref().is_some_and(|s| s.enabled)
+            })
+            && params.unknown_flags[0] <= 1
+            && params.unknown_flags[1..] == [0, 1, 0]
+            && env.unknown_flag <= 1
+            && default_time
+    }
+
     fn source_envelope(
         source: &mut ir::SourceIndices,
         group: usize,
         slot: usize,
         envelope: &ni_file::kontakt::objects::EnvelopeAhdsr,
     ) {
+        source.ahdsrs.push(ir::SourceAhdsr {
+            group,
+            slot,
+            attack_ms: envelope.attack_ms,
+            attack_curve: envelope.attack_curve,
+            hold_ms: envelope.hold_ms,
+            decay_ms: envelope.decay_ms,
+            sustain: envelope.sustain,
+            release_ms: envelope.release_ms,
+            ahd_only: envelope.unknown_flag != 0,
+            native_amplitude: false,
+        });
         use sampler_core::{EngineParameterLaw, EnvelopeStage};
         let (ir::Curve::Exponential(curve), _) = ahdsr_curves(envelope.attack_curve) else {
             unreachable!()
@@ -1853,22 +1912,126 @@ pub(crate) fn saved(entries: &[String]) -> Result<Vec<(String, ir::Saved)>, crat
 mod saved_tests {
     use super::*;
     #[test]
+    fn native_primary_ahdsr_requires_exact_v1_wrapper_and_unity_target() {
+        use ni_file::kontakt::{
+            Chunk, StructuredObject,
+            objects::{EnvelopeAhdsr, InternalMod, InternalModParams},
+        };
+        let target = |param: &str, intensity: f32| ni_file::kontakt::objects::ModTarget {
+            param: param.into(),
+            intensity,
+            lag_ms: 0,
+            name: String::new(),
+            slot: None,
+            invert: false,
+            shaper: None,
+            unknown_i16: -1,
+            unknown_flags: 0x10,
+        };
+        let env = EnvelopeAhdsr {
+            attack_ms: 125.012924,
+            attack_curve: 0.75,
+            hold_ms: 0.,
+            decay_ms: 0.,
+            sustain: 1.,
+            release_ms: 25000.043,
+            unknown_flag: 1,
+            unknown_tail: [0, 0, 128, 191, 0, 0, 0, 0, 0, 0, 128, 63, 0].repeat(4),
+        };
+        let mut child = Vec::new();
+        env.to_chunk().unwrap().write(&mut child).unwrap();
+        let mut data = vec![1];
+        data.extend(0x90u16.to_le_bytes());
+        for bytes in [&[][..], &[0; 4][..], &child] {
+            data.extend((bytes.len() as u32).to_le_bytes());
+            data.extend(bytes);
+        }
+        let raw = InternalMod(StructuredObject {
+            version: 0x80,
+            private_data: 2u32.to_le_bytes().to_vec(),
+            public_data: vec![],
+            children: vec![Chunk { id: 7, data }],
+        });
+        let mut t = target("volume", 1.);
+        t.unknown_flags = 0x10;
+        let params = InternalModParams {
+            name: "amp".into(),
+            targets: vec![t],
+            modulator: Modulator::Ahdsr(env.clone()),
+            unknown_flags: [0, 0, 1, 0],
+            unknown_id: 0,
+        };
+        assert!(Translation::native_primary_ahdsr(&raw, &params, &env));
+        let mut open = params.clone();
+        open.unknown_flags[0] = 1;
+        assert!(
+            Translation::native_primary_ahdsr(&raw, &open, &env),
+            "router UI is independent"
+        );
+        for change in 0..6 {
+            let mut other = params.clone();
+            match change {
+                0 => other.targets[0].intensity = 0.5,
+                1 => other.targets[0].lag_ms = 1,
+                2 => other.targets[0].invert = true,
+                3 => other.unknown_flags[1] = 1,
+                4 => other.targets.push(target("filterCutoff", 1.)),
+                _ => other.targets[0].unknown_flags = 0x12,
+            }
+            assert!(!Translation::native_primary_ahdsr(&raw, &other, &env));
+        }
+        let mut opaque = env.clone();
+        opaque.unknown_tail[0] = 1;
+        assert!(!Translation::native_primary_ahdsr(&raw, &params, &opaque));
+        let mut wrapper = raw;
+        wrapper.0.children[0].data[1] = 0x91;
+        assert!(!Translation::native_primary_ahdsr(&wrapper, &params, &env));
+    }
+
+    #[test]
     fn raw_ahdsr_preparation_keeps_original_f32_setters_before_curve_normalization() {
         let mut indices = ir::SourceIndices::default();
         let envelope = ni_file::kontakt::objects::EnvelopeAhdsr {
-            attack_ms: 125.012924, attack_curve: 0.75, hold_ms: 0.012345,
-            decay_ms: 25000.043, sustain: 0.4, release_ms: 1234.567,
-            unknown_flag: 1, unknown_tail: vec![0;52],
+            attack_ms: 125.012924,
+            attack_curve: 0.75,
+            hold_ms: 0.012345,
+            decay_ms: 25000.043,
+            sustain: 0.4,
+            release_ms: 1234.567,
+            unknown_flag: 1,
+            unknown_tail: vec![0; 52],
         };
-        Translation::source_envelope(&mut indices,7,12,&envelope);
-        let source = indices.ahdsrs.first().expect("raw AHDSR descriptor lost before preparation");
-        assert_eq!((source.group,source.slot),(7,12));
-        assert_eq!([source.attack_ms,source.attack_curve,source.hold_ms,source.decay_ms,
-            source.sustain,source.release_ms].map(f32::to_bits),
-            [envelope.attack_ms,envelope.attack_curve,envelope.hold_ms,envelope.decay_ms,
-            envelope.sustain,envelope.release_ms].map(f32::to_bits));
+        Translation::source_envelope(&mut indices, 7, 12, &envelope);
+        let source = indices
+            .ahdsrs
+            .first()
+            .expect("raw AHDSR descriptor lost before preparation");
+        assert_eq!((source.group, source.slot), (7, 12));
+        assert_eq!(
+            [
+                source.attack_ms,
+                source.attack_curve,
+                source.hold_ms,
+                source.decay_ms,
+                source.sustain,
+                source.release_ms
+            ]
+            .map(f32::to_bits),
+            [
+                envelope.attack_ms,
+                envelope.attack_curve,
+                envelope.hold_ms,
+                envelope.decay_ms,
+                envelope.sustain,
+                envelope.release_ms
+            ]
+            .map(f32::to_bits)
+        );
         assert!(source.ahd_only);
-        assert!(!source.native_amplitude,"standalone scalars cannot prove native primary geometry");
+        assert!(
+            !source.native_amplitude,
+            "standalone scalars cannot prove native primary geometry"
+        );
     }
 
     #[test]
