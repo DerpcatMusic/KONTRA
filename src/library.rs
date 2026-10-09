@@ -458,7 +458,7 @@ pub struct BankIssue {
 
 impl Progress {
     fn bank_issue(&self, path: &Path, error: sampler_uvi::AccessError) {
-        let unsupported = matches!(error, sampler_uvi::AccessError::Reader(_) | sampler_uvi::AccessError::Content(_) | sampler_uvi::AccessError::Disabled);
+        let unsupported = matches!(error, sampler_uvi::AccessError::Disabled);
         let message = if unsupported { "protected library: not supported".into() } else { error.to_string() };
         lock(&self.bank_issues).entry((unsupported, message)).or_default().insert(path.into());
     }
@@ -1270,13 +1270,26 @@ mod tests {
     #[test]
     fn unsupported_bank_errors_share_one_record_without_reader_access() {
         let progress = Progress::default();
-        progress.bank_issue(Path::new("/virtual/First.ufs"), sampler_uvi::AccessError::Reader("unavailable".into()));
-        progress.bank_issue(Path::new("/virtual/Second.ufs"), sampler_uvi::AccessError::Content("unavailable".into()));
-        progress.bank_issue(Path::new("/virtual/First.ufs"), sampler_uvi::AccessError::Reader("unavailable".into()));
+        progress.bank_issue(Path::new("/virtual/First.ufs"), sampler_uvi::AccessError::Disabled);
+        progress.bank_issue(Path::new("/virtual/Second.ufs"), sampler_uvi::AccessError::Disabled);
+        progress.bank_issue(Path::new("/virtual/First.ufs"), sampler_uvi::AccessError::Disabled);
         let issues = lock(&progress.bank_issues);
         assert_eq!(issues.len(), 1);
         assert_eq!(issues.keys().next().unwrap(), &(true, "protected library: not supported".into()));
         assert_eq!(issues.values().next().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn native_content_failures_retain_their_cause_without_unsupported_label() {
+        let progress = Progress::default();
+        progress.bank_issue(Path::new("/virtual/Corrupt.ufs"), sampler_uvi::AccessError::Content("invalid PNG checksum".into()));
+        progress.bank_issue(Path::new("/virtual/Disabled.ufs"), sampler_uvi::AccessError::Disabled);
+        let issues = lock(&progress.bank_issues);
+        assert_eq!(issues.len(), 2);
+        let content = issues.iter().find(|((unsupported, _), _)| !unsupported).unwrap();
+        assert!(content.0.1.contains("invalid PNG checksum"));
+        assert!(!content.0.1.contains("not supported"));
+        assert_eq!(content.1.len(), 1);
     }
 
     #[test]
