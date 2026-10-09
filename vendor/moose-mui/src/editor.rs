@@ -113,6 +113,24 @@ pub struct MuiEditor<P: Params> {
     /// [`MuiEditor::hide_pointer`], handed to each window it opens.
     pointer: Option<window::PointerHook>,
     timing: Option<window::NativeTimingHook>,
+    // Last: release unused GNU allocator pages after the editor's owners drop.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    closed_memory: ClosedMemory,
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+struct ClosedMemory(bool);
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+impl Drop for ClosedMemory {
+    #[expect(unsafe_code, reason = "GNU allocator releases only already-free pages")]
+    fn drop(&mut self) {
+        if self.0 {
+            unsafe extern "C" { fn malloc_trim(pad: usize) -> std::ffi::c_int; }
+            // SAFETY: GNU's thread-safe allocator owns the free pages; no live pointer is touched.
+            unsafe { malloc_trim(0); }
+        }
+    }
 }
 
 /// Whole logical points, as the host's window API takes them.
@@ -170,6 +188,8 @@ impl<P: Params> MuiEditor<P> {
             keys: None,
             pointer: None,
             timing: None,
+            #[cfg(all(target_os = "linux", target_env = "gnu"))]
+            closed_memory: ClosedMemory(false),
         }
     }
 
@@ -321,6 +341,8 @@ impl<P: Params> Editor for MuiEditor<P> {
             Arc::clone(&self.requests),
         )
         .map(Handle);
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        { self.closed_memory.0 |= self.window.is_some(); }
     }
 
     fn close(&mut self) {
