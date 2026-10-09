@@ -195,3 +195,44 @@ same message. Index schema 2 rebuilds the disposable catalog from older indexes;
 user settings and presets are unaffected. Clear banks receive no access warning.
 The authored clear-bank playback test embeds a sine sample, deletes its loose
 source, then uses the product's catalog, V2 loader, MIDI note and audio output.
+
+
+## Authored clear UVI feature gate
+
+`tests/fixtures/uvi-clear-features.uvip` is authored test content, packaged by
+`library::tests::clear_sample_bank_xml` into an entirely clear UFS bank with an
+embedded one-second sine WAV. It has two layers, two keygroups per layer,
+continuous loops, DAHDSR amplitude envelopes and a Lua `onNote` plus panel,
+label and button. No installed protected payload is involved.
+
+The product test loads the bank member through `V2Loader`, checks its translated
+zones and UI, invokes the Lua button callback, plays eight valid keys at two
+velocities, holds them with sustain and then releases. It checks finite audible
+PCM beyond the sample's end, 16 simultaneous voices, no streaming underruns and
+zero callback heap calls (allocations and frees), counted from the first note.
+Load-time allocation and the independent Lua owner are outside that callback
+claim. `KONTRA_UVI_FIXTURE_OUT` optionally retains the authored bank for the
+existing CPU audit; `KONTRA_UVI_FIXTURE_SHOTS` saves native browser receipts.
+
+The Lua driver now prepares every key's held-note queue at load time and bounds
+admission at its existing 1024 tracked-note budget. This costs roughly 1 MiB per
+scripted part, rather than allocating when a cold key or overlapping note arrives.
+Capacity rejection releases the untracked physical note. Direct lifecycle tests
+cover every prepared key and the rejection path.
+
+UVI browser search again includes the `UVI` provider keyword, as v1 did. Favourites
+retain the full bank/member path even for identical preset names. File-bank artwork
+uses same-stem PNG/JPEG sidecars, ported from v1 `4bffbb18:src/artwork.rs`, with
+nonblocking regular-file reads, encoded-byte/display-pixel budgets and v2's bounded
+display decoder/cache. Artwork scanning does not open UFS payloads or substitute
+instrument panels for a bank cover.
+
+
+### Open v1 UX parity gap: favourites after a bank moves (low priority)
+
+V1's UVI favourites retain bank UUID and member identity as well as a locator.
+Current v2 favourites retain the full virtual bank/member path, so changing the
+bank's library location leaves that favourite pointing at its former path.
+Same-name presets and current v2 state roundtrips are covered; UUID-based
+relocation is not. Track this after the authored CPU gate. Migration of saved
+v1 state is N/A by product policy; the remaining gap is current v2 UX.

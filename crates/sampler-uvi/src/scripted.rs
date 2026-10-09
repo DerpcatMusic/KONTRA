@@ -163,8 +163,8 @@ pub struct Driver<S: Script> {
     glides: Vec<Glide>,
     /// Frame of the next glide step.
     glide_at: u64,
-    /// Commands being applied, and ids of notes found ended: kept so the
-    /// audio thread allocates nothing once warm.
+    /// Commands being applied, and ids of notes found ended: kept off the heap
+    /// during audio callbacks.
     inbox: Vec<Command>,
     ended: Vec<u64>,
     /// MIDI the scripts generated, for the host to play into the part.
@@ -187,7 +187,8 @@ impl<S: Script> Driver<S> {
             groups,
             rate: f64::from(rate),
             notes: HashMap::with_capacity(TRACKED),
-            held: HashMap::with_capacity(128),
+            // Any key can hold the entire tracked-note budget; prepare every queue.
+            held: (0..128).map(|key| (key, std::collections::VecDeque::with_capacity(TRACKED))).collect(),
             next: 1,
             unmodeled: Vec::with_capacity(32),
             global: HashMap::with_capacity(32),
@@ -238,10 +239,16 @@ impl<S: Script> Driver<S> {
         key: u8,
         velocity: f64,
     ) -> Result<(), Error> {
+        if self.notes.len() >= TRACKED { self.prune(rt); }
+        let held = self.held.get_mut(&key).ok_or(Error::InvalidInput)?;
+        if self.notes.len() >= TRACKED || held.len() >= TRACKED {
+            rt.release(note)?;
+            return Err(Error::Capacity);
+        }
         let id = self.next;
         self.next += 1;
         self.notes.insert(id, note);
-        self.held.entry(key).or_default().push_back(id);
+        held.push_back(id);
         self.host.set_time(self.now_ms(rt));
         self.host.note_on(id, key, (velocity * 127.0).round() as u8);
         if !self.host.handles_notes() {

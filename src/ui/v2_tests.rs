@@ -2177,3 +2177,22 @@ fn v1_eq_handles_use_each_band_gain_and_graph_drag_scale() {
         assert_eq!(super::viz::filter_handles(&make(&edits).playing),handles);
     }
 }
+
+#[test]
+fn w10_authored_uvi_fixture_paints_its_declared_ui() {
+    let xml = include_str!("../../tests/fixtures/uvi-clear-features.uvip");
+    let host = sampler_uvi::script::ScriptHost::new(xml, (), Default::default()).unwrap();
+    let face = host.interface();
+    let mut values = ir_view::Values::default();
+    let assets = ir_view::Assets::default();
+    let ui = settle(320., 140., |ui| ir_view::view(ui, &face, ir::PageRef(0), &assets, ir::Presentation::Vector, 1., &mut values));
+    for id in ["ir-2"] {
+        let frame = ui.scene().unwrap().surface(id).unwrap().frame;
+        assert!(frame.size.width > 0. && frame.size.height > 0. && frame.y + frame.size.height <= 140.);
+    }
+    #[cfg(feature = "shots")]
+    if let Some(out) = std::env::var_os("KONTRA_UVI_FIXTURE_SHOTS").map(std::path::PathBuf::from) {
+        std::fs::create_dir_all(&out).unwrap();
+        moose::core::screenshot::save_png(&out.join("uvi-authored-original.png"), &pixels(&ui, 320, 140), 320, 140);
+    }
+}
