@@ -528,3 +528,17 @@ fn named_ui_text_read_modify_write_emits_the_same_value_it_stores() {
     });
     assert_eq!(effects, 1);
 }
+
+#[test]
+fn computed_ui_ids_read_the_declared_control_type_and_range() {
+    let rt = run(
+        "on init declare ui_knob $knob(-4,101,1)
+        declare $id declare $kind declare $lo declare $hi end on
+        on note $id := get_ui_id($knob)
+            $kind := get_control_par($id,$CONTROL_PAR_TYPE)
+            $lo := get_control_par($id,$CONTROL_PAR_MIN_VALUE)
+            $hi := get_control_par($id,$CONTROL_PAR_MAX_VALUE) end on",
+        &[],
+    );
+    assert_eq!((cell(&rt, 1), cell(&rt, 2), cell(&rt, 3)), (2, -4, 101));
+}
