@@ -88,6 +88,42 @@ fn info_distill_shots() {
 }
 
 #[test]
+fn articulation_count_starts_at_the_panel_inset_without_a_second_title() {
+    for (width, height) in [(900., 600.), (1180., 900.)] {
+        let p = specimen();
+        let mut h = Harness::new(&p, width, height);
+        h.press("view-0-Articulations");
+        h.idle(20);
+        let scene = h.ui.scene().unwrap();
+        let inside = scene.surface("inside-0").unwrap().frame;
+        let count = scene.surface("art-count-0").expect("the count remains visible");
+        assert!((count.frame.x - inside.x - INSET).abs() < 0.5,
+            "the repeated Articulations heading should not displace the count");
+        assert_eq!(count.tip.as_deref(), Some("12 articulations"));
+        let mode = scene.surface("art-driver-0").unwrap().frame;
+        assert!(count.frame.x + count.frame.size.width + SPACE <= mode.x,
+            "count and trigger mode keep their gap");
+        assert!(scene.surface("arts-more-0").unwrap().frame.x + CONTROL <= inside.x + inside.size.width - INSET + 0.5);
+        hover_text(&mut h, "12");
+    }
+}
+
+#[test]
+#[cfg(feature = "shots")]
+fn articulation_distill_shots() {
+    let Some(out) = std::env::var_os("KONTRA_ARTICULATION_SHOTS").map(PathBuf::from) else { return };
+    std::fs::create_dir_all(&out).unwrap();
+    for (width, height) in [(900, 600), (1180, 900)] {
+        let p = specimen();
+        let mut h = Harness::new(&p, width as f64, height as f64);
+        h.press("view-0-Articulations");
+        h.idle(20);
+        moose::core::screenshot::save_png(&out.join(format!("articulations-{width}.png")),
+            &pixels(&h.ui, width, height), width.into(), height.into());
+    }
+}
+
+#[test]
 fn performance_dynamics_fit_the_minimum_rack() {
     let p = specimen();
     let h = Harness::new(&p, 900., 600.);
