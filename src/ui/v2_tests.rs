@@ -8,6 +8,7 @@ use moose::mui::mui::scene::Image;
 use sampler_ui_ir as ir;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 /// Lays `build` out a few frames at `w`×`h` and returns the ui.
 fn settle(w: f64, h: f64, mut build: impl FnMut(&mut Ui) -> El) -> Ui {
@@ -618,6 +619,101 @@ fn keyswitch_replacing_a_preset_clears_its_user_overlay() {
     part.articulation_overlay.driver = Some(3);
     super::replace_part(&mut part, "/new.nki".into());
     assert_eq!(part.articulation_overlay, Default::default());
+}
+
+fn keyswitch_learn_fixture() -> (Arc<crate::plugin::SamplerParams>, Arc<sampler_ir::Instrument>) {
+    let source = Arc::new(sampler_ir::Instrument {
+        name: "MIDI learn fixture".into(),
+        articulations: vec![sampler_ir::Articulation {
+            source: "axis:main:Sustain".into(), name: "Sustain".into(),
+            switch_keys: vec![24], default: true, ..Default::default()
+        }],
+        ..Default::default()
+    });
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    p.selection.write().unwrap().parts = (0..2).map(|n| crate::plugin::Part {
+        path: format!("/synthetic/learn-{n}.nki"), ..Default::default()
+    }).collect();
+    p.shared.ensure_parts(2);
+    for part in &mut p.shared.view.lock().unwrap().parts {
+        part.active = source.name.clone();
+        part.instrument = Some(source.clone());
+    }
+    (p, source)
+}
+
+fn keyswitch_begin_learn(h: &mut Harness, slot: usize) {
+    let row = super::inside::row_id(slot, "axis:main:Sustain#0");
+    h.press(&format!("view-{slot}-Articulations"));
+    h.press(&format!("{row}-more"));
+    h.press("menu-item-0");
+    assert!(h.ui.scene().unwrap().surface(&format!("{row}-edit")).is_some());
+}
+
+#[test]
+fn keyswitch_learn_escape_wins_over_a_note_received_in_the_same_frame() {
+    let (p, source) = keyswitch_learn_fixture();
+    let mut h = Harness::new(&p, 1180., 780.);
+    keyswitch_begin_learn(&mut h, 0);
+    h.tick(Input { keys: vec![KeyPress { key: Key::Escape, mods: Mods::default() }], ..Default::default() });
+    p.shared.record_learn(0, 0, 62);
+    h.idle(3);
+    assert!(p.selection.read().unwrap().parts[0].articulation_overlay.inputs.is_empty(), "Escape must cancel the pending learned note");
+    assert_eq!(p.shared.learn_target.load(Ordering::Relaxed), 0);
+    assert_eq!(*p.shared.view.lock().unwrap().parts[0].instrument.clone().unwrap(), *source);
+}
+
+#[test]
+fn keyswitch_learn_has_one_owner_across_parts() {
+    let (p, _) = keyswitch_learn_fixture();
+    let mut h = Harness::new(&p, 1180., 780.);
+    keyswitch_begin_learn(&mut h, 0);
+    keyswitch_begin_learn(&mut h, 1);
+    p.shared.record_learn(0, 0, 62);
+    h.idle(3);
+    let selection = p.selection.read().unwrap();
+    assert!(selection.parts[0].articulation_overlay.inputs.is_empty(), "starting another part's learn cancels the former owner");
+    assert_eq!(selection.parts[1].articulation_overlay.inputs["axis:main:Sustain#0"].keys, Some(vec![62]));
+    assert_eq!(p.shared.learn_target.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn keyswitch_learn_close_releases_the_request_and_keeps_the_overlay() {
+    let (p, _) = keyswitch_learn_fixture();
+    let mut h = Harness::new(&p, 1180., 780.);
+    keyswitch_begin_learn(&mut h, 0);
+    let learned = p.shared.learned_note.load(Ordering::Relaxed);
+    let mut editor = super::editor(p.clone());
+    editor.close();
+    drop(editor);
+    assert_eq!(p.shared.learn_target.load(Ordering::Relaxed), 0, "closed editor cannot keep learning host notes");
+    p.shared.record_learn(0, 0, 62);
+    assert_eq!(p.shared.learned_note.load(Ordering::Relaxed), learned);
+    assert!(p.selection.read().unwrap().parts[0].articulation_overlay.inputs.is_empty());
+}
+
+#[test]
+fn keyswitch_learn_leaving_the_panel_cancels_the_hidden_owner() {
+    let (p, _) = keyswitch_learn_fixture();
+    let mut h = Harness::new(&p, 1180., 780.);
+    keyswitch_begin_learn(&mut h, 0);
+    h.press("view-0-Info");
+    assert_eq!(p.shared.learn_target.load(Ordering::Relaxed), 0, "hidden panel must stop recording notes");
+    p.shared.record_learn(0, 0, 62);
+    h.press("view-0-Articulations");
+    assert!(p.selection.read().unwrap().parts[0].articulation_overlay.inputs.is_empty());
+}
+
+#[test]
+fn keyswitch_learn_replacement_cancels_even_when_source_ids_match() {
+    let (p, _) = keyswitch_learn_fixture();
+    let mut h = Harness::new(&p, 1180., 780.);
+    keyswitch_begin_learn(&mut h, 0);
+    p.shared.view.lock().unwrap().parts[0].generation += 1;
+    p.shared.record_learn(0, 0, 62);
+    h.idle(3);
+    assert!(p.selection.read().unwrap().parts[0].articulation_overlay.inputs.is_empty(), "a pending note belongs to the retired load generation");
+    assert_eq!(p.shared.learn_target.load(Ordering::Relaxed), 0);
 }
 
 #[test]
