@@ -16,6 +16,7 @@ pub(super) struct State {
     bounds: (u8, u8),
     rectangles: Arc<[(usize, u8, u8, u8, u8)]>,
     selected: usize,
+    query: String,
     stack: Vec<usize>,
     audition: Option<Audition>,
     cell: Option<(u8, u8)>,
@@ -243,6 +244,21 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
             st.mapping.stack = stack(inst, None, k, v);
         }
     }
+    let st = &mut cx.state.inside.get_mut(&slot).unwrap().mapping;
+    let before = st.query.clone();
+    let search = super::browser::search_field(
+        ui,
+        &format!("map-search-{slot}"),
+        &mut st.query,
+        "Filter groups",
+        "Filter groups by group or articulation name",
+    )
+    .w(156.);
+    if st.query != before {
+        ui.set_scroll(format!("map-groups-{slot}"), [0., 0.]);
+    }
+    let query = st.query.trim().to_lowercase();
+    let active = super::inside::active(cx, slot);
     let mut picked = cx.state.inside[&slot].group;
     let (all, all_el) = latch(
         ui,
@@ -275,6 +291,14 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
                 },
                 |g| g.name.clone(),
             );
+        if !query.is_empty()
+            && !name.to_lowercase().contains(&query)
+            && !cx.state.inside[&slot].mapping.links[g]
+                .iter()
+                .any(|&n| inst.articulations[n].name.to_lowercase().contains(&query))
+        {
+            continue;
+        }
         let id = format!("map-group-{slot}-{g}");
         let on = picked == Some(g);
         if ui.get(id.as_str()).activated() {
@@ -303,7 +327,9 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
                 let id = format!("map-art-{slot}-{g}-{n}");
                 if ui.get(id.as_str()).activated() {
                     cx.p.shared.select_articulation(slot, n);
+                    cx.state.inside.get_mut(&slot).unwrap().active = Some(n);
                 }
+                let on = active == Some(n);
                 let c = super::inside::articulation_color(cx, slot, &ids[n], a);
                 let input = cx.selection.parts[slot].articulation_overlay.input(
                     &ids[n],
@@ -311,7 +337,7 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
                     super::inside::mode(cx, slot, inst),
                 );
                 let label = format!("{} · {}", a.name, super::inside::input_label(&input));
-                groups.push(
+                groups.push(interactive(
                     row![
                         block(3., 12.).fill(c).shrink(0),
                         caption(label.clone()).lines(1).min_w(0).flex(1)
@@ -320,11 +346,13 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
                     .pad((0, SPACE))
                     .h(20.)
                     .focusable()
-                    .a11y(A11y::Button)
+                    .a11y(A11y::Toggle { on })
+                    .when(on, |e| e.fill(Role::Raised))
                     .named(format!("Select {} articulation", a.name))
                     .tip(format!("{label}; authored group conditions still apply"))
                     .id(id),
-                );
+                    on,
+                ));
             }
             let conditions = group
                 .start
@@ -353,6 +381,16 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
                 );
             }
         }
+    }
+    if groups.len() == 1 && !query.is_empty() {
+        groups.push(
+            caption("No groups match")
+                .fill(secondary())
+                .lines(1)
+                .h(CONTROL)
+                .tip("Clear the group search to show every group")
+                .id(format!("map-no-groups-{slot}")),
+        );
     }
     if picked != cx.state.inside[&slot].group {
         ui.set_scroll(format!("map-stack-{slot}"), [0., 0.]);
@@ -588,7 +626,7 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
         ));
     }
     let head = row![
-        section("Mapping"),
+        search,
         caption(format!(
             "{} zones · {} {}",
             inst.zones.len(),
@@ -599,8 +637,15 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
                 "groups"
             }
         ))
-        .fill(secondary()),
-        spacer(),
+        .fill(secondary())
+        .lines(1)
+        .flex(1)
+        .min_w(0)
+        .tip(format!(
+            "{} zones · {} groups in this instrument",
+            inst.zones.len(),
+            inst.groups.len()
+        )),
         caption(format!("{}–{}", note_name(bounds.0), note_name(bounds.1)))
             .fill(secondary())
             .id(format!("map-range-{slot}")),
@@ -618,6 +663,7 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
             .w(156.)
             .h(map_height + 28.)
             .scroll()
+            .id(format!("map-groups-{slot}"))
             .shrink(0),
         col![
             row![
