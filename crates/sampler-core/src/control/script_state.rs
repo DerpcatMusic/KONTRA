@@ -4,6 +4,7 @@ use crate::{
     BehaviorId, ControlId, ControlValue, Error, Outcome, PlanId, Runtime, ScriptInstanceId, Text,
 };
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ScriptStateAddress {
     Control(ControlId),
@@ -17,6 +18,7 @@ pub enum ScriptStateAddress {
     },
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ScriptStateValue {
     Control(ControlValue),
@@ -25,6 +27,7 @@ pub enum ScriptStateValue {
     Text(Text),
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ScriptStateEntry {
     pub address: ScriptStateAddress,
@@ -119,6 +122,14 @@ impl Runtime {
         }
     }
 
+    /// Changes to captured cells/text and base controls, including DSP edits.
+    /// Callback outcomes are independent; this token gates value-only snapshots.
+    pub fn script_state_revision(&self, plan: PlanId) -> Result<(u64, u64), Error> {
+        let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
+        Ok((generation.controls.revision, generation.script_revision))
+    }
+
+    #[inline]
     fn script_state_value(
         &self,
         plan: PlanId,
@@ -234,14 +245,23 @@ impl Runtime {
                 return Err(Error::InvalidInput);
             }
             prior_instance = Some(instance);
-            self.validate_plan_context(plan, callback.program, self.script_state_context(instance))?;
+            self.validate_plan_context(
+                plan,
+                callback.program,
+                self.script_state_context(instance),
+            )?;
         }
         for callback in &mut state.callbacks {
             let instance = self.plans.get(plan.0).unwrap().prepared.programs[callback.program]
-                .script_instance.unwrap();
+                .script_instance
+                .unwrap();
             callback.behavior = Some(
-                self.admit_plan_context(plan, callback.program, self.script_state_context(instance))
-                    .expect("preflighted persistence callback admission"),
+                self.admit_plan_context(
+                    plan,
+                    callback.program,
+                    self.script_state_context(instance),
+                )
+                .expect("preflighted persistence callback admission"),
             );
             callback.outcome = None;
             let generation = self.plans.get_mut(plan.0).unwrap();
@@ -259,7 +279,9 @@ impl Runtime {
                     generation.controls.base[index] = value;
                     let playing = generation.controls.playing(&generation.prepared, index);
                     generation.controls.values[index] = playing;
-                    generation.dsp.edit_control(&generation.prepared, index, playing, self.now);
+                    generation
+                        .dsp
+                        .edit_control(&generation.prepared, index, playing, self.now);
                 }
                 (ScriptStateAddress::Cell { instance, index }, ScriptStateValue::Cell(value)) => {
                     generation.scripts[usize::from(instance.0)].cells[index as usize] = value

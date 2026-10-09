@@ -57,12 +57,13 @@ impl Translation {
 
     /// Record `placed` entries (relative to one chain) once the chain is `chain`.
     pub(super) fn place(&mut self, chain: ir::ChainRef, placed: Vec<Placed>) {
-        self.insert_nodes.extend(placed.into_iter().map(|(node, first, count)| InsertNode {
-            node,
-            chain,
-            first,
-            count,
-        }));
+        self.insert_nodes
+            .extend(placed.into_iter().map(|(node, first, count)| InsertNode {
+                node,
+                chain,
+                first,
+                count,
+            }));
     }
 
     /// The enabled inserts of `parent` (an AuxEffect or a Keygroup), in order.
@@ -125,7 +126,11 @@ impl Translation {
                     ] {
                         let gain = db(number(node, name, 0.0)? - middle);
                         out.push(ir::Processor::Filter(ir::Filter {
-                            kind: if low { ir::FilterKind::LowShelf { gain } } else { ir::FilterKind::HighShelf { gain } },
+                            kind: if low {
+                                ir::FilterKind::LowShelf { gain }
+                            } else {
+                                ir::FilterKind::HighShelf { gain }
+                            },
                             cutoff: ir::Frequency::Hertz(number(node, frequency, default)?),
                             resonance: ir::Resonance::Q(std::f64::consts::FRAC_1_SQRT_2),
                         }));
@@ -177,7 +182,10 @@ impl Translation {
                         ("GateRatio", "CompExp gate (expander)", 1.0),
                     ] {
                         let v = number(node, name, off)?;
-                        if v != off && (name != "GateRatio" || number(node, "GateThreshold", -130.0)? > -130.0) {
+                        if v != off
+                            && (name != "GateRatio"
+                                || number(node, "GateThreshold", -130.0)? > -130.0)
+                        {
                             self.unsupported(&at, why, v);
                         }
                     }
@@ -189,7 +197,9 @@ impl Translation {
                         threshold_db: number(node, "CompThreshold", 0.0)?,
                         ratio: number(node, "CompRatio", 10.0)?.max(1.0),
                         attack: ir::Time::Milliseconds(number(node, "CompAttack", 10.0)?.max(0.0)),
-                        release: ir::Time::Milliseconds(number(node, "CompRelease", 100.0)?.max(0.0)),
+                        release: ir::Time::Milliseconds(
+                            number(node, "CompRelease", 100.0)?.max(0.0),
+                        ),
                         makeup: db(number(node, "MakeUpGain", 0.0)?),
                         link: true,
                     }));
@@ -201,7 +211,11 @@ impl Translation {
                         * 2f64.powf(tracking * (key - 60.0) / 12.0))
                     .clamp(20.0, 20000.0);
                     if tracking != 0.0 {
-                        self.unsupported(&at, "OnePole key tracking (keygroup middle key)", tracking);
+                        self.unsupported(
+                            &at,
+                            "OnePole key tracking (keygroup middle key)",
+                            tracking,
+                        );
                     }
                     let poles = 1;
                     out.push(ir::Processor::Filter(ir::Filter {
@@ -349,7 +363,11 @@ impl Translation {
         }
         // The manual lists the seven shapes but not their numbering; this is
         // the listed order with peak last.
-        self.unsupported(at, "DigitalEq band type numbering (manual order assumed)", "");
+        self.unsupported(
+            at,
+            "DigitalEq band type numbering (manual order assumed)",
+            "",
+        );
         Ok(())
     }
 }

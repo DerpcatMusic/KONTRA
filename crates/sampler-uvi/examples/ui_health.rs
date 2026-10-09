@@ -69,11 +69,9 @@ fn run(
                     bank.program(&program)
                         .map(|(xml, _)| (bank, xml))
                         .map_err(|error| error.to_string())
-                })
-            {
+                }) {
                 Err(error) => json!({"id":id, "loaded":false, "failure":error}),
-                Ok((bank, xml)) => match ScriptHost::new(&xml, bank.scripts(), Config::default())
-                {
+                Ok((bank, xml)) => match ScriptHost::new(&xml, bank.scripts(), Config::default()) {
                     Err(_) => json!({"id": format!("{path}::{program}"), "loaded":false}),
                     Ok(host) => {
                         let face = host.interface();

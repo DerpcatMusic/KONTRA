@@ -1,13 +1,15 @@
 //! BUFFR's crash recovery and acknowledged support transport, adapted for KONTRA.
-//! No process-wide panic, signal or exception handler is installed in a host.
+//! Plugin panic observation chains the host's hook; standalone capture is explicitly installed.
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{LazyLock, Mutex, MutexGuard};
+use std::sync::{LazyLock, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 mod crash;
 mod export;
 pub(crate) use export::export_crash_evidence;
 mod platform;
 mod report;
+#[cfg(target_os = "linux")]
+mod standalone;
 pub(crate) use crash::flush_journal;
 pub use crash::{CrashIncident, CrashSessionGuard, pending_incident};
 pub(crate) use report::public_issue_url;
@@ -16,15 +18,131 @@ const REPORT_URL: &str = "https://matari-audio.com/api/support/report";
 static AUTOMATIC_CRASH_REPORT_STARTED: AtomicBool = AtomicBool::new(false);
 static HOST_IDENTITY: LazyLock<Mutex<(String, String)>> =
     LazyLock::new(|| Mutex::new(Default::default()));
+static POISON_PENDING: AtomicBool = AtomicBool::new(false);
 
-trait MutexExt<T> {
+pub(crate) trait MutexExt<T> {
+    #[track_caller]
     fn lock_unpoisoned(&self) -> MutexGuard<'_, T>;
+    #[track_caller]
+    fn try_lock_unpoisoned(&self) -> std::sync::TryLockResult<MutexGuard<'_, T>>;
 }
 impl<T> MutexExt<T> for Mutex<T> {
+    #[track_caller]
     fn lock_unpoisoned(&self) -> MutexGuard<'_, T> {
-        self.lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        if POISON_PENDING.swap(false, Ordering::Relaxed) {
+            report_poison();
+        }
+        match self.lock() {
+            Ok(guard) => guard,
+            Err(error) => {
+                let guard = error.into_inner();
+                self.clear_poison();
+                report_poison();
+                guard
+            }
+        }
     }
+    #[track_caller]
+    fn try_lock_unpoisoned(&self) -> std::sync::TryLockResult<MutexGuard<'_, T>> {
+        match self.try_lock() {
+            Err(std::sync::TryLockError::Poisoned(error)) => {
+                let guard = error.into_inner();
+                self.clear_poison();
+                // These reads run on audio too. The next off-audio lock reports recovery.
+                POISON_PENDING.store(true, Ordering::Relaxed);
+                Ok(guard)
+            }
+            result => result,
+        }
+    }
+}
+
+pub(crate) trait RwLockExt<T> {
+    #[track_caller]
+    fn read_unpoisoned(&self) -> RwLockReadGuard<'_, T>;
+    #[track_caller]
+    fn write_unpoisoned(&self) -> RwLockWriteGuard<'_, T>;
+}
+impl<T> RwLockExt<T> for RwLock<T> {
+    #[track_caller]
+    fn read_unpoisoned(&self) -> RwLockReadGuard<'_, T> {
+        match self.read() {
+            Ok(guard) => guard,
+            Err(error) => {
+                let guard = error.into_inner();
+                self.clear_poison();
+                report_poison();
+                guard
+            }
+        }
+    }
+    #[track_caller]
+    fn write_unpoisoned(&self) -> RwLockWriteGuard<'_, T> {
+        match self.write() {
+            Ok(guard) => guard,
+            Err(error) => {
+                let guard = error.into_inner();
+                self.clear_poison();
+                report_poison();
+                guard
+            }
+        }
+    }
+}
+
+#[track_caller]
+fn report_poison() {
+    // Multiple locks can be held by one panic. Retain data and report once per process.
+    static REPORTED: AtomicBool = AtomicBool::new(false);
+    if !REPORTED.swap(true, Ordering::Relaxed) {
+        let location = std::panic::Location::caller().to_string();
+        let _ = std::io::Write::write_fmt(
+            &mut std::io::stderr(),
+            format_args!(
+                "KONTRA: recovered poisoned shared state at {location}; original panic evidence is separate\n"
+            ),
+        );
+        crate::diagnostics::try_event(
+            crate::diagnostics::LogLevel::Warning,
+            "support",
+            "shared_lock_recovered",
+            serde_json::json!({"stage":"shared-state", "location":location, "reason":"Recovered poisoned lock without resetting its data; inspect the original panic"}),
+        );
+    }
+}
+
+fn install_panic_observer() {
+    static INSTALLED: std::sync::Once = std::sync::Once::new();
+    INSTALLED.call_once(|| {
+        // A host retains the global callback after editor/plugin teardown.
+        if let Err(error) = crash::pin_own_module() {
+            let _ = std::io::Write::write_fmt(&mut std::io::stderr(), format_args!("KONTRA: panic observer unavailable: {error}\n"));
+            crate::diagnostics::try_event(crate::diagnostics::LogLevel::Warning, "support", "panic_observer_unavailable",
+                serde_json::json!({"reason":error}));
+            return;
+        }
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            thread_local! {
+                static REPORTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+            }
+            if !REPORTED.with(|reported| reported.replace(true)) {
+                let message = info.payload().downcast_ref::<String>().map(String::as_str)
+                    .or_else(|| info.payload().downcast_ref::<&str>().copied())
+                    .unwrap_or("non-string panic payload");
+                let end = message.char_indices().map(|(at, _)| at).take_while(|&at| at <= 4096).last().unwrap_or(0);
+                let message = report::redact_log(if message.len() > 4096 { &message[..end] } else { message });
+                let location = info.location().map(|location| location.to_string());
+                let thread = std::thread::current();
+                let _ = std::io::Write::write_fmt(&mut std::io::stderr(), format_args!("KONTRA: first panic on {:?} at {location:?}: {message}\n", thread.id()));
+                crate::diagnostics::try_event(crate::diagnostics::LogLevel::Error, "support", "panic_observed",
+                    serde_json::json!({"stage":"panic-before-unwind", "message":message,
+                        "location":location, "thread":format!("{:?}",thread.id()), "thread_name":thread.name(),
+                        "ownership":"host process; panic location identifies component"}));
+            }
+            previous(info);
+        }));
+    });
 }
 
 fn support_cache_path() -> PathBuf {
@@ -69,12 +187,25 @@ pub fn register_crash_session() -> CrashSessionGuard {
     session
 }
 
+/// Standalone entry point only: a plug-in must never replace its host's handlers.
+pub fn start_standalone_session() -> CrashSessionGuard {
+    let host = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()));
+    record_host_identity("standalone", host.as_deref());
+    let mut guard = register_crash_session();
+    guard.mark_initializing("standalone", host.as_deref());
+    crash::install_standalone_capture();
+    guard
+}
+
 /// Off audio: each plugin's retained state owns one marker, before it constructs its rack.
 pub(crate) fn start_plugin_session() -> Option<CrashSessionGuard> {
     // Tests use the explicit reporter entry points with isolated directories; plugin harnesses do not.
     if cfg!(test) {
         return None;
     }
+    install_panic_observer();
     let host = std::env::current_exe()
         .ok()
         .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()));
@@ -249,6 +380,85 @@ fn read_response(mut response: ureq::http::Response<ureq::Body>) -> Result<(u16,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_panic_hook_records_original_before_poison() {
+        const CHILD: &str = "KONTRA_PANIC_OBSERVER_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "support::tests::first_panic_hook_records_original_before_poison",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env("KONTRA_DISABLE_NETWORK", "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&output.stderr)
+                    .matches("KONTRA: first panic")
+                    .count(),
+                1
+            );
+            return;
+        }
+        let _lease = crate::diagnostics::acquire();
+        let state = std::sync::Arc::new(Mutex::new(41));
+        let original = state.clone();
+        let called = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = called.clone();
+        std::panic::set_hook(Box::new(move |_| {
+            if !original.is_poisoned() {
+                observed.fetch_add(1, Ordering::Relaxed);
+            }
+        }));
+        install_panic_observer();
+        for _ in 0..2 {
+            assert!(
+                std::panic::catch_unwind(|| {
+                    let _guard = state.lock_unpoisoned();
+                    panic!("synthetic first fault");
+                })
+                .is_err()
+            );
+            assert!(state.is_poisoned());
+            assert_eq!(*state.lock_unpoisoned(), 41);
+        }
+        assert_eq!(
+            called.load(Ordering::Relaxed),
+            2,
+            "previous host hook is chained before poisoning"
+        );
+        let snapshot = crate::diagnostics::snapshot();
+        let panics: Vec<_> = snapshot
+            .events
+            .iter()
+            .filter(|row| row.event == "panic_observed")
+            .collect();
+        assert_eq!(panics.len(), 1);
+        assert_eq!(panics[0].reason.as_deref(), Some("synthetic first fault"));
+        assert!(
+            panics[0].details["location"]
+                .as_str()
+                .unwrap()
+                .contains("src/support.rs:")
+        );
+        assert_eq!(panics[0].stage.as_deref(), Some("panic-before-unwind"));
+        assert_eq!(
+            snapshot
+                .events
+                .iter()
+                .filter(|row| row.event == "shared_lock_recovered")
+                .count(),
+            1
+        );
+    }
 
     #[test]
     fn bounded_local_reads_distinguish_exact_limit_and_preserve_oversized_original() {

@@ -9,8 +9,9 @@ use raw_window_handle::{
     HandleError, HasWindowHandle, RawWindowHandle, WindowHandle, XlibWindowHandle,
 };
 use std::sync::{
+    Arc,
     atomic::{AtomicU64, Ordering},
-    mpsc, Arc,
+    mpsc,
 };
 use std::time::{Duration, Instant};
 use x11_dl::xlib;
@@ -58,14 +59,22 @@ impl Host {
             let parent = (lib.XCreateSimpleWindow)(display, root, 0, 0, 64, 64, 0, 0, 0);
             assert_ne!(parent, 0);
             (lib.XSync)(display, 0);
-            Self { lib, display, root, parent }
+            Self {
+                lib,
+                display,
+                root,
+                parent,
+            }
         }
     }
     fn map_state(&self, window: xlib::Window) -> i32 {
         // SAFETY: a live window on our owned display and a writable attributes struct.
         unsafe {
             let mut attrs: xlib::XWindowAttributes = std::mem::zeroed();
-            assert_ne!((self.lib.XGetWindowAttributes)(self.display, window, &mut attrs), 0);
+            assert_ne!(
+                (self.lib.XGetWindowAttributes)(self.display, window, &mut attrs),
+                0
+            );
             attrs.map_state
         }
     }
@@ -123,7 +132,10 @@ fn exercise(reparent: bool) {
     let callbacks = frames.load(Ordering::Relaxed);
     child.close();
     assert_eq!(map_state, xlib::IsViewable);
-    assert!(callbacks > 0, "server-viewable child must receive a native frame");
+    assert!(
+        callbacks > 0,
+        "server-viewable child must receive a native frame"
+    );
 }
 
 #[test]

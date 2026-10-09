@@ -34,4 +34,58 @@ Gain: no authored Ladder/Daft Gain routes in these four items. The 989 enabled `
 
 Receipts: `recount-42062adc-{summary,provenance}.json`, `target-summary-after-42062adc.json`, `after-42062adc/`, refreshed `grouped-top20-gate.md`, `grouped-top20-all-gate.md`, `grouped-gate{,-locations}.json` under the directory above. Historical corpus grouping now includes 11 typed groups (builtin, Lua and initialization categories); native DSP coverage there is still zero. Fresh full-corpus native census is in progress in `corpus-42062adc/`, with private member IDs, metadata only and bounded FIFO shards.
 
-NEXT: finish the fresh 1494-item native census and publish the full-corpus ranked table for W15.
+## Recovered whole-manifest receipt, 2026-10-09
+
+All 1494 worker receipts survived the restart. Final aggregation establishes **834 complete Kontakt inventories and 660 UNKNOWN UVI inventories**, not 1494 successful inventories. Every UVI worker exited 1 with typed `native-slot-census-failed`; all 26 referenced bank files exist. The failure is at our reader/worker boundary; no missing-user-data verdict or precise cause is established. The provenance status is corrected to `partial-inventory`. No protected-reader, Wine or native-host retry was run.
+
+The recovered report has 163 typed groups and 3,706,447 unique references in the full 32 MiB compressed sidecar. A bounded-memory, 50-item FIFO aggregation replaces the interrupted eager aggregation; its self-check matches the common collector exactly for counts, ranking, capped locations and full unique references. Shards paused when quiet requests appeared. Sidecar totals equal group totals; numeric item identities are unique. Source remains `5172a9ef`, through W15 `42062adc`; these are metadata admission receipts, not the latest release or native PCM certification.
+
+Measured Kontakt loss counts, enabled/bypassed: FX slots **459/1037**, filter slots **1799/545**, modulator source slots **158209/2685**, target routes **222757/18054**. These four quantities are different units and must not be added. The native target losses form 55 groups. The separate 22-item gate ledger retains its 80 target-loss groups, including its measured UVI baseline.
+
+| Native target reason / parameter | Enabled | Bypassed | Libraries |
+|---|---:|---:|---:|
+| TargetsDropped / intensity | 64974 | 0 | 1 |
+| TargetsDropped / frequency | 37128 | 0 | 1 |
+| SourceNotExecuted / filterCutoff | 14047 | 0 | 2 |
+| SourceNotExecuted / filterQ | 14047 | 0 | 2 |
+| SourceNotExecuted / pan | 14047 | 0 | 2 |
+| SourceNotExecuted / frequency | 13923 | 0 | 1 |
+| SourceNotExecuted / pitch | 13923 | 0 | 1 |
+| TargetsDropped / eqGain1 | 10396 | 0 | 1 |
+| SourceNotExecuted / volume | 9406 | 0 | 2 |
+| TargetsDropped / eqGain2 | 7157 | 0 | 5 |
+| SourceNotExecuted / intensity | 4641 | 0 | 1 |
+| TargetsDropped / filterCutoff | 4612 | 0 | 7 |
+| TargetsDropped / filterQ | 2370 | 0 | 2 |
+| TargetsDropped / startPhase | 1920 | 0 | 1 |
+| TargetsDropped / formantTalk | 1509 | 0 | 1 |
+| TargetsDropped / eqGain3 | 1265 | 0 | 5 |
+| TargetsDropped / ahdsr_attack | 1069 | 0 | 4 |
+| TargetsDropped / shaper | 647 | 0 | 2 |
+| TargetsDropped / bitdepth | 572 | 0 | 1 |
+| TargetsDropped / downsample | 572 | 0 | 1 |
+
+W15 received this final queue, superseding the provisional 123-item prefix. Full artifacts beside the earlier receipts: `grouped-corpus-native.json`, `grouped-corpus-native-locations.json.gz`, `grouped-top20-corpus-native.md`, `grouped-top20-all-corpus-native.md`, and `grouped-corpus-native-resume.log`. The older plain sidecar belongs to the partial prefix; only the compressed sidecar named by the final report is authoritative. `corpus-ranked-stream.py` and its resumable runner retain the analysis and assertions in the receipt directory.
+
+NEXT: recount admission-changing W15 EQ/source routes; prioritise the NI family protocol in `w12-priority-family.md`. UVI whole-manifest inventory remains UNKNOWN pending an admitted reader path.
+
+## Cached EQ route projection, c49d5862
+
+Una Corda first: eqGain2 9 enabled / 0 bypassed; eqGain3 9 / 0, three of each in Cotton, Felt and Pure. Corpus candidates: eqGain1 10,396 / 0; eqGain2 7,157 / 0; eqGain3 1,265 / 0; eqFreq1 200 / 0; eqFreq2/3 and eqBandwidth1/2/3 zero. Total 19,018 enabled source/physical-owner-supported route candidates. No native reader rerun or new playback measurement; the cached inventory does not retain native band count or target-shaper data. Keep measured gates unchanged until executed route evidence exists.
+
+Cached source-reviewed EQ projection: c49d5862 over fdf6d4e0; 834 Kontakt inventories, 660 UVI UNKNOWN. Native band count/shaper unrecorded; counts are candidates, not new executed gate evidence.
+
+| Reason / target | Enabled | Bypassed | Libraries |
+|---|---:|---:|---:|
+| TargetsDropped/intensity | 64974 | 0 | 1 |
+| TargetsDropped/frequency | 37128 | 0 | 1 |
+| SourceNotExecuted/filterCutoff | 14047 | 0 | 2 |
+| SourceNotExecuted/filterQ | 14047 | 0 | 2 |
+| SourceNotExecuted/pan | 14047 | 0 | 2 |
+| SourceNotExecuted/frequency | 13923 | 0 | 1 |
+| SourceNotExecuted/pitch | 13923 | 0 | 1 |
+| SourceNotExecuted/volume | 9406 | 0 | 2 |
+| SourceNotExecuted/intensity | 4641 | 0 | 1 |
+| TargetsDropped/filterCutoff | 4612 | 0 | 7 |
+
+Receipt and complete location sidecar: `/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w12-fidelity/cached-c49-eq-summary.json` and `cached-c49-eq-locations.json`. The latter uses the common grouped-diagnostics-v1 format; capped locations remain in the summary.

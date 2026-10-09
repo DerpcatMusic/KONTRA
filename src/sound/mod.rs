@@ -22,6 +22,7 @@
 
 pub mod articulation;
 pub mod edits;
+pub(crate) mod effect_controls;
 pub mod event;
 pub mod mics;
 pub mod mix;
@@ -73,7 +74,12 @@ pub struct LoadFailure {
 impl LoadFailure {
     /// A failure with only a message (a source that does not stage its errors).
     pub fn message(message: impl fmt::Display) -> Self {
-        Self { message: message.to_string(), stage: None, kind: None, at: None }
+        Self {
+            message: message.to_string(),
+            stage: None,
+            kind: None,
+            at: None,
+        }
     }
 }
 
@@ -218,7 +224,11 @@ pub struct Stream {
 impl Stream {
     /// Bytes held in memory: start data plus the page pool.
     pub fn resident_bytes(&self) -> u64 {
-        let heads: usize = self.assets.iter().map(sampler_core::Pcm::resident_bytes).sum();
+        let heads: usize = self
+            .assets
+            .iter()
+            .map(sampler_core::Pcm::resident_bytes)
+            .sum();
         (heads + self.report.pool_bytes) as u64
     }
 
@@ -227,7 +237,11 @@ impl Stream {
     /// `budget` bytes; they read again from disk when next played.
     pub fn trim(&self, budget: u64, before: u64) -> usize {
         let pool = self.report.pool_bytes as u64;
-        self.streamer.trim(&self.assets, budget.saturating_sub(pool).try_into().unwrap_or(usize::MAX), before)
+        self.streamer.trim(
+            &self.assets,
+            budget.saturating_sub(pool).try_into().unwrap_or(usize::MAX),
+            before,
+        )
     }
 }
 
@@ -255,7 +269,9 @@ pub struct ScriptUi {
 impl ScriptUi {
     /// Apply an effect script `instance` emitted; true when it changed a view.
     pub fn apply(&mut self, instance: usize, effect: &sampler_core::Effect) -> bool {
-        self.views.get_mut(instance).is_some_and(|v| v.apply_ui_effect(effect))
+        self.views
+            .get_mut(instance)
+            .is_some_and(|v| v.apply_ui_effect(effect))
     }
 
     /// The keyboard as the scripts colour and name it, 128 keys; a later
@@ -292,7 +308,10 @@ impl ScriptUi {
         }
         let resources = std::cell::RefCell::new(&mut self.resources);
         let picture = |path: &str| resources.borrow_mut().as_mut()?.picture(path);
-        self.views.iter().filter_map(|v| v.ui(&picture).ok()).collect()
+        self.views
+            .iter()
+            .filter_map(|v| v.ui(&picture).ok())
+            .collect()
     }
 }
 
@@ -339,7 +358,9 @@ pub trait Core: Send {
     /// Render `frames` (≤ [`MAX_BLOCK`]) onto the output pairs.
     fn render(&mut self, frames: usize) -> Rendered<'_>;
     /// Optional shared-engine trace of the host master gain, after rack mixing.
-    fn trace_master(&mut self, _gains: &[f32]) -> bool { false }
+    fn trace_master(&mut self, _gains: &[f32]) -> bool {
+        false
+    }
     /// Observe physical host channels after routing, summing and mono conversion.
     fn trace_output(&mut self, _port: usize, _frames: &[[f32; 2]], _channels: u8) {}
     /// Whether anything still owns exact host note `note`. A note-on that
@@ -375,12 +396,21 @@ pub trait Core: Send {
     fn set_control(&mut self, part: usize, control: sampler_ui_ir::ControlId, value: f64) -> bool;
     /// The control's current value, which scripts may also change.
     fn control_value(&self, part: usize, control: sampler_ui_ir::ControlId) -> Option<f64>;
+    fn effect_value(&self, _part: usize, _address: sampler_core::ParameterAddress) -> Option<f64> {
+        None
+    }
     /// Hand `part`'s queued script effects to `each` with their script
     /// instance, in order, until it returns false; the rest stay queued.
-    fn take_effects(&mut self, part: usize, each: &mut dyn FnMut(usize, &sampler_core::Effect) -> bool);
+    fn take_effects(
+        &mut self,
+        part: usize,
+        each: &mut dyn FnMut(usize, &sampler_core::Effect) -> bool,
+    );
 
     fn voices(&self) -> Voices;
-    fn voice_taps(&self, _part:usize)->[Option<sampler_core::VoiceTap>;16] {[None;16]}
+    fn voice_taps(&self, _part: usize) -> [Option<sampler_core::VoiceTap>; 16] {
+        [None; 16]
+    }
     /// `part`'s runtime problems since it was installed.
     fn problems(&self, part: usize) -> report::RuntimeProblems;
     /// The articulation `part` plays, by index in its instrument, when the

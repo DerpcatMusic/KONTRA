@@ -63,6 +63,7 @@ fn effect(
     let mut load = |_| Ok((48000, vec![[1.0; 2]]));
     let mut source = crate::effects::Impulses {
         store: &mut impulses,
+        recipes: None,
         load: &mut load,
     };
     let chain = crate::effects::chain_with(
@@ -75,6 +76,7 @@ fn effect(
         Some(&mut source),
         Some((-1, -1)),
         (-1, -1),
+        &[],
     );
     let at = format!("{scope} slot {}", fx.slot);
     let failures = actual

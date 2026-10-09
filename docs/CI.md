@@ -31,6 +31,10 @@ The shipping release profile itself is unchanged.
 
 Rust 1.99.0 matches the compiler in the successful baseline run linked below.
 Actions use immutable commit pins; Cargo commands use the committed lockfile.
+Editor validation uses the locally retained MUI workflow from revision
+`dcf0796082feec053af1418e3a38a302ee61da0a`. Its display/graphics setup gets two
+three-minute attempts inside a seven-minute step deadline, with bounded network
+waits and package recovery before retrying.
 Caches are separated by OS/target, profile and feature set. The cache action also
 keys the compiler, Cargo manifests/lockfile and compiler-related environment.
 Caches are accelerators, not test evidence or release artifacts.
@@ -116,6 +120,12 @@ durations and total runner-minutes on real runs before claiming realized savings
 For branch protection, select the stable **CI required** check after it has run
 successfully. This PR does not change repository protection/settings. Existing
 required check names must be reviewed by a maintainer before changing them.
+
+The Linux dependency step keeps its exact downloaded `.deb` files in the plugin artifact.
+Editor jobs verify the cache hashes and configure those packages offline, with five
+bounded attempts and exponential backoff. A complete preinstalled Xvfb/graphics/tool
+stack needs no installation. Vulkan/GL diagnostics, the screen recording, editor
+reopen and MUI first-frame checks remain required.
 
 ## Why this setup / primary references
 

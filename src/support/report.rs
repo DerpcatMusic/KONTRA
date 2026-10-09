@@ -377,14 +377,15 @@ pub(super) fn try_auto_report_pending_incident() {
                 &status_path,
                 std::time::Duration::from_millis(500),
                 |file| std::io::Write::write_all(file, &bytes),
-            ) {
-                crate::diagnostics::event(
-                    crate::diagnostics::LogLevel::Error,
-                    "support",
-                    "report_receipt_write_failed",
-                    serde_json::json!({"reason":format!("Could not persist the crash-report delivery status: {error}")}),
-                );
-            }
+            )
+        {
+            crate::diagnostics::event(
+                crate::diagnostics::LogLevel::Error,
+                "support",
+                "report_receipt_write_failed",
+                serde_json::json!({"reason":format!("Could not persist the crash-report delivery status: {error}")}),
+            );
+        }
         crate::diagnostics::event(level, "support", "automatic_crash_report", value);
         if result.is_ok() {
             completion.0 = Some(AutomaticReportContinuation::Acknowledged(incident.id));
@@ -1240,7 +1241,7 @@ mod tests {
                 };
                 outcome.send(acknowledged).unwrap();
                 finishing.recv_timeout(timeout).unwrap();
-                if !acknowledged {// Rejected receipt, offline or unconfirmed incident.
+                if !acknowledged { // Rejected receipt, offline or unconfirmed incident.
                 }
                 // Successful completion leaves through the same scope boundary.
             })

@@ -334,6 +334,12 @@ pub enum Instruction {
         info: super::EventInfo,
         local: u16,
     },
+    /// Read an event field selected by a runtime native parameter number.
+    ReadEventParameter {
+        event: u16,
+        parameter: u16,
+        local: u16,
+    },
     /// Read a script layer's own value, in `WriteParam` units.
     ReadParam {
         scope: super::ParamScope,
@@ -721,7 +727,12 @@ impl Program {
                 locals = locals.max(usize::from(index.max(local)) + 1);
             }
             if let Instruction::WriteModValue { event, id, local }
-            | Instruction::ReadModValue { event, id, local } = *op
+            | Instruction::ReadModValue { event, id, local }
+            | Instruction::ReadEventParameter {
+                event,
+                parameter: id,
+                local,
+            } = *op
             {
                 locals = locals.max(usize::from(event.max(id).max(local)) + 1);
             }
@@ -839,7 +850,7 @@ pub struct BehaviorId(pub(super) Handle);
 pub enum Outcome {
     Finished,
     Cancelled,
-    /// Still running after one second of preemption (a runaway loop).
+    /// Still running after one second of continuous preemption (a runaway loop).
     FuelExhausted,
     Fault(Error),
 }
@@ -920,8 +931,8 @@ pub(super) struct Continuation {
     pub callback_id: i32,
     pub waiting: bool,
     pub disable_wait: bool,
-    pub async_result: Option<(i32,i32)>,
-    pub async_wait:Option<i32>,
+    pub async_result: Option<(i32, i32)>,
+    pub async_wait: Option<i32>,
 }
 
 #[derive(Clone, Copy)]
@@ -1130,10 +1141,18 @@ impl Runtime {
         while let Some(index) = next {
             let slot = &self.behaviors.slots[index];
             next = slot.next;
-            let Some(c) = slot.value.as_ref() else { continue };
-            visit(BehaviorProgress { program: c.program, pc: c.pc, owner: c.owner,
-                yielded_at: c.yielded_at, waiting: c.waiting, outcome: c.outcome,
-                callers: c.frames.callers() });
+            let Some(c) = slot.value.as_ref() else {
+                continue;
+            };
+            visit(BehaviorProgress {
+                program: c.program,
+                pc: c.pc,
+                owner: c.owner,
+                yielded_at: c.yielded_at,
+                waiting: c.waiting,
+                outcome: c.outcome,
+                callers: c.frames.callers(),
+            });
         }
     }
 
@@ -1266,7 +1285,7 @@ impl Runtime {
     pub(super) fn resume_behavior(&mut self, id: BehaviorId) {
         if let Some(c) = self.behaviors.get_mut(id.0) {
             c.waiting = false;
-            c.async_wait=None;
+            c.async_wait = None;
         }
         self.queue_behavior(id);
         self.drain_behavior();
@@ -1409,6 +1428,7 @@ impl Runtime {
             return 0;
         };
         let mut steps = 0;
+        let mut wrote_script = false;
         macro_rules! local {
             ($l:expr) => {
                 match locals.get_mut(usize::from($l)) {
@@ -1507,6 +1527,7 @@ impl Runtime {
                 Instruction::WriteScriptCell { cell, local } => {
                     let value = *local!(local);
                     *cell!(cell) = value;
+                    wrote_script = true;
                 }
                 Instruction::ReadScriptArray {
                     array,
@@ -1529,11 +1550,15 @@ impl Runtime {
                     };
                     let value = *local!(local);
                     *cell!(at) = value;
+                    wrote_script = true;
                 }
                 _ => break,
             }
             pc = next;
             steps += 1;
+        }
+        if wrote_script {
+            generation.script_revision = generation.script_revision.wrapping_add(1);
         }
         if steps > 0 {
             self.behaviors.get_mut(id.0).unwrap().pc = pc;
@@ -1550,7 +1575,7 @@ impl Runtime {
     }
 
     /// Out of fuel for this block: continue next block, unless it has been
-    /// running for a second, which only a runaway loop does.
+    /// continuously preempted for a second without an intentional wait.
     fn yield_behavior(&mut self, id: BehaviorId) {
         let now = self.now;
         let c = self.behaviors.get_mut(id.0).unwrap();
@@ -1614,6 +1639,7 @@ impl Runtime {
         match op {
             Instruction::ForwardController => {
                 self.forward_controller(id)?;
+                self.flush_deferred(id);
             }
             Instruction::SuppressController => {
                 self.controller_event_mut(id)?.pending = false;
@@ -1707,6 +1733,7 @@ impl Runtime {
                 } else {
                     self.forward_attack(note)?;
                 }
+                self.flush_deferred(id);
             }
             Instruction::ForwardReleaseGroups => {
                 if let Some(NoteStage::Release(stage)) =
@@ -1716,6 +1743,7 @@ impl Runtime {
                 } else {
                     self.forward_release_groups(owner.note()?)?;
                 }
+                self.flush_deferred(id);
             }
             Instruction::SuppressAttack => {
                 let note = owner.note()?;
@@ -1912,27 +1940,52 @@ impl Runtime {
                 let value = self.source_event_id(owner.note()?)?;
                 *self.local_cell_mut(id, local)? = i64::from(value);
             }
-            Instruction::DiscardEvent { event, current_release } => {
+            Instruction::DiscardEvent {
+                event,
+                current_release,
+            } => {
                 let event = i32::try_from(*self.local_cell_mut(id, event)?)
                     .map_err(|_| Error::InvalidInput)?;
                 let plan = self.behavior_plan(owner)?;
                 let many = event == 0x3fff_fffe || (event > 0 && event & 0x2000_0000 != 0);
-                let single = if many { None } else { self.resolve_source_event(plan, event)? };
-                let range = if many { 0..self.notes.slots.len() }
-                    else if let Some(note) = single { note.0.index..note.0.index + 1 }
-                    else { 0..0 };
+                let single = if many {
+                    None
+                } else {
+                    self.resolve_source_event(plan, event)?
+                };
+                let range = if many {
+                    0..self.notes.slots.len()
+                } else if let Some(note) = single {
+                    note.0.index..note.0.index + 1
+                } else {
+                    0..0
+                };
                 for index in range {
-                    let Some(n) = self.notes.slots[index].value else { continue };
+                    let Some(n) = self.notes.slots[index].value else {
+                        continue;
+                    };
                     let note = NoteId(self.notes.id(index));
                     let selected = if many {
-                        n.plan == plan && (event == 0x3fff_fffe
-                            || self.note_events[index].marks & (event as u32 & 0x0fff_ffff) != 0)
-                    } else { single == Some(note) };
-                    if !selected { continue; }
+                        n.plan == plan
+                            && (event == 0x3fff_fffe
+                                || self.note_events[index].marks & (event as u32 & 0x0fff_ffff)
+                                    != 0)
+                    } else {
+                        single == Some(note)
+                    };
+                    if !selected {
+                        continue;
+                    }
                     if owner.note().ok() == Some(note) {
-                        self.behavior_step(id, owner, if current_release {
-                            Instruction::SuppressRelease
-                        } else { Instruction::SuppressAttack })?;
+                        self.behavior_step(
+                            id,
+                            owner,
+                            if current_release {
+                                Instruction::SuppressRelease
+                            } else {
+                                Instruction::SuppressAttack
+                            },
+                        )?;
                     } else {
                         self.discard_note(note)?;
                     }
@@ -2082,7 +2135,7 @@ impl Runtime {
                 self.note_values[index] = *self.local_cell_mut(id, local)?;
             }
             Instruction::ReadScriptCell { local, cell } => {
-                let value = *self.behavior_script_cell_mut(id, cell)?;
+                let value = *self.behavior_script_cell(id, cell)?;
                 *self.local_cell_mut(id, local)? = value;
             }
             Instruction::WriteScriptCell { cell, local } => {
@@ -2098,7 +2151,7 @@ impl Runtime {
                 // there instead of failing the callback (Dolce's rr table is read
                 // one past its end).
                 let value = match array.cell(*self.local_cell_mut(id, index)?) {
-                    Ok(cell) => *self.behavior_script_cell_mut(id, cell)?,
+                    Ok(cell) => *self.behavior_script_cell(id, cell)?,
                     Err(_) => 0,
                 };
                 *self.local_cell_mut(id, local)? = value;
@@ -2245,6 +2298,61 @@ impl Runtime {
                 let plan = self.behavior_plan(owner)?;
                 let event = *self.local_cell_mut(id, event)?;
                 *self.local_cell_mut(id, local)? = self.read_event_info(plan, event, info)?;
+            }
+            Instruction::ReadEventParameter {
+                event,
+                parameter,
+                local,
+            } => {
+                let plan = self.behavior_plan(owner)?;
+                let event = *self.local_cell_mut(id, event)?;
+                let parameter = *self.local_cell_mut(id, parameter)?;
+                // v1 calls.rs dispatches the numeric selector, including user tags.
+                let value = match parameter {
+                    0..=3 => self.read_mod_value(
+                        plan,
+                        event,
+                        i64::from(super::USER_EVENT_PAR) + parameter,
+                    )?,
+                    4..=6 => self.read_param(
+                        plan,
+                        super::ParamScope::Note,
+                        event,
+                        match parameter {
+                            4 => super::ModTarget::Decibels,
+                            5 => super::ModTarget::Pitch,
+                            _ => super::ModTarget::Pan,
+                        },
+                    )?,
+                    7 | 8
+                        if owner.note().ok().is_some_and(|note| {
+                            self.note_events[note.0.index].source_id_is(event)
+                        }) =>
+                    {
+                        let note = self
+                            .note_event_at(owner.note()?, self.behavior_stage(id)?)?
+                            .ok_or(Error::InvalidInput)?;
+                        if parameter == 7 {
+                            i64::from(note.pitch.key())
+                        } else {
+                            (note.velocity * 127.).round() as i64
+                        }
+                    }
+                    7 | 8 | 10 | 11 | 13 | 15 => self.read_event_info(
+                        plan,
+                        event,
+                        match parameter {
+                            7 => super::EventInfo::Key,
+                            8 => super::EventInfo::Velocity,
+                            10 => super::EventInfo::ZoneId,
+                            11 => super::EventInfo::Source,
+                            13 => super::EventInfo::MidiChannel,
+                            _ => super::EventInfo::ReleaseVelocity,
+                        },
+                    )?,
+                    _ => 0,
+                };
+                *self.local_cell_mut(id, local)? = value;
             }
             Instruction::ReadParam {
                 scope,
@@ -2478,23 +2586,46 @@ impl Runtime {
     fn flush_deferred(&mut self, id: BehaviorId) {
         while let Some(at) = self.deferred.iter().position(|d| d.0 == id) {
             let (_, note, entry) = self.deferred.remove(at);
-            match self.commit_note_attack(note, entry) {
-                Ok(true) => {
-                    let plan = self.notes.get(note.0).unwrap().plan;
-                    let end = self.plans.get(plan.0).unwrap().prepared.stages.len();
-                    self.project_note(note, entry, end);
-                    let _ = self
-                        .plans
-                        .get_mut(plan.0)
-                        .unwrap()
-                        .projections
-                        .get_mut(note.0.index, end)
-                        .map(|p| p.forwarded = true);
+            let ready_begin = self.behavior_ready.len();
+            let callbacks = std::mem::take(&mut self.note_events[note.0.index].pending_callbacks);
+            if callbacks != 0 {
+                self.behaviors.unreserve(callbacks);
+                self.begin_note_stages(note, entry);
+            } else {
+                match self.commit_note_attack(note, entry) {
+                    Ok(true) => {
+                        let plan = self.notes.get(note.0).unwrap().plan;
+                        let end = self.plans.get(plan.0).unwrap().prepared.stages.len();
+                        self.project_note(note, entry, end);
+                        let _ = self
+                            .plans
+                            .get_mut(plan.0)
+                            .unwrap()
+                            .projections
+                            .get_mut(note.0.index, end)
+                            .map(|p| p.forwarded = true);
+                    }
+                    Ok(false) | Err(Error::ClosedNote) => {}
+                    // No room once the selection was edited: drop the note.
+                    Err(_) => {
+                        let _ = self.suppress_attack(note);
+                    }
                 }
-                Ok(false) | Err(Error::ClosedNote) => {}
-                // No room once the selection was edited: drop the note.
-                Err(_) => {
-                    let _ = self.suppress_attack(note);
+            }
+            let child = *self.notes.get(note.0).unwrap();
+            if let (Some(parent), super::ReleaseLink::Stage(stage)) =
+                (child.parent, child.release_link)
+            {
+                let projection = self
+                    .plans
+                    .get(child.plan.0)
+                    .unwrap()
+                    .projections
+                    .get(parent.0.index, stage)
+                    .unwrap();
+                if projection.release != super::note_event::ReleaseStage::Unreached {
+                    // A linked release follows the child's edited note route.
+                    self.queue_note_release(note, None, ready_begin);
                 }
             }
             self.notes.get_mut(note.0).unwrap().work -= 1;
@@ -2555,7 +2686,10 @@ impl Runtime {
         if self.available_commands() == 0 {
             return Err(Error::Capacity);
         }
-        self.behaviors.get_mut(id.0).unwrap().waiting = true;
+        let c = self.behaviors.get_mut(id.0).unwrap();
+        c.waiting = true;
+        // A scheduled wait ends the current burst of continuous preemption.
+        c.yielded_at = None;
         self.queue(at, Action::Resume(id));
         Ok(true)
     }
@@ -2615,7 +2749,6 @@ impl Runtime {
         // own later release families and commands. Neither may consume the other.
         let command = usize::from(at.is_some_and(|at| at != self.now));
         self.reserved_commands += command;
-        let ready_begin = self.behavior_ready.len();
         let child = self.select(
             origin,
             pitch,
@@ -2627,21 +2760,8 @@ impl Runtime {
         self.reserved_commands -= command;
         let child = child?;
         if linked && let Some(stage) = source_stage {
-            let parent = callback.owner.note()?;
             self.notes.get_mut(child.0).unwrap().release_link =
                 super::ReleaseLink::Stage(stage.index());
-            let plan = self.notes.get(parent.0).unwrap().plan;
-            if self
-                .plans
-                .get(plan.0)
-                .unwrap()
-                .projections
-                .get(parent.0.index, stage.index())?
-                .release
-                != super::note_event::ReleaseStage::Unreached
-            {
-                self.queue_note_release(child, None, ready_begin);
-            }
         }
         self.note_events[child.0.index].fixed_duration = frames.is_some();
         self.notes.get_mut(child.0).unwrap().retire_when_silent = duration == Duration::UntilSilent;

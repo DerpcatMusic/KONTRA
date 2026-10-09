@@ -36,6 +36,41 @@ pub struct Environment {
 /// Steps one `on init` may take before evaluation is abandoned.
 pub const INIT_FUEL: u64 = 200_000_000;
 
+/// Detect suspension before evaluating a callback, so its prefix is never replayed.
+fn may_suspend<'a>(hir: &'a Hir, body: &'a [Stmt], async_wait_suspends: bool) -> bool {
+    let mut pending = vec![body];
+    let mut seen = vec![false; hir.functions.len()];
+    while let Some(body) = pending.pop() {
+        for stmt in body {
+            match &stmt.kind {
+                StmtKind::Builtin(builtin, _) => {
+                    if matches!(builtin, Builtin::Wait | Builtin::WaitTicks)
+                        || async_wait_suspends && *builtin == Builtin::WaitAsync
+                    {
+                        return true;
+                    }
+                }
+                StmtKind::If(_, yes, no) => {
+                    pending.push(yes);
+                    pending.push(no);
+                }
+                StmtKind::While(_, body) => pending.push(body),
+                StmtKind::Select(_, cases) => {
+                    pending.extend(cases.iter().map(|case| case.body.as_slice()));
+                }
+                StmtKind::Call(id) => {
+                    let index = id.0 as usize;
+                    if !std::mem::replace(&mut seen[index], true) {
+                        pending.push(&hir.functions[index].body);
+                    }
+                }
+                StmtKind::Assign(_, _) | StmtKind::Fill(_, _) => {}
+            }
+        }
+    }
+    false
+}
+
 pub fn int_arith(op: Arith, a: i32, b: i32) -> i32 {
     use sampler_core::IntegerBinary as I;
     match op {
@@ -158,7 +193,7 @@ struct Eval<'h> {
     consumed: BTreeSet<VarId>,
     pending_menus: BTreeMap<usize, i32>,
     callback_type: i32,
-    async_result:Option<(i32,i32)>,
+    async_result: Option<(i32, i32)>,
     async_depth: u8,
     profile: Option<HashMap<&'static str, (u64, u128)>>,
 }
@@ -187,7 +222,7 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
         consumed: BTreeSet::new(),
         pending_menus: BTreeMap::new(),
         callback_type: b::cb::INIT,
-        async_result:None,
+        async_result: None,
         async_depth: 0,
         profile: std::env::var_os("KONTRA_AUDIT_KSP_PROFILE").map(|_| HashMap::new()),
     };
@@ -231,25 +266,33 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
         .iter()
         .find(|c| c.kind == CallbackKind::PersistenceChanged)
     {
-        #[cfg(feature="scan")] crate::scan::stage("persistence_changed");
-        let result=e.block(&cb.body);
-        #[cfg(feature="scan")] crate::scan::phase("persistence_changed",result.as_ref().err());
-        e.st.model.persistence_completion = match result {
-            Ok(_) => model::PersistenceCompletion::Completed,
-            Err(f) => {
-                let category = if e.fuel == 0 {
-                    model::EvaluationFailure::Budget
-                } else {
-                    model::EvaluationFailure::InvalidValue
-                };
-                e.warn(f.span, "on persistence_changed did not complete".to_owned());
-                model::PersistenceCompletion::Failed {
-                    category,
-                    offset: f.span.start,
-                    builtin: f.builtin,
+        if may_suspend(hir, &cb.body, true) {
+            e.st.model.persistence_completion = model::PersistenceCompletion::Scheduled;
+            #[cfg(feature = "scan")]
+            crate::scan::phase("persistence_scheduled", None);
+        } else {
+            #[cfg(feature = "scan")]
+            crate::scan::stage("persistence_changed");
+            let result = e.block(&cb.body);
+            #[cfg(feature = "scan")]
+            crate::scan::phase("persistence_changed", result.as_ref().err());
+            e.st.model.persistence_completion = match result {
+                Ok(_) => model::PersistenceCompletion::Completed,
+                Err(f) => {
+                    let category = if e.fuel == 0 {
+                        model::EvaluationFailure::Budget
+                    } else {
+                        model::EvaluationFailure::InvalidValue
+                    };
+                    e.warn(f.span, "on persistence_changed did not complete".to_owned());
+                    model::PersistenceCompletion::Failed {
+                        category,
+                        offset: f.span.start,
+                        builtin: f.builtin,
+                    }
                 }
-            }
-        };
+            };
+        }
     }
     if let Some(profile) = &e.profile {
         eprintln!(
@@ -623,8 +666,8 @@ impl Eval<'_> {
         match sys {
             NumGroups => self.env.groups.len() as i32,
             CallbackType => self.callback_type,
-            AsyncId => self.async_result.map_or(0,|v|v.0),
-            AsyncExitStatus => self.async_result.map_or(0,|v|v.1),
+            AsyncId => self.async_result.map_or(0, |v| v.0),
+            AsyncExitStatus => self.async_result.map_or(0, |v| v.1),
             DurationQuarter => 500_000,
             DurationEighth => 250_000,
             DurationSixteenth => 125_000,
@@ -802,7 +845,8 @@ impl Eval<'_> {
                 Arg::Var(v, _) => V::S(self.hir.vars[v.0 as usize].name.to_string()),
                 // Record symbolic parameter keys by name; opaque ids cannot cross the IR.
                 _ if (i == 0 && builtin == Builtin::SetEnginePar)
-                    || (i == 1 && builtin == Builtin::SetUiWfProperty) => {
+                    || (i == 1 && builtin == Builtin::SetUiWfProperty) =>
+                {
                     let id = self.int(args, i)?;
                     symbol_name(self.hir, id).map_or(V::I(id), V::S)
                 }
@@ -1360,14 +1404,15 @@ impl Eval<'_> {
                 self.st.model.listeners.insert(signal, value);
                 V::I(0)
             }
-            builtin @ (MfGetFirst | MfGetLast | MfGetNext | MfGetPrev | MfGetNextAt | MfGetPrevAt
-            | MfGetId | MfGetCommand | MfSetCommand | MfGetByteOne | MfSetByteOne
-            | MfGetByteTwo | MfSetByteTwo | MfGetChannel | MfSetChannel | MfGetPos
-            | MfSetPos | MfGetLength | MfSetLength | MfGetTrackIdx | MfSetTrackIdx
-            | MfGetEventPar | MfSetEventPar | MfGetNumTracks | MfGetBufferSize
-            | MfSetBufferSize | MfInsertEvent | MfRemoveEvent | MfGetMark | MfSetMark
-            | MfSetExportArea | MfSetNumExportAreas | MfCopyExportArea | MfReset
-            | MfInsertFile | LoadMidiFile | SaveMidiFile) => {
+            builtin @ (MfGetFirst | MfGetLast | MfGetNext | MfGetPrev | MfGetNextAt
+            | MfGetPrevAt | MfGetId | MfGetCommand | MfSetCommand | MfGetByteOne
+            | MfSetByteOne | MfGetByteTwo | MfSetByteTwo | MfGetChannel
+            | MfSetChannel | MfGetPos | MfSetPos | MfGetLength | MfSetLength
+            | MfGetTrackIdx | MfSetTrackIdx | MfGetEventPar | MfSetEventPar
+            | MfGetNumTracks | MfGetBufferSize | MfSetBufferSize | MfInsertEvent
+            | MfRemoveEvent | MfGetMark | MfSetMark | MfSetExportArea
+            | MfSetNumExportAreas | MfCopyExportArea | MfReset | MfInsertFile
+            | LoadMidiFile | SaveMidiFile) => {
                 let action = builtin.midi().unwrap();
                 let has_text = matches!(
                     action,
@@ -1395,7 +1440,8 @@ impl Eval<'_> {
                 let synchronous = self.callback_type == b::cb::INIT
                     && matches!(
                         action,
-                        sampler_core::MidiAction::InsertFile | sampler_core::MidiAction::SetBufferSize
+                        sampler_core::MidiAction::InsertFile
+                            | sampler_core::MidiAction::SetBufferSize
                     );
                 let value = if action.asynchronous() && !synchronous {
                     self.st
@@ -1428,7 +1474,21 @@ impl Eval<'_> {
             }
             WaitAsync => {
                 let id = self.int(args, 0)?;
-                if let Some(status) = self.st.midi_object.finish_initial(self.env.slot, id) {
+                // Init completes MIDI jobs synchronously; only clock waits defer their callback.
+                let deferred = self
+                    .hir
+                    .callbacks
+                    .iter()
+                    .find(|c| c.kind == CallbackKind::AsyncComplete)
+                    .is_some_and(|c| may_suspend(self.hir, &c.body, false));
+                if let Some(status) =
+                    self.st
+                        .midi_object
+                        .finish_initial(self.env.slot, id, deferred)
+                {
+                    if deferred {
+                        return Ok(V::I(0));
+                    }
                     // ponytail: cap nested init completions at eight; use an interpreter trampoline if deeper nesting is needed.
                     if self.async_depth >= 8 {
                         return fault(span, "async completion nesting limit");
@@ -1537,7 +1597,9 @@ impl Eval<'_> {
             OutputChannelName | GetFolder | FsGetFilename => V::S(String::new()),
             FindZone => V::I(b::NOT_FOUND),
             GetNumZones | GetZoneId | GetZonePar | GetPurgeState | GetVoiceLimit
-            | GetUiWfProperty | EventStatus | GetEventPar | GetEventParArr | GetEventMark => V::I(0),
+            | GetUiWfProperty | EventStatus | GetEventPar | GetEventParArr | GetEventMark => {
+                V::I(0)
+            }
             // No host consumes zone writes (FindZone finds nothing at init), and
             // Conflux issues three million of them: logging each cost ~1 GB.
             SetZonePar => V::I(0),
@@ -1553,9 +1615,9 @@ impl Eval<'_> {
                 self.request(builtin, args)?;
                 V::I(0)
             }
-            PurgeGroup | SetVoiceLimit | LoadIrSample | SaveArray | LoadArrayStr
-            | SaveArrayStr | AttachLevelMeter | AttachZone | SetUiWfProperty | FsNavigate
-            | LoadNativeUi | SetNksNavName | SetNksNavPar | ResetNksNav => {
+            PurgeGroup | SetVoiceLimit | LoadIrSample | SaveArray | LoadArrayStr | SaveArrayStr
+            | AttachLevelMeter | AttachZone | SetUiWfProperty | FsNavigate | LoadNativeUi
+            | SetNksNavName | SetNksNavPar | ResetNksNav => {
                 self.request(builtin, args)?;
                 V::I(0)
             }

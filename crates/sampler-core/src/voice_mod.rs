@@ -13,7 +13,60 @@
 //! largest program, so rendering never allocates.
 use crate::{Envelope, EnvelopeCurve, Error, envelope::EnvelopeState};
 
-type Shape = Box<[(f32, f32)]>;
+struct Shape {
+    points: Box<[(f32, f32)]>,
+    table: bool,
+}
+
+impl Shape {
+    fn new(points: Box<[(f32, f32)]>) -> Self {
+        let last = points.len().saturating_sub(1);
+        let table = last > 0
+            && points
+                .iter()
+                .enumerate()
+                .all(|(i, p)| p.0 == (i as f64 / last as f64) as f32);
+        Self { points, table }
+    }
+
+    fn evaluate(&self, x: f32) -> f32 {
+        let points = &self.points;
+        // Port 0cb7a8a0:src/engine/params.rs::Mod::shape table indexing.
+        // Check rounded brackets, then retain v2's original interpolation bits.
+        let before = |i: usize| {
+            #[cfg(test)]
+            SHAPE_PROBES.set(SHAPE_PROBES.get() + 1);
+            points[i].0 < x
+        };
+        let search = || {
+            points.partition_point(|p| {
+                #[cfg(test)]
+                SHAPE_PROBES.set(SHAPE_PROBES.get() + 1);
+                p.0 < x
+            })
+        };
+        let after = if self.table && x.is_finite() {
+            let last = points.len() - 1;
+            let position = x * last as f32;
+            let index = (position as usize).min(last);
+            if before(index) {
+                let next = index + 1;
+                if next < points.len() && before(next) {
+                    search()
+                } else {
+                    next
+                }
+            } else if index > 0 && !before(index - 1) {
+                search()
+            } else {
+                index
+            }
+        } else {
+            search()
+        };
+        interpolate(points, x, after)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LfoShape {
@@ -94,7 +147,7 @@ impl ModSource {
 /// Destination and law; `v` is the route's transformed source value and `u`
 /// its unipolar view ((v + 1) / 2 for bipolar sources).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ModTarget {
+pub(crate) enum CompiledTarget {
     /// gain × (1 − depth·(1 − u)).
     Attenuate,
     /// gain × 10^(depth·v / 20); depth in decibels.
@@ -119,6 +172,35 @@ pub enum ModTarget {
     Tone,
     /// Start offset of depth·u × the region's start range, at voice start only.
     SampleStart,
+    Control(usize),
+}
+
+/// Open, plan-local destination identity. Legacy constructors preserve native laws.
+pub type ModTarget = crate::ParameterAddress;
+
+impl crate::ParameterAddress {
+    pub(crate) fn compiled(self) -> Option<CompiledTarget> {
+        if self.scope != crate::ParameterScope::Voice {
+            return None;
+        }
+        use CompiledTarget as T;
+        Some(match (self.node, u32::MAX - self.parameter) {
+            (0, 0) => T::Attenuate,
+            (0, 1) => T::Decibels,
+            (0, 2) => T::Pan,
+            (0, 3) => T::Pitch,
+            (0, 4) => T::Cutoff,
+            (0, 5) => T::Resonance,
+            (i, 6) => T::ProcessorCutoff(i),
+            (i, 7) => T::ProcessorResonance(i),
+            (i, 8) => T::ProcessorNativeCutoff(i),
+            (i, 9) => T::ProcessorNativeResonance(i),
+            (i, 10) => T::ProcessorNativeGain(i),
+            (0, 11) => T::Tone,
+            (0, 12) => T::SampleStart,
+            _ => return None,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -213,6 +295,8 @@ struct Program {
     envelopes: Box<[Envelope]>,
     breakpoints: Box<[Breakpoints]>,
     routes: Box<[ModRoute]>,
+    targets: Box<[CompiledTarget]>,
+    filter_indices: Box<[usize]>,
     shapes: Box<[Shape]>,
     /// Whether any route reaches each kind of output, so unused work is skipped.
     filter: bool,
@@ -220,6 +304,7 @@ struct Program {
     start: bool,
     /// v1 settled-result reuse, restricted to sources without clocks or lag.
     cacheable: bool,
+    control: bool,
 }
 
 /// Immutable per-plan programs and region bindings.
@@ -245,6 +330,10 @@ pub(crate) struct ModShape {
 }
 
 impl VoiceModulation {
+    pub(crate) fn has_control_targets(&self) -> bool {
+        self.programs.iter().any(|p| p.control)
+    }
+
     pub fn shape(&self) -> ModShape {
         ModShape {
             empty: self.is_empty(),
@@ -270,10 +359,20 @@ impl VoiceModulation {
             + self.routes * size_of::<f64>()
             + self.envelopes * size_of::<EnvelopeState>()
     }
+    #[cfg(test)]
     pub fn new(
         programs: Vec<ModProgram>,
         regions: Vec<Option<usize>>,
         start_ranges: Vec<u32>,
+    ) -> Result<Self, Error> {
+        Self::new_resolved(programs, regions, start_ranges, |_| None)
+    }
+
+    pub(crate) fn new_resolved(
+        programs: Vec<ModProgram>,
+        regions: Vec<Option<usize>>,
+        start_ranges: Vec<u32>,
+        resolve: impl Fn(crate::ParameterAddress) -> Option<usize>,
     ) -> Result<Self, Error> {
         if start_ranges.len() != regions.len()
             || regions.iter().flatten().any(|p| *p >= programs.len())
@@ -341,12 +440,12 @@ impl VoiceModulation {
                 {
                     return Err(Error::InvalidInput);
                 }
-                shapes.push(
+                shapes.push(Shape::new(
                     shape
                         .iter()
                         .map(|&(x, y)| (x as f32, y as f32))
                         .collect::<Box<[_]>>(),
-                );
+                ));
             }
             for route in &program.routes {
                 if route.source >= sources.len()
@@ -361,21 +460,56 @@ impl VoiceModulation {
             }
             let reaches =
                 |targets: &[ModTarget]| program.routes.iter().any(|r| targets.contains(&r.target));
+            let mut filter_indices: Vec<_> = program
+                .routes
+                .iter()
+                .filter_map(|route| match route.target.compiled() {
+                    Some(
+                        CompiledTarget::ProcessorCutoff(i)
+                        | CompiledTarget::ProcessorResonance(i)
+                        | CompiledTarget::ProcessorNativeCutoff(i)
+                        | CompiledTarget::ProcessorNativeResonance(i)
+                        | CompiledTarget::ProcessorNativeGain(i),
+                    ) => Some(i as usize),
+                    _ => None,
+                })
+                .collect();
+            filter_indices.sort_unstable();
+            filter_indices.dedup();
             compiled.push(Program {
                 bipolar: program.sources.iter().map(ModSource::bipolar).collect(),
                 cacheable: sources.iter().all(|s| {
-                    matches!(s,
-                        Prepared::Velocity | Prepared::Key | Prepared::Controller(_)
-                        | Prepared::Pressure | Prepared::Timbre | Prepared::Random
-                        | Prepared::Constant | Prepared::Script(_) | Prepared::PitchBend
+                    matches!(
+                        s,
+                        Prepared::Velocity
+                            | Prepared::Key
+                            | Prepared::Controller(_)
+                            | Prepared::Pressure
+                            | Prepared::Timbre
+                            | Prepared::Random
+                            | Prepared::Constant
+                            | Prepared::Script(_)
+                            | Prepared::PitchBend
                     )
                 }) && program.routes.iter().all(|r| r.lag == 0),
                 sources,
+                filter_indices: filter_indices.into_boxed_slice(),
                 envelopes: envelopes.into_boxed_slice(),
                 breakpoints: program.breakpoints.into_boxed_slice(),
                 filter: reaches(&[ModTarget::Cutoff, ModTarget::Resonance]),
                 tone: reaches(&[ModTarget::Tone]),
                 start: reaches(&[ModTarget::SampleStart]),
+                targets: program
+                    .routes
+                    .iter()
+                    .map(|r| {
+                        r.target
+                            .compiled()
+                            .or_else(|| resolve(r.target).map(CompiledTarget::Control))
+                            .ok_or(Error::InvalidInput)
+                    })
+                    .collect::<Result<_, _>>()?,
+                control: program.routes.iter().any(|r| r.target.compiled().is_none()),
                 routes: program.routes.into_boxed_slice(),
                 shapes: shapes.into_boxed_slice(),
             });
@@ -468,9 +602,9 @@ const FULL_SCALE: f64 = 1.0 / u32::MAX as f64;
 impl Program {
     fn scale(&self, scale: ModScale, raw: f64) -> f64 {
         let x = unipolar(raw, self.bipolar[scale.source]);
-        scale.shape.map_or(x, |shape| {
-            f64::from(evaluate(&self.shapes[shape], x as f32))
-        })
+        scale
+            .shape
+            .map_or(x, |shape| f64::from(self.shapes[shape].evaluate(x as f32)))
     }
 
     fn transform(&self, route: &ModRoute, raw: f64, bipolar: bool) -> f64 {
@@ -481,7 +615,7 @@ impl Program {
         };
         if let Some(shape) = route.shape {
             let x = unipolar(v, bipolar);
-            let y = evaluate(&self.shapes[shape], x as f32) as f64;
+            let y = self.shapes[shape].evaluate(x as f32) as f64;
             v = if bipolar { 2.0 * y - 1.0 } else { y };
         }
         v
@@ -492,8 +626,17 @@ fn unipolar(v: f64, bipolar: bool) -> f64 {
     if bipolar { (v + 1.0) * 0.5 } else { v }
 }
 
+#[cfg(test)]
 fn evaluate(points: &[(f32, f32)], x: f32) -> f32 {
-    let after = points.partition_point(|p| p.0 < x);
+    let after = points.partition_point(|p| {
+        #[cfg(test)]
+        SHAPE_PROBES.set(SHAPE_PROBES.get() + 1);
+        p.0 < x
+    });
+    interpolate(points, x, after)
+}
+
+fn interpolate(points: &[(f32, f32)], x: f32, after: usize) -> f32 {
     match after {
         0 => points[0].1,
         n if n == points.len() => points[n - 1].1,
@@ -790,42 +933,68 @@ impl VoiceModState {
         voice: usize,
         // Native: cutoff/Q/Gain deltas and enabled bits; SVF: cutoff/Q factors.
         factors: &mut [[f64; 4]],
+        previous_program: &mut Option<u32>,
         normalized: impl Fn(usize) -> bool,
     ) {
-        factors.fill([0.0; 4]);
-        if let Some(program) = self.program(voice) {
+        // v1 filter.rs projects group-local rows; reset only the last voice's rows.
+        if let Some(previous) = *previous_program {
+            for &index in &modulation.programs[previous as usize].filter_indices {
+                factors[index] = if normalized(index) {
+                    [0.; 4]
+                } else {
+                    [1., 1., 0., 0.]
+                };
+            }
+        }
+        *previous_program = self.program(voice);
+        if let Some(program) = *previous_program {
             let p = &modulation.programs[program as usize];
+            for &index in &p.filter_indices {
+                factors[index] = [0.; 4];
+            }
             let offset = voice * self.routes;
-            for (i, route) in p.routes.iter().enumerate() {
+            for (i, target) in p.targets.iter().enumerate() {
                 let value = (self.processor_values[offset + i]
                     + self.previous_processor_values[offset + i])
                     * 0.5;
-                match route.target {
-                    ModTarget::ProcessorCutoff(index) => factors[index as usize][0] += value,
-                    ModTarget::ProcessorResonance(index) => factors[index as usize][1] += value,
-                    ModTarget::ProcessorNativeCutoff(index) => {
+                match *target {
+                    CompiledTarget::ProcessorCutoff(index) => factors[index as usize][0] += value,
+                    CompiledTarget::ProcessorResonance(index) => {
+                        factors[index as usize][1] += value
+                    }
+                    CompiledTarget::ProcessorNativeCutoff(index) => {
                         factors[index as usize][0] += value;
-                        factors[index as usize][3] = ((factors[index as usize][3] as u8) | 1) as f64;
+                        factors[index as usize][3] =
+                            ((factors[index as usize][3] as u8) | 1) as f64;
                     }
-                    ModTarget::ProcessorNativeResonance(index) => {
+                    CompiledTarget::ProcessorNativeResonance(index) => {
                         factors[index as usize][1] += value;
-                        factors[index as usize][3] = ((factors[index as usize][3] as u8) | 2) as f64;
+                        factors[index as usize][3] =
+                            ((factors[index as usize][3] as u8) | 2) as f64;
                     }
-                    ModTarget::ProcessorNativeGain(index) => {
+                    CompiledTarget::ProcessorNativeGain(index) => {
                         factors[index as usize][2] += value;
-                        factors[index as usize][3] = ((factors[index as usize][3] as u8) | 4) as f64;
+                        factors[index as usize][3] =
+                            ((factors[index as usize][3] as u8) | 4) as f64;
                     }
                     _ => {}
                 }
             }
         }
-        for (index, factor) in factors.iter_mut().enumerate() {
-            if normalized(index) { continue; }
+        let indices = previous_program.map_or(&[][..], |p| {
+            &*modulation.programs[p as usize].filter_indices
+        });
+        for &index in indices {
+            let factor = &mut factors[index];
+            if normalized(index) {
+                continue;
+            }
             let deltas = *factor;
             *factor = [1., 1., 0., 0.];
             // v1 0cb7a8a0:src/engine/filter.rs skips neutral modulation deltas.
             for (n, (v, d)) in factor
-                .iter_mut().take(2)
+                .iter_mut()
+                .take(2)
                 .zip(&deltas)
                 .enumerate()
                 .filter(|(_, (_, d))| **d != 0.0)
@@ -841,6 +1010,39 @@ impl VoiceModState {
 
     /// Bind a starting voice and compute its first control point, so the first
     /// chunk ramps from the onset values rather than from unity.
+    /// A lane-local copy retains the shared base ramp and every voice's own offsets.
+    pub(crate) fn project_parameters(
+        &self,
+        modulation: &VoiceModulation,
+        voice: usize,
+        base: &[crate::dsp::control::ControlRamp],
+        bindings: &[crate::ControlRange],
+        span: std::ops::Range<usize>,
+        scratch: &mut [crate::dsp::control::ControlRamp],
+    ) -> bool {
+        let Some(program) = self.program(voice) else {
+            return false;
+        };
+        let p = &modulation.programs[program as usize];
+        if !p.control {
+            return false;
+        }
+        scratch[span.clone()].copy_from_slice(&base[span.clone()]);
+        let offset = voice * self.routes;
+        for (i, target) in p.targets.iter().enumerate() {
+            if let CompiledTarget::Control(lane) = *target {
+                if !span.contains(&lane) {
+                    continue;
+                }
+                let delta = (self.previous_processor_values[offset + i]
+                    + self.processor_values[offset + i])
+                    * 0.5;
+                scratch[lane].add_modulation(delta, bindings[lane]);
+            }
+        }
+        true
+    }
+
     pub fn start(
         &mut self,
         modulation: &VoiceModulation,
@@ -1027,18 +1229,21 @@ impl VoiceModState {
             if onset {
                 previous_processor_values[i] = processor_values[i];
             }
-            match route.target {
-                ModTarget::Attenuate => gain *= 1.0 - d * (1.0 - unipolar(v, bipolar)),
-                ModTarget::Decibels => decibels += d * v,
-                ModTarget::Pan => pan += d * v,
-                ModTarget::Pitch => out.pitch += d * v,
-                ModTarget::Cutoff => cutoff += d * v,
-                ModTarget::Resonance => resonance += d * v,
-                ModTarget::Tone => out.tone += d * v,
-                ModTarget::SampleStart => {}
-                ModTarget::ProcessorCutoff(_) | ModTarget::ProcessorResonance(_)
-                | ModTarget::ProcessorNativeCutoff(_) | ModTarget::ProcessorNativeResonance(_)
-                | ModTarget::ProcessorNativeGain(_) => {}
+            match p.targets[i] {
+                CompiledTarget::Attenuate => gain *= 1.0 - d * (1.0 - unipolar(v, bipolar)),
+                CompiledTarget::Decibels => decibels += d * v,
+                CompiledTarget::Pan => pan += d * v,
+                CompiledTarget::Pitch => out.pitch += d * v,
+                CompiledTarget::Cutoff => cutoff += d * v,
+                CompiledTarget::Resonance => resonance += d * v,
+                CompiledTarget::Tone => out.tone += d * v,
+                CompiledTarget::SampleStart => {}
+                CompiledTarget::ProcessorCutoff(_)
+                | CompiledTarget::ProcessorResonance(_)
+                | CompiledTarget::ProcessorNativeCutoff(_)
+                | CompiledTarget::ProcessorNativeResonance(_)
+                | CompiledTarget::ProcessorNativeGain(_)
+                | CompiledTarget::Control(_) => {}
             }
         }
         let gain = (gain * 10f64.powf(decibels / 20.0)).max(0.0);
@@ -1165,26 +1370,214 @@ impl crate::Runtime {
 }
 
 #[cfg(test)]
+thread_local! { static SHAPE_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    fn uniform_shaper_uses_v1_index_instead_of_binary_search() {
+        let points: Vec<_> = (0..128)
+            .map(|i| ((i as f64 / 127.) as f32, i as f32 / 127.))
+            .collect();
+        let shape = Shape::new(points.into_boxed_slice());
+        SHAPE_PROBES.set(0);
+        std::hint::black_box(shape.evaluate(std::hint::black_box(0.43)));
+        assert!(
+            SHAPE_PROBES.get() <= 3,
+            "uniform lookup used {} probes",
+            SHAPE_PROBES.get()
+        );
+    }
+
+    #[test]
+    fn v1_table_index_preserves_v2_shape_bits_at_every_boundary() {
+        for len in [1, 2, 3, 17, 128, 1024] {
+            let points: Box<[_]> = (0..len)
+                .map(|i| {
+                    (
+                        (i as f64 / (len - 1).max(1) as f64) as f32,
+                        ((i * 7919 % 127) as f32 - 63.) / 17.,
+                    )
+                })
+                .collect();
+            for irregular in [false, true] {
+                let mut points = points.clone();
+                if irregular && len > 2 {
+                    points[1].0 = points[0].0;
+                }
+                let shape = Shape::new(points);
+                for x in shape
+                    .points
+                    .iter()
+                    .flat_map(|p| [p.0.next_down(), p.0, p.0.next_up()])
+                    .chain((0..=16384).map(|i| i as f32 / 16384.))
+                    .chain([f32::NAN, f32::NEG_INFINITY, f32::INFINITY, -1., 2.])
+                {
+                    assert_eq!(
+                        shape.evaluate(x).to_bits(),
+                        evaluate(&shape.points, x).to_bits(),
+                        "len={len} irregular={irregular} x={x}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn addressed_projection_averages_each_route_before_saved_order_reduction() {
+        let modulation = VoiceModulation::new(
+            vec![ModProgram {
+                sources: vec![ModSource::Constant],
+                routes: (0..3)
+                    .map(|_| ModRoute::new(0, ModTarget::ProcessorNativeCutoff(0), 1.))
+                    .collect(),
+                ..Default::default()
+            }],
+            vec![Some(0)],
+            vec![0],
+        )
+        .unwrap();
+        let mut state = VoiceModState::new(&modulation, 1).unwrap();
+        state.program[0] = Some(0);
+        let tiny = 2f64.powi(-54);
+        state.previous_processor_values[..3].copy_from_slice(&[1., tiny, -1.]);
+        state.processor_values[..3].copy_from_slice(&[-1., tiny, 1.]);
+        let mut projected = [[0.; 4]];
+        state.fill_filter_factors(&modulation, 0, &mut projected, &mut None, |_| true);
+        assert_eq!(
+            projected[0].map(f64::to_bits),
+            [tiny, 0., 0., 1.].map(f64::to_bits)
+        );
+        // Reducing endpoints first loses the small contribution; this is a PCM-preservation rule.
+        let sum = |values: &[f64]| values.iter().fold(0., |sum, value| sum + value);
+        assert_eq!(
+            (sum(&state.previous_processor_values) + sum(&state.processor_values)) * 0.5,
+            0.
+        );
+    }
+
+    #[test]
+    fn filter_projection_work_is_bounded_by_addressed_stages() {
+        use std::cell::Cell;
+        let modulation = VoiceModulation::new(
+            vec![ModProgram {
+                sources: vec![ModSource::Constant],
+                routes: vec![ModRoute::new(0, ModTarget::ProcessorCutoff(3), 12.)],
+                ..Default::default()
+            }],
+            vec![Some(0)],
+            vec![0],
+        )
+        .unwrap();
+        let mut state = VoiceModState::new(&modulation, 2).unwrap();
+        state.program[0] = Some(0);
+        state.processor_values[0] = 12.;
+        state.previous_processor_values[0] = 12.;
+        let mut factors = [[1., 1., 0., 0.]; 1024];
+        let mut previous_program = None;
+        for voice in [0, 0, 1, 0] {
+            let visits = Cell::new(0);
+            state.fill_filter_factors(
+                &modulation,
+                voice,
+                &mut factors,
+                &mut previous_program,
+                |_| {
+                    visits.set(visits.get() + 1);
+                    false
+                },
+            );
+            assert!(
+                visits.get() <= 2,
+                "whole-plan projection: {} stages",
+                visits.get()
+            );
+            assert_eq!(factors[3][0], if voice == 0 { 2. } else { 1. });
+            assert_eq!(factors[1023], [1., 1., 0., 0.]);
+        }
+    }
+
+    #[test]
+    fn sparse_projection_resets_disjoint_programs_and_keeps_native_flags() {
+        let modulation = VoiceModulation::new(
+            vec![
+                ModProgram {
+                    sources: vec![ModSource::Constant],
+                    routes: vec![
+                        ModRoute::new(0, ModTarget::ProcessorCutoff(2), 12.),
+                        ModRoute::new(0, ModTarget::ProcessorCutoff(2), -12.),
+                        ModRoute::new(0, ModTarget::ProcessorNativeCutoff(5), 0.),
+                        ModRoute::new(0, ModTarget::ProcessorNativeGain(5), 0.5),
+                        ModRoute::new(0, ModTarget::ProcessorNativeGain(5), -0.5),
+                    ],
+                    ..Default::default()
+                },
+                ModProgram {
+                    sources: vec![ModSource::Constant],
+                    routes: vec![ModRoute::new(0, ModTarget::ProcessorResonance(7), 20.)],
+                    ..Default::default()
+                },
+            ],
+            vec![Some(0), Some(1)],
+            vec![0, 0],
+        )
+        .unwrap();
+        let mut state = VoiceModState::new(&modulation, 3).unwrap();
+        state.program[0] = Some(0);
+        state.program[1] = Some(1);
+        state.processor_values[..5].copy_from_slice(&[12., -12., 0., 0.5, -0.5]);
+        state.previous_processor_values[..5].copy_from_slice(&[12., -12., 0., 0.5, -0.5]);
+        state.processor_values[5] = 20.;
+        state.previous_processor_values[5] = 20.;
+        let neutral = |i| if i == 5 { [0.; 4] } else { [1., 1., 0., 0.] };
+        let mut factors = std::array::from_fn::<_, 12, _>(neutral);
+        let mut previous_program = None;
+        for voice in [0, 1, 0, 2, 1, 2] {
+            state.fill_filter_factors(
+                &modulation,
+                voice,
+                &mut factors,
+                &mut previous_program,
+                |i| i == 5,
+            );
+            let mut expected = std::array::from_fn::<_, 12, _>(neutral);
+            if voice == 0 {
+                expected[5] = [0., 0., 0., 5.];
+            }
+            if voice == 1 {
+                expected[7][1] = 10.;
+            }
+            assert_eq!(
+                factors.map(|v| v.map(f64::to_bits)),
+                expected.map(|v| v.map(f64::to_bits))
+            );
+        }
+    }
+
+    #[test]
     fn native_knob_projection_preserves_cancellation_enabled_flags_and_voice_reuse() {
-        let program = ModProgram { sources: vec![ModSource::Constant], routes: vec![
-            ModRoute::new(0, ModTarget::ProcessorNativeCutoff(0), 1.),
-            ModRoute::new(0, ModTarget::ProcessorNativeResonance(0), 1.),
-            ModRoute::new(0, ModTarget::ProcessorNativeGain(0), 1.),
-            ModRoute::new(0, ModTarget::ProcessorNativeGain(0), 1.),
-        ], ..Default::default() };
+        let program = ModProgram {
+            sources: vec![ModSource::Constant],
+            routes: vec![
+                ModRoute::new(0, ModTarget::ProcessorNativeCutoff(0), 1.),
+                ModRoute::new(0, ModTarget::ProcessorNativeResonance(0), 1.),
+                ModRoute::new(0, ModTarget::ProcessorNativeGain(0), 1.),
+                ModRoute::new(0, ModTarget::ProcessorNativeGain(0), 1.),
+            ],
+            ..Default::default()
+        };
         let modulation = VoiceModulation::new(vec![program], vec![Some(0)], vec![0]).unwrap();
         let mut state = VoiceModState::new(&modulation, 2).unwrap();
         state.program[0] = Some(0);
         state.processor_values[..4].copy_from_slice(&[0., 0.25, 0.5, -0.5]);
         state.previous_processor_values[..4].copy_from_slice(&[0., 0.25, 0.5, -0.5]);
-        let mut actual = [[9.; 4]; 2];
-        state.fill_filter_factors(&modulation, 0, &mut actual, |_| true);
+        let mut actual = [[0.; 4]; 2];
+        let mut previous_program = None;
+        state.fill_filter_factors(&modulation, 0, &mut actual, &mut previous_program, |_| true);
         assert_eq!(actual, [[0., 0.25, 0., 7.], [0.; 4]]);
-        state.fill_filter_factors(&modulation, 1, &mut actual, |_| true);
+        state.fill_filter_factors(&modulation, 1, &mut actual, &mut previous_program, |_| true);
         assert_eq!(actual, [[0.; 4]; 2]);
     }
 
@@ -1199,39 +1592,63 @@ mod tests {
             routes: vec![ModRoute::new(0, ModTarget::ProcessorCutoff(0), 6.0)],
             ..program.clone()
         };
-        let modulation = VoiceModulation::new(
-            vec![program, other], vec![Some(0), Some(1)], vec![0, 0],
-        ).unwrap();
+        let modulation =
+            VoiceModulation::new(vec![program, other], vec![Some(0), Some(1)], vec![0, 0]).unwrap();
         let mut state = VoiceModState::new(&modulation, 1).unwrap();
         let low = [0; 128];
         let mut high = low;
         high[1] = u32::MAX;
         let script = Default::default();
         let low_inputs = Inputs {
-            velocity: 1.0, key: 0.5, pressure: 0, timbre: 0,
-            controllers: &low, held: 0, script: &script, bend: 0.0,
+            velocity: 1.0,
+            key: 0.5,
+            pressure: 0,
+            timbre: 0,
+            controllers: &low,
+            held: 0,
+            script: &script,
+            bend: 0.0,
         };
-        let clock = |now| Clock { rate: 48000.0, tempo: 120.0, now };
+        let clock = |now| Clock {
+            rate: 48000.0,
+            tempo: 120.0,
+            now,
+        };
         state.start(&modulation, 0, 0, &low_inputs, clock(0), 7);
         // A CC transition moves half an octave in its first cell, then holds
         // the complete octave. A cache hit must not repeat the transition.
         for (now, controls, factor) in [
-            (0, &low, 1.0), (64, &high, 2f64.sqrt()), (128, &high, 2.0),
-            (192, &low, 2f64.sqrt()), (256, &low, 1.0),
+            (0, &low, 1.0),
+            (64, &high, 2f64.sqrt()),
+            (128, &high, 2.0),
+            (192, &low, 2f64.sqrt()),
+            (256, &low, 1.0),
         ] {
-            let inputs = Inputs { controllers: controls, ..low_inputs };
+            let inputs = Inputs {
+                controllers: controls,
+                ..low_inputs
+            };
             state.advance(&modulation, 0, &inputs, clock(now));
             let mut factors = [[0.0; 4]; 1];
-            state.fill_filter_factors(&modulation, 0, &mut factors, |_| false);
+            let mut previous_program = None;
+            state.fill_filter_factors(&modulation, 0, &mut factors, &mut previous_program, |_| {
+                false
+            });
             assert!((factors[0][0] - factor).abs() < 1e-15, "{now}: {factors:?}");
             assert_eq!(factors[0][1], 1.0);
         }
-        let high_inputs = Inputs { controllers: &high, ..low_inputs };
+        let high_inputs = Inputs {
+            controllers: &high,
+            ..low_inputs
+        };
         state.start(&modulation, 0, 0, &high_inputs, clock(320), 7);
         // Reusing a voice with the same source but another route resets its result.
         state.start(&modulation, 0, 1, &high_inputs, clock(384), 7);
         let mut factors = [[0.0; 4]; 1];
-        state.fill_filter_factors(&modulation, 0, &mut factors, |_| false);
+        let mut previous_program = None;
+        state.fill_filter_factors(&modulation, 0, &mut factors, &mut previous_program, |_| {
+            false
+        });
         assert!((factors[0][0] - 2f64.sqrt()).abs() < 1e-15);
     }
 
@@ -1251,11 +1668,14 @@ mod tests {
         let modulation = VoiceModulation::new(vec![program], vec![Some(0)], vec![0]).unwrap();
         let mut state = VoiceModState::new(&modulation, 2).unwrap();
         state.program[0] = Some(0);
-        let mut actual = [[9.; 4]; 4];
+        let mut actual = [[1., 1., 0., 0.]; 4];
+        let mut previous_program = None;
         for delta in [-24., -0., 0., 6., 20.] {
             state.processor_values[..5].copy_from_slice(&[12., -12., delta, 9., 127.]);
             state.previous_processor_values[..5].copy_from_slice(&[12., -12., delta, 3., -127.]);
-            state.fill_filter_factors(&modulation, 0, &mut actual, |_| false);
+            state.fill_filter_factors(&modulation, 0, &mut actual, &mut previous_program, |_| {
+                false
+            });
             let expected = [
                 [1., 1., 0., 0.],
                 [1., 10f64.powf(delta / 20.), 0., 0.],
@@ -1266,12 +1686,61 @@ mod tests {
                 actual.map(|v| v.map(f64::to_bits)),
                 expected.map(|v| v.map(f64::to_bits))
             );
-            state.fill_filter_factors(&modulation, 1, &mut actual, |_| false);
+            state.fill_filter_factors(&modulation, 1, &mut actual, &mut previous_program, |_| {
+                false
+            });
             assert_eq!(
-                actual, [[1., 1., 0., 0.]; 4],
+                actual,
+                [[1., 1., 0., 0.]; 4],
                 "unbound voice must clear the previous voice's factors"
             );
         }
+    }
+
+    #[test]
+    fn addressed_filter_factors_reset_and_sum_at_the_control_midpoint() {
+        let modulation = VoiceModulation::new(
+            vec![ModProgram {
+                sources: vec![ModSource::Velocity],
+                routes: vec![
+                    ModRoute::new(0, ModTarget::ProcessorCutoff(1), 1.0),
+                    ModRoute::new(0, ModTarget::ProcessorCutoff(1), 1.0),
+                    ModRoute::new(0, ModTarget::ProcessorResonance(1), 1.0),
+                    ModRoute::new(0, ModTarget::ProcessorResonance(2), 1.0),
+                    ModRoute::new(0, ModTarget::ProcessorResonance(2), 1.0),
+                ],
+                ..ModProgram::default()
+            }],
+            vec![Some(0)],
+            vec![0],
+        )
+        .unwrap();
+        let mut state = VoiceModState::new(&modulation, 1).unwrap();
+        state.program[0] = Some(0);
+        state
+            .previous_processor_values
+            .copy_from_slice(&[4., 2., 10., -20., 20.]);
+        state
+            .processor_values
+            .copy_from_slice(&[8., 10., 30., -40., 40.]);
+        let mut previous_program = None;
+        let mut factors = [[1., 1., 0., 0.]; 128];
+        state.fill_filter_factors(&modulation, 0, &mut factors, &mut previous_program, |_| {
+            false
+        });
+        assert_eq!(factors[1], [2., 10., 0., 0.]);
+        assert!(
+            factors
+                .iter()
+                .enumerate()
+                .all(|(i, f)| i == 1 || *f == [1., 1., 0., 0.])
+        );
+        // A subsequent voice must not inherit the previous addressed factors.
+        state.stop(0);
+        state.fill_filter_factors(&modulation, 0, &mut factors, &mut previous_program, |_| {
+            false
+        });
+        assert!(factors.iter().all(|f| *f == [1., 1., 0., 0.]));
     }
 
     #[test]
