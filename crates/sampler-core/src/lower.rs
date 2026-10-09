@@ -1355,6 +1355,8 @@ impl Lowering<'_> {
             (Processor::LadderLP4(filter), Resonance) => filter.resonance = parameter,
             (Processor::Gainer { gain, .. }, Gain) => *gain = parameter,
             (Processor::PeakingEq(eq), Gain) => eq.gain_db = parameter,
+            (Processor::PeakingEq(eq), Cutoff) => eq.frequency = parameter,
+            (Processor::PeakingEq(eq), Resonance) => eq.bandwidth = parameter,
             (Processor::StereoModeller(settings), Width) => settings.width = parameter,
             (Processor::StereoModeller(settings), Pan) => settings.pan = parameter,
             _ => return Ok(false),
@@ -1426,9 +1428,9 @@ impl Lowering<'_> {
         for (index, p) in listed.iter().enumerate() {
             starts.push(processors.len());
             let mut stages = if let ir::Processor::Filter(ir::Filter { kind: ir::FilterKind::Peak { gain }, cutoff: ir::Frequency::Hertz(hz), resonance: ir::Resonance::Q(q) }) = **p
-                && self.ir.processor_controls.iter().any(|b| b.chain == chain && b.index == start + index && b.parameter == ir::ProcessorParameter::Gain) {
-                vec![Processor::PeakingEq(crate::PeakingEq { frequency_hz: hz,
-                    bandwidth_octaves: 2. * (0.5 / q).asinh() / std::f64::consts::LN_2,
+                && self.ir.processor_controls.iter().any(|b| b.chain == chain && b.index == start + index) {
+                vec![Processor::PeakingEq(crate::PeakingEq { frequency: Parameter::Constant(((hz / 20.).log10() / 3.).clamp(0., 1.)),
+                    bandwidth: Parameter::Constant(((2. * (0.5 / q).asinh() / std::f64::consts::LN_2 - 0.3) / 2.7).clamp(0., 1.)),
                     gain_db: Parameter::Constant(20. * gain.linear().log10()) })]
             } else { self.processors(owner, **p)? };
             // A physical native owner already binds these fields to the shared

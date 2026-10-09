@@ -1359,7 +1359,9 @@ pub enum SendPosition {
 
 /// Format-neutral binding of one authored control to an actual processor field.
 /// The control's Continuous range is in the field's native units (Hz, linear
-/// gain, dB, Q or normalized Daft units). Ramping uses the engine sample clock.
+/// gain, dB, Q or normalized knobs). A bound Peak uses dB Gain and 0..1
+/// Cutoff/Resonance knobs (20 Hz * 10^(3*x), 0.3 + 2.7*x octaves).
+/// Ramping uses the engine sample clock.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ProcessorControl {
     pub control: ControlRef,
