@@ -97,7 +97,7 @@ def extra_columns(r):
         if p.get('pick_source')=='shared-note-plan':
             p['adapter_pick_source']='shared-note-plan'
             origin=common.get(p.get('program',i),{})
-            p['pick_source']=origin.get('pick_source','unknown') if origin.get('pick')==p.get('pick') else 'unknown'
+            p['pick_source']=origin.get('pick_source','unknown') if origin.get('pick')==p.get('pick') and origin.get('held_key')==p.get('held_key') else 'unknown'
     actual=[p for p in programs if isinstance(p.get('pick'),list)]
     r['fallback_note']=int(any(p.get('fallback_note') or p.get('pick_source')=='fallback' or common.get(p.get('program',i),{}).get('pick_source')=='fallback' for i,p in enumerate(actual)))
     if r['fallback_note'] and r.get('audition_status')=='matched-note-plan':r['audition_status']='fallback-note'
@@ -357,8 +357,10 @@ def probe(engine, item, work, timeout, shots):
                     if target is not None and 'keyswitch' in p:target['keyswitch']=p['keyswitch']
                 plan['selection_source']={str(p.get('program',i)):p.get('pick_source','unknown') for i,p in enumerate(r.get('programs',[]))}
                 atomic(plan_path,plan)
-            wanted={k:{'key':v['key'],'velocity':v['velocity']} for k,v in plan.get('programs',{}).items()}
-            r['audition_status']='matched-note-plan' if wanted==picks else 'audition-mismatch'
+            wanted={k:{'key':v['key'],'velocity':v['velocity'],'held_key':v.get('held_key')} for k,v in plan.get('programs',{}).items()}
+            executed={str(p.get('program',i)):dict(picks[str(p.get('program',i))],held_key=p.get('held_key')) for i,p in enumerate(r.get('programs',[])) if str(p.get('program',i)) in picks}
+            invalid=any(p.get('audition_plan_error') for p in r.get('programs',[]))
+            r['audition_status']='invalid-note-plan' if invalid else 'matched-note-plan' if wanted==executed else 'audition-mismatch'
             r['note_policy']=plan.get('policy','unknown')
     else: r['audition_status']='not-auditioned'
     # stdout is metrics only; keep one canonical cached record, not a second copy.
