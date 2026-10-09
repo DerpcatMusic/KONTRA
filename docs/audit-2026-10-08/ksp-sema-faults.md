@@ -77,18 +77,21 @@ selected slots instead failed on `mf_get_command` (zero arguments). This was
 0/15 fully admitted, not an instrument playback success. The full family was
 implemented together before the next 15-slot compilation.
 
-Targeted tests: 14 MIDI tests PASS, covering traversal, init/live shared slots,
+Targeted tests: 15 MIDI tests PASS, covering traversal, init/live shared slots,
 getters/edits, selectors/marks, buffer insert/remove, export validation, file note
 pairing and empty tracks, malformed files, async identity across waits,
 cancellation, init job completion, `wait_async` and bounded init callback nesting.
 The instruction size guard still passes at at most 32 bytes. Empty tracks now
 survive file export; its failing-first roundtrip returned one track instead of
 two. The host control-queue save test and six core plan lifecycle tests passed
-with the init/wait additions. Final area/root no-run checks are pending.
+with the init/wait additions. Core/KSP/Kontakt (scan enabled) area and root lib no-run checks PASS.
+The full KSP suite is **200 PASS, 0 FAIL, 40 ignored**; all 15 MIDI tests pass.
+The final host control-queue save/complete test is **1 PASS**. The earlier six
+core plan lifecycle tests also passed. No larger scanner/playback gate was run.
 
 Numeric receipts are in `~/.cache/kontakto-w5/ksp-coverage/`:
-`fault-kinds-before.json`, `mf-first-after.json`, `mf-family-after.json`, and the
-MIDI test logs. The probe includes group names and full callback lowering but
+`fault-kinds-before.json`, `mf-first-after.json`, `mf-family-after.json`,
+`fault-next-attribution.json` and the MIDI test logs. The probe includes group names and full callback lowering but
 omits saved state and performance resources. Admission is a compile verdict,
 not a full Original playback or native Kontakt comparison.
 
@@ -97,9 +100,15 @@ objects; SMPTE divisions fail explicitly. Meta/SysEx events are not exposed as
 MIDI object events. Input is bounded to 256 MiB, and paths use the existing
 fixed-capacity text transport. Nested init async completions are limited to eight
 with an explicit fault; the recursive fixture first overflowed the debug thread
-stack under the attempted 64-level guard and now passes. No native MIDI-file/export-area comparison or CPU
-measurement is claimed by this semantic change. Conflux/256's prior approximately
-+5 microsecond p50 disclosure remains open.
+stack under the attempted 64-level guard and now passes. A failing-first adoption fixture fills the effect queue with 256 old-plan jobs;
+early completion of the new unpublished init job underflowed its plan-pin counter.
+Completion and capture now reject unpublished jobs before touching that pin. The
+ordinary startup fixture was corrected because runtime construction already
+publishes its initial jobs. No native
+MIDI-file/export-area comparison or CPU measurement is claimed by this semantic
+change. Input file PPQ is preserved; Kontakt PPQ normalization has not been
+verified. Conflux/256's prior approximately +5 microsecond p50 disclosure remains
+open.
 
 The whole-family 15-slot probe is **0/15 admitted**. All 15 move past the MIDI
 commands to a different unknown command at line 3051, offset 114475. A separate
@@ -109,5 +118,19 @@ public catalog; its name remains withheld pending a public specification.
 Frozen whole-family probe SHA256:
 `2599ef0f48bfba7eec3e74988e2a44ea2def10faff2f0d8900b50762d2a871af`.
 
-NEXT: public attribution of the new non-MIDI blocker, then the timeboxed
-`subscribe_async` declaration origin and version-specific contract.
+The final two-slot numeric attribution uses a union of 173 command headings from
+NI's current manual and the [archived KSP manual](https://www.native-instruments.com/fileadmin/ni_media/downloads/manuals/kontakt/KSP_Reference_Manual_English_28_01_21.pdf),
+in addition to the frozen catalog. The next command still has no verified public
+match. It takes two arguments (integer variable, integer array); the first has a
+plain raw declaration at line 53. The subscription call still has the observed
+shape (integer variable, 0, 0), with no matching plain declaration located by this
+probe. That does not establish the argument's declaration origin or a contract.
+Final attribution binary SHA256:
+`ce3b7c8b928f2b1766179c5cb45647ca7b1eb46cc4d8b97b591eef73f2f6fd48`.
+Public heading-list SHA256:
+`b2338bd1c0b46aa9f63cb518b7ca95cc151aa150fc1157600afa8013ebd9c144`.
+Archived primary PDF SHA256:
+`ca141a6cbbbe7cefd9c4b82c3d5f2ea1d4698597d0e80de57346bbed1eaa00b4`.
+
+NEXT: establish the remaining command contracts and the subscription argument's
+actual declaration origin in RAM; neither command is admitted as a no-op.
