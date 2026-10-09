@@ -770,11 +770,21 @@ impl Host {
         self.gpu.poll_lost()
     }
 
+    /// Force a complete repaint after a native expose, restore, or reparent.
+    pub fn invalidate(&mut self) {
+        self.gpu.renderer.invalidate();
+        self.first_frame = true;
+    }
+
     /// Resize to `width` x `height` physical pixels, clamped to what the
     /// device and a vello scene hold. Zero hides: presents skip until a
     /// real size comes back.
     pub fn resize(&mut self, width: u32, height: u32) -> Result<(), HostError> {
+        let was_hidden = self.wanted.is_none();
         self.wanted = target_size(width, height);
+        if was_hidden && self.wanted.is_some() {
+            self.invalidate();
+        }
         let Some((width, height)) = self.wanted else {
             return Ok(());
         };
@@ -816,6 +826,7 @@ impl Host {
         // oversized GL framebuffer shifts its top-left image upward, while
         // Wayland surfaces take their dimensions from the submitted buffer.
         *config = next;
+        self.first_frame = true;
         Ok(())
     }
 
@@ -852,6 +863,7 @@ impl Host {
         self.gpu = gpu;
         self.generation = self.generation.wrapping_add(1);
         self.retry_at = None;
+        self.first_frame = true;
         Ok(())
     }
 
@@ -936,6 +948,9 @@ impl Host {
             renderer,
             ..
         } = &mut self.gpu;
+        if self.first_frame {
+            renderer.invalidate();
+        }
         if overlay.is_none() && renderer.is_current(scene, xf) {
             return Ok(Frame::Current);
         }
@@ -1355,4 +1370,40 @@ mod tests {
             "missing surface cannot trigger a device rebuild"
         );
     }
+    #[test]
+    #[ignore = "requires a native adapter with Vello compute support"]
+    fn expose_and_same_size_restore_require_full_repaint() {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let gpu = OnDevice::open(&instance, None, (16, 16), Transparency::Opaque).unwrap();
+        let mut host = Host {
+            instance, surface: None, gpu, wanted: Some((16, 16)), retry_at: None,
+            generation: 0, transparency: Transparency::Opaque, first_frame: true,
+        };
+        let scene = resolve(&SceneSpec::new(block(16., 16.).fill(Role::Primary))).unwrap();
+        let target = host.gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("first-frame regression"), size: wgpu::Extent3d { width: 16, height: 16, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm, usage: wgpu::TextureUsages::RENDER_ATTACHMENT, view_formats: &[],
+        });
+        let view = target.create_view(&Default::default());
+        let first = host.gpu.renderer.render(&scene, Affine::IDENTITY, &view).unwrap();
+        assert_eq!(first.encoded_scenes, 1);
+        assert!(host.gpu.renderer.is_current(&scene, Affine::IDENTITY));
+        host.first_frame = false;
+        host.invalidate();
+        assert!(host.first_frame);
+        assert!(!host.gpu.renderer.is_current(&scene, Affine::IDENTITY));
+        assert_eq!(host.gpu.renderer.render(&scene, Affine::IDENTITY, &view).unwrap().encoded_scenes, 1);
+        host.first_frame = false;
+        host.resize(0, 0).unwrap();
+        host.resize(16, 16).unwrap();
+        assert!(host.first_frame, "restore at the same size must force first present");
+        assert!(!host.gpu.renderer.is_current(&scene, Affine::IDENTITY));
+        host.gpu.renderer.render(&scene, Affine::IDENTITY, &view).unwrap();
+        host.first_frame = false;
+        host.resize(32, 32).unwrap();
+        assert!(host.first_frame);
+        assert!(!host.gpu.renderer.is_current(&scene, Affine::IDENTITY));
+    }
+
 }

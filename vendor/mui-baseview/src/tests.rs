@@ -1032,3 +1032,12 @@ fn native_destroyed_parent_and_drawable_stop_callbacks() {
         }
     }
 }
+
+#[test]
+fn a_same_size_resize_requires_native_presentation() {
+    let mut h = handler((640, 400), 1.0);
+    h.step();
+    h.unpainted = false;
+    h.resized(WindowSize::from_logical(LogicalSize::new(640., 400.), 1.));
+    assert!(h.unpainted);
+}
