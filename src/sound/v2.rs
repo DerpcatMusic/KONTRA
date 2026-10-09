@@ -1973,7 +1973,6 @@ impl V2Loader {
         let mut controls: Vec<_> = prepared
             .controls()
             .iter()
-            .filter(|c| !prepared.parameter_registry().descriptors().any(|d| d.control == c.id))
             .map(|c| (sampler_ui_ir::ControlId(c.id.0), number(c.default)))
             .collect();
         if let Some(script) = &script { controls.extend(script.ui().values()); }
