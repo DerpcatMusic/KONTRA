@@ -10,8 +10,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("expected instrument path or bank::program")?;
     let mut programs = Vec::new();
     if let Some((path, member)) = item.split_once("::") {
-        let bank = sampler_uvi::Bank::open(Path::new(path))?;
-        let ir = sampler_uvi::translate_program(&bank, member)?;
+        let ir = sampler_uvi::Bank::open_metadata(Path::new(path))
+            .map_err(|_| "uvi-bank-directory")
+            .and_then(|bank| sampler_uvi::translate_program(&bank, member)
+                .map_err(|_| "uvi-program-translate"));
+        let ir = match ir {
+            Ok(ir) => ir,
+            Err(stage) => {
+                println!("{}", json!({"basis":"untimed-native-slot-census", "programs":[],
+                    "error":"native-slot-census-failed", "stage":stage}));
+                return Ok(());
+            }
+        };
         programs.push(json!({"program":0,"loaded":true,"dsp_slots":coverage::slots(&ir),"family_native":coverage::native_family(&ir,None,None)}));
     } else if Path::new(&item)
         .extension()
