@@ -7,6 +7,9 @@ impl Bank {
     pub fn catalog(_: &Path) -> Result<Vec<String>, AccessError> {
         Err(AccessError::Disabled)
     }
+    pub fn catalog_status(_: &Path) -> Result<(Vec<String>, Option<String>), AccessError> {
+        Err(AccessError::Disabled)
+    }
     pub fn open_metadata(_: &Path) -> Result<Self, AccessError> {
         Err(AccessError::Disabled)
     }
