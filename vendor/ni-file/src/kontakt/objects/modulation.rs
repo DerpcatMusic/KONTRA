@@ -358,21 +358,27 @@ pub fn read_param_slots(
         )));
     }
 
-    let mut reader = Cursor::new(object.public_data.as_slice());
-    if object.version == 0x13 && reader.read_u32_le()? as usize != slots {
-        return Err(Error::Static("Parameter array serialized slot count differs"));
-    }
-    let mut items = Vec::new();
-    for slot in 0..slots {
-        let present = read_flag(&mut reader)?;
-        // Native length-framed v0x11 arrays have one opaque u32 even for holes.
-        if object.version == 0x11 { reader.read_u32_le()?; }
-        if present {
-            items.push((slot, Chunk::read(&mut reader)?));
+    let parse = |slot_words: bool| -> Result<Vec<(usize, Chunk)>, Error> {
+        let mut reader = Cursor::new(object.public_data.as_slice());
+        if object.version == 0x13 && reader.read_u32_le()? as usize != slots {
+            return Err(Error::Static("Parameter array serialized slot count differs"));
         }
+        let mut items = Vec::new();
+        for slot in 0..slots {
+            let present = read_flag(&mut reader)?;
+            if slot_words { reader.read_u32_le()?; }
+            if present { items.push((slot, Chunk::read(&mut reader)?)); }
+        }
+        if matches!(object.version, 0x11 | 0x13) { ensure_consumed(&reader)?; }
+        Ok(items)
+    };
+    if object.version != 0x11 { return parse(false); }
+    // Native v11 has two context-dependent layouts; bounded records must fit exactly one.
+    match (parse(false), parse(true)) {
+        (Ok(items), Err(_)) | (Err(_), Ok(items)) => Ok(items),
+        (Ok(_), Ok(_)) => Err(Error::Static("Ambiguous parameter array v0x11 framing")),
+        (Err(error), Err(_)) => Err(error),
     }
-    if matches!(object.version, 0x11 | 0x13) { ensure_consumed(&reader)?; }
-    Ok(items)
 }
 
 /// Length-prefixed 8-bit string.
