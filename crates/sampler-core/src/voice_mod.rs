@@ -1265,6 +1265,31 @@ mod tests {
     }
 
     #[test]
+    fn filter_projection_work_is_bounded_by_addressed_stages() {
+        use std::cell::Cell;
+        let modulation = VoiceModulation::new(vec![ModProgram {
+            sources: vec![ModSource::Constant],
+            routes: vec![ModRoute::new(0, ModTarget::ProcessorCutoff(3), 12.)],
+            ..Default::default()
+        }], vec![Some(0)], vec![0]).unwrap();
+        let mut state = VoiceModState::new(&modulation, 2).unwrap();
+        state.program[0] = Some(0);
+        state.processor_values[0] = 12.;
+        state.previous_processor_values[0] = 12.;
+        let mut factors = [[1., 1., 0., 0.]; 1024];
+        for voice in [0, 0, 1, 0] {
+            let visits = Cell::new(0);
+            state.fill_filter_factors(&modulation, voice, &mut factors, |_| {
+                visits.set(visits.get() + 1);
+                false
+            });
+            assert!(visits.get() <= 2, "whole-plan projection: {} stages", visits.get());
+            assert_eq!(factors[3][0], if voice == 0 { 2. } else { 1. });
+            assert_eq!(factors[1023], [1., 1., 0., 0.]);
+        }
+    }
+
+    #[test]
     fn native_knob_projection_preserves_cancellation_enabled_flags_and_voice_reuse() {
         let program = ModProgram { sources: vec![ModSource::Constant], routes: vec![
             ModRoute::new(0, ModTarget::ProcessorNativeCutoff(0), 1.),
