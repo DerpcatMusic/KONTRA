@@ -127,3 +127,28 @@ Both remain varied with the seed unset on the same binary. All eight renders are
 nonzero with zero problem counters. Numeric-only receipts live in
 `~/.cache/kontakto-w10/audit-seed/`; no authored PCM is retained. This is A/A
 repeatability, not acceptance of W8's chain-sharing A/B or a CPU/RSS comparison.
+
+### Audit publication boundary (2026-10-09)
+
+The seeded barrier must acknowledge the owner only after publishing control
+values, the authored interface, runtime findings and scanner faults. Before this
+correction, the command reply preceded those publications: a synthetic note
+callback returned its Play command while the bridge still showed velocity 0
+instead of 64. The regression retains all 4,097 synthetic widgets and checks
+their text, scalar readback and one callback fault at the same completed barrier.
+It uses a clear inline preset and no library reader. This affects only the scan
+barrier; ordinary asynchronous playback keeps its existing publication path.
+
+Readback has its own load-sized work allowance after initialization. Metatable
+reads needed to project a large UI previously spent the remaining live callback
+work: after fixing reply ordering alone, the same synthetic panel exposed empty
+Panel placeholders starting at source widget 1,411. The inspection guard restores
+the exact previous work remainder, exhaustion flag and elapsed observation on
+exit. Initialization still shares one allowance and cannot refill it through
+inspection. A separate regression checks both near-empty and exhausted live
+allowances, and an inspection that exceeds its own bound reports a budget fault.
+
+The historical 11/21 timeouts remain incomplete observations. This UI-publication
+race does not establish their cause or a PCM difference. W8's frozen matching
+0be9 witnesses remain valid for their reported PCM comparisons; counter snapshots
+from those witnesses do not imply a fully published owner boundary.
