@@ -693,6 +693,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn keyswitch_keyboard_preserves_authored_colours_without_mapped_samples() {
+        let p = std::sync::Arc::new(crate::plugin::SamplerParams::new());
+        p.selection.write().unwrap().parts.push(crate::plugin::Part {
+            path: "/synthetic/authored-key-colours.nki".into(),
+            ..Default::default()
+        });
+        let mut view = super::super::shown(&p.shared.view);
+        let mut keys = vec![crate::sound::KeyLook::default(); 128];
+        for (key, color) in [(24, 0), (25, 1), (26, 16), (27, 17), (28, 18), (29, 19), (30, 20)] {
+            keys[key].color = Some(color);
+        }
+        keys[31].control = true;
+        view.parts[0].keys = keys.into();
+        let mut state = super::super::EditorState::default();
+        let mut cx = Cx {
+            p: &p,
+            view,
+            settings: p.shared.libraries.settings(),
+            selection: p.selection.read().unwrap().clone(),
+            state: &mut state,
+        };
+        let looks = part_looks(&mut cx, 0);
+        for (key, color) in [(24, 0), (25, 1)] {
+            assert!(matches!(looks[key], Look::Switch(tint, false, false) if Some(tint) == ksp_key_color(color)), "v1 paints explicit authored key colours even without mapped sample zones");
+        }
+        for key in [26, 27, 28] {
+            assert!(matches!(looks[key], Look::Unmapped), "DEFAULT, INACTIVE and NONE do not invent a coloured key");
+        }
+        for key in [29, 30] {
+            assert!(matches!(looks[key], Look::Mapped(_)), "WHITE and BLACK retain piano faces");
+        }
+        assert!(matches!(looks[31], Look::Switch(_, false, false)), "an authored control still has its existing mark");
+    }
+
+    #[test]
     fn the_keyboard_fits_midi() {
         const { assert!(MAX_OCTAVE * 12 + OCTAVES * 12 <= 128) };
     }
