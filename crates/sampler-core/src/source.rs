@@ -1770,6 +1770,44 @@ impl ReadFrames for PagedFrames<'_> {
 #[cfg(test)]
 mod native_slot_tests {
     use super::*;
+    struct ProbeFrames<'a> {
+        frames: &'a [Frame],
+        bulk: bool,
+        missing: Option<usize>,
+        reads: std::cell::Cell<usize>,
+    }
+    impl ReadFrames for ProbeFrames<'_> {
+        fn frame(&self, index: usize) -> Option<Frame> {
+            self.reads.set(self.reads.get() + 1);
+            if self.missing == Some(index) { None } else { self.frames.get(index).copied() }
+        }
+        fn span(&self, range: std::ops::Range<usize>) -> Option<&[Frame]> {
+            if !self.bulk || self.missing.is_some_and(|i| range.contains(&i)) { None }
+            else { self.frames.get(range) }
+        }
+        fn copy(&self, _: std::ops::Range<usize>, _: &mut [Frame]) -> bool { false }
+    }
+
+    #[test]
+    fn native_loop_interior_resamples_one_window_per_block() {
+        let frames: Vec<Frame> = (0..512).map(|i| [(i as f32 * 0.731).sin(), (i as f32 * 0.317).cos()]).collect();
+        let mut slots = [None; 8];
+        slots[7] = Some(LoopSlot { range: Loop {
+            start: 32, end: 256, mode: LoopMode::Continuous,
+            shape: LoopShape::Wrap, passes: None,
+        }, tuning: 1. });
+        let mut cursor = Playback { loop_slots: slots, ..Default::default() }.cursor(512, 48000, 48000).unwrap();
+        cursor.position = 80;
+        cursor.fraction = 0.3;
+        cursor.step = 0.8;
+        let reader = ProbeFrames { frames: &frames, bulk: true, missing: None, reads: Default::default() };
+        let mut output = [[0.; 2]; 64];
+        let mut envelope = EnvelopeState::new(crate::Envelope::default());
+        assert_eq!(cursor.render(&reader, &mut output, &mut envelope, 0.731, [0.7, -0.2], &Kernel::new(crate::ResampleQuality::Realtime)), 64);
+        assert_eq!(reader.reads.get(), 0, "native loop interior fell back to per-tap reads");
+        assert!(output.iter().any(|frame| *frame != [0.; 2]));
+    }
+
     #[test]
     fn tuning_applies_on_repetitions_and_finite_exit_restores_the_base_rate() {
         let mut slots = [None; 8];
