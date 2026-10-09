@@ -31,6 +31,10 @@ The shipping release profile itself is unchanged.
 
 Rust 1.99.0 matches the compiler in the successful baseline run linked below.
 Actions use immutable commit pins; Cargo commands use the committed lockfile.
+Editor validation uses the locally retained MUI workflow from revision
+`dcf0796082feec053af1418e3a38a302ee61da0a`. Its display/graphics setup gets two
+three-minute attempts inside a seven-minute step deadline, with bounded network
+waits and package recovery before retrying.
 Caches are separated by OS/target, profile and feature set. The cache action also
 keys the compiler, Cargo manifests/lockfile and compiler-related environment.
 Caches are accelerators, not test evidence or release artifacts.

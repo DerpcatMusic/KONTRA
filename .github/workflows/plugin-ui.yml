@@ -1,0 +1,129 @@
+name: Plugin editor validation
+
+# Adapted from Matari-Audio/MUI dcf0796082feec053af1418e3a38a302ee61da0a.
+# Consume the caller's built Linux x86_64 VST3 bundle; no second Rust build.
+on:
+  workflow_call:
+    inputs:
+      artifact-name:
+        description: Artifact containing an unpacked Linux x86_64 VST3 bundle
+        required: true
+        type: string
+      plugin-path:
+        description: Relative path to the .vst3 bundle inside the artifact
+        required: true
+        type: string
+      require-mui-diagnostics:
+        description: Require a successful MUI first-frame record (needs instrumented MUI)
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  editor:
+    name: Editor / ${{ matrix.renderer }} / ${{ matrix.backend }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {renderer: gpu, backend: vulkan}
+          - {renderer: gpu, backend: gl}
+          - {renderer: cpu, backend: vulkan}
+    env:
+      WGPU_BACKEND: ${{ matrix.backend }}
+      MUI_RENDERER: ${{ matrix.renderer }}
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      GALLIUM_DRIVER: llvmpipe
+      MUI_DIAGNOSTICS_DIR: ${{ github.workspace }}/ui-results/${{ matrix.renderer }}-${{ matrix.backend }}/mui
+      MUI_REPORTING_DISABLED: "1"
+      RESULTS: ${{ github.workspace }}/ui-results/${{ matrix.renderer }}-${{ matrix.backend }}
+      PLUGIN_PATH: ${{ inputs.plugin-path }}
+      REQUIRE_MUI_DIAGNOSTICS: ${{ inputs.require-mui-diagnostics }}
+    steps:
+      - name: Install virtual display and software graphics
+        timeout-minutes: 7
+        run: |
+          for attempt in 1 2; do
+            if sudo timeout --kill-after=10s 3m bash -e -c '
+              dpkg --configure -a
+              apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+              apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends xvfb xauth dbus-x11 \
+                mesa-vulkan-drivers libgl1-mesa-dri libegl1 mesa-utils vulkan-tools \
+                libasound2t64 libfreetype6 libfontconfig1 libx11-6 libxext6 \
+                libxrender1 libxinerama1 libxcursor1 libxrandr2 ffmpeg unzip ripgrep
+            '; then
+              break
+            fi
+            if [[ "$attempt" == 2 ]]; then
+              echo '::error::Virtual display setup failed after two bounded attempts'
+              exit 1
+            fi
+            sleep 5
+          done
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: plugin
+      - name: Install pinned pluginval
+        run: |
+          curl --fail --location --retry 3 --output pluginval.zip \
+            https://github.com/Tracktion/pluginval/releases/download/v1.0.4/pluginval_Linux.zip
+          echo 'c01c49d8063965c4c2dea8324468336768f5c9139e0b1caebde14c2400b55352  pluginval.zip' | sha256sum --check
+          unzip -q pluginval.zip -d validator
+          chmod +x validator/pluginval
+      - name: Exercise editor open, reopen, automation and processing
+        shell: bash
+        run: |
+          set -euo pipefail
+          plugin=$(realpath "plugin/$PLUGIN_PATH")
+          if [[ "$plugin" != "$GITHUB_WORKSPACE/plugin/"* || "$plugin" != *.vst3 || ! -e "$plugin" ]]; then
+            echo '::error::plugin-path must name a .vst3 bundle inside the downloaded artifact'
+            exit 1
+          fi
+          export PLUGIN_UNDER_TEST="$plugin"
+          mkdir -p "$RESULTS" "$MUI_DIAGNOSTICS_DIR"
+          # Force Mesa lavapipe rather than silently selecting another Vulkan ICD.
+          VK_ICD_FILENAMES=$(dpkg -L mesa-vulkan-drivers | rg '/lvp_icd[^/]*\.json$' | head -n 1)
+          test -f "$VK_ICD_FILENAMES"
+          export VK_ICD_FILENAMES
+          unset SKIP_GUI_TESTS DISABLED_TESTS
+          xvfb-run -a -s '-screen 0 1280x800x24' dbus-run-session -- bash -euo pipefail -c '
+            glxinfo -B > "$RESULTS/gl.txt"
+            vulkaninfo --summary > "$RESULTS/vulkan.txt" 2>&1
+            ffmpeg -nostdin -y -f x11grab -video_size 1280x800 -framerate 2 \
+              -i "$DISPLAY" -c:v libx264 -threads 1 -preset ultrafast -pix_fmt yuv420p \
+              "$RESULTS/screen.mp4" > "$RESULTS/recording.log" 2>&1 &
+            recorder=$!
+            stop_recording() { kill -INT "$recorder" 2>/dev/null || true; wait "$recorder" || true; }
+            trap stop_recording EXIT
+            timeout --kill-after=5s 10m ./validator/pluginval \
+              --strictness-level 6 --repeat 3 --random-seed 0x4d5549 \
+              --timeout-ms 60000 --verbose --output-dir "$RESULTS" \
+              --validate "$PLUGIN_UNDER_TEST" 2>&1 | tee "$RESULTS/pluginval.log"
+          '
+          # pluginval also passes plugins reporting hasEditor=false: reject that skip.
+          rg -q 'Time taken to open editor \(cold\):' "$RESULTS/pluginval.log"
+          test -s "$RESULTS/screen.mp4"
+          if [[ "$REQUIRE_MUI_DIAGNOSTICS" == true ]]; then
+            if [[ "$MUI_RENDERER" == cpu ]]; then
+              rg -q 'mui-baseview/cpu_frame_presented' "$MUI_DIAGNOSTICS_DIR"
+            else
+              rg -q 'mui-vello/frame_presented' "$MUI_DIAGNOSTICS_DIR"
+            fi
+            if rg --glob '*.log' -n 'ERROR ' "$MUI_DIAGNOSTICS_DIR"; then
+              echo '::error::MUI recorded a graphics or window failure'
+              exit 1
+            fi
+          fi
+      - name: Preserve display recording and diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: plugin-ui-${{ inputs.artifact-name }}-${{ matrix.renderer }}-${{ matrix.backend }}
+          path: ui-results/
+          if-no-files-found: warn
+          retention-days: 7
