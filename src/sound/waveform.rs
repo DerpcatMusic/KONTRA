@@ -1,4 +1,5 @@
 //! Display envelopes computed off audio from the already admitted sample source.
+use crate::support::MutexExt;
 use sampler_core::{Pcm, PlanId};
 use std::{collections::{HashMap, HashSet, VecDeque}, sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}, mpsc::{SyncSender, sync_channel}}};
 
@@ -49,7 +50,7 @@ impl Provider {
                 if stop.load(Ordering::Acquire) { break; }
                 let value = sources.get(&key.0).and_then(|source| envelope(source, key.1, key.2, &stop));
                 if stop.load(Ordering::Acquire) { break; }
-                let mut cache = cache.lock().unwrap();
+                let mut cache = cache.lock_unpoisoned();
                 cache.pending.remove(&key);
                 // ponytail: at most 64 envelopes (2 MiB); a byte LRU if this grows.
                 while cache.values.len() >= 64 {
@@ -65,7 +66,7 @@ impl Provider {
     pub fn get_window(&self, zone: u32, bins: usize, range: Option<(u64, u64)>) -> Option<Envelope> {
         if zone == 0 || range.is_some_and(|(a,b)| a >= b) { return None; }
         let key = (zone, bins.clamp(1, 4096), range);
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.lock_unpoisoned();
         if let Some(value) = cache.values.get(&key).cloned() {
             cache.order.retain(|old| *old != key); cache.order.push_back(key);
             return value;
