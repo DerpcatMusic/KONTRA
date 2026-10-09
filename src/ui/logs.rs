@@ -914,7 +914,9 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
         let title = format!("{} · {patch} · {}", level_name(event.level), time(event.timestamp_ms));
         let header = col![
             row![caption(title).fill(if event.level == LogLevel::Error { Fill::from(Role::Warning) } else { secondary() })
-                .lines(1).min_w(0).id(title_id)].justify(Justify::Start).w(Len::Pct(100.)).min_w(0),
+                .lines(1).flex(1).min_w(0).id(title_id),
+                glyph(if selected { Icon::Down } else { Icon::Right }, TEXT, secondary())]
+                .gap(SPACE).align(Align::Center).justify(Justify::Start).w(Len::Pct(100.)).min_w(0),
             row![body(event.reason.as_deref().unwrap_or(&event.event)).text_size(TEXT).lines(1).min_w(0).id(reason_id)]
                 .justify(Justify::Start).w(Len::Pct(100.)).min_w(0)
         ].gap(0).align(Align::Start).h(ROW).pad((INSET, 2.)).clip().shrink(0);
