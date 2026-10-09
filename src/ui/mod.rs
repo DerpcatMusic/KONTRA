@@ -182,7 +182,7 @@ struct Meters {
     /// A view moves on its own (a spectrum or a peak hold falling): the
     /// last frame built says so, and frames keep coming until one does not.
     animating: AtomicBool,
-    /// Journal changes affect this editor only while its Logs pane is shown.
+    /// Journal changes affect this editor only while its Report pane is shown.
     logs_visible: AtomicBool,
 }
 
@@ -361,7 +361,6 @@ enum Tab {
     Rack,
     Mixer,
     Report,
-    Logs,
 }
 
 /// Editor-only state that outlives a frame but not the window.
@@ -395,6 +394,7 @@ struct EditorState {
     unselected: bool,
     notice: String,
     root: String,
+    root_typing: bool,
     last_poll: Instant,
     /// The top bar's readouts, as [`Watch`] last eased them.
     meters: Arc<Meters>,
@@ -438,7 +438,6 @@ struct EditorState {
     /// The mixer's strip width and meter holds.
     /// The mixer shows the output tree, else the flat console.
     mix_tree: mix_tree::State,
-    report: load_report::State,
     /// Each part's library interface as drawn, by slot.
     faces: HashMap<usize, part::Face>,
     /// Each part's views beside its interface.
@@ -944,6 +943,7 @@ fn build(
         unselected: true,
         notice: String::new(),
         root: String::new(),
+        root_typing: false,
         last_poll: Instant::now() - Duration::from_secs(1),
         meters,
         menu: None,
@@ -966,7 +966,6 @@ fn build(
         modulation: None,
         picker,
         mix_tree: Default::default(),
-        report: Default::default(),
         faces: Default::default(),
         inside: Default::default(),
         editor: Default::default(),
@@ -1013,7 +1012,6 @@ fn build(
         shortcuts(ui, &mut cx);
         picked(&mut cx);
         let top = header::top_bar(ui, &mut cx, bridge);
-        let settings = cx.state.settings.then(|| header::settings(ui, &mut cx));
         let saving = cx.state.saving.is_some().then(|| header::save_multi(ui, &mut cx));
         let browser_w = cx
             .state
@@ -1035,7 +1033,7 @@ fn build(
         let keys = keyboard::dock(ui, &mut cx);
         let menu = menu::view(ui, &mut cx, window);
         let ghost = ghost(ui, &cx);
-        cx.state.meters.logs_visible.store(cx.state.tab == Tab::Logs, Ordering::Relaxed);
+        cx.state.meters.logs_visible.store(cx.state.tab == Tab::Report && !cx.state.settings, Ordering::Relaxed);
 
         let ui_zoom = cx.settings.editor_scale();
         let Cx { mut selection, view, .. } = cx;
@@ -1054,7 +1052,6 @@ fn build(
         p.shared.selected.store(state.played() as u64, Ordering::Relaxed);
 
         let mut shell = vec![top, header::loading_bar(&view, &p, state.started)];
-        shell.extend(settings);
         shell.extend(saving);
         let mut middle: Vec<El> = sidebar.into_iter().collect();
         middle.extend(splitter);
@@ -1123,6 +1120,7 @@ fn shortcuts(ui: &mut Ui, cx: &mut Cx) {
     for k in keys {
         let ctrl = k.mods.ctrl || k.mods.cmd;
         match k.key {
+            Key::Escape if cx.state.settings && cx.state.menu.is_none() => cx.state.settings = false,
             Key::Delete if loaded && cx.state.renaming.is_none() => cx.remove(slot),
             Key::Char('d' | 'D') if ctrl && loaded => cx.duplicate(slot),
             // The browser shut: Ctrl+F opens it on its filter.
@@ -1227,18 +1225,19 @@ fn ghost(ui: &Ui, cx: &Cx) -> Option<El> {
     )
 }
 
-/// View tabs over the rack, the mixer or the logs.
+/// Workspace tabs; Settings temporarily occupies the same panel.
 fn main_view(ui: &mut Ui, cx: &mut Cx) -> El {
     let mut tabs = Vec::new();
     for (tab, label, id) in [
         (Tab::Rack, "Rack", "tab-rack"),
         (Tab::Mixer, "Mixer", "tab-mixer"),
         (Tab::Report, "Report", "tab-report"),
-        (Tab::Logs, "Logs", "tab-logs"),
     ] {
-        let (hit, el) = theme::tab(ui, id, label, cx.state.tab == tab);
+        let (hit, el) = theme::tab(ui, id, label, cx.state.tab == tab && !cx.state.settings);
         if hit {
             cx.state.tab = tab;
+            cx.state.settings = false;
+            cx.state.logs.show_entries();
         }
         tabs.push(el);
     }
@@ -1257,12 +1256,11 @@ fn main_view(ui: &mut Ui, cx: &mut Cx) -> El {
     // A spectrum shown below names its strip; none shown, none is copied.
     cx.state.scope = 0;
     cx.state.meters.animating.store(false, Ordering::Relaxed);
-    content.push(match cx.state.tab {
+    content.push(if cx.state.settings { header::settings(ui, cx) } else { match cx.state.tab {
         Tab::Rack => rack::view(ui, cx),
         Tab::Mixer => mixer_view(ui, cx),
-        Tab::Report => report_view(ui, cx),
-        Tab::Logs => logs::view(ui, cx),
-    });
+        Tab::Report => logs::view(ui, cx),
+    }});
     cx.p.shared.scope.source.store(cx.state.scope, Ordering::Relaxed);
     if cx.state.analyser.busy() && cx.state.scope != 0 {
         cx.state.meters.animating.store(true, Ordering::Relaxed);
@@ -1326,16 +1324,6 @@ fn mixer_view(ui: &mut Ui, cx: &mut Cx) -> El {
         rows.push(spectrum::panel(shape, "mix-spectrum-graph").h(TEXT * 10.).flex(0).pad(INSET).shrink(0));
     }
     col(rows).gap(0).flex(1).min_h(0).min_w(0)
-}
-
-/// The selected part's load report.
-fn report_view(ui: &mut Ui, cx: &mut Cx) -> El {
-    if cx.part().is_none() {
-        return caption("Select a loaded instrument to see its report").fill(secondary());
-    }
-    let slot = cx.state.selected;
-    let report = bridge::report(cx, slot);
-    load_report::view(ui, &mut cx.state.report, &report)
 }
 
 impl Cx<'_> {
