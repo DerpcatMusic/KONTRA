@@ -736,6 +736,20 @@ impl Eval<'_> {
     }
 
     fn get_property(&self, id: i32, par: i32) -> V {
+        if let Some(ui) = self.ui_index(id)
+            && (Some(par) == b::control_par("$CONTROL_PAR_SELECTED_ITEM_IDX")
+                || (par == b::CONTROL_PAR_VALUE && self.hir.uis[ui].kind == WidgetKind::Menu))
+        {
+            let value = self.read_var(self.hir.uis[ui].var).int();
+            let index = self
+                .st
+                .model
+                .interface
+                .widgets
+                .get(ui)
+                .and_then(|w| w.menu.iter().position(|item| item.value == value));
+            return V::I(index.map_or(-1, |index| index as i32));
+        }
         if par == b::CONTROL_PAR_VALUE
             && let Some(ui) = self.ui_index(id)
         {
@@ -1231,6 +1245,16 @@ impl Eval<'_> {
             }
             GetFontId => {
                 let name = self.text(args, 0)?;
+                if let Ok(id) = name.parse::<i32>() {
+                    return Ok(V::I(id));
+                }
+                if name.is_empty() || name.contains(['/', '\\']) {
+                    self.warn(
+                        span,
+                        "invalid bitmap font resource name; using the default font",
+                    );
+                    return Ok(V::I(0));
+                }
                 let fonts = &mut self.st.model.interface.fonts;
                 let index = fonts.iter().position(|f| *f == name).unwrap_or_else(|| {
                     fonts.push(name);
@@ -1598,10 +1622,28 @@ impl Eval<'_> {
             }
             OutputChannelName | GetFolder | FsGetFilename => V::S(String::new()),
             FindZone => V::I(b::NOT_FOUND),
-            GetNumZones | GetZoneId | GetZonePar | GetPurgeState | GetVoiceLimit
-            | GetUiWfProperty | EventStatus | GetEventPar | GetEventParArr | GetEventMark => {
-                V::I(0)
+            GetZonePar => {
+                let zone = self.int(args, 0)?;
+                let parameter = self.int(args, 1)?;
+                let field = match symbol_name(self.hir, parameter).as_deref() {
+                    Some("$ZONE_PAR_GROUP") => Some(0),
+                    Some("$ZONE_PAR_LOW_KEY") => Some(1),
+                    Some("$ZONE_PAR_HIGH_KEY") => Some(2),
+                    _ => None,
+                };
+                V::I(
+                    field
+                        .and_then(|field| {
+                            self.env
+                                .zones
+                                .get(&u32::try_from(zone).ok()?)
+                                .map(|values| values[field])
+                        })
+                        .unwrap_or(0),
+                )
             }
+            GetNumZones | GetZoneId | GetPurgeState | GetVoiceLimit | GetUiWfProperty
+            | EventStatus | GetEventPar | GetEventParArr | GetEventMark => V::I(0),
             // No host consumes zone writes (FindZone finds nothing at init), and
             // Conflux issues three million of them: logging each cost ~1 GB.
             SetZonePar => V::I(0),
