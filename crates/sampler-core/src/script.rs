@@ -135,24 +135,23 @@ impl Runtime {
             .and_then(|bank| bank.cells.get(cell))
             .ok_or(Error::InvalidInput)
     }
-    pub(super) fn behavior_script_cell_mut(
-        &mut self,
-        id: BehaviorId,
-        cell: u32,
-    ) -> Result<&mut i64, Error> {
+    pub(super) fn behavior_write_script_cell(
+        &mut self, id: BehaviorId, cell: u32, value: i64,
+    ) -> Result<(), Error> {
         let cell = usize::try_from(cell).map_err(|_| Error::InvalidInput)?;
         let continuation = self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
         let plan = self.behavior_plan(continuation.owner)?;
         let program = continuation.program;
         let generation = self.plans.get_mut(plan.0).ok_or(Error::StaleHandle)?;
-        let instance = generation.prepared.programs[program]
-            .script_instance
-            .ok_or(Error::InvalidInput)?;
-        generation.script_revision = generation.script_revision.wrapping_add(1);
-        generation
-            .scripts
-            .get_mut(usize::from(instance.0))
-            .and_then(|bank| bank.cells.get_mut(cell))
-            .ok_or(Error::InvalidInput)
+        let instance = generation.prepared.programs[program].script_instance.ok_or(Error::InvalidInput)?;
+        let bank = generation.scripts.get_mut(usize::from(instance.0)).ok_or(Error::InvalidInput)?;
+        let target = bank.cells.get_mut(cell).ok_or(Error::InvalidInput)?;
+        // Port v1 refresh_range's changed-value test into the shared writer.
+        let changed = *target != value;
+        *target = value;
+        if changed && super::ops::captures_cell(bank.captured_cells.as_deref(), cell) {
+            generation.script_revision = generation.script_revision.wrapping_add(1);
+        }
+        Ok(())
     }
 }
