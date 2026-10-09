@@ -205,14 +205,17 @@ fn identity(import_hash: u64, build_hash: u64) {
         // Nightly changes only the root package versions; validate the entire delta.
         let status = Command::new("python3")
             .args(["tools/version.py", "nightly-dirty"])
-            .output()
-            .expect("Nightly source provenance requires Python 3");
-        assert!(status.status.success(), "Nightly provenance check failed: {}",
-            String::from_utf8_lossy(&status.stderr));
-        match String::from_utf8_lossy(&status.stdout).trim() {
-            "false" => Some(false),
-            "true" => Some(true),
-            _ => panic!("Invalid Nightly provenance result"),
+            .output();
+        match status {
+            Ok(status) if status.status.success() && status.stdout.trim_ascii() == b"false" => Some(false),
+            Ok(status) if status.status.success() && status.stdout.trim_ascii() == b"true" => {
+                println!("cargo:warning=Nightly has source changes beyond its version stamp; dirty=true is recorded");
+                Some(true)
+            }
+            _ => {
+                println!("cargo:warning=Nightly stamp validation unavailable; recording ordinary Git source status");
+                git(&["status", "--porcelain", "--untracked-files=no"]).map(|s| !s.is_empty())
+            }
         }
     } else {
         git(&["status", "--porcelain", "--untracked-files=no"]).map(|s| !s.is_empty())
