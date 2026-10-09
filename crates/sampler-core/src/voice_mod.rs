@@ -794,6 +794,7 @@ impl VoiceModState {
         self.program.get(voice).copied().flatten()
     }
 
+    /// Scratch starts neutral; `previous_program` belongs to this scratch and plan.
     pub(crate) fn fill_filter_factors(
         &self,
         modulation: &VoiceModulation,
