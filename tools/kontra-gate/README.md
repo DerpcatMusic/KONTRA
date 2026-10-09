@@ -61,6 +61,14 @@ all programs named by the same-run scanner receipt, one heavy invocation per pro
 Missing, crashed, timed-out, empty or partially enumerated probes cannot pass. A legacy
 Conflux Vector/readback witness cannot certify another cell.
 
+Each 60 Hz editor tick advances exactly 800 engine samples at 48 kHz, split at
+the engine's 128-sample block limit. Fault receipts name the public callback and
+record the actual sample clock, editor frame, current target and probe phase.
+Read-only continuation observations include numeric PC/call-return positions,
+wait state and first-preemption sample; they stop after 128 rows and report
+truncation. These are block-boundary observations, not instruction traces or proof
+that the current gesture initiated a callback. The watchdog policy is unchanged.
+
 Presented-window coverage is separate from the headless editor. `presented-host.cpp`
 opens the exported CLAP GUI in a mapped X11 parent, processes audio on a separate
 thread, waits for the loaded-part counter, and reads the visible window with
