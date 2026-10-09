@@ -712,7 +712,7 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
             .id(format!("map-stack-{slot}")),
         inspector
     ]
-    .gap(TIGHT)
+    .gap(if compact { TIGHT / 2. } else { TIGHT })
     .w(Len::Pct(100.))
     .min_w(0)
 }
@@ -1075,7 +1075,7 @@ fn inspector(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument, compa
             .min_w(0)
             .tip(status.clone())
     ]
-    .gap(TIGHT)
+    .gap(if compact { TIGHT / 2. } else { TIGHT })
     .id(format!("map-inspector-{slot}-{n}"))
 }
 
