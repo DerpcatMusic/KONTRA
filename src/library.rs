@@ -422,6 +422,20 @@ impl Shelf {
         self.by_name.get(name).map(|&n| &self.libraries[n])
     }
 
+    /// Count unreadable banks and retain each reported cause for this root.
+    pub fn bank_problem(&self, root: &Path) -> Option<String> {
+        let mut count = 0;
+        let mut causes = Vec::new();
+        for issue in &self.bank_issues {
+            let matched = issue.locations.iter().filter(|path| path.starts_with(root)).count();
+            if matched > 0 {
+                count += matched;
+                causes.push(issue.message.as_str());
+            }
+        }
+        (count > 0).then(|| format!("{count} UVI {} could not be cataloged: {}", if count == 1 { "bank" } else { "banks" }, causes.join("; ")))
+    }
+
     /// One library per folder right under `root`, named for it: what a list
     /// of files with no folders on disk behind them is shelved as.
     #[cfg(test)]
@@ -734,8 +748,8 @@ fn cached_presets(dir: &Path, progress: &Progress, cache: &mut cache::Cache) -> 
             cache.observe(path);
             out.push(e.into_path());
         } else if path.extension().is_some_and(|x| x.eq_ignore_ascii_case("ufs")) {
-            if let Some(cache::Metadata::Bank(members)) = cache.memo(path, || match sampler_uvi::Bank::open(path) {
-                Ok(bank) => Some(cache::Metadata::Bank(bank.programs())),
+            if let Some(cache::Metadata::Bank(members)) = cache.memo(path, || match sampler_uvi::Bank::catalog(path) {
+                Ok(members) => Some(cache::Metadata::Bank(members)),
                 Err(e) => { progress.bank_issue(path, e); None }
             }) { out.extend(members.into_iter().map(|member| path.join(member))); }
         }
@@ -1300,6 +1314,21 @@ mod tests {
 
     #[test]
     #[cfg(feature = "library-access")]
+    fn w10_uvi_catalog_does_not_prepare_unavailable_member_payloads() {
+        let root = tree("uvi-catalog-only", &[]);
+        let path = root.join("Owned.ufs");
+        clear_bank(&path);
+        let mut bytes = std::fs::read(&path).unwrap();
+        let member = bytes.windows(4).position(|x| x == 0x675850e4u32.to_le_bytes()).unwrap();
+        bytes[member + 276] = 2;
+        std::fs::write(&path, bytes).unwrap();
+        let (shelf, files) = scan(&[Root { path: root.to_string_lossy().into_owned(), single: false }], &Progress::default()).unwrap();
+        assert_eq!((shelf.libraries.len(), files.len()), (1, 1), "cataloging requires directory metadata, not content preparation");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[cfg(feature = "library-access")]
     fn w10_uvi_flat_bank_folder_is_cataloged_and_cached() {
         let root = tree("uvi-flat-banks", &[]);
         clear_bank(&root.join("Alpha.ufs"));
@@ -1397,6 +1426,21 @@ mod tests {
         assert_eq!(records.len(), 1, "one grouped diagnostic must retain every failed bank location");
         assert_eq!(records[0].details["locations"].as_array().unwrap().len(), 2);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn w10_uvi_root_problem_counts_banks_and_keeps_distinct_causes() {
+        let mut shelf = Shelf::default();
+        shelf.bank_issues = vec![
+            BankIssue { unsupported: false, message: "Truncated header".into(),
+                locations: vec!["/owned/A.ufs".into(), "/owned/B.ufs".into(), "/owned-other/C.ufs".into()] },
+            BankIssue { unsupported: false, message: "Invalid directory".into(), locations: vec!["/owned/D.ufs".into()] },
+        ];
+        assert_eq!(shelf.bank_problem(Path::new("/owned")).as_deref(),
+            Some("3 UVI banks could not be cataloged: Truncated header; Invalid directory"));
+        assert_eq!(shelf.bank_problem(Path::new("/owned/D.ufs")).as_deref(),
+            Some("1 UVI bank could not be cataloged: Invalid directory"));
+        assert_eq!(shelf.bank_problem(Path::new("/missing")), None);
     }
 
     #[test]
