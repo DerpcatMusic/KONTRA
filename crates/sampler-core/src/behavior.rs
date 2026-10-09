@@ -1398,9 +1398,10 @@ impl Runtime {
         };
         let code = &generation.prepared.programs[program].code;
         let instance = generation.prepared.programs[program].script_instance;
-        let mut cells = instance
+        let (mut cells, captured_cells) = instance
             .and_then(|i| generation.scripts.get_mut(usize::from(i.0)))
-            .map(|bank| &mut bank.cells[..]);
+            .map(|bank| (Some(&mut bank.cells[..]), bank.captured_cells.as_deref()))
+            .unwrap_or((None, None));
         let base = id.0.index * self.behavior_stride;
         let Some(locals) = self
             .behavior_locals
@@ -1507,8 +1508,10 @@ impl Runtime {
                 }
                 Instruction::WriteScriptCell { cell, local } => {
                     let value = *local!(local);
-                    *cell!(cell) = value;
-                    wrote_script = true;
+                    let target = cell!(cell);
+                    let changed = *target != value;
+                    *target = value;
+                    wrote_script |= changed && super::ops::captures_cell(captured_cells, cell as usize);
                 }
                 Instruction::ReadScriptArray {
                     array,
@@ -1530,8 +1533,10 @@ impl Runtime {
                         break;
                     };
                     let value = *local!(local);
-                    *cell!(at) = value;
-                    wrote_script = true;
+                    let target = cell!(at);
+                    let changed = *target != value;
+                    *target = value;
+                    wrote_script |= changed && super::ops::captures_cell(captured_cells, at as usize);
                 }
                 _ => break,
             }
@@ -2093,7 +2098,7 @@ impl Runtime {
             }
             Instruction::WriteScriptCell { cell, local } => {
                 let value = *self.local_cell_mut(id, local)?;
-                *self.behavior_script_cell_mut(id, cell)? = value;
+                self.behavior_write_script_cell(id, cell, value)?;
             }
             Instruction::ReadScriptArray {
                 array,
@@ -2116,7 +2121,7 @@ impl Runtime {
             } => {
                 if let Ok(cell) = array.cell(*self.local_cell_mut(id, index)?) {
                     let value = *self.local_cell_mut(id, local)?;
-                    *self.behavior_script_cell_mut(id, cell)? = value;
+                    self.behavior_write_script_cell(id, cell, value)?;
                 }
             }
             Instruction::ReadControl { local, control } => {
@@ -2175,12 +2180,12 @@ impl Runtime {
                         if at == array.len {
                             break;
                         }
-                        *self.behavior_script_cell_mut(id, array.offset + at)? = i64::from(source);
+                        self.behavior_write_script_cell(id, array.offset + at, i64::from(source))?;
                         at += 1;
                     }
                 }
                 if at < array.len {
-                    *self.behavior_script_cell_mut(id, array.offset + at)? = 0;
+                    self.behavior_write_script_cell(id, array.offset + at, 0)?;
                 }
             }
             Instruction::ReadEventMark { event, mark, local } => {

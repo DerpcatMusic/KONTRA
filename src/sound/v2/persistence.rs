@@ -166,6 +166,8 @@ pub(super) struct Persistence {
 impl Persistence {
     #[cfg(test)]
     pub(super) fn values_len(&self) -> usize { self.state.values.len() }
+    #[cfg(test)]
+    pub(super) fn values_bytes(&self) -> usize { self.state.values.capacity() * std::mem::size_of::<ScriptStateEntry>() }
     fn new(
         runtime: &mut Runtime,
         views: &[sampler_ksp::ScriptView],
@@ -268,6 +270,7 @@ impl Persistence {
                 .capture_script_state(plan, &mut state)
                 .map_err(core)?;
         }
+        runtime.watch_script_state_values(plan, &state.values).map_err(core)?;
         let snapshot = Snapshot::new(schema, &state);
         let revision = (plan, runtime.script_state_revision(plan).map_err(core)?);
         Ok(Self {
@@ -330,6 +333,41 @@ impl Part {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn temporary_script_writes_do_not_recapture_persistent_values() {
+        let script = sampler_ksp::compile(
+            "on init\n declare $saved := 17\n make_persistent($saved)\n declare $temporary := 0\n end on\n on note\n $temporary := $EVENT_NOTE\n if ($EVENT_NOTE = 61)\n $saved := 61\n end if\n ignore_event($EVENT_ID)\n end on\n",
+            48000, sampler_ksp::Limits::LIBRARY, &[],
+        ).unwrap();
+        let view = script.view();
+        let plan = script.bind(Prepared::new(48000, vec![], vec![], 1).unwrap()).unwrap();
+        let limits = sampler_core::Limits::for_plan(&plan, 128, 8);
+        let mut part = Part::new(Runtime::new(plan, limits).unwrap(), MixTree::instrument("s")).unwrap();
+        part.prepare_persistence(&[view], "").unwrap();
+        let persistence = part.persistence.as_mut().unwrap();
+        assert_eq!(persistence.state.values.len(), 1);
+        let slot = persistence.snapshot.published.load(Ordering::SeqCst);
+        persistence.state.values[0].value = Value::Cell(-123);
+        part.runtime.trigger(sampler_core::Input {
+            protocol: sampler_core::Protocol::Native, port: 0, group: 0,
+            channel: 0, key: 60, external_id: None,
+        }, 60, 1.).unwrap();
+        #[cfg(feature = "plugin")]
+        assert_eq!(crate::plugin::tests::allocations(|| persistence.publish(&part.runtime)), 0);
+        #[cfg(not(feature = "plugin"))]
+        persistence.publish(&part.runtime);
+        assert_eq!(persistence.state.values[0].value, Value::Cell(-123),
+            "a callback's temporary variable must not recapture the saved array");
+        assert_eq!(persistence.snapshot.published.load(Ordering::SeqCst), slot);
+        part.runtime.trigger(sampler_core::Input {
+            protocol: sampler_core::Protocol::Native, port: 0, group: 0,
+            channel: 0, key: 61, external_id: None,
+        }, 61, 1.).unwrap();
+        persistence.publish(&part.runtime);
+        assert_eq!(persistence.state.values[0].value, Value::Cell(61));
+        let saved: Saved = serde_json::from_str(&persistence.snapshot.save()).unwrap();
+        assert!(matches!(saved.values.as_slice(), [SavedValue::Cell(61)]));
+    }
     #[test]
     fn dsp_control_edit_without_script_changes_is_published() {
         use sampler_core::{
