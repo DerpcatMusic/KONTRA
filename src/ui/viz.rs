@@ -214,7 +214,9 @@ pub fn filter_handles(s: &GroupSettings) -> Vec<Handle> {
             let high = s.frequency(p, 1.)?;
             let scale = if low > 0. && high > low {
                 (HIGH_HZ / LOW_HZ).log2() / (high / low).log2()
-            } else { 1. };
+            } else {
+                1.
+            };
             let (y, wheel) = match p {
                 Param::Cutoff(slot) => (Param::Resonance(slot), None),
                 Param::Freq(slot, b) => (Param::Gain(slot, b), Some(Param::Bandwidth(slot, b))),
@@ -223,8 +225,11 @@ pub fn filter_handles(s: &GroupSettings) -> Vec<Handle> {
             // port from v1 0cb7a8a0:src/ui/viz.rs: EQ handles show their own gain.
             let (db, y_scale) = if matches!(p, Param::Freq(..)) {
                 let db = y.read(s).and_then(|n| s.gain_db(y, n));
-                let range = s.gain_db(y, 1.).zip(s.gain_db(y, 0.))
-                    .map(|(high, low)| high - low).filter(|range| *range > 0.);
+                let range = s
+                    .gain_db(y, 1.)
+                    .zip(s.gain_db(y, 0.))
+                    .map(|(high, low)| high - low)
+                    .filter(|range| *range > 0.);
                 (db, range.map(|range| (TOP_DB - BOTTOM_DB) / range))
             } else {
                 (None, Some(1.))
@@ -232,10 +237,13 @@ pub fn filter_handles(s: &GroupSettings) -> Vec<Handle> {
             Some(Handle {
                 at: [
                     freq_x(hz),
-                    db_y(db.unwrap_or_else(|| 20. * s.magnitude(hz).max(1e-6).log10())).clamp(0., 1.),
+                    db_y(db.unwrap_or_else(|| 20. * s.magnitude(hz).max(1e-6).log10()))
+                        .clamp(0., 1.),
                 ],
                 x: Some((x, scale)),
-                y: y_scale.filter(|_| y.read(s).is_some()).map(|scale| (y, scale)),
+                y: y_scale
+                    .filter(|_| y.read(s).is_some())
+                    .map(|scale| (y, scale)),
                 wheel: wheel.filter(|w| s.values.iter().any(|(q, _)| q == w)),
                 active: true,
             })

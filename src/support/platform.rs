@@ -987,18 +987,19 @@ fn windows_wer_matches_host(text: &str, host: &str) -> bool {
     let mut found = false;
     for line in text.lines() {
         if let Some((key, value)) = line.split_once('=')
-            && matches!(key.trim(), "AppPath" | "AppName") {
-                let basename = value
-                    .trim()
-                    .trim_matches('"')
-                    .rsplit(['\\', '/'])
-                    .next()
-                    .unwrap_or_default();
-                if expected.is_empty() || comparable_process_name(basename) != expected {
-                    return false;
-                }
-                found = true;
+            && matches!(key.trim(), "AppPath" | "AppName")
+        {
+            let basename = value
+                .trim()
+                .trim_matches('"')
+                .rsplit(['\\', '/'])
+                .next()
+                .unwrap_or_default();
+            if expected.is_empty() || comparable_process_name(basename) != expected {
+                return false;
             }
+            found = true;
+        }
     }
     found
 }

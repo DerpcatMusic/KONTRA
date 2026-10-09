@@ -96,26 +96,52 @@ fn ignore_other_event_discards_pending_and_held_notes_without_key_up() {
             on release inc($releases) end on";
         let (cache, mut worker) = StreamCache::new(2).unwrap();
         let script = compile(source).unwrap();
-        assert!(script.coverage().iter().any(|&(name, coverage, _)|
-            name == "ignore_event" && coverage == sampler_ksp::Coverage::Native));
-        assert!(!script.coverage().iter().any(|&(name, coverage, _)|
-            name == "ignore_event" && coverage == sampler_ksp::Coverage::Approximate));
+        assert!(
+            script
+                .coverage()
+                .iter()
+                .any(|&(name, coverage, _)| name == "ignore_event"
+                    && coverage == sampler_ksp::Coverage::Native)
+        );
+        assert!(
+            !script
+                .coverage()
+                .iter()
+                .any(|&(name, coverage, _)| name == "ignore_event"
+                    && coverage == sampler_ksp::Coverage::Approximate)
+        );
         let mut rt = if pending {
             runtime_script_pcm(script, Pcm::streamed(48000, PAGE_FRAMES).unwrap())
                 .with_stream_cache(cache)
-        } else { runtime_script(script) };
+        } else {
+            runtime_script(script)
+        };
         rt.set_cold_starts(true);
         support::without_heap(|| {
             let old = rt.trigger(input(60), 60, 1.).unwrap();
             rt.render(&mut [[0.; 2]; 1]).unwrap();
             assert_eq!(rt.voice_count(), 1);
-            let target = rt.resolve_source_event(rt.active_plan(),
-                rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 0).unwrap() as i32).unwrap().unwrap();
-            if pending { rt.service_streaming(16).unwrap(); }
+            let target = rt
+                .resolve_source_event(
+                    rt.active_plan(),
+                    rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 0)
+                        .unwrap() as i32,
+                )
+                .unwrap()
+                .unwrap();
+            if pending {
+                rt.service_streaming(16).unwrap();
+            }
             rt.trigger(input(61), 61, 1.).unwrap();
-            assert_eq!(rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 1), Ok(0),
-                "discard cannot manufacture a release callback");
-            assert!(rt.release_context(target).unwrap().key.is_none(), "discard cannot manufacture key-up");
+            assert_eq!(
+                rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 1),
+                Ok(0),
+                "discard cannot manufacture a release callback"
+            );
+            assert!(
+                rt.release_context(target).unwrap().key.is_none(),
+                "discard cannot manufacture key-up"
+            );
             assert!(rt.input_held(old).unwrap());
             assert_eq!(rt.voice_count(), 0);
             if pending {
@@ -126,7 +152,10 @@ fn ignore_other_event_discards_pending_and_held_notes_without_key_up() {
             }
             let mut output = [[1.; 2]; 128];
             rt.render(&mut output).unwrap();
-            assert_eq!(output, [[0.; 2]; 128], "discarded delayed attacks must stay cancelled");
+            assert_eq!(
+                output, [[0.; 2]; 128],
+                "discarded delayed attacks must stay cancelled"
+            );
             rt.flush_behaviors(|_, _, _| true);
             rt.note_off(input(60), None).unwrap();
             rt.note_off(input(61), None).unwrap();
@@ -408,13 +437,24 @@ fn ui_can_stop_stored_events_and_stale_ids_cannot_stop_a_reused_slot() {
         assert_eq!(rt.note_count(), 0);
     });
     assert!(compile("on note note_off(1,0,1) end on").is_err());
-    assert!(!compile("on init note_off(1) end on").unwrap().warnings().is_empty());
+    assert!(
+        !compile("on init note_off(1) end on")
+            .unwrap()
+            .warnings()
+            .is_empty()
+    );
     for (selector, keep_second) in [("$ALL_EVENTS", false), ("by_marks($MARK_1)", true)] {
-        let script = compile(&format!("on note
+        let script = compile(&format!(
+            "on note
             if ($EVENT_NOTE = 60) set_event_mark($EVENT_ID, $MARK_1)
             else note_off({selector}) end if
-            end on")).unwrap();
-        assert!(script.warnings().is_empty(), "implemented selector: {selector}");
+            end on"
+        ))
+        .unwrap();
+        assert!(
+            script.warnings().is_empty(),
+            "implemented selector: {selector}"
+        );
         let mut rt = runtime_script(script);
         support::without_heap(|| {
             let marked = rt.trigger(input(60), 60, 1.).unwrap();

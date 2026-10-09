@@ -16,7 +16,9 @@ impl Prepared {
     }
 
     pub fn with_source_zones(mut self, ids: Vec<u32>) -> Result<Self, Error> {
-        if ids.len() != self.region_count() || ids.contains(&0) { return Err(Error::InvalidInput); }
+        if ids.len() != self.region_count() || ids.contains(&0) {
+            return Err(Error::InvalidInput);
+        }
         self.region_zone_ids = ids.into_boxed_slice();
         Ok(self)
     }
