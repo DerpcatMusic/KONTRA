@@ -347,6 +347,7 @@ pub(crate) struct FilterBank {
     /// Set around one voice's render; 1.0 uses the cached shared coefficients.
     pub modulation: [f64; 2],
     addressed_modulation: Box<[[f64; 4]]>,
+    modulation_program: Option<u32>,
 }
 impl FilterBank {
     pub fn new(filters: &[PreparedFilter], expressions: usize) -> Result<Self, Error> {
@@ -383,6 +384,7 @@ impl FilterBank {
             expressions: caches.into_boxed_slice(),
             stride,
             modulation: [1.0; 2],
+            modulation_program: None,
             addressed_modulation: filters.iter().map(|f| if matches!(f, PreparedFilter::NativeControl) {
                 [0.; 4]
             } else { [1., 1., 0., 0.] }).collect(),
@@ -412,7 +414,7 @@ impl FilterBank {
         state: &crate::voice_mod::VoiceModState,
         voice: usize,
     ) {
-        state.fill_filter_factors(modulation, voice, &mut self.addressed_modulation,
+        state.fill_filter_factors(modulation, voice, &mut self.addressed_modulation, &mut self.modulation_program,
             |i| matches!(self.scopes[i], Scope::NativeControl));
     }
 
