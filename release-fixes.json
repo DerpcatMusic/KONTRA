@@ -3569,7 +3569,7 @@
       "release_note": "Load repeated NKX directory entries while preserving exact-case resource paths.",
       "category": "Fixed",
       "accepted": true,
-      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim."
+      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim. W0 combined source46c899a9: workspace1956PASS/0FAIL/219ignored, scan scheduler48PASS, reader45PASS/1ignored, standalone+workspace no-run and GPU gates PASS; native15loads/15audible, existing Vista image reference remains open. Publication requires completion of the held 72-cell playback and hosted checks."
     },
     {
       "id": "mapping-selected-sample-window",
@@ -3580,7 +3580,7 @@
       "release_note": "Show the exact selected sample window and loop markers in Mapping.",
       "category": "Fixed",
       "accepted": true,
-      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim."
+      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim. W0 combined source46c899a9: workspace1956PASS/0FAIL/219ignored, scan scheduler48PASS, reader45PASS/1ignored, standalone+workspace no-run and GPU gates PASS; native15loads/15audible, existing Vista image reference remains open. Publication requires completion of the held 72-cell playback and hosted checks."
     },
     {
       "id": "mapping-selected-articulation-feedback",
@@ -3591,7 +3591,7 @@
       "release_note": "Keep Mapping articulation and keyswitch selection feedback synchronized.",
       "category": "Fixed",
       "accepted": true,
-      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim."
+      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim. W0 combined source46c899a9: workspace1956PASS/0FAIL/219ignored, scan scheduler48PASS, reader45PASS/1ignored, standalone+workspace no-run and GPU gates PASS; native15loads/15audible, existing Vista image reference remains open. Publication requires completion of the held 72-cell playback and hosted checks."
     },
     {
       "id": "legacy-ahdsr-revision-10",
@@ -3602,7 +3602,7 @@
       "release_note": "Load legacy AHDSR envelopes without losing their authored metadata.",
       "category": "Fixed",
       "accepted": true,
-      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim."
+      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim. W0 combined source46c899a9: workspace1956PASS/0FAIL/219ignored, scan scheduler48PASS, reader45PASS/1ignored, standalone+workspace no-run and GPU gates PASS; native15loads/15audible, existing Vista image reference remains open. Publication requires completion of the held 72-cell playback and hosted checks."
     },
     {
       "id": "kontakt-revisioned-arrays-empty-zones",
@@ -3614,7 +3614,7 @@
       "release_note": "Read native revisioned parameter arrays and sample-less zones with strict bounds.",
       "category": "Fixed",
       "accepted": true,
-      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim."
+      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim. W0 combined source46c899a9: workspace1956PASS/0FAIL/219ignored, scan scheduler48PASS, reader45PASS/1ignored, standalone+workspace no-run and GPU gates PASS; native15loads/15audible, existing Vista image reference remains open. Publication requires completion of the held 72-cell playback and hosted checks."
     },
     {
       "id": "generated-note-slot-defer",
@@ -3625,7 +3625,7 @@
       "release_note": "Preserve generated-note group edits across later script slots.",
       "category": "Fixed",
       "accepted": true,
-      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim."
+      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim. W0 combined source46c899a9: workspace1956PASS/0FAIL/219ignored, scan scheduler48PASS, reader45PASS/1ignored, standalone+workspace no-run and GPU gates PASS; native15loads/15audible, existing Vista image reference remains open. Publication requires completion of the held 72-cell playback and hosted checks."
     },
     {
       "id": "editor-poison-recovery",
@@ -3636,7 +3636,7 @@
       "release_note": "Recover editor state after a panic and retain the first failure report.",
       "category": "Fixed",
       "accepted": true,
-      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim."
+      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim. W0 combined source46c899a9: workspace1956PASS/0FAIL/219ignored, scan scheduler48PASS, reader45PASS/1ignored, standalone+workspace no-run and GPU gates PASS; native15loads/15audible, existing Vista image reference remains open. Publication requires completion of the held 72-cell playback and hosted checks."
     },
     {
       "id": "persistence-unchanged-audio-snapshot",
@@ -3652,7 +3652,7 @@
       "release_note": "Avoid recapturing unchanged script persistence on every audio block.",
       "category": "Fixed",
       "accepted": true,
-      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim."
+      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim. W0 combined source46c899a9: workspace1956PASS/0FAIL/219ignored, scan scheduler48PASS, reader45PASS/1ignored, standalone+workspace no-run and GPU gates PASS; native15loads/15audible, existing Vista image reference remains open. Publication requires completion of the held 72-cell playback and hosted checks."
     },
     {
       "id": "library-unavailable-path-reporting",
@@ -3663,7 +3663,7 @@
       "release_note": "Keep healthy libraries visible when other library paths are missing or dangling.",
       "category": "Fixed",
       "accepted": true,
-      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim."
+      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim. W0 combined source46c899a9: workspace1956PASS/0FAIL/219ignored, scan scheduler48PASS, reader45PASS/1ignored, standalone+workspace no-run and GPU gates PASS; native15loads/15audible, existing Vista image reference remains open. Publication requires completion of the held 72-cell playback and hosted checks."
     },
     {
       "id": "compressor-live-physical-controls",
@@ -3674,7 +3674,7 @@
       "release_note": "Restore live compressor threshold, ratio, attack and release controls.",
       "category": "Fixed",
       "accepted": true,
-      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim."
+      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim. W0 combined source46c899a9: workspace1956PASS/0FAIL/219ignored, scan scheduler48PASS, reader45PASS/1ignored, standalone+workspace no-run and GPU gates PASS; native15loads/15audible, existing Vista image reference remains open. Publication requires completion of the held 72-cell playback and hosted checks."
     },
     {
       "id": "held-note-audition-identity",
@@ -3686,7 +3686,7 @@
       "release_note": "Retain required held notes in audition plans and their comparison identity.",
       "category": "Fixed",
       "accepted": true,
-      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim."
+      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim. W0 combined source46c899a9: workspace1956PASS/0FAIL/219ignored, scan scheduler48PASS, reader45PASS/1ignored, standalone+workspace no-run and GPU gates PASS; native15loads/15audible, existing Vista image reference remains open. Publication requires completion of the held 72-cell playback and hosted checks."
     },
     {
       "id": "compact-snapshot-source-framing",
@@ -3697,7 +3697,7 @@
       "release_note": "Load compact snapshot revisions with their exact source boundaries.",
       "category": "Fixed",
       "accepted": true,
-      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim."
+      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim. W0 combined source46c899a9: workspace1956PASS/0FAIL/219ignored, scan scheduler48PASS, reader45PASS/1ignored, standalone+workspace no-run and GPU gates PASS; native15loads/15audible, existing Vista image reference remains open. Publication requires completion of the held 72-cell playback and hosted checks."
     },
     {
       "id": "unsupported-fx-diagnostic-privacy",
@@ -3708,7 +3708,7 @@
       "release_note": "Keep unsupported-effect reports limited to layout metadata.",
       "category": "Fixed",
       "accepted": true,
-      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim."
+      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim. W0 combined source46c899a9: workspace1956PASS/0FAIL/219ignored, scan scheduler48PASS, reader45PASS/1ignored, standalone+workspace no-run and GPU gates PASS; native15loads/15audible, existing Vista image reference remains open. Publication requires completion of the held 72-cell playback and hosted checks."
     },
     {
       "id": "original-art-decoder-poison-recovery",
@@ -3719,7 +3719,7 @@
       "release_note": "Continue loading Original artwork after a decoder panic.",
       "category": "Fixed",
       "accepted": true,
-      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim."
+      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim. W0 combined source46c899a9: workspace1956PASS/0FAIL/219ignored, scan scheduler48PASS, reader45PASS/1ignored, standalone+workspace no-run and GPU gates PASS; native15loads/15audible, existing Vista image reference remains open. Publication requires completion of the held 72-cell playback and hosted checks."
     },
     {
       "id": "load-audit-numeric-stage-retention",
@@ -3730,7 +3730,7 @@
       "release_note": "Retain numeric load-stage diagnostics without authored payload data.",
       "category": "Fixed",
       "accepted": true,
-      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim."
+      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim. W0 combined source46c899a9: workspace1956PASS/0FAIL/219ignored, scan scheduler48PASS, reader45PASS/1ignored, standalone+workspace no-run and GPU gates PASS; native15loads/15audible, existing Vista image reference remains open. Publication requires completion of the held 72-cell playback and hosted checks."
     },
     {
       "id": "persistence-wait-live-scheduler",
@@ -3742,7 +3742,7 @@
       "release_note": "Schedule persistence callbacks that wait and preserve synchronous init MIDI completion.",
       "category": "Fixed",
       "accepted": true,
-      "validation": "Owner RED/GREEN and root no-run receipts reviewed. Combined W0 workspace, callback count/outcome, native quick and editor gates pending before publication; no real-library or performance parity claim."
+      "validation": "Owner RED/GREEN and root no-run receipts reviewed. Combined W0 workspace, callback count/outcome, native quick and editor gates pending before publication; no real-library or performance parity claim. W0 combined source46c899a9: workspace1956PASS/0FAIL/219ignored, scan scheduler48PASS, reader45PASS/1ignored, standalone+workspace no-run and GPU gates PASS; native15loads/15audible, existing Vista image reference remains open. Publication requires completion of the held 72-cell playback and hosted checks."
     },
     {
       "id": "sticky-rack-body-clipping",
@@ -3753,7 +3753,7 @@
       "release_note": "Keep rack contents beneath sticky headers when resizing the editor.",
       "category": "Fixed",
       "accepted": true,
-      "validation": "Owner RED/GREEN and root no-run receipts reviewed. Combined W0 workspace, callback count/outcome, native quick and editor gates pending before publication; no real-library or performance parity claim."
+      "validation": "Owner RED/GREEN and root no-run receipts reviewed. Combined W0 workspace, callback count/outcome, native quick and editor gates pending before publication; no real-library or performance parity claim. W0 combined source46c899a9: workspace1956PASS/0FAIL/219ignored, scan scheduler48PASS, reader45PASS/1ignored, standalone+workspace no-run and GPU gates PASS; native15loads/15audible, existing Vista image reference remains open. Publication requires completion of the held 72-cell playback and hosted checks."
     },
     {
       "id": "typed-effect-owner-project-recall",
@@ -3764,7 +3764,7 @@
       "release_note": "Retain registered effect controls in saved projects while accepting the exact previous script-state schema.",
       "category": "Fixed",
       "accepted": true,
-      "validation": "Owner publication5, script-free recall1, previous-schema1, persistence8 and root no-run PASS; exact pushed candidate reviewed. W0 combined W9/W15 and broad gates pending before publication; synthetic fixtures only."
+      "validation": "Owner publication5, script-free recall1, previous-schema1, persistence8 and root no-run PASS; exact pushed candidate reviewed. W0 combined W9/W15 and broad gates pending before publication; synthetic fixtures only. W0 combined source46c899a9: workspace1956PASS/0FAIL/219ignored, scan scheduler48PASS, reader45PASS/1ignored, standalone+workspace no-run and GPU gates PASS; native15loads/15audible, existing Vista image reference remains open. Publication requires completion of the held 72-cell playback and hosted checks."
     },
     {
       "id": "async-wait-preemption-age",
@@ -3775,7 +3775,7 @@
       "release_note": "Keep finite script callbacks alive across admitted asynchronous MIDI waits.",
       "category": "Fixed",
       "accepted": true,
-      "validation": "W5 owner2 host-budget callback witnesses/26core+15MIDI+rootno-run reviewed. W0 combined-source RED reproduces admitted wait FuelExhausted while regular waits pass; invalid/disabled runaway guards retained. Final combined GREEN gate pending before publication; Glaze/Horns actual-library attribution unknown."
+      "validation": "W5 owner2 host-budget callback witnesses/26core+15MIDI+rootno-run reviewed. W0 combined-source RED reproduces admitted wait FuelExhausted while regular waits pass; invalid/disabled runaway guards retained. Combined GREEN gate completed; Glaze/Horns actual-library attribution unknown. W0 combined source46c899a9: workspace1956PASS/0FAIL/219ignored, scan scheduler48PASS, reader45PASS/1ignored, standalone+workspace no-run and GPU gates PASS; native15loads/15audible, existing Vista image reference remains open. Publication requires completion of the held 72-cell playback and hosted checks."
     },
     {
       "id": "standalone-crash-evidence-delivery",
@@ -3786,7 +3786,7 @@
       "release_note": "Retain native fault evidence and readable crash reports from the Linux standalone.",
       "category": "Fixed",
       "accepted": true,
-      "validation": "Owner Linux x86_64 two baseline REDs, five GREEN runtime tests and standalone no-run; W3 plugin panic ownership preserved. Other native platforms unvalidated. W0 final combined gate pending before publication."
+      "validation": "Owner Linux x86_64 two baseline REDs, five GREEN runtime tests and standalone no-run; W3 plugin panic ownership preserved. Other native platforms unvalidated. W0 combined source46c899a9: workspace1956PASS/0FAIL/219ignored, scan scheduler48PASS, reader45PASS/1ignored, standalone+workspace no-run and GPU gates PASS; native15loads/15audible, existing Vista image reference remains open. Publication requires completion of the held 72-cell playback and hosted checks."
     },
     {
       "id": "uvi-metadata-slot-census",
@@ -3797,7 +3797,7 @@
       "release_note": "Inventory accessible UVI program metadata without preparing unrelated sample content.",
       "category": "Fixed",
       "accepted": true,
-      "validation": "Owner authored inventory 0\u21921, opener compatibility and feature-on/off no-run PASS; installed protected inventories remain 0\u21920. W0 final combined gate pending before publication."
+      "validation": "Owner authored inventory 0\u21921, opener compatibility and feature-on/off no-run PASS; installed protected inventories remain 0\u21920. W0 combined source46c899a9: workspace1956PASS/0FAIL/219ignored, scan scheduler48PASS, reader45PASS/1ignored, standalone+workspace no-run and GPU gates PASS; native15loads/15audible, existing Vista image reference remains open. Publication requires completion of the held 72-cell playback and hosted checks."
     },
     {
       "id": "editor-graphics-setup-deadline",
@@ -3808,7 +3808,7 @@
       "release_note": "Retry editor graphics setup once and stop stalled package installation within a bounded deadline.",
       "category": "Fixed",
       "accepted": true,
-      "validation": "Offline success, transient install failure, permanent failure and timeout outcomes PASS; actionlint and ten workflow safety tests PASS. Hosted execution pending. W0 final combined gate pending before publication."
+      "validation": "Offline success, transient install failure, permanent failure and timeout outcomes PASS; actionlint and ten workflow safety tests PASS. Hosted execution pending. W0 combined source46c899a9: workspace1956PASS/0FAIL/219ignored, scan scheduler48PASS, reader45PASS/1ignored, standalone+workspace no-run and GPU gates PASS; native15loads/15audible, existing Vista image reference remains open. Publication requires completion of the held 72-cell playback and hosted checks."
     },
     {
       "id": "ksp-computed-event-getter",
@@ -3819,7 +3819,7 @@
       "release_note": "Read event parameters correctly when scripts compute the parameter selector.",
       "category": "Fixed",
       "accepted": true,
-      "validation": "Owner failing-first synthetic selector and current-note projection checks PASS; full combined gate pending. W0 final combined gate pending before publication."
+      "validation": "Owner failing-first synthetic selector and current-note projection checks PASS; full combined gate pending. W0 combined source46c899a9: workspace1956PASS/0FAIL/219ignored, scan scheduler48PASS, reader45PASS/1ignored, standalone+workspace no-run and GPU gates PASS; native15loads/15audible, existing Vista image reference remains open. Publication requires completion of the held 72-cell playback and hosted checks."
     },
     {
       "id": "ksp-legacy-current-event-array",
@@ -3830,7 +3830,7 @@
       "release_note": "Honor legacy event tags during piano release routing, preventing the extra dry release note.",
       "category": "Fixed",
       "accepted": true,
-      "validation": "Owner legacy-array RED\u2192GREEN, noheap saved-script witness and frozen native host comparison: settled Una release falls 14.4113 dB; attack peak timing unchanged. Noire and exact older tester build unavailable. W0 final combined gate pending before publication."
+      "validation": "Owner legacy-array RED\u2192GREEN, noheap saved-script witness and frozen native host comparison: settled Una release falls 14.4113 dB; attack peak timing unchanged. Noire and exact older tester build unavailable. W0 combined source46c899a9: workspace1956PASS/0FAIL/219ignored, scan scheduler48PASS, reader45PASS/1ignored, standalone+workspace no-run and GPU gates PASS; native15loads/15audible, existing Vista image reference remains open. Publication requires completion of the held 72-cell playback and hosted checks."
     },
     {
       "id": "sample-resolver-temporary-allocation",
@@ -3841,7 +3841,7 @@
       "release_note": "Avoid unnecessary temporary archive paths when resolving loose samples.",
       "category": "Fixed",
       "accepted": true,
-      "validation": "Owner allocation RED 687 bytes\u2192GREEN 147/161 bytes matching path lengths, three sample tests and root no-run PASS. No whole-worker speed or RSS parity claim. W0 final combined gate pending before publication."
+      "validation": "Owner allocation RED 687 bytes\u2192GREEN 147/161 bytes matching path lengths, three sample tests and root no-run PASS. No whole-worker speed or RSS parity claim. W0 combined source46c899a9: workspace1956PASS/0FAIL/219ignored, scan scheduler48PASS, reader45PASS/1ignored, standalone+workspace no-run and GPU gates PASS; native15loads/15audible, existing Vista image reference remains open. Publication requires completion of the held 72-cell playback and hosted checks."
     },
     {
       "id": "quiet-waiter-parent-classification",
@@ -3852,7 +3852,7 @@
       "release_note": "Keep idle build waiters from falsely invalidating quiet measurement admission.",
       "category": "Fixed",
       "accepted": true,
-      "validation": "Owner nested idle-runner RED\u2192GREEN; real sibling workloads remain CONTENDED. Synthetic observer coverage only. W0 final combined gate pending before publication."
+      "validation": "Owner nested idle-runner RED\u2192GREEN; real sibling workloads remain CONTENDED. Synthetic observer coverage only. W0 combined source46c899a9: workspace1956PASS/0FAIL/219ignored, scan scheduler48PASS, reader45PASS/1ignored, standalone+workspace no-run and GPU gates PASS; native15loads/15audible, existing Vista image reference remains open. Publication requires completion of the held 72-cell playback and hosted checks."
     }
   ]
 }
