@@ -367,6 +367,11 @@ impl ScriptHost {
                         } else {
                             1
                         },
+                        axis: if key == "stripImage" && flag(w, "stripHorizontal", false) {
+                            ui::Orientation::Horizontal
+                        } else {
+                            ui::Orientation::Vertical
+                        },
                         ..Default::default()
                     };
                     wd.images.push(ui::ImageUse::new(
@@ -438,6 +443,7 @@ impl ScriptHost {
                 "align",
                 "image",
                 "frames",
+                "stripHorizontal",
                 "stripImage",
                 "normalImage",
                 "pressedImage",

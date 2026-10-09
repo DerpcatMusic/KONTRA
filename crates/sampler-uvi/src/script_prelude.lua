@@ -125,6 +125,14 @@ function methods.getValue(w, i)
   end
   return w.value
 end
+-- Port v1 4bffbb18:src/uvi/host.rs; momentary buttons do not store a value.
+function methods.push(w, callChangedCallback, mods)
+  local p = data(w)
+  if p.kind ~= 'Button' or rawtype(callChangedCallback) ~= 'boolean' then error('UVI Button push requires a boolean callback flag') end
+  if callChangedCallback and rawtype(p.changed) == 'function' then
+    if mods then p.changed(w,mods) else p.changed(w) end
+  end
+end
 function methods.setRange(w, lo, hi) w.min, w.max = lo, hi end
 function methods.setPosition(w, x, y) w.position = {x, y} end
 function methods.setSize(w, width, height) w.size = {width, height} end
@@ -136,7 +144,7 @@ function methods.addItem(w, text)
 end
 function methods.clear(w) data(w).items = {}; ui.revision = ui.revision + 1 end
 function methods.getText(w, i) return data(w).items[i] end
-function methods.setStripImage(w, path, frames) w.stripImage, w.frames = path, frames end
+function methods.setStripImage(w, path, frames, horizontal) w.stripImage, w.frames, w.stripHorizontal = path, frames, horizontal end
 function methods.setViewPosition(w, x, y) w.viewPosition = {x, y} end
 function methods.loadFont(w, path) w.font = path end
 function methods.toString(w) return tostring(w.value) end
@@ -247,10 +255,7 @@ widget = function(kind, ...)
   if kind=="Slider" and args[6]~=nil then d.vertical=args[6] end
   registry[#registry+1] = w; rawset(w,"id",#registry)
   d.id = #registry
-  -- A default grid per parent; explicit bounds/position override it.
-  if not named.bounds and not named.position and not named.pos and named.x == nil and named.y == nil then
-    d.x,d.y = ((#registry-1)%6)*120,math.floor((#registry-1)/6)*90
-  end
+  ui.revision = ui.revision + 1
   return w
 end
 for _, kind in ipairs(kinds) do _G[kind] = function(...) return widget(kind, ...) end end
@@ -289,7 +294,7 @@ function __ui_edit(id, component, value)
     error("unbound XY axis")
   elseif w.kind == "Button" then
     if component ~= 0 then error('invalid UI component') end
-    if value >= 0.5 then notify(w) end
+    if value >= 0.5 then w:push(true) end
   else
     if component ~= 0 then error('invalid UI component') end
     w:setValue(value)
@@ -453,19 +458,27 @@ function print() end
 
 -- Loading ------------------------------------------------------------------
 dofile, loadfile, load, loadstring, module = nil, nil, nil, nil, nil
-local loaded = {}
+local loaded, loading = {}, {}
 function require(name)
-  if loaded[name] ~= nil then return loaded[name] end
-  if string.sub(name, 1, 4) == "uvi." then
-    report("module " .. name, "")
-    loaded[name] = stub(name)
-    return loaded[name]
+  if rawtype(name) == 'number' then name = tostring(name) end
+  if rawtype(name) ~= 'string' or #name == 0 or #name > 256 or string.find(name,'\0',1,true) then
+    error('Invalid UVI embedded module name',2)
   end
+  if loaded[name] then return loaded[name] end
+  if loading[name] then error("UVI module load cycle at '" .. name .. "'",2) end
   local source = native.source(name)
-  if source == nil then error("module '" .. tostring(name) .. "' not found", 2) end
+  if source == nil and name == 'uvi.AsyncUpdater' then
+    AsyncUpdater = native.asyncUpdater()
+    loaded[name] = true
+    return true
+  end
+  if source == nil then error("module '" .. name .. "' not found",2) end
   local chunk, err = native.compile(source, name)
-  if not chunk then error(err, 2) end
-  local result = chunk(name)
+  if not chunk then error(err,2) end
+  loading[name] = true
+  local ok, result = pcall(chunk,name)
+  loading[name] = nil
+  if not ok then error(result,2) end
   if result == nil then result = true end
   loaded[name] = result
   return result
@@ -510,9 +523,10 @@ function type(v)
 end
 
 -- What the interface export reads (see ScriptHost::interface).
-function setBackground(path) ui.background = native.resourcePath(path) end
-function setSize(w, h) ui.width, ui.height = w, h end
-function setBackgroundColour(c) ui.backgroundColour = c end
+function setBackground(path) ui.background = native.resourcePath(path); ui.revision = ui.revision + 1 end
+function setSize(w, h) ui.width, ui.height = w, h; ui.revision = ui.revision + 1 end
+function setHeight(h) ui.height = h; ui.revision = ui.revision + 1 end
+function setBackgroundColour(c) ui.backgroundColour = c; ui.revision = ui.revision + 1 end
 function setKeyColour(key, c)
   ui.keys[key+1] = c; ui.revision = ui.revision + 1
   if native.scanKey then native.scanKey("setKeyColour", {key, c}) end
@@ -521,5 +535,5 @@ function resetKeyColour(key)
   ui.keys[key+1] = nil; ui.revision = ui.revision + 1
   if native.scanKey then native.scanKey("resetKeyColour", {key}) end
 end
-function makePerformanceView() ui.performance = true end
+function makePerformanceView() ui.performance = true; ui.revision = ui.revision + 1 end
 __ui = ui
