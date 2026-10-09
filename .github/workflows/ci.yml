@@ -117,6 +117,8 @@ jobs:
             libxkbcommon-dev libxkbcommon-x11-dev libxrandr-dev \
             libgl1-mesa-dev libgl1-mesa-dri libvulkan-dev mesa-vulkan-drivers xvfb xauth \
             libasound2-dev libjack-jackd2-dev
+          # apt owns partial/; Cargo must be able to scan the workspace.
+          sudo chmod -R a+rX ui-plugin/editor-debs
           (cd ui-plugin/editor-debs && sha256sum *.deb > SHA256SUMS)
       - name: VST3 native shim editor lifecycle
         run: |
