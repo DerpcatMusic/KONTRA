@@ -1853,6 +1853,25 @@ pub(crate) fn saved(entries: &[String]) -> Result<Vec<(String, ir::Saved)>, crat
 mod saved_tests {
     use super::*;
     #[test]
+    fn raw_ahdsr_preparation_keeps_original_f32_setters_before_curve_normalization() {
+        let mut indices = ir::SourceIndices::default();
+        let envelope = ni_file::kontakt::objects::EnvelopeAhdsr {
+            attack_ms: 125.012924, attack_curve: 0.75, hold_ms: 0.012345,
+            decay_ms: 25000.043, sustain: 0.4, release_ms: 1234.567,
+            unknown_flag: 1, unknown_tail: vec![0;52],
+        };
+        Translation::source_envelope(&mut indices,7,12,&envelope);
+        let source = indices.ahdsrs.first().expect("raw AHDSR descriptor lost before preparation");
+        assert_eq!((source.group,source.slot),(7,12));
+        assert_eq!([source.attack_ms,source.attack_curve,source.hold_ms,source.decay_ms,
+            source.sustain,source.release_ms].map(f32::to_bits),
+            [envelope.attack_ms,envelope.attack_curve,envelope.hold_ms,envelope.decay_ms,
+            envelope.sustain,envelope.release_ms].map(f32::to_bits));
+        assert!(source.ahd_only);
+        assert!(!source.native_amplitude,"standalone scalars cannot prove native primary geometry");
+    }
+
+    #[test]
     fn authored_envelope_init_values_keep_physical_slots_and_native_laws() {
         let mut indices = ir::SourceIndices::default();
         let envelope = ni_file::kontakt::objects::EnvelopeAhdsr {

@@ -186,6 +186,8 @@ pub struct SourceIndices {
     pub groups: Vec<Option<GroupRef>>,
     pub zones: Vec<Option<ZoneRef>>,
     pub modulators: Vec<SourceModulator>,
+    /// Original Kontakt AHDSR setter values; normalized curves cannot recover v1 bits.
+    pub ahdsrs: Vec<SourceAhdsr>,
     /// Authored native mod/target names and physical lookup addresses, including omitted DSP.
     pub engine_lookups: Vec<SourceEngineLookup>,
     /// Authored normalized getter values before script initialization, at physical addresses.
@@ -202,6 +204,21 @@ pub struct SourceModulator {
     pub external: bool,
     pub name: String,
     pub runtime: Option<ModulatorRef>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SourceAhdsr {
+    pub group: usize,
+    pub slot: usize,
+    pub attack_ms: f32,
+    pub attack_curve: f32,
+    pub hold_ms: f32,
+    pub decay_ms: f32,
+    pub sustain: f32,
+    pub release_ms: f32,
+    pub ahd_only: bool,
+    /// Exact pinned primary amplitude geometry, validated while the raw wrapper exists.
+    pub native_amplitude: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
