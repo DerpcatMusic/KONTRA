@@ -2485,3 +2485,45 @@ fn mapping_art_link_selection_tracks_keyswitch_identity() {
     }
     assert_eq!(*source,before);
 }
+
+#[test]
+fn v1_effects_list_includes_native_zone_chains_once_per_group() {
+    use sampler_ir as I;
+    let mut i = I::Instrument::default();
+    i.groups = vec![I::Group { chain:Some(I::ChainRef(1)), ..Default::default() }, I::Group::default()];
+    for (scope, processor) in [
+        (I::Scope::Voice, I::Processor::LadderLP4(I::LadderLP4 { address:None,
+            gain:0., cutoff:0.5, resonance:0.2, record_version:0x92 })),
+        (I::Scope::Group(I::GroupRef(0)), I::Processor::Gain(I::Gain::Decibels(-6.))),
+        (I::Scope::Master, I::Processor::Rectify(I::Rectifier::Full)),
+        (I::Scope::Bus(I::BusRef(0)), I::Processor::LoFi { bits:8., frequency:12000., noise:0., color:0.5 }),
+        (I::Scope::Voice, I::Processor::Rectify(I::Rectifier::Half)),
+        (I::Scope::Voice, I::Processor::Daft(I::Daft { gain:0., cutoff:0.5, resonance:0.2, highpass:true })),
+    ] {
+        i.chains.push(I::Chain { scope, pre_amplitude:vec![processor], post_amplitude:vec![] });
+    }
+    i.buses.push(I::Bus { name:"Room".into(), chain:Some(I::ChainRef(3)), sends:vec![],
+        output:I::Output::Master, gain:I::Gain::UNITY });
+    for (group, chain) in [(0,0),(0,0),(0,5),(1,4)] {
+        let mut zone = I::Zone::new(I::AssetRef(0));
+        zone.group = Some(I::GroupRef(group)); zone.chain = Some(I::ChainRef(chain));
+        i.zones.push(zone);
+    }
+    let labels = |i:&I::Instrument| {
+        let ui = settle(800.,600.,|_| super::chain::effects(i,0));
+        ui.scene().unwrap().surfaces().filter_map(|s|s.text_value.as_deref().map(str::to_owned)).collect::<Vec<_>>()
+    };
+    let text = labels(&i);
+    let count = |prefix:&str| text.iter().filter(|s|s.starts_with(prefix)).count();
+    assert_eq!(count("Gain · -6.0 dB"),1,"the summed group chain is retained");
+    assert_eq!(count("Rectifier · full wave"),1,"instrument inserts remain visible");
+    assert_eq!(count("LoFi"),1,"bus effects remain visible");
+    assert_eq!(count("Ladder low-pass"),1,"native group inserts live on shared zone voice chains");
+    assert_eq!(count("Daft high-pass"),1,"every distinct zone chain of this group is inventoried");
+    assert_eq!(count("GROUP INSERTS"),1,"one group heading covers the complete insert inventory");
+    assert_eq!(count("Rectifier · half wave"),0,"another group's voice effects stay out of this list");
+    i.groups[0].chain = Some(I::ChainRef(0));
+    let text = labels(&i);
+    assert_eq!(text.iter().filter(|s|s.starts_with("Ladder low-pass")).count(),1,
+        "a chain referenced by both zones and group is shown once");
+}

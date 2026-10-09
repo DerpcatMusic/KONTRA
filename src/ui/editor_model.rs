@@ -202,13 +202,7 @@ impl Model {
                     .map(|(_, v)| (p, b.law.encode(*v) as f32 / 1e6))
             })
             .collect();
-        // Native Kontakt group inserts live on shared zone voice chains.
-        let mut chains = Vec::new();
-        for reference in i.zones.iter().filter(|z| z.group == Some(ir::GroupRef(g)))
-            .filter_map(|z| z.chain).chain(i.groups.get(g).and_then(|group| group.chain))
-        {
-            if !chains.contains(&reference) { chains.push(reference); }
-        }
+        let chains = super::chain::group_chains(i, g);
         let processors = || chains.iter().filter_map(|r| i.chains.get(r.0))
             .flat_map(|chain| chain.pre_amplitude.iter().chain(&chain.post_amplitude));
         let filters = processors().filter_map(|p| match p {
