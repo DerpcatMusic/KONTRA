@@ -3754,6 +3754,17 @@
       "category": "Fixed",
       "accepted": true,
       "validation": "Owner RED/GREEN and root no-run receipts reviewed. Combined W0 workspace, callback count/outcome, native quick and editor gates pending before publication; no real-library or performance parity claim."
+    },
+    {
+      "id": "typed-effect-owner-project-recall",
+      "summary": "Publish exact effect owners and preserve script-free DSP state through host recall",
+      "source_commits": [
+        "f1989643ea9902944f14e4d483581e45e6f5d2a8"
+      ],
+      "release_note": "Retain registered effect controls in saved projects while accepting the exact previous script-state schema.",
+      "category": "Fixed",
+      "accepted": true,
+      "validation": "Owner publication5, script-free recall1, previous-schema1, persistence8 and root no-run PASS; exact pushed candidate reviewed. W0 combined W9/W15 and broad gates pending before publication; synthetic fixtures only."
     }
   ]
 }
