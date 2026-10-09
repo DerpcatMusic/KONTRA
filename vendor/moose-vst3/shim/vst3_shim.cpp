@@ -1257,7 +1257,7 @@ public:
     }
 
     tresult setActive(TBool state) {
-        if (state && g_cb && ctx) {
+        if (g_cb && ctx) {
             g_cb->reset(ctx, sampleRate, maxFrames, procMode);
         }
         // Tell Rust the activation state for both directions so a state
@@ -1404,7 +1404,10 @@ public:
         return kResultOk;
     }
 
-    tresult setProcessing(TBool) { return kResultOk; }
+    tresult setProcessing(TBool state) {
+        if (!state && g_cb && ctx) g_cb->reset(ctx, sampleRate, maxFrames, procMode);
+        return kResultOk;
+    }
 
     tresult process(ProcessData* data) {
         if (!data || !g_cb || !ctx) return kResultOk;
