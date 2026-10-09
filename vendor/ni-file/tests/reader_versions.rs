@@ -1,5 +1,5 @@
 //! W6 fixture cases consolidated into W12; no library bytes.
-//! Additional cases are unrun and outside READY 7bc29b21; snapshot/context cases await RED.
+//! Bounded revisions, adjacent compact groups, nullable names and opaque envelope tails.
 use ni_file::kontakt::{
     objects::{
         BParamArrayBParFX8, EnvelopeAhdsr, ExternalMod, ExternalModArray32, InternalMod,
