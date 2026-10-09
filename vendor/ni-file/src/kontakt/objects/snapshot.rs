@@ -21,16 +21,16 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    /// Opt-in compact-v2/v4 decoding; IDs retain Kontakt's original array order.
+    /// Opt-in compact-v1..v4 decoding; IDs retain Kontakt's original array order.
     pub fn group_snapshots(&self) -> Result<Vec<(u32, super::GroupSnapshot)>, Error> {
         let Some(group_chunk) = &self.groups else {
             return Ok(Vec::new());
         };
         let mut reader = Cursor::new(group_chunk.data.as_slice());
         let count = reader.read_u32_le()?;
-        // Even empty v2 records have 125 bytes of headers, state and slot flags.
+        // Smallest v1 record: 115 bytes with a v0x100 source and empty fixed racks.
         if count != self.group_count
-            || count as usize > group_chunk.data.len().saturating_sub(4) / 125
+            || count as usize > group_chunk.data.len().saturating_sub(4) / 115
         {
             return Err(Error::Static("Invalid compact group snapshot count"));
         }

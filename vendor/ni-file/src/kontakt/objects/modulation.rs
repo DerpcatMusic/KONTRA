@@ -290,7 +290,9 @@ pub(crate) fn read_targets(reader: &mut Cursor<&[u8]>, legacy: bool) -> Result<V
         } else {
             Some(reader.read_u8()?)
         };
-        let invert = read_flag(reader)?;
+        let invert = read_flag(reader).map_err(|error| {
+            Error::context(format!("Modulation target {param} invert"), error)
+        })?;
         targets.push(ModTarget {
             param,
             intensity,
@@ -304,7 +306,9 @@ pub(crate) fn read_targets(reader: &mut Cursor<&[u8]>, legacy: bool) -> Result<V
         });
     }
     for target in &mut targets {
-        target.shaper = read_shaper(reader)?;
+        target.shaper = read_shaper(reader).map_err(|error| {
+            Error::context(format!("Modulation target {} shaper", target.param), error)
+        })?;
     }
     Ok(targets)
 }
@@ -365,7 +369,9 @@ pub fn read_param_slots(
         }
         let mut items = Vec::new();
         for slot in 0..slots {
-            let present = read_flag(&mut reader)?;
+            let present = read_flag(&mut reader).map_err(|error| {
+                Error::context(format!("Parameter array 0x{:X} slot {slot} presence", object.version), error)
+            })?;
             if slot_words { reader.read_u32_le()?; }
             if present { items.push((slot, Chunk::read(&mut reader)?)); }
         }
