@@ -4,7 +4,7 @@ use super::*;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(super) enum Metadata {
     Product(String, String),
-    Bank(Vec<String>),
+    Bank(Vec<String>, Option<String>),
     Snapshot(String),
     Instrument(String),
 }
@@ -37,7 +37,7 @@ pub(super) struct Cache {
 impl Default for Cache {
     fn default() -> Self {
         Self {
-            version: 1,
+            version: 2,
             entries: BTreeMap::new(),
             seen: BTreeSet::new(),
             dirty: false,
@@ -70,7 +70,7 @@ impl Cache {
     pub fn load(path: Option<&Path>) -> Self {
         path.filter(|p| p.metadata().is_ok_and(|m| m.len() <= 32 << 20))
             .and_then(|p| serde_json::from_slice::<Self>(&std::fs::read(p).ok()?).ok())
-            .filter(|c| c.version == 1)
+            .filter(|c| c.version == 2)
             .unwrap_or_default()
     }
 
@@ -153,7 +153,10 @@ mod tests {
         let (file, index) = (dir.join("Library.ufs"), dir.join("index.json"));
         std::fs::write(&file, b"catalog").unwrap();
         let mut cache = Cache::default();
-        let value = Metadata::Bank(vec!["Presets/Piano.uvip".into()]);
+        let value = Metadata::Bank(
+            vec!["Presets/Piano.uvip".into()],
+            Some("Content access needed".into()),
+        );
         assert_eq!(
             cache.memo(&file, || Some(value.clone())),
             Some(value.clone())
@@ -166,7 +169,7 @@ mod tests {
         );
         assert_eq!((cache.stats.changed, cache.stats.reads), (0, 0));
         std::fs::write(&file, b"changed catalog").unwrap();
-        let next = Metadata::Bank(vec!["Presets/Organ.uvip".into()]);
+        let next = Metadata::Bank(vec!["Presets/Organ.uvip".into()], None);
         assert_eq!(cache.memo(&file, || Some(next.clone())), Some(next));
         assert_eq!((cache.stats.changed, cache.stats.reads), (1, 1));
         let changed = std::fs::metadata(&file).unwrap().modified().unwrap()
@@ -178,7 +181,7 @@ mod tests {
             .set_times(std::fs::FileTimes::new().set_modified(changed))
             .unwrap();
         cache
-            .memo(&file, || Some(Metadata::Bank(Vec::new())))
+            .memo(&file, || Some(Metadata::Bank(Vec::new(), None)))
             .unwrap();
         assert_eq!(
             (cache.stats.changed, cache.stats.reads),

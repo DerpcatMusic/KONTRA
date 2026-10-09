@@ -74,6 +74,8 @@ def compare(native, takes):
 
 def _compare(native, takes):
     plan, program = native['audition'], native.get('program', {})
+    if plan.get('held_key') is not None:
+        raise ValueError('multi-note-native-oracle-requires-capture')
     key, velocity = plan['key'], plan['velocity']
     if any(type(x) is not int or not 0 <= x <= 127 for x in (key, velocity)):
         raise ValueError('invalid-audition-midi')

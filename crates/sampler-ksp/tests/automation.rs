@@ -157,16 +157,34 @@ fn pedal_domain_capacity_rejects_before_saved_widget_callback() {
         "on init declare ui_slider $target(0,127) $target := 90 declare $called end on on ui_control($target) inc($called) end on",
         48000, KspLimits::LIBRARY, &[], &Environment::default(),
     ).unwrap();
-    let plan = script.bind(Prepared::new(48000,vec![],vec![],0).unwrap()).unwrap()
+    let plan = script
+        .bind(Prepared::new(48000, vec![], vec![], 0).unwrap())
+        .unwrap()
         .with_automation_bindings(vec![AutomationBinding {
-            source: AutomationSource::Controller(64),source_slot:0,ui_id:32768,
-            low:0.,high:1.,soft_takeover:false,
-        }]).unwrap();
-    let mut limits = Limits::for_plan(&plan,4,8); limits.channels=0;
-    let mut rt=Runtime::new(plan,limits).unwrap(); let c=context(&rt);
-    let id=rt.widget_id(rt.active_plan(),0,32768).unwrap();
-    assert_eq!(rt.dispatch_controller(c.performance,c.origin,1,64,u32::MAX),Err(Error::Capacity));
-    assert_eq!(rt.widget_value(rt.active_plan(),id,0),Ok(WidgetValue::Integer(90)));
-    assert_eq!(rt.script_cell(rt.active_plan(),ScriptInstanceId(0),0),Ok(0));
-    assert_eq!(rt.input_controller(c.performance,64),Ok(0));
+            source: AutomationSource::Controller(64),
+            source_slot: 0,
+            ui_id: 32768,
+            low: 0.,
+            high: 1.,
+            soft_takeover: false,
+        }])
+        .unwrap();
+    let mut limits = Limits::for_plan(&plan, 4, 8);
+    limits.channels = 0;
+    let mut rt = Runtime::new(plan, limits).unwrap();
+    let c = context(&rt);
+    let id = rt.widget_id(rt.active_plan(), 0, 32768).unwrap();
+    assert_eq!(
+        rt.dispatch_controller(c.performance, c.origin, 1, 64, u32::MAX),
+        Err(Error::Capacity)
+    );
+    assert_eq!(
+        rt.widget_value(rt.active_plan(), id, 0),
+        Ok(WidgetValue::Integer(90))
+    );
+    assert_eq!(
+        rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 0),
+        Ok(0)
+    );
+    assert_eq!(rt.input_controller(c.performance, 64), Ok(0));
 }

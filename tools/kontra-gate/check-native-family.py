@@ -16,6 +16,9 @@ def takes(ids):
             "started":[{"source_zone":i,"frame":48,"direction":"Forward","loops":[]}]}],"release":[]} for i in ids]
 native=fixture()
 assert compare(native,takes([2,1]*16))["verdict"] == "MATCH"
+native['audition']['held_key']=61
+assert compare(native,takes([2,1]*16))['reason'] == 'multi-note-native-oracle-requires-capture'
+native['audition'].pop('held_key')
 assert compare(native,takes([1]*32))["reason"] == "round-robin-distribution-mismatch"
 assert compare(native,takes([3]*32))["reason"] == "source-outside-native-candidates"
 bad=takes([1,2]*16);bad[0]["attack"][0]["started"][0]["frame"]=0

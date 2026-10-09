@@ -264,10 +264,20 @@ impl Runtime {
                 self.performance_state.edit(performance).axes[axis] = choice;
             }
         } else {
-            let key = self.plans.get(self.active_plan.0).unwrap().prepared.native_articulation_keys.get(value as usize).copied().flatten();
+            let key = self
+                .plans
+                .get(self.active_plan.0)
+                .unwrap()
+                .prepared
+                .native_articulation_keys
+                .get(value as usize)
+                .copied()
+                .flatten();
             let state = self.performance_state.edit(performance);
             state.articulation = value;
-            if key.is_some() { state.native_key = key; }
+            if key.is_some() {
+                state.native_key = key;
+            }
         }
     }
 }

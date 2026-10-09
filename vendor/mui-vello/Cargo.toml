@@ -79,3 +79,7 @@ required-features = ["cpu", "gpu-effects"]
 [[example]]
 name = "gpu_damage"
 required-features = ["gpu-effects"]
+
+[[example]]
+name = "gpu_hidden"
+required-features = ["gpu-effects"]

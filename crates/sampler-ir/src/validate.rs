@@ -213,8 +213,18 @@ impl Check<'_> {
                     self.within(pan, -1.0..=1.0, "stereo pan")?;
                 }
                 Processor::Pan(pan) => self.pan(pan, "pan")?,
-                Processor::LoFi { bits, frequency, noise, color } => {
-                    for (v, field) in [(bits, "lofi bits"), (frequency, "lofi frequency"), (noise, "lofi noise"), (color, "lofi color")] {
+                Processor::LoFi {
+                    bits,
+                    frequency,
+                    noise,
+                    color,
+                } => {
+                    for (v, field) in [
+                        (bits, "lofi bits"),
+                        (frequency, "lofi frequency"),
+                        (noise, "lofi noise"),
+                        (color, "lofi color"),
+                    ] {
                         self.within(f64::from(v), 0.0..=1.0, field)?;
                     }
                 }
@@ -295,7 +305,9 @@ impl Instrument {
             ir: self,
             owner: String::new(),
         };
-        if let Some(bus) = self.input_bus { check.output(Output::Bus(bus))?; }
+        if let Some(bus) = self.input_bus {
+            check.output(Output::Bus(bus))?;
+        }
         for (source, zone) in self.source_indices.zones.iter().enumerate() {
             check.owner = format!("source zone {source}");
             if let Some(zone) = zone {
@@ -502,6 +514,29 @@ impl Instrument {
             })?;
             check.time(binding.ramp, "ramp")?;
         }
+        for (i, alias) in self.source_indices.control_aliases.iter().enumerate() {
+            check.owner = format!("source control alias {i}");
+            check.exists(Reference::Control(alias.control.0))?;
+            check.within(
+                f64::from(alias.address.slot),
+                0.0..=f64::from(i32::MAX),
+                "native module alias slot",
+            )?;
+            if !matches!(
+                self.controls[alias.control.0].value,
+                crate::ControlValue::Continuous { .. }
+            ) || !self
+                .processor_controls
+                .iter()
+                .any(|binding| binding.control == alias.control)
+            {
+                return Err(ValidationError::OutOfRange {
+                    owner: check.owner.clone(),
+                    field: "unbound native control alias",
+                    value: i as f64,
+                });
+            }
+        }
         for (i, tap) in self.voice_send_taps.iter().enumerate() {
             check.owner = format!("voice send tap {i}");
             check.exists(Reference::Chain(tap.chain.0))?;
@@ -600,7 +635,10 @@ impl Instrument {
             if !needed {
                 return fail(&check.owner, "no value for the active driver");
             }
-            if switching.owner == SwitchOwner::Behavior && a.switch_keys.is_empty() && a.control.is_none() {
+            if switching.owner == SwitchOwner::Behavior
+                && a.switch_keys.is_empty()
+                && a.control.is_none()
+            {
                 return fail(
                     &check.owner,
                     "behavior-owned articulation has no key or selection control",

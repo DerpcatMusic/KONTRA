@@ -62,6 +62,14 @@ def snapshot():
         # wrapper bookkeeping/sleep descendants qualify, never a workload.
         if all(commands[child] in WAIT_HELPERS for child in children - {pid}):
             waiting |= children
+    children = {}
+    for pid, parent in parents.items(): children.setdefault(parent, set()).add(pid)
+    while True:
+        grown = waiting | {parents[pid] for pid in waiting
+                           if commands.get(parents[pid]) in {'bash', 'sh', 'python', 'python3'}
+                           and children[parents[pid]] <= waiting}
+        if grown == waiting: break
+        waiting = grown
     own_units = {part for pid in ancestors for part in groups.get(pid, '').split('/') if part.strip().endswith('.service')}
     own_units = {name.strip() for name in own_units}
     result['processes'] = [{'pid': pid, 'kind': kind, 'owned': pid in owned, **({'waiting': True} if pid in waiting else {})}
