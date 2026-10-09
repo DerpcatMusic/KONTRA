@@ -268,3 +268,99 @@ fn read_conflux_script_and_group_intent() {
         "v1-admitted saved wavetable must reach oscillator playback"
     );
 }
+
+#[test]
+#[ignore = "requires installed Conflux; run through kontakto-heavy"]
+fn conflux_digital_lfo_sources_are_retained() {
+    let path = Path::new(
+        "/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Instruments/Conflux.nki",
+    );
+    let chunks = sampler_kontakt::read_chunks(path).unwrap();
+    let program = Program::try_from(chunks.find_first(0x28).unwrap()).unwrap();
+    let groups = GroupList::try_from(program.0.find_first(0x33).unwrap()).unwrap();
+    let mut states = BTreeMap::new();
+    let mut raw = 0;
+    for group in &groups.groups {
+        if let Some(c) = group.0.find_first(0x3b) {
+            for (_, m) in InternalModArray16::try_from(c).unwrap().slots().unwrap() {
+                let p = m.params().unwrap();
+                if let ni_file::kontakt::objects::Modulator::Lfo(l) = p.modulator {
+                    if l.waveform != 6 {
+                        continue;
+                    }
+                    raw += 1;
+                    count(
+                        &mut states,
+                        format!(
+                            "sine_only_unit{} normalize{} zero_delay{} delay_unsynced{} frequency_unsynced{} retrigger{} extra{} component{:?} subunit{}",
+                            l.trailing_values == Some([1., 0., 0., 0., 0.]),
+                            l.records[0].flag,
+                            l.initial_values[0] == 0.,
+                            l.records[1].values[0] == -1.,
+                            l.records[0].values[0] == -1.,
+                            p.unknown_flags[2] != 0,
+                            l.additional_flag == Some(true),
+                            l.trailing_values.unwrap().iter().position(|v| *v != 0.),
+                            l.trailing_values.unwrap().iter().all(|v| v.abs() <= 1.)
+                        ),
+                    );
+                }
+            }
+        }
+    }
+    println!("DIGITAL_LFO_RAW {raw} STATES {states:?}");
+    assert_eq!(raw, 182);
+    let library = sampler_kontakt::read(path).unwrap();
+    let lost = library
+        .instrument
+        .unsupported
+        .iter()
+        .filter(|u| u.feature == "LFO waveform (id, multi weights, pulse width)")
+        .count();
+    assert_eq!(
+        lost, 58,
+        "zero-delay digital LFOs must reach the evaluator; nonzero native fade remains diagnosed"
+    );
+    assert_eq!(
+        library
+            .instrument
+            .modulators
+            .iter()
+            .filter(|m| matches!(m.source, sampler_ir::ModulationSource::Lfo(_)))
+            .count(),
+        124
+    );
+    let pan = library
+        .instrument
+        .routes
+        .iter()
+        .filter(|r| {
+            r.target == sampler_ir::Target::Pan
+                && matches!(r.depth, sampler_ir::Depth::Normalized(d) if d != 0.)
+                && matches!(
+                    library.instrument.modulators[r.source.0].source,
+                    sampler_ir::ModulationSource::Lfo(_)
+                )
+        })
+        .count();
+    println!("DIGITAL_LFO_ADMITTED 124 NONZERO_PAN_ROUTES {pan}");
+    let identities = library
+        .instrument
+        .source_indices
+        .modulators
+        .iter()
+        .filter(|m| {
+            !m.external
+                && m.runtime.is_some_and(|r| {
+                    matches!(
+                        library.instrument.modulators[r.0].source,
+                        sampler_ir::ModulationSource::Lfo(_)
+                    )
+                })
+        })
+        .count();
+    assert_eq!(
+        identities, 124,
+        "admitted sources keep their physical internal-slot identity"
+    );
+}
