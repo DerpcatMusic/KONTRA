@@ -331,47 +331,133 @@ fn signal_trace_host_fader_rack_and_master_hooks_are_bounded_and_sample_clocked(
             .unwrap();
         assert_eq!(row.at, 0);
         assert_eq!(row.frames, 64);
-        assert_eq!(row.identity.external_port, (!matches!(kind, "host_part_fader" | "host_aux_send")).then_some(2));
+        assert_eq!(
+            row.identity.external_port,
+            (!matches!(kind, "host_part_fader" | "host_aux_send")).then_some(2)
+        );
         assert!((row.output.rms[0] - left).abs() < 1e-7);
         assert!((row.output.rms[1] - right).abs() < 1e-7);
-        if kind == "host_output" { assert_eq!(row.identity.output_channels, Some(1)); }
+        if kind == "host_output" {
+            assert_eq!(row.identity.output_channels, Some(1));
+        }
     }
 }
 
 #[test]
 fn signal_trace_amp_parameters_describe_the_live_envelope_not_its_authored_default() {
     use sampler_core::{EngineParameterAddress, EngineParameterLaw, engine_parameter_id};
-    let plan = plan(false, 0).with_groups(1, vec![Some(0)]).unwrap()
-        .with_group_envelope_parameters(0, 88, 0, Envelope::default()).unwrap()
-        .with_signal_trace(4096).unwrap();
+    let plan = plan(false, 0)
+        .with_groups(1, vec![Some(0)])
+        .unwrap()
+        .with_group_envelope_parameters(0, 88, 0, Envelope::default())
+        .unwrap()
+        .with_signal_trace(4096)
+        .unwrap();
     let mut rt = Runtime::new(plan, limits()).unwrap();
     let reader = rt.signal_trace_reader().unwrap();
-    let address = EngineParameterAddress {parameter:engine_parameter_id("ENGINE_PAR_ATTACK").unwrap(),group:88,slot:0,generic:-1};
+    let address = EngineParameterAddress {
+        parameter: engine_parameter_id("ENGINE_PAR_ATTACK").unwrap(),
+        group: 88,
+        slot: 0,
+        generic: -1,
+    };
     rt.set_engine_parameter(address, 449120).unwrap();
     rt.trigger(input(), 60, 0.5).unwrap();
-    support::without_heap(|| {rt.render(&mut [[0.;2];64]).unwrap();});
-    let row=reader.drain().into_iter().find(|r|reader.graph.nodes[r.node].kind=="amplifier").unwrap();
-    let index=reader.graph.nodes[row.node].parameters.iter().position(|p|p.name=="attack_frames").unwrap();
-    let expected=EngineParameterLaw::ShiftedExponential {low:96.,high:15002.*48.,offset:96.}.decode(449120).round();
-    assert!((row.values[index]-expected).abs()<1.,"{} vs {}",row.values[index],expected);
-    assert_eq!(row.normalized[index],Some(EngineParameterLaw::ShiftedExponential {low:96.,high:15002.*48.,offset:96.}.encode(expected)));
+    support::without_heap(|| {
+        rt.render(&mut [[0.; 2]; 64]).unwrap();
+    });
+    let row = reader
+        .drain()
+        .into_iter()
+        .find(|r| reader.graph.nodes[r.node].kind == "amplifier")
+        .unwrap();
+    let index = reader.graph.nodes[row.node]
+        .parameters
+        .iter()
+        .position(|p| p.name == "attack_frames")
+        .unwrap();
+    let expected = EngineParameterLaw::ShiftedExponential {
+        low: 96.,
+        high: 15002. * 48.,
+        offset: 96.,
+    }
+    .decode(449120)
+    .round();
+    assert!(
+        (row.values[index] - expected).abs() < 1.,
+        "{} vs {}",
+        row.values[index],
+        expected
+    );
+    assert_eq!(
+        row.normalized[index],
+        Some(
+            EngineParameterLaw::ShiftedExponential {
+                low: 96.,
+                high: 15002. * 48.,
+                offset: 96.
+            }
+            .encode(expected)
+        )
+    );
 }
 
 #[test]
 fn signal_trace_branch_rows_measure_the_partial_sum_without_changing_audio() {
     let make = |traced| {
-        let p = plan(false, 0).with_voice_chains(vec![VoiceChain::new(vec![Processor::Gain(2.)], vec![
-            Processor::Branch {count:1,gain:0.25,first:true,last:false},Processor::Gain(2.),
-            Processor::Branch {count:1,gain:0.25,first:false,last:true},Processor::Gain(4.)],0).unwrap()],vec![Some(0)]).unwrap();
-        if traced {p.with_signal_trace(4096).unwrap()} else {p}
+        let p = plan(false, 0)
+            .with_voice_chains(
+                vec![
+                    VoiceChain::new(
+                        vec![Processor::Gain(2.)],
+                        vec![
+                            Processor::Branch {
+                                count: 1,
+                                gain: 0.25,
+                                first: true,
+                                last: false,
+                            },
+                            Processor::Gain(2.),
+                            Processor::Branch {
+                                count: 1,
+                                gain: 0.25,
+                                first: false,
+                                last: true,
+                            },
+                            Processor::Gain(4.),
+                        ],
+                        0,
+                    )
+                    .unwrap(),
+                ],
+                vec![Some(0)],
+            )
+            .unwrap();
+        if traced {
+            p.with_signal_trace(4096).unwrap()
+        } else {
+            p
+        }
     };
-    let mut on=Runtime::new(make(true),limits()).unwrap();let reader=on.signal_trace_reader().unwrap();
-    let mut off=Runtime::new(make(false),limits()).unwrap();
-    for rt in [&mut on,&mut off] {rt.trigger(input(),60,0.5).unwrap();}
-    let mut a=[[0.;2];64];let mut b=a;
-    support::without_heap(|| {on.render(&mut a).unwrap();off.render(&mut b).unwrap();});assert_eq!(a,b);
-    let rows=reader.drain();let branch:Vec<_>=rows.iter().filter(|r|reader.graph.nodes[r.node].processor=="branch").collect();
-    assert_eq!(branch.len(),2);
-    assert!((branch[0].output.rms[0]-0.025).abs()<1e-7);
-    assert!((branch[1].output.rms[0]-0.075).abs()<1e-7);
+    let mut on = Runtime::new(make(true), limits()).unwrap();
+    let reader = on.signal_trace_reader().unwrap();
+    let mut off = Runtime::new(make(false), limits()).unwrap();
+    for rt in [&mut on, &mut off] {
+        rt.trigger(input(), 60, 0.5).unwrap();
+    }
+    let mut a = [[0.; 2]; 64];
+    let mut b = a;
+    support::without_heap(|| {
+        on.render(&mut a).unwrap();
+        off.render(&mut b).unwrap();
+    });
+    assert_eq!(a, b);
+    let rows = reader.drain();
+    let branch: Vec<_> = rows
+        .iter()
+        .filter(|r| reader.graph.nodes[r.node].processor == "branch")
+        .collect();
+    assert_eq!(branch.len(), 2);
+    assert!((branch[0].output.rms[0] - 0.025).abs() < 1e-7);
+    assert!((branch[1].output.rms[0] - 0.075).abs() < 1e-7);
 }

@@ -4,8 +4,8 @@ mod selection;
 use super::{Envelope, Error, Frame, NotePitch, Playback};
 use predicates::Matching;
 pub use predicates::{AXIS_BASE, ControllerCondition, MAX_AXES, PREVIOUS_KEY};
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering::Relaxed};
 use sampler_pool::{Snapshot, SnapshotRead};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering::Relaxed};
 
 /// Immutable decoded-asset metadata with optional resident PCM. Construct, clone and drop on the
 /// control side. Clones share the original sample buffer; rendering only borrows.
@@ -87,7 +87,10 @@ impl Pcm {
     pub fn mipmapped(rate: u32, frames: Box<[Frame]>) -> Result<Self, Error> {
         let pcm = Self::new(rate, frames)?;
         let depth = crate::resample::OCTAVES;
-        pcm.0.levels.replace(crate::resample::octaves(pcm.0.frames.as_deref().unwrap(), depth), |_| ());
+        pcm.0.levels.replace(
+            crate::resample::octaves(pcm.0.frames.as_deref().unwrap(), depth),
+            |_| (),
+        );
         pcm.0.wanted.store(depth as u8, Relaxed);
         Ok(pcm)
     }
@@ -112,7 +115,10 @@ impl Pcm {
     /// missing fails `NotReady` and marks the asset cold (`take_cold`).
     /// Frames are kept packed ([`crate::Packed`]): 16/24-bit, mono when both
     /// channels match, whenever that reads back bit-exactly.
-    pub fn set_ranges(&self, ranges: Vec<(usize, Box<[Frame]>)>) -> Result<SnapshotRead<'_, Ranges>, Error> {
+    pub fn set_ranges(
+        &self,
+        ranges: Vec<(usize, Box<[Frame]>)>,
+    ) -> Result<SnapshotRead<'_, Ranges>, Error> {
         let valid = self.0.frames.is_none()
             && ranges.windows(2).all(|w| w[0].0 + w[0].1.len() <= w[1].0)
             && ranges.iter().all(|(start, frames)| {
@@ -612,9 +618,15 @@ impl Prepared {
         }
         offsets[128] = candidates.len();
         if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
-            eprintln!("AUDIT {{\"stage\":\"region_playback_templates\",\"regions\":{},\"region_bytes\":{},\"cursor_bytes\":{},\"template_bytes\":{},\"multi_loop_regions\":{},\"multi_loop_bytes\":{}}}",
-                prepared_regions.len(), size_of::<PreparedRegion>(), size_of::<super::source::Cursor>(),
-                size_of::<super::source::CursorTemplate>(), cursor_loops.len(), size_of::<super::source::LoopSlots>());
+            eprintln!(
+                "AUDIT {{\"stage\":\"region_playback_templates\",\"regions\":{},\"region_bytes\":{},\"cursor_bytes\":{},\"template_bytes\":{},\"multi_loop_regions\":{},\"multi_loop_bytes\":{}}}",
+                prepared_regions.len(),
+                size_of::<PreparedRegion>(),
+                size_of::<super::source::Cursor>(),
+                size_of::<super::source::CursorTemplate>(),
+                cursor_loops.len(),
+                size_of::<super::source::LoopSlots>()
+            );
         }
         Ok(Self {
             parameter_registry: Default::default(),
@@ -757,27 +769,50 @@ impl Prepared {
                 .iter()
                 .flat_map(|p| &p.routes)
                 .any(|r| match r.target.compiled() {
-                    Some(super::voice_mod::CompiledTarget::ProcessorCutoff(i)
-                    | super::voice_mod::CompiledTarget::ProcessorResonance(i)) => !matches!(self.filters.get(i as usize),
-                        Some(super::dsp::svf::PreparedFilter::StateVariable(_))),
-                    Some(super::voice_mod::CompiledTarget::ProcessorNativeCutoff(i)
-                    | super::voice_mod::CompiledTarget::ProcessorNativeResonance(i)
-                    | super::voice_mod::CompiledTarget::ProcessorNativeGain(i)) => !matches!(self.filters.get(i as usize),
-                        Some(super::dsp::svf::PreparedFilter::NativeControl)),
+                    Some(
+                        super::voice_mod::CompiledTarget::ProcessorCutoff(i)
+                        | super::voice_mod::CompiledTarget::ProcessorResonance(i),
+                    ) => !matches!(
+                        self.filters.get(i as usize),
+                        Some(super::dsp::svf::PreparedFilter::StateVariable(_))
+                    ),
+                    Some(
+                        super::voice_mod::CompiledTarget::ProcessorNativeCutoff(i)
+                        | super::voice_mod::CompiledTarget::ProcessorNativeResonance(i)
+                        | super::voice_mod::CompiledTarget::ProcessorNativeGain(i),
+                    ) => !matches!(
+                        self.filters.get(i as usize),
+                        Some(super::dsp::svf::PreparedFilter::NativeControl)
+                    ),
                     _ => false,
                 })
         {
             return Err(Error::InvalidInput);
         }
         for (region, program) in self.regions.iter().zip(&regions) {
-            let Some(program) = program else { continue; };
-            let Some(program) = programs.get(*program) else { return Err(Error::InvalidInput); };
+            let Some(program) = program else {
+                continue;
+            };
+            let Some(program) = programs.get(*program) else {
+                return Err(Error::InvalidInput);
+            };
             for route in &program.routes {
-                if route.target.compiled().is_some() { continue; }
-                let descriptor = self.parameter_registry.resolve(route.target)
-                    .and_then(|lane| self.parameter_registry.descriptor(lane)).ok_or(Error::InvalidInput)?;
-                let chain = region.chain.and_then(|i| self.voice_chains.get(i)).ok_or(Error::InvalidInput)?;
-                if !self.dsp_bindings[chain.parameter_span.clone()].iter().any(|b| b.control == descriptor.control) {
+                if route.target.compiled().is_some() {
+                    continue;
+                }
+                let descriptor = self
+                    .parameter_registry
+                    .resolve(route.target)
+                    .and_then(|lane| self.parameter_registry.descriptor(lane))
+                    .ok_or(Error::InvalidInput)?;
+                let chain = region
+                    .chain
+                    .and_then(|i| self.voice_chains.get(i))
+                    .ok_or(Error::InvalidInput)?;
+                if !self.dsp_bindings[chain.parameter_span.clone()]
+                    .iter()
+                    .any(|b| b.control == descriptor.control)
+                {
                     return Err(Error::InvalidInput);
                 }
             }
@@ -786,24 +821,48 @@ impl Prepared {
         for program in &mut programs {
             let mut routes = Vec::new();
             for route in &program.routes {
-                if route.target.compiled().is_some() { routes.push(*route); continue; }
-                if route.target.scope != super::ParameterScope::Voice { return Err(Error::InvalidInput); }
-                let descriptor = self.parameter_registry.resolve(route.target)
-                    .and_then(|lane| self.parameter_registry.descriptor(lane)).ok_or(Error::InvalidInput)?;
-                let consumers: Vec<_> = self.dsp_bindings.iter().enumerate()
-                    .filter(|(_, binding)| binding.control == descriptor.control).collect();
-                if consumers.is_empty() { return Err(Error::InvalidInput); }
+                if route.target.compiled().is_some() {
+                    routes.push(*route);
+                    continue;
+                }
+                if route.target.scope != super::ParameterScope::Voice {
+                    return Err(Error::InvalidInput);
+                }
+                let descriptor = self
+                    .parameter_registry
+                    .resolve(route.target)
+                    .and_then(|lane| self.parameter_registry.descriptor(lane))
+                    .ok_or(Error::InvalidInput)?;
+                let consumers: Vec<_> = self
+                    .dsp_bindings
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, binding)| binding.control == descriptor.control)
+                    .collect();
+                if consumers.is_empty() {
+                    return Err(Error::InvalidInput);
+                }
                 for (lane, binding) in consumers {
                     // Compiled control addresses are private to this preparation call.
-                    routes.push(super::ModRoute { target: super::ParameterAddress {
-                        scope: super::ParameterScope::Voice, node: u32::try_from(lane).map_err(|_| Error::Capacity)?, parameter: u32::MAX - 13,
-                    }, depth: route.depth * (binding.high - binding.low), ..*route });
+                    routes.push(super::ModRoute {
+                        target: super::ParameterAddress {
+                            scope: super::ParameterScope::Voice,
+                            node: u32::try_from(lane).map_err(|_| Error::Capacity)?,
+                            parameter: u32::MAX - 13,
+                        },
+                        depth: route.depth * (binding.high - binding.low),
+                        ..*route
+                    });
                 }
             }
             program.routes = routes;
         }
         self.voice_modulation = super::voice_mod::VoiceModulation::new_resolved(
-            programs, regions, start_ranges, |address| (address.parameter == u32::MAX - 13).then_some(address.node as usize))?;
+            programs,
+            regions,
+            start_ranges,
+            |address| (address.parameter == u32::MAX - 13).then_some(address.node as usize),
+        )?;
         Ok(self)
     }
 
@@ -891,7 +950,9 @@ impl Prepared {
 
     /// The immutable prepared sample asset behind a region, for control-side peak work.
     pub fn region_asset(&self, region: usize) -> Option<&Pcm> {
-        self.regions.get(region).and_then(|r| self.pcm.get(r.sample))
+        self.regions
+            .get(region)
+            .and_then(|r| self.pcm.get(r.sample))
     }
 
     pub fn candidate_count(&self) -> usize {
@@ -1339,7 +1400,9 @@ impl Prepared {
 impl Prepared {
     /// Host fallback times apply only to regions without authored AHDSR or FLEX.
     pub fn with_fallback_envelopes(mut self, regions: Vec<bool>) -> Result<Self, Error> {
-        if regions.len() != self.regions.len() { return Err(Error::InvalidInput); }
+        if regions.len() != self.regions.len() {
+            return Err(Error::InvalidInput);
+        }
         for (region, fallback) in self.regions.iter_mut().zip(regions) {
             region.fallback_envelope = fallback;
         }
@@ -1394,7 +1457,9 @@ impl Prepared {
 
     /// Mark the pre-insert sum before signal-trace preparation. Processor indices stay unchanged.
     pub fn with_input_bus(mut self, bus: usize) -> Result<Self, Error> {
-        if bus >= self.buses.len() { return Err(Error::InvalidInput); }
+        if bus >= self.buses.len() {
+            return Err(Error::InvalidInput);
+        }
         self.buses.input = Some(bus);
         Ok(self)
     }
@@ -1465,45 +1530,100 @@ mod fade_tests {
 }
 
 impl Prepared {
-    pub(crate) fn trace_region_take(&self,region:usize) -> Option<crate::Take> {self.regions[region].take}
-    pub(crate) fn trace_region_gains(&self, region: usize, key: u8, velocity: f64) -> [f64;3] {
-        let r=&self.regions[region]; [f64::from(r.gain),f64::from(r.velocity_curve.amplitude(velocity)),f64::from(r.fade_gain(key,velocity))]
+    pub(crate) fn trace_region_take(&self, region: usize) -> Option<crate::Take> {
+        self.regions[region].take
+    }
+    pub(crate) fn trace_region_gains(&self, region: usize, key: u8, velocity: f64) -> [f64; 3] {
+        let r = &self.regions[region];
+        [
+            f64::from(r.gain),
+            f64::from(r.velocity_curve.amplitude(velocity)),
+            f64::from(r.fade_gain(key, velocity)),
+        ]
     }
     /// Build all signal identities and fixed diagnostic storage off audio.
     /// This opt-in builder leaves ordinary plans/rendering unchanged.
     pub fn with_signal_trace(mut self, records: usize) -> Result<Self, Error> {
-        self.enable_signal_trace(records)?; Ok(self)
+        self.enable_signal_trace(records)?;
+        Ok(self)
     }
-    pub(crate) fn enable_signal_trace(&mut self, records:usize) -> Result<(),Error> {
-        if self.signal_trace.is_some() { return Err(Error::InvalidInput); }
+    pub(crate) fn enable_signal_trace(&mut self, records: usize) -> Result<(), Error> {
+        if self.signal_trace.is_some() {
+            return Err(Error::InvalidInput);
+        }
         if self.regions.iter().any(|r| r.chain.is_none()) {
             let index = self.voice_chains.len();
-            let empty = crate::VoiceChain::new(vec![], vec![], 0)?.compile(self.rate, &mut vec![], &mut vec![])?;
-            let mut chains = std::mem::take(&mut self.voice_chains).into_vec(); chains.push(empty); self.voice_chains = chains.into_boxed_slice();
-            for region in &mut self.regions { if region.chain.is_none() { region.chain = Some(index); } }
+            let empty = crate::VoiceChain::new(vec![], vec![], 0)?.compile(
+                self.rate,
+                &mut vec![],
+                &mut vec![],
+            )?;
+            let mut chains = std::mem::take(&mut self.voice_chains).into_vec();
+            chains.push(empty);
+            self.voice_chains = chains.into_boxed_slice();
+            for region in &mut self.regions {
+                if region.chain.is_none() {
+                    region.chain = Some(index);
+                }
+            }
         }
         let mut graph = crate::trace::TraceGraph::new(self.rate);
         self.buses.trace_graph(&self, &mut graph);
         let initial = crate::dsp::control::initial_parameters(&self, &self.dsp_bindings);
         for (index, region) in self.regions.iter().enumerate() {
-            let zone = self.region_zone_ids.get(index).copied().unwrap_or(index as u32 + 1);
+            let zone = self
+                .region_zone_ids
+                .get(index)
+                .copied()
+                .unwrap_or(index as u32 + 1);
             let group = self.region_groups.get(index).copied().flatten();
             let chain = &self.voice_chains[region.chain.unwrap()];
             let mut nodes = chain.trace_graph(&self, &mut graph, zone, group, region.bus, &initial);
-            nodes.region=index;
-            graph.nodes[nodes.amp].parameters = std::iter::once(crate::trace::TraceParameter::constant("region_gain",f64::from(region.gain)))
-                .chain(std::iter::once(crate::trace::TraceParameter::constant("velocity_exponent",match region.velocity_curve {VelocityCurve::Constant=>0.,VelocityCurve::Linear=>1.,VelocityCurve::Power(p)=>p})))
-                .chain(region.envelope.trace_parameters().into_iter().map(|(n,v)| {
-                    let stage=match n {"attack_frames"=>Some(0),"hold_frames"=>Some(1),"decay_frames"=>Some(2),"sustain"=>Some(3),"release_frames"=>Some(4),"attack_curvature"=>Some(5),_=>None};
-                    let control=group.and_then(|g|self.envelope_controls.get(g as usize)).and_then(|lanes|stage.and_then(|s|lanes[s]));
-                    let binding=control.and_then(|control|self.engine_parameters.iter().find(|b|b.control==control));
-                    crate::trace::TraceParameter::envelope(n,v,binding)
-                })).collect();
+            nodes.region = index;
+            graph.nodes[nodes.amp].parameters = std::iter::once(
+                crate::trace::TraceParameter::constant("region_gain", f64::from(region.gain)),
+            )
+            .chain(std::iter::once(crate::trace::TraceParameter::constant(
+                "velocity_exponent",
+                match region.velocity_curve {
+                    VelocityCurve::Constant => 0.,
+                    VelocityCurve::Linear => 1.,
+                    VelocityCurve::Power(p) => p,
+                },
+            )))
+            .chain(
+                region
+                    .envelope
+                    .trace_parameters()
+                    .into_iter()
+                    .map(|(n, v)| {
+                        let stage = match n {
+                            "attack_frames" => Some(0),
+                            "hold_frames" => Some(1),
+                            "decay_frames" => Some(2),
+                            "sustain" => Some(3),
+                            "release_frames" => Some(4),
+                            "attack_curvature" => Some(5),
+                            _ => None,
+                        };
+                        let control = group
+                            .and_then(|g| self.envelope_controls.get(g as usize))
+                            .and_then(|lanes| stage.and_then(|s| lanes[s]));
+                        let binding = control.and_then(|control| {
+                            self.engine_parameters.iter().find(|b| b.control == control)
+                        });
+                        crate::trace::TraceParameter::envelope(n, v, binding)
+                    }),
+            )
+            .collect();
             graph.voices.insert(zone, nodes);
         }
-        graph.order=graph.topological_order();
-        if graph.order.len()!=graph.nodes.len() {return Err(Error::InvalidInput);}
-        self.signal_trace = Some(crate::trace::TracePrepared::new(graph, records)?); Ok(())
+        graph.order = graph.topological_order();
+        if graph.order.len() != graph.nodes.len() {
+            return Err(Error::InvalidInput);
+        }
+        self.signal_trace = Some(crate::trace::TracePrepared::new(graph, records)?);
+        Ok(())
     }
 }
 
@@ -1518,10 +1638,14 @@ mod publication_tests {
         let control = pcm.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         let publisher = std::thread::spawn(move || {
-            control.set_ranges(vec![(0, vec![[0.5; 2]; 64].into_boxed_slice())]).unwrap();
+            control
+                .set_ranges(vec![(0, vec![[0.5; 2]; 64].into_boxed_slice())])
+                .unwrap();
             tx.send(()).unwrap();
         });
-        let published = rx.recv_timeout(std::time::Duration::from_millis(100)).is_ok();
+        let published = rx
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .is_ok();
         assert_eq!(old[0].1.frame(0), [0.25; 2]);
         drop(old);
         publisher.join().unwrap();

@@ -23,9 +23,13 @@ pub struct EngineParameterOffset {
 
 /// A native FX lane keeps its complete physical address, without hashing.
 pub fn engine_parameter_control(address: EngineParameterAddress) -> ControlId {
-    ControlId((0x4658u128 << 112) | (u128::from(address.parameter) << 96)
-        | (u128::from(address.group as u32) << 64)
-        | (u128::from(address.slot as u32) << 32) | u128::from(address.generic as u32))
+    ControlId(
+        (0x4658u128 << 112)
+            | (u128::from(address.parameter) << 96)
+            | (u128::from(address.group as u32) << 64)
+            | (u128::from(address.slot as u32) << 32)
+            | u128::from(address.generic as u32),
+    )
 }
 
 /// Completion metadata for script service calls. Unsupported addresses stay
@@ -150,7 +154,14 @@ impl EngineParameterLaw {
         if !self.valid() || !value.is_finite() {
             return Err(Error::InvalidInput);
         }
-        let (a, b) = (self.decode(if self == Self::SignedNormalized { -1_000_000 } else { 0 }), self.decode(1_000_000));
+        let (a, b) = (
+            self.decode(if self == Self::SignedNormalized {
+                -1_000_000
+            } else {
+                0
+            }),
+            self.decode(1_000_000),
+        );
         let (low, high) = (a.min(b), a.max(b));
         if !low.is_finite() || !high.is_finite() || value < low || value > high {
             return Err(Error::InvalidInput);
@@ -161,7 +172,9 @@ impl EngineParameterLaw {
     /// Convert the normalized service range to a native DSP value. Use a law
     /// admitted by Prepared::with_engine_parameters; normalized inputs clamp.
     pub fn decode(self, value: i32) -> f64 {
-        if self == Self::SignedNormalized { return f64::from(value.clamp(-1_000_000, 1_000_000)) / 1e6; }
+        if self == Self::SignedNormalized {
+            return f64::from(value.clamp(-1_000_000, 1_000_000)) / 1e6;
+        }
         let v = f64::from(value.clamp(0, 1_000_000));
         match self {
             Self::SignedNormalized => unreachable!(),
@@ -188,7 +201,9 @@ impl EngineParameterLaw {
     /// Convert a finite native DSP value to the normalized service range.
     /// Frontends should use normalized_value to validate authored input.
     pub fn encode(self, value: f64) -> i32 {
-        if self == Self::SignedNormalized { return (value * 1e6).round().clamp(-1e6, 1e6) as i32; }
+        if self == Self::SignedNormalized {
+            return (value * 1e6).round().clamp(-1e6, 1e6) as i32;
+        }
         (match self {
             Self::SignedNormalized => unreachable!(),
             Self::Linear { low, high } => {
@@ -497,8 +512,16 @@ impl Runtime {
             .map(|peak| peak[address.channel as usize])
             .ok_or(Error::InvalidInput)
     }
-    pub fn engine_parameter_bindings(&self, plan: PlanId) -> Result<&[EngineParameterBinding], Error> {
-        Ok(&self.plans.get(plan.0).ok_or(Error::StaleHandle)?.prepared.engine_parameters)
+    pub fn engine_parameter_bindings(
+        &self,
+        plan: PlanId,
+    ) -> Result<&[EngineParameterBinding], Error> {
+        Ok(&self
+            .plans
+            .get(plan.0)
+            .ok_or(Error::StaleHandle)?
+            .prepared
+            .engine_parameters)
     }
     /// Replace the player's complete offset layer without allocating. Scripts
     /// continue to read/write base values; DSP consumes the base plus offsets.
@@ -506,34 +529,57 @@ impl Runtime {
         if offsets.len() > 256 || offsets.iter().any(|o| !o.offset.is_finite()) {
             return Err(Error::InvalidInput);
         }
-        let generation = self.plans.get_mut(self.active_plan.0).ok_or(Error::StaleHandle)?;
+        let generation = self
+            .plans
+            .get_mut(self.active_plan.0)
+            .ok_or(Error::StaleHandle)?;
         let prepared = &generation.prepared;
         let matches = |a: EngineParameterAddress, binding: &EngineParameterBinding| {
             let b = binding.address;
             // User-layer amplitude selector across different physical modulator slots.
             // -2 is never admitted as a script address; match only actual amplitude lanes.
-            a.parameter == b.parameter && (a.slot == b.slot || a.slot == -2 && binding.control.0 >> 104 == 0x454e56) && a.generic == b.generic
+            a.parameter == b.parameter
+                && (a.slot == b.slot || a.slot == -2 && binding.control.0 >> 104 == 0x454e56)
+                && a.generic == b.generic
                 && (a.group == -1 || a.group == b.group)
         };
         // Missing controls are ignored, like v1 offsets for a group without that parameter.
         let mut changed = false;
         for binding in &prepared.engine_parameters {
             let index = prepared.control_index(binding.control).unwrap();
-            let offset: f32 = offsets.iter().filter(|o| matches(o.address, binding)).map(|o| o.offset).sum();
-            if !offset.is_finite() { return Err(Error::InvalidInput); }
+            let offset: f32 = offsets
+                .iter()
+                .filter(|o| matches(o.address, binding))
+                .map(|o| o.offset)
+                .sum();
+            if !offset.is_finite() {
+                return Err(Error::InvalidInput);
+            }
             changed |= generation.controls.offsets[index] != offset;
         }
-        if !changed { return Ok(()); }
-        let revision = generation.controls.revision.checked_add(1)
-            .filter(|r| r.checked_add(generation.controls.pending as u64).is_some()).ok_or(Error::Capacity)?;
+        if !changed {
+            return Ok(());
+        }
+        let revision = generation
+            .controls
+            .revision
+            .checked_add(1)
+            .filter(|r| r.checked_add(generation.controls.pending as u64).is_some())
+            .ok_or(Error::Capacity)?;
         for binding in &prepared.engine_parameters {
             let index = prepared.control_index(binding.control).unwrap();
-            let offset: f32 = offsets.iter().filter(|o| matches(o.address, binding)).map(|o| o.offset).sum();
+            let offset: f32 = offsets
+                .iter()
+                .filter(|o| matches(o.address, binding))
+                .map(|o| o.offset)
+                .sum();
             if generation.controls.offsets[index] != offset {
                 generation.controls.offsets[index] = offset;
                 let value = generation.controls.playing(prepared, index);
                 generation.controls.values[index] = value;
-                generation.dsp.edit_control(prepared, index, value, self.now);
+                generation
+                    .dsp
+                    .edit_control(prepared, index, value, self.now);
             }
         }
         generation.controls.revision = revision;

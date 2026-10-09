@@ -33,9 +33,7 @@ impl std::convert::TryFrom<KontaktChunks> for KontaktV42 {
                 .try_into()?,
             filetable: chunks
                 .last()
-                .ok_or(NIFileError::Static(
-                    "Could not find FileNameListPreK51",
-                ))?
+                .ok_or(NIFileError::Static("Could not find FileNameListPreK51"))?
                 .try_into()?,
         })
     }

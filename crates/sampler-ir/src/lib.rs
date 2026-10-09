@@ -117,7 +117,7 @@ pub struct Instrument {
 #[derive(Clone, Debug, PartialEq)]
 pub struct NativeFamily {
     pub zones: Vec<NativeFamilyZone>,
-    pub unknown: Option<&'static str>,
+    pub unknown: Option<String>,
 }
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
@@ -173,7 +173,11 @@ pub struct DspTarget {
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DspSlotKind { Fx, Filter, Mod }
+pub enum DspSlotKind {
+    Fx,
+    Filter,
+    Mod,
+}
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1388,14 +1392,21 @@ pub enum Processor {
     /// Memoryless rectification of both channels.
     Rectify(Rectifier),
     /// Pinned v1 Lo-Fi approximation; saved normalized controls.
-    LoFi { bits: f32, frequency: f32, noise: f32, color: f32 },
+    LoFi {
+        bits: f32,
+        frequency: f32,
+        noise: f32,
+        color: f32,
+    },
     /// Kontakt's Daft filter: normalized controls, laws in the engine.
     Daft(Daft),
     /// Native Ladder LP4. Values are normalized; the engine owns the laws.
     LadderLP4(LadderLP4),
     /// Mute a send return when its paired Mix slot is bypassed. Uses that
     /// slot's existing bypass control; insert bypass still passes dry audio.
-    SendReturnGate { address: SlotAddress },
+    SendReturnGate {
+        address: SlotAddress,
+    },
     /// One parallel branch of an effect rack. The next `count` processors (nested
     /// ones included) run on the signal that entered the group's first branch;
     /// `gain` times their output joins the sum, which the `last` branch leaves
@@ -1685,7 +1696,10 @@ pub struct ScriptAutomation {
 }
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ScriptAutomationSource { Controller(u8), HostParameter(u16) }
+pub enum ScriptAutomationSource {
+    Controller(u8),
+    HostParameter(u16),
+}
 
 // ---------------------------------------------------------------- behavior
 
@@ -1840,9 +1854,22 @@ mod ranking_tests {
 /// A Kontakt note name: MIDI 60 = C3, 0 = C-2. Strict bounds; no wrapping.
 pub fn parse_note(text: &str) -> Option<u8> {
     let mut chars = text.trim().chars();
-    let base = match chars.next()?.to_ascii_uppercase() { 'C' => 0, 'D' => 2, 'E' => 4, 'F' => 5, 'G' => 7, 'A' => 9, 'B' => 11, _ => return None };
+    let base = match chars.next()?.to_ascii_uppercase() {
+        'C' => 0,
+        'D' => 2,
+        'E' => 4,
+        'F' => 5,
+        'G' => 7,
+        'A' => 9,
+        'B' => 11,
+        _ => return None,
+    };
     let rest = chars.as_str();
-    let (offset, octave) = match rest.as_bytes().first() { Some(b'#') => (1, &rest[1..]), Some(b'b' | b'B') => (-1, &rest[1..]), _ => (0, rest) };
+    let (offset, octave) = match rest.as_bytes().first() {
+        Some(b'#') => (1, &rest[1..]),
+        Some(b'b' | b'B') => (-1, &rest[1..]),
+        _ => (0, rest),
+    };
     let note = (i32::from(octave.parse::<i16>().ok()?) + 2) * 12 + base + offset;
     u8::try_from(note).ok().filter(|n| *n < 128)
 }

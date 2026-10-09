@@ -6,34 +6,70 @@ use sampler_ir as ir;
 #[test]
 fn authored_inactive_envelope_values_remain_readable_without_a_dsp_write_owner() {
     use sampler_core::{EngineParameterAddress, Error, engine_parameter_id};
-    let address = EngineParameterAddress { parameter: engine_parameter_id("ENGINE_PAR_ATTACK").unwrap(), group: 7, slot: 9, generic: -1 };
+    let address = EngineParameterAddress {
+        parameter: engine_parameter_id("ENGINE_PAR_ATTACK").unwrap(),
+        group: 7,
+        slot: 9,
+        generic: -1,
+    };
     let mut instrument = ir::Instrument::default();
-    instrument.source_indices.engine_values.push(ir::SourceEngineValue {
-        parameter: address.parameter, group: address.group, slot: address.slot, generic: address.generic, value: 234567,
-    });
+    instrument
+        .source_indices
+        .engine_values
+        .push(ir::SourceEngineValue {
+            parameter: address.parameter,
+            group: address.group,
+            slot: address.slot,
+            generic: address.generic,
+            value: 234567,
+        });
     let plan = lower(&instrument, 48000, vec![], no_behaviors).unwrap();
     assert!(plan.engine_parameter_bindings().is_empty());
     let limits = Limits::for_plan(&plan, 4, 0);
     let mut runtime = Runtime::new(plan, limits).unwrap();
     support::without_heap(|| {
-        assert_eq!(runtime.engine_parameter(address), Ok(234567), "authored source value was dropped with its inactive DSP owner");
-        assert_eq!(runtime.set_engine_parameter(address, 765432), Err(Error::InvalidInput));
+        assert_eq!(
+            runtime.engine_parameter(address),
+            Ok(234567),
+            "authored source value was dropped with its inactive DSP owner"
+        );
+        assert_eq!(
+            runtime.set_engine_parameter(address, 765432),
+            Err(Error::InvalidInput)
+        );
         assert_eq!(runtime.engine_parameter(address), Ok(234567));
-        assert_eq!(runtime.engine_parameter(EngineParameterAddress { slot: 8, ..address }), Err(Error::InvalidInput));
+        assert_eq!(
+            runtime.engine_parameter(EngineParameterAddress { slot: 8, ..address }),
+            Err(Error::InvalidInput)
+        );
     });
 }
 
 #[test]
 fn live_envelope_owner_takes_precedence_over_authored_source_defaults() {
     use sampler_core::{EngineParameterAddress, Envelope, engine_parameter_id};
-    let address = EngineParameterAddress { parameter: engine_parameter_id("ENGINE_PAR_ATTACK").unwrap(), group: 7, slot: 9, generic: -1 };
+    let address = EngineParameterAddress {
+        parameter: engine_parameter_id("ENGINE_PAR_ATTACK").unwrap(),
+        group: 7,
+        slot: 9,
+        generic: -1,
+    };
     let mut instrument = ir::Instrument::default();
     instrument.groups.push(ir::Group::default());
-    instrument.source_indices.engine_values.push(ir::SourceEngineValue {
-        parameter: address.parameter, group: address.group, slot: address.slot, generic: address.generic, value: 234567,
-    });
-    let plan = lower(&instrument, 48000, vec![], no_behaviors).unwrap()
-        .with_group_envelope_parameters(0, 7, 9, Envelope::default()).unwrap();
+    instrument
+        .source_indices
+        .engine_values
+        .push(ir::SourceEngineValue {
+            parameter: address.parameter,
+            group: address.group,
+            slot: address.slot,
+            generic: address.generic,
+            value: 234567,
+        });
+    let plan = lower(&instrument, 48000, vec![], no_behaviors)
+        .unwrap()
+        .with_group_envelope_parameters(0, 7, 9, Envelope::default())
+        .unwrap();
     let limits = Limits::for_plan(&plan, 4, 0);
     let mut runtime = Runtime::new(plan, limits).unwrap();
     support::without_heap(|| {
@@ -842,7 +878,11 @@ fn addressed_gain_and_filter_controls_drive_real_audio_lanes() {
         Ok(ControlValue::Real(0.25))
     );
     // v1's user offset rides this same physical gain lane; the script base is unchanged.
-    rt.set_engine_offsets(&[sampler_core::EngineParameterOffset { address, offset: 0.1 }]).unwrap();
+    rt.set_engine_offsets(&[sampler_core::EngineParameterOffset {
+        address,
+        offset: 0.1,
+    }])
+    .unwrap();
     rt.render(&mut out).unwrap();
     assert!((out[32][0] / before - 0.35).abs() < 0.001);
     assert_eq!(rt.engine_parameter(address), Ok(250000));
@@ -934,11 +974,20 @@ fn addressed_gain_and_filter_controls_drive_real_audio_lanes() {
     let high: f32 = out[512..].iter().map(|f| f[0] * f[0]).sum();
     assert!(high > low * 100., "Daft {low} {high}");
     instrument.chains[0].pre_amplitude[0] = ir::Processor::LadderLP4(ir::LadderLP4 {
-        address: None, gain: 0., cutoff: 0., resonance: 0., record_version: 0x92,
+        address: None,
+        gain: 0.,
+        cutoff: 0.,
+        resonance: 0.,
+        record_version: 0x92,
     });
-    let pcm = Pcm::new(48000, (0..4096)
-        .map(|i| [(i as f32 * std::f32::consts::TAU / 8.).sin() * 0.001; 2])
-        .collect::<Vec<_>>().into_boxed_slice()).unwrap();
+    let pcm = Pcm::new(
+        48000,
+        (0..4096)
+            .map(|i| [(i as f32 * std::f32::consts::TAU / 8.).sin() * 0.001; 2])
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    )
+    .unwrap();
     let mut rt = Runtime::new(prepare(&instrument, pcm), limits()).unwrap();
     rt.trigger(input(60), 60, 1.).unwrap();
     rt.render(&mut out).unwrap();
@@ -1384,143 +1433,305 @@ fn stale_physical_zone_maps_return_invalid_instead_of_panicking() {
     let mut holes = ir::Instrument::default();
     holes.source_indices.zones = vec![None, None];
     assert!(lower(&holes, 48000, vec![], no_behaviors).is_ok());
-
 }
 
 #[test]
 fn physical_ladder_lanes_keep_signed_gain_and_drive_audio_without_heap() {
     use sampler_core::{EngineParameterAddress, engine_parameter_id};
-    let address = ir::SlotAddress { group: 4, slot: 3, generic: -1 };
+    let address = ir::SlotAddress {
+        group: 4,
+        slot: 3,
+        generic: -1,
+    };
     let instrument = ir::Instrument {
         assets: vec![asset("tone")],
-        chains: vec![ir::Chain { scope: ir::Scope::Voice,
+        chains: vec![ir::Chain {
+            scope: ir::Scope::Voice,
             pre_amplitude: vec![ir::Processor::LadderLP4(ir::LadderLP4 {
-                address: Some(address), gain: -0.25, cutoff: 1., resonance: 0., record_version: 0x92 })],
-            post_amplitude: vec![] }],
-        zones: vec![ir::Zone { keys: ir::KeyRange { low: 60, high: 60 },
-            pitch: ir::KeyTracking::Fixed, velocity: ir::VelocityResponse::None,
-            chain: Some(ir::ChainRef(0)), ..ir::Zone::new(ir::AssetRef(0)) }], ..Default::default() };
-    let pcm = Pcm::new(48000, (0..10000).map(|i|
-        [(i as f32 * std::f32::consts::TAU / 100.).sin() * 0.0001; 2]).collect::<Vec<_>>().into_boxed_slice()).unwrap();
+                address: Some(address),
+                gain: -0.25,
+                cutoff: 1.,
+                resonance: 0.,
+                record_version: 0x92,
+            })],
+            post_amplitude: vec![],
+        }],
+        zones: vec![ir::Zone {
+            keys: ir::KeyRange { low: 60, high: 60 },
+            pitch: ir::KeyTracking::Fixed,
+            velocity: ir::VelocityResponse::None,
+            chain: Some(ir::ChainRef(0)),
+            ..ir::Zone::new(ir::AssetRef(0))
+        }],
+        ..Default::default()
+    };
+    let pcm = Pcm::new(
+        48000,
+        (0..10000)
+            .map(|i| [(i as f32 * std::f32::consts::TAU / 100.).sin() * 0.0001; 2])
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    )
+    .unwrap();
     let plan = lower(&instrument, 48000, vec![pcm], no_behaviors).unwrap();
     assert_eq!(plan.engine_parameter_bindings().len(), 3);
-    let gain = EngineParameterAddress { parameter: engine_parameter_id("ENGINE_PAR_GAIN").unwrap(),
-        group: 4, slot: 3, generic: -1 };
+    let gain = EngineParameterAddress {
+        parameter: engine_parameter_id("ENGINE_PAR_GAIN").unwrap(),
+        group: 4,
+        slot: 3,
+        generic: -1,
+    };
     let mut rt = Runtime::new(plan, limits()).unwrap();
     assert_eq!(rt.engine_parameter(gain), Ok(-250000));
     let mut out = [[0.; 2]; 2000];
     rt.trigger(input(60), 60, 1.).unwrap();
     support::without_heap(|| rt.render(&mut out).unwrap());
     let low: f64 = out[1000..].iter().map(|x| f64::from(x[0]).powi(2)).sum();
-    support::without_heap(|| { rt.set_engine_parameter(gain, 250000).unwrap(); rt.render(&mut out).unwrap(); });
+    support::without_heap(|| {
+        rt.set_engine_parameter(gain, 250000).unwrap();
+        rt.render(&mut out).unwrap();
+    });
     let high: f64 = out[1000..].iter().map(|x| f64::from(x[0]).powi(2)).sum();
-    assert!((10. * (high / low).log10() - 6.).abs() < 0.02, "{low} {high}");
+    assert!(
+        (10. * (high / low).log10() - 6.).abs() < 0.02,
+        "{low} {high}"
+    );
     assert_eq!(rt.engine_parameter(gain), Ok(250000));
 }
 
 #[test]
 fn normalized_cutoff_routes_address_ladder_and_daft_without_audio_heap() {
     for ladder in [true, false] {
-      for post in [false, true] {
-        for mixed in [false, true] {
-        let render = |cutoff, depth| {
-            let processor = if ladder {
-                ir::Processor::LadderLP4(ir::LadderLP4 { address: None, gain: 0.,
-                    cutoff, resonance: 0.1, record_version: 0x92 })
-            } else {
-                ir::Processor::Daft(ir::Daft { gain: 0., cutoff, resonance: 0.1, highpass: false })
-            };
-            let mut processors = vec![ir::Processor::Gain(ir::Gain::UNITY),
-                ir::Processor::Filter(ir::Filter { kind: ir::FilterKind::LowPass { poles: 4 },
-                    cutoff: ir::Frequency::Hertz(20000.), resonance: ir::Resonance::Q(0.7) })];
-            if mixed {
-                processors.push(ir::Processor::Mix { count: 1,
-                    address: ir::SlotAddress { group: 0, slot: 5, generic: -1 },
-                    dry: 0., wet: 1., bypass: false });
+        for post in [false, true] {
+            for mixed in [false, true] {
+                let render = |cutoff, depth| {
+                    let processor = if ladder {
+                        ir::Processor::LadderLP4(ir::LadderLP4 {
+                            address: None,
+                            gain: 0.,
+                            cutoff,
+                            resonance: 0.1,
+                            record_version: 0x92,
+                        })
+                    } else {
+                        ir::Processor::Daft(ir::Daft {
+                            gain: 0.,
+                            cutoff,
+                            resonance: 0.1,
+                            highpass: false,
+                        })
+                    };
+                    let mut processors = vec![
+                        ir::Processor::Gain(ir::Gain::UNITY),
+                        ir::Processor::Filter(ir::Filter {
+                            kind: ir::FilterKind::LowPass { poles: 4 },
+                            cutoff: ir::Frequency::Hertz(20000.),
+                            resonance: ir::Resonance::Q(0.7),
+                        }),
+                    ];
+                    if mixed {
+                        processors.push(ir::Processor::Mix {
+                            count: 1,
+                            address: ir::SlotAddress {
+                                group: 0,
+                                slot: 5,
+                                generic: -1,
+                            },
+                            dry: 0.,
+                            wet: 1.,
+                            bypass: false,
+                        });
+                    }
+                    let index = processors.len();
+                    processors.push(processor);
+                    let mut chains = vec![
+                        ir::Chain {
+                            scope: ir::Scope::Voice,
+                            pre_amplitude: vec![],
+                            post_amplitude: vec![]
+                        };
+                        13
+                    ];
+                    chains.push(ir::Chain {
+                        scope: ir::Scope::Voice,
+                        pre_amplitude: if post { vec![] } else { processors.clone() },
+                        post_amplitude: if post { processors } else { vec![] },
+                    });
+                    let instrument = ir::Instrument {
+                        assets: vec![asset("native cutoff")],
+                        chains,
+                        modulators: vec![ir::Modulator {
+                            scope: ir::Scope::Voice,
+                            source: ir::ModulationSource::Constant,
+                        }],
+                        routes: vec![ir::Route {
+                            source: ir::ModulatorRef(0),
+                            target: ir::Target::Processor {
+                                chain: ir::ChainRef(13),
+                                index,
+                                parameter: ir::ProcessorParameter::Cutoff,
+                            },
+                            depth: ir::Depth::Normalized(depth),
+                            invert: false,
+                            shape: None,
+                            smoothing: ir::Time::Seconds(0.),
+                            scale: None,
+                        }],
+                        zones: vec![ir::Zone {
+                            chain: Some(ir::ChainRef(13)),
+                            routes: vec![ir::RouteRef(0)],
+                            pitch: ir::KeyTracking::Fixed,
+                            velocity: ir::VelocityResponse::None,
+                            ..ir::Zone::new(ir::AssetRef(0))
+                        }],
+                        ..Default::default()
+                    };
+                    let pcm = Pcm::new(
+                        48000,
+                        (0..4096)
+                            .map(|i| [0.01 * (i as f32 * std::f32::consts::TAU / 24.).sin(); 2])
+                            .collect::<Vec<_>>()
+                            .into_boxed_slice(),
+                    )
+                    .unwrap();
+                    let plan = lower(&instrument, 48000, vec![pcm], no_behaviors).unwrap();
+                    let mut runtime = Runtime::new(plan, limits()).unwrap();
+                    let mut out = [[0.; 2]; 2048];
+                    support::without_heap(|| {
+                        runtime.trigger(input(60), 60, 1.).unwrap();
+                        for frames in out.chunks_mut(7) {
+                            runtime.render(frames).unwrap();
+                        }
+                        runtime.note_off(input(60), None).unwrap();
+                    });
+                    out
+                };
+                let dry = render(0.5, 0.);
+                let wet = render(0.5, 0.25);
+                assert_eq!(
+                    wet,
+                    render(0.75, 0.),
+                    "normalized depth must adjust the saved knob before conversion"
+                );
+                let energy = |x: &[[f32; 2]]| {
+                    x[1024..]
+                        .iter()
+                        .flatten()
+                        .map(|v| f64::from(*v).powi(2))
+                        .sum::<f64>()
+                };
+                assert!(
+                    10. * (energy(&wet) / energy(&dry)).log10() > 3.,
+                    "opening the cutoff must pass more of the 2 kHz tone"
+                );
             }
-            let index = processors.len();
-            processors.push(processor);
-            let mut chains = vec![ir::Chain { scope: ir::Scope::Voice,
-                pre_amplitude: vec![], post_amplitude: vec![] }; 13];
-            chains.push(ir::Chain { scope: ir::Scope::Voice,
-                pre_amplitude: if post { vec![] } else { processors.clone() },
-                post_amplitude: if post { processors } else { vec![] } });
-            let instrument = ir::Instrument {
-                assets: vec![asset("native cutoff")], chains,
-                modulators: vec![ir::Modulator { scope: ir::Scope::Voice, source: ir::ModulationSource::Constant }],
-                routes: vec![ir::Route { source: ir::ModulatorRef(0),
-                    target: ir::Target::Processor { chain: ir::ChainRef(13), index, parameter: ir::ProcessorParameter::Cutoff },
-                    depth: ir::Depth::Normalized(depth), invert: false, shape: None, smoothing: ir::Time::Seconds(0.), scale: None }],
-                zones: vec![ir::Zone { chain: Some(ir::ChainRef(13)), routes: vec![ir::RouteRef(0)],
-                    pitch: ir::KeyTracking::Fixed, velocity: ir::VelocityResponse::None,
-                    ..ir::Zone::new(ir::AssetRef(0)) }], ..Default::default() };
-            let pcm = Pcm::new(48000, (0..4096).map(|i|
-                [0.01 * (i as f32 * std::f32::consts::TAU / 24.).sin(); 2]).collect::<Vec<_>>().into_boxed_slice()).unwrap();
-            let plan = lower(&instrument, 48000, vec![pcm], no_behaviors).unwrap();
-            let mut runtime = Runtime::new(plan, limits()).unwrap();
-            let mut out = [[0.; 2]; 2048];
-            support::without_heap(|| {
-                runtime.trigger(input(60), 60, 1.).unwrap();
-                for frames in out.chunks_mut(7) { runtime.render(frames).unwrap(); }
-                runtime.note_off(input(60), None).unwrap();
-            });
-            out
-        };
-        let dry = render(0.5, 0.);
-        let wet = render(0.5, 0.25);
-        assert_eq!(wet, render(0.75, 0.), "normalized depth must adjust the saved knob before conversion");
-        let energy = |x: &[[f32; 2]]| x[1024..].iter().flatten().map(|v| f64::from(*v).powi(2)).sum::<f64>();
-        assert!(10. * (energy(&wet) / energy(&dry)).log10() > 3., "opening the cutoff must pass more of the 2 kHz tone");
-    }
         }
-      }
+    }
 }
 
 #[test]
 fn normalized_q_gain_routes_address_native_knobs_without_audio_heap() {
     for ladder in [true, false] {
-      for parameter in [ir::ProcessorParameter::Resonance, ir::ProcessorParameter::Gain] {
-        let render = |value, depth| {
-            let (gain, resonance) = if parameter == ir::ProcessorParameter::Gain { (value, 0.1) } else { (0., value) };
-            let processor = if ladder {
-                ir::Processor::LadderLP4(ir::LadderLP4 { address: None, gain,
-                    cutoff: 0.5, resonance, record_version: 0x92 })
-            } else {
-                ir::Processor::Daft(ir::Daft { gain, cutoff: 0.5, resonance, highpass: false })
+        for parameter in [
+            ir::ProcessorParameter::Resonance,
+            ir::ProcessorParameter::Gain,
+        ] {
+            let render = |value, depth| {
+                let (gain, resonance) = if parameter == ir::ProcessorParameter::Gain {
+                    (value, 0.1)
+                } else {
+                    (0., value)
+                };
+                let processor = if ladder {
+                    ir::Processor::LadderLP4(ir::LadderLP4 {
+                        address: None,
+                        gain,
+                        cutoff: 0.5,
+                        resonance,
+                        record_version: 0x92,
+                    })
+                } else {
+                    ir::Processor::Daft(ir::Daft {
+                        gain,
+                        cutoff: 0.5,
+                        resonance,
+                        highpass: false,
+                    })
+                };
+                let instrument = ir::Instrument {
+                    assets: vec![asset("native cutoff")],
+                    chains: vec![ir::Chain {
+                        scope: ir::Scope::Voice,
+                        pre_amplitude: vec![ir::Processor::Gain(ir::Gain::Linear(1.)), processor],
+                        post_amplitude: vec![],
+                    }],
+                    modulators: vec![ir::Modulator {
+                        scope: ir::Scope::Voice,
+                        source: ir::ModulationSource::Constant,
+                    }],
+                    routes: vec![ir::Route {
+                        source: ir::ModulatorRef(0),
+                        target: ir::Target::Processor {
+                            chain: ir::ChainRef(0),
+                            index: 1,
+                            parameter,
+                        },
+                        depth: ir::Depth::Normalized(depth),
+                        invert: false,
+                        shape: None,
+                        smoothing: ir::Time::Seconds(0.),
+                        scale: None,
+                    }],
+                    zones: vec![ir::Zone {
+                        chain: Some(ir::ChainRef(0)),
+                        routes: vec![ir::RouteRef(0)],
+                        pitch: ir::KeyTracking::Fixed,
+                        velocity: ir::VelocityResponse::None,
+                        ..ir::Zone::new(ir::AssetRef(0))
+                    }],
+                    ..Default::default()
+                };
+                let pcm = Pcm::new(
+                    48000,
+                    (0..4096)
+                        .map(|i| [0.01 * (i as f32 * std::f32::consts::TAU / 24.).sin(); 2])
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice(),
+                )
+                .unwrap();
+                let plan = lower(&instrument, 48000, vec![pcm], no_behaviors).unwrap();
+                let mut runtime = Runtime::new(plan, limits()).unwrap();
+                let mut out = [[0.; 2]; 2048];
+                support::without_heap(|| {
+                    runtime.trigger(input(60), 60, 1.).unwrap();
+                    for frames in out.chunks_mut(7) {
+                        runtime.render(frames).unwrap();
+                    }
+                    runtime.note_off(input(60), None).unwrap();
+                });
+                out
             };
-            let instrument = ir::Instrument {
-                assets: vec![asset("native cutoff")],
-                chains: vec![ir::Chain { scope: ir::Scope::Voice,
-                    pre_amplitude: vec![ir::Processor::Gain(ir::Gain::Linear(1.)), processor],
-                    post_amplitude: vec![] }],
-                modulators: vec![ir::Modulator { scope: ir::Scope::Voice, source: ir::ModulationSource::Constant }],
-                routes: vec![ir::Route { source: ir::ModulatorRef(0),
-                    target: ir::Target::Processor { chain: ir::ChainRef(0), index: 1, parameter },
-                    depth: ir::Depth::Normalized(depth), invert: false, shape: None, smoothing: ir::Time::Seconds(0.), scale: None }],
-                zones: vec![ir::Zone { chain: Some(ir::ChainRef(0)), routes: vec![ir::RouteRef(0)],
-                    pitch: ir::KeyTracking::Fixed, velocity: ir::VelocityResponse::None,
-                    ..ir::Zone::new(ir::AssetRef(0)) }], ..Default::default() };
-            let pcm = Pcm::new(48000, (0..4096).map(|i|
-                [0.01 * (i as f32 * std::f32::consts::TAU / 24.).sin(); 2]).collect::<Vec<_>>().into_boxed_slice()).unwrap();
-            let plan = lower(&instrument, 48000, vec![pcm], no_behaviors).unwrap();
-            let mut runtime = Runtime::new(plan, limits()).unwrap();
-            let mut out = [[0.; 2]; 2048];
-            support::without_heap(|| {
-                runtime.trigger(input(60), 60, 1.).unwrap();
-                for frames in out.chunks_mut(7) { runtime.render(frames).unwrap(); }
-                runtime.note_off(input(60), None).unwrap();
-            });
-            out
-        };
-        let dry = render(0.1, 0.);
-        let wet = render(0.1, 0.4);
-        assert_eq!(wet, render(0.5, 0.), "depth must add to the native knob before conversion");
-        assert_ne!(wet, dry, "Q/Gain must change audio");
-        assert_eq!(render(0.9, 0.4), render(1., 0.), "normalized knobs saturate");
-        if ladder && parameter == ir::ProcessorParameter::Gain {
-            assert_eq!(render(-0.25, 0.), render(0., 0.), "enabled zero-depth Gain clamps saved signed gain, as v1 does");
+            let dry = render(0.1, 0.);
+            let wet = render(0.1, 0.4);
+            assert_eq!(
+                wet,
+                render(0.5, 0.),
+                "depth must add to the native knob before conversion"
+            );
+            assert_ne!(wet, dry, "Q/Gain must change audio");
+            assert_eq!(
+                render(0.9, 0.4),
+                render(1., 0.),
+                "normalized knobs saturate"
+            );
+            if ladder && parameter == ir::ProcessorParameter::Gain {
+                assert_eq!(
+                    render(-0.25, 0.),
+                    render(0., 0.),
+                    "enabled zero-depth Gain clamps saved signed gain, as v1 does"
+                );
+            }
         }
-      }
     }
 }
 
@@ -1528,26 +1739,68 @@ fn normalized_q_gain_routes_address_native_knobs_without_audio_heap() {
 fn arbitrary_registered_control_target_drives_its_real_processor_per_voice_without_heap() {
     let mut instrument = ir::Instrument {
         assets: vec![asset("generic target")],
-        controls: vec![ir::Control { key: "custom/gain/no-native-id".into(), label: "level".into(),
-            value: ir::ControlValue::Continuous { min: 0., max: 2., default: 1., unit: ir::ControlUnit::None },
-            automation: ir::Automation::None }],
-        chains: vec![ir::Chain { scope: ir::Scope::Voice,
-            pre_amplitude: vec![ir::Processor::Gain(ir::Gain::UNITY)], post_amplitude: vec![] }],
-        processor_controls: vec![ir::ProcessorControl { control: ir::ControlRef(0), chain: ir::ChainRef(0),
-            index: 0, parameter: ir::ProcessorParameter::Gain, ramp: ir::Time::ZERO }],
-        modulators: vec![ir::Modulator { scope: ir::Scope::Voice, source: ir::ModulationSource::Velocity }],
-        routes: vec![ir::Route { source: ir::ModulatorRef(0), target: ir::Target::Control(ir::ControlRef(0)),
-            depth: ir::Depth::Normalized(0.25), invert: false, shape: None, smoothing: ir::Time::ZERO, scale: None }],
-        zones: vec![ir::Zone { chain: Some(ir::ChainRef(0)), routes: vec![ir::RouteRef(0)],
-            keys: ir::KeyRange { low: 60, high: 60 }, pitch: ir::KeyTracking::Fixed,
-            velocity: ir::VelocityResponse::None, ..ir::Zone::new(ir::AssetRef(0)) }],
+        controls: vec![ir::Control {
+            key: "custom/gain/no-native-id".into(),
+            label: "level".into(),
+            value: ir::ControlValue::Continuous {
+                min: 0.,
+                max: 2.,
+                default: 1.,
+                unit: ir::ControlUnit::None,
+            },
+            automation: ir::Automation::None,
+        }],
+        chains: vec![ir::Chain {
+            scope: ir::Scope::Voice,
+            pre_amplitude: vec![ir::Processor::Gain(ir::Gain::UNITY)],
+            post_amplitude: vec![],
+        }],
+        processor_controls: vec![ir::ProcessorControl {
+            control: ir::ControlRef(0),
+            chain: ir::ChainRef(0),
+            index: 0,
+            parameter: ir::ProcessorParameter::Gain,
+            ramp: ir::Time::ZERO,
+        }],
+        modulators: vec![ir::Modulator {
+            scope: ir::Scope::Voice,
+            source: ir::ModulationSource::Velocity,
+        }],
+        routes: vec![ir::Route {
+            source: ir::ModulatorRef(0),
+            target: ir::Target::Control(ir::ControlRef(0)),
+            depth: ir::Depth::Normalized(0.25),
+            invert: false,
+            shape: None,
+            smoothing: ir::Time::ZERO,
+            scale: None,
+        }],
+        zones: vec![ir::Zone {
+            chain: Some(ir::ChainRef(0)),
+            routes: vec![ir::RouteRef(0)],
+            keys: ir::KeyRange { low: 60, high: 60 },
+            pitch: ir::KeyTracking::Fixed,
+            velocity: ir::VelocityResponse::None,
+            ..ir::Zone::new(ir::AssetRef(0))
+        }],
         ..Default::default()
     };
-    for (processor_target, threads, block) in [false, true].into_iter().flat_map(|processor_target|
-        [1, 2, 4].into_iter().flat_map(move |threads| [1, 7, 64, 137].map(|block| (processor_target, threads, block)))) {
+    for (processor_target, threads, block) in
+        [false, true].into_iter().flat_map(|processor_target| {
+            [1, 2, 4].into_iter().flat_map(move |threads| {
+                [1, 7, 64, 137].map(|block| (processor_target, threads, block))
+            })
+        })
+    {
         instrument.routes[0].target = if processor_target {
-            ir::Target::Processor { chain: ir::ChainRef(0), index: 0, parameter: ir::ProcessorParameter::Gain }
-        } else { ir::Target::Control(ir::ControlRef(0)) };
+            ir::Target::Processor {
+                chain: ir::ChainRef(0),
+                index: 0,
+                parameter: ir::ProcessorParameter::Gain,
+            }
+        } else {
+            ir::Target::Control(ir::ControlRef(0))
+        };
         let prepared = lower(&instrument, 48000, vec![constant(0.1)], no_behaviors)
             .expect("registered processor parameter must have a generic route consumer");
         let published: Vec<_> = prepared.parameter_registry().descriptors().collect();
@@ -1555,232 +1808,558 @@ fn arbitrary_registered_control_target_drives_its_real_processor_per_voice_witho
         assert_eq!(published[0].name, "level");
         assert_eq!(published[0].range, [0., 2.]);
         assert_eq!(published[0].default, 1.);
-        assert_eq!(published[0].address.scope, sampler_core::ParameterScope::Voice);
+        assert_eq!(
+            published[0].address.scope,
+            sampler_core::ParameterScope::Voice
+        );
         assert_eq!(published[0].display.group, "chain 0 processor 0");
-        let mut rt = Runtime::new(prepared, Limits { notes: 128, families: 128, expressions: 128, voices: 128, ..limits() }).unwrap().with_threads(sampler_core::Threads::Fixed(threads));
-        let voice = |id| Input { protocol: Protocol::Clap, external_id: Some(id), ..input(60) };
+        let mut rt = Runtime::new(
+            prepared,
+            Limits {
+                notes: 128,
+                families: 128,
+                expressions: 128,
+                voices: 128,
+                ..limits()
+            },
+        )
+        .unwrap()
+        .with_threads(sampler_core::Threads::Fixed(threads));
+        let voice = |id| Input {
+            protocol: Protocol::Clap,
+            external_id: Some(id),
+            ..input(60)
+        };
         let mut first = [[0.; 2]; 256];
         support::without_heap(|| {
             rt.trigger(voice(1), 60, 1.).unwrap();
-            for chunk in first.chunks_mut(block) { rt.render(chunk).unwrap(); }
+            for chunk in first.chunks_mut(block) {
+                rt.render(chunk).unwrap();
+            }
         });
         assert_eq!(first[128], [0.15; 2]);
         let mut second = [[0.; 2]; 256];
         support::without_heap(|| {
             // Independent voice contribution must not overwrite the first's target.
             rt.trigger(voice(2), 60, 0.5).unwrap();
-            for chunk in second.chunks_mut(block) { rt.render(chunk).unwrap(); }
+            for chunk in second.chunks_mut(block) {
+                rt.render(chunk).unwrap();
+            }
         });
         assert_eq!(second[128], [0.275; 2]);
         let id = sampler_core::lower::ir_control_id("custom/gain/no-native-id");
         let active = rt.active_plan();
-        assert_eq!(rt.control_value(active, id), Ok(sampler_core::ControlValue::Real(1.)),
-            "voice modulation must not overwrite the shared editor/script base");
+        assert_eq!(
+            rt.control_value(active, id),
+            Ok(sampler_core::ControlValue::Real(1.)),
+            "voice modulation must not overwrite the shared editor/script base"
+        );
         let mut edited = [[0.; 2]; 256];
         support::without_heap(|| {
-            rt.edit_controls(active, None, &[sampler_core::ControlWrite {
-                id, value: sampler_core::ControlValue::Real(0.5),
-            }]).unwrap();
-            for chunk in edited.chunks_mut(block) { rt.render(chunk).unwrap(); }
+            rt.edit_controls(
+                active,
+                None,
+                &[sampler_core::ControlWrite {
+                    id,
+                    value: sampler_core::ControlValue::Real(0.5),
+                }],
+            )
+            .unwrap();
+            for chunk in edited.chunks_mut(block) {
+                rt.render(chunk).unwrap();
+            }
         });
         let expected = 0.1f32 + 0.1f32 * 0.75;
-        assert_eq!(edited[128], [expected; 2],
-            "a base edit must invalidate consumers while retaining each voice's held offset");
-        assert_eq!(rt.control_base_value(active, id), Ok(sampler_core::ControlValue::Real(0.5)));
+        assert_eq!(
+            edited[128], [expected; 2],
+            "a base edit must invalidate consumers while retaining each voice's held offset"
+        );
+        assert_eq!(
+            rt.control_base_value(active, id),
+            Ok(sampler_core::ControlValue::Real(0.5))
+        );
         let mut many = [[0.; 2]; 256];
         support::without_heap(|| {
-            for id in 3..=128 { rt.trigger(voice(id), 60, 1.).unwrap(); }
-            for chunk in many.chunks_mut(block) { rt.render(chunk).unwrap(); }
+            for id in 3..=128 {
+                rt.trigger(voice(id), 60, 1.).unwrap();
+            }
+            for chunk in many.chunks_mut(block) {
+                rt.render(chunk).unwrap();
+            }
         });
         let expected_many = (3..=128).fold(expected, |sum, _| sum + 0.1f32);
         assert_eq!(many[128], [expected_many; 2]);
-        if threads > 1 { assert!(rt.parallel_blocks() > 0, "worker projection must actually execute"); }
+        if threads > 1 {
+            assert!(
+                rt.parallel_blocks() > 0,
+                "worker projection must actually execute"
+            );
+        }
     }
 }
 
-
 #[test]
 fn generic_voice_filter_parameters_never_share_another_voices_coefficients() {
-    let zone = |key, routes| ir::Zone { chain: Some(ir::ChainRef(0)), routes,
-        keys: ir::KeyRange { low: key, high: key }, pitch: ir::KeyTracking::Fixed,
-        velocity: ir::VelocityResponse::None, ..ir::Zone::new(ir::AssetRef(0)) };
+    let zone = |key, routes| ir::Zone {
+        chain: Some(ir::ChainRef(0)),
+        routes,
+        keys: ir::KeyRange {
+            low: key,
+            high: key,
+        },
+        pitch: ir::KeyTracking::Fixed,
+        velocity: ir::VelocityResponse::None,
+        ..ir::Zone::new(ir::AssetRef(0))
+    };
     let instrument = ir::Instrument {
         assets: vec![asset("per-voice filter coefficients")],
-        controls: vec![ir::Control { key: "filter/cutoff".into(), label: "Cutoff".into(),
-            value: ir::ControlValue::Continuous { min: 500., max: 9500., default: 500., unit: ir::ControlUnit::Hertz },
-            automation: ir::Automation::None }],
-        chains: vec![ir::Chain { scope: ir::Scope::Voice,
-            pre_amplitude: vec![ir::Processor::Filter(ir::Filter { kind: ir::FilterKind::LowPass { poles: 2 },
-                cutoff: ir::Frequency::Hertz(500.), resonance: ir::Resonance::Q(1.) })], post_amplitude: vec![] }],
-        processor_controls: vec![ir::ProcessorControl { control: ir::ControlRef(0), chain: ir::ChainRef(0),
-            index: 0, parameter: ir::ProcessorParameter::Cutoff, ramp: ir::Time::ZERO }],
-        modulators: vec![ir::Modulator { scope: ir::Scope::Voice, source: ir::ModulationSource::Velocity }],
-        routes: vec![ir::Route { source: ir::ModulatorRef(0), target: ir::Target::Control(ir::ControlRef(0)),
-            depth: ir::Depth::Normalized(1.), invert: false, shape: None, smoothing: ir::Time::ZERO, scale: None }],
+        controls: vec![ir::Control {
+            key: "filter/cutoff".into(),
+            label: "Cutoff".into(),
+            value: ir::ControlValue::Continuous {
+                min: 500.,
+                max: 9500.,
+                default: 500.,
+                unit: ir::ControlUnit::Hertz,
+            },
+            automation: ir::Automation::None,
+        }],
+        chains: vec![ir::Chain {
+            scope: ir::Scope::Voice,
+            pre_amplitude: vec![ir::Processor::Filter(ir::Filter {
+                kind: ir::FilterKind::LowPass { poles: 2 },
+                cutoff: ir::Frequency::Hertz(500.),
+                resonance: ir::Resonance::Q(1.),
+            })],
+            post_amplitude: vec![],
+        }],
+        processor_controls: vec![ir::ProcessorControl {
+            control: ir::ControlRef(0),
+            chain: ir::ChainRef(0),
+            index: 0,
+            parameter: ir::ProcessorParameter::Cutoff,
+            ramp: ir::Time::ZERO,
+        }],
+        modulators: vec![ir::Modulator {
+            scope: ir::Scope::Voice,
+            source: ir::ModulationSource::Velocity,
+        }],
+        routes: vec![ir::Route {
+            source: ir::ModulatorRef(0),
+            target: ir::Target::Control(ir::ControlRef(0)),
+            depth: ir::Depth::Normalized(1.),
+            invert: false,
+            shape: None,
+            smoothing: ir::Time::ZERO,
+            scale: None,
+        }],
         zones: vec![zone(60, vec![ir::RouteRef(0)]), zone(61, vec![])],
         ..Default::default()
     };
-    let frames: Vec<_> = (0..4800).map(|n| [0.01 * (std::f32::consts::TAU * n as f32 / 16.).sin(); 2]).collect();
+    let frames: Vec<_> = (0..4800)
+        .map(|n| [0.01 * (std::f32::consts::TAU * n as f32 / 16.).sin(); 2])
+        .collect();
     let runtime = |threads| {
         let pcm = Pcm::new(48000, frames.clone().into_boxed_slice()).unwrap();
-        Runtime::new(lower(&instrument, 48000, vec![pcm], no_behaviors).unwrap(),
-            Limits { notes: 128, families: 128, expressions: 128, voices: 128, ..limits() }).unwrap()
-            .with_threads(sampler_core::Threads::Fixed(threads))
+        Runtime::new(
+            lower(&instrument, 48000, vec![pcm], no_behaviors).unwrap(),
+            Limits {
+                notes: 128,
+                families: 128,
+                expressions: 128,
+                voices: 128,
+                ..limits()
+            },
+        )
+        .unwrap()
+        .with_threads(sampler_core::Threads::Fixed(threads))
     };
     for threads in [1, 2, 4] {
         let mut expected = [[0f32; 2]; 256];
         for id in 1..=128 {
-            let (key, velocity) = match id % 3 { 0 => (61, 1.), 1 => (60, 1.), _ => (60, 0.1) };
-            let input = Input { external_id: Some(id), ..input(key) };
+            let (key, velocity) = match id % 3 {
+                0 => (61, 1.),
+                1 => (60, 1.),
+                _ => (60, 0.1),
+            };
+            let input = Input {
+                external_id: Some(id),
+                ..input(key)
+            };
             let mut rt = runtime(1);
             let mut separate = [[0.; 2]; 256];
-            support::without_heap(|| { rt.trigger(input, key, velocity).unwrap(); rt.render(&mut separate).unwrap(); });
-            for (sum, voice) in expected.iter_mut().zip(separate) { for c in 0..2 { sum[c] += voice[c]; } }
+            support::without_heap(|| {
+                rt.trigger(input, key, velocity).unwrap();
+                rt.render(&mut separate).unwrap();
+            });
+            for (sum, voice) in expected.iter_mut().zip(separate) {
+                for c in 0..2 {
+                    sum[c] += voice[c];
+                }
+            }
         }
         let mut combined = runtime(threads);
         let mut actual = [[0.; 2]; 256];
         support::without_heap(|| {
             for id in 1..=128 {
-                let (key, velocity) = match id % 3 { 0 => (61, 1.), 1 => (60, 1.), _ => (60, 0.1) };
-                combined.trigger(Input { external_id: Some(id), ..input(key) }, key, velocity).unwrap();
+                let (key, velocity) = match id % 3 {
+                    0 => (61, 1.),
+                    1 => (60, 1.),
+                    _ => (60, 0.1),
+                };
+                combined
+                    .trigger(
+                        Input {
+                            external_id: Some(id),
+                            ..input(key)
+                        },
+                        key,
+                        velocity,
+                    )
+                    .unwrap();
             }
             combined.render(&mut actual).unwrap();
         });
-        let mismatch = actual.iter().zip(expected).enumerate().find(|(_, (a, b))| **a != *b);
-        assert!(mismatch.is_none(), "each voice keeps its cutoff, including the unmodulated sibling, threads={threads}, first mismatch={mismatch:?}");
-        if threads > 1 { assert!(combined.parallel_blocks() > 0); }
+        let mismatch = actual
+            .iter()
+            .zip(expected)
+            .enumerate()
+            .find(|(_, (a, b))| **a != *b);
+        assert!(
+            mismatch.is_none(),
+            "each voice keeps its cutoff, including the unmodulated sibling, threads={threads}, first mismatch={mismatch:?}"
+        );
+        if threads > 1 {
+            assert!(combined.parallel_blocks() > 0);
+        }
     }
 }
-
 
 #[test]
 fn registered_peak_gain_keeps_a_flat_band_and_drives_real_voice_audio() {
     let instrument = ir::Instrument {
-        source_indices: ir::SourceIndices { control_aliases: vec![ir::SourceControlAlias {
-            control: ir::ControlRef(0), parameter: "ENGINE_PAR_GAIN2".into(),
-            address: ir::SlotAddress { group: 0, slot: 5, generic: -1 },
-        }], ..Default::default() },
+        source_indices: ir::SourceIndices {
+            control_aliases: vec![ir::SourceControlAlias {
+                control: ir::ControlRef(0),
+                parameter: "ENGINE_PAR_GAIN2".into(),
+                address: ir::SlotAddress {
+                    group: 0,
+                    slot: 5,
+                    generic: -1,
+                },
+            }],
+            ..Default::default()
+        },
         assets: vec![asset("EQ owner witness")],
-        controls: vec![ir::Control { key: "eq/physical-slot-5/band-2/gain".into(), label: "Band 2 Gain".into(),
-            value: ir::ControlValue::Continuous { min: -18., max: 18., default: 0., unit: ir::ControlUnit::Decibels },
-            automation: ir::Automation::None }],
-        chains: vec![ir::Chain { scope: ir::Scope::Voice,
+        controls: vec![ir::Control {
+            key: "eq/physical-slot-5/band-2/gain".into(),
+            label: "Band 2 Gain".into(),
+            value: ir::ControlValue::Continuous {
+                min: -18.,
+                max: 18.,
+                default: 0.,
+                unit: ir::ControlUnit::Decibels,
+            },
+            automation: ir::Automation::None,
+        }],
+        chains: vec![ir::Chain {
+            scope: ir::Scope::Voice,
             pre_amplitude: vec![ir::Processor::Filter(ir::Filter {
-                kind: ir::FilterKind::Peak { gain: ir::Gain::Decibels(0.) },
-                cutoff: ir::Frequency::Hertz(1000.), resonance: ir::Resonance::Q(1.),
-            })], post_amplitude: vec![] }],
-        processor_controls: vec![ir::ProcessorControl { control: ir::ControlRef(0), chain: ir::ChainRef(0),
-            index: 0, parameter: ir::ProcessorParameter::Gain, ramp: ir::Time::ZERO }],
-        modulators: vec![ir::Modulator { scope: ir::Scope::Voice, source: ir::ModulationSource::Velocity }],
-        routes: vec![ir::Route { source: ir::ModulatorRef(0), target: ir::Target::Control(ir::ControlRef(0)),
-            depth: ir::Depth::Normalized(1./3.), invert: false, shape: None, smoothing: ir::Time::ZERO, scale: None }],
-        zones: vec![ir::Zone { chain: Some(ir::ChainRef(0)), routes: vec![ir::RouteRef(0)],
-            keys: ir::KeyRange { low: 60, high: 60 }, pitch: ir::KeyTracking::Fixed,
-            velocity: ir::VelocityResponse::None, ..ir::Zone::new(ir::AssetRef(0)) }],
+                kind: ir::FilterKind::Peak {
+                    gain: ir::Gain::Decibels(0.),
+                },
+                cutoff: ir::Frequency::Hertz(1000.),
+                resonance: ir::Resonance::Q(1.),
+            })],
+            post_amplitude: vec![],
+        }],
+        processor_controls: vec![ir::ProcessorControl {
+            control: ir::ControlRef(0),
+            chain: ir::ChainRef(0),
+            index: 0,
+            parameter: ir::ProcessorParameter::Gain,
+            ramp: ir::Time::ZERO,
+        }],
+        modulators: vec![ir::Modulator {
+            scope: ir::Scope::Voice,
+            source: ir::ModulationSource::Velocity,
+        }],
+        routes: vec![ir::Route {
+            source: ir::ModulatorRef(0),
+            target: ir::Target::Control(ir::ControlRef(0)),
+            depth: ir::Depth::Normalized(1. / 3.),
+            invert: false,
+            shape: None,
+            smoothing: ir::Time::ZERO,
+            scale: None,
+        }],
+        zones: vec![ir::Zone {
+            chain: Some(ir::ChainRef(0)),
+            routes: vec![ir::RouteRef(0)],
+            keys: ir::KeyRange { low: 60, high: 60 },
+            pitch: ir::KeyTracking::Fixed,
+            velocity: ir::VelocityResponse::None,
+            ..ir::Zone::new(ir::AssetRef(0))
+        }],
         ..Default::default()
     };
     let mut phantom = instrument.clone();
     phantom.processor_controls.clear();
-    assert!(phantom.validate().is_err(), "an alias cannot publish an unbound mirror");
+    assert!(
+        phantom.validate().is_err(),
+        "an alias cannot publish an unbound mirror"
+    );
     let mut layer_alias = instrument.clone();
     layer_alias.source_indices.control_aliases[0].address.slot = -1;
-    assert!(layer_alias.validate().is_err(), "module aliases cannot shadow layer parameter dispatch");
+    assert!(
+        layer_alias.validate().is_err(),
+        "module aliases cannot shadow layer parameter dispatch"
+    );
     let mut duplicate = instrument.clone();
-    duplicate.source_indices.control_aliases.push(duplicate.source_indices.control_aliases[0].clone());
+    duplicate
+        .source_indices
+        .control_aliases
+        .push(duplicate.source_indices.control_aliases[0].clone());
     let pcm = Pcm::new(48000, vec![[0.; 2]; 4800].into_boxed_slice()).unwrap();
-    assert!(lower(&duplicate, 48000, vec![pcm], no_behaviors).is_err(), "native address aliases cannot conflict");
-    let frames: Vec<_> = (0..4800).map(|n| [0.01 * (std::f32::consts::TAU * n as f32 / 48.).sin(); 2]).collect();
+    assert!(
+        lower(&duplicate, 48000, vec![pcm], no_behaviors).is_err(),
+        "native address aliases cannot conflict"
+    );
+    let frames: Vec<_> = (0..4800)
+        .map(|n| [0.01 * (std::f32::consts::TAU * n as f32 / 48.).sin(); 2])
+        .collect();
     let pcm = Pcm::new(48000, frames.clone().into_boxed_slice()).unwrap();
     let prepared = lower(&instrument, 48000, vec![pcm], no_behaviors)
         .expect("a flat peak band must retain its real gain owner before modulation");
     let native = sampler_core::EngineParameterAddress {
-        parameter: sampler_core::engine_parameter_id("ENGINE_PAR_GAIN2").unwrap(), group: 0, slot: 5, generic: -1,
+        parameter: sampler_core::engine_parameter_id("ENGINE_PAR_GAIN2").unwrap(),
+        group: 0,
+        slot: 5,
+        generic: -1,
     };
-    assert!(prepared.parameter_registry().resolve_native(native).is_some(), "native alias must resolve to the real EQ gain owner");
+    assert!(
+        prepared
+            .parameter_registry()
+            .resolve_native(native)
+            .is_some(),
+        "native alias must resolve to the real EQ gain owner"
+    );
     let descriptor = prepared.parameter_registry().descriptors().next().unwrap();
-    assert_eq!((descriptor.unit, descriptor.range, descriptor.default),
-        (sampler_core::ParameterUnit::Decibels, [-18., 18.], 0.));
+    assert_eq!(
+        (descriptor.unit, descriptor.range, descriptor.default),
+        (sampler_core::ParameterUnit::Decibels, [-18., 18.], 0.)
+    );
     let mut rt = Runtime::new(prepared, limits()).unwrap();
     let mut output = [[0.; 2]; 4096];
-    support::without_heap(|| { rt.trigger(input(60), 60, 1.).unwrap(); rt.render(&mut output).unwrap(); });
+    support::without_heap(|| {
+        rt.trigger(input(60), 60, 1.).unwrap();
+        rt.render(&mut output).unwrap();
+    });
     let power = |frames: &[[f32; 2]]| frames.iter().map(|f| f64::from(f[0]).powi(2)).sum::<f64>();
     let gain_db = 10. * (power(&output[1024..]) / power(&frames[1024..4096])).log10();
-    assert!((gain_db - 12.).abs() < 0.02, "center-frequency gain: {gain_db} dB");
+    assert!(
+        (gain_db - 12.).abs() < 0.02,
+        "center-frequency gain: {gain_db} dB"
+    );
     let id = sampler_core::lower::ir_control_id("eq/physical-slot-5/band-2/gain");
-    assert_eq!(rt.control_base_value(rt.active_plan(), id), Ok(sampler_core::ControlValue::Real(0.)));
+    assert_eq!(
+        rt.control_base_value(rt.active_plan(), id),
+        Ok(sampler_core::ControlValue::Real(0.))
+    );
     let mut edited = [[0.; 2]; 512];
     support::without_heap(|| {
         rt.set_engine_parameter(native, 666_667).unwrap();
         rt.render(&mut edited).unwrap();
     });
     let edited_db = 10. * (power(&edited[128..]) / power(&frames[4224..4608])).log10();
-    assert!((edited_db - 18.).abs() < 0.02, "native base plus held modulation clamps at +18 dB: {edited_db}");
-    let Ok(sampler_core::ControlValue::Real(base)) = rt.control_base_value(rt.active_plan(), id) else { panic!("real EQ base"); };
+    assert!(
+        (edited_db - 18.).abs() < 0.02,
+        "native base plus held modulation clamps at +18 dB: {edited_db}"
+    );
+    let Ok(sampler_core::ControlValue::Real(base)) = rt.control_base_value(rt.active_plan(), id)
+    else {
+        panic!("real EQ base");
+    };
     assert!((base - 6.000012).abs() < 1e-12);
 }
 
 #[test]
 fn registered_peak_frequency_and_width_use_normalized_knob_domains() {
-    let controls = ["frequency", "bandwidth"].map(|name| ir::Control {
-        key: format!("eq/{name}"), label: name.into(),
-        value: ir::ControlValue::Continuous { min: 0., max: 1., default: if name == "frequency" { 0.3 } else { 0.2 }, unit: ir::ControlUnit::Percent },
-        automation: ir::Automation::None,
-    }).to_vec();
+    let controls = ["frequency", "bandwidth"]
+        .map(|name| ir::Control {
+            key: format!("eq/{name}"),
+            label: name.into(),
+            value: ir::ControlValue::Continuous {
+                min: 0.,
+                max: 1.,
+                default: if name == "frequency" { 0.3 } else { 0.2 },
+                unit: ir::ControlUnit::Percent,
+            },
+            automation: ir::Automation::None,
+        })
+        .to_vec();
     let instrument = ir::Instrument {
-        assets: vec![asset("EQ knob domains")], controls,
-        chains: vec![ir::Chain { scope: ir::Scope::Voice,
-            pre_amplitude: vec![ir::Processor::Filter(ir::Filter { kind: ir::FilterKind::Peak { gain: ir::Gain::Decibels(12.) },
-                cutoff: ir::Frequency::Hertz(20. * 10f64.powf(0.9)), resonance: ir::Resonance::Q(1. / (2. * (std::f64::consts::LN_2 * 0.5 * 0.84).sinh())) })], post_amplitude: vec![] }],
-        processor_controls: [ir::ProcessorParameter::Cutoff, ir::ProcessorParameter::Resonance].into_iter().enumerate()
-            .map(|(control, parameter)| ir::ProcessorControl { control: ir::ControlRef(control), chain: ir::ChainRef(0), index: 0, parameter, ramp: ir::Time::ZERO }).collect(),
-        source_indices: ir::SourceIndices { control_aliases: ["ENGINE_PAR_FREQ2", "ENGINE_PAR_BW2"].into_iter().enumerate()
-            .map(|(control, parameter)| ir::SourceControlAlias { control: ir::ControlRef(control), parameter: parameter.into(), address: ir::SlotAddress { group: 0, slot: 5, generic: -1 } }).collect(), ..Default::default() },
-        modulators: vec![ir::Modulator { scope: ir::Scope::Voice, source: ir::ModulationSource::Velocity }],
-        routes: [0.4, 0.2].into_iter().enumerate().map(|(control, depth)| ir::Route { source: ir::ModulatorRef(0),
-            target: ir::Target::Control(ir::ControlRef(control)), depth: ir::Depth::Normalized(depth), invert: false,
-            shape: None, smoothing: ir::Time::ZERO, scale: None }).collect(),
-        zones: vec![ir::Zone { keys: ir::KeyRange { low: 60, high: 60 }, pitch: ir::KeyTracking::Fixed,
-            velocity: ir::VelocityResponse::None, chain: Some(ir::ChainRef(0)), routes: vec![ir::RouteRef(0), ir::RouteRef(1)], ..ir::Zone::new(ir::AssetRef(0)) }],
+        assets: vec![asset("EQ knob domains")],
+        controls,
+        chains: vec![ir::Chain {
+            scope: ir::Scope::Voice,
+            pre_amplitude: vec![ir::Processor::Filter(ir::Filter {
+                kind: ir::FilterKind::Peak {
+                    gain: ir::Gain::Decibels(12.),
+                },
+                cutoff: ir::Frequency::Hertz(20. * 10f64.powf(0.9)),
+                resonance: ir::Resonance::Q(
+                    1. / (2. * (std::f64::consts::LN_2 * 0.5 * 0.84).sinh()),
+                ),
+            })],
+            post_amplitude: vec![],
+        }],
+        processor_controls: [
+            ir::ProcessorParameter::Cutoff,
+            ir::ProcessorParameter::Resonance,
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(control, parameter)| ir::ProcessorControl {
+            control: ir::ControlRef(control),
+            chain: ir::ChainRef(0),
+            index: 0,
+            parameter,
+            ramp: ir::Time::ZERO,
+        })
+        .collect(),
+        source_indices: ir::SourceIndices {
+            control_aliases: ["ENGINE_PAR_FREQ2", "ENGINE_PAR_BW2"]
+                .into_iter()
+                .enumerate()
+                .map(|(control, parameter)| ir::SourceControlAlias {
+                    control: ir::ControlRef(control),
+                    parameter: parameter.into(),
+                    address: ir::SlotAddress {
+                        group: 0,
+                        slot: 5,
+                        generic: -1,
+                    },
+                })
+                .collect(),
+            ..Default::default()
+        },
+        modulators: vec![ir::Modulator {
+            scope: ir::Scope::Voice,
+            source: ir::ModulationSource::Velocity,
+        }],
+        routes: [0.4, 0.2]
+            .into_iter()
+            .enumerate()
+            .map(|(control, depth)| ir::Route {
+                source: ir::ModulatorRef(0),
+                target: ir::Target::Control(ir::ControlRef(control)),
+                depth: ir::Depth::Normalized(depth),
+                invert: false,
+                shape: None,
+                smoothing: ir::Time::ZERO,
+                scale: None,
+            })
+            .collect(),
+        zones: vec![ir::Zone {
+            keys: ir::KeyRange { low: 60, high: 60 },
+            pitch: ir::KeyTracking::Fixed,
+            velocity: ir::VelocityResponse::None,
+            chain: Some(ir::ChainRef(0)),
+            routes: vec![ir::RouteRef(0), ir::RouteRef(1)],
+            ..ir::Zone::new(ir::AssetRef(0))
+        }],
         ..Default::default()
     };
     let hz = 20f32 * 10f32.powf(3. * 0.7);
-    let frames: Vec<_> = (0..10000).map(|n| [0.01 * (std::f32::consts::TAU * hz * n as f32 / 48000.).sin(); 2]).collect();
+    let frames: Vec<_> = (0..10000)
+        .map(|n| [0.01 * (std::f32::consts::TAU * hz * n as f32 / 48000.).sin(); 2])
+        .collect();
     let pcm = Pcm::new(48000, frames.clone().into_boxed_slice()).unwrap();
-    let prepared = lower(&instrument, 48000, vec![pcm.clone()], no_behaviors).expect("both normalized EQ knobs bind actual processor lanes");
+    let prepared = lower(&instrument, 48000, vec![pcm.clone()], no_behaviors)
+        .expect("both normalized EQ knobs bind actual processor lanes");
     for descriptor in prepared.parameter_registry().descriptors() {
-        assert_eq!((descriptor.range, descriptor.unit), ([0., 1.], sampler_core::ParameterUnit::Percent));
+        assert_eq!(
+            (descriptor.range, descriptor.unit),
+            ([0., 1.], sampler_core::ParameterUnit::Percent)
+        );
     }
     let mut rt = Runtime::new(prepared, limits()).unwrap();
     let mut out = [[0.; 2]; 4096];
-    support::without_heap(|| { rt.trigger(input(60), 60, 1.).unwrap(); rt.render(&mut out).unwrap(); });
+    support::without_heap(|| {
+        rt.trigger(input(60), 60, 1.).unwrap();
+        rt.render(&mut out).unwrap();
+    });
     let power = |f: &[[f32; 2]]| f.iter().map(|x| f64::from(x[0]).powi(2)).sum::<f64>();
     let boosted_db = 10. * (power(&out[1024..]) / power(&frames[1024..4096])).log10();
-    assert!((boosted_db - 12.).abs() < 0.03, "frequency moved in log-knob domain: {boosted_db}");
+    assert!(
+        (boosted_db - 12.).abs() < 0.03,
+        "frequency moved in log-knob domain: {boosted_db}"
+    );
     let mut edited = [[0.; 2]; 1024];
     support::without_heap(|| {
         for name in ["ENGINE_PAR_FREQ2", "ENGINE_PAR_BW2"] {
-            rt.set_engine_parameter(sampler_core::EngineParameterAddress { parameter: sampler_core::engine_parameter_id(name).unwrap(), group: 0, slot: 5, generic: -1 }, 0).unwrap();
+            rt.set_engine_parameter(
+                sampler_core::EngineParameterAddress {
+                    parameter: sampler_core::engine_parameter_id(name).unwrap(),
+                    group: 0,
+                    slot: 5,
+                    generic: -1,
+                },
+                0,
+            )
+            .unwrap();
         }
         rt.render(&mut edited).unwrap();
     });
     let edited_db = 10. * (power(&edited[512..]) / power(&frames[4608..5120])).log10();
-    assert!(edited_db < 1., "native base edits move the same held knobs: {edited_db}");
+    assert!(
+        edited_db < 1.,
+        "native base edits move the same held knobs: {edited_db}"
+    );
 
     let mut width_outputs = [[[0.; 2]; 1024]; 2];
     support::without_heap(|| {
-        rt.set_engine_parameter(sampler_core::EngineParameterAddress {
-            parameter: sampler_core::engine_parameter_id("ENGINE_PAR_FREQ2").unwrap(), group: 0, slot: 5, generic: -1 }, 400000).unwrap();
+        rt.set_engine_parameter(
+            sampler_core::EngineParameterAddress {
+                parameter: sampler_core::engine_parameter_id("ENGINE_PAR_FREQ2").unwrap(),
+                group: 0,
+                slot: 5,
+                generic: -1,
+            },
+            400000,
+        )
+        .unwrap();
         for (n, width) in [0, 800000].into_iter().enumerate() {
-            rt.set_engine_parameter(sampler_core::EngineParameterAddress {
-                parameter: sampler_core::engine_parameter_id("ENGINE_PAR_BW2").unwrap(), group: 0, slot: 5, generic: -1 }, width).unwrap();
+            rt.set_engine_parameter(
+                sampler_core::EngineParameterAddress {
+                    parameter: sampler_core::engine_parameter_id("ENGINE_PAR_BW2").unwrap(),
+                    group: 0,
+                    slot: 5,
+                    generic: -1,
+                },
+                width,
+            )
+            .unwrap();
             rt.render(&mut width_outputs[n]).unwrap();
         }
     });
-    let width_db = 10. * (power(&width_outputs[1][512..]) / power(&width_outputs[0][512..])).log10();
-    assert!(width_db > 2., "wider bell boosts the off-center sine: {width_db}");
+    let width_db =
+        10. * (power(&width_outputs[1][512..]) / power(&width_outputs[0][512..])).log10();
+    assert!(
+        width_db > 2.,
+        "wider bell boosts the off-center sine: {width_db}"
+    );
 
-    let mut runtimes: Vec<_> = (0..3).map(|_| Runtime::new(
-        lower(&instrument, 48000, vec![pcm.clone()], no_behaviors).unwrap(), limits()).unwrap()).collect();
+    let mut runtimes: Vec<_> = (0..3)
+        .map(|_| {
+            Runtime::new(
+                lower(&instrument, 48000, vec![pcm.clone()], no_behaviors).unwrap(),
+                limits(),
+            )
+            .unwrap()
+        })
+        .collect();
     let mut separate = [[[0.; 2]; 2048]; 2];
     let mut mixed = [[0.; 2]; 2048];
     support::without_heap(|| {
@@ -1793,7 +2372,10 @@ fn registered_peak_frequency_and_width_use_normalized_knob_domains() {
     });
     for ((actual, first), second) in mixed.iter().zip(&separate[0]).zip(&separate[1]) {
         for c in 0..2 {
-            assert!((actual[c] - first[c] - second[c]).abs() < 2e-8, "EQ knob coefficients belong to each voice");
+            assert!(
+                (actual[c] - first[c] - second[c]).abs() < 2e-8,
+                "EQ knob coefficients belong to each voice"
+            );
         }
     }
 }

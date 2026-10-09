@@ -30,14 +30,13 @@ pub fn survey(
             .enumerate()
             .find(|(i, b)| b.slot.unwrap_or(*i as u8) == slot)
             .map(|(_, b)| b);
-        let frontend =
-            if behavior.is_some_and(|b| b.source.contains("load_performance_view")) {
-                "creator_tools"
-            } else if !face.assets.is_empty() {
-                "bitmap_ksp"
-            } else {
-                "stock_ksp"
-            };
+        let frontend = if behavior.is_some_and(|b| b.source.contains("load_performance_view")) {
+            "creator_tools"
+        } else if !face.assets.is_empty() {
+            "bitmap_ksp"
+        } else {
+            "stock_ksp"
+        };
         let bound: BTreeSet<_> = script
             .into_iter()
             .flat_map(|s| s.controls())
@@ -149,25 +148,59 @@ pub fn survey(
                 let w = face.pages[p].size.width.clamp(1, 4096) as u16;
                 let h = ir_view::height(&face, ir::PageRef(p)).clamp(1, 4096) as u16;
                 let name = format!("slot-{slot}-page-{p}-{mode:?}.png");
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
-                    let mut ui = theme::ui();
-                    for _ in 0..2 {
-                        let view = ir_view::view(&mut ui, &face, ir::PageRef(p), &assets, mode, 1., &mut values);
-                        ui.frame(view, Some(Size::new(f64::from(w), f64::from(h))), Input::default(), 1. / 60.).map_err(|e| format!("{e:?}"))?;
-                    }
-                    let mut ctx = vello::vello_cpu::RenderContext::new(w, h);
-                    let mut resources = vello::vello_cpu::Resources::default();
-                    vello::paint(&mut vello::Cpu { ctx: &mut ctx, resources: &mut resources, cache: &mut vello::Cache::default() }, ui.scene().ok_or("no scene")?, vello::kurbo::Affine::IDENTITY).map_err(|e| format!("{e:?}"))?;
-                    ctx.flush();
-                    let mut pix = vello::vello_cpu::Pixmap::new(w, h);
-                    ctx.render(&mut pix, &mut resources);
-                    if let Some(dir) = shots {
-                        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-                        let rgba: Vec<_> = pix.take_unpremultiplied().iter().flat_map(|p| [p.r, p.g, p.b, p.a]).collect();
-                        moose::core::screenshot::save_png(&dir.join(&name), &rgba, u32::from(w), u32::from(h));
-                    }
-                    Ok(())
-                }));
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                    || -> Result<(), String> {
+                        let mut ui = theme::ui();
+                        for _ in 0..2 {
+                            let view = ir_view::view(
+                                &mut ui,
+                                &face,
+                                ir::PageRef(p),
+                                &assets,
+                                mode,
+                                1.,
+                                &mut values,
+                            );
+                            ui.frame(
+                                view,
+                                Some(Size::new(f64::from(w), f64::from(h))),
+                                Input::default(),
+                                1. / 60.,
+                            )
+                            .map_err(|e| format!("{e:?}"))?;
+                        }
+                        let mut ctx = vello::vello_cpu::RenderContext::new(w, h);
+                        let mut resources = vello::vello_cpu::Resources::default();
+                        vello::paint(
+                            &mut vello::Cpu {
+                                ctx: &mut ctx,
+                                resources: &mut resources,
+                                cache: &mut vello::Cache::default(),
+                            },
+                            ui.scene().ok_or("no scene")?,
+                            vello::kurbo::Affine::IDENTITY,
+                        )
+                        .map_err(|e| format!("{e:?}"))?;
+                        ctx.flush();
+                        let mut pix = vello::vello_cpu::Pixmap::new(w, h);
+                        ctx.render(&mut pix, &mut resources);
+                        if let Some(dir) = shots {
+                            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+                            let rgba: Vec<_> = pix
+                                .take_unpremultiplied()
+                                .iter()
+                                .flat_map(|p| [p.r, p.g, p.b, p.a])
+                                .collect();
+                            moose::core::screenshot::save_png(
+                                &dir.join(&name),
+                                &rgba,
+                                u32::from(w),
+                                u32::from(h),
+                            );
+                        }
+                        Ok(())
+                    },
+                ));
                 renders.push(json!({"presentation": format!("{mode:?}"), "page": p, "ok": matches!(result, Ok(Ok(()))), "error": match result { Ok(Ok(())) => None, Ok(Err(e)) => Some(e), Err(_) => Some("renderer panic".into()) }, "shot": shots.map(|d| d.join(&name).display().to_string())}));
             }
         }
@@ -217,14 +250,23 @@ mod tests {
     fn komplete_ui_load_is_an_authored_frontend_even_without_stock_declarations() {
         let mut instrument = sampler_ir::Instrument {
             behaviors: vec![sampler_ir::Behavior {
-                name: "Komplete".into(), language: sampler_ir::Language::Ksp,
+                name: "Komplete".into(),
+                language: sampler_ir::Language::Ksp,
                 source: "on init\nload_komplete_ui(\"Main\")\nend on".into(),
-                slot: Some(0), state: vec![], requires: vec![],
-            }], ..Default::default()
+                slot: Some(0),
+                state: vec![],
+                requires: vec![],
+            }],
+            ..Default::default()
         };
-        let report = super::survey(&mut instrument, &sampler_kontakt::Options {
-            library: Some(std::env::temp_dir().join("komplete-ui-survey.nki")), ..Default::default()
-        }, None);
+        let report = super::survey(
+            &mut instrument,
+            &sampler_kontakt::Options {
+                library: Some(std::env::temp_dir().join("komplete-ui-survey.nki")),
+                ..Default::default()
+            },
+            None,
+        );
         assert_eq!(report["authored"], true);
         assert_eq!(report["expected_frontends"][0]["frontend"], "komplete_ui");
         assert_eq!(report["expected_frontends"][0]["loaded"], false);
