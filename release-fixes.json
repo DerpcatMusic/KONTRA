@@ -3235,6 +3235,205 @@
       ],
       "validation": "Four failing-first ownership/lifecycle checks and source-policy tests pass; real Contrabassoon finishes at 2248 ms with zero voices/notes/pressed keys and faults.",
       "accepted": true
+    },
+    {
+      "id": "native-uvi-provider-independence",
+      "summary": "Open protected Falcon and UVI content with the native format implementation",
+      "source_commits": [
+        "8f4c3c7c7f268003a40bd34b6eff1b478cbb1650"
+      ],
+      "validation": "Owner focused regression/PCM checks passed; W0 reconciled source conflicts. Combined serial workspace and native-only quick gates are required before publication; quiet performance remains unmeasured.",
+      "accepted": true,
+      "release_note": "Open protected Falcon and UVI content with the native format implementation.",
+      "category": "Fixed"
+    },
+    {
+      "id": "uvi-deterministic-callback-work",
+      "summary": "Bound UVI script evaluation by deterministic callback work",
+      "source_commits": [
+        "469013bc2f5e4c773c696fe873e82d984b9b4328"
+      ],
+      "validation": "Owner focused regression/PCM checks passed; W0 reconciled source conflicts. Combined serial workspace and native-only quick gates are required before publication; quiet performance remains unmeasured.",
+      "accepted": true,
+      "release_note": "Bound UVI script evaluation by deterministic callback work.",
+      "category": "Fixed"
+    },
+    {
+      "id": "uvi-same-clock-coroutine-wakeups",
+      "summary": "Stop zero-wait coroutine wakeups from exhausting a callback indefinitely",
+      "source_commits": [
+        "78d159df8d0bff77f533e31a4b0fa7c9b6408a79"
+      ],
+      "validation": "Owner focused regression/PCM checks passed; W0 reconciled source conflicts. Combined serial workspace and native-only quick gates are required before publication; quiet performance remains unmeasured.",
+      "accepted": true,
+      "release_note": "Stop zero-wait coroutine wakeups from exhausting a callback indefinitely.",
+      "category": "Fixed"
+    },
+    {
+      "id": "uvi-complete-inspection-publication",
+      "summary": "Publish complete authored UVI controls before audit replies while preserving live work limits",
+      "source_commits": [
+        "7b586bb5741fb28d8475d21376c2a506c98bb924"
+      ],
+      "validation": "Owner focused regression/PCM checks passed; W0 reconciled source conflicts. Combined serial workspace and native-only quick gates are required before publication; quiet performance remains unmeasured.",
+      "accepted": true,
+      "release_note": "Publish complete authored UVI controls before audit replies while preserving live work limits.",
+      "category": "Fixed"
+    },
+    {
+      "id": "census-member-identity-sanitization",
+      "summary": "Retain member identity without persisting instrument member names",
+      "source_commits": [
+        "45643d76e39295b115078a6ed9947037469ded1d"
+      ],
+      "validation": "Owner focused regression/PCM checks passed; W0 reconciled source conflicts. Combined serial workspace and native-only quick gates are required before publication; quiet performance remains unmeasured.",
+      "accepted": true,
+      "release_note": "Retain member identity without persisting instrument member names.",
+      "category": "Fixed"
+    },
+    {
+      "id": "census-heavy-fifo-yield",
+      "summary": "Yield long metadata census shards to waiting builds",
+      "source_commits": [
+        "d9357a8ec6aa199cad90ddb59f8d637082fae277"
+      ],
+      "validation": "Owner focused regression/PCM checks passed; W0 reconciled source conflicts. Combined serial workspace and native-only quick gates are required before publication; quiet performance remains unmeasured.",
+      "accepted": true,
+      "release_note": "Yield long metadata census shards to waiting builds.",
+      "category": "Fixed"
+    },
+    {
+      "id": "runtime-diagnostic-refresh-stability",
+      "summary": "Avoid duplicate runtime fault summaries on unchanged refreshes",
+      "source_commits": [
+        "e548ced2b3f1716c180fd3ab4eae849a42b2c037"
+      ],
+      "validation": "Owner focused regression/PCM checks passed; W0 reconciled source conflicts. Combined serial workspace and native-only quick gates are required before publication; quiet performance remains unmeasured.",
+      "accepted": true,
+      "release_note": "Avoid duplicate runtime fault summaries on unchanged refreshes.",
+      "category": "Fixed"
+    },
+    {
+      "id": "part-tone-preinsert-placement",
+      "summary": "Place part Tone before instrument effects as in KONTRA v1",
+      "source_commits": [
+        "a2df9489d675631cfe1dab351ae833ac9f4372cc"
+      ],
+      "validation": "Owner focused regression/PCM checks passed; W0 reconciled source conflicts. Combined serial workspace and native-only quick gates are required before publication; quiet performance remains unmeasured.",
+      "accepted": true,
+      "release_note": "Place part Tone before instrument effects as in KONTRA v1.",
+      "category": "Fixed"
+    },
+    {
+      "id": "ksp-midi-object-command-completions",
+      "summary": "Execute authored KSP MIDI object commands and return host file completions",
+      "source_commits": [
+        "9988ee59a13e36e85a75a504c78e520977d9f7f0"
+      ],
+      "validation": "Owner focused regression/PCM checks passed; W0 reconciled source conflicts. Combined serial workspace and native-only quick gates are required before publication; quiet performance remains unmeasured.",
+      "accepted": true,
+      "release_note": "Execute authored KSP MIDI object commands and return host file completions.",
+      "category": "Fixed"
+    },
+    {
+      "id": "midi-unpublished-job-rejection",
+      "summary": "Reject MIDI completions and captures for unpublished jobs",
+      "source_commits": [
+        "56a315dcdd219730a0fc54fd71082e0334f0e863"
+      ],
+      "validation": "Owner focused regression/PCM checks passed; W0 reconciled source conflicts. Combined serial workspace and native-only quick gates are required before publication; quiet performance remains unmeasured.",
+      "accepted": true,
+      "release_note": "Reject MIDI completions and captures for unpublished jobs.",
+      "category": "Fixed"
+    },
+    {
+      "id": "nightly-independent-snapshot-publication",
+      "summary": "Preserve every completed Nightly snapshot and publish source versions in order",
+      "source_commits": [
+        "635c1ea57e3679ca8f3f4e9b4f1a3c7c2156c539"
+      ],
+      "validation": "Owner focused regression/PCM checks passed; W0 reconciled source conflicts. Combined serial workspace and native-only quick gates are required before publication; quiet performance remains unmeasured.",
+      "accepted": true,
+      "release_note": "Preserve every completed Nightly snapshot and publish source versions in order.",
+      "category": "Fixed"
+    },
+    {
+      "id": "visible-native-bank-failure-causes",
+      "summary": "Show grouped failed UVI banks with accurate access causes and affected locations",
+      "source_commits": [
+        "24966c074a472fbe88207615a52f30dee4780a7c"
+      ],
+      "validation": "Owner focused regression/PCM checks passed; W0 reconciled source conflicts. Combined serial workspace and native-only quick gates are required before publication; quiet performance remains unmeasured.",
+      "accepted": true,
+      "release_note": "Show grouped failed UVI banks with accurate access causes and affected locations.",
+      "category": "Fixed"
+    },
+    {
+      "id": "sound-editor-piano-keyboard",
+      "summary": "Keep the piano keyboard visible in the current Sound editor",
+      "source_commits": [
+        "cdf0e183be0f44c2ed28e918bab6f9b02308fab9"
+      ],
+      "validation": "Owner focused regression/PCM checks passed; W0 reconciled source conflicts. Combined serial workspace and native-only quick gates are required before publication; quiet performance remains unmeasured.",
+      "accepted": true,
+      "release_note": "Keep the piano keyboard visible in the current Sound editor.",
+      "category": "Fixed"
+    },
+    {
+      "id": "popup-wheel-event-capture",
+      "summary": "Keep wheel gestures inside dropdown and picker popups",
+      "source_commits": [
+        "fcb62d6c25ad944966fd5b0269d9108e300cf204"
+      ],
+      "validation": "Owner focused regression/PCM checks passed; W0 reconciled source conflicts. Combined serial workspace and native-only quick gates are required before publication; quiet performance remains unmeasured.",
+      "accepted": true,
+      "release_note": "Keep wheel gestures inside dropdown and picker popups.",
+      "category": "Fixed"
+    },
+    {
+      "id": "info-instrument-name-duplication",
+      "summary": "Remove the repeated instrument name in Info",
+      "source_commits": [
+        "28f11fdbc2d8d258ed3a504b437728131cd93d1a"
+      ],
+      "validation": "Owner focused regression/PCM checks passed; W0 reconciled source conflicts. Combined serial workspace and native-only quick gates are required before publication; quiet performance remains unmeasured.",
+      "accepted": true,
+      "release_note": "Remove the repeated instrument name in Info.",
+      "category": "Fixed"
+    },
+    {
+      "id": "gpu-damage-local-vector-transform",
+      "summary": "Preserve partial redraw coordinates for GPU vector rendering",
+      "source_commits": [
+        "e0382501196f2de6c3aae92470e72925899b7433"
+      ],
+      "validation": "Owner focused regression/PCM checks passed; W0 reconciled source conflicts. Combined serial workspace and native-only quick gates are required before publication; quiet performance remains unmeasured.",
+      "accepted": true,
+      "release_note": "Preserve partial redraw coordinates for GPU vector rendering.",
+      "category": "Fixed"
+    },
+    {
+      "id": "eq-independent-band-gain-handles",
+      "summary": "Show each EQ band gain and apply the correct graph drag scale",
+      "source_commits": [
+        "c9ac9372ac5a529765dd7e13dace83e73c1ebe73"
+      ],
+      "validation": "Owner focused regression/PCM checks passed; W0 reconciled source conflicts. Combined serial workspace and native-only quick gates are required before publication; quiet performance remains unmeasured.",
+      "accepted": true,
+      "release_note": "Show each EQ band gain and apply the correct graph drag scale.",
+      "category": "Fixed"
+    },
+    {
+      "id": "immutable-zone-chain-sharing",
+      "summary": "Share identical immutable zone chains without changing audible PCM",
+      "source_commits": [
+        "ed07a54938db5717103ae81eb45a60a0fc6dc66f",
+        "f8a570729dc667bd2387255590a77f91dd0240bd"
+      ],
+      "validation": "Owner focused regression/PCM checks passed; W0 reconciled source conflicts. Combined serial workspace and native-only quick gates are required before publication; quiet performance remains unmeasured.",
+      "accepted": true,
+      "release_note": "Share identical immutable zone chains without changing audible PCM.",
+      "category": "Improved"
     }
   ]
 }
