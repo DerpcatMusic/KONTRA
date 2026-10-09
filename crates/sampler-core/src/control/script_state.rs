@@ -124,14 +124,21 @@ impl Runtime {
 
     /// Register the value-only snapshot domain during off-thread preparation.
     /// Unregistered plans conservatively track every script write.
-    pub fn watch_script_state_values(&mut self, plan: PlanId, values: &[ScriptStateEntry]) -> Result<(), Error> {
+    pub fn watch_script_state_values(
+        &mut self,
+        plan: PlanId,
+        values: &[ScriptStateEntry],
+    ) -> Result<(), Error> {
         // Validate the entire request before changing the existing capture domain.
         for entry in values {
             self.script_state_value(plan, entry.address)?;
         }
         let generation = self.plans.get_mut(plan.0).ok_or(Error::StaleHandle)?;
-        let mut masks: Vec<Box<[u64]>> = generation.scripts.iter()
-            .map(|bank| vec![0; bank.cells.len().div_ceil(64)].into_boxed_slice()).collect();
+        let mut masks: Vec<Box<[u64]>> = generation
+            .scripts
+            .iter()
+            .map(|bank| vec![0; bank.cells.len().div_ceil(64)].into_boxed_slice())
+            .collect();
         for entry in values {
             if let ScriptStateAddress::Cell { instance, index } = entry.address {
                 masks[usize::from(instance.0)][index as usize / 64] |= 1 << (index % 64);
@@ -147,9 +154,17 @@ impl Runtime {
 
     /// Registered snapshot owner: visit changed captured cells without clearing them.
     /// False means a plan has no complete registered domain and needs full capture.
-    pub fn visit_dirty_script_cells(&self, plan: PlanId, mut visit: impl FnMut(ScriptStateAddress)) -> Result<bool, Error> {
+    pub fn visit_dirty_script_cells(
+        &self,
+        plan: PlanId,
+        mut visit: impl FnMut(ScriptStateAddress),
+    ) -> Result<bool, Error> {
         let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
-        if generation.scripts.iter().any(|bank| bank.dirty_cells.is_none()) {
+        if generation
+            .scripts
+            .iter()
+            .any(|bank| bank.dirty_cells.is_none())
+        {
             return Ok(false);
         }
         for (instance, bank) in generation.scripts.iter().enumerate() {
@@ -158,7 +173,10 @@ impl Runtime {
                 while bits != 0 {
                     let index = word * 64 + bits.trailing_zeros() as usize;
                     bits &= bits - 1;
-                    visit(ScriptStateAddress::Cell { instance: ScriptInstanceId(instance as u16), index: index as u32 });
+                    visit(ScriptStateAddress::Cell {
+                        instance: ScriptInstanceId(instance as u16),
+                        index: index as u32,
+                    });
                 }
             }
         }
@@ -169,7 +187,9 @@ impl Runtime {
     pub fn clear_dirty_script_cells(&mut self, plan: PlanId) -> Result<(), Error> {
         let generation = self.plans.get_mut(plan.0).ok_or(Error::StaleHandle)?;
         for bank in &mut generation.scripts {
-            if let Some(dirty) = bank.dirty_cells.as_mut() { dirty.fill(0); }
+            if let Some(dirty) = bank.dirty_cells.as_mut() {
+                dirty.fill(0);
+            }
         }
         Ok(())
     }

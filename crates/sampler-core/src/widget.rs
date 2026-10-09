@@ -438,7 +438,8 @@ impl Runtime {
         if let Some(write) = scalar {
             self.edit_controls_now(plan, expected_revision, &[write])?;
             if let Some(drop) = w.drop {
-                let bank = &mut self.plans.get_mut(plan.0).unwrap().scripts[usize::from(w.instance.0)];
+                let bank =
+                    &mut self.plans.get_mut(plan.0).unwrap().scripts[usize::from(w.instance.0)];
                 for index in drop.counts as usize..drop.counts as usize + 3 {
                     let changed = bank.cells[index] != 0;
                     bank.cells[index] = 0;

@@ -203,14 +203,27 @@ fn w10_held_note_budget_returns_capacity_without_growing() {
 
 #[test]
 fn midi_release_pairs_the_physical_note_across_same_key_channels() {
-    let (mut rt, mut driver) = fixture("function onNote(e) playNote(e.note,e.velocity,-1) end", true);
-    let input = |channel| Input { protocol: Protocol::Midi1, port: 0, group: 0, channel, key: 60, external_id: None };
+    let (mut rt, mut driver) = fixture(
+        "function onNote(e) playNote(e.note,e.velocity,-1) end",
+        true,
+    );
+    let input = |channel| Input {
+        protocol: Protocol::Midi1,
+        port: 0,
+        group: 0,
+        channel,
+        key: 60,
+        external_id: None,
+    };
     let first = rt.note_on(input(0), 60, 1.).unwrap();
     driver.note_on(&mut rt, first, 60, 1.).unwrap();
     let second = rt.note_on(input(1), 60, 1.).unwrap();
     driver.note_on(&mut rt, second, 60, 1.).unwrap();
     driver.note_off_note(&mut rt, second, 60).unwrap();
-    assert!(rt.key_down(first).unwrap(), "another channel's same-key gate stays held");
+    assert!(
+        rt.key_down(first).unwrap(),
+        "another channel's same-key gate stays held"
+    );
     assert!(!rt.key_down(second).unwrap());
     driver.note_off_note(&mut rt, first, 60).unwrap();
     assert!(!rt.key_down(first).unwrap());

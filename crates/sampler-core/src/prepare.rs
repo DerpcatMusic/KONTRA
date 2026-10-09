@@ -553,7 +553,11 @@ impl Prepared {
             {
                 return Err(Error::InvalidInput);
             }
-            let root_key = if r.playback.wavetable.is_some() { Some(69) } else { r.root_key };
+            let root_key = if r.playback.wavetable.is_some() {
+                Some(69)
+            } else {
+                r.root_key
+            };
             let mut playback = r.playback;
             if let Some(root) = root_key {
                 playback.transpose_semitones +=
@@ -602,7 +606,11 @@ impl Prepared {
             offsets[key as usize] = candidates.len();
             for (region, r) in regions.iter().enumerate() {
                 if r.key_low <= key && key <= r.key_high {
-                    let step = if let Some(root) = if r.playback.wavetable.is_some() { Some(69) } else { r.root_key } {
+                    let step = if let Some(root) = if r.playback.wavetable.is_some() {
+                        Some(69)
+                    } else {
+                        r.root_key
+                    } {
                         let mut playback = r.playback;
                         playback.transpose_semitones +=
                             f64::from(key) - f64::from(root) + tuning.0[key as usize];
@@ -610,7 +618,9 @@ impl Prepared {
                     } else {
                         prepared_regions[region].cursor.cursor(&cursor_loops).step()
                     };
-                    if r.playback.wavetable.is_none() && !(super::resample::MIN_STEP..=super::resample::MAX_STEP).contains(&step) {
+                    if r.playback.wavetable.is_none()
+                        && !(super::resample::MIN_STEP..=super::resample::MAX_STEP).contains(&step)
+                    {
                         return Err(Error::InvalidInput);
                     }
                     candidates.push(Candidate { region, step });
@@ -965,7 +975,12 @@ impl Prepared {
         match (pitch, r.root_key) {
             (NotePitch::Absolute(pitch), Some(root)) => {
                 let semitones = r.transpose_semitones + (pitch - f64::from(root));
-                if r.cursor.cursor(&self.cursor_loops).wavetable().is_some() { 440. * 2048. / f64::from(self.rate) * super::pitch::ratio(semitones) } else { f64::from(self.pcm[r.sample].sample_rate()) / f64::from(self.rate) * super::pitch::ratio(semitones) }
+                if r.cursor.cursor(&self.cursor_loops).wavetable().is_some() {
+                    440. * 2048. / f64::from(self.rate) * super::pitch::ratio(semitones)
+                } else {
+                    f64::from(self.pcm[r.sample].sample_rate()) / f64::from(self.rate)
+                        * super::pitch::ratio(semitones)
+                }
             }
             _ => candidate.step,
         }
@@ -1319,7 +1334,14 @@ impl Prepared {
             });
             let mut matching = Matching::new(ranges);
             while let Some(candidate) = matching.next(self, state, velocity) {
-                range.apply_source(self.step(candidate, pitch), self.regions[candidate.region].cursor.cursor(&self.cursor_loops).wavetable().is_some())?;
+                range.apply_source(
+                    self.step(candidate, pitch),
+                    self.regions[candidate.region]
+                        .cursor
+                        .cursor(&self.cursor_loops)
+                        .wavetable()
+                        .is_some(),
+                )?;
             }
             from = until;
         }

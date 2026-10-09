@@ -136,15 +136,23 @@ impl Runtime {
             .ok_or(Error::InvalidInput)
     }
     pub(super) fn behavior_write_script_cell(
-        &mut self, id: BehaviorId, cell: u32, value: i64,
+        &mut self,
+        id: BehaviorId,
+        cell: u32,
+        value: i64,
     ) -> Result<(), Error> {
         let cell = usize::try_from(cell).map_err(|_| Error::InvalidInput)?;
         let continuation = self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
         let plan = self.behavior_plan(continuation.owner)?;
         let program = continuation.program;
         let generation = self.plans.get_mut(plan.0).ok_or(Error::StaleHandle)?;
-        let instance = generation.prepared.programs[program].script_instance.ok_or(Error::InvalidInput)?;
-        let bank = generation.scripts.get_mut(usize::from(instance.0)).ok_or(Error::InvalidInput)?;
+        let instance = generation.prepared.programs[program]
+            .script_instance
+            .ok_or(Error::InvalidInput)?;
+        let bank = generation
+            .scripts
+            .get_mut(usize::from(instance.0))
+            .ok_or(Error::InvalidInput)?;
         let target = bank.cells.get_mut(cell).ok_or(Error::InvalidInput)?;
         // Port v1 refresh_range's changed-value test into the shared writer.
         let changed = *target != value;

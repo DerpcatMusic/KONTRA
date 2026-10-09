@@ -297,8 +297,12 @@ impl<S: Script> Driver<S> {
 
     /// Release the physical note paired by the MIDI adapter, across overlapping channels.
     pub fn note_off_note(&mut self, rt: &mut Runtime, note: NoteId, key: u8) -> Result<(), Error> {
-        let Some(ids) = self.held.get_mut(&key) else { return Ok(()) };
-        let Some(at) = ids.iter().position(|id| self.notes.get(id) == Some(&note)) else { return Ok(()) };
+        let Some(ids) = self.held.get_mut(&key) else {
+            return Ok(());
+        };
+        let Some(at) = ids.iter().position(|id| self.notes.get(id) == Some(&note)) else {
+            return Ok(());
+        };
         let id = ids.remove(at).unwrap();
         self.release_id(rt, id, key)
     }

@@ -45,7 +45,9 @@ impl Bank {
     }
 
     /// Directory-only catalog, declared access requirements and bank UUID; no payload reads.
-    pub fn catalog_status(path: &Path) -> Result<(Vec<String>, Option<String>, [u8; 16]), AccessError> {
+    pub fn catalog_status(
+        path: &Path,
+    ) -> Result<(Vec<String>, Option<String>, [u8; 16]), AccessError> {
         let bank_error = |e| AccessError::Bank(access::failure_reason(&e));
         let ufs = Ufs::open(path).map_err(bank_error)?;
         let directory = ufs
@@ -85,7 +87,11 @@ impl Bank {
                 programs.len()
             ));
         }
-        Ok((programs, (!reasons.is_empty()).then(|| reasons.join(" ")), ufs.header.uuid))
+        Ok((
+            programs,
+            (!reasons.is_empty()).then(|| reasons.join(" ")),
+            ufs.header.uuid,
+        ))
     }
 
     /// Open a bank for programs, scripts and samples, preparing content access.

@@ -19,7 +19,9 @@ thread_local! {
 }
 
 pub(super) fn submitted_control(id: ir::ControlId) {
-    SUBMITTED.with(|edits| { edits.borrow_mut().insert(format!("control-{}", id.0)); });
+    SUBMITTED.with(|edits| {
+        edits.borrow_mut().insert(format!("control-{}", id.0));
+    });
 }
 
 pub(super) fn submitted_widget(widget: &ir::Widget, indices: &[u32]) {
@@ -30,26 +32,44 @@ pub(super) fn submitted_widget(widget: &ir::Widget, indices: &[u32]) {
             SUBMITTED.with(|edits| {
                 let mut edits = edits.borrow_mut();
                 if matches!(widget.kind, ir::Kind::Table { .. } | ir::Kind::Xy { .. }) {
-                    edits.extend(indices.iter().map(|index| format!("typed-{}-{index}", id.0)));
+                    edits.extend(
+                        indices
+                            .iter()
+                            .map(|index| format!("typed-{}-{index}", id.0)),
+                    );
                 } else {
                     edits.insert(format!("typed-{}", id.0));
                 }
             });
         }
-        _ => {},
+        _ => {}
     }
     for index in indices {
-        if let Some(id) = widget.components.get(*index as usize) { submitted_control(*id); }
+        if let Some(id) = widget.components.get(*index as usize) {
+            submitted_control(*id);
+        }
     }
 }
 
 fn typed_values(out: &mut Values, id: ir::ControlId, value: &ir::Value) {
     match value {
-        ir::Value::Integers(values) => out.extend(values.iter().enumerate().map(|(index, value)|
-            (format!("typed-{}-{index}", id.0), ir::Value::Integer(*value)))),
-        ir::Value::Reals(values) => out.extend(values.iter().enumerate().map(|(index, value)|
-            (format!("typed-{}-{index}", id.0), ir::Value::Real(*value)))),
-        value => { out.insert(format!("typed-{}", id.0), value.clone()); },
+        ir::Value::Integers(values) => {
+            out.extend(values.iter().enumerate().map(|(index, value)| {
+                (
+                    format!("typed-{}-{index}", id.0),
+                    ir::Value::Integer(*value),
+                )
+            }))
+        }
+        ir::Value::Reals(values) => out.extend(
+            values
+                .iter()
+                .enumerate()
+                .map(|(index, value)| (format!("typed-{}-{index}", id.0), ir::Value::Real(*value))),
+        ),
+        value => {
+            out.insert(format!("typed-{}", id.0), value.clone());
+        }
     }
 }
 fn advance_editor_frame(core: &mut V2Core, mut observe: impl FnMut(&mut V2Core)) {
@@ -108,15 +128,32 @@ impl Gate {
         params.shared.widget_gate_install(&mut core);
         native_ui::gate_clear();
         let editor = Harness::new(&params, 1500., 1100.);
-        let mut gate = Self { params, core, editor, observing: None, observed_changes: BTreeSet::new(), submitted: BTreeSet::new(), frame: 0, current_target: None, first_native_diagnostic: None, fault_events: Vec::new(), fault_cursor: 0,
-            preemption_observations: Vec::new(), preemptions: 0, progress_truncated: false, phase: "load" };
+        let mut gate = Self {
+            params,
+            core,
+            editor,
+            observing: None,
+            observed_changes: BTreeSet::new(),
+            submitted: BTreeSet::new(),
+            frame: 0,
+            current_target: None,
+            first_native_diagnostic: None,
+            fault_events: Vec::new(),
+            fault_cursor: 0,
+            preemption_observations: Vec::new(),
+            preemptions: 0,
+            progress_truncated: false,
+            phase: "load",
+        };
         gate.settle();
         gate
     }
     fn tick(&mut self, input: Input) {
         self.editor.tick(input);
         let submitted = SUBMITTED.with(|edits| std::mem::take(&mut *edits.borrow_mut()));
-        if self.observing.is_some() { self.submitted.extend(submitted); }
+        if self.observing.is_some() {
+            self.submitted.extend(submitted);
+        }
         self.frame += 1;
         if self.first_native_diagnostic.is_none() && !native_ui::gate_diagnostics().is_empty() {
             self.first_native_diagnostic = Some((self.frame, self.current_target));
@@ -399,14 +436,25 @@ impl Gate {
 }
 
 fn changed(before: &Values, after: &Values, submitted: &BTreeSet<String>) -> Vec<String> {
-    after.iter().filter(|(key, value)| submitted.contains(*key) && before.get(*key).is_some_and(|old| old != *value))
-        .map(|(key, _)| key.clone()).collect()
+    after
+        .iter()
+        .filter(|(key, value)| {
+            submitted.contains(*key) && before.get(*key).is_some_and(|old| old != *value)
+        })
+        .map(|(key, _)| key.clone())
+        .collect()
 }
 
 #[test]
 fn gestures_require_the_submitted_owner_not_an_unrelated_listener() {
-    let before = BTreeMap::from([("control-1".into(), ir::Value::Real(0.)), ("typed-2".into(), ir::Value::Integer(0))]);
-    let after = BTreeMap::from([("control-1".into(), ir::Value::Real(1.)), ("typed-2".into(), ir::Value::Integer(1))]);
+    let before = BTreeMap::from([
+        ("control-1".into(), ir::Value::Real(0.)),
+        ("typed-2".into(), ir::Value::Integer(0)),
+    ]);
+    let after = BTreeMap::from([
+        ("control-1".into(), ir::Value::Real(1.)),
+        ("typed-2".into(), ir::Value::Integer(1)),
+    ]);
     let submitted = BTreeSet::from(["control-1".into()]);
     assert_eq!(changed(&before, &after, &submitted), ["control-1"]);
     assert!(changed(&before, &after, &BTreeSet::new()).is_empty());
@@ -418,11 +466,23 @@ fn gestures_require_the_submitted_owner_not_an_unrelated_listener() {
 fn gestures_require_the_touched_cell_not_another_array_cell() {
     let mut before = Values::new();
     let mut after = Values::new();
-    typed_values(&mut before, ir::ControlId(9), &ir::Value::Integers(vec![0, 0]));
-    typed_values(&mut after, ir::ControlId(9), &ir::Value::Integers(vec![0, 1]));
+    typed_values(
+        &mut before,
+        ir::ControlId(9),
+        &ir::Value::Integers(vec![0, 0]),
+    );
+    typed_values(
+        &mut after,
+        ir::ControlId(9),
+        &ir::Value::Integers(vec![0, 1]),
+    );
     let submitted = BTreeSet::from(["typed-9-0".into()]);
     assert!(changed(&before, &after, &submitted).is_empty());
-    typed_values(&mut after, ir::ControlId(9), &ir::Value::Integers(vec![1, 1]));
+    typed_values(
+        &mut after,
+        ir::ControlId(9),
+        &ir::Value::Integers(vec![1, 1]),
+    );
     assert_eq!(changed(&before, &after, &submitted), ["typed-9-0"]);
     assert!(!retained(&["typed-9-0".into()], &after, &before));
 }
@@ -568,21 +628,37 @@ fn original_widget_gestures() {
                 let mut reason = "parameter-unchanged";
                 let mut keys = Vec::new();
                 let mut submitted_parameters = 0;
-                if Instant::now() >= deadline { exhausted = true; reason = "probe-budget"; }
-                else if let Some(at) = gate.hit(&id) {
+                if Instant::now() >= deadline {
+                    exhausted = true;
+                    reason = "probe-budget";
+                } else if let Some(at) = gate.hit(&id) {
                     for attempt in 0..6 {
                         keys = gate.gesture(&id, &kind, at, attempt);
                         submitted_parameters = submitted_parameters.max(gate.submitted.len());
-                        if !keys.is_empty() { reason = "persistence-pending"; break; }
-                        if gate.editor.ui.scene().unwrap().surface(&id).is_none() { reason = "navigation-only"; break; }
+                        if !keys.is_empty() {
+                            reason = "persistence-pending";
+                            break;
+                        }
+                        if gate.editor.ui.scene().unwrap().surface(&id).is_none() {
+                            reason = "navigation-only";
+                            break;
+                        }
                     }
-                    if reason == "parameter-unchanged" && submitted_parameters == 0 { reason = "widget-edit-not-submitted"; }
-                } else { reason = "occluded-or-outside-viewport"; }
+                    if reason == "parameter-unchanged" && submitted_parameters == 0 {
+                        reason = "widget-edit-not-submitted";
+                    }
+                } else {
+                    reason = "occluded-or-outside-viewport";
+                }
                 let faults = gate.faults();
                 initial_faults += faults;
-                if faults > 0 { reason = "script-or-render-fault"; }
+                if faults > 0 {
+                    reason = "script-or-render-fault";
+                }
                 results.push((serde_json::json!({"target_sha256": sha2::Sha256::digest(id.as_bytes()).iter().map(|b|format!("{b:02x}")).collect::<String>(), "source": source, "page": page, "kind": kind, "reason": reason, "submitted_parameters": submitted_parameters, "parameter_changes": keys.len(), "value_changed": !keys.is_empty(), "parameter_reached": !keys.is_empty(), "persistence": false}), keys));
-                if exhausted { break; }
+                if exhausted {
+                    break;
+                }
             }
         }
         if exhausted {

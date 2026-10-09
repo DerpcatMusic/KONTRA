@@ -102,7 +102,11 @@ pub fn lock<V>(shared: &Mutex<Shared<V>>) -> MutexGuard<'_, Shared<V>> {
         Err(error) => {
             let guard = error.into_inner();
             shared.clear_poison();
-            crate::diagnostics::error("mui", "shared_lock_recovered", "Recovered poisoned UI state without resetting its data; inspect the original panic");
+            crate::diagnostics::error(
+                "mui",
+                "shared_lock_recovered",
+                "Recovered poisoned UI state without resetting its data; inspect the original panic",
+            );
             guard
         }
     }

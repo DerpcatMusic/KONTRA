@@ -296,7 +296,10 @@ impl Cursor {
         mut accept: impl FnMut(u32, Range<usize>) -> bool,
     ) -> bool {
         if self.wavetable.is_some() {
-            return frames == 0 || self.done() || envelope.done() || accept(0, self.start..self.end);
+            return frames == 0
+                || self.done()
+                || envelope.done()
+                || accept(0, self.start..self.end);
         }
         let mut covered_end: Option<i128> = None;
         let mut previous_step = self.step();
