@@ -105,7 +105,7 @@ pub(crate) fn render_encoding_full(
 ) -> (Recording, ResourceProxy) {
     let mut render = Render::new();
     let mut recording =
-        render.render_encoding_coarse(encoding, resolver, shaders, image_atlas, params, false);
+        render.render_encoding_coarse(encoding, resolver, shaders, image_atlas, params, std::env::var_os("KONTRA_GPU_ENCODING_AUDIT").is_some());
     let out_image = render.out_image();
     render.record_fine(shaders, &mut recording);
     (recording, out_image.into())
@@ -222,6 +222,9 @@ impl Render {
                 params.width,
                 params.height
             );
+        }
+        if std::env::var_os("KONTRA_GPU_ENCODING_AUDIT").is_some() {
+            eprintln!("GPU_WORK paths={} draws={} clips={} padded_path_tags={} large_path_scan={} lines_capacity={} tiles_capacity={} blend_capacity={}",layout.n_paths,layout.n_draw_objects,layout.n_clips,layout.path_tags_size(),cpu_config.workgroup_counts.use_large_path_scan,cpu_config.buffer_sizes.lines.len(),cpu_config.buffer_sizes.tiles.len(),cpu_config.buffer_sizes.blend_spill.len());
         }
         let buffer_sizes = &cpu_config.buffer_sizes;
         let wg_counts = &cpu_config.workgroup_counts;
