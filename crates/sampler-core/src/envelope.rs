@@ -109,7 +109,20 @@ impl Default for Envelope {
 }
 
 impl Envelope {
-    pub(crate) fn trace_parameters(&self) -> [(&'static str, f64); 10] { [("delay_frames",self.delay as f64),("attack_frames",self.attack as f64),("hold_frames",self.hold as f64),("decay_frames",self.decay as f64),("sustain",self.sustain as f64),("release_frames",self.release as f64),("one_shot",f64::from(self.one_shot)),("attack_curvature",self.curves[0].curvature),("decay_curvature",self.curves[1].curvature),("release_curvature",self.curves[2].curvature)] }
+    pub(crate) fn trace_parameters(&self) -> [(&'static str, f64); 10] {
+        [
+            ("delay_frames", self.delay as f64),
+            ("attack_frames", self.attack as f64),
+            ("hold_frames", self.hold as f64),
+            ("decay_frames", self.decay as f64),
+            ("sustain", self.sustain as f64),
+            ("release_frames", self.release as f64),
+            ("one_shot", f64::from(self.one_shot)),
+            ("attack_curvature", self.curves[0].curvature),
+            ("decay_curvature", self.curves[1].curvature),
+            ("release_curvature", self.curves[2].curvature),
+        ]
+    }
     pub fn new(
         attack: u32,
         hold: u32,
@@ -369,7 +382,17 @@ impl EnvelopeState {
         matches!(self.phase, Phase::Release | Phase::Done)
     }
 
-    pub(super) fn editor_phase(&self)->u8 {match self.phase {Phase::Attack=>0,Phase::Hold=>1,Phase::Decay=>2,Phase::Sustain=>3,Phase::Release=>4,Phase::Delay=>5,Phase::Done=>6}}
+    pub(super) fn editor_phase(&self) -> u8 {
+        match self.phase {
+            Phase::Attack => 0,
+            Phase::Hold => 1,
+            Phase::Decay => 2,
+            Phase::Sustain => 3,
+            Phase::Release => 4,
+            Phase::Delay => 5,
+            Phase::Done => 6,
+        }
+    }
     /// The level the next frame starts from.
     pub(super) fn current(&self) -> f32 {
         self.level()
@@ -413,22 +436,32 @@ impl EnvelopeState {
         None
     }
 
-    /// Level after `frames` more frames, as if `next` ran that many times.
-    /// Linear stages jump; curved stages still step per frame.
-    // ponytail: curved stages step per frame; jump with Curve::at if modulation envelopes get hot.
+    /// Port v1 voice.rs::Envelope::run(None): advance without discarded levels.
+    /// Keep v2's recurrence bits; a 64-frame anchor overwrites earlier steps.
     pub(super) fn advance(&mut self, mut frames: u32) -> f32 {
         while frames > 0 && !matches!(self.phase, Phase::Sustain | Phase::Done) {
-            if self.curve().curvature != 0.0 {
-                self.next();
-                frames -= 1;
-                continue;
-            }
             let step = frames.min(self.duration() - self.age);
-            self.age += step;
-            frames -= step;
-            if self.age == self.duration() {
-                self.enter(self.following());
+            let curve = self.curve();
+            if curve.curvature != 0.0 {
+                let target = self.age + step;
+                let anchor = target.min(self.duration() - 1) / 64 * 64;
+                if anchor > self.age {
+                    self.age = anchor;
+                    self.progress = curve.at(self.age, self.duration());
+                    self.delta = curve.delta
+                        * (curve.curvature * (f64::from(self.age) / f64::from(self.duration())))
+                            .exp();
+                }
+                for _ in self.age..target {
+                    self.step();
+                }
+            } else {
+                self.age += step;
+                if self.age == self.duration() {
+                    self.enter(self.following());
+                }
             }
+            frames -= step;
         }
         self.level()
     }
@@ -438,6 +471,11 @@ impl EnvelopeState {
         if matches!(self.phase, Phase::Sustain | Phase::Done) {
             return value;
         }
+        self.step();
+        value
+    }
+
+    fn step(&mut self) {
         self.age += 1; // Strictly below the u32 duration.
         if self.age == self.duration() {
             self.enter(self.following());
@@ -457,7 +495,6 @@ impl EnvelopeState {
                 }
             }
         }
-        value
     }
 }
 
