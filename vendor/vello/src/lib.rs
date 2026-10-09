@@ -486,6 +486,7 @@ impl Renderer {
             &mut self.image_atlas,
             params,
         );
+        let audit_bump = recording.commands.iter().find_map(|c| if let recording::Command::Download(proxy)=c {Some(*proxy)}else{None});
         let external_resources = [ExternalResource::Image(
             *target.as_image().unwrap(),
             texture,
@@ -499,6 +500,17 @@ impl Renderer {
             #[cfg(feature = "wgpu-profiler")]
             &mut self.profiler,
         )?;
+        if let Some(proxy) = audit_bump {
+            let buffer = self.engine.get_download(proxy).expect("numeric GPU bump download");
+            let (send,recv)=std::sync::mpsc::sync_channel(1);
+            buffer.slice(..).map_async(wgpu::MapMode::Read,move |r| {let _=send.send(r);});
+            device.poll(wgpu::PollType::wait_indefinitely()).expect("numeric GPU bump wait");
+            recv.recv().expect("numeric GPU bump result").expect("numeric GPU bump mapping");
+            let mapped=buffer.slice(..).get_mapped_range().expect("numeric GPU bump bytes");
+            let bump: vello_encoding::BumpAllocators = bytemuck::pod_read_unaligned(&mapped);
+            eprintln!("GPU_BUMP failed={} binning={} ptcl={} tile={} seg_counts={} segments={} blend={} lines={}",bump.failed,bump.binning,bump.ptcl,bump.tile,bump.seg_counts,bump.segments,bump.blend,bump.lines);
+            drop(mapped);buffer.unmap();self.engine.free_download(proxy);
+        }
         // N.B. This is horrible; this integration of wgpu-profiler really needs some work...
         #[cfg(feature = "wgpu-profiler")]
         {

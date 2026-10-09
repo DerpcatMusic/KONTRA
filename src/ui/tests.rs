@@ -2313,6 +2313,9 @@ fn shared_context_menu_never_fades_over_interactive_content() {
     let mut h=Harness::new(p,1180.,760.);
     h.idle(4);
     let build_ms = start.elapsed().as_secs_f64() * 1000.;
+    if let Some(output) = std::env::var_os("KONTRA_UI_GPU_AUDIT") {
+        super::gpu_audit::frames(&mut h, Path::new(&output));
+    }
     std::thread::sleep(std::time::Duration::from_secs(4));
     let status=std::fs::read_to_string("/proc/self/status").unwrap();
     let kb=|key:&str| status.lines().find_map(|l|l.strip_prefix(key)?.split_whitespace().next()?.parse::<u64>().ok()).unwrap_or(0);
