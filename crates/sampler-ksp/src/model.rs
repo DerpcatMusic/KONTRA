@@ -239,6 +239,8 @@ pub enum EvaluationFailure {
 pub enum PersistenceCompletion {
     #[default]
     NotPresent,
+    /// A wait-capable callback starts once when its plan activates.
+    Scheduled,
     Completed,
     Failed {
         category: EvaluationFailure,
