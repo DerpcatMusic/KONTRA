@@ -1100,6 +1100,7 @@ fn draw_modifiers(
                             node, props, style, modifiers, el, flex, fixed,
                         }), content));
                     };
+                    ui.capture_popup_wheel(popup_id.clone());
                     let popup = popup.id(popup_id)
                     .tracks_pointer()
                     .float()
@@ -1339,6 +1340,42 @@ pub(super) fn stack_peak((start, end, top): (usize, usize, usize)) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_popover_keeps_its_geometry_and_pointer_target_while_capturing_wheel() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("Resources/native_ui")).unwrap();
+        std::fs::write(dir.path().join("Resources/native_ui/main.nui"), b"return function() return nil end").unwrap();
+        let package = Arc::new(Package::load(&dir.path().join("fixture.nki")).unwrap());
+        let session = Session::new(package.clone(), "main", vec![]).unwrap();
+        let graph: Table = session.lua().load(r#"return {
+            kind="Rectangle",path="root",props={},children={},modifiers={
+                {name="frame",value={width=80,height=24}},
+                {name="popover",value={direction="down",spacing=4,content={
+                    kind="Rectangle",path="root/popover",props={},children={},modifiers={
+                        {name="frame",value={width=137,height=83}}
+                    }
+                }}}
+            }
+        }"#).eval().unwrap();
+        let mut ui = super::super::theme::ui();
+        let tick = |ui: &mut Ui, input: Input| {
+            let el = draw(ui, &graph, &package, &session, 0, 1., Style::default(), &mut HashMap::new()).unwrap();
+            ui.frame(stack![
+                col![block(300.,900.)].size(300.,200.).scroll().id("background"),
+                el.at(100.,30.)
+            ].size(300.,200.), None, input, 1./60.).unwrap();
+        };
+        for _ in 0..4 { tick(&mut ui, Input::default()); }
+        let popup = ui.scene().unwrap().surface("nui-0-root-popup").unwrap().frame;
+        assert_eq!(popup.size, Size::new(137.,83.));
+        let at = Point::new(popup.x+10.,popup.y+10.);
+        tick(&mut ui, Input { pointer: PointerInput {pos: Some(at), ..Default::default()},
+            wheel: Vec2::new(0.,60.), ..Default::default() });
+        assert!(ui.get("nui-0-root-popup").hovered, "the authored popup keeps its pointer target");
+        assert_eq!(ui.wheel("background"), None);
+        assert_eq!(ui.scroll("background"), [0.,0.]);
+    }
 
     #[cfg(feature = "shots")]
     #[test]
