@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 
 pub use crate::hir::{Persistence, WidgetKind};
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
     Int(i32),
@@ -13,6 +14,7 @@ pub enum Value {
 }
 
 /// A widget's script-visible value after `on init`.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub enum WidgetValue {
     /// Value with no script variable behind it (panel, mouse area, ...).
@@ -27,6 +29,7 @@ pub enum WidgetValue {
 
 /// A control declared by a Creator Tools performance view file rather than by
 /// the script; the host reads the `.nckp` and passes these in `Environment`.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct PerformanceControl {
     /// Variable name with its type prefix, e.g. `$Cutoff` or `%Steps`.
@@ -45,6 +48,7 @@ pub struct PerformanceControl {
 
 /// A Creator Tools performance view: its controls in declaration order (UI
 /// ids are consecutive in this order, as in Kontakt) and page settings.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PerformanceView {
     pub controls: Vec<PerformanceControl>,
@@ -78,6 +82,7 @@ impl PerformanceControl {
     }
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct MenuItem {
     pub text: String,
@@ -85,6 +90,7 @@ pub struct MenuItem {
     pub visible: bool,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Widget {
     /// Unbound source handle; never a visible performance-view widget.
@@ -138,6 +144,7 @@ impl Widget {
     }
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Key {
     pub color: Option<i32>,
@@ -146,6 +153,7 @@ pub struct Key {
     pub pressed: Option<i32>,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct KeyRange {
     pub low: i32,
@@ -154,6 +162,7 @@ pub struct KeyRange {
 }
 
 /// Where a persistent variable's value lives.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub enum Location {
     Control(ControlId),
@@ -169,6 +178,7 @@ pub enum Location {
     },
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Persistent {
     pub name: String,
@@ -177,6 +187,7 @@ pub struct Persistent {
 }
 
 /// Instrument-side request made by `on init`, kept in order for the host.
+#[cfg_attr(feature = "cache", derive(serde::Serialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Request {
     /// Builtin name, e.g. `set_engine_par`.
@@ -184,6 +195,7 @@ pub struct Request {
     pub args: Vec<Value>,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Interface {
     pub title: Option<String>,
@@ -204,6 +216,7 @@ pub struct Interface {
 
 /// Snapshot policy is shared across script slots. Modes 1/3 preserve the live
 /// script setup; modes 2/3 save only script state.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SnapshotMode {
     #[default]
@@ -229,6 +242,7 @@ impl SnapshotMode {
         matches!(self, Self::NativeWithInit | Self::NativeWithoutInit)
     }
 }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EvaluationFailure {
     Budget,
@@ -239,6 +253,8 @@ pub enum EvaluationFailure {
 pub enum PersistenceCompletion {
     #[default]
     NotPresent,
+    /// A wait-capable callback starts once when its plan activates.
+    Scheduled,
     Completed,
     Failed {
         category: EvaluationFailure,
@@ -246,6 +262,7 @@ pub enum PersistenceCompletion {
         builtin: Option<&'static str>,
     },
 }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Model {
     pub snapshot_mode: SnapshotMode,

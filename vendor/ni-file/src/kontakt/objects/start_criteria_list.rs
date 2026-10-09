@@ -47,20 +47,24 @@ impl StartCriteriaList {
         let num_items = reader.read_i8()?;
         let mut items = Vec::new();
 
-        if !(0..=15).contains(&num_items) { return Err(Error::Static("Invalid start criteria mask")); }
+        if !(0..=15).contains(&num_items) {
+            return Err(Error::Static("Invalid start criteria mask"));
+        }
 
         for i in 0..4 {
             if num_items & (1 << (i & 0x1F)) != 0 {
                 // ensure raw data
                 match reader.read_u8()? {
-                    0 => {},
+                    0 => {}
                     1 => return Err(Error::Static("Unexpected structured start criteria")),
                     _ => return Err(Error::Static("Invalid start criteria object flag")),
                 }
 
                 // ensure startcriteria v70
                 let version = reader.read_u16_le()?;
-                if version!=0x70 {return Err(Error::Static("Unsupported start criteria version"));}
+                if version != 0x70 {
+                    return Err(Error::Static("Unsupported start criteria version"));
+                }
 
                 let item = StartCriteriaParams::read(&mut reader)?;
                 items.push(item);
@@ -70,11 +74,17 @@ impl StartCriteriaList {
         let position = reader.stream_position()?;
         let end = reader.seek(SeekFrom::End(0))?;
         reader.seek(SeekFrom::Start(position))?;
-        let remaining = usize::try_from(end.checked_sub(position)
-            .ok_or(Error::Static("Invalid start criteria cursor"))?)
-            .map_err(|_| Error::Static("Start criteria tail exceeds address space"))?;
+        let remaining = usize::try_from(
+            end.checked_sub(position)
+                .ok_or(Error::Static("Invalid start criteria cursor"))?,
+        )
+        .map_err(|_| Error::Static("Start criteria tail exceeds address space"))?;
         let unknown_tail = reader.read_bytes(remaining)?;
-        Ok(Self { mask: num_items as u8, items, unknown_tail })
+        Ok(Self {
+            mask: num_items as u8,
+            items,
+            unknown_tail,
+        })
     }
 }
 

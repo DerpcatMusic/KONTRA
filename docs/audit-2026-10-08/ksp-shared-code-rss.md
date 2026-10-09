@@ -97,3 +97,9 @@ Overall CPU acceptance remains FAIL at Conflux256: p50 delta 4.9938 µs exceeds 
 Source-only compiled-code inspection also rules out a guessed scheduler frame-copy cost: exact 3f49 and the original shared-table profiling builds both emit 4,080-byte drain_behavior bodies with 264-byte stack frames and no memcpy/rep-movs sequence. Structural differences are Program strides and Arc header offsets. Sparse GDB sampling did not establish VM dominance. No separate KSP timer was added.
 
 NEXT: compare frozen original shared-table and follow-up binaries in a matched quiet window after W13/W9, within the callback-diagnosis timebox; preserve the unresolved result if no window is available.
+
+## CPU item parked by coordinator
+
+Symptom: original Dolce32 +14% remains disclosed; the fresh comparison passes Dolce, while Conflux256 still exceeds its A/A floor by about +5 µs p50.
+Best hypothesis: the matched old/new callback attribution is unresolved because baseline timings shifted; scheduler frame copies and argument-copy overhead were not established causes.
+Next step: preserve the CPU disclosure for the shipped alpha and revisit a matched comparison later; W5 now owns the larger 45-fault KSP semantic-analysis queue.

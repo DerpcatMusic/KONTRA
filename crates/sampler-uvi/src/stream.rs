@@ -46,18 +46,41 @@ impl Origin {
             Self::File(path) => {
                 let file = File::open(path)?;
                 let meta = file.metadata()?;
-                (file, 0, meta.len(), None, Guard::Loose(meta.len(), meta.modified().ok()))
+                (
+                    file,
+                    0,
+                    meta.len(),
+                    None,
+                    Guard::Loose(meta.len(), meta.modified().ok()),
+                )
             }
             #[cfg(feature = "library-access")]
-            Self::Member { ufs, offset, size, key } => (
-                ufs.open_snapshot().map_err(|e| io::Error::other(e.to_string()))?,
+            Self::Member {
+                ufs,
+                offset,
+                size,
+                key,
+            } => (
+                ufs.open_snapshot()
+                    .map_err(|e| io::Error::other(e.to_string()))?,
                 *offset,
                 *size,
                 *key,
                 Guard::Bank(ufs.clone()),
             ),
         };
-        Ok(Bytes { counted, file, base, size, key, guard, pos: 0, buf: Vec::new(), at: 0, riff: false })
+        Ok(Bytes {
+            counted,
+            file,
+            base,
+            size,
+            key,
+            guard,
+            pos: 0,
+            buf: Vec::new(),
+            at: 0,
+            riff: false,
+        })
     }
 }
 
@@ -116,7 +139,13 @@ impl Read for Bytes {
             while filled < len {
                 match self.file.read(&mut self.buf[filled..])? {
                     0 => break,
-                    n => { filled += n; if self.counted { sampler_kontakt::DISK_READ.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed); } },
+                    n => {
+                        filled += n;
+                        if self.counted {
+                            sampler_kontakt::DISK_READ
+                                .fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
                 }
             }
             if filled < len {
@@ -197,10 +226,17 @@ impl Stream {
             .format(&Hint::new(), stream, &FormatOptions::default(), &metadata)
             .map_err(|e| invalid(format!("not WAV, AIFF or FLAC: {e}")))?
             .format;
-        let track = format.default_track().ok_or_else(|| invalid("no audio track"))?;
+        let track = format
+            .default_track()
+            .ok_or_else(|| invalid("no audio track"))?;
         let (id, params) = (track.id, track.codec_params.clone());
-        let rate = params.sample_rate.ok_or_else(|| invalid("undeclared sample rate"))?;
-        let channels = params.channels.ok_or_else(|| invalid("undeclared channel count"))?.count();
+        let rate = params
+            .sample_rate
+            .ok_or_else(|| invalid("undeclared sample rate"))?;
+        let channels = params
+            .channels
+            .ok_or_else(|| invalid("undeclared channel count"))?
+            .count();
         let frames = match params.n_frames {
             Some(n) => n,
             None => {
@@ -209,12 +245,20 @@ impl Stream {
                     match format.next_packet() {
                         Ok(p) if p.track_id() == id => total += p.dur,
                         Ok(_) => {}
-                        Err(AudioError::IoError(e)) if e.kind() == io::ErrorKind::UnexpectedEof => break,
+                        Err(AudioError::IoError(e)) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                            break;
+                        }
                         Err(e) => return Err(invalid(e)),
                     }
                 }
                 format
-                    .seek(SeekMode::Accurate, SeekTo::TimeStamp { ts: 0, track_id: id })
+                    .seek(
+                        SeekMode::Accurate,
+                        SeekTo::TimeStamp {
+                            ts: 0,
+                            track_id: id,
+                        },
+                    )
                     .map_err(invalid)?;
                 total
             }
@@ -251,9 +295,9 @@ impl Stream {
                 continue;
             }
             let decoded = self.decoder.decode(&packet).map_err(invalid)?;
-            let buffer = self
-                .buffer
-                .get_or_insert_with(|| SampleBuffer::new(decoded.capacity() as u64, *decoded.spec()));
+            let buffer = self.buffer.get_or_insert_with(|| {
+                SampleBuffer::new(decoded.capacity() as u64, *decoded.spec())
+            });
             buffer.copy_interleaved_ref(decoded);
             self.window.clear();
             self.window.extend_from_slice(buffer.samples());
@@ -284,7 +328,10 @@ impl Stream {
             // Decode forward when the target is at or just past the window,
             // else seek (to a frame at or before it).
             if !(at >= window_end && at - window_end < SKIP_FRAMES) {
-                let to = SeekTo::TimeStamp { ts: at, track_id: self.track };
+                let to = SeekTo::TimeStamp {
+                    ts: at,
+                    track_id: self.track,
+                };
                 let sought = self.format.seek(SeekMode::Accurate, to).map_err(invalid)?;
                 self.decoder.reset();
                 self.window.clear();
@@ -302,47 +349,65 @@ pub(crate) struct Sample {
 }
 
 impl AssetSource for Sample {
-    fn open(&self) -> io::Result<SampleReader> { self.open_counted(false) }
-    fn open_stream(&self) -> io::Result<SampleReader> { self.open_counted(true) }
+    fn open(&self) -> io::Result<SampleReader> {
+        self.open_counted(false)
+    }
+    fn open_stream(&self) -> io::Result<SampleReader> {
+        self.open_counted(true)
+    }
 }
 
 impl Sample {
     fn open_counted(&self, counted: bool) -> io::Result<SampleReader> {
-        let mut streams = self.parts.iter().map(|o| Stream::open_counted(o, counted)).collect::<io::Result<Vec<_>>>()?;
+        let mut streams = self
+            .parts
+            .iter()
+            .map(|o| Stream::open_counted(o, counted))
+            .collect::<io::Result<Vec<_>>>()?;
         if streams.len() > 1
-            && streams.iter().any(|s| s.channels != 1 || s.rate != streams[0].rate)
+            && streams
+                .iter()
+                .any(|s| s.channels != 1 || s.rate != streams[0].rate)
         {
             return Err(invalid("channel bundle members must be mono at one rate"));
         }
-        let frames = streams.iter().map(|s| s.frames).min().expect("a sample has a part");
+        let frames = streams
+            .iter()
+            .map(|s| s.frames)
+            .min()
+            .expect("a sample has a part");
         let rate = streams[0].rate;
         let mut scratch = Vec::<f32>::new();
-        Ok(SampleReader::custom(rate, frames as usize, move |start, out| {
-            let start = start as u64;
-            match streams.as_mut_slice() {
-                [one] => {
-                    let channels = one.channels;
-                    scratch.resize(out.len() * channels, 0.0);
-                    one.read(start, &mut scratch)?;
-                    for (frame, s) in out.iter_mut().zip(scratch.chunks_exact(channels)) {
-                        *frame = [s[0], s[channels.min(2) - 1]];
-                    }
-                }
-                many => {
-                    for (k, stream) in many.iter_mut().take(2).enumerate() {
-                        scratch.resize(out.len(), 0.0);
-                        stream.read(start, &mut scratch)?;
-                        for (frame, &s) in out.iter_mut().zip(&scratch) {
-                            frame[k] = s;
+        Ok(SampleReader::custom(
+            rate,
+            frames as usize,
+            move |start, out| {
+                let start = start as u64;
+                match streams.as_mut_slice() {
+                    [one] => {
+                        let channels = one.channels;
+                        scratch.resize(out.len() * channels, 0.0);
+                        one.read(start, &mut scratch)?;
+                        for (frame, s) in out.iter_mut().zip(scratch.chunks_exact(channels)) {
+                            *frame = [s[0], s[channels.min(2) - 1]];
                         }
                     }
-                    if many.len() == 1 {
-                        out.iter_mut().for_each(|f| f[1] = f[0]);
+                    many => {
+                        for (k, stream) in many.iter_mut().take(2).enumerate() {
+                            scratch.resize(out.len(), 0.0);
+                            stream.read(start, &mut scratch)?;
+                            for (frame, &s) in out.iter_mut().zip(&scratch) {
+                                frame[k] = s;
+                            }
+                        }
+                        if many.len() == 1 {
+                            out.iter_mut().for_each(|f| f[1] = f[0]);
+                        }
                     }
                 }
-            }
-            Ok(())
-        }))
+                Ok(())
+            },
+        ))
     }
 }
 
@@ -385,13 +450,18 @@ mod tests {
         use std::sync::atomic::Ordering::Relaxed;
         let dir = std::env::temp_dir().join(format!("uvi-read-counter-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("sample.wav"); let bytes = wav(40000, 2, false);
+        let path = dir.join("sample.wav");
+        let bytes = wav(40000, 2, false);
         std::fs::write(&path, &bytes).unwrap();
-        let source = Sample { parts: vec![Origin::File(path)] };
+        let source = Sample {
+            parts: vec![Origin::File(path)],
+        };
         let before = sampler_kontakt::DISK_READ.load(Relaxed);
-        let mut reader = source.open().unwrap(); reader.read(0, &mut vec![[0.; 2]; 40000]).unwrap();
+        let mut reader = source.open().unwrap();
+        reader.read(0, &mut vec![[0.; 2]; 40000]).unwrap();
         assert_eq!(sampler_kontakt::DISK_READ.load(Relaxed), before);
-        let mut reader = source.open_stream().unwrap(); reader.read(0, &mut vec![[0.; 2]; 40000]).unwrap();
+        let mut reader = source.open_stream().unwrap();
+        reader.read(0, &mut vec![[0.; 2]; 40000]).unwrap();
         assert!(sampler_kontakt::DISK_READ.load(Relaxed) >= before + bytes.len() as u64);
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -421,12 +491,23 @@ mod tests {
             assert_eq!((reader.frames(), reader.rate()), (full.frames.len(), 44100));
             // Forward, backward, within a window, across the skip threshold, and the end.
             let end = full.frames.len();
-            for range in [0..3000, 3000..7000, 100..200, end - 1..end, 20000..30000, 0..end] {
+            for range in [
+                0..3000,
+                3000..7000,
+                100..200,
+                end - 1..end,
+                20000..30000,
+                0..end,
+            ] {
                 let mut out = vec![[0.0; 2]; range.len()];
                 reader.read(range.start, &mut out).unwrap();
                 assert_eq!(out, full.frames[range]);
             }
-            assert!(reader.read(full.frames.len() - 1, &mut [[0.0; 2]; 2]).is_err());
+            assert!(
+                reader
+                    .read(full.frames.len() - 1, &mut [[0.0; 2]; 2])
+                    .is_err()
+            );
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -439,7 +520,11 @@ mod tests {
         for truncate in [false, true] {
             let path = dir.join(format!("{truncate}.wav"));
             std::fs::write(&path, &bytes).unwrap();
-            let mut reader = Sample { parts: vec![Origin::File(path.clone())] }.open().unwrap();
+            let mut reader = Sample {
+                parts: vec![Origin::File(path.clone())],
+            }
+            .open()
+            .unwrap();
             let mut out = vec![[0.0; 2]; 100];
             reader.read(0, &mut out).unwrap();
             let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
@@ -447,7 +532,8 @@ mod tests {
                 file.set_len(bytes.len() as u64 / 2).unwrap();
             } else {
                 // Same length, new modification time.
-                file.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5)).unwrap();
+                file.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5))
+                    .unwrap();
             }
             // Far enough ahead to need a fresh chunk of the file.
             assert!(reader.read(40000, &mut out).is_err(), "truncate {truncate}");

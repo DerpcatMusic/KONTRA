@@ -9,6 +9,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from contention import Activity, QuietBusy
 
+AUDIT_STAGES = set('preset_cache_lookup preset_cache_store preset_cache_decode preset_cache_validate preset_cache_restore_scripts script_ui_prepare core_lower_bindings stream_page_pool file_read_ni_container decrypt_expand ni_chunk_parse ni_objects_parse translate_resolve_ir translate_ksp_init translate_resource_ir_dsp translate_zones_sample_resolve translate_keys_validate sample_source_resolve sample_headers_latency_probe sample_preload runtime_alloc_init ksp_frontend ksp_cache_frontend ksp_cache_native_restore ksp_on_init ksp_callback_lower uvi_read_translate uvi_lua_init'.split())
 FIELDS = set('level subsystem event phase category kind sequence instance_id count counters data elapsed_ms timestamp status error position stage subsystem_id nodes id from to node_id edges blocks peak rms dc enabled params level_db rms_db peak_db gain_db gain latency latency_frames bypass bypassed signal_graph_trace sample_rate'.split())
 
 def digest(value):
@@ -54,30 +55,37 @@ class Capture:
         if self.activity: self.activity.finish()
         self.stderr.flush(); self.stderr.close()
         records = []
-        trace = next(self.root.rglob('signal-trace.json'), None)
-        trace_ok = False
-        if trace:
+        stages = []
+        for line in (self.root / 'stderr').read_bytes().splitlines():
+            if not line.startswith(b'AUDIT '): continue
             try:
-                value = json.loads(trace.read_text())
-                trace_ok = isinstance(value, dict) and isinstance(value.get('nodes'), list)
-            except (ValueError, OSError):
-                pass
-        # W6's fixed prepared graph exporter guarantees no PCM/authored names/text.
-        # Keep its exact JSON and companion SVG for per-item inspection.
-        if trace_ok:
-            shutil.copyfile(trace, self.work / 'signal-trace.json')
-            chart = trace.with_suffix('.svg')
-            if chart.is_file(): shutil.copyfile(chart, self.work / 'signal-trace.svg')
+                stage = json.loads(line[6:])
+            except (ValueError, UnicodeError): continue
+            if stage.get('stage') in AUDIT_STAGES and isinstance(stage.get('ms'), (int, float)):
+                stages.append({k:v for k,v in stage.items() if k=='stage' or k in ['ms','rss_kb','hwm_kb'] and isinstance(v,(int,float))})
+        (self.work / 'load-stages.json').write_text(json.dumps({'stages':stages,'basis':'numeric-only explicit audit spans; enclosing spans overlap'}) + '\n')
+        traces=[]
+        for trace in sorted((self.root/'reports').rglob('signal-trace.json')):
+            relative=trace.relative_to(self.root/'reports')
+            if any(not p.isdigit() for p in relative.parts[:-1]): continue
+            try:
+                value=json.loads(trace.read_text())
+                valid=(value.get('schema')==1 and isinstance(value.get('graph',{}).get('nodes'),list)
+                       and isinstance(value.get('records'),list) and value.get('complete') is True and value.get('dropped')==0)
+            except (ValueError,OSError,AttributeError): valid=False; value={}
+            destination=self.work/relative; destination.parent.mkdir(parents=True,exist_ok=True)
+            shutil.copyfile(trace,destination)
+            chart=trace.with_suffix('.svg')
+            if chart.is_file(): shutil.copyfile(chart,destination.with_suffix('.svg'))
+            traces.append({'path':str(relative),'status':'VALID' if valid else 'UNKNOWN', 'schema':value.get('schema'), 'complete':value.get('complete'), 'dropped':value.get('dropped')})
+        (self.work/'signal-traces.json').write_text(json.dumps({'traces':traces})+'\n')
         for path in sorted(self.root.rglob('*')):
             if not path.is_file():
                 continue
             raw = path.read_bytes()
             record = {'file_sha256': digest(raw), 'bytes': len(raw), 'lines': []}
-            if any(word in path.name.lower() for word in ['signal-graph', 'signal_graph', 'engine-trace', 'signal-trace']):
-                try:
-                    record['signal_graph_trace'] = redact(json.loads(raw))
-                except (ValueError, UnicodeError):
-                    pass
+            if path.name in ['signal-trace.json','signal-trace.svg']:
+                record['line_count']=len(raw.splitlines()); records.append(record); continue
             for line in raw.splitlines():
                 try:
                     record['lines'].append(redact(json.loads(line)))

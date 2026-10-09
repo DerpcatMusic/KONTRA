@@ -158,6 +158,7 @@ fn export_from(
         "deferred",
         "sessions",
         "panics",
+        "signals",
         "manual-export-required",
     ] {
         let path = root.join(directory);
@@ -222,6 +223,7 @@ fn export_from(
                         && !stem.is_empty()
                         && stem.bytes().all(|b| b.is_ascii_digit())
                 }
+                "signals" => matches!(extension, "json" | "maps") && hex(stem, 16),
                 "sessions" => extension == "json",
                 _ => false,
             };
@@ -229,6 +231,21 @@ fn export_from(
                 continue;
             }
             let relative = PathBuf::from("crash-reports").join(directory).join(name);
+            if directory == "signals" {
+                let pid = metadata_json(&entry.path().with_extension("json"))
+                    .ok()
+                    .and_then(|(value, _)| value["pid"].as_u64())
+                    .and_then(|pid| u32::try_from(pid).ok())
+                    .filter(|pid| *pid != 0);
+                if pid.is_none_or(|pid| {
+                    pid == std::process::id() || super::platform::process_is_alive(pid, "")
+                }) {
+                    entries.push(
+                        json!({"source":relative,"status":"active_or_unverified_owner_omitted"}),
+                    );
+                    continue;
+                }
+            }
             if directory == "panics"
                 && stem
                     .parse::<u32>()

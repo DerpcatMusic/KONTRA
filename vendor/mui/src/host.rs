@@ -16,7 +16,7 @@
 //! neither does a hover that [`Ui::inert`] says changes nothing.
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use mui_input::{Button, Ime, Input, Key, KeyPress, Mods, PointerInput, Vec2};
@@ -97,9 +97,15 @@ pub struct Shared<V> {
 
 /// Lock the shared state, through a poisoned lock.
 pub fn lock<V>(shared: &Mutex<Shared<V>>) -> MutexGuard<'_, Shared<V>> {
-    // A panic caught at an FFI edge (unwinding builds only) poisons the
-    // lock; the state is still the last consistent frame's.
-    shared.lock().unwrap_or_else(PoisonError::into_inner)
+    match shared.lock() {
+        Ok(guard) => guard,
+        Err(error) => {
+            let guard = error.into_inner();
+            shared.clear_poison();
+            crate::diagnostics::error("mui", "shared_lock_recovered", "Recovered poisoned UI state without resetting its data; inspect the original panic");
+            guard
+        }
+    }
 }
 
 /// A key as the window names it.

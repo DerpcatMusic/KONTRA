@@ -1,5 +1,6 @@
 //! Bounded legacy .nui execution over the published UI IR. No filesystem Lua API.
 use super::pictures::Source;
+use crate::support::MutexExt;
 use mlua::{Function, Lua, Table, UserData, UserDataFields, UserDataMethods, Value as LuaValue};
 use moose::mui::mui::{prelude::Font, scene::Image};
 use sampler_ui_ir as ir;
@@ -34,7 +35,9 @@ pub(super) struct Images {
 }
 impl Images {
     pub fn get(&self, name: &str) -> Option<Arc<Image>> {
-        if name.len()>4096 {return None;}
+        if name.len() > 4096 {
+            return None;
+        }
         let name = name.replace('\\', "/").to_lowercase();
         if name.split('/').any(|s| s == ".." || s.is_empty())
             || name.starts_with('/')
@@ -42,64 +45,81 @@ impl Images {
         {
             return None;
         }
-        let mut cache = self.cache.lock().ok()?;
+        let mut cache = self.cache.lock_unpoisoned();
         cache.tick = cache.tick.wrapping_add(1);
         let tick = cache.tick;
         if let Some(image) = cache.loaded.get(&name) {
-            let image=image.clone();
-            cache.touch.insert(name,tick);
+            let image = image.clone();
+            cache.touch.insert(name, tick);
             return image;
         }
         if !cache.pending.contains(&name) && self.request.try_send(name.clone()).is_ok() {
             cache.pending.insert(name.clone());
-            cache.touch.insert(name,tick);
+            cache.touch.insert(name, tick);
         }
         None
     }
     pub fn pending(&self) -> usize {
-        self.cache.lock().map_or(0, |c| c.pending.len())
+        self.cache.lock_unpoisoned().pending.len()
     }
     pub fn bytes(&self) -> usize {
-        self.cache.lock().map_or(0, |c| c.bytes)
+        self.cache.lock_unpoisoned().bytes
     }
     #[cfg(feature = "shots")]
     pub fn scan(&self) -> super::pictures::Scan {
-        self.cache.lock().map_or(Default::default(), |c| c.scan)
+        self.cache.lock_unpoisoned().scan
     }
     #[cfg(feature = "shots")]
     pub fn failures(&self) -> Vec<String> {
-        self.cache.lock().map_or(Vec::new(), |c| {
-            c.loaded
-                .iter()
-                .filter(|(_, v)| v.is_none())
-                .map(|(k, _)| blake3::hash(k.as_bytes()).to_hex().to_string())
-                .collect()
-        })
+        self.cache
+            .lock_unpoisoned()
+            .loaded
+            .iter()
+            .filter(|(_, v)| v.is_none())
+            .map(|(k, _)| blake3::hash(k.as_bytes()).to_hex().to_string())
+            .collect()
     }
 }
 impl Package {
     #[cfg(test)]
+    pub(super) fn audit_bytes(&self) -> usize {
+        self.members.values().map(|b| b.len()).sum::<usize>()
+            + self.fonts.values().map(|f| f.as_ref().len()).sum::<usize>()
+    }
+    #[cfg(test)]
     pub(super) fn audit_token_count(&self, token: &str) -> usize {
-        self.members.values().filter_map(|bytes| std::str::from_utf8(bytes).ok())
-            .map(|source| source.matches(token).count()).sum()
+        self.members
+            .values()
+            .filter_map(|bytes| std::str::from_utf8(bytes).ok())
+            .map(|source| source.matches(token).count())
+            .sum()
     }
     pub fn font(&self, name: &str, bold: bool) -> Option<Font> {
         let name = name.to_lowercase();
-        self.fonts.iter().find(|(path, _)| {
-            *path == &name || path.rsplit('/').next().is_some_and(|p|
-                p == name || p.strip_suffix(".ttf") == Some(name.as_str())
-                || p.strip_suffix(".otf") == Some(name.as_str()))
-        }).map(|(_, f)| f.clone()).or_else(|| {
-            self.font_names.iter().filter(|(family, _, _)|family.eq_ignore_ascii_case(&name))
-                .min_by_key(|(_, weight, _)|weight.abs_diff(if bold {700} else {400}))
-                .map(|(_, _, font)|font.clone())
-        })
+        self.fonts
+            .iter()
+            .find(|(path, _)| {
+                *path == &name
+                    || path.rsplit('/').next().is_some_and(|p| {
+                        p == name
+                            || p.strip_suffix(".ttf") == Some(name.as_str())
+                            || p.strip_suffix(".otf") == Some(name.as_str())
+                    })
+            })
+            .map(|(_, f)| f.clone())
+            .or_else(|| {
+                self.font_names
+                    .iter()
+                    .filter(|(family, _, _)| family.eq_ignore_ascii_case(&name))
+                    .min_by_key(|(_, weight, _)| weight.abs_diff(if bold { 700 } else { 400 }))
+                    .map(|(_, _, font)| font.clone())
+            })
     }
     pub fn load(path: &Path) -> anyhow::Result<Self> {
-        Self::load_cancel(path,||false)
+        Self::load_cancel(path, || false)
     }
-    pub fn load_cancel(path: &Path, canceled: impl Fn()->bool) -> anyhow::Result<Self> {
-        anyhow::ensure!(!canceled(),"NativeUI preparation canceled");
+    pub fn load_cancel(path: &Path, canceled: impl Fn() -> bool) -> anyhow::Result<Self> {
+        anyhow::ensure!(!canceled(), "NativeUI preparation canceled");
         let mut source = Source::of(path);
         let mut members = BTreeMap::new();
         let mut fonts = BTreeMap::new();
@@ -107,7 +127,7 @@ impl Package {
         let mut total = 0;
         let mut resource_paths = BTreeMap::new();
         for name in source.native_names() {
-            anyhow::ensure!(!canceled(),"NativeUI preparation canceled");
+            anyhow::ensure!(!canceled(), "NativeUI preparation canceled");
             let relative = name
                 .strip_prefix("resources/native_ui/")
                 .or_else(|| name.strip_prefix("native_ui/"))
@@ -122,9 +142,14 @@ impl Package {
             }
             let bytes = source
                 .read_result(&name)
-                .map_err(|e| anyhow::anyhow!("NativeUI resource {}", super::pictures::resource_category(e)))?
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "NativeUI resource {}",
+                        super::pictures::resource_category(e)
+                    )
+                })?
                 .ok_or_else(|| anyhow::anyhow!("NativeUI member unreadable"))?;
-            anyhow::ensure!(!canceled(),"NativeUI preparation canceled");
+            anyhow::ensure!(!canceled(), "NativeUI preparation canceled");
             total += bytes.len();
             anyhow::ensure!(
                 total <= 16 << 20,
@@ -133,15 +158,19 @@ impl Package {
             if relative.ends_with(".nui") {
                 members.insert(relative, Arc::from(bytes));
             } else {
-                let font = Font::new(bytes).map_err(|_| anyhow::anyhow!("NativeUI font invalid"))?;
+                let font =
+                    Font::new(bytes).map_err(|_| anyhow::anyhow!("NativeUI font invalid"))?;
                 let (names, weight) = font_metadata(&font);
-                total += names.iter().map(|n|n.len()+std::mem::size_of::<(String,u16,Font)>()).sum::<usize>();
-                anyhow::ensure!(total <= 16 << 20, "NativeUI sources and fonts exceed 16 MiB");
-                font_names.extend(names.into_iter().map(|name|(name,weight,font.clone())));
-                fonts.insert(
-                    relative,
-                    font,
+                total += names
+                    .iter()
+                    .map(|n| n.len() + std::mem::size_of::<(String, u16, Font)>())
+                    .sum::<usize>();
+                anyhow::ensure!(
+                    total <= 16 << 20,
+                    "NativeUI sources and fonts exceed 16 MiB"
                 );
+                font_names.extend(names.into_iter().map(|name| (name, weight, font.clone())));
+                fonts.insert(relative, font);
             }
         }
         anyhow::ensure!(!members.is_empty(), "No readable legacy .nui resources");
@@ -175,7 +204,7 @@ impl Package {
                     let Some(cache) = worker_cache.upgrade() else {
                         return;
                     };
-                    let Ok(mut cache) = cache.lock() else { return };
+                    let mut cache = cache.lock_unpoisoned();
                     let bytes = image.as_ref().map_or(0, |i| i.rgba.len());
                     while cache.bytes + bytes > 48 << 20 || cache.loaded.len() >= 4096 {
                         let Some(old) = cache
@@ -234,47 +263,79 @@ impl Package {
 // not discover system fonts or substitute a family absent from the package.
 fn font_metadata(font: &Font) -> (Vec<String>, u16) {
     let bytes = font.as_ref();
-    let u16_at = |at:usize| -> Option<u16> {Some(u16::from_be_bytes(bytes.get(at..at.checked_add(2)?)?.try_into().ok()?))};
-    let u32_at = |at:usize| -> Option<usize> {Some(u32::from_be_bytes(bytes.get(at..at.checked_add(4)?)?.try_into().ok()?) as usize)};
-    let read = || -> Option<(Vec<String>,u16)> {
-        let base = if bytes.starts_with(b"ttcf") {u32_at(12 + font.index() as usize * 4)?} else {0};
-        let table = |tag:&[u8]| -> Option<(usize,usize)> {
+    let u16_at = |at: usize| -> Option<u16> {
+        Some(u16::from_be_bytes(
+            bytes.get(at..at.checked_add(2)?)?.try_into().ok()?,
+        ))
+    };
+    let u32_at = |at: usize| -> Option<usize> {
+        Some(u32::from_be_bytes(bytes.get(at..at.checked_add(4)?)?.try_into().ok()?) as usize)
+    };
+    let read = || -> Option<(Vec<String>, u16)> {
+        let base = if bytes.starts_with(b"ttcf") {
+            u32_at(12 + font.index() as usize * 4)?
+        } else {
+            0
+        };
+        let table = |tag: &[u8]| -> Option<(usize, usize)> {
             for n in 0..usize::from(u16_at(base.checked_add(4)?)?) {
-                let at=base.checked_add(12)?.checked_add(n.checked_mul(16)?)?;
+                let at = base.checked_add(12)?.checked_add(n.checked_mul(16)?)?;
                 if bytes.get(at..at.checked_add(4)?)? == tag {
-                    let (start,len)=(u32_at(at+8)?,u32_at(at+12)?);
+                    let (start, len) = (u32_at(at + 8)?, u32_at(at + 12)?);
                     bytes.get(start..start.checked_add(len)?)?;
-                    return Some((start,len));
+                    return Some((start, len));
                 }
             }
             None
         };
-        let weight=table(b"OS/2").and_then(|(at,len)|(len>=6).then(||u16_at(at+4)).flatten()).unwrap_or(400);
-        let (at,len)=table(b"name")?;
-        if len<6 {return None;}
-        let count=usize::from(u16_at(at+2)?);
-        let strings=usize::from(u16_at(at+4)?);
-        if 6usize.checked_add(count.checked_mul(12)?)? > len {return None;}
-        let mut names=Vec::new();
+        let weight = table(b"OS/2")
+            .and_then(|(at, len)| (len >= 6).then(|| u16_at(at + 4)).flatten())
+            .unwrap_or(400);
+        let (at, len) = table(b"name")?;
+        if len < 6 {
+            return None;
+        }
+        let count = usize::from(u16_at(at + 2)?);
+        let strings = usize::from(u16_at(at + 4)?);
+        if 6usize.checked_add(count.checked_mul(12)?)? > len {
+            return None;
+        }
+        let mut names = Vec::new();
         for n in 0..count {
-            let record=at+6+n*12;
-            if !matches!(u16_at(record+6)?,1|4|6|16) {continue;}
-            let start=strings.checked_add(usize::from(u16_at(record+10)?))?;
-            let end=start.checked_add(usize::from(u16_at(record+8)?))?;
-            if end>len {return None;}
-            let data=bytes.get(at+start..at+end)?;
-            let name=match u16_at(record)? {
-                0|3 if data.len()%2==0 => String::from_utf16(&data.chunks_exact(2).map(|c|u16::from_be_bytes([c[0],c[1]])).collect::<Vec<_>>()).ok(),
-                1 if data.is_ascii()=>String::from_utf8(data.to_vec()).ok(),
-                _=>None,
+            let record = at + 6 + n * 12;
+            if !matches!(u16_at(record + 6)?, 1 | 4 | 6 | 16) {
+                continue;
+            }
+            let start = strings.checked_add(usize::from(u16_at(record + 10)?))?;
+            let end = start.checked_add(usize::from(u16_at(record + 8)?))?;
+            if end > len {
+                return None;
+            }
+            let data = bytes.get(at + start..at + end)?;
+            let name = match u16_at(record)? {
+                0 | 3 if data.len() % 2 == 0 => String::from_utf16(
+                    &data
+                        .chunks_exact(2)
+                        .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                        .collect::<Vec<_>>(),
+                )
+                .ok(),
+                1 if data.is_ascii() => String::from_utf8(data.to_vec()).ok(),
+                _ => None,
             };
-            if let Some(name)=name.filter(|s|!s.is_empty()&&s.len()<=1024) {
-                if !names.contains(&name) {names.push(name);}
+            if let Some(name) = name.filter(|s| !s.is_empty() && s.len() <= 1024) {
+                if !names.contains(&name) {
+                    names.push(name);
+                }
                 // ponytail: 32 supplied aliases per face; no unbounded localized-name cache.
-                if names.len()==32 {break;}
+                if names.len() == 32 {
+                    break;
+                }
             }
         }
-        names.sort();names.dedup();Some((names,weight))
+        names.sort();
+        names.dedup();
+        Some((names, weight))
     };
     read().unwrap_or_default()
 }
@@ -305,10 +366,16 @@ struct Parameter {
     bridge: Arc<Mutex<Bridge>>,
 }
 #[cfg(test)]
-fn trace_parameter(lua:&Lua, parameter:&Parameter, access:&str) -> mlua::Result<()> {
-    if let Ok(trace)=lua.globals().get::<Function>("__audit_parameter") {
-        trace.call::<()>((parameter.identifier.clone(),parameter.binding as i64,
-            lua.globals().get::<String>("__audit_path").unwrap_or_default(),access))?;
+fn trace_parameter(lua: &Lua, parameter: &Parameter, access: &str) -> mlua::Result<()> {
+    if let Ok(trace) = lua.globals().get::<Function>("__audit_parameter") {
+        trace.call::<()>((
+            parameter.identifier.clone(),
+            parameter.binding as i64,
+            lua.globals()
+                .get::<String>("__audit_path")
+                .unwrap_or_default(),
+            access,
+        ))?;
     }
     Ok(())
 }
@@ -328,7 +395,9 @@ fn value(lua: &Lua, value: &ir::Value, index: Option<usize>) -> mlua::Result<Lua
     Ok(match value {
         ir::Value::Integer(n) => LuaValue::Integer(*n as i64),
         ir::Value::Real(n) => LuaValue::Number(*n),
-        ir::Value::Text(s) | ir::Value::DropPath {path:s,..} => LuaValue::String(lua.create_string(s)?),
+        ir::Value::Text(s) | ir::Value::DropPath { path: s, .. } => {
+            LuaValue::String(lua.create_string(s)?)
+        }
         ir::Value::Integers(a) if index.is_some() => {
             LuaValue::Integer(a.get(index.unwrap()).copied().unwrap_or(0) as i64)
         }
@@ -340,14 +409,21 @@ fn value(lua: &Lua, value: &ir::Value, index: Option<usize>) -> mlua::Result<Lua
     })
 }
 impl UserData for Parameter {
-    fn add_fields<F:UserDataFields<Self>>(fields:&mut F) {
-        fields.add_field_method_get("connected",|_,this|Ok(this.bridge.lock().unwrap().controls.get(this.binding).is_some()));
+    fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
+        fields.add_field_method_get("connected", |_, this| {
+            Ok(this
+                .bridge
+                .lock_unpoisoned()
+                .controls
+                .get(this.binding)
+                .is_some())
+        });
     }
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("value", |lua, this, index: Option<usize>| {
             #[cfg(test)]
-            trace_parameter(lua,this,"value")?;
-            let mut bridge = this.bridge.lock().unwrap();
+            trace_parameter(lua, this, "value")?;
+            let mut bridge = this.bridge.lock_unpoisoned();
             let Some(widget) = bridge.controls.get(this.binding) else {
                 if bridge.unavailable.len() < 128 {
                     bridge.unavailable.insert(this.identifier.clone());
@@ -388,9 +464,11 @@ impl UserData for Parameter {
             "set_value",
             |_lua, this, (v, index): (LuaValue, Option<usize>)| {
                 #[cfg(test)]
-                trace_parameter(_lua,this,"write")?;
-                let mut bridge = this.bridge.lock().unwrap();
-                let Some(widget) = bridge.controls.get(this.binding) else {return Ok(())};
+                trace_parameter(_lua, this, "write")?;
+                let mut bridge = this.bridge.lock_unpoisoned();
+                let Some(widget) = bridge.controls.get(this.binding) else {
+                    return Ok(());
+                };
                 let value = match v {
                     LuaValue::String(s) => {
                         let s = s.to_str()?.to_owned();
@@ -454,8 +532,8 @@ impl UserData for Parameter {
             "ksp_control_property",
             |lua, this, (property, index): (i32, Option<usize>)| {
                 #[cfg(test)]
-                trace_parameter(lua,this,"property")?;
-                let bridge = this.bridge.lock().unwrap();
+                trace_parameter(lua, this, "property")?;
+                let bridge = this.bridge.lock_unpoisoned();
                 let Some(w) = bridge.controls.get(this.binding) else {
                     return Ok(match property {
                         0 | 1 | 14 | 18 => LuaValue::String(lua.create_string("")?),
@@ -496,14 +574,15 @@ impl UserData for Parameter {
             },
         );
         methods.add_method("update_touch", |_, this, index: Option<usize>| {
-            let mut bridge=this.bridge.lock().unwrap();
-            if bridge.controls.get(this.binding).is_some() {bridge.touches.insert((this.binding,index.unwrap_or(0)));}
+            let mut bridge = this.bridge.lock_unpoisoned();
+            if bridge.controls.get(this.binding).is_some() {
+                bridge.touches.insert((this.binding, index.unwrap_or(0)));
+            }
             Ok(())
         });
         methods.add_method("end_touch", |_, this, index: Option<usize>| {
             this.bridge
-                .lock()
-                .unwrap()
+                .lock_unpoisoned()
                 .touches
                 .remove(&(this.binding, index.unwrap_or(0)));
             Ok(())
@@ -511,15 +590,22 @@ impl UserData for Parameter {
         methods.add_method("is_touch_active", |_, this, index: Option<usize>| {
             Ok(this
                 .bridge
-                .lock()
-                .unwrap()
+                .lock_unpoisoned()
                 .touches
                 .contains(&(this.binding, index.unwrap_or(0))))
         });
         methods.add_method("is_midi_learn_active", |_, _, _: Option<usize>| Ok(false));
         for name in ["begin_midi_learn", "end_midi_learn"] {
             methods.add_method(name, |_, this, _: Option<usize>| {
-                if this.bridge.lock().unwrap().controls.get(this.binding).is_none() {return Ok(())};
+                if this
+                    .bridge
+                    .lock_unpoisoned()
+                    .controls
+                    .get(this.binding)
+                    .is_none()
+                {
+                    return Ok(());
+                };
                 Err::<(), _>(mlua::Error::external("NativeUI MIDI learn is unavailable"))
             });
         }
@@ -565,12 +651,22 @@ impl Session {
                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
                 .is_err()
             {
-                let site = lua.inspect_stack(0, |debug| {
-                    let source = debug.source();
-                    let source = source.source.as_deref().unwrap_or("");
-                    format!("{}:{}:{}:{}", usize::from(source == "NativeUI host"), debug.current_line().unwrap_or(0), &blake3::hash(source.as_bytes()).to_hex()[..16], lua.globals().get::<u32>("__native_nodes").unwrap_or(0))
-                }).unwrap_or_default();
-                return Err(mlua::Error::external(format!("NativeUI interrupt budget exceeded; site {site}")));
+                let site = lua
+                    .inspect_stack(0, |debug| {
+                        let source = debug.source();
+                        let source = source.source.as_deref().unwrap_or("");
+                        format!(
+                            "{}:{}:{}:{}",
+                            usize::from(source == "NativeUI host"),
+                            debug.current_line().unwrap_or(0),
+                            &blake3::hash(source.as_bytes()).to_hex()[..16],
+                            lua.globals().get::<u32>("__native_nodes").unwrap_or(0)
+                        )
+                    })
+                    .unwrap_or_default();
+                return Err(mlua::Error::external(format!(
+                    "NativeUI interrupt budget exceeded; site {site}"
+                )));
             }
             Ok(mlua::VmState::Continue)
         });
@@ -581,9 +677,7 @@ impl Session {
                 "current_path,hook_index,current_context=old_path,old_index,old_context\n    _G.__audit_path=old_path; return out");
         #[cfg(not(test))]
         let runtime = include_str!("native_runtime/runtime.lua");
-        lua.load(runtime)
-            .set_name("NativeUI host")
-            .exec()?;
+        lua.load(runtime).set_name("NativeUI host").exec()?;
         let package_table: Table = lua.globals().get("package")?;
         for key in ["loadlib", "searchers", "path", "cpath"] {
             package_table.set(key, LuaValue::Nil)?;
@@ -598,19 +692,30 @@ impl Session {
         // KSP expose_controls: duplicate identifiers use the first script slot,
         // regardless of the order in which source interfaces are published.
         let names = {
-            let bridge=bridge.lock().unwrap();
-            let mut names=HashMap::new();
-            let priority=|index:usize| match bridge.locations[index].0 {
-                ir::Source::Ksp{slot}=>(slot,index), _=>(u8::MAX,index),
+            let bridge = bridge.lock_unpoisoned();
+            let mut names = HashMap::new();
+            let priority = |index: usize| match bridge.locations[index].0 {
+                ir::Source::Ksp { slot } => (slot, index),
+                _ => (u8::MAX, index),
             };
-            for (index,control) in bridge.controls.iter().enumerate() {
-                names.entry(control.name.trim_start_matches(['$', '%', '@', '~', '?', '!']).to_owned())
-                    .and_modify(|previous|if priority(index)<priority(*previous) {*previous=index})
+            for (index, control) in bridge.controls.iter().enumerate() {
+                names
+                    .entry(
+                        control
+                            .name
+                            .trim_start_matches(['$', '%', '@', '~', '?', '!'])
+                            .to_owned(),
+                    )
+                    .and_modify(|previous| {
+                        if priority(index) < priority(*previous) {
+                            *previous = index
+                        }
+                    })
                     .or_insert(index);
             }
             names
         };
-        let meter_names=names.clone();
+        let meter_names = names.clone();
         let parameters = bridge.clone();
         let kontakt = lua.create_table()?;
         kontakt.set(
@@ -634,11 +739,15 @@ impl Session {
                 let binding = meter_names.get(&identifier).copied();
                 let bridge = meter_bridge.clone();
                 let meter = lua.create_table()?;
-                meter.set("connected",binding.is_some())?;
+                meter.set("connected", binding.is_some())?;
                 meter.set(
                     "level_value",
                     lua.create_function(move |_, _: LuaValue| {
-                        Ok(binding.and_then(|binding|bridge.lock().unwrap().meters.get(&binding).copied()).unwrap_or(0.))
+                        Ok(binding
+                            .and_then(|binding| {
+                                bridge.lock_unpoisoned().meters.get(&binding).copied()
+                            })
+                            .unwrap_or(0.))
                     })?,
                 )?;
                 Ok(meter)
@@ -684,10 +793,12 @@ impl Session {
         typed: &HashMap<ir::WidgetRef, ir::Value>,
         meters: &HashMap<ir::WidgetRef, f64>,
     ) {
-        let mut bridge = self.bridge.lock().unwrap();
+        let mut bridge = self.bridge.lock_unpoisoned();
         for at in 0..bridge.controls.len() {
             let (source, index) = bridge.locations[at];
-            if source != face.source {continue;}
+            if source != face.source {
+                continue;
+            }
             if let Some(w) = face.widgets.get(index)
                 && &bridge.controls[at] != w
             {
@@ -699,8 +810,10 @@ impl Session {
             let w = &mut bridge.controls[at];
             if let Some(value) = typed.get(&ir::WidgetRef(index)) {
                 w.value = Some(value.clone());
-            } else if matches!(w.value, None | Some(ir::Value::Integer(_) | ir::Value::Real(_)))
-                && let ir::Binding::Control(c) = w.binding
+            } else if matches!(
+                w.value,
+                None | Some(ir::Value::Integer(_) | ir::Value::Real(_))
+            ) && let ir::Binding::Control(c) = w.binding
                 && let Some(&n) = values.get(&c)
             {
                 w.value = Some(if matches!(w.value, Some(ir::Value::Real(_))) {
@@ -712,7 +825,7 @@ impl Session {
         }
     }
     pub fn update_meters(&self, mut meter: impl FnMut(&ir::Widget) -> f64) {
-        let mut bridge = self.bridge.lock().unwrap();
+        let mut bridge = self.bridge.lock_unpoisoned();
         let values = bridge
             .controls
             .iter()
@@ -734,20 +847,27 @@ impl Session {
             .call(self.root.clone())?)
     }
     #[cfg(test)]
-    pub fn work_remaining(&self) -> usize { self.fuel.load(Ordering::Relaxed) }
+    pub fn work_remaining(&self) -> usize {
+        self.fuel.load(Ordering::Relaxed)
+    }
     #[cfg(any(test, feature = "shots"))]
     pub fn graph_work(&self) -> (usize, usize) {
-        (self.lua.globals().get::<usize>("__native_nodes").unwrap_or(0),
-            1_000_000usize.saturating_sub(self.fuel.load(Ordering::Relaxed)))
+        (
+            self.lua
+                .globals()
+                .get::<usize>("__native_nodes")
+                .unwrap_or(0),
+            1_000_000usize.saturating_sub(self.fuel.load(Ordering::Relaxed)),
+        )
     }
     pub fn lua(&self) -> &Lua {
         &self.lua
     }
-    pub fn paint_callback(&self, paint:Function) -> mlua::Result<Function> {
-        let fuel=self.fuel.clone();
-        self.lua.create_function(move |_,args:mlua::MultiValue| {
+    pub fn paint_callback(&self, paint: Function) -> mlua::Result<Function> {
+        let fuel = self.fuel.clone();
+        self.lua.create_function(move |_, args: mlua::MultiValue| {
             // Deferred Canvas starts its own work allowance after layout.
-            fuel.store(100_000,Ordering::Relaxed);
+            fuel.store(100_000, Ordering::Relaxed);
             paint.call::<()>(args)
         })
     }
@@ -784,12 +904,11 @@ impl Session {
         Ok(event)
     }
     pub fn take_edits(&self) -> Vec<Edit> {
-        self.bridge.lock().unwrap().edits.drain(..).collect()
+        self.bridge.lock_unpoisoned().edits.drain(..).collect()
     }
     pub fn unavailable_controls(&self) -> Vec<String> {
         self.bridge
-            .lock()
-            .unwrap()
+            .lock_unpoisoned()
             .unavailable
             .iter()
             .cloned()
@@ -801,9 +920,67 @@ impl Session {
 mod tests {
     use super::*;
     #[test]
+    fn editor_memory_drops_unresolved_child_factories() {
+        let lua = Lua::new();
+        lua.load("package={loaded={}} ").exec().unwrap();
+        lua.load(include_str!("native_runtime/runtime.lua"))
+            .exec()
+            .unwrap();
+        let (graph, watched): (Table, Table) = lua.load(r#"
+            local watched=setmetatable({}, {__mode='v'})
+            local function root()
+                local child=__node('Text',function() return {text='visible'} end)
+                watched[1]=child
+                return __node('VStack',function() return {[1]=child, [3]=__node('Text',function() return {text='sparse'} end)} end)
+            end
+            return __render(root),watched
+        "#).eval().unwrap();
+        lua.gc_collect().unwrap();
+        assert!(
+            watched.get::<LuaValue>(1).unwrap().is_nil(),
+            "resolved graph retained an unused child factory"
+        );
+        let children: Table = graph.get("children").unwrap();
+        assert_eq!(children.raw_len(), 2);
+        for (n, text) in [(1, "visible"), (2, "sparse")] {
+            assert_eq!(
+                children
+                    .get::<Table>(n)
+                    .unwrap()
+                    .get::<Table>("props")
+                    .unwrap()
+                    .get::<String>("text")
+                    .unwrap(),
+                text
+            );
+        }
+        lua.load(
+            r#"
+            local child=__node('Text',function() return {text='reused'} end)
+            local props={[1]=child}
+            local callback=function() return props[1]==child end
+            props.on_change=callback
+            local root=function() return __node('VStack',function() return props end) end
+            for _=1,2 do
+                local graph=__render(root)
+                assert(graph.children[1].props.text=='reused')
+                assert(graph.props.on_change())
+                assert(props[1]==child and props.on_change==callback)
+            end
+        "#,
+        )
+        .exec()
+        .unwrap();
+    }
+    #[test]
     fn legacy_component_reads_the_published_ir_and_produces_a_typed_edit() {
-        assert_eq!(Package::load_cancel(Path::new("/unopened/synthetic.nki"),||true)
-            .err().unwrap().to_string(),"NativeUI preparation canceled");
+        assert_eq!(
+            Package::load_cancel(Path::new("/unopened/synthetic.nki"), || true)
+                .err()
+                .unwrap()
+                .to_string(),
+            "NativeUI preparation canceled"
+        );
         let (request, _jobs) = std::sync::mpsc::sync_channel(1);
         let package=Arc::new(Package{members:BTreeMap::from([("main.nui".into(),Arc::from(br#"local ui=require("native_ui")
             local kontakt=require("kontakt")
@@ -813,19 +990,29 @@ mod tests {
                 p:set_value(0.75)
                 return @ui.ZStack { @ui.Text {text=tostring(meter:level_value()),}, @ui.Rectangle {color=ui.Color(12,24,48)}.frame(width=10,height=20) }.frame(width=80,height=60)
             end"#.as_slice()))]),fonts:BTreeMap::new(),font_names:Vec::new(),images:Images{request,cache:Arc::new(Mutex::new(ImageCache{loaded:HashMap::new(),pending:BTreeSet::new(),touch:HashMap::new(),tick:0,bytes:0,#[cfg(feature="shots")] scan:Default::default()}))}});
-        let font=Font::new(super::super::theme::NOTO_SANS).unwrap();
-        let (names,weight)=font_metadata(&font);
-        assert!(names.iter().any(|n|n=="Noto Sans"));
-        let mut package=package;
+        let font = Font::new(super::super::theme::NOTO_SANS).unwrap();
+        let (names, weight) = font_metadata(&font);
+        assert!(names.iter().any(|n| n == "Noto Sans"));
+        let mut package = package;
         assert!(package.images.get("queued.png").is_none());
-        for n in 0..5000 {assert!(package.images.get(&format!("rejected-{n}.png")).is_none());}
-        assert_eq!(package.images.cache.lock().unwrap().touch.len(),1,
-            "a full worker queue must not retain rejected image-name metadata");
-        let supplied=Arc::get_mut(&mut package).unwrap();
-        supplied.fonts.insert("unrelated-file.ttf".into(),font.clone());
-        supplied.font_names=names.into_iter().map(|n|(n,weight,font.clone())).collect();
-        assert_eq!(supplied.font("Noto Sans",false).unwrap().id(),font.id());
-        assert!(supplied.font("an absent authored family",false).is_none());
+        for n in 0..5000 {
+            assert!(package.images.get(&format!("rejected-{n}.png")).is_none());
+        }
+        assert_eq!(
+            package.images.cache.lock_unpoisoned().touch.len(),
+            1,
+            "a full worker queue must not retain rejected image-name metadata"
+        );
+        let supplied = Arc::get_mut(&mut package).unwrap();
+        supplied
+            .fonts
+            .insert("unrelated-file.ttf".into(), font.clone());
+        supplied.font_names = names
+            .into_iter()
+            .map(|n| (n, weight, font.clone()))
+            .collect();
+        assert_eq!(supplied.font("Noto Sans", false).unwrap().id(), font.id());
+        assert!(supplied.font("an absent authored family", false).is_none());
         let mut widget = ir::Widget::new(
             "$gain",
             ir::PageRef(0),
@@ -846,19 +1033,21 @@ mod tests {
         let session = Session::new(
             package,
             "main",
-            vec![(ir::Source::Ksp { slot: 4 }, 0, widget.clone()),
+            vec![
+                (ir::Source::Ksp { slot: 4 }, 0, widget.clone()),
                 (ir::Source::Ksp { slot: 2 }, 0, widget.clone()),
-                (ir::Source::Ksp { slot: 3 }, 0, widget)],
+                (ir::Source::Ksp { slot: 3 }, 0, widget),
+            ],
         )
         .unwrap();
         let source = ir::Interface {
             source: ir::Source::Ksp { slot: 2 },
-            widgets: vec![session.bridge.lock().unwrap().controls[1].clone()],
+            widgets: vec![session.bridge.lock_unpoisoned().controls[1].clone()],
             ..Default::default()
         };
         session.update_view(
             &source,
-            &HashMap::from([(ir::ControlId(42),75.)]),
+            &HashMap::from([(ir::ControlId(42), 75.)]),
             &HashMap::from([(
                 ir::WidgetRef(0),
                 ir::Value::Text("callback readback".into()),
@@ -866,27 +1055,50 @@ mod tests {
             &Default::default(),
         );
         assert_eq!(
-            session.bridge.lock().unwrap().controls[1].value,
+            session.bridge.lock_unpoisoned().controls[1].value,
             Some(ir::Value::Text("callback readback".into()))
         );
-        assert_eq!(session.bridge.lock().unwrap().controls[0].value,Some(ir::Value::Integer(20)),
-            "another source is not overwritten by this source's scalar fallback");
-        let mut typed_source=source.clone();
-        for saved in [ir::Value::Text("published text".into()),ir::Value::Integers(vec![1,2,3]),ir::Value::Reals(vec![0.25,0.5])] {
-            typed_source.widgets[0].value=Some(saved.clone());
-            session.update_view(&typed_source,&HashMap::from([(ir::ControlId(42),75.)]),&Default::default(),&Default::default());
-            assert_eq!(session.bridge.lock().unwrap().controls[1].value,Some(saved),"scalar telemetry must preserve declared text/array values");
+        assert_eq!(
+            session.bridge.lock_unpoisoned().controls[0].value,
+            Some(ir::Value::Integer(20)),
+            "another source is not overwritten by this source's scalar fallback"
+        );
+        let mut typed_source = source.clone();
+        for saved in [
+            ir::Value::Text("published text".into()),
+            ir::Value::Integers(vec![1, 2, 3]),
+            ir::Value::Reals(vec![0.25, 0.5]),
+        ] {
+            typed_source.widgets[0].value = Some(saved.clone());
+            session.update_view(
+                &typed_source,
+                &HashMap::from([(ir::ControlId(42), 75.)]),
+                &Default::default(),
+                &Default::default(),
+            );
+            assert_eq!(
+                session.bridge.lock_unpoisoned().controls[1].value,
+                Some(saved),
+                "scalar telemetry must preserve declared text/array values"
+            );
         }
         session.update_view(
             &source,
             &Default::default(),
             &HashMap::from([(ir::WidgetRef(0), ir::Value::Integer(20))]),
-            &HashMap::from([(ir::WidgetRef(0),0.625)]),
+            &HashMap::from([(ir::WidgetRef(0), 0.625)]),
         );
         let graph = session.render().unwrap();
         assert_eq!(graph.get::<String>("kind").unwrap(), "ZStack");
-        let meter:Table=graph.get::<Table>("children").unwrap().get(1).unwrap();
-        assert_eq!(meter.get::<Table>("props").unwrap().get::<String>("text").unwrap(),"0.625");
+        let meter: Table = graph.get::<Table>("children").unwrap().get(1).unwrap();
+        assert_eq!(
+            meter
+                .get::<Table>("props")
+                .unwrap()
+                .get::<String>("text")
+                .unwrap(),
+            "0.625"
+        );
         let edits = session.take_edits();
         assert_eq!(edits.len(), 1);
         assert_eq!(edits[0].value, ir::Value::Integer(75));
@@ -894,7 +1106,10 @@ mod tests {
         assert_eq!(edits[0].source, ir::Source::Ksp { slot: 2 });
         assert!(session.unavailable_controls().is_empty());
         // Requested faces may contain bindings absent from this instrument.
-        session.lua().load(r#"
+        session
+            .lua()
+            .load(
+                r#"
             local kontakt=require('kontakt')
             local missing=kontakt.connect_parameter('undeclared')
             local missing_bool=kontakt.connect_parameter('undeclared_bool','bool')
@@ -911,9 +1126,15 @@ mod tests {
             missing:update_touch()
             assert(missing:is_touch_active()==false)
             missing:end_touch()
-        "#).exec().unwrap();
-        assert!(session.take_edits().is_empty(),"unconnected bindings cannot edit a declared control");
-        assert!(session.bridge.lock().unwrap().touches.is_empty());
+        "#,
+            )
+            .exec()
+            .unwrap();
+        assert!(
+            session.take_edits().is_empty(),
+            "unconnected bindings cannot edit a declared control"
+        );
+        assert!(session.bridge.lock_unpoisoned().touches.is_empty());
         assert!(
             session
                 .lua()
@@ -936,12 +1157,46 @@ mod tests {
         let render: Function = session.lua().globals().get("__render").unwrap();
         let graph: Table = render.call(context_root).unwrap();
         let children: Table = graph.get("children").unwrap();
-        let nested: Table = children.get::<Table>(1).unwrap().get::<Table>("children").unwrap().get(1).unwrap();
+        let nested: Table = children
+            .get::<Table>(1)
+            .unwrap()
+            .get::<Table>("children")
+            .unwrap()
+            .get(1)
+            .unwrap();
         let sibling: Table = children.get(2).unwrap();
-        assert_eq!(nested.get::<Table>("props").unwrap().get::<String>("text").unwrap(), "nested");
-        assert_eq!(sibling.get::<Table>("props").unwrap().get::<String>("text").unwrap(), "base");
-        let forever: Function = session.lua().load("return function() while true do end end").eval().unwrap();
-        assert!(session.call(forever, ()).unwrap_err().to_string().contains("NativeUI interrupt budget exceeded"));
-        assert_eq!(session.work_remaining(),0,"pathological loops must exhaust deterministic work");
+        assert_eq!(
+            nested
+                .get::<Table>("props")
+                .unwrap()
+                .get::<String>("text")
+                .unwrap(),
+            "nested"
+        );
+        assert_eq!(
+            sibling
+                .get::<Table>("props")
+                .unwrap()
+                .get::<String>("text")
+                .unwrap(),
+            "base"
+        );
+        let forever: Function = session
+            .lua()
+            .load("return function() while true do end end")
+            .eval()
+            .unwrap();
+        assert!(
+            session
+                .call(forever, ())
+                .unwrap_err()
+                .to_string()
+                .contains("NativeUI interrupt budget exceeded")
+        );
+        assert_eq!(
+            session.work_remaining(),
+            0,
+            "pathological loops must exhaust deterministic work"
+        );
     }
 }
