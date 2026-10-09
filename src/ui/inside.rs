@@ -171,6 +171,8 @@ pub enum ArtAction { Reset, ResetRow(String), Clear(String), Keep, Learn(Option<
 #[derive(Clone, Debug)]
 struct Edit {
     source: String,
+    path: String,
+    generation: u64,
     text: String,
     learned: u64,
     learn: bool,
@@ -190,11 +192,32 @@ pub(super) fn mode(cx: &Cx, slot: usize, inst: &ir::Instrument) -> ir::Driver {
 }
 
 fn begin(ui: &mut Ui, cx: &mut Cx, slot: usize, source: &str, text: String, learn: bool) {
+    cx.p.shared.learn_target.store(0, Ordering::Relaxed);
+    // Like v1's single inline editor, a new owner replaces every prior draft.
+    for state in cx.state.inside.values_mut() { state.edit = None; }
     let learned = cx.p.shared.learned_note.load(Ordering::Relaxed);
     let part = &cx.selection.parts[slot];
     cx.p.shared.learn_target.store(if learn { 1 << 31 | u32::from(part.port) << 8 | ((i32::from(part.channel) + 1).max(0) as u32) << 16 } else { 0 }, Ordering::Relaxed);
-    cx.state.inside.entry(slot).or_default().edit = Some(Edit { source: source.into(), text, learned, learn, error: None, conflict: None });
+    cx.state.inside.entry(slot).or_default().edit = Some(Edit { source: source.into(), path: part.path.clone(), generation: cx.view.parts[slot].generation, text, learned, learn, error: None, conflict: None });
     ui.focus(format!("{}-edit", row_id(slot, source)));
+}
+
+pub(super) fn release_learn(cx: &mut Cx) {
+    let armed = cx.p.shared.learn_target.load(Ordering::Relaxed) != 0;
+    let rack = cx.state.tab == super::Tab::Rack;
+    for (&slot, state) in &mut cx.state.inside {
+        if let Some(edit) = state.edit.as_ref().filter(|e| e.learn)
+            && (!armed || !rack || state.view != Some(View::Articulations)
+                || !cx.selection.parts.get(slot).is_some_and(|p| p.path == edit.path && !p.collapsed)
+                || !cx.p.shared.part(slot).is_some_and(|p| p.generation.load(Ordering::Acquire) == edit.generation)
+                || !cx.view.parts.get(slot).is_some_and(|v| v.generation == edit.generation && v.instrument.is_some()))
+        {
+            state.edit = None;
+        }
+    }
+    if !cx.state.inside.values().any(|s| s.edit.as_ref().is_some_and(|e| e.learn)) {
+        cx.p.shared.learn_target.store(0, Ordering::Relaxed);
+    }
 }
 
 pub fn action(ui: &mut Ui, cx: &mut Cx, slot: usize, action: ArtAction) {
@@ -223,6 +246,7 @@ pub fn action(ui: &mut Ui, cx: &mut Cx, slot: usize, action: ArtAction) {
         ArtAction::Clear(source) => {
             let input = match mode { ir::Driver::Keys => Input::Keys(Vec::new()), ir::Driver::Channel => Input::Channel(None), ir::Driver::Velocity => Input::Velocity(None), ir::Driver::Controller => Input::Controller(None), ir::Driver::Program => Input::Program(None) };
             cx.selection.parts[slot].articulation_overlay.set(&source, input);
+            cx.state.inside.entry(slot).or_default().edit = None;
         }
         ArtAction::Include(source) => {
             let input = cx.selection.parts[slot].articulation_overlay.inputs.entry(source).or_default();
@@ -241,7 +265,7 @@ pub fn action(ui: &mut Ui, cx: &mut Cx, slot: usize, action: ArtAction) {
             for (rank, n) in order.into_iter().enumerate() { overlay.set(&ids[n], original[rank].clone()); }
         }
     }
-    if !cx.state.inside.entry(slot).or_default().edit.as_ref().is_some_and(|e| e.learn) { cx.p.shared.learn_target.store(0, Ordering::Relaxed); }
+    if !cx.state.inside.values().any(|s| s.edit.as_ref().is_some_and(|e| e.learn)) { cx.p.shared.learn_target.store(0, Ordering::Relaxed); }
 }
 
 pub fn input_label(input: &crate::sound::articulation::Input) -> String {
@@ -299,7 +323,7 @@ fn trigger_cell(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument, so
     // MUI clears focus on Escape before this frame; read both streams.
     let escape = ui.keys(edit_id.as_str()).iter().chain(ui.shortcuts()).any(|k| k.key == Key::Escape);
     let done = existed && !edit.learn && (field.changed.submitted || (!ui.focused(edit_id.as_str()) && edit.conflict.is_none()));
-    let proposal = learned.map(Ok).or_else(|| (done && !escape).then(|| parse_input(mode, &edit.text)));
+    let proposal = learned.filter(|_| !escape).map(Ok).or_else(|| (done && !escape).then(|| parse_input(mode, &edit.text)));
     let mut committed = false;
     if let Some(proposal) = proposal {
         match proposal {
