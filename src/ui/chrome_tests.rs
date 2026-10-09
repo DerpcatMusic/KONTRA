@@ -637,3 +637,58 @@ fn trigger_conflict_hover_displays_the_full_name() {
     trigger_conflict(&mut h, &p);
     hover_text(&mut h, "Used by ");
 }
+
+#[test]
+fn long_inside_rows_stop_painting_at_the_next_slot() {
+    for (w, h) in [(900., 600.), (1180., 900.)] {
+        let p = specimen();
+        let mut h = Harness::new(&p, w, h);
+        trigger_conflict(&mut h, &p);
+        h.idle(20);
+        let scene = h.ui.scene().unwrap();
+        let next = scene.surface("header-1").unwrap().frame.y;
+        let row = scene.surfaces().find(|surface| surface.text_value.as_deref()
+            .is_some_and(|text| text.starts_with("11 Long articulation"))).unwrap();
+        let bottom = (row.frame.y + row.frame.size.height)
+            .min(row.clip.map_or(f64::INFINITY, |clip| clip.y1));
+        assert!(bottom <= next + 0.5,
+            "inside rows must clip before the next slot: visible bottom {bottom}, next {next}; row clip {:?}, viewport {:?}, scroller {:?}", row.clip, scene.surface("rack-viewport").map(|s| (s.frame, s.clip)), scene.surface("rack-view").map(|s| (s.frame, s.clip)));
+    }
+}
+
+#[test]
+fn sticky_header_clipping_tracks_window_resize_without_moving_the_scroll_body() {
+    let p = specimen();
+    let mut h = Harness::new(&p, 900., 600.);
+    trigger_conflict(&mut h, &p);
+    for size in [Size::new(900., 600.), Size::new(1180., 900.), Size::new(900., 600.)] {
+        h.resize(size);
+        h.idle(20);
+        let scene = h.ui.scene().unwrap();
+        let viewport = scene.surface("rack-viewport").unwrap().frame;
+        let scroller = scene.surface("rack-view").unwrap().frame;
+        assert!((viewport.x - scroller.x).abs() < 0.5 && (viewport.y - scroller.y).abs() < 0.5,
+            "clipping does not shift the body's coordinate system");
+        assert!((viewport.size.height - scroller.size.height).abs() < 0.5,
+            "window resize changes the full scroll viewport, not only its clip");
+        let row = scene.surfaces().find(|surface| surface.text_value.as_deref()
+            .is_some_and(|text| text.starts_with("11 Long articulation"))).unwrap();
+        let bottom = (row.frame.y + row.frame.size.height).min(row.clip.map_or(f64::INFINITY, |clip| clip.y1));
+        assert!(bottom <= scene.surface("header-1").unwrap().frame.y + 0.5,
+            "the resized clip follows the visible header");
+    }
+}
+
+#[test]
+#[cfg(feature = "shots")]
+fn slot_clip_shots() {
+    let Some(out) = std::env::var_os("KONTRA_SLOT_CLIP_SHOTS").map(PathBuf::from) else { return; };
+    std::fs::create_dir_all(&out).unwrap();
+    for (w, h) in [(900, 600), (1180, 900)] {
+        let p = specimen();
+        let mut fixture = Harness::new(&p, w as f64, h as f64);
+        trigger_conflict(&mut fixture, &p);
+        fixture.idle(20);
+        moose::core::screenshot::save_png(&out.join(format!("slot-clip-{w}.png")), &pixels(&fixture.ui, w, h), w.into(), h.into());
+    }
+}
