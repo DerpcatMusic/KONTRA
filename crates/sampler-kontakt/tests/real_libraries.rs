@@ -1107,7 +1107,16 @@ fn vista_harp_mode3_nulls_against_frozen_v1() {
     }
     let format = format.expect("WAV format");
     assert!(format.len() >= 16);
-    assert_eq!(u16::from_le_bytes(format[..2].try_into().unwrap()), 3, "float PCM");
+    let encoding = u16::from_le_bytes(format[..2].try_into().unwrap());
+    if encoding == 0xfffe {
+        // hound writes v1's stereo f32 reference as WAVE_FORMAT_EXTENSIBLE.
+        assert!(format.len() >= 40);
+        assert_eq!(u16::from_le_bytes(format[16..18].try_into().unwrap()), 22);
+        assert_eq!(u16::from_le_bytes(format[18..20].try_into().unwrap()), 32);
+        assert_eq!(&format[24..40], &[3, 0, 0, 0, 0, 0, 16, 0, 128, 0, 0, 170, 0, 56, 155, 113], "IEEE float subtype");
+    } else {
+        assert_eq!(encoding, 3, "float PCM");
+    }
     assert_eq!(u16::from_le_bytes(format[2..4].try_into().unwrap()), 2);
     assert_eq!(u32::from_le_bytes(format[4..8].try_into().unwrap()), reference::RATE);
     assert_eq!(u16::from_le_bytes(format[14..16].try_into().unwrap()), 32);
@@ -1117,7 +1126,11 @@ fn vista_harp_mode3_nulls_against_frozen_v1() {
     let objects = library.instrument.kontakt_objects.as_ref().unwrap();
     assert_eq!(objects.groups.len(), 20);
     assert!(objects.groups.iter().all(|g| g.source.as_ref().is_some_and(|s| s.mode == 3)));
-    library.instrument.zones.retain(|z| z.group == Some(ir::GroupRef(0)));
+    let kept = library.instrument.retain_zones(|z| z.group == Some(ir::GroupRef(0)));
+    library.locations = kept.iter().map(|&i| library.locations[i].clone()).collect();
+    assert!(library.instrument.source_indices.zones.iter().flatten()
+        .all(|z| z.0 < library.instrument.zones.len()), "fixture source-zone mapping must be compacted");
+    assert_eq!(library.locations.len(), library.instrument.assets.len());
     for group in &mut library.instrument.groups {
         group.output = ir::Output::Master;
         group.sends.clear();
