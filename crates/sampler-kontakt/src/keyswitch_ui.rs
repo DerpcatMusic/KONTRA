@@ -53,7 +53,7 @@ pub(crate) fn normalize(
         let mut runs: Vec<Vec<&Widget>> = Vec::new();
         for w in choices {
             let (x, y, width, height) = position(w);
-            if width < height * 3 {
+            if height == 0 || width < height * 3 {
                 continue;
             }
             // Hidden overlays at a visible row's position are alternate faces, not extra rows.
@@ -86,6 +86,7 @@ pub(crate) fn normalize(
             .into_iter()
             .filter(|r| r.len() >= 3 && r.iter().filter(|w| !w.hidden).count() >= 2)
         {
+            let first = found.len();
             for w in run {
                 let (x, y, width, height) = position(w);
                 let labels: Vec<_> = ui
@@ -135,6 +136,10 @@ pub(crate) fn normalize(
                     ..Default::default()
                 });
             }
+            // Preset browsers have the same geometry; require switching evidence within this list.
+            if !found[first..].iter().any(|row| !row.switch_keys.is_empty()) {
+                found.truncate(first);
+            }
         }
     }
     if instrument.articulations.is_empty() {
@@ -180,7 +185,12 @@ pub(crate) fn normalize(
             instrument.assign_alternatives(super::keyswitch::CONTROLLER);
         }
     } else {
-        let named = |key: &u8| keys.get(usize::from(*key)).and_then(|k| k.name.as_deref()).map(str::trim).filter(|s| !s.is_empty());
+        let named = |key: &u8| {
+            keys.get(usize::from(*key))
+                .and_then(|k| k.name.as_deref())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+        };
         for a in &mut instrument.articulations {
             if let Some(row) = found
                 .iter()
@@ -190,7 +200,8 @@ pub(crate) fn normalize(
                 a.name.clone_from(&row.name);
             } else if let Some(name) = a.switch_keys.first().and_then(named)
                 && ir::parse_note(&a.name) == a.switch_keys.first().copied()
-                && a.switch_keys.iter().all(|key| named(key) == Some(name)) {
+                && a.switch_keys.iter().all(|key| named(key) == Some(name))
+            {
                 a.name = name.into();
             }
         }
@@ -277,18 +288,73 @@ mod tests {
         let script = sampler_ksp::compile("on init\n set_key_name(24,\"Legato\")\n set_key_name(25,\"Legato\")\n set_key_name(26,\"Staccato\")\n set_key_name(27,\"Pizzicato\")\nend on", 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
         let mut inst = ir::Instrument::default();
         inst.articulations = [
-            ("range", "C0", vec![24,25]),
+            ("range", "C0", vec![24, 25]),
             ("single", "D0", vec![26]),
-            ("mixed", "D0", vec![26,27]),
+            ("mixed", "D0", vec![26, 27]),
             ("authored", "Saved label", vec![27]),
             ("unnamed", "E0", vec![28]),
-            ("partial", "C0", vec![24,28]),
-        ].into_iter().enumerate().map(|(n,(source,name,switch_keys))| ir::Articulation { source:source.into(),name:name.into(),switch_keys,control:Some(n as u128),default:n==1,..Default::default() }).collect();
-        let before=inst.clone();
-        normalize(&mut inst,&[],&[script]);
-        assert_eq!(inst.articulations.iter().map(|a|a.name.as_str()).collect::<Vec<_>>(),["Legato","Staccato","D0","Saved label","E0","C0"]);
-        for (after,before) in inst.articulations.iter_mut().zip(&before.articulations) { after.name.clone_from(&before.name); }
-        assert_eq!(inst,before,"source IDs, ranges, controls, defaults and alternatives do not change");
+            ("partial", "C0", vec![24, 28]),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(n, (source, name, switch_keys))| ir::Articulation {
+            source: source.into(),
+            name: name.into(),
+            switch_keys,
+            control: Some(n as u128),
+            default: n == 1,
+            ..Default::default()
+        })
+        .collect();
+        let before = inst.clone();
+        normalize(&mut inst, &[], &[script]);
+        assert_eq!(
+            inst.articulations
+                .iter()
+                .map(|a| a.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Legato", "Staccato", "D0", "Saved label", "E0", "C0"]
+        );
+        for (after, before) in inst.articulations.iter_mut().zip(&before.articulations) {
+            after.name.clone_from(&before.name);
+        }
+        assert_eq!(
+            inst, before,
+            "source IDs, ranges, controls, defaults and alternatives do not change"
+        );
     }
-
+    #[test]
+    fn keyswitch_shape_only_lists_are_not_articulations() {
+        for (height, keyed) in [(0, true), (24, false), (24, true)] {
+            let mut ui = Interface::default();
+            for n in 0..4 {
+                let mut button = Widget::new(
+                    format!("$item{n}"),
+                    PageRef(0),
+                    Rect::new(10, n * height as i32, 160, height),
+                    Kind::Button { momentary: false },
+                );
+                button.binding = Binding::Control(ControlId(100 + n as u128));
+                button.text = "PRESET 001".into();
+                ui.widgets.push(button);
+            }
+            if keyed {
+                let mut label = Widget::new(
+                    "$note",
+                    PageRef(0),
+                    Rect::new(180, 0, 40, height),
+                    Kind::Label,
+                );
+                label.text = "C0".into();
+                ui.widgets.push(label);
+            }
+            let mut inst = ir::Instrument::default();
+            normalize(&mut inst, &[ui], &[]);
+            assert_eq!(
+                inst.articulations.len(),
+                if height > 0 && keyed { 4 } else { 0 },
+                "height {height}, keyed {keyed}: require visible geometry and switching evidence, retaining keyless rows in a keyed list"
+            );
+        }
+    }
 }
