@@ -1596,3 +1596,70 @@ fn generic_voice_filter_parameters_never_share_another_voices_coefficients() {
         if threads > 1 { assert!(combined.parallel_blocks() > 0); }
     }
 }
+
+
+#[test]
+fn registered_peak_gain_keeps_a_flat_band_and_drives_real_voice_audio() {
+    let instrument = ir::Instrument {
+        source_indices: ir::SourceIndices { control_aliases: vec![ir::SourceControlAlias {
+            control: ir::ControlRef(0), parameter: "ENGINE_PAR_GAIN2".into(),
+            address: ir::SlotAddress { group: 0, slot: 5, generic: -1 },
+        }], ..Default::default() },
+        assets: vec![asset("EQ owner witness")],
+        controls: vec![ir::Control { key: "eq/physical-slot-5/band-2/gain".into(), label: "Band 2 Gain".into(),
+            value: ir::ControlValue::Continuous { min: -18., max: 18., default: 0., unit: ir::ControlUnit::Decibels },
+            automation: ir::Automation::None }],
+        chains: vec![ir::Chain { scope: ir::Scope::Voice,
+            pre_amplitude: vec![ir::Processor::Filter(ir::Filter {
+                kind: ir::FilterKind::Peak { gain: ir::Gain::Decibels(0.) },
+                cutoff: ir::Frequency::Hertz(1000.), resonance: ir::Resonance::Q(1.),
+            })], post_amplitude: vec![] }],
+        processor_controls: vec![ir::ProcessorControl { control: ir::ControlRef(0), chain: ir::ChainRef(0),
+            index: 0, parameter: ir::ProcessorParameter::Gain, ramp: ir::Time::ZERO }],
+        modulators: vec![ir::Modulator { scope: ir::Scope::Voice, source: ir::ModulationSource::Velocity }],
+        routes: vec![ir::Route { source: ir::ModulatorRef(0), target: ir::Target::Control(ir::ControlRef(0)),
+            depth: ir::Depth::Normalized(1./3.), invert: false, shape: None, smoothing: ir::Time::ZERO, scale: None }],
+        zones: vec![ir::Zone { chain: Some(ir::ChainRef(0)), routes: vec![ir::RouteRef(0)],
+            keys: ir::KeyRange { low: 60, high: 60 }, pitch: ir::KeyTracking::Fixed,
+            velocity: ir::VelocityResponse::None, ..ir::Zone::new(ir::AssetRef(0)) }],
+        ..Default::default()
+    };
+    let mut phantom = instrument.clone();
+    phantom.processor_controls.clear();
+    assert!(phantom.validate().is_err(), "an alias cannot publish an unbound mirror");
+    let mut layer_alias = instrument.clone();
+    layer_alias.source_indices.control_aliases[0].address.slot = -1;
+    assert!(layer_alias.validate().is_err(), "module aliases cannot shadow layer parameter dispatch");
+    let mut duplicate = instrument.clone();
+    duplicate.source_indices.control_aliases.push(duplicate.source_indices.control_aliases[0].clone());
+    let pcm = Pcm::new(48000, vec![[0.; 2]; 4800].into_boxed_slice()).unwrap();
+    assert!(lower(&duplicate, 48000, vec![pcm], no_behaviors).is_err(), "native address aliases cannot conflict");
+    let frames: Vec<_> = (0..4800).map(|n| [0.01 * (std::f32::consts::TAU * n as f32 / 48.).sin(); 2]).collect();
+    let pcm = Pcm::new(48000, frames.clone().into_boxed_slice()).unwrap();
+    let prepared = lower(&instrument, 48000, vec![pcm], no_behaviors)
+        .expect("a flat peak band must retain its real gain owner before modulation");
+    let native = sampler_core::EngineParameterAddress {
+        parameter: sampler_core::engine_parameter_id("ENGINE_PAR_GAIN2").unwrap(), group: 0, slot: 5, generic: -1,
+    };
+    assert!(prepared.parameter_registry().resolve_native(native).is_some(), "native alias must resolve to the real EQ gain owner");
+    let descriptor = prepared.parameter_registry().descriptors().next().unwrap();
+    assert_eq!((descriptor.unit, descriptor.range, descriptor.default),
+        (sampler_core::ParameterUnit::Decibels, [-18., 18.], 0.));
+    let mut rt = Runtime::new(prepared, limits()).unwrap();
+    let mut output = [[0.; 2]; 4096];
+    support::without_heap(|| { rt.trigger(input(60), 60, 1.).unwrap(); rt.render(&mut output).unwrap(); });
+    let power = |frames: &[[f32; 2]]| frames.iter().map(|f| f64::from(f[0]).powi(2)).sum::<f64>();
+    let gain_db = 10. * (power(&output[1024..]) / power(&frames[1024..4096])).log10();
+    assert!((gain_db - 12.).abs() < 0.02, "center-frequency gain: {gain_db} dB");
+    let id = sampler_core::lower::ir_control_id("eq/physical-slot-5/band-2/gain");
+    assert_eq!(rt.control_base_value(rt.active_plan(), id), Ok(sampler_core::ControlValue::Real(0.)));
+    let mut edited = [[0.; 2]; 512];
+    support::without_heap(|| {
+        rt.set_engine_parameter(native, 666_667).unwrap();
+        rt.render(&mut edited).unwrap();
+    });
+    let edited_db = 10. * (power(&edited[128..]) / power(&frames[4224..4608])).log10();
+    assert!((edited_db - 18.).abs() < 0.02, "native base plus held modulation clamps at +18 dB: {edited_db}");
+    let Ok(sampler_core::ControlValue::Real(base)) = rt.control_base_value(rt.active_plan(), id) else { panic!("real EQ base"); };
+    assert!((base - 6.000012).abs() < 1e-12);
+}
