@@ -1,11 +1,10 @@
-//! The adapter is path-included until W9 installs the prepared-plan callers.
+//! Literal pinned-v1 controls checked through the exported prepared-control API.
 #![allow(dead_code)]
 use sampler_core::Error;
 #[path = "support/v1_voice_controls_oracle.rs"]
 mod oracle;
 mod support;
-#[path = "../src/v1_voice_controls.rs"]
-mod v1_voice_controls;
+use sampler_core::v1_voice_controls;
 use std::sync::Arc;
 use v1_voice_controls::*;
 
@@ -832,4 +831,106 @@ fn arbitrary_stage_release_and_ahd_only_match_literal_v1() {
             }
         }
     }
+}
+
+#[test]
+fn raw_ahdsr_forward_mapping_keeps_v1_native_setter_and_ordinary_conversion_distinct() {
+    let mut source = sampler_ir::SourceAhdsr {
+        group: 7,
+        slot: 12,
+        attack_ms: 125.012924,
+        attack_curve: 0.75,
+        hold_ms: 0.012345,
+        decay_ms: 25000.043,
+        sustain: 0.4,
+        release_ms: 1234.567,
+        ahd_only: true,
+        native_amplitude: false,
+    };
+    let ordinary = Ahdsr::from(&source);
+    let expected = Ahdsr {
+        attack: source.attack_ms / 1000.,
+        curve: source.attack_curve,
+        hold: source.hold_ms / 1000.,
+        decay: source.decay_ms / 1000.,
+        sustain: source.sustain,
+        release: source.release_ms / 1000.,
+        ahd_only: false,
+    };
+    assert_eq!(
+        [
+            ordinary.attack,
+            ordinary.curve,
+            ordinary.hold,
+            ordinary.decay,
+            ordinary.sustain,
+            ordinary.release
+        ]
+        .map(f32::to_bits),
+        [
+            expected.attack,
+            expected.curve,
+            expected.hold,
+            expected.decay,
+            expected.sustain,
+            expected.release
+        ]
+        .map(f32::to_bits)
+    );
+    assert!(!ordinary.ahd_only);
+    source.native_amplitude = true;
+    let native = Ahdsr::from(&source);
+    let expected = Ahdsr {
+        attack: source.attack_ms * 0.001,
+        hold: source.hold_ms * 0.001,
+        decay: source.decay_ms * 0.001,
+        release: source.release_ms * 0.001,
+        ahd_only: true,
+        ..expected
+    };
+    assert_eq!(
+        [
+            native.attack,
+            native.curve,
+            native.hold,
+            native.decay,
+            native.sustain,
+            native.release
+        ]
+        .map(f32::to_bits),
+        [
+            expected.attack,
+            expected.curve,
+            expected.hold,
+            expected.decay,
+            expected.sustain,
+            expected.release
+        ]
+        .map(f32::to_bits)
+    );
+    assert!(native.ahd_only);
+    assert_ne!(
+        native.attack.to_bits(),
+        ordinary.attack.to_bits(),
+        "this saved scalar distinguishes the setter laws"
+    );
+    let plan = ControlPlan::prepare(
+        ControlDescription {
+            amplitude: native,
+            native_amplitude: true,
+            ..ControlDescription::default()
+        },
+        48000.,
+    )
+    .unwrap();
+    let mut actual = ControlState::new(&plan);
+    let mut frozen = oracle::Amplitude::new(&expected, 48000., true);
+    let mut out = [0.; 128];
+    let mut reference = [0.; 128];
+    support::without_heap(|| {
+        render(&mut actual, &plan, 64, &mut out, None, None);
+        frozen.render(&mut reference[..64], None, 48000.);
+        bits(&out[..64], &reference[..64]);
+        assert_eq!(actual.amplitude_level().to_bits(), frozen.level().to_bits());
+    });
 }
