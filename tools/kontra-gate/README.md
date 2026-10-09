@@ -61,6 +61,13 @@ all programs named by the same-run scanner receipt, one heavy invocation per pro
 Missing, crashed, timed-out, empty or partially enumerated probes cannot pass. A legacy
 Conflux Vector/readback witness cannot certify another cell.
 
+Gesture changes are attributed to the owners of accepted editor submissions.
+Table and XY edits track the submitted array cells separately. A background
+listener changing another owner or untouched cell cannot certify input or cause
+an unrelated recall mismatch. `submitted_parameters` records the largest owner
+count in an attempted gesture; `widget-edit-not-submitted` distinguishes missing
+input admission from an admitted edit whose engine value did not change.
+
 Each 60 Hz editor tick advances exactly 800 engine samples at 48 kHz, split at
 the engine's 128-sample block limit. Fault receipts name the public callback and
 record the actual sample clock, editor frame, current target and probe phase.
