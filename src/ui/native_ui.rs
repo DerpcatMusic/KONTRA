@@ -513,6 +513,10 @@ fn align(value: &str) -> (Align, Align) {
 // their intrinsic size. Keep this across modifier wrappers rather than making
 // every component expand when an outer frame is applied.
 fn flexibility(node: &Table) -> (bool, bool) {
+    // Each render makes new resolved nodes; reuse derived flags within that graph.
+    if let Ok(flags) = node.get::<u8>("__host_flex") {
+        return (flags & 1 != 0, flags & 2 != 0);
+    }
     let kind = string(node, "kind");
     let children = tables(node, "children").unwrap_or_default();
     let mut flex = match kind.as_str() {
@@ -569,6 +573,7 @@ fn flexibility(node: &Table) -> (bool, bool) {
             }
         }
     }
+    let _ = node.set("__host_flex", u8::from(flex.0) | (u8::from(flex.1) << 1));
     flex
 }
 fn expand(mut el: El, flex: (bool, bool)) -> El {
