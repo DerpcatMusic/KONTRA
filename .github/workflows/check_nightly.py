@@ -262,6 +262,7 @@ if a[0]=="api":
         s["deleted"].append(int(path.rsplit("/",1)[1])); status=int(s["case"]=="cleanup-fails"); out="{}"
     else: raise AssertionError(a)
 elif a[:2]==["release","create"]:
+    assert len(Path("notes.md").read_text()) <= 125000, "GitHub release body exceeds 125000 characters"
     assert a[2]=="v"+os.environ["TEST_VERSION"] and "--draft" in a and "--prerelease" not in a
     assert len([r for r in s["releases"] if not r["draft"]]) in (0,2,3)
     s["published"]=False
@@ -317,13 +318,16 @@ def universal_fixture(root, version, revision, case="current"):
     if case=="missing-universal": package.unlink()
     if case=="changed-installer": package.write_bytes(b"xar!changed-installer")
 
-cases=("current","first","bad-digest","stale-before","stale-after","upload-fails","missing-asset","bad-checksum","wrong-format","cleanup-fails","rotation-fails","missing-font-license","missing-legal-review","missing-notices","missing-mpl-source","missing-patched-mpl-source","missing-notarization","rejected-notarization","changed-notarized-product","missing-universal","changed-installer","rejected-installer","wrong-installer-source","missing-package-types")
+cases=("current","first","oversized-notes","bad-digest","stale-before","stale-after","upload-fails","missing-asset","bad-checksum","wrong-format","cleanup-fails","rotation-fails","missing-font-license","missing-legal-review","missing-notices","missing-mpl-source","missing-patched-mpl-source","missing-notarization","rejected-notarization","changed-notarized-product","missing-universal","changed-installer","rejected-installer","wrong-installer-source","missing-package-types")
 for case in cases:
     with tempfile.TemporaryDirectory(prefix="kontra-nightly-check-") as directory:
         root=Path(directory); root.joinpath("gh").write_text(mock_gh); root.joinpath("gh").chmod(0o755); root.joinpath("dist").mkdir()
         version="0.2.0-nightly.20261002.gaaaaaaaaaaaa"
         root.joinpath("Cargo.toml").write_text('[package]\nversion="'+version+'"\n')
         root.joinpath("CHANGELOG.md").write_text('## Current — unreleased\n### Added\n- Reviewed source feature.\n### Fixed\n- Reviewed defect corrected.\n### Known limits\n- Hosted compilation does not prove DAW compatibility.\n')
+        if case=="oversized-notes":
+            with root.joinpath("CHANGELOG.md").open("a") as notes:
+                notes.write("\n- " + "Complete reviewed Unicode context 🎵. " * 5000 + "\n")
         for platform in platforms:
             if case=="missing-asset" and platform==platforms[-1]: continue
             with zipfile.ZipFile(root/f"dist/KONTRA-nightly-{platform}.zip","w") as z:
@@ -387,7 +391,7 @@ for case in cases:
             assert state["published"] and len(state["releases"])==4 and state["latest"] is not None
             result=run(publish); assert result.returncode==0,result.stderr
             state=json.loads(root.joinpath("state.json").read_text())
-        promoted=case in ("current","first","cleanup-fails","rotation-fails")
+        promoted=case in ("current","first","oversized-notes","cleanup-fails","rotation-fails")
         assert state["promoted"]==promoted,(case,state)
         assert state["refs"]["nightly-staging-other"]=="e"*40
         assert not any(r["draft"] for r in state["releases"]),(case,state)
@@ -395,6 +399,12 @@ for case in cases:
             assert len(state["releases"])==(1 if case=="first" else 2)
             newest=next(r for r in state["releases"] if r["tag_name"]=="v"+version)
             assert newest["target_commitish"]=="a"*40 and newest["name"]=="KONTRA "+version
+            if case=="oversized-notes":
+                manifest=json.loads(state["manifests"][str(newest["id"])])
+                assert root.joinpath("dist/release-notes.md").read_text()==manifest["changelog"]
+                assert len(manifest["changelog"])>125000 and len(newest["body"].encode())<=125000
+                assert "release-notes.md" in newest["body"]
+                assert any(a["name"]=="release-notes.md" for a in newest["assets"])
             assert not any(a["name"].startswith(("KONTRA-nightly-macos-arm64","KONTRA-nightly-macos-x86_64")) for a in newest["assets"]), "macOS ships only the universal installer"
             assert state["refs"]["v"+version]=="a"*40 and not newest["prerelease"] and state["latest"]==newest["id"]
             if case!="first":
@@ -463,4 +473,4 @@ for case in cases:
                 state=json.loads(root.joinpath("state.json").read_text())
                 assert state["deleted"]==[100,101,102,103] and state["releases"]==before
         assert ("published=true" in output.read_text())==promoted,case
-print("Nightly checks passed: reviewed delta/history/bootstrap notes, format selection/plist checks, 24 retention/rerun/upload/checksum/cleanup/legal-bundle/notarization/installer scenarios and the stable README links.")
+print("Nightly checks passed: reviewed delta/history/bootstrap notes, format selection/plist checks, 25 retention/rerun/upload/checksum/cleanup/legal-bundle/notarization/installer/body-limit scenarios and the stable README links.")
