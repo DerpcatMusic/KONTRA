@@ -40,6 +40,36 @@ fn tester_parameter_array_v11_keeps_holes_and_opaque_slot_words() {
 }
 
 #[test]
+fn tester_parameter_array_v11_presence_only_is_bounded_and_inline() {
+    for (id, capacity, child) in [(0x3a, 8, 0x2a), (0x3b, 16, 0x0d), (0x3c, 32, 0x0c)] {
+        let mut bytes = vec![0, 0x11, 0];
+        bytes.extend(vec![0; capacity - 1]);
+        bytes.push(1);
+        Chunk { id: child, data: object(0x81, &[], &[0xaa]) }.write(&mut bytes).unwrap();
+        let chunk = Chunk { id, data: bytes };
+        let slots: Vec<_> = match id {
+            0x3a => BParamArrayBParFX8::try_from(&chunk).unwrap().items.into_iter().enumerate().filter_map(|(slot,c)| c.map(|_| slot)).collect(),
+            0x3b => InternalModArray16::try_from(&chunk).unwrap().slots().unwrap().into_iter().map(|(slot,_)| slot).collect(),
+            _ => ExternalModArray32::try_from(&chunk).unwrap().slots().unwrap().into_iter().map(|(slot,_)| slot).collect(),
+        };
+        assert_eq!(slots, [capacity - 1]); roundtrip(&chunk);
+        if id == 0x3a {
+            let mut inline = chunk.data.clone(); inline.extend([0xfe; 4]);
+            let mut reader = Cursor::new(inline);
+            assert_eq!(BParamArrayBParFX8::read(&mut reader, 8).unwrap().len(), 1);
+            assert_eq!(reader.position(), chunk.data.len() as u64);
+        }
+        let mut trailing = Chunk { id, data: chunk.data.clone() }; trailing.data.push(0xfe);
+        let rejected = match id {
+            0x3a => BParamArrayBParFX8::try_from(&trailing).is_err(),
+            0x3b => InternalModArray16::try_from(&trailing).and_then(|a| a.slots()).is_err(),
+            _ => ExternalModArray32::try_from(&trailing).and_then(|a| a.slots()).is_err(),
+        };
+        assert!(rejected);
+    }
+}
+
+#[test]
 fn tester_legacy_modulation_nullable_names_keep_target_alignment() {
     let mut private = 1u32.to_le_bytes().to_vec();
     private.extend(6u32.to_le_bytes()); private.extend(b"volume");
@@ -96,7 +126,7 @@ fn tester_revision_fixes_reject_unknown_versions_and_truncated_records() {
         assert!(array.slots().is_err());
     }
     let mut array = vec![0,0x11,0];
-    for _ in 0..32 { array.push(0); array.extend(0u32.to_le_bytes()); }
+    for _ in 0..32 { array.push(0); array.extend(0xaabbccddu32.to_le_bytes()); }
     for end in 0..array.len() {
         let chunk = Chunk { id:0x3c,data:array[..end].to_vec() };
         assert!(ExternalModArray32::try_from(&chunk).and_then(|a|a.slots()).is_err());
