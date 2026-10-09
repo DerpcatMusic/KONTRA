@@ -229,6 +229,7 @@ enum Prepared {
 }
 
 struct Program {
+    native: Option<crate::whole_voice::Program>,
     sources: Box<[Prepared]>,
     bipolar: Box<[bool]>,
     envelopes: Box<[Envelope]>,
@@ -260,6 +261,7 @@ pub(crate) struct VoiceModulation {
 /// What sizes a [`VoiceModState`], so it can be built without the plan.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ModShape {
+    native: bool,
     empty: bool,
     sources: usize,
     envelopes: usize,
@@ -274,6 +276,7 @@ impl VoiceModulation {
 
     pub fn shape(&self) -> ModShape {
         ModShape {
+            native: self.programs.iter().any(|p| p.native.is_some()),
             empty: self.is_empty(),
             sources: self.sources,
             envelopes: self.envelopes,
@@ -287,7 +290,9 @@ impl VoiceModulation {
         if self.is_empty() {
             return 0;
         }
-        size_of::<Option<u32>>()
+        usize::from(self.programs.iter().any(|p| p.native.is_some())) * size_of::<Option<crate::v1_voice_controls::ControlState>>()
+            + usize::from(self.programs.iter().any(|p| p.native.is_some())) * size_of::<std::sync::atomic::AtomicBool>()
+            + size_of::<Option<u32>>()
             + size_of::<u64>()
             + size_of::<u32>()
             + 2 * size_of::<Outputs>()
@@ -303,12 +308,12 @@ impl VoiceModulation {
         regions: Vec<Option<usize>>,
         start_ranges: Vec<u32>,
     ) -> Result<Self, Error> {
-        Self::new_resolved(programs, regions, start_ranges, |_| None)
+        Self::new_resolved(programs, regions, start_ranges, Vec::new(), |_| None)
     }
 
     pub(crate) fn new_resolved(
         programs: Vec<ModProgram>, regions: Vec<Option<usize>>, start_ranges: Vec<u32>,
-        resolve: impl Fn(crate::ParameterAddress) -> Option<usize>,
+        native: Vec<Option<crate::whole_voice::Program>>, resolve: impl Fn(crate::ParameterAddress) -> Option<usize>,
     ) -> Result<Self, Error> {
         if start_ranges.len() != regions.len()
             || regions.iter().flatten().any(|p| *p >= programs.len())
@@ -316,6 +321,7 @@ impl VoiceModulation {
         {
             return Err(Error::InvalidInput);
         }
+        let mut native = native.into_iter();
         let mut compiled = Vec::with_capacity(programs.len());
         for program in programs {
             let mut envelopes = Vec::new();
@@ -397,6 +403,7 @@ impl VoiceModulation {
             let reaches =
                 |targets: &[ModTarget]| program.routes.iter().any(|r| targets.contains(&r.target));
             compiled.push(Program {
+                native: native.next().flatten(),
                 bipolar: program.sources.iter().map(ModSource::bipolar).collect(),
                 cacheable: sources.iter().all(|s| {
                     matches!(s,
@@ -657,6 +664,9 @@ impl Default for Outputs {
 
 /// Mutable per-voice state for one plan generation, sized at construction.
 pub(crate) struct VoiceModState {
+    pub(crate) native: sampler_pool::Slab<Option<crate::v1_voice_controls::ControlState>>,
+    pub(crate) native_starts: u64,
+    pub(crate) native_blocks: std::sync::atomic::AtomicU64,
     sources: usize,
     envelopes: usize,
     breakpoints: usize,
@@ -743,6 +753,9 @@ impl VoiceModState {
             return Ok(Self::empty());
         }
         Ok(Self {
+            native: sampler_pool::Slab::new(crate::dsp::allocate(if modulation.native { voices } else { 0 })?, 1),
+            native_starts: 0,
+            native_blocks: std::sync::atomic::AtomicU64::new(0),
             sources: modulation.sources,
             envelopes: modulation.envelopes,
             breakpoints: modulation.breakpoints,
@@ -777,6 +790,11 @@ impl VoiceModState {
             new[..n].swap_with_slice(old);
             std::mem::swap(old, new);
         }
+        if !self.native.is_empty() {
+            let n = self.native.len();
+            larger.native.as_mut_slice()[..n].swap_with_slice(self.native.as_mut_slice());
+            std::mem::swap(&mut self.native, &mut larger.native);
+        }
         take(&mut self.program, &mut larger.program);
         take(&mut self.seed, &mut larger.seed);
         take(&mut self.age, &mut larger.age);
@@ -797,6 +815,9 @@ impl VoiceModState {
 
     fn empty() -> Self {
         Self {
+            native: sampler_pool::Slab::new(Box::new([]), 1),
+            native_starts: 0,
+            native_blocks: std::sync::atomic::AtomicU64::new(0),
             sources: 0,
             envelopes: 0,
             breakpoints: 0,
@@ -903,14 +924,19 @@ impl VoiceModState {
 
 
     pub fn start(
+        &mut self, modulation: &VoiceModulation, voice: usize, region: usize,
+        inputs: &Inputs<'_>, clock: Clock, seed: u64,
+    ) { self.start_with_controls(modulation, voice, region, inputs, clock, seed, true); }
+    pub(crate) fn start_with_controls(
         &mut self,
         modulation: &VoiceModulation,
         voice: usize,
         region: usize,
         inputs: &Inputs<'_>,
         clock: Clock,
-        seed: u64,
+        seed: u64, native_allowed: bool,
     ) {
+        if let Some(state) = self.native.as_mut_slice().get_mut(voice) { *state = None; }
         let Some(program) = self.program.get_mut(voice) else {
             return;
         };
@@ -919,6 +945,12 @@ impl VoiceModState {
             return;
         };
         let p = &modulation.programs[index as usize];
+        if native_allowed && let Some(native) = &p.native {
+            let mut state = crate::v1_voice_controls::ControlState::new(&native.plan);
+            state.reset_read(&native.plan, |s,t| crate::whole_voice::read(inputs,s,t), clock.now);
+            self.native.as_mut_slice()[voice] = Some(state);
+            self.native_starts += 1;
+        }
         self.seed[voice] = seed;
         self.age[voice] = 0;
         self.restart = (clock.now, seed);
@@ -939,9 +971,17 @@ impl VoiceModState {
         self.times[voice] = [clock.now; 2];
     }
 
+    pub(crate) fn native_render<'a>(&'a self, modulation: &'a VoiceModulation, voice: usize,
+        state: &'a mut Option<crate::v1_voice_controls::ControlState>) -> Option<crate::whole_voice::Render<'a>> {
+        let program = &modulation.programs[self.program(voice)? as usize];
+        Some(crate::whole_voice::Render { plan: &program.native.as_ref()?.plan, state: state.as_mut()?, blocks: &self.native_blocks })
+    }
     pub fn release(&mut self, modulation: &VoiceModulation, voice: usize) {
         if let Some(program) = self.program(voice) {
             let p = &modulation.programs[program as usize];
+            if let (Some(native), Some(Some(state))) = (&p.native, self.native.as_mut_slice().get_mut(voice)) {
+                state.release(&native.plan);
+            }
             for state in &mut self.envelope[voice * self.envelopes..][..p.envelopes.len()] {
                 state.release();
             }
@@ -1004,6 +1044,7 @@ impl VoiceModState {
         frames: u32,
         onset: bool,
     ) -> Outputs {
+        let native = p.native.as_ref().filter(|_| self.native.as_mut_slice().get(voice).is_some_and(Option::is_some));
         let seed = self.seed[voice];
         let age = self.age[voice].saturating_add(frames);
         self.age[voice] = age;
@@ -1012,6 +1053,7 @@ impl VoiceModState {
         let mut changed = onset;
         for (i, source) in p.sources.iter().enumerate() {
             let value = match *source {
+                _ if native.is_some_and(|n| n.flex_source == Some(i)) => 0.,
                 Prepared::Lfo(lfo) if lfo.shape == LfoShape::Zero => 0.,
                 Prepared::Lfo(lfo) => {
                     let hz = match lfo.rate {
@@ -1051,26 +1093,48 @@ impl VoiceModState {
                 ),
                 other => other.input(inputs, seed, i),
             };
-            if p.cacheable {
-                changed |= values[i].to_bits() != value.to_bits();
-            }
+            changed |= values[i].to_bits() != value.to_bits();
             values[i] = value;
         }
+        let native_point = native.map(|native| {
+            let state = self.native.as_mut_slice()[voice].as_mut().unwrap();
+            if changed { state.invalidate_inputs(); }
+            state.plan_controls_read(&native.plan, |s,t| crate::whole_voice::read(inputs,s,t), 0, frames as usize)
+        });
         let processor_values = &mut self.processor_values[voice * self.routes..][..p.routes.len()];
         let previous_processor_values =
             &mut self.previous_processor_values[voice * self.routes..][..p.routes.len()];
         previous_processor_values.copy_from_slice(processor_values);
-        if p.cacheable && !changed {
+        if p.cacheable && !changed && native.is_none() {
             return self.outputs[voice];
         }
         let mut gain = 1.0;
         let mut decibels = 0.0;
         let mut pan = 0.0;
         let mut out = Outputs::default();
+        out.pitch = native_point.map_or(0., |p| f64::from(p.1));
         let mut resonance = 0.0;
         let mut cutoff = 0.0;
         let lagged = &mut self.lagged[voice * self.routes..][..p.routes.len()];
         for (i, (route, lagged)) in p.routes.iter().zip(lagged).enumerate() {
+            let control = native.map_or(crate::whole_voice::Route::Residual, |n| n.routes[i]);
+            match control {
+                crate::whole_voice::Route::Flex => continue,
+                crate::whole_voice::Route::External(assignment) => {
+                    let m = &native.unwrap().plan.description().mods.assignments()[assignment as usize];
+                    let (source,target) = m.route.unwrap();
+                    if target != crate::v1_voice_controls::Target::Module { continue; }
+                    let input = crate::whole_voice::read(inputs, source, target);
+                    let mut value = *lagged as f32;
+                    if onset { value = m.shape(input); }
+                    else { m.follow_value(&mut value, input, frames as usize, clock.rate as f32); }
+                    *lagged = f64::from(value);
+                    processor_values[i] = f64::from(m.intensity * value);
+                    if onset { previous_processor_values[i] = processor_values[i]; }
+                    continue;
+                }
+                crate::whole_voice::Route::Residual => {}
+            }
             let bipolar = p.bipolar[route.source];
             let mut v = p.transform(route, values[route.source], bipolar);
             if route.lag != 0 && !onset {
@@ -1111,6 +1175,7 @@ impl VoiceModState {
         if p.filter {
             out.filter = [(cutoff / 12.0).exp2(), 10f64.powf(resonance / 20.0)];
         }
+        if let Some((gain,_,_)) = native_point { out.gains = out.gains.map(|g| g * gain); }
         out.tone = if p.tone { out.tone.min(0.0) } else { 0.0 };
         out
     }

@@ -91,7 +91,8 @@ pub struct Envelope {
     release: u32,
     one_shot: bool,
     curves: [Curve; 3],
-    native: Option<crate::v1_voice_controls::native::Native>,
+    native: Option<crate::v1_voice_controls::Primary>,
+    controlled: bool,
 }
 
 impl Default for Envelope {
@@ -106,6 +107,7 @@ impl Default for Envelope {
             one_shot: false,
             curves: [Curve::default(); 3],
             native: None,
+            controlled: false,
         }
     }
 }
@@ -164,6 +166,7 @@ impl Envelope {
     }
     pub(crate) fn with_control(mut self, stage: crate::EnvelopeStage, value: f64) -> Self {
         self.native = None;
+        self.controlled = true;
         match stage {
             crate::EnvelopeStage::Sustain => self.sustain = value.clamp(0., 1.) as f32,
             crate::EnvelopeStage::AttackCurve => {
@@ -179,6 +182,7 @@ impl Envelope {
     pub(crate) fn with_stage(mut self, stage: crate::EnvelopeStage, value: u32) -> Self {
         // ponytail: live frame-valued setters use v2 until original native knob values reach this owner.
         self.native = None;
+        self.controlled = true;
         use crate::EnvelopeStage as S;
         let recurve = |curve: Curve, frames| Curve::new(EnvelopeCurve(curve.curvature), frames);
         match stage {
@@ -219,7 +223,7 @@ impl Envelope {
         if !crate::v1_voice_controls::valid_ahdsr(&params) || rate < 10 {
             return Err(Error::InvalidInput);
         }
-        self.native = Some(crate::v1_voice_controls::native::Native::new(&params, rate as f32));
+        self.native = Some(crate::v1_voice_controls::Primary::new(&params, rate as f32, true));
         Ok(self)
     }
 
@@ -268,6 +272,11 @@ pub(super) struct EnvelopeState {
 }
 
 impl EnvelopeState {
+    pub(crate) fn admits_v1_controls(&self) -> bool { !self.shape.controlled && !self.shape.one_shot && self.shape.delay == 0 }
+    pub(crate) fn set_v1_amplitude(&mut self, primary: crate::v1_voice_controls::Primary, _rate: f32) {
+        if !self.shape.controlled { self.shape.native = Some(primary); }
+    }
+
     pub(crate) fn trace_parameters(&self) -> [f64; 10] { self.shape.trace_parameters().map(|(_,v)|v) }
     pub(super) fn new(shape: Envelope) -> Self {
         let mut state = Self {
@@ -369,6 +378,7 @@ impl EnvelopeState {
     pub(super) fn release_onset(&mut self) {
         // Storage-onset release starts from sustain under the existing v2 policy.
         self.shape.native = None;
+        self.shape.controlled = true;
         if !self.shape.one_shot && !matches!(self.phase, Phase::Release | Phase::Done) {
             self.release_level = self.shape.sustain;
             self.enter(Phase::Release);
@@ -387,6 +397,7 @@ impl EnvelopeState {
         }
         self.release_level = self.level();
         self.shape.native = None;
+        self.shape.controlled = true;
         self.shape.release = frames;
         self.shape.curves[2] = Curve::default();
         self.enter(Phase::Release);
@@ -550,7 +561,9 @@ mod tests {
         let shape = native_shape(false);
         for stage in crate::engine_parameters::ENVELOPE_STAGES {
             assert!(shape.with_stage(stage, 17).native.is_none());
+            assert!(!EnvelopeState::new(shape.with_stage(stage, 17)).admits_v1_controls());
             assert!(shape.with_control(stage, 0.5).native.is_none());
+            assert!(!EnvelopeState::new(shape.with_control(stage, 0.5)).admits_v1_controls());
         }
         let mut state = EnvelopeState::new(shape);
         state.advance(63);
