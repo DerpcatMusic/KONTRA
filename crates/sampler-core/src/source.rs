@@ -1821,7 +1821,7 @@ mod native_slot_tests {
         }).collect();
         for direction in [Direction::Forward, Direction::Reverse] {
             for shape in [LoopShape::Wrap, LoopShape::PingPong, LoopShape::Crossfade { frames: 8 }, LoopShape::EqualPowerCrossfade { frames: 8 }] {
-                for (step, tuning) in [(0.8, 1.), (0.8, 1.5), (1., 1.), (1.25, 0.75)] {
+                for (step, tuning) in [(0.8, 1.), (0.8, 1.5), (1., 1.), (1.25, 0.75), (2.4, 0.75)] {
                     for quality in [crate::ResampleQuality::Realtime, crate::ResampleQuality::High] {
                         for missing in [None, Some(113)] {
                             let mut slots = [None; 8];
