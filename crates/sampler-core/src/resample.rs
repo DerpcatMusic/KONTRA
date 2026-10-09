@@ -141,6 +141,7 @@ fn cubic(fraction: f64, mut read: impl FnMut(i64) -> [f32; 2]) -> [f32; 2] {
 
 /// Stretches of the polyphase bank: eight per octave above unity.
 const STRETCHES: usize = 8;
+const BANK_ENTRIES: usize = STRETCHES * OCTAVES;
 /// Phases per input frame; coefficients interpolate linearly between rows.
 const PHASES: usize = 64;
 
@@ -279,8 +280,8 @@ fn accumulate<const FUSED: bool>(
     }
 }
 
-/// Widest polyphase window: radius 12 at stretch 2.
-const MAX_TAPS: usize = 2 * 2 * SHORT_RADIUS + 1;
+/// Widest polyphase window: radius 12 at MAX_STEP.
+const MAX_TAPS: usize = 2 * MAX_STEP as usize * SHORT_RADIUS + 1;
 /// Its padded width in frames.
 const MAX_WIDTH: usize = (2 * MAX_TAPS).div_ceil(CHUNK) * CHUNK / 2;
 
@@ -291,7 +292,7 @@ pub(super) struct Kernel {
     quality: ResampleQuality,
     long: &'static Table,
     short: &'static Table,
-    bank: &'static [Polyphase; STRETCHES],
+    bank: &'static [Polyphase; BANK_ENTRIES],
 }
 
 impl Kernel {
@@ -301,7 +302,7 @@ impl Kernel {
     pub(super) fn new(quality: ResampleQuality) -> Self {
         static LONG: OnceLock<Table> = OnceLock::new();
         static SHORT: OnceLock<Table> = OnceLock::new();
-        static BANK: OnceLock<[Polyphase; STRETCHES]> = OnceLock::new();
+        static BANK: OnceLock<[Polyphase; BANK_ENTRIES]> = OnceLock::new();
         let short = SHORT.get_or_init(|| Table::new(SHORT_RADIUS, 0.8));
         Self {
             quality,
@@ -316,10 +317,10 @@ impl Kernel {
         ((index + 1) as f64 / STRETCHES as f64).exp2()
     }
 
-    /// The bank entry for 1 < step <= 2: the narrowest stretch at or above
+    /// The bank entry for 1 < step <= MAX_STEP: the narrowest stretch at or above
     /// step, so the band edge sits at most an eighth of an octave low.
     pub(super) fn polyphase(&self, step: f64) -> Option<&Polyphase> {
-        if self.quality != ResampleQuality::Realtime || step <= 1.0 || step > 2.0 {
+        if self.quality != ResampleQuality::Realtime || step <= 1.0 || step > MAX_STEP {
             return None;
         }
         self.bank.iter().find(|entry| entry.stretch >= step)
