@@ -2271,7 +2271,7 @@ fn mapping_analog_waveform_worker_probe_skips_only_when_library_is_missing() {
         let keys=scene.surface("keys").unwrap().frame;
         let part=scene.surface("part-0").unwrap().frame;
         let rack=scene.surface("rack-view").unwrap().frame;
-        assert!(status.size.height >= 10. && status.y+status.size.height <= (part.y+part.size.height-1.).min(keys.y-24.).min(rack.y+rack.size.height),"authored header rows leave room for every inspector detail at {w}×{h}: {} vs {}",status.y+status.size.height,keys.y-24.);
+        assert!(status.size.height >= 10. && status.y+status.size.height <= (part.y+part.size.height-1.).min(keys.y-24.).min(rack.y+rack.size.height),"authored header rows leave room for every inspector detail at {w}×{h}: bottom {}, height {}, part {}, keys {}, rack {}",status.y+status.size.height,status.size.height,part.y+part.size.height-1.,keys.y-24.,rack.y+rack.size.height);
         if let Some(dir)=std::env::var_os("KONTAKTO_MAPPING_SHOTS") {let path=std::path::PathBuf::from(dir).join(format!("mapping-analog-{w}x{h}.png"));std::fs::create_dir_all(path.parent().unwrap()).unwrap();moose::core::screenshot::save_png(&path,&pixels(&ui.ui,w,h),w as u32,h as u32);}
         ui.press("keyboard-toggle");ui.idle(30);
         let scene=ui.ui.scene().unwrap();let status=scene.surface("map-wave-status-0").unwrap().frame;let rack=scene.surface("rack-view").unwrap().frame;
