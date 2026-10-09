@@ -375,8 +375,13 @@ fn finish_kept(
             .group
             .map_or(0.0, |g| instrument.groups[g.0].tune.semitones());
         let ratio = f64::from(audio.sample_rate()) / f64::from(options.rate);
+        let wavetable = zone.group.is_some_and(|g| instrument.groups[g.0].wavetable.is_some());
         playable[index] = fit(&mut zone.playback, audio.frame_count() as u64, &mut report)
-            && fit_keys(zone, group_tune, ratio, &mut report);
+            && (wavetable || fit_keys(zone, group_tune, ratio, &mut report));
+        if playable[index] && wavetable && (zone.playback.start % 2048 != 0 || (zone.playback.end.unwrap_or(audio.frame_count() as u64) - zone.playback.start) % 2048 != 0) {
+            report.push(("wavetable requires complete 2048-frame cycles, zone dropped", "invalid cycle geometry".into()));
+            playable[index] = false;
+        }
         let location = format!("zone {index} ({})", labels[zone.asset.0]);
         instrument
             .unsupported

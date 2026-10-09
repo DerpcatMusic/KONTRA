@@ -9,7 +9,7 @@ use crate::{
 use sampler_core::{AssetId, DecodeFailure, PAGE_FRAMES, Pcm, StreamCache, StreamWorker};
 use sampler_ir as ir;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::File,
     io::{self, Read, Seek, SeekFrom},
     ops::Range,
@@ -404,6 +404,12 @@ pub(crate) fn start_ranges(
     for zone in &instrument.zones {
         let (asset, playback) = (zone.asset.0, &zone.playback);
         let pcm = &assets[asset];
+        if zone.group.is_some_and(|g| instrument.groups[g.0].wavetable.is_some()) {
+            // port v1 bank.rs::spans: any cycle can be read at every oscillator sample.
+            let end = playback.end.unwrap_or(pcm.frame_count() as u64).min(pcm.frame_count() as u64);
+            if playback.start < end { ranges[asset].push(playback.start as usize..end as usize); }
+            continue;
+        }
         let ratio = f64::from(pcm.sample_rate()) / f64::from(rate);
         let step = zone_step(zone, &instrument.groups, ratio, policy);
         // The resampling window reads this far either side of the position.
@@ -491,6 +497,7 @@ fn load_ranges(pcm: &Pcm, reader: &mut SampleReader, ranges: &[Range<usize>]) ->
 /// decode thread. Purge and reload start ranges here; the runtime owns the
 /// page cache.
 pub struct Streamer {
+    pinned_wavetables: HashSet<AssetId>,
     sources: Arc<HashMap<AssetId, Arc<dyn AssetSource>>>,
     ranges: Arc<HashMap<AssetId, Vec<Range<usize>>>>,
     stop: Arc<AtomicBool>,
@@ -631,16 +638,26 @@ impl Streamer {
         decoders: usize,
         lazy: bool,
         head_budget: usize,
+        pinned_wavetables: HashSet<AssetId>,
     ) -> io::Result<(Self, usize)> {
         let span = crate::audit::Span::new("sample_preload");
+        let table: HashMap<_, _> = assets.iter().zip(ranges).map(|(pcm, ranges)| (pcm.asset_id(), ranges)).collect();
+        let mandatory = pinned_wavetables.iter().try_fold(0usize, |sum, id| {
+            table.get(id)?.iter().try_fold(sum, |sum, range| {
+                sum.checked_add((range.end - range.start).checked_mul(size_of::<sampler_core::Frame>())?)
+            })
+        }).ok_or_else(|| io::Error::other("invalid wavetable residency size"))?;
+        if mandatory > head_budget {
+            return Err(io::Error::other("complete wavetable cycles exceed the resident head budget"));
+        }
         let mut bytes = 0;
-        let mut table = HashMap::with_capacity(assets.len());
-        for (pcm, ranges) in assets.iter().zip(ranges) {
-            if !lazy && !ranges.is_empty() {
-                let mut reader = sources[&pcm.asset_id()].open()?;
-                bytes += load_ranges(pcm, &mut reader, &ranges)?;
+        let mut read = HashSet::new();
+        for pcm in assets {
+            let id = pcm.asset_id();
+            let ranges = &table[&id];
+            if (!lazy || pinned_wavetables.contains(&id)) && !ranges.is_empty() && read.insert(id) {
+                bytes += load_ranges(pcm, &mut sources[&id].open()?, ranges)?;
             }
-            table.insert(pcm.asset_id(), ranges);
         }
         drop(span);
         let sources = Arc::new(sources);
@@ -649,6 +666,7 @@ impl Streamer {
         // the pages queued behind it; they share the single worker endpoint.
         let worker = Arc::new(Mutex::new(worker));
         let mut streamer = Self {
+            pinned_wavetables,
             sources,
             ranges: Arc::new(table),
             stop,
@@ -705,7 +723,7 @@ impl Streamer {
         let mut held: usize = assets.iter().map(bytes).sum();
         let mut idle: Vec<&Pcm> = assets
             .iter()
-            .filter(|pcm| pcm.head_frames() > 0 && pcm.last_played() < before)
+            .filter(|pcm| !self.pinned_wavetables.contains(&pcm.asset_id()) && pcm.head_frames() > 0 && pcm.last_played() < before)
             .collect();
         idle.sort_unstable_by_key(|pcm| pcm.last_played());
         let mut freed = 0;
@@ -898,6 +916,7 @@ impl Streamed {
         report.pool_bytes = cache.bytes();
         drop(pool_span);
         let ranges = start_ranges(&loaded.instrument, &kept, rate, head, &policy);
+        let pinned_wavetables = loaded.instrument.zones.iter().filter(|zone| zone.group.is_some_and(|g| loaded.instrument.groups[g.0].wavetable.is_some())).map(|zone| kept[zone.asset.0].asset_id()).collect();
         let (streamer, bytes) = Streamer::start(
             sources,
             &kept,
@@ -906,6 +925,7 @@ impl Streamed {
             policy.decoders,
             policy.lazy,
             policy.head_budget,
+            pinned_wavetables,
         )
         .map_err(|e| invalid(e.to_string()))?;
         report.head_bytes = bytes;
@@ -931,6 +951,83 @@ impl Streamed {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wavetable_start_ranges_keep_every_cycle_under_a_tiny_head_budget() {
+        let mut zone = ir::Zone::new(ir::AssetRef(0));
+        zone.group = Some(ir::GroupRef(0));
+        zone.playback.start = 2048;
+        zone.playback.end = Some(7 * 2048);
+        let instrument = ir::Instrument {
+            zones: vec![zone],
+            groups: vec![ir::Group {
+                wavetable: Some(ir::Wavetable::default()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let pcm = Pcm::streamed(22050, 8 * 2048).unwrap();
+        let policy = StreamPolicy {
+            head_budget: 1,
+            resident_budget: Some(1),
+            ..Default::default()
+        };
+        assert_eq!(
+            start_ranges(&instrument, &[pcm], 48000, 1, &policy),
+            vec![vec![2048..7 * 2048]]
+        );
+    }
+
+    #[test]
+    fn wavetable_pin_reads_lazy_cycles_and_survives_purge_with_explicit_budget_failure() {
+        struct TableSource(Arc<std::sync::atomic::AtomicUsize>);
+        impl AssetSource for TableSource {
+            fn open(&self) -> io::Result<SampleReader> {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                Ok(SampleReader::custom(48000, 8192, |_, out| {
+                    out.fill([0.5; 2]);
+                    Ok(())
+                }))
+            }
+        }
+        for budget in [1, 8192 * 8] {
+            let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let pcm = Pcm::streamed(48000, 8192).unwrap();
+            let sources = HashMap::from([(
+                pcm.asset_id(),
+                Arc::new(TableSource(reads.clone())) as Arc<dyn AssetSource>,
+            )]);
+            let (_, worker) = StreamCache::new(1).unwrap();
+            let pinned = [pcm.asset_id(), pcm.asset_id()].into_iter().collect();
+            let result = Streamer::start(
+                sources,
+                std::slice::from_ref(&pcm),
+                vec![vec![0..8192]],
+                worker,
+                1,
+                true,
+                budget,
+                pinned,
+            );
+            if budget == 1 {
+                assert!(result.is_err());
+                assert_eq!(pcm.head_frames(), 0);
+                assert_eq!(reads.load(Ordering::Relaxed), 0);
+            } else {
+                let (streamer, bytes) = result.unwrap();
+                assert_eq!(
+                    reads.load(Ordering::Relaxed),
+                    1,
+                    "shared oscillator asset is read once"
+                );
+                assert_eq!(bytes, pcm.head_bytes());
+                assert_eq!(pcm.head_frames(), 8192);
+                assert_eq!(streamer.purge(std::slice::from_ref(&pcm), 1), 0);
+                assert_eq!(pcm.head_frames(), 8192);
+                assert_eq!(streamer.reload(std::slice::from_ref(&pcm)).unwrap(), 0);
+            }
+        }
+    }
 
     #[test]
     fn headers_open_in_bounded_parallel_workers_and_keep_asset_order() {
@@ -1045,6 +1142,7 @@ mod tests {
             1,
             true,
             1,
+            HashSet::new(),
         )
         .unwrap();
         assert_eq!(
@@ -1091,6 +1189,7 @@ mod tests {
             1,
             false,
             usize::MAX,
+            HashSet::new(),
         )
         .unwrap();
         // Packed: 16-bit mono.
