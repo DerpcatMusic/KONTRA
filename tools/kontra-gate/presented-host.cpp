@@ -103,8 +103,13 @@ static void pump(const clap_plugin_t* p, const clap_plugin_gui_t* gui, Host& hos
     if (host.callback.exchange(false)) p->on_main_thread(p);
     while (XPending(display)) {
         XEvent event{}; XNextEvent(display, &event);
-        if (window && event.type == ConfigureNotify && event.xconfigure.window == window)
-            require(gui->set_size(p, event.xconfigure.width, event.xconfigure.height), "host resize");
+        if (window && event.type == ConfigureNotify && event.xconfigure.window == window) {
+            uint32_t w=event.xconfigure.width,h=event.xconfigure.height;
+            if (host.fixed_rss && (w!=1180 || h!=760)) {
+                w=1180; h=760; XResizeWindow(display,window,w,h);
+            }
+            require(gui->set_size(p,w,h), "host resize");
+        }
     }
     if (const auto size=host.resize.exchange(0); window && size)
         XResizeWindow(display, window, size>>32, size&0xffffffff);
