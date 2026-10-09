@@ -43,10 +43,27 @@ fn program_paths(directory: &Directory) -> Vec<String> {
 impl Bank {
     /// List program paths using directory metadata only, without preparing or reading payloads.
     pub fn catalog(path: &Path) -> Result<Vec<String>, AccessError> {
+        Self::catalog_status(path).map(|(programs, _)| programs)
+    }
+
+    /// Directory-only catalog and declared program access requirements; no payload reads.
+    pub fn catalog_status(path: &Path) -> Result<(Vec<String>, Option<String>), AccessError> {
         let bank_error = |e| AccessError::Bank(access::failure_reason(&e));
         let ufs = Ufs::open(path).map_err(bank_error)?;
         let directory = ufs.decode_directory(&Namespaces::native().metadata).map_err(bank_error)?;
-        Ok(program_paths(&directory))
+        let programs = program_paths(&directory);
+        let protected = directory.files.iter().filter(|m| m.path.as_ref().is_some_and(|p| p.to_ascii_lowercase().ends_with(".uvip"))
+            && m.mode == Protection::Content).count();
+        let unknown = directory.files.iter().filter(|m| m.path.as_ref().is_some_and(|p| p.to_ascii_lowercase().ends_with(".uvip"))
+            && matches!(m.mode, Protection::Unknown(_))).count();
+        let mut reasons = Vec::new();
+        if protected > 0 {
+            reasons.push(format!("{protected} of {} presets need content access before they can load.", programs.len()));
+        }
+        if unknown > 0 {
+            reasons.push(format!("{unknown} of {} presets use an unsupported protection mode.", programs.len()));
+        }
+        Ok((programs, (!reasons.is_empty()).then(|| reasons.join(" "))))
     }
 
     /// Open a bank for programs, scripts and samples, preparing content access.
