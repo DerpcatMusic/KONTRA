@@ -685,6 +685,13 @@ fn w13_report_settings_feedback_shots() {
         save("report-closed", &mut h);
         h.press("report-entry-0");
         save("report-expanded", &mut h);
+        let at = tests::center(&h.ui, "report-detail-0");
+        let outer = h.ui.scroll("logs-list");
+        h.tick(Input { wheel: Vec2::new(0., 1000.), pointer: PointerInput { pos: Some(at), ..Default::default() }, ..Default::default() });
+        h.idle(30);
+        assert!(h.ui.scroll("report-detail-0")[1] > 0., "instrument details scroll within their expansion");
+        assert_eq!(h.ui.scroll("logs-list"), outer, "detail wheel keeps the report list stationary");
+        save("report-scrolled", &mut h);
         h.press("logs-about-button");
         save("report-about", &mut h);
         h.press("logs-close-about");
