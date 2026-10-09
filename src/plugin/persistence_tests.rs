@@ -190,6 +190,7 @@ fn corpus_project_save_reload_compares_every_persistent_and_ui_value() {
         let immediately: serde_json::Value = serde_json::from_str(&recalled.shared.part(0).unwrap().ingress.lock().unwrap().as_ref().unwrap().save_script_state().unwrap()).unwrap();
         settle(&recalled, &mut reopened);
         let after_ui = reopened.widget_gate_values(0);
+        assert_eq!(before_ui.len(), after_ui.len(), "UI roster changed: {library}");
         let mut after_progress = Vec::new();
         reopened.widget_gate_behavior_progress(0, |p| after_progress.push(serde_json::json!({"program":p.program,"pc":p.pc,"waiting":p.waiting,"outcome":format!("{:?}",p.outcome)})));
         recalled.capture_ui_controls();
