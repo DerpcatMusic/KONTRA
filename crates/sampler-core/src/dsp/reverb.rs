@@ -16,8 +16,6 @@ pub const MAX_DECAY_SECONDS: f64 = 60.0;
 /// Largest `size` (base lengths scale by it) and modulation depth accepted.
 pub const MAX_SIZE: f64 = 1.5;
 pub const MAX_MODULATION_SECONDS: f64 = 0.0015;
-/// Keeps decaying feedback out of subnormal floats.
-const ANTI_DENORMAL: f32 = 1e-20;
 /// Frames between exact LFO values; between them the LFO is interpolated.
 const LFO_STEP: usize = 16;
 
@@ -214,7 +212,7 @@ impl Reverb {
         let mut diffused = [0.0; 2];
         for (ch, out) in diffused.iter_mut().enumerate() {
             let state = &mut self.input_state[ch];
-            *state += (dry - *state) * self.input_coef + ANTI_DENORMAL;
+            *state = super::kernels::biased_one_pole32(*state, (dry - *state) * self.input_coef);
             let mut x = *state;
             for (line, &len) in self.allpass[ch].iter_mut().zip(&self.allpass_len) {
                 let delayed = line.read(pos, len);
@@ -239,7 +237,7 @@ impl Reverb {
         hadamard(&mut mix);
         let row = &mut self.lines[pos & mask];
         for (i, (y, damped)) in row.iter_mut().zip(&mut self.damp_state).enumerate() {
-            *damped += (mix[i] * self.feedback[i] - *damped) * self.damp_coef + ANTI_DENORMAL;
+            *damped = super::kernels::biased_one_pole32(*damped, (mix[i] * self.feedback[i] - *damped) * self.damp_coef);
             *y = *damped + diffused[i % 2];
         }
         let l = (taps[0] - taps[2] + taps[4] - taps[6]) * 0.5;
@@ -248,7 +246,7 @@ impl Reverb {
         let mut out = [mid + side, mid - side];
         for (ch, v) in out.iter_mut().enumerate() {
             let low = &mut self.shelf_state[ch];
-            *low += (*v - *low) * self.shelf_coef;
+            *low = super::kernels::one_pole32(*low, *v, self.shelf_coef);
             *v += *low * self.shelf_gain;
         }
         out

@@ -81,23 +81,21 @@ pub(crate) fn process(
                 for (i, (x, d)) in block[..len].iter_mut().zip(&dry_block).enumerate() {
                     let t = at + i as u64;
                     let b = bypass.value(t);
-                    let (direct, through) = (dry.value(t) * (1. - b) + b, wet.value(t) * (1. - b));
+                    let gains = super::kernels::mix_gains(dry.value(t), wet.value(t), b);
                     for (v, d) in x.iter_mut().zip(d) {
-                        let wet_part = if off { 0. } else { through * *v };
-                        *v = direct * d + wet_part;
+                        *v = super::kernels::mix(*d, *v, gains, off);
                     }
                 }
             }
             PreparedProcessor::Gain(gain) => {
                 for x in &mut block[..len] {
-                    x.iter_mut().for_each(|v| *v *= gain);
+                    x.iter_mut().for_each(|v| *v = super::kernels::gain(*v, *gain));
                 }
             }
             PreparedProcessor::StereoMatrix(m) => {
                 for x in &mut block[..len] {
                     for pair in x.as_chunks_mut::<2>().0 {
-                        let [l, r] = *pair;
-                        *pair = [m[0][0] * l + m[0][1] * r, m[1][0] * l + m[1][1] * r];
+                        *pair = super::kernels::matrix(*pair, *m);
                     }
                 }
             }
@@ -114,10 +112,10 @@ pub(crate) fn process(
                     for v in 0..batch.count {
                         if i >= batch.ends[2 * v] { continue; }
                         if !initialized[v] { (current[v], initialized[v]) = (target, true); }
-                        let m = dry + f64::from(current[v]);
-                        x[2 * v] *= m;
-                        x[2 * v + 1] *= m;
-                        current[v] += (target - current[v]) * *k as f32;
+                        let (m, next) = super::kernels::gainer(current[v], target, *dry, *k as f32);
+                        x[2 * v] = super::kernels::gain(x[2 * v], m);
+                        x[2 * v + 1] = super::kernels::gain(x[2 * v + 1], m);
+                        current[v] = next;
                     }
                 }
                 for v in 0..batch.count {
@@ -146,13 +144,9 @@ pub(crate) fn process(
                             (width[v], pan[v], initialized[v]) = (target_width, target_pan, true);
                         }
                         let (l, r) = super::stereo::matrix(x[2 * v] as f32, x[2 * v + 1] as f32, width[v]);
-                        x[2 * v] = f64::from(l * (1.0 - pan[v].max(0.0)));
-                        x[2 * v + 1] = f64::from(r * (1.0 + pan[v].min(0.0)));
-                        width[v] += (target_width - width[v]) * (1.0f32 / 180.0);
-                        if i >= end / 4 * 4 || i % 4 != 3 {
-                            delta[v] = (target_pan - pan[v]) * f32::from_bits(0x3a11a2b4);
-                        }
-                        pan[v] += delta[v];
+                        [x[2 * v], x[2 * v + 1]] = super::stereo::balance(l, r, pan[v]);
+                        [width[v], pan[v], delta[v]] = super::stereo::advance(
+                            [width[v], pan[v], delta[v]], [target_width, target_pan], i, end);
                     }
                 }
                 for v in 0..batch.count {
@@ -169,7 +163,7 @@ pub(crate) fn process(
                 let ramp = parameters[*lane];
                 for (i, x) in block[..len].iter_mut().enumerate() {
                     let gain = ramp.value(at + i as u64);
-                    x.iter_mut().for_each(|v| *v *= gain);
+                    x.iter_mut().for_each(|v| *v = super::kernels::gain(*v, gain));
                 }
             }
             PreparedProcessor::Biquad(filter) => {
@@ -325,11 +319,11 @@ fn one_pole<const MASK: bool>(
     let mut y = s[0];
     for (i, x) in block[..batch.len].iter_mut().enumerate() {
         for k in 0..LANES {
-            let next = y[k] + (x[k] - y[k]) * b(i, k);
+            let (out, next) = super::svf::one_pole_sample(x[k], y[k], b(i, k), high);
             if !MASK || i < batch.ends[k] {
                 y[k] = next;
             }
-            x[k] = if high { x[k] - next } else { next };
+            x[k] = out;
         }
     }
     s[0] = y;
@@ -365,14 +359,12 @@ fn recurrence<const MASK: bool>(
     for (i, x) in block[..batch.len].iter_mut().enumerate() {
         let [a1, a2, a3, km] = coefficients(i);
         for k in 0..LANES {
-            let (ic1, ic2) = (s0[k], s1[k]);
-            let v3 = x[k] - ic2;
-            let band = a1[k] * ic1 + a2[k] * v3;
-            let low = ic2 + a2[k] * ic1 + a3[k] * v3;
+            let (out, next) = super::svf::sample(x[k], [s0[k], s1[k]],
+                [a1[k], a2[k], a3[k], km[k]], [m0, m2]);
             if !MASK || i < batch.ends[k] {
-                (s0[k], s1[k]) = (2. * band - ic1, 2. * low - ic2);
+                (s0[k], s1[k]) = (next[0], next[1]);
             }
-            x[k] = m0 * x[k] + km[k] * band + m2 * low;
+            x[k] = out;
         }
     }
     *s = [s0, s1];
