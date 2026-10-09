@@ -3776,6 +3776,83 @@
       "category": "Fixed",
       "accepted": true,
       "validation": "W5 owner2 host-budget callback witnesses/26core+15MIDI+rootno-run reviewed. W0 combined-source RED reproduces admitted wait FuelExhausted while regular waits pass; invalid/disabled runaway guards retained. Final combined GREEN gate pending before publication; Glaze/Horns actual-library attribution unknown."
+    },
+    {
+      "id": "standalone-crash-evidence-delivery",
+      "summary": "Retain standalone crash evidence and delivery worker ownership",
+      "source_commits": [
+        "5a10d206d8b1bb439510ccf7ef81eebc563ddf6e"
+      ],
+      "release_note": "Retain native fault evidence and readable crash reports from the Linux standalone.",
+      "category": "Fixed",
+      "accepted": true,
+      "validation": "Owner Linux x86_64 two baseline REDs, five GREEN runtime tests and standalone no-run; W3 plugin panic ownership preserved. Other native platforms unvalidated. W0 final combined gate pending before publication."
+    },
+    {
+      "id": "uvi-metadata-slot-census",
+      "summary": "Inventory accessible program metadata independently of sample-content setup",
+      "source_commits": [
+        "fb327e8ca8ae12ee1109069cfa5b8c3d7106b459"
+      ],
+      "release_note": "Inventory accessible UVI program metadata without preparing unrelated sample content.",
+      "category": "Fixed",
+      "accepted": true,
+      "validation": "Owner authored inventory 0\u21921, opener compatibility and feature-on/off no-run PASS; installed protected inventories remain 0\u21920. W0 final combined gate pending before publication."
+    },
+    {
+      "id": "editor-graphics-setup-deadline",
+      "summary": "Retry transient editor setup failures without allowing an unbounded apt step",
+      "source_commits": [
+        "7c042fa772dd898ca19b9251c3e5a4d4a55e46f7"
+      ],
+      "release_note": "Retry editor graphics setup once and stop stalled package installation within a bounded deadline.",
+      "category": "Fixed",
+      "accepted": true,
+      "validation": "Offline success, transient install failure, permanent failure and timeout outcomes PASS; actionlint and ten workflow safety tests PASS. Hosted execution pending. W0 final combined gate pending before publication."
+    },
+    {
+      "id": "ksp-computed-event-getter",
+      "summary": "Read event parameters selected by runtime expressions",
+      "source_commits": [
+        "46bfa562c84c34df2af3d578b0bae9ec26ef020f"
+      ],
+      "release_note": "Read event parameters correctly when scripts compute the parameter selector.",
+      "category": "Fixed",
+      "accepted": true,
+      "validation": "Owner failing-first synthetic selector and current-note projection checks PASS; full combined gate pending. W0 final combined gate pending before publication."
+    },
+    {
+      "id": "ksp-legacy-current-event-array",
+      "summary": "Map legacy current-event parameter arrays to bounded custom event storage",
+      "source_commits": [
+        "e70d6053bad8d3e28963059a40017c3f02c710bb"
+      ],
+      "release_note": "Honor legacy event tags during piano release routing, preventing the extra dry release note.",
+      "category": "Fixed",
+      "accepted": true,
+      "validation": "Owner legacy-array RED\u2192GREEN, noheap saved-script witness and frozen native host comparison: settled Una release falls 14.4113 dB; attack peak timing unchanged. Noire and exact older tester build unavailable. W0 final combined gate pending before publication."
+    },
+    {
+      "id": "sample-resolver-temporary-allocation",
+      "summary": "Avoid formatting archive-member paths before verifying the archive parent",
+      "source_commits": [
+        "cf79b2cfa7653c926b34435c0c21302555649b48"
+      ],
+      "release_note": "Avoid unnecessary temporary archive paths when resolving loose samples.",
+      "category": "Fixed",
+      "accepted": true,
+      "validation": "Owner allocation RED 687 bytes\u2192GREEN 147/161 bytes matching path lengths, three sample tests and root no-run PASS. No whole-worker speed or RSS parity claim. W0 final combined gate pending before publication."
+    },
+    {
+      "id": "quiet-waiter-parent-classification",
+      "summary": "Recognize idle runner ancestors only when all descendants are waiting",
+      "source_commits": [
+        "f9d69ce67d259a29e2332c10a6327628fd88ccfc"
+      ],
+      "release_note": "Keep idle build waiters from falsely invalidating quiet measurement admission.",
+      "category": "Fixed",
+      "accepted": true,
+      "validation": "Owner nested idle-runner RED\u2192GREEN; real sibling workloads remain CONTENDED. Synthetic observer coverage only. W0 final combined gate pending before publication."
     }
   ]
 }
