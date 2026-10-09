@@ -428,7 +428,7 @@ pub(super) fn compile_processors(
                     PreparedProcessor::Delay { delay, offset }
                 }
                 Processor::Compressor(settings) => {
-                    PreparedProcessor::Compressor(settings.prepare(rate))
+                    PreparedProcessor::Compressor(settings.prepare(rate, bindings))
                 }
                 Processor::Branch {
                     count,
@@ -951,7 +951,7 @@ pub(super) fn process<const TRACE: bool>(
                     len,
                 );
             }
-            PreparedProcessor::Compressor(compressor) => compressor.process(state, block, len),
+            PreparedProcessor::Compressor(compressor) => compressor.process(state, parameters, block, len, at),
             PreparedProcessor::Decimate(decimator) => decimator.process(state, block, len),
             PreparedProcessor::LoFi(lofi) => lofi.process(state, block, len),
             PreparedProcessor::Daft(daft) => daft.process(state, parameters, block, len, at,
