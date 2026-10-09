@@ -63,7 +63,7 @@ class NightlySource(unittest.TestCase):
         self.git("config", "core.autocrlf", "true")
         for name in ("Cargo.toml", "Cargo.lock"):
             path = self.root / name
-            path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+            path.write_bytes(path.read_text().replace("\n", "\r\n").encode())
         self.assertFalse(self.dirty(), "Windows checkout line endings are not source changes")
         path = self.root / "Cargo.lock"
         sections = path.read_text().split("\n\n")
