@@ -1,5 +1,8 @@
 # W15: real EQ gain owners and physical band routing
 
+This records gain step `fdf6d4e0`; subsequent frequency/bandwidth owners are
+documented in [W15_EQ_KNOBS.md](W15_EQ_KNOBS.md).
+
 Kontakt `eqGain1..3` now address retained physical bands through the shared
 processor route resolver. Flat bands stay present when a script or authored EQ
 gain route can make them nonflat; their following band identities do not shift.
