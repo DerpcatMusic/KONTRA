@@ -198,6 +198,10 @@ pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
             .pad(edges(0., SPACE, 0., INSET))
             .shrink(0),
         );
+        if scanned && let Some(problem) = cx.view.shelf.bank_problem(std::path::Path::new(&root.path)) {
+            rows.push(caption(problem.clone()).lines(3).tip(problem)
+                .pad(edges(0., SPACE, SPACE, INSET)).shrink(0).id(format!("root-bank-problem-{n}")));
+        }
     }
     // Typed, for a desktop with no file dialog.
     let field = text_input(ui, "root", &mut cx.state.root);
@@ -212,7 +216,7 @@ pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
     if many || one {
         add_folder(cx, one);
     }
-    let (import, import_el) = action(ui, "root-import", "Import from Kontakt", false);
+    let (import, import_el) = action(ui, "root-import", "Find installed libraries", false);
     if import {
         cx.p.shared.libraries.import_kontakt();
     }

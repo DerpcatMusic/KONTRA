@@ -82,6 +82,10 @@ class Gates(unittest.TestCase):
         self.assertIn("key: nightly-${{ matrix.os }}-${{ matrix.target }}-release", build)
         self.assertLess(build.index("uses: actions/setup-python@"), build.index("- name: Nightly version"))
         self.assertIn("python3 .github/scripts/check_glibc.py", build)
+        self.assertIn('echo "KONTRA_NIGHTLY_BUILD=1" >> "$GITHUB_ENV"', build)
+        self.assertIn('::warning::{format}: source provenance is dirty or unknown', build)
+        self.assertIn('::warning::standalone: source provenance is dirty or unknown', build)
+        self.assertNotIn("Dirty Nightly source", build)
         release = nightly.split("\n  release:\n", 1)[1]
         self.assertIn("    needs: [verify, build, macos-universal]\n", release)
         universal = nightly.split("\n  macos-universal:\n", 1)[1].split("\n  release:\n", 1)[0]
@@ -99,6 +103,10 @@ class Gates(unittest.TestCase):
         self.assertIn("FORCE: ${{ inputs.release_validation ||", ci)
         self.assertIn("python3 tools/version.py check\n          python3 tools/version.py self-test", ci)
         self.assertEqual(ci.count("      - name: Nightly shipping identity"), 3)
+        self.assertEqual(ci.count('echo "KONTRA_NIGHTLY_BUILD=1"'), 3)
+        self.assertEqual(ci.count("python3 tools/test_version.py"), 4)
+        self.assertEqual(ci.count("python3 tools/version.py nightly-dirty"), 3)
+        self.assertEqual(ci.count("if: inputs.release_validation || github.event_name == 'pull_request'"), 3)
         self.assertIn("    if: always()\n    needs: [changes, linux, windows, macos, editor]", ci)
         self.assertNotIn("cargo test --release --features library-access", ci)
 

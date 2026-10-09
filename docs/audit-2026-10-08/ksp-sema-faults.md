@@ -132,5 +132,15 @@ Public heading-list SHA256:
 Archived primary PDF SHA256:
 `ca141a6cbbbe7cefd9c4b82c3d5f2ea1d4698597d0e80de57346bbed1eaa00b4`.
 
-NEXT: establish the remaining command contracts and the subscription argument's
-actual declaration origin in RAM; neither command is admitted as a no-op.
+Parked by coordinator: subscription origin is explicitly **UNKNOWN**; the RAM
+probe finds an undeclared NI-prefixed scalar, absent from saved state and the
+checked v1/manual symbols. This does not establish an engine contract.
+
+Symptom: 30 subscription faults persist; the 15 MIDI-family slots reach another
+undocumented command after the implemented family.
+Best hypothesis: an internal subscription interface; origin and semantics remain
+UNKNOWN, with no no-op admission.
+Next step: obtain a documented contract or native behavior witness before
+revisiting either remaining command.
+
+NEXT: Areia scanner settle and UI-effect application before snapshot.

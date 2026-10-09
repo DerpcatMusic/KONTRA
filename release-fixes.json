@@ -1195,7 +1195,7 @@
     },
     {
       "id": "ladder-versioned-cutoff-clock-mode",
-      "summary": "Retain version144\u2013146 Ladder cutoff boundary snapshots independently of the Gain/resonance clock",
+      "summary": "Retain version144–146 Ladder cutoff boundary snapshots independently of the Gain/resonance clock",
       "source_commits": [
         "3d5a34b1ddb58211ea38e7d9d76ec3c4c6c59b5c"
       ],
@@ -3434,6 +3434,131 @@
       "accepted": true,
       "release_note": "Share identical immutable zone chains without changing audible PCM.",
       "category": "Improved"
+    },
+    {
+      "id": "bound-processor-modulation-lanes",
+      "summary": "Apply supported effect-control modulation to independent voice lanes",
+      "source_commits": [
+        "427e3e46f37914e9595d19ad73069d3f87d792a7",
+        "b2bd75994b311bbb3195dab2cf4f17deb1a3b344"
+      ],
+      "release_note": "Apply modulation to supported effect controls while keeping voice settings independent.",
+      "accepted": true,
+      "validation": "Owner134 targeted/root no-run and23exact PCM pairs; W8rows11/19MATCH. Native and quiet performance remain unknown. W0 merged gates: ci/shots workspace at f109799e 1868PASS/0FAIL/218ignored; final01680642 rootshots no-run,9W10 regressions,57UVI tests,feature-off no-run,2fresh GPU fixtures and24 exact partial/full frames PASS. Native quick72loads/68audible;70 matched344 cases unchanged stage/audibility,0nonfinite/audioalloc. Loose scripted UVI fixture verifies sample playback only, not Lua execution; protected UVI playback and quiet performance unknown. Clean artifact proof and hosted Nightly-stamp proof recorded in separate release receipts; no W0 install.",
+      "category": "Fixed"
+    },
+    {
+      "id": "live-eq-gain-band-routing",
+      "summary": "Keep live EQ gain on the authored physical bands",
+      "source_commits": [
+        "fdf6d4e016c89e68266ac4543b6af424460307f3",
+        "f109799e41ba0e58d673afcd1a153716821f3e73"
+      ],
+      "release_note": "Restore live EQ gain control with stable band routing.",
+      "accepted": true,
+      "validation": "Owner83core/27lower/78Kontakt tests and isolated physical-band gain A/B+1.79dB; zero heap/nonfinite. Explicit v1TPT fallback, native parity/quietCPU unknown. W0 merged gates: ci/shots workspace at f109799e 1868PASS/0FAIL/218ignored; final01680642 rootshots no-run,9W10 regressions,57UVI tests,feature-off no-run,2fresh GPU fixtures and24 exact partial/full frames PASS. Native quick72loads/68audible;70 matched344 cases unchanged stage/audibility,0nonfinite/audioalloc. Loose scripted UVI fixture verifies sample playback only, not Lua execution; protected UVI playback and quiet performance unknown. Clean artifact proof and hosted Nightly-stamp proof recorded in separate release receipts; no W0 install.",
+      "category": "Fixed"
+    },
+    {
+      "id": "mapping-overlap-pages",
+      "summary": "Keep every overlapping sample mapping reachable beyond the initial page",
+      "source_commits": [
+        "bb0dbe265a9f04c58a277b894724b9f1c9a28b35"
+      ],
+      "release_note": "Browse every overlapping sample mapping with key zoom, pan and group Fit.",
+      "accepted": true,
+      "validation": "Owner19 targeted and rootci no-run; real Kontakt/Falcon worker mapping probes and two-size navigation screenshots. W0 merged gates: ci/shots workspace at f109799e 1868PASS/0FAIL/218ignored; final01680642 rootshots no-run,9W10 regressions,57UVI tests,feature-off no-run,2fresh GPU fixtures and24 exact partial/full frames PASS. Native quick72loads/68audible;70 matched344 cases unchanged stage/audibility,0nonfinite/audioalloc. Loose scripted UVI fixture verifies sample playback only, not Lua execution; protected UVI playback and quiet performance unknown. Clean artifact proof and hosted Nightly-stamp proof recorded in separate release receipts; no W0 install.",
+      "category": "Fixed"
+    },
+    {
+      "id": "periodic-callback-wait-preemption",
+      "summary": "End continuous preemption age on successful positive waits",
+      "source_commits": [
+        "235ac3eb918a6e77d26b101e6a0418d40d7c48c1"
+      ],
+      "release_note": "Keep periodic script controls updating across intentional waits.",
+      "accepted": true,
+      "validation": "Ownercore26/KSP2 and rootno-run; Analog98400samples timer alive/zero faults; zero-wait runaway watchdog retained. W0 merged gates: ci/shots workspace at f109799e 1868PASS/0FAIL/218ignored; final01680642 rootshots no-run,9W10 regressions,57UVI tests,feature-off no-run,2fresh GPU fixtures and24 exact partial/full frames PASS. Native quick72loads/68audible;70 matched344 cases unchanged stage/audibility,0nonfinite/audioalloc. Loose scripted UVI fixture verifies sample playback only, not Lua execution; protected UVI playback and quiet performance unknown. Clean artifact proof and hosted Nightly-stamp proof recorded in separate release receipts; no W0 install.",
+      "category": "Fixed"
+    },
+    {
+      "id": "nightly-stamp-source-provenance",
+      "summary": "Recognize exact deterministic Nightly version stamps without hiding source edits",
+      "source_commits": [
+        "f616489425e014de9cbaf9734cdc4723914141b6",
+        "e555f222b3cbcc2039794e4ce7901772fd7ce6fe",
+        "54a54de9ef4860ee50c0be0040a75c838488f643"
+      ],
+      "release_note": "Correct Nightly source-status reporting without blocking downloads.",
+      "accepted": true,
+      "validation": "Four Git-backed Python fixtures including CRLF/lock reorder, snapshot graph and macOS mixed-dirty composition pass. Three-platform hosted stamp proof pending; dirty/unknown warn+record without blocking Nightly. W0 merged gates: ci/shots workspace at f109799e 1868PASS/0FAIL/218ignored; final01680642 rootshots no-run,9W10 regressions,57UVI tests,feature-off no-run,2fresh GPU fixtures and24 exact partial/full frames PASS. Native quick72loads/68audible;70 matched344 cases unchanged stage/audibility,0nonfinite/audioalloc. Loose scripted UVI fixture verifies sample playback only, not Lua execution; protected UVI playback and quiet performance unknown. Clean artifact proof and hosted Nightly-stamp proof recorded in separate release receipts; no W0 install.",
+      "category": "Fixed"
+    },
+    {
+      "id": "articulation-interior-heading-duplication",
+      "summary": "Remove the duplicated articulation interior heading",
+      "source_commits": [
+        "4ff16464be4ac98538eefda9fd3ab200a40bf6e6"
+      ],
+      "release_note": "Remove the repeated Articulations heading while keeping count and trigger actions visible.",
+      "accepted": true,
+      "validation": "Ownergeometry/hover two sizes and rootshots no-run pass. W0 merged gates: ci/shots workspace at f109799e 1868PASS/0FAIL/218ignored; final01680642 rootshots no-run,9W10 regressions,57UVI tests,feature-off no-run,2fresh GPU fixtures and24 exact partial/full frames PASS. Native quick72loads/68audible;70 matched344 cases unchanged stage/audibility,0nonfinite/audioalloc. Loose scripted UVI fixture verifies sample playback only, not Lua execution; protected UVI playback and quiet performance unknown. Clean artifact proof and hosted Nightly-stamp proof recorded in separate release receipts; no W0 install.",
+      "category": "Fixed"
+    },
+    {
+      "id": "scanner-script-settle-before-capture",
+      "summary": "Apply settled script UI effects before face and control snapshots",
+      "source_commits": [
+        "c643531df8fec10a64c3a1b73bf3699e906c75d1"
+      ],
+      "release_note": "Let scripted interfaces settle before taking scan snapshots.",
+      "accepted": true,
+      "validation": "Real Areia red1→green1, rootshots no-run; five quiet alternating beforefail/afterpass witnesses. Snapshot median+1.90%; wholepainting/audition performance unknown. W0 merged gates: ci/shots workspace at f109799e 1868PASS/0FAIL/218ignored; final01680642 rootshots no-run,9W10 regressions,57UVI tests,feature-off no-run,2fresh GPU fixtures and24 exact partial/full frames PASS. Native quick72loads/68audible;70 matched344 cases unchanged stage/audibility,0nonfinite/audioalloc. Loose scripted UVI fixture verifies sample playback only, not Lua execution; protected UVI playback and quiet performance unknown. Clean artifact proof and hosted Nightly-stamp proof recorded in separate release receipts; no W0 install.",
+      "category": "Fixed"
+    },
+    {
+      "id": "uvi-root-discovery-migration",
+      "summary": "Discover default UVI roots and loose banks independently of old Kontakt imports",
+      "source_commits": [
+        "d0ec1024fba9ec6f80f8971fa89d8f11e1cd4d35"
+      ],
+      "release_note": "Find installed UVI banks even with existing Kontakt roots, including banks directly inside an added folder.",
+      "accepted": true,
+      "validation": "Owner6 focused/33library/rootci no-run; authored clearbanks flat0→2 and mixed1→3. Installed filesystem census only4folders/26containers; protected downstream playback not certified. W0 merged gates: ci/shots workspace at f109799e 1868PASS/0FAIL/218ignored; final01680642 rootshots no-run,9W10 regressions,57UVI tests,feature-off no-run,2fresh GPU fixtures and24 exact partial/full frames PASS. Native quick72loads/68audible;70 matched344 cases unchanged stage/audibility,0nonfinite/audioalloc. Loose scripted UVI fixture verifies sample playback only, not Lua execution; protected UVI playback and quiet performance unknown. Clean artifact proof and hosted Nightly-stamp proof recorded in separate release receipts; no W0 install.",
+      "category": "Fixed"
+    },
+    {
+      "id": "live-eq-frequency-width-routing",
+      "summary": "Apply authored EQ frequency and bandwidth controls on their physical bands",
+      "source_commits": [
+        "c49d58621c0c777ffd9e27203709229220d085cb"
+      ],
+      "release_note": "Restore live EQ frequency and bandwidth controls.",
+      "category": "Fixed",
+      "accepted": true,
+      "validation": "Owner14selected and area no-run; isolated frequency+1.70dB/width+6.36dB, zeroheap/nonfinite. Explicitv1fallback; native and quiet performance unknown. W0 merged gates: ci/shots workspace at f109799e 1868PASS/0FAIL/218ignored; final01680642 rootshots no-run,9W10 regressions,57UVI tests,feature-off no-run,2fresh GPU fixtures and24 exact partial/full frames PASS. Native quick72loads/68audible;70 matched344 cases unchanged stage/audibility,0nonfinite/audioalloc. Loose scripted UVI fixture verifies sample playback only, not Lua execution; protected UVI playback and quiet performance unknown. Clean artifact proof and hosted Nightly-stamp proof recorded in separate release receipts; no W0 install."
+    },
+    {
+      "id": "gpu-overflow-first-presentation",
+      "summary": "Recover GPU allocation overflow and repaint newly shown editors",
+      "source_commits": [
+        "e2c6c47ca737d25632febad98348c251ad9d47b1"
+      ],
+      "release_note": "Recover complex interfaces from blank first frames and redraw on open, resize and restore.",
+      "category": "Fixed",
+      "accepted": true,
+      "validation": "OwnerRX6600/Vulkan fresh-target22layer redalltransparent→opaque first/changed/resized frames;24exactpartial/full pairs;33rendererPASS, targetedhost/allocator/debug-limit/native-resize, rootno-run andWindowsGNUcheckPASS. Windows DAW scanout and timing remain unverified. W0 merged gates: ci/shots workspace at f109799e 1868PASS/0FAIL/218ignored; final01680642 rootshots no-run,9W10 regressions,57UVI tests,feature-off no-run,2fresh GPU fixtures and24 exact partial/full frames PASS. Native quick72loads/68audible;70 matched344 cases unchanged stage/audibility,0nonfinite/audioalloc. Loose scripted UVI fixture verifies sample playback only, not Lua execution; protected UVI playback and quiet performance unknown. Clean artifact proof and hosted Nightly-stamp proof recorded in separate release receipts; no W0 install."
+    },
+    {
+      "id": "uvi-directory-only-catalog",
+      "summary": "Catalog UVI presets independently of payload setup and show per-root failures",
+      "source_commits": [
+        "c6393dcef0fbea9df5a6b63f4dca0499c0f10344"
+      ],
+      "release_note": "List UVI presets from bank directories without requiring payload access, and show failed-root bank counts and causes.",
+      "category": "Fixed",
+      "accepted": true,
+      "validation": "Owner8focused/7auditseed/nativeclearbank/rootlib and feature-off no-runPASS. Clear unavailable-payload fixture0→1catalogprogram; installed26/26directories→4libraries/660programs/0bankissues, no payload opening. Downstream protected playback UNKNOWN; metadata catalog is not playback certification. W0 merged gates: ci/shots workspace at f109799e 1868PASS/0FAIL/218ignored; final01680642 rootshots no-run,9W10 regressions,57UVI tests,feature-off no-run,2fresh GPU fixtures and24 exact partial/full frames PASS. Native quick72loads/68audible;70 matched344 cases unchanged stage/audibility,0nonfinite/audioalloc. Loose scripted UVI fixture verifies sample playback only, not Lua execution; protected UVI playback and quiet performance unknown. Clean artifact proof and hosted Nightly-stamp proof recorded in separate release receipts; no W0 install."
     }
   ]
 }
