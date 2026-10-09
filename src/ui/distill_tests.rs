@@ -41,9 +41,9 @@ fn empty_settings_uses_the_add_actions_as_instructions() {
         .is_some_and(|text| text.starts_with("No library folders yet."))), "the folder actions already explain the empty state");
     assert!(scene.surface("root-pick-many").unwrap().tip.as_deref()
         .is_some_and(|tip| tip.contains("each library")));
-    let field = scene.surface("root").unwrap().frame;
-    let toolbar = scene.surface("root-pick-many").unwrap().frame;
-    assert!(field.y - toolbar.y <= CONTROL + SPACE * 2., "typed folder follows the toolbar directly");
+    assert!(scene.surface("root").is_none(), "the unused path input stays behind its action");
+    h.press("root-typed-toggle");
+    assert!(h.ui.scene().unwrap().surface("root").is_some(), "a typed path remains available when requested");
 }
 
 #[test]
