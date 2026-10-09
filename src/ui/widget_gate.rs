@@ -732,6 +732,38 @@ fn original_widget_gestures() {
 }
 
 #[test]
+#[ignore = "geometry attribution: library state stays in RAM; numeric counts only"]
+fn original_widget_geometry() {
+    let path = std::env::var("KONTRA_WIDGET_GATE_PATH").expect("gate path required");
+    let mut selection = Selection::default();
+    selection.parts = vec![Part {
+        path,
+        program: 0,
+        view: 1,
+        ..Default::default()
+    }];
+    let gate = Gate::load(selection);
+    let view = gate.params.shared.view.lock().unwrap();
+    let faces: Vec<_> = view.parts[0].interfaces.iter().enumerate().map(|(source, face)| {
+        let face = super::ir_view::resolved(face);
+        let pages: Vec<_> = face.pages.iter().enumerate().map(|(page, definition)| {
+            let visible: Vec<_> = face.draw_order(ir::PageRef(page)).into_iter()
+                .filter(|&n| face.visible(n)).map(|n| face.page_rect(n)).collect();
+            serde_json::json!({"page": page, "authored_width": definition.size.width,
+                "authored_height": definition.size.height, "rendered_height": super::ir_view::height(&face, ir::PageRef(page)),
+                "visible": visible.len(), "below_page": visible.iter().filter(|r| i64::from(r.y) >= i64::from(definition.size.height)).count(),
+                "outside_width": visible.iter().filter(|r| i64::from(r.x) >= i64::from(definition.size.width) || i64::from(r.x) + i64::from(r.width) <= 0).count(),
+                "above_page": visible.iter().filter(|r| i64::from(r.y) + i64::from(r.height) <= 0).count()})
+        }).collect();
+        serde_json::json!({"source": source, "pages": pages})
+    }).collect();
+    println!(
+        "{}",
+        serde_json::json!({"widget_geometry_schema": 1, "faces": faces})
+    );
+}
+
+#[test]
 #[ignore = "owner attribution: two engine seconds without gestures; library state stays in RAM"]
 fn original_idle_script_attribution() {
     let path = std::env::var("KONTRA_WIDGET_GATE_PATH").expect("gate path required");
