@@ -738,7 +738,7 @@ impl Amplitude {
     }
 }
 
-mod native {
+pub(crate) mod native {
     use super::{Ahdsr, Phase};
     const BASE: f32 = 0.075;
     const START: f32 = 1.075;
@@ -924,6 +924,41 @@ mod native {
                 && self.primed
                 && self.previous == 0.
                 && self.current == 0.
+        }
+        pub(crate) fn remaining(&self) -> usize {
+            if self.done() {
+                return 0;
+            }
+            let ticks = match self.source.phase {
+                Phase::Release => u64::from(self.source.left),
+                Phase::Done => {
+                    return if self.current == 0. {
+                        (32 - usize::from(self.offset)) % 32 + 1
+                    } else {
+                        (32 - usize::from(self.offset)) % 32 + 33
+                    };
+                }
+                _ if self.source.ahd => {
+                    u64::from(self.source.left)
+                        + match self.source.phase {
+                            Phase::Attack => {
+                                u64::from(self.source.counts[1]) + u64::from(self.source.counts[2])
+                            }
+                            Phase::Hold => u64::from(self.source.counts[2]),
+                            _ => 0,
+                        }
+                }
+                _ => return usize::MAX,
+            };
+            let delay = (32 - u64::from(self.offset)) % 32;
+            // A zero release baseline has no final nonzero point to interpolate.
+            let intervals = if self.source.phase == Phase::Release && self.source.mul <= 0. {
+                ticks.saturating_sub(1).max(u64::from(self.current != 0.))
+            } else {
+                ticks + 1
+            };
+            let frames = delay + 32 * intervals + 1;
+            usize::try_from(frames).unwrap_or(usize::MAX)
         }
         pub fn phase(&self) -> Phase {
             self.source.phase
@@ -1459,7 +1494,7 @@ fn valid_mod(m: &Mod) -> bool {
             .as_ref()
             .is_none_or(|c| c.iter().all(|x| x.is_finite()))
 }
-fn valid_ahdsr(p: &Ahdsr) -> bool {
+pub(crate) fn valid_ahdsr(p: &Ahdsr) -> bool {
     [p.attack, p.hold, p.decay]
         .iter()
         .all(|x| x.is_finite() && *x >= 0.)

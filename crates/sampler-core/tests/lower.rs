@@ -1927,3 +1927,35 @@ fn lowered_native_primary_runs_the_pinned_evaluator_in_production_voice() {
         }
     }
 }
+
+
+#[test]
+fn native_primary_requires_unique_physical_identity_and_rejects_bad_coefficients() {
+    let render = |ir: &ir::Instrument| {
+        let mut rt = Runtime::new(lower(ir, 48000, vec![constant(1.)], no_behaviors).unwrap(), limits()).unwrap();
+        rt.trigger(input(60), 60, 1.).unwrap();
+        let mut out = [[0.; 2]; 64];
+        rt.render(&mut out).unwrap();
+        out
+    };
+    let mut generic = native_primary_fixture();
+    generic.source_indices.ahdsrs[0].native_amplitude = false;
+    let expected = render(&generic);
+    for case in 0..4 {
+        let mut ir = native_primary_fixture();
+        match case {
+            0 => ir.source_indices.ahdsrs[0].slot = 8,
+            1 => ir.source_indices.modulators[0].external = true,
+            2 => ir.source_indices.modulators.push(ir.source_indices.modulators[0].clone()),
+            _ => ir.source_indices.ahdsrs.push(ir.source_indices.ahdsrs[0]),
+        }
+        if case == 2 {
+            assert!(lower(&ir, 48000, vec![constant(1.)], no_behaviors).is_err(), "duplicate physical owner is invalid");
+        } else {
+            assert_eq!(render(&ir), expected, "case={case}");
+        }
+    }
+    let mut malformed = native_primary_fixture();
+    malformed.source_indices.ahdsrs[0].attack_curve = f32::NAN;
+    assert!(lower(&malformed, 48000, vec![constant(1.)], no_behaviors).is_err());
+}
