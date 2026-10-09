@@ -156,7 +156,7 @@ fn load_from(
         return None;
     }
     drop(validation_span);
-    let mut samples = Samples::new(&head.root);
+    let mut samples = Samples::instrument(&head.root, path).ok()?;
     let mut instrument = head.instrument.into_owned();
     instrument.zones = zones;
     if let Some(objects) = instrument.kontakt_objects.as_mut() {
