@@ -6,7 +6,8 @@ import struct
 rows = [dict(phase=phase, sample=i, rss_kib=1024*(10+index), hwm_kib=20480,
              swap_kib=0, editor_children=int(phase in ('open','reopened')),
              width=1180 if phase in ('open','reopened') else 0,
-             height=760 if phase in ('open','reopened') else 0)
+             height=760 if phase in ('open','reopened') else 0,
+             parent_width=1180, parent_height=760, clap_width=1180, clap_height=760)
         for index, phase in enumerate(PHASES) for i in range(10)]
 result = summarize(rows)
 assert result['open_delta_mib'] == 1 and result['close_delta_mib'] == 2 and result['reopen_delta_mib'] == 3
@@ -30,3 +31,10 @@ assert selected_loads([row('other',0,'loaded')],Path('selected'),[0]) == {}
 assert selected_loads([row('selected',0,'partial'),row('selected',0,'loaded')],Path('selected'),[0,1]) == {0:'loaded'}
 assert selected_loads([row('selected',0,'loaded'),row('selected',1,'partial')],Path('selected'),[0,1]) == {0:'loaded',1:'partial'}
 print('PASS: selected source and unique-program readiness; duplicate loads cannot admit incomplete multi')
+
+assert summarize([dict(r,width=1181,height=761,parent_width=1181,parent_height=761,clap_width=1181,clap_height=761) if r['editor_children'] else r for r in rows])
+for changes in (dict(parent_width=1181),dict(clap_height=761),dict(width=1182,parent_width=1182,clap_width=1182)):
+    try: summarize([dict(r,**changes) if r['editor_children'] else r for r in rows])
+    except AssertionError: pass
+    else: raise AssertionError('clipped or oversized viewport admitted')
+print('PASS: compositor +1 admitted; parent/child/CLAP mismatch and +2 rejected')
