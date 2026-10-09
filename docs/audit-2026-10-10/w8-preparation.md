@@ -47,5 +47,23 @@ FREEZE.json records the corrected per-worktree transport and frozen probe.
 CHECKS.json records every successful command. No all-14 rerun or new timing is
 claimed. The observer remains f9d69ce6 and retains polling CPU as contention.
 
-NEXT: remaining callback preemption and first-page ordering; frozen Areia/Dolce
-pair only after W9 DIRECT, then fully drained DIRECT to W10.
+Remaining onset work: callback-before-stream ordering is already preserved in
+6885c290 and its first-page regression passed again. Sparse capture previously
+reduced install-to-sound from 517.556/357.407 ms to 11.648/6.574 ms. The residual
+callbacks span about six/three blocks with v2's 8,192 shared instruction cap.
+v1 0cb7a8a0 src/ksp/runtime.rs begin_audio_block uses frames*2048/parts and a
+remaining wall-time allowance of 40% of the host block. A global fuel raise is
+unsafe without the dense-chord witness: 30 notes of a 14k-instruction callback
+previously measured 8 ms unlimited, versus 0.70 ms at the cap. W9 explicitly
+owns scheduler block allowance in its CPU backlog; these findings were sent to
+W9. The load probe omits host begin_block, a further limit on comparing its
+frozen v1 fallback fuel with the production audio-block policy.
+
+Quiet slot remains W9 → W8 → W10 → W6 → W13. W9 has not yet frozen its current
+Horns256 rows or sent DIRECT. W8's corrected unit is inactive/MainPID0; no own
+waiter, request, grant or override remains. The short frozen Areia/Dolce pair is
+prepared but not started. The unchanged observer digest is
+5333b5f58cac61e50e21f68b2f28dcc0256d60b7991cfaa1492d0a4c172ab041.
+
+NEXT: source-only warm runtime review while waiting W9 DIRECT; frozen pair,
+then fully drained DIRECT to W10 with exact observer identity and raw samples.
