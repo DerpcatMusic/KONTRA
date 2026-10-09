@@ -2320,9 +2320,15 @@ fn shared_context_menu_never_fades_over_interactive_content() {
     h.idle(4);
     if std::env::var_os("PROBE_EDITOR_SETTLE").is_some() {
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let (mut settled, mut decoded) = (0, 0);
         loop {
             h.idle(1);
-            if super::native_ui::audit_memory(false) > 0 && super::native_ui::audit_assets().2 == 0 { break; }
+            let assets = super::native_ui::audit_assets();
+            if super::native_ui::audit_memory(false) > 0 && assets.2 == 0 && assets.1 == decoded {
+                settled += 1;
+                if settled == 3 { break; }
+            } else { settled = 0; }
+            decoded = assets.1;
             assert!(std::time::Instant::now() < deadline, "Native editor did not settle");
             std::thread::sleep(Duration::from_millis(10));
         }
