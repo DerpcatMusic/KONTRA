@@ -1542,3 +1542,57 @@ fn arbitrary_registered_control_target_drives_its_real_processor_per_voice_witho
         if threads > 1 { assert!(rt.parallel_blocks() > 0, "worker projection must actually execute"); }
     }
 }
+
+
+#[test]
+fn generic_voice_filter_parameters_never_share_another_voices_coefficients() {
+    let zone = |key, routes| ir::Zone { chain: Some(ir::ChainRef(0)), routes,
+        keys: ir::KeyRange { low: key, high: key }, pitch: ir::KeyTracking::Fixed,
+        velocity: ir::VelocityResponse::None, ..ir::Zone::new(ir::AssetRef(0)) };
+    let instrument = ir::Instrument {
+        assets: vec![asset("per-voice filter coefficients")],
+        controls: vec![ir::Control { key: "filter/cutoff".into(), label: "Cutoff".into(),
+            value: ir::ControlValue::Continuous { min: 500., max: 9500., default: 500., unit: ir::ControlUnit::Hertz },
+            automation: ir::Automation::None }],
+        chains: vec![ir::Chain { scope: ir::Scope::Voice,
+            pre_amplitude: vec![ir::Processor::Filter(ir::Filter { kind: ir::FilterKind::LowPass { poles: 2 },
+                cutoff: ir::Frequency::Hertz(500.), resonance: ir::Resonance::Q(1.) })], post_amplitude: vec![] }],
+        processor_controls: vec![ir::ProcessorControl { control: ir::ControlRef(0), chain: ir::ChainRef(0),
+            index: 0, parameter: ir::ProcessorParameter::Cutoff, ramp: ir::Time::ZERO }],
+        modulators: vec![ir::Modulator { scope: ir::Scope::Voice, source: ir::ModulationSource::Velocity }],
+        routes: vec![ir::Route { source: ir::ModulatorRef(0), target: ir::Target::Control(ir::ControlRef(0)),
+            depth: ir::Depth::Normalized(1.), invert: false, shape: None, smoothing: ir::Time::ZERO, scale: None }],
+        zones: vec![zone(60, vec![ir::RouteRef(0)]), zone(61, vec![])],
+        ..Default::default()
+    };
+    let frames: Vec<_> = (0..4800).map(|n| [0.01 * (std::f32::consts::TAU * n as f32 / 16.).sin(); 2]).collect();
+    let runtime = |threads| {
+        let pcm = Pcm::new(48000, frames.clone().into_boxed_slice()).unwrap();
+        Runtime::new(lower(&instrument, 48000, vec![pcm], no_behaviors).unwrap(),
+            Limits { notes: 128, families: 128, expressions: 128, voices: 128, ..limits() }).unwrap()
+            .with_threads(sampler_core::Threads::Fixed(threads))
+    };
+    for threads in [1, 2, 4] {
+        let mut expected = [[0f32; 2]; 256];
+        for id in 1..=128 {
+            let (key, velocity) = match id % 3 { 0 => (61, 1.), 1 => (60, 1.), _ => (60, 0.1) };
+            let input = Input { external_id: Some(id), ..input(key) };
+            let mut rt = runtime(1);
+            let mut separate = [[0.; 2]; 256];
+            support::without_heap(|| { rt.trigger(input, key, velocity).unwrap(); rt.render(&mut separate).unwrap(); });
+            for (sum, voice) in expected.iter_mut().zip(separate) { for c in 0..2 { sum[c] += voice[c]; } }
+        }
+        let mut combined = runtime(threads);
+        let mut actual = [[0.; 2]; 256];
+        support::without_heap(|| {
+            for id in 1..=128 {
+                let (key, velocity) = match id % 3 { 0 => (61, 1.), 1 => (60, 1.), _ => (60, 0.1) };
+                combined.trigger(Input { external_id: Some(id), ..input(key) }, key, velocity).unwrap();
+            }
+            combined.render(&mut actual).unwrap();
+        });
+        let mismatch = actual.iter().zip(expected).enumerate().find(|(_, (a, b))| **a != *b);
+        assert!(mismatch.is_none(), "each voice keeps its cutoff, including the unmodulated sibling, threads={threads}, first mismatch={mismatch:?}");
+        if threads > 1 { assert!(combined.parallel_blocks() > 0); }
+    }
+}
