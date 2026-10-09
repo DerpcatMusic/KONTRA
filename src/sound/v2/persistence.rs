@@ -171,6 +171,9 @@ impl Persistence {
         let core = |error| CoreError::Invalid(format!("Script persistence: {error:?}"));
         let plan = runtime.active_plan();
         let mut state = sampler_ksp::persistent_state_buffer(views).map_err(core)?;
+        for descriptor in runtime.parameter_registry(plan).map_err(core)?.descriptors() {
+            state.values.push(ScriptStateEntry { address: Address::Control(descriptor.control), value: Value::Control(ControlValue::Real(0.)) });
+        }
         // Widget values also survive recall when the author omitted make_persistent.
         for widget in runtime.widget_definitions(plan).map_err(core)? {
             let (offset, len, text) = match widget.storage {
@@ -284,7 +287,7 @@ impl Part {
         views: &[sampler_ksp::ScriptView],
         saved: &str,
     ) -> Result<(), CoreError> {
-        if views.is_empty() {
+        if views.is_empty() && self.runtime.parameter_registry(self.runtime.active_plan()).map_err(|error| CoreError::Invalid(format!("Script persistence: {error:?}")))?.descriptors().len() == 0 {
             return Ok(());
         }
         let persistence = Persistence::new(&mut self.runtime, views, saved)?;
