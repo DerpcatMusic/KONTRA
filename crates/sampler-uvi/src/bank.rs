@@ -31,7 +31,24 @@ pub(crate) fn program_text(bytes: &[u8]) -> Result<String, AccessError> {
         .map_err(|e| AccessError::Program(access::failure_reason(&e)))
 }
 
+fn program_paths(directory: &Directory) -> Vec<String> {
+    let mut programs: Vec<String> = directory.files.iter()
+        .filter_map(|m| m.path.clone())
+        .filter(|p| p.to_ascii_lowercase().ends_with(".uvip"))
+        .collect();
+    programs.sort();
+    programs
+}
+
 impl Bank {
+    /// List program paths using directory metadata only, without preparing or reading payloads.
+    pub fn catalog(path: &Path) -> Result<Vec<String>, AccessError> {
+        let bank_error = |e| AccessError::Bank(access::failure_reason(&e));
+        let ufs = Ufs::open(path).map_err(bank_error)?;
+        let directory = ufs.decode_directory(&Namespaces::native().metadata).map_err(bank_error)?;
+        Ok(program_paths(&directory))
+    }
+
     /// Open and decode the directory of the bank at `path`.
     pub fn open(path: &Path) -> Result<Self, AccessError> {
         let bank_error = |e| AccessError::Bank(access::failure_reason(&e));
@@ -78,15 +95,7 @@ impl Bank {
 
     /// Program member paths (`*.uvip`), in directory order.
     pub fn programs(&self) -> Vec<String> {
-        let mut programs: Vec<String> = self
-            .directory
-            .files
-            .iter()
-            .filter_map(|m| m.path.clone())
-            .filter(|p| p.to_ascii_lowercase().ends_with(".uvip"))
-            .collect();
-        programs.sort();
-        programs
+        program_paths(&self.directory)
     }
 
     fn read(&self, member: &Member) -> Result<Vec<u8>> {
@@ -452,6 +461,7 @@ mod tests {
         let mut bank = Bank::open(&path).unwrap();
         assert_eq!(bank.program_namespace.len(), 39);
         assert_eq!(bank.programs(), ["preset.uvip"]);
+        assert_eq!(Bank::catalog(&path).unwrap(), bank.programs());
         assert_eq!(bank.program("preset.uvip").unwrap(),
             (std::str::from_utf8(xml).unwrap().to_owned(), "preset.uvip".to_owned()));
         assert!(bank.directory.warnings.is_empty());

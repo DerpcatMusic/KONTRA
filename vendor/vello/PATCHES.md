@@ -59,3 +59,17 @@ the persistent atlas. Grep `KONTAKTO patch`. Belongs upstream in MUI.
 
 The atlas fix remains absent from MUI `cc4e61e6` (2026-10-04), so KONTRA
 retains this override when updating the remaining MUI packages.
+
+## 6. KONTRA: recover coarse GPU allocation before fine/present
+
+`src/lib.rs` now reads the 32-byte GPU bump allocator after coarse work in both
+render entry points. Failed stages grow their buffers and rerun coarse, with
+power-of-two headroom, at most eight attempts, and the existing device storage
+buffer limit. `src/render.rs` applies matching buffer and shader-uniform sizes,
+and frees intermediate resources between attempts. Successful capacities are
+retained; failed recovery returns an error and never presents empty/stale fine
+work. Only allocator metadata is downloaded in production, never scene pixels.
+
+The failing-first `mui-vello` `gpu_hidden` example uses a fresh target/renderer
+and nested invisible or translucent layers. It requires an opaque first frame,
+a changed subsequent frame, full-redraw encoding and an opaque resized frame.

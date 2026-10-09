@@ -784,6 +784,9 @@ impl TraceGraph {
                     .collect(),
                 delay.trace_frames(),
             ),
+            PreparedProcessor::PeakingEq(eq) => (
+                "v1_peaking_eq", eq.trace_parameters().into_iter().map(|(n, p)| parameter(n, p)).collect(), 0,
+            ),
             PreparedProcessor::Biquad(b) => (
                 "biquad",
                 ["b0", "b1", "b2", "a1", "a2"]

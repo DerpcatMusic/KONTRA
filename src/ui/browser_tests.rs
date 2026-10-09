@@ -122,6 +122,43 @@ fn w14_format_tabs_separate_libraries() {
 }
 
 #[test]
+fn uvi_scan_publication_populates_the_falcon_tab_after_an_empty_start() {
+    for (width, height) in [(900., 600.), (1180., 900.)] {
+        let p = catalog();
+        {
+            let mut view = p.shared.view.lock().unwrap();
+            view.shelf = Arc::new(crate::library::Shelf::new(Vec::new()));
+            view.files = Arc::new(Vec::new());
+        }
+        let mut h = Harness::new(&p, width, height);
+        h.press("bank-uvi");
+        assert!(h.ui.scene().unwrap().surface("library-0").is_none());
+        let bank = PathBuf::from("/virtual/UVI/Published Bank.UFS");
+        let preset = bank.join("Piano.uvip");
+        {
+            let mut view = p.shared.view.lock().unwrap();
+            view.shelf = Arc::new(crate::library::Shelf::new(vec![crate::library::Library {
+                dir: bank.clone(), name: "Published Falcon bank".into(), instruments: 1,
+                ..Default::default()
+            }]));
+            view.files = Arc::new(vec![preset.clone()]);
+        }
+        h.idle(5);
+        assert!(h.ui.scene().unwrap().surface("library-0").is_some(),
+            "a newly published bank appears without reopening the browser");
+        h.press("library-0");
+        assert!(h.ui.scene().unwrap().surface("instrument-0").is_some(),
+            "the scan's bank member is browseable");
+        h.press("bank-kontakt");
+        assert!(h.ui.scene().unwrap().surface("library-0").is_none(),
+            "the UVI bank belongs only to the Falcon tab");
+        h.press("bank-uvi");
+        assert!(h.ui.scene().unwrap().surface("instrument-0").is_some(),
+            "the Falcon selection survives changing tabs");
+    }
+}
+
+#[test]
 fn unsupported_uvi_banks_stay_visible_when_no_library_opens() {
     let p = catalog();
     {
@@ -277,4 +314,47 @@ fn oversized_library_panel_reveals_its_top() {
     let card = scene.surface("library-0").unwrap().frame;
     let viewport = scene.surface("browser-sources-false").unwrap().frame;
     assert!((card.y - viewport.y).abs() < 0.5, "an oversized panel must reveal its top: {card:?}, {viewport:?}");
+}
+
+#[test]
+fn w10_uvi_bank_file_libraries_appear_in_the_uvi_browser() {
+    let p = Arc::new(SamplerParams::new());
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        view.shelf = Arc::new(crate::library::Shelf::new(["Alpha.ufs", "Beta.UFS"].into_iter().map(|bank| {
+            crate::library::Library { dir: PathBuf::from("/virtual/UVISoundBanks").join(bank),
+                name: bank.into(), instruments: 1, ..Default::default() }
+        }).collect()));
+        view.files = Arc::new(["Alpha.ufs", "Beta.UFS"].into_iter().map(|bank| {
+            PathBuf::from("/virtual/UVISoundBanks").join(bank).join("Presets/Owned.uvip")
+        }).collect());
+        view.scanned = p.shared.libraries.wanted();
+    }
+    let mut h = Harness::new(&p, 1180., 760.);
+    h.press("bank-uvi");
+    assert!(h.ui.scene().unwrap().surface("library-0").is_some());
+    assert!(h.ui.scene().unwrap().surface("library-1").is_some());
+    h.press("library-0");
+    assert!(h.ui.scene().unwrap().surface("instrument-0").is_some());
+}
+
+#[test]
+fn w10_uvi_unreadable_banks_show_the_root_count_and_cause() {
+    let p = Arc::new(SamplerParams::new());
+    p.shared.libraries.edit(|s| s.roots = vec![crate::library::Root { path: "/virtual/Owned".into(), single: false }]);
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        let mut shelf = crate::library::Shelf::new(Vec::new());
+        shelf.per_root = vec![0];
+        shelf.bank_issues.push(crate::library::BankIssue { unsupported: false, message: "UFS header is truncated".into(),
+            locations: vec!["/virtual/Owned/A.ufs".into(), "/virtual/Owned/B.ufs".into()] });
+        view.shelf = Arc::new(shelf);
+        view.scanned = p.shared.libraries.wanted();
+    }
+    let mut h = Harness::new(&p, 900., 600.);
+    h.press("bank-uvi");
+    assert!(h.ui.scene().unwrap().surface("uvi-bank-root-0").is_some(), "browser must identify the failed root");
+    h.press("app-menu");
+    h.press("menu-item-5");
+    assert!(h.ui.scene().unwrap().surface("root-bank-problem-0").is_some(), "settings must show the count and cause");
 }
