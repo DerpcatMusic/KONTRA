@@ -119,6 +119,14 @@ impl Runtime {
         }
     }
 
+    /// Changes to captured cells/text and base controls, including DSP edits.
+    /// Callback outcomes are independent; this token gates value-only snapshots.
+    pub fn script_state_revision(&self, plan: PlanId) -> Result<(u64, u64), Error> {
+        let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
+        Ok((generation.controls.revision, generation.script_revision))
+    }
+
+    #[inline]
     fn script_state_value(
         &self,
         plan: PlanId,
