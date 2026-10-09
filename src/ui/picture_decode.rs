@@ -142,7 +142,7 @@ mod tests {
         let pixels = side as usize * side as usize;
         let mut encoded = Vec::new();
         image_webp::WebPEncoder::new(&mut encoded)
-            .encode(&[19,29,39].repeat(pixels),side,side,image_webp::ColorType::Rgb).unwrap();
+            .encode(&[19,29,39].repeat(pixels),side,side,image_webp::ColorType::Rgb8).unwrap();
         assert!(!image_webp::WebPDecoder::new(Cursor::new(&encoded)).unwrap().has_alpha());
         let mut image = None;
         let peak = crate::plugin::tests::peak_allocated(|| {
