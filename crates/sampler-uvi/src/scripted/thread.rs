@@ -313,23 +313,31 @@ impl ScriptThread {
         self.audit_due = due;
     }
 
-    fn enqueue(&mut self, mut message: Message) {
-        loop {
-            match self.events.push(message) {
-                Ok(()) => { self.wake(); return; }
-                Err(rtrb::PushError::Full(back)) => {
-                    message = back;
-                    #[cfg(feature = "scan")]
-                    if self.audit {
-                        let mut commands = std::mem::take(&mut self.audit_pending);
-                        self.synchronize_audit(&mut commands);
-                        self.audit_pending = commands;
-                        continue;
+    fn enqueue(&mut self, message: Message) {
+        #[cfg(feature = "scan")]
+        {
+            let mut message = message;
+            loop {
+                match self.events.push(message) {
+                    Ok(()) => { self.wake(); return; }
+                    Err(rtrb::PushError::Full(back)) => {
+                        message = back;
+                        if self.audit {
+                            let mut commands = std::mem::take(&mut self.audit_pending);
+                            self.synchronize_audit(&mut commands);
+                            self.audit_pending = commands;
+                            continue;
+                        }
+                        self.wake();
+                        return;
                     }
-                    self.wake();
-                    return;
                 }
             }
+        }
+        #[cfg(not(feature = "scan"))]
+        {
+            let _ = self.events.push(message);
+            self.wake();
         }
     }
 
