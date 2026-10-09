@@ -50,3 +50,47 @@ UNKNOWN. No performance verdict is implied by preparation or self-checks.
 
 Checks: C++ host `--self-check`, `check-live-host.py`, `check-load-host.py`,
 Python byte compilation, and root `cargo test --locked --lib --no-run`.
+
+## Recovered attribution, 2026-10-09
+
+The 11:34Z app restart interrupted the conversation, not the worker. The existing
+three-cell run finished with exit 0. Every cell was QUIET, finite, audible and
+verified by native-state readback. The unit was inactive with MainPID 0 when
+recovered. W8 wrote `FINAL.json` and `RELEASE.json`, removed its request and
+grant, and sent the direct completion handoff to W6 (then W13).
+
+Receipt: `/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w8-load-attribution-326-20261009/`.
+These are diagnostic runs with `KONTRA_AUDIT_LOAD=1`, not replacement parity
+numbers. They use the same frozen 608a20a1 plugin/CLI and host digests above.
+
+| Preset | Ready ms | First audio wall ms | Ready RSS MiB | After audio RSS MiB |
+|---|---:|---:|---:|---:|
+| Conflux | 1411.52 | 1512.48 | 138.43 | 138.67 |
+| Pacific Legato | 1355.64 | 1463.74 | 133.69 | 135.15 |
+| Analog Strings | 9626.30 | 9734.05 | 836.24 | 846.32 |
+
+All three have zero swap. The host retains only the aggregate plugin `prepare`
+stage (1371.16, 1338.85 and 9551.03 ms respectively). The detailed numeric
+`AUDIT` lines were read from stderr but discarded by `live_host.observe`;
+the raw capture was then removed from tmpfs. The original receipts remain
+unchanged. No substage attribution can be recovered from their hashes.
+
+The collector now retains `load_audit.records` on load probes, preserving ordered
+records rather than summing nested spans or collapsing repeated script slots.
+Only fixed public stage/context names, explicitly listed numeric fields and
+boolean flags survive. Raw stderr, authored text and unknown keys remain out
+of the numeric receipt. Each line and result count is bounded to 4096;
+`dropped_records` makes truncation visible. The regression failed before the
+collector change and passed after it, including malformed, nonfinite, private
+text, oversized-number and overflow cases. Load-host and contention checks
+also pass; normal FIFO root `cargo test --no-run` passed.
+
+The existing six-cell uninstrumented quiet comparison still establishes a
+load deficit on Conflux and Pacific and a readiness RSS deficit on Analog.
+It does not establish editor-open RSS parity. The newer integration already
+contains immutable-chain sharing; the frozen 326 artifact predates that code.
+Further product edits must use the captured substages and current-source
+measurements, rather than reinstalling an already integrated optimization.
+
+NEXT: bounded numeric stage attribution, then current-source cold/warm load
+and editor-open RSS comparison against frozen v1.
