@@ -1059,7 +1059,7 @@ mod native_lookup_tests {
         zone.keys=ir::KeyRange{low:60,high:60};
         zone.group=Some(ir::GroupRef(0)); zone.amplitude=Some(ir::ModulatorRef(0));
         instrument.zones.push(zone);
-        instrument.source_indices.modulators.push(ir::SourceModulator {group:0,slot:9,external:false,name:"ENV_AHDSR".into(),runtime:Some(ir::ModulatorRef(0))});
+        instrument.source_indices.modulators.push(ir::SourceModulator {group:0,slot:9,external:false,name:"ENV_AHDSR".into(),runtime:Some(ir::ModulatorRef(0)),settings:None});
         instrument.source_indices.engine_lookups.push(ir::SourceEngineLookup {group:0,owner:-1,target:false,name:"ENV_AHDSR".into(),index:9});
         instrument.behaviors.push(ir::Behavior {name:"synthetic envelope init".into(),language:ir::Language::Ksp,slot:Some(0),state:vec![],requires:vec![],source:"on init set_engine_par($ENGINE_PAR_ATTACK,200809,0,find_mod(0,\"ENV_AHDSR\"),-1) end on".into()});
         let loaded=prepare(instrument,vec![Pcm::new(48000,vec![[0.5;2];4096].into_boxed_slice()).unwrap()],&Options{mpe:None,..Default::default()}).unwrap();
