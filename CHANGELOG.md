@@ -8,6 +8,37 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ## Unreleased
 
+### Fixed after 0.3.326
+
+- Open protected Falcon and UVI content with the native format implementation.
+- Bound UVI script evaluation by deterministic callback work.
+- Stop zero-wait coroutine wakeups from exhausting a callback indefinitely.
+- Publish complete authored UVI controls before audit replies while preserving live work limits.
+- Retain member identity without persisting instrument member names.
+- Yield long metadata census shards to waiting builds.
+- Avoid duplicate runtime fault summaries on unchanged refreshes.
+- Place part Tone before instrument effects as in KONTRA v1.
+- Execute authored KSP MIDI object commands and return host file completions.
+- Reject MIDI completions and captures for unpublished jobs.
+- Preserve every completed Nightly snapshot and publish source versions in order.
+- Show grouped failed UVI banks with accurate access causes and affected locations.
+- Keep the piano keyboard visible in the current Sound editor.
+- Keep wheel gestures inside dropdown and picker popups.
+- Remove the repeated instrument name in Info.
+- Preserve partial redraw coordinates for GPU vector rendering.
+- Show each EQ band gain and apply the correct graph drag scale.
+- Share identical immutable zone chains without changing audible PCM.
+
+### Added
+
+- Read-only Mapping workbench with shared Sound tabs, zone identity, waveform inspection and balanced audition.
+- Optional numeric audit progress and grouped diagnostics with location sidecars.
+
+### Internal
+
+- Scalar and batched voices use one shared biquad sample kernel; no control or coefficient law changes.
+
+
 ### Fixed after 0.3.306
 
 - Native script host recall now restores callback context, text and arrays; UVI host saves retain immediate scalar and custom state.
