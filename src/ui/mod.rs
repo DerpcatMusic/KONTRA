@@ -45,6 +45,9 @@ mod native_ui;
 mod render_art;
 mod inside;
 mod editor;
+// ponytail: standalone panels use the approved descriptor fixture until W15 publishes its registry.
+#[allow(dead_code)]
+mod effects;
 mod editor_model;
 mod viz;
 mod chain;
