@@ -263,6 +263,7 @@ fn translate(
         engine: Vec::new(),
         dynamic: false,
         eq_mod_slots: HashMap::new(),
+        cutoff_octaves: HashMap::new(),
         send_taps: Vec::new(),
         #[cfg(feature = "scan")]
         target_outcomes: HashMap::new(),
@@ -662,6 +663,7 @@ struct Translation {
     /// A script writes effect slots while playing.
     dynamic: bool,
     eq_mod_slots: HashMap<usize, Vec<usize>>,
+    cutoff_octaves: HashMap<(usize, usize), f64>,
     send_taps: Vec<(ir::ChainRef, crate::effects::SendTap)>,
     #[cfg(feature = "scan")]
     target_outcomes: crate::coverage::Targets,
@@ -1230,6 +1232,12 @@ impl Translation {
                         post_amplitude,
                     });
                     chain = Some(ir::ChainRef(self.ir.chains.len() - 1));
+                    for &(slot, processor) in &filter_slots {
+                        if slots.iter().find(|s| s.slot == slot).is_some_and(|s|
+                            matches!(s.params(), Some(crate::effects::Params::Filter { kind: 2, .. }))) {
+                            self.cutoff_octaves.insert((chain.unwrap().0, processor), crate::effects::LEGACY_CUTOFF_OCTAVES);
+                        }
+                    }
                     self.eq_controls(index, chain.unwrap(), &filter_slots);
                     self.send_taps
                         .extend(c.send_taps.into_iter().map(|tap| (chain.unwrap(), tap)));
@@ -1745,19 +1753,10 @@ impl Translation {
                 "Gain" if native => ir::ProcessorParameter::Gain,
                 _ => return None,
             };
-            let depth = if native {
-                ir::Depth::Normalized(i)
-            } else {
-                ir::Depth::Pitch(ir::Pitch::Semitones(120.0 * i))
-            };
-            Some((
-                ir::Target::Processor {
-                    chain,
-                    index: *index,
-                    parameter,
-                },
-                depth,
-            ))
+            let depth = if native { ir::Depth::Normalized(i) }
+                else { ir::Depth::Pitch(ir::Pitch::Semitones(
+                    12. * self.cutoff_octaves.get(&(chain.0, *index)).copied().unwrap_or(10.) * i)) };
+            Some((ir::Target::Processor { chain, index: *index, parameter }, depth))
         });
         if target.slot.is_some() && addressed.is_none() {
             return report(
@@ -2913,6 +2912,7 @@ mod modulation {
             engine: Vec::new(),
             dynamic: false,
             eq_mod_slots: HashMap::new(),
+            cutoff_octaves: HashMap::new(),
             send_taps: Vec::new(),
             #[cfg(feature = "scan")]
             target_outcomes: HashMap::new(),
@@ -3200,6 +3200,24 @@ mod modulation {
             t.route("g", source, true, &cutoff, Some((chain, &[])))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn legacy_cutoff_span_does_not_change_an_adjacent_sv_slot() {
+        let mut t = translation();
+        let filter = ir::Processor::Filter(ir::Filter { kind: ir::FilterKind::LowPass { poles: 2 },
+            cutoff: ir::Frequency::Hertz(1000.), resonance: ir::Resonance::Q(0.7) });
+        t.ir.chains.push(ir::Chain { scope: ir::Scope::Voice,
+            pre_amplitude: vec![filter], post_amplitude: vec![filter] });
+        t.cutoff_octaves.insert((0, 1), crate::effects::LEGACY_CUTOFF_OCTAVES);
+        for (slot, expected) in [(0, -30.), (5, -26.88)] {
+            let route = t.route("group", ir::ModulatorRef(0), true,
+                &ModTarget { slot: Some(slot), ..target("filterCutoff", -0.25) },
+                Some((ir::ChainRef(0), &[(0, 0), (5, 1)]))).unwrap();
+            let ir::Depth::Pitch(depth) = t.ir.routes[route.0].depth else { panic!("pitch depth") };
+            assert!((depth.semitones() - expected).abs() < 1e-6,
+                "a legacy post-amplitude slot must not change the neighboring SV law");
+        }
     }
 
     #[test]
