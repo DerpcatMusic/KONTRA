@@ -269,6 +269,66 @@ fn even_probability_takes_lower_to_a_random_sequence() {
 }
 
 #[test]
+fn saved_digital_sine_lowers_with_its_bipolar_level_without_callback_heap() {
+    for (phase, expected) in [(0., 0.25), (0.25, 0.175), (0.5, 0.25), (0.75, 0.325)] {
+        let mut instrument = ir::Instrument {
+            assets: vec![asset("a")],
+            zones: vec![ir::Zone {
+                keys: ir::KeyRange { low: 60, high: 60 },
+                pitch: ir::KeyTracking::Fixed,
+                velocity: ir::VelocityResponse::None,
+                routes: vec![ir::RouteRef(0)],
+                ..ir::Zone::new(ir::AssetRef(0))
+            }],
+            modulators: vec![ir::Modulator {
+                scope: ir::Scope::Voice,
+                source: ir::ModulationSource::Lfo(ir::Lfo {
+                    shape: ir::LfoShape::SineScaled(-f64::from(0.3f32)),
+                    rate: ir::Frequency::Hertz(1e-10),
+                    delay: ir::Time::ZERO,
+                    fade_in: ir::Time::ZERO,
+                    phase,
+                    retrigger: true,
+                }),
+            }],
+            routes: vec![ir::Route::new(
+                ir::ModulatorRef(0),
+                ir::Target::Amplitude,
+                ir::Depth::Normalized(1.),
+            )],
+            ..Default::default()
+        };
+        for block in [1, 7, 32, 61, 256] {
+            let plan = lower(&instrument, 48000, vec![constant(0.5)], no_behaviors).unwrap();
+            let mut rt = Runtime::new(plan, limits()).unwrap();
+            for _ in 0..2 {
+                let mut audio = [[0.; 2]; 384];
+                support::without_heap(|| {
+                    rt.trigger(input(60), 60, 1.).unwrap();
+                    for chunk in audio.chunks_mut(block) {
+                        rt.render(chunk).unwrap();
+                    }
+                    rt.note_off(input(60), None).unwrap();
+                    rt.render(&mut [[0.; 2]; 128]).unwrap();
+                });
+                assert_eq!(rt.voice_count(), 0);
+                assert!(
+                    audio
+                        .iter()
+                        .flatten()
+                        .all(|v| (f64::from(*v) - expected).abs() < 1e-6)
+                );
+            }
+        }
+        if let ir::ModulationSource::Lfo(lfo) = &mut instrument.modulators[0].source {
+            lfo.shape = ir::LfoShape::SineScaled(f64::NAN);
+        }
+        assert!(instrument.validate().is_err());
+        assert!(lower(&instrument, 48000, vec![constant(0.5)], no_behaviors).is_err());
+    }
+}
+
+#[test]
 fn zone_routes_lower_to_voice_modulation() {
     let mut ir = ir::Instrument {
         assets: vec![asset("a")],

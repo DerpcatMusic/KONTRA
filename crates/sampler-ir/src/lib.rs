@@ -1130,8 +1130,10 @@ pub struct Lfo {
     pub retrigger: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LfoShape {
+    /// Sine with a signed bipolar peak in -1..=1; phase still starts at zero.
+    SineScaled(f64),
     /// A zero-weight Multi remains a bipolar source, with output 0.
     Zero,
     /// Starts at 0 rising.
