@@ -1,9 +1,10 @@
 use std::io::{Cursor, Read, Write};
 
-use super::BParamArrayBParFX8;
+use super::{BParamArrayBParFX8, BParSrcMode};
+use crate::read_bytes::ReadBytesExt;
 use crate::{Error, kontakt::Chunk};
 
-/// Compact group snapshot v2 or v4. Group IDs are the enclosing array indices.
+/// Compact group snapshot v1..=v4. Group IDs are the enclosing array indices.
 /// Unknown public/source values and the trailing flag are retained verbatim.
 #[derive(Debug)]
 pub struct GroupSnapshot {
@@ -50,45 +51,38 @@ fn write_array(array: &BParamArrayBParFX8, writer: &mut impl Write) -> Result<()
     Ok(())
 }
 
-// These lengths are serialization boundaries, not decoded source parameters.
-// Verified against all 2,799 v4 records in three local modern snapshots:
-// source v0x106/mode3 is 32 bytes; mode9 is 99 bytes. Other modes stay strict.
-fn source_length(version: u16, identity: &[u8]) -> Result<usize, Error> {
-    if version == 2 && identity[..3] == [0, 2, 1] {
-        return Ok(32);
+// Native compact v4/mode9 ends at 99 bytes; other records retain two extra bytes.
+fn source_data(reader: &mut Cursor<&[u8]>, version: u16) -> Result<Vec<u8>, Error> {
+    let start = reader.position() as usize;
+    let source = BParSrcMode::read(&mut *reader)?;
+    if !(version == 4 && source.version == 0x106 && source.mode == 9) {
+        bytes::<2>(reader)?;
     }
-    if version == 4 && identity[..3] == [0, 6, 1] {
-        return match u32::from_le_bytes(identity[3..7].try_into().unwrap()) {
-            3 => Ok(32),
-            9 => Ok(99),
-            mode => Err(Error::Generic(format!(
-                "Unsupported compact v4 source v0x106 mode {mode}"
-            ))),
-        };
-    }
-    Err(Error::Static("Unsupported group snapshot source version"))
+    Ok(reader.get_ref()[start..reader.position() as usize].to_vec())
 }
 
 impl GroupSnapshot {
     pub(crate) fn read(reader: &mut Cursor<&[u8]>) -> Result<Self, Error> {
         let header = bytes::<3>(reader)?;
-        if !matches!(header, [0, 2, 0] | [0, 4, 0]) {
+        if header[0] != 0 || header[2] != 0 || !(1..=4).contains(&header[1]) {
             return Err(Error::Static("Unsupported compact group snapshot version"));
         }
         let version = u16::from_le_bytes([header[1], header[2]]);
         let public_data = bytes(reader)?;
         let fx = array(reader, 8, 0x25)?;
-        let identity = bytes::<7>(reader)?;
-        let at = reader.position() - 7;
-        let length = source_length(version, &identity).map_err(|error| {
+        let at = reader.position();
+        let source_data = source_data(reader, version).map_err(|error| {
             Error::context(format!("Compact group source at offset {at}"), error)
         })?;
-        let mut source_data = identity.to_vec();
-        source_data.resize(length, 0);
-        reader.read_exact(&mut source_data[7..])?;
         let internal = array(reader, 16, 0x0d)?;
-        let external = array(reader, if version == 4 { 64 } else { 32 }, 0x0c)?;
-        let trailing_flag = bytes::<1>(reader)?[0];
+        let mut header = reader.clone();
+        header.read_u8()?;
+        let external_count = if header.read_u16_le()? == 0x13 { header.read_u32_le()? } else { 32 };
+        if !matches!(external_count, 32 | 64) {
+            return Err(Error::Static("Unsupported group snapshot external slot count"));
+        }
+        let external = array(reader, external_count, 0x0c)?;
+        let trailing_flag = if version >= 2 { bytes::<1>(reader)?[0] } else { 0 };
         if trailing_flag > 1 {
             return Err(Error::Static("Invalid group snapshot trailing flag"));
         }
@@ -111,29 +105,33 @@ impl GroupSnapshot {
 
     /// Write the decoded record without modifying unknown state or slot data.
     pub fn write(&self, mut writer: impl Write) -> Result<(), Error> {
+        if !matches!(self.version, 1..=4)
+            || !matches!(self.external.items.len(), 32 | 64)
+            || self.external.version != 0x13 && self.external.items.len() != 32
+        {
+            return Err(Error::Static("Invalid group snapshot version/capacity"));
+        }
         for (array, count, id) in [
             (&self.fx, 8, 0x25),
             (&self.internal, 16, 0x0d),
             (
                 &self.external,
-                if self.version == 4 { 64 } else { 32 },
+                self.external.items.len(),
                 0x0c,
             ),
         ] {
             if array.items.len() != count
-                || !matches!(array.version, 0x10 | 0x12 | 0x13)
+                || !matches!(array.version, 0x10..=0x13)
                 || array.items.iter().flatten().any(|c| c.id != id)
             {
                 return Err(Error::Static("Invalid group snapshot slot shape"));
             }
         }
-        let identity = self
-            .source_data
-            .get(..7)
-            .ok_or(Error::Static("Truncated group snapshot source identity"))?;
-        if self.source_data.len() != source_length(self.version, identity)?
+        let mut source = Cursor::new(self.source_data.as_slice());
+        source_data(&mut source, self.version)?;
+        if source.position() as usize != self.source_data.len()
             || self.trailing_data.len() != if self.version == 4 { 8 } else { 0 }
-            || self.trailing_flag > 1
+            || self.trailing_flag > 1 || self.version == 1 && self.trailing_flag != 0
         {
             return Err(Error::Static("Invalid group snapshot opaque state"));
         }
@@ -144,7 +142,7 @@ impl GroupSnapshot {
         writer.write_all(&self.source_data)?;
         write_array(&self.internal, &mut writer)?;
         write_array(&self.external, &mut writer)?;
-        writer.write_all(&[self.trailing_flag])?;
+        if self.version >= 2 { writer.write_all(&[self.trailing_flag])?; }
         writer.write_all(&self.trailing_data)?;
         Ok(())
     }
@@ -182,6 +180,8 @@ mod tests {
             let mut source_data = vec![0x42; length];
             source_data[..3].copy_from_slice(&[0, 6, 1]);
             source_data[3..7].copy_from_slice(&mode.to_le_bytes());
+            for at in [11, 16, 29] { source_data[at] = 0; }
+            if mode == 9 { source_data[54] = 0; }
             let mut record = GroupSnapshot {
                 version: 4,
                 public_data: [0x39; 24],
@@ -233,6 +233,8 @@ mod tests {
             trailing_data: Vec::new(),
         };
         record.source_data[..3].copy_from_slice(&[0, 2, 1]);
+        record.source_data[3..7].copy_from_slice(&3u32.to_le_bytes());
+        for at in [11, 16, 29] { record.source_data[at] = 0; }
         record.internal.items[3] = Some(Chunk {
             id: 0x0d,
             data: b"authored opaque modulator".to_vec(),
