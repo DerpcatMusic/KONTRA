@@ -198,7 +198,7 @@ pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
             .pad(edges(0., SPACE, 0., INSET))
             .shrink(0),
         );
-        if scanned && let Some(problem) = cx.view.shelf.bank_problem(std::path::Path::new(&root.path)) {
+        if scanned && let Some(problem) = cx.view.shelf.root_problem(std::path::Path::new(&root.path)) {
             rows.push(caption(problem.clone()).lines(3).tip(problem)
                 .pad(edges(0., SPACE, SPACE, INSET)).shrink(0).id(format!("root-bank-problem-{n}")));
         }
