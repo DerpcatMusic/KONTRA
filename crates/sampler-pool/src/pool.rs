@@ -33,11 +33,16 @@ impl Shared {
             }
             // Winning the claim means this run is still live (it cannot end
             // before this task is done), so `call` and `data` are its own.
-            if self.ticket.compare_exchange_weak(t, t + 1, AcqRel, Acquire).is_err() {
+            if self
+                .ticket
+                .compare_exchange_weak(t, t + 1, AcqRel, Acquire)
+                .is_err()
+            {
                 continue;
             }
             // SAFETY: `call` holds a `fn(usize, usize)` stored by `run` for this run.
-            let call: fn(usize, usize, usize) = unsafe { std::mem::transmute(self.call.load(Relaxed)) };
+            let call: fn(usize, usize, usize) =
+                unsafe { std::mem::transmute(self.call.load(Relaxed)) };
             let data = self.data.load(Relaxed);
             if catch_unwind(AssertUnwindSafe(|| call(data, t as u32 as usize, lane))).is_err() {
                 self.panicked.store(true, Relaxed);
@@ -75,7 +80,11 @@ impl Pool {
                     .expect("spawn render worker")
             })
             .collect();
-        Self { shared, workers, generation: 0 }
+        Self {
+            shared,
+            workers,
+            generation: 0,
+        }
     }
 
     /// Worker threads, not counting the caller.
@@ -100,7 +109,8 @@ impl Pool {
         let s = &*self.shared;
         s.total.store(tasks, Relaxed);
         s.done.store(0, Relaxed);
-        s.call.store(call::<F> as fn(usize, usize, usize) as usize, Relaxed);
+        s.call
+            .store(call::<F> as fn(usize, usize, usize) as usize, Relaxed);
         s.data.store(f as *const F as usize, Relaxed);
         self.generation = self.generation.wrapping_add(1);
         s.ticket.store(u64::from(self.generation) << 32, SeqCst);

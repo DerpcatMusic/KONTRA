@@ -846,27 +846,48 @@ fn full_note_runtime_trace_probe() {
         if vel != 100 {
             continue;
         }
-        let vel = std::env::var("KONTRA_TRACE_VEL").ok().map_or(vel, |v| v.parse().unwrap());
+        let vel = std::env::var("KONTRA_TRACE_VEL")
+            .ok()
+            .map_or(vel, |v| v.parse().unwrap());
         let path = std::path::Path::new(&root).join(relative);
         if !path.exists() {
             continue;
         }
         let d = decoded(&path, key);
-        let loaded =
-            sampler_kontakt::finish(d.instrument.clone(), d.pcm.clone(), d.labels.clone(), &d.options)
-                .unwrap();
-        let names: Vec<String> = loaded.instrument.groups.iter().map(|g| g.name.clone()).collect();
-        if let Some(z) = std::env::var("KONTRA_TRACE_ZONE").ok().and_then(|v| v.parse::<usize>().ok()) {
+        let loaded = sampler_kontakt::finish(
+            d.instrument.clone(),
+            d.pcm.clone(),
+            d.labels.clone(),
+            &d.options,
+        )
+        .unwrap();
+        let names: Vec<String> = loaded
+            .instrument
+            .groups
+            .iter()
+            .map(|g| g.name.clone())
+            .collect();
+        if let Some(z) = std::env::var("KONTRA_TRACE_ZONE")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+        {
             let ir = &loaded.instrument;
             for r in &ir.zones[z].routes {
                 let route = &ir.routes[r.0];
-                println!("ZONE {z} route {:?} src {:?} shape {:?}", route, ir.modulators[route.source.0].source, route.shape.map(|s| ir.shapes[s.0].points.clone()));
+                println!(
+                    "ZONE {z} route {:?} src {:?} shape {:?}",
+                    route,
+                    ir.modulators[route.source.0].source,
+                    route.shape.map(|s| ir.shapes[s.0].points.clone())
+                );
             }
         }
         if std::env::var_os("KONTRA_TRACE_UNS").is_some() {
             let mut seen: std::collections::BTreeMap<String, usize> = Default::default();
             for u in &loaded.instrument.unsupported {
-                *seen.entry(format!("{} | {:.90}", u.feature, u.value)).or_default() += 1;
+                *seen
+                    .entry(format!("{} | {:.90}", u.feature, u.value))
+                    .or_default() += 1;
             }
             for (k, n) in seen {
                 println!("UNS {n} {k}");
@@ -897,12 +918,20 @@ fn full_note_runtime_trace_probe() {
         let mut articulator = Articulator::new(&rt, rt.performance(0).unwrap(), 0).unwrap();
         let mut out = vec![[0.0; 2]; 64];
         println!("=== {relative} key {key} vel {vel}");
-        let mut words = vec![0x2000_0000, 0x2090_0000 | u32::from(key) << 8 | u32::from(vel)];
+        let mut words = vec![
+            0x2000_0000,
+            0x2090_0000 | u32::from(key) << 8 | u32::from(vel),
+        ];
         words.resize(1500, 0x2000_0000);
-        if let Some(off) = std::env::var("KONTRA_TRACE_OFF").ok().and_then(|v| v.parse::<usize>().ok()) {
+        if let Some(off) = std::env::var("KONTRA_TRACE_OFF")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+        {
             words[off] = 0x2080_0000 | u32::from(key) << 8;
         }
-        let trace_steps: usize = std::env::var("KONTRA_TRACE_STEPS").ok().map_or(200, |v| v.parse().unwrap());
+        let trace_steps: usize = std::env::var("KONTRA_TRACE_STEPS")
+            .ok()
+            .map_or(200, |v| v.parse().unwrap());
         let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
         for (i, &word) in words.iter().enumerate() {
             let w = [word];
@@ -913,7 +942,11 @@ fn full_note_runtime_trace_probe() {
             rt.render(&mut out).unwrap();
             let peak = out.iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
             if i % 50 == 0 {
-                println!("step {i} peak {:.1} dB voices {}", 20.0 * f64::from(peak).log10(), rt.voice_count());
+                println!(
+                    "step {i} peak {:.1} dB voices {}",
+                    20.0 * f64::from(peak).log10(),
+                    rt.voice_count()
+                );
             }
             for r in rt.take_selection_records() {
                 let sounded: Vec<String> = r
@@ -924,13 +957,18 @@ fn full_note_runtime_trace_probe() {
                         let g = c.group.map_or("?".into(), |g| {
                             format!("{g}:{}", names.get(g as usize).map_or("", |n| n.as_str()))
                         });
-                        format!("{g} z{} {:?}", c.region, loaded.instrument.zones[c.region].velocities)
+                        format!(
+                            "{g} z{} {:?}",
+                            c.region, loaded.instrument.zones[c.region].velocities
+                        )
                     })
                     .collect();
                 if let Ok(pat) = std::env::var("KONTRA_TRACE_REJ") {
                     let mut by: std::collections::BTreeMap<String, usize> = Default::default();
                     for c in r.candidates.iter().filter(|c| c.rejected.is_some()) {
-                        let g = c.group.map_or("?".into(), |g| names.get(g as usize).cloned().unwrap_or_default());
+                        let g = c.group.map_or("?".into(), |g| {
+                            names.get(g as usize).cloned().unwrap_or_default()
+                        });
                         if g.contains(&pat) {
                             *by.entry(format!("{g} {:?}", c.rejected)).or_default() += 1;
                         }
@@ -961,7 +999,10 @@ fn full_note_runtime_trace_probe() {
                 let args = e.args();
                 let shown = match (name, view) {
                     ("set_engine_par", Some(v)) => {
-                        let par = args.first().and_then(|&a| v.symbol(a as i32)).unwrap_or_default();
+                        let par = args
+                            .first()
+                            .and_then(|&a| v.symbol(a as i32))
+                            .unwrap_or_default();
                         format!("{par} {:?}", &args[1.min(args.len())..])
                     }
                     _ => format!("{args:?}"),
@@ -986,7 +1027,8 @@ fn una_script_vs_native_probe() {
     let Some(root) = std::env::var_os("KONTRA_KONTAKT_LIBRARIES") else {
         return;
     };
-    let path = std::path::Path::new(&root).join("Una Corda Library/Instruments/Una Corda Cotton.nki");
+    let path =
+        std::path::Path::new(&root).join("Una Corda Library/Instruments/Una Corda Cotton.nki");
     let windows = |out: &[[f32; 2]]| {
         (0..8)
             .map(|w| {
@@ -1011,7 +1053,9 @@ fn una_script_vs_native_probe() {
                 .map(|(i, _)| i)
                 .collect();
             println!("native groups {keep:?}");
-            let kept = d.instrument.retain_zones(|z| z.group.is_some_and(|g| keep.contains(&g.0)));
+            let kept = d
+                .instrument
+                .retain_zones(|z| z.group.is_some_and(|g| keep.contains(&g.0)));
             d.pcm = kept.iter().map(|&i| d.pcm[i].clone()).collect();
             d.labels = kept.iter().map(|&i| d.labels[i].clone()).collect();
             d.options.scripts = false;
@@ -1037,7 +1081,8 @@ fn una_solo_probe() {
     let Some(root) = std::env::var_os("KONTRA_KONTAKT_LIBRARIES") else {
         return;
     };
-    let path = std::path::Path::new(&root).join("Una Corda Library/Instruments/Una Corda Cotton.nki");
+    let path =
+        std::path::Path::new(&root).join("Una Corda Library/Instruments/Una Corda Cotton.nki");
     for name in ["DRY_C3", "RESONANCE f"] {
         for vel in [64u32, 100, 127] {
             let mut d = decoded(&path, 60);
@@ -1049,20 +1094,37 @@ fn una_solo_probe() {
                 .filter(|(_, g)| g.name == name)
                 .map(|(i, _)| i)
                 .collect();
-            let kept = d.instrument.retain_zones(|z| z.group.is_some_and(|g| keep.contains(&g.0)));
+            let kept = d
+                .instrument
+                .retain_zones(|z| z.group.is_some_and(|g| keep.contains(&g.0)));
             d.pcm = kept.iter().map(|&i| d.pcm[i].clone()).collect();
             d.labels = kept.iter().map(|&i| d.labels[i].clone()).collect();
             d.options.scripts = false;
             let zones = d.instrument.zones.len();
-            let loaded = sampler_kontakt::finish(d.instrument.clone(), d.pcm.clone(), d.labels.clone(), &d.options).unwrap();
+            let loaded = sampler_kontakt::finish(
+                d.instrument.clone(),
+                d.pcm.clone(),
+                d.labels.clone(),
+                &d.options,
+            )
+            .unwrap();
             let mut words = vec![0x2000_0000, 0x2090_0000 | 60 << 8 | vel];
             words.resize(3000, 0x2000_0000);
             let out = render(loaded, &words);
             let l = reference::levels(&out, 0.0, 3.0);
             let r = reference::levels(&out, 0.5, 2.0);
-            let wins: Vec<String> = (0..12).map(|w| { let seg = &out[w * 4800..(w + 1) * 4800]; let p = seg.iter().flatten().fold(0f32, |p, x| p.max(x.abs())); format!("{:.0}", 20.0 * f64::from(p).log10()) }).collect();
+            let wins: Vec<String> = (0..12)
+                .map(|w| {
+                    let seg = &out[w * 4800..(w + 1) * 4800];
+                    let p = seg.iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
+                    format!("{:.0}", 20.0 * f64::from(p).log10())
+                })
+                .collect();
             eprintln!("PROBE windows {}", wins.join(" "));
-            eprintln!("PROBE {name} zones {zones} vel {vel}: pk {:.1}/{:.1} rms {:.1}/{:.1}", l.peak[0], l.peak[1], r.rms[0], r.rms[1]);
+            eprintln!(
+                "PROBE {name} zones {zones} vel {vel}: pk {:.1}/{:.1} rms {:.1}/{:.1}",
+                l.peak[0], l.peak[1], r.rms[0], r.rms[1]
+            );
         }
     }
 }
@@ -1076,7 +1138,9 @@ fn saved_state_probe() {
         return;
     };
     let filter = std::env::var("KONTRA_SAVED_FILTER").unwrap_or_default();
-    let ir = sampler_kontakt::read(std::path::Path::new(&path)).unwrap().instrument;
+    let ir = sampler_kontakt::read(std::path::Path::new(&path))
+        .unwrap()
+        .instrument;
     for b in &ir.behaviors {
         for (name, value) in &b.state {
             if !name.contains(&filter) {
@@ -1084,8 +1148,20 @@ fn saved_state_probe() {
             }
             match value {
                 ir::Saved::Ints(v) => {
-                    let ones: Vec<usize> = v.iter().enumerate().filter(|(_, x)| **x != 0).map(|(i, _)| i).take(12).collect();
-                    println!("slot {:?} {name} ints len {} nonzero {} first {ones:?} last {:?}", b.slot, v.len(), v.iter().filter(|x| **x != 0).count(), v.last());
+                    let ones: Vec<usize> = v
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, x)| **x != 0)
+                        .map(|(i, _)| i)
+                        .take(12)
+                        .collect();
+                    println!(
+                        "slot {:?} {name} ints len {} nonzero {} first {ones:?} last {:?}",
+                        b.slot,
+                        v.len(),
+                        v.iter().filter(|x| **x != 0).count(),
+                        v.last()
+                    );
                 }
                 other => println!("slot {:?} {name} {:.80?}", b.slot, other),
             }

@@ -77,25 +77,50 @@ impl OutputLowPass {
             mode: SvfMode::OnePoleLowPass,
             cutoff_hz: Parameter::Constant(20_000f64.min(f64::from(rate) * 0.45)),
             q: Parameter::Constant(1.),
-        }.compile(rate, &mut Vec::new())?;
-        Ok(Self { cache: FilterCache::new(filter), rate })
+        }
+        .compile(rate, &mut Vec::new())?;
+        Ok(Self {
+            cache: FilterCache::new(filter),
+            rate,
+        })
     }
 
     /// v1 Player::output: dry bypass tracks the last sample before filter enable.
-    pub fn process(&mut self, frames: &mut [crate::Frame], state: &mut [[f64; 2]; 2], cutoff: f64, at: u64) -> Result<(), Error> {
-        if !(20.0..=20_000.).contains(&cutoff) { return Err(Error::InvalidInput); }
+    pub fn process(
+        &mut self,
+        frames: &mut [crate::Frame],
+        state: &mut [[f64; 2]; 2],
+        cutoff: f64,
+        at: u64,
+    ) -> Result<(), Error> {
+        if !(20.0..=20_000.).contains(&cutoff) {
+            return Err(Error::InvalidInput);
+        }
         if cutoff >= 20_000. {
-            if let Some(last) = frames.last() { *state = [last.map(f64::from), [0.; 2]]; }
+            if let Some(last) = frames.last() {
+                *state = [last.map(f64::from), [0.; 2]];
+            }
             return Ok(());
         }
-        self.cache.filter.cutoff = PreparedParameter::Constant(cutoff.min(f64::from(self.rate) * 0.45));
+        self.cache.filter.cutoff =
+            PreparedParameter::Constant(cutoff.min(f64::from(self.rate) * 0.45));
         for (chunk, frames) in frames.chunks_mut(BLOCK).enumerate() {
             let mut block = [[0.; BLOCK]; 2];
             for (n, frame) in frames.iter().enumerate() {
-                block[0][n] = f64::from(frame[0]); block[1][n] = f64::from(frame[1]);
+                block[0][n] = f64::from(frame[0]);
+                block[1][n] = f64::from(frame[1]);
             }
-            self.cache.process(state, &mut block, frames.len(), &[], at + (chunk * BLOCK) as u64, None);
-            for (n, frame) in frames.iter_mut().enumerate() { *frame = [block[0][n] as f32, block[1][n] as f32]; }
+            self.cache.process(
+                state,
+                &mut block,
+                frames.len(),
+                &[],
+                at + (chunk * BLOCK) as u64,
+                None,
+            );
+            for (n, frame) in frames.iter_mut().enumerate() {
+                *frame = [block[0][n] as f32, block[1][n] as f32];
+            }
         }
         Ok(())
     }
@@ -118,7 +143,9 @@ pub(crate) struct PreparedSvf {
 
 impl PreparedFilter {
     pub(crate) fn trace_parameters(&self) -> [(&'static str, PreparedParameter); 2] {
-        let Self::StateVariable(f) = self else { unreachable!("native filter traces its own lanes") };
+        let Self::StateVariable(f) = self else {
+            unreachable!("native filter traces its own lanes")
+        };
         [("cutoff_hz", f.cutoff), ("q", f.q)]
     }
     pub fn requires_expression(self) -> bool {
@@ -173,7 +200,9 @@ pub(crate) struct FilterCache {
 }
 impl FilterCache {
     pub fn new(filter: PreparedFilter) -> Self {
-        let PreparedFilter::StateVariable(filter) = filter else { unreachable!("native filter has no SVF cache") };
+        let PreparedFilter::StateVariable(filter) = filter else {
+            unreachable!("native filter has no SVF cache")
+        };
         Self {
             filter,
             owner: None,
@@ -265,11 +294,19 @@ pub(super) fn one_pole_sample(input: f64, state: f64, b: f64, high: bool) -> (f6
 }
 
 #[inline(always)]
-pub(super) fn sample(x: f64, [ic1, ic2]: [f64; 2], [a1, a2, a3, km]: [f64; 4], [m0, m2]: [f64; 2]) -> (f64, [f64; 2]) {
+pub(super) fn sample(
+    x: f64,
+    [ic1, ic2]: [f64; 2],
+    [a1, a2, a3, km]: [f64; 4],
+    [m0, m2]: [f64; 2],
+) -> (f64, [f64; 2]) {
     let v3 = x - ic2;
     let band = a1 * ic1 + a2 * v3;
     let low = ic2 + a2 * ic1 + a3 * v3;
-    (m0 * x + km * band + m2 * low, [2. * band - ic1, 2. * low - ic2])
+    (
+        m0 * x + km * band + m2 * low,
+        [2. * band - ic1, 2. * low - ic2],
+    )
 }
 
 #[inline(always)]
@@ -304,7 +341,12 @@ fn run(
         let c = coefficients(i);
         let x = [*l, *r];
         let y: [f64; 2] = std::array::from_fn(|ch| {
-            let (y, next) = sample(x[ch], [s0[ch], s1[ch]], [c.a1, c.a2, c.a3, mk * c.k], [m0, m2]);
+            let (y, next) = sample(
+                x[ch],
+                [s0[ch], s1[ch]],
+                [c.a1, c.a2, c.a3, mk * c.k],
+                [m0, m2],
+            );
             (s0[ch], s1[ch]) = (next[0], next[1]);
             y
         });
@@ -356,6 +398,7 @@ pub(crate) struct FilterBank {
     /// Set around one voice's render; 1.0 uses the cached shared coefficients.
     pub modulation: [f64; 2],
     addressed_modulation: Box<[[f64; 4]]>,
+    modulation_program: Option<u32>,
 }
 impl FilterBank {
     pub fn new(filters: &[PreparedFilter], expressions: usize) -> Result<Self, Error> {
@@ -392,9 +435,17 @@ impl FilterBank {
             expressions: caches.into_boxed_slice(),
             stride,
             modulation: [1.0; 2],
-            addressed_modulation: filters.iter().map(|f| if matches!(f, PreparedFilter::NativeControl) {
-                [0.; 4]
-            } else { [1., 1., 0., 0.] }).collect(),
+            modulation_program: None,
+            addressed_modulation: filters
+                .iter()
+                .map(|f| {
+                    if matches!(f, PreparedFilter::NativeControl) {
+                        [0.; 4]
+                    } else {
+                        [1., 1., 0., 0.]
+                    }
+                })
+                .collect(),
         })
     }
 }
@@ -421,8 +472,13 @@ impl FilterBank {
         state: &crate::voice_mod::VoiceModState,
         voice: usize,
     ) {
-        state.fill_filter_factors(modulation, voice, &mut self.addressed_modulation,
-            |i| matches!(self.scopes[i], Scope::NativeControl));
+        state.fill_filter_factors(
+            modulation,
+            voice,
+            &mut self.addressed_modulation,
+            &mut self.modulation_program,
+            |i| matches!(self.scopes[i], Scope::NativeControl),
+        );
     }
 
     pub(crate) fn native_knobs(&self, index: usize) -> [f64; 4] {

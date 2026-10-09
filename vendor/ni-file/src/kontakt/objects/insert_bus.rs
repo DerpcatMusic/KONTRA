@@ -31,6 +31,8 @@ pub struct InsertBusParams {
     pub pan: f32,
     /// -1 routes to the instrument output.
     pub output: i32,
+    /// Bytes after the established fields, including newer bus extensions.
+    pub unknown_tail: Vec<u8>,
 }
 
 impl InsertBus {
@@ -42,6 +44,7 @@ impl InsertBus {
             volume: reader.read_f32_le()?,
             pan: reader.read_f32_le()?,
             output: reader.read_i32_le()?,
+            unknown_tail: reader.read_all()?,
         })
     }
 }
@@ -63,6 +66,24 @@ impl std::convert::TryFrom<&Chunk> for InsertBus {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    #[test]
+    fn bus_extensions_are_retained_after_the_established_fields() {
+        let mut data = 0u32.to_le_bytes().to_vec();
+        data.extend(0.5f32.to_le_bytes());
+        data.extend((-0.25f32).to_le_bytes());
+        data.extend((-1i32).to_le_bytes());
+        data.extend([0xa5, 0, 1, 2, 3, 4, 5, 6]);
+        let bus = InsertBus(StructuredObject {
+            version: 0x12,
+            private_data: Vec::new(),
+            public_data: data,
+            children: Vec::new(),
+        });
+        let params = bus.params().unwrap();
+        assert_eq!((params.volume, params.pan, params.output), (0.5, -0.25, -1));
+        assert_eq!(params.unknown_tail, [0xa5, 0, 1, 2, 3, 4, 5, 6]);
+    }
     // use super::*;
     // use crate::Error;
     // use std::fs::File;

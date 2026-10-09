@@ -508,21 +508,34 @@ fn edited_public_reader_fields_are_revalidated() {
 #[test]
 #[ignore = "benchmark"]
 fn bench() {
-    let Ok(dir) = std::env::var("NCW_BENCH") else { return };
-    let mut paths: Vec<_> = fs::read_dir(dir).unwrap().filter_map(|e| Some(e.ok()?.path())).collect();
+    let Ok(dir) = std::env::var("NCW_BENCH") else {
+        return;
+    };
+    let mut paths: Vec<_> = fs::read_dir(dir)
+        .unwrap()
+        .filter_map(|e| Some(e.ok()?.path()))
+        .collect();
     paths.retain(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("ncw")));
     paths.sort();
-    let files: Vec<Vec<u8>> = paths.iter().take(64).map(|p| fs::read(p).unwrap()).collect();
+    let files: Vec<Vec<u8>> = paths
+        .iter()
+        .take(64)
+        .map(|p| fs::read(p).unwrap())
+        .collect();
     let (mut best, mut blocks, mut sum) = (f64::MAX, 0, 0u64);
     for _ in 0..5 {
         (blocks, sum) = (0, 0);
         let start = std::time::Instant::now();
         for file in &files {
-            let mut reader = NcwReader::read(std::io::BufReader::new(std::io::Cursor::new(file))).unwrap();
+            let mut reader =
+                NcwReader::read(std::io::BufReader::new(std::io::Cursor::new(file))).unwrap();
             for i in 0..reader.block_offsets.len() {
                 for channel in reader.decode_block(i).unwrap() {
                     // Position-weighted, so it vectorizes and still sees order.
-                    let block = channel.iter().zip(1u64..).fold(0u64, |s, (&v, k)| s.wrapping_add(k.wrapping_mul(v as u64)));
+                    let block = channel
+                        .iter()
+                        .zip(1u64..)
+                        .fold(0u64, |s, (&v, k)| s.wrapping_add(k.wrapping_mul(v as u64)));
                     sum = sum.rotate_left(7) ^ block;
                 }
                 blocks += 1;
@@ -530,5 +543,9 @@ fn bench() {
         }
         best = best.min(start.elapsed().as_secs_f64());
     }
-    println!("{} files · {blocks} blocks · {:.0} ns per block · checksum {sum:016x}", files.len(), best / blocks as f64 * 1e9);
+    println!(
+        "{} files · {blocks} blocks · {:.0} ns per block · checksum {sum:016x}",
+        files.len(),
+        best / blocks as f64 * 1e9
+    );
 }
