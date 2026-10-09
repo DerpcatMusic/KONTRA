@@ -265,7 +265,9 @@ pub(super) struct EnvelopeState {
 }
 
 impl EnvelopeState {
-    pub(crate) fn trace_parameters(&self) -> [f64; 10] { self.shape.trace_parameters().map(|(_,v)|v) }
+    pub(crate) fn trace_parameters(&self) -> [f64; 10] {
+        self.shape.trace_parameters().map(|(_, v)| v)
+    }
     pub(super) fn new(shape: Envelope) -> Self {
         let mut state = Self {
             shape,
@@ -508,36 +510,54 @@ mod tests {
     #[test]
     fn skipped_curves_do_not_compute_discarded_frame_levels() {
         let c = EnvelopeCurve::exponential(-4.).unwrap();
-        let shape = Envelope::new(48000, 0, 48000, 0.3, 48000).unwrap()
+        let shape = Envelope::new(48000, 0, 48000, 0.3, 48000)
+            .unwrap()
             .with_curves(c, c, c);
         let mut state = EnvelopeState::new(shape);
         LEVEL_READS.set(0);
         std::hint::black_box(state.advance(32));
-        assert_eq!(LEVEL_READS.get(), 1, "only the requested endpoint needs a level");
+        assert_eq!(
+            LEVEL_READS.get(),
+            1,
+            "only the requested endpoint needs a level"
+        );
     }
 
     #[test]
     fn skipped_envelopes_keep_scalar_output_and_state_bits() {
         for curvature in [-32., -4., -1e-320, 0., 1e-320, 4., 32., f64::INFINITY] {
-            let c = if curvature.is_infinite() { EnvelopeCurve::step() }
-                else { EnvelopeCurve::exponential(curvature).unwrap() };
+            let c = if curvature.is_infinite() {
+                EnvelopeCurve::step()
+            } else {
+                EnvelopeCurve::exponential(curvature).unwrap()
+            };
             for frames in [0, 1, 7, 31, 32, 63, 64, 65, 127, 256, 513] {
                 for off in [0, 17, 140, 260, 800] {
                     for one_shot in [false, true] {
-                        let mut shape = Envelope::new(137, 5, 149, 0.25, 173).unwrap()
-                            .with_delay(3).with_curves(c, c, c);
+                        let mut shape = Envelope::new(137, 5, 149, 0.25, 173)
+                            .unwrap()
+                            .with_delay(3)
+                            .with_curves(c, c, c);
                         shape.one_shot = one_shot;
                         let mut scalar = EnvelopeState::new(shape);
                         let mut skip = scalar;
                         for at in (0..1200).step_by(frames.max(1) as usize) {
-                            if at >= off { scalar.release(); skip.release(); }
-                            for _ in 0..frames { scalar.next(); }
+                            if at >= off {
+                                scalar.release();
+                                skip.release();
+                            }
+                            for _ in 0..frames {
+                                scalar.next();
+                            }
                             assert_eq!(skip.advance(frames).to_bits(), scalar.current().to_bits());
                             assert_eq!(skip.phase, scalar.phase);
                             assert_eq!(skip.age, scalar.age);
                             assert_eq!(skip.progress.to_bits(), scalar.progress.to_bits());
                             assert_eq!(skip.delta.to_bits(), scalar.delta.to_bits());
-                            assert_eq!(skip.release_level.to_bits(), scalar.release_level.to_bits());
+                            assert_eq!(
+                                skip.release_level.to_bits(),
+                                scalar.release_level.to_bits()
+                            );
                         }
                     }
                 }

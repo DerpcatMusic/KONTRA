@@ -393,8 +393,16 @@ fn run() -> io::Result<()> {
         [command, instrument, grid, output, renders @ ..]
             if command == "identify-kontakt" && !renders.is_empty() =>
         {
-            let renders: Vec<String> = renders.iter().map(|r| r.to_string_lossy().into_owned()).collect();
-            identify::run(Path::new(instrument), Path::new(grid), Path::new(output), &renders)
+            let renders: Vec<String> = renders
+                .iter()
+                .map(|r| r.to_string_lossy().into_owned())
+                .collect();
+            identify::run(
+                Path::new(instrument),
+                Path::new(grid),
+                Path::new(output),
+                &renders,
+            )
         }
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,

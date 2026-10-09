@@ -1,9 +1,9 @@
 use std::io::Cursor;
 
 use crate::{
-    Error,
-    kontakt::{Chunk, KontaktError, StructuredObject, objects::Loop},
+    kontakt::{objects::Loop, Chunk, KontaktError, StructuredObject},
     read_bytes::ReadBytesExt,
+    Error,
 };
 
 /// Type:           Chunk

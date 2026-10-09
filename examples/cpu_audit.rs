@@ -12,8 +12,13 @@ impl Drop for Player {
     fn drop(&mut self) {
         if std::env::var_os("KONTRA_SIGNAL_TRACE").as_deref() == Some(std::ffi::OsStr::new("1")) {
             // Finish the observation artifact after the measured player retires.
-            drop(std::mem::replace(&mut self.0, V2Core::with_parts(1, 48000.)));
-            assert!(sampler_core::trace_report::flush(std::time::Duration::from_secs(30)));
+            drop(std::mem::replace(
+                &mut self.0,
+                V2Core::with_parts(1, 48000.),
+            ));
+            assert!(sampler_core::trace_report::flush(
+                std::time::Duration::from_secs(30)
+            ));
         }
     }
 }

@@ -8,11 +8,7 @@ use crate::{
     ufs::{Directory, Member, Protection, Ufs},
 };
 use anyhow::{Context, Result, ensure};
-use std::{
-    collections::HashMap,
-    path::Path,
-    sync::Arc,
-};
+use std::{collections::HashMap, path::Path, sync::Arc};
 
 /// An open bank. Deliberately not Debug: it holds access values.
 pub struct Bank {
@@ -32,7 +28,9 @@ pub(crate) fn program_text(bytes: &[u8]) -> Result<String, AccessError> {
 }
 
 fn program_paths(directory: &Directory) -> Vec<String> {
-    let mut programs: Vec<String> = directory.files.iter()
+    let mut programs: Vec<String> = directory
+        .files
+        .iter()
         .filter_map(|m| m.path.clone())
         .filter(|p| p.to_ascii_lowercase().ends_with(".uvip"))
         .collect();
@@ -50,18 +48,42 @@ impl Bank {
     pub fn catalog_status(path: &Path) -> Result<(Vec<String>, Option<String>), AccessError> {
         let bank_error = |e| AccessError::Bank(access::failure_reason(&e));
         let ufs = Ufs::open(path).map_err(bank_error)?;
-        let directory = ufs.decode_directory(&Namespaces::native().metadata).map_err(bank_error)?;
+        let directory = ufs
+            .decode_directory(&Namespaces::native().metadata)
+            .map_err(bank_error)?;
         let programs = program_paths(&directory);
-        let protected = directory.files.iter().filter(|m| m.path.as_ref().is_some_and(|p| p.to_ascii_lowercase().ends_with(".uvip"))
-            && m.mode == Protection::Content).count();
-        let unknown = directory.files.iter().filter(|m| m.path.as_ref().is_some_and(|p| p.to_ascii_lowercase().ends_with(".uvip"))
-            && matches!(m.mode, Protection::Unknown(_))).count();
+        let protected = directory
+            .files
+            .iter()
+            .filter(|m| {
+                m.path
+                    .as_ref()
+                    .is_some_and(|p| p.to_ascii_lowercase().ends_with(".uvip"))
+                    && m.mode == Protection::Content
+            })
+            .count();
+        let unknown = directory
+            .files
+            .iter()
+            .filter(|m| {
+                m.path
+                    .as_ref()
+                    .is_some_and(|p| p.to_ascii_lowercase().ends_with(".uvip"))
+                    && matches!(m.mode, Protection::Unknown(_))
+            })
+            .count();
         let mut reasons = Vec::new();
         if protected > 0 {
-            reasons.push(format!("{protected} of {} presets need content access before they can load.", programs.len()));
+            reasons.push(format!(
+                "{protected} of {} presets need content access before they can load.",
+                programs.len()
+            ));
         }
         if unknown > 0 {
-            reasons.push(format!("{unknown} of {} presets use an unsupported protection mode.", programs.len()));
+            reasons.push(format!(
+                "{unknown} of {} presets use an unsupported protection mode.",
+                programs.len()
+            ));
         }
         Ok((programs, (!reasons.is_empty()).then(|| reasons.join(" "))))
     }
@@ -72,12 +94,16 @@ impl Bank {
         let content_error = |e| AccessError::Content(access::failure_reason(&e));
         let span = sampler_kontakt::audit::Span::new("uvi_content_setup");
         // Only banks with encrypted members need a content state prepared.
-        let content_key = if bank.directory
+        let content_key = if bank
+            .directory
             .files
             .iter()
             .any(|m| m.mode == Protection::Content)
         {
-            Some(access::recover_content_key(path, &bank.ufs, &bank.directory).map_err(content_error)?)
+            Some(
+                access::recover_content_key(path, &bank.ufs, &bank.directory)
+                    .map_err(content_error)?,
+            )
         } else {
             None
         };
@@ -187,11 +213,16 @@ impl Bank {
     }
 
     /// Same bank/script-origin authority as ui_resource, without erasing failure categories.
-    pub fn ui_resource_result(&self, program: &str, path: &str) -> std::result::Result<Option<Vec<u8>>, crate::ResourceError> {
+    pub fn ui_resource_result(
+        &self,
+        program: &str,
+        path: &str,
+    ) -> std::result::Result<Option<Vec<u8>>, crate::ResourceError> {
         use crate::ResourceError as E;
         crate::resources::validate_path(path)?;
         let path = path.replace('\\', "/");
-        let (program, path) = resource_base(program, &path, &self.ufs.header.bank_name).map_err(|_| E::InvalidPath)?;
+        let (program, path) = resource_base(program, &path, &self.ufs.header.bank_name)
+            .map_err(|_| E::InvalidPath)?;
         let candidates = ui_candidates(program, path).map_err(|_| E::InvalidPath)?;
         let mut member = None;
         for candidate in &candidates {
@@ -200,19 +231,33 @@ impl Bank {
                 break;
             }
         }
-        let member = if let Some(member) = member { member } else {
+        let member = if let Some(member) = member {
+            member
+        } else {
             let normalized = normalize(path).map_err(|_| E::InvalidPath)?;
             let suffix = format!("/{}", normalized.to_ascii_lowercase());
             let mut matches = self.directory.files.iter().filter(|m| {
-                m.path.as_ref().is_some_and(|p| p.to_ascii_lowercase().ends_with(&suffix))
+                m.path
+                    .as_ref()
+                    .is_some_and(|p| p.to_ascii_lowercase().ends_with(&suffix))
             });
-            let Some(first) = matches.next() else {return Ok(None)};
-            if matches.next().is_some() {return Err(E::Ambiguous)};
+            let Some(first) = matches.next() else {
+                return Ok(None);
+            };
+            if matches.next().is_some() {
+                return Err(E::Ambiguous);
+            };
             first
         };
-        if member.size > 32 << 20 {return Err(E::Limit)};
+        if member.size > 32 << 20 {
+            return Err(E::Limit);
+        };
         self.read(member).map(Some).map_err(|e| {
-            if e.downcast_ref::<std::io::Error>().is_some() {E::Read} else {E::Corrupt}
+            if e.downcast_ref::<std::io::Error>().is_some() {
+                E::Read
+            } else {
+                E::Corrupt
+            }
         })
     }
 
@@ -255,12 +300,15 @@ impl Bank {
         let parts = resources(program_path, path, |path| self.resolve(path))?
             .into_iter()
             .map(|member| {
-                let (offset, size, key) = self.ufs.locate(
-                    member,
-                    self.directory.metadata_key,
-                    self.content_key,
-                )?;
-                Ok(crate::stream::Origin::Member { ufs: self.ufs.clone(), offset, size, key })
+                let (offset, size, key) =
+                    self.ufs
+                        .locate(member, self.directory.metadata_key, self.content_key)?;
+                Ok(crate::stream::Origin::Member {
+                    ufs: self.ufs.clone(),
+                    offset,
+                    size,
+                    key,
+                })
             })
             .collect::<Result<Vec<_>>>()?;
         crate::stream::source(parts).map_err(anyhow::Error::msg)
@@ -292,15 +340,21 @@ fn ui_candidates(program: &str, path: &str) -> Result<Vec<String>> {
     let base = program.rsplit_once('/').map_or("", |(base, _)| base);
     let rooted = normalize(path)?;
     let mut out = Vec::new();
-    if !path.starts_with('/') { out.push(normalize(&format!("{base}/{path}"))?); }
-    if !out.contains(&rooted) { out.push(rooted.clone()); }
+    if !path.starts_with('/') {
+        out.push(normalize(&format!("{base}/{path}"))?);
+    }
+    if !out.contains(&rooted) {
+        out.push(rooted.clone());
+    }
     let parts: Vec<_> = rooted.split('/').collect();
     if let Some(scripts) = parts.iter().position(|p| p.eq_ignore_ascii_case("Scripts")) {
         // A module can live below nested package folders. The bank index is
         // authoritative; no filesystem or another bank participates.
         for start in scripts + 1..parts.len() {
             let candidate = parts[start..].join("/");
-            if !out.contains(&candidate) { out.push(candidate); }
+            if !out.contains(&candidate) {
+                out.push(candidate);
+            }
         }
     }
     Ok(out)
@@ -352,7 +406,11 @@ fn resolve<'a>(directory: &'a Directory, path: &str) -> Result<&'a Member> {
     let exact: Vec<_> = directory
         .files
         .iter()
-        .filter(|m| m.path.as_ref().is_some_and(|p| p.eq_ignore_ascii_case(&path)))
+        .filter(|m| {
+            m.path
+                .as_ref()
+                .is_some_and(|p| p.eq_ignore_ascii_case(&path))
+        })
         .collect();
     if exact.len() == 1 {
         return Ok(exact[0]);
@@ -360,7 +418,11 @@ fn resolve<'a>(directory: &'a Directory, path: &str) -> Result<&'a Member> {
     ensure!(exact.is_empty(), "Ambiguous UVI member path");
     let bare = !path.contains('/');
     if bare {
-        let named: Vec<_> = directory.files.iter().filter(|m| m.name.eq_ignore_ascii_case(&path)).collect();
+        let named: Vec<_> = directory
+            .files
+            .iter()
+            .filter(|m| m.name.eq_ignore_ascii_case(&path))
+            .collect();
         if named.len() == 1 {
             return Ok(named[0]);
         }
@@ -502,7 +564,9 @@ mod tests {
         point(&mut leaf, 264, member);
         leaf[272..288].fill(255);
         let table = append(&mut bytes, &leaf);
-        for offset in [4, 12, 20] { point(&mut bytes, tree + offset, table); }
+        for offset in [4, 12, 20] {
+            point(&mut bytes, tree + offset, table);
+        }
         let payload = append(&mut bytes, xml);
         point(&mut bytes, member + 260, xml.len() as u64);
         point(&mut bytes, member + 268, payload);
@@ -525,15 +589,24 @@ mod tests {
             let pointer = at + 8;
             let tag = u32::from_le_bytes(bytes[pointer..pointer + 4].try_into().unwrap());
             if matches!(tag, 0x2fba3632 | 0x675850e4) {
-                crypto::transform(&mut bytes[pointer + 4..pointer + 260], key, (pointer + 4) as u64);
+                crypto::transform(
+                    &mut bytes[pointer + 4..pointer + 260],
+                    key,
+                    (pointer + 4) as u64,
+                );
                 if tag == 0x675850e4 && bytes[pointer + 276] == 0 {
                     bytes[pointer + 276] = 1;
-                    let size = u64::from_le_bytes(bytes[pointer + 260..pointer + 268].try_into().unwrap()) as usize;
-                    let offset = u64::from_le_bytes(bytes[pointer + 268..pointer + 276].try_into().unwrap()) as usize;
+                    let size =
+                        u64::from_le_bytes(bytes[pointer + 260..pointer + 268].try_into().unwrap())
+                            as usize;
+                    let offset =
+                        u64::from_le_bytes(bytes[pointer + 268..pointer + 276].try_into().unwrap())
+                            as usize;
                     crypto::transform_blocks(&mut bytes[offset..offset + size], key, offset as u64);
                 }
             } else if tag == 0x3ca86aaf {
-                let count = u32::from_le_bytes(bytes[pointer + 4..pointer + 8].try_into().unwrap()) as usize;
+                let count = u32::from_le_bytes(bytes[pointer + 4..pointer + 8].try_into().unwrap())
+                    as usize;
                 for child in 0..count {
                     let start = pointer + 8 + child * 264;
                     crypto::transform(&mut bytes[start..start + 256], key, start as u64);
@@ -547,49 +620,86 @@ mod tests {
     #[test]
     fn census_does_not_prepare_unrelated_content() {
         let (bytes, xml) = census_bank_fixture();
-        let path = std::env::temp_dir().join(format!("kontra-census-bank-{}.ufs", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("kontra-census-bank-{}.ufs", std::process::id()));
         std::fs::write(&path, bytes).unwrap();
-        let mut bank = Bank::open_metadata(&path).expect("census must not prepare unrelated content");
+        let mut bank =
+            Bank::open_metadata(&path).expect("census must not prepare unrelated content");
         assert!(bank.content_key.is_none());
         assert_eq!(bank.program("preset.uvip").unwrap().0.as_bytes(), xml);
         assert!(crate::translate_program(&bank, "preset.uvip").is_ok());
-        assert!(bank.read(&bank.directory.files[1]).is_err(), "content access still requires a supplied key");
+        assert!(
+            bank.read(&bank.directory.files[1]).is_err(),
+            "content access still requires a supplied key"
+        );
         bank.directory.files[0].mode = Protection::Content;
-        assert!(bank.program("preset.uvip").is_err(), "metadata census must refuse content-protected programs");
+        assert!(
+            bank.program("preset.uvip").is_err(),
+            "metadata census must refuse content-protected programs"
+        );
         std::fs::remove_file(path).unwrap();
     }
 
     #[test]
     fn clear_bank_and_program_load_with_native_namespaces() {
         let (bytes, xml) = clear_bank_fixture();
-        let path = std::env::temp_dir().join(format!("kontra-clear-bank-{}.ufs", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("kontra-clear-bank-{}.ufs", std::process::id()));
         std::fs::write(&path, bytes).unwrap();
         let mut bank = Bank::open(&path).unwrap();
         assert_eq!(bank.program_namespace.len(), 39);
         assert_eq!(bank.programs(), ["preset.uvip"]);
         assert_eq!(Bank::catalog(&path).unwrap(), bank.programs());
-        assert_eq!(bank.program("preset.uvip").unwrap(),
-            (std::str::from_utf8(&xml).unwrap().to_owned(), "preset.uvip".to_owned()));
+        assert_eq!(
+            bank.program("preset.uvip").unwrap(),
+            (
+                std::str::from_utf8(&xml).unwrap().to_owned(),
+                "preset.uvip".to_owned()
+            )
+        );
         assert!(bank.directory.warnings.is_empty());
         use crate::ResourceError as E;
-        assert_eq!(bank.ui_resource_result("preset.uvip", "preset.uvip").unwrap(), Some(xml.to_vec()));
-        assert_eq!(bank.ui_resource_result("preset.uvip", "missing.png").unwrap(), None);
-        assert_eq!(bank.ui_resource_result("preset.uvip", "$Other.ufs/preset.uvip"), Err(E::InvalidPath));
-        let index=bank.paths["preset.uvip"].unwrap();
-        bank.paths.insert("preset.uvip".into(),None);
-        assert_eq!(bank.ui_resource_result("preset.uvip", "preset.uvip"), Err(E::Ambiguous));
-        bank.paths.insert("preset.uvip".into(),Some(index));
-        let member=&mut bank.directory.files[index];
-        let size=member.size;
-        member.size=(32<<20)+1;
-        assert_eq!(bank.ui_resource_result("preset.uvip", "preset.uvip"), Err(E::Limit));
-        bank.directory.files[index].size=size;
-        let offset=bank.directory.files[index].offset;
-        bank.directory.files[index].offset=u64::MAX;
-        assert_eq!(bank.ui_resource_result("preset.uvip", "preset.uvip"), Err(E::Corrupt));
-        bank.directory.files[index].offset=offset;
+        assert_eq!(
+            bank.ui_resource_result("preset.uvip", "preset.uvip")
+                .unwrap(),
+            Some(xml.to_vec())
+        );
+        assert_eq!(
+            bank.ui_resource_result("preset.uvip", "missing.png")
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            bank.ui_resource_result("preset.uvip", "$Other.ufs/preset.uvip"),
+            Err(E::InvalidPath)
+        );
+        let index = bank.paths["preset.uvip"].unwrap();
+        bank.paths.insert("preset.uvip".into(), None);
+        assert_eq!(
+            bank.ui_resource_result("preset.uvip", "preset.uvip"),
+            Err(E::Ambiguous)
+        );
+        bank.paths.insert("preset.uvip".into(), Some(index));
+        let member = &mut bank.directory.files[index];
+        let size = member.size;
+        member.size = (32 << 20) + 1;
+        assert_eq!(
+            bank.ui_resource_result("preset.uvip", "preset.uvip"),
+            Err(E::Limit)
+        );
+        bank.directory.files[index].size = size;
+        let offset = bank.directory.files[index].offset;
+        bank.directory.files[index].offset = u64::MAX;
+        assert_eq!(
+            bank.ui_resource_result("preset.uvip", "preset.uvip"),
+            Err(E::Corrupt)
+        );
+        bank.directory.files[index].offset = offset;
         std::fs::remove_file(path).unwrap();
-        assert_eq!(bank.ui_resource_result("preset.uvip", "preset.uvip"), Err(E::Read));
+        assert_eq!(
+            bank.ui_resource_result("preset.uvip", "preset.uvip"),
+            Err(E::Read)
+        );
     }
 
     #[test]
@@ -660,10 +770,22 @@ mod tests {
 
     #[test]
     fn ui_candidates_keep_module_and_package_roots_in_order() {
-        assert_eq!(ui_candidates("Presets/Strings/p.uvip", "/Scripts/_ui/../Resources/knob.png").unwrap(),
-            ["Scripts/Resources/knob.png", "Resources/knob.png", "knob.png"]);
-        assert_eq!(ui_candidates("Presets/Strings/p.uvip", "Resources/knob.png").unwrap(),
-            ["Presets/Strings/Resources/knob.png", "Resources/knob.png"]);
+        assert_eq!(
+            ui_candidates(
+                "Presets/Strings/p.uvip",
+                "/Scripts/_ui/../Resources/knob.png"
+            )
+            .unwrap(),
+            [
+                "Scripts/Resources/knob.png",
+                "Resources/knob.png",
+                "knob.png"
+            ]
+        );
+        assert_eq!(
+            ui_candidates("Presets/Strings/p.uvip", "Resources/knob.png").unwrap(),
+            ["Presets/Strings/Resources/knob.png", "Resources/knob.png"]
+        );
         assert!(ui_candidates("Presets/p.uvip", "/Scripts/../../escape.png").is_err());
     }
 }

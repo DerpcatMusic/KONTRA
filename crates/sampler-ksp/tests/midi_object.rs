@@ -445,11 +445,15 @@ fn unpublished_init_completion_is_rejected_when_adoption_has_a_full_effect_queue
             .bind(Prepared::new(48000, vec![], vec![], 0).unwrap())
             .unwrap()
     };
-    let old = prepare("on init declare $i declare $job declare $status while ($i<256) $job:=mf_reset() inc($i) end while end on on async_complete $status:=$NI_ASYNC_EXIT_STATUS end on");
+    let old = prepare(
+        "on init declare $i declare $job declare $status while ($i<256) $job:=mf_reset() inc($i) end while end on on async_complete $status:=$NI_ASYNC_EXIT_STATUS end on",
+    );
     let limits = Limits::for_plan(&old, 4, 4);
     let (mut rt, mut control) = Runtime::with_plan_updates(old, limits, 2, 1).unwrap();
     let old_id = rt.active_plan();
-    let next = prepare("on init declare $i declare $job:=mf_reset() declare $status end on on async_complete $status:=$NI_ASYNC_EXIT_STATUS end on");
+    let next = prepare(
+        "on init declare $i declare $job:=mf_reset() declare $status end on on async_complete $status:=$NI_ASYNC_EXIT_STATUS end on",
+    );
     let request = control.submit(Box::new(next)).unwrap();
     support::without_heap(|| assert_eq!(rt.poll_plan_update(), Ok(Some(request))));
     let new_id = rt.active_plan();

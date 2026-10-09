@@ -151,7 +151,9 @@ impl Runtime {
             owner.value = value;
         }
         self.follow_expression();
-        if pitch_changed { self.refresh_stream_reservations(); }
+        if pitch_changed {
+            self.refresh_stream_reservations();
+        }
         Ok(())
     }
 
@@ -207,7 +209,9 @@ impl Runtime {
             }
         }
         self.follow_expression();
-        if pitch_changed { self.refresh_stream_reservations(); }
+        if pitch_changed {
+            self.refresh_stream_reservations();
+        }
         Ok(changed)
     }
 
@@ -225,7 +229,9 @@ impl Runtime {
         owner.value = value;
         owner.rendered = rendered;
         self.follow_expression();
-        if pitch_changed { self.refresh_stream_reservations(); }
+        if pitch_changed {
+            self.refresh_stream_reservations();
+        }
         Ok(())
     }
 
@@ -260,7 +266,9 @@ impl Runtime {
                 owner.rendered = rendered;
             }
         }
-        if pitch_changed { self.refresh_stream_reservations(); }
+        if pitch_changed {
+            self.refresh_stream_reservations();
+        }
     }
 
     /// Freeze a shared note at its current expression. Capacity failure leaves its

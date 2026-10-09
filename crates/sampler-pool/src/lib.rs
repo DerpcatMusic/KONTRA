@@ -44,7 +44,9 @@ mod tests {
         {
             let mut a = slab.claim(0);
             a[1] = 7;
-            assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| slab.claim(0))).is_err());
+            assert!(
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| slab.claim(0))).is_err()
+            );
             assert_eq!(slab.claim(1).len(), 4);
         }
         assert_eq!(slab.claim(0)[1], 7);

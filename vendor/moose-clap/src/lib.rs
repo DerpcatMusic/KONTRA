@@ -57,8 +57,9 @@ use clap_sys::ext::audio_ports_config::{
 };
 use clap_sys::ext::latency::{CLAP_EXT_LATENCY, clap_host_latency, clap_plugin_latency};
 use clap_sys::ext::note_ports::{
-    CLAP_EXT_NOTE_PORTS, CLAP_NOTE_DIALECT_CLAP, CLAP_NOTE_DIALECT_MIDI, CLAP_NOTE_DIALECT_MIDI2,
-    CLAP_NOTE_DIALECT_MIDI_MPE, clap_note_port_info, clap_plugin_note_ports,
+    CLAP_EXT_NOTE_PORTS, CLAP_NOTE_DIALECT_CLAP, CLAP_NOTE_DIALECT_MIDI,
+    CLAP_NOTE_DIALECT_MIDI_MPE, CLAP_NOTE_DIALECT_MIDI2, clap_note_port_info,
+    clap_plugin_note_ports,
 };
 use clap_sys::ext::params::{
     CLAP_EXT_PARAMS, CLAP_PARAM_IS_AUTOMATABLE, CLAP_PARAM_IS_BYPASS, CLAP_PARAM_IS_ENUM,
@@ -2659,9 +2660,12 @@ unsafe extern "C" fn clap_plugin_process<P: PluginExport>(
         let state_loaded = data.pending_state.apply_audio(|state| {
             state::apply_state(&mut *instance, state);
         });
-        if state_loaded && !data.host.is_null()
+        if state_loaded
+            && !data.host.is_null()
             && let Some(request) = (*data.host).request_callback
-        { request(data.host); }
+        {
+            request(data.host);
+        }
 
         // The audio scratch lives behind an ownership cell reached through the
         // shared `&data`, so a concurrent host-thread `&data` (param reads,
@@ -3325,24 +3329,66 @@ unsafe fn zero_clap_output_buffers(process: *const clap_process) {
 
 /// Test helper exercising hard resets through the exported CLAP lifecycle vtable.
 #[doc(hidden)]
-pub fn lifecycle_reset_smoke<P: PluginExport>(seed: impl Fn(&P::Params), cleared: impl Fn(&P::Params) -> bool) -> [bool; 2] {
-    unsafe extern "C" fn no_extension(_host: *const clap_host, _id: *const c_char) -> *const c_void { ptr::null() }
-    let descriptor=Box::leak(Box::new(clap_plugin_descriptor {clap_version:CLAP_VERSION,id:ptr::null(),name:ptr::null(),vendor:ptr::null(),url:ptr::null(),manual_url:ptr::null(),support_url:ptr::null(),version:ptr::null(),description:ptr::null(),features:ptr::null()}));
-    let host=Box::leak(Box::new(clap_host {clap_version:CLAP_VERSION,host_data:ptr::null_mut(),name:ptr::null(),vendor:ptr::null(),url:ptr::null(),version:ptr::null(),get_extension:Some(no_extension),request_restart:None,request_process:None,request_callback:None}));
+pub fn lifecycle_reset_smoke<P: PluginExport>(
+    seed: impl Fn(&P::Params),
+    cleared: impl Fn(&P::Params) -> bool,
+) -> [bool; 2] {
+    unsafe extern "C" fn no_extension(
+        _host: *const clap_host,
+        _id: *const c_char,
+    ) -> *const c_void {
+        ptr::null()
+    }
+    let descriptor = Box::leak(Box::new(clap_plugin_descriptor {
+        clap_version: CLAP_VERSION,
+        id: ptr::null(),
+        name: ptr::null(),
+        vendor: ptr::null(),
+        url: ptr::null(),
+        manual_url: ptr::null(),
+        support_url: ptr::null(),
+        version: ptr::null(),
+        description: ptr::null(),
+        features: ptr::null(),
+    }));
+    let host = Box::leak(Box::new(clap_host {
+        clap_version: CLAP_VERSION,
+        host_data: ptr::null_mut(),
+        name: ptr::null(),
+        vendor: ptr::null(),
+        url: ptr::null(),
+        version: ptr::null(),
+        get_extension: Some(no_extension),
+        request_restart: None,
+        request_process: None,
+        request_callback: None,
+    }));
     // Same exported lifecycle vtable and ownership as the audio smoke below.
     unsafe {
-        let plugin=create_plugin_instance::<P>(descriptor,host);
-        let api=&*plugin;
+        let plugin = create_plugin_instance::<P>(descriptor, host);
+        let api = &*plugin;
         (api.init.unwrap())(plugin);
-        (api.activate.unwrap())(plugin,48000.,1,64);
-        {let instance=enter_plugin(&data_from_plugin::<P>(plugin).plugin);seed(instance.params());}
+        (api.activate.unwrap())(plugin, 48000., 1, 64);
+        {
+            let instance = enter_plugin(&data_from_plugin::<P>(plugin).plugin);
+            seed(instance.params());
+        }
         (api.reset.unwrap())(plugin);
-        let reset={let instance=enter_plugin(&data_from_plugin::<P>(plugin).plugin);cleared(instance.params())};
-        {let instance=enter_plugin(&data_from_plugin::<P>(plugin).plugin);seed(instance.params());}
+        let reset = {
+            let instance = enter_plugin(&data_from_plugin::<P>(plugin).plugin);
+            cleared(instance.params())
+        };
+        {
+            let instance = enter_plugin(&data_from_plugin::<P>(plugin).plugin);
+            seed(instance.params());
+        }
         (api.deactivate.unwrap())(plugin);
-        let deactivate={let instance=enter_plugin(&data_from_plugin::<P>(plugin).plugin);cleared(instance.params())};
+        let deactivate = {
+            let instance = enter_plugin(&data_from_plugin::<P>(plugin).plugin);
+            cleared(instance.params())
+        };
         (api.destroy.unwrap())(plugin);
-        [reset,deactivate]
+        [reset, deactivate]
     }
 }
 
@@ -4288,7 +4334,9 @@ unsafe extern "C" fn audio_ports_get<P: PluginExport>(
         let named = if is_input {
             None
         } else {
-            data_from_plugin::<P>(plugin).params_arc.output_port_name(index)
+            data_from_plugin::<P>(plugin)
+                .params_arc
+                .output_port_name(index)
         };
         copy_str_to_buf(&mut out.name, named.as_deref().unwrap_or(bus.name));
         out.channel_count = bus.channels.channel_count();

@@ -112,7 +112,11 @@ impl EnvelopeAhdsr {
         let mut data = Vec::new();
         data.try_reserve_exact(length as usize)
             .map_err(|_| Error::Static("AHDSR allocation failed"))?;
-        let version = if self.unknown_tail.len() == AHDSR_TAIL_V10 { 0x10 } else { VERSION };
+        let version = if self.unknown_tail.len() == AHDSR_TAIL_V10 {
+            0x10
+        } else {
+            VERSION
+        };
         data.push(0);
         data.extend_from_slice(&version.to_le_bytes());
         for value in [

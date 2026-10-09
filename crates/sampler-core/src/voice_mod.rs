@@ -180,16 +180,24 @@ pub type ModTarget = crate::ParameterAddress;
 
 impl crate::ParameterAddress {
     pub(crate) fn compiled(self) -> Option<CompiledTarget> {
-        if self.scope != crate::ParameterScope::Voice { return None; }
+        if self.scope != crate::ParameterScope::Voice {
+            return None;
+        }
         use CompiledTarget as T;
         Some(match (self.node, u32::MAX - self.parameter) {
-            (0, 0) => T::Attenuate, (0, 1) => T::Decibels,
-            (0, 2) => T::Pan, (0, 3) => T::Pitch,
-            (0, 4) => T::Cutoff, (0, 5) => T::Resonance,
-            (i, 6) => T::ProcessorCutoff(i), (i, 7) => T::ProcessorResonance(i),
-            (i, 8) => T::ProcessorNativeCutoff(i), (i, 9) => T::ProcessorNativeResonance(i),
+            (0, 0) => T::Attenuate,
+            (0, 1) => T::Decibels,
+            (0, 2) => T::Pan,
+            (0, 3) => T::Pitch,
+            (0, 4) => T::Cutoff,
+            (0, 5) => T::Resonance,
+            (i, 6) => T::ProcessorCutoff(i),
+            (i, 7) => T::ProcessorResonance(i),
+            (i, 8) => T::ProcessorNativeCutoff(i),
+            (i, 9) => T::ProcessorNativeResonance(i),
             (i, 10) => T::ProcessorNativeGain(i),
-            (0, 11) => T::Tone, (0, 12) => T::SampleStart,
+            (0, 11) => T::Tone,
+            (0, 12) => T::SampleStart,
             _ => return None,
         })
     }
@@ -361,7 +369,9 @@ impl VoiceModulation {
     }
 
     pub(crate) fn new_resolved(
-        programs: Vec<ModProgram>, regions: Vec<Option<usize>>, start_ranges: Vec<u32>,
+        programs: Vec<ModProgram>,
+        regions: Vec<Option<usize>>,
+        start_ranges: Vec<u32>,
         resolve: impl Fn(crate::ParameterAddress) -> Option<usize>,
     ) -> Result<Self, Error> {
         if start_ranges.len() != regions.len()
@@ -929,13 +939,19 @@ impl VoiceModState {
         // v1 filter.rs projects group-local rows; reset only the last voice's rows.
         if let Some(previous) = *previous_program {
             for &index in &modulation.programs[previous as usize].filter_indices {
-                factors[index] = if normalized(index) { [0.; 4] } else { [1., 1., 0., 0.] };
+                factors[index] = if normalized(index) {
+                    [0.; 4]
+                } else {
+                    [1., 1., 0., 0.]
+                };
             }
         }
         *previous_program = self.program(voice);
         if let Some(program) = *previous_program {
             let p = &modulation.programs[program as usize];
-            for &index in &p.filter_indices { factors[index] = [0.; 4]; }
+            for &index in &p.filter_indices {
+                factors[index] = [0.; 4];
+            }
             let offset = voice * self.routes;
             for (i, target) in p.targets.iter().enumerate() {
                 let value = (self.processor_values[offset + i]
@@ -996,25 +1012,36 @@ impl VoiceModState {
     /// chunk ramps from the onset values rather than from unity.
     /// A lane-local copy retains the shared base ramp and every voice's own offsets.
     pub(crate) fn project_parameters(
-        &self, modulation: &VoiceModulation, voice: usize,
-        base: &[crate::dsp::control::ControlRamp], bindings: &[crate::ControlRange],
-        span: std::ops::Range<usize>, scratch: &mut [crate::dsp::control::ControlRamp],
+        &self,
+        modulation: &VoiceModulation,
+        voice: usize,
+        base: &[crate::dsp::control::ControlRamp],
+        bindings: &[crate::ControlRange],
+        span: std::ops::Range<usize>,
+        scratch: &mut [crate::dsp::control::ControlRamp],
     ) -> bool {
-        let Some(program) = self.program(voice) else { return false; };
+        let Some(program) = self.program(voice) else {
+            return false;
+        };
         let p = &modulation.programs[program as usize];
-        if !p.control { return false; }
+        if !p.control {
+            return false;
+        }
         scratch[span.clone()].copy_from_slice(&base[span.clone()]);
         let offset = voice * self.routes;
         for (i, target) in p.targets.iter().enumerate() {
             if let CompiledTarget::Control(lane) = *target {
-                if !span.contains(&lane) { continue; }
-                let delta = (self.previous_processor_values[offset + i] + self.processor_values[offset + i]) * 0.5;
+                if !span.contains(&lane) {
+                    continue;
+                }
+                let delta = (self.previous_processor_values[offset + i]
+                    + self.processor_values[offset + i])
+                    * 0.5;
                 scratch[lane].add_modulation(delta, bindings[lane]);
             }
         }
         true
     }
-
 
     pub fn start(
         &mut self,
@@ -1211,9 +1238,12 @@ impl VoiceModState {
                 CompiledTarget::Resonance => resonance += d * v,
                 CompiledTarget::Tone => out.tone += d * v,
                 CompiledTarget::SampleStart => {}
-                CompiledTarget::ProcessorCutoff(_) | CompiledTarget::ProcessorResonance(_)
-                | CompiledTarget::ProcessorNativeCutoff(_) | CompiledTarget::ProcessorNativeResonance(_)
-                | CompiledTarget::ProcessorNativeGain(_) | CompiledTarget::Control(_) => {}
+                CompiledTarget::ProcessorCutoff(_)
+                | CompiledTarget::ProcessorResonance(_)
+                | CompiledTarget::ProcessorNativeCutoff(_)
+                | CompiledTarget::ProcessorNativeResonance(_)
+                | CompiledTarget::ProcessorNativeGain(_)
+                | CompiledTarget::Control(_) => {}
             }
         }
         let gain = (gain * 10f64.powf(decibels / 20.0)).max(0.0);
@@ -1695,7 +1725,9 @@ mod tests {
             .copy_from_slice(&[8., 10., 30., -40., 40.]);
         let mut previous_program = None;
         let mut factors = [[1., 1., 0., 0.]; 128];
-        state.fill_filter_factors(&modulation, 0, &mut factors, &mut previous_program, |_| false);
+        state.fill_filter_factors(&modulation, 0, &mut factors, &mut previous_program, |_| {
+            false
+        });
         assert_eq!(factors[1], [2., 10., 0., 0.]);
         assert!(
             factors
@@ -1705,7 +1737,9 @@ mod tests {
         );
         // A subsequent voice must not inherit the previous addressed factors.
         state.stop(0);
-        state.fill_filter_factors(&modulation, 0, &mut factors, &mut previous_program, |_| false);
+        state.fill_filter_factors(&modulation, 0, &mut factors, &mut previous_program, |_| {
+            false
+        });
         assert!(factors.iter().all(|f| *f == [1., 1., 0., 0.]));
     }
 

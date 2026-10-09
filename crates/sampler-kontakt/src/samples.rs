@@ -52,7 +52,9 @@ pub struct Samples {
 }
 
 impl Samples {
-    pub(crate) fn root(&self) -> &Path { &self.root }
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
+    }
     /// `root` bounds every lookup: a sample never resolves outside its library.
     pub fn new(root: &Path) -> Self {
         Self {
@@ -525,7 +527,11 @@ fn content_roots() -> Vec<PathBuf> {
 
 #[cfg(feature = "library-access")]
 fn content_install_bases(env: impl FnMut(&str) -> Option<std::ffi::OsString>) -> Vec<PathBuf> {
-    ["ProgramFiles", "ProgramFiles(x86)"].into_iter().filter_map(env).map(PathBuf::from).collect()
+    ["ProgramFiles", "ProgramFiles(x86)"]
+        .into_iter()
+        .filter_map(env)
+        .map(PathBuf::from)
+        .collect()
 }
 
 #[cfg(feature = "library-access")]
@@ -643,10 +649,23 @@ impl Seek for FileAt<'_> {
 }
 
 // Port from v1 0cb7a8a0:src/import.rs: format only an actual archive member.
-fn archive_member_where(path: &Path, mut is_file: impl FnMut(&Path) -> bool) -> Option<(PathBuf, String)> {
+fn archive_member_where(
+    path: &Path,
+    mut is_file: impl FnMut(&Path) -> bool,
+) -> Option<(PathBuf, String)> {
     for parent in path.ancestors().skip(1) {
-        if parent.extension().is_some_and(|e| e.eq_ignore_ascii_case("nkx") || e.eq_ignore_ascii_case("nkr")) && is_file(parent) {
-            return Some((parent.to_path_buf(), path.strip_prefix(parent).ok()?.to_string_lossy().replace('\\', "/")));
+        if parent
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("nkx") || e.eq_ignore_ascii_case("nkr"))
+            && is_file(parent)
+        {
+            return Some((
+                parent.to_path_buf(),
+                path.strip_prefix(parent)
+                    .ok()?
+                    .to_string_lossy()
+                    .replace('\\', "/"),
+            ));
         }
     }
     None
@@ -699,11 +718,17 @@ fn frames(head: &[u8]) -> Option<u64> {
 /// WAV, AIFF/AIFC PCM or NCW bytes to stereo frames.
 pub fn decode(bytes: &[u8]) -> Result<Decoded, String> {
     if bytes.starts_with(b"FORM") {
-        let mut reader = crate::pcm::Reader::open(Box::new(Cursor::new(bytes.to_vec()))).map_err(|e| format!("AIFF: {e:#}"))?;
+        let mut reader = crate::pcm::Reader::open(Box::new(Cursor::new(bytes.to_vec())))
+            .map_err(|e| format!("AIFF: {e:#}"))?;
         let len = usize::try_from(reader.frames).map_err(|_| "AIFF too long")?;
         let mut frames = vec![[0.; 2]; len];
-        reader.read(0, &mut frames).map_err(|e| format!("AIFF: {e:#}"))?;
-        return Ok(Decoded { rate: reader.rate, frames });
+        reader
+            .read(0, &mut frames)
+            .map_err(|e| format!("AIFF: {e:#}"))?;
+        return Ok(Decoded {
+            rate: reader.rate,
+            frames,
+        });
     }
     if bytes.starts_with(b"RIFF") {
         return wav(bytes);

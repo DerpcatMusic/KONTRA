@@ -19,26 +19,70 @@ pub struct ItemContainer {
 impl ItemContainer {
     pub fn read<R: ReadBytesExt>(mut reader: R) -> Result<Self, Error> {
         let at = reader.stream_position()?;
-        let header = ItemHeader::read(&mut reader).map_err(|e| Error::context(format!("NIS item header at offset {at}, expected 40 bytes/version 1"), e))?;
+        let header = ItemHeader::read(&mut reader).map_err(|e| {
+            Error::context(
+                format!("NIS item header at offset {at}, expected 40 bytes/version 1"),
+                e,
+            )
+        })?;
         let length = header
             .length
             .checked_sub(40)
             .and_then(|n| usize::try_from(n).ok())
             .ok_or(Error::Static("Invalid NIS item length"))?;
-        let body = reader.read_bytes(length).map_err(|e| Error::context(format!("NIS item body at offset {}, declared body length {length}/version 1", at + 40), e))?;
-        Self::read_body(header, &body).map_err(|e| Error::context(format!("NIS item body at offset {}, declared body length {length}/version 1", at + 40), e))
+        let body = reader.read_bytes(length).map_err(|e| {
+            Error::context(
+                format!(
+                    "NIS item body at offset {}, declared body length {length}/version 1",
+                    at + 40
+                ),
+                e,
+            )
+        })?;
+        Self::read_body(header, &body).map_err(|e| {
+            Error::context(
+                format!(
+                    "NIS item body at offset {}, declared body length {length}/version 1",
+                    at + 40
+                ),
+                e,
+            )
+        })
     }
 
     pub(crate) fn read_cursor(reader: &mut Cursor<&[u8]>) -> Result<Self, Error> {
         let at = reader.position();
-        let header = ItemHeader::read(&mut *reader).map_err(|e| Error::context(format!("NIS child header at body-relative offset {at}, expected 40 bytes/version 1"), e))?;
+        let header = ItemHeader::read(&mut *reader).map_err(|e| {
+            Error::context(
+                format!(
+                    "NIS child header at body-relative offset {at}, expected 40 bytes/version 1"
+                ),
+                e,
+            )
+        })?;
         let length = header
             .length
             .checked_sub(40)
             .and_then(|n| usize::try_from(n).ok())
             .ok_or(Error::Static("Invalid NIS item length"))?;
-        let body = super::read_slice(reader, length).map_err(|e| Error::context(format!("NIS child body at body-relative offset {}, declared length {length}/version 1", at + 40), e))?;
-        Self::read_body(header, body).map_err(|e| Error::context(format!("NIS child body at body-relative offset {}, declared length {length}/version 1", at + 40), e))
+        let body = super::read_slice(reader, length).map_err(|e| {
+            Error::context(
+                format!(
+                    "NIS child body at body-relative offset {}, declared length {length}/version 1",
+                    at + 40
+                ),
+                e,
+            )
+        })?;
+        Self::read_body(header, body).map_err(|e| {
+            Error::context(
+                format!(
+                    "NIS child body at body-relative offset {}, declared length {length}/version 1",
+                    at + 40
+                ),
+                e,
+            )
+        })
     }
 
     fn read_body(header: ItemHeader, body: &[u8]) -> Result<Self, Error> {

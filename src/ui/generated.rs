@@ -185,7 +185,12 @@ pub fn view(
                     let label = name(face, n);
                     cells.push(
                         col![
-                            caption(label.clone()).lines(1).min_w(0).fill(secondary()).tip(label).id(format!("{namespace}-caption-{}", n.0)),
+                            caption(label.clone())
+                                .lines(1)
+                                .min_w(0)
+                                .fill(secondary())
+                                .tip(label)
+                                .id(format!("{namespace}-caption-{}", n.0)),
                             ir_view::widget_state(
                                 ui,
                                 namespace,
@@ -208,10 +213,23 @@ pub fn view(
                 }
                 strips.push(col(cells).gap(SPACE).align(Align::Center).shrink(0));
             }
-            let body = row(strips).wrap().gap(INSET).align(Align::Start).w(Len::Pct(100.)).min_w(0).shrink(0);
+            let body = row(strips)
+                .wrap()
+                .gap(INSET)
+                .align(Align::Start)
+                .w(Len::Pct(100.))
+                .min_w(0)
+                .shrink(0);
             sections.push(
                 match title {
-                    Some(t) => col![section(&t).tip(t).id(format!("{namespace}-section-{section_index}")), rule(), body].gap(SPACE),
+                    Some(t) => col![
+                        section(&t)
+                            .tip(t)
+                            .id(format!("{namespace}-section-{section_index}")),
+                        rule(),
+                        body
+                    ]
+                    .gap(SPACE),
                     None => col![body],
                 }
                 .pad(INSET)
@@ -228,11 +246,33 @@ pub fn view(
                 .w(Len::Pct(100.)),
         );
     }
-    let root=format!("{namespace}-ir-view");
-    let size=ui.scene().and_then(|scene|scene.surface(&root)).map(|surface|surface.frame.size)
-        .unwrap_or(Size::new(f64::from(face.pages[page.0].size.width)*scale,f64::from(face.pages[page.0].size.height)*scale));
-    let body=col(bands).gap(INSET).pad(INSET).w(Len::Pct(100.)).shrink(0).named("KONTRA performance controls");
-    let mut layers=vec![body];
-    if let Some(popup)=ir_view::menu_popup(ui,namespace,face,scale,values,input,size.width,size.height) {layers.push(popup);}
+    let root = format!("{namespace}-ir-view");
+    let size = ui
+        .scene()
+        .and_then(|scene| scene.surface(&root))
+        .map(|surface| surface.frame.size)
+        .unwrap_or(Size::new(
+            f64::from(face.pages[page.0].size.width) * scale,
+            f64::from(face.pages[page.0].size.height) * scale,
+        ));
+    let body = col(bands)
+        .gap(INSET)
+        .pad(INSET)
+        .w(Len::Pct(100.))
+        .shrink(0)
+        .named("KONTRA performance controls");
+    let mut layers = vec![body];
+    if let Some(popup) = ir_view::menu_popup(
+        ui,
+        namespace,
+        face,
+        scale,
+        values,
+        input,
+        size.width,
+        size.height,
+    ) {
+        layers.push(popup);
+    }
     stack(layers).w(Len::Pct(100.)).min_w(0).shrink(0).id(root)
 }

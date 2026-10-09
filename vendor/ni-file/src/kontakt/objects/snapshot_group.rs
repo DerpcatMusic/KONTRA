@@ -1,8 +1,8 @@
 use std::io::{Cursor, Read, Write};
 
-use super::{BParamArrayBParFX8, BParSrcMode};
+use super::{BParSrcMode, BParamArrayBParFX8};
 use crate::read_bytes::ReadBytesExt;
-use crate::{Error, kontakt::Chunk};
+use crate::{kontakt::Chunk, Error};
 
 /// Compact group snapshot v1..=v4. Group IDs are the enclosing array indices.
 /// Unknown public/source values and the trailing flag are retained verbatim.
@@ -77,12 +77,22 @@ impl GroupSnapshot {
         let internal = array(reader, 16, 0x0d)?;
         let mut header = reader.clone();
         header.read_u8()?;
-        let external_count = if header.read_u16_le()? == 0x13 { header.read_u32_le()? } else { 32 };
+        let external_count = if header.read_u16_le()? == 0x13 {
+            header.read_u32_le()?
+        } else {
+            32
+        };
         if !matches!(external_count, 32 | 64) {
-            return Err(Error::Static("Unsupported group snapshot external slot count"));
+            return Err(Error::Static(
+                "Unsupported group snapshot external slot count",
+            ));
         }
         let external = array(reader, external_count, 0x0c)?;
-        let trailing_flag = if version >= 2 { bytes::<1>(reader)?[0] } else { 0 };
+        let trailing_flag = if version >= 2 {
+            bytes::<1>(reader)?[0]
+        } else {
+            0
+        };
         if trailing_flag > 1 {
             return Err(Error::Static("Invalid group snapshot trailing flag"));
         }
@@ -114,11 +124,7 @@ impl GroupSnapshot {
         for (array, count, id) in [
             (&self.fx, 8, 0x25),
             (&self.internal, 16, 0x0d),
-            (
-                &self.external,
-                self.external.items.len(),
-                0x0c,
-            ),
+            (&self.external, self.external.items.len(), 0x0c),
         ] {
             if array.items.len() != count
                 || !matches!(array.version, 0x10..=0x13)
@@ -131,7 +137,8 @@ impl GroupSnapshot {
         source_data(&mut source, self.version)?;
         if source.position() as usize != self.source_data.len()
             || self.trailing_data.len() != if self.version == 4 { 8 } else { 0 }
-            || self.trailing_flag > 1 || self.version == 1 && self.trailing_flag != 0
+            || self.trailing_flag > 1
+            || self.version == 1 && self.trailing_flag != 0
         {
             return Err(Error::Static("Invalid group snapshot opaque state"));
         }
@@ -142,7 +149,9 @@ impl GroupSnapshot {
         writer.write_all(&self.source_data)?;
         write_array(&self.internal, &mut writer)?;
         write_array(&self.external, &mut writer)?;
-        if self.version >= 2 { writer.write_all(&[self.trailing_flag])?; }
+        if self.version >= 2 {
+            writer.write_all(&[self.trailing_flag])?;
+        }
         writer.write_all(&self.trailing_data)?;
         Ok(())
     }
@@ -180,8 +189,12 @@ mod tests {
             let mut source_data = vec![0x42; length];
             source_data[..3].copy_from_slice(&[0, 6, 1]);
             source_data[3..7].copy_from_slice(&mode.to_le_bytes());
-            for at in [11, 16, 29] { source_data[at] = 0; }
-            if mode == 9 { source_data[54] = 0; }
+            for at in [11, 16, 29] {
+                source_data[at] = 0;
+            }
+            if mode == 9 {
+                source_data[54] = 0;
+            }
             let mut record = GroupSnapshot {
                 version: 4,
                 public_data: [0x39; 24],
@@ -234,7 +247,9 @@ mod tests {
         };
         record.source_data[..3].copy_from_slice(&[0, 2, 1]);
         record.source_data[3..7].copy_from_slice(&3u32.to_le_bytes());
-        for at in [11, 16, 29] { record.source_data[at] = 0; }
+        for at in [11, 16, 29] {
+            record.source_data[at] = 0;
+        }
         record.internal.items[3] = Some(Chunk {
             id: 0x0d,
             data: b"authored opaque modulator".to_vec(),

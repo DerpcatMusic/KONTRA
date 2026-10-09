@@ -18,7 +18,9 @@ impl BPatchMetaInfoHeader {
         // std::fs::write("header", buf)?;
 
         let magic: u32 = ReadBytesExt::read_le(&mut reader)?;
-        if magic != 0xB00EE1AE { return Err(NKSError::InvalidMetadataMagic(magic)); }
+        if magic != 0xB00EE1AE {
+            return Err(NKSError::InvalidMetadataMagic(magic));
+        }
         // match magic {
         //     0xB00EE1AE => {},
         //     _ => panic!("Invalid BPatchMetaInfoHeader magic number: expected 0xB00EE1AE | 0xBDEC0178 got 0x{magic:x}")

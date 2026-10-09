@@ -15,11 +15,18 @@ fn complete(cache: &mut StreamCache, worker: &mut StreamWorker) {
 
 fn report(pages: usize, phase: &str, times: &mut [u128]) {
     times.sort_unstable();
-    println!("{pages},{phase},{:.3},{:.3},0", times[times.len() / 2] as f64 / 1000., times[(times.len() - 1) * 99 / 100] as f64 / 1000.);
+    println!(
+        "{pages},{phase},{:.3},{:.3},0",
+        times[times.len() / 2] as f64 / 1000.,
+        times[(times.len() - 1) * 99 / 100] as f64 / 1000.
+    );
 }
 
 fn main() {
-    assert!(!cfg!(debug_assertions), "run with --profile corpus or --release");
+    assert!(
+        !cfg!(debug_assertions),
+        "run with --profile corpus or --release"
+    );
     println!("pages,phase,median_us,p99_us,heap_calls");
     for pages in [768, 6144] {
         let pcm = Pcm::streamed(48000, PAGE_FRAMES * pages * 3).unwrap();
@@ -28,7 +35,10 @@ fn main() {
         for page in (0..pages).rev() {
             support::without_heap(|| {
                 let start = Instant::now();
-                assert_eq!(black_box(cache.request(&pcm, page, 0)), Ok(PageStatus::Pending));
+                assert_eq!(
+                    black_box(cache.request(&pcm, page, 0)),
+                    Ok(PageStatus::Pending)
+                );
                 times[page] = start.elapsed().as_nanos();
                 complete(&mut cache, &mut worker);
             });
@@ -38,7 +48,10 @@ fn main() {
             support::without_heap(|| {
                 cache.begin_epoch().unwrap();
                 let start = Instant::now();
-                assert_eq!(black_box(cache.request(&pcm, pages + page, 0)), Ok(PageStatus::Pending));
+                assert_eq!(
+                    black_box(cache.request(&pcm, pages + page, 0)),
+                    Ok(PageStatus::Pending)
+                );
                 times[page] = start.elapsed().as_nanos();
                 complete(&mut cache, &mut worker);
             });
@@ -49,9 +62,15 @@ fn main() {
         for page in 0..pages {
             support::without_heap(|| {
                 cache.begin_epoch().unwrap();
-                assert_eq!(cache.protect(&pcm, pages * PAGE_FRAMES..(2 * pages - 1) * PAGE_FRAMES), Ok(true));
+                assert_eq!(
+                    cache.protect(&pcm, pages * PAGE_FRAMES..(2 * pages - 1) * PAGE_FRAMES),
+                    Ok(true)
+                );
                 let start = Instant::now();
-                assert_eq!(black_box(cache.request(&pcm, 2 * pages + page, 0)), Ok(PageStatus::Pending));
+                assert_eq!(
+                    black_box(cache.request(&pcm, 2 * pages + page, 0)),
+                    Ok(PageStatus::Pending)
+                );
                 times[page] = start.elapsed().as_nanos();
                 complete(&mut cache, &mut worker);
             });

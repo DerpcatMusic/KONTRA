@@ -36,15 +36,16 @@ mod automation;
 pub use automation::{AutomationBinding, AutomationSource};
 mod widget;
 pub use widget::{
-    WIDGET_EDIT_CAPACITY, WIDGET_DROP_CAPACITY, WidgetDefinition, WidgetDropKind, WidgetDropStorage,
-    WidgetEdit, WidgetEventType, WidgetInteraction, WidgetStorage, WidgetValue,
+    WIDGET_DROP_CAPACITY, WIDGET_EDIT_CAPACITY, WidgetDefinition, WidgetDropKind,
+    WidgetDropStorage, WidgetEdit, WidgetEventType, WidgetInteraction, WidgetStorage, WidgetValue,
 };
 mod control;
 pub use control::{
     BUS_VOLUME_SLOT, ControlCallback, ControlClient, ControlContext, ControlDefinition,
     ControlDomain, ControlId, ControlOperation, ControlQueueError, ControlReply, ControlRequest,
     ControlValue, ControlWrite, RejectedControls, ScriptStateAddress, ScriptStateBuffer,
-    ScriptStateCallback, ScriptStateEntry, ScriptStateValue, SlotKind, is_slot_control, slot_control,
+    ScriptStateCallback, ScriptStateEntry, ScriptStateValue, SlotKind, is_slot_control,
+    slot_control,
 };
 mod controller_event;
 mod performance;
@@ -56,8 +57,8 @@ pub use switching::{Driver, Selector, Switch, SwitchKeys, Switching};
 mod behavior;
 use behavior::Continuation;
 pub use behavior::{
-    BehaviorId, BehaviorOwner, BehaviorProgress, Comparison, Duration, DurationValue, Instruction, Outcome, Program,
-    Velocity, WaitLifetime,
+    BehaviorId, BehaviorOwner, BehaviorProgress, Comparison, Duration, DurationValue, Instruction,
+    Outcome, Program, Velocity, WaitLifetime,
 };
 mod stages;
 pub use stages::Stage;
@@ -75,9 +76,10 @@ pub use bus::{Bus, BusMix, BusSend, GroupFader};
 pub use resample::{ResampleQuality, read_radius};
 mod dsp;
 pub use dsp::{
-    Biquad, LoFiSettings, CompressorSettings, ControlRange, ConvolutionUpload, DaftSettings, Decimator, Delay,
-    FilterKind, Impulse, LadderSettings, MAX_IMPULSE_FRAMES, OutputLowPass, Parameter, PeakingEq, Processor, Rectifier, ReverbSettings,
-    StateVariableFilter, StereoSettings, SvfMode, VoiceChain, VoiceSendPosition, VoiceSendTap,
+    Biquad, CompressorSettings, ControlRange, ConvolutionUpload, DaftSettings, Decimator, Delay,
+    FilterKind, Impulse, LadderSettings, LoFiSettings, MAX_IMPULSE_FRAMES, OutputLowPass,
+    Parameter, PeakingEq, Processor, Rectifier, ReverbSettings, StateVariableFilter,
+    StereoSettings, SvfMode, VoiceChain, VoiceSendPosition, VoiceSendTap,
 };
 mod envelope;
 use envelope::EnvelopeState;
@@ -91,12 +93,15 @@ mod script_params;
 pub use engine_parameter_names::ENGINE_PARAMETER_NAMES;
 pub use engine_parameters::{
     EngineLookup, EngineMeterAddress, EngineParameterAddress, EngineParameterBinding,
-    EngineParameterLaw, EngineParameterOutcome, EngineParameterOffset, engine_parameter_id, engine_parameter_name, engine_parameter_control,
+    EngineParameterLaw, EngineParameterOffset, EngineParameterOutcome, engine_parameter_control,
+    engine_parameter_id, engine_parameter_name,
 };
-mod steal;
 mod parameter_registry;
-pub use parameter_registry::{ParameterAddress, ParameterDescriptor, ParameterDisplay, ParameterLaw,
-    ParameterRegistry, ParameterRole, ParameterScope, ParameterUnit, PreparedParameterRegistry};
+mod steal;
+pub use parameter_registry::{
+    ParameterAddress, ParameterDescriptor, ParameterDisplay, ParameterLaw, ParameterRegistry,
+    ParameterRole, ParameterScope, ParameterUnit, PreparedParameterRegistry,
+};
 mod voice_mod;
 pub use plan_programs::{PlanProgram, SignalProgram};
 pub use script_params::{EnvelopeStage, GroupParams, ParamScope};
@@ -138,9 +143,13 @@ pub use prepare::{
 mod integer;
 pub mod lower;
 pub use integer::{IntegerBinary, IntegerUnary};
-mod ops;
 mod midi_object;
-pub use midi_object::{MidiAction, MidiObject, MidiObjectEvent, MidiExportArea, MidiCompletion, midi_par, MIDI_CURRENT_EVENT, MIDI_ALL_EVENTS, MIDI_TRACK_FLAG, MIDI_MARKS_FLAG, MIDI_SERVICE, MIDI_ASYNC_SIGNAL, MIDI_MAX_EVENTS};
+mod ops;
+pub use midi_object::{
+    MIDI_ALL_EVENTS, MIDI_ASYNC_SIGNAL, MIDI_CURRENT_EVENT, MIDI_MARKS_FLAG, MIDI_MAX_EVENTS,
+    MIDI_SERVICE, MIDI_TRACK_FLAG, MidiAction, MidiCompletion, MidiExportArea, MidiObject,
+    MidiObjectEvent, midi_par,
+};
 mod script;
 pub use ops::{
     CALL_DEPTH, EFFECT_ARGS, EFFECT_CAPACITY, Effect, HOST_VALUES, IntegerExtra, Op, RealBinary,
@@ -468,7 +477,13 @@ struct Note {
 
 /// Fixed editor probe of actual occupied native voices (v1 playheads).
 #[derive(Clone, Copy, Debug)]
-pub struct VoiceTap {pub group:u32,pub key:u8,pub velocity:u8,pub phase:u8,pub level:f32}
+pub struct VoiceTap {
+    pub group: u32,
+    pub key: u8,
+    pub velocity: u8,
+    pub phase: u8,
+    pub level: f32,
+}
 
 #[derive(Clone, Copy, Debug)]
 struct Voice {
@@ -604,7 +619,11 @@ impl<T> Arena<T> {
             .take(capacity.div_ceil(64))
             .enumerate()
             .find(|(word, bits)| {
-                let mask = if (*word + 1) * 64 > capacity { (1u64 << (capacity % 64)) - 1 } else { u64::MAX };
+                let mask = if (*word + 1) * 64 > capacity {
+                    (1u64 << (capacity % 64)) - 1
+                } else {
+                    u64::MAX
+                };
                 **bits & mask != 0
             })
             .ok_or(Error::Capacity)?;
@@ -856,9 +875,15 @@ impl Runtime {
         Self::new_with_note_params(plan, limits, limits.notes)
     }
 
-    fn new_with_note_params(mut plan: Prepared, limits: Limits, initial_notes: usize) -> Result<Self, Error> {
+    fn new_with_note_params(
+        mut plan: Prepared,
+        limits: Limits,
+        initial_notes: usize,
+    ) -> Result<Self, Error> {
         trace_report::configure(&mut plan)?;
-        if initial_notes == 0 || initial_notes > limits.notes { return Err(Error::InvalidInput); }
+        if initial_notes == 0 || initial_notes > limits.notes {
+            return Err(Error::InvalidInput);
+        }
         if limits.notes == 0 || limits.performances == 0 {
             return Err(Error::InvalidInput);
         }
@@ -906,26 +931,37 @@ impl Runtime {
             .map_err(|_| Error::Capacity)?;
         let rate = plan.rate;
         let mut plans = Arena::new(id, 1);
-        let active_plan = PlanId(plans.insert(Generation {
-            script_revision: 0,
-            native_cycle: 0,
-            native_seed: 0,
-            request: 0,
-            sequences: variation::SequenceState::new(&plan),
-            controls: control::ControlState::new(&plan),
-            scripts: plan.script_initial.iter().map(ops::ScriptInitial::bank).collect(),
-            midi_object: plan.midi_object.clone(),
-            dsp: dsp::DspState::new(&plan, limits.voices, limits.expressions, 1)?,
-            groups: groups::GroupState::new(plan.group_count, limits.notes, plan.stages.len())?,
-            controllers: controller_event::ControllerState::new(&plan, limits.performances)?,
-            projections: note_event::NoteProjections::new(plan.stages.len(), limits.notes)?,
-            modulation: voice_mod::VoiceModState::new(&plan.voice_modulation, limits.voices)?,
-            script: script_params::EngineLayers::new(&plan),
-            prepared: Box::new(plan),
-            notes: 0,
-            callbacks: 0,
-        })?);
-        let signal_trace = plans.get(active_plan.0).unwrap().prepared.signal_trace.is_some();
+        let active_plan = PlanId(
+            plans.insert(Generation {
+                script_revision: 0,
+                native_cycle: 0,
+                native_seed: 0,
+                request: 0,
+                sequences: variation::SequenceState::new(&plan),
+                controls: control::ControlState::new(&plan),
+                scripts: plan
+                    .script_initial
+                    .iter()
+                    .map(ops::ScriptInitial::bank)
+                    .collect(),
+                midi_object: plan.midi_object.clone(),
+                dsp: dsp::DspState::new(&plan, limits.voices, limits.expressions, 1)?,
+                groups: groups::GroupState::new(plan.group_count, limits.notes, plan.stages.len())?,
+                controllers: controller_event::ControllerState::new(&plan, limits.performances)?,
+                projections: note_event::NoteProjections::new(plan.stages.len(), limits.notes)?,
+                modulation: voice_mod::VoiceModState::new(&plan.voice_modulation, limits.voices)?,
+                script: script_params::EngineLayers::new(&plan),
+                prepared: Box::new(plan),
+                notes: 0,
+                callbacks: 0,
+            })?,
+        );
+        let signal_trace = plans
+            .get(active_plan.0)
+            .unwrap()
+            .prepared
+            .signal_trace
+            .is_some();
         let mut runtime = Self {
             signal_trace,
             rate,
@@ -1067,13 +1103,25 @@ impl Runtime {
         audible
     }
 
-    pub fn voice_taps(&self) -> [Option<VoiceTap>;16] {
-        let mut taps=[None;16]; let mut next=self.voices.first;
+    pub fn voice_taps(&self) -> [Option<VoiceTap>; 16] {
+        let mut taps = [None; 16];
+        let mut next = self.voices.first;
         for to in &mut taps {
-            let Some(i)=next else {break;};let slot=&self.voices.slots[i];let v=slot.value.as_ref().unwrap();
-            let family=self.families.get(v.family.0).unwrap();let note=self.notes.get(family.note.0).unwrap();
-            *to=Some(VoiceTap {group:v.group.unwrap_or(u32::MAX),key:note.pitch.key(),velocity:(note.velocity*127.).round() as u8,phase:v.envelope.editor_phase(),level:v.envelope.current()});
-            next=slot.next;
+            let Some(i) = next else {
+                break;
+            };
+            let slot = &self.voices.slots[i];
+            let v = slot.value.as_ref().unwrap();
+            let family = self.families.get(v.family.0).unwrap();
+            let note = self.notes.get(family.note.0).unwrap();
+            *to = Some(VoiceTap {
+                group: v.group.unwrap_or(u32::MAX),
+                key: note.pitch.key(),
+                velocity: (note.velocity * 127.).round() as u8,
+                phase: v.envelope.editor_phase(),
+                level: v.envelope.current(),
+            });
+            next = slot.next;
         }
         taps
     }
@@ -1370,38 +1418,41 @@ impl Runtime {
             self.input_keys |= 1 << (input.key & 127);
         }
         self.note_note_pressure();
-        let id = match self.notes.insert_below(Note {
-            input,
-            input_down: input.is_some(),
-            address,
-            plan,
-            parent,
-            release_link: if linked_release {
-                ReleaseLink::Gate
-            } else {
-                ReleaseLink::None
+        let id = match self.notes.insert_below(
+            Note {
+                input,
+                input_down: input.is_some(),
+                address,
+                plan,
+                parent,
+                release_link: if linked_release {
+                    ReleaseLink::Gate
+                } else {
+                    ReleaseLink::None
+                },
+                retire_when_silent: false,
+                attack: AttackStatus::Pending,
+                siblings: Siblings {
+                    previous: None,
+                    next: next_sibling,
+                },
+                first_child: None,
+                first_family: None,
+                first_decision: None,
+                pitch,
+                velocity,
+                key_release: None,
+                gate_release: None,
+                sostenuto: false,
+                work: 0,
+                pins: 0,
+                order,
+                expression,
+                families: 0,
+                children: 0,
             },
-            retire_when_silent: false,
-            attack: AttackStatus::Pending,
-            siblings: Siblings {
-                previous: None,
-                next: next_sibling,
-            },
-            first_child: None,
-            first_family: None,
-            first_decision: None,
-            pitch,
-            velocity,
-            key_release: None,
-            gate_release: None,
-            sostenuto: false,
-            work: 0,
-            pins: 0,
-            order,
-            expression,
-            families: 0,
-            children: 0,
-        }, self.note_params.capacity()) {
+            self.note_params.capacity(),
+        ) {
             Ok(id) => id,
             Err(error) => {
                 self.drop_expression(expression);
@@ -1413,7 +1464,14 @@ impl Runtime {
             let cells = self.plans.get(plan.0).unwrap().prepared.note_cells;
             self.note_values[begin..begin + cells].fill(0);
         }
-        if !self.plans.get(plan.0).unwrap().prepared.native_start.is_empty() {
+        if !self
+            .plans
+            .get(plan.0)
+            .unwrap()
+            .prepared
+            .native_start
+            .is_empty()
+        {
             let generation = self.plans.get_mut(plan.0).unwrap();
             let state = self.performance_state.edit(performance);
             state.native_tick = generation.native_cycle;
@@ -1618,10 +1676,15 @@ impl Runtime {
                 Err(error) => {
                     if matches!(error, StreamError::Capacity | StreamError::Disconnected) {
                         let index = usize::from(error == StreamError::Disconnected);
-                        self.stream_admission_errors[index] = self.stream_admission_errors[index].saturating_add(1);
+                        self.stream_admission_errors[index] =
+                            self.stream_admission_errors[index].saturating_add(1);
                     }
                     self.voice_drops = self.voice_drops.saturating_add(1);
-                    return Err(if error == StreamError::Capacity { Error::Capacity } else { Error::NotReady });
+                    return Err(if error == StreamError::Capacity {
+                        Error::Capacity
+                    } else {
+                        Error::NotReady
+                    });
                 }
             }
         } else {
@@ -1659,7 +1722,11 @@ impl Runtime {
                 next: next_sibling,
             },
             sample,
-            cursor: if cold && !self.offline { cursor.cold() } else { cursor },
+            cursor: if cold && !self.offline {
+                cursor.cold()
+            } else {
+                cursor
+            },
             base_step,
             mod_pitch: (f64::NAN, 1.0),
             stream_pages,
@@ -1787,7 +1854,14 @@ impl Runtime {
             }
         }
         for generation in self.plans.slots.iter_mut().filter_map(|s| s.value.as_mut()) {
-            generation.callbacks=generation.callbacks.saturating_sub(generation.midi_object.jobs.iter().filter(|j|!j.initial).count());
+            generation.callbacks = generation.callbacks.saturating_sub(
+                generation
+                    .midi_object
+                    .jobs
+                    .iter()
+                    .filter(|j| !j.initial)
+                    .count(),
+            );
             generation.midi_object.jobs.clear();
             generation.dsp.buses.reset();
         }

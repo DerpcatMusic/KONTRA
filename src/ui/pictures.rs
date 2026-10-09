@@ -13,7 +13,6 @@ pub struct Source {
     uvi: Option<sampler_uvi::Resources>,
     #[cfg(feature = "shots")]
     pub scan: Scan,
-
 }
 
 #[cfg(feature = "shots")]
@@ -40,7 +39,6 @@ pub struct Scan {
     pub preparation_key_budget: usize,
     pub preparation_evicted: usize,
     pub preparation_requeued: usize,
-
 }
 
 impl Source {
@@ -59,7 +57,6 @@ impl Source {
             #[cfg(feature = "shots")]
             scan: Scan::default(),
         }
-
     }
 
     pub(crate) fn read_result(&mut self, path: &str) -> Result<Option<Vec<u8>>, ResourceError> {
@@ -96,7 +93,9 @@ impl Source {
     }
     pub fn font(&mut self, asset: &ir::Asset) -> Option<moose::mui::mui::prelude::Font> {
         let font = self
-            .read_result(&asset.path).ok().flatten()
+            .read_result(&asset.path)
+            .ok()
+            .flatten()
             .and_then(|bytes| moose::mui::mui::prelude::Font::new(bytes).ok());
         #[cfg(feature = "shots")]
         {
@@ -104,7 +103,6 @@ impl Source {
             self.scan.font_ok += usize::from(font.is_some());
         }
         font
-
     }
 
     /// Compatibility probe: one frame, never an eagerly decoded strip.
@@ -119,14 +117,17 @@ impl Source {
         window: Option<[u32; 4]>,
         canceled: impl Fn() -> bool,
     ) -> Option<Arc<Picture>> {
-        if canceled() {return None;}
+        if canceled() {
+            return None;
+        }
         let bytes = self.read_result(&asset.path).ok().flatten()?;
-        if canceled() {return None;}
+        if canceled() {
+            return None;
+        }
         let meta = match asset.kind {
             ir::AssetKind::Image(m) => m,
             ir::AssetKind::BitmapFont => ir::ImageMeta::default(),
             _ => return None,
-
         };
         let image = super::picture_decode::decode(&bytes, meta, frame, target, window, canceled);
 
@@ -151,7 +152,6 @@ impl Source {
             meta.frames.max(1) as usize,
             window,
         )))
-
     }
 }
 
@@ -257,123 +257,359 @@ mod tests {
     #[test]
     #[ignore = "requires locally owned libraries; numeric asset inventory only"]
     fn kontakt_missing_image_inventory() {
-        let manifest=std::fs::read_to_string(std::env::var_os("KONTRA_RESOURCE_PROBE_LIST").unwrap()).unwrap();
-        for (item,line) in manifest.lines().enumerate() {
-            let path=Path::new(line.split_once('\t').unwrap().1);
-            let mut instrument=sampler_kontakt::read(path).unwrap().instrument;
-            instrument.retain_zones(|_|false);instrument.assets.clear();
-            let loaded=sampler_kontakt::prepare(instrument,vec![],&sampler_kontakt::Options {library:Some(path.to_owned()),..Default::default()}).unwrap();
-            let mut source=Source::of(path);
-            let root=source.kontakt.root().to_owned();
-            let names=source.kontakt.names("");
-            for (container,path) in source.kontakt.locations().iter().filter(|p|p.extension().is_some_and(|e|e.eq_ignore_ascii_case("nkr")||e.eq_ignore_ascii_case("nicnt"))).enumerate() {
+        let manifest =
+            std::fs::read_to_string(std::env::var_os("KONTRA_RESOURCE_PROBE_LIST").unwrap())
+                .unwrap();
+        for (item, line) in manifest.lines().enumerate() {
+            let path = Path::new(line.split_once('\t').unwrap().1);
+            let mut instrument = sampler_kontakt::read(path).unwrap().instrument;
+            instrument.retain_zones(|_| false);
+            instrument.assets.clear();
+            let loaded = sampler_kontakt::prepare(
+                instrument,
+                vec![],
+                &sampler_kontakt::Options {
+                    library: Some(path.to_owned()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let mut source = Source::of(path);
+            let root = source.kontakt.root().to_owned();
+            let names = source.kontakt.names("");
+            for (container, path) in source
+                .kontakt
+                .locations()
+                .iter()
+                .filter(|p| {
+                    p.extension().is_some_and(|e| {
+                        e.eq_ignore_ascii_case("nkr") || e.eq_ignore_ascii_case("nicnt")
+                    })
+                })
+                .enumerate()
+            {
                 match sampler_kontakt::ResourceContainer::open(path) {
-                    Ok(c)=>println!("RESOURCE_PROBE item={item} container={container} indexed=true members={}",c.names().len()),
-                    Err(e)=>println!("RESOURCE_PROBE item={item} container={container} indexed=false kind={:?} stage={:?}",e.kind(),e.stage()),
+                    Ok(c) => println!(
+                        "RESOURCE_PROBE item={item} container={container} indexed=true members={}",
+                        c.names().len()
+                    ),
+                    Err(e) => println!(
+                        "RESOURCE_PROBE item={item} container={container} indexed=false kind={:?} stage={:?}",
+                        e.kind(),
+                        e.stage()
+                    ),
                 }
             }
-            let loose:Vec<_>=std::fs::read_dir(&root).unwrap().flatten().filter(|e|e.file_type().is_ok_and(|t|t.is_file())).map(|e|e.file_name().to_string_lossy().to_lowercase()).collect();
-            let mut inventory=Vec::new();
-            let mut indexed_containers=0;let mut rejected_containers=0;let mut metadata_only_members=0;
-            if let Ok(list)=std::env::var("KONTRA_RESOURCE_GLOBAL_LIST") {
+            let loose: Vec<_> = std::fs::read_dir(&root)
+                .unwrap()
+                .flatten()
+                .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+                .map(|e| e.file_name().to_string_lossy().to_lowercase())
+                .collect();
+            let mut inventory = Vec::new();
+            let mut indexed_containers = 0;
+            let mut rejected_containers = 0;
+            let mut metadata_only_members = 0;
+            if let Ok(list) = std::env::var("KONTRA_RESOURCE_GLOBAL_LIST") {
                 for line in std::fs::read_to_string(list).unwrap().lines() {
-                    let path=Path::new(line);
-                    if path.extension().is_some_and(|e|e.eq_ignore_ascii_case("nkr")||e.eq_ignore_ascii_case("nicnt")) {
-                        match sampler_kontakt::ResourceContainer::open(path) {Ok(c)=>{indexed_containers+=1;inventory.extend(c.names().into_iter().map(str::to_owned));},Err(_)=>{
-                            rejected_containers+=1;
-                            // Inspect bounded names only; truncated payloads remain unreadable.
-                            if path.extension().is_some_and(|e|e.eq_ignore_ascii_case("nicnt")) {
-                                use std::io::Read;
-                                let mut head=Vec::new();std::fs::File::open(path).unwrap().take(4<<20).read_to_end(&mut head).unwrap();
-                                let marker=b"/\\ NI FC MTD  /\\";
-                                if let Some(start)=head.windows(marker.len()).enumerate().skip(1).find_map(|(n,b)|(b==marker).then_some(n)) {
-                                    if let Some(raw)=head.get(start+272..start+280) {
-                                        let count=u64::from_le_bytes(raw.try_into().unwrap());
-                                        let first=start+904;
-                                        if count<=100_000 && count<=head.len().saturating_sub(first) as u64/640 {
-                                            for n in 0..count as usize {
-                                                let raw=&head[first+n*640+24..first+n*640+624];
-                                                let units:Vec<_>=raw.chunks_exact(2).map(|b|u16::from_le_bytes([b[0],b[1]])).take_while(|&u|u!=0).collect();
-                                                inventory.push(String::from_utf16_lossy(&units));metadata_only_members+=1;
+                    let path = Path::new(line);
+                    if path.extension().is_some_and(|e| {
+                        e.eq_ignore_ascii_case("nkr") || e.eq_ignore_ascii_case("nicnt")
+                    }) {
+                        match sampler_kontakt::ResourceContainer::open(path) {
+                            Ok(c) => {
+                                indexed_containers += 1;
+                                inventory.extend(c.names().into_iter().map(str::to_owned));
+                            }
+                            Err(_) => {
+                                rejected_containers += 1;
+                                // Inspect bounded names only; truncated payloads remain unreadable.
+                                if path
+                                    .extension()
+                                    .is_some_and(|e| e.eq_ignore_ascii_case("nicnt"))
+                                {
+                                    use std::io::Read;
+                                    let mut head = Vec::new();
+                                    std::fs::File::open(path)
+                                        .unwrap()
+                                        .take(4 << 20)
+                                        .read_to_end(&mut head)
+                                        .unwrap();
+                                    let marker = b"/\\ NI FC MTD  /\\";
+                                    if let Some(start) = head
+                                        .windows(marker.len())
+                                        .enumerate()
+                                        .skip(1)
+                                        .find_map(|(n, b)| (b == marker).then_some(n))
+                                    {
+                                        if let Some(raw) = head.get(start + 272..start + 280) {
+                                            let count = u64::from_le_bytes(raw.try_into().unwrap());
+                                            let first = start + 904;
+                                            if count <= 100_000
+                                                && count
+                                                    <= head.len().saturating_sub(first) as u64 / 640
+                                            {
+                                                for n in 0..count as usize {
+                                                    let raw = &head[first + n * 640 + 24
+                                                        ..first + n * 640 + 624];
+                                                    let units: Vec<_> = raw
+                                                        .chunks_exact(2)
+                                                        .map(|b| u16::from_le_bytes([b[0], b[1]]))
+                                                        .take_while(|&u| u != 0)
+                                                        .collect();
+                                                    inventory
+                                                        .push(String::from_utf16_lossy(&units));
+                                                    metadata_only_members += 1;
+                                                }
                                             }
                                         }
                                     }
                                 }
                             }
-                        }}
-                    } else {inventory.push(path.to_string_lossy().into_owned());}
-                }
-            }
-            let mut requested=0;let mut resolved=0;let mut failures=0;
-            for (face_index,face) in loaded.interfaces.iter().enumerate() {
-                for (asset_index,asset) in face.assets.iter().enumerate() {
-                    if !matches!(asset.kind,ir::AssetKind::Image(_)) {continue;}
-                    requested+=1;
-                    let result=source.read_result(&asset.path);
-                    if result.as_ref().is_ok_and(|b|b.is_some()) {resolved+=1;continue;}
-                    failures+=1;
-                    let basename=asset.path.rsplit(['/', '\\']).next().unwrap().to_lowercase();
-                    let stem=Path::new(&basename).file_stem().unwrap().to_string_lossy();
-                    let global_basename=inventory.iter().filter(|n|n.rsplit(['/', '\\', '|']).next().is_some_and(|n|n.eq_ignore_ascii_case(&basename))).count();
-                    let global_stem=inventory.iter().filter(|n|Path::new(n).file_stem().is_some_and(|n|n.to_string_lossy().eq_ignore_ascii_case(&stem))).count();
-                    let numeric_name=stem.parse::<f64>().is_ok();
-                    let blank_name=["empty","blank","none","off","no"].iter().any(|n|stem.eq_ignore_ascii_case(n));
-                    let literal_occurrences=loaded.instrument.behaviors.iter().map(|b|b.source.matches(&format!("\"{stem}\"")).count()).sum::<usize>();
-                    let mut kinds=[0usize;7];
-                    for w in face.widgets.iter().filter(|w|w.images.iter().any(|i|i.asset.0==asset_index)) {
-                        kinds[match w.kind {ir::Kind::Knob{..}=>0,ir::Kind::Slider{..}=>1,ir::Kind::Button{..}=>2,ir::Kind::Switch=>3,ir::Kind::Menu{..}=>4,ir::Kind::Label=>5,_=>6}]+=1;
+                        }
+                    } else {
+                        inventory.push(path.to_string_lossy().into_owned());
                     }
-                    let nil_name=stem.eq_ignore_ascii_case("nil");
-                    let dropdown_name=stem.eq_ignore_ascii_case("dropdown");
-                    let label_refs=face.widgets.iter().filter(|w|matches!(w.kind,ir::Kind::Label)&&w.images.iter().any(|i|i.asset.0==asset_index)).count();
-                    let menu_refs=face.widgets.iter().filter(|w|matches!(w.kind,ir::Kind::Menu{..})&&w.images.iter().any(|i|i.asset.0==asset_index)).count();
-                    let namespace_exact=names.iter().filter(|n|n.eq_ignore_ascii_case(&asset.path)).count();
-                    let namespace_basename=names.iter().filter(|n|n.rsplit(['/', '\\', '|']).next().is_some_and(|n|n.eq_ignore_ascii_case(&basename))).count();
-                    let namespace_stem=names.iter().filter(|n|Path::new(n).file_stem().is_some_and(|n|n.to_string_lossy().eq_ignore_ascii_case(&stem))).count();
-                    let root_basename=loose.iter().filter(|n|*n==&basename).count();
-                    let twice_stem=Path::new(stem.as_ref()).file_stem().map(|n|n.to_string_lossy().to_lowercase());
-                    let namespace_twice_stem=twice_stem.as_ref().map_or(0,|stem|names.iter().filter(|n|Path::new(n).file_stem().is_some_and(|n|n.to_string_lossy().eq_ignore_ascii_case(stem))).count());
-                    let root_twice_stem=twice_stem.as_ref().map_or(0,|stem|loose.iter().filter(|n|Path::new(n).file_stem().is_some_and(|n|n.to_string_lossy().eq_ignore_ascii_case(stem))).count());
-                    let image_refs:Vec<_>=face.widgets.iter().enumerate().filter(|(_,w)|w.images.iter().any(|i|i.asset.0==asset_index)).collect();
-                    let visible_refs=image_refs.iter().filter(|(i,_)|face.visible(ir::WidgetRef(*i))).count();
-                    let background_hidden_refs=image_refs.iter().filter(|(_,w)|w.hide.background).count();
-                    let title_hidden_refs=image_refs.iter().filter(|(_,w)|w.hide.title).count();
-                    let text_empty_refs=image_refs.iter().filter(|(_,w)|w.text.is_empty()).count();
-                    let resolved=super::super::ir_view::resolved(face);
-                    let geometry_refs:Vec<_>=image_refs.iter().map(|(i,_)|{let r=resolved.page_rect(ir::WidgetRef(*i));[r.x as i64,r.y as i64,r.width as i64,r.height as i64]}).collect();
-                    let background_refs=face.pages.iter().filter(|p|p.background.image.is_some_and(|a|a.0==asset_index)).count();
-                    let root_stem=loose.iter().filter(|n|Path::new(n).file_stem().is_some_and(|n|n.to_string_lossy().eq_ignore_ascii_case(&stem))).count();
-                    println!("RESOURCE_PROBE item={item} face={face_index} asset={asset_index} requested_hash={} error={:?} namespace_exact={namespace_exact} namespace_basename={namespace_basename} namespace_stem={namespace_stem} root_basename={root_basename} root_stem={root_stem} namespace_twice_stem={namespace_twice_stem} root_twice_stem={root_twice_stem} indexed_containers={indexed_containers} rejected_containers={rejected_containers} metadata_only_members={metadata_only_members} numeric_name={numeric_name} blank_name={blank_name} literal_occurrences={literal_occurrences} kind_counts={kinds:?} global_basename={global_basename} global_stem={global_stem} nil_name={nil_name} dropdown_name={dropdown_name} label_refs={label_refs} menu_refs={menu_refs} name_bytes={} png_suffixes={} refs={} visible_refs={visible_refs} background_refs={background_refs} background_hidden_refs={background_hidden_refs} title_hidden_refs={title_hidden_refs} text_empty_refs={text_empty_refs} geometry_refs={geometry_refs:?}",&blake3::hash(asset.path.as_bytes()).to_hex()[..16],result.err(),asset.path.len(),basename.matches(".png").count(),image_refs.len());
                 }
             }
-            println!("RESOURCE_PROBE item={item} namespace_members={} requested={requested} resolved={resolved} failed={failures}",names.len());
+            let mut requested = 0;
+            let mut resolved = 0;
+            let mut failures = 0;
+            for (face_index, face) in loaded.interfaces.iter().enumerate() {
+                for (asset_index, asset) in face.assets.iter().enumerate() {
+                    if !matches!(asset.kind, ir::AssetKind::Image(_)) {
+                        continue;
+                    }
+                    requested += 1;
+                    let result = source.read_result(&asset.path);
+                    if result.as_ref().is_ok_and(|b| b.is_some()) {
+                        resolved += 1;
+                        continue;
+                    }
+                    failures += 1;
+                    let basename = asset
+                        .path
+                        .rsplit(['/', '\\'])
+                        .next()
+                        .unwrap()
+                        .to_lowercase();
+                    let stem = Path::new(&basename).file_stem().unwrap().to_string_lossy();
+                    let global_basename = inventory
+                        .iter()
+                        .filter(|n| {
+                            n.rsplit(['/', '\\', '|'])
+                                .next()
+                                .is_some_and(|n| n.eq_ignore_ascii_case(&basename))
+                        })
+                        .count();
+                    let global_stem = inventory
+                        .iter()
+                        .filter(|n| {
+                            Path::new(n)
+                                .file_stem()
+                                .is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(&stem))
+                        })
+                        .count();
+                    let numeric_name = stem.parse::<f64>().is_ok();
+                    let blank_name = ["empty", "blank", "none", "off", "no"]
+                        .iter()
+                        .any(|n| stem.eq_ignore_ascii_case(n));
+                    let literal_occurrences = loaded
+                        .instrument
+                        .behaviors
+                        .iter()
+                        .map(|b| b.source.matches(&format!("\"{stem}\"")).count())
+                        .sum::<usize>();
+                    let mut kinds = [0usize; 7];
+                    for w in face
+                        .widgets
+                        .iter()
+                        .filter(|w| w.images.iter().any(|i| i.asset.0 == asset_index))
+                    {
+                        kinds[match w.kind {
+                            ir::Kind::Knob { .. } => 0,
+                            ir::Kind::Slider { .. } => 1,
+                            ir::Kind::Button { .. } => 2,
+                            ir::Kind::Switch => 3,
+                            ir::Kind::Menu { .. } => 4,
+                            ir::Kind::Label => 5,
+                            _ => 6,
+                        }] += 1;
+                    }
+                    let nil_name = stem.eq_ignore_ascii_case("nil");
+                    let dropdown_name = stem.eq_ignore_ascii_case("dropdown");
+                    let label_refs = face
+                        .widgets
+                        .iter()
+                        .filter(|w| {
+                            matches!(w.kind, ir::Kind::Label)
+                                && w.images.iter().any(|i| i.asset.0 == asset_index)
+                        })
+                        .count();
+                    let menu_refs = face
+                        .widgets
+                        .iter()
+                        .filter(|w| {
+                            matches!(w.kind, ir::Kind::Menu { .. })
+                                && w.images.iter().any(|i| i.asset.0 == asset_index)
+                        })
+                        .count();
+                    let namespace_exact = names
+                        .iter()
+                        .filter(|n| n.eq_ignore_ascii_case(&asset.path))
+                        .count();
+                    let namespace_basename = names
+                        .iter()
+                        .filter(|n| {
+                            n.rsplit(['/', '\\', '|'])
+                                .next()
+                                .is_some_and(|n| n.eq_ignore_ascii_case(&basename))
+                        })
+                        .count();
+                    let namespace_stem = names
+                        .iter()
+                        .filter(|n| {
+                            Path::new(n)
+                                .file_stem()
+                                .is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(&stem))
+                        })
+                        .count();
+                    let root_basename = loose.iter().filter(|n| *n == &basename).count();
+                    let twice_stem = Path::new(stem.as_ref())
+                        .file_stem()
+                        .map(|n| n.to_string_lossy().to_lowercase());
+                    let namespace_twice_stem = twice_stem.as_ref().map_or(0, |stem| {
+                        names
+                            .iter()
+                            .filter(|n| {
+                                Path::new(n)
+                                    .file_stem()
+                                    .is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(stem))
+                            })
+                            .count()
+                    });
+                    let root_twice_stem = twice_stem.as_ref().map_or(0, |stem| {
+                        loose
+                            .iter()
+                            .filter(|n| {
+                                Path::new(n)
+                                    .file_stem()
+                                    .is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(stem))
+                            })
+                            .count()
+                    });
+                    let image_refs: Vec<_> = face
+                        .widgets
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, w)| w.images.iter().any(|i| i.asset.0 == asset_index))
+                        .collect();
+                    let visible_refs = image_refs
+                        .iter()
+                        .filter(|(i, _)| face.visible(ir::WidgetRef(*i)))
+                        .count();
+                    let background_hidden_refs =
+                        image_refs.iter().filter(|(_, w)| w.hide.background).count();
+                    let title_hidden_refs = image_refs.iter().filter(|(_, w)| w.hide.title).count();
+                    let text_empty_refs =
+                        image_refs.iter().filter(|(_, w)| w.text.is_empty()).count();
+                    let resolved = super::super::ir_view::resolved(face);
+                    let geometry_refs: Vec<_> = image_refs
+                        .iter()
+                        .map(|(i, _)| {
+                            let r = resolved.page_rect(ir::WidgetRef(*i));
+                            [r.x as i64, r.y as i64, r.width as i64, r.height as i64]
+                        })
+                        .collect();
+                    let background_refs = face
+                        .pages
+                        .iter()
+                        .filter(|p| p.background.image.is_some_and(|a| a.0 == asset_index))
+                        .count();
+                    let root_stem = loose
+                        .iter()
+                        .filter(|n| {
+                            Path::new(n)
+                                .file_stem()
+                                .is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(&stem))
+                        })
+                        .count();
+                    println!(
+                        "RESOURCE_PROBE item={item} face={face_index} asset={asset_index} requested_hash={} error={:?} namespace_exact={namespace_exact} namespace_basename={namespace_basename} namespace_stem={namespace_stem} root_basename={root_basename} root_stem={root_stem} namespace_twice_stem={namespace_twice_stem} root_twice_stem={root_twice_stem} indexed_containers={indexed_containers} rejected_containers={rejected_containers} metadata_only_members={metadata_only_members} numeric_name={numeric_name} blank_name={blank_name} literal_occurrences={literal_occurrences} kind_counts={kinds:?} global_basename={global_basename} global_stem={global_stem} nil_name={nil_name} dropdown_name={dropdown_name} label_refs={label_refs} menu_refs={menu_refs} name_bytes={} png_suffixes={} refs={} visible_refs={visible_refs} background_refs={background_refs} background_hidden_refs={background_hidden_refs} title_hidden_refs={title_hidden_refs} text_empty_refs={text_empty_refs} geometry_refs={geometry_refs:?}",
+                        &blake3::hash(asset.path.as_bytes()).to_hex()[..16],
+                        result.err(),
+                        asset.path.len(),
+                        basename.matches(".png").count(),
+                        image_refs.len()
+                    );
+                }
+            }
+            println!(
+                "RESOURCE_PROBE item={item} namespace_members={} requested={requested} resolved={resolved} failed={failures}",
+                names.len()
+            );
         }
     }
 
     #[test]
     fn shared_lookup_distinguishes_absence_invalid_path_and_failed_authority() {
-        let dir = std::env::temp_dir().join(format!("kontra-shared-resource-result-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "kontra-shared-resource-result-{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(dir.join("Resources")).unwrap();
         std::fs::write(dir.join("Resources/fixture.bin"), b"synthetic").unwrap();
         for instrument in ["fixture.nki", "fixture.uvip"] {
             let mut source = Source::of(&dir.join(instrument));
-            assert_eq!(source.read_result("Resources/fixture.bin").unwrap(), Some(b"synthetic".to_vec()));
+            assert_eq!(
+                source.read_result("Resources/fixture.bin").unwrap(),
+                Some(b"synthetic".to_vec())
+            );
             assert_eq!(source.read_result("Resources/absent.bin").unwrap(), None);
-            assert_eq!(source.read_result("../foreign.bin"), Err(ResourceError::InvalidPath));
-            assert_eq!(source.read_result("Resources/\0fixture.bin"), Err(ResourceError::InvalidPath));
-            assert_eq!(source.read_result(&"x".repeat(4097)), Err(ResourceError::InvalidPath));
+            assert_eq!(
+                source.read_result("../foreign.bin"),
+                Err(ResourceError::InvalidPath)
+            );
+            assert_eq!(
+                source.read_result("Resources/\0fixture.bin"),
+                Err(ResourceError::InvalidPath)
+            );
+            assert_eq!(
+                source.read_result(&"x".repeat(4097)),
+                Err(ResourceError::InvalidPath)
+            );
             #[cfg(feature = "shots")]
-            assert_eq!((source.scan.lookups, source.scan.lookup_ok, source.scan.lookup_missing, source.scan.lookup_invalid), (5, 1, 1, 3));
+            assert_eq!(
+                (
+                    source.scan.lookups,
+                    source.scan.lookup_ok,
+                    source.scan.lookup_missing,
+                    source.scan.lookup_invalid
+                ),
+                (5, 1, 1, 3)
+            );
         }
         std::fs::write(dir.join("broken.nkr"), b"not an archive").unwrap();
         let mut source = Source::of(&dir.join("fixture.nki"));
-        assert_eq!(source.read_result("Resources/absent.bin"), Err(ResourceError::Unavailable));
+        assert_eq!(
+            source.read_result("Resources/absent.bin"),
+            Err(ResourceError::Unavailable)
+        );
         #[cfg(feature = "shots")]
-        assert_eq!((source.scan.lookup_missing, source.scan.lookup_unavailable), (0, 1));
+        assert_eq!(
+            (source.scan.lookup_missing, source.scan.lookup_unavailable),
+            (0, 1)
+        );
         let mut source = Source::of(&dir.join("broken.ufs/fixture.uvip"));
-        assert_eq!(source.read_result("Resources/absent.bin"), Err(ResourceError::Unavailable));
+        assert_eq!(
+            source.read_result("Resources/absent.bin"),
+            Err(ResourceError::Unavailable)
+        );
         #[cfg(feature = "shots")]
-        assert_eq!((source.scan.lookup_missing, source.scan.lookup_unavailable), (0, 1));
+        assert_eq!(
+            (source.scan.lookup_missing, source.scan.lookup_unavailable),
+            (0, 1)
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

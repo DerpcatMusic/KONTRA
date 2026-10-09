@@ -237,7 +237,9 @@ impl Session {
                 db(input),
                 db(output),
                 db(if input > 0. { output / input } else { 0. }),
-                node.gain_measurement, row.gain[0], row.gain[1],
+                node.gain_measurement,
+                row.gain[0],
+                row.gain[1],
                 row.latency_samples,
                 row.enabled,
                 row.contributors
@@ -266,8 +268,13 @@ impl Session {
                     let limit = rest.char_indices().nth(165).map_or(rest.len(), |(i, _)| i);
                     let split = if limit < rest.len() {
                         rest[..limit].rfind(' ').filter(|i| *i > 0).unwrap_or(limit)
-                    } else { limit };
-                    let escaped = rest[..split].replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+                    } else {
+                        limit
+                    };
+                    let escaped = rest[..split]
+                        .replace('&', "&amp;")
+                        .replace('<', "&lt;")
+                        .replace('>', "&gt;");
                     body.push_str(&format!("<text x=\"24\" y=\"{y}\">{escaped}</text>"));
                     y += 22;
                     rest = rest[split..].trim_start();

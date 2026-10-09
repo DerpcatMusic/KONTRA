@@ -120,11 +120,7 @@ impl Runtime {
             .ok_or(Error::InvalidInput)
     }
 
-    pub(super) fn behavior_script_cell(
-        &self,
-        id: BehaviorId,
-        cell: u32,
-    ) -> Result<&i64, Error> {
+    pub(super) fn behavior_script_cell(&self, id: BehaviorId, cell: u32) -> Result<&i64, Error> {
         let cell = usize::try_from(cell).map_err(|_| Error::InvalidInput)?;
         let continuation = self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
         let plan = self.behavior_plan(continuation.owner)?;

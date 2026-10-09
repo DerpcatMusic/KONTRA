@@ -125,17 +125,37 @@ fn complete_clarinet_original_editor_fits_the_scene_and_paints() {
 #[test]
 fn assistant_host_font_parses_on_request() {
     fn rss() -> u64 {
-        std::fs::read_to_string("/proc/self/status").ok().and_then(|s|
-            s.lines().find_map(|l| l.strip_prefix("VmRSS:").and_then(|v|v.split_whitespace().next()?.parse().ok()))
-        ).unwrap_or(0)
+        std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|s| {
+                s.lines().find_map(|l| {
+                    l.strip_prefix("VmRSS:")
+                        .and_then(|v| v.split_whitespace().next()?.parse().ok())
+                })
+            })
+            .unwrap_or(0)
     }
-    let path=std::env::temp_dir().join("kontra-authored-host-font.uvip");
-    let mut source=pictures::Source::of(&path);
-    assert!(source.read_result("Unrelated-Regular.ttf").unwrap().is_none());
-    let _ui=theme::ui();
-    let before=rss();
-    let asset=sampler_ui_ir::Asset {path:"Assistant-Regular.ttf".into(),kind:sampler_ui_ir::AssetKind::TrueTypeFont};
-    let font=source.font(&asset).expect("requested Assistant Regular parses");
-    assert_eq!(font.as_ref().len(),75500);
-    eprintln!("HOST_FONT bytes={} rss_delta_kib={}",font.as_ref().len(),rss().saturating_sub(before));
+    let path = std::env::temp_dir().join("kontra-authored-host-font.uvip");
+    let mut source = pictures::Source::of(&path);
+    assert!(
+        source
+            .read_result("Unrelated-Regular.ttf")
+            .unwrap()
+            .is_none()
+    );
+    let _ui = theme::ui();
+    let before = rss();
+    let asset = sampler_ui_ir::Asset {
+        path: "Assistant-Regular.ttf".into(),
+        kind: sampler_ui_ir::AssetKind::TrueTypeFont,
+    };
+    let font = source
+        .font(&asset)
+        .expect("requested Assistant Regular parses");
+    assert_eq!(font.as_ref().len(), 75500);
+    eprintln!(
+        "HOST_FONT bytes={} rss_delta_kib={}",
+        font.as_ref().len(),
+        rss().saturating_sub(before)
+    );
 }

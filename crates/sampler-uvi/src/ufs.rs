@@ -519,7 +519,12 @@ impl Ufs {
                 "{unresolved} member paths could not be linked to the container root"
             ));
         }
-        if namespace.is_empty() && directory.files.iter().any(|m| m.mode == Protection::Metadata) {
+        if namespace.is_empty()
+            && directory
+                .files
+                .iter()
+                .any(|m| m.mode == Protection::Metadata)
+        {
             return Err(NeedsMetadataNamespace.into());
         }
         self.check_snapshot(&file)?;
@@ -598,16 +603,28 @@ mod tests {
     fn reference_directories_match_independent_numeric_index() {
         let corpus = std::env::var_os("KONTRA_UFS_CORPUS").expect("KONTRA_UFS_CORPUS");
         let namespaces = super::super::access::Namespaces::native();
-        let corpus: serde_json::Value = serde_json::from_slice(&std::fs::read(corpus).unwrap()).unwrap();
+        let corpus: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(corpus).unwrap()).unwrap();
         let mut files = 0;
         let mut folders = 0;
         for bank in corpus["corpus"].as_array().unwrap() {
             let ufs = Ufs::open(Path::new(bank["path"].as_str().unwrap())).unwrap();
             let directory = ufs.decode_directory(&namespaces.metadata).unwrap();
-            assert_eq!(directory.files.len() as u64, bank["counts"]["file"].as_u64().unwrap());
-            assert_eq!(directory.directories.len() as u64, bank["counts"]["folder"].as_u64().unwrap());
+            assert_eq!(
+                directory.files.len() as u64,
+                bank["counts"]["file"].as_u64().unwrap()
+            );
+            assert_eq!(
+                directory.directories.len() as u64,
+                bank["counts"]["folder"].as_u64().unwrap()
+            );
             assert!(directory.files.iter().all(|member| member.path.is_some()));
-            assert!(directory.directories.iter().all(|folder| folder.path.is_some()));
+            assert!(
+                directory
+                    .directories
+                    .iter()
+                    .all(|folder| folder.path.is_some())
+            );
             files += directory.files.len();
             folders += directory.directories.len();
         }
@@ -853,8 +870,14 @@ mod tests {
         let clear_bank = Ufs::open(&path).unwrap();
         assert!(!clear_bank.header.encoded_names);
         let clear_directory = clear_bank.decode_directory(&[]).unwrap();
-        assert_eq!(clear_directory.files.iter().map(|m| m.path.as_deref().unwrap()).collect::<Vec<_>>(),
-            ["A/same.wav", "A/other.wav", "B/same.wav"]);
+        assert_eq!(
+            clear_directory
+                .files
+                .iter()
+                .map(|m| m.path.as_deref().unwrap())
+                .collect::<Vec<_>>(),
+            ["A/same.wav", "A/other.wav", "B/same.wav"]
+        );
         bytes[first as usize + 280..first as usize + 288].copy_from_slice(&first.to_le_bytes());
         File::create(&path).unwrap().write_all(&bytes).unwrap();
         assert!(

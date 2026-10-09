@@ -60,30 +60,49 @@ fn info_starts_with_the_file_and_keeps_the_name_in_the_header_tooltip() {
         let scene = h.ui.scene().unwrap();
         let inside = scene.surface("inside-0").unwrap().frame;
         let file = scene.surface("info-0-File").unwrap();
-        assert!((file.frame.y - inside.y - INSET).abs() < 0.5,
-            "the file is the first fact, without a repeated name row: {:?} in {inside:?}", file.frame);
+        assert!(
+            (file.frame.y - inside.y - INSET).abs() < 0.5,
+            "the file is the first fact, without a repeated name row: {:?} in {inside:?}",
+            file.frame
+        );
         assert!(scene.surface("info-0-Instrument").is_none());
         let part = &p.selection.read().unwrap().parts[0];
         assert_eq!(file.tip.as_deref(), Some(part.path.as_str()));
-        assert!(scene.surface("name-0").unwrap().tip.as_deref().unwrap().contains(&part.name));
+        assert!(
+            scene
+                .surface("name-0")
+                .unwrap()
+                .tip
+                .as_deref()
+                .unwrap()
+                .contains(&part.name)
+        );
         let last = scene.surface("info-0-Keyswitches").unwrap().frame;
-        assert!(last.y + last.size.height <= inside.y + inside.size.height - INSET + 0.5,
-            "the last fact stays inside the panel inset");
+        assert!(
+            last.y + last.size.height <= inside.y + inside.size.height - INSET + 0.5,
+            "the last fact stays inside the panel inset"
+        );
     }
 }
 
 #[test]
 #[cfg(feature = "shots")]
 fn info_distill_shots() {
-    let Some(out) = std::env::var_os("KONTRA_INFO_SHOTS").map(PathBuf::from) else { return };
+    let Some(out) = std::env::var_os("KONTRA_INFO_SHOTS").map(PathBuf::from) else {
+        return;
+    };
     std::fs::create_dir_all(&out).unwrap();
     for (width, height) in [(900, 600), (1180, 900)] {
         let p = specimen();
         let mut h = Harness::new(&p, width as f64, height as f64);
         h.press("view-0-Info");
         h.idle(20);
-        moose::core::screenshot::save_png(&out.join(format!("info-{width}.png")),
-            &pixels(&h.ui, width, height), width.into(), height.into());
+        moose::core::screenshot::save_png(
+            &out.join(format!("info-{width}.png")),
+            &pixels(&h.ui, width, height),
+            width.into(),
+            height.into(),
+        );
     }
 }
 
@@ -96,14 +115,23 @@ fn articulation_count_starts_at_the_panel_inset_without_a_second_title() {
         h.idle(20);
         let scene = h.ui.scene().unwrap();
         let inside = scene.surface("inside-0").unwrap().frame;
-        let count = scene.surface("art-count-0").expect("the count remains visible");
-        assert!((count.frame.x - inside.x - INSET).abs() < 0.5,
-            "the repeated Articulations heading should not displace the count");
+        let count = scene
+            .surface("art-count-0")
+            .expect("the count remains visible");
+        assert!(
+            (count.frame.x - inside.x - INSET).abs() < 0.5,
+            "the repeated Articulations heading should not displace the count"
+        );
         assert_eq!(count.tip.as_deref(), Some("12 articulations"));
         let mode = scene.surface("art-driver-0").unwrap().frame;
-        assert!(count.frame.x + count.frame.size.width + SPACE <= mode.x,
-            "count and trigger mode keep their gap");
-        assert!(scene.surface("arts-more-0").unwrap().frame.x + CONTROL <= inside.x + inside.size.width - INSET + 0.5);
+        assert!(
+            count.frame.x + count.frame.size.width + SPACE <= mode.x,
+            "count and trigger mode keep their gap"
+        );
+        assert!(
+            scene.surface("arts-more-0").unwrap().frame.x + CONTROL
+                <= inside.x + inside.size.width - INSET + 0.5
+        );
         hover_text(&mut h, "12");
     }
 }
@@ -111,15 +139,21 @@ fn articulation_count_starts_at_the_panel_inset_without_a_second_title() {
 #[test]
 #[cfg(feature = "shots")]
 fn articulation_distill_shots() {
-    let Some(out) = std::env::var_os("KONTRA_ARTICULATION_SHOTS").map(PathBuf::from) else { return };
+    let Some(out) = std::env::var_os("KONTRA_ARTICULATION_SHOTS").map(PathBuf::from) else {
+        return;
+    };
     std::fs::create_dir_all(&out).unwrap();
     for (width, height) in [(900, 600), (1180, 900)] {
         let p = specimen();
         let mut h = Harness::new(&p, width as f64, height as f64);
         h.press("view-0-Articulations");
         h.idle(20);
-        moose::core::screenshot::save_png(&out.join(format!("articulations-{width}.png")),
-            &pixels(&h.ui, width, height), width.into(), height.into());
+        moose::core::screenshot::save_png(
+            &out.join(format!("articulations-{width}.png")),
+            &pixels(&h.ui, width, height),
+            width.into(),
+            height.into(),
+        );
     }
 }
 
@@ -348,16 +382,29 @@ fn envelope_specimen(p: &Arc<SamplerParams>) {
     view.parts[0].instrument = Some(Arc::new(inst));
     drop(view);
     // Numeric readouts exist only for admitted DSP lanes, as in a real loaded part.
-    let plan = sampler_core::Prepared::new(48000, vec![], vec![], 0).unwrap()
-        .with_groups(groups as u32, vec![]).unwrap()
-        .with_group_envelope_parameters(0, 0, 2,
-            sampler_core::Envelope::new(479952, 0, 479952, 0.57, 479952).unwrap()).unwrap();
+    let plan = sampler_core::Prepared::new(48000, vec![], vec![], 0)
+        .unwrap()
+        .with_groups(groups as u32, vec![])
+        .unwrap()
+        .with_group_envelope_parameters(
+            0,
+            0,
+            2,
+            sampler_core::Envelope::new(479952, 0, 479952, 0.57, 479952).unwrap(),
+        )
+        .unwrap();
     let atoms = p.shared.part(0).unwrap();
     *atoms.engine_bindings.lock().unwrap() = plan.engine_parameter_bindings().into();
-    *atoms.controls.lock().unwrap() = plan.controls().iter().map(|control| {
-        let sampler_core::ControlValue::Real(value) = control.default else { panic!("real envelope lane") };
-        crate::plugin::ControlCell::new(sampler_ui_ir::ControlId(control.id.0), value)
-    }).collect();
+    *atoms.controls.lock().unwrap() = plan
+        .controls()
+        .iter()
+        .map(|control| {
+            let sampler_core::ControlValue::Real(value) = control.default else {
+                panic!("real envelope lane")
+            };
+            crate::plugin::ControlCell::new(sampler_ui_ir::ControlId(control.id.0), value)
+        })
+        .collect();
 }
 
 #[test]
@@ -540,8 +587,13 @@ fn sound_readouts_keep_the_full_envelope_description() {
     h.press("view-0-Sound");
     let scene = h.ui.scene().unwrap();
     let readout = scene.surface("edit-envelope-value-Attack").unwrap();
-    assert!(readout.tip.as_deref().is_some_and(|tip| tip.contains("Attack") && tip.contains("type")),
-        "the current live Sound editor exposes the full parameter name and typing action");
+    assert!(
+        readout
+            .tip
+            .as_deref()
+            .is_some_and(|tip| tip.contains("Attack") && tip.contains("type")),
+        "the current live Sound editor exposes the full parameter name and typing action"
+    );
 }
 
 #[test]
@@ -608,7 +660,14 @@ fn sound_hover_displays_the_full_readout() {
     envelope_specimen(&p);
     let mut h = Harness::new(&p, 900., 600.);
     h.press("view-0-Sound");
-    let readout = h.ui.scene().unwrap().surface("edit-envelope-value-Attack").unwrap().text_value.clone().unwrap();
+    let readout =
+        h.ui.scene()
+            .unwrap()
+            .surface("edit-envelope-value-Attack")
+            .unwrap()
+            .text_value
+            .clone()
+            .unwrap();
     hover_text(&mut h, &readout);
 }
 
@@ -647,12 +706,24 @@ fn long_inside_rows_stop_painting_at_the_next_slot() {
         h.idle(20);
         let scene = h.ui.scene().unwrap();
         let next = scene.surface("header-1").unwrap().frame.y;
-        let row = scene.surfaces().find(|surface| surface.text_value.as_deref()
-            .is_some_and(|text| text.starts_with("11 Long articulation"))).unwrap();
+        let row = scene
+            .surfaces()
+            .find(|surface| {
+                surface
+                    .text_value
+                    .as_deref()
+                    .is_some_and(|text| text.starts_with("11 Long articulation"))
+            })
+            .unwrap();
         let bottom = (row.frame.y + row.frame.size.height)
             .min(row.clip.map_or(f64::INFINITY, |clip| clip.y1));
-        assert!(bottom <= next + 0.5,
-            "inside rows must clip before the next slot: visible bottom {bottom}, next {next}; row clip {:?}, viewport {:?}, scroller {:?}", row.clip, scene.surface("rack-viewport").map(|s| (s.frame, s.clip)), scene.surface("rack-view").map(|s| (s.frame, s.clip)));
+        assert!(
+            bottom <= next + 0.5,
+            "inside rows must clip before the next slot: visible bottom {bottom}, next {next}; row clip {:?}, viewport {:?}, scroller {:?}",
+            row.clip,
+            scene.surface("rack-viewport").map(|s| (s.frame, s.clip)),
+            scene.surface("rack-view").map(|s| (s.frame, s.clip))
+        );
     }
 }
 
@@ -661,35 +732,60 @@ fn sticky_header_clipping_tracks_window_resize_without_moving_the_scroll_body() 
     let p = specimen();
     let mut h = Harness::new(&p, 900., 600.);
     trigger_conflict(&mut h, &p);
-    for size in [Size::new(900., 600.), Size::new(1180., 900.), Size::new(900., 600.)] {
+    for size in [
+        Size::new(900., 600.),
+        Size::new(1180., 900.),
+        Size::new(900., 600.),
+    ] {
         h.resize(size);
         h.idle(20);
         let scene = h.ui.scene().unwrap();
         let viewport = scene.surface("rack-viewport").unwrap().frame;
         let scroller = scene.surface("rack-view").unwrap().frame;
-        assert!((viewport.x - scroller.x).abs() < 0.5 && (viewport.y - scroller.y).abs() < 0.5,
-            "clipping does not shift the body's coordinate system");
-        assert!((viewport.size.height - scroller.size.height).abs() < 0.5,
-            "window resize changes the full scroll viewport, not only its clip");
-        let row = scene.surfaces().find(|surface| surface.text_value.as_deref()
-            .is_some_and(|text| text.starts_with("11 Long articulation"))).unwrap();
-        let bottom = (row.frame.y + row.frame.size.height).min(row.clip.map_or(f64::INFINITY, |clip| clip.y1));
-        assert!(bottom <= scene.surface("header-1").unwrap().frame.y + 0.5,
-            "the resized clip follows the visible header");
+        assert!(
+            (viewport.x - scroller.x).abs() < 0.5 && (viewport.y - scroller.y).abs() < 0.5,
+            "clipping does not shift the body's coordinate system"
+        );
+        assert!(
+            (viewport.size.height - scroller.size.height).abs() < 0.5,
+            "window resize changes the full scroll viewport, not only its clip"
+        );
+        let row = scene
+            .surfaces()
+            .find(|surface| {
+                surface
+                    .text_value
+                    .as_deref()
+                    .is_some_and(|text| text.starts_with("11 Long articulation"))
+            })
+            .unwrap();
+        let bottom = (row.frame.y + row.frame.size.height)
+            .min(row.clip.map_or(f64::INFINITY, |clip| clip.y1));
+        assert!(
+            bottom <= scene.surface("header-1").unwrap().frame.y + 0.5,
+            "the resized clip follows the visible header"
+        );
     }
 }
 
 #[test]
 #[cfg(feature = "shots")]
 fn slot_clip_shots() {
-    let Some(out) = std::env::var_os("KONTRA_SLOT_CLIP_SHOTS").map(PathBuf::from) else { return; };
+    let Some(out) = std::env::var_os("KONTRA_SLOT_CLIP_SHOTS").map(PathBuf::from) else {
+        return;
+    };
     std::fs::create_dir_all(&out).unwrap();
     for (w, h) in [(900, 600), (1180, 900)] {
         let p = specimen();
         let mut fixture = Harness::new(&p, w as f64, h as f64);
         trigger_conflict(&mut fixture, &p);
         fixture.idle(20);
-        moose::core::screenshot::save_png(&out.join(format!("slot-clip-{w}.png")), &pixels(&fixture.ui, w, h), w.into(), h.into());
+        moose::core::screenshot::save_png(
+            &out.join(format!("slot-clip-{w}.png")),
+            &pixels(&fixture.ui, w, h),
+            w.into(),
+            h.into(),
+        );
     }
 }
 
@@ -698,27 +794,45 @@ fn report_is_one_tab_and_settings_uses_the_workspace() {
     let p = specimen();
     let mut h = Harness::new(&p, 900., 600.);
     h.press("tab-report");
-    assert!(h.ui.scene().unwrap().surface("tab-logs").is_none(), "Report replaces both old tabs");
+    assert!(
+        h.ui.scene().unwrap().surface("tab-logs").is_none(),
+        "Report replaces both old tabs"
+    );
     h.press("app-menu");
     h.press("menu-item-5");
     h.idle(20);
     let scene = h.ui.scene().unwrap();
     let settings = scene.surface("settings-body").unwrap().frame;
     let center = scene.surface("center").unwrap().frame;
-    assert!(settings.size.height > 250., "Settings is a workspace panel, not a two-row strip: {settings:?}");
-    assert!(settings.y >= center.y && settings.y + settings.size.height <= center.y + center.size.height + 0.5);
-    for id in ["settings-libraries", "settings-interface", "settings-midi", "settings-performance"] {
-        assert!(scene.surface(id).is_some(), "Settings has a labelled section: {id}");
+    assert!(
+        settings.size.height > 250.,
+        "Settings is a workspace panel, not a two-row strip: {settings:?}"
+    );
+    assert!(
+        settings.y >= center.y
+            && settings.y + settings.size.height <= center.y + center.size.height + 0.5
+    );
+    for id in [
+        "settings-libraries",
+        "settings-interface",
+        "settings-midi",
+        "settings-performance",
+    ] {
+        assert!(
+            scene.surface(id).is_some(),
+            "Settings has a labelled section: {id}"
+        );
     }
     h.press("settings-close");
     assert!(h.ui.scene().unwrap().surface("settings-body").is_none());
-
 }
 
 #[test]
 #[cfg(feature = "shots")]
 fn w13_report_settings_feedback_shots() {
-    let Some(out) = std::env::var_os("KONTRA_REPORT_SETTINGS_SHOTS").map(PathBuf::from) else { return };
+    let Some(out) = std::env::var_os("KONTRA_REPORT_SETTINGS_SHOTS").map(PathBuf::from) else {
+        return;
+    };
     std::fs::create_dir_all(&out).unwrap();
     for (width, height) in [(900, 600), (1180, 780)] {
         let p = specimen();
@@ -726,16 +840,24 @@ fn w13_report_settings_feedback_shots() {
             let mut view = p.shared.view.lock().unwrap();
             let report = Arc::make_mut(view.parts[0].report.as_mut().unwrap());
             report.missing.push(crate::sound::report::Missing {
-                location: "Main".into(), feature: "script".into(),
-                value: format!("42:9: {}", "Synthetic long error detail for wrapping and scrolling. ".repeat(30)),
+                location: "Main".into(),
+                feature: "script".into(),
+                value: format!(
+                    "42:9: {}",
+                    "Synthetic long error detail for wrapping and scrolling. ".repeat(30)
+                ),
                 reason: crate::sound::report::MissingReason::NotModeled,
             });
         }
         let mut h = Harness::new(&p, width as f64, height as f64);
         let save = |name: &str, h: &mut Harness| {
             h.idle(20);
-            moose::core::screenshot::save_png(&out.join(format!("{name}-{width}.png")),
-                &pixels(&h.ui, width, height), width.into(), height.into());
+            moose::core::screenshot::save_png(
+                &out.join(format!("{name}-{width}.png")),
+                &pixels(&h.ui, width, height),
+                width.into(),
+                height.into(),
+            );
         };
         h.press("tab-report");
         save("report-closed", &mut h);
@@ -743,18 +865,40 @@ fn w13_report_settings_feedback_shots() {
         save("report-expanded", &mut h);
         let at = tests::center(&h.ui, "report-detail-0");
         let outer = h.ui.scroll("logs-list");
-        h.tick(Input { wheel: Vec2::new(0., 1000.), pointer: PointerInput { pos: Some(at), ..Default::default() }, ..Default::default() });
+        h.tick(Input {
+            wheel: Vec2::new(0., 1000.),
+            pointer: PointerInput {
+                pos: Some(at),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
         h.idle(30);
-        assert!(h.ui.scroll("report-detail-0")[1] > 0., "instrument details scroll within their expansion");
-        assert_eq!(h.ui.scroll("logs-list"), outer, "detail wheel keeps the report list stationary");
+        assert!(
+            h.ui.scroll("report-detail-0")[1] > 0.,
+            "instrument details scroll within their expansion"
+        );
+        assert_eq!(
+            h.ui.scroll("logs-list"),
+            outer,
+            "detail wheel keeps the report list stationary"
+        );
         save("report-scrolled", &mut h);
         h.press("logs-about-button");
         save("report-about", &mut h);
         h.press("logs-close-about");
-        h.press("app-menu"); h.press("menu-item-5");
+        h.press("app-menu");
+        h.press("menu-item-5");
         save("settings-top", &mut h);
         let at = tests::center(&h.ui, "settings-body");
-        h.tick(Input { wheel: Vec2::new(0., 1000.), pointer: PointerInput { pos: Some(at), ..Default::default() }, ..Default::default() });
+        h.tick(Input {
+            wheel: Vec2::new(0., 1000.),
+            pointer: PointerInput {
+                pos: Some(at),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
         save("settings-lower", &mut h);
     }
 }

@@ -61,17 +61,25 @@ impl Param {
 impl GroupSettings {
     fn ladder(&self, p: Param) -> Option<&ir::LadderLP4> {
         let binding = self.bindings.iter().find(|(q, _)| *q == p)?.1;
-        self.ladders.iter().find(|f| f.address.is_some_and(|a| {
-            a.group == binding.address.group && a.slot == binding.address.slot && a.generic == binding.address.generic
-        }))
+        self.ladders.iter().find(|f| {
+            f.address.is_some_and(|a| {
+                a.group == binding.address.group
+                    && a.slot == binding.address.slot
+                    && a.generic == binding.address.generic
+            })
+        })
     }
 
     pub fn frequency(&self, p: Param, n: f32) -> Option<f32> {
         let binding = self.bindings.iter().find(|(q, _)| *q == p)?.1;
         let native = binding.law.decode((n * 1e6).round() as i32) as f32;
-        Some(if matches!(p, Param::Cutoff(_)) && self.ladder(p).is_some() {
-            sampler_core::LadderSettings::cutoff_hz(native)
-        } else { native })
+        Some(
+            if matches!(p, Param::Cutoff(_)) && self.ladder(p).is_some() {
+                sampler_core::LadderSettings::cutoff_hz(native)
+            } else {
+                native
+            },
+        )
     }
 
     pub fn gain_db(&self, p: Param, n: f32) -> Option<f32> {
@@ -138,8 +146,17 @@ impl GroupSettings {
                 (if poles == 4 { m * m } else { m }) as f32
             })
             .product::<f32>()
-            * self.ladders.iter().map(|f| sampler_core::LadderSettings::magnitude(
-                [f.cutoff as f32, f.resonance as f32, f.gain as f32], hz, self.rate)).product::<f32>()
+            * self
+                .ladders
+                .iter()
+                .map(|f| {
+                    sampler_core::LadderSettings::magnitude(
+                        [f.cutoff as f32, f.resonance as f32, f.gain as f32],
+                        hz,
+                        self.rate,
+                    )
+                })
+                .product::<f32>()
     }
 }
 #[derive(Clone, PartialEq)]
@@ -203,24 +220,45 @@ impl Model {
             })
             .collect();
         let chains = super::chain::group_chains(i, g);
-        let processors = || chains.iter().filter_map(|r| i.chains.get(r.0))
-            .flat_map(|chain| chain.pre_amplitude.iter().chain(&chain.post_amplitude));
-        let filters = processors().filter_map(|p| match p {
-            ir::Processor::Filter(f) => Some(*f), _ => None,
-        }).collect();
+        let processors = || {
+            chains
+                .iter()
+                .filter_map(|r| i.chains.get(r.0))
+                .flat_map(|chain| chain.pre_amplitude.iter().chain(&chain.post_amplitude))
+        };
+        let filters = processors()
+            .filter_map(|p| match p {
+                ir::Processor::Filter(f) => Some(*f),
+                _ => None,
+            })
+            .collect();
         let ladders = processors()
-            .filter_map(|p| if let ir::Processor::LadderLP4(f) = p { Some(*f) } else { None })
+            .filter_map(|p| {
+                if let ir::Processor::LadderLP4(f) = p {
+                    Some(*f)
+                } else {
+                    None
+                }
+            })
             .map(|mut f| {
                 if let Some(a) = f.address {
-                    if let Some(binding) = admitted.iter().find(|b| b.address.group == a.group
-                        && b.address.slot == a.slot && b.address.generic == a.generic
-                        && Some(b.address.parameter) == sampler_core::engine_parameter_id("ENGINE_PAR_GAIN"))
-                    {
-                        if let Some((_, gain)) = values.iter().find(|(id, _)| id.0 == binding.control.0) { f.gain = *gain; }
+                    if let Some(binding) = admitted.iter().find(|b| {
+                        b.address.group == a.group
+                            && b.address.slot == a.slot
+                            && b.address.generic == a.generic
+                            && Some(b.address.parameter)
+                                == sampler_core::engine_parameter_id("ENGINE_PAR_GAIN")
+                    }) {
+                        if let Some((_, gain)) =
+                            values.iter().find(|(id, _)| id.0 == binding.control.0)
+                        {
+                            f.gain = *gain;
+                        }
                     }
                 }
                 f
-            }).collect();
+            })
+            .collect();
         let mut base = GroupSettings {
             envelope,
             values: vals,
@@ -264,8 +302,13 @@ impl Model {
                     }
                 }
                 for ladder in &mut s.ladders {
-                    if !ladder.address.is_some_and(|a| a.group == b.address.group
-                        && a.slot == b.address.slot && a.generic == b.address.generic) { continue; }
+                    if !ladder.address.is_some_and(|a| {
+                        a.group == b.address.group
+                            && a.slot == b.address.slot
+                            && a.generic == b.address.generic
+                    }) {
+                        continue;
+                    }
                     match p {
                         Param::Cutoff(_) => ladder.cutoff = native,
                         Param::Resonance(_) => ladder.resonance = native,
@@ -284,17 +327,22 @@ impl Model {
                     let Some(chain) = i.chains.get(target.chain.0) else {
                         continue;
                     };
-                    let preceding = s.chains.iter().take_while(|r| **r != target.chain)
+                    let preceding = s
+                        .chains
+                        .iter()
+                        .take_while(|r| **r != target.chain)
                         .filter_map(|r| i.chains.get(r.0))
                         .flat_map(|c| c.pre_amplitude.iter().chain(&c.post_amplitude))
-                        .filter(|p| matches!(p, ir::Processor::Filter(_))).count();
-                    let index = preceding + chain
-                        .pre_amplitude
-                        .iter()
-                        .chain(&chain.post_amplitude)
-                        .take(target.index)
                         .filter(|p| matches!(p, ir::Processor::Filter(_)))
                         .count();
+                    let index = preceding
+                        + chain
+                            .pre_amplitude
+                            .iter()
+                            .chain(&chain.post_amplitude)
+                            .take(target.index)
+                            .filter(|p| matches!(p, ir::Processor::Filter(_)))
+                            .count();
                     if let Some(f) = s.filters.get_mut(index) {
                         match target.parameter {
                             ir::ProcessorParameter::Cutoff => {

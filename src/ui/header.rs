@@ -36,12 +36,19 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
         many => format!("Loading {} instruments…", many.len()),
     };
 
-    let roomy = ui.scene().and_then(|s| s.surface("activity")).is_none_or(|s| s.frame.size.width >= TEXT * 8.);
+    let roomy = ui
+        .scene()
+        .and_then(|s| s.surface("activity"))
+        .is_none_or(|s| s.frame.size.width >= TEXT * 8.);
     let (browser, browser_el) = icon_button(
         ui,
         "toggle-browser",
         Icon::Sidebar,
-        if cx.state.browser { "Hide the browser" } else { "Show the browser" },
+        if cx.state.browser {
+            "Hide the browser"
+        } else {
+            "Show the browser"
+        },
         cx.state.browser,
     );
     if browser {
@@ -85,7 +92,10 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
             cx.state.computer.release(p);
         }
     }
-    cx.state.computer.on.store(cx.selection.qwerty, Ordering::Relaxed);
+    cx.state
+        .computer
+        .on
+        .store(cx.selection.qwerty, Ordering::Relaxed);
     let (panic, panic_el) = action(ui, "panic", "Panic", false);
     if panic {
         p.shared.panic.store(true, Ordering::Release);
@@ -117,23 +127,31 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
             .shrink(0),
         // Squeezed to a letter or two, it says nothing: the loading bar and
         // the parts' own headers carry it, and the words stay in a tip.
-        caption(if roomy { activity.clone() } else { String::new() })
-            .fill(secondary())
-            .lines(1)
-            .flex(1)
-            .min_w(0)
-            .when(!activity.is_empty(), |e| e.tip(activity))
-            .id("activity"),
+        caption(if roomy {
+            activity.clone()
+        } else {
+            String::new()
+        })
+        .fill(secondary())
+        .lines(1)
+        .flex(1)
+        .min_w(0)
+        .when(!activity.is_empty(), |e| e.tip(activity))
+        .id("activity"),
         stat("CPU", format!("{:.0}%", cpu * 100.), "100%"),
-        stat("Voices", audible.to_string(), "000").tip(format!("{voices} running, {} muted by the script", voices.saturating_sub(audible))),
+        stat("Voices", audible.to_string(), "000").tip(format!(
+            "{voices} running, {} muted by the script",
+            voices.saturating_sub(audible)
+        )),
         // Sample heads sized by use and idle stream rings handed back.
-        stat("RAM", megabytes(memory), "00000 MB").tip(format!(
-            "Smart memory: {} of samples resident, for this rack · {} freed",
-            megabytes(memory),
-            megabytes(freed as usize)
-        )).id("readout-ram"),
+        stat("RAM", megabytes(memory), "00000 MB")
+            .tip(format!(
+                "Smart memory: {} of samples resident, for this rack · {} freed",
+                megabytes(memory),
+                megabytes(freed as usize)
+            ))
+            .id("readout-ram"),
         stat("Disk", format!("{disk:.1} MB/s"), "000.0 MB/s").id("readout-disk"),
-
         vrule().h(CONTROL - TIGHT),
         cluster(vec![section("Master"), master, meter_bar(level)]).gap(SPACE),
         vrule().h(CONTROL - TIGHT),
@@ -154,12 +172,19 @@ fn meter_bar(level: f32) -> El {
         let mid = (s.height / 2. - t / 2.).round();
         let mut draw = vec![Draw::fill(rect(0., mid, s.width, t), Role::Ink.alpha(0.1))];
         if unit > 0. {
-            let fill = if hot { Role::Danger.alpha(1.) } else { Role::Ink.alpha(0.7) };
+            let fill = if hot {
+                Role::Danger.alpha(1.)
+            } else {
+                Role::Ink.alpha(0.7)
+            };
             draw.push(Draw::fill(rect(0., mid, (unit * s.width).round(), t), fill));
         }
         // Unity.
         let x = (60. / 66. * s.width).round();
-        draw.push(Draw::fill(rect(x, mid - t / 2., 1., 2. * t), Role::Ink.alpha(0.3)));
+        draw.push(Draw::fill(
+            rect(x, mid - t / 2., 1., 2. * t),
+            Role::Ink.alpha(0.3),
+        ));
         draw
     })
     .w(CONTROL * 2.)
@@ -174,7 +199,13 @@ pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
     let scanned = cx.view.scanned == libraries.wanted();
     let mut rows = Vec::new();
     for (n, root) in cx.settings.roots.iter().enumerate() {
-        let (remove, remove_el) = icon_button(ui, format!("root-remove-{n}"), Icon::Close, "Remove this folder", false);
+        let (remove, remove_el) = icon_button(
+            ui,
+            format!("root-remove-{n}"),
+            Icon::Close,
+            "Remove this folder",
+            false,
+        );
         if remove {
             libraries.remove_root(n);
         }
@@ -184,11 +215,20 @@ pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
             Some(k) => format!("{k} libraries"),
             None => "Scanning".to_owned(),
         };
-        let kind = if root.single { "Library" } else { "Folder of libraries" };
+        let kind = if root.single {
+            "Library"
+        } else {
+            "Folder of libraries"
+        };
         rows.push(
             row![
-                col![body(root.path.clone()).text_size(TEXT).w(Len::Pct(100.)),
-                    caption(format!("{kind} · {found}")).fill(secondary())].gap(TIGHT).flex(1).min_w(0),
+                col![
+                    body(root.path.clone()).text_size(TEXT).w(Len::Pct(100.)),
+                    caption(format!("{kind} · {found}")).fill(secondary())
+                ]
+                .gap(TIGHT)
+                .flex(1)
+                .min_w(0),
                 remove_el
             ]
             .gap(SPACE)
@@ -196,9 +236,17 @@ pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
             .pad(edges(0., SPACE, 0., INSET))
             .shrink(0),
         );
-        if scanned && let Some(problem) = cx.view.shelf.root_problem(std::path::Path::new(&root.path)) {
-            rows.push(caption(problem.clone()).w(Len::Pct(100.)).tip(problem)
-                .pad(edges(0., SPACE, SPACE, INSET)).shrink(0).id(format!("root-bank-problem-{n}")));
+        if scanned
+            && let Some(problem) = cx.view.shelf.root_problem(std::path::Path::new(&root.path))
+        {
+            rows.push(
+                caption(problem.clone())
+                    .w(Len::Pct(100.))
+                    .tip(problem)
+                    .pad(edges(0., SPACE, SPACE, INSET))
+                    .shrink(0)
+                    .id(format!("root-bank-problem-{n}")),
+            );
         }
     }
     // Typed, for a desktop with no file dialog.
@@ -230,25 +278,73 @@ pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
     let mut body = vec![section("Library folders").id("settings-libraries"),
         row![many_el.tip("Add the folder that holds your libraries; each library is found, with or without a library file."), one_el.tip("Add one library’s own folder."), import_el.tip("Import installed Kontakt libraries and find supported library banks."), scan_el].gap(SPACE).wrap().w(Len::Pct(100.)).shrink(0)];
     if rows.is_empty() {
-        body.push(caption("Add a folder to make its libraries available in the browser.").fill(secondary()).w(Len::Pct(100.)));
+        body.push(
+            caption("Add a folder to make its libraries available in the browser.")
+                .fill(secondary())
+                .w(Len::Pct(100.)),
+        );
     }
     body.extend(rows);
-    let (typed_hit, typed_el) = action(ui, "root-typed-toggle", "Enter a folder path…", cx.state.root_typing);
-    if typed_hit { cx.state.root_typing ^= true; }
+    let (typed_hit, typed_el) = action(
+        ui,
+        "root-typed-toggle",
+        "Enter a folder path…",
+        cx.state.root_typing,
+    );
+    if typed_hit {
+        cx.state.root_typing ^= true;
+    }
     body.push(row![typed_el].shrink(0));
     if cx.state.root_typing {
-        body.push(col![caption("Folder path").fill(secondary()),
-            row![field.el.flex(1).min_w(0).h(CONTROL).named("A folder to add, typed"), add_el]
-                .gap(SPACE).align(Align::Center).w(Len::Pct(100.))].gap(TIGHT).shrink(0));
+        body.push(
+            col![
+                caption("Folder path").fill(secondary()),
+                row![
+                    field
+                        .el
+                        .flex(1)
+                        .min_w(0)
+                        .h(CONTROL)
+                        .named("A folder to add, typed"),
+                    add_el
+                ]
+                .gap(SPACE)
+                .align(Align::Center)
+                .w(Len::Pct(100.))
+            ]
+            .gap(TIGHT)
+            .shrink(0),
+        );
     }
-    body.extend([rule(), section("Interface").id("settings-interface"),
-        interface_settings(ui, cx), view_settings(ui, cx),
-        rule(), section("MIDI / Output").id("settings-midi"), new_part_settings(ui, cx),
-        rule(), section("Performance").id("settings-performance"), thread_settings(ui, cx)]);
-    let preferences = col(body).gap(SPACE).align(Align::Stretch).pad(INSET)
-        .scroll().flex(1).min_h(0).min_w(0).id("settings-body");
-    col![toolbar, rule(), preferences].gap(0).align(Align::Stretch)
-        .flex(1).min_h(0).min_w(0).fill(Role::Surface).id("settings-panel")
+    body.extend([
+        rule(),
+        section("Interface").id("settings-interface"),
+        interface_settings(ui, cx),
+        view_settings(ui, cx),
+        rule(),
+        section("MIDI / Output").id("settings-midi"),
+        new_part_settings(ui, cx),
+        rule(),
+        section("Performance").id("settings-performance"),
+        thread_settings(ui, cx),
+    ]);
+    let preferences = col(body)
+        .gap(SPACE)
+        .align(Align::Stretch)
+        .pad(INSET)
+        .scroll()
+        .flex(1)
+        .min_h(0)
+        .min_w(0)
+        .id("settings-body");
+    col![toolbar, rule(), preferences]
+        .gap(0)
+        .align(Align::Stretch)
+        .flex(1)
+        .min_h(0)
+        .min_w(0)
+        .fill(Role::Surface)
+        .id("settings-panel")
 }
 
 /// Which performance view parts show unless they choose, and the scale of
@@ -258,14 +354,29 @@ fn interface_settings(ui: &mut Ui, cx: &mut Cx) -> El {
     let mut choices = Vec::new();
     for (to, label) in [(1.0, "100%"), (1.25, "125%"), (1.5, "150%"), (2.0, "200%")] {
         let (hit, el) = action(ui, format!("ui-scale-{label}"), label, scale == to);
-        if hit { cx.p.shared.libraries.edit(|s| s.ui_scale = to); }
+        if hit {
+            cx.p.shared.libraries.edit(|s| s.ui_scale = to);
+        }
         choices.push(el);
     }
     let (reset, reset_el) = action(ui, "ui-scale-reset", "Reset", false);
-    if reset { cx.p.shared.libraries.edit(|s| s.ui_scale = 1.0); }
-    row![caption("Interface scale").fill(secondary()).w(Len::Pct(100.))
-            .tip("Window size is remembered").id("ui-scale-label"), segmented(choices), reset_el]
-        .gap(SPACE).wrap().align(Align::Center).w(Len::Pct(100.)).shrink(0)
+    if reset {
+        cx.p.shared.libraries.edit(|s| s.ui_scale = 1.0);
+    }
+    row![
+        caption("Interface scale")
+            .fill(secondary())
+            .w(Len::Pct(100.))
+            .tip("Window size is remembered")
+            .id("ui-scale-label"),
+        segmented(choices),
+        reset_el
+    ]
+    .gap(SPACE)
+    .wrap()
+    .align(Align::Center)
+    .w(Len::Pct(100.))
+    .shrink(0)
 }
 
 fn view_settings(ui: &mut Ui, cx: &mut Cx) -> El {
@@ -288,7 +399,9 @@ fn view_settings(ui: &mut Ui, cx: &mut Cx) -> El {
         scales.push(el);
     }
     row![
-        caption("Default instrument view").fill(secondary()).w(Len::Pct(100.)),
+        caption("Default instrument view")
+            .fill(secondary())
+            .w(Len::Pct(100.)),
         segmented(views),
         caption("Scale").fill(secondary()).lines(1).shrink(0),
         segmented(scales),
@@ -308,8 +421,18 @@ fn new_part_settings(ui: &mut Ui, cx: &mut Cx) -> El {
     let mut inputs = Vec::new();
     for (id, label, to, on) in [
         ("next", "Next free channel", None, input.is_none()),
-        ("omni", "Omni", Some((0, -1)), input.is_some_and(|(_, c)| c < 0)),
-        ("fixed", "Channel", Some(fixed.unwrap_or((0, 0))), fixed.is_some()),
+        (
+            "omni",
+            "Omni",
+            Some((0, -1)),
+            input.is_some_and(|(_, c)| c < 0),
+        ),
+        (
+            "fixed",
+            "Channel",
+            Some(fixed.unwrap_or((0, 0))),
+            fixed.is_some(),
+        ),
     ] {
         let (hit, el) = action(ui, format!("new-input-{id}"), label, on);
         if hit {
@@ -321,10 +444,22 @@ fn new_part_settings(ui: &mut Ui, cx: &mut Cx) -> El {
     let step = |ui: &mut Ui, id: &str, now: usize, count: usize| {
         let (down, down_el) = icon_button(ui, format!("{id}-down"), Icon::Left, "Previous", false);
         let (up, up_el) = icon_button(ui, format!("{id}-up"), Icon::Right, "Next", false);
-        let to = if down { Some((now + count - 1) % count) } else if up { Some((now + 1) % count) } else { None };
+        let to = if down {
+            Some((now + count - 1) % count)
+        } else if up {
+            Some((now + 1) % count)
+        } else {
+            None
+        };
         (to, down_el, up_el)
     };
-    let mut items = vec![caption("New parts: MIDI").fill(secondary()).lines(1).shrink(0), segmented(inputs)];
+    let mut items = vec![
+        caption("New parts: MIDI")
+            .fill(secondary())
+            .lines(1)
+            .shrink(0),
+        segmented(inputs),
+    ];
     if let Some((port, channel)) = fixed {
         let now = usize::from(port) * 16 + channel as usize;
         let (to, down, up) = step(ui, "new-channel", now, 64);
@@ -332,25 +467,46 @@ fn new_part_settings(ui: &mut Ui, cx: &mut Cx) -> El {
             libraries.edit(|s| s.new_input = Some(((n / 16) as u8, (n % 16) as i16)));
         }
         let name = format!("{}{}", char::from(b'A' + port), channel + 1);
-        items.push(cluster(vec![down, caption(name).reserve("D16").justify(Justify::Center), up]));
+        items.push(cluster(vec![
+            down,
+            caption(name).reserve("D16").justify(Justify::Center),
+            up,
+        ]));
     }
     let mut outputs = Vec::new();
-    for (id, label, to, on) in [("auto", "Automatic", None, output.is_none()), ("fixed", "Bus", Some(output.unwrap_or(0)), output.is_some())] {
+    for (id, label, to, on) in [
+        ("auto", "Automatic", None, output.is_none()),
+        ("fixed", "Bus", Some(output.unwrap_or(0)), output.is_some()),
+    ] {
         let (hit, el) = action(ui, format!("new-output-{id}"), label, on);
         if hit {
             libraries.edit(|s| s.new_output = to);
         }
         outputs.push(el);
     }
-    items.extend([caption("Output").fill(secondary()).lines(1).shrink(0), segmented(outputs)]);
+    items.extend([
+        caption("Output").fill(secondary()).lines(1).shrink(0),
+        segmented(outputs),
+    ]);
     if let Some(bus) = output {
         let (to, down, up) = step(ui, "new-bus", usize::from(bus), crate::sound::BUSES);
         if let Some(n) = to {
             libraries.edit(|s| s.new_output = Some(n as u8));
         }
-        items.push(cluster(vec![down, caption(format!("st.{}", bus + 1)).reserve("st.16").justify(Justify::Center), up]));
+        items.push(cluster(vec![
+            down,
+            caption(format!("st.{}", bus + 1))
+                .reserve("st.16")
+                .justify(Justify::Center),
+            up,
+        ]));
     }
-    row(items).gap(SPACE).wrap().align(Align::Center).w(Len::Pct(100.)).shrink(0)
+    row(items)
+        .gap(SPACE)
+        .wrap()
+        .align(Align::Center)
+        .w(Len::Pct(100.))
+        .shrink(0)
 }
 
 fn thread_settings(ui: &mut Ui, cx: &mut Cx) -> El {
@@ -358,15 +514,26 @@ fn thread_settings(ui: &mut Ui, cx: &mut Cx) -> El {
     use crate::library::ThreadSetting as T;
     let threads = cx.settings.threads;
     let mut choices = Vec::new();
-    for (id, label, to) in [("auto", "Auto", T::Auto), ("1", "1", T::Single), ("2", "2", T::Fixed(2)), ("4", "4", T::Fixed(4)), ("8", "8", T::Fixed(8))] {
+    for (id, label, to) in [
+        ("auto", "Auto", T::Auto),
+        ("1", "1", T::Single),
+        ("2", "2", T::Fixed(2)),
+        ("4", "4", T::Fixed(4)),
+        ("8", "8", T::Fixed(8)),
+    ] {
         let (hit, el) = action(ui, format!("threads-{id}"), label, threads == to);
         if hit {
             libraries.edit(|s| s.threads = to);
         }
         choices.push(el);
     }
-    col![caption("Threads (applies to the next load)").fill(secondary()),
-        row![segmented(choices)].shrink(0)].gap(TIGHT).align(Align::Stretch).shrink(0)
+    col![
+        caption("Threads (applies to the next load)").fill(secondary()),
+        row![segmented(choices)].shrink(0)
+    ]
+    .gap(TIGHT)
+    .align(Align::Stretch)
+    .shrink(0)
 }
 
 /// Ask for a library folder (`single`) or a folder of libraries to add;
@@ -376,7 +543,11 @@ pub fn add_folder(cx: &mut Cx, single: bool) {
         .map(|r| std::path::PathBuf::from(&r.path))
         .or_else(dirs::home_dir)
         .unwrap_or_default();
-    if !cx.state.picker.ask(super::picker::Ask::Folder { from, single }) {
+    if !cx
+        .state
+        .picker
+        .ask(super::picker::Ask::Folder { from, single })
+    {
         cx.state.settings = true;
         cx.state.root_typing = true;
     }
@@ -395,7 +566,10 @@ pub fn multi_path(root: &str, name: &str) -> std::path::PathBuf {
 pub fn root(cx: &Cx) -> String {
     match cx.settings.roots.iter().find(|r| !r.single) {
         Some(root) => root.path.clone(),
-        None => crate::library::data_dir().unwrap_or_default().to_string_lossy().into_owned(),
+        None => crate::library::data_dir()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned(),
     }
 }
 
@@ -455,7 +629,10 @@ pub fn save_multi(ui: &mut Ui, cx: &mut Cx) -> El {
     line.extend(error);
     line.extend([save_el, close_el]);
     col![
-        row(line).gap(SPACE).align(Align::Center).pad((INSET, SPACE)),
+        row(line)
+            .gap(SPACE)
+            .align(Align::Center)
+            .pad((INSET, SPACE)),
         rule()
     ]
     .gap(0)
@@ -495,7 +672,10 @@ pub fn load_fraction(view: &View, p: &SamplerParams) -> f64 {
     let fractions: Vec<f64> = (view.parts.iter().enumerate())
         .filter(|(_, v)| v.loading)
         .map(|(n, _)| {
-            let done = p.shared.part(n).map_or(0, |part| part.load_progress.load(Ordering::Relaxed));
+            let done = p
+                .shared
+                .part(n)
+                .map_or(0, |part| part.load_progress.load(Ordering::Relaxed));
             f64::from(done) / f64::from(crate::sound::Progress::DONE.0)
         })
         .collect();
