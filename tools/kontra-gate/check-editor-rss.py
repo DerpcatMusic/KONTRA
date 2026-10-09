@@ -1,5 +1,5 @@
 """Synthetic RSS admission checks, without loading any plugin."""
-from editor_rss import PHASES, summarize, author_state
+from editor_rss import PHASES, summarize, author_state, selected_loads
 from live_host import native_selection
 from pathlib import Path
 import struct
@@ -24,3 +24,9 @@ parts, order=native_selection(state)
 assert programs==[0,1] and order==(0,1)
 assert [struct.unpack('<I',part[1])[0] for part in parts]==[0,1]
 print('PASS: full two-part native multi identity')
+
+def row(path,program,status): return dict(event='load_finished',path=path,program=program,data={'status':status})
+assert selected_loads([row('other',0,'loaded')],Path('selected'),[0]) == {}
+assert selected_loads([row('selected',0,'partial'),row('selected',0,'loaded')],Path('selected'),[0,1]) == {0:'loaded'}
+assert selected_loads([row('selected',0,'loaded'),row('selected',1,'partial')],Path('selected'),[0,1]) == {0:'loaded',1:'partial'}
+print('PASS: selected source and unique-program readiness; duplicate loads cannot admit incomplete multi')
