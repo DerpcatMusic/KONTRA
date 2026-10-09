@@ -59,6 +59,13 @@ with tempfile.TemporaryDirectory() as tmp:
         observed = contention.snapshot()
         assert contention.status(observed) == 'QUIET'
         assert observed['processes'][-1]['waiting'] and observed['units'][0]['waiting']
+        # A normal systemd shell/Python runner waits above its heavy wrapper.
+        parent = root / '29'; parent.mkdir()
+        parent.joinpath('stat').write_text('29 (fixture) S 1')
+        parent.joinpath('cmdline').write_bytes(b'python3\0runner.py')
+        parent.joinpath('cgroup').write_text('0::/kontakto-build.service\n')
+        proc.joinpath('stat').write_text('30 (fixture) S 29')
+        assert contention.status(contention.snapshot()) == 'QUIET'
         child = root / '31'; child.mkdir()
         child.joinpath('stat').write_text('31 (fixture) S 30')
         child.joinpath('cmdline').write_bytes(b'sleep\0' + b'5')
