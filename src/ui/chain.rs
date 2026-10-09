@@ -122,13 +122,23 @@ pub fn modulation(p: &Arc<crate::plugin::SamplerParams>, i: &ir::Instrument, g: 
     }
     col(rows).gap(0).align(Align::Stretch).min_w(0).shrink(0)
 }
-pub fn effects(i: &ir::Instrument, g: &ir::Group) -> El {
+/// Native Kontakt group inserts live on shared zone voice chains.
+pub fn group_chains(i: &ir::Instrument, g: usize) -> Vec<ir::ChainRef> {
+    let mut chains = Vec::new();
+    for reference in i.zones.iter().filter(|z| z.group == Some(ir::GroupRef(g)))
+        .filter_map(|z| z.chain).chain(i.groups.get(g).and_then(|group| group.chain))
+    {
+        if !chains.contains(&reference) { chains.push(reference); }
+    }
+    chains
+}
+
+pub fn effects(i: &ir::Instrument, g: usize) -> El {
     let mut rows = Vec::new();
-    let mut chain = |title: String, c: Option<ir::ChainRef>| {
-        let Some(c) = c.and_then(|r| i.chains.get(r.0)) else {
-            return;
-        };
-        if c.pre_amplitude.is_empty() && c.post_amplitude.is_empty() {
+    let mut chain = |title: String, references: &[ir::ChainRef]| {
+        let mut processors = references.iter().filter_map(|r| i.chains.get(r.0))
+            .flat_map(|c| c.pre_amplitude.iter().chain(&c.post_amplitude)).peekable();
+        if processors.peek().is_none() {
             return;
         }
         rows.push(
@@ -136,7 +146,7 @@ pub fn effects(i: &ir::Instrument, g: &ir::Group) -> El {
                 .pad(edges(TIGHT, 0., 0., 0.))
                 .shrink(0),
         );
-        for p in c.pre_amplitude.iter().chain(&c.post_amplitude) {
+        for p in processors {
             let on = !matches!(p, ir::Processor::Mix { bypass: true, .. });
             let detail = detail(*p);
             rows.push(
@@ -152,14 +162,16 @@ pub fn effects(i: &ir::Instrument, g: &ir::Group) -> El {
             );
         }
     };
-    chain("Group inserts".into(), g.chain);
+    // port from v1 0cb7a8a0:src/ui/chain.rs: inventory every group insert once.
+    let group = group_chains(i, g);
+    chain("Group inserts".into(), &group);
     for (n, c) in i.chains.iter().enumerate() {
-        if Some(ir::ChainRef(n)) == g.chain {
+        if group.contains(&ir::ChainRef(n)) {
             continue;
         }
         match c.scope {
-            ir::Scope::Master => chain("Instrument inserts".into(), Some(ir::ChainRef(n))),
-            ir::Scope::Bus(b) => chain(format!("Bus {}", b.0 + 1), Some(ir::ChainRef(n))),
+            ir::Scope::Master => chain("Instrument inserts".into(), &[ir::ChainRef(n)]),
+            ir::Scope::Bus(b) => chain(format!("Bus {}", b.0 + 1), &[ir::ChainRef(n)]),
             _ => {}
         }
     }
