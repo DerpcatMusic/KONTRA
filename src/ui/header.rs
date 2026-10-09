@@ -275,9 +275,8 @@ fn interface_settings(ui: &mut Ui, cx: &mut Cx) -> El {
     }
     let (reset, reset_el) = action(ui, "ui-scale-reset", "Reset", false);
     if reset { cx.p.shared.libraries.edit(|s| s.ui_scale = 1.0); }
-    row![caption("Interface scale").fill(secondary()).lines(1).shrink(0),
-        segmented(choices), reset_el,
-        caption("Window size is remembered").fill(secondary()).lines(1).flex(1).min_w(0)]
+    row![caption("Interface scale").fill(secondary()).lines(1).shrink(0)
+            .tip("Window size is remembered").id("ui-scale-label"), segmented(choices), reset_el]
         .gap(SPACE).align(Align::Center).pad(edges(TIGHT, SPACE, SPACE, INSET)).shrink(0)
 }
 
