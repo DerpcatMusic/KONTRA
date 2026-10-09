@@ -438,16 +438,23 @@ impl Runtime {
         if let Some(write) = scalar {
             self.edit_controls_now(plan, expected_revision, &[write])?;
             if let Some(drop) = w.drop {
-                self.plans.get_mut(plan.0).unwrap().scripts[usize::from(w.instance.0)].cells
-                    [drop.counts as usize..drop.counts as usize + 3]
-                    .fill(0);
+                let bank = &mut self.plans.get_mut(plan.0).unwrap().scripts[usize::from(w.instance.0)];
+                for index in drop.counts as usize..drop.counts as usize + 3 {
+                    let changed = bank.cells[index] != 0;
+                    bank.cells[index] = 0;
+                    bank.mark_captured_cell(index, changed);
+                }
             }
         } else {
             let generation = self.plans.get_mut(plan.0).unwrap();
             let next = revision.checked_add(1).ok_or(Error::Capacity)?;
             let bank = &mut generation.scripts[usize::from(w.instance.0)];
             if let Some(drop) = w.drop {
-                bank.cells[drop.counts as usize..drop.counts as usize + 3].fill(0);
+                for index in drop.counts as usize..drop.counts as usize + 3 {
+                    let changed = bank.cells[index] != 0;
+                    bank.cells[index] = 0;
+                    bank.mark_captured_cell(index, changed);
+                }
             }
             for e in edits {
                 if let WidgetValue::DropPath { kind, path } = e.value {
@@ -456,14 +463,22 @@ impl Runtime {
                     bank.texts[(drop.texts + kind as u32 * WIDGET_DROP_CAPACITY) as usize
                         + *count as usize] = path;
                     *count += 1;
+                    bank.mark_captured_cell(drop.counts as usize + kind as usize, true);
                     continue;
                 }
                 match (w.storage, e.value) {
                     (WidgetStorage::Cells { offset, .. }, WidgetValue::Integer(v)) => {
-                        bank.cells[(offset + e.index) as usize] = v
+                        let index = (offset + e.index) as usize;
+                        let changed = bank.cells[index] != v;
+                        bank.cells[index] = v;
+                        bank.mark_captured_cell(index, changed);
                     }
                     (WidgetStorage::Cells { offset, .. }, WidgetValue::Real(v)) => {
-                        bank.cells[(offset + e.index) as usize] = v.to_bits() as i64
+                        let index = (offset + e.index) as usize;
+                        let value = v.to_bits() as i64;
+                        let changed = bank.cells[index] != value;
+                        bank.cells[index] = value;
+                        bank.mark_captured_cell(index, changed);
                     }
                     (WidgetStorage::FileSelection { offset }, WidgetValue::Text(v)) => {
                         bank.texts[offset as usize] = v

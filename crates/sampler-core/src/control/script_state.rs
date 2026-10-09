@@ -138,9 +138,39 @@ impl Runtime {
             }
         }
         for (bank, mask) in generation.scripts.iter_mut().zip(masks) {
+            bank.dirty_cells = Some(vec![0; mask.len()].into_boxed_slice());
             bank.captured_cells = Some(mask);
         }
         generation.script_revision = generation.script_revision.wrapping_add(1);
+        Ok(())
+    }
+
+    /// Registered snapshot owner: visit changed captured cells without clearing them.
+    /// False means a plan has no complete registered domain and needs full capture.
+    pub fn visit_dirty_script_cells(&self, plan: PlanId, mut visit: impl FnMut(ScriptStateAddress)) -> Result<bool, Error> {
+        let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
+        if generation.scripts.iter().any(|bank| bank.dirty_cells.is_none()) {
+            return Ok(false);
+        }
+        for (instance, bank) in generation.scripts.iter().enumerate() {
+            for (word, &bits) in bank.dirty_cells.as_deref().unwrap().iter().enumerate() {
+                let mut bits = bits;
+                while bits != 0 {
+                    let index = word * 64 + bits.trailing_zeros() as usize;
+                    bits &= bits - 1;
+                    visit(ScriptStateAddress::Cell { instance: ScriptInstanceId(instance as u16), index: index as u32 });
+                }
+            }
+        }
+        Ok(true)
+    }
+
+    /// Clear only after the registered snapshot owner successfully captured the batch.
+    pub fn clear_dirty_script_cells(&mut self, plan: PlanId) -> Result<(), Error> {
+        let generation = self.plans.get_mut(plan.0).ok_or(Error::StaleHandle)?;
+        for bank in &mut generation.scripts {
+            if let Some(dirty) = bank.dirty_cells.as_mut() { dirty.fill(0); }
+        }
         Ok(())
     }
 
@@ -306,7 +336,10 @@ impl Runtime {
                         .edit_control(&generation.prepared, index, playing, self.now);
                 }
                 (ScriptStateAddress::Cell { instance, index }, ScriptStateValue::Cell(value)) => {
-                    generation.scripts[usize::from(instance.0)].cells[index as usize] = value
+                    let bank = &mut generation.scripts[usize::from(instance.0)];
+                    let changed = bank.cells[index as usize] != value;
+                    bank.cells[index as usize] = value;
+                    bank.mark_captured_cell(index as usize, changed);
                 }
                 (ScriptStateAddress::Text { instance, index }, ScriptStateValue::Text(value)) => {
                     generation.scripts[usize::from(instance.0)].texts[index as usize] = value
