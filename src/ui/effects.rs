@@ -9,11 +9,91 @@ use sampler_core::{
 /// The common model supplies roles; display names never determine routing.
 pub struct FilterModel {
     pub rate: u32,
-    pub kind: FilterKind,
+    pub kernel: FilterKernel,
     pub cutoff: ParameterAddress,
     pub q: ParameterAddress,
     pub frequency_hz: fn(f64, u32) -> f64,
     pub resonance_q: fn(f64) -> f64,
+}
+
+#[derive(Clone, Copy)]
+pub enum FilterKernel {
+    Biquad(FilterKind),
+    LadderLP4 { gain: ParameterAddress },
+}
+
+#[derive(Clone, Copy)]
+enum Response {
+    Biquad(Biquad),
+    LadderLP4 { knobs: [f32; 3], rate: u32 },
+}
+
+impl Response {
+    fn magnitude(self, hz: f64) -> f64 {
+        match self {
+            Self::Biquad(coefficients) => coefficients.magnitude(hz),
+            Self::LadderLP4 { knobs, rate } => f64::from(sampler_core::LadderSettings::magnitude(
+                knobs, hz as f32, rate,
+            )),
+        }
+    }
+}
+
+impl FilterModel {
+    fn cutoff_hz(&self, value: f64) -> f64 {
+        match self.kernel {
+            FilterKernel::Biquad(_) => (self.frequency_hz)(value, self.rate),
+            FilterKernel::LadderLP4 { .. } => {
+                f64::from(sampler_core::LadderSettings::cutoff_hz(value as f32))
+            }
+        }
+    }
+
+    fn resonance(&self, value: f64) -> f64 {
+        match self.kernel {
+            FilterKernel::Biquad(_) => (self.resonance_q)(value),
+            FilterKernel::LadderLP4 { .. } => value,
+        }
+    }
+
+    fn preview(&self, controls: &[(&ParameterDescriptor, f64)]) -> Option<(Response, f64, f64)> {
+        let read = |address| {
+            controls
+                .iter()
+                .find(|(d, _)| d.address == address)
+                .map(|(_, v)| *v)
+        };
+        if high_hz(self.rate) <= 20. {
+            return None;
+        }
+        let cutoff = read(self.cutoff)?;
+        let resonance = self.resonance(read(self.q)?);
+        let hz = self.cutoff_hz(cutoff);
+        match self.kernel {
+            FilterKernel::Biquad(kind) => Some((
+                Response::Biquad(Biquad::new(self.rate, kind, hz, resonance).ok()?),
+                hz,
+                self::kind(self.kernel).2,
+            )),
+            FilterKernel::LadderLP4 { gain } => {
+                let gain = read(gain)?;
+                if !(0.0..=1.0).contains(&cutoff)
+                    || !(0.0..=1.0).contains(&resonance)
+                    || !(-1.0..=1.0).contains(&gain)
+                {
+                    return None;
+                }
+                let response = Response::LadderLP4 {
+                    knobs: [cutoff as f32, resonance as f32, gain as f32],
+                    rate: self.rate,
+                };
+                response
+                    .magnitude(1000.)
+                    .is_finite()
+                    .then_some((response, hz, gain))
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -115,7 +195,10 @@ fn readout(d: &ParameterDescriptor, v: f64) -> String {
     }
 }
 
-fn kind(kind: FilterKind) -> (&'static str, u8, f64) {
+fn kind(kernel: FilterKernel) -> (&'static str, u8, f64) {
+    let FilterKernel::Biquad(kind) = kernel else {
+        return ("Low-pass · 4 poles", 8, 0.);
+    };
     match kind {
         FilterKind::LowPass => ("Low-pass", 0, 0.),
         FilterKind::HighPass => ("High-pass", 1, 0.),
@@ -167,7 +250,7 @@ pub fn filter(
         state.grabbed = false;
         return caption("Filter parameters are not available.").fill(secondary());
     };
-    let (title, k, gain) = kind(model.kind);
+    let (title, k, _) = kind(model.kernel);
     let (reset, reset_el) = action(ui, "effect-filter-reset", "Reset", false);
     if reset {
         for (d, v) in &mut controls {
@@ -185,26 +268,21 @@ pub fn filter(
     {
         if r.pressed {
             state.first_drag = true;
-            state.grabbed = Biquad::new(
-                model.rate,
-                model.kind,
-                (model.frequency_hz)(controls[cutoff].1, model.rate),
-                (model.resonance_q)(controls[q].1),
-            )
-            .ok()
-            .zip(ui.local("effect-filter-graph"))
-            .is_some_and(|(coefficients, p)| {
-                let hz = (model.frequency_hz)(controls[cutoff].1, model.rate);
-                let at = editor::place(
-                    size,
-                    [
-                        frequency_x(hz, model.rate),
-                        viz::db_y((20. * coefficients.magnitude(hz).max(1e-6).log10()) as f32)
-                            .clamp(0., 1.),
-                    ],
-                );
-                (at.x - p.x).hypot(at.y - p.y) <= CONTROL
-            });
+            state.grabbed = model
+                .preview(&controls)
+                .zip(ui.local("effect-filter-graph"))
+                .is_some_and(|((coefficients, hz, _), p)| {
+                    let hz = hz.clamp(20., high_hz(model.rate));
+                    let at = editor::place(
+                        size,
+                        [
+                            frequency_x(hz, model.rate),
+                            viz::db_y((20. * coefficients.magnitude(hz).max(1e-6).log10()) as f32)
+                                .clamp(0., 1.),
+                        ],
+                    );
+                    (at.x - p.x).hypot(at.y - p.y) <= CONTROL
+                });
         }
         if state.grabbed && r.dragged {
             let fine = if r.mods.shift { 0.1 } else { 1. };
@@ -280,6 +358,20 @@ pub fn filter(
             ))
             .id(id);
         let value_id = format!("effect-value-{}", d.control.0);
+        let value_tip = if matches!(model.kernel, FilterKernel::LadderLP4 { .. })
+            && d.address == model.cutoff
+        {
+            format!(
+                "{}: {:.1} Hz cutoff. Double-click to type the normalized parameter value.",
+                d.name,
+                model.cutoff_hz(*v)
+            )
+        } else {
+            format!(
+                "{}: double-click to type a value in the parameter's units",
+                d.name
+            )
+        };
         if ui.get(&value_id).double_clicked {
             state.typing = Some((d.control, v.to_string()));
         }
@@ -311,10 +403,7 @@ pub fn filter(
                     .text_size(TEXT)
                     .lines(1)
                     .reserve("20000.00 Hz")
-                    .tip(format!(
-                        "{}: double-click to type a value in the parameter's units",
-                        d.name
-                    ))
+                    .tip(value_tip)
                     .id(value_id)
             };
         if groups
@@ -337,14 +426,16 @@ pub fn filter(
             .min_w(0),
         );
     }
-    let (hz, q) = (
-        (model.frequency_hz)(controls[cutoff].1, model.rate),
-        (model.resonance_q)(controls[q].1),
-    );
     let width = ui
         .scene()
-        .and_then(|s| s.surface("effect-filter-graph"))
-        .map(|s| s.frame.size.width)
+        .and_then(|s| {
+            s.surface("effect-filter-graph")
+                .map(|s| s.frame.size.width)
+                .or_else(|| {
+                    s.surface("effect-filter")
+                        .map(|s| s.frame.size.width - INSET * 2.)
+                })
+        })
         .unwrap_or(TEXT * 20.);
     let columns = ((width + INSET) / (TEXT * 9. + INSET)).floor().max(1.) as usize;
     let multiple = groups.len() > 1;
@@ -364,16 +455,24 @@ pub fn filter(
     .max_size(Size::new(1e5, CONTROL * 5.))
     .scroll()
     .shrink(0);
-    let Ok(coefficients) = Biquad::new(model.rate, model.kind, hz, q) else {
+    let Some((coefficients, hz, gain)) = model.preview(&controls) else {
         return col![
             section_bar(title, vec![reset_el]),
             caption("Filter preview is not available.").fill(secondary()),
             control_rows
         ]
-        .gap(SPACE);
+        .gap(SPACE)
+        .min_w(0)
+        .id("effect-filter");
     };
     let rate = model.rate;
-    let key = (rate, k, gain.to_bits(), hz.to_bits(), q.to_bits());
+    let key = (
+        rate,
+        k,
+        gain.to_bits(),
+        hz.to_bits(),
+        model.resonance(controls[q].1).to_bits(),
+    );
     let graph = canvas_keyed(&state.response, key, move |size| {
         let mut draws = Vec::new();
         for hz in [100., 1000., 10000.] {
@@ -422,11 +521,13 @@ pub fn filter(
         .and_then(|s| s.surface("effect-filter-graph"))
         .map(|s| s.frame.size)
         .unwrap_or(Size::new(1., 1.));
+    let node_hz = hz.clamp(20., high_hz(rate));
     let at = editor::place(
         size,
         [
-            frequency_x(hz, rate),
-            viz::db_y((20. * coefficients.magnitude(hz).max(1e-6).log10()) as f32).clamp(0., 1.),
+            frequency_x(node_hz, rate),
+            viz::db_y((20. * coefficients.magnitude(node_hz).max(1e-6).log10()) as f32)
+                .clamp(0., 1.),
         ],
     );
     let handle = block(SPACE, SPACE)
@@ -437,10 +538,20 @@ pub fn filter(
         .float()
         .id("effect-filter-handle")
         .disabled();
+    let (status, status_tip) = match model.kernel {
+        FilterKernel::Biquad(_) => (
+            "Unverified mapping",
+            "Standalone physical Hz/Q fixture uses identity converters. Native filter parameter conversion is awaiting verification.",
+        ),
+        FilterKernel::LadderLP4 { .. } => (
+            "Normalized resonance",
+            "LP4 cutoff uses the shared cutoff_hz helper. Resonance stays normalized. The curve is the playback kernel's small-signal response; large signals additionally undergo input soft clipping.",
+        ),
+    };
     col![
         section_bar(title, vec![
-            caption("Unverified mapping").fill(secondary()).lines(1)
-                .tip("Standalone physical Hz/Q fixture uses identity converters. Native filter parameter conversion is awaiting verification.")
+            caption(status).fill(secondary()).lines(1)
+                .tip(status_tip)
                 .id("effect-filter-mapping-status"),
             reset_el,
         ]),
@@ -452,7 +563,7 @@ pub fn filter(
             .cursor(Cursor::Grab)
             .named("Filter response")
             .tip(
-                "Drag the node: across for cutoff, up for Q. Wheel changes Q; double-click resets."
+                "Drag the node: across for cutoff, up for resonance. Wheel changes resonance; double-click resets."
             )
             .id("effect-filter-graph")
             .flex(1)
@@ -530,6 +641,7 @@ mod tests {
         writes: RefCell<Vec<(ControlId, f64)>>,
         size: Size,
         frequency_hz: fn(f64, u32) -> f64,
+        kernel: FilterKernel,
     }
     impl Fixture {
         fn new(width: f64, height: f64) -> Self {
@@ -548,6 +660,7 @@ mod tests {
                 writes: RefCell::default(),
                 size: Size::new(width, height),
                 frequency_hz: |v, _| v,
+                kernel: FilterKernel::Biquad(FilterKind::LowPass),
             };
             f.idle(4);
             f
@@ -555,7 +668,7 @@ mod tests {
         fn tick(&mut self, input: Input) {
             let model = FilterModel {
                 rate: 48000,
-                kind: FilterKind::LowPass,
+                kernel: self.kernel,
                 cutoff: self.descriptors[1].address,
                 q: self.descriptors[0].address,
                 frequency_hz: self.frequency_hz,
@@ -603,6 +716,41 @@ mod tests {
                 },
                 ..Default::default()
             });
+        }
+
+        fn lp4(width: f64, height: f64) -> Self {
+            let mut f = Self::new(width, height);
+            for (d, default) in f.descriptors.iter_mut().zip([0.6, 0.5]) {
+                d.unit = ParameterUnit::Normalized;
+                d.range = [0., 1.];
+                d.default = default;
+                d.law = ParameterLaw::Linear;
+            }
+            let mut gain = f.descriptors[0].clone();
+            gain.control = ControlId(903);
+            gain.address.node = 22;
+            gain.name = "Drive".into();
+            gain.unit = ParameterUnit::Linear;
+            gain.range = [-1., 1.];
+            gain.default = 0.;
+            gain.display.order = 3;
+            f.kernel = FilterKernel::LadderLP4 { gain: gain.address };
+            f.descriptors.push(gain);
+            let mut registry = sampler_core::ParameterRegistry::default();
+            for d in &f.descriptors {
+                registry.register(d.clone()).unwrap();
+            }
+            f.descriptors = registry.prepare().unwrap().descriptors().cloned().collect();
+            *f.values.borrow_mut() = f
+                .descriptors
+                .iter()
+                .map(|d| (d.control, d.default))
+                .collect();
+            // LP4 must use its shared helper rather than a Biquad converter supplied by the caller.
+            f.frequency_hz = |_, _| f64::NAN;
+            f.state = State::default();
+            f.idle(4);
+            f
         }
     }
 
@@ -785,6 +933,85 @@ mod tests {
             "the node lies on the playback low-pass response: magnitude at cutoff is Q"
         );
         assert!(f.writes.borrow().is_empty());
+    }
+
+    #[test]
+    fn lp4_uses_shared_cutoff_and_response_without_claiming_physical_resonance_units() {
+        for (w, h) in [(900., 600.), (1180., 900.)] {
+            let mut f = Fixture::lp4(w, h);
+            let scene = f.ui.scene().unwrap();
+            let graph = scene
+                .surface("effect-filter-graph")
+                .expect("dedicated LP4 preview")
+                .frame;
+            for (id, value) in [(901, "0.500"), (902, "0.600")] {
+                assert_eq!(
+                    scene
+                        .surface(&format!("effect-value-{id}"))
+                        .unwrap()
+                        .text_value
+                        .as_deref(),
+                    Some(value)
+                );
+            }
+            let at = scene.surface("effect-filter-handle").unwrap().frame;
+            let hz = f64::from(sampler_core::LadderSettings::cutoff_hz(0.5));
+            let magnitude =
+                sampler_core::LadderSettings::magnitude([0.5, 0.6, 0.], hz as f32, 48000);
+            let expected = editor::place(
+                graph.size,
+                [
+                    frequency_x(hz, 48000),
+                    viz::db_y(20. * magnitude.max(1e-6).log10()).clamp(0., 1.),
+                ],
+            );
+            assert!((at.x + SPACE / 2. - graph.x - expected.x).abs() < 0.5);
+            assert!(
+                (at.y + SPACE / 2. - graph.y - expected.y).abs() < 0.5,
+                "node uses the playback LP4 kernel"
+            );
+            assert!(
+                f.writes.borrow().is_empty(),
+                "painting preserves normalized lanes"
+            );
+            let at = super::super::tests::center(&f.ui, "effect-filter-handle");
+            f.pointer(at, true);
+            f.pointer(Point::new(at.x + 50., at.y - 30.), true);
+            f.pointer(Point::new(at.x + 50., at.y - 30.), false);
+            assert!(f.values.borrow()[&ControlId(901)] > 0.5);
+            assert!(f.values.borrow()[&ControlId(902)] > 0.6);
+            assert_eq!(
+                f.values.borrow()[&ControlId(903)],
+                0.,
+                "cutoff/resonance gesture leaves drive alone"
+            );
+            assert!(
+                f.writes
+                    .borrow()
+                    .iter()
+                    .all(|(id, value)| [ControlId(901), ControlId(902)].contains(id)
+                        && (0.0..=1.0).contains(value))
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "shots")]
+    fn lp4_panel_shots() {
+        let Some(out) = std::env::var_os("KONTRA_LP4_SHOTS").map(std::path::PathBuf::from) else {
+            return;
+        };
+        std::fs::create_dir_all(&out).unwrap();
+        for (w, h) in [(900, 600), (1180, 900)] {
+            let mut f = Fixture::lp4(w as f64, h as f64);
+            f.idle(20);
+            moose::core::screenshot::save_png(
+                &out.join(format!("lp4-{w}.png")),
+                &super::super::tests::pixels(&f.ui, w, h),
+                w.into(),
+                h.into(),
+            );
+        }
     }
 
     #[test]
