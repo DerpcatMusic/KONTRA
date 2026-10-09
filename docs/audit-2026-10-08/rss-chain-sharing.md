@@ -1,8 +1,9 @@
 # Shared immutable voice chains
 
 Base: `c39fd7b0fc3245b3087c5da7408028a9831ffbfd` (includes W15 pan routing).
-Status: **HOLD, parked** at the item timebox. Seeded UVI indices11/21 and the
-authorized quiet load receipt remain UNKNOWN. Pacific smoke trace is resolved.
+Status: **Seeded PCM PASS, cleared for the next batch** (`ed07a549`). All five
+held UVI rows now match in the strict optimized A/B below. Quiet load evidence
+remains UNKNOWN; Pacific smoke trace is resolved.
 
 ## Change and v1 source
 
@@ -117,10 +118,51 @@ wrapper renders establish correctness only; there is no CPU or load verdict.
 Each has a separate BUILD.json with features, source fingerprints and protocol.
 No authored PCM was retained; the original manifest and note plans are reused.
 
-Parked work: resolve the owner-clock/work behavior for UVI11/21 after W10's
+Earlier parked work (superseded by the completed A/B below): resolve the owner-clock/work behavior for UVI11/21 after W10's
 hotfix, then complete strict parity. Run the prepared six-cell quiet collector
 only after the actual W9→W8 handoff. No W8 quiet request was created or claimed.
 NEXT: UVI11/21 owner evidence, then authorized quiet load measurements.
+
+## Strict optimized seeded A/B completed, 2026-10-09
+
+The five held rows now **PASS** and clear implementation `ed07a549` for the next
+batch on PCM correctness. No production source was changed for this receipt.
+Both immutable `ci` witnesses use root `shots`, seed 42, the same `0be9aa7b`
+audit overlay and common dependencies listed above; all non-chain source
+fingerprints and both binary SHA256s were verified before use. The existing
+helper ran through the normal kontakto-heavy FIFO, one bounded shard at a time.
+Each side rendered 384,000 samples at 48 kHz/block 64, with the unchanged
+program/key/keyswitch plan, velocity 64 and common CCs. Only numeric receipts and
+PCM hashes were persisted.
+
+| UVI row | Verdict | Identical before/after BLAKE3 PCM hash |
+|---|---|---|
+| 11 | PASS, audible | `ec684d68deae6aefbd0f94e6b54928ff95ed8cda48f035d7765465b40e449594` |
+| 12 | PASS, audible | `97ad41a1002763ddebde5f4a514c81f79a1167e8c1e09ca64544f9bf62e62efc` |
+| 13 | PASS, audible | `e8e09e2479156b5fbdd307e5e5e023f4f365d1e9a420680115201553d36d37d4` |
+| 14 | PASS, audible | `870caca9233f8aac574298a4e4e4e436c06766891d8382dcbe6f5176050f2a69` |
+| 21 | PASS, audible | `f8e30173c479715fe50d667585ea73966febb053adf1c901158db4a59521effc` |
+
+All five full paired records agree, including reported runtime-counter snapshots
+(all zero). W10 identified a separate `0be9` audit limitation: the owner sends
+commands and due time before publishing UI/fault/scan readback. These snapshots
+do not validate that publication barrier; the PCM equality verdict stands.
+There is no need for an attribution repeat or signal-stage divergence trace
+when the complete PCM hashes agree. Earlier timeouts and cancelled attempts
+remain intact; this successful run does not establish their cause.
+
+Numeric evidence: `~/.cache/kontakto-fix-load/rss-owners/c45-seeded-summary.json`
+contains freeze provenance, full paired PCM records, fixed plans and receipt
+SHA256s; `c45-seeded-provenance.json` and ten
+`c45-seeded-ci-{before,after}-pcm-{11,12,13,14,21}.json` retain individual results.
+Existing 62-targeted/1-ignored checks cover the unchanged implementation.
+`cargo test --locked --lib --no-run` was revalidated through kontakto-heavy
+before this receipt push (PASS, log `c45-seeded-root-no-run.log`). No full suite
+or new production/audit overlay was added.
+
+Quiet load/first-sound and editor-open RSS remain UNKNOWN. Frozen 0.3.326 and
+default RSS witnesses were unchanged, with no install and no W8 quiet request.
+NEXT: W9 direct handoff → six frozen 0.3.326 load cells → direct W6 handoff.
 
 ## RSS and load receipts
 
