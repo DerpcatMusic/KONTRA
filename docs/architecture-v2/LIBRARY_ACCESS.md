@@ -39,3 +39,19 @@ Program XML is bounded to 32 MiB and one million nodes, with DTDs disabled.
 This admits the installed Augmented Orchestra programs with more than
 200,000 nodes. Explicit `$Bank.ufs/` resources resolve within their named bank.
 XML bounds: `f24c85c6`; resource paths: `2b9a8b3d`; memory-only access: `2a6ba617`.
+
+## Unavailable UVI banks
+
+Catalog failures are grouped as `bank_unreadable`: one record per cause with
+all affected locations. The Falcon/UVI tab keeps a visible unsupported-library
+message even when no presets were admitted, instead of showing an empty-library
+state. Other malformed-bank failures remain separate diagnostics. Successful
+libraries stay available alongside the failure summary.
+
+The reader discovery/Locate proposal is parked by the user's 2026-10-09
+directive; this diagnostic-only change adds no reader selection, discovery or
+external software access. Existing reader-backed receipts retain their original
+provenance and do not establish support under the new policy. The release owner
+must apply the product's separate access policy; this change only reports failures.
+Its tests use synthetic catalog errors and UI fixtures, without opening installed
+protected banks or touching a Wine prefix.
