@@ -297,7 +297,7 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             let mut items = vec![
                 act("Add folder of libraries…", "", Command::AddFolder(false)),
                 act("Add library folder…", "", Command::AddFolder(true)),
-                act("Import from Kontakt", "", Command::ImportKontakt),
+                act("Find installed libraries", "", Command::ImportKontakt),
                 act("Create library from folder…", "", Command::CreateLibrary),
                 Item::Rule,
                 act("Library folders…", "", Command::Folders),

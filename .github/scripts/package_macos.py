@@ -94,6 +94,8 @@ def compose(arm64, x86_64, stage, revision, version, lipo="lipo"):
     for fmt in FORMATS:
         a, b = (dict(manifests[arch][fmt]) for arch in TARGETS)
         a.pop("target"); b.pop("target")
+        if a.pop("dirty", None) != b.pop("dirty", None):
+            print(f"::warning::{fmt}: architecture source status differs; preserving both source manifests")
         require(a == b, f"{fmt}: architecture build metadata differs beyond target")
     # No embedded code may escape the explicit signing list.
     mach_magic = {bytes.fromhex(h) for h in ("feedface", "cefaedfe", "feedfacf", "cffaedfe", "cafebabe", "bebafeca", "cafebabf", "bfbafeca")}

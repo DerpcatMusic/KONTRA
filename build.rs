@@ -163,6 +163,7 @@ fn identity(import_hash: u64, build_hash: u64) {
         "SOURCE_DATE_EPOCH",
         "KONTRA_BUILD_REVISION",
         "KONTRA_SOURCE_REVISION",
+        "KONTRA_NIGHTLY_BUILD",
     ] {
         println!("cargo:rerun-if-env-changed={name}");
     }
@@ -200,7 +201,25 @@ fn identity(import_hash: u64, build_hash: u64) {
         .map(revision)
         .unwrap_or_else(|| rev.clone());
     // Untracked and ignored output is not a source modification.
-    let dirty = git(&["status", "--porcelain", "--untracked-files=no"]).map(|s| !s.is_empty());
+    let dirty = if env::var("KONTRA_NIGHTLY_BUILD").as_deref() == Ok("1") {
+        // Nightly changes only the root package versions; validate the entire delta.
+        let status = Command::new("python3")
+            .args(["tools/version.py", "nightly-dirty"])
+            .output();
+        match status {
+            Ok(status) if status.status.success() && status.stdout.trim_ascii() == b"false" => Some(false),
+            Ok(status) if status.status.success() && status.stdout.trim_ascii() == b"true" => {
+                println!("cargo:warning=Nightly has source changes beyond its version stamp; dirty=true is recorded");
+                Some(true)
+            }
+            _ => {
+                println!("cargo:warning=Nightly stamp validation unavailable; recording ordinary Git source status");
+                git(&["status", "--porcelain", "--untracked-files=no"]).map(|s| !s.is_empty())
+            }
+        }
+    } else {
+        git(&["status", "--porcelain", "--untracked-files=no"]).map(|s| !s.is_empty())
+    };
     let epoch = env::var("SOURCE_DATE_EPOCH")
         .map(|v| {
             v.parse()

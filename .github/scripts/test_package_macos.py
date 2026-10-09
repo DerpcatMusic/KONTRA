@@ -99,6 +99,16 @@ class Packaging(unittest.TestCase):
         self.assertEqual(plist, package.app_info(VERSION))
         self.assertFalse((resources / 'KONTRA.app').exists())
 
+    def test_dirty_source_status_is_recorded_without_blocking_composition(self):
+        path = self.sources['x86_64'] / package.MANIFESTS['standalone']
+        info = json.loads(path.read_text())
+        info['dirty'] = True
+        path.write_text(json.dumps(info))
+        identity = self.compose()
+        self.assertIs(identity['source_builds']['arm64']['standalone']['dirty'], False)
+        self.assertIs(identity['source_builds']['x86_64']['standalone']['dirty'], True)
+        self.assertTrue((self.stage / 'build-info.json').exists())
+
     def test_mismatched_identity_or_resources_never_produces_payload(self):
         for case in ('revision', 'version', 'profile', 'features', 'resources', 'plist', 'app-types', 'arch', 'binary', 'legal', 'symlink'):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:

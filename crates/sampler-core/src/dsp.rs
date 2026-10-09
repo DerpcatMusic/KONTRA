@@ -170,6 +170,8 @@ pub enum Processor {
     /// Formant Crusher decimation; per-voice scalar path.
     Decimate(Decimator),
     StateVariable(StateVariableFilter),
+    /// Live gain owner for the v1 TPT peaking-band fallback.
+    PeakingEq(PeakingEq),
     /// Stereo reverb; bus scope only (it owns megabytes of state).
     Reverb(ReverbSettings),
     /// `dry * x + wet * (x * impulse)`; bus scope only. `impulse` indexes
@@ -197,6 +199,7 @@ impl Processor {
             Processor::StereoMatrix(matrix) => matrix.iter().flatten().all(|v| v.is_finite()),
             Processor::ControlGain(binding) => binding.valid(),
             Processor::StateVariable(filter) => filter.valid(),
+            Processor::PeakingEq(settings) => settings.valid(),
             Processor::Reverb(settings) => settings.valid(),
             Processor::Convolution { dry, wet, .. } => dry.is_finite() && wet.is_finite(),
             Processor::Mix {
@@ -222,6 +225,8 @@ mod compressor;
 pub(super) mod control;
 mod convolution;
 mod daft;
+mod eq;
+pub use eq::PeakingEq;
 mod ladder_kernel;
 mod lofi;
 pub use lofi::LoFiSettings;
@@ -253,6 +258,7 @@ pub(super) enum PreparedProcessor {
     Gain(f64),
     StereoMatrix([[f64; 2]; 2]),
     Biquad(Biquad),
+    PeakingEq(eq::Eq),
     ControlGain(usize),
     Delay {
         delay: Delay,
@@ -494,6 +500,7 @@ pub(super) fn compile_processors(
                     }
                     PreparedProcessor::Biquad(filter)
                 }
+                Processor::PeakingEq(settings) => PreparedProcessor::PeakingEq(settings.compile(rate, bindings)?),
                 Processor::ControlGain(binding) => {
                     let lane = bindings.len();
                     bindings.push(binding);
@@ -1009,6 +1016,7 @@ pub(super) fn process<const TRACE: bool>(
                     *r *= gain;
                 }
             }
+            PreparedProcessor::PeakingEq(eq) => eq.process(state, parameters, block, len, at),
             PreparedProcessor::Biquad(filter) => {
                 let [mut zl, mut zr] = state.z;
                 let [left, right] = block;
@@ -1201,6 +1209,16 @@ mod tests {
                 }),
             ], Vec::new(), 0).unwrap().compile(48000, &mut Vec::new(), &mut Vec::new()).unwrap();
             assert_eq!(chain.batches(), !pseudo);
+        }
+    }
+
+    #[test]
+    fn live_eq_keeps_other_stages_in_the_lane_path() {
+        for gain in [-12., 0., 12.] {
+            let chain = VoiceChain::new(vec![Processor::PeakingEq(PeakingEq {
+                frequency: Parameter::Constant((1000f64 / 20.).log10() / 3.), bandwidth: Parameter::Constant((1. - 0.3) / 2.7), gain_db: Parameter::Constant(gain),
+            })], Vec::new(), 0).unwrap().compile(48000, &mut Vec::new(), &mut Vec::new()).unwrap();
+            assert!(chain.batches(), "live EQ must not force unrelated stages out of the lane path");
         }
     }
 

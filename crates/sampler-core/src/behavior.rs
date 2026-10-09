@@ -839,7 +839,7 @@ pub struct BehaviorId(pub(super) Handle);
 pub enum Outcome {
     Finished,
     Cancelled,
-    /// Still running after one second of preemption (a runaway loop).
+    /// Still running after one second of continuous preemption (a runaway loop).
     FuelExhausted,
     Fault(Error),
 }
@@ -1550,7 +1550,7 @@ impl Runtime {
     }
 
     /// Out of fuel for this block: continue next block, unless it has been
-    /// running for a second, which only a runaway loop does.
+    /// continuously preempted for a second without an intentional wait.
     fn yield_behavior(&mut self, id: BehaviorId) {
         let now = self.now;
         let c = self.behaviors.get_mut(id.0).unwrap();
@@ -2555,7 +2555,10 @@ impl Runtime {
         if self.available_commands() == 0 {
             return Err(Error::Capacity);
         }
-        self.behaviors.get_mut(id.0).unwrap().waiting = true;
+        let c = self.behaviors.get_mut(id.0).unwrap();
+        c.waiting = true;
+        // A scheduled wait ends the current burst of continuous preemption.
+        c.yielded_at = None;
         self.queue(at, Action::Resume(id));
         Ok(true)
     }
