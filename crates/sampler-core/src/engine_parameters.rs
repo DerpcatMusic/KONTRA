@@ -255,6 +255,22 @@ pub(crate) const ENVELOPE_STAGES: [crate::EnvelopeStage; 6] = [
 ];
 
 impl Prepared {
+    pub(crate) fn with_authored_engine_parameters(
+        mut self,
+        mut values: Vec<(EngineParameterAddress, i32)>,
+    ) -> Result<Self, Error> {
+        values.sort_by_key(|(address, _)| *address);
+        if values.windows(2).any(|v| v[0].0 == v[1].0)
+            || values
+                .iter()
+                .any(|(address, _)| engine_parameter_name(address.parameter).is_none())
+        {
+            return Err(Error::InvalidInput);
+        }
+        self.authored_engine_parameters = values.into_boxed_slice();
+        Ok(self)
+    }
+
     pub fn engine_parameter_bindings(&self) -> &[EngineParameterBinding] {
         &self.engine_parameters
     }
@@ -649,7 +665,17 @@ impl Runtime {
                 });
             }
         }
-        Err(Error::InvalidInput)
+        // Port v1's live-then-authored getter for inactive native modulators.
+        let values = &self
+            .plans
+            .get(plan.0)
+            .ok_or(Error::StaleHandle)?
+            .prepared
+            .authored_engine_parameters;
+        let index = values
+            .binary_search_by_key(&address, |(address, _)| *address)
+            .map_err(|_| Error::InvalidInput)?;
+        Ok(values[index].1)
     }
 }
 pub(crate) fn display(parameter: u16, value: i32, text: &mut Text) {
