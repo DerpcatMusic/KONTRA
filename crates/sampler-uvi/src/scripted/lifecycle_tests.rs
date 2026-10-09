@@ -164,15 +164,27 @@ fn player_flushes_source_owned_notes_after_eof() {
 fn w10_cold_keys_have_prepared_note_queues() {
     let (_, driver) = fixture("", false);
     for key in 0..128 {
-        assert!(driver.held.get(&key).is_some_and(|ids| ids.capacity() >= TRACKED),
-            "key {key} must not allocate its first or overlapping held-note queue on the callback");
+        assert!(
+            driver
+                .held
+                .get(&key)
+                .is_some_and(|ids| ids.capacity() >= TRACKED),
+            "key {key} must not allocate its first or overlapping held-note queue on the callback"
+        );
     }
 }
 
 #[test]
 fn w10_held_note_budget_returns_capacity_without_growing() {
     let (mut rt, mut driver) = fixture("", false);
-    let input = Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: None };
+    let input = Input {
+        protocol: Protocol::Native,
+        port: 0,
+        group: 0,
+        channel: 0,
+        key: 60,
+        external_id: None,
+    };
     let note = rt.note_on(input, 60, 1.).unwrap();
     let held = driver.held.get_mut(&60).unwrap();
     held.extend(0..TRACKED as u64);
@@ -182,5 +194,9 @@ fn w10_held_note_budget_returns_capacity_without_growing() {
     assert!(driver.notes.is_empty());
     rt.render(&mut [[0.; 2]; 128]).unwrap();
     rt.flush_ended(|_| true);
-    assert_eq!(rt.note_count(), 0, "rejected physical notes cannot remain held");
+    assert_eq!(
+        rt.note_count(),
+        0,
+        "rejected physical notes cannot remain held"
+    );
 }

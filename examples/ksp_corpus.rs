@@ -4,12 +4,17 @@
 use std::{collections::BTreeSet, fs, path::Path};
 
 fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else { return };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
             walk(&path, out);
-        } else if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("nki")) {
+        } else if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("nki"))
+        {
             out.push(path);
         }
     }
@@ -26,8 +31,16 @@ fn main() -> anyhow::Result<()> {
         match sampler_kontakt::read(preset) {
             Ok(loaded) => {
                 read += 1;
-                for (slot, text) in loaded.instrument.behaviors.iter().map(|b| &b.source).enumerate() {
-                    if text.trim().is_empty() || !seen.insert(*blake3::hash(text.as_bytes()).as_bytes()) {
+                for (slot, text) in loaded
+                    .instrument
+                    .behaviors
+                    .iter()
+                    .map(|b| &b.source)
+                    .enumerate()
+                {
+                    if text.trim().is_empty()
+                        || !seen.insert(*blake3::hash(text.as_bytes()).as_bytes())
+                    {
                         continue;
                     }
                     let name = format!("{}-{slot}.ksp", seen.len());
@@ -42,6 +55,10 @@ fn main() -> anyhow::Result<()> {
             }
         }
     }
-    eprintln!("{} presets, {read} read, {failed} unreadable, {} distinct scripts", presets.len(), seen.len());
+    eprintln!(
+        "{} presets, {read} read, {failed} unreadable, {} distinct scripts",
+        presets.len(),
+        seen.len()
+    );
     Ok(())
 }

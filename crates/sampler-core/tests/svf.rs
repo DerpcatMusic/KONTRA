@@ -546,13 +546,21 @@ fn static_filter_boundaries_rates_and_invalid_control_ranges_are_explicit() {
 #[test]
 fn batched_voices_match_voices_rendered_alone() {
     const VOICES: usize = 11;
-    let native_parameter = |low, high| Parameter::Control(ControlRange {
-        control: CUTOFF, low, high, ramp_frames: 4,
-    });
+    let native_parameter = |low, high| {
+        Parameter::Control(ControlRange {
+            control: CUTOFF,
+            low,
+            high,
+            ramp_frames: 4,
+        })
+    };
     let chain = || {
         VoiceChain::new(
             vec![
-                Processor::Gainer { dry: 0.1, gain: native_parameter(0.2, 2.0) },
+                Processor::Gainer {
+                    dry: 0.1,
+                    gain: native_parameter(0.2, 2.0),
+                },
                 Processor::StereoMatrix([[0.9, 0.2], [-0.1, 1.1]]),
                 Processor::Biquad(Biquad::new(48000, FilterKind::LowPass, 7000., 0.8).unwrap()),
                 Processor::StateVariable(filter(SvfMode::LowPass)),
@@ -560,7 +568,9 @@ fn batched_voices_match_voices_rendered_alone() {
             vec![
                 Processor::Gain(0.7),
                 Processor::StereoModeller(StereoSettings {
-                    width: native_parameter(0.0, 1.0), pan: native_parameter(-0.8, 0.5), pseudo: false,
+                    width: native_parameter(0.0, 1.0),
+                    pan: native_parameter(-0.8, 0.5),
+                    pseudo: false,
                 }),
                 Processor::StateVariable(filter(SvfMode::BandPass)),
             ],

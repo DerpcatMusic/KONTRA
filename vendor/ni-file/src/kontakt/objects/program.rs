@@ -1,9 +1,9 @@
 use std::io::{Cursor, Read};
 
 use crate::{
-    Error,
     kontakt::{chunk::Chunk, error::KontaktError, structured_object::StructuredObject},
     read_bytes::ReadBytesExt,
+    Error,
 };
 
 use super::zone_list::ZoneList;
@@ -815,11 +815,9 @@ mod tests {
                 continue;
             }
             let error = ProgramPublicRecord::read(&[], version).unwrap_err();
-            assert!(
-                error
-                    .to_string()
-                    .contains("Unsupported Program public version")
-            );
+            assert!(error
+                .to_string()
+                .contains("Unsupported Program public version"));
         }
         let mut bad_records = Vec::new();
         for at in &fixture.versions {
@@ -894,11 +892,9 @@ mod tests {
             ] {
                 let mut reader = Cursor::new(&data);
                 let error = ProgramDataPrivateParams::read(&mut reader, version).unwrap_err();
-                assert!(
-                    error
-                        .to_string()
-                        .contains(&format!("version 0x{version:04x}"))
-                );
+                assert!(error
+                    .to_string()
+                    .contains(&format!("version 0x{version:04x}")));
                 assert!(error.to_string().contains("unsupported"));
                 assert_eq!(
                     reader.position(),
@@ -924,10 +920,11 @@ mod tests {
         body.extend(&children);
         let program = Program::read(Cursor::new(body)).unwrap();
         assert_eq!(program.version(), 0x80);
-        assert!(
-            ProgramDataPrivateParams::read(Cursor::new(&program.0.private_data), program.version())
-                .is_err()
-        );
+        assert!(ProgramDataPrivateParams::read(
+            Cursor::new(&program.0.private_data),
+            program.version()
+        )
+        .is_err());
         assert_eq!(program.0.private_data, private);
         let raw = &program.children()[0];
         assert!(raw.into_object().is_err());

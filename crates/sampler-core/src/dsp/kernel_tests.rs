@@ -391,29 +391,70 @@ fn shared_svf_matches_frozen_pcm_and_state_bits() {
 #[test]
 fn held_mix_reads_controls_once_per_block_in_scalar_and_lanes() {
     use control::RAMP_READS;
-    let stages = [PreparedProcessor::Mix { count: 1, lanes: [0, 1, 2] },
-        PreparedProcessor::Gain(0.75)];
-    let parameters = [ControlRamp::test_ramp(0., 0.2, 0, 0),
-        ControlRamp::test_ramp(0., 0.8, 0, 0), ControlRamp::test_ramp(0., 0.25, 0, 0)];
+    let stages = [
+        PreparedProcessor::Mix {
+            count: 1,
+            lanes: [0, 1, 2],
+        },
+        PreparedProcessor::Gain(0.75),
+    ];
+    let parameters = [
+        ControlRamp::test_ramp(0., 0.2, 0, 0),
+        ControlRamp::test_ramp(0., 0.8, 0, 0),
+        ControlRamp::test_ramp(0., 0.25, 0, 0),
+    ];
     check(&stages, &[], &parameters);
     let mut states = [ProcessorState::default(); 2];
     let mut block = [[0.125; BLOCK]; 2];
     let mut bank = FilterBank::new(&[], 0).unwrap();
-    let mut context = FilterContext { bank: &mut bank, expression: None,
-        reverbs: &mut [], convolutions: &mut [] };
+    let mut context = FilterContext {
+        bank: &mut bank,
+        expression: None,
+        reverbs: &mut [],
+        convolutions: &mut [],
+    };
     RAMP_READS.with(|n| n.set(0));
-    assert!(!super::process::<false>(&stages, &mut states, &mut block, 32,
-        &parameters, 0, &mut [], &mut context, None));
+    assert!(!super::process::<false>(
+        &stages,
+        &mut states,
+        &mut block,
+        32,
+        &parameters,
+        0,
+        &mut [],
+        &mut context,
+        None
+    ));
     let reads = RAMP_READS.with(|n| n.get());
     eprintln!("held scalar mix reads={reads} frames=32");
-    assert!(reads <= 8, "held scalar mix performed {reads} target reads for 32 frames");
+    assert!(
+        reads <= 8,
+        "held scalar mix performed {reads} target reads for 32 frames"
+    );
     let slab = Slab::new(vec![ProcessorState::default(); 2].into_boxed_slice(), 2);
     let mut cells: Cells<'_> = std::array::from_fn(|v| (v == 0).then(|| slab.claim(v)));
-    let batch = Batch { count: 1, expressions: [None; VOICES], ends: [32; lanes::LANES], len: 32 };
+    let batch = Batch {
+        count: 1,
+        expressions: [None; VOICES],
+        ends: [32; lanes::LANES],
+        len: 32,
+    };
     let mut block = [[0.125; lanes::LANES]; BLOCK];
     RAMP_READS.with(|n| n.set(0));
-    lanes::process(&stages, 0, &mut cells, &batch, &mut block, &parameters, 0, &mut bank);
+    lanes::process(
+        &stages,
+        0,
+        &mut cells,
+        &batch,
+        &mut block,
+        &parameters,
+        0,
+        &mut bank,
+    );
     let reads = RAMP_READS.with(|n| n.get());
     eprintln!("held lane mix reads={reads} frames=32");
-    assert!(reads <= 8, "held lane mix performed {reads} target reads for 32 frames");
+    assert!(
+        reads <= 8,
+        "held lane mix performed {reads} target reads for 32 frames"
+    );
 }
