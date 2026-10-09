@@ -380,6 +380,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn realtime_polyphase_covers_every_supported_pitched_up_octave() {
+        let kernel = Kernel::new(ResampleQuality::Realtime);
+        for step in [1.0001, 2., 2.0001, 3., 4., 8., MAX_STEP] {
+            let bank = kernel.polyphase(step).expect("pitched-up realtime voice needs prepared taps");
+            assert!(bank.stretch >= step && bank.stretch / step <= 2_f64.powf(1. / 8.));
+            for fraction in [0., 0.125, 0.5, 0.999] {
+                let dc = kernel.sample(fraction, step, |_| [1., -1.]);
+                assert!((dc[0] - 1.).abs() < 2e-6 && (dc[1] + 1.).abs() < 2e-6);
+                let frequency = 0.49 / step;
+                let rejected = kernel.sample(fraction, step, |i| {
+                    let angle = 2. * PI * frequency * i as f64;
+                    [angle.cos() as f32, angle.sin() as f32]
+                });
+                assert!(f64::from(rejected[0]).hypot(f64::from(rejected[1])) < 0.02);
+            }
+        }
+        assert!(kernel.polyphase(1.).is_none());
+        assert!(Kernel::new(ResampleQuality::High).polyphase(4.).is_none());
+    }
+
+    #[test]
     fn fractional_kernel_preserves_dc_passband_and_rejects_alias_band() {
         let kernel = Kernel::new(ResampleQuality::High);
         for step in [MIN_STEP, 0.5, 1.0, 48000.0 / 44100.0, 2.0, 8.0, MAX_STEP] {
