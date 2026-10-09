@@ -1577,7 +1577,6 @@ fn render_threads(request: &LoadRequest) -> Threads {
 /// Maximum per-voice memory, including slot and parallel scratch overhead.
 /// The pool grows off audio within this budget and the streaming page budget.
 const VOICE_BUDGET: usize = 256 << 20;
-const MIN_VOICES: usize = 512;
 // port from v1 0cb7a8a0:src/engine/mod.rs; growth remains off audio.
 const MAX_VOICES: usize = 1024;
 const GROWTH: usize = 8;
@@ -3096,7 +3095,7 @@ mod tests {
         let plan = Prepared::new(48000, vec![], vec![], 0).unwrap();
         let (limits, ceiling) = budgeted_limits(&plan, Some(1024));
         assert_eq!(ceiling, 1024);
-        assert_eq!(limits.voices, 512);
+        assert_eq!(limits.voices, 1024);
         assert!(limits.notes >= ceiling);
         assert!(limits.families >= ceiling);
         assert!(ceiling * (plan.voice_state_bytes() + VOICE_OVERHEAD) <= VOICE_BUDGET);
