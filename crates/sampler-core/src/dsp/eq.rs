@@ -154,6 +154,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn held_eq_reads_controls_once_and_reuses_coefficients() {
+        use super::super::control::{PreparedParameter, PARAMETER_READS};
+        let eq = Eq { rate: 48000, frequency: PreparedParameter::Control(0),
+            bandwidth: PreparedParameter::Control(1), gain: PreparedParameter::Control(2) };
+        let parameters = [ControlRamp::test_ramp(0.2, 0.6, 0, 0),
+            ControlRamp::test_ramp(0.1, 0.4, 0, 0), ControlRamp::test_ramp(0., 6., 0, 0)];
+        let mut state = ProcessorState::default();
+        for at in [0, 32, 64] {
+            let mut block = [[0.125; super::super::BLOCK]; 2];
+            PARAMETER_READS.with(|n| n.set(0));
+            eq.process(&mut state, &parameters, &mut block, 32, at);
+            let reads = PARAMETER_READS.with(|n| n.get());
+            assert!(reads <= 8, "held EQ performed {reads} target reads for 32 frames");
+        }
+    }
+
+    #[test]
     fn eq_preview_adapters_share_the_playback_knob_laws() {
         assert_eq!(PeakingEq::frequency_hz(0., 48000), 20.);
         assert_eq!(PeakingEq::frequency_hz(1., 48000), 20000.);
