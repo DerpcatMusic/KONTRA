@@ -1117,17 +1117,21 @@ mod tests {
         std::fs::create_dir_all(root.join("Samples")).unwrap();
         let member = "Resources/ir/authored.wav";
         let wav = wav_bytes(1, 1, 16, &[0, 0x40]);
-        let mut bytes = 0x5e70ac54u32.to_le_bytes().to_vec();
-        bytes.extend(0x110u16.to_le_bytes());
-        bytes.extend([0; 8]);
-        bytes.extend(1u32.to_le_bytes());
-        bytes.extend([0; 4]);
-        let record = 8 + (member.len() + 1) * 2;
-        bytes.extend((record as u16).to_le_bytes());
-        bytes.extend((22 + record as u32).to_le_bytes());
-        bytes.extend(0u16.to_le_bytes());
-        for c in member.encode_utf16().chain([0]) {
-            bytes.extend(c.to_le_bytes());
+        let mut bytes = Vec::new();
+        for (name, kind) in [("Resources", 1u16), ("ir", 1), ("authored.wav", 0)] {
+            let record = 8 + (name.len() + 1) * 2;
+            let next = bytes.len() + 22 + record;
+            bytes.extend(0x5e70ac54u32.to_le_bytes());
+            bytes.extend(0x110u16.to_le_bytes());
+            bytes.extend([0; 8]);
+            bytes.extend(1u32.to_le_bytes());
+            bytes.extend([0; 4]);
+            bytes.extend((record as u16).to_le_bytes());
+            bytes.extend((next as u32).to_le_bytes());
+            bytes.extend(kind.to_le_bytes());
+            for c in name.encode_utf16().chain([0]) {
+                bytes.extend(c.to_le_bytes());
+            }
         }
         let mut header = [0u8; 22];
         header[..4].copy_from_slice(&0x2ae905fau32.to_le_bytes());
@@ -1145,10 +1149,11 @@ mod tests {
             .join("Samples/authored.nkr")
             .join(member);
         let mut samples = Samples::new(&root);
+        // Validate the archive and decoded payload before testing the missing fallback.
+        assert_eq!(samples.decode(&expected).unwrap().frames, [[0.5, 0.5]]);
         let resolved =
             samples.resolve_impulse(&parent, "C:\\old\\Resources\\ir\\authored.wav", &containers);
         assert_eq!(resolved.unwrap(), Some(expected.clone()));
-        assert_eq!(samples.decode(&expected).unwrap().frames, [[0.5, 0.5]]);
         assert_eq!(
             samples
                 .resolve_impulse(&parent, "C:/old/resources/IR/AUTHORED.WAV", &containers)
