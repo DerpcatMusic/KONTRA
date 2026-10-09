@@ -32,3 +32,16 @@ need a page/visibility-state witness instead of a parameter delta. Disabled and
 passive controls have no edit obligation. Frozen v1 source and binaries are the
 local comparison reference; Kontakt/Falcon interaction calibration still needs
 an explicit native witness before claiming faithfulness.
+
+Use source-specific conventions when testing modifiers and numeric entry:
+
+| Source | Fine drag | Reset | Numeric entry |
+| --- | --- | --- | --- |
+| Kontakt | Shift | Ctrl-click on Windows; Cmd-click on macOS | Double-click a value field |
+| Falcon | Ctrl on Windows; Cmd on macOS | Alt-click on Windows; Option-click on macOS | Double-click a numeric control; Enter confirms and Escape cancels |
+
+These conventions come from the official [Kontakt interface manual](https://docs.native-instruments.com/ni-tech-manuals/kontakt-player-manual/en/user-interface-elements)
+and [Falcon interface manual](https://manual.uvi.net/falcon/en/interface/).
+They define separate test obligations; support remains unverified until the
+actual input path has a witness. Authored script behavior still governs custom
+controls. Shared KONTRA modifiers must not silently replace Falcon semantics.
