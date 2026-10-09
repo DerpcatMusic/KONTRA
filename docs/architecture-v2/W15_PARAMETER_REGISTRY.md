@@ -33,8 +33,8 @@ Legacy-only plans allocate no projection scratch. ControlRamp carries optional
 projection metadata; its memory/CPU impact remains a measurement gate.
 
 Validation: registry API imports initially failed; the real gain contract initially
-failed at unsupported Target::Control lowering. The implementation passes 79 core
-unit tests, 25 lowering tests and 7 registry contracts, plus core area no-run.
+failed at unsupported Target::Control lowering. The implementation passes 80 core
+unit tests, 26 lowering tests and 7 registry contracts, plus core area no-run.
 The gain fixture covers Control and Processor targets, 128 voices, 1/2/4 threads,
 1/7/64/137 frame partitions, actual worker execution, shared-base edits and audio
 allocation/deallocation guards. The projection test checks clamping after the base
@@ -45,3 +45,12 @@ overlay on both sides: W10 deterministic-work/coroutine dependencies 469013bc an
 78d159df, seed/barrier 0be9aa7b, and the numeric hash harness. This avoids silently
 ignoring the seed in the unmodified 5fc source. Product patches are excluded from
 that common overlay; hashes and raw numeric results live in the W15 run receipt.
+
+Polyphonic filter regression: a generic projected cutoff/Q must not enter the
+shared coefficient cache. The failing-first 128-voice fixture exposed sibling
+cutoff reuse. Projected filters now prepare a bounded stack cache, keeping both
+per-voice history and sample-clock base ramps; unprojected siblings retain the
+shared base cache. The fixture requires exact ordered isolated-voice sums at
+1/2/4 threads, including unmodulated siblings and RT heap guards.
+Validation after the cache fix: 134 targeted core/lowering/registry/control-DSP/
+SVF/multicore/trace tests pass. Quiet CPU acceptance remains open.

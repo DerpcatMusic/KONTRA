@@ -79,6 +79,9 @@ pub(crate) enum PreparedParameter {
     },
 }
 impl PreparedParameter {
+    pub(super) fn projected(self, parameters: &[ControlRamp]) -> bool {
+        matches!(self, Self::Control(lane) if parameters[lane].modulation.is_some())
+    }
     pub fn requires_expression(self) -> bool {
         matches!(self, Self::Expression { .. })
     }
