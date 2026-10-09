@@ -216,6 +216,7 @@ impl Runtime {
         }
         // Chunks end on the absolute BLOCK grid, where voice modulation
         // evaluates, so host block sizes do not move control points.
+        let tone_cutoff = self.has_input_tone().then_some(self.part_tone_cutoff);
         let mut at = self.now;
         let mut rest = output;
         while !rest.is_empty() {
@@ -233,7 +234,7 @@ impl Runtime {
                 let faults = g
                     .dsp
                     .buses
-                    .render::<TRACE>(&g.prepared.buses, output, outs, start, at,
+                    .render::<TRACE>(&g.prepared.buses, output, outs, start, at, tone_cutoff,
                         if TRACE { g.dsp.trace.as_mut().zip(g.prepared.signal_trace.as_ref()).map(|(r,t)| (&*t.graph,r)) } else { None });
                 self.nonfinite_frames = self.nonfinite_frames.saturating_add(faults);
                 if TRACE { if let Some(trace) = &mut g.dsp.trace { trace.end(); } }

@@ -92,7 +92,7 @@ pub struct Settings {
     /// Voice-rendering threads for parts loaded from now on (`KONTRA_THREADS`
     /// overrides it).
     pub threads: ThreadSetting,
-    /// Additional v2 preferences, including the UVI reader path.
+    /// Additional v2 preferences not interpreted by this version.
     #[serde(flatten)]
     pub other: serde_json::Map<String, serde_json::Value>,
 }
@@ -370,6 +370,7 @@ pub struct Snapshots {
 pub struct Shelf {
     pub libraries: Vec<Library>,
     pub snapshots: HashMap<PathBuf, Snapshots>,
+    pub bank_issues: Vec<BankIssue>,
     /// Prepared once by the library worker, never scanned during painting.
     /// Native path keys also equate Windows' slash and backslash separators.
     by_dir: HashMap<PathBuf, usize>,
@@ -400,7 +401,7 @@ impl Shelf {
             .map(|(n, l)| (l.dir.clone(), n))
             .collect();
         let by_name = libraries.iter().enumerate().map(|(n, l)| (l.name.clone(), n)).collect();
-        Self { libraries, by_dir, by_name, per_root: Vec::new(), snapshots: HashMap::new() }
+        Self { libraries, by_dir, by_name, per_root: Vec::new(), snapshots: HashMap::new(), bank_issues: Vec::new() }
     }
 
     /// The library `path` is in: the nearest library folder above it.
@@ -444,9 +445,24 @@ pub struct Progress {
     pub found: AtomicUsize,
     pub cancel: AtomicBool,
     pub running: AtomicBool,
+    bank_issues: Mutex<BTreeMap<(bool, String), BTreeSet<PathBuf>>>,
+}
+
+/// One catalog problem and every bank affected by it.
+#[derive(Debug)]
+pub struct BankIssue {
+    pub unsupported: bool,
+    pub message: String,
+    pub locations: Vec<PathBuf>,
 }
 
 impl Progress {
+    fn bank_issue(&self, path: &Path, error: sampler_uvi::AccessError) {
+        let unsupported = matches!(error, sampler_uvi::AccessError::Disabled);
+        let message = if unsupported { "protected library: not supported".into() } else { error.to_string() };
+        lock(&self.bank_issues).entry((unsupported, message)).or_default().insert(path.into());
+    }
+
     fn canceled(&self) -> bool {
         self.cancel.load(Ordering::Relaxed)
     }
@@ -704,7 +720,7 @@ fn cached_presets(dir: &Path, progress: &Progress, cache: &mut cache::Cache) -> 
         } else if path.extension().is_some_and(|x| x.eq_ignore_ascii_case("ufs")) {
             if let Some(cache::Metadata::Bank(members)) = cache.memo(path, || match sampler_uvi::Bank::open(path) {
                 Ok(bank) => Some(cache::Metadata::Bank(bank.programs())),
-                Err(e) => { trace.issue("catalog", "bank_unreadable", e.to_string()); None }
+                Err(e) => { progress.bank_issue(path, e); None }
             }) { out.extend(members.into_iter().map(|member| path.join(member))); }
         }
     }
@@ -797,6 +813,15 @@ fn cached_scan(roots: &[Root], progress: &Progress, cache: &mut cache::Cache) ->
     let mut shelf = Shelf::new(libraries);
     shelf.per_root = per_root;
     shelf.snapshots = snapshots;
+    shelf.bank_issues = lock(&progress.bank_issues).iter().map(|((unsupported, message), locations)| BankIssue {
+        unsupported: *unsupported, message: message.clone(), locations: locations.iter().cloned().collect(),
+    }).collect();
+    for issue in &shelf.bank_issues {
+        crate::diagnostics::event(crate::diagnostics::LogLevel::Warning, "library", "bank_unreadable", serde_json::json!({
+            "path": roots.first().map(|r| &r.path), "stage": "catalog", "unsupported": issue.unsupported,
+            "message": issue.message, "locations": issue.locations, "count": issue.locations.len(),
+        }));
+    }
     Some((shelf, files.into_iter().collect()))
 }
 
@@ -1089,9 +1114,11 @@ impl Scanner {
                     }
                     let per_root = std::mem::take(&mut shelf.per_root);
                     let snapshots = std::mem::take(&mut shelf.snapshots);
+                    let bank_issues = std::mem::take(&mut shelf.bank_issues);
                     let mut shelf = Shelf::new(shelf.libraries);
                     shelf.per_root = per_root;
                     shelf.snapshots = snapshots;
+                    shelf.bank_issues = bank_issues;
                     Scanned { shelf: Arc::new(shelf), files: Arc::new(files), artwork, imported }
                 });
                 let scanned = scanned.filter(|_| !progress.canceled());
@@ -1162,12 +1189,12 @@ mod tests {
     #[test]
     fn a_save_keeps_settings_this_version_does_not_know() {
         let path = std::env::temp_dir().join(format!("kontra-settings-{}.json", std::process::id()));
-        std::fs::write(&path, r#"{"version":2,"uvi_reader":"/x/UVIWorkstationx64.exe","ui_scale":1.5}"#).unwrap();
+        std::fs::write(&path, r#"{"version":2,"future_preference":"retained","ui_scale":1.5}"#).unwrap();
         let settings = super::Settings::load(&path).unwrap();
         settings.save(&path).unwrap();
         let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         std::fs::remove_file(&path).unwrap();
-        assert_eq!(saved["uvi_reader"], "/x/UVIWorkstationx64.exe");
+        assert_eq!(saved["future_preference"], "retained");
         assert_eq!(saved["ui_scale"], 1.5);
     }
 
@@ -1226,6 +1253,43 @@ mod tests {
         let (_, changed) = cached_scan(&roots, &Progress::default(), &mut cache::Cache::load(Some(&index))).unwrap();
         assert_eq!(changed, [root.join("Instruments/Organ.nki")]);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn w10_catalog_bank_errors_are_grouped_with_all_locations() {
+        let _lease = crate::diagnostics::acquire();
+        let root = tree("bank-errors", &[("A/Bad.ufs", "broken"), ("B/Bad.ufs", "broken")]);
+        scan(&[Root { path: root.to_string_lossy().into_owned(), single: false }], &Progress::default()).unwrap();
+        let snapshot = crate::diagnostics::snapshot();
+        let records: Vec<_> = snapshot.events.iter().filter(|e| e.code.as_deref() == Some("bank_unreadable") && e.path.as_ref().is_some_and(|p| Path::new(p).starts_with(&root))).collect();
+        assert_eq!(records.len(), 1, "one grouped diagnostic must retain every failed bank location");
+        assert_eq!(records[0].details["locations"].as_array().unwrap().len(), 2);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn unsupported_bank_errors_share_one_record_without_reader_access() {
+        let progress = Progress::default();
+        progress.bank_issue(Path::new("/virtual/First.ufs"), sampler_uvi::AccessError::Disabled);
+        progress.bank_issue(Path::new("/virtual/Second.ufs"), sampler_uvi::AccessError::Disabled);
+        progress.bank_issue(Path::new("/virtual/First.ufs"), sampler_uvi::AccessError::Disabled);
+        let issues = lock(&progress.bank_issues);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues.keys().next().unwrap(), &(true, "protected library: not supported".into()));
+        assert_eq!(issues.values().next().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn native_content_failures_retain_their_cause_without_unsupported_label() {
+        let progress = Progress::default();
+        progress.bank_issue(Path::new("/virtual/Corrupt.ufs"), sampler_uvi::AccessError::Content("invalid PNG checksum".into()));
+        progress.bank_issue(Path::new("/virtual/Disabled.ufs"), sampler_uvi::AccessError::Disabled);
+        let issues = lock(&progress.bank_issues);
+        assert_eq!(issues.len(), 2);
+        let content = issues.iter().find(|((unsupported, _), _)| !unsupported).unwrap();
+        assert!(content.0.1.contains("invalid PNG checksum"));
+        assert!(!content.0.1.contains("not supported"));
+        assert_eq!(content.1.len(), 1);
     }
 
     #[test]
@@ -1529,7 +1593,7 @@ fn v2_settings_reject_legacy_and_unversioned_files() {
         std::fs::write(&path, json).unwrap();
         assert!(Settings::load(&path).is_none(), "only the version-2 document is accepted");
     }
-    std::fs::write(&path, r#"{"roots":[{"path":"old-library","single":true}],"ui_scale":1.5,"vector_view":true,"uvi_reader":"old-reader"}"#).unwrap();
+    std::fs::write(&path, r#"{"roots":[{"path":"old-library","single":true}],"ui_scale":1.5,"vector_view":true,"future_preference":"retained"}"#).unwrap();
     let settings = Settings::load(&path).unwrap_or_default();
     assert_eq!(settings, Settings::default(), "legacy fields never seed v2 defaults");
     settings.save(&path).unwrap();

@@ -1,0 +1,81 @@
+[package]
+name = "mui-vello"
+version = "0.4.0"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT"
+
+[features]
+default = []
+reporting = ["dep:serde_json", "dep:sha2", "dep:ureq", "dep:hickory-resolver", "dep:tokio"]
+gpu-effects = ["wgpu/wgsl", "dep:vello", "dep:pollster"]
+# A CPU rasteriser: snapshot tests, thumbnails, hosts with no GPU.
+cpu = ["dep:vello_cpu", "dep:glifo"]
+# Rasterise on a rayon pool instead of one core. Off by default: a snapshot-
+# sized pixmap loses more to thread hand-off than it gains.
+cpu-threads = ["cpu", "vello_cpu/multithreading"]
+# Native CPU presentation, independent of GPU drivers.
+software-window = ["cpu", "dep:softbuffer", "dep:raw-window-handle"]
+
+[dependencies]
+softbuffer = { version = "0.4", default-features = false, features = ["x11", "x11-dlopen", "wayland", "wayland-dlopen"], optional = true }
+raw-window-handle = { version = "0.6", optional = true }
+mui-scene = { git = "https://github.com/Matari-Audio/MUI" }
+mui-weld = { git = "https://github.com/Matari-Audio/MUI" }
+mui-geometry = { git = "https://github.com/Matari-Audio/MUI" }
+rustc-hash = "2"
+# No wgpu backend features: a plugin renders into the device its host wrapper
+# already created, so this crate must not choose the backend. Hosts turn on
+# `wgpu_default` (desktop) or `webgl` (browser) themselves.
+# Classic Vello, vendored onto the wgpu the rest of the stack uses: the GPU
+# renderer. Rasterises in compute shaders, so a changed frame costs the CPU
+# its serialisation only.
+vello = { path = "../vello", default-features = false, features = ["wgpu"], optional = true }
+# `host` opens and, after a loss, reopens a device from a frame callback.
+pollster = { version = "0.4", optional = true }
+# `Glyph` is the one glyph type `vello_cpu` does not re-export, so it comes
+# straight from the crate it builds on.
+glifo = { version = "0.3", default-features = false, optional = true }
+# kurbo and peniko reach us through vello_common so the types cannot version-skew.
+vello_common = { version = "0.2", default-features = false, features = ["std"] }
+# Types only (`Device`, `Queue`) for the image atlas upload; still no backend.
+wgpu = { version = "30", default-features = false }
+vello_cpu = { version = "0.2", default-features = false, features = ["std", "u8_pipeline", "text"], optional = true }
+
+[dev-dependencies]
+naga = { version = "30", features = ["wgsl-in"] }
+mui-layout = { git = "https://github.com/Matari-Audio/MUI" }
+mui-material = { git = "https://github.com/Matari-Audio/MUI" }
+epaint_default_fonts = "0.36"
+mui-text = { git = "https://github.com/Matari-Audio/MUI" }
+ttf-inter = { version = "0.1", default-features = false, features = ["v"] }
+png = "0.18"
+# The example builds its own headless device.
+wgpu = { version = "30", default-features = false, features = ["wgsl", "vulkan", "gles", "metal", "dx12"] }
+pollster = "0.4"
+mui = { git = "https://github.com/Matari-Audio/MUI" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+serde_json = { version = "1", optional = true }
+sha2 = { version = "0.10", optional = true }
+hickory-resolver = { version = "=0.26.3", default-features = false, features = ["system-config", "tokio"], optional = true }
+tokio = { version = "1", default-features = false, features = ["rt", "net", "time"], optional = true }
+# The joined resolver uses ureq's explicitly unversioned low-level API.
+ureq = { version = "=3.4.2", default-features = false, features = ["rustls"], optional = true }
+
+[[example]]
+name = "gpu_contract"
+required-features = ["gpu-effects"]
+
+[[example]]
+name = "headless"
+required-features = ["gpu-effects"]
+
+[[example]]
+name = "bench"
+required-features = ["cpu", "gpu-effects"]
+
+
+[[example]]
+name = "gpu_damage"
+required-features = ["gpu-effects"]

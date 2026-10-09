@@ -74,6 +74,12 @@ impl GroupSettings {
         } else { native })
     }
 
+    pub fn gain_db(&self, p: Param, n: f32) -> Option<f32> {
+        let binding = self.bindings.iter().find(|(q, _)| *q == p)?.1;
+        let native = binding.law.decode((n * 1e6).round() as i32) as f32;
+        Some(20. * native.max(1e-10).log10())
+    }
+
     pub fn magnitude(&self, hz: f32) -> f32 {
         self.filters
             .iter()
@@ -344,7 +350,7 @@ impl Model {
             Param::Cutoff(_) | Param::Freq(..) => self.base.frequency(p, n).unwrap_or(native),
             Param::Resonance(_) => n,
             Param::Bandwidth(..) => ((0.5 / native).asinh() * 2. / std::f32::consts::LN_2),
-            Param::Gain(..) => 20. * native.max(1e-10).log10(),
+            Param::Gain(..) => self.base.gain_db(p, n).unwrap_or(native),
             _ => native,
         }
     }

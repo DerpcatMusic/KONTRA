@@ -86,6 +86,36 @@ fn argument_facts(arg: &str) -> String {
     )
 }
 
+fn declaration_facts(source: &str, arg: &str) -> String {
+    if !arg.starts_with('$') || argument_kind(arg) != "integer-variable" {
+        return "null".into();
+    }
+    for (index, line) in source.lines().enumerate() {
+        let Some(declaration) = line.trim().strip_prefix("declare ") else {
+            continue;
+        };
+        let (head, initial) = declaration
+            .split_once(":=")
+            .map_or((declaration, None), |(a, b)| (a, Some(b.trim())));
+        if !head.split_whitespace().any(|token| token == arg) {
+            continue;
+        }
+        let kind = if head.split_whitespace().any(|token| token == "const") {
+            "integer-constant"
+        } else {
+            "integer-scalar"
+        };
+        let integer = initial
+            .and_then(|value| value.parse::<i32>().ok())
+            .map_or("null".into(), |value| value.to_string());
+        return format!(
+            "{{\"line\":{},\"kind\":\"{kind}\",\"initial_integer\":{integer}}}",
+            index + 1
+        );
+    }
+    "null".into()
+}
+
 fn main() -> anyhow::Result<()> {
     assert_eq!(
         reason("unknown command private_authored_name"),
@@ -107,6 +137,15 @@ fn main() -> anyhow::Result<()> {
         argument_facts("$private_name"),
         "{\"kind\":\"integer-variable\",\"public_symbol\":null,\"integer\":null}"
     );
+    assert_eq!(
+        declaration_facts("declare $private := 4", "$private"),
+        "{\"line\":1,\"kind\":\"integer-scalar\",\"initial_integer\":4}"
+    );
+    let public = std::env::args()
+        .nth(2)
+        .map(std::fs::read_to_string)
+        .transpose()?
+        .unwrap_or_default();
     let manifest = std::fs::read_to_string(
         std::env::args()
             .nth(1)
@@ -138,6 +177,12 @@ fn main() -> anyhow::Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("numeric probe slot missing"))?;
             let environment = sampler_ksp::Environment {
                 slot,
+                groups: loaded
+                    .instrument
+                    .groups
+                    .iter()
+                    .map(|g| g.name.clone())
+                    .collect(),
                 ..Default::default()
             };
             sampler_ksp::scan::begin();
@@ -145,7 +190,16 @@ fn main() -> anyhow::Result<()> {
                 &behavior.source,
                 sampler_ksp::Limits::LIBRARY,
                 &environment,
-            );
+            )
+            .and_then(|initialized| {
+                sampler_ksp::compile_initialized(
+                    &behavior.source,
+                    48000,
+                    sampler_ksp::Limits::LIBRARY,
+                    &[],
+                    initialized,
+                )
+            });
             let records = sampler_ksp::scan::take();
             match result {
                 Ok(_) => println!(
@@ -157,26 +211,53 @@ fn main() -> anyhow::Result<()> {
                         .and_then(|r| r.error.as_ref())
                         .map_or("unknown", |e| e.phase);
                     let (kind, builtin) = reason(&error.message);
-                    let arguments =
-                        builtin.and_then(|name| arity(&behavior.source, error.offset, name));
-                    let kinds = builtin
-                        .and_then(|name| self::arguments(&behavior.source, error.offset, name))
+                    let raw = error
+                        .message
+                        .strip_prefix("unknown command ")
+                        .or_else(|| error.message.strip_prefix("unknown function "));
+                    let args =
+                        raw.and_then(|name| self::arguments(&behavior.source, error.offset, name));
+                    let arguments = args.as_ref().map(Vec::len);
+                    let kinds = args
+                        .as_deref()
                         .unwrap_or_default()
                         .iter()
                         .map(|arg| format!("\"{}\"", argument_kind(arg)))
                         .collect::<Vec<_>>()
                         .join(",");
-                    let facts = builtin
-                        .and_then(|name| self::arguments(&behavior.source, error.offset, name))
+                    let facts = args
+                        .as_deref()
                         .unwrap_or_default()
                         .iter()
                         .map(|arg| argument_facts(arg))
                         .collect::<Vec<_>>()
                         .join(",");
-                    let builtin = builtin.map_or("null".into(), |name| format!("\"{name}\""));
+                    let declarations = args
+                        .as_deref()
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|arg| declaration_facts(&behavior.source, arg))
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    let public_name = raw.filter(|name| public.lines().any(|line| line == *name));
+                    let family = match raw {
+                        Some(name) if name.starts_with("mf_") => "midi-object",
+                        Some(name) if name.starts_with("subscribe_") => "subscription",
+                        _ => "other-command",
+                    };
+                    let declared = raw.is_some_and(|name| {
+                        behavior.source.lines().any(|line| {
+                            line.trim()
+                                .strip_prefix("function ")
+                                .is_some_and(|tail| tail.split_whitespace().next() == Some(name))
+                        })
+                    });
+                    let builtin = builtin
+                        .or(public_name)
+                        .map_or("null".into(), |name| format!("\"{name}\""));
                     let arguments = arguments.map_or("null".into(), |n| n.to_string());
                     println!(
-                        "{{\"item\":\"{item}\",\"program\":{program},\"slot\":{slot},\"phase\":\"{phase}\",\"reason\":\"{kind}\",\"builtin\":{builtin},\"arity\":{arguments},\"argument_kinds\":[{kinds}],\"argument_facts\":[{facts}],\"offset\":{},\"line\":{}}}",
+                        "{{\"item\":\"{item}\",\"program\":{program},\"slot\":{slot},\"phase\":\"{phase}\",\"reason\":\"{kind}\",\"builtin\":{builtin},\"arity\":{arguments},\"argument_kinds\":[{kinds}],\"argument_facts\":[{facts}],\"argument_declarations\":[{declarations}],\"name_family\":\"{family}\",\"function_declared\":{declared},\"offset\":{},\"line\":{}}}",
                         error.offset, error.line
                     );
                 }

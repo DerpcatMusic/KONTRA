@@ -5,7 +5,6 @@
 use super::{Cx, theme::*};
 use moose::mui::mui::prelude::*;
 use sampler_ir as ir;
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -59,11 +58,17 @@ impl Driver {
     }
 }
 
+/// Shared Sound chrome; each tab owns its contents.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum SoundTab { #[default] Controls, Mapping, Effects }
+
 /// A part's views across frames.
 #[derive(Default)]
 pub struct State {
     /// `None` until picked: the interface when there is one, else Info.
     pub view: Option<View>,
+    pub sound_tab: SoundTab,
+    pub(super) mapping: super::mapping::State,
     /// The articulation playing, following switch keys as they are played.
     pub active: Option<usize>,
     edit: Option<Edit>,
@@ -121,14 +126,8 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, view: View) -> Option<El> {
     let inst = cx.view.parts[slot].instrument.clone();
     let el = match (view, inst) {
         (View::Articulations, Some(i)) => articulations(ui, cx, slot, &i),
-        (View::Mapping, Some(i)) => mapping(ui, cx, slot, &i),
-        (View::Sound, Some(_)) if cx.state.selected == slot && cx.p.shared.editor_watch.load(Ordering::Relaxed)==usize::MAX => super::editor::view(ui, cx, slot),
-        (View::Sound, Some(_)) => {
-            let (hit,button)=super::theme::action(ui,format!("edit-open-{slot}"),"Edit sound",false);
-            if hit {cx.state.select(slot);}
-            col![caption("Select this part to edit its sound.").fill(secondary()),button].gap(SPACE)
-        },
-
+        (View::Mapping, Some(i)) => super::mapping::view(ui, cx, slot, &i),
+        (View::Sound, Some(i)) => sound(ui, cx, slot, &i),
         (View::Info, i) => info(cx, slot, i.as_deref()),
         _ => return None,
     };
@@ -339,17 +338,17 @@ fn articulations(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument) -
     let edit = cx.state.inside.entry(slot).or_default().edit.clone();
     let error = edit.as_ref().and_then(|e| e.error.clone()).or_else(|| capacity.map(String::from));
     let mut head = vec![section("Articulations").shrink(0), caption(arts.len().to_string()).fill(secondary()).lines(1).shrink(0), spacer(), driver_el.h(CONTROL).shrink(0), more_el];
-    if let Some(error) = error { head.insert(2, caption(error.clone()).fill(Role::Danger).lines(1).min_w(0).tip(format!("{error}\nCorrect the trigger and press Enter"))); }
+    if let Some(error) = error { head.insert(2, caption(error.clone()).fill(Role::Danger).lines(1).min_w(0).tip(format!("{error}\nCorrect the trigger and press Enter")).id(format!("art-error-{slot}"))); }
     if let Some(edit) = edit.as_ref().filter(|e| e.learn) {
         let message = format!("Learn {}…", arts[ids.iter().position(|id| id == &edit.source).unwrap_or(0)].name);
-        head.insert(2, caption(message.clone()).lines(1).min_w(0).tip(message));
+        head.insert(2, caption(message.clone()).lines(1).min_w(0).tip(message).id(format!("art-learn-{slot}")));
     }
     if let Some(edit) = edit.as_ref() && let Some((proposal, other)) = &edit.conflict {
         let other_name = ids.iter().position(|id| id == other).map(|n| arts[n].name.as_str()).unwrap_or("other row");
         let (swap, swap_el) = latch(ui, format!("art-swap-{slot}"), "Swap", &format!("Swap triggers with {other_name}"), false);
         let (cancel, cancel_el) = icon_button(ui, format!("art-cancel-{slot}"), Icon::Close, "Cancel trigger swap", false);
         let message = format!("Used by {other_name}");
-        head.insert(2, caption(message.clone()).lines(1).min_w(0).tip(message));
+        head.insert(2, caption(message.clone()).lines(1).min_w(0).tip(message).id(format!("art-conflict-{slot}")));
         head.insert(3, swap_el.h(CONTROL).shrink(0)); head.insert(4, cancel_el);
         if swap {
             let n = ids.iter().position(|id| id == &edit.source).unwrap();
@@ -404,101 +403,36 @@ fn articulations(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument) -
     col![head, list].gap(TIGHT).align(Align::Stretch).w(Len::Pct(100.)).min_w(0)
 }
 
-// Mapping ---------------------------------------------------------------
-
-/// Group `g`'s color in the map and its list.
-fn group_color(g: usize) -> Color {
-    Color::oklch(0.72, 0.09, golden_hue(200., g))
-}
-
-fn mapping(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument) -> El {
-    let groups = inst.groups.len();
-    let mut counts = vec![0usize; groups + 1];
-    // ponytail: walks every zone each frame the map shows; cache per load if
-    // a 50k-zone instrument makes it slow.
-    let mut rects = HashSet::new();
-    let (mut low, mut high) = (127u8, 0u8);
-    for z in &inst.zones {
-        let g = z.group.map_or(groups, |g| g.0);
-        counts[g] += 1;
-        rects.insert((g, z.keys.low, z.keys.high, z.velocities.low, z.velocities.high));
-        (low, high) = (low.min(z.keys.low), high.max(z.keys.high));
-    }
-    let picked = cx.state.inside.entry(slot).or_default().group;
-    let mut pick = picked;
-    let mut list = Vec::new();
-    let names = inst.groups.iter().map(|g| g.name.as_str()).chain(std::iter::once("No group"));
-    for (g, name) in names.enumerate().filter(|&(g, _)| counts[g] > 0) {
-        let id = format!("map-group-{slot}-{g}");
-        let on = picked == Some(g);
-        if ui.get(id.as_str()).activated() {
-            pick = if on { None } else { Some(g) };
-        }
-        let label = if name.is_empty() { format!("Group {}", g + 1) } else { name.to_owned() };
-        let el = row![
-            block(TIGHT, TIGHT * 3.).fill(group_color(g)).shrink(0),
-            body(label.clone()).fill(if on { Fill::from(Role::Ink) } else { secondary() }).lines(1).flex(1).min_w(0),
-            caption(counts[g].to_string()).fill(secondary()).shrink(0)
-        ]
-        .gap(SPACE)
-        .align(Align::Center)
-        .pad((0, SPACE))
-        .h(CONTROL - TIGHT)
-        .when(on, |e| e.fill(Role::Raised))
-        .focusable()
-        .a11y(A11y::Button)
-        .tip(label.clone())
-        .named(label)
-        .id(id);
-        list.push(interactive(el, on));
-    }
-    cx.state.inside.entry(slot).or_default().group = pick;
-
-    let (first, last) = (low.min(high), high.max(low));
-    // Whole octaves, so each C sits at the start of an equal cell.
-    let (low, high) = if low > high { (0, 119) } else { (low / 12 * 12, (high / 12 * 12 + 11).min(127)) };
-    let rects: Vec<_> = rects.into_iter().collect();
-    let keys = f64::from(high - low + 1);
-    let map = canvas(move |s| {
-        let x = |k: u8| f64::from(k - low) / keys * s.width;
-        let y = |v: u8| (1. - f64::from(v) / 127.) * s.height;
-        let mut out = vec![Draw::fill(rect(0., 0., s.width, s.height), Role::Field)];
-        for c in (low..=high).filter(|k| k % 12 == 0) {
-            out.push(Draw::fill(rect(x(c).round(), 0., 1., s.height), hairline()));
-        }
-        // The picked group last, so it lies on top.
-        let mut sorted = rects.clone();
-        sorted.sort_by_key(|r| (pick == Some(r.0), r.0));
-        for (g, kl, kh, vl, vh) in sorted {
-            let r = rect(x(kl), y(vh), x(kh) - x(kl) + s.width / keys, y(vl.saturating_sub(1)) - y(vh));
-            let shown = pick.is_none_or(|p| p == g);
-            let c = group_color(g);
-            out.push(Draw::fill(r.clone(), c.with_alpha(if shown { 0.22 } else { 0.04 })));
-            if shown {
-                out.push(Draw::stroke(r.clone(), c.with_alpha(0.8), 1.));
-            }
-        }
-        out
-    })
-    .flex(1)
-    .min_w(0)
-    .h(TEXT * 16.)
-    .clip()
-    .named("Zones by key and velocity")
-    .id(format!("map-{slot}"));
-    let scale = row((low..=high).filter(|k| k % 12 == 0).map(|c| row![caption(note_name(c)).text_size(SMALL).fill(secondary()).lines(1)].flex(1).min_w(0)).collect::<Vec<_>>())
-        .gap(0)
-        .w(Len::Pct(100.))
-        .shrink(0);
-    let head = row![section("Mapping"), caption(format!("{} zones · {} – {}", inst.zones.len(), note_name(first), note_name(last))).fill(secondary()).lines(1), spacer(), caption("Keys across, velocity up").fill(secondary())]
-        .gap(SPACE)
-        .align(Align::Center)
-        .shrink(0);
-    let groups = col(list).gap(1).align(Align::Stretch).pad(edges(0., SPACE, 0., 0.)).w(TEXT * 16.).h(TEXT * 16.).scroll().shrink(0);
-    col![head, row![groups, col![map, scale].gap(TIGHT).flex(1).min_w(0)].gap(SPACE)].gap(SPACE).align(Align::Stretch)
-}
-
 // Sound -----------------------------------------------------------------
+
+/// Stable shared widget contract: sound-tabs-{slot}, sound-tab-{slot}-{label}.
+fn sound(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrument>) -> El {
+    let mut picked = cx.state.inside.entry(slot).or_default().sound_tab;
+    let tabs = [SoundTab::Controls, SoundTab::Mapping, SoundTab::Effects].into_iter().map(|tab| {
+        let label = match tab { SoundTab::Controls => "Controls", SoundTab::Mapping => "Mapping", SoundTab::Effects => "Effects" };
+        let (hit, el) = latch(ui, format!("sound-tab-{slot}-{label}"), label, label, tab == picked);
+        if hit { picked = tab; }
+        el
+    }).collect();
+    cx.state.inside.get_mut(&slot).unwrap().sound_tab = picked;
+    let strip = segmented(tabs).id(format!("sound-tabs-{slot}"));
+    let body = match picked {
+        SoundTab::Mapping => super::mapping::view(ui, cx, slot, inst),
+        SoundTab::Effects => sound_effects(ui, cx, slot),
+        SoundTab::Controls if cx.state.selected == slot && cx.p.shared.editor_watch.load(Ordering::Relaxed) == usize::MAX => super::editor::view(ui, cx, slot),
+        SoundTab::Controls => {
+            let (hit, button) = super::theme::action(ui, format!("edit-open-{slot}"), "Edit sound", false);
+            if hit { cx.state.select(slot); }
+            col![caption("Select this part to edit its sound.").fill(secondary()), button].gap(SPACE)
+        }
+    };
+    col![row![strip, spacer()], body].gap(SPACE).w(Len::Pct(100.)).min_w(0)
+}
+
+/// W14 owns this tab's editor contents and its effect selection.
+fn sound_effects(_ui: &mut Ui, _cx: &mut Cx, _slot: usize) -> El {
+    caption("Select an effect in the rack or Sound effect list.").fill(secondary())
+}
 
 fn hz(f: ir::Frequency) -> String {
     match f {
@@ -522,10 +456,9 @@ pub(super) fn source_name(s: &ir::ModulationSource) -> String {
 fn info(cx: &Cx, slot: usize, inst: Option<&ir::Instrument>) -> El {
     let v = &cx.view.parts[slot];
     let pair = |k: &str, val: String| {
-        row![caption(k.to_owned()).fill(secondary()).w(TEXT * 8.).shrink(0), body(val.clone()).lines(1).min_w(0).tip(val)].gap(SPACE).align(Align::Center).shrink(0)
+        row![caption(k.to_owned()).fill(secondary()).w(TEXT * 8.).shrink(0), body(val.clone()).lines(1).min_w(0).tip(val).id(format!("info-{slot}-{k}"))].gap(SPACE).align(Align::Center).shrink(0)
     };
     let mut rows = Vec::new();
-    rows.push(pair("Instrument", super::rack::name(cx, slot)));
     rows.push(pair("File", cx.selection.parts[slot].path.clone()));
     if let Some(r) = &v.report {
         let d = &r.decoded;

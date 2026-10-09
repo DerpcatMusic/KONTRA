@@ -1,3 +1,4 @@
+mod support;
 use sampler_core::{Input, Limits, OutputLowPass, Pcm, Protocol, Runtime};
 use sampler_ir as ir;
 
@@ -88,4 +89,110 @@ fn v1_global_tone_dry_seed_stereo_history_and_f32_comparison() {
     let held = state;
     assert!(filter.process(&mut dry, &mut state, f64::NAN, 2200).is_err());
     assert_eq!(state, held);
+}
+
+fn input_tone_ir() -> ir::Instrument {
+    let mut i=source(0);
+    i.groups.push(ir::Group { output: ir::Output::Bus(ir::BusRef(0)), ..Default::default() });
+    i.zones[0].group=Some(ir::GroupRef(0));
+    i.input_bus=Some(ir::BusRef(1));
+    i.chains.push(ir::Chain { scope:ir::Scope::Bus(ir::BusRef(1)),
+        pre_amplitude:vec![ir::Processor::Rectify(ir::Rectifier::Full)], post_amplitude:vec![] });
+    i.buses=vec![
+        ir::Bus { name:"upstream".into(), chain:None, sends:vec![], output:ir::Output::Bus(ir::BusRef(1)), gain:ir::Gain::UNITY },
+        ir::Bus { name:"insert".into(), chain:Some(ir::ChainRef(0)), sends:vec![], output:ir::Output::Bus(ir::BusRef(2)), gain:ir::Gain::UNITY },
+        ir::Bus { name:"downstream".into(), chain:None, sends:vec![], output:ir::Output::Master, gain:ir::Gain::UNITY },
+    ];
+    i
+}
+
+#[test]
+fn input_tone_precedes_nonlinear_insert_and_direct_descendants_filter_once() {
+    let i=input_tone_ir();
+    let samples:Vec<_>=(0..2048).map(|n| [(n as f32*0.17).sin()*0.5;2]).collect();
+    let run=|cutoff,direct:Option<usize>| {
+        let pcm=Pcm::new(48_000,samples.clone().into_boxed_slice()).unwrap();
+        let plan=sampler_core::lower::lower_with(&i,48_000,vec![pcm],&sampler_core::lower::Options{mpe:None},|_,_|unreachable!()).unwrap();
+        let limits=Limits::for_plan(&plan,4,4);
+        let mut rt=Runtime::new(plan,limits).unwrap(); rt.set_part_tone_cutoff(cutoff).unwrap();
+        if let Some(bus)=direct { rt.set_bus_mix(bus,sampler_core::BusMix { gain:[1.;2],output:Some(0) }).unwrap(); }
+        rt.trigger(input(),60,1.).unwrap();
+        let mut main=vec![[0.;2];512];let mut separate=vec![[0.;2];512];
+        rt.render_split(&mut main,&mut [&mut separate]).unwrap();
+        (main,separate)
+    };
+    let mut expected=samples[..512].to_vec();
+    OutputLowPass::new(48_000).unwrap().process(&mut expected,&mut [[0.;2];2],1000.,0).unwrap();
+    for f in &mut expected { *f=f.map(f32::abs); }
+    let (wet,_)=run(1000.,None);
+    let error=wet.iter().flatten().zip(expected.iter().flatten()).map(|(a,b)|(a-b).abs()).fold(0f32,f32::max);
+    assert!(error<1e-6,"input Tone precedes rectification, error={error}");
+    let dry=run(20_000.,None).0;
+    assert_eq!(dry,samples[..512].iter().map(|f|f.map(f32::abs)).collect::<Vec<_>>());
+    for bus in [1,2] {
+        let (main,direct)=run(1000.,Some(bus));
+        assert!(main.iter().all(|f|*f==[0.;2]));
+        assert_eq!(direct,wet,"Tone must reach downstream direct bus{bus} exactly once");
+    }
+    let (main,direct)=run(1000.,Some(0));
+    assert!(main.iter().all(|f|*f==[0.;2]));
+    assert_eq!(direct,&samples[..512],"upstream direct escapes Tone and inserts, as v1 does");
+    let mut invalid=i.clone();invalid.input_bus=Some(ir::BusRef(3));
+    assert!(invalid.validate().is_err());
+}
+
+fn tone_plan(value:f32,traced:bool) -> sampler_core::Prepared {
+    let pcm=Pcm::new(48_000,vec![[value;2];48000].into_boxed_slice()).unwrap();
+    let plan=sampler_core::lower::lower_with(&input_tone_ir(),48_000,vec![pcm],&sampler_core::lower::Options{mpe:None},|_,_|unreachable!()).unwrap();
+    if traced { plan.with_signal_trace(1024).unwrap() } else { plan }
+}
+
+#[test]
+fn input_tone_trace_exposes_pre_insert_levels_without_heap() {
+    let plan=tone_plan(0.5,true);let limits=Limits::for_plan(&plan,4,4);
+    let mut rt=Runtime::new(plan,limits).unwrap();let reader=rt.signal_trace_reader().unwrap();
+    rt.set_part_tone_cutoff(1000.).unwrap();rt.trigger(input(),60,1.).unwrap();
+    support::without_heap(|| rt.render(&mut [[0.;2];64]).unwrap());
+    let rows=reader.drain();
+    let node=reader.graph.nodes.iter().find(|n|n.kind=="part_tone").unwrap();
+    let tone=rows.iter().find(|r|r.node==node.id).unwrap();
+    assert!((tone.input.dc[0]-0.5).abs()<1e-9);
+    assert!(tone.output.dc[0]>0. && tone.output.dc[0]<tone.input.dc[0]);
+    let input_node=reader.graph.nodes.iter().find(|n|n.kind=="bus_input" && n.bus==Some(1)).unwrap();
+    let summed=rows.iter().find(|r|r.node==input_node.id).unwrap();
+    assert_eq!(summed.output.dc,tone.input.dc,"sum is observed before Tone");
+    let fx=reader.graph.nodes.iter().find(|n|n.kind=="bus_fx" && n.bus==Some(1)).unwrap();
+    let effected=rows.iter().find(|r|r.node==fx.id).unwrap();
+    assert_eq!(effected.input.dc,tone.output.dc,"native FX receives Tone once");
+    assert!(reader.graph.edges.iter().any(|e| e.from==input_node.id && e.to==node.id));
+}
+
+#[test]
+fn input_tone_retained_generations_keep_histories_and_live_cutoff_until_tail_retires() {
+    let old=tone_plan(0.5,false);let limits=Limits::for_plan(&old,4,4);
+    let (mut rt,mut control)=Runtime::with_plan_updates(old,limits,2,1).unwrap();
+    let mut old_ref=Runtime::new(tone_plan(0.5,false),limits).unwrap();
+    for r in [&mut rt,&mut old_ref] {r.set_part_tone_cutoff(1000.).unwrap();r.trigger(input(),60,1.).unwrap();r.render(&mut [[0.;2];128]).unwrap();}
+    let new=tone_plan(0.25,false);let request=control.submit(Box::new(new)).unwrap();
+    let mut new_ref=Runtime::new(tone_plan(0.25,false),limits).unwrap();
+    let mut other=input();other.key=61;
+    support::without_heap(|| {
+        assert_eq!(rt.poll_plan_update(),Ok(Some(request)));
+        assert!(rt.has_input_tone());rt.set_part_tone_cutoff(20.).unwrap();
+        rt.trigger(other,61,1.).unwrap();rt.render(&mut [[0.;2];0]).unwrap();
+    });
+    old_ref.set_part_tone_cutoff(20.).unwrap();new_ref.set_part_tone_cutoff(20.).unwrap();new_ref.trigger(other,61,1.).unwrap();
+    let (mut combined,mut old,mut new)=([[0.;2];128],[[0.;2];128],[[0.;2];128]);
+    support::without_heap(|| rt.render(&mut combined).unwrap());old_ref.render(&mut old).unwrap();new_ref.render(&mut new).unwrap();
+    for n in 0..128 {for c in 0..2 {assert!((combined[n][c]-old[n][c]-new[n][c]).abs()<1e-6,"per-generation Tone history");}}
+    support::without_heap(|| {
+        rt.note_off(input(),None).unwrap();rt.render(&mut [[0.;2];64]).unwrap();rt.flush_ended(|_|true);
+        assert_eq!(rt.note_count(),1,"only the new generation note remains");
+        assert_eq!(rt.collect_retired_plans(),0,"Tone's zero-input tail retains old generation");
+        for _ in 0..300 {rt.render(&mut [[0.;2];64]).unwrap();}
+        rt.flush_ended(|_|true);
+        assert_eq!(rt.collect_retired_plans(),1,"old Tone tail eventually retires");
+        rt.panic();rt.render(&mut [[0.;2];64]).unwrap();
+    });
+    assert!(!rt.has_input_tone() || rt.plan_count()==1);
 }

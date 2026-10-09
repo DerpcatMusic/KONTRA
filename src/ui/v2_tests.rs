@@ -1977,3 +1977,203 @@ fn native_voice_group_filter_graphs_deduplicate_and_keep_control_owners() {
     assert!((changed.playing.magnitude(3000.) - magnitude(1000.)*magnitude(cutoff)).abs() < 1e-6,
         "native edit changes the intended group filter, preserving voice-chain ownership");
 }
+
+/// Sound's Mapping is the same read-only IR view as the chrome shortcut.
+#[test]
+fn mapping_sound_tabs_preserve_zone_identity_and_ir() {
+    use sampler_ir as sir;
+    let mut inst = sir::Instrument { name: "Layered strings (synthetic RR fixture)".into(), ..Default::default() };
+    inst.assets.push(sir::Asset { location: sir::AssetLocation::Path("Samples/Cello_C3_rr1.wav".into()), encoding: sir::Encoding::Wav, root_key: Some(60), loops: vec![] });
+    for name in ["Sustain", "Shorts"] { inst.groups.push(sir::Group {name:name.into(), ..Default::default()}); }
+    inst.sequences.push(sir::Sequence {policy:sir::SequencePolicy::RoundRobin, takes:2, counter:sir::CounterScope::Key});
+    for n in 0..3 {
+        let mut z = sir::Zone::new(sir::AssetRef(0));
+        z.group = Some(sir::GroupRef(n / 2));
+        z.keys = sir::KeyRange {low:48,high:72};
+        z.velocities = sir::VelocityRange {low:1,high:127};
+        if n < 2 { z.selection = Some(sir::Selection {sequence:sir::SequenceRef(0),take:sir::Take::Index(n as u32)}); }
+        inst.zones.push(z);
+    }
+    let source = Arc::new(inst);
+    let before = (*source).clone();
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    p.selection.write().unwrap().parts.push(crate::plugin::Part {path:"/x/Layered strings.nki".into(),..Default::default()});
+    { let mut v = p.shared.view.lock().unwrap(); v.parts.resize_with(1,Default::default); v.parts[0].active="Layered strings (synthetic RR fixture)".into(); v.parts[0].instrument=Some(source.clone()); }
+    for (w,h) in [(1180,780),(900,640)] {
+        let mut ui = Harness::new(&p,w as f64,h as f64);
+        ui.press("view-0-Sound");
+        assert!(ui.ui.scene().unwrap().surface("sound-tabs-0").is_some(),"Sound exposes its shared tab strip");
+        ui.press("sound-tab-0-Mapping");
+        assert!(ui.ui.scene().unwrap().surface("map-0").is_some());
+        ui.press("map-group-0-0");
+        ui.press("map-zone-0-1");
+        assert!(ui.ui.scene().unwrap().surface("map-inspector-0-1").is_some(),"second RR zone retains its own identity");
+        assert!(ui.ui.scene().unwrap().surface("map-zone-0-0").is_some());
+        assert!(ui.ui.scene().unwrap().surface("map-zone-0-2").is_none(),"group filter excludes other groups");
+        assert_eq!(p.shared.editor_watch.load(std::sync::atomic::Ordering::Relaxed),usize::MAX,"mapping does not arm audio editor probes");
+        if let Some(dir)=std::env::var_os("KONTAKTO_MAPPING_SHOTS") {
+            let path=std::path::PathBuf::from(dir).join(format!("mapping-{w}x{h}.png"));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            moose::core::screenshot::save_png(&path,&pixels(&ui.ui,w,h),w as u32,h as u32);
+        }
+        ui.press("view-0-Mapping");
+        assert!(ui.ui.scene().unwrap().surface("map-inspector-0-1").is_some(),"legacy chrome route shares selection");
+    }
+    assert_eq!(*source,before,"mapping selection never edits the worker IR");
+}
+
+#[test]
+fn mapping_waveform_worker_reads_falcon_without_original_waveform_widget() {
+    use moose::prelude::BackgroundTask;
+    let dir=tempfile::tempdir().unwrap();
+    let wav=dir.path().join("Cello_C3.wav");
+    let mut writer=hound::WavWriter::create(&wav,hound::WavSpec {channels:1,sample_rate:48000,bits_per_sample:16,sample_format:hound::SampleFormat::Int}).unwrap();
+    for n in 0..48000 {writer.write_sample(((n as f64*0.0288).sin()*20000.*(1.-n as f64/60000.)) as i16).unwrap();}
+    writer.finalize().unwrap();
+    let path=dir.path().join("Layered strings.uvip");
+    std::fs::write(&path,r#"<UVI4><Program Name="Layered strings (synthetic Falcon fixture)"><Layers><Layer Name="Strings"><Keygroups><Keygroup Name="Sustain" LowKey="48" HighKey="84" LowVelocity="1" HighVelocity="127"><Oscillators><SamplePlayer SamplePath="Cello_C3.wav" BaseNote="60" FineTune="-12" Gain="0.8"><PlaybackOptions Start="2000" Stop="45000"><Loop Start="12000" End="34000" Type="0"/></PlaybackOptions></SamplePlayer><SamplePlayer SamplePath="Cello_C3.wav" BaseNote="60" FineTune="12" Gain="0.7"/></Oscillators></Keygroup><Keygroup Name="Shorts" LowKey="55" HighKey="79" LowVelocity="70" HighVelocity="127"><Oscillators><SamplePlayer SamplePath="Cello_C3.wav" BaseNote="60"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program></UVI4>"#).unwrap();
+    let p=Arc::new(crate::plugin::SamplerParams::new());
+    p.selection.write().unwrap().parts.push(crate::plugin::Part {path:path.display().to_string(),..Default::default()});
+    for _ in 0..200 {
+        crate::plugin::Load.run(&p);
+        if p.shared.view.lock().unwrap().parts.first().is_some_and(|v|!v.loading && v.instrument.is_some()) {break;}
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let (inst,epoch)={let v=p.shared.view.lock().unwrap();let v=&v.parts[0];(v.instrument.clone().unwrap_or_else(||panic!("{}",v.status)),v.generation)};
+    assert_eq!(inst.source,sampler_ir::SourceFormat::Uvi);
+    assert_eq!(inst.zones.len(),3);
+    assert_eq!(crate::sound::waveform::source_ids(&inst), vec![1, 2, 3], "Falcon player source identities match these fixture zones");
+    let part=p.shared.part(0).unwrap();
+    let envelope=(0..200).find_map(|_|{let e=part.zone_waveform(1,epoch,512);if e.is_none(){std::thread::sleep(std::time::Duration::from_millis(5));}e}).expect("Mapping resolves full admitted PCM without Original widgets");
+    assert_eq!(envelope.frames,48000);assert_eq!(envelope.sample_rate,48000);
+    assert!(envelope.peaks.iter().any(|(lo,hi)|hi-lo>0.3));
+    assert!(part.zone_waveform(1,epoch+1,512).is_none(),"stale load cannot request a waveform");
+    for (w,h) in [(1180,780),(900,640)] {
+        let mut ui=Harness::new(&p,w as f64,h as f64);ui.press("view-0-Sound");ui.press("sound-tab-0-Mapping");
+        ui.press("map-group-0-0");ui.press("map-zone-0-0");
+        for _ in 0..15 {ui.idle(1);std::thread::sleep(std::time::Duration::from_millis(5));}
+        assert!(ui.ui.scene().unwrap().surface("map-wave-0").is_some());
+        let scene=ui.ui.scene().unwrap();
+        let status=scene.surface("map-wave-status-0").unwrap().frame;
+        let keys=scene.surface("keys").unwrap().frame;
+        assert!(status.y+status.size.height <= keys.y-24.,"all inspector details fit above the keyboard at {w}×{h}: {} vs {}",status.y+status.size.height,keys.y-24.);
+        if let Some(dir)=std::env::var_os("KONTAKTO_MAPPING_SHOTS") {
+            let path=std::path::PathBuf::from(dir).join(format!("mapping-falcon-{w}x{h}.png"));std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            moose::core::screenshot::save_png(&path,&pixels(&ui.ui,w,h),w as u32,h as u32);
+        }
+        // Holding the existing audition control emits an onset, then a balanced release.
+        let at=super::tests::center(&ui.ui,"map-audition-0");
+        ui.tick(Input {pointer:PointerInput {pos:Some(at),buttons:Buttons::PRIMARY,..Default::default()},..Default::default()});ui.idle(1);
+        assert!(matches!(p.shared.keyboard.pop(),Some((0,crate::plugin::Play::Note(_,v))) if v>0));
+        ui.tick(Input::default());ui.idle(2);
+        assert!(matches!(p.shared.keyboard.pop(),Some((0,crate::plugin::Play::Note(_,0)))));
+        let held=|| Input {pointer:PointerInput {pos:Some(at),buttons:Buttons::PRIMARY,..Default::default()},..Default::default()};
+        ui.tick(held());ui.tick(held());
+        assert!(matches!(p.shared.keyboard.pop(),Some((0,crate::plugin::Play::Note(_,v))) if v>0));
+        drop(ui);
+        assert!(matches!(p.shared.keyboard.pop(),Some((0,crate::plugin::Play::Note(_,0)))),"closing the UI releases its held audition");
+    }
+}
+
+#[test]
+fn mapping_kontakt_worker_probe_skips_when_library_is_missing() {
+    use moose::prelude::BackgroundTask;
+    let path=Path::new("/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Multi Instruments/2 Horns KS.nki");
+    if !path.exists() {eprintln!("SKIP Mapping Kontakt probe: fixture library absent");return;}
+    let p=Arc::new(crate::plugin::SamplerParams::new());
+    p.selection.write().unwrap().parts.push(crate::plugin::Part {path:path.display().to_string(),..Default::default()});
+    for _ in 0..600 {
+        crate::plugin::Load.run(&p);
+        if p.shared.view.lock().unwrap().parts.first().is_some_and(|v|!v.loading && v.instrument.is_some()) {break;}
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let (inst,epoch)={let v=p.shared.view.lock().unwrap();let v=&v.parts[0];(v.instrument.clone().unwrap_or_else(||panic!("{}",v.status)),v.generation)};
+    assert!(matches!(inst.source,sampler_ir::SourceFormat::Kontakt{..}));
+    assert!(!inst.articulations.is_empty());
+    let source_ids=crate::sound::waveform::source_ids(&inst);
+    let zone=inst.zones.iter().position(|z|(z.keys.low..=z.keys.high).contains(&60)).expect("musical mapping");
+    let part=p.shared.part(0).unwrap();
+    let envelope=(0..400).find_map(|_|{let e=part.zone_waveform(source_ids[zone],epoch,512);if e.is_none(){std::thread::sleep(std::time::Duration::from_millis(5));}e}).expect("Kontakt physical source identity resolves its full waveform");
+    assert!(envelope.frames>0 && envelope.peaks.iter().any(|(lo,hi)|hi-lo>0.0001));
+    let before=(*inst).clone();
+    let mut ui=Harness::new(&p,1180.,780.);ui.press("view-0-Sound");ui.press("sound-tab-0-Mapping");
+    assert!(ui.ui.scene().unwrap().surface("map-0").is_some());
+    assert_eq!(*inst,before);
+}
+
+#[test]
+fn mapping_audition_editor_close_releases_held_note() {
+    for close in [true,false] {
+        let p=Arc::new(crate::plugin::SamplerParams::new());
+        p.shared.press_key(0,60,80);
+        assert_eq!(p.shared.keyboard.pop(),Some((0,crate::plugin::Play::Note(60,80))));
+        let mut editor=super::editor(p.clone());
+        if close {editor.close();}
+        drop(editor);
+        assert_eq!(p.shared.played[60].load(std::sync::atomic::Ordering::Relaxed),0,"native close/drop releases Mapping audition even when the build closure is retained");
+        assert_eq!(p.shared.keyboard.pop(),Some((0,crate::plugin::Play::Note(60,0))));
+    }
+}
+
+#[test]
+fn v1_eq_handles_use_each_band_gain_and_graph_drag_scale() {
+    use sampler_core::{EngineParameterBinding, EngineParameterLaw};
+    use sampler_ir as I;
+    use crate::sound::edits::{Edits, Override, Param};
+    let mut i = I::Instrument::default();
+    i.groups.push(I::Group { chain:Some(I::ChainRef(0)), ..Default::default() });
+    let filter = |kind, hz| I::Processor::Filter(I::Filter { kind,
+        cutoff:I::Frequency::Hertz(hz), resonance:I::Resonance::Q(1.) });
+    i.chains.push(I::Chain { scope:I::Scope::Group(I::GroupRef(0)),
+        pre_amplitude:vec![filter(I::FilterKind::LowPass { poles:2 }, 500.),
+            filter(I::FilterKind::Peak { gain:I::Gain::Decibels(6.) }, 1000.),
+            filter(I::FilterKind::Peak { gain:I::Gain::Decibels(-6.) }, 2000.)],
+        post_amplitude:vec![] });
+    let mut bindings = Vec::new();
+    let mut values = Vec::new();
+    for (band, hz, db, range) in [(0, 1000., 6., 18.), (1, 2000., -6., 24.)] {
+        for (param, parameter, law, native) in [
+            (Param::Freq(3,band), I::ProcessorParameter::Cutoff,
+                EngineParameterLaw::Exponential { low:20., high:20000. }, hz),
+            (Param::Bandwidth(3,band), I::ProcessorParameter::Resonance,
+                EngineParameterLaw::Exponential { low:0.1, high:10. }, 1.),
+            (Param::Gain(3,band), I::ProcessorParameter::Gain,
+                EngineParameterLaw::DecibelGain { low_db:-range, high_db:range }, 10f64.powf(db/20.)),
+        ] {
+            let key = format!("eq-handle-{}", bindings.len());
+            let control = sampler_core::lower::ir_control_id(&key);
+            let reference = I::ControlRef(i.controls.len());
+            i.controls.push(I::Control { key, label:String::new(), value:I::ControlValue::Continuous {
+                min:law.decode(0), max:law.decode(1000000), default:native,
+                unit:I::ControlUnit::None }, automation:I::Automation::None });
+            i.processor_controls.push(I::ProcessorControl { control:reference, chain:I::ChainRef(0),
+                index:usize::from(band)+1, parameter, ramp:I::Time::Milliseconds(0.) });
+            bindings.push(EngineParameterBinding { control, law, address:param.address(0) });
+            values.push((ir::ControlId(control.0),native));
+        }
+    }
+    let make = |edits:&Edits| super::editor_model::Model::new(&i,0,edits,&bindings,&values,48000.);
+    let model = make(&Edits::default());
+    let handles = super::viz::filter_handles(&model.playing);
+    for (band, db, range) in [(0,6.,18.),(1,-6.,24.)] {
+        let param = Param::Gain(3,band);
+        let handle = handles.iter().find(|h| h.x.unwrap().0 == Param::Freq(3,band)).unwrap();
+        assert!((handle.at[1] - super::viz::db_y(db)).abs() < 1e-5,
+            "each EQ handle shows its own gain, independent of other bands and serial filters");
+        assert!((handle.y.unwrap().1 - 60./(2.*range)).abs() < 1e-5,
+            "vertical graph motion must use the admitted gain range");
+        assert_eq!(handle.wheel,Some(Param::Bandwidth(3,band)));
+        let typed = model.typed(param,&format!("{db} dB")).unwrap();
+        assert!((model.display(param,typed)-db).abs() < 0.001);
+        let mut edits = Edits::default();
+        edits.set(Override { group:None, param, offset:handle.y.unwrap().1*0.1 });
+        let changed = make(&edits);
+        let moved = super::viz::filter_handles(&changed.playing);
+        let moved = moved.iter().find(|h| h.x.unwrap().0 == Param::Freq(3,band)).unwrap();
+        assert!((moved.at[1]-handle.at[1]-0.1).abs() < 1e-5,
+            "dragging up one tenth of the graph raises the band's gain by 6 dB");
+        assert!(changed.base == model.base,"player edits preserve the script-set base");
+        edits.reset(param);
+        assert_eq!(super::viz::filter_handles(&make(&edits).playing),handles);
+    }
+}

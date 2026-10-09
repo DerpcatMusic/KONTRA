@@ -18,12 +18,14 @@ use std::{
 };
 
 mod ui;
+#[cfg(feature = "scan")]
+pub mod diagnostics;
 #[path = "parameters.rs"]
 pub(crate) mod parameters;
 pub use ui::{UiState, SavedValue, control_id};
 
 const PRELUDE: &str = include_str!("script_prelude.lua");
-const INIT_BUDGET: &str = "uvi_lua_init unsupported: initialization time budget exceeded";
+const INIT_BUDGET: &str = "uvi_lua_init unsupported: initialization work budget exceeded";
 /// Where `require` finds a module: a bank's script members.
 pub trait Files {
     fn script(&self, module: &str) -> Option<String>;
@@ -78,19 +80,36 @@ impl Files for () {
 
 #[derive(Clone, Copy, Debug)]
 pub struct Config {
-    /// Time one callback may run before it is aborted.
+    /// Elapsed callback observation threshold; scheduler delay never rejects work.
     pub callback: Duration,
-    /// Total time constructing the graph and initializing all scripts may take.
+    /// Elapsed initialization observation threshold; scheduler delay never rejects work.
     pub load: Duration,
+    /// Luau call/backedge checkpoints and deferred resumes per initialization.
+    pub load_work: u64,
+    /// Luau call/backedge checkpoints and deferred resumes per live callback.
+    pub callback_work: u64,
     /// Bytes the Lua state may allocate.
     pub memory: usize,
     /// The host's sample rate, for `getSamplingRate` and the sample conversions.
     pub rate: f64,
+    /// Explicit audit seed; absent from normal builds and user preferences.
+    #[cfg(feature = "scan")]
+    pub audit_seed: Option<u32>,
+    /// Optional numeric progress observations, only for an explicitly seeded audit.
+    #[cfg(feature = "scan")]
+    pub audit_progress: bool,
+}
+
+/// Explicit scanner/test option, never read by ordinary plugin builds.
+#[cfg(feature = "scan")]
+pub fn audit_seed() -> Result<Option<u32>, String> {
+    std::env::var("KONTRA_UVI_AUDIT_SEED").map_or_else(
+        |e| if matches!(e, std::env::VarError::NotPresent) { Ok(None) } else { Err("invalid UVI audit seed".into()) },
+        |value| value.parse().map(Some).map_err(|_| "invalid UVI audit seed".into()))
 }
 
 impl Config {
-    /// For a plugin: a callback that overruns a few milliseconds is aborted
-    /// (its commands up to then stand) rather than left to lag the sound.
+    /// Plugin observation threshold; deterministic work bounds remain the same.
     pub fn realtime() -> Self {
         Self { callback: Duration::from_millis(8), ..Self::default() }
     }
@@ -101,8 +120,14 @@ impl Default for Config {
         Self {
             callback: Duration::from_millis(200),
             load: Duration::from_secs(20),
+            load_work: 1 << 25,
+            callback_work: 1 << 20,
             memory: 1536 << 20,
             rate: 48000.0,
+            #[cfg(feature = "scan")]
+            audit_seed: None,
+            #[cfg(feature = "scan")]
+            audit_progress: false,
         }
     }
 }
@@ -316,6 +341,8 @@ struct Waiting {
 
 struct Shared {
     #[cfg(feature = "scan")]
+    progress: Option<std::sync::Arc<diagnostics::ScanProgress>>,
+    #[cfg(feature = "scan")]
     init_api: RefCell<BTreeMap<&'static str, (u64, Duration)>>,
     #[cfg(feature = "scan")]
     audit_init: bool,
@@ -329,8 +356,10 @@ struct Shared {
     now: Cell<f64>,
     ids: Cell<u64>,
     seq: Cell<u64>,
-    /// When the running callback is aborted.
+    /// Elapsed observation only; admission is bounded by deterministic work.
     deadline: Cell<Option<Instant>>,
+    remaining_work: Cell<u64>,
+    work_exhausted: Cell<bool>,
     vm_checkpoints: Cell<u64>,
     graph_nodes: Cell<usize>,
     graph_depth: Cell<usize>,
@@ -364,6 +393,26 @@ struct Shared {
     cc: RefCell<[u8; 128]>,
 }
 
+struct InspectionBudget<'a> {
+    shared: &'a Shared,
+    saved: Option<(u64, bool, Option<Instant>)>,
+}
+
+impl Drop for InspectionBudget<'_> {
+    fn drop(&mut self) {
+        if let Some((work, exhausted, deadline)) = self.saved {
+            if self.shared.work_exhausted.get() {
+                self.shared.find("lua error", "work budget exceeded during UI snapshot");
+            }
+            self.shared.remaining_work.set(work);
+            self.shared.work_exhausted.set(exhausted);
+            self.shared.deadline.set(deadline);
+            #[cfg(feature = "scan")]
+            self.shared.observe_work();
+        }
+    }
+}
+
 #[cfg(feature = "scan")]
 struct ApiTimer<'a>(&'a Shared, &'static str, Option<Instant>);
 #[cfg(feature = "scan")]
@@ -377,8 +426,25 @@ impl Drop for ApiTimer<'_> {
         }
     }
 }
-#[cfg(feature = "scan")]
 impl Shared {
+    #[cfg(feature = "scan")]
+    fn observe_work(&self) {
+        if let Some(progress) = &self.progress {
+            progress.work(self.remaining_work.get(), self.vm_checkpoints.get(), self.work_exhausted.get());
+        }
+    }
+
+    fn inspection_budget(&self) -> InspectionBudget<'_> {
+        // Readback gets load-sized work without spending or refilling live work.
+        let saved = (!self.initializing.get()).then(|| (
+            self.remaining_work.replace(self.config.load_work),
+            self.work_exhausted.replace(false),
+            self.deadline.replace(Some(Instant::now() + self.config.load)),
+        ));
+        InspectionBudget { shared: self, saved }
+    }
+
+    #[cfg(feature = "scan")]
     fn api_timer(&self, name: &'static str) -> ApiTimer<'_> {
         ApiTimer(self, name, (self.audit_init && self.initializing.get()).then(Instant::now))
     }
@@ -388,7 +454,7 @@ impl Shared {
     fn find(&self, feature: &str, value: &str) {
         self.finding_revision.set(self.finding_revision.get().saturating_add(1));
         if matches!(feature,"lua error"|"lua UI callback") {
-            let category = if value.contains("time budget exceeded") { FaultCategory::Budget } else if feature=="lua UI callback" { FaultCategory::UiCallback } else { FaultCategory::Lua };
+            let category = if value.contains("budget exceeded") { FaultCategory::Budget } else if feature=="lua UI callback" { FaultCategory::UiCallback } else { FaultCategory::Lua };
             let mut faults = self.faults.borrow_mut();
             faults.first.get_or_insert(category);
             let counts = if self.initializing.get() { &mut faults.init } else { &mut faults.runtime };
@@ -405,7 +471,7 @@ impl Shared {
                 scan.runtime_count += 1;
                 scan.runtime_first.get_or_insert_with(|| value.to_owned());
             }
-            scan.budget_hits += usize::from(value.contains("time budget exceeded"));
+            scan.budget_hits += usize::from(value.contains("budget exceeded"));
         }
         let mut findings = self.findings.borrow_mut();
         let key=(feature.to_owned(),None);
@@ -439,11 +505,28 @@ impl Shared {
         else {faults.setter_type_mismatches.push(SetterTypeFinding{types,count:1});}
     }
 
-    /// Start a time budget for the code about to run.
-    fn arm(&self, budget: Duration) {
-        // All initialization phases share the original deadline.
+    /// All initialization phases share one allowance, including spawned work.
+    fn arm(&self, elapsed: Duration, work: u64) {
         if !self.initializing.get() {
-            self.deadline.set(Some(Instant::now() + budget));
+            self.deadline.set(Some(Instant::now() + elapsed));
+            self.remaining_work.set(work);
+            self.work_exhausted.set(false);
+            #[cfg(feature = "scan")]
+            self.observe_work();
+        }
+    }
+
+    fn consume_work(&self) -> mlua::Result<()> {
+        if let Some(left) = self.remaining_work.get().checked_sub(1) {
+            self.remaining_work.set(left);
+            #[cfg(feature = "scan")]
+            self.observe_work();
+            Ok(())
+        } else {
+            self.work_exhausted.set(true);
+            #[cfg(feature = "scan")]
+            self.observe_work();
+            Err(mlua::Error::runtime("work budget exceeded"))
         }
     }
 
@@ -524,8 +607,8 @@ fn element(
     class: &Table,
     list_class: &Table,
 ) -> mlua::Result<Table> {
-    if shared.deadline.get().is_some_and(|d| Instant::now() >= d) {
-        return Err(mlua::Error::runtime(INIT_BUDGET));
+    if shared.graph_nodes.get() >= 1 << 18 || depth > 192 {
+        return Err(mlua::Error::runtime("uvi_lua_init unsupported: graph node/depth budget exceeded"));
     }
     let table = lua.create_table()?;
     shared.graph_nodes.set(shared.graph_nodes.get() + 1);
@@ -677,7 +760,17 @@ impl ScriptHost {
             .map_err(lua_error)?
         };
         lua.set_memory_limit(config.memory).map_err(lua_error)?;
+        #[cfg(feature = "scan")]
+        if let Some(seed) = config.audit_seed {
+            let math: Table = lua.globals().get("math").map_err(lua_error)?;
+            math.get::<Function>("randomseed").map_err(lua_error)?
+                .call::<()>(seed).map_err(lua_error)?;
+        }
+
         let shared = Rc::new(Shared {
+            #[cfg(feature = "scan")]
+            progress: (config.audit_seed.is_some() && config.audit_progress)
+                .then(|| std::sync::Arc::new(diagnostics::ScanProgress::new(config.load_work))),
             #[cfg(feature = "scan")]
             init_api: RefCell::new(BTreeMap::new()),
             #[cfg(feature = "scan")]
@@ -693,6 +786,8 @@ impl ScriptHost {
             ids: Cell::new(1 << 32),
             seq: Cell::new(0),
             deadline: Cell::new(Some(Instant::now() + config.load)),
+            remaining_work: Cell::new(config.load_work),
+            work_exhausted: Cell::new(false),
             vm_checkpoints: Cell::new(0),
             graph_nodes: Cell::new(0),
             graph_depth: Cell::new(0),
@@ -732,12 +827,14 @@ impl ScriptHost {
             eprintln!("AUDIT {}", serde_json::json!({"stage":"uvi_lua_work",
                 "xml_bytes":xml.len(),"script_bytes":host.shared.script_bytes.get(),
                 "graph_nodes":host.shared.graph_nodes.get(),"graph_depth":host.shared.graph_depth.get(),
-                "vm_checkpoints":host.shared.vm_checkpoints.get(),"memory_bytes":host.lua.used_memory(),
+                "vm_checkpoints":host.shared.vm_checkpoints.get(),
+                "work_limit":config.load_work,"work_remaining":host.shared.remaining_work.get(),
+                "work_exhausted":host.shared.work_exhausted.get(),"memory_bytes":host.lua.used_memory(),
                 "wall_limit_ms":config.load.as_millis(),
                 "wall_expired":host.shared.deadline.get().is_some_and(|d| Instant::now() >= d),
                 "initialized":initialized.is_ok()}));
         }
-        if host.shared.deadline.get().is_some_and(|d| Instant::now() >= d) {
+        if host.shared.work_exhausted.get() {
             return Err(INIT_BUDGET.into());
         }
         initialized?;
@@ -799,14 +896,11 @@ impl ScriptHost {
         let globals = lua.globals();
         let shared = &self.shared;
 
-        // Luau calls the interrupt at calls and loop back-edges: a callback
-        // that outlives its time budget is aborted.
+        // Count Luau call/loop-backedge checkpoints, not elapsed scheduler time.
         let budget = shared.clone();
         lua.set_interrupt(move |_| {
             budget.vm_checkpoints.set(budget.vm_checkpoints.get().saturating_add(1));
-            if budget.deadline.get().is_some_and(|d| Instant::now() > d) {
-                return Err(mlua::Error::runtime("time budget exceeded"));
-            }
+            budget.consume_work()?;
             Ok(VmState::Continue)
         });
 
@@ -1377,7 +1471,7 @@ impl ScriptHost {
                 continue;
             }
             self.shared.note_assigned(&text);
-            self.shared.arm(self.shared.config.load);
+            self.shared.arm(self.shared.config.load, self.shared.config.load_work);
             let function = {
                 let _span = Span::new("uvi_lua_root_compile");
                 self
@@ -1407,7 +1501,7 @@ impl ScriptHost {
             // Saved widget values and their `changed` callbacks come after the script body
             // and before onInit, which is why scripts test for a restored zero there.
             if let Ok(Value::Function(f)) = self.lua.globals().raw_get::<Value>("__restore") {
-                self.shared.arm(self.shared.config.load);
+                self.shared.arm(self.shared.config.load, self.shared.config.load_work);
                 if let Ok(thread) = self.lua.create_thread(f) {
                     resume(&self.shared, thread, MultiValue::new(), None);
                     self.cycle();
@@ -1427,9 +1521,9 @@ impl ScriptHost {
             let batch = std::mem::take(&mut *self.shared.deferred.borrow_mut());
             if batch.is_empty() { break; }
             for (thread, args, note) in batch {
-                if self.shared.deadline.get().is_some_and(|d| Instant::now() >= d) {
+                if self.shared.consume_work().is_err() {
                     self.shared.deferred.borrow_mut().clear();
-                    self.shared.find("lua error", "time budget exceeded");
+                    self.shared.find("lua error", "work budget exceeded");
                     return;
                 }
                 resume(&self.shared, thread, args, note);
@@ -1465,6 +1559,10 @@ impl ScriptHost {
             self.shared.config.load
         } else {
             self.shared.config.callback
+        }, if self.shared.initializing.get() {
+            self.shared.config.load_work
+        } else {
+            self.shared.config.callback_work
         });
         let Ok(thread) = self.lua.create_thread(f) else {
             return;
@@ -1523,7 +1621,7 @@ impl ScriptHost {
             woken
         };
         for w in woken {
-            self.shared.arm(self.shared.config.callback);
+            self.shared.arm(self.shared.config.callback, self.shared.config.callback_work);
             resume(&self.shared, w.thread, MultiValue::new(), w.note);
         }
         let e = self.event(
@@ -1595,7 +1693,7 @@ impl ScriptHost {
         let Ok(Value::Function(f)) = self.lua.globals().raw_get::<Value>("onTransport") else {
             return;
         };
-        self.shared.arm(self.shared.config.callback);
+        self.shared.arm(self.shared.config.callback, self.shared.config.callback_work);
         if let Ok(thread) = self.lua.create_thread(f) {
             let mut args = MultiValue::new();
             args.push_front(Value::Boolean(playing));
@@ -1614,6 +1712,7 @@ impl ScriptHost {
     /// Move the clock to `now_ms`, resuming every thread whose wait ends by
     /// then, in time order. Commands carry the time they were issued.
     pub fn advance(&mut self, now_ms: f64) {
+        self.shared.arm(self.shared.config.callback, self.shared.config.callback_work);
         loop {
             let next = {
                 let mut waiting = self.shared.waiting.borrow_mut();
@@ -1627,16 +1726,23 @@ impl ScriptHost {
             };
             let Some(w) = next else { break };
             self.shared.now.set(w.due.max(self.shared.now.get()));
-            self.shared.arm(self.shared.config.callback);
+            if self.shared.consume_work().is_err() {
+                self.shared.find("lua error", "work budget exceeded");
+                break;
+            }
             resume(&self.shared, w.thread, MultiValue::new(), w.note);
             self.cycle();
         }
         self.shared.now.set(now_ms.max(self.shared.now.get()));
+        #[cfg(feature = "scan")]
+        if let Some(progress) = &self.shared.progress { progress.clock(self.shared.now.get()); }
     }
 
     /// Set the clock without resuming anything (a starting point).
     pub fn set_time(&mut self, now_ms: f64) {
         self.shared.now.set(now_ms);
+        #[cfg(feature = "scan")]
+        if let Some(progress) = &self.shared.progress { progress.clock(now_ms); }
     }
 
     /// The commands issued since the last call.
@@ -1701,6 +1807,14 @@ impl ScriptHost {
     }
     #[cfg(feature = "scan")]
     pub fn scan_faults(&self) -> ScanFaults { self.shared.scan.borrow().clone() }
+    #[cfg(feature = "scan")]
+    pub fn scan_progress(&self) -> Option<std::sync::Arc<diagnostics::ScanProgress>> {
+        self.shared.progress.clone()
+    }
+    #[cfg(feature = "scan")]
+    pub(crate) fn owner_phase(&self, phase: diagnostics::OwnerPhase) {
+        if let Some(progress) = &self.shared.progress { progress.phase(phase); }
+    }
 
     pub fn memory(&self) -> usize {
         self.lua.used_memory()
@@ -1708,6 +1822,8 @@ impl ScriptHost {
 }
 
 fn resume(shared: &Rc<Shared>, thread: Thread, args: MultiValue, note: Option<u64>) {
+    #[cfg(feature = "scan")]
+    if let Some(progress) = &shared.progress { progress.resume(shared.now.get()); }
     let before = shared.current.replace(note);
     let result = thread.resume::<MultiValue>(args);
     shared.current.set(before);
@@ -1796,6 +1912,17 @@ fn parse_play(shared: &Shared, args: &[Value]) -> Play {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn finite_initialization_survives_expired_elapsed_budget() {
+        let xml = "<UVI4><Program><EventProcessors><ScriptProcessor><script>function onInit() for n=1,100 do assert(n&gt;0) end; initialized=true end</script></ScriptProcessor></EventProcessors></Program></UVI4>";
+        let host = super::ScriptHost::new(xml, (), super::Config {
+            load: std::time::Duration::ZERO,
+            ..Default::default()
+        }).unwrap();
+        assert_eq!(host.global_text("initialized"), "true");
+        assert!(host.fault_counts().init.is_empty());
+    }
+
+    #[test]
     fn finite_initialization_records_deterministic_work() {
         let xml = "<UVI4><Program><EventProcessors><ScriptProcessor><script>function onInit() for n=1,100 do assert(n&gt;0) end end</script></ScriptProcessor></EventProcessors></Program></UVI4>";
         let first = super::ScriptHost::new(xml, (), super::Config::default()).unwrap();
@@ -1807,16 +1934,61 @@ mod tests {
     }
 
     #[test]
-    fn initialization_phases_cannot_renew_an_expired_deadline() {
+    fn graph_node_and_depth_work_are_bounded() {
         let h = super::ScriptHost::new("<UVI4><Program/></UVI4>", (), super::Config::default()).unwrap();
-        let expired = std::time::Instant::now();
+        h.shared.graph_nodes.set(1 << 18);
+        let doc = roxmltree::Document::parse("<UVI4><Program/></UVI4>").unwrap();
+        assert!(h.build_program(&doc).unwrap_err().to_string().contains("node/depth budget"));
+        let xml = format!("<UVI4><Program>{}<Layer/>{}</Program></UVI4>",
+            "<Layers><Layer>".repeat(192), "</Layer></Layers>".repeat(192));
+        let error = super::ScriptHost::new(&xml, (), super::Config::default()).err().unwrap();
+        assert!(error.contains("node/depth budget"), "{error}");
+    }
+
+    #[test]
+    fn initialization_phases_cannot_refill_exhausted_work() {
+        let h = super::ScriptHost::new("<UVI4><Program/></UVI4>", (), super::Config::default()).unwrap();
         h.shared.initializing.set(true);
-        h.shared.deadline.set(Some(expired));
-        h.shared.arm(std::time::Duration::from_secs(20));
-        assert_eq!(h.shared.deadline.get(), Some(expired));
+        h.shared.remaining_work.set(0);
+        assert!(h.shared.consume_work().is_err());
+        h.shared.arm(std::time::Duration::from_secs(20), 100);
+        assert_eq!(h.shared.remaining_work.get(), 0);
+        assert!(h.shared.work_exhausted.get());
         h.shared.initializing.set(false);
-        h.shared.arm(std::time::Duration::from_secs(20));
-        assert!(h.shared.deadline.get().unwrap() > expired);
+        h.shared.arm(std::time::Duration::from_secs(20), 100);
+        assert_eq!(h.shared.remaining_work.get(), 100);
+        assert!(!h.shared.work_exhausted.get());
+    }
+
+    #[test]
+    fn ui_inspection_preserves_live_work_and_exhaustion() {
+        let h = super::ScriptHost::new("<UVI4><Program><EventProcessors><ScriptProcessor><script>Knob('K',1,0,127)</script></ScriptProcessor></EventProcessors></Program></UVI4>", (), super::Config::default()).unwrap();
+        let deadline = h.shared.deadline.get();
+        for (work, exhausted) in [(1, false), (0, true)] {
+            h.shared.remaining_work.set(work);
+            h.shared.work_exhausted.set(exhausted);
+            let face=h.interface();
+            assert_eq!(face.widgets[0].name,"K");
+            assert_eq!(face.widgets[0].initial_value,1.);
+            assert_eq!(h.shared.remaining_work.get(),work);
+            assert_eq!(h.shared.work_exhausted.get(),exhausted);
+            assert_eq!(h.shared.deadline.get(),deadline);
+        }
+        h.shared.remaining_work.set(7);
+        h.shared.work_exhausted.set(false);
+        {
+            let _inspection = h.shared.inspection_budget();
+            h.shared.remaining_work.set(0);
+            assert!(h.shared.consume_work().is_err());
+        }
+        assert_eq!(h.shared.remaining_work.get(), 7);
+        assert!(!h.shared.work_exhausted.get());
+        assert_eq!(h.fault_counts().runtime.get(&super::FaultCategory::Budget), Some(&1));
+        h.shared.initializing.set(true);
+        h.shared.remaining_work.set(0);
+        { let _inspection=h.shared.inspection_budget();
+          assert_eq!(h.shared.remaining_work.get(),0); }
+        assert_eq!(h.shared.remaining_work.get(),0);
     }
 
     use super::*;
@@ -1903,7 +2075,7 @@ mod tests {
         assert!(
             findings
                 .iter()
-                .any(|f| f.feature == "lua error" && f.value.contains("time budget")),
+                .any(|f| f.feature == "lua error" && f.value.contains("work budget")),
             "{findings:?}"
         );
         // The host is still usable.

@@ -96,8 +96,30 @@ static Io read_io() {
     std::ifstream file("/proc/self/io");
     return parse_io(std::string{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()});
 }
+struct Memory { uint64_t rss = 0, peak = 0, swap = 0; bool valid = false; };
+static Memory parse_memory(const std::string& text) {
+    Memory m; bool rss = false, peak = false, swap = false;
+    std::istringstream lines(text); std::string line;
+    while (std::getline(lines, line)) {
+        std::istringstream fields(line); std::string key, unit; uint64_t value;
+        if (!(fields >> key >> value >> unit) || unit != "kB") continue;
+        if (key == "VmRSS:") { m.rss = value; rss = true; }
+        if (key == "VmHWM:") { m.peak = value; peak = true; }
+        if (key == "VmSwap:") { m.swap = value; swap = true; }
+    }
+    m.valid = rss && peak && swap; return m;
+}
+static Memory read_memory() {
+    std::ifstream file("/proc/self/status");
+    auto m = parse_memory(std::string{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()});
+    require(m.valid, "process RSS/HWM/swap fields"); return m;
+}
 using ReadPerf = bool (*)(const clap_plugin_t*, Perf*);
 
+static bool earlier_audio(float sample, uint64_t frame, int64_t& first) {
+    if (!std::isfinite(sample) || std::abs(sample) <= 1e-7 || (first >= 0 && frame >= uint64_t(first))) return false;
+    first = int64_t(frame); return true;
+}
 static double quantile(const std::vector<double>& sorted, double q) {
     require(!sorted.empty(), "measured process calls");
     return sorted[std::min(sorted.size()-1, size_t(std::ceil(q * sorted.size())-1))];
@@ -110,10 +132,18 @@ int main(int argc, char** argv) {
             && events.in.get(&events.in, 1) == nullptr, "sample-exact bounded host events");
         const auto io = parse_io("rchar: 1200\nread_bytes: 4096\nwchar: 8\n");
         require(io.valid && io.chars == 1200 && io.disk == 4096 && !parse_io("rchar: 1\n").valid, "stream I/O counters and absent field");
+        auto memory = parse_memory("VmRSS: 123 kB\nVmHWM: 456 kB\nVmSwap: 7 kB\n");
+        require(memory.valid && memory.rss == 123 && memory.peak == 456 && memory.swap == 7
+            && !parse_memory("VmRSS: 1 kB\n").valid
+            && !parse_memory("VmRSS: 1 MB\nVmHWM: 2 kB\nVmSwap: 0 kB\n").valid, "numeric process memory and missing fields");
+        int64_t first = -1;
+        require(!earlier_audio(0, 0, first) && !earlier_audio(std::nanf(""), 1, first)
+            && earlier_audio(.5f, 9, first) && earlier_audio(.5f, 3, first)
+            && !earlier_audio(.5f, 10, first) && first == 3, "earliest finite audible frame across channels");
         SavedState saved;
         require(saved.api.write(&saved.api, "abc", 3) == 3 && saved.bytes == std::vector<char>({'a', 'b', 'c'})
             && saved.api.write(&saved.api, "x", 64 * 1024 * 1024) == -1, "bounded native state-save stream");
-        std::puts("PASS: percentiles, timestamped event input, stream I/O and native state save"); return 0;
+        std::puts("PASS: percentiles, event input, stream I/O, process memory, first audio and native state save"); return 0;
     }
     require(argc == 9, "PLUGIN STATE BLOCK SECONDS READY_FLAG EVENT_TSV EXPECTED_PARTS READBACK_STATE");
     const unsigned block = std::strtoul(argv[3], nullptr, 10);
@@ -130,6 +160,10 @@ int main(int argc, char** argv) {
     auto* state = static_cast<const clap_plugin_state_t*>(p->get_extension(p, CLAP_EXT_STATE));
     std::ifstream file(argv[2], std::ios::binary);
     Stream stream{{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()}};
+    const bool load_probe = std::getenv("KONTRA_LOAD_HOST") && std::strcmp(std::getenv("KONTRA_LOAD_HOST"), "1") == 0;
+    const auto memory_before = load_probe ? read_memory() : Memory{};
+    Memory memory_ready{}; double ready_ms = -1, first_audio_wall_ms = -1; int64_t first_audio_frame = -1;
+    const auto load_begin = Clock::now();
     require(state && !stream.bytes.empty() && state->load(p, &stream.api), "native CLAP state load");
     // Frozen v1 defaults to -12 dB; v2 defaults to 0. Match the actual host parameter.
     auto* params = static_cast<const clap_plugin_params_t*>(p->get_extension(p, CLAP_EXT_PARAMS));
@@ -195,6 +229,9 @@ int main(int argc, char** argv) {
                 misses += us > block * 1e6 / 48000.; wake_misses += before > deadline + period;
                 for (const auto& b : pcm) for (const auto& c : b) for (unsigned f = 0; f < block; ++f) {
                     const auto x = c[f]; nonfinite += !std::isfinite(x); if (std::isfinite(x)) peak = std::max(peak, double(std::abs(x)));
+                    if (load_probe && earlier_audio(x, at + f, first_audio_frame)) {
+                        first_audio_wall_ms = std::chrono::duration<double, std::milli>(after - load_begin).count();
+                    }
                 }
                 at += block;
             }
@@ -220,13 +257,24 @@ int main(int argc, char** argv) {
             std::printf("{\"kind\":\"perf_view\",\"cpu_percent\":%.6f,\"disk_mb_s\":%.6f,\"voices\":%llu,\"audible\":%llu,\"dropouts\":%llu,\"sample_ram_bytes\":%llu,\"freed_bytes\":%llu,\"underruns\":%llu,\"loaded_parts\":%llu,\"blocks\":%llu}\n",
                 ui_cpu * 100, ui_disk, (unsigned long long)current.voices, (unsigned long long)current.audible, (unsigned long long)current.dropouts,
                 (unsigned long long)current.memory, (unsigned long long)current.freed, (unsigned long long)current.underruns, (unsigned long long)current.loaded_parts, (unsigned long long)current.blocks);
-            if (current.loaded_parts >= parts) ready.store(true, std::memory_order_release);
+            if (!load_probe && current.loaded_parts >= parts) ready.store(true, std::memory_order_release);
             previous = current; sample_at = Clock::now();
         }
-        if (!perf && std::ifstream(argv[5]).good()) ready.store(true, std::memory_order_release);
+        // Load comparison uses the same diagnostic readiness gate on both versions.
+        if ((!perf || load_probe) && !ready.load(std::memory_order_acquire) && std::ifstream(argv[5]).good()) {
+            if (load_probe) { memory_ready = read_memory(); ready_ms = std::chrono::duration<double, std::milli>(Clock::now() - load_begin).count(); }
+            ready.store(true, std::memory_order_release);
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     audio.join(); if (host.callback.exchange(false)) p->on_main_thread(p);
+    if (load_probe) {
+        const auto memory_done = read_memory();
+        std::printf("{\"kind\":\"load_probe\",\"ready_ms\":%.6f,\"first_audio_wall_ms\":%.6f,\"first_audio_frame\":%lld,\"rss_before_kb\":%llu,\"rss_ready_kb\":%llu,\"rss_done_kb\":%llu,\"hwm_kb\":%llu,\"swap_kb\":%llu}\n",
+            ready_ms, first_audio_wall_ms, (long long)first_audio_frame,
+            (unsigned long long)memory_before.rss, (unsigned long long)memory_ready.rss,
+            (unsigned long long)memory_done.rss, (unsigned long long)memory_done.peak, (unsigned long long)memory_done.swap);
+    }
     // State readback stays outside measured process calls and streaming deltas.
     SavedState saved;
     require(state->save(p, &saved.api) && !saved.bytes.empty(), "native CLAP state save");
