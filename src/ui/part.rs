@@ -555,10 +555,9 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
             && now != was
             && !edited_controls.contains(&id)
         {
-            let admitted = cx.p.shared.set_control_at(slot, generation, id, now);
+            let _admitted = cx.p.shared.set_control_at(slot, generation, id, now);
             #[cfg(all(test, feature = "shots"))]
-            if admitted && slot == 0 { super::widget_gate::submitted_control(id); }
-            let _ = admitted;
+            if _admitted && slot == 0 { super::widget_gate::submitted_control(id); }
         }
     }
     Some(
