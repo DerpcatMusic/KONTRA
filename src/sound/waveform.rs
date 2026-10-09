@@ -12,6 +12,16 @@ pub(crate) struct Source {
 pub(crate) struct Envelope {
     pub peaks: Peaks,
     pub duration_us: u64,
+    pub frames: u64,
+    pub sample_rate: u32,
+}
+/// Waveform request IDs: physical source IDs where present, else IR ordinals.
+pub(crate) fn source_ids(inst: &sampler_ir::Instrument) -> Vec<u32> {
+    let mut ids: Vec<u32> = (1..=inst.zones.len() as u32).collect();
+    for (physical, zone) in inst.source_indices.zones.iter().enumerate() {
+        if let Some(zone) = zone && let Some(id) = ids.get_mut(zone.0) { *id = physical as u32 + 1; }
+    }
+    ids
 }
 #[derive(Default)]
 struct Cache {
@@ -94,12 +104,20 @@ fn envelope(source: &Source, bins: usize, stop: &AtomicBool) -> Option<Envelope>
         }
         peaks.push((low, high));
     }
-    Some(Envelope {peaks:peaks.into(), duration_us:(count as u128 * 1_000_000 / u128::from(rate)).min(u128::from(u64::MAX)) as u64})
+    Some(Envelope {peaks:peaks.into(), frames:count as u64, sample_rate:rate, duration_us:(count as u128 * 1_000_000 / u128::from(rate)).min(u128::from(u64::MAX)) as u64})
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mapping_source_ids_preserve_native_holes_and_falcon_ordinals() {
+        let mut inst=sampler_ir::Instrument::default();
+        for _ in 0..2 {inst.zones.push(sampler_ir::Zone::new(sampler_ir::AssetRef(0)));}
+        assert_eq!(source_ids(&inst),vec![1,2]);
+        inst.source_indices.zones=vec![Some(sampler_ir::ZoneRef(1)),None,Some(sampler_ir::ZoneRef(0))];
+        assert_eq!(source_ids(&inst),vec![3,1]);
+    }
     #[test]
     fn resident_and_streamed_envelopes_share_exact_bins_without_head_fallback() {
         let frames = vec![[-2., 0.25], [0.5, 0.], [0.75, -0.75], [0., 2.]];
@@ -119,6 +137,7 @@ mod tests {
         let b = envelope(&streamed, 2, &stop).expect("streamed envelope");
         assert_eq!(&*a.peaks, &[(-1.,0.5),(-0.75,1.)]);
         assert_eq!(&*a.peaks, &*b.peaks); assert_eq!(a.duration_us, 1_000_000);
+        assert_eq!((a.frames,a.sample_rate),(4,4)); assert_eq!((b.frames,b.sample_rate),(4,4));
         assert!(envelope(&Source {pcm:streamed.pcm.clone(),stream:None},2,&stop).is_none(),"a stream without its reader is unavailable, not a fake full envelope");
         stop.store(true,Ordering::Release); assert!(envelope(&resident,2,&stop).is_none());
     }

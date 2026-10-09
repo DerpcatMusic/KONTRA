@@ -44,6 +44,7 @@ mod native_runtime;
 mod native_ui;
 mod render_art;
 mod inside;
+mod mapping;
 mod editor;
 mod editor_model;
 mod viz;
@@ -90,6 +91,7 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
     let size = params.shared.libraries.settings().editor_size();
     let zoom_params = params.clone();
     let close_params = params.clone();
+    let close_computer = computer.clone();
     let close_picker = Arc::clone(&picker);
     #[cfg(target_os = "linux")]
     let parent_picker = Arc::clone(&picker);
@@ -125,6 +127,7 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
             zoom_params.shared.libraries.settings().editor_scale()
         })
         .on_close(move || {
+            let_go(&close_params, &close_computer);
             close_params.shared.editor_watch.store(usize::MAX, Ordering::Relaxed);
             close_picker.close();
             close_params.shared.libraries.flush_settings();
@@ -993,6 +996,7 @@ fn build(
             selection,
             state: &mut state,
         };
+        mapping::release(ui, &mut cx);
         shortcuts(ui, &mut cx);
         picked(&mut cx);
         let top = header::top_bar(ui, &mut cx, bridge);
