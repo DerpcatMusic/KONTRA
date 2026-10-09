@@ -376,3 +376,34 @@ bank's library location leaves that favourite pointing at its former path.
 Same-name presets and current v2 state roundtrips are covered; UUID-based
 relocation is not. Track this after the authored CPU gate. Migration of saved
 v1 state is N/A by product policy; the remaining gap is current v2 UX.
+
+### Authored CPU receipt and MIDI/Lua coverage
+
+The 2026-10-09 before/after receipt used the same authored clear bank, piano
+schedule and `ci` profile (three repetitions at 32/64/256 frames). Playback
+produced peak 0.50925505 and 16 voices with zero callback heap calls and runtime
+faults. Timing is **CONTENDED/UNKNOWN**: the intruder ledger found foreign KURV
+builds during the requested window. These quantiles do not establish acceptance.
+V1 was not run: the frozen UVI CPU adapter requires the official reader even for
+a clear bank, and the current no-third-party rule forbids that opener. Saved v1
+state migration remains N/A by product policy.
+
+A separate three-cell 32-frame diagnostic had 13 continuous QUIET observer
+samples. Misses were 3/3/2: none at startup, one in the scored steady interval,
+and seven after note-off while sustain still held 16 voices. Their elapsed
+callback times were 714–1055 µs against a 667 µs deadline, with only 47–92 µs of
+audio-thread CPU. This demonstrates time off CPU in these outliers; it does not
+prove whether each delay was preemption or a wait. The host/scheduler issue
+remains open; no CPU-axis pass is claimed.
+
+Those CPU cells exposed another coverage gap: incoming MIDI notes reached the
+MPE adapter but bypassed UVI `onNote`, while exact host notes used the Lua driver.
+The authored fixture now changes its label to `Played` from `onNote`, and the
+product gate requires that change. Incoming scripted notes use the MIDI adapter's
+silent admission, retaining its channel expression and physical-note pairing;
+Lua then chooses the attack. Script-generated MIDI keeps the direct wire route.
+Host-note releases also use the exact core note ID, so a same-key MIDI gate
+cannot be closed by a host release or consume that host's Lua release callback.
+V1 `4bffbb18:src/plugin/uvi.rs::Slot::feed` likewise routes note arrivals through
+`HostedInput::On` and releases their stored typed root. V2 keeps its validated
+MPE adapter and core note identities rather than introducing a second ledger.
