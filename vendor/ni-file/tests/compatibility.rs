@@ -9,46 +9,100 @@ use std::io::Cursor;
 
 #[test]
 fn truncated_containers_preserve_decoder_context_and_valid_roundtrips() {
-    use ni_file::{NIFile, NIFileError, nis::{ItemContainer, ItemData, ItemDataHeader, ItemHeader},
-        kontakt::{Chunk, objects::BPatchMetaInfoHeader}};
+    use ni_file::{
+        kontakt::{objects::BPatchMetaInfoHeader, Chunk},
+        nis::{ItemContainer, ItemData, ItemDataHeader, ItemHeader},
+        NIFile, NIFileError,
+    };
     let item = ItemContainer {
-        header: ItemHeader { length: 40, magic: b"hsin".to_vec(), header_flags: 0, reserved: 0, uuid: vec![0; 16] },
-        data: ItemData { header: ItemDataHeader { length: 20, domain_id: *b"NISD", item_id: 1, version: 1 }, inner: None, data: vec![] },
-        children: vec![], child_headers: vec![], trailing_data: vec![],
+        header: ItemHeader {
+            length: 40,
+            magic: b"hsin".to_vec(),
+            header_flags: 0,
+            reserved: 0,
+            uuid: vec![0; 16],
+        },
+        data: ItemData {
+            header: ItemDataHeader {
+                length: 20,
+                domain_id: *b"NISD",
+                item_id: 1,
+                version: 1,
+            },
+            inner: None,
+            data: vec![],
+        },
+        children: vec![],
+        child_headers: vec![],
+        trailing_data: vec![],
     };
     let mut bytes = Vec::new();
     item.write(&mut bytes).unwrap();
     let valid = NIFile::read(Cursor::new(&bytes)).unwrap();
     let mut encoded = Vec::new();
     valid.write(&mut encoded).unwrap();
-    assert_eq!(encoded, bytes, "a supported NIS roundtrip preserves every byte");
-    let error = NIFile::read(Cursor::new(&bytes[..bytes.len()-1])).err().unwrap();
+    assert_eq!(
+        encoded, bytes,
+        "a supported NIS roundtrip preserves every byte"
+    );
+    let error = NIFile::read(Cursor::new(&bytes[..bytes.len() - 1]))
+        .err()
+        .unwrap();
     let message = error.to_string();
-    assert!(message.contains("NIS item body at offset 40") && message.contains("declared body length 28/version 1")
-        && message.contains("available 27"), "{message}");
-    assert!(!message.contains("Unknown"), "a recognized NIS signature retains the decoder cause");
+    assert!(
+        message.contains("NIS item body at offset 40")
+            && message.contains("declared body length 28/version 1")
+            && message.contains("available 27"),
+        "{message}"
+    );
+    assert!(
+        !message.contains("Unknown"),
+        "a recognized NIS signature retains the decoder cause"
+    );
     let mut error = NIFile::read(Cursor::new(&bytes[..21])).err().unwrap();
     assert!(error.to_string().contains("NIS item header at offset 0"));
-    while let NIFileError::Context { source, .. } = error { error = *source; }
-    assert!(matches!(error, NIFileError::IO(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof),
-        "context preserves the original EOF error: {error:?}");
+    while let NIFileError::Context { source, .. } = error {
+        error = *source;
+    }
+    assert!(
+        matches!(error, NIFileError::IO(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof),
+        "context preserves the original EOF error: {error:?}"
+    );
 
-    let chunks = KontaktChunks(vec![Chunk { id: 0x28, data: vec![1,2,3] }]);
+    let chunks = KontaktChunks(vec![Chunk {
+        id: 0x28,
+        data: vec![1, 2, 3],
+    }]);
     let mut bytes = Vec::new();
     chunks.write(&mut bytes).unwrap();
     let mut encoded = Vec::new();
-    KontaktChunks::read(Cursor::new(&bytes)).unwrap().write(&mut encoded).unwrap();
+    KontaktChunks::read(Cursor::new(&bytes))
+        .unwrap()
+        .write(&mut encoded)
+        .unwrap();
     assert_eq!(encoded, bytes);
-    for (len, expected) in [(4, "chunk 0x0028 length at offset 2"), (8, "chunk 0x0028 body at offset 6, declared length 3")] {
-        let message = KontaktChunks::read(Cursor::new(&bytes[..len])).unwrap_err().to_string();
+    for (len, expected) in [
+        (4, "chunk 0x0028 length at offset 2"),
+        (8, "chunk 0x0028 body at offset 6, declared length 3"),
+    ] {
+        let message = KontaktChunks::read(Cursor::new(&bytes[..len]))
+            .unwrap_err()
+            .to_string();
         assert!(message.contains(expected), "{message}");
     }
     let mut bytes = 0x7FA89012u32.to_le_bytes().to_vec();
     bytes.extend(5u32.to_le_bytes());
     bytes.extend(0x1000u16.to_le_bytes());
     let message = NIFile::read(Cursor::new(bytes)).err().unwrap().to_string();
-    assert!(message.contains("NKS patch header at offset 8, format word 0x1000") && message.contains("declared 212"), "{message}");
-    assert!(BPatchMetaInfoHeader::read(Cursor::new([0;8])).is_err(), "invalid metadata returns an error rather than panicking");
+    assert!(
+        message.contains("NKS patch header at offset 8, format word 0x1000")
+            && message.contains("declared 212"),
+        "{message}"
+    );
+    assert!(
+        BPatchMetaInfoHeader::read(Cursor::new([0; 8])).is_err(),
+        "invalid metadata returns an error rather than panicking"
+    );
 }
 
 #[test]
@@ -64,7 +118,12 @@ fn malformed_nis_lengths_and_children_return_errors() {
     data.extend(1u32.to_le_bytes());
     data.extend(1u32.to_le_bytes());
     assert!(ItemData::read(Cursor::new(&data)).is_err());
-    let header = ItemDataHeader { length: 20, domain_id: [0xff; 4], item_id: 1, version: 1 };
+    let header = ItemDataHeader {
+        length: 20,
+        domain_id: [0xff; 4],
+        item_id: 1,
+        version: 1,
+    };
     assert!(matches!(header.item_type(), ItemType::Unknown(1, _)));
     // A minimal empty item followed by an unsupported child-list version.
     data[..8].copy_from_slice(&20u64.to_le_bytes());
@@ -77,32 +136,60 @@ fn malformed_nis_lengths_and_children_return_errors() {
 
 #[test]
 fn nks_extraction_checks_decompressed_length_and_returns_errors() {
-    use ni_file::{NIFile, kontakt::objects::{BPatchHeader, BPatchHeaderV42}, nks::container::NKSContainer};
+    use ni_file::{
+        kontakt::objects::{BPatchHeader, BPatchHeaderV42},
+        nks::container::NKSContainer,
+        NIFile,
+    };
     let mut header = vec![0; 212];
     header[..4].copy_from_slice(&0xEA37631Au32.to_le_bytes());
     let mut h = BPatchHeaderV42::read_le(Cursor::new(&header)).unwrap();
     h.decompressed_length = 4;
-    let mut nks = NKSContainer { header: BPatchHeader::BPatchHeaderV42(h), compressed_data: vec![3,b't',b'e',b's',b't'], meta_info: None };
+    let mut nks = NKSContainer {
+        header: BPatchHeader::BPatchHeaderV42(h),
+        compressed_data: vec![3, b't', b'e', b's', b't'],
+        meta_info: None,
+    };
     assert_eq!(nks.decompressed_preset().unwrap(), b"test");
-    if let BPatchHeader::BPatchHeaderV42(h) = &mut nks.header { h.decompressed_length = 5; }
+    if let BPatchHeader::BPatchHeaderV42(h) = &mut nks.header {
+        h.decompressed_length = 5;
+    }
     assert!(nks.decompressed_preset().is_err());
-    if let BPatchHeader::BPatchHeaderV42(h) = &mut nks.header { h.decompressed_length = u32::MAX; }
+    if let BPatchHeader::BPatchHeaderV42(h) = &mut nks.header {
+        h.decompressed_length = u32::MAX;
+    }
     assert!(nks.decompressed_preset().is_err());
     nks.compressed_data.clear();
     assert!(nks.preset().is_err());
-    assert!(NKSContainer::read(Cursor::new([0;4])).is_err());
-    assert!(BPatchHeaderV42::read_le(Cursor::new([0;212])).is_err());
+    assert!(NKSContainer::read(Cursor::new([0; 4])).is_err());
+    assert!(BPatchHeaderV42::read_le(Cursor::new([0; 212])).is_err());
     assert!(NIFile::NICompressedWave.inner_preset().is_err());
-    if let BPatchHeader::BPatchHeaderV42(h) = &mut nks.header { h.decompressed_length = 4; }
-    nks.compressed_data = vec![3,b't',b'e',b's',b't'];
+    if let BPatchHeader::BPatchHeaderV42(h) = &mut nks.header {
+        h.decompressed_length = 4;
+    }
+    nks.compressed_data = vec![3, b't', b'e', b's', b't'];
     assert_eq!(NIFile::NKSContainer(nks).inner_preset().unwrap(), b"test");
 }
 
 #[test]
 fn generic_nis_extraction_uses_the_existing_subtree_reader() {
-    use ni_file::{NIFile, nis::{ItemContainer, ItemData, ItemDataHeader, ItemHeader, PresetChunkItemProperties}};
-    let data_header = |item_id| ItemDataHeader { length: 20, domain_id: *b"NISD", item_id, version: 1 };
-    let container_header = ItemHeader { length: 40, magic: b"hsin".to_vec(), header_flags: 0, reserved: 0, uuid: vec![0;16] };
+    use ni_file::{
+        nis::{ItemContainer, ItemData, ItemDataHeader, ItemHeader, PresetChunkItemProperties},
+        NIFile,
+    };
+    let data_header = |item_id| ItemDataHeader {
+        length: 20,
+        domain_id: *b"NISD",
+        item_id,
+        version: 1,
+    };
+    let container_header = ItemHeader {
+        length: 40,
+        magic: b"hsin".to_vec(),
+        header_flags: 0,
+        reserved: 0,
+        uuid: vec![0; 16],
+    };
     let mut props = 1u32.to_le_bytes().to_vec();
     props.extend(0u32.to_le_bytes());
     props.extend(1u32.to_le_bytes());
@@ -110,17 +197,61 @@ fn generic_nis_extraction_uses_the_existing_subtree_reader() {
     props.extend(b"test");
     // Encoded PresetChunkItem with its empty base Item and no child containers.
     let mut inner = (40u64 + 40 + props.len() as u64 + 8).to_le_bytes().to_vec();
-    inner.extend(1u32.to_le_bytes());inner.extend(b"hsin");inner.extend([0;24]);
-    inner.extend((40u64 + props.len() as u64).to_le_bytes());inner.extend(b"DSIN");inner.extend(0x6du32.to_le_bytes());inner.extend(1u32.to_le_bytes());
-    inner.extend(20u64.to_le_bytes());inner.extend(b"DSIN");inner.extend(1u32.to_le_bytes());inner.extend(1u32.to_le_bytes());inner.extend(&props);
-    inner.extend(1u32.to_le_bytes());inner.extend(0u32.to_le_bytes());
-    let mut subtree = 1u32.to_le_bytes().to_vec();subtree.push(0);subtree.extend(inner);
-    let encryption = ItemData { header: data_header(0x74), inner: Some(Box::new(ItemData { header: data_header(0x73), inner: None, data: subtree })), data: vec![1,0,0,0,0] };
-    let preset = ItemContainer { header: container_header.clone(), data: ItemData { header: ItemDataHeader { domain_id: *b"NIK4", item_id: 3, ..data_header(3) }, inner: None, data: vec![] }, child_headers: vec![[0;12]], trailing_data: vec![], children: vec![ItemContainer { header: container_header, data: encryption, children: vec![], child_headers: vec![], trailing_data: vec![] }] };
-    assert_eq!(NIFile::NISoundContainer(preset).inner_preset().unwrap(), b"test");
+    inner.extend(1u32.to_le_bytes());
+    inner.extend(b"hsin");
+    inner.extend([0; 24]);
+    inner.extend((40u64 + props.len() as u64).to_le_bytes());
+    inner.extend(b"DSIN");
+    inner.extend(0x6du32.to_le_bytes());
+    inner.extend(1u32.to_le_bytes());
+    inner.extend(20u64.to_le_bytes());
+    inner.extend(b"DSIN");
+    inner.extend(1u32.to_le_bytes());
+    inner.extend(1u32.to_le_bytes());
+    inner.extend(&props);
+    inner.extend(1u32.to_le_bytes());
+    inner.extend(0u32.to_le_bytes());
+    let mut subtree = 1u32.to_le_bytes().to_vec();
+    subtree.push(0);
+    subtree.extend(inner);
+    let encryption = ItemData {
+        header: data_header(0x74),
+        inner: Some(Box::new(ItemData {
+            header: data_header(0x73),
+            inner: None,
+            data: subtree,
+        })),
+        data: vec![1, 0, 0, 0, 0],
+    };
+    let preset = ItemContainer {
+        header: container_header.clone(),
+        data: ItemData {
+            header: ItemDataHeader {
+                domain_id: *b"NIK4",
+                item_id: 3,
+                ..data_header(3)
+            },
+            inner: None,
+            data: vec![],
+        },
+        child_headers: vec![[0; 12]],
+        trailing_data: vec![],
+        children: vec![ItemContainer {
+            header: container_header,
+            data: encryption,
+            children: vec![],
+            child_headers: vec![],
+            trailing_data: vec![],
+        }],
+    };
+    assert_eq!(
+        NIFile::NISoundContainer(preset).inner_preset().unwrap(),
+        b"test"
+    );
     props[..4].copy_from_slice(&2u32.to_le_bytes());
     assert!(PresetChunkItemProperties::read(Cursor::new(&props)).is_err());
-    props[..4].copy_from_slice(&1u32.to_le_bytes());props[8..12].copy_from_slice(&2u32.to_le_bytes());
+    props[..4].copy_from_slice(&1u32.to_le_bytes());
+    props[8..12].copy_from_slice(&2u32.to_le_bytes());
     assert!(PresetChunkItemProperties::read(Cursor::new(props)).is_err());
 }
 #[test]
@@ -144,7 +275,7 @@ fn loop_slots_are_a_mask_not_a_count() {
 
 #[test]
 fn filename_table_records_preserve_native_metadata_and_edit_paths() {
-    use ni_file::kontakt::objects::{FNTableRecord, BFileNameSegmentRecord};
+    use ni_file::kontakt::objects::{BFileNameSegmentRecord, FNTableRecord};
     // Authored v2 table: all supported native segment kinds, exact UTF-16 code
     // units (including an unpaired surrogate), full-width metadata and an
     // uninterpreted extension. No proprietary table or filename is included.
@@ -180,9 +311,17 @@ fn filename_table_records_preserve_native_metadata_and_edit_paths() {
     assert_eq!(record.to_chunk().unwrap().data, chunk.data);
     let mut encoded = Vec::new();
     record.write(&mut encoded).unwrap();
-    assert_eq!(ni_file::kontakt::Chunk::read(Cursor::new(encoded)).unwrap().data, chunk.data);
+    assert_eq!(
+        ni_file::kontakt::Chunk::read(Cursor::new(encoded))
+            .unwrap()
+            .data,
+        chunk.data
+    );
     for end in 0..known_length {
-        let truncated = ni_file::kontakt::Chunk { id: 0x4b, data: chunk.data[..end].to_vec() };
+        let truncated = ni_file::kontakt::Chunk {
+            id: 0x4b,
+            data: chunk.data[..end].to_vec(),
+        };
         assert!(FNTableRecord::try_from(&truncated).is_err(), "end={end}");
     }
     for (offset, bytes) in [
@@ -192,41 +331,75 @@ fn filename_table_records_preserve_native_metadata_and_edit_paths() {
     ] {
         let mut malformed = chunk.data.clone();
         malformed[offset..offset + 4].copy_from_slice(&bytes);
-        assert!(FNTableRecord::try_from(&ni_file::kontakt::Chunk { id: 0x4b, data: malformed }).is_err());
+        assert!(FNTableRecord::try_from(&ni_file::kontakt::Chunk {
+            id: 0x4b,
+            data: malformed
+        })
+        .is_err());
     }
     record.samples[0].filename.segments[0].text = Some("Authored.ncw".encode_utf16().collect());
     let edited = FNTableRecord::try_from(&record.to_chunk().unwrap()).unwrap();
     assert_eq!(edited, record);
-    assert_eq!(edited.special_files[0], FNTableRecord::try_from(&chunk).unwrap().special_files[0]);
-    record.samples[0].filename.segments.push(BFileNameSegmentRecord { kind: 11, text: Some(vec![65]) });
+    assert_eq!(
+        edited.special_files[0],
+        FNTableRecord::try_from(&chunk).unwrap().special_files[0]
+    );
+    record.samples[0]
+        .filename
+        .segments
+        .push(BFileNameSegmentRecord {
+            kind: 11,
+            text: Some(vec![65]),
+        });
     let mut output = Vec::new();
     assert!(record.write(&mut output).is_err());
     assert!(output.is_empty());
     let mut wrong_version = chunk.data.clone();
     wrong_version[0] = 3;
-    assert!(FNTableRecord::try_from(&ni_file::kontakt::Chunk { id: 0x4b, data: wrong_version }).is_err());
+    assert!(FNTableRecord::try_from(&ni_file::kontakt::Chunk {
+        id: 0x4b,
+        data: wrong_version
+    })
+    .is_err());
     let mut unknown_segment = chunk.data.clone();
     unknown_segment[10] = 255;
-    assert!(FNTableRecord::try_from(&ni_file::kontakt::Chunk { id: 0x4b, data: unknown_segment }).is_err());
-    assert!(FNTableRecord::try_from(&ni_file::kontakt::Chunk { id: 0x3d, data: chunk.data }).is_err());
+    assert!(FNTableRecord::try_from(&ni_file::kontakt::Chunk {
+        id: 0x4b,
+        data: unknown_segment
+    })
+    .is_err());
+    assert!(FNTableRecord::try_from(&ni_file::kontakt::Chunk {
+        id: 0x3d,
+        data: chunk.data
+    })
+    .is_err());
 }
 #[test]
 fn filename_calendar_view_keeps_paths_and_unrepresentable_raw_dates() {
-    use ni_file::kontakt::{Chunk, objects::{FNTableImpl, FNTableRecord, FileNameListPreK51}};
+    use ni_file::kontakt::{
+        objects::{FNTableImpl, FNTableRecord, FileNameListPreK51},
+        Chunk,
+    };
     for raw_timestamp in [0u64, u64::MAX, i64::MAX as u64, i64::MIN as u64] {
         for id in [0x3d, 0x4b] {
             let mut data = Vec::new();
-            if id == 0x4b { data.extend(2u16.to_le_bytes()); }
+            if id == 0x4b {
+                data.extend(2u16.to_le_bytes());
+            }
             data.extend(0u32.to_le_bytes()); // special files
             data.extend(1u32.to_le_bytes()); // samples
             data.extend(1i32.to_le_bytes()); // one literal filename segment
             data.push(4);
             let name: Vec<_> = "sample.wav".encode_utf16().collect();
             data.extend((name.len() as u32).to_le_bytes());
-            for unit in name { data.extend(unit.to_le_bytes()); }
+            for unit in name {
+                data.extend(unit.to_le_bytes());
+            }
             let timestamp_offset = data.len();
             data.extend(raw_timestamp.to_le_bytes());
-            if id == 0x4b { data.extend(0x12345678u32.to_le_bytes()); }
+            if id == 0x4b {
+                data.extend(0x12345678u32.to_le_bytes());
+            }
             data.extend(0u32.to_le_bytes()); // other files
             let chunk = Chunk { id, data };
             let (paths, dates) = if id == 0x4b {
@@ -240,13 +413,23 @@ fn filename_calendar_view_keeps_paths_and_unrepresentable_raw_dates() {
                 (table.sample_filetable, table.sample_timestamp_table)
             };
             assert_eq!(paths[&0], "sample.wav");
-            assert_eq!(dates.contains_key(&0), matches!(raw_timestamp, 0 | u64::MAX));
-            let mut encoded = Vec::new(); chunk.write(&mut encoded).unwrap();
+            assert_eq!(
+                dates.contains_key(&0),
+                matches!(raw_timestamp, 0 | u64::MAX)
+            );
+            let mut encoded = Vec::new();
+            chunk.write(&mut encoded).unwrap();
             assert_eq!(Chunk::read(Cursor::new(encoded)).unwrap().data, chunk.data);
             for end in timestamp_offset..chunk.data.len() {
-                let truncated = Chunk { id, data: chunk.data[..end].to_vec() };
-                if id == 0x4b { assert!(FNTableImpl::try_from(&truncated).is_err()); }
-                else { assert!(FileNameListPreK51::try_from(&truncated).is_err()); }
+                let truncated = Chunk {
+                    id,
+                    data: chunk.data[..end].to_vec(),
+                };
+                if id == 0x4b {
+                    assert!(FNTableImpl::try_from(&truncated).is_err());
+                } else {
+                    assert!(FileNameListPreK51::try_from(&truncated).is_err());
+                }
             }
         }
     }
@@ -278,33 +461,56 @@ fn nkx_directory_errors_distinguish_signature_offset_and_truncation() {
     let mut header = 0x5e70ac54u32.to_le_bytes().to_vec();
     header.extend(0x110u16.to_le_bytes());
     header.extend([0; 16]);
-    assert!(Archive::read_index(Cursor::new(&header)).unwrap().entries.is_empty());
+    assert!(Archive::read_index(Cursor::new(&header))
+        .unwrap()
+        .entries
+        .is_empty());
     header[4..6].copy_from_slice(&0x111u16.to_le_bytes());
-    assert!(Archive::read_index(Cursor::new(&header)).unwrap().entries.is_empty());
+    assert!(Archive::read_index(Cursor::new(&header))
+        .unwrap()
+        .entries
+        .is_empty());
 
     for magic in [0u32, 0x12345678] {
         let mut wrong = header.clone();
         wrong[..4].copy_from_slice(&magic.to_le_bytes());
-        let error = Archive::read_index(Cursor::new(wrong)).unwrap_err().to_string();
+        let error = Archive::read_index(Cursor::new(wrong))
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("at 0x0 ()"), "{error}");
         assert!(error.contains(&format!("got {magic:#010x}")), "{error}");
-        assert!(error.contains("expected 0x5e70ac54, file length 22"), "{error}");
+        assert!(
+            error.contains("expected 0x5e70ac54, file length 22"),
+            "{error}"
+        );
     }
     for length in [0, 4, 21] {
-        let error = Archive::read_index(Cursor::new(&header[..length])).unwrap_err().to_string();
+        let error = Archive::read_index(Cursor::new(&header[..length]))
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("Truncated NKX directory header"), "{error}");
-        assert!(error.contains(&format!("available {length}, file length {length}")), "{error}");
+        assert!(
+            error.contains(&format!("available {length}, file length {length}")),
+            "{error}"
+        );
     }
     header[4..6].copy_from_slice(&0x999u16.to_le_bytes());
-    assert!(Archive::read_index(Cursor::new(&header)).unwrap_err().to_string().contains("version 0x999 at 0x0"));
+    assert!(Archive::read_index(Cursor::new(&header))
+        .unwrap_err()
+        .to_string()
+        .contains("version 0x999 at 0x0"));
     header[4..6].copy_from_slice(&0x110u16.to_le_bytes());
     header[14..18].copy_from_slice(&1u32.to_le_bytes());
-    let error = Archive::read_index(Cursor::new(&header)).unwrap_err().to_string();
+    let error = Archive::read_index(Cursor::new(&header))
+        .unwrap_err()
+        .to_string();
     assert!(error.contains("entry 0/1 at 0x16"), "{error}");
     assert!(error.contains("need 8 bytes, available 0"), "{error}");
     header.extend(12u16.to_le_bytes());
     header.extend([0; 6]);
-    let error = Archive::read_index(Cursor::new(&header)).unwrap_err().to_string();
+    let error = Archive::read_index(Cursor::new(&header))
+        .unwrap_err()
+        .to_string();
     assert!(error.contains("entry 0/1 length 12 at 0x16"), "{error}");
     assert!(error.contains("available 8, file length 30"), "{error}");
 }
@@ -318,9 +524,20 @@ fn nkx_directory_accepts_repeated_aliases_and_preserves_case_distinct_members() 
         bytes.extend((names.len() as u32).to_le_bytes());
         bytes.extend([0; 4]);
         for &(name, offset, kind) in names {
-            let name: Vec<u8> = name.encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect();
+            let name: Vec<u8> = name
+                .encode_utf16()
+                .chain([0])
+                .flat_map(u16::to_le_bytes)
+                .collect();
             bytes.extend(((name.len() + 8) as u16).to_le_bytes());
-            bytes.extend((if kind == 2 { offset ^ 0x1f4e0c8d } else { offset }).to_le_bytes());
+            bytes.extend(
+                (if kind == 2 {
+                    offset ^ 0x1f4e0c8d
+                } else {
+                    offset
+                })
+                .to_le_bytes(),
+            );
             bytes.extend(kind.to_le_bytes());
             bytes.extend(name);
         }
@@ -335,31 +552,77 @@ fn nkx_directory_accepts_repeated_aliases_and_preserves_case_distinct_members() 
         bytes
     }
     // NKX kind 2 encodes the same reference that kinds 0/4 store directly.
-    let bytes = index(&[("clarinet.ncw", 512, 0), ("clarinet.ncw", 512, 2), ("CLARINET.NCW", 512, 4)]);
+    let bytes = index(&[
+        ("clarinet.ncw", 512, 0),
+        ("clarinet.ncw", 512, 2),
+        ("CLARINET.NCW", 512, 4),
+    ]);
     let archive = Archive::read_index(Cursor::new(bytes)).unwrap();
     assert_eq!(archive.entries.len(), 1);
     assert_eq!(archive.find("ClArInEt.NcW").unwrap().header_offset, 512);
 
-    let bytes = index(&[("Clarinet.ncw", 512, 0), ("clarinet.ncw", 768, 0), ("other.ncw", 900, 0)]);
+    let bytes = index(&[
+        ("Clarinet.ncw", 512, 0),
+        ("clarinet.ncw", 768, 0),
+        ("other.ncw", 900, 0),
+    ]);
     let archive = Archive::read_index(Cursor::new(&bytes)).unwrap();
-    assert_eq!(archive.read_entry(Cursor::new(&bytes), "Clarinet.ncw").unwrap(), [0x11]);
-    assert_eq!(archive.read_entry(Cursor::new(&bytes), "clarinet.ncw").unwrap(), [0x22]);
+    assert_eq!(
+        archive
+            .read_entry(Cursor::new(&bytes), "Clarinet.ncw")
+            .unwrap(),
+        [0x11]
+    );
+    assert_eq!(
+        archive
+            .read_entry(Cursor::new(&bytes), "clarinet.ncw")
+            .unwrap(),
+        [0x22]
+    );
     let checked = Archive::read(Cursor::new(&bytes)).unwrap();
     assert!(checked.issues.is_empty());
     assert!(checked.find("Clarinet.ncw").unwrap().checked);
-    assert_eq!(checked.read_entry(Cursor::new(&bytes), "Clarinet.ncw").unwrap(), [0x11]);
-    assert_eq!(archive.members().count(), 3, "both case-distinct members remain enumerable");
+    assert_eq!(
+        checked
+            .read_entry(Cursor::new(&bytes), "Clarinet.ncw")
+            .unwrap(),
+        [0x11]
+    );
+    assert_eq!(
+        archive.members().count(),
+        3,
+        "both case-distinct members remain enumerable"
+    );
     assert_eq!(archive.find("Clarinet.ncw").unwrap().header_offset, 512);
     assert_eq!(archive.find("clarinet.ncw").unwrap().header_offset, 768);
-    assert_eq!(archive.find("CLARINET.NCW").unwrap().header_offset, 768, "folded fallback is directory-order last-wins");
+    assert_eq!(
+        archive.find("CLARINET.NCW").unwrap().header_offset,
+        768,
+        "folded fallback is directory-order last-wins"
+    );
     assert_eq!(archive.find("OTHER.NCW").unwrap().header_offset, 900);
 
-    let bytes = index(&[("clarinet.ncw", 512, 0), ("clarinet.ncw", 768, 0), ("other.ncw", 900, 0)]);
+    let bytes = index(&[
+        ("clarinet.ncw", 512, 0),
+        ("clarinet.ncw", 768, 0),
+        ("other.ncw", 900, 0),
+    ]);
     let archive = Archive::read_index(Cursor::new(bytes)).unwrap();
-    assert_eq!(archive.find("clarinet.ncw").unwrap().header_offset, 768, "identical names are directory-order last-wins");
-    assert!(archive.find("other.ncw").is_some(), "a conflict must not reject unrelated members");
+    assert_eq!(
+        archive.find("clarinet.ncw").unwrap().header_offset,
+        768,
+        "identical names are directory-order last-wins"
+    );
+    assert!(
+        archive.find("other.ncw").is_some(),
+        "a conflict must not reject unrelated members"
+    );
 
-    let bytes = index(&[("Clarinet.ncw", 512, 0), ("clarinet.ncw", 768, 0), ("Clarinet.ncw", 900, 0)]);
+    let bytes = index(&[
+        ("Clarinet.ncw", 512, 0),
+        ("clarinet.ncw", 768, 0),
+        ("Clarinet.ncw", 900, 0),
+    ]);
     let archive = Archive::read_index(Cursor::new(bytes)).unwrap();
     assert_eq!(archive.find("Clarinet.ncw").unwrap().header_offset, 900);
     assert_eq!(archive.find("clarinet.ncw").unwrap().header_offset, 768);
@@ -373,31 +636,55 @@ fn nkx_directory_accepts_repeated_aliases_and_preserves_case_distinct_members() 
     bytes[128..128 + 50].copy_from_slice(&winds[..50]);
     bytes[256..256 + 50].copy_from_slice(&brass[..50]);
     let archive = Archive::read_index(Cursor::new(&bytes)).unwrap();
-    assert_eq!(archive.find(r"Woodwinds\voice.ncw").unwrap().header_offset, 512);
+    assert_eq!(
+        archive.find(r"Woodwinds\voice.ncw").unwrap().header_offset,
+        512
+    );
     assert_eq!(archive.find("BRASS/VOICE.NCW").unwrap().header_offset, 768);
 
     bytes[14..18].copy_from_slice(&1_000_001u32.to_le_bytes());
-    assert!(Archive::read_index(Cursor::new(bytes)).unwrap_err().to_string().contains("Invalid NKX directory size"));
+    assert!(Archive::read_index(Cursor::new(bytes))
+        .unwrap_err()
+        .to_string()
+        .contains("Invalid NKX directory size"));
 }
 
 #[test]
 #[ignore = "directory-only local corpus probe; requires KONTRA_NKX_PATHS"]
 fn local_nkx_directory_corpus_probe() {
-    let paths = std::fs::read_to_string(std::env::var_os("KONTRA_NKX_PATHS").expect("set KONTRA_NKX_PATHS")).unwrap();
+    let paths = std::fs::read_to_string(
+        std::env::var_os("KONTRA_NKX_PATHS").expect("set KONTRA_NKX_PATHS"),
+    )
+    .unwrap();
     for (index, path) in paths.lines().enumerate() {
-        let result = std::fs::File::open(path).map_err(ni_file::Error::from).and_then(Archive::read_index);
+        let result = std::fs::File::open(path)
+            .map_err(ni_file::Error::from)
+            .and_then(Archive::read_index);
         match result {
-            Ok(archive) => println!("NKX_SCAN\t{index}\tloaded\t{}\t{}", archive.members().count(), archive.issues.len()),
+            Ok(archive) => println!(
+                "NKX_SCAN\t{index}\tloaded\t{}\t{}",
+                archive.members().count(),
+                archive.issues.len()
+            ),
             Err(error) => {
                 let message = error.to_string();
-                let class = if message.contains("Duplicate or excessive NKX member") { "duplicate_or_excessive" }
-                    else if message.contains("Excessive NKX member") { "member_limit" }
-                    else if message.contains("Invalid NKX directory size") { "directory_limit" }
-                    else if message.contains("signature") { "signature" }
-                    else if message.contains("version") { "version" }
-                    else if message.contains("Truncated") { "truncated" }
-                    else if message.contains("filename") { "filename" }
-                    else { "other" };
+                let class = if message.contains("Duplicate or excessive NKX member") {
+                    "duplicate_or_excessive"
+                } else if message.contains("Excessive NKX member") {
+                    "member_limit"
+                } else if message.contains("Invalid NKX directory size") {
+                    "directory_limit"
+                } else if message.contains("signature") {
+                    "signature"
+                } else if message.contains("version") {
+                    "version"
+                } else if message.contains("Truncated") {
+                    "truncated"
+                } else if message.contains("filename") {
+                    "filename"
+                } else {
+                    "other"
+                };
                 // Persist only numeric counters and a class, never authored member names.
                 println!("NKX_SCAN\t{index}\t{class}\t0\t0");
             }
@@ -433,21 +720,43 @@ fn clear_nkx_member_and_bad_sibling_are_independent() {
     b.extend(*b"test");
     b.resize(231, 0);
     let archive = Archive::read(Cursor::new(&b)).unwrap();
-    assert!(archive.issues.iter().any(|s|s.contains("1 archive members have missing/corrupt headers")));
+    assert!(archive
+        .issues
+        .iter()
+        .any(|s| s.contains("1 archive members have missing/corrupt headers")));
     assert_eq!(
         archive.read_entry(Cursor::new(&b), "PIANO.NCW").unwrap(),
         b"test"
     );
     assert!(archive.read_entry(Cursor::new(&b), "broken.ncw").is_err());
-    assert_eq!(archive.find("broken.ncw").unwrap().issue,Some("Zero-filled NKX member header"));
+    assert_eq!(
+        archive.find("broken.ncw").unwrap().issue,
+        Some("Zero-filled NKX member header")
+    );
     // A truncated or unsupported sibling must not hide intact members.
-    for (magic,version,size,length,issue) in [
-        (0x4916e63cu32,0x110u16,40u32,231,"Truncated NKX member payload"),
-        (0x4916e63c,0x999,4,231,"Unsupported NKX member version"),
-        (0x4916e63c,0x110,4,221,"Truncated NKX member header"),
+    for (magic, version, size, length, issue) in [
+        (
+            0x4916e63cu32,
+            0x110u16,
+            40u32,
+            231,
+            "Truncated NKX member payload",
+        ),
+        (0x4916e63c, 0x999, 4, 231, "Unsupported NKX member version"),
+        (0x4916e63c, 0x110, 4, 221, "Truncated NKX member header"),
     ] {
-        let mut damaged=b.clone();damaged[200..204].copy_from_slice(&magic.to_le_bytes());damaged[204..206].copy_from_slice(&version.to_le_bytes());damaged[219..223].copy_from_slice(&size.to_le_bytes());damaged.truncate(length);
-        let a=Archive::read(Cursor::new(&damaged)).unwrap();assert_eq!(a.find("broken.ncw").unwrap().issue,Some(issue));assert_eq!(a.read_entry(Cursor::new(&damaged),"piano.ncw").unwrap(),b"test");assert!(a.read_entry(Cursor::new(&damaged),"broken.ncw").is_err());
+        let mut damaged = b.clone();
+        damaged[200..204].copy_from_slice(&magic.to_le_bytes());
+        damaged[204..206].copy_from_slice(&version.to_le_bytes());
+        damaged[219..223].copy_from_slice(&size.to_le_bytes());
+        damaged.truncate(length);
+        let a = Archive::read(Cursor::new(&damaged)).unwrap();
+        assert_eq!(a.find("broken.ncw").unwrap().issue, Some(issue));
+        assert_eq!(
+            a.read_entry(Cursor::new(&damaged), "piano.ncw").unwrap(),
+            b"test"
+        );
+        assert!(a.read_entry(Cursor::new(&damaged), "broken.ncw").is_err());
     }
     b.truncate(10);
     assert!(Archive::read(Cursor::new(b)).is_err());
@@ -493,11 +802,7 @@ fn encrypted_subtree_requires_the_matching_key() {
             .inner_data,
         b"test"
     );
-    assert!(SubtreeItem::read_with_key(
-        Cursor::new(&frame),
-        Some(&XorKey(0x33))
-    )
-    .is_err());
+    assert!(SubtreeItem::read_with_key(Cursor::new(&frame), Some(&XorKey(0x33))).is_err());
 }
 
 #[test]
@@ -552,36 +857,85 @@ fn plain_offsets_and_encrypted_members() {
         }
         b.pop();
         let a = Archive::read_index(Cursor::new(&b)).unwrap();
-        assert!(a.read_entry_with_key(Cursor::new(&b), "x", Some(&key)).is_err());
+        assert!(a
+            .read_entry_with_key(Cursor::new(&b), "x", Some(&key))
+            .is_err());
     }
 }
 
 #[test]
 fn nkr_picture_resource_uses_its_22_byte_header() {
-    let mut b=Vec::new();
-    b.extend(0x5e70ac54u32.to_le_bytes());b.extend(0x111u16.to_le_bytes());b.extend([0;8]);b.extend(1u32.to_le_bytes());b.extend([0;4]);
-    let name:Vec<u8>="wallpaper.png".encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect();
-    b.extend(((name.len()+8) as u16).to_le_bytes());b.extend(96u32.to_le_bytes());b.extend(4u16.to_le_bytes());b.extend(name);
-    b.resize(96,0);b.extend(0x2ae905fau32.to_le_bytes());b.extend(0x111u16.to_le_bytes());b.extend([0;4]);b.extend(255u32.to_le_bytes());b.extend(4u32.to_le_bytes());b.extend([0;4]);b.extend(*b"test");
-    let archive=Archive::read(Cursor::new(&b)).unwrap();
-    assert_eq!(archive.read_entry(Cursor::new(&b),"wallpaper.png").unwrap(),b"test");
-    b.pop();let damaged=Archive::read(Cursor::new(&b)).unwrap();assert_eq!(damaged.find("wallpaper.png").unwrap().issue,Some("Truncated NKX member payload"));assert!(damaged.read_entry(Cursor::new(&b),"wallpaper.png").is_err());
+    let mut b = Vec::new();
+    b.extend(0x5e70ac54u32.to_le_bytes());
+    b.extend(0x111u16.to_le_bytes());
+    b.extend([0; 8]);
+    b.extend(1u32.to_le_bytes());
+    b.extend([0; 4]);
+    let name: Vec<u8> = "wallpaper.png"
+        .encode_utf16()
+        .chain([0])
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    b.extend(((name.len() + 8) as u16).to_le_bytes());
+    b.extend(96u32.to_le_bytes());
+    b.extend(4u16.to_le_bytes());
+    b.extend(name);
+    b.resize(96, 0);
+    b.extend(0x2ae905fau32.to_le_bytes());
+    b.extend(0x111u16.to_le_bytes());
+    b.extend([0; 4]);
+    b.extend(255u32.to_le_bytes());
+    b.extend(4u32.to_le_bytes());
+    b.extend([0; 4]);
+    b.extend(*b"test");
+    let archive = Archive::read(Cursor::new(&b)).unwrap();
+    assert_eq!(
+        archive
+            .read_entry(Cursor::new(&b), "wallpaper.png")
+            .unwrap(),
+        b"test"
+    );
+    b.pop();
+    let damaged = Archive::read(Cursor::new(&b)).unwrap();
+    assert_eq!(
+        damaged.find("wallpaper.png").unwrap().issue,
+        Some("Truncated NKX member payload")
+    );
+    assert!(damaged
+        .read_entry(Cursor::new(&b), "wallpaper.png")
+        .is_err());
 }
 
 #[test]
 fn app_specific_missing_subtree_is_an_error() {
-    use ni_file::nis::{AppSpecificProperties,ItemData,ItemDataHeader};
-    let item=ItemData{header:ItemDataHeader{length:24,domain_id:*b"NISD",item_id:0x75,version:1},inner:None,data:1u32.to_le_bytes().to_vec()};
+    use ni_file::nis::{AppSpecificProperties, ItemData, ItemDataHeader};
+    let item = ItemData {
+        header: ItemDataHeader {
+            length: 24,
+            domain_id: *b"NISD",
+            item_id: 0x75,
+            version: 1,
+        },
+        inner: None,
+        data: 1u32.to_le_bytes().to_vec(),
+    };
     assert!(AppSpecificProperties::try_from(&item).is_err());
 }
 
 #[test]
 fn malformed_start_criteria_returns_error() {
     use ni_file::kontakt::objects::StartCriteriaList;
-    for data in [vec![1,1,0x70,0],vec![1,0,0x71,0],vec![1,0,0x70,0]] {
+    for data in [
+        vec![1, 1, 0x70, 0],
+        vec![1, 0, 0x71, 0],
+        vec![1, 0, 0x70, 0],
+    ] {
         assert!(StartCriteriaList::read(Cursor::new(data)).is_err());
     }
-    assert!(StartCriteriaList::read(Cursor::new([0])).unwrap().items.is_empty());
+    assert!(StartCriteriaList::read(Cursor::new([0]))
+        .unwrap()
+        .items
+        .is_empty());
 }
 
 #[test]
@@ -592,8 +946,12 @@ fn start_criteria_preserve_sparse_rows_unknown_ids_and_edits() {
         raw.extend([0, 0x70, 0]);
         raw.extend(mode.to_le_bytes());
         raw.extend(operator.to_le_bytes());
-        for v in [24i16, 25, 64, 0, 127] { raw.extend(v.to_le_bytes()); }
-        for v in [cycle, -1, -2] { raw.extend(v.to_le_bytes()); }
+        for v in [24i16, 25, 64, 0, 127] {
+            raw.extend(v.to_le_bytes());
+        }
+        for v in [cycle, -1, -2] {
+            raw.extend(v.to_le_bytes());
+        }
         raw.push(sequencer);
     }
     let records_len = raw.len();
@@ -609,13 +967,21 @@ fn start_criteria_preserve_sparse_rows_unknown_ids_and_edits() {
     criteria.write(&mut written).unwrap();
     let mut expected = raw.clone();
     expected[56..60].copy_from_slice(&7i32.to_le_bytes());
-    assert_eq!(written, expected, "editing one field retains unknown IDs and sparse row mask");
-    assert_eq!(StartCriteriaList::read(Cursor::new(&written)).unwrap(), criteria);
+    assert_eq!(
+        written, expected,
+        "editing one field retains unknown IDs and sparse row mask"
+    );
+    assert_eq!(
+        StartCriteriaList::read(Cursor::new(&written)).unwrap(),
+        criteria
+    );
     criteria.mask = 1;
     written.clear();
     assert!(criteria.write(&mut written).is_err());
     assert!(written.is_empty(), "reject mismatched masks before output");
-    for len in 0..records_len { assert!(StartCriteriaList::read(Cursor::new(&raw[..len])).is_err()); }
+    for len in 0..records_len {
+        assert!(StartCriteriaList::read(Cursor::new(&raw[..len])).is_err());
+    }
     raw[records_len - 1] = 2;
     assert!(StartCriteriaList::read(Cursor::new(&raw)).is_err());
     raw[records_len - 1] = 0;
@@ -625,20 +991,29 @@ fn start_criteria_preserve_sparse_rows_unknown_ids_and_edits() {
 
 #[test]
 fn group_conditions_are_found_by_id() {
-    use ni_file::kontakt::{Chunk, StructuredObject, objects::Group};
-    let mut group=Group(StructuredObject{version:0x90,public_data:vec![0;64],private_data:vec![],children:vec![Chunk{id:0x38,data:vec![0]}]});
+    use ni_file::kontakt::{objects::Group, Chunk, StructuredObject};
+    let mut group = Group(StructuredObject {
+        version: 0x90,
+        public_data: vec![0; 64],
+        private_data: vec![],
+        children: vec![Chunk {
+            id: 0x38,
+            data: vec![0],
+        }],
+    });
     assert!(group.params().unwrap().start_criteria.items.is_empty());
-    group.0.children.clear();assert!(group.params().is_err());
+    group.0.children.clear();
+    assert!(group.params().is_err());
 }
 
 /// Synthetic modulation records built from the layout in `audits/MODULATION.md`.
 mod modulation {
     use ni_file::kontakt::{
-        Chunk,
         objects::{
             EnvelopeAhdsr, ExternalMod, ExternalModArray32, InternalMod, InternalModArray16,
             ModSource, Modulator, ShaperCurve,
         },
+        Chunk,
     };
 
     fn name(out: &mut Vec<u8>, text: &str) {
@@ -788,12 +1163,10 @@ mod modulation {
             assert!(ExternalMod::try_from(&chunk).unwrap().params().is_err());
         }
         let unknown_version = structured(0x0C, 0x0FF, &valid, &[], &[]);
-        assert!(
-            ExternalMod::try_from(&unknown_version)
-                .unwrap()
-                .params()
-                .is_err()
-        );
+        assert!(ExternalMod::try_from(&unknown_version)
+            .unwrap()
+            .params()
+            .is_err());
     }
 
     #[test]
@@ -863,62 +1236,129 @@ mod modulation {
 
 #[test]
 fn nis_and_raw_chunks_roundtrip_without_losing_opaque_metadata() {
-    use ni_file::{NIFile, nis::{ItemContainer, ItemData, ItemDataHeader, ItemHeader, SubtreeItem}};
     use ni_file::kontakt::Chunk;
-    fn layer(domain_id: [u8;4], item_id: u32, data: Vec<u8>, inner: Option<ItemData>) -> ItemData {
-        ItemData { header: ItemDataHeader { length: 0, domain_id, item_id, version: 1 }, inner: inner.map(Box::new), data }
+    use ni_file::{
+        nis::{ItemContainer, ItemData, ItemDataHeader, ItemHeader, SubtreeItem},
+        NIFile,
+    };
+    fn layer(domain_id: [u8; 4], item_id: u32, data: Vec<u8>, inner: Option<ItemData>) -> ItemData {
+        ItemData {
+            header: ItemDataHeader {
+                length: 0,
+                domain_id,
+                item_id,
+                version: 1,
+            },
+            inner: inner.map(Box::new),
+            data,
+        }
     }
-    fn base() -> ItemData { layer(*b"NISD", 1, vec![1,0,0,0], None) }
+    fn base() -> ItemData {
+        layer(*b"NISD", 1, vec![1, 0, 0, 0], None)
+    }
     fn item(data: ItemData) -> ItemContainer {
         ItemContainer {
-            header: ItemHeader { length: 0, magic: b"hsin".to_vec(), header_flags: 0xa501, reserved: 0x12345678, uuid: (0..16).collect() },
-            data, children: vec![], child_headers: vec![], trailing_data: vec![0xc1,0xc2],
+            header: ItemHeader {
+                length: 0,
+                magic: b"hsin".to_vec(),
+                header_flags: 0xa501,
+                reserved: 0x12345678,
+                uuid: (0..16).collect(),
+            },
+            data,
+            children: vec![],
+            child_headers: vec![],
+            trailing_data: vec![0xc1, 0xc2],
         }
     }
     let chunks = KontaktChunks(vec![
-        Chunk { id: 0xf123, data: vec![0,1,2,0xff] },
-        Chunk { id: 6, data: b"uninterpreted script".to_vec() },
-        Chunk { id: 0xf123, data: vec![3,4] },
+        Chunk {
+            id: 0xf123,
+            data: vec![0, 1, 2, 0xff],
+        },
+        Chunk {
+            id: 6,
+            data: b"uninterpreted script".to_vec(),
+        },
+        Chunk {
+            id: 0xf123,
+            data: vec![3, 4],
+        },
     ]);
     let mut preset = Vec::new();
     chunks.write(&mut preset).unwrap();
     let mut again = Vec::new();
-    KontaktChunks::read(Cursor::new(&preset)).unwrap().write(&mut again).unwrap();
+    KontaktChunks::read(Cursor::new(&preset))
+        .unwrap()
+        .write(&mut again)
+        .unwrap();
     assert_eq!(again, preset);
     let mut properties = 1u32.to_le_bytes().to_vec();
     properties.extend(0u32.to_le_bytes());
     properties.extend(1u32.to_le_bytes());
     properties.extend((preset.len() as u64).to_le_bytes());
     properties.extend(&preset);
-    properties.extend([0x75,0x76,0x77]); // opaque preset property trailer
+    properties.extend([0x75, 0x76, 0x77]); // opaque preset property trailer
     let inner = item(layer(*b"NISD", 0x6d, properties, Some(base())));
     let mut inner_bytes = Vec::new();
     inner.write(&mut inner_bytes).unwrap();
-    let subtree = SubtreeItem { inner_data: inner_bytes.clone() };
-    for (compressed, encrypted) in [(false,false), (true,false), (true,true)] {
+    let subtree = SubtreeItem {
+        inner_data: inner_bytes.clone(),
+    };
+    for (compressed, encrypted) in [(false, false), (true, false), (true, true)] {
         let key = XorKey(0x39);
         let access = encrypted.then_some(&key as &dyn ni_file::nis::LibraryKey);
         let mut encoded_subtree = Vec::new();
-        subtree.write_with_key(&mut encoded_subtree, compressed, access).unwrap();
-        assert_eq!(SubtreeItem::read_with_key(Cursor::new(&encoded_subtree), access).unwrap().inner_data, inner_bytes);
+        subtree
+            .write_with_key(&mut encoded_subtree, compressed, access)
+            .unwrap();
+        assert_eq!(
+            SubtreeItem::read_with_key(Cursor::new(&encoded_subtree), access)
+                .unwrap()
+                .inner_data,
+            inner_bytes
+        );
         let subtree_layer = layer(*b"NISD", 0x73, encoded_subtree.clone(), Some(base()));
-        let enc_layer = layer(*b"NISD", 0x74, vec![1,0,0,0, encrypted as u8], Some(subtree_layer));
-        let mut root = item(layer(*b"NIK4", 3, vec![0,0], Some(layer(*b"TEST", 0x9876, vec![9,8,7], Some(base())))));
+        let enc_layer = layer(
+            *b"NISD",
+            0x74,
+            vec![1, 0, 0, 0, encrypted as u8],
+            Some(subtree_layer),
+        );
+        let mut root = item(layer(
+            *b"NIK4",
+            3,
+            vec![0, 0],
+            Some(layer(*b"TEST", 0x9876, vec![9, 8, 7], Some(base()))),
+        ));
         root.children.push(item(enc_layer));
         // Preserve deliberately noncanonical sibling index/domain/id, not inferred values.
-        let descriptor = [0xe9,3,0,0,b'4',b'K',b'I',b'N',0xde,0xad,0xbe,0xef];
+        let descriptor = [
+            0xe9, 3, 0, 0, b'4', b'K', b'I', b'N', 0xde, 0xad, 0xbe, 0xef,
+        ];
         root.child_headers.push(descriptor);
         let mut bytes = Vec::new();
         root.write(&mut bytes).unwrap();
         let mut parsed = ItemContainer::read(Cursor::new(&bytes)).unwrap();
         assert_eq!(parsed.header.reserved, 0x12345678);
         assert_eq!(parsed.child_headers, [descriptor]);
-        assert_eq!(parsed.trailing_data, [0xc1,0xc2]);
+        assert_eq!(parsed.trailing_data, [0xc1, 0xc2]);
         let mut roundtrip = Vec::new();
-        NIFile::NISoundContainer(parsed.clone()).write(&mut roundtrip).unwrap();
+        NIFile::NISoundContainer(parsed.clone())
+            .write(&mut roundtrip)
+            .unwrap();
         assert_eq!(roundtrip, bytes);
-        assert_eq!(NIFile::NISoundContainer(parsed.clone()).inner_preset_with_key(access).unwrap(), preset);
-        if encrypted { assert!(NIFile::NISoundContainer(parsed.clone()).inner_preset().is_err()); }
+        assert_eq!(
+            NIFile::NISoundContainer(parsed.clone())
+                .inner_preset_with_key(access)
+                .unwrap(),
+            preset
+        );
+        if encrypted {
+            assert!(NIFile::NISoundContainer(parsed.clone())
+                .inner_preset()
+                .is_err());
+        }
         // Changing opaque metadata recomputes nested lengths, preserving all children.
         parsed.data.data.extend([0xf1; 21]);
         let mut edited = Vec::new();
@@ -926,12 +1366,19 @@ fn nis_and_raw_chunks_roundtrip_without_losing_opaque_metadata() {
         let reparsed = ItemContainer::read(Cursor::new(&edited)).unwrap();
         assert_eq!(reparsed.header.length, bytes.len() as u64 + 21);
         assert_eq!(reparsed.child_headers, [descriptor]);
-        assert_eq!(NIFile::NISoundContainer(reparsed).inner_preset_with_key(access).unwrap(), preset);
+        assert_eq!(
+            NIFile::NISoundContainer(reparsed)
+                .inner_preset_with_key(access)
+                .unwrap(),
+            preset
+        );
         parsed.child_headers.clear();
         assert!(parsed.write(&mut Vec::new()).is_err());
     }
     let mut output = Vec::new();
-    assert!(subtree.write_with_key(&mut output, false, Some(&XorKey(0x39))).is_err());
+    assert!(subtree
+        .write_with_key(&mut output, false, Some(&XorKey(0x39)))
+        .is_err());
     assert!(output.is_empty());
     assert!(NIFile::NICompressedWave.write(&mut output).is_err());
     assert!(output.is_empty());
@@ -950,7 +1397,7 @@ fn nis_and_raw_chunks_roundtrip_without_losing_opaque_metadata() {
 
 #[test]
 fn ahdsr_legacy_and_current_layouts_keep_their_versions() {
-    use ni_file::kontakt::{Chunk, objects::EnvelopeAhdsr};
+    use ni_file::kontakt::{objects::EnvelopeAhdsr, Chunk};
     for (version, tail) in [(0x10u16, 16), (0x11, 52), (0x11, 55)] {
         let mut data = vec![0];
         data.extend(version.to_le_bytes());
@@ -969,14 +1416,26 @@ fn ahdsr_legacy_and_current_layouts_keep_their_versions() {
         assert_eq!(EnvelopeAhdsr::try_from(&edited).unwrap(), envelope);
         let minimum = if version == 0x10 { 44 } else { 80 };
         for end in 0..minimum {
-            assert!(EnvelopeAhdsr::try_from(&Chunk { id: 0x3f, data: original.data[..end].to_vec() }).is_err());
+            assert!(EnvelopeAhdsr::try_from(&Chunk {
+                id: 0x3f,
+                data: original.data[..end].to_vec()
+            })
+            .is_err());
         }
         let mut wrong = original.data.clone();
         wrong[1] = if version == 0x10 { 0x11 } else { 0x10 };
-        assert!(EnvelopeAhdsr::try_from(&Chunk { id: 0x3f, data: wrong }).is_err());
+        assert!(EnvelopeAhdsr::try_from(&Chunk {
+            id: 0x3f,
+            data: wrong
+        })
+        .is_err());
         let mut unknown = original.data.clone();
         unknown[1] = 0x12;
-        assert!(EnvelopeAhdsr::try_from(&Chunk { id: 0x3f, data: unknown }).is_err());
+        assert!(EnvelopeAhdsr::try_from(&Chunk {
+            id: 0x3f,
+            data: unknown
+        })
+        .is_err());
         envelope.sustain = f32::NAN;
         assert!(envelope.to_chunk().is_err());
     }
@@ -985,8 +1444,8 @@ fn ahdsr_legacy_and_current_layouts_keep_their_versions() {
 #[test]
 fn envelope_records_preserve_metadata_and_validate_edits() {
     use ni_file::kontakt::{
-        Chunk,
         objects::{EnvelopeAhdsr, EnvelopeFlex},
+        Chunk,
     };
     let mut bytes = vec![0, 0x11, 0];
     for value in [-0.0f32, 10.0, 500.0, 0.0, 300.0, 0.5] {
@@ -1005,13 +1464,11 @@ fn envelope_records_preserve_metadata_and_validate_edits() {
     envelope.write(&mut rewritten).unwrap();
     assert_eq!(rewritten, framed);
     for end in 0..original.data.len() {
-        assert!(
-            EnvelopeAhdsr::try_from(&Chunk {
-                id: 0x3f,
-                data: original.data[..end].to_vec()
-            })
-            .is_err()
-        );
+        assert!(EnvelopeAhdsr::try_from(&Chunk {
+            id: 0x3f,
+            data: original.data[..end].to_vec()
+        })
+        .is_err());
     }
     envelope.attack_ms = 1234.5;
     envelope.sustain = 0.25;
@@ -1046,13 +1503,11 @@ fn envelope_records_preserve_metadata_and_validate_edits() {
         envelope.write(&mut rewritten).unwrap();
         assert_eq!(rewritten, expected);
         for end in 0..original.data.len() {
-            assert!(
-                EnvelopeFlex::try_from(&Chunk {
-                    id: 0x40,
-                    data: original.data[..end].to_vec()
-                })
-                .is_err()
-            );
+            assert!(EnvelopeFlex::try_from(&Chunk {
+                id: 0x40,
+                data: original.data[..end].to_vec()
+            })
+            .is_err());
         }
         envelope.points[1].time_ms = 90.5;
         envelope.points[1].level = 0.6;
@@ -1079,11 +1534,17 @@ fn nested_nis_lengths_cannot_consume_bytes_outside_their_declared_body() {
     use ni_file::nis::{ItemContainer, SubtreeItem};
     fn header(length: u64) -> Vec<u8> {
         let mut out = length.to_le_bytes().to_vec();
-        out.extend(1u32.to_le_bytes());out.extend(b"hsin");out.extend([0;24]);out
+        out.extend(1u32.to_le_bytes());
+        out.extend(b"hsin");
+        out.extend([0; 24]);
+        out
     }
     fn data_header(length: u64, id: u32) -> Vec<u8> {
         let mut out = length.to_le_bytes().to_vec();
-        out.extend(b"DSIN");out.extend(id.to_le_bytes());out.extend(1u32.to_le_bytes());out
+        out.extend(b"DSIN");
+        out.extend(id.to_le_bytes());
+        out.extend(1u32.to_le_bytes());
+        out
     }
     let empty_children = [1u32.to_le_bytes(), 0u32.to_le_bytes()].concat();
     let mut invalid_layer = header(88);
@@ -1091,22 +1552,37 @@ fn nested_nis_lengths_cannot_consume_bytes_outside_their_declared_body() {
     invalid_layer.extend(data_header(21, 1)); // its enclosing layer permits only the 20-byte header
     invalid_layer.extend(&empty_children);
     assert!(ItemContainer::read(Cursor::new(&invalid_layer)).is_err());
-    assert!(SubtreeItem { inner_data: invalid_layer }.item().is_err());
+    assert!(SubtreeItem {
+        inner_data: invalid_layer
+    }
+    .item()
+    .is_err());
 
     let mut child = header(72); // only 68 child bytes are actually inside the parent
-    child.extend(data_header(20, 1));child.extend(&empty_children);
+    child.extend(data_header(20, 1));
+    child.extend(&empty_children);
     let mut parent = header(148);
-    parent.extend(data_header(20, 1));parent.extend(1u32.to_le_bytes());parent.extend(1u32.to_le_bytes());
-    parent.extend([0;12]);parent.extend(child);
-    parent.extend([0xaa;4]); // bytes after the declared parent must not satisfy the child
+    parent.extend(data_header(20, 1));
+    parent.extend(1u32.to_le_bytes());
+    parent.extend(1u32.to_le_bytes());
+    parent.extend([0; 12]);
+    parent.extend(child);
+    parent.extend([0xaa; 4]); // bytes after the declared parent must not satisfy the child
     assert!(ItemContainer::read(Cursor::new(&parent)).is_err());
     assert!(SubtreeItem { inner_data: parent }.item().is_err());
 
-    let mut valid = header(68);valid.extend(data_header(20, 1));valid.extend(empty_children);
+    let mut valid = header(68);
+    valid.extend(data_header(20, 1));
+    valid.extend(empty_children);
     let mut cursor = Cursor::new(&valid);
-    ItemContainer::read(&mut cursor).unwrap();assert_eq!(cursor.position(), 68);
+    ItemContainer::read(&mut cursor).unwrap();
+    assert_eq!(cursor.position(), 68);
     for length in 0..valid.len() {
-        assert!(SubtreeItem { inner_data: valid[..length].to_vec() }.item().is_err());
+        assert!(SubtreeItem {
+            inner_data: valid[..length].to_vec()
+        }
+        .item()
+        .is_err());
     }
 }
 
@@ -1114,21 +1590,40 @@ fn nested_nis_lengths_cannot_consume_bytes_outside_their_declared_body() {
 fn generic_nis_read_reuses_detection_and_preserves_stream_consumption() {
     use ni_file::NIFile;
     use std::io::{Read, Seek, SeekFrom};
-    struct Counted { bytes: Cursor<Vec<u8>>, read: usize }
+    struct Counted {
+        bytes: Cursor<Vec<u8>>,
+        read: usize,
+    }
     impl Read for Counted {
         fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
-            let n = self.bytes.read(out)?;self.read += n;Ok(n)
+            let n = self.bytes.read(out)?;
+            self.read += n;
+            Ok(n)
         }
     }
     impl Seek for Counted {
-        fn seek(&mut self, from: SeekFrom) -> std::io::Result<u64> { self.bytes.seek(from) }
+        fn seek(&mut self, from: SeekFrom) -> std::io::Result<u64> {
+            self.bytes.seek(from)
+        }
     }
     let mut bytes = 68u64.to_le_bytes().to_vec();
-    bytes.extend(1u32.to_le_bytes());bytes.extend(b"hsin");bytes.extend([0;24]);
-    bytes.extend(20u64.to_le_bytes());bytes.extend(b"DSIN");bytes.extend(1u32.to_le_bytes());bytes.extend(1u32.to_le_bytes());
-    bytes.extend(1u32.to_le_bytes());bytes.extend(0u32.to_le_bytes());
-    let mut reader = Counted { bytes: Cursor::new(bytes.clone()), read: 0 };
-    assert!(matches!(NIFile::read(&mut reader).unwrap(), NIFile::NISoundContainer(_)));
+    bytes.extend(1u32.to_le_bytes());
+    bytes.extend(b"hsin");
+    bytes.extend([0; 24]);
+    bytes.extend(20u64.to_le_bytes());
+    bytes.extend(b"DSIN");
+    bytes.extend(1u32.to_le_bytes());
+    bytes.extend(1u32.to_le_bytes());
+    bytes.extend(1u32.to_le_bytes());
+    bytes.extend(0u32.to_le_bytes());
+    let mut reader = Counted {
+        bytes: Cursor::new(bytes.clone()),
+        read: 0,
+    };
+    assert!(matches!(
+        NIFile::read(&mut reader).unwrap(),
+        NIFile::NISoundContainer(_)
+    ));
     assert_eq!(reader.read, bytes.len() + 4); // one signature probe and one complete parse
     assert_eq!(reader.bytes.position(), bytes.len() as u64);
     bytes[60..64].copy_from_slice(&2u32.to_le_bytes()); // corrupt child-list version
@@ -1206,9 +1701,15 @@ fn flat_filename_tables_keep_global_indices_and_reject_damage() {
 
 #[test]
 fn modern_source_identity_retains_opaque_bytes_and_keeps_snapshot_codec_strict() {
-    use ni_file::kontakt::{StructuredObject, objects::{Group, SourceIdentity}};
+    use ni_file::kontakt::{
+        objects::{Group, SourceIdentity},
+        StructuredObject,
+    };
     let mut private = Vec::new();
-    for _ in 0..136 { private.extend(8u32.to_le_bytes()); private.extend([0; 8]); }
+    for _ in 0..136 {
+        private.extend(8u32.to_le_bytes());
+        private.extend([0; 8]);
+    }
     private.extend([0; 24]);
     private.extend([0, 0x13, 0]);
     private.extend(8u32.to_le_bytes());
@@ -1219,13 +1720,32 @@ fn modern_source_identity_retains_opaque_bytes_and_keeps_snapshot_codec_strict()
     private.extend([0, 6, 1]);
     private.extend(9u32.to_le_bytes());
     private.extend([0x5a; 114]); // Opaque remainder; not asserted as a source length.
-    let mut group = Group(StructuredObject { version: 150, public_data: Vec::new(), private_data: private, children: Vec::new() });
+    let mut group = Group(StructuredObject {
+        version: 150,
+        public_data: Vec::new(),
+        private_data: private,
+        children: Vec::new(),
+    });
     for value in [0, 1] {
         group.0.private_data[flag] = value;
         let before = group.0.private_data.clone();
-        assert_eq!(group.source_identity().unwrap(), SourceIdentity { flag: value, structured: false, version: 0x106, mode: 9 });
-        assert_eq!(group.0.private_data, before, "identity reads preserve the entire unknown remainder");
-        assert!(group.source_state().is_err(), "modern identity cannot masquerade as a legacy snapshot record");
+        assert_eq!(
+            group.source_identity().unwrap(),
+            SourceIdentity {
+                flag: value,
+                structured: false,
+                version: 0x106,
+                mode: 9
+            }
+        );
+        assert_eq!(
+            group.0.private_data, before,
+            "identity reads preserve the entire unknown remainder"
+        );
+        assert!(
+            group.source_state().is_err(),
+            "modern identity cannot masquerade as a legacy snapshot record"
+        );
     }
     group.0.private_data[flag] = 2;
     assert!(group.source_identity().is_err());
@@ -1234,15 +1754,25 @@ fn modern_source_identity_retains_opaque_bytes_and_keeps_snapshot_codec_strict()
     assert!(group.source_identity().is_err());
     group.0.private_data[source] = 0;
     group.0.private_data[source + 1] = 7;
-    assert!(group.source_identity().is_err(), "future versions remain unclassified");
+    assert!(
+        group.source_identity().is_err(),
+        "future versions remain unclassified"
+    );
     group.0.private_data[source + 1] = 6;
     let full = group.0.private_data.clone();
     for bytes in 0..7 {
         group.0.private_data = full[..source + bytes].to_vec();
-        assert!(group.source_identity().is_err(), "truncated identity {bytes}");
+        assert!(
+            group.source_identity().is_err(),
+            "truncated identity {bytes}"
+        );
     }
     group.0.private_data = full[..source + 7].to_vec();
-    assert_eq!(group.source_identity().unwrap().mode, 9, "only the identity is consumed; no claim of a decoded tail");
+    assert_eq!(
+        group.source_identity().unwrap().mode,
+        9,
+        "only the identity is consumed; no claim of a decoded tail"
+    );
     group.0.private_data = full;
     group.0.private_data[source + 1] = 2;
     assert_eq!(group.source_identity().unwrap().version, 0x102);
