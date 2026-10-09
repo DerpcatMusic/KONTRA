@@ -68,8 +68,10 @@ impl Shape {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LfoShape {
+    /// Signed bipolar peak, prepared in -1..=1.
+    SineScaled(f64),
     /// Bipolar zero, including every phase, delay and fade state.
     Zero,
     Sine,
@@ -389,6 +391,11 @@ impl VoiceModulation {
                 .map(|source| {
                     Ok(match *source {
                         ModSource::Lfo(lfo) => {
+                            if let LfoShape::SineScaled(level) = lfo.shape
+                                && !(-1.0..=1.0).contains(&level)
+                            {
+                                return Err(Error::InvalidInput);
+                            }
                             let rate = match lfo.rate {
                                 LfoRate::Hertz(r) | LfoRate::Beats(r) => r,
                             };
@@ -673,6 +680,9 @@ fn wave(shape: LfoShape, phase: f64, seed: u64) -> f64 {
     let cycle = phase.floor();
     let t = phase - cycle;
     match shape {
+        LfoShape::SineScaled(level) => {
+            f64::from((t * std::f64::consts::TAU).sin() as f32 * level as f32)
+        }
         LfoShape::Zero => 0.,
         LfoShape::Sine => (t * std::f64::consts::TAU).sin(),
         LfoShape::Triangle => {
@@ -1422,6 +1432,49 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn scaled_sine_matches_original_digital_waveform_points_and_rejects_bad_levels() {
+        // Original Digital entry 0x140b078d0, authored inputs, no helper stubs.
+        let native = [
+            0.,
+            -0.7071070075035095,
+            -1.,
+            -0.7071070075035095,
+            0.,
+            0.7071070075035095,
+            1.,
+            0.7071070075035095,
+            0.,
+        ];
+        for weight in [0.3f32, 1., -0.7] {
+            for (i, point) in native.into_iter().enumerate() {
+                let actual = wave(LfoShape::SineScaled(-f64::from(weight)), i as f64 / 8., 0);
+                assert!((actual - f64::from(point * weight)).abs() < 1e-6);
+            }
+        }
+        for level in [f64::NAN, f64::INFINITY, -1.01, 1.01] {
+            assert!(
+                VoiceModulation::new(
+                    vec![ModProgram {
+                        sources: vec![ModSource::Lfo(Lfo {
+                            shape: LfoShape::SineScaled(level),
+                            rate: LfoRate::Hertz(1.),
+                            phase: 0.,
+                            delay: 0,
+                            fade: 0,
+                            retrigger: true,
+                            shared: false
+                        })],
+                        ..Default::default()
+                    }],
+                    vec![Some(0)],
+                    vec![0]
+                )
+                .is_err()
+            );
         }
     }
 

@@ -1444,6 +1444,7 @@ impl Lowering<'_> {
             }
             ir::ModulationSource::Lfo(lfo) => ModSource::Lfo(Lfo {
                 shape: match lfo.shape {
+                    ir::LfoShape::SineScaled(level) => LfoShape::SineScaled(level),
                     ir::LfoShape::Zero => LfoShape::Zero,
                     ir::LfoShape::Sine => LfoShape::Sine,
                     ir::LfoShape::Triangle => LfoShape::Triangle,

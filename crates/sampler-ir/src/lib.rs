@@ -389,6 +389,7 @@ pub enum Encoding {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Group {
     /// Strictly admitted Kontakt cycle oscillator, independent of sample root/rate.
+    #[cfg_attr(feature = "cache", serde(default))]
     pub wavetable: Option<Wavetable>,
     pub name: String,
     pub start: Vec<GroupStart>,
@@ -412,6 +413,7 @@ pub struct Group {
 }
 
 /// Saved controls for v1's admitted 2048-frame Kontakt wavetable subset.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Wavetable {
     pub position: f32,
@@ -1266,8 +1268,10 @@ pub struct Lfo {
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LfoShape {
+    /// Sine with a signed bipolar peak in -1..=1; phase still starts at zero.
+    SineScaled(f64),
     /// A zero-weight Multi remains a bipolar source, with output 0.
     Zero,
     /// Starts at 0 rising.

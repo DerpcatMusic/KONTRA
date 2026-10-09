@@ -1827,6 +1827,18 @@ impl Translation {
     ) -> Option<ir::Lfo> {
         let [fade_ms, rate, width, phase] = lfo.initial_values.map(f64::from);
         let shape = match (lfo.waveform, lfo.trailing_values) {
+            // Digital Multi's falling sine retains subunit weights; normalization
+            // divides by max(1, sum(abs(weights))), not by the sole weight.
+            // ponytail: other waves and nonzero native fades need measured source clocks.
+            (6, Some([sine, 0., 0., 0., 0.]))
+                if sine.is_finite()
+                    && sine.abs() <= 1.
+                    && fade_ms == 0.
+                    && lfo.records[1].values[0] == -1.
+                    && lfo.additional_flag == Some(false) =>
+            {
+                ir::LfoShape::SineScaled(-f64::from(sine))
+            }
             // Native core 0x140b07290: the five weighted components sum to zero.
             // Verified original-byte waveform checks; the bipolar view is still 0.5.
             (5, Some(weights)) if weights == [0.; 5] && width > 0. && width < 1. => {
@@ -3551,6 +3563,57 @@ mod modulation {
                 assert_eq!(t.ir.routes[0].invert, invert);
             }
         }
+    }
+
+    #[test]
+    fn digital_sine_keeps_saved_level_phase_sync_and_unsupported_fade_diagnostic() {
+        let mut t = translation();
+        let mut raw = Lfo {
+            structured: false,
+            version: 0x73,
+            waveform: 6,
+            initial_values: [0., 4., 0.5, 0.125],
+            records: [
+                LfoRecord {
+                    flag: true,
+                    values: [-1., 0., 0.],
+                },
+                LfoRecord {
+                    flag: false,
+                    values: [-1., 0., 0.],
+                },
+            ],
+            trailing_flag: false,
+            trailing_values: Some([0.3, 0., 0., 0., 0.]),
+            additional_flag: Some(false),
+        };
+        for normalize in [false, true] {
+            raw.records[0].flag = normalize;
+            let source = t.lfo("g", &raw, true).unwrap();
+            assert_eq!(source.shape, ir::LfoShape::SineScaled(-f64::from(0.3f32)));
+            assert_eq!(source.phase, 0.125);
+            assert_eq!(source.rate, ir::Frequency::Hertz(4.));
+            assert_eq!(source.fade_in, ir::Time::Milliseconds(0.));
+        }
+        raw.records[0].values[0] = 0.25;
+        assert_eq!(
+            t.lfo("g", &raw, true).unwrap().rate,
+            ir::Frequency::Beats(1.)
+        );
+        raw.initial_values[0] = 10.;
+        assert!(
+            t.lfo("g", &raw, true).is_none(),
+            "native nonzero fade must stay diagnosed"
+        );
+        raw.initial_values[0] = 0.;
+        raw.trailing_values = Some([f32::NAN, 0., 0., 0., 0.]);
+        assert!(t.lfo("g", &raw, true).is_none());
+        raw.trailing_values = Some([0.3, 0.2, 0., 0., 0.]);
+        assert!(t.lfo("g", &raw, true).is_none());
+        raw.trailing_values = Some([0.3, 0., 0., 0., 0.]);
+        raw.additional_flag = Some(true);
+        assert!(t.lfo("g", &raw, true).is_none());
+        assert_eq!(t.ir.unsupported.len(), 4);
     }
 
     #[test]
