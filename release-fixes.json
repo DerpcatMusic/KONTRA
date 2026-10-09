@@ -1195,7 +1195,7 @@
     },
     {
       "id": "ladder-versioned-cutoff-clock-mode",
-      "summary": "Retain version144–146 Ladder cutoff boundary snapshots independently of the Gain/resonance clock",
+      "summary": "Retain version144\u2013146 Ladder cutoff boundary snapshots independently of the Gain/resonance clock",
       "source_commits": [
         "3d5a34b1ddb58211ea38e7d9d76ec3c4c6c59b5c"
       ],
@@ -3513,7 +3513,7 @@
       ],
       "release_note": "Let scripted interfaces settle before taking scan snapshots.",
       "accepted": true,
-      "validation": "Real Areia red1→green1, rootshots no-run; five quiet alternating beforefail/afterpass witnesses. Snapshot median+1.90%; wholepainting/audition performance unknown. W0 merged gates: ci/shots workspace at f109799e 1868PASS/0FAIL/218ignored; final01680642 rootshots no-run,9W10 regressions,57UVI tests,feature-off no-run,2fresh GPU fixtures and24 exact partial/full frames PASS. Native quick72loads/68audible;70 matched344 cases unchanged stage/audibility,0nonfinite/audioalloc. Loose scripted UVI fixture verifies sample playback only, not Lua execution; protected UVI playback and quiet performance unknown. Clean artifact proof and hosted Nightly-stamp proof recorded in separate release receipts; no W0 install.",
+      "validation": "Real Areia red1\u2192green1, rootshots no-run; five quiet alternating beforefail/afterpass witnesses. Snapshot median+1.90%; wholepainting/audition performance unknown. W0 merged gates: ci/shots workspace at f109799e 1868PASS/0FAIL/218ignored; final01680642 rootshots no-run,9W10 regressions,57UVI tests,feature-off no-run,2fresh GPU fixtures and24 exact partial/full frames PASS. Native quick72loads/68audible;70 matched344 cases unchanged stage/audibility,0nonfinite/audioalloc. Loose scripted UVI fixture verifies sample playback only, not Lua execution; protected UVI playback and quiet performance unknown. Clean artifact proof and hosted Nightly-stamp proof recorded in separate release receipts; no W0 install.",
       "category": "Fixed"
     },
     {
@@ -3524,7 +3524,7 @@
       ],
       "release_note": "Find installed UVI banks even with existing Kontakt roots, including banks directly inside an added folder.",
       "accepted": true,
-      "validation": "Owner6 focused/33library/rootci no-run; authored clearbanks flat0→2 and mixed1→3. Installed filesystem census only4folders/26containers; protected downstream playback not certified. W0 merged gates: ci/shots workspace at f109799e 1868PASS/0FAIL/218ignored; final01680642 rootshots no-run,9W10 regressions,57UVI tests,feature-off no-run,2fresh GPU fixtures and24 exact partial/full frames PASS. Native quick72loads/68audible;70 matched344 cases unchanged stage/audibility,0nonfinite/audioalloc. Loose scripted UVI fixture verifies sample playback only, not Lua execution; protected UVI playback and quiet performance unknown. Clean artifact proof and hosted Nightly-stamp proof recorded in separate release receipts; no W0 install.",
+      "validation": "Owner6 focused/33library/rootci no-run; authored clearbanks flat0\u21922 and mixed1\u21923. Installed filesystem census only4folders/26containers; protected downstream playback not certified. W0 merged gates: ci/shots workspace at f109799e 1868PASS/0FAIL/218ignored; final01680642 rootshots no-run,9W10 regressions,57UVI tests,feature-off no-run,2fresh GPU fixtures and24 exact partial/full frames PASS. Native quick72loads/68audible;70 matched344 cases unchanged stage/audibility,0nonfinite/audioalloc. Loose scripted UVI fixture verifies sample playback only, not Lua execution; protected UVI playback and quiet performance unknown. Clean artifact proof and hosted Nightly-stamp proof recorded in separate release receipts; no W0 install.",
       "category": "Fixed"
     },
     {
@@ -3547,7 +3547,7 @@
       "release_note": "Recover complex interfaces from blank first frames and redraw on open, resize and restore.",
       "category": "Fixed",
       "accepted": true,
-      "validation": "OwnerRX6600/Vulkan fresh-target22layer redalltransparent→opaque first/changed/resized frames;24exactpartial/full pairs;33rendererPASS, targetedhost/allocator/debug-limit/native-resize, rootno-run andWindowsGNUcheckPASS. Windows DAW scanout and timing remain unverified. W0 merged gates: ci/shots workspace at f109799e 1868PASS/0FAIL/218ignored; final01680642 rootshots no-run,9W10 regressions,57UVI tests,feature-off no-run,2fresh GPU fixtures and24 exact partial/full frames PASS. Native quick72loads/68audible;70 matched344 cases unchanged stage/audibility,0nonfinite/audioalloc. Loose scripted UVI fixture verifies sample playback only, not Lua execution; protected UVI playback and quiet performance unknown. Clean artifact proof and hosted Nightly-stamp proof recorded in separate release receipts; no W0 install."
+      "validation": "OwnerRX6600/Vulkan fresh-target22layer redalltransparent\u2192opaque first/changed/resized frames;24exactpartial/full pairs;33rendererPASS, targetedhost/allocator/debug-limit/native-resize, rootno-run andWindowsGNUcheckPASS. Windows DAW scanout and timing remain unverified. W0 merged gates: ci/shots workspace at f109799e 1868PASS/0FAIL/218ignored; final01680642 rootshots no-run,9W10 regressions,57UVI tests,feature-off no-run,2fresh GPU fixtures and24 exact partial/full frames PASS. Native quick72loads/68audible;70 matched344 cases unchanged stage/audibility,0nonfinite/audioalloc. Loose scripted UVI fixture verifies sample playback only, not Lua execution; protected UVI playback and quiet performance unknown. Clean artifact proof and hosted Nightly-stamp proof recorded in separate release receipts; no W0 install."
     },
     {
       "id": "uvi-directory-only-catalog",
@@ -3558,7 +3558,178 @@
       "release_note": "List UVI presets from bank directories without requiring payload access, and show failed-root bank counts and causes.",
       "category": "Fixed",
       "accepted": true,
-      "validation": "Owner8focused/7auditseed/nativeclearbank/rootlib and feature-off no-runPASS. Clear unavailable-payload fixture0→1catalogprogram; installed26/26directories→4libraries/660programs/0bankissues, no payload opening. Downstream protected playback UNKNOWN; metadata catalog is not playback certification. W0 merged gates: ci/shots workspace at f109799e 1868PASS/0FAIL/218ignored; final01680642 rootshots no-run,9W10 regressions,57UVI tests,feature-off no-run,2fresh GPU fixtures and24 exact partial/full frames PASS. Native quick72loads/68audible;70 matched344 cases unchanged stage/audibility,0nonfinite/audioalloc. Loose scripted UVI fixture verifies sample playback only, not Lua execution; protected UVI playback and quiet performance unknown. Clean artifact proof and hosted Nightly-stamp proof recorded in separate release receipts; no W0 install."
+      "validation": "Owner8focused/7auditseed/nativeclearbank/rootlib and feature-off no-runPASS. Clear unavailable-payload fixture0\u21921catalogprogram; installed26/26directories\u21924libraries/660programs/0bankissues, no payload opening. Downstream protected playback UNKNOWN; metadata catalog is not playback certification. W0 merged gates: ci/shots workspace at f109799e 1868PASS/0FAIL/218ignored; final01680642 rootshots no-run,9W10 regressions,57UVI tests,feature-off no-run,2fresh GPU fixtures and24 exact partial/full frames PASS. Native quick72loads/68audible;70 matched344 cases unchanged stage/audibility,0nonfinite/audioalloc. Loose scripted UVI fixture verifies sample playback only, not Lua execution; protected UVI playback and quiet performance unknown. Clean artifact proof and hosted Nightly-stamp proof recorded in separate release receipts; no W0 install."
+    },
+    {
+      "id": "nkx-repeated-directory-members",
+      "summary": "Preserve repeated and case-variant NKX directory members",
+      "source_commits": [
+        "fae6047e60000ee3530d2e352196608be6374103"
+      ],
+      "release_note": "Load repeated NKX directory entries while preserving exact-case resource paths.",
+      "category": "Fixed",
+      "accepted": true,
+      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim."
+    },
+    {
+      "id": "mapping-selected-sample-window",
+      "summary": "Draw the selected sample interval instead of the full-source overview",
+      "source_commits": [
+        "495a998ffd34ab534bdde837614be66d48b7b622"
+      ],
+      "release_note": "Show the exact selected sample window and loop markers in Mapping.",
+      "category": "Fixed",
+      "accepted": true,
+      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim."
+    },
+    {
+      "id": "mapping-selected-articulation-feedback",
+      "summary": "Share selected feedback between linked Mapping and keyswitch rows",
+      "source_commits": [
+        "4bd96ad958306c0f8cc9d65ba20f02474b8b2952"
+      ],
+      "release_note": "Keep Mapping articulation and keyswitch selection feedback synchronized.",
+      "category": "Fixed",
+      "accepted": true,
+      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim."
+    },
+    {
+      "id": "legacy-ahdsr-revision-10",
+      "summary": "Decode the native legacy AHDSR revision alongside revision 0x11",
+      "source_commits": [
+        "c1359117652bbdfd9fae01bebf9df0fe71389929"
+      ],
+      "release_note": "Load legacy AHDSR envelopes without losing their authored metadata.",
+      "category": "Fixed",
+      "accepted": true,
+      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim."
+    },
+    {
+      "id": "kontakt-revisioned-arrays-empty-zones",
+      "summary": "Decode bounded native parameter arrays, nullable names and authored empty zones",
+      "source_commits": [
+        "4fb8bd5f1f6d42e03f13b7bb1982c5da8c762020",
+        "7bc29b2186e090166fbb2b6f76674c0c59d3fb02"
+      ],
+      "release_note": "Read native revisioned parameter arrays and sample-less zones with strict bounds.",
+      "category": "Fixed",
+      "accepted": true,
+      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim."
+    },
+    {
+      "id": "generated-note-slot-defer",
+      "summary": "Keep post-play edits before generated notes enter later script slots",
+      "source_commits": [
+        "c49a329e05a3519a92d3e5af60e5da02af761532"
+      ],
+      "release_note": "Preserve generated-note group edits across later script slots.",
+      "category": "Fixed",
+      "accepted": true,
+      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim."
+    },
+    {
+      "id": "editor-poison-recovery",
+      "summary": "Recover poisoned editor state and preserve the first panic report",
+      "source_commits": [
+        "97438d89749d5c428bd47a59a39717e060be99bd"
+      ],
+      "release_note": "Recover editor state after a panic and retain the first failure report.",
+      "category": "Fixed",
+      "accepted": true,
+      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim."
+    },
+    {
+      "id": "persistence-unchanged-audio-snapshot",
+      "summary": "Skip unchanged persistence snapshots and preserve revisions under retirement backpressure",
+      "source_commits": [
+        "7fa595e8a0528eca5e7b3778f0e071d314f54282",
+        "034a4e4fc29d81fcaf45082e4c27641334be2d2a",
+        "c6db49416b47db798d1a60f044544162e23ee29e",
+        "4e5abecfb8597b7537e2d6faffbe61d1b3a135d0",
+        "5592510e64630e433f4607c2f43d1ff49cf489d3",
+        "c3e8a590fcc0f3b23b48fbacc6a78c564e46b3ce"
+      ],
+      "release_note": "Avoid recapturing unchanged script persistence on every audio block.",
+      "category": "Fixed",
+      "accepted": true,
+      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim."
+    },
+    {
+      "id": "library-unavailable-path-reporting",
+      "summary": "Retain healthy catalog entries while reporting unavailable paths per root",
+      "source_commits": [
+        "b7e8f932c6709b285fd2a7f81e7e14431e13bcde"
+      ],
+      "release_note": "Keep healthy libraries visible when other library paths are missing or dangling.",
+      "category": "Fixed",
+      "accepted": true,
+      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim."
+    },
+    {
+      "id": "compressor-live-physical-controls",
+      "summary": "Connect compressor threshold, ratio, attack and release to their physical owners",
+      "source_commits": [
+        "544fb72b5daf6260cc87b4d63d76e5757e3df8a6"
+      ],
+      "release_note": "Restore live compressor threshold, ratio, attack and release controls.",
+      "category": "Fixed",
+      "accepted": true,
+      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim."
+    },
+    {
+      "id": "held-note-audition-identity",
+      "summary": "Carry required held notes through scanner/live-host audition identity",
+      "source_commits": [
+        "50ea8c997a58be5e0eef0ac70d9c198dabe91de2"
+      ],
+      "release_note": "Retain required held notes in audition plans and their comparison identity.",
+      "category": "Fixed",
+      "accepted": true,
+      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim."
+    },
+    {
+      "id": "compact-snapshot-source-framing",
+      "summary": "Decode adjacent compact snapshots through the verified source codec",
+      "source_commits": [
+        "bd485fe5c760d4280ddb7427dddd85e7c27c7a80"
+      ],
+      "release_note": "Load compact snapshot revisions with their exact source boundaries.",
+      "category": "Fixed",
+      "accepted": true,
+      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim."
+    },
+    {
+      "id": "unsupported-fx-diagnostic-privacy",
+      "summary": "Remove opaque FX payload bytes from unsupported-effect diagnostics",
+      "source_commits": [
+        "bd485fe5c760d4280ddb7427dddd85e7c27c7a80"
+      ],
+      "release_note": "Keep unsupported-effect reports limited to layout metadata.",
+      "category": "Fixed",
+      "accepted": true,
+      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim."
+    },
+    {
+      "id": "original-art-decoder-poison-recovery",
+      "summary": "Recover decoder gates so later Original artwork can still load",
+      "source_commits": [
+        "c126abf0ac27cb4edbc0d92b6debcdcb1112bcb6"
+      ],
+      "release_note": "Continue loading Original artwork after a decoder panic.",
+      "category": "Fixed",
+      "accepted": true,
+      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim."
+    },
+    {
+      "id": "load-audit-numeric-stage-retention",
+      "summary": "Retain bounded numeric load-stage counters for attribution",
+      "source_commits": [
+        "4c0a72a8b5d3f22e261f5f84b44de90a6792e061"
+      ],
+      "release_note": "Retain numeric load-stage diagnostics without authored payload data.",
+      "category": "Fixed",
+      "accepted": true,
+      "validation": "Owner failing-first and targeted/no-run receipts verified. W0 staged source97f61e69 workspace ci/shots no-run PASS; merged reader compatibility33/tester7/compact4 PASS at540286cc. Final merged workspace/native quick gate pending before publication; no native-host or quiet-performance parity claim."
     }
   ]
 }
