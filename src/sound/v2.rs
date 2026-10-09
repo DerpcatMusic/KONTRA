@@ -45,6 +45,7 @@ use super::{
 #[cfg(test)]
 mod pressed_tests;
 mod persistence;
+mod effect_controls;
 
 /// Host notes tracked for ownership and NOTE_END across the rack.
 const HELD: usize = 1024;
@@ -190,6 +191,7 @@ impl Part {
         let engine_bindings = runtime.engine_parameter_bindings(runtime.active_plan()).map_err(core)?.into();
         let definitions = runtime.control_definitions(runtime.active_plan()).unwrap_or_default().to_vec();
         let plan = runtime.active_plan();
+        let parameters = runtime.parameter_registry(plan).map_err(core)?.descriptors().cloned().collect::<Vec<_>>().into();
         let widgets = runtime.widget_definitions(plan).unwrap_or_default().to_vec();
         let widget_values = widgets.iter().filter(|w| !matches!(w.storage, sampler_core::WidgetStorage::Control(_))).filter_map(|w| widget_value(&runtime, plan, w).map(|value| (sampler_ui_ir::ControlId(w.id.0), value))).collect();
         let mut captures=std::collections::VecDeque::new();
@@ -210,7 +212,7 @@ impl Part {
             epoch: 0,
             engine_bindings,
             waveform_sources: Default::default(),
-            ui_controls: Some(ControlIngress { client, plan, context, definitions, widgets, widget_values, captures, capturing:false, midi_requests:Default::default(), revision, pending_widgets: Default::default(), pending: Default::default(), persistence: None }),
+            ui_controls: Some(ControlIngress { client, plan, context, definitions, parameters, parameter_generation: 0, widgets, widget_values, captures, capturing:false, midi_requests:Default::default(), revision, pending_widgets: Default::default(), pending: Default::default(), persistence: None }),
             runtime,
             tone,
             tone_history: [[[0.; 2]; 2]; BUSES + 1],
@@ -368,6 +370,8 @@ pub struct V2Core {
 
 /// Off-audio producer for the native admission/reply service; never retargeted on replacement.
 pub(crate) struct ControlIngress {
+    pub(crate) parameters: Arc<[sampler_core::ParameterDescriptor]>,
+    pub(crate) parameter_generation: u64,
     pub(crate) client: sampler_core::ControlClient,
     plan: sampler_core::PlanId,
     context: ControlContext,
@@ -1502,6 +1506,10 @@ impl Core for V2Core {
         let rt = &p.runtime;
         rt.control_base_value(rt.active_plan(), sampler_core::ControlId(control.0)).ok().map(number)
     }
+
+    fn effect_value(&self, part: usize, address: sampler_core::ParameterAddress) -> Option<f64> {
+        self.parts.get(part)?.as_ref()?.effect_value(address)
+    }
 }
 
 fn number(value: ControlValue) -> f64 {
@@ -1965,6 +1973,7 @@ impl V2Loader {
         let mut controls: Vec<_> = prepared
             .controls()
             .iter()
+            .filter(|c| !prepared.parameter_registry().descriptors().any(|d| d.control == c.id))
             .map(|c| (sampler_ui_ir::ControlId(c.id.0), number(c.default)))
             .collect();
         if let Some(script) = &script { controls.extend(script.ui().values()); }
@@ -3591,4 +3600,3 @@ mod timing_parity_tests {
         let r=c.render(1);assert!(r.buses[0][0][0]>0.1,"audio starts exactly after 480 held frames");
     }
 }
-
