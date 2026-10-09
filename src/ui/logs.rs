@@ -578,10 +578,10 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
         }
         content.push(section_bar("About KONTRA", vec![copy_el, close_el]));
         content.push(
-            body(crate::build_info::SUMMARY)
-                .text_size(TEXT)
-                .w(Len::Pct(100.))
+            col![body(crate::build_info::SUMMARY).text_size(TEXT).w(Len::Pct(100.))]
                 .pad(INSET)
+                .align(Align::Stretch)
+                .w(Len::Pct(100.))
                 .shrink(0)
                 .id("logs-about"),
         );
