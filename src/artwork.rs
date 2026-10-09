@@ -302,18 +302,17 @@ fn own_hue_uncached(dir: &Path) -> Option<f32> {
         nkrs.sort();
         for nkr in nkrs.iter().take(2) {
             let Ok(mut f) = File::open(nkr) else { continue };
-            let Ok(mut archive) = ni_file::nkr::Archive::read_index(&mut f) else { continue };
+            let Ok(archive) = ni_file::nkr::Archive::read_index(&mut f) else { continue };
             // Only what reads without a key.
-            let mut names: Vec<String> = (archive.entries.keys())
-                .filter(|n| n.ends_with(".png"))
-                .cloned()
+            let mut names: Vec<String> = archive.members()
+                .filter(|e| e.name.to_lowercase().ends_with(".png"))
+                .map(|e| e.name.clone())
                 .collect();
             names.sort();
             let mut eligible = 0;
             for name in names {
                 let Ok(Some(entry)) = archive.member(&mut f, &name) else { continue };
                 if !entry.valid || entry.encoded || entry.size >= 4 << 20 { continue; }
-                archive.entries.insert(name.clone(), entry);
                 eligible += 1;
                 let bytes = archive.read_entry(&mut f, &name);
                 if let Ok(bytes) = bytes {
