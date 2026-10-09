@@ -138,7 +138,7 @@ fn registered_snapshot_tracks_only_captured_cells_in_fast_and_general_paths() {
         address: ScriptStateAddress::Cell { instance: ScriptInstanceId(0), index },
         value: ScriptStateValue::Cell(0),
     });
-    runtime.watch_script_state_values(plan, &watched).unwrap();
+    runtime.watch_script_state_addresses(plan, &watched.map(|entry| entry.address)).unwrap();
     let before = runtime.script_state_revision(plan).unwrap();
     assert_eq!(runtime.watch_script_state_values(plan, &[ScriptStateEntry {
         address: ScriptStateAddress::Cell { instance: ScriptInstanceId(0), index: 72 },
