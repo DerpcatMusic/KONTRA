@@ -578,6 +578,34 @@ fn widget_negative_mouse_behaviour() {
 }
 
 #[test]
+fn widget_gesture_uses_authored_axis_and_sensitivity_without_shape_guesses() {
+    for (kind, width, height, behaviour, vertical) in [
+        ("ui_slider $s(0,1000000)", 40, 200, None, false),
+        ("ui_slider $s(0,1000000)", 40, 200, Some(1000), false),
+        ("ui_slider $s(0,1000000)", 200, 40, Some(-1000), true),
+        ("ui_knob $s(0,1000000,1)", 200, 40, None, true),
+    ] {
+        let mouse = behaviour.map(|value| format!("set_control_par(get_ui_id($s),$CONTROL_PAR_MOUSE_BEHAVIOUR,{value})")).unwrap_or_default();
+        let source = format!("on init\n declare {kind}\n move_control_px($s,20,20)\n set_control_par(get_ui_id($s),$CONTROL_PAR_WIDTH,{width})\n set_control_par(get_ui_id($s),$CONTROL_PAR_HEIGHT,{height})\n {mouse}\nend on");
+        let script = sampler_ksp::compile(&source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+        let face = ir_view::resolved(&script.ui(&|_| None).unwrap());
+        let (horizontal, captured_x) = audit_motion(&face, 0, 10., 0.);
+        let (upward, captured_y) = audit_motion(&face, 0, 0., -10.);
+        assert!(captured_x && captured_y);
+        let (active, inactive) = if vertical {(upward, horizontal)} else {(horizontal, upward)};
+        assert!(active > 0., "{kind} {width}x{height} behaviour={behaviour:?}");
+        assert_eq!(inactive, 0., "{kind} {width}x{height} behaviour={behaviour:?}");
+        if behaviour.is_some() {
+            let mut slower = face.clone();
+            slower.widgets[0].drag.as_mut().unwrap().sensitivity = 500;
+            let (delta, captured) = audit_motion(&slower, 0, if vertical {0.} else {10.}, if vertical {-10.} else {0.});
+            assert!(captured);
+            assert!((active - delta * 2.).abs() <= 1., "sensitivity: {active} vs {delta}");
+        }
+    }
+}
+
+#[test]
 fn widget_passive_overlay_passes_knob() {
     let script = sampler_ksp::compile("on init\n declare ui_knob $k(0,1000000,1)\n declare ui_label $l(1,1)\n move_control_px($k,20,20)\n move_control_px($l,20,20)\n set_control_par(get_ui_id($l),$CONTROL_PAR_WIDTH,85)\n set_control_par(get_ui_id($l),$CONTROL_PAR_HEIGHT,52)\nend on", 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
     let face = ir_view::resolved(&script.ui(&|_| None).unwrap());
