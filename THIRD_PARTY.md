@@ -150,12 +150,13 @@ Regenerate this list with
 ## Distribution notices and assets
 
 Keep LICENSE, NOTICE, this file and the applicable third-party copyright
-and license texts with redistributed material. Nightlies include
-`assets/OFL.txt`, `docs/LEGAL.md`, and a generated `licenses/` bundle.
-That bundle contains selected dependency license texts and copyright
-notices, the unchanged MOOSE rider and upstream NOTICE, MUI's license,
-the adapted BUFFR support notice and provenance under `licenses/BUFFR/`,
-and source archives for the MPL dependencies. The patched
+and license texts with redistributed material. Linux and Windows nightlies
+consolidate the complete root notices, legal review, dependency notices, MOOSE
+rider and NOTICE, MUI and BUFFR texts, and font licenses in `LICENSES.txt`.
+The original paths identify sections of this file rather than separate files.
+The release asset `KONTRA-nightly-covered-source.zip` supplies the MPL dependency
+source archives; `release-manifest.json` records their checksums. macOS retains
+its license bundle and covered source inside the universal installer. The patched
 `symphonia-format-riff` archive contains the current vendored source;
 other MPL archives are copied unchanged from the Cargo registry.
 The `.crate` files are gzip-compressed tar archives containing the
@@ -171,8 +172,10 @@ python3 tools/licenses.py --self-test
 python3 tools/licenses.py --output license-bundle
 ```
 
-Copy `license-bundle/` into the release as `licenses/`, alongside the
-root notices, font license and legal review. `about.toml` chooses among
+The nightly staging script consolidates `license-bundle/` and the root notices
+into `LICENSES.txt`, and publishes its covered sources separately. Manual
+packages may retain the original `licenses/` layout alongside all root notices,
+font licenses and legal review. `about.toml` chooses among
 permitted alternatives without dropping `AND` obligations. No override
 assigns a license to `ni-file`: that known gap remains explicit, while
 other dependencies with missing license text fail bundling. Generating
