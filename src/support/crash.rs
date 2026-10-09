@@ -842,6 +842,7 @@ pub fn pending_incident() -> Option<CrashIncident> {
 }
 
 pub(super) fn install_standalone_capture() {
+    #[cfg(target_os = "linux")]
     let marker = REPORTER.marker.lock_unpoisoned().clone();
     #[cfg(target_os = "linux")]
     if let Some(marker) = &marker {
@@ -858,7 +859,7 @@ pub(super) fn install_standalone_capture() {
             let panic = PanicMarker {
                 at: now_unix(),
                 thread: std::thread::current().name().unwrap_or("unnamed").to_owned(),
-                message: format!("{info}\n{}", std::backtrace::Backtrace::force_capture()),
+                message: format!("{info}\nRust backtrace:\n{}", std::backtrace::Backtrace::force_capture()),
                 location: info.location().map_or_else(String::new, |v| v.to_string()),
                 images: Vec::new(),
             };
@@ -1468,7 +1469,7 @@ fn retire_acknowledged_copy(
 }
 
 #[cfg(test)]
-fn detect_stale_sessions(stopping: &AtomicBool) -> Option<CrashIncident> {
+pub(super) fn detect_stale_sessions(stopping: &AtomicBool) -> Option<CrashIncident> {
     find_stale_candidate(stopping, false)?.consume(stopping)
 }
 
@@ -1590,7 +1591,7 @@ fn find_stale_candidate(stopping: &AtomicBool, confirmed_only: bool) -> Option<R
 
         let detected_at = now_unix();
         let started_at = marker.started_at.min(detected_at);
-        let evidence = if marker.schema >= 4 || panic.is_some() {
+        let mut evidence = if marker.schema >= 4 || panic.is_some() {
             if stopping.load(Ordering::Acquire) {
                 return None;
             }
@@ -1604,6 +1605,13 @@ fn find_stale_candidate(stopping: &AtomicBool, confirmed_only: bool) -> Option<R
         } else {
             super::platform::CrashEvidence::default()
         };
+        #[cfg(target_os = "linux")]
+        if let Some(native) = super::standalone::evidence(&marker.session_id, marker.pid,
+            started_at, detected_at, &marker.host_process) {
+            evidence.disposition = native.disposition;
+            evidence.signature = native.signature;
+            evidence.text = format!("{}\n{}", native.text, evidence.text);
+        }
         if stopping.load(Ordering::Acquire) {
             return None;
         }
