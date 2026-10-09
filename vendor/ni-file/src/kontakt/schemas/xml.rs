@@ -13,15 +13,22 @@ impl XMLDocument {
     }
 
     pub fn from_compressed_data(data: &[u8]) -> Result<Self, NKSError> {
-        let mut decoder = ZlibDecoder::new(data);
+        let decoder = ZlibDecoder::new(data);
         let mut decompressed = Vec::new();
-        decoder.read_to_end(&mut decompressed)?;
+        decoder
+            .take((128 << 20) + 1)
+            .read_to_end(&mut decompressed)?;
+        if decompressed.len() > 128 << 20 {
+            return Err(NKSError::Decompression(
+                "Expanded Kontakt XML exceeds decode limit".into(),
+            ));
+        }
 
         // let decompressed = miniz_oxide::inflate::decompress_to_vec(data).expect("decompress xml");
 
-        Ok(XMLDocument(
-            String::from_utf8(decompressed).expect("convert xml to string"),
-        ))
+        Ok(XMLDocument(String::from_utf8(decompressed).map_err(
+            |_| NKSError::Decompression("Invalid Kontakt XML UTF-8".into()),
+        )?))
     }
 }
 

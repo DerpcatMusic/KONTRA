@@ -1,0 +1,35 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 1K of event 'cycles:u'
+# Event count (approx.): 285564371
+#
+# Overhead  Command          Shared Object           Symbol                                                                                                                                                                                                                                                                                                                                                                            
+# ........  ...............  ......................  ..................................................................................................................................................................................................................................................................................................................................................................................
+#
+    21.31%  admission-worke  admission-worker-queue  [.] sampler_core::dsp::process
+    11.21%  admission-worke  admission-worker-queue  [.] <sampler_core::bus::BusState>::render
+    11.20%  admission-worke  admission-worker-queue  [.] <sampler_core::source::Cursor>::render_filtered::<sampler_core::source::PagedFrames>
+     6.35%  admission-worke  admission-worker-queue  [.] <sampler_core::resample::Kernel>::sample_window
+     3.98%  admission-worke  admission-worker-queue  [.] <sampler_core::Runtime>::service_streaming
+     3.17%  admission-worke  admission-worker-queue  [.] sampler_core::render::render_source::<sampler_core::source::PagedFrames>
+     2.70%  admission-worke  admission-worker-queue  [.] <sampler_core::voice_mod::VoiceModState>::evaluate
+     2.16%  admission-worke  admission-worker-queue  [.] sampler_simd::dispatch::v3::<(), sampler_simd::dispatch::run_fused<(&mut sampler_core::source::Cursor, &mut [[f32; 2]], &mut sampler_core::envelope::EnvelopeState), (), <sampler_core::source::Cursor>::render_run<sampler_core::source::PagedFrames>::{closure#3}, <sampler_core::source::Cursor>::render_run<sampler_core::source::PagedFrames>::{closure#4}>::{closure#0}>
+     2.04%  admission-worke  admission-worker-queue  [.] <sampler_core::Runtime>::render_voice
+     1.79%  admission-worke  admission-worker-queue  [.] <sampler_core::dsp::PreparedVoiceChain>::finish
+     1.70%  admission-worke  admission-worker-queue  [.] <sampler_core::Runtime>::render_split
+     1.34%  sampler-stream   admission-worker-queue  [.] <sampler_kontakt::stream::SampleReader>::read
+     1.32%  admission-worke  libc.so.6               [.] 0x00000000001b7bdd
+     1.29%  admission-worke  admission-worker-queue  [.] <sampler_core::Runtime>::prepare_voice
+     1.28%  admission-worke  admission-worker-queue  [.] <sampler_core::dsp::PreparedVoiceChain>::begin::<sampler_core::source::PagedFrames>
+     1.19%  admission-worke  admission-worker-queue  [.] <sampler_core::stream::StreamCache>::protect
+     1.07%  sampler-stream   admission-worker-queue  [.] <sampler_core::stream::StreamWorker>::complete
+     1.01%  admission-worke  admission-worker-queue  [.] <sampler_core::voice_mod::VoiceModState>::mix
+     1.00%  admission-worke  admission-worker-queue  [.] <core::slice::iter::Iter<sampler_core::dsp::ProcessorState> as core::iter::traits::iterator::Iterator>::all::<<sampler_core::dsp::ProcessorState>::finite>
+
+
+#
+# (Tip: Save output of perf stat using: perf stat record <target workload>)
+#

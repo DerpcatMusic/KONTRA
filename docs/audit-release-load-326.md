@@ -133,3 +133,125 @@ These changes are on `v2/w8-load-attribution-resume`: collector/receipt
 publication, authored picture or callback-CPU implementation was changed.
 All new run artifacts live under
 `/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w8-load-attribution-resume/`.
+
+The allocation-only comparison was parked after four cells: three frozen-v1
+cold cells (all CONTENDED) and current pre-port Conflux (QUIET). The current
+Conflux retained CPU-editor harness was 200.29 MiB versus frozen v1 114.61 MiB.
+This is a retained-harness comparison, not live CLAP editor-window evidence.
+Current-source Analog subsequently measured 372.73 MiB in that same harness;
+the frozen-v1 cold observation was 1064.35 MiB. These newer source observations
+must not be relabeled as the old frozen326 plugin measurements.
+
+A separate direct v1 worker heap-trim port (`9000c604`) compiled and received
+one decisive before/after check. It was rejected and reverted (`f0c00ea2`), so
+the final product code is identical to the checked resolver source at
+`6a1e031c`. GNU-only `malloc_trim` ran in the completed-load branch off audio.
+It reduced pre-editor RSS but gave mixed retained-editor RSS:
+
+| Preset | Pre-editor before/after MiB | Retained editor before/after MiB |
+|---|---:|---:|
+| Conflux | 115.27 / 112.56 | 198.51 / 204.45 |
+| Analog Strings | 351.35 / 332.16 | 372.73 / 361.46 |
+
+Both before cells were QUIET; both after cells were CONTENDED. No timing gain
+or regression is established. All six cold/warm candidate cells were finite
+and audible, with zero underrun, nonfinite, script-overrun, Lua-fault,
+stream-failed and fault-program counters. Analog recorded one silent internal
+note in each pass; audibility alone does not certify every authored note.
+Both second loads explicitly
+reported `sample_header_cache.hit=true`. Receipt: `HEAP-FINAL.json`.
+The post-harness `rss_after_trim_mb` field combines dropping the harness and
+trimming; it does not isolate freed allocator pages while an editor is live.
+`HEAP-FINAL.json` labels `rss_done_mb` as `ready_rss_mb`; that legacy label
+means worker completion after at least 375 audition blocks, not publication
+readiness. The editor delta compares this pre-editor sample with RSS sampled
+inside `src/ui/tests.rs:2311` while the 1180×760 CPU harness is retained.
+
+Conflux's observed retained-editor RSS exceeds the frozen-v1 observation;
+the v1 cell was contended, so a paired deficit is not established. The increase
+from pre-editor to retained editor is a concrete lead for W3/W13; W8 has not
+changed their renderer or publication path. Timing parity and fresh all-14
+shared-scanner acceptance remain open.
+
+## Recovered shared-scanner shard, 12:39Z restart
+
+The restored source passed default-feature optimized root no-run again, then
+the canonical shared scanner built with `--profile ci --features shots`.
+Scanner source is `f0c00ea2`; its final product code equals `6a1e031c`.
+Frozen v1 hashes passed before use. The common collector reused owned copies
+of the shared numeric note plans; no new corpus collector was introduced.
+Both versions loaded and produced audible output on all three matched plans,
+with zero underruns and zero load/runtime fault records.
+
+| Preset | v2 load ms | v1 load ms | v2/v1 worker peak MiB | v2/v1 activity |
+|---|---:|---:|---:|---|
+| Conflux | 443.96 | 269.57 | 196.98 / 70.01 | CONTENDED / CONTENDED |
+| Pacific Legato | 232.73 | 76.25 | 107.12 / 53.49 | CONTENDED / CONTENDED |
+| Analog Strings | 1442.38 | 4227.41 | 468.07 / 564.78 | QUIET / CONTENDED |
+
+These are numeric scanner observations, not admitted timing comparisons.
+Frozen v1 exposes no first-audio field in this older adapter, and v2 uses the
+optimized CI profile without ThinLTO while frozen v1 is release. Scanner peak
+is not retained-editor RSS. Analog's observed worker peak is lower than v1;
+Conflux and Pacific are higher in this run; paired RSS parity remains UNKNOWN.
+Source-port causality is established by
+the allocation regression, not these cross-version whole-worker figures.
+
+The current scanner reports Original OK for Conflux/Analog. Pacific paints but
+reports one missing image (`lookup-not-found`); frozen v1 also reports missing
+images on Conflux/Pacific. These rows do not certify full authored fidelity.
+W3 received the exact stage-probe invocation and retained-editor memory lead; the remaining
+Pacific lookup must be resolved by library membership. Receipt:
+`SCAN-FINAL.json`; binary/profile provenance: `SCAN-BUILD.json`.
+
+`RECOVERY-RELEASE.json` confirms the attribution, stage-probe and scanner units
+are inactive with MainPID 0, and no quiet request or grant remains. W6 received
+the direct completion handoff again after restart. This recovery submitted no
+new heavy job. The rejected heap-trim candidate remains reverted.
+
+Observed v2 minus v1 scanner deltas are +174.39 ms / +126.97 MiB for Conflux,
++156.48 ms / +53.63 MiB for Pacific and -2785.03 ms / -96.71 MiB for Analog.
+These are unadmitted observations; all paired performance verdicts are UNKNOWN.
+
+Parked parity note:
+1. Symptom: current Conflux retained-editor RSS remains about 199 MiB versus
+   frozen v1 about 115 MiB; no fresh every-preset timing pass exists.
+2. Best hypothesis: the large pre-editor-to-editor increase warrants retained
+   renderer/resource allocation attribution; worker heap trimming was mixed.
+3. Next step: W3/W13 measure the live retained editor, then W8 reruns the original
+   14 cold/warm onset/RSS cells on the combined build in an admitted quiet window.
+
+NEXT: retained-editor allocation attribution and combined-build 14-preset parity.
+
+## 2026-10-09 measured receipt
+
+All six cells are QUIET, audible, have verified native selection readback and zero
+process swap. Frozen v1 checksum verification and every 326 artifact digest
+passed. Receipt: `/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w8-load-030326-608a20a1/`.
+No product build or install was performed.
+
+| Preset | v1 ready ms | 326 ready ms | v1 first audio ms | 326 first audio ms | v1/326 ready RSS MiB | v1/326 after-audio RSS MiB |
+|---|---:|---:|---:|---:|---:|---:|
+| Conflux | 186.84 | 442.08 | 285.99 | 543.14 | 398.88 / 138.54 | 416.91 / 138.75 |
+| Pacific 10 Cellos – Legato Sustains | 78.67 | 1238.61 | 179.30 | 1344.45 | 341.75 / 133.40 | 460.27 / 134.78 |
+| ANALOG STRINGS | 3438.75 | 2750.16 | 3539.10 | 2856.68 | 581.91 / 836.40 | 1222.75 / 846.52 |
+
+This single trial is an exported-CLAP, editor-closed observation with the fixed
+100 ms post-ready warmup included. It establishes neither editor-open RSS nor
+native sound parity. V1 reported 1/1/2 underruns for Conflux/Pacific/Analog;
+326 reported zero. The readiness and memory axes are independent of those
+underruns. V1 plugin initialization already held about 249–251 MiB before state
+load; 326 about 21 MiB. Full process RSS is reported, not sample counters.
+
+The first attempt retained two completed Conflux cells and stopped on an audit
+bug: `native.state` was reused while the state exporter requires create-new.
+Each preset now uses a unique state filename. A provenance-checked `--resume`
+retained those two observations and ran only the four remaining cells. The
+original and resumed driver digests are recorded. A mock exporter enforcing
+create-new proves unique filenames and no repeated auditions during resume.
+An unrelated KURV build delayed the resumed pregrant; it ended before those
+four cells began. No measurement overlapped it; all six activity timelines are
+QUIET. Both owned quiet requests/grants were removed, and the final unit has
+MainPID 0. The next quiet owner is W5, then W6 and W13.
+
+NEXT: exact shipping 0.3.344 Kontakt load/audio sweep after timed owners clear.

@@ -10,7 +10,10 @@ fn main() -> Result<()> {
     let path = std::env::args().nth(1).context("NKI path")?;
     let key: u8 = std::env::args().nth(2).unwrap_or("60".into()).parse()?;
     let mode = std::env::args().nth(3).unwrap_or("gain".into());
-    ensure!(["gain", "frequency", "bandwidth"].contains(&mode.as_str()), "EQ witness mode");
+    ensure!(
+        ["gain", "frequency", "bandwidth"].contains(&mode.as_str()),
+        "EQ witness mode"
+    );
     let mut library = sampler_kontakt::read(Path::new(&path))?;
     let is_eq = |r: &ir::Route| match r.target {
         ir::Target::Processor {
@@ -157,13 +160,27 @@ fn main() -> Result<()> {
                 for slot in &eq_slots {
                     for (parameter, value) in knob_parameters.into_iter().zip([
                         750000,
-                        if mode == "frequency" { if enabled { 300000 } else { 700000 } } else { 500000 },
-                        if mode == "bandwidth" { if enabled { 1000000 } else { 0 } } else { 400000 },
+                        if mode == "frequency" {
+                            if enabled { 300000 } else { 700000 }
+                        } else {
+                            500000
+                        },
+                        if mode == "bandwidth" {
+                            if enabled { 1000000 } else { 0 }
+                        } else {
+                            400000
+                        },
                     ]) {
-                        rt.set_engine_parameter(sampler_core::EngineParameterAddress {
-                            parameter,
-                            group: slot.group, slot: slot.slot, generic: slot.generic,
-                        }, value).unwrap();
+                        rt.set_engine_parameter(
+                            sampler_core::EngineParameterAddress {
+                                parameter,
+                                group: slot.group,
+                                slot: slot.slot,
+                                generic: slot.generic,
+                            },
+                            value,
+                        )
+                        .unwrap();
                     }
                 }
             }
@@ -208,7 +225,12 @@ fn main() -> Result<()> {
             {
                 println!(
                     "EQ_STAGE {{\"mode\":\"{mode}\",\"enabled\":{enabled},\"node\":{},\"frequency_knob\":{},\"bandwidth_knob\":{},\"gain_db\":{},\"input_rms\":{},\"output_rms\":{}}}",
-                    node.id, row.values[0], row.values[1], row.values[2], row.input.rms[0], row.output.rms[0]
+                    node.id,
+                    row.values[0],
+                    row.values[1],
+                    row.values[2],
+                    row.input.rms[0],
+                    row.output.rms[0]
                 );
             }
         }

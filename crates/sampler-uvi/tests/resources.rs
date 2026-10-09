@@ -64,7 +64,10 @@ fn failed_bank_admission_is_not_a_missing_loose_asset() {
         resources.read_result("image.png"),
         Err(ResourceError::Unavailable)
     );
-    assert_eq!(resources.read_result("Assistant-Regular.ttf"),Err(ResourceError::Unavailable));
+    assert_eq!(
+        resources.read_result("Assistant-Regular.ttf"),
+        Err(ResourceError::Unavailable)
+    );
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -93,18 +96,37 @@ fn empty_resource_assignments_clear_images_fonts_and_backgrounds() {
 
 #[test]
 fn authored_host_font_identity_is_exact_and_loaded_only_on_request() {
-    let root=std::env::temp_dir().join(format!("kontra-uvi-host-font-{}",std::process::id()));
+    let root = std::env::temp_dir().join(format!("kontra-uvi-host-font-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
-    let resources=Resources::of(&root.join("preset.uvip"));
-    let font=resources.read_result("Artwork/Assistant-Regular.ttf").unwrap().expect("authored host font");
-    assert_eq!(font.len(),75500);
-    assert_eq!(&font[..4], &[0,1,0,0]);
-    assert_eq!(resources.read_result("Artwork/assistant-regular.TTF").unwrap(),Some(font));
-    for name in ["Assistant-Bold.ttf","Assistant-Light.ttf","Other-Regular.ttf","Assistant-Regular.png"] {
-        assert_eq!(resources.read_result(name).unwrap(),None);
+    let resources = Resources::of(&root.join("preset.uvip"));
+    let font = resources
+        .read_result("Artwork/Assistant-Regular.ttf")
+        .unwrap()
+        .expect("authored host font");
+    assert_eq!(font.len(), 75500);
+    assert_eq!(&font[..4], &[0, 1, 0, 0]);
+    assert_eq!(
+        resources
+            .read_result("Artwork/assistant-regular.TTF")
+            .unwrap(),
+        Some(font)
+    );
+    for name in [
+        "Assistant-Bold.ttf",
+        "Assistant-Light.ttf",
+        "Other-Regular.ttf",
+        "Assistant-Regular.png",
+    ] {
+        assert_eq!(resources.read_result(name).unwrap(), None);
     }
-    assert_eq!(resources.read_result("../Assistant-Regular.ttf"),Err(ResourceError::InvalidPath));
-    std::fs::write(root.join("Assistant-Regular.ttf"),b"authored bank font").unwrap();
-    assert_eq!(resources.read_result("Assistant-Regular.ttf").unwrap(),Some(b"authored bank font".to_vec()));
+    assert_eq!(
+        resources.read_result("../Assistant-Regular.ttf"),
+        Err(ResourceError::InvalidPath)
+    );
+    std::fs::write(root.join("Assistant-Regular.ttf"), b"authored bank font").unwrap();
+    assert_eq!(
+        resources.read_result("Assistant-Regular.ttf").unwrap(),
+        Some(b"authored bank font".to_vec())
+    );
     std::fs::remove_dir_all(root).unwrap();
 }

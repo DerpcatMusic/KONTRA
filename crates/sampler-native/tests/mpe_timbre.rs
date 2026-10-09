@@ -71,7 +71,9 @@ fn level_of(ir: &ir::Instrument, y: u8, run: usize) -> f32 {
     let defaults = MpeDefaults::for_instrument(ir);
     let nyquist = (0..4800).map(|i| [if (i / run) % 2 == 0 { 0.25 } else { -0.25 }; 2]);
     let pcm = vec![Pcm::new(48000, nyquist.collect()).unwrap()];
-    let options = Options { mpe: Some(defaults) };
+    let options = Options {
+        mpe: Some(defaults),
+    };
     let plan = lower_with(ir, 48000, pcm, &options, |_, _| unreachable!()).unwrap();
     let limits = Limits {
         notes: 8,
@@ -93,7 +95,8 @@ fn level_of(ir: &ir::Instrument, y: u8, run: usize) -> f32 {
         mpe.set_timbre_controller(Some(cc));
     }
     for word in [packet(0xb0, 1, 74, y), packet(0x90, 1, 60, 127)] {
-        mpe.apply(&mut rt, Packets::new(&[word]).next().unwrap().unwrap()).unwrap();
+        mpe.apply(&mut rt, Packets::new(&[word]).next().unwrap().unwrap())
+            .unwrap();
     }
     let mut out = [[0.0; 2]; 512];
     rt.render(&mut out).unwrap();
@@ -103,7 +106,10 @@ fn level_of(ir: &ir::Instrument, y: u8, run: usize) -> f32 {
 #[test]
 fn a_dynamics_controller_takes_timbre_as_its_per_note_position() {
     let ir = with_crossfade(with_filter(instrument()), 1);
-    assert_eq!(MpeDefaults::for_instrument(&ir).timbre, TimbreTarget::Controller(1));
+    assert_eq!(
+        MpeDefaults::for_instrument(&ir).timbre,
+        TimbreTarget::Controller(1)
+    );
     let (low, high) = (level_of(&ir, 20, 3), level_of(&ir, 127, 3));
     assert!(high > 0.01 && low < 0.5 * high, "{low} {high}");
 }
@@ -111,9 +117,19 @@ fn a_dynamics_controller_takes_timbre_as_its_per_note_position() {
 #[test]
 fn a_filter_without_a_dynamics_controller_takes_timbre_as_its_cutoff() {
     let ir = with_filter(instrument());
-    assert_eq!(MpeDefaults::for_instrument(&ir).timbre, TimbreTarget::Cutoff);
-    let (dark, centre, bright) = (level_of(&ir, 0, 3), level_of(&ir, 64, 3), level_of(&ir, 127, 3));
-    assert!(dark < centre && centre * 4.0 < bright, "{dark} {centre} {bright}");
+    assert_eq!(
+        MpeDefaults::for_instrument(&ir).timbre,
+        TimbreTarget::Cutoff
+    );
+    let (dark, centre, bright) = (
+        level_of(&ir, 0, 3),
+        level_of(&ir, 64, 3),
+        level_of(&ir, 127, 3),
+    );
+    assert!(
+        dark < centre && centre * 4.0 < bright,
+        "{dark} {centre} {bright}"
+    );
 }
 
 #[test]

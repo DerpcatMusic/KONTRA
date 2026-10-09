@@ -867,7 +867,6 @@ fn lower(
         }
         latches.push(el);
     }
-    let g = &instrument.groups[group as usize];
     let bar = row![segmented(latches), spacer()]
         .pad(edges(TIGHT, INSET, TIGHT, INSET))
         .shrink(0);
@@ -878,7 +877,7 @@ fn lower(
                 .shrink(0);
         }
         Lower::Modulation => chain::modulation(cx.p, instrument, group as usize),
-        Lower::Effects => chain::effects(instrument, g),
+        Lower::Effects => chain::effects(instrument, group as usize),
     };
     col![
         bar,
