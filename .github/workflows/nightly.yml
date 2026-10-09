@@ -58,6 +58,7 @@ jobs:
           export SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")
           echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" >> "$GITHUB_ENV"
           python3 tools/version.py nightly --write
+          echo "KONTRA_NIGHTLY_BUILD=1" >> "$GITHUB_ENV"
       - name: License bundle checks
         shell: bash
         run: python3 tools/licenses.py --self-test
@@ -100,6 +101,7 @@ jobs:
                       and not ({"clap", "vst3", "standalone"} - {format}) & features):
                       matches.append(path)
               assert len(matches) == 1, (format, matches)
+              assert json.loads(pathlib.Path(matches[0]).read_text())["dirty"] is False, "Dirty Nightly source"
               pathlib.Path(format + "-build-info.json").write_bytes(pathlib.Path(matches[0]).read_bytes())
           PYINFO
       - name: Standalone
@@ -116,6 +118,7 @@ jobs:
           stage="KONTRA-nightly-${{ matrix.name }}"
           exe=kontakto-standalone; [ "$RUNNER_OS" = Windows ] && exe=kontakto-standalone.exe
           "target/${{ matrix.target }}/release/$exe" --build-info > standalone-build-info.json
+          python3 -c 'import json; assert json.load(open("standalone-build-info.json"))["dirty"] is False, "Dirty Nightly source"'
           if [ "$RUNNER_OS" != macOS ]; then
             python3 .github/scripts/stage_nightly.py --platform "${{ matrix.name }}" --stage "$stage" \
               --bundles "target/bundles/${{ matrix.target }}" --standalone "target/${{ matrix.target }}/release/$exe" \
