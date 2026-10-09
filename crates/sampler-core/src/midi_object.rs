@@ -619,6 +619,7 @@ pub(crate) struct MidiJob {
     pub action: MidiAction,
     pub args: [i32; 5],
     pub initial: bool,
+    pub completed: Option<bool>,
     pub text: Option<Text>,
 }
 impl MidiObject {
@@ -643,17 +644,20 @@ impl MidiObject {
             action,
             args,
             initial: true,
+            completed: None,
             text,
         });
         self.next_job = id;
         Ok(id)
     }
-    pub fn finish_initial(&mut self, slot: u8, id: i32) -> Option<i32> {
+    pub fn finish_initial(&mut self, slot: u8, id: i32, defer_callback: bool) -> Option<i32> {
         let index = self
             .jobs
             .iter()
-            .position(|j| j.initial && j.id == id && j.instance.0 == u16::from(slot))?;
-        let job = self.jobs.remove(index);
+            .position(|j| {
+                j.initial && j.completed.is_none() && j.id == id && j.instance.0 == u16::from(slot)
+            })?;
+        let job = self.jobs[index];
         let result = match job.action {
             MidiAction::InsertFile => self.insert_file(
                 job.text.unwrap_or_default().as_str(),
@@ -669,7 +673,13 @@ impl MidiObject {
             }
             _ => self.apply(job.action, &job.args, None).map(|_| ()),
         };
-        Some(i32::from(result.is_ok()))
+        let success = result.is_ok();
+        if defer_callback {
+            self.jobs[index].completed = Some(success);
+        } else {
+            self.jobs.remove(index);
+        }
+        Some(i32::from(success))
     }
     pub fn bind_initial_instances(
         &mut self,
@@ -979,11 +989,12 @@ impl crate::Runtime {
             if self.ops.effects.len() == crate::ops::EFFECT_CAPACITY {
                 break;
             }
-            let kind = match job.action {
-                MidiAction::SetBufferSize => 1,
-                MidiAction::Reset => 2,
-                MidiAction::InsertFile => 3,
-                MidiAction::SaveFile => 4,
+            let kind = match (job.completed, job.action) {
+                (Some(_), _) => 5, // Already applied off audio; notify the callback only.
+                (None, MidiAction::SetBufferSize) => 1,
+                (None, MidiAction::Reset) => 2,
+                (None, MidiAction::InsertFile) => 3,
+                (None, MidiAction::SaveFile) => 4,
                 _ => continue,
             };
             self.ops.effects.push_back(crate::Effect {
@@ -1037,6 +1048,7 @@ impl crate::Runtime {
             action,
             args,
             initial: false,
+            completed: None,
             text,
         });
         generation.midi_object.next_job = job;
@@ -1134,7 +1146,9 @@ impl crate::Runtime {
             self.validate_plan_context(plan, p.program, context.unwrap())?;
         }
         let generation = self.plans.get_mut(plan.0).unwrap();
-        if output.success {
+        if let Some(success) = job.completed {
+            output.success = success;
+        } else if output.success {
             let result = if job.action == MidiAction::InsertFile {
                 generation
                     .midi_object
