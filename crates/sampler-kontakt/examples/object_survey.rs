@@ -242,6 +242,7 @@ impl Survey {
             for zone in z.zones() {
                 let v = zone.0.version;
                 let q = zone.params()?;
+                self.field(file, "0x34/0x2c", v, "sample_present", q.sample_present, true);
                 self.field(file, "0x34/0x2c", v, "filename_id", q.filename_id, -1);
                 self.field(
                     file,

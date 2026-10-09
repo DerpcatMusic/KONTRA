@@ -24,7 +24,7 @@ impl BParamArrayBParFX8 {
     pub fn read<R: ReadBytesExt>(mut reader: R, num_items: u32) -> Result<Self, Error> {
         let is_structured_data = reader.read_bool()?;
         let version = reader.read_u16_le()?;
-        if is_structured_data || !matches!(version, 0x10 | 0x12 | 0x13) {
+        if is_structured_data || !matches!(version, 0x10..=0x13) {
             return Err(NIFileError::Generic(format!(
                 "Unsupported BParamArrayBParFX8 v{version:x} (structured: {is_structured_data})"
             )));
@@ -37,7 +37,9 @@ impl BParamArrayBParFX8 {
         }
         let mut items = Vec::with_capacity(num_items as usize);
         for _ in 0..num_items {
-            items.push(match reader.read_u8()? {
+            let flag = reader.read_u8()?;
+            if version == 0x11 { reader.read_u32_le()?; }
+            items.push(match flag {
                 0 => None,
                 1 => Some(Chunk::read(&mut reader)?),
                 flag => {
