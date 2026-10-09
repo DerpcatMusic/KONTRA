@@ -665,15 +665,28 @@ pub fn one(id: &str, out: &Path) -> Value {
             Some((_, _)) if candidate==pick => "zone_coverage",
             _ => "fallback",
         };
+        let held = metrics::planned_held_key(program as u32);
+        let mut audition_plan_error = held.as_ref().err().copied();
+        let held_key = held.ok().flatten();
+        if held_key.is_some_and(|held| pick.is_none_or(|(key,_)| key == held) || keyswitch == Some(held) || excluded.contains(&held)) {
+            audition_plan_error = Some("invalid-held-key");
+        }
+        let audition_pick = pick.filter(|_| audition_plan_error.is_none());
         let sample_zone_count=loaded.instrument.as_ref().map(|i|i.zones.len());
-        let family_native = loaded.instrument.as_ref().map(|i|coverage::native_family(i,pick,keyswitch)).unwrap_or(json!({"basis":"native-reader","unknown":"instrument-absent"}));
+        let mut family_native = loaded.instrument.as_ref().map(|i|coverage::native_family(i,pick,keyswitch)).unwrap_or(json!({"basis":"native-reader","unknown":"instrument-absent"}));
+        if pick.is_some() { family_native["audition"]["held_key"] = json!(held_key); }
+        if held_key.is_some() { family_native["unknown"] = json!("multi-note-native-oracle-requires-capture"); }
         let mut heard = false;
         // Diagnostic repeats stay opt-in so gate load/onset timings keep their protocol.
         let family_repeats = std::env::var("KONTRA_SCAN_FAMILY_REPEATS").ok().and_then(|v|v.parse::<usize>().ok()).unwrap_or(0).min(128);
         let mut family_takes = Vec::new();
         result["stage"] = json!(format!("play program {program}"));
         metrics::checkpoint(out, &result);
-        if let Some((key, velocity)) = pick {
+        if let Some((key, velocity)) = audition_pick {
+            if let Some(held) = held_key {
+                core.event(0, Event::midi1(0x90, held, velocity));
+                core.render(128);
+            }
             core.event(0, Event::midi1(0x90, key, velocity));
             for _ in 0..180 {
                 std::thread::sleep(Duration::from_millis(3));
@@ -689,7 +702,7 @@ pub fn one(id: &str, out: &Path) -> Value {
                 runtime_faults.extend(core.scan_runtime_faults(0));
             }
         }
-        if let Some((key, velocity)) = pick {
+        if let Some((key, velocity)) = audition_pick {
             if family_repeats > 0 && family_native["script_driven"].as_array().is_some_and(Vec::is_empty) && family_native["unknown"].is_null() {
                 core.event(0, Event::midi1(0x80, key, 0));
                 core.render(128); // Finish the unrecorded audition before starting repeat evidence.
@@ -713,6 +726,12 @@ pub fn one(id: &str, out: &Path) -> Value {
                 }
                 core.scan_record_selections(0, false);
             }
+        }
+        if let Some((key,_)) = audition_pick.filter(|_| held_key.is_some()) {
+            core.event(0, Event::midi1(0x80, key, 0));
+            core.render(128);
+            core.event(0, Event::midi1(0x80, held_key.unwrap(), 0));
+            core.render(128);
         }
         result["stage"]=json!(format!("Original paint join program {program}"));
         metrics::checkpoint(out,&result);
@@ -742,7 +761,7 @@ pub fn one(id: &str, out: &Path) -> Value {
         result["programs"].as_array_mut().unwrap().push(json!({"family_native":family_native,"family_takes":family_takes,"dsp_slots":dsp_slots,"authored_view_requests":view_requests,"native_frontend_consumed":native_consumed,"ksp":ksp,"ksp_runtime_faults":runtime_faults.iter().map(|(program,outcome)|json!({"program":program,"callback":sampler_ksp::callback_of(&loaded.scripts.views,*program),"category":match outcome{sampler_core::Outcome::FuelExhausted=>"fuel-budget",_=>"runtime-fault"},"core_error":match outcome{sampler_core::Outcome::Fault(e)=>Some(format!("{e:?}")),_=>None}})).collect::<Vec<_>>(),"lua":lua_report,"admitted_saved_entries_by_sigil":admitted,
             "load_path":if is_uvi {if lua.is_some(){"scripted-worker"}else{"offline-loader"}}else{"kontakt-v2-loader"},
             "sample_zone_count":sample_zone_count,"decoded_zone_count":loaded.report.decoded.zones,"sample_count":loaded.report.decoded.samples,"sample_resident_bytes":sample_resident_bytes,"underruns":core.problems(0).underruns,
-            "keyswitch":keyswitch,"selected_articulation":core.articulation(0),"fallback_note":pick_source=="fallback","zero_zone_reason":if sample_zone_count==Some(0) {Some("unknown")} else {None},"pick_source":pick_source,"native_valid_keys":native_valid,"native_key_conflicts":native.as_ref().map(|n|n.native_key_conflicts),"native_preferred_note":candidate.filter(|(k,_)|native_valid.contains(k)),
+            "keyswitch":keyswitch,"held_key":held_key,"audition_plan_error":audition_plan_error,"selected_articulation":core.articulation(0),"fallback_note":pick_source=="fallback","zero_zone_reason":if sample_zone_count==Some(0) {Some("unknown")} else {None},"pick_source":pick_source,"native_valid_keys":native_valid,"native_key_conflicts":native.as_ref().map(|n|n.native_key_conflicts),"native_preferred_note":candidate.filter(|(k,_)|native_valid.contains(k)),
             "program":program,"loaded":true,"source":if is_uvi {"uvi"}else{"kontakt"},"script_errors":script_errors,"symbols":symbols,"views":views,"plays_note":if heard {"yes"}else{"silent"},"pick":pick,"snapshot_settle_ms":snapshot_settle_ms,"load_ms":start.elapsed().as_secs_f64()*1000.}));
         // Keep the streaming owner alive throughout the note probe.
         loaded.stream.take();
