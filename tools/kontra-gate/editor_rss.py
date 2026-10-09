@@ -33,6 +33,9 @@ def summarize(rows):
             assert (0 < row['width'] <= 4096 and 0 < row['height'] <= 2160) if shown else (row['width'], row['height']) == (0, 0)
             assert all(type(row[k]) is int and row[k] >= 0 for k in ('rss_kib', 'hwm_kib', 'swap_kib'))
             assert 0 < row['rss_kib'] <= row['hwm_kib']
+            if shown:
+                assert 1179 <= row['width'] <= 1181 and 759 <= row['height'] <= 761, 'mapped viewport exceeds compositor tolerance'
+                assert (row['width'], row['height']) == (row['parent_width'], row['parent_height']) == (row['clap_width'], row['clap_height']), 'parent/child/CLAP clipping disagreement'
         values = [r['rss_kib']/1024 for r in samples]
         result[phase] = {'rss_mib': statistics.median(values), 'min_mib': min(values), 'max_mib': max(values)}
     result['open_delta_mib'] = result['open']['rss_mib']-result['loaded']['rss_mib']
@@ -131,6 +134,8 @@ def observe(host, plugin, item, folder):
             assert sum(s in ('loaded','partial') for s in finished) >= len(programs), 'selected load receipts incomplete'
             receipt['all_loads_complete'] = all(s == 'loaded' for s in finished)
             receipt['device_windows'] = {phase: [rows[i*10]['width'],rows[i*10]['height']] for i,phase in enumerate(PHASES)}
+            receipt['viewport_agreement_verified'] = True
+            receipt['compositor_tolerance_pixels'] = 1
             receipt['requested_device_size_matched'] = all(receipt['device_windows'][phase] == [1180,760] for phase in ('open','reopened'))
             receipt['status'] = 'RAW_MEASURED'
         except (AssertionError, ValueError, OSError, subprocess.TimeoutExpired) as error:
