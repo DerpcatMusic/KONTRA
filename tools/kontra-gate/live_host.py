@@ -10,6 +10,7 @@ import json
 import math
 import os
 from pathlib import Path
+import signal
 import struct
 import subprocess
 import tempfile
@@ -193,10 +194,18 @@ def frozen_underruns(rows):
 
 
 def measured_status(live):
+    if live.get('family_observation'):
+        return 'UNKNOWN'  # Opt-in audio capture is excluded from CPU/load acceptance.
     complete = (live.get('returncode') == 0 and live.get('events_dispatched', 0) > 0
                 and live.get('events_dispatched') == live.get('events_planned')
                 and live.get('peak', 0) > 0 and live.get('nonfinite') == 0
                 and live.get('native_state_verified') is True)
+    if 'cpu_audit' in live:
+        audit = live['cpu_audit']
+        complete = (complete and bool(audit.get('steady')) and audit.get('steady_peak', 0) > 0
+                    and live.get('underruns') is not None
+                    and (not live.get('profiled') or live.get('profiler_exit_code') in (0, -signal.SIGINT)
+                         and live.get('profile_samples_steady', 0) > 0))
     return 'MEASURED' if complete and live.get('contention') == 'QUIET' else 'UNKNOWN'
 
 
@@ -261,13 +270,26 @@ def load_audit(stderr):
     return {'records': records, 'dropped_records': dropped}
 
 
-def observe(host, plugin, state, plan, block, seconds, folder, version, load_probe=False):
+def steady_leaf_samples(text, epoch_ns):
+    result = []
+    for line in text.splitlines():
+        if not line.strip(): continue
+        try:
+            seconds, fraction = line.split()[0].rstrip(':').split('.')
+            stamp = int(seconds) * 1_000_000_000 + int(fraction.ljust(9, '0'))
+        except (ValueError, IndexError): return []
+        if 250_000_000 <= stamp - epoch_ns < 1_000_000_000: result.append(line)
+    return result
+
+
+def observe(host, plugin, state, plan, block, seconds, folder, version, load_probe=False, *, cpu_audit=False, profile=False):
+    assert not profile or cpu_audit
     folder.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='kontra-live-', dir='/dev/shm') as temp:
         temp = Path(temp)
         ready = temp / 'ready'
         schedule = temp / 'events.tsv'
-        schedule.write_text(''.join('\t'.join(map(str, e)) + '\n' for e in events(plan, seconds)))
+        schedule.write_text(''.join('\t'.join(map(str, e)) + '\n' for e in (plan if cpu_audit else events(plan, seconds))))
         native = temp / 'session.state'; native.write_bytes(state)
         readback = temp / 'readback.state'
         private_settings(temp / 'config')
@@ -277,16 +299,30 @@ def observe(host, plugin, state, plan, block, seconds, folder, version, load_pro
             for key in ['KONTRA_UVI_AUDIT_SEED', 'KONTRA_SIGNAL_TRACE', 'KONTRA_REPORT_DIR', 'PROBE_ALLOCS']:
                 env.pop(key, None)
         capture = Capture(folder, env)
+        profile_ready, profile_finished = temp / 'audio-tid', temp / 'audio-finished'
+        if profile:
+            env.update(CPU_AUDIT_READY=str(profile_ready), CPU_AUDIT_FINISHED=str(profile_finished))
         activity = Activity(folder)
-        job = None
+        job = profiler = None
         live = {}
         activity.start()
         try:
             with tempfile.TemporaryFile(dir='/dev/shm') as output:
-                job = subprocess.Popen([str(host), str(plugin), str(native), str(block), str(seconds), str(ready), str(schedule), '1', str(readback)],
+                command = [str(host), str(plugin), str(native), str(block), str(seconds), str(ready), str(schedule), '1', str(readback)]
+                if cpu_audit: command.append('--cpu-audit')
+                job = subprocess.Popen(command,
                                        env=env, stdout=output, stderr=capture.stderr)
                 started = time.monotonic()
                 while job.poll() is None:
+                    if profile and profiler is None and profile_ready.exists():
+                        tid = profile_ready.read_text().strip()
+                        if tid.isdigit():
+                            profiler = subprocess.Popen(['perf', 'record', '-e', 'cpu-clock:u', '-F', '9999',
+                                                         '--clockid', 'CLOCK_REALTIME', '-t', tid,
+                                                         '-o', str(folder / 'audio.perf.data')],
+                                                        stdout=subprocess.DEVNULL, stderr=capture.stderr)
+                    if profiler and profiler.poll() is None and profile_finished.exists():
+                        profiler.send_signal(signal.SIGINT); profiler.wait()
                     if time.monotonic() - started > 145:
                         job.kill(); job.wait(); break
                     if not ready.exists():
@@ -303,6 +339,12 @@ def observe(host, plugin, state, plan, block, seconds, folder, version, load_pro
                     try: records.append(json.loads(line))
                     except ValueError: pass
                 live.update(next((r for r in records if r.get('kind') == 'live_host'), {}))
+                if cpu_audit: live['cpu_audit'] = next((r for r in records if r.get('kind') == 'cpu_audit'), {})
+                if cpu_audit: live['profiled'] = profile
+                if os.environ.get('KONTRA_FAMILY_AUDIO') == '1':
+                    live['family_observation'] = True
+                    live['note_audio'] = [r for r in records if r.get('kind') == 'note_audio']
+                    live['family_audio'] = next((r for r in records if r.get('kind') == 'family_audio'), {})
                 views = [r for r in records if r.get('kind') == 'perf_view']
                 io = next((r for r in records if r.get('kind') == 'stream_io'), {})
                 rows = log_rows(capture.root)
@@ -311,11 +353,13 @@ def observe(host, plugin, state, plan, block, seconds, folder, version, load_pro
                 for stage in ['native CLAP state load', 'native CLAP state save', 'matched zero-dB master', 'bounded load/readiness wait', 'dlopen plugin']:
                     if 'FAIL: ' + stage in errors: live['host_failure'] = stage
                 saved = readback.read_bytes() if readback.exists() else b''
+                verified = verify_native_state(state, saved)
                 live.update(version=version, returncode=job.returncode, plugin_sha256=sha(plugin),
                             host_sha256=sha(host), state_sha256=hashlib.sha256(state).hexdigest(),
                             render_threads_setting='Single (private Settings default)',
                             render_threads_environment=env.get('KONTRA_THREADS'),
-                            native_state_verified=verify_native_state(state, saved),
+                            native_state_verified=verified,
+                            native_selection_sha256=hashlib.sha256(repr(native_selection(state)).encode()).hexdigest() if verified else None,
                             native_state_readback_sha256=hashlib.sha256(saved).hexdigest(),
                             audition_sha256=sha(schedule), stdout_sha256=hashlib.sha256(raw).hexdigest(),
                             perf_view=views, streaming_io=io, underruns=views[-1]['underruns'] if views else frozen_underruns(rows))
@@ -326,6 +370,16 @@ def observe(host, plugin, state, plan, block, seconds, folder, version, load_pro
                     live['host_failure'] = 'native selection readback mismatch or unavailable'
         finally:
             if job and job.poll() is None: job.kill(); job.wait()
+            if profiler:
+                if profiler.poll() is None: profiler.send_signal(signal.SIGINT)
+                live['profiler_exit_code'] = profiler.wait()
+                decoded = subprocess.run(['perf', 'script', '--ns', '-F', 'time,ip,dso',
+                                          '-i', str(folder / 'audio.perf.data')],
+                                         stdout=subprocess.PIPE, stderr=capture.stderr, text=True)
+                epoch = live.get('cpu_audit', {}).get('profile_pace_unix_ns')
+                samples = steady_leaf_samples(decoded.stdout, int(epoch)) if decoded.returncode == 0 and epoch else []
+                live['profile_samples_steady'] = len(samples)
+                (folder / 'audio-steady.perf.txt').write_text('\n'.join(samples) + '\n')
             activity.finish()
             capture.finish()
         diagnostics = folder / 'plugin-diagnostics.json'

@@ -105,13 +105,21 @@ jobs:
           components: rustfmt, clippy
       - name: System libraries (X11, OpenGL/Vulkan, ALSA, JACK)
         run: |
+          mkdir -p ui-plugin/editor-debs/partial
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          # Retain the exact packages for offline editor setup on the same runner image.
+          sudo apt-get -o Dir::Cache::archives="$PWD/ui-plugin/editor-debs" \
+            -o APT::Keep-Downloaded-Packages=true install -y --no-install-recommends \
+            dbus-x11 mesa-utils vulkan-tools ffmpeg unzip ripgrep libegl1 \
+            libfreetype6 libfontconfig1 libxext6 libxrender1 libxinerama1 \
             build-essential pkg-config \
             libx11-dev libx11-xcb-dev libxcb1-dev libxcb-icccm4-dev libxcursor-dev \
             libxkbcommon-dev libxkbcommon-x11-dev libxrandr-dev \
             libgl1-mesa-dev libgl1-mesa-dri libvulkan-dev mesa-vulkan-drivers xvfb xauth \
             libasound2-dev libjack-jackd2-dev
+          # apt owns partial/; Cargo must be able to scan the workspace.
+          sudo chmod -R a+rX ui-plugin/editor-debs
+          (cd ui-plugin/editor-debs && sha256sum *.deb > SHA256SUMS)
       - name: VST3 native shim editor lifecycle
         run: |
           for test in editor_attach editor_lifetime; do

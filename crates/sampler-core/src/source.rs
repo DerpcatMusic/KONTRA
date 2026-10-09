@@ -372,21 +372,41 @@ impl Cursor {
         }) || self.loop_range.is_some() && self.exit.is_none()
     }
 
-    pub(super) fn trace_direction(&self) -> Direction { self.direction }
+    pub(super) fn trace_direction(&self) -> Direction {
+        self.direction
+    }
 
     pub(super) fn trace_loops(&self) -> [Option<crate::SelectedLoop>; 8] {
         let convert = |range: Loop, tuning: f64| crate::SelectedLoop {
-            start: range.start, end: range.end, until_release: range.mode == LoopMode::UntilRelease,
+            start: range.start,
+            end: range.end,
+            until_release: range.mode == LoopMode::UntilRelease,
             alternating: range.shape == LoopShape::PingPong,
-            crossfade: match range.shape { LoopShape::Crossfade {frames} | LoopShape::EqualPowerCrossfade {frames} => frames, _ => 0 },
-            count: range.passes.map_or(0, |n| n.get()), tuning_bits: tuning.to_bits(),
+            crossfade: match range.shape {
+                LoopShape::Crossfade { frames } | LoopShape::EqualPowerCrossfade { frames } => {
+                    frames
+                }
+                _ => 0,
+            },
+            count: range.passes.map_or(0, |n| n.get()),
+            tuning_bits: tuning.to_bits(),
         };
-        if let Some(loops) = self.loops { loops.slots.map(|s| s.map(|s| convert(s.range, s.tuning))) }
-        else { let mut slots = [None; 8]; slots[0] = self.loop_range.map(|r| convert(r, 1.0)); slots }
+        if let Some(loops) = self.loops {
+            loops.slots.map(|s| s.map(|s| convert(s.range, s.tuning)))
+        } else {
+            let mut slots = [None; 8];
+            slots[0] = self.loop_range.map(|r| convert(r, 1.0));
+            slots
+        }
     }
 
-    pub(super) fn trace_start(&self) -> u64 { self.start as u64 }
-    pub(super) fn trace_position(&self) -> u64 { self.index(self.position as i128).map_or(self.start as u64, |i| i as u64) }
+    pub(super) fn trace_start(&self) -> u64 {
+        self.start as u64
+    }
+    pub(super) fn trace_position(&self) -> u64 {
+        self.index(self.position as i128)
+            .map_or(self.start as u64, |i| i as u64)
+    }
 
     pub(super) fn step(&self) -> f64 {
         if let Some(loops) = self.loops {
@@ -540,7 +560,9 @@ impl Cursor {
         self.starvation == Some(0)
     }
 
-    pub(super) fn holding_onset(&self) -> bool { self.cold_hold }
+    pub(super) fn holding_onset(&self) -> bool {
+        self.cold_hold
+    }
 
     /// One millisecond of native fade from the last complete resampled frame.
     /// No incomplete resampler frame is published. The cursor keeps advancing in
@@ -1031,9 +1053,10 @@ impl Cursor {
         };
         let output = &mut output[..count];
         if kernel.uses_cubic(self.step()) && output.len() >= 4 {
-            sampler_simd::dispatch(#[inline(always)] || {
-                self.run_cubic(span, width, output, envelope, gain, gains, kernel)
-            });
+            sampler_simd::dispatch(
+                #[inline(always)]
+                || self.run_cubic(span, width, output, envelope, gain, gains, kernel),
+            );
             return count;
         }
         match bank {
@@ -1104,7 +1127,11 @@ impl Cursor {
             });
             let sources = crate::resample::cubic_four(windows, phases);
             for (frame, source) in chunk.iter_mut().zip(sources) {
-                last = if source.iter().all(|value| value.is_finite()) { source } else { [0.; 2] };
+                last = if source.iter().all(|value| value.is_finite()) {
+                    source
+                } else {
+                    [0.; 2]
+                };
                 let level = envelope.constant_level().unwrap_or_else(|| envelope.next());
                 for channel in 0..2 {
                     frame[channel] += source[channel] * gain * gains[channel] * level;
@@ -1114,7 +1141,15 @@ impl Cursor {
         self.fraction = fraction;
         self.position += offset as u64;
         self.last = last;
-        self.run(&span[offset..], width, tail, envelope, gain, gains, |f, w| kernel.sample_window(f, step, w));
+        self.run(
+            &span[offset..],
+            width,
+            tail,
+            envelope,
+            gain,
+            gains,
+            |f, w| kernel.sample_window(f, step, w),
+        );
     }
 
     /// The [`Self::render_run`] frame loop over one contiguous span, with the
@@ -1246,15 +1281,23 @@ mod tests {
         use super::*;
         use crate::{Envelope, EnvelopeCurve};
         let kernel = Kernel::new(crate::ResampleQuality::Realtime);
-        let span: Vec<Frame> = (0..128).map(|i| {
-            let x = (i as f32 * 0.731).sin();
-            [x, -x * 0.321]
-        }).collect();
+        let span: Vec<Frame> = (0..128)
+            .map(|i| {
+                let x = (i as f32 * 0.731).sin();
+                [x, -x * 0.321]
+            })
+            .collect();
         for step in [MIN_STEP, 0.25, 0.8, 44100.0 / 48000.0, 1.0] {
             for fraction in [0.0, 0.123456789, 0.999999999] {
                 for len in 0..=65 {
-                    for shape in [Envelope::default(), Envelope::new(5, 2, 17, 0.1, 13).unwrap().with_curves(
-                        EnvelopeCurve::exponential(2.0).unwrap(), EnvelopeCurve::exponential(-3.0).unwrap(), EnvelopeCurve::default())] {
+                    for shape in [
+                        Envelope::default(),
+                        Envelope::new(5, 2, 17, 0.1, 13).unwrap().with_curves(
+                            EnvelopeCurve::exponential(2.0).unwrap(),
+                            EnvelopeCurve::exponential(-3.0).unwrap(),
+                            EnvelopeCurve::default(),
+                        ),
+                    ] {
                         let mut old = Playback::default().cursor(128, 48000, 48000).unwrap();
                         old.step = step;
                         old.fraction = fraction;
@@ -1263,14 +1306,39 @@ mod tests {
                         let mut new_env = old_env;
                         let mut expected = vec![[0.123, -0.567]; len];
                         let mut actual = expected.clone();
-                        old.run(&span, 5, &mut expected, &mut old_env, 0.731, [0.7, -0.2], |f,w| kernel.sample_window(f, step, w));
-                        sampler_simd::dispatch(#[inline(always)] || new.run_cubic(&span, 5, &mut actual, &mut new_env, 0.731, [0.7, -0.2], &kernel));
-                        for (a,b) in actual.iter().zip(&expected) { assert_eq!(a.map(f32::to_bits), b.map(f32::to_bits)); }
+                        old.run(
+                            &span,
+                            5,
+                            &mut expected,
+                            &mut old_env,
+                            0.731,
+                            [0.7, -0.2],
+                            |f, w| kernel.sample_window(f, step, w),
+                        );
+                        sampler_simd::dispatch(
+                            #[inline(always)]
+                            || {
+                                new.run_cubic(
+                                    &span,
+                                    5,
+                                    &mut actual,
+                                    &mut new_env,
+                                    0.731,
+                                    [0.7, -0.2],
+                                    &kernel,
+                                )
+                            },
+                        );
+                        for (a, b) in actual.iter().zip(&expected) {
+                            assert_eq!(a.map(f32::to_bits), b.map(f32::to_bits));
+                        }
                         assert_eq!(new.position, old.position);
                         assert_eq!(new.fraction.to_bits(), old.fraction.to_bits());
                         assert_eq!(new.last.map(f32::to_bits), old.last.map(f32::to_bits));
                         assert_eq!(new_env.remaining(), old_env.remaining());
-                        for _ in 0..64 { assert_eq!(new_env.next().to_bits(), old_env.next().to_bits()); }
+                        for _ in 0..64 {
+                            assert_eq!(new_env.next().to_bits(), old_env.next().to_bits());
+                        }
                     }
                 }
             }

@@ -60,7 +60,10 @@ pub trait ReadBytesExt: Read + Seek {
         })?;
         buf.resize(bytes, 0);
         self.read_exact(&mut buf).map_err(|e| {
-            ReadBytesError::IO(io::Error::new(e.kind(), format!("Read at offset {position}: required {bytes} bytes: {e}")))
+            ReadBytesError::IO(io::Error::new(
+                e.kind(),
+                format!("Read at offset {position}: required {bytes} bytes: {e}"),
+            ))
         })?;
         Ok(buf)
     }
@@ -85,7 +88,10 @@ pub trait ReadBytesExt: Read + Seek {
         };
         self.read_exact(bytes).map_err(|e| {
             let at = self.stream_position().ok();
-            io::Error::new(e.kind(), format!("Scalar read failed at cursor {at:?}: required {size} bytes: {e}"))
+            io::Error::new(
+                e.kind(),
+                format!("Scalar read failed at cursor {at:?}: required {size} bytes: {e}"),
+            )
         })?;
         Ok(match endian {
             Endian::LE => T::from_le_bytes(bytes),
@@ -212,7 +218,9 @@ pub trait ReadBytesExt: Read + Seek {
         let buf = self.read_bytes(size_field as usize * 2)?;
 
         let bytes: Vec<u16> = buf
-            .as_chunks::<2>().0.iter()
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
             .collect();
 
