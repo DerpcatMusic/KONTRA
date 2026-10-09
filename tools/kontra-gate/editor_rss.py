@@ -84,7 +84,7 @@ def observe(host, plugin, item, folder):
         values.update(uvi_imported=True, view_mode='Original', ui_scale=1.0, window_size=[1180, 760])
         settings.write_text(json.dumps(values))
         env = dict(os.environ, XDG_CONFIG_HOME=str(root/'config'))
-        for key in ('PROBE_ALLOCS','KONTRA_SIGNAL_TRACE','KONTRA_AUDIT_STACKS','PROBE_EDITOR_SETTLE', 'KONTRA_GATE_ACTIVITY'):
+        for key in ('PROBE_ALLOCS','KONTRA_SIGNAL_TRACE','KONTRA_AUDIT_STACKS','PROBE_EDITOR_SETTLE', 'KONTRA_GATE_ACTIVITY', 'KONTRA_UVI_READER'):
             env.pop(key, None)
         capture = Capture(folder, env); job = None
         try:
