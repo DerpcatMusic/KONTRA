@@ -347,6 +347,14 @@ pub fn lower_with(
     }
     let mut plan = Prepared::new(rate, pcm.clone(), regions, candidates)
         .map_err(core(Stage::Regions, "zones"))?;
+    // Port v1 settings.envelope/flex: either authored amplitude source excludes defaults.
+    plan = plan.with_fallback_envelopes(instrument.zones.iter().map(|z| {
+        z.amplitude.is_none() && !z.routes.iter().any(|r| {
+            let r = &instrument.routes[r.0];
+            r.target == ir::Target::Amplitude && matches!(instrument.modulators[r.source.0].source,
+                ir::ModulationSource::Envelope(_) | ir::ModulationSource::Breakpoints(_))
+        })
+    }).collect()).map_err(core(Stage::Envelope, "fallback envelopes"))?;
     if !instrument.source_indices.zones.is_empty() {
         let mut ids: Vec<u32> = (1..=instrument.zones.len() as u32).collect();
         for (source, runtime) in instrument.source_indices.zones.iter().enumerate() {
@@ -397,14 +405,41 @@ pub fn lower_with(
     }
     // Only source modulators that actually own an amplitude envelope get lanes.
     // Muted/unmodeled names remain findable without inventing a DSP consumer.
+    let mut envelopes = Vec::new();
     for source in &instrument.source_indices.modulators {
-        let Some(modulator) = source.runtime else { continue };
-        let runtime_group = instrument.source_indices.groups.get(source.group).copied().flatten().unwrap_or(ir::GroupRef(source.group));
-        if source.external || !instrument.zones.iter().any(|z|z.group == Some(runtime_group) && z.amplitude == Some(modulator)) { continue }
-        let ir::ModulationSource::Envelope(envelope) = &instrument.modulators[modulator.0].source else { continue };
-        let authored=lowering.adsr("source amplitude envelope",envelope,false)?;
-        plan=plan.with_group_envelope_parameters(runtime_group.0 as u32,source.group as i32,source.slot as i32,authored).map_err(core(Stage::Envelope,"source amplitude envelope"))?;
+        let Some(modulator) = source.runtime else {
+            continue;
+        };
+        let runtime_group = instrument
+            .source_indices
+            .groups
+            .get(source.group)
+            .copied()
+            .flatten()
+            .unwrap_or(ir::GroupRef(source.group));
+        if source.external
+            || !instrument
+                .zones
+                .iter()
+                .any(|z| z.group == Some(runtime_group) && z.amplitude == Some(modulator))
+        {
+            continue;
+        }
+        let ir::ModulationSource::Envelope(envelope) = &instrument.modulators[modulator.0].source
+        else {
+            continue;
+        };
+        let authored = lowering.adsr("source amplitude envelope", envelope, false)?;
+        envelopes.push((
+            runtime_group.0 as u32,
+            source.group as i32,
+            source.slot as i32,
+            authored,
+        ));
     }
+    plan = plan
+        .with_group_envelope_parameters_batch(envelopes)
+        .map_err(core(Stage::Envelope, "source amplitude envelope"))?;
     if instrument.voice_limit.is_some() || !instrument.voice_limits.is_empty() {
         let limit = |l: &ir::VoiceLimit| crate::VoiceLimit {
             voices: l.voices,
@@ -970,6 +1005,13 @@ impl Lowering<'_> {
                         unsupported(owner.clone(), Feature::ModulationRoute(route.target))
                     })?;
                     match (parameter, depth) {
+                        (parameter, ir::Depth::Normalized(d))
+                            if matches!(**processor, ir::Processor::LadderLP4(_) | ir::Processor::Daft(_)) => {
+                            (match parameter { ir::ProcessorParameter::Cutoff => ModTarget::ProcessorNativeCutoff(first),
+                                ir::ProcessorParameter::Resonance => ModTarget::ProcessorNativeResonance(first),
+                                ir::ProcessorParameter::Gain => ModTarget::ProcessorNativeGain(first),
+                                _ => return Err(unsupported(owner, Feature::ModulationRoute(route.target))), }, d)
+                        }
                         (ir::ProcessorParameter::Cutoff, ir::Depth::Pitch(p)) => {
                             (ModTarget::ProcessorCutoff(first), p.semitones())
                         }
@@ -1043,6 +1085,9 @@ impl Lowering<'_> {
                 let target = match native.target {
                     ModTarget::ProcessorCutoff(_) => ModTarget::ProcessorCutoff(index),
                     ModTarget::ProcessorResonance(_) => ModTarget::ProcessorResonance(index),
+                    ModTarget::ProcessorNativeCutoff(_) => ModTarget::ProcessorNativeCutoff(index),
+                    ModTarget::ProcessorNativeResonance(_) => ModTarget::ProcessorNativeResonance(index),
+                    ModTarget::ProcessorNativeGain(_) => ModTarget::ProcessorNativeGain(index),
                     _ => unreachable!(),
                 };
                 program.routes.push(ModRoute { target, ..native });
@@ -1128,6 +1173,7 @@ impl Lowering<'_> {
             }
             ir::ModulationSource::Lfo(lfo) => ModSource::Lfo(Lfo {
                 shape: match lfo.shape {
+                    ir::LfoShape::Zero => LfoShape::Zero,
                     ir::LfoShape::Sine => LfoShape::Sine,
                     ir::LfoShape::Triangle => LfoShape::Triangle,
                     ir::LfoShape::Square => LfoShape::Square,
@@ -1437,6 +1483,7 @@ impl Lowering<'_> {
                 Processor::LadderLP4(crate::LadderSettings { cutoff: parameter(0, d.cutoff),
                     resonance: parameter(1, d.resonance), gain: parameter(2, d.gain), record_version: d.record_version })
             },
+            ir::Processor::LoFi { bits, frequency, noise, color } => Processor::LoFi(crate::LoFiSettings { bits, frequency, noise, color }),
             ir::Processor::Rectify(mode) => Processor::Rectify(match mode {
                 ir::Rectifier::Full => Rectifier::Full,
                 ir::Rectifier::Half => Rectifier::Half,

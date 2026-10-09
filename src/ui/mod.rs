@@ -44,14 +44,20 @@ mod native_runtime;
 mod native_ui;
 mod render_art;
 mod inside;
+mod editor;
+mod editor_model;
+mod viz;
+mod chain;
 mod part;
 pub(crate) mod picker;
 mod rack;
 mod spectrum;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 #[cfg(test)]
 mod v2_tests;
+#[cfg(all(test, feature = "shots"))]
+mod widget_gate;
 mod theme;
 
 use crate::library;
@@ -67,6 +73,12 @@ use std::time::{Duration, Instant};
 use theme::*;
 
 pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
+    let mut config = mui::diagnostics::Config::new("kontra", env!("CARGO_PKG_VERSION"));
+    config.build = option_env!("APP_GIT_REVISION").unwrap_or("unknown").into();
+    config.mui_revision = "dcf0796082feec053af1418e3a38a302ee61da0a".into();
+    let reporter = mui::diagnostics::Reporter::start(config)
+        .inspect_err(|error| eprintln!("KONTRA MUI reporting: {error}"))
+        .ok();
     let meters = Arc::new(Meters::default());
     let computer = Arc::new(computer::Computer::default());
     #[cfg(target_os = "linux")]
@@ -91,7 +103,8 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
     let parent_picker = Arc::clone(&picker);
     let last_size = AtomicU64::new(0);
     let editor = MuiEditor::new(params, theme::ui(), size, build)
-        .on_log(|line| {
+        .on_log(move |line| {
+            let _reporter = &reporter;
             let failed = line.contains("unavailable") || line.contains("failed") || line.contains("panic");
             crate::diagnostics::event(if failed { crate::diagnostics::LogLevel::Warning } else { crate::diagnostics::LogLevel::Info },
                 "renderer", "native_window", serde_json::json!({"stage":"renderer", "reason":line}));
@@ -121,6 +134,7 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
             zoom_params.shared.libraries.settings().editor_scale()
         })
         .on_close(move || {
+            close_params.shared.editor_watch.store(usize::MAX, Ordering::Relaxed);
             close_picker.close();
             close_params.shared.libraries.flush_settings();
         })
@@ -422,6 +436,7 @@ struct EditorState {
     faces: HashMap<usize, part::Face>,
     /// Each part's views beside its interface.
     inside: HashMap<usize, inside::State>,
+    editor: editor::State,
     /// The spectrum on screen, and the strip it shows this frame
     /// ([`crate::plugin::Scope::source`]; 0 for none).
     analyser: spectrum::Analyser,
@@ -947,6 +962,7 @@ fn build(
         report: Default::default(),
         faces: Default::default(),
         inside: Default::default(),
+        editor: Default::default(),
         analyser: Default::default(),
         scope: 0,
         corner: None,
@@ -960,6 +976,7 @@ fn build(
             state.last_poll = Instant::now();
         }
         let p = bridge.params().clone();
+        p.shared.editor_watch.store(usize::MAX,Ordering::Relaxed);
         let mut selection = read(&p.selection).clone();
         p.shared.ensure_parts(selection.parts.len());
         let mut view = shown(&p.shared.view);

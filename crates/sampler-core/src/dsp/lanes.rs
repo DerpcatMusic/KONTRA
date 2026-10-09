@@ -214,6 +214,7 @@ pub(crate) fn process(
             PreparedProcessor::Delay { .. }
             | PreparedProcessor::Compressor(_)
             | PreparedProcessor::Decimate(_)
+            | PreparedProcessor::LoFi(_)
             | PreparedProcessor::Daft(_)
             | PreparedProcessor::LadderLP4 { .. }
             | PreparedProcessor::Branch { .. } => {

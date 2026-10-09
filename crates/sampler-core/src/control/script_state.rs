@@ -52,6 +52,24 @@ pub struct ScriptStateBuffer {
 }
 
 impl Runtime {
+    fn script_state_context(&self, instance: ScriptInstanceId) -> crate::behavior::PlanContext {
+        if self.performance_state.current.is_empty() {
+            return crate::behavior::PlanContext::Bare;
+        }
+        // Persistence uses the same instrument domain and source stage as listeners.
+        crate::behavior::PlanContext::Control(crate::control::ControlEvent {
+            performance: 0,
+            origin: crate::ChannelAddress {
+                protocol: crate::Protocol::Native,
+                port: 0,
+                group: 0,
+                channel: 0,
+            },
+            channels: 1,
+            stage: usize::from(instance.0),
+            interaction: crate::WidgetInteraction::default(),
+        })
+    }
     fn script_state_callback_outcome(
         &self,
         plan: PlanId,
@@ -216,11 +234,13 @@ impl Runtime {
                 return Err(Error::InvalidInput);
             }
             prior_instance = Some(instance);
-            self.validate_plan_context(plan, callback.program, crate::behavior::PlanContext::Bare)?;
+            self.validate_plan_context(plan, callback.program, self.script_state_context(instance))?;
         }
         for callback in &mut state.callbacks {
+            let instance = self.plans.get(plan.0).unwrap().prepared.programs[callback.program]
+                .script_instance.unwrap();
             callback.behavior = Some(
-                self.admit_plan_context(plan, callback.program, crate::behavior::PlanContext::Bare)
+                self.admit_plan_context(plan, callback.program, self.script_state_context(instance))
                     .expect("preflighted persistence callback admission"),
             );
             callback.outcome = None;

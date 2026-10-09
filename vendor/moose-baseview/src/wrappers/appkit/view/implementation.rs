@@ -1,25 +1,26 @@
 use super::*;
 use crate::wrappers::appkit::new_class_name;
 use objc2::__framework_prelude::{AnyClass, AnyObject, Bool, Sel};
-use objc2::ffi::objc_disposeClassPair;
 use objc2::rc::Retained;
 use objc2::runtime::ClassBuilder;
 use objc2::{msg_send, sel, ClassType};
 use objc2_app_kit::{NSEvent, NSView};
 use objc2_foundation::{NSArray, NSAttributedString, NSRange, NSRect};
+use std::any::TypeId;
 use std::ffi::c_void;
+use std::sync::Mutex;
 
-/// # Safety
-///
-/// This class is going to be destroyed when its first instance gets deallocated.
-///
-/// The returned reference must NOT be used after that point.
-pub unsafe fn create_view_class<V: ViewImpl>() -> &'static AnyClass {
-    // Use unique class names so that there are no conflicts between different
-    // instances. The class is deleted when the view is released. Previously,
-    // the class was stored in a OnceCell after creation. This way, we didn't
-    // have to recreate it each time a view was opened, but now we don't leave
-    // any class definitions lying around when the plugin is closed.
+// AccessKit caches subclasses of our view class for the process lifetime.
+// Share one base class per Rust implementation and image, without disposing its superclass.
+static VIEW_CLASSES: Mutex<Vec<(TypeId, &'static AnyClass)>> = Mutex::new(Vec::new());
+
+pub fn create_view_class<V: ViewImpl>() -> &'static AnyClass {
+    let mut classes = VIEW_CLASSES.lock().unwrap_or_else(|e| e.into_inner());
+    let view_type = TypeId::of::<V>();
+    if let Some((_, class)) = classes.iter().find(|(kind, _)| *kind == view_type) {
+        return class;
+    }
+    // UUID names also keep independent plugin images' Rust callbacks separate.
     let class_name = new_class_name("BaseviewNSView_");
 
     let Some(mut class) = ClassBuilder::new(&class_name, NSView::class()) else {
@@ -198,20 +199,18 @@ pub unsafe fn create_view_class<V: ViewImpl>() -> &'static AnyClass {
     }
     class.add_ivar::<*mut c_void>(BASEVIEW_STATE_IVAR);
 
-    class.register()
+    let class = class.register();
+    classes.push((view_type, class));
+    class
 }
 
 pub extern "C-unwind" fn dealloc<V: ViewImpl>(this: &mut AnyObject, _sel: Sel) {
     let class = this.class();
     View::<V>::free_inner(this, class);
 
-    if let Some(superclass) = class.superclass() {
-        let () = unsafe { msg_send![super(this, superclass), dealloc] };
-    }
-
-    // SAFETY: This is safe as long as nobody holds a reference to this class.
-    // On the Baseview side, this is enforced by the safety contract in `create_view_class`
-    unsafe { objc_disposeClassPair(class as *const _ as *mut _) }
+    // Dispatch from the class whose implementation this is, even if the view
+    // acquired an accessibility/KVO subclass before being released.
+    let () = unsafe { msg_send![super(this, NSView::class()), dealloc] };
 }
 
 extern "C-unwind" fn display_link_fired<V: ViewImpl>(this: &View<V>, _: Sel, _link: &AnyObject) {

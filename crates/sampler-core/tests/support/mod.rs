@@ -7,6 +7,7 @@ struct Counting;
 thread_local! {
     static COUNTING: Cell<bool> = const { Cell::new(false) };
     static CALLS: Cell<usize> = const { Cell::new(0) };
+    static ALLOCATED: Cell<usize> = const { Cell::new(0) };
 }
 fn count() {
     if COUNTING.get() {
@@ -21,6 +22,9 @@ fn count() {
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         count();
+        if COUNTING.get() {
+            ALLOCATED.set(ALLOCATED.get() + layout.size());
+        }
         unsafe { System.alloc(layout) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
@@ -52,4 +56,23 @@ pub fn without_heap(f: impl FnOnce()) {
         0,
         "callback allocated or freed memory"
     );
+}
+
+#[allow(
+    dead_code,
+    reason = "only schema sizing fixtures measure requested bytes"
+)]
+pub fn allocated_bytes(f: impl FnOnce()) -> usize {
+    struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            COUNTING.set(false);
+        }
+    }
+    let before = ALLOCATED.get();
+    COUNTING.set(true);
+    let guard = Guard;
+    f();
+    drop(guard);
+    ALLOCATED.get() - before
 }
