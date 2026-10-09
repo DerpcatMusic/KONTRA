@@ -41,7 +41,10 @@ borrowed or gathered on the stack, and no callback allocation was added.
 - Integration checks: resample 19, source 10, paged_render 16 — all passed.
   The v1 null fixture covers 9 ratios × 4 callback partitions × 256 stereo
   frames (18,432 scalar samples): bit-identical, zero measured heap calls.
-- Root compile and quiet A/B: pending completion.
+- Root CI `cargo test --profile ci --lib --no-run`: passed.
+- Frozen release probe and observer self-check: passed; source `55ea2797`.
+- Quiet A/B: all 18 original-cell cold/warm executions admitted; zero
+  render/event heap calls and zero stream underruns in all three engines.
 
 The runtime null fixture compares a generated stereo waveform with an independent
 literal v1 scalar Hermite oracle at dyadic ratios 0.25–8x and callback partitions
@@ -58,9 +61,39 @@ One paired matrix is sufficient unless it leaves the verdict unclear. Timed runs
 follow W13's handback; profiler-attribution estimates are not scored timings.
 No PCM or decrypted library payload is persisted.
 
-READY and full CPU/native parity are not claimed until the required checks
-and measurements are complete. Native Morph/Horns capture paths have been
-requested from the coordinator; the available reference folder lacks these
-programs.
+## Quiet steady-block timing
 
-NEXT: finish targeted/root checks, then take the first-ready quiet slot after W13.
+Microseconds per block; each entry is p50 / p99. Source baseline is `5fc362f3`,
+frozen v1 is `0cb7a8a0` plus verified adapter `42a0ae91`, candidate is
+`55ea2797` (runtime `22e44927`). This comparison includes the earlier prepared
+bank coverage change in `49401fce` as well as the v1 fused port. The original
+sound-seam audit schedule, 48 kHz and realtime streaming are unchanged.
+
+| Cell | Cache | v1 | Before | Candidate |
+|---|---|---:|---:|---:|
+| Horns64 | cold | 51.411 / 86.992 | 557.300 / 718.324 | 569.711 / 687.843 |
+| Horns64 | warm | 46.581 / 89.792 | 552.231 / 687.723 | 561.761 / 723.074 |
+| Horns256 | cold | 166.894 / 263.615 | 2140.192 / 2613.070 | 2310.354 / 2619.650 |
+| Horns256 | warm | 162.843 / 299.656 | 2131.651 / 2525.829 | 2234.043 / 2614.660 |
+| Morph256 | cold | 40.151 / 57.201 | 676.273 / 836.567 | 373.368 / 485.099 |
+| Morph256 | warm | 43.431 / 55.761 | 659.443 / 818.046 | 365.777 / 461.709 |
+
+Morph256 improves p50 by 44.5–44.8% and p99 by 42.0–43.6%. Horns64 p50
+regresses 1.7–2.2%; its p99 improves cold but regresses warm. Horns256 p50
+regresses 4.8–8.0%, with p99 also higher. V2 remains 8.4–13.8x v1 at steady
+p50. Peak voices match across engines (Horns192, Morph32), but v1/v2 mean
+active-voice lifetimes differ; these are product comparisons, not same-output
+full-graph kernel comparisons. All-block quantiles, deadline misses, admission
+and cache receipts remain in the numeric ledger.
+
+**CPU HOLD:** do not route the whole candidate as READY. The v1 interpolation
+null and RT checks pass, but the Horns median regression needs resolution and
+whole-v1 CPU/native-output parity is not established. No native Morph/Horns
+captures were available in the known reference folder.
+
+The W9 quiet window was drained and handed directly to W8 at 13:26:43Z.
+`SUMMARY.json` and `RELEASE.json` record the measured source and zero own jobs,
+waiters, quiet files or active units. No PCM was persisted.
+
+NEXT: failing work-budget fixture for repeated native rate resolution in run admission;
+cache the stable rate inside each bounded run after W8 drains.
