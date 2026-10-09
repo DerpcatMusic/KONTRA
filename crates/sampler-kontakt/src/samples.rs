@@ -422,18 +422,14 @@ impl Seek for FileAt<'_> {
 fn archive_member(path: &Path) -> Option<(PathBuf, String)> {
     archive_member_where(path, Path::is_file)
 }
-fn archive_member_where(path: &Path, exists: impl Fn(&Path) -> bool) -> Option<(PathBuf, String)> {
-    path.ancestors().skip(1).find_map(|parent| {
-        let archive = parent
-            .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("nkx") || e.eq_ignore_ascii_case("nkr"));
-        let member = path
-            .strip_prefix(parent)
-            .ok()?
-            .to_string_lossy()
-            .replace('\\', "/");
-        (archive && exists(parent)).then(|| (parent.into(), member))
-    })
+// Port from v1 0cb7a8a0:src/import.rs: format only an actual archive member.
+fn archive_member_where(path: &Path, mut is_file: impl FnMut(&Path) -> bool) -> Option<(PathBuf, String)> {
+    for parent in path.ancestors().skip(1) {
+        if parent.extension().is_some_and(|e| e.eq_ignore_ascii_case("nkx") || e.eq_ignore_ascii_case("nkr")) && is_file(parent) {
+            return Some((parent.to_path_buf(), path.strip_prefix(parent).ok()?.to_string_lossy().replace('\\', "/")));
+        }
+    }
+    None
 }
 
 fn walk(dir: &Path, found: &mut impl FnMut(PathBuf)) {

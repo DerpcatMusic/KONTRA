@@ -1,8 +1,10 @@
 //! Bounded authored-image preparation. PNG strips are read a scanline at a time.
+use crate::support::MutexExt;
 use moose::mui::mui::scene::Image;
 use sampler_ui_ir as ir;
 use std::io::Cursor;
 const PIXELS: usize = 8 << 20;
+static DECODE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn source_rect(meta: ir::ImageMeta, frame: usize, width: u32, height: u32,
     window: Option<[u32;4]>) -> Option<[u32;4]> {
@@ -135,6 +137,36 @@ pub(super) fn png(
 mod tests {
     use super::*;
     #[test]
+    fn poisoned_codec_permit_keeps_valid_original_art_decodable() {
+        const CHILD: &str = "KONTRA_CODEC_POISON_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "ui::picture_decode::tests::poisoned_codec_permit_keeps_valid_original_art_decodable", "--nocapture"])
+                .env(CHILD, "1").env("KONTRA_DISABLE_NETWORK", "1").output().unwrap();
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            return;
+        }
+        assert!(std::panic::catch_unwind(|| {
+            let _guard = DECODE.lock().unwrap();
+            panic!("synthetic codec permit fault");
+        }).is_err());
+        assert!(DECODE.is_poisoned());
+        let pixels = [9, 99, 199, 127].repeat(4);
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut bytes, 2, 2);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder.write_header().unwrap().write_image_data(&pixels).unwrap();
+        }
+        for _ in 0..2 {
+            let image = decode(&bytes, Default::default(), 0, [2, 2], None, || false).unwrap();
+            assert_eq!((image.width, image.height), (2, 2));
+            assert_eq!(image.rgba.as_ref(), pixels.as_slice());
+        }
+        assert!(!DECODE.is_poisoned());
+    }
+    #[test]
     fn extracts_only_requested_strip_frame_and_preserves_alpha() {
         let mut bytes = Vec::new();
         {
@@ -206,8 +238,7 @@ pub(super) fn decode(
     window: Option<[u32; 4]>,
     canceled: impl Fn() -> bool,
 ) -> Option<Image> {
-    static DECODE: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _permit = DECODE.lock().ok()?;
+    let _permit = DECODE.lock_unpoisoned();
     if bytes.starts_with(b"\x89PNG") {
         return png(bytes, meta, frame, target, window, canceled);
     }

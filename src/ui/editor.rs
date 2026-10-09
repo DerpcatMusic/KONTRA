@@ -4,7 +4,7 @@
 
 use super::viz::Phase;
 use super::viz::{self, Handle, Model};
-use super::{Cx, chain, spectrum, theme::*};
+use super::{Cx, chain, lock, spectrum, theme::*};
 use crate::sound::edits::Tap;
 use crate::sound::edits::{Override, Param};
 use moose::mui::mui::geometry::Path as DrawPath;
@@ -120,7 +120,7 @@ impl Curves {
 }
 
 /// Unit coordinates to a canvas of `s`, inset so handles are not clipped.
-fn place(s: Size, [x, y]: [f32; 2]) -> Point {
+pub(super) fn place(s: Size, [x, y]: [f32; 2]) -> Point {
     let pad = SPACE;
     Point::new(
         pad + f64::from(x) * (s.width - 2. * pad).max(1.),
@@ -128,12 +128,12 @@ fn place(s: Size, [x, y]: [f32; 2]) -> Point {
     )
 }
 
-fn line(s: Size, points: &[[f32; 2]]) -> DrawPath {
+pub(super) fn line(s: Size, points: &[[f32; 2]]) -> DrawPath {
     DrawPath::polyline(points.iter().map(|&p| place(s, p)), false)
 }
 
 /// `points` closed down to the floor.
-fn area(s: Size, points: &[[f32; 2]]) -> DrawPath {
+pub(super) fn area(s: Size, points: &[[f32; 2]]) -> DrawPath {
     let (Some(first), Some(last)) = (points.first(), points.last()) else {
         return DrawPath::polyline([], true);
     };
@@ -163,7 +163,7 @@ fn curves(
     instrument: &Arc<sampler_ir::Instrument>,
 ) -> (Key, Arc<Curves>) {
     let atoms = cx.p.shared.part(slot).expect("loaded editor part");
-    let bindings = atoms.engine_bindings.lock().unwrap().clone();
+    let bindings = lock(&atoms.engine_bindings).clone();
     let base = atoms.control_values();
     let edits = &cx.selection.parts[slot].edits;
     let model = Model::new(

@@ -2,6 +2,7 @@
 //! enter rendering; preparation resolves addresses to existing control owners.
 use crate::{ControlId, EngineParameterAddress, Error};
 use std::collections::BTreeMap;
+pub use sampler_ir::ProcessorParameter as ParameterRole;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ParameterScope {
@@ -49,6 +50,8 @@ pub struct ParameterDescriptor {
     pub address: ParameterAddress,
     pub control: ControlId,
     pub name: String,
+    /// Semantic processor field, independent of display labels.
+    pub role: ParameterRole,
     pub unit: ParameterUnit,
     pub range: [f64; 2],
     pub default: f64,
@@ -193,5 +196,20 @@ impl crate::Prepared {
         }
         self.parameter_registry = registry;
         Ok(self)
+    }
+}
+
+impl crate::Runtime {
+    /// Immutable schema for an off-audio reader of the addressed generation.
+    pub fn parameter_registry(
+        &self,
+        plan: crate::PlanId,
+    ) -> Result<&PreparedParameterRegistry, Error> {
+        Ok(&self
+            .plans
+            .get(plan.0)
+            .ok_or(Error::StaleHandle)?
+            .prepared
+            .parameter_registry)
     }
 }

@@ -14,7 +14,7 @@ const SLOTS: usize = 16;
 ///
 /// Type:           Chunk<StructuredObject>
 /// SerType:        0x3B
-/// Versions:       0x10, 0x12 (0x11 unsupported)
+/// Versions:       0x10, 0x11, 0x12, 0x13
 /// Kontakt 7:      BParameterArraySerBParInternalMod16
 /// KontaktIO:      BParamArray<16>
 #[derive(Debug)]

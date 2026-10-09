@@ -36,6 +36,41 @@ pub struct Environment {
 /// Steps one `on init` may take before evaluation is abandoned.
 pub const INIT_FUEL: u64 = 200_000_000;
 
+/// Detect suspension before evaluating a callback, so its prefix is never replayed.
+fn may_suspend<'a>(hir: &'a Hir, body: &'a [Stmt], async_wait_suspends: bool) -> bool {
+    let mut pending = vec![body];
+    let mut seen = vec![false; hir.functions.len()];
+    while let Some(body) = pending.pop() {
+        for stmt in body {
+            match &stmt.kind {
+                StmtKind::Builtin(builtin, _) => {
+                    if matches!(builtin, Builtin::Wait | Builtin::WaitTicks)
+                        || async_wait_suspends && *builtin == Builtin::WaitAsync
+                    {
+                        return true;
+                    }
+                }
+                StmtKind::If(_, yes, no) => {
+                    pending.push(yes);
+                    pending.push(no);
+                }
+                StmtKind::While(_, body) => pending.push(body),
+                StmtKind::Select(_, cases) => {
+                    pending.extend(cases.iter().map(|case| case.body.as_slice()));
+                }
+                StmtKind::Call(id) => {
+                    let index = id.0 as usize;
+                    if !std::mem::replace(&mut seen[index], true) {
+                        pending.push(&hir.functions[index].body);
+                    }
+                }
+                StmtKind::Assign(_, _) | StmtKind::Fill(_, _) => {}
+            }
+        }
+    }
+    false
+}
+
 pub fn int_arith(op: Arith, a: i32, b: i32) -> i32 {
     use sampler_core::IntegerBinary as I;
     match op {
@@ -231,25 +266,33 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
         .iter()
         .find(|c| c.kind == CallbackKind::PersistenceChanged)
     {
-        #[cfg(feature="scan")] crate::scan::stage("persistence_changed");
-        let result=e.block(&cb.body);
-        #[cfg(feature="scan")] crate::scan::phase("persistence_changed",result.as_ref().err());
-        e.st.model.persistence_completion = match result {
-            Ok(_) => model::PersistenceCompletion::Completed,
-            Err(f) => {
-                let category = if e.fuel == 0 {
-                    model::EvaluationFailure::Budget
-                } else {
-                    model::EvaluationFailure::InvalidValue
-                };
-                e.warn(f.span, "on persistence_changed did not complete".to_owned());
-                model::PersistenceCompletion::Failed {
-                    category,
-                    offset: f.span.start,
-                    builtin: f.builtin,
+        if may_suspend(hir, &cb.body, true) {
+            e.st.model.persistence_completion = model::PersistenceCompletion::Scheduled;
+            #[cfg(feature = "scan")]
+            crate::scan::phase("persistence_scheduled", None);
+        } else {
+            #[cfg(feature = "scan")]
+            crate::scan::stage("persistence_changed");
+            let result = e.block(&cb.body);
+            #[cfg(feature = "scan")]
+            crate::scan::phase("persistence_changed", result.as_ref().err());
+            e.st.model.persistence_completion = match result {
+                Ok(_) => model::PersistenceCompletion::Completed,
+                Err(f) => {
+                    let category = if e.fuel == 0 {
+                        model::EvaluationFailure::Budget
+                    } else {
+                        model::EvaluationFailure::InvalidValue
+                    };
+                    e.warn(f.span, "on persistence_changed did not complete".to_owned());
+                    model::PersistenceCompletion::Failed {
+                        category,
+                        offset: f.span.start,
+                        builtin: f.builtin,
+                    }
                 }
-            }
-        };
+            };
+        }
     }
     if let Some(profile) = &e.profile {
         eprintln!(
@@ -1428,7 +1471,14 @@ impl Eval<'_> {
             }
             WaitAsync => {
                 let id = self.int(args, 0)?;
-                if let Some(status) = self.st.midi_object.finish_initial(self.env.slot, id) {
+                // Init completes MIDI jobs synchronously; only clock waits defer their callback.
+                let deferred = self.hir.callbacks.iter()
+                    .find(|c| c.kind == CallbackKind::AsyncComplete)
+                    .is_some_and(|c| may_suspend(self.hir, &c.body, false));
+                if let Some(status) = self.st.midi_object.finish_initial(self.env.slot, id, deferred) {
+                    if deferred {
+                        return Ok(V::I(0));
+                    }
                     // ponytail: cap nested init completions at eight; use an interpreter trampoline if deeper nesting is needed.
                     if self.async_depth >= 8 {
                         return fault(span, "async completion nesting limit");
