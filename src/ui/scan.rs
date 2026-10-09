@@ -50,6 +50,31 @@ fn observed_font_styles(styles:&[ir::TextStyle],ready:&std::collections::BTreeSe
     }).count()
 }
 
+fn settle_snapshot(core: &mut V2Core, scripts: &mut crate::sound::ScriptUi, faces: &mut Vec<ir::Interface>) -> Vec<(usize, sampler_core::Outcome)> {
+    let mut changed = false;
+    let mut faults = Vec::new();
+    // Frozen v1 processes ten 480-sample ticks before taking the face.
+    for _ in 0..10 {
+        let mut remaining = 480;
+        while remaining > 0 {
+            let frames = remaining.min(crate::sound::MAX_BLOCK);
+            core.begin_block(&crate::sound::BlockInfo { frames, offline: true, ..Default::default() });
+            core.render(frames);
+            core.take_effects(0, &mut |instance, effect| {
+                changed |= scripts.apply(instance, effect);
+                true
+            });
+            faults.extend(core.scan_runtime_faults(0));
+            core.end_block(frames, &mut |_| true);
+            remaining -= frames;
+        }
+    }
+    if changed || scripts.uvi.is_some() {
+        *faces = scripts.interfaces();
+    }
+    faults
+}
+
 fn render(
     face: &ir::Interface,
     path: &Path,
@@ -555,6 +580,9 @@ pub fn one(id: &str, out: &Path) -> Value {
         let sample_resident_bytes = loaded.stream.as_ref().map(|s| s.resident_bytes());
         let mut core = V2Core::with_parts(1, 48000.);
         core.install(0, loaded.part);
+        let settle_started = Instant::now();
+        let mut runtime_faults = settle_snapshot(&mut core, &mut loaded.scripts, &mut loaded.interfaces);
+        let snapshot_settle_ms = settle_started.elapsed().as_secs_f64() * 1000.;
         let mut values = ir_view::Values::new();
         for face in &loaded.interfaces {
             for w in &face.widgets {
@@ -639,7 +667,6 @@ pub fn one(id: &str, out: &Path) -> Value {
         };
         let sample_zone_count=loaded.instrument.as_ref().map(|i|i.zones.len());
         let family_native = loaded.instrument.as_ref().map(|i|coverage::native_family(i,pick,keyswitch)).unwrap_or(json!({"basis":"native-reader","unknown":"instrument-absent"}));
-        let mut runtime_faults = Vec::new();
         let mut heard = false;
         // Diagnostic repeats stay opt-in so gate load/onset timings keep their protocol.
         let family_repeats = std::env::var("KONTRA_SCAN_FAMILY_REPEATS").ok().and_then(|v|v.parse::<usize>().ok()).unwrap_or(0).min(128);
@@ -716,7 +743,7 @@ pub fn one(id: &str, out: &Path) -> Value {
             "load_path":if is_uvi {if lua.is_some(){"scripted-worker"}else{"offline-loader"}}else{"kontakt-v2-loader"},
             "sample_zone_count":sample_zone_count,"decoded_zone_count":loaded.report.decoded.zones,"sample_count":loaded.report.decoded.samples,"sample_resident_bytes":sample_resident_bytes,"underruns":core.problems(0).underruns,
             "keyswitch":keyswitch,"selected_articulation":core.articulation(0),"fallback_note":pick_source=="fallback","zero_zone_reason":if sample_zone_count==Some(0) {Some("unknown")} else {None},"pick_source":pick_source,"native_valid_keys":native_valid,"native_key_conflicts":native.as_ref().map(|n|n.native_key_conflicts),"native_preferred_note":candidate.filter(|(k,_)|native_valid.contains(k)),
-            "program":program,"loaded":true,"source":if is_uvi {"uvi"}else{"kontakt"},"script_errors":script_errors,"symbols":symbols,"views":views,"plays_note":if heard {"yes"}else{"silent"},"pick":pick,"load_ms":start.elapsed().as_secs_f64()*1000.}));
+            "program":program,"loaded":true,"source":if is_uvi {"uvi"}else{"kontakt"},"script_errors":script_errors,"symbols":symbols,"views":views,"plays_note":if heard {"yes"}else{"silent"},"pick":pick,"snapshot_settle_ms":snapshot_settle_ms,"load_ms":start.elapsed().as_secs_f64()*1000.}));
         // Keep the streaming owner alive throughout the note probe.
         loaded.stream.take();
     }
@@ -820,6 +847,38 @@ mod font_observation_tests {
         ready.insert(0); // First page.
         ready.insert(1); // Second page, whose preparation no longer holds font 0.
         assert_eq!(observed_font_styles(&styles,&ready),2);
+    }
+
+    #[test]
+    #[ignore = "requires the owned translation manifest and authored Areia library"]
+    fn areia_scanner_snapshot_applies_listener_before_face_capture() {
+        let started = Instant::now();
+        let manifest = std::fs::read_to_string("/dev/shm/kontra-w3-translation/kontakt.tsv")
+            .expect("owned translation manifest required");
+        let path = manifest.lines().find_map(|line| {
+            let fields: Vec<_> = line.split('\t').collect();
+            fields.iter().any(|s| s.contains("Areia")).then(|| fields.iter().find(|s| s.ends_with(".nki")).copied()).flatten()
+        }).expect("Areia fixture required");
+        let mut loaded = V2Loader.prepare(&LoadRequest {
+            path: path.into(), sample_rate: 48000., dynamics_start: Some(100), threads: None,
+            ..Default::default()
+        }, &mut |_| {}, &|| false).unwrap_or_else(|_| panic!("production preparation failed; authored diagnostics withheld"));
+        let model = loaded.scripts.views[0].model();
+        let warning = model.interface.widgets[6].name.clone();
+        let articulation = model.interface.widgets[90].name.clone();
+        let hidden = |faces: &[ir::Interface], name: &str| faces.iter().flat_map(|face| &face.widgets).find(|w| w.name == name).expect("numeric fixture widget absent").hidden;
+        assert!(!hidden(&loaded.interfaces, &warning));
+        assert!(hidden(&loaded.interfaces, &articulation));
+        let mut core = V2Core::with_parts(1, 48000.);
+        core.install(0, loaded.part);
+        let settle_started = Instant::now();
+        let faults = settle_snapshot(&mut core, &mut loaded.scripts, &mut loaded.interfaces);
+        println!("areia_snapshot_scan_ms={:.3} settle_ms={:.3}", started.elapsed().as_secs_f64()*1000., settle_started.elapsed().as_secs_f64()*1000.);
+        assert!(hidden(&loaded.interfaces, &warning), "warning remains visible in scanner snapshot");
+        assert!(!hidden(&loaded.interfaces, &articulation), "articulation list remains hidden in scanner snapshot");
+        assert_eq!(faults.len(), 0);
+        let p=core.problems(0);
+        assert_eq!([p.offline_failures,p.stream_capacity,p.stream_disconnected,p.stream_failed,p.stream_errors,p.underruns], [0;6]);
     }
 }
 
