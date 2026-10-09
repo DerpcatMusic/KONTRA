@@ -2161,6 +2161,39 @@ mod tests {
         assert!(dry > 1. && wet < dry * 0.01, "Tone must filter the part output: dry={dry}, wet={wet}");
     }
 
+    #[test]
+    #[cfg(feature = "library-access")]
+    fn w10_clear_uvi_bank_catalog_load_and_play_end_to_end() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wav = tmp.path().join("note.wav");
+        sine(&wav);
+        let bank = tmp.path().join("Clear.ufs");
+        crate::library::tests::clear_sample_bank(&bank, &std::fs::read(&wav).unwrap());
+        std::fs::remove_file(wav).unwrap(); // Only the embedded bank sample can satisfy the loader.
+        let roots = [crate::library::Root { path: tmp.path().to_string_lossy().into_owned(), single: false }];
+        let (shelf, files) = crate::library::scan(&roots, &crate::library::Progress::default()).unwrap();
+        assert_eq!((shelf.libraries.len(), files.len()), (1, 1));
+        assert!(shelf.bank_status.is_empty(), "clear programs must not be marked as blocked");
+        let mut core = V2Core::with_parts(1, 48000.);
+        core.install(0, load(&files[0]));
+        core.begin_block(&BlockInfo { frames: 128, offline: true, ..Default::default() });
+        core.play(0, Event::midi1(0x90, 60, 127));
+        let mut peak = 0.0f32;
+        for _ in 0..32 {
+            let out = core.render(128);
+            for sample in out.buses[0].iter().flat_map(|channel| &channel[..128]) {
+                assert!(sample.is_finite());
+                peak = peak.max(sample.abs());
+            }
+        }
+        assert!(peak > 0.01, "clear bank must reach product audio output: {peak}");
+        core.play(0, Event::midi1(0x80, 60, 0));
+        for _ in 0..600 { core.render(128); }
+        assert_eq!(core.voices().active, 0, "release must retire the clear-bank note");
+        assert_eq!(core.problems(0).underruns, 0);
+        eprintln!("CLEAR_UVI_END_TO_END peak={peak} underruns=0 voices_after_release=0");
+    }
+
     fn sine(path: &Path) {
         let spec = hound::WavSpec { channels: 1, sample_rate: 48000, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
         let mut w = hound::WavWriter::create(path, spec).unwrap();

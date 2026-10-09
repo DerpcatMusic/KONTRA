@@ -368,3 +368,50 @@ fn w10_uvi_dangling_library_paths_survive_scan_and_show_root_reasons() {
         assert!(h.ui.scene().unwrap().surface(&format!("root-bank-problem-{n}")).is_some(), "root {n} must report its skipped paths");
     }
 }
+
+#[test]
+#[cfg(feature = "library-access")]
+fn w10_uvi_catalogued_protected_programs_keep_rows_and_show_bank_reason() {
+    let tmp = tempfile::tempdir().unwrap();
+    let bank = tmp.path().join("Owned.ufs");
+    crate::library::tests::clear_bank(&bank);
+    let mut bytes = std::fs::read(&bank).unwrap();
+    let member = bytes.windows(4).position(|x| x == 0x675850e4u32.to_le_bytes()).unwrap();
+    bytes[member + 276] = 2;
+    std::fs::write(&bank, bytes).unwrap();
+    assert!(sampler_uvi::Bank::open(&bank).is_err(), "authored bank is catalogued but cannot load");
+    let roots = vec![crate::library::Root { path: tmp.path().to_string_lossy().into_owned(), single: false }];
+    let (shelf, files) = crate::library::scan(&roots, &crate::library::Progress::default()).unwrap();
+    assert_eq!((shelf.libraries.len(), files.len()), (1, 1));
+    assert_eq!(shelf.bank_status.get(&bank).map(String::as_str), Some("1 of 1 presets need content access before they can load."));
+    let p = Arc::new(SamplerParams::new());
+    p.shared.libraries.edit(|s| s.roots = roots);
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        view.shelf = Arc::new(shelf);
+        view.files = Arc::new(files);
+        view.scanned = p.shared.libraries.wanted();
+    }
+    for (width, height) in [(900., 600.), (1180., 760.)] {
+        let mut h = Harness::new(&p, width, height);
+        h.press("bank-uvi");
+        h.press("library-0");
+        h.idle(30);
+        assert!(h.ui.scene().unwrap().surface("instrument-0").is_some(), "catalogued preset stays visible");
+        let status = h.ui.scene().unwrap().surface("uvi-bank-status-0");
+        assert!(status.is_some(), "selected bank must show the access reason beside its presets");
+        let status = status.unwrap().frame;
+        let badge = h.ui.scene().unwrap().surface("library-0-status").unwrap().frame;
+        let viewport = h.ui.scene().unwrap().surface("browser-sources-true").unwrap().frame;
+        assert!(badge.y + badge.size.height <= viewport.y + viewport.size.height + 0.5, "library status must stay visible: {badge:?} {viewport:?}");
+        assert!(status.size.height > 0. && status.y + status.size.height < height, "status must fit: {status:?}");
+        #[cfg(feature = "shots")]
+        if let Some(out) = std::env::var_os("KONTRA_UVI_STATUS_SHOTS").map(PathBuf::from) {
+            std::fs::create_dir_all(&out).unwrap();
+            h.settle_art();
+            h.idle(30);
+            moose::core::screenshot::save_png(&out.join(format!("bank-status-{width:.0}.png")),
+                &pixels(&h.ui, width as u16, height as u16), width as u32, height as u32);
+        }
+    }
+}
