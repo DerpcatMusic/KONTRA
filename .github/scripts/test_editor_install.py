@@ -11,6 +11,28 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class EditorInstall(unittest.TestCase):
+    def test_package_cache_remains_readable_for_cargo(self):
+        workflow = (ROOT / '.github/workflows/ci.yml').read_text()
+        step = workflow.split('      - name: System libraries (X11, OpenGL/Vulkan, ALSA, JACK)\n', 1)[1].split('      - name:', 1)[0]
+        command = textwrap.dedent(step.split('        run: |\n', 1)[1])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scripts = {
+                'sudo': '#!/bin/bash\nexec "$@"\n',
+                'apt-get': '#!/bin/bash\n[[ "$1" == update ]] && exit 0\nmkdir -p ui-plugin/editor-debs/partial\nchmod 700 ui-plugin/editor-debs/partial\nprintf fixture > ui-plugin/editor-debs/fixture.deb\n',
+            }
+            for name, script in scripts.items():
+                path = root / name
+                path.write_text(script)
+                path.chmod(0o755)
+            env = dict(os.environ, PATH=str(root) + ':' + os.environ['PATH'])
+            result = subprocess.run(['bash', '-e', '-c', command], cwd=root, env=env, capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            cache = root / 'ui-plugin/editor-debs'
+            for path in [cache, *cache.rglob('*')]:
+                required = 0o005 if path.is_dir() else 0o004
+                self.assertEqual(path.stat().st_mode & required, required, str(path))
+
     def test_offline_setup_retries_and_propagates_failure(self):
         workflow = (ROOT / '.github/workflows/plugin-ui.yml').read_text()
         step = workflow.split('      - name: Install virtual display and software graphics\n', 1)[1].split('      - name:', 1)[0]
