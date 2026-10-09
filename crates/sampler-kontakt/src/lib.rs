@@ -17,6 +17,7 @@ mod effects;
 mod coverage;
 pub mod keyswitch;
 mod keyswitch_ui;
+mod wavetable;
 mod library;
 mod load;
 mod mapping;
