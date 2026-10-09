@@ -148,6 +148,10 @@ pub(crate) struct ControlRamp {
     frames: u32,
 }
 impl ControlRamp {
+    #[cfg(test)]
+    pub(super) fn test_ramp(from: f64, target: f64, start: u64, frames: u32) -> Self {
+        Self { from, target, start, frames }
+    }
     pub(crate) fn value(self, at: u64) -> f64 {
         let elapsed = at.saturating_sub(self.start);
         if elapsed >= u64::from(self.frames) {
