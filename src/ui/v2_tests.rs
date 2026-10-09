@@ -2030,8 +2030,10 @@ fn mapping_waveform_worker_reads_falcon_without_original_waveform_widget() {
     let mut writer=hound::WavWriter::create(&wav,hound::WavSpec {channels:1,sample_rate:48000,bits_per_sample:16,sample_format:hound::SampleFormat::Int}).unwrap();
     for n in 0..48000 {writer.write_sample(((n as f64*0.0288).sin()*20000.*(1.-n as f64/60000.)) as i16).unwrap();}
     writer.finalize().unwrap();
+    let mut alternate=hound::WavWriter::create(dir.path().join("Cello_G3.wav"),hound::WavSpec {channels:1,sample_rate:48000,bits_per_sample:16,sample_format:hound::SampleFormat::Int}).unwrap();
+    for _ in 0..24000 {alternate.write_sample(10000i16).unwrap();}alternate.finalize().unwrap();
     let path=dir.path().join("Layered strings.uvip");
-    std::fs::write(&path,r#"<UVI4><Program Name="Layered strings (synthetic Falcon fixture)"><Layers><Layer Name="Strings"><Keygroups><Keygroup Name="Sustain" LowKey="48" HighKey="84" LowVelocity="1" HighVelocity="127"><Oscillators><SamplePlayer SamplePath="Cello_C3.wav" BaseNote="60" FineTune="-12" Gain="0.8"><PlaybackOptions Start="2000" Stop="45000"><Loop Start="12000" End="34000" Type="0"/></PlaybackOptions></SamplePlayer><SamplePlayer SamplePath="Cello_C3.wav" BaseNote="60" FineTune="12" Gain="0.7"/></Oscillators></Keygroup><Keygroup Name="Shorts" LowKey="55" HighKey="79" LowVelocity="70" HighVelocity="127"><Oscillators><SamplePlayer SamplePath="Cello_C3.wav" BaseNote="60"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program></UVI4>"#).unwrap();
+    std::fs::write(&path,r#"<UVI4><Program Name="Layered strings (synthetic Falcon fixture)"><Layers><Layer Name="Strings"><Keygroups><Keygroup Name="Sustain" LowKey="48" HighKey="84" LowVelocity="1" HighVelocity="127"><Oscillators><SamplePlayer SamplePath="Cello_C3.wav" BaseNote="60" FineTune="-12" Gain="0.8"><PlaybackOptions Start="2000" Stop="45000"><Loop Start="12000" End="34000" Type="0"/></PlaybackOptions></SamplePlayer><SamplePlayer SamplePath="Cello_G3.wav" BaseNote="67" FineTune="12" Gain="0.7"/></Oscillators></Keygroup><Keygroup Name="Shorts" LowKey="55" HighKey="79" LowVelocity="70" HighVelocity="127"><Oscillators><SamplePlayer SamplePath="Cello_C3.wav" BaseNote="60"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program></UVI4>"#).unwrap();
     let p=Arc::new(crate::plugin::SamplerParams::new());
     p.selection.write().unwrap().parts.push(crate::plugin::Part {path:path.display().to_string(),..Default::default()});
     for _ in 0..200 {
@@ -2053,6 +2055,25 @@ fn mapping_waveform_worker_reads_falcon_without_original_waveform_widget() {
         ui.press("map-group-0-0");ui.press("map-zone-0-0");
         for _ in 0..15 {ui.idle(1);std::thread::sleep(std::time::Duration::from_millis(5));}
         assert!(ui.ui.scene().unwrap().surface("map-wave-0").is_some());
+        assert!(ui.ui.scene().unwrap().surface("map-wave-zoom-in-0").is_some(),"the selected sample has source-frame zoom and pan controls");
+        ui.press("map-wave-zoom-in-0");ui.press("map-wave-pan-right-0");
+        assert!(ui.ui.scene().unwrap().surface("map-wave-status-0").unwrap().tip.as_deref().unwrap().contains("View 24000–48000 frames"),"wave buttons change the actual source viewport");
+        let zoomed=(0..200).find_map(|_| {let e=part.zone_waveform_window(1,epoch,512,Some((24000,48000)));if e.is_none(){std::thread::sleep(std::time::Duration::from_millis(2));}e}).unwrap();
+        assert_eq!(zoomed.range,(24000,48000));assert_eq!(zoomed.frames,48000);
+        assert!(part.zone_waveform_window(1,epoch+1,512,Some((24000,48000))).is_none());
+        ui.press("map-zone-0-1");
+        for _ in 0..100 {ui.idle(1);if ui.ui.scene().unwrap().surface("map-wave-status-0").unwrap().tip.as_deref().is_some_and(|s|s.contains("View 0–24000 frames")) {break;}std::thread::sleep(std::time::Duration::from_millis(5));}
+        assert!(ui.ui.scene().unwrap().surface("map-wave-status-0").unwrap().tip.as_deref().unwrap().contains("View 0–24000 frames"),"selecting another admitted sample resets the old 48k-frame viewport");
+        assert!(ui.ui.scene().unwrap().surface("map-inspector-0-1").is_some());
+        ui.press("map-zone-0-0");ui.press("map-wave-fit-0");ui.idle(10);
+        let at=super::tests::center(&ui.ui,"map-wave-0");
+        ui.tick(Input {pointer:PointerInput {pos:Some(at),..Default::default()},wheel:Vec2::new(0.,-120.),..Default::default()});ui.idle(3);
+        assert!(ui.ui.scene().unwrap().surface("map-wave-status-0").unwrap().tip.as_deref().unwrap().contains("View 12000–36000 frames"),"wheel zoom is anchored to the pointer's exact source frame");
+        ui.tick(Input {pointer:PointerInput {pos:Some(at),..Default::default()},wheel:Vec2::new(50.,0.),..Default::default()});ui.idle(3);
+        assert!(!ui.ui.scene().unwrap().surface("map-wave-status-0").unwrap().tip.as_deref().unwrap().contains("View 12000–36000 frames"),"horizontal scrolling pans the source window");
+        ui.press("map-wave-fit-0");
+        for _ in 0..20 {ui.idle(1);std::thread::sleep(std::time::Duration::from_millis(5));}
+        assert!(ui.ui.scene().unwrap().surface("map-wave-status-0").unwrap().tip.as_deref().unwrap().contains("View 0–48000 frames"));
         let scene=ui.ui.scene().unwrap();
         let status=scene.surface("map-wave-status-0").unwrap().frame;
         let keys=scene.surface("keys").unwrap().frame;
@@ -2222,4 +2243,39 @@ fn mapping_navigation_reaches_late_takes_and_restores_fitted_keys() {
         assert!((tick.x - map.x - map.size.width * 60. / 128.).abs() < 1.,"octave labels align with exact map cells");
     }
     assert_eq!(*source,before,"navigation leaves authored ranges and sequence order untouched");
+}
+
+#[test]
+fn mapping_analog_waveform_worker_probe_skips_only_when_library_is_missing() {
+    use moose::prelude::BackgroundTask;
+    let path=Path::new("/mnt/MAIN_STORAGE/Libraries/Kontakt/ANALOG STRINGS/Instruments/ANALOG STRINGS.nki");
+    if !path.exists() {eprintln!("SKIP Analog Mapping waveform probe: library absent");return;}
+    let p=Arc::new(crate::plugin::SamplerParams::new());
+    p.selection.write().unwrap().parts.push(crate::plugin::Part {path:path.display().to_string(),..Default::default()});
+    for _ in 0..600 {crate::plugin::Load.run(&p);if p.shared.view.lock().unwrap().parts.first().is_some_and(|v|!v.loading && v.instrument.is_some()) {break;}std::thread::sleep(std::time::Duration::from_millis(20));}
+    let (inst,epoch)={let v=p.shared.view.lock().unwrap();let v=&v.parts[0];(v.instrument.clone().unwrap_or_else(||panic!("Analog load: {}",v.status)),v.generation)};
+    let ids=crate::sound::waveform::source_ids(&inst);let part=p.shared.part(0).unwrap();
+    assert!(!inst.zones.is_empty());let first=0;
+    let envelope=(0..600).find_map(|_|{let e=part.zone_waveform(ids[first],epoch,512);if e.is_none(){std::thread::sleep(std::time::Duration::from_millis(5));}e}).expect("Analog selected zone admits full sample peaks");
+    assert!(envelope.frames>0 && envelope.sample_rate>0 && envelope.peaks.iter().any(|(a,b)|b-a>0.00001));
+    let high=envelope.frames.min(1024);
+    let view=(0..600).find_map(|_|{let e=part.zone_waveform_window(ids[first],epoch,64,Some((0,high)));if e.is_none(){std::thread::sleep(std::time::Duration::from_millis(5));}e}).expect("Analog zoomed peaks");
+    assert_eq!(view.range,(0,high));assert_eq!(view.frames,envelope.frames);
+    assert!(part.zone_waveform_window(ids[first],epoch+1,64,Some((0,high))).is_none());
+    for (w,h) in [(1180,780),(900,640)] {
+        let mut ui=Harness::new(&p,w as f64,h as f64);ui.press("view-0-Sound");ui.press("sound-tab-0-Mapping");
+        for _ in 0..100 {ui.idle(1);if ui.ui.scene().unwrap().surface("map-wave-status-0").unwrap().tip.as_deref().is_some_and(|s|s.contains(&format!("View 0–{} frames",envelope.frames))) {break;}std::thread::sleep(std::time::Duration::from_millis(5));}
+        assert!(ui.ui.scene().unwrap().surface("map-wave-status-0").unwrap().tip.as_deref().unwrap().contains(&format!("View 0–{} frames",envelope.frames)));
+        let scene=ui.ui.scene().unwrap();
+        let status=scene.surface("map-wave-status-0").unwrap().frame;
+        let keys=scene.surface("keys").unwrap().frame;
+        let part=scene.surface("part-0").unwrap().frame;
+        let rack=scene.surface("rack-view").unwrap().frame;
+        assert!(status.size.height >= 10. && status.y+status.size.height <= (part.y+part.size.height-1.).min(keys.y-24.).min(rack.y+rack.size.height),"authored header rows leave room for every inspector detail at {w}×{h}: {} vs {}",status.y+status.size.height,keys.y-24.);
+        if let Some(dir)=std::env::var_os("KONTAKTO_MAPPING_SHOTS") {let path=std::path::PathBuf::from(dir).join(format!("mapping-analog-{w}x{h}.png"));std::fs::create_dir_all(path.parent().unwrap()).unwrap();moose::core::screenshot::save_png(&path,&pixels(&ui.ui,w,h),w as u32,h as u32);}
+        ui.press("keyboard-toggle");ui.idle(30);
+        let scene=ui.ui.scene().unwrap();let status=scene.surface("map-wave-status-0").unwrap().frame;let rack=scene.surface("rack-view").unwrap().frame;
+        assert!(status.size.height >= 10. && status.y+status.size.height <= rack.y+rack.size.height,"inspector layout also works with the keyboard hidden");
+    }
+    assert!(p.shared.keyboard.pop().is_none(),"waveform inspection dispatches no instrument audio");
 }
