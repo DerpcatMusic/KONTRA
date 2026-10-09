@@ -1,7 +1,7 @@
 # Parameter registry plumbing — W15
 
 Implementation step on `v2/w15-modulation`; full slice READY requires the frozen
-5fc362f3 22-item PCM gate and quiet CPU acceptance. Neither is claimed here.
+5fc362f3 22-item PCM gate and quiet CPU acceptance. Full acceptance remains HOLD.
 
 `ModRoute::target` is now an open `ParameterAddress { scope, node, parameter }`.
 `ModTarget` remains a compatibility alias with legacy constructors. Preparation
@@ -54,3 +54,19 @@ shared base cache. The fixture requires exact ordered isolated-voice sums at
 1/2/4 threads, including unmodulated siblings and RT heap guards.
 Validation after the cache fix: 134 targeted core/lowering/registry/control-DSP/
 SVF/multicore/trace tests pass. Quiet CPU acceptance remains open.
+
+Final frozen candidate: b2bd75994b311bbb3195dab2cf4f17deb1a3b344.
+The 22-item comparison attempted all 23 programs: 21 produced PCM pairs are
+bit-identical and have identical diagnostic counters (20 audible, one identically
+silent). Seeded UVI item 11 timed out only on the candidate; item 19 timed out only
+on the baseline, each at the 140-second bound. No produced PCM pair differs, but
+full PCM preservation is UNKNOWN. Timings were contended; CPU remains UNKNOWN.
+
+Numeric receipts and frozen binary identities are under
+`/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w15-registry-5fc362f3/`:
+`acceptance.json`, `comparison.json`, `provenance.json` and the three-line
+`PARK.txt`. Both builds asserted the same audit overlay SHA256
+`9d73c3db8594b4699a0d07e3b26e9067cf612c42c700850a313f7e6074390ef3`.
+PCM was hashed in RAM; no library WAV or decrypted payload was persisted.
+W8/W10 owns usable seeded load pairs/first-stage diagnosis; W6 owns quiet CPU.
+The next W15 slice is the real EQ gain owner and physical band routing.
