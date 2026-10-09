@@ -475,8 +475,8 @@ impl EditorState {
     }
 }
 
-/// The browser's files by library name, as indices into the scan.
-type Libraries = std::collections::BTreeMap<String, Vec<usize>>;
+/// The browser's naturally ordered paths by library, including native presets.
+type Libraries = std::collections::BTreeMap<String, Vec<PathBuf>>;
 
 /// One frame's inputs: the loader's view, the rack being edited, the editor state.
 struct Cx<'a> {
@@ -1354,6 +1354,8 @@ pub use ir_view::uvi_ui_health;
 mod loop_audit;
 #[cfg(test)]
 mod browser_tests;
+#[cfg(all(test, feature = "shots"))]
+mod browser_perf_tests;
 #[cfg(test)]
 mod chrome_tests;
 #[cfg(test)]
