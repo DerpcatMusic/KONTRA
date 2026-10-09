@@ -883,7 +883,22 @@ impl Lowering<'_> {
         let ir::ModulationSource::Envelope(e) = &modulator.source else {
             return Err(unsupported(owner, Feature::AmplitudeSource));
         };
-        self.adsr(owner, e, one_shot)
+        let envelope = self.adsr(owner, e, one_shot)?;
+        let source = zone.group.and_then(|group| {
+            let mut sources = self.ir.source_indices.modulators.iter().filter(|source|
+                self.ir.source_indices.groups.get(source.group).copied().flatten()
+                    .unwrap_or(ir::GroupRef(source.group)) == group
+                    && !source.external && source.runtime == zone.amplitude);
+            let address = sources.next()?;
+            if sources.next().is_some() { return None; }
+            let mut raw = self.ir.source_indices.ahdsrs.iter().filter(|source|
+                source.group == address.group && source.slot == address.slot);
+            let source = raw.next()?;
+            (raw.next().is_none() && source.native_amplitude).then_some(source)
+        });
+        if !one_shot && e.delay == ir::Time::ZERO && let Some(source) = source {
+            envelope.with_native_primary(source, self.rate).map_err(core(Stage::Envelope, owner))
+        } else { Ok(envelope) }
     }
 
     fn adsr(&self, owner: &str, e: &ir::Envelope, one_shot: bool) -> Result<Envelope, LowerError> {
