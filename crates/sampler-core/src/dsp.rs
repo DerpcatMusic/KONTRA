@@ -1216,7 +1216,7 @@ mod tests {
     fn live_eq_keeps_other_stages_in_the_lane_path() {
         for gain in [-12., 0., 12.] {
             let chain = VoiceChain::new(vec![Processor::PeakingEq(PeakingEq {
-                frequency_hz: 1000., bandwidth_octaves: 1., gain_db: Parameter::Constant(gain),
+                frequency: Parameter::Constant((1000f64 / 20.).log10() / 3.), bandwidth: Parameter::Constant((1. - 0.3) / 2.7), gain_db: Parameter::Constant(gain),
             })], Vec::new(), 0).unwrap().compile(48000, &mut Vec::new(), &mut Vec::new()).unwrap();
             assert!(chain.batches(), "live EQ must not force unrelated stages out of the lane path");
         }

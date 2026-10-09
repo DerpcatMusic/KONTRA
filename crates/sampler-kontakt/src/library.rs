@@ -531,9 +531,15 @@ struct Translation {
     target_outcomes: crate::coverage::Targets,
 }
 
-fn eq_gain_band(name: &str) -> Option<usize> {
-    name.strip_prefix("eqGain")?.parse::<u8>().ok()
-        .filter(|b| (1..=3).contains(b)).map(|b| usize::from(b - 1))
+fn eq_knob(name: &str) -> Option<(usize, ir::ProcessorParameter)> {
+    for (prefix, parameter) in [("eqGain", ir::ProcessorParameter::Gain),
+        ("eqFreq", ir::ProcessorParameter::Cutoff), ("eqBandwidth", ir::ProcessorParameter::Resonance)] {
+        if let Some(rest) = name.strip_prefix(prefix) {
+            let band = rest.parse::<u8>().ok().filter(|b| (1..=3).contains(b))?;
+            return Some((usize::from(band - 1), parameter));
+        }
+    }
+    None
 }
 
 const VOICE_GROUPS: u16 = 0x32;
@@ -678,7 +684,7 @@ impl Translation {
                 };
                 for (slot, name, targets) in names {
                     for target in &targets {
-                        if eq_gain_band(&target.param).is_some() && let Some(slot) = target.slot {
+                        if eq_knob(&target.param).is_some() && let Some(slot) = target.slot {
                             let live = self.eq_mod_slots.entry(index).or_default();
                             if !live.contains(&usize::from(slot)) { live.push(usize::from(slot)); }
                         }
@@ -705,13 +711,19 @@ impl Translation {
     fn source_eq_values(&mut self, group: usize, slots: &[crate::effects::Slot]) {
         for slot in slots {
             if let Some(crate::effects::Params::Eq { bands }) = slot.params() {
-                for (band, [_, _, db]) in bands.iter().enumerate() {
-                    if !db.is_finite() { continue; }
-                    let parameter = sampler_core::engine_parameter_id(&format!("ENGINE_PAR_GAIN{}", band + 1)).unwrap();
-                    self.ir.source_indices.engine_values.push(ir::SourceEngineValue {
-                        parameter, group: group as i32, slot: slot.slot as i32, generic: -1,
-                        value: sampler_core::EngineParameterLaw::Linear { low: -18., high: 18. }.encode(f64::from(*db)),
-                    });
+                for (band, [hz, width, db]) in bands.iter().enumerate() {
+                    for (name, value, low, high) in [
+                        ("GAIN", f64::from(*db), -18., 18.),
+                        ("FREQ", (f64::from(*hz) / 20.).log10() / 3., 0., 1.),
+                        ("BW", (f64::from(*width) - 0.3) / 2.7, 0., 1.),
+                    ] {
+                        if !value.is_finite() { continue; }
+                        let parameter = sampler_core::engine_parameter_id(&format!("ENGINE_PAR_{name}{}", band + 1)).unwrap();
+                        self.ir.source_indices.engine_values.push(ir::SourceEngineValue {
+                            parameter, group: group as i32, slot: slot.slot as i32, generic: -1,
+                            value: sampler_core::EngineParameterLaw::Linear { low, high }.encode(value),
+                        });
+                    }
                 }
             }
         }
@@ -893,7 +905,7 @@ impl Translation {
                         post_amplitude,
                     });
                     chain = Some(ir::ChainRef(self.ir.chains.len() - 1));
-                    self.eq_gain_controls(index, chain.unwrap(), &filter_slots);
+                    self.eq_controls(index, chain.unwrap(), &filter_slots);
                     self.send_taps.extend(c.send_taps.into_iter().map(|tap| (chain.unwrap(), tap)));
                 }
             }
@@ -1158,29 +1170,37 @@ impl Translation {
             .map(|w| w.value)
     }
 
-    /// Port v1's normalized EQ gain knob onto a real dB processor lane.
-    fn eq_gain_controls(&mut self, group: usize, chain: ir::ChainRef, slots: &[(usize, usize)]) {
+    /// Port v1's EQ knob domains onto the physical band's real processor lanes.
+    fn eq_controls(&mut self, group: usize, chain: ir::ChainRef, slots: &[(usize, usize)]) {
         let mut bands = HashMap::<usize, usize>::new();
         for &(slot, index) in slots {
-            let Some(ir::Processor::Filter(ir::Filter { kind: ir::FilterKind::Peak { gain }, .. })) =
+            let Some(ir::Processor::Filter(ir::Filter { kind: ir::FilterKind::Peak { gain },
+                cutoff: ir::Frequency::Hertz(hz), resonance: ir::Resonance::Q(q) })) =
                 self.ir.chains[chain.0].pre_amplitude.iter().chain(&self.ir.chains[chain.0].post_amplitude).nth(index)
             else { continue; };
             let band = bands.entry(slot).or_default();
-            let parameter = format!("ENGINE_PAR_GAIN{}", *band + 1);
-            let default = self.script_par(&parameter, group as i32, slot as i32, -1)
-                .map_or_else(|| 20. * gain.linear().log10(), |v| 36. * f64::from(v.clamp(0, 1_000_000)) / 1_000_000. - 18.)
-                .clamp(-18., 18.);
-            let control = ir::ControlRef(self.ir.controls.len());
-            self.ir.controls.push(ir::Control {
-                key: format!("kontakt/group/{group}/slot/{slot}/eq/band/{}/gain", *band + 1),
-                label: format!("EQ Band {} Gain", *band + 1),
-                value: ir::ControlValue::Continuous { min: -18., max: 18., default, unit: ir::ControlUnit::Decibels },
-                automation: ir::Automation::None,
-            });
-            self.ir.processor_controls.push(ir::ProcessorControl { control, chain, index,
-                parameter: ir::ProcessorParameter::Gain, ramp: ir::Time::ZERO });
-            self.ir.source_indices.control_aliases.push(ir::SourceControlAlias { control, parameter,
-                address: ir::SlotAddress { group: group as i32, slot: slot as i32, generic: -1 } });
+            let saved = [20. * gain.linear().log10(), (hz / 20.).log10() / 3.,
+                (2. * (0.5 / q).asinh() / std::f64::consts::LN_2 - 0.3) / 2.7];
+            for (n, (native, name, label, parameter, min, max, unit)) in [
+                ("GAIN", "gain", "Gain", ir::ProcessorParameter::Gain, -18., 18., ir::ControlUnit::Decibels),
+                ("FREQ", "frequency", "Frequency", ir::ProcessorParameter::Cutoff, 0., 1., ir::ControlUnit::Percent),
+                ("BW", "bandwidth", "Bandwidth", ir::ProcessorParameter::Resonance, 0., 1., ir::ControlUnit::Percent),
+            ].into_iter().enumerate() {
+                let native = format!("ENGINE_PAR_{native}{}", *band + 1);
+                let default = self.script_par(&native, group as i32, slot as i32, -1)
+                    .map_or(saved[n], |v| min + (max - min) * f64::from(v.clamp(0, 1_000_000)) / 1_000_000.)
+                    .clamp(min, max);
+                let control = ir::ControlRef(self.ir.controls.len());
+                self.ir.controls.push(ir::Control {
+                    key: format!("kontakt/group/{group}/slot/{slot}/eq/band/{}/{name}", *band + 1),
+                    label: format!("EQ Band {} {label}", *band + 1),
+                    value: ir::ControlValue::Continuous { min, max, default, unit },
+                    automation: ir::Automation::None,
+                });
+                self.ir.processor_controls.push(ir::ProcessorControl { control, chain, index, parameter, ramp: ir::Time::ZERO });
+                self.ir.source_indices.control_aliases.push(ir::SourceControlAlias { control, parameter: native,
+                    address: ir::SlotAddress { group: group as i32, slot: slot as i32, generic: -1 } });
+            }
             *band += 1;
         }
     }
@@ -1237,13 +1257,13 @@ impl Translation {
         // the generic filter fallback retains its octave law.
         let addressed = filters.and_then(|(chain, slots)| {
             let slot = target.slot?;
-            let band = eq_gain_band(&target.param);
-            let (_, index) = slots.iter().filter(|(s, _)| *s == usize::from(slot)).nth(band.unwrap_or(0))?;
+            let knob = eq_knob(&target.param);
+            let (_, index) = slots.iter().filter(|(s, _)| *s == usize::from(slot)).nth(knob.map_or(0, |(band, _)| band))?;
             let processor = self.ir.chains.get(chain.0)?.pre_amplitude.iter()
                 .chain(&self.ir.chains[chain.0].post_amplitude).nth(*index)?;
-            if band.is_some() {
+            if let Some((_, parameter)) = knob {
                 return matches!(processor, ir::Processor::Filter(ir::Filter { kind: ir::FilterKind::Peak { .. }, .. }))
-                    .then_some((ir::Target::Processor { chain, index: *index, parameter: ir::ProcessorParameter::Gain }, ir::Depth::Normalized(i)));
+                    .then_some((ir::Target::Processor { chain, index: *index, parameter }, ir::Depth::Normalized(i)));
             }
             let native = matches!(processor, ir::Processor::LadderLP4(_) | ir::Processor::Daft(_));
             let parameter = match target.param.as_str() {
@@ -2300,13 +2320,35 @@ mod modulation {
     }
 
     #[test]
+    fn eq_frequency_and_width_routes_keep_the_physical_band() {
+        let mut t = translation();
+        let peak = ir::Processor::Filter(ir::Filter { kind: ir::FilterKind::Peak { gain: ir::Gain::Decibels(6.) },
+            cutoff: ir::Frequency::Hertz(1000.), resonance: ir::Resonance::Q(1.) });
+        t.ir.chains.push(ir::Chain { scope: ir::Scope::Voice, pre_amplitude: vec![peak; 3], post_amplitude: vec![] });
+        t.engine.push(sampler_ksp::EnginePar { parameter: "$ENGINE_PAR_FREQ2".into(), group: 7, slot: 5, generic: -1, value: 700000 });
+        t.engine.push(sampler_ksp::EnginePar { parameter: "$ENGINE_PAR_BW3".into(), group: 7, slot: 5, generic: -1, value: 400000 });
+        t.eq_controls(7, ir::ChainRef(0), &[(5, 0), (5, 1), (5, 2)]);
+        for (control, default, name) in [(4, 0.7, "ENGINE_PAR_FREQ2"), (8, 0.4, "ENGINE_PAR_BW3")] {
+            assert!(matches!(t.ir.controls[control].value, ir::ControlValue::Continuous { min: 0., max: 1., default: v, unit: ir::ControlUnit::Percent } if v == default));
+            assert_eq!(t.ir.source_indices.control_aliases[control].parameter, name);
+        }
+        for (name, index, parameter) in [("eqFreq2", 1, ir::ProcessorParameter::Cutoff), ("eqBandwidth3", 2, ir::ProcessorParameter::Resonance)] {
+            let target = ModTarget { slot: Some(5), ..target(name, -0.25) };
+            let route = t.route("g", ir::ModulatorRef(0), true, &target, Some((ir::ChainRef(0), &[(5, 0), (5, 1), (5, 2)])))
+                .expect("native EQ knob route reaches its physical band");
+            assert_eq!(t.ir.routes[route.0].target, ir::Target::Processor { chain: ir::ChainRef(0), index, parameter });
+            assert_eq!(t.ir.routes[route.0].depth, ir::Depth::Normalized(-0.25));
+        }
+    }
+
+    #[test]
     fn eq_live_owner_clamps_saved_gain_like_v1_knobs() {
         let mut t = translation();
         t.ir.chains.push(ir::Chain { scope: ir::Scope::Voice, pre_amplitude: vec![ir::Processor::Filter(ir::Filter {
             kind: ir::FilterKind::Peak { gain: ir::Gain::Decibels(24.) },
             cutoff: ir::Frequency::Hertz(1000.), resonance: ir::Resonance::Q(1.),
         })], post_amplitude: vec![] });
-        t.eq_gain_controls(7, ir::ChainRef(0), &[(5, 0)]);
+        t.eq_controls(7, ir::ChainRef(0), &[(5, 0)]);
         assert!(matches!(t.ir.controls[0].value, ir::ControlValue::Continuous { default: 18., .. }),
             "v1 clamps normalized EQ knobs before conversion; a saved outlier must not invalidate the instrument");
     }
@@ -2323,11 +2365,11 @@ mod modulation {
         let mut t = translation();
         t.source_eq_values(7, &[slot]);
         let values = &t.ir.source_indices.engine_values;
-        assert_eq!(values.len(), 3);
+        assert_eq!(values.len(), 9);
         for (band, expected) in [500000, 750000, 0].into_iter().enumerate() {
-            assert_eq!(values[band].value, expected);
-            assert_eq!((values[band].group, values[band].slot, values[band].generic), (7, 5, -1));
-            assert_eq!(sampler_core::engine_parameter_name(values[band].parameter), Some(["$ENGINE_PAR_GAIN1", "$ENGINE_PAR_GAIN2", "$ENGINE_PAR_GAIN3"][band]));
+            assert_eq!(values[band * 3].value, expected);
+            assert_eq!((values[band * 3].group, values[band * 3].slot, values[band * 3].generic), (7, 5, -1));
+            assert_eq!(sampler_core::engine_parameter_name(values[band * 3].parameter), Some(["$ENGINE_PAR_GAIN1", "$ENGINE_PAR_GAIN2", "$ENGINE_PAR_GAIN3"][band]));
         }
     }
 
@@ -2340,10 +2382,10 @@ mod modulation {
                 cutoff: ir::Frequency::Hertz(1000.), resonance: ir::Resonance::Q(1.) });
             t.ir.chains.push(ir::Chain { scope: ir::Scope::Voice, pre_amplitude: vec![peak; 3], post_amplitude: vec![] });
             t.engine.push(sampler_ksp::EnginePar { parameter: "$ENGINE_PAR_GAIN2".into(), group: 7, slot: 5, generic: -1, value: 750000 });
-            t.eq_gain_controls(7, ir::ChainRef(0), &[(5, 0), (5, 1), (5, 2)]);
-            assert_eq!(t.ir.processor_controls.len(), 3);
-            assert_eq!(t.ir.source_indices.control_aliases[1].parameter, "ENGINE_PAR_GAIN2");
-            assert!(matches!(t.ir.controls[1].value, ir::ControlValue::Continuous { default: 9., unit: ir::ControlUnit::Decibels, .. }));
+            t.eq_controls(7, ir::ChainRef(0), &[(5, 0), (5, 1), (5, 2)]);
+            assert_eq!(t.ir.processor_controls.len(), 9);
+            assert_eq!(t.ir.source_indices.control_aliases[3].parameter, "ENGINE_PAR_GAIN2");
+            assert!(matches!(t.ir.controls[3].value, ir::ControlValue::Continuous { default: 9., unit: ir::ControlUnit::Decibels, .. }));
             let target = ModTarget { slot: Some(5), ..target(name, -0.25) };
             t.route("g", ir::ModulatorRef(0), true, &target, Some((ir::ChainRef(0), &[(5, 0), (5, 1), (5, 2)])))
                 .expect("authored EQ gain must reach its physical band");
