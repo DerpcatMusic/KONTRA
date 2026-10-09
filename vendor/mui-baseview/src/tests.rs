@@ -22,7 +22,8 @@ fn close_cycles_release_gui_thread_render_trees_before_model_drop() {
         fn request_resize(&mut self, _: u32, _: u32) -> bool { false }
     }
     let mut owners = Vec::new();
-    for cycle in 0..4 {
+    let mut retained = Vec::new();
+    for _ in 0..4 {
         let shared = Arc::new(Mutex::new(Shared { ui: Ui::default(), view: Memo(Default::default()) }));
         let mut h = Handler::new(shared.clone(), Arc::default(), (64, 64), 1.);
         h.step();
@@ -32,9 +33,9 @@ fn close_cycles_release_gui_thread_render_trees_before_model_drop() {
         drop(h);
         std::thread::spawn(move || drop(shared)).join().unwrap();
         owners.push(owner);
-        let retained: usize = owners.iter().filter_map(|owner| owner.upgrade()).map(|art| art.len()).sum();
-        assert_eq!(retained, 0, "closed render bytes grew after cycle {cycle}");
+        retained.push(owners.iter().filter_map(|owner| owner.upgrade()).map(|art| art.len()).sum::<usize>());
     }
+    assert_eq!(retained, [0; 4], "closed render bytes must remain flat at zero");
 }
 
 #[test]
