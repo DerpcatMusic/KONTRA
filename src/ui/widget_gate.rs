@@ -443,7 +443,6 @@ fn source_shards_reject_unknown_sources_and_preserve_full_default() {
     assert_eq!(source_range(2, Some(2)), None);
 }
 
-
 #[test]
 #[ignore = "release gate: set KONTRA_WIDGET_GATE_PATH and KONTRA_WIDGET_GATE_PROGRAM; all private values stay in RAM"]
 fn original_widget_gestures() {
