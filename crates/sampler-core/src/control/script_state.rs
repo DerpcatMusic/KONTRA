@@ -119,6 +119,28 @@ impl Runtime {
         }
     }
 
+    /// Register the value-only snapshot domain during off-thread preparation.
+    /// Unregistered plans conservatively track every script write.
+    pub fn watch_script_state_values(&mut self, plan: PlanId, values: &[ScriptStateEntry]) -> Result<(), Error> {
+        // Validate the entire request before changing the existing capture domain.
+        for entry in values {
+            self.script_state_value(plan, entry.address)?;
+        }
+        let generation = self.plans.get_mut(plan.0).ok_or(Error::StaleHandle)?;
+        let mut masks: Vec<Box<[u64]>> = generation.scripts.iter()
+            .map(|bank| vec![0; bank.cells.len().div_ceil(64)].into_boxed_slice()).collect();
+        for entry in values {
+            if let ScriptStateAddress::Cell { instance, index } = entry.address {
+                masks[usize::from(instance.0)][index as usize / 64] |= 1 << (index % 64);
+            }
+        }
+        for (bank, mask) in generation.scripts.iter_mut().zip(masks) {
+            bank.captured_cells = Some(mask);
+        }
+        generation.script_revision = generation.script_revision.wrapping_add(1);
+        Ok(())
+    }
+
     /// Changes to captured cells/text and base controls, including DSP edits.
     /// Callback outcomes are independent; this token gates value-only snapshots.
     pub fn script_state_revision(&self, plan: PlanId) -> Result<(u64, u64), Error> {
