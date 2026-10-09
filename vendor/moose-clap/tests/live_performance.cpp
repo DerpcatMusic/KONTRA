@@ -1,6 +1,7 @@
 // Real-time exported CLAP host. Reuses native_midi_audio.cpp's SDK/state path.
 // HOST PLUGIN STATE BLOCK SECONDS READY_FLAG EVENT_TSV EXPECTED_PARTS READBACK_STATE [--cpu-audit]
 #include <clap/clap.h>
+#include "family_audio.hpp"
 #include <dlfcn.h>
 #include <algorithm>
 #include <array>
@@ -137,6 +138,15 @@ static uint32_t event_time(Midi event, uint64_t at, bool audit) {
 }
 int main(int argc, char** argv) {
     if (argc == 2 && std::strcmp(argv[1], "--self-check") == 0) {
+        std::vector<std::array<float, 2>> samples(48000);
+        for (size_t i = 48; i < 24000; ++i) samples[i] = {float(std::cos(i * 2 * 3.141592653589793 / 48)), float(-std::cos(i * 2 * 3.141592653589793 / 48))};
+        auto fingerprint = FamilyAudio::measure(samples, 0, samples.size());
+        require(fingerprint.onset == 48 && fingerprint.last == 23999 && fingerprint.rms > .49 && fingerprint.rms < .51, "per-note onset, length and opposite-phase stereo energy");
+        double power = 0; for (double band : fingerprint.spectrum) { require(std::isfinite(band) && band >= 0, "finite spectrum fingerprint"); power += band; }
+        require(std::abs(power - 1) < 1e-10, "normalized spectrum fingerprint");
+        for (auto& sample : samples) sample = {0, 0};
+        fingerprint = FamilyAudio::measure(samples, 0, samples.size());
+        require(fingerprint.onset == -1 && fingerprint.last == -1 && fingerprint.rms == 0, "silent window has no onset or length");
         require(quantile({1, 2, 3, 4}, .5) == 2 && quantile({1, 2, 3, 4}, .99) == 4, "nearest-rank percentiles");
         require(audit_quantile({1, 2, 3, 4}, false) == 3 && audit_quantile({1, 2, 3, 4}, true) == 3, "source audit percentiles");
         require(event_time({48000, 0x80, 60, 0}, 47872, true) == 0
@@ -220,6 +230,11 @@ int main(int argc, char** argv) {
     std::vector<double> wall, cpu, steady_wall, steady_cpu; const uint64_t frames = uint64_t(seconds * 48000);
     wall.reserve(frames / block + 1); cpu.reserve(wall.capacity());
     steady_wall.reserve(wall.capacity()); steady_cpu.reserve(wall.capacity());
+    FamilyAudio family;
+    if (std::getenv("KONTRA_FAMILY_AUDIO")) {
+        require(pcm[0].size() == 2, "stereo family fingerprint output");
+        family.pcm.resize(frames);
+    }
     Io io_start{}, io_end{};
     uint64_t misses = 0, wake_misses = 0, nonfinite = 0, dispatched = 0, audit_epoch_ns = 0; double peak = 0, steady_peak = 0;
     auto audio = std::thread([&] {
@@ -263,6 +278,7 @@ int main(int argc, char** argv) {
             if (measuring && audit) scan_peak();
             const auto after = Clock::now(); clock_gettime(CLOCK_THREAD_CPUTIME_ID, &c1);
             if (measuring) {
+                if (!family.pcm.empty()) for (unsigned f = 0; f < block && at + f < frames; ++f) family.pcm[at + f] = {pcm[0][0][f], pcm[0][1][f]};
                 const auto us = std::chrono::duration<double, std::micro>(after - before).count(); wall.push_back(us);
                 cpu.push_back((c1.tv_sec - c0.tv_sec) * 1e6 + (c1.tv_nsec - c0.tv_nsec) / 1e3);
                 if (audit && at >= 12000 && at < 48000) { steady_wall.push_back(us); steady_cpu.push_back(cpu.back()); }
@@ -315,6 +331,7 @@ int main(int argc, char** argv) {
             (unsigned long long)memory_before.rss, (unsigned long long)memory_ready.rss,
             (unsigned long long)memory_done.rss, (unsigned long long)memory_done.peak, (unsigned long long)memory_done.swap);
     }
+    if (!family.pcm.empty() && nonfinite == 0) family.report(plan);
     // State readback stays outside measured process calls and streaming deltas.
     SavedState saved;
     require(state->save(p, &saved.api) && !saved.bytes.empty(), "native CLAP state save");
