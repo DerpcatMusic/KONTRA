@@ -172,3 +172,130 @@ pub struct Loop {
     pub loop_tuning: f32,
     pub x_fade_length: i32,
 }
+
+/// Original source/target settings before init writes and playback admission.
+/// Physical identity lives in SourceModulator; target ordinals are vector indices.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Modulation {
+    pub version: u16,
+    pub source: ModulationSource,
+    pub targets: Vec<ModulationTarget>,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub enum ModulationSource {
+    Internal {
+        flags: [u8; 4],
+        unknown_id: u32,
+        source: InternalSource,
+    },
+    External {
+        source: ExternalSource,
+        unknown_id: u32,
+        unknown_source_data: Vec<u8>,
+        unknown_tail: Vec<u8>,
+    },
+}
+#[derive(Clone, Debug, PartialEq)]
+pub enum InternalSource {
+    Ahdsr {
+        attack_curve: f32,
+        attack_ms: f32,
+        hold_ms: f32,
+        decay_ms: f32,
+        sustain: f32,
+        release_ms: f32,
+        ahd_only: u8,
+        unknown_tail: Vec<u8>,
+    },
+    Flex {
+        points: Vec<FlexPoint>,
+        sustain: u32,
+        unknown_index: u32,
+        unknown_tail: Vec<u8>,
+    },
+    Lfo(Lfo),
+    Other {
+        chunk_id: u16,
+    },
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FlexPoint {
+    /// Delta from the preceding point in milliseconds, not absolute time.
+    pub time_ms: f32,
+    pub level: f32,
+    /// Serialized 0..1 curve, with 0.5 linear, not an exponential coefficient.
+    pub curve: f32,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct Lfo {
+    pub structured: bool,
+    pub version: u16,
+    pub waveform: u32,
+    /// Delay, frequency/count, width, phase in original units.
+    pub initial_values: [f32; 4],
+    /// Packed fields cross native sync-record boundaries; preserve byte order.
+    pub records: [LfoRecord; 2],
+    pub trailing_flag: bool,
+    pub trailing_values: Option<[f32; 5]>,
+    pub additional_flag: Option<bool>,
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LfoRecord {
+    pub flag: bool,
+    pub values: [f32; 3],
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExternalSource {
+    PitchBend,
+    PolyAftertouch,
+    MonoAftertouch,
+    MidiCc(u8),
+    KeyPosition,
+    Velocity,
+    ReleaseVelocity,
+    ReleaseTriggerCounter,
+    Constant,
+    RandomUnipolar,
+    RandomBipolar,
+    Script(u32),
+    Unassigned,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModulationTarget {
+    pub param: String,
+    /// Saved magnitude; flags bit 1 stores depth sign independently of invert.
+    pub intensity: f32,
+    pub lag_ms: u16,
+    pub name: String,
+    /// Physical owning module slot, never a dense processor index.
+    pub slot: Option<u8>,
+    pub invert: bool,
+    pub shaper: Option<ModulationShaper>,
+    pub unknown_i16: i16,
+    pub flags: u8,
+}
+impl ModulationTarget {
+    pub fn signed_intensity(&self) -> f32 {
+        if self.flags & 2 != 0 {
+            -self.intensity
+        } else {
+            self.intensity
+        }
+    }
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModulationShaper {
+    pub enabled: bool,
+    pub curve: ShaperCurve,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub enum ShaperCurve {
+    Table(Vec<f32>),
+    Breakpoints(Vec<ShaperPoint>),
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShaperPoint {
+    pub x: f32,
+    pub y: f32,
+    pub curve: f32,
+}

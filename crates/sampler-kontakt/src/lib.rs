@@ -23,6 +23,7 @@ mod load;
 mod mapping;
 mod metadata;
 mod objects;
+mod modulation_objects;
 pub mod nis;
 mod nks;
 mod persistence;

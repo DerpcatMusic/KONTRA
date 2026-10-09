@@ -202,6 +202,9 @@ pub struct SourceModulator {
     pub external: bool,
     pub name: String,
     pub runtime: Option<ModulatorRef>,
+    /// Original Kontakt settings, including bypassed and unmodeled targets.
+    /// None for synthetic/non-Kontakt registries; never playback admission.
+    pub settings: Option<kontakt::Modulation>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
