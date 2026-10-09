@@ -49,10 +49,30 @@ impl Bank {
         Ok(program_paths(&directory))
     }
 
-    /// Open and decode the directory of the bank at `path`.
+    /// Open a bank for programs, scripts and samples, preparing content access.
     pub fn open(path: &Path) -> Result<Self, AccessError> {
-        let bank_error = |e| AccessError::Bank(access::failure_reason(&e));
+        let mut bank = Self::open_metadata(path)?;
         let content_error = |e| AccessError::Content(access::failure_reason(&e));
+        let span = sampler_kontakt::audit::Span::new("uvi_content_setup");
+        // Only banks with encrypted members need a content state prepared.
+        let content_key = if bank.directory
+            .files
+            .iter()
+            .any(|m| m.mode == Protection::Content)
+        {
+            Some(access::recover_content_key(path, &bank.ufs, &bank.directory).map_err(content_error)?)
+        } else {
+            None
+        };
+        drop(span);
+        bank.content_key = content_key;
+        Ok(bank)
+    }
+
+    /// Open directory metadata without preparing content access. Content-protected
+    /// members remain unavailable; clear and metadata members can be read.
+    pub fn open_metadata(path: &Path) -> Result<Self, AccessError> {
+        let bank_error = |e| AccessError::Bank(access::failure_reason(&e));
         let span = sampler_kontakt::audit::Span::new("uvi_ufs_header");
         let ufs = Ufs::open(path).map_err(bank_error)?;
         drop(span);
@@ -62,18 +82,6 @@ impl Bank {
             .decode_directory(&namespaces.metadata)
             .map_err(bank_error)?;
         let program_namespace = namespaces.program;
-        drop(span);
-        let span = sampler_kontakt::audit::Span::new("uvi_content_setup");
-        // Only banks with encrypted members need a content state prepared.
-        let content_key = if directory
-            .files
-            .iter()
-            .any(|m| m.mode == Protection::Content)
-        {
-            Some(access::recover_content_key(path, &ufs, &directory).map_err(content_error)?)
-        } else {
-            None
-        };
         drop(span);
         let mut paths = HashMap::with_capacity(directory.files.len());
         for (index, member) in directory.files.iter().enumerate() {
@@ -87,7 +95,7 @@ impl Bank {
         Ok(Self {
             ufs: Arc::new(ufs),
             directory,
-            content_key,
+            content_key: None,
             program_namespace,
             paths,
         })
@@ -414,8 +422,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn clear_bank_and_program_load_with_native_namespaces() {
+    fn clear_bank_fixture() -> (Vec<u8>, Vec<u8>) {
         fn append(bytes: &mut Vec<u8>, payload: &[u8]) -> u64 {
             let pointer = bytes.len() as u64 + 8;
             bytes.extend((payload.len() as u64).to_le_bytes());
@@ -456,6 +463,62 @@ mod tests {
         let payload = append(&mut bytes, xml);
         point(&mut bytes, member + 260, xml.len() as u64);
         point(&mut bytes, member + 268, payload);
+        (bytes, xml.to_vec())
+    }
+
+    fn census_bank_fixture() -> (Vec<u8>, Vec<u8>) {
+        let (mut bytes, xml) = clear_bank_fixture();
+        let mut asset = vec![0; 289];
+        asset[..4].copy_from_slice(&0x675850e4u32.to_le_bytes());
+        asset[4..13].copy_from_slice(b"asset.bin");
+        asset[276] = 2;
+        bytes.extend((asset.len() as u64).to_le_bytes());
+        bytes.extend(asset);
+        bytes[304] = 1;
+        let key = crypto::metadata_key(&Namespaces::native().metadata, "Authored");
+        let mut at = 320;
+        while at < bytes.len() {
+            let length = u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap()) as usize;
+            let pointer = at + 8;
+            let tag = u32::from_le_bytes(bytes[pointer..pointer + 4].try_into().unwrap());
+            if matches!(tag, 0x2fba3632 | 0x675850e4) {
+                crypto::transform(&mut bytes[pointer + 4..pointer + 260], key, (pointer + 4) as u64);
+                if tag == 0x675850e4 && bytes[pointer + 276] == 0 {
+                    bytes[pointer + 276] = 1;
+                    let size = u64::from_le_bytes(bytes[pointer + 260..pointer + 268].try_into().unwrap()) as usize;
+                    let offset = u64::from_le_bytes(bytes[pointer + 268..pointer + 276].try_into().unwrap()) as usize;
+                    crypto::transform_blocks(&mut bytes[offset..offset + size], key, offset as u64);
+                }
+            } else if tag == 0x3ca86aaf {
+                let count = u32::from_le_bytes(bytes[pointer + 4..pointer + 8].try_into().unwrap()) as usize;
+                for child in 0..count {
+                    let start = pointer + 8 + child * 264;
+                    crypto::transform(&mut bytes[start..start + 256], key, start as u64);
+                }
+            }
+            at += length + 8;
+        }
+        (bytes, xml)
+    }
+
+    #[test]
+    fn census_does_not_prepare_unrelated_content() {
+        let (bytes, xml) = census_bank_fixture();
+        let path = std::env::temp_dir().join(format!("kontra-census-bank-{}.ufs", std::process::id()));
+        std::fs::write(&path, bytes).unwrap();
+        let mut bank = Bank::open_metadata(&path).expect("census must not prepare unrelated content");
+        assert!(bank.content_key.is_none());
+        assert_eq!(bank.program("preset.uvip").unwrap().0.as_bytes(), xml);
+        assert!(crate::translate_program(&bank, "preset.uvip").is_ok());
+        assert!(bank.read(&bank.directory.files[1]).is_err(), "content access still requires a supplied key");
+        bank.directory.files[0].mode = Protection::Content;
+        assert!(bank.program("preset.uvip").is_err(), "metadata census must refuse content-protected programs");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn clear_bank_and_program_load_with_native_namespaces() {
+        let (bytes, xml) = clear_bank_fixture();
         let path = std::env::temp_dir().join(format!("kontra-clear-bank-{}.ufs", std::process::id()));
         std::fs::write(&path, bytes).unwrap();
         let mut bank = Bank::open(&path).unwrap();
@@ -463,7 +526,7 @@ mod tests {
         assert_eq!(bank.programs(), ["preset.uvip"]);
         assert_eq!(Bank::catalog(&path).unwrap(), bank.programs());
         assert_eq!(bank.program("preset.uvip").unwrap(),
-            (std::str::from_utf8(xml).unwrap().to_owned(), "preset.uvip".to_owned()));
+            (std::str::from_utf8(&xml).unwrap().to_owned(), "preset.uvip".to_owned()));
         assert!(bank.directory.warnings.is_empty());
         use crate::ResourceError as E;
         assert_eq!(bank.ui_resource_result("preset.uvip", "preset.uvip").unwrap(), Some(xml.to_vec()));
