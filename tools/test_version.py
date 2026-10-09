@@ -59,6 +59,17 @@ class NightlySource(unittest.TestCase):
         self.git("mv", "source.rs", "renamed.rs")
         self.assertTrue(self.dirty(), "staged rename is a source change")
 
+    def test_crlf_stamp_is_clean_but_lockfile_reordering_is_dirty(self):
+        self.git("config", "core.autocrlf", "true")
+        for name in ("Cargo.toml", "Cargo.lock"):
+            path = self.root / name
+            path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+        self.assertFalse(self.dirty(), "Windows checkout line endings are not source changes")
+        path = self.root / "Cargo.lock"
+        sections = path.read_text().split("\n\n")
+        path.write_text("\n\n".join(reversed(sections)))
+        self.assertTrue(self.dirty(), "do not hide a Cargo lockfile rewrite")
+
     def test_wrong_or_unstamped_version_is_dirty(self):
         path = self.root / "Cargo.toml"
         path.write_text(path.read_text().replace(self.stamp, "0.3.344-nightly.wrong"))
