@@ -1087,6 +1087,11 @@ fn compile_initialized_inner(
                 program: programs.len(),
             });
             programs.push(program);
+            if kind == EntryKind::PersistenceChanged
+                && init.model.persistence_completion == model::PersistenceCompletion::Scheduled
+            {
+                starts.push(programs.len() - 1);
+            }
             if let Some(signal) = signal {
                 let body = programs.len() - 1;
                 let driver = unit
@@ -1116,7 +1121,8 @@ fn compile_initialized_inner(
         })
         .collect();
     if !start.is_empty() || !purges.is_empty() {
-        starts.push(programs.len());
+        // Authored init writes must precede live persistence and listener callbacks.
+        starts.insert(0, programs.len());
         programs.push(
             unit.engine_start(&start, &purges)
                 .map_err(|f| f.locate(source))?,

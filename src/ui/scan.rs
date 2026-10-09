@@ -831,7 +831,7 @@ fn ksp_observations() -> Value {
     };
 
     let diagnostic = |e: &sampler_ksp::scan::Diagnostic| json!({"phase":e.phase,"kind":e.kind,"category":e.category,"builtin":e.builtin,"offset":e.offset,"line":e.line,"column":e.column,"inactive_region":"unknown"});
-    let phase = |p: &sampler_ksp::scan::Phase| json!({"present":p.present,"completion":p.completion,"status":match p.completion {"not_present"=>"absent","not_reached"=>"not_started","failed" if p.fault.as_ref().is_some_and(|f|f.category=="fuel-budget")=>"budget_stopped","failed"=>"faulted",_=>"completed"},"fault":p.fault.as_ref().map(&diagnostic)});
+    let phase = |p: &sampler_ksp::scan::Phase| json!({"present":p.present,"completion":p.completion,"status":match p.completion {"not_present"=>"absent","not_reached"=>"not_started","scheduled"=>"scheduled","failed" if p.fault.as_ref().is_some_and(|f|f.category=="fuel-budget")=>"budget_stopped","failed"=>"faulted",_=>"completed"},"fault":p.fault.as_ref().map(&diagnostic)});
     let first = obs
         .iter()
         .find_map(|s| {
