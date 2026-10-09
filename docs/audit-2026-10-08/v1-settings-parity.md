@@ -316,3 +316,20 @@ The user prohibited new subagents, so finish-review/documenter ran inline: `wave
 W9: source-window peaks run only on the existing worker, with an 8-request queue and 64-entry LRU, 1–4096 bins per entry (at most 2 MiB of peak pairs plus bounded metadata/scratch). Cache reference reuse is tested; numerical performance is unmeasured.
 
 NEXT: W14 source-only Effects integration handoff; Mapping edits remain a later slice.
+
+
+## Mapping slice 4 — group discovery and linked articulation feedback (2026-10-09)
+
+Mapping reuses the retained v1 `0cb7a8a0:src/ui/browser.rs:1058–1088` search helper for group/articulation-name search. The helper before adaptation was byte-identical to v1. The query trims surrounding space and ignores case; clear and no-match guidance restore the list. Searching preserves the selected group, zone and sample waveform, and dispatches no musical input. Matching uses the existing cached group/articulation links; source identities and prepared IR remain unchanged.
+
+Linked articulation rows announce and paint their selected state through the existing keyswitch active model. Selection queues the source articulation index despite overlay reorder/remap, stores the same fallback as the keyswitch panel, and yields to runtime observations. The test explicitly models the engine's acknowledgement, then removes that observation to verify shared fallback and restores it to verify runtime authority; it does not claim a binary-host acknowledgement measurement. Effective trigger labels and authored/fallback colours remain intact. W14's Effects and `inside.rs` are untouched.
+
+`mapping-polish-red.log` records two actual failing-first UI tests: absent Mapping search and absent linked active feedback. The first capture review found an inherited search-glyph overlap in the shared helper under current MUI: padding the field did not move its fixed-inset text canvas. The direct v1 port is adapted with parent spacing, a retained clear-button area and icon-area focus. The geometry/pointer-focus assertions were prepared before this correction; an additional old-binary spacing RED was blocked by quiet and was not run. The two feature REDs and original captures are the failure evidence.
+
+Final `mapping-polish-final-green.log`: **36 passed**, covering search/empty recovery at both sizes, stable linked selection, runtime authority, existing browser paths, resident waveform tests, prior Mapping/keyswitch tests, worker-loaded Falcon and real Analog/Horns plus Afflatus authored-script remap probes. The real probes ran rather than skipped. Final root `cargo test --profile ci --no-run` passed (`mapping-polish-final-no-run.log`). All cargo went through `kontakto-heavy`; no W4 heavy job was queued during the W9 quiet request.
+
+Receipts and final native PNGs reside at `/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w4-settings-parity/`. `screenshots/polish/mapping-search-{1180x780,900x640}.png` and `keyswitch-linked-{1180x780,900x640}.png` show the metadata-only synthetic fixture; no sample was admitted and the unavailable-waveform message is intentional. Supplemental `mapping-analog-{1180x780,900x640}.png` shows the actual 95,624-zone / 483-group library with its cached sample peaks. Only graphical captures are exported, not real-library PCM or key material.
+
+The user prohibited new subagents, so native finish-review and documenter ran inline. The second six-capture inspection resolves the single glyph-overlap finding: `mapping-polish-finish-verdict.md` records **disposition: ship**; `mapping-polish-design-documenter.md` records **No changes**. The bounded group rail remains scrollable at the smaller size. Existing DESIGN title/sidecar drift was not repaired or canonized. No full suite, native binary-host or timed CPU/RSS claim follows. W9: the query/filter executes only in the UI; this slice changes no audio-thread processing or allocation.
+
+NEXT: MIDI-learn cancellation and exclusive editor ownership regressions.
