@@ -381,6 +381,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn realtime_matches_v1_hermite_through_three_octaves() {
+        let kernel = Kernel::new(ResampleQuality::Realtime);
+        let taps = [[0.271, -0.991], [0.831, 0.173], [-0.419, 0.631], [0.927, -0.217]];
+        for step in [0.8, 1.0001, 1.5, 2., 3., 4., 8.] {
+            assert!(kernel.uses_cubic(step), "v1 interpolation at {step}");
+            assert!(kernel.polyphase(step).is_none());
+            for fraction in [0., 0.123456789, 0.5, 0.999999999] {
+                // v1 0cb7a8a0:voice.rs::mix_body uses the upper 24 phase bits.
+                let t = (((fraction * 4294967296.) as u64 as u32) >> 8) as f32 / 16777216.;
+                let expected: [f32; 2] = std::array::from_fn(|c| {
+                    let [xm1, x0, x1, x2] = taps.map(|q| q[c]);
+                    let c1 = 0.5 * (x1 - xm1);
+                    let c2 = xm1 - 2.5 * x0 + 2. * x1 - 0.5 * x2;
+                    let c3 = 0.5 * (x2 - xm1) + 1.5 * (x0 - x1);
+                    ((c3 * t + c2) * t + c1) * t + x0
+                });
+                let actual = kernel.sample(fraction, step, |offset| taps[(offset + 1) as usize]);
+                assert_eq!(actual.map(f32::to_bits), expected.map(f32::to_bits));
+            }
+        }
+        assert!(kernel.polyphase(8.0001).is_some());
+        assert!(kernel.polyphase(MAX_STEP).is_some());
+    }
+
+    #[test]
     fn realtime_polyphase_covers_every_supported_pitched_up_octave() {
         let kernel = Kernel::new(ResampleQuality::Realtime);
         for step in [1.0001, 2., 2.0001, 3., 4., 8., MAX_STEP] {
