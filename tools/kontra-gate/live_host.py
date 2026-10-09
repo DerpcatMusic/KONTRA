@@ -7,6 +7,7 @@ native states stay in tmpfs; only numeric receipts and hashes are retained.
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import struct
@@ -42,7 +43,9 @@ def events(program, seconds):
     assert isinstance(key, int) and 0 <= key < 128
     assert isinstance(velocity, int) and 1 <= velocity < 128
     assert switch is None or isinstance(switch, int) and 0 <= switch < 128
-    result = [(0, 0xb0, 1, 100), (0, 0xb0, 11, 127)]
+    cc1 = program.get('cc1', 100)
+    assert type(cc1) is int and 0 <= cc1 < 128
+    result = [(0, 0xb0, 1, cc1), (0, 0xb0, 11, 127)]
     at = 0
     if switch is not None:
         result += [(0, 0x90, switch, 64), (128, 0x80, switch, 0)]
@@ -192,7 +195,30 @@ def measured_status(live):
     return 'MEASURED' if complete and live.get('contention') == 'QUIET' else 'UNKNOWN'
 
 
-def observe(host, plugin, state, plan, block, seconds, folder, version):
+def load_observation(records, rows):
+    """Keep host process RSS separate from the plugin's sample-memory counter."""
+    probes = [r for r in records if r.get('kind') == 'load_probe']
+    fields = ['ready_ms', 'first_audio_wall_ms', 'first_audio_frame', 'rss_before_kb',
+              'rss_ready_kb', 'rss_done_kb', 'hwm_kb', 'swap_kb']
+    def number(value):
+        return type(value) in (int, float) and math.isfinite(value) and value >= 0
+    probe = probes[0] if len(probes) == 1 else {}
+    valid = all(number(probe.get(k)) for k in fields)
+    if valid:
+        valid = (type(probe['first_audio_frame']) is int and probe['rss_before_kb'] > 0
+                 and probe['hwm_kb'] >= max(probe['rss_before_kb'], probe['rss_ready_kb'], probe['rss_done_kb'])
+                 and probe['first_audio_wall_ms'] >= probe['ready_ms'])
+    finished = {r.get('load_id'): r.get('data', {}) for r in rows
+                if r.get('event') == 'load_finished' and r.get('data', {}).get('status') in ['loaded', 'partial']}
+    data = next(iter(finished.values())) if len(finished) == 1 else {}
+    stages = data.get('stages_ms', {})
+    if not isinstance(stages, dict): stages = {}
+    return dict({k: probe[k] for k in fields if number(probe.get(k))}, complete=bool(valid),
+                plugin_load_ms=data.get('elapsed_ms') if number(data.get('elapsed_ms')) else None,
+                plugin_stages_ms={k: v for k, v in stages.items() if number(v)})
+
+
+def observe(host, plugin, state, plan, block, seconds, folder, version, load_probe=False):
     folder.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='kontra-live-', dir='/dev/shm') as temp:
         temp = Path(temp)
@@ -203,6 +229,10 @@ def observe(host, plugin, state, plan, block, seconds, folder, version):
         readback = temp / 'readback.state'
         private_settings(temp / 'config')
         env = dict(os.environ, XDG_CONFIG_HOME=str(temp / 'config'))
+        if load_probe:
+            env['KONTRA_LOAD_HOST'] = '1'
+            for key in ['KONTRA_UVI_AUDIT_SEED', 'KONTRA_SIGNAL_TRACE', 'KONTRA_REPORT_DIR', 'PROBE_ALLOCS']:
+                env.pop(key, None)
         capture = Capture(folder, env)
         activity = Activity(folder)
         job = None
@@ -222,7 +252,7 @@ def observe(host, plugin, state, plan, block, seconds, folder, version):
                         elif loaded == 'FAILED':
                             live['host_failure'] = 'plugin load reported failed'
                             job.kill(); job.wait(); break
-                    time.sleep(.05)
+                    time.sleep(.005 if load_probe else .05)
                 output.seek(0)
                 raw = output.read()
                 records = []
@@ -246,6 +276,8 @@ def observe(host, plugin, state, plan, block, seconds, folder, version):
                             native_state_readback_sha256=hashlib.sha256(saved).hexdigest(),
                             audition_sha256=sha(schedule), stdout_sha256=hashlib.sha256(raw).hexdigest(),
                             perf_view=views, streaming_io=io, underruns=views[-1]['underruns'] if views else frozen_underruns(rows))
+                if load_probe:
+                    live['load_probe'] = load_observation(records, rows)
                 if job.returncode == 0 and not live['native_state_verified']:
                     live['host_failure'] = 'native selection readback mismatch or unavailable'
         finally:
@@ -257,6 +289,8 @@ def observe(host, plugin, state, plan, block, seconds, folder, version):
         diagnostics.write_text(json.dumps(captured) + '\n')
         live['contention'] = json.loads((folder / 'activity.json').read_text())['status']
         live['status'] = measured_status(live)
+        if load_probe and not live.get('load_probe', {}).get('complete'):
+            live['status'] = 'UNKNOWN'
         (folder / 'metrics.json').write_text(json.dumps(live, indent=2) + '\n')
         return live
 
