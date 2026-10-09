@@ -403,7 +403,7 @@ struct PreparedRegion {
     bus: Option<usize>,
     envelope: Envelope,
     fallback_envelope: bool,
-    cursor: super::source::Cursor,
+    cursor: super::source::CursorTemplate,
     root_key: Option<u8>,
     transpose_semitones: f64,
     take: Option<super::Take>,
@@ -429,6 +429,7 @@ pub struct Prepared {
     pub(super) dsp_bindings: Box<[super::ControlRange]>,
     pub(super) dsp_controls: Box<[(super::ControlId, usize)]>,
     regions: Box<[PreparedRegion]>,
+    cursor_loops: Box<[super::source::LoopSlots]>,
     pub(super) group_count: u32,
     pub(super) source_event_limit: i32,
     /// CC64 holds no gate: a behavior implements sustain itself.
@@ -463,6 +464,7 @@ pub struct Prepared {
     candidates: Box<[Candidate]>,
     pub(super) programs: Box<[super::Program]>,
     pub(super) script_initial: Box<[super::ops::ScriptInitial]>,
+    pub(super) midi_object: super::MidiObject,
     pub(super) stages: Box<[super::Stage]>,
     pub(super) note_cells: usize,
     pub(super) automation: Box<[super::AutomationBinding]>,
@@ -543,6 +545,7 @@ impl Prepared {
         }
         let mut count = 0usize;
         let mut prepared_regions = Vec::new();
+        let mut cursor_loops = Vec::new();
         for r in &regions {
             if r.sample >= pcm.len()
                 || r.key_low > r.key_high
@@ -591,7 +594,7 @@ impl Prepared {
                 bus: None,
                 envelope: r.envelope,
                 fallback_envelope: false,
-                cursor,
+                cursor: super::source::CursorTemplate::new(cursor, &mut cursor_loops),
                 root_key: r.root_key,
                 transpose_semitones: r.playback.transpose_semitones,
                 take: None,
@@ -612,7 +615,7 @@ impl Prepared {
                             f64::from(key) - f64::from(root) + tuning.0[key as usize];
                         playback.step(pcm[r.sample].sample_rate(), rate)
                     } else {
-                        prepared_regions[region].cursor.step()
+                        prepared_regions[region].cursor.cursor(&cursor_loops).step()
                     };
                     if !(super::resample::MIN_STEP..=super::resample::MAX_STEP).contains(&step) {
                         return Err(Error::InvalidInput);
@@ -622,6 +625,11 @@ impl Prepared {
             }
         }
         offsets[128] = candidates.len();
+        if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
+            eprintln!("AUDIT {{\"stage\":\"region_playback_templates\",\"regions\":{},\"region_bytes\":{},\"cursor_bytes\":{},\"template_bytes\":{},\"multi_loop_regions\":{},\"multi_loop_bytes\":{}}}",
+                prepared_regions.len(), size_of::<PreparedRegion>(), size_of::<super::source::Cursor>(),
+                size_of::<super::source::CursorTemplate>(), cursor_loops.len(), size_of::<super::source::LoopSlots>());
+        }
         Ok(Self {
             rate,
             pcm: pcm.into_boxed_slice(),
@@ -633,6 +641,7 @@ impl Prepared {
             filters: Box::new([]),
             dsp_controls: Box::new([]),
             regions: prepared_regions.into_boxed_slice(),
+            cursor_loops: cursor_loops.into_boxed_slice(),
             group_count: 0,
             source_event_limit: i32::MAX,
             script_sustain: false,
@@ -662,6 +671,7 @@ impl Prepared {
             candidates: candidates.into_boxed_slice(),
             programs: Box::new([]),
             script_initial: Box::new([]),
+            midi_object: super::MidiObject::default(),
             stages: Box::new([]),
             note_cells: 0,
             automation: Box::new([]),
@@ -760,7 +770,12 @@ impl Prepared {
                 .flat_map(|p| &p.routes)
                 .any(|r| match r.target {
                     super::ModTarget::ProcessorCutoff(i)
-                    | super::ModTarget::ProcessorResonance(i) => i as usize >= self.filters.len(),
+                    | super::ModTarget::ProcessorResonance(i) => !matches!(self.filters.get(i as usize),
+                        Some(super::dsp::svf::PreparedFilter::StateVariable(_))),
+                    super::ModTarget::ProcessorNativeCutoff(i)
+                    | super::ModTarget::ProcessorNativeResonance(i)
+                    | super::ModTarget::ProcessorNativeGain(i) => !matches!(self.filters.get(i as usize),
+                        Some(super::dsp::svf::PreparedFilter::NativeControl)),
                     _ => false,
                 })
         {
@@ -965,7 +980,7 @@ impl Prepared {
         for (region, trigger) in self.regions.iter_mut().zip(triggers) {
             if let Some(index) = trigger.release_index()
                 && self.release_options[index].duration.is_none()
-                && region.cursor.unbounded_loop()
+                && region.cursor.cursor(&self.cursor_loops).unbounded_loop()
                 && !region.envelope.finite()
             {
                 return Err(Error::InvalidInput);

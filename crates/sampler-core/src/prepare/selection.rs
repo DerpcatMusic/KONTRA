@@ -417,6 +417,8 @@ impl Runtime {
         });
         if let Some(log) = &mut self.selection_log {
             log.push(crate::SelectionRecord {
+                event: n.order,
+                parent_event: None,
                 at: self.now,
                 key,
                 velocity: 0.,
@@ -609,6 +611,7 @@ impl Runtime {
                     let asset = &prepared.pcm[r.sample];
                     let cursor = r
                         .cursor
+                        .cursor(&prepared.cursor_loops)
                         .with_offset(offset_micros, asset.sample_rate())
                         .with_step(step);
                     self.check_source_ready(asset, cursor, self.region_envelope(r.envelope, r.fallback_envelope))?;
@@ -811,10 +814,13 @@ impl Runtime {
                     region: c.region,
                     group,
                     rejected: verdict,
+                    started: None,
                 }
             })
             .collect();
         crate::SelectionRecord {
+            event: n.order,
+            parent_event: n.parent.and_then(|id| self.notes.get(id.0).map(|n| n.order)),
             at: self.now,
             key,
             velocity,
@@ -911,13 +917,14 @@ impl Runtime {
                 let start = prepared
                     .voice_modulation
                     .start_offset(candidate.region, &inputs, seed);
+                let cursor = r.cursor.cursor(&prepared.cursor_loops);
                 let cursor = if trigger == Trigger::Attack {
-                    r.cursor.with_offset(
+                    cursor.with_offset(
                         self.note_events[note.0.index].source_offset_micros,
                         prepared.pcm[r.sample].sample_rate(),
                     )
                 } else {
-                    r.cursor
+                    cursor
                 };
                 let cursor = if start != 0 {
                     cursor.skip(start)
@@ -964,6 +971,14 @@ impl Runtime {
                     .get(candidate.region)
                     .copied()
                     .unwrap_or(candidate.region as u32 + 1);
+                if let Some(record) = self.selection_log.as_mut().and_then(|log| log.last_mut()) {
+                    if let Some(candidate) = record.candidates.iter_mut().find(|c| c.region == candidate.region) {
+                        candidate.started = Some(crate::SelectedSource {
+                            zone: state.source_zone, sample: r.sample,
+                            frame: state.cursor.trace_position(), direction: state.cursor.trace_direction(), loops: state.cursor.trace_loops(),
+                        });
+                    }
+                }
                 if r.chain.is_some() {
                     self.plans.get_mut(plan.0).unwrap().dsp.reset(voice.0.index);
                 }

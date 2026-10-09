@@ -23,7 +23,7 @@ ROOT = Path.home() / '.cache/kontra-runs'
 V1 = Path.home() / '.cache/kontra-v1'
 HEAVY = Path.home() / '.cache/kontakto-heavy'
 DRIVER = HERE.parent / 'kontra-scan/kontra_scan.py'
-METRICS = ['load_ms', 'first_audio_ms', 'peak_rss_mb', 'underruns', 'nonfinite', 'family_match', 'widget_gesture_pass', 'fx_slots_dropped', 'filter_slots_dropped', 'mod_slots_dropped', 'signal_graph_trace']
+METRICS = ['load_ms', 'first_audio_ms', 'peak_rss_mb', 'underruns', 'nonfinite', 'family_match', 'widget_gesture_pass', 'presented_ui_pass', 'fx_slots_dropped', 'filter_slots_dropped', 'mod_slots_dropped', 'signal_graph_trace']
 
 
 def utc():
@@ -88,6 +88,7 @@ def summarize(run, complete=False):
     observed = []
     cpu = json.loads((run / 'cpu.json').read_text()) if (run / 'cpu.json').exists() else {}
     gestures = json.loads((run / 'gestures.json').read_text()) if (run / 'gestures.json').exists() else {}
+    presented = json.loads((run / 'presented.json').read_text()) if (run / 'presented.json').exists() else {}
     host = json.loads((run / 'host.json').read_text()) if (run / 'host.json').exists() else {}
     axes = {key: [] for key in ['UI', 'DSP', 'UVI', 'scripting', 'beats-v1-every-metric']}
     totals = {version: {'rows': 0, 'original_ok': 0, 'audible': 0} for version in ['v1', 'v2']}
@@ -102,7 +103,11 @@ def summarize(run, complete=False):
                 totals[version]['audible'] += row.get('plays_note') == 'yes'
             ui = 'UNKNOWN' if not new else 'PASS' if new.get('ui') == 'original-ok' else 'FAIL'
             audible = 'UNKNOWN' if not new or new.get('audition_status') in ['audition-mismatch', 'fallback-note', 'not-auditioned'] else 'PASS' if new.get('plays_note') == 'yes' else 'FAIL'
-            axes['UI'] += [ui, gestures.get('status', 'UNKNOWN') if path.endswith('/Instruments/Conflux.nki') else 'UNKNOWN']  # gesture/persistence coverage is not scalar readback
+            from adapters import gesture_cell
+            gesture = gesture_cell(gestures.get('cells', []), item, condition)
+            from presented import presented_cell
+            surface = presented_cell(presented.get('cells', []), item, condition, manifest['sha'])
+            axes['UI'] += [ui, gesture['status'], surface['status']]
             axes['DSP'] += [audible, 'UNKNOWN']  # native family and complete slot disposition not observed
             if '::' in path:
                 axes['UVI'] += [ui, audible, 'UNKNOWN']  # gate subset never certifies the entire corpus
@@ -111,6 +116,20 @@ def summarize(run, complete=False):
             axes['scripting'].append('FAIL' if any(v and v > 0 for v in known) else 'UNKNOWN' if not known or None in known else 'PASS')
             for metric in METRICS:
                 a, b = old.get(metric), new.get(metric)
+                if metric == 'widget_gesture_pass':
+                    observed.append({'item_sha256': item, 'condition': condition, 'metric': metric, 'v1': None, 'v2': gesture.get('passed'), 'delta': None, 'total': gesture.get('total'), 'failures': gesture.get('failures', {}), 'verdict': gesture['status']})
+                    continue
+                if metric == 'presented_ui_pass':
+                    observed.append({'item_sha256': item, 'condition': condition, 'metric': metric,
+                                     'v1': None, 'v2': None, 'delta': None, 'verdict': surface['status'],
+                                     'reason': surface.get('reason'), 'frames': surface.get('frames'),
+                                     'black_regions': surface.get('black_regions', []),
+                                     'duplicate_chrome': surface.get('duplicate_chrome', []),
+                                     'visibility_flicker': surface.get('visibility_flicker', []),
+                                     'capture_intervals': surface.get('capture_intervals'),
+                                     'native_timing': surface.get('native_timing', []),
+                                     'timing_status': surface.get('timing_status', 'UNKNOWN')})
+                    continue
                 if metric in ['load_ms', 'first_audio_ms']:
                     a = a if old.get('loads') == 'yes' else None
                     b = b if new.get('loads') == 'yes' else None
@@ -306,7 +325,7 @@ def main():
     parser.add_argument('--source', type=Path, help='existing owned clean checkout at exact SHA')
     parser.add_argument('--resume', type=Path)
     parser.add_argument('--require-quiet', action='store_true', help='wait outside heavy slots until other heavy units/processes are inactive; monitor every timed cell')
-    parser.add_argument('--adapter', choices=['cpu', 'gestures', 'host', 'all'], help='run owner adapter(s) on an existing run without repeating scanner cells')
+    parser.add_argument('--adapter', choices=['cpu', 'gestures', 'host', 'presented', 'all'], help='run owner adapter(s) on an existing run without repeating scanner cells')
     args = parser.parse_args()
     sha = subprocess.check_output(['git', '-C', str(REPO), 'rev-parse', args.sha + '^{commit}'], text=True).strip()
     ROOT.mkdir(parents=True, exist_ok=True)
@@ -336,7 +355,7 @@ def main():
             manifest['contention_protocol'] = 1
             if subprocess.check_output(['git', '-C', str(args.source), 'rev-parse', 'HEAD'], text=True).strip() != sha:
                 parser.error('adapter checkout SHA differs')
-            for name in (['cpu', 'gestures', 'host'] if args.adapter == 'all' else [args.adapter]):
+            for name in (['cpu', 'gestures', 'host', 'presented'] if args.adapter == 'all' else [args.adapter]):
                 getattr(adapters, name)(run, args.source)
             manifest['adapter_completed_utc'] = utc()
             manifest['adapter_source_sha256'] = sha256(HERE / 'adapters.py')
@@ -357,7 +376,7 @@ def main():
             if not harness.exists():
                 (harness / 'kontra-gate').mkdir(parents=True)
                 (harness / 'kontra-scan').mkdir()
-                for name in ['evidence.py', 'adapters.py', 'gate.py', 'contention.py']:
+                for name in ['evidence.py', 'adapters.py', 'gate.py', 'contention.py', 'presented.py']:
                     shutil.copyfile(HERE / name, harness / 'kontra-gate' / name)
                 shutil.copyfile(DRIVER, harness / 'kontra-scan/kontra_scan.py')
                 shutil.copyfile(HERE.parent / 'audit-load.py', harness / 'audit-load.py')
@@ -371,7 +390,7 @@ def main():
             probes(run, env)
             import adapters
             source = Path(manifest['source_checkout']) if manifest.get('source_checkout') else Path.home() / '.t3/worktrees/KONTAKTO' / ('gate-' + sha[:12])
-            for name in ['cpu', 'gestures', 'host']:
+            for name in ['cpu', 'gestures', 'host', 'presented']:
                 getattr(adapters, name)(run, source)
             manifest.update(state='complete', completed_utc=utc())
         except Exception as error:

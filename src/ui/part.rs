@@ -271,10 +271,6 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
 pub fn welcome(cx: &Cx) -> El {
     let mut lines = vec![
         title("Pick an instrument").text_weight(Weight::SEMIBOLD),
-        body("Choose a library on the left and click an instrument, or drag it onto the rack. Multis load the whole rack.")
-            .fill(secondary())
-            .lines(3)
-            .max_size(Size::new(TEXT * 35., CONTROL * 3.)),
     ];
     if !cx.view.multi_status.is_empty() {
         lines.push(caption(cx.view.multi_status.clone()).fill(secondary()).lines(2));
@@ -334,6 +330,7 @@ pub fn performance(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
     if inst.is_none() && report.is_none() {
         return None;
     }
+    let mut rows = Vec::new();
     let mut items = Vec::new();
     if let Some(inst) = inst.as_deref() {
         if let Some(n) = inside::active(cx, slot).filter(|&n| n < inst.articulations.len()) {
@@ -341,13 +338,15 @@ pub fn performance(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
             let id = &crate::sound::articulation::identities(&inst.articulations)[n];
             let input = cx.selection.parts[slot].articulation_overlay.input(id, a, inside::mode(cx, slot, inst));
             let text = format!("{} · {}", a.name, inside::input_label(&input));
-            items.push(row![caption("Articulation").fill(secondary()), body(text).lines(1)].gap(SPACE).align(Align::Center).named("Articulation").id(format!("perf-art-{slot}")));
+            rows.push(row![caption("Articulation").fill(secondary()).lines(1).shrink(0), body(text.clone()).lines(1).flex(1).min_w(0)]
+                .gap(SPACE).align(Align::Center).tip(text).named("Articulation").id(format!("perf-art-{slot}")));
         }
         if let Some(text) = volume_text(inst) {
             items.push(
                 row![caption("Volume").fill(secondary()), body(text).lines(1)]
                     .gap(SPACE)
                     .align(Align::Center)
+                    .shrink(0)
                     .tip("The instrument's saved volume until CC7 arrives; then CC7 cubed")
                     .id(format!("perf-vol-{slot}")),
             );
@@ -374,13 +373,17 @@ pub fn performance(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
         let needs = report.as_ref().is_some_and(|r| r.decoded.needs_controller);
         let words = badge_text(&moving.join("/"), picked, loaded, needs);
         let badge = if words.starts_with("Needs") {
-            caption(words).fill(Role::Warning).tip("Near-silent until the controller moves; set where it starts")
+            caption(words.clone()).fill(Role::Warning).tip(format!("{words}\nNear-silent until the controller moves; set where it starts"))
         } else {
-            caption(words).fill(secondary())
+            caption(words.clone()).fill(secondary()).tip(words)
         };
-        items.push(row![badge.id(format!("perf-needs-{slot}")), segmented(tabs)].gap(SPACE).align(Align::Center));
+        items.push(row![badge.lines(1).flex(1).min_w(0).id(format!("perf-needs-{slot}")), segmented(tabs).shrink(0)]
+            .gap(SPACE).align(Align::Center).flex(1).min_w(CONTROL * 9.));
     }
-    Some(row(items).gap(SPACE * 2.).align(Align::Center).pad((SPACE, TIGHT)).w(Len::Pct(100.)).shrink(0).id(format!("perf-{slot}")))
+    if !items.is_empty() {
+        rows.push(row(items).wrap().gap(SPACE * 2.).line_gap(TIGHT).align(Align::Center));
+    }
+    Some(col(rows).gap(TIGHT).align(Align::Stretch).pad((INSET, TIGHT)).w(Len::Pct(100.)).shrink(0).id(format!("perf-{slot}")))
 }
 
 /// The part's view switch, then the view: its interface, articulations,

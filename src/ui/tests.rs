@@ -47,8 +47,8 @@ pub(super) fn center(ui: &Ui, id: &str) -> Point {
 
 type Build = Box<dyn FnMut(&mut Ui, &mut Bridge<SamplerParams>) -> El>;
 
-pub(super) struct Harness {
-    pub(super) ui: Ui,
+pub(crate) struct Harness {
+    pub(crate) ui: Ui,
     build: Build,
     bridge: Bridge<SamplerParams>,
     size: Size,
@@ -57,7 +57,7 @@ pub(super) struct Harness {
 }
 
 impl Harness {
-    pub(super) fn new(p: &Arc<SamplerParams>, width: f64, height: f64) -> Self {
+    pub(crate) fn new(p: &Arc<SamplerParams>, width: f64, height: f64) -> Self {
         let computer = Arc::<computer::Computer>::default();
         let art = Arc::<art::Art>::default();
         let mut h = Self {
@@ -72,7 +72,7 @@ impl Harness {
         h
     }
 
-    pub(super) fn tick(&mut self, input: Input) {
+    pub(crate) fn tick(&mut self, input: Input) {
         let root = (self.build)(&mut self.ui, &mut self.bridge);
         self.ui
             .frame(root, Some(self.size), input, 1. / 60.)
@@ -80,7 +80,7 @@ impl Harness {
     }
 
     /// Frames until the library artwork asked for is made and drawn.
-    fn settle_art(&mut self) {
+    pub(super) fn settle_art(&mut self) {
         loop {
             self.idle(1);
             if !self.art.busy() {
@@ -378,14 +378,14 @@ fn the_browser_finds_by_library_and_folder() {
     assert!(shown(&h, "folder-4") && !shown(&h, "instrument-5"));
     tap(&mut h, Key::Down);
     tap(&mut h, Key::Right);
-    assert!(shown(&h, "instrument-2"), "Right opens a folder");
+    assert!(shown(&h, "instrument-0"), "Right opens a folder");
     assert_eq!(p.shared.libraries.settings().folders.get("/virtual/Lib 042/Instruments/0 Part"), Some(&true));
     tap(&mut h, Key::Right);
-    assert_eq!(h.ui.focus_key(), Some("instrument-2"), "and steps into it");
+    assert_eq!(h.ui.focus_key(), Some("instrument-0"), "and steps into it");
     tap(&mut h, Key::Left);
     assert_eq!(h.ui.focus_key(), Some("folder-1"), "Left steps back to its folder");
     tap(&mut h, Key::Left);
-    assert!(!shown(&h, "instrument-2"), "and shuts it");
+    assert!(!shown(&h, "instrument-0"), "and shuts it");
     tap(&mut h, Key::Right);
     tap(&mut h, Key::Right);
     tap(&mut h, Key::Enter);
@@ -514,8 +514,8 @@ fn rack_interactions() {
     h.press("preset-prev-0");
     assert!(parts(&p)[0].path.ends_with("Piano.nki"));
 
-    h.press("picker-multis");
-    h.press("instrument-0");
+    h.press("folder-3");
+    h.press("instrument-2");
     assert!(
         p.shared
             .multi_request
@@ -526,7 +526,7 @@ fn rack_interactions() {
             .ends_with("Ensemble.kontra-multi")
     );
     assert_eq!(parts(&p).len(), 2, "the rack stays until the multi loads");
-    h.press("picker-instruments");
+    h.press("folder-3");
 
     h.drag("name-1", "header-0");
     assert_eq!(
@@ -804,7 +804,7 @@ fn the_split_browser_walks_both_panes() {
     assert!(shown(&h, "instrument-0") && !shown(&h, "instrument-1"), "and lists the one it lands on");
     h.tick(key(Key::Tab));
     h.idle(2);
-    assert_eq!(h.ui.focus_key(), Some("instrument-0"), "Tab crosses to the presets");
+    assert_eq!(h.ui.focus_key(), Some("folder-0"), "Tab crosses to the preset categories");
     h.tick(key(Key::Tab));
     h.idle(2);
     assert_eq!(h.ui.focus_key(), Some("library-1"), "and back to the library");
@@ -878,7 +878,7 @@ fn split_browser_keeps_both_panes_usable_across_resize_and_scale() {
                 h.ui.focus(start);
                 h.tick(Input { keys: vec![KeyPress { key: Key::Home, mods: Mods::default() }], ..Default::default() });
                 h.idle(30);
-                assert_eq!(h.ui.focus_key(), Some("instrument-0"), "Home: split={split} scale={scale} size={size:?}");
+                assert_eq!(h.ui.focus_key(), Some("folder-0"), "Home: split={split} scale={scale} size={size:?}");
                 h.tick(Input { keys: vec![KeyPress { key: Key::End, mods: Mods::default() }], ..Default::default() });
                 h.idle(30);
                 assert_eq!(h.ui.focus_key(), Some("instrument-99"), "End: split={split} scale={scale} size={size:?}");
@@ -1343,7 +1343,7 @@ fn screenshot() {
         ("rack", true, &["tab-rack"]),
         ("info", true, &["tab-info"]),
         ("library", false, &["library-1"]),
-        ("multis", false, &["picker-multis"]),
+        ("falcon-uvi", false, &["bank-uvi"]),
         // A library's folders, one opened by the keys, a part loaded.
         ("browser-tree", true, &["library-2"]),
         // The search inside a library: flat, each with its folder under it.
@@ -2318,3 +2318,36 @@ fn shared_context_menu_never_fades_over_interactive_content() {
     let kb=|key:&str| status.lines().find_map(|l|l.strip_prefix(key)?.split_whitespace().next()?.parse::<u64>().ok()).unwrap_or(0);
     serde_json::json!({"build_ms":build_ms,"rss_live_mb":kb("VmRSS:") as f64/1024.,"hwm_live_mb":kb("VmHWM:") as f64/1024.})
  }
+
+#[test]
+fn full_editor_native_frames_fit_a_plain_two_mib_thread() {
+    std::thread::Builder::new().stack_size(2 << 20).spawn(|| {
+        use sampler_ui_ir as ir;
+        let dir = std::env::temp_dir().join(format!("kontra-editor-native-stack-{}",std::process::id()));
+        std::fs::create_dir_all(dir.join("Resources/native_ui")).unwrap();
+        let mut node="@ui.Rectangle {color=ui.Color(20,40,60)}.frame(width=32,height=32)".to_owned();
+        for _ in 0..32 {node=format!("@ui.VStack {{ {node} }}");}
+        std::fs::write(dir.join("Resources/native_ui/main.nui"),format!("local ui=require('native_ui')\nreturn function() return {node}.frame(width=32,height=32).on_tap_gesture({{complete=function() end}}) end")).unwrap();
+        let p = Arc::new(SamplerParams::new());
+        p.selection.write().unwrap().parts=vec![crate::plugin::Part {path:dir.join("fixture.nki").to_string_lossy().into_owned(),view:1,..Default::default()}];
+        p.selection.write().unwrap().order=vec![0];
+        p.shared.view.lock().unwrap().parts[0].interfaces=vec![ir::Interface {
+            source:ir::Source::Ksp{slot:0},
+            native_ui:Some(ir::NativeUi{entry:"main".into()}),
+            pages:vec![ir::Page{size:ir::Size{width:32,height:32},..Default::default()}],
+            widgets:vec![ir::Widget::new("fixture",ir::PageRef(0),ir::Rect::new(0,0,32,32),ir::Kind::Label)],
+            ..Default::default()
+        }].into();
+        let mut h=Harness::new(&p,1180.,760.);
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);
+        let painted=|h:&Harness|h.ui.scene().unwrap().surfaces().any(|s|s.key.as_str().starts_with("nui-")&&s.key.as_str().ends_with("-root/component"));
+        while !painted(&h) {
+            assert!(std::time::Instant::now()<deadline,"full editor never painted native fixture");
+            h.idle(1); std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        h.idle(4);
+        assert!(painted(&h));
+        drop(h);
+        std::fs::remove_dir_all(dir).unwrap();
+    }).unwrap().join().unwrap();
+}

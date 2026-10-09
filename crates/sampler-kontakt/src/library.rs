@@ -206,6 +206,8 @@ fn translate(
         engine: Vec::new(),
         dynamic: false,
         send_taps: Vec::new(),
+        #[cfg(feature="scan")]
+        target_outcomes: HashMap::new(),
     };
     match crate::program_automation(&program.0.private_data, program.version(), crate::Limits { bytes: 64 << 20, records: 65536 }) {
         Ok(records) => for record in records {
@@ -477,6 +479,8 @@ fn translate(
     let _span = crate::audit::Span::new("translate_keys_validate");
     crate::keyswitch::translate(&mut out.ir, &out.start_criteria);
     out.ir.unsupported.dedup();
+    #[cfg(feature = "scan")]
+    { out.ir.dsp_slots = crate::coverage::slots(&program, &out.ir, dynamic, &out.engine, &out.target_outcomes).ok(); out.ir.native_start_mod_groups = crate::coverage::start_mod_groups(&program).ok(); }
     out.ir.validate().map_err(|e| invalid(&e.to_string()))?;
     Ok(Kontakt {
         instrument: out.ir,
@@ -521,6 +525,8 @@ struct Translation {
     /// A script writes effect slots while playing.
     dynamic: bool,
     send_taps: Vec<(ir::ChainRef, crate::effects::SendTap)>,
+    #[cfg(feature="scan")]
+    target_outcomes: crate::coverage::Targets,
 }
 
 const VOICE_GROUPS: u16 = 0x32;
@@ -948,16 +954,15 @@ impl Translation {
                 { address.runtime = Some(modulator); }
                 if envelope_source && volume && envelope.is_none() {
                     envelope = Some(modulator);
+                    #[cfg(feature="scan")]
+                    self.target_outcomes.insert((index,usize::from(slot),false,0),true);
                     continue;
                 }
-                for target in &params.targets {
-                    routes.extend(self.route(
-                        &at,
-                        modulator,
-                        envelope_source,
-                        target,
-                        chain.zip(Some(&filter_slots[..])),
-                    ));
+                for (_ordinal,target) in params.targets.iter().enumerate() {
+                    let route=self.route(&at,modulator,envelope_source,target,chain.zip(Some(&filter_slots[..])));
+                    #[cfg(feature="scan")]
+                    self.target_outcomes.insert((index,usize::from(slot),false,_ordinal),route.is_some());
+                    routes.extend(route);
                 }
             }
         }
@@ -1001,6 +1006,8 @@ impl Translation {
                     // gain × velocity: the attenuate law at full intensity,
                     // kept on the voice so no per-voice modulation is needed.
                     velocity = ir::VelocityResponse::Linear;
+                    #[cfg(feature="scan")]
+                    self.target_outcomes.insert((index,usize::from(slot),true,0),true);
                     continue;
                 }
                 let source = match params.source {
@@ -1056,14 +1063,11 @@ impl Translation {
                 {
                     address.runtime = Some(modulator);
                 }
-                for target in &params.targets {
-                    routes.extend(self.route(
-                        &at,
-                        modulator,
-                        !bipolar,
-                        target,
-                        chain.zip(Some(&filter_slots[..])),
-                    ));
+                for (_ordinal,target) in params.targets.iter().enumerate() {
+                    let route=self.route(&at,modulator,!bipolar,target,chain.zip(Some(&filter_slots[..])));
+                    #[cfg(feature="scan")]
+                    self.target_outcomes.insert((index,usize::from(slot),true,_ordinal),route.is_some());
+                    routes.extend(route);
                 }
             }
         }
@@ -1159,41 +1163,36 @@ impl Translation {
             );
             None
         };
-        // Filter cutoff of an insert slot: octaves, linear in the modulator,
-        // 10 octaves per 100 % (KONTAKT_REFERENCE.md section 17).
-        let cutoff = match (target.slot, target.param.as_str()) {
-            (None, _) => None,
-            (Some(slot), "filterCutoff") => filters.and_then(|(chain, slots)| {
-                slots
-                    .iter()
-                    .find(|(s, _)| *s == usize::from(slot))
-                    .map(|&(_, index)| ir::Target::Processor {
-                        chain,
-                        index,
-                        parameter: ir::ProcessorParameter::Cutoff,
-                    })
-            }),
-            _ => None,
-        };
-        if target.slot.is_some() && cutoff.is_none() {
-            return report(
-                self,
-                "modulation of a module parameter",
-                ir::Reason::NotModeled,
-            );
+        // Native Ladder/Daft use normalized knob addition (v1 filter.rs);
+        // the generic filter fallback retains its octave law.
+        let addressed = filters.and_then(|(chain, slots)| {
+            let slot = target.slot?;
+            let (_, index) = slots.iter().find(|(s, _)| *s == usize::from(slot))?;
+            let native = self.ir.chains.get(chain.0).and_then(|c| c.pre_amplitude.iter()
+                .chain(&c.post_amplitude).nth(*index))
+                .is_some_and(|p| matches!(p, ir::Processor::LadderLP4(_) | ir::Processor::Daft(_)));
+            let parameter = match target.param.as_str() {
+                "filterCutoff" => ir::ProcessorParameter::Cutoff,
+                "filterQ" if native => ir::ProcessorParameter::Resonance,
+                "Gain" if native => ir::ProcessorParameter::Gain,
+                _ => return None,
+            };
+            let depth = if native { ir::Depth::Normalized(i) }
+                else { ir::Depth::Pitch(ir::Pitch::Semitones(120.0 * i)) };
+            Some((ir::Target::Processor { chain, index: *index, parameter }, depth))
+        });
+        if target.slot.is_some() && addressed.is_none() {
+            return report(self, "modulation of a module parameter", ir::Reason::NotModeled);
         }
         let (route_target, depth) = match target.param.as_str() {
-            _ if cutoff.is_some() => (
-                cutoff.unwrap_or(ir::Target::Amplitude),
-                ir::Depth::Pitch(ir::Pitch::Semitones(120.0 * i)),
-            ),
+            _ if addressed.is_some() => addressed.unwrap(),
             "volume" => (ir::Target::Amplitude, ir::Depth::Normalized(i)),
             "pitch" => (
                 ir::Target::Pitch,
                 ir::Depth::Pitch(ir::Pitch::Semitones(12.0 * i)),
             ),
             "playPos" => (ir::Target::SampleStart, ir::Depth::Normalized(i)),
-            "pan" => return report(self, "pan modulation", ir::Reason::UnknownLaw),
+            "pan" => (ir::Target::Pan, ir::Depth::Normalized(i)),
             _ => return report(self, "modulation target", ir::Reason::NotModeled),
         };
         // The invert flag does not act through an enabled shaper: Vista Full
@@ -1246,6 +1245,9 @@ impl Translation {
     ) -> Option<ir::Lfo> {
         let [fade_ms, rate, width, phase] = lfo.initial_values.map(f64::from);
         let shape = match (lfo.waveform, lfo.trailing_values) {
+            // Native core 0x140b07290: the five weighted components sum to zero.
+            // Verified original-byte waveform checks; the bipolar view is still 0.5.
+            (5, Some(weights)) if weights == [0.; 5] && width > 0. && width < 1. => ir::LfoShape::Zero,
             (0, _) => ir::LfoShape::Sine,
             (1, _) if width == 0.5 => ir::LfoShape::Square,
             (2, _) => ir::LfoShape::Triangle,
@@ -2007,6 +2009,8 @@ mod modulation {
             engine: Vec::new(),
             dynamic: false,
             send_taps: Vec::new(),
+        #[cfg(feature="scan")]
+        target_outcomes: HashMap::new(),
         }
     }
 
@@ -2161,6 +2165,32 @@ mod modulation {
     }
 
     #[test]
+    fn authored_pan_target_reaches_the_shared_voice_pan_route() {
+        for unipolar in [false, true] {
+            let mut t = translation();
+            let pan = ModTarget { lag_ms: 15, invert: true, ..target("pan", 0.5) };
+            t.route("g", ir::ModulatorRef(0), unipolar, &pan, None)
+                .expect("authored pan must execute");
+            assert_eq!(t.ir.routes[0].target, ir::Target::Pan);
+            assert_eq!(t.ir.routes[0].depth, ir::Depth::Normalized(0.5));
+            assert!(t.ir.routes[0].invert);
+            assert_eq!(t.ir.routes[0].smoothing, ir::Time::Milliseconds(15.));
+        }
+    }
+
+    #[test]
+    fn zero_wave_multi_lfo_retains_its_bipolar_source_instead_of_disappearing() {
+        let mut t = translation();
+        let lfo = Lfo { structured: false, version: 0x73, waveform: 5,
+            initial_values: [0., 1., 0.5, 0.],
+            records: [LfoRecord { flag: true, values: [-1., 0., 1.] },
+                LfoRecord { flag: false, values: [-1., 0., 1.] }],
+            trailing_flag: false, trailing_values: Some([0.; 5]), additional_flag: Some(true) };
+        let source = t.lfo("g", &lfo, true).expect("authored zero-wave Multi still has a bipolar output");
+        assert_eq!(source.shape, ir::LfoShape::Zero);
+    }
+
+    #[test]
     fn filter_cutoff_modulation_is_ten_octaves_per_full_amount() {
         let mut t = translation();
         let source = ir::ModulatorRef(0);
@@ -2191,6 +2221,37 @@ mod modulation {
     }
 
     #[test]
+    fn native_filter_q_and_gain_routes_add_normalized_depth() {
+        for processor in [ir::Processor::LadderLP4(ir::LadderLP4 { address: None, gain: -0.25,
+            cutoff: 0.5, resonance: 0., record_version: 0x92 }),
+            ir::Processor::Daft(ir::Daft { gain: 0., cutoff: 0.5, resonance: 0., highpass: false })] {
+            for (name, parameter) in [("filterQ", ir::ProcessorParameter::Resonance), ("Gain", ir::ProcessorParameter::Gain)] {
+                let mut t = translation();
+                t.ir.chains.push(ir::Chain { scope: ir::Scope::Voice, pre_amplitude: vec![processor], post_amplitude: vec![] });
+                let target = ModTarget { slot: Some(5), ..target(name, -0.25) };
+                t.route("g", ir::ModulatorRef(0), true, &target, Some((ir::ChainRef(0), &[(5, 0)])))
+                    .expect("v1 executes native normalized Q/Gain routes");
+                assert_eq!(t.ir.routes[0].depth, ir::Depth::Normalized(-0.25));
+                assert_eq!(t.ir.routes[0].target, ir::Target::Processor { chain: ir::ChainRef(0), index: 0, parameter });
+            }
+        }
+    }
+
+    #[test]
+    fn native_filter_cutoff_modulation_adds_normalized_depth() {
+        for processor in [ir::Processor::LadderLP4(ir::LadderLP4 { address: None, gain: 0.,
+            cutoff: 0.5, resonance: 0., record_version: 0x92 }),
+            ir::Processor::Daft(ir::Daft { gain: 0., cutoff: 0.5, resonance: 0., highpass: false })] {
+            let mut t = translation();
+            t.ir.chains.push(ir::Chain { scope: ir::Scope::Voice, pre_amplitude: vec![processor], post_amplitude: vec![] });
+            let target = ModTarget { slot: Some(5), ..target("filterCutoff", -0.25) };
+            t.route("g", ir::ModulatorRef(0), true, &target, Some((ir::ChainRef(0), &[(5, 0)]))).unwrap();
+            assert_eq!(t.ir.routes[0].depth, ir::Depth::Normalized(-0.25));
+            assert_eq!(t.ir.routes[0].target, ir::Target::Processor { chain: ir::ChainRef(0), index: 0, parameter: ir::ProcessorParameter::Cutoff });
+        }
+    }
+
+    #[test]
     fn targets_translate_with_kontakt_laws_or_are_reported() {
         let mut t = translation();
         let source = ir::ModulatorRef(0);
@@ -2218,8 +2279,9 @@ mod modulation {
         t.route("g", source, true, &target("playPos", 1.0), None)
             .unwrap();
         assert_eq!(t.ir.routes[2].target, ir::Target::SampleStart);
+        t.route("g", source, true, &target("pan", 1.0), None).unwrap();
+        assert_eq!(t.ir.routes[3].target, ir::Target::Pan);
         for unknown in [
-            target("pan", 1.0),
             target("cutoff", 1.0),
             ModTarget {
                 slot: Some(0),
@@ -2228,12 +2290,11 @@ mod modulation {
         ] {
             assert!(t.route("g", source, true, &unknown, None).is_none());
         }
-        assert_eq!(t.ir.routes.len(), 3);
+        assert_eq!(t.ir.routes.len(), 4);
         let reasons: Vec<_> = t.ir.unsupported.iter().map(|u| u.reason).collect();
         assert_eq!(
             reasons,
             [
-                ir::Reason::UnknownLaw,
                 ir::Reason::NotModeled,
                 ir::Reason::NotModeled
             ]

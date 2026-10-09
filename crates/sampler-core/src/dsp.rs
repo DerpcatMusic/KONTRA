@@ -22,6 +22,14 @@ pub struct Biquad {
     a: [f64; 2],
 }
 impl Biquad {
+    // Keep the operation order identical in scalar and batched render paths.
+    #[inline(always)]
+    fn sample(&self, input: f64, [z0, z1]: [f64; 2]) -> (f64, [f64; 2]) {
+        let ([b0, b1, b2], [a1, a2]) = (self.b, self.a);
+        let y = b0 * input + z0;
+        (y, [b1 * input - a1 * y + z1, b2 * input - a2 * y])
+    }
+
     pub(crate) fn trace_coefficients(&self) -> [f64; 5] { [self.b[0],self.b[1],self.b[2],self.a[0],self.a[1]] }
     /// Static response from the coefficients playback consumes. Port from v1
     /// filter::magnitude, for the sound editor; no second filter kernel.
@@ -132,6 +140,7 @@ pub enum Processor {
     Delay(Delay),
     /// Stereo compressor; the smoothed reduction lives in the stage's state.
     Compressor(CompressorSettings),
+    LoFi(LoFiSettings),
     /// One parallel branch of an effect rack: the next `count` processors run
     /// on the signal that entered the first branch, and `gain` times their
     /// output joins the sum. The last branch leaves the sum as the signal.
@@ -195,6 +204,7 @@ impl Processor {
             } => dry.valid() && wet.valid() && bypass.valid(),
             Processor::Compressor(settings) => settings.valid(),
             Processor::Decimate(decimator) => decimator.valid(),
+            Processor::LoFi(settings) => settings.valid(),
             Processor::Daft(settings) => settings.valid(),
             Processor::LadderLP4(settings) => settings.valid(),
             Processor::StereoModeller(settings) => settings.valid(),
@@ -213,6 +223,8 @@ pub(super) mod control;
 mod convolution;
 mod daft;
 mod ladder_kernel;
+mod lofi;
+pub use lofi::LoFiSettings;
 mod ladder;
 pub use ladder::LadderSettings;
 mod delay;
@@ -255,6 +267,7 @@ pub(super) enum PreparedProcessor {
         k: f64,
     },
     Decimate(Decimator),
+    LoFi(lofi::LoFi),
     Daft(daft::Daft),
     LadderLP4 { ladder: ladder::Ladder, offset: usize },
     StereoModeller {
@@ -416,13 +429,20 @@ pub(super) fn compile_processors(
                     first,
                     last,
                 },
+                Processor::LoFi(settings) => PreparedProcessor::LoFi(settings.compile(rate)),
                 Processor::Daft(settings) => {
-                    PreparedProcessor::Daft(settings.compile(rate, bindings))
+                    let mut daft = settings.compile(rate, bindings);
+                    daft.modulation_index = filters.len();
+                    filters.push(svf::PreparedFilter::NativeControl);
+                    PreparedProcessor::Daft(daft)
                 }
                 Processor::LadderLP4(settings) => {
                     let offset = *delay_frames;
                     *delay_frames = offset.checked_add(ladder::CELLS).ok_or(Error::Capacity)?;
-                    PreparedProcessor::LadderLP4 { ladder: settings.compile(rate, bindings), offset }
+                    let mut ladder = settings.compile(rate, bindings);
+                    ladder.modulation_index = filters.len();
+                    filters.push(svf::PreparedFilter::NativeControl);
+                    PreparedProcessor::LadderLP4 { ladder, offset }
                 }
                 Processor::Rectify(mode) => PreparedProcessor::Rectify(mode),
                 Processor::Gainer { dry, gain } => PreparedProcessor::Gainer {
@@ -491,6 +511,8 @@ impl PreparedVoiceChain {
                 PreparedProcessor::StateVariable(filter) if stages.contains(&i) => {
                     u32::try_from(*filter).ok()
                 }
+                PreparedProcessor::Daft(daft) if stages.contains(&i) => u32::try_from(daft.modulation_index).ok(),
+                PreparedProcessor::LadderLP4 { ladder, .. } if stages.contains(&i) => u32::try_from(ladder.modulation_index).ok(),
                 _ => None,
             })
             .collect()
@@ -691,6 +713,7 @@ impl PreparedVoiceChain {
                     PreparedProcessor::Delay { .. }
                         | PreparedProcessor::Compressor(_)
                         | PreparedProcessor::Decimate(_)
+                        | PreparedProcessor::LoFi(_)
                         | PreparedProcessor::Daft(_)
                         | PreparedProcessor::LadderLP4 { .. }
                         | PreparedProcessor::Branch { .. }
@@ -921,9 +944,12 @@ pub(super) fn process<const TRACE: bool>(
             }
             PreparedProcessor::Compressor(compressor) => compressor.process(state, block, len),
             PreparedProcessor::Decimate(decimator) => decimator.process(state, block, len),
-            PreparedProcessor::Daft(daft) => daft.process(state, parameters, block, len, at),
+            PreparedProcessor::LoFi(lofi) => lofi.process(state, block, len),
+            PreparedProcessor::Daft(daft) => daft.process(state, parameters, block, len, at,
+                filters.bank.native_knobs(daft.modulation_index)),
             PreparedProcessor::LadderLP4 { ladder, offset } => {
-                fault |= ladder.process(state, &mut delay_samples[*offset..*offset + ladder::CELLS], parameters, block, len, at);
+                fault |= ladder.process(state, &mut delay_samples[*offset..*offset + ladder::CELLS], parameters, block, len, at,
+                    filters.bank.native_knobs(ladder.modulation_index));
             }
             PreparedProcessor::StereoModeller { stereo, offset } => {
                 stereo.process(
@@ -981,16 +1007,11 @@ pub(super) fn process<const TRACE: bool>(
                 }
             }
             PreparedProcessor::Biquad(filter) => {
-                let ([b0, b1, b2], [a1, a2]) = (filter.b, filter.a);
                 let [mut zl, mut zr] = state.z;
                 let [left, right] = block;
                 for (l, r) in left[..len].iter_mut().zip(&mut right[..len]) {
-                    let (x, y) = (*l, b0 * *l + zl[0]);
-                    zl = [b1 * x - a1 * y + zl[1], b2 * x - a2 * y];
-                    *l = y;
-                    let (x, y) = (*r, b0 * *r + zr[0]);
-                    zr = [b1 * x - a1 * y + zr[1], b2 * x - a2 * y];
-                    *r = y;
+                    (*l, zl) = filter.sample(*l, zl);
+                    (*r, zr) = filter.sample(*r, zr);
                 }
                 state.z = [zl.map(flush), zr.map(flush)];
             }

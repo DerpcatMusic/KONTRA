@@ -97,6 +97,88 @@ pub struct Instrument {
     /// Source meaning this description does not carry. Lowering never reads it;
     /// it exists so a caller can show or reject what was not translated.
     pub unsupported: Vec<Unsupported>,
+    /// Complete authored DSP slot inventory, collected only by diagnostic builds.
+    pub dsp_slots: Option<Vec<DspSlot>>,
+    /// Native XML records for the independent audition oracle, never consumed by playback.
+    pub native_family: Option<NativeFamily>,
+    /// Native groups with an active sample-start modulation target.
+    pub native_start_mod_groups: Option<Vec<u32>>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct NativeFamily {
+    pub zones: Vec<NativeFamilyZone>,
+    pub unknown: Option<&'static str>,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct NativeFamilyZone {
+    pub id: u32,
+    pub group: u32,
+    pub keys: KeyRange,
+    pub velocities: VelocityRange,
+    pub muted: bool,
+    pub start: i64,
+    pub end: i64,
+    pub frames: i64,
+    pub reverse: bool,
+    pub loops: Vec<NativeFamilyLoop>,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct NativeFamilyLoop {
+    pub slot: usize,
+    pub mode: i32,
+    pub start: i64,
+    pub length: i64,
+    pub count: i32,
+    pub alternating: bool,
+    pub crossfade: i64,
+    pub tuning: f64,
+}
+
+/// One occupied native slot; addresses never compact around holes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DspSlot {
+    pub kind: DspSlotKind,
+    pub scope: String,
+    pub slot: usize,
+    pub module: String,
+    pub enabled: bool,
+    pub disposition: DspDisposition,
+    pub targets: Vec<DspTarget>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DspTarget {
+    pub ordinal: usize,
+    pub parameter: String,
+    pub module_slot: Option<usize>,
+    /// Physical insert lookup or XML owner; source-control slot namespaces are unverified.
+    pub module: Option<String>,
+    pub enabled: bool,
+    pub disposition: DspDisposition,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DspSlotKind { Fx, Filter, Mod }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DspDisposition {
+    Implemented,
+    Approximated(DspSlotReason),
+    Dropped(DspSlotReason),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DspSlotReason {
+    NotModeled,
+    Malformed,
+    NativeLawUnverified,
+    TargetsDropped,
+    SourceNotExecuted,
+    ResourceUnavailable,
+    SavedBypassNotInstantiated,
+    MutedScopeNotInstantiated,
+    ScopeNotInstantiated,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -939,6 +1021,8 @@ pub struct Lfo {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LfoShape {
+    /// A zero-weight Multi remains a bipolar source, with output 0.
+    Zero,
     /// Starts at 0 rising.
     Sine,
     /// Starts at 0 rising.
@@ -1088,6 +1172,8 @@ pub enum Processor {
     Compressor(Compressor),
     /// Memoryless rectification of both channels.
     Rectify(Rectifier),
+    /// Pinned v1 Lo-Fi approximation; saved normalized controls.
+    LoFi { bits: f32, frequency: f32, noise: f32, color: f32 },
     /// Kontakt's Daft filter: normalized controls, laws in the engine.
     Daft(Daft),
     /// Native Ladder LP4. Values are normalized; the engine owns the laws.

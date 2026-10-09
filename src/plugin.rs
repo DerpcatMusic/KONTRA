@@ -8,6 +8,8 @@
 //! audio thread replaces goes back to the loader to be dropped.
 
 mod automation;
+mod host_probe;
+pub(crate) use host_probe::export_multi_state;
 pub(crate) mod automation_ids;
 
 use crate::sound::{
@@ -98,6 +100,8 @@ pub struct Part {
     pub group: u32,
     pub edits: crate::sound::edits::Edits,
     pub timing: crate::timing::Timing,
+    pub script_state: String,
+    pub script_state_source: String,
 }
 
 impl Default for Part {
@@ -135,6 +139,8 @@ impl Default for Part {
             group: 0,
             edits: Default::default(),
             timing: Default::default(),
+            script_state: String::new(),
+            script_state_source: String::new(),
         }
     }
 }
@@ -334,11 +340,18 @@ pub(crate) use SamplerParamsParamId as P;
 
 impl SamplerParams {
     fn capture_ui_controls(&self) {
+        self.shared.refresh_uvi(self);
         let mut selection = self.selection.read().unwrap().clone();
         self.shared.capture_ui_controls(&mut selection);
         let mut current = self.selection.write().unwrap();
         for (part, captured) in current.parts.iter_mut().zip(selection.parts) {
-            if part.source() == captured.source() { part.control_values = captured.control_values; }
+            if part.source() == captured.source() {
+                part.control_values = captured.control_values;
+                part.uvi_state = captured.uvi_state;
+                part.uvi_state_source = captured.uvi_state_source;
+                part.script_state = captured.script_state;
+                part.script_state_source = captured.script_state_source;
+            }
         }
     }
 
@@ -604,6 +617,7 @@ pub struct Shared {
     /// or from the computer keyboard, `heard` from the host's MIDI.
     pub(crate) played: [AtomicU8; 128],
     pub(crate) heard: [AtomicU8; 128],
+    pub(crate) engine_keys: AtomicBool,
     pub(crate) learn_target: AtomicU32,
     pub(crate) learned_note: AtomicU64,
     /// What the on-screen keyboard and wheels play, by rack slot.
@@ -696,6 +710,8 @@ pub(crate) struct PartView {
     pub(crate) keys: Arc<[crate::sound::KeyLook]>,
     /// The load's log record ([`crate::diagnostics::LoadTrace`]).
     pub(crate) trace: Option<Arc<serde_json::Value>>,
+    pub(crate) fault_inbox: Option<Arc<crate::sound::report::FaultInbox>>,
+    pub(crate) runtime_log: Option<crate::diagnostics::grouped::RuntimeLog>,
 }
 
 impl PartView {
@@ -751,6 +767,7 @@ impl Default for Shared {
             key_owners: std::array::from_fn(|_| AtomicU64::new(0)),
             played: std::array::from_fn(|_| AtomicU8::new(0)),
             heard: std::array::from_fn(|_| AtomicU8::new(0)),
+            engine_keys: AtomicBool::new(false),
             keyboard: ArrayQueue::new(256),
             bend: AtomicU32::new(8192),
             modulation: AtomicU32::new(0),
@@ -1135,6 +1152,20 @@ impl Shared {
             if sources.get(slot).and_then(Option::as_ref) != Some(&part.source()) { continue; }
             if let Some(atoms) = self.part(slot) {
                 part.control_values = atoms.control_values().into_iter().filter(|(_, value)| value.is_finite()).map(|(id, value)| SavedControl::new(id, value)).collect();
+                let scripts = atoms.scripts.lock().unwrap();
+                if scripts.uvi_source.as_ref() == Some(&part.source())
+                    && let Some(uvi) = &scripts.uvi
+                    && let Ok(state) = uvi.state()
+                    && let Ok(state) = serde_json::to_string(&state)
+                {
+                    part.uvi_state_source = serde_json::to_string(&part.source()).unwrap();
+                    part.uvi_state = state;
+                }
+                if let Some(state) = atoms.ingress.lock().unwrap().as_ref().and_then(|client|client.save_script_state()) {
+                    part.script_state_source = serde_json::to_string(&part.source()).unwrap();
+                    part.script_state = state;
+                }
+
             }
         }
     }
@@ -1199,6 +1230,10 @@ impl Shared {
         while let Some((slot, epoch, instance, effect)) = self.effects.pop() {
             let Some(part) = self.part(slot) else { continue };
             if part.generation.load(Ordering::Acquire) != epoch { continue; }
+            if effect.service==sampler_core::MIDI_SERVICE {
+                if let Some(ingress)=part.ingress.lock().unwrap().as_mut() {ingress.service_midi(&effect);}
+                continue;
+            }
             let mut scripts = part.scripts.lock().unwrap();
             let key_only = scripts.views.get(instance).and_then(|v| v.service(effect.service)).is_some_and(|s| s.starts_with("set_key_"));
             if scripts.apply(instance, &effect) {
@@ -1230,6 +1265,9 @@ impl Shared {
             let Some(uvi) = scripts.uvi.clone() else {
                 continue;
             };
+            if scripts.uvi_source != params.selection.read().unwrap().parts.get(slot).map(Part::source) {
+                continue;
+            }
             let revision = uvi.revision();
             if revision == scripts.uvi_revision {
                 continue;
@@ -1237,14 +1275,6 @@ impl Shared {
             scripts.uvi_revision = revision;
             if let Some(view) = self.view.lock().unwrap().parts.get_mut(slot) {
                 view.publish_interface(&uvi.interface());
-            }
-            if let Ok(state) = uvi.state()
-                && let Ok(state) = serde_json::to_string(&state)
-                && let Some(part) = params.selection.write().unwrap().parts.get_mut(slot)
-                && scripts.uvi_source.as_ref() == Some(&part.source())
-            {
-                part.uvi_state_source = serde_json::to_string(&part.source()).unwrap();
-                part.uvi_state = state;
             }
         }
     }
@@ -1648,7 +1678,16 @@ fn load_part(params: &SamplerParams, slot: usize, prepared: Option<crate::sound:
         },
     };
     let mut progress = |p: Progress| atoms.load_progress.store(u32::from(p.0), Ordering::Relaxed);
-    let result = state.and_then(|_| match prepared { Some(loaded) if !canceled() => Ok(loaded), Some(_) => Err(CoreError::Canceled), None => V2Loader.prepare(&request, &mut progress, &canceled) });
+    let result = state.and_then(|_| match prepared { Some(loaded) if !canceled() => Ok(loaded), Some(_) => Err(CoreError::Canceled), None => V2Loader.prepare(&request, &mut progress, &canceled) }).and_then(|mut loaded| {
+        if let Some(runtime) = loaded.part.as_mut() {
+            let saved = if part.script_state_source == serde_json::to_string(&source).unwrap() { part.script_state.as_str() } else { "" };
+            runtime.prepare_persistence(&loaded.scripts.views, saved)?;
+            for (id, value) in &mut loaded.controls {
+                if let Some(current) = runtime.persistent_control_value(*id) { *value = current; }
+            }
+        }
+        Ok(loaded)
+    });
     let mut view = shared.view.lock().unwrap();
     let v = &mut view.parts[slot];
     v.loading = false;
@@ -1657,9 +1696,15 @@ fn load_part(params: &SamplerParams, slot: usize, prepared: Option<crate::sound:
             if loaded.scripts.uvi.is_some() {
                 loaded.scripts.uvi_source = Some(source.clone());
             }
-            for line in loaded.report.lines().skip(1) {
-                trace.issue("translate", crate::diagnostics::code(&line), line);
+            for missing in &loaded.report.missing {
+                trace.missing(missing, loaded.instrument.as_deref());
             }
+            v.fault_inbox = loaded.part.as_ref().map(|p| p.fault_inbox.clone());
+            let mut runtime_log = trace.runtime_log();
+            if runtime_log.lua(&loaded.report.uvi_faults) {
+                trace.detail("runtime_diagnostics", runtime_log.summary());
+            }
+            v.runtime_log = Some(runtime_log);
             let d = &loaded.report.decoded;
             trace.detail("zones", d.zones);
             trace.detail("groups", d.groups);
@@ -1717,6 +1762,8 @@ fn load_part(params: &SamplerParams, slot: usize, prepared: Option<crate::sound:
         }
         Err(e) => {
             v.status = format!("Load failed: {e}");
+            v.fault_inbox = None;
+            v.runtime_log = None;
             trace.fail(e.to_string());
             v.trace = Some(trace.finish("failed"));
             drop(view);
@@ -1743,12 +1790,25 @@ fn refresh_problems(shared: &Shared) {
                     }
                     None => Vec::new(),
                 };
-                (p.problems(), faults)
+                let lua = p.scripts.lock().unwrap().uvi.as_ref().map(|ui| ui.fault_counts());
+                (p.problems(), faults, lua)
             })
             .collect::<Vec<_>>()
     });
     let mut view = shared.view.lock().unwrap();
-    for (v, (problems, faults)) in view.parts.iter_mut().zip(problems) {
+    for (v, (problems, faults, lua)) in view.parts.iter_mut().zip(problems) {
+        if let Some(log) = v.runtime_log.as_mut() {
+            let mut changed = log.counters(problems);
+            if let Some(inbox) = &v.fault_inbox {
+                while let Some((callback, outcome)) = inbox.queue.pop() { log.fault(callback, outcome); changed = true; }
+                let dropped = inbox.take_dropped();
+                if dropped > 0 { log.lost(dropped); changed = true; }
+            }
+            if let Some(lua) = &lua { changed |= log.lua(lua); }
+            if changed && let Some(trace) = &mut v.trace {
+                Arc::make_mut(trace)["runtime_diagnostics"] = log.summary();
+            }
+        }
         if let Some(report) = v.report.as_mut().filter(|r| r.runtime != problems) {
             let report = Arc::make_mut(report);
             report.runtime = problems;
@@ -1958,6 +2018,7 @@ pub struct Dsp {
     shared_parts: Vec<Arc<PartShared>>,
     unsupported: u64,
     end_rejections: u64,
+    playing: bool,
 }
 
 impl Default for Dsp {
@@ -1971,6 +2032,7 @@ impl Default for Dsp {
             shared_parts: Vec::new(),
             unsupported: 0,
             end_rejections: 0,
+            playing: false,
         }
     }
 }
@@ -2021,7 +2083,11 @@ impl PluginLogic for Sampler {
         p.shared.rate.store(c.sample_rate.to_bits(), Ordering::Release);
         s.until_poll = 0;
         s.audition.fill((0, 0));
+        s.playing = false;
         p.shared.reset_midi();
+        p.shared.voices.store(0, Ordering::Relaxed);
+        p.shared.audible.store(0, Ordering::Relaxed);
+        p.shared.engine_keys.store(false, Ordering::Release);
     }
 
     fn process(
@@ -2099,9 +2165,15 @@ impl PluginLogic for Sampler {
                 signature: (cx.transport.time_sig_num, cx.transport.time_sig_den),
             },
         });
+        let stopped = s.playing && !cx.transport.playing;
+        s.playing = cx.transport.playing;
         if shared.panic.swap(false, Ordering::AcqRel) {
             shared.reset_midi();
             s.core.panic();
+            s.audition.fill((0, 0));
+        } else if stopped {
+            shared.reset_midi();
+            s.core.release_all_notes();
             s.audition.fill((0, 0));
         }
         while let Some((slot, articulation)) = shared.articulation_edits.pop() {
@@ -2237,6 +2309,10 @@ impl PluginLogic for Sampler {
         let offset = frames.saturating_sub(1) as u32;
         let refused = s.core.end_block(frames, &mut |note| end_host_note(cx, note, offset));
         s.end_rejections += refused;
+        let mut keys = [0; 128];
+        let loaded = s.core.pressed_keys(&mut keys);
+        for (cell, value) in shared.heard.iter().zip(keys) { cell.store(value, Ordering::Relaxed); }
+        shared.engine_keys.store(loaded, Ordering::Release);
         shared.blocks.fetch_add(1, Ordering::Relaxed);
         cx.set_meter(P::Level, peak[0].max(peak[1]).min(1.0));
         if frames > 0 && rate > 0. {
@@ -2638,6 +2714,12 @@ pub(crate) mod tests {
 
 #[cfg(test)]
 mod loop_audit;
+#[cfg(test)]
+mod uvi_save_tests;
+#[cfg(test)]
+mod pressed_tests;
+#[cfg(test)]
+mod persistence_tests;
 
 #[cfg(test)]
 mod settings_parity_tests {

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Runnable check for shard timeout, per-item reuse, TSV escaping and changed-input invalidation."""
 import importlib.util
+import os
 import json
 from pathlib import Path
 import subprocess
@@ -19,7 +20,13 @@ with tempfile.TemporaryDirectory() as tmp:
     manifest.write_text(f'kontakt\t{good}\nkontakt\t{hung}\n')
     engine = root / 'engine'
     engine.write_text('#!/usr/bin/env python3\nimport sys,json,time,os\n'
-                      'if "hung" in sys.argv[2]: time.sleep(60)\n'
+                      'from pathlib import Path\n'
+                      'if "hung" in sys.argv[2] or "partial" in sys.argv[2]:\n'
+                      '  progress={"stage":"sample-preload","completed_bytes":123}\n'
+                      '  if "partial" in sys.argv[2]: progress.update(loads="yes",plays_note="yes")\n'
+                      '  Path(sys.argv[3],"progress.json").write_text(json.dumps(progress))\n'
+                      '  if "partial" in sys.argv[2]: print(json.dumps(progress),flush=True)\n'
+                      '  time.sleep(60)\n'
                       'assert os.environ.get("KONTRA_UVI_STATIC_PCM_CACHE")=="0"\n'
                       'print(json.dumps({"loads":"yes","ui":"original-ok","plays_note":"silent","reason":"x\\ty\\nz"}))\n')
     engine.chmod(0o755)
@@ -29,7 +36,13 @@ with tempfile.TemporaryDirectory() as tmp:
     records = [json.loads(p.read_text()) for p in (root / 'out/cache').glob('*.json')]
     assert len(records) == 2
     assert any(r['loads'] == 'yes' for r in records)
-    assert any(r['timed_out'] and r['loads'] == 'no' for r in records)
+    incomplete = next(r for r in records if r['timed_out'])
+    assert incomplete['loads'] == 'incomplete' and incomplete['ui'] == 'incomplete'
+    assert incomplete['incomplete'] and incomplete['stage'] == 'sample-preload'
+    assert incomplete['completed_bytes'] == 123
+    partial = scanner.probe(engine, str(root / 'partial.nki'), root / 'partial', 0.3, False)
+    assert partial['incomplete'] and partial['loads'] == 'yes' and partial['plays_note'] == 'yes'
+    assert partial['ui'] == 'incomplete' and partial['stage'] == 'sample-preload'
     assert len((root / 'out/results.tsv').read_text().splitlines()) == 3
     result = subprocess.run(args, check=True, capture_output=True, text=True)
     assert 'new=0 reused=2' in result.stdout
@@ -40,6 +53,17 @@ with tempfile.TemporaryDirectory() as tmp:
     assert len((root/'out/results.tsv').read_text().splitlines())==3 # stale signature never duplicates a row
     assert scanner.items(str(manifest)) == [str(good), str(hung)]
 assert scanner.extra_columns({'loads':'yes','plays_note':'silent','ui':'no-ui','programs':[{'pick':None}]})['plays_note']=='no'
+# An incomplete watchdog observation is neither paint failure nor paint success.
+incomplete=scanner.extra_columns({'loads':'yes','ui':'original-ok','programs':[{'views':[{
+ 'source_presentation':'native-package','font_declared':None,
+ 'image_preparation':{'completed':2,'completed_bytes':1024},
+ 'renders':[{'ok':False,'incomplete':True,'stage':'asset-preparation','pending':3}]}]}]})
+assert incomplete['ui']=='incomplete' and incomplete['paint_ok']=='unknown' and incomplete['paint_error']==''
+assert incomplete['programs'][0]['views'][0]['image_preparation']['completed']==2
+mixed=scanner.extra_columns({'ui':'error','programs':[{'views':[{'renders':[
+ {'ok':False,'incomplete':True,'stage':'asset-preparation'},
+ {'ok':False,'reason':'paint failed'}]}]}]})
+assert mixed['ui']=='error' and mixed['paint_ok']=='no' and mixed['paint_error']=='paint failed'
 # Phase failures, MUI budgets, slot partitions and fixed dictionaries share one exporter.
 r=scanner.extra_columns({'ui':'error','programs':[{'source':'kontakt','program':0,'pick':[62,64],
  'ksp':{'compile_ok':'yes','init_ok':'yes','slots':[{'compile_ok':True,'compile_clean':False,'disabled_block_errors':2,'init':{'completion':'completed'},'persistence_changed':{'completion':'failed','fault':{'category':'fuel-budget'}}}]},
@@ -97,3 +121,34 @@ unrequested=scanner.extra_columns({'ui':'original-ok','programs':[{'views':[{'fo
 assert unrequested['ui']=='original-ok'
 
 print('shared scanner checks passed')
+# A complete zero-slot inventory is zero, absent/partial evidence is unknown.
+assert scanner.extra_columns({'programs':[{'dsp_slots':{'complete':True,'counts':{'fx_slots_dropped':{'enabled':2,'bypassed':3},'filter_slots_dropped':{'enabled':0,'bypassed':1},'mod_slots_dropped':{'enabled':4,'bypassed':0}}}}]})['fx_slots_dropped']=='{"enabled":2,"bypassed":3}'
+assert scanner.extra_columns({'programs':[{'dsp_slots':{'complete':False}}]})['mod_slots_dropped']=='unknown'
+assert scanner.extra_columns({'programs':[]})['filter_slots_dropped']=='unknown'
+
+assert scanner.extra_columns({"programs":[]})["family_match"]=="UNKNOWN"
+scripted={"programs":[{"family_native":{"basis":"native-reader","script_driven":["allow_group"]},"family_takes":[]}]}
+scanner.extra_columns(scripted)
+assert scripted["family_match"]=="UNKNOWN" and scripted["family_script_driven_count"]==1
+# Repeated family evidence cannot reuse a timing-only cached worker.
+old_repeats=os.environ.get('KONTRA_SCAN_FAMILY_REPEATS')
+os.environ['KONTRA_SCAN_FAMILY_REPEATS']='0'
+timing_signature=scanner.signature('absent-instrument','r')
+os.environ['KONTRA_SCAN_FAMILY_REPEATS']='32'
+assert scanner.signature('absent-instrument','r')!=timing_signature
+if old_repeats is None:os.environ.pop('KONTRA_SCAN_FAMILY_REPEATS')
+else:os.environ['KONTRA_SCAN_FAMILY_REPEATS']=old_repeats
+
+# Audit seed participates in metrics-cache identity, including explicit seed zero.
+import os
+old_seed=os.environ.get('KONTRA_UVI_AUDIT_SEED')
+try:
+    os.environ.pop('KONTRA_UVI_AUDIT_SEED',None)
+    plain=scanner.signature('/absent/audit-item','revision')
+    os.environ['KONTRA_UVI_AUDIT_SEED']='0'
+    zero=scanner.signature('/absent/audit-item','revision')
+    os.environ['KONTRA_UVI_AUDIT_SEED']='42'
+    assert len({plain,zero,scanner.signature('/absent/audit-item','revision')})==3
+finally:
+    if old_seed is None: os.environ.pop('KONTRA_UVI_AUDIT_SEED',None)
+    else: os.environ['KONTRA_UVI_AUDIT_SEED']=old_seed

@@ -1,0 +1,11 @@
+The editor retains MUI reporting through native teardown. Cargo.lock pins MUI packages consistently, and CI checks that the recorded revision matches the compiled sources. The custom native host now shares MUI's CPU presenter and uses sticky CPU fallback after GPU initialization, resize or rendering failure. Its low-level macOS host shares the run-loop wakeup and class-lifetime fixes; KONTRA's X11 visibility patch remains.
+
+The existing public Linux CI build uploads an unpacked VST3. Standard free runners reuse MUI's editor validation on software Vulkan, GL and forced CPU. The required gate includes editor validation; a skipped/failed applicable UI job cannot pass the aggregate. Artifacts preserve pluginval output, native screen recording, driver facts and MUI journals for seven days. Existing Windows/macOS compile checks remain; they do not replace an actual DAW/device test.
+
+MUI_REPORTING_DISABLED=1 disables reporting in tests. MUI_RENDERER=cpu skips GPU initialization. Runtime/library errors retain the bounded report queue until a verified service acknowledgement. The deployed service currently needs its token granted Issues read/write access to Matari-Audio/MUI. NVIDIA/Intel hardware and real DAW sessions remain unverified.
+
+The first hosted run exposed a missing native Expose contract and a DX12
+allocator resolving older Windows interface types than WGPU. The vendored host
+now emits RedrawRequested; a lockfile invariant checks Windows type identity.
+Linux destroyed-drawable and malformed XIM regressions accompany those repairs.
+Final hosted compilation and editor runs remain required before release.

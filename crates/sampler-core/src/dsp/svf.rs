@@ -57,12 +57,12 @@ impl StateVariableFilter {
                 }
             }
         }
-        Ok(PreparedFilter {
+        Ok(PreparedFilter::StateVariable(PreparedSvf {
             mode: self.mode,
             rate: f64::from(rate),
             cutoff: self.cutoff_hz.compile(bindings),
             q: self.q.compile(bindings),
-        })
+        }))
     }
 }
 
@@ -102,7 +102,14 @@ impl OutputLowPass {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct PreparedFilter {
+pub(crate) enum PreparedFilter {
+    StateVariable(PreparedSvf),
+    /// Addressed normalized knob deltas; no SVF coefficient cache.
+    NativeControl,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct PreparedSvf {
     mode: SvfMode,
     rate: f64,
     cutoff: PreparedParameter,
@@ -110,9 +117,12 @@ pub(crate) struct PreparedFilter {
 }
 
 impl PreparedFilter {
-    pub(crate) fn trace_parameters(&self) -> [(&'static str, PreparedParameter); 2] { [("cutoff_hz",self.cutoff),("q",self.q)] }
+    pub(crate) fn trace_parameters(&self) -> [(&'static str, PreparedParameter); 2] {
+        let Self::StateVariable(f) = self else { unreachable!("native filter traces its own lanes") };
+        [("cutoff_hz", f.cutoff), ("q", f.q)]
+    }
     pub fn requires_expression(self) -> bool {
-        self.cutoff.requires_expression() || self.q.requires_expression()
+        matches!(self, Self::StateVariable(f) if f.cutoff.requires_expression() || f.q.requires_expression())
     }
 }
 
@@ -151,7 +161,7 @@ impl Coefficients {
 /// calculate nothing. The window is keyed by its absolute start frame; render
 /// segmentation never presents more than [`BLOCK`] frames from one start.
 pub(crate) struct FilterCache {
-    filter: PreparedFilter,
+    filter: PreparedSvf,
     owner: Option<crate::ExpressionId>,
     start: Option<u64>,
     filled: usize,
@@ -163,6 +173,7 @@ pub(crate) struct FilterCache {
 }
 impl FilterCache {
     pub fn new(filter: PreparedFilter) -> Self {
+        let PreparedFilter::StateVariable(filter) = filter else { unreachable!("native filter has no SVF cache") };
         Self {
             filter,
             owner: None,
@@ -323,6 +334,7 @@ impl SvfMode {
 enum Scope {
     Shared(usize),
     Expression(usize),
+    NativeControl,
 }
 
 /// Prepared caches, indexed by the actual owner rather than MIDI channel or key.
@@ -334,7 +346,7 @@ pub(crate) struct FilterBank {
     /// Cutoff and Q factors of the voice being rendered (per-voice modulation).
     /// Set around one voice's render; 1.0 uses the cached shared coefficients.
     pub modulation: [f64; 2],
-    addressed_modulation: Box<[[f64; 2]]>,
+    addressed_modulation: Box<[[f64; 4]]>,
 }
 impl FilterBank {
     pub fn new(filters: &[PreparedFilter], expressions: usize) -> Result<Self, Error> {
@@ -342,6 +354,10 @@ impl FilterBank {
         let mut shared = Vec::new();
         let mut per_expression = Vec::new();
         for &filter in filters {
+            if matches!(filter, PreparedFilter::NativeControl) {
+                scopes.push(Scope::NativeControl);
+                continue;
+            }
             scopes.push(if filter.requires_expression() {
                 let index = per_expression.len();
                 per_expression.push(filter);
@@ -367,7 +383,9 @@ impl FilterBank {
             expressions: caches.into_boxed_slice(),
             stride,
             modulation: [1.0; 2],
-            addressed_modulation: vec![[1.0; 2]; filters.len()].into_boxed_slice(),
+            addressed_modulation: filters.iter().map(|f| if matches!(f, PreparedFilter::NativeControl) {
+                [0.; 4]
+            } else { [1., 1., 0., 0.] }).collect(),
         })
     }
 }
@@ -394,7 +412,12 @@ impl FilterBank {
         state: &crate::voice_mod::VoiceModState,
         voice: usize,
     ) {
-        state.fill_filter_factors(modulation, voice, &mut self.addressed_modulation);
+        state.fill_filter_factors(modulation, voice, &mut self.addressed_modulation,
+            |i| matches!(self.scopes[i], Scope::NativeControl));
+    }
+
+    pub(crate) fn native_knobs(&self, index: usize) -> [f64; 4] {
+        self.addressed_modulation[index]
     }
     /// Fill `index`'s coefficients for one voice's block; see [`FilterContext::process`].
     pub(super) fn prepare(
@@ -406,6 +429,7 @@ impl FilterBank {
         expression: Option<(crate::ExpressionId, crate::Expression)>,
     ) -> CacheRef {
         let cache = match self.scopes[index] {
+            Scope::NativeControl => unreachable!("native filter prepares its own coefficients"),
             Scope::Shared(index) => CacheRef::Shared(index),
             Scope::Expression(index) => {
                 let (id, _) = expression.expect("prepared voice-scoped filter");
@@ -446,6 +470,7 @@ impl FilterContext<'_> {
         at: u64,
     ) {
         let cache = match self.bank.scopes[index] {
+            Scope::NativeControl => unreachable!("native filter processes its own coefficients"),
             Scope::Shared(index) => &mut self.bank.shared[index],
             Scope::Expression(index) => {
                 let (id, _) = self.expression.expect("prepared voice-scoped filter");

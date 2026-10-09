@@ -17,6 +17,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[path = "scan_coverage.rs"]
+mod coverage;
+
 fn add(counts: &mut BTreeMap<String, usize>, key: impl Into<String>) {
     *counts.entry(key.into()).or_default() += 1;
 }
@@ -200,7 +203,8 @@ fn render(
                 let mut settled = 0;
                 while settled < 2 {
                     if Instant::now() > deadline {
-                        return Err("authored image preparation time budget exceeded".into());
+                        return Ok(json!({"incomplete":true,"stage":"asset-preparation",
+                            "pending":native.as_ref().map_or_else(||assets.pending(),|n|n.pending())}));
                     }
                     let el = if let Some(native) = &mut native {
                         native.view(&mut ui, 0, scale, &face, values, &input)
@@ -285,7 +289,7 @@ fn render(
             }));
         renders.push(match result {
             Ok(Ok(mut r)) => {
-                r["ok"] = json!(true);
+                r["ok"] = json!(r["incomplete"] != true);
                 r["ms"] = json!(start.elapsed().as_secs_f64() * 1000.);
                 r
             }
@@ -336,6 +340,7 @@ fn render(
         failures.insert("lookup-ambiguous",scan.lookup_ambiguous);
         failures.insert("lookup-corrupt",scan.lookup_corrupt);
         failures.insert("lookup-limit",scan.lookup_limit);
+        failures.insert("preparation-limit",scan.preparation_oversized + scan.preparation_key_budget);
         failures.insert("lookup-read",scan.lookup_read);
         failures.insert("lookup-unavailable",scan.lookup_unavailable);
         failures.insert("decode-failed",scan.decodes-scan.decode_ok);
@@ -343,8 +348,14 @@ fn render(
     if let Some(missing_fonts)=missing_fonts {
         failures.insert("font-service-unavailable",missing_fonts);
     }
+    let preparation = native.is_none().then(|| json!({"completed":scan.preparation_completed,"completed_bytes":scan.preparation_completed_bytes,
+        "max_key_bytes":scan.preparation_max_key_bytes,"wanted_peak_bytes":scan.preparation_wanted_peak_bytes,
+        "oversized":scan.preparation_oversized,"key_budget":scan.preparation_key_budget,
+        "evicted":scan.preparation_evicted,"requeued":scan.preparation_requeued,
+        "completed_key_bytes":assets.completed_key_bytes()}));
     json!({"bound_typed":if matches!(face.source,ir::Source::FalconLua){None}else{Some(typed_bound)},"typed_binding_refs":typed_refs,"typed_binding_basis":"installed script model target; live typed edit/readback unmeasured","phantom_free_controls":null,"controls_declared":declared,"controls_bound_declared":declared_bound,
         "asset_lookup_requested":resources_known.then_some(scan.lookups),"asset_lookup_ok":resources_known.then_some(scan.lookup_ok),
+        "image_preparation":preparation,
         "asset_decode_requested":resources_known.then_some(scan.decodes),"asset_decode_ok":resources_known.then_some(scan.decode_ok),
         "font_declared":fonts_declared,"font_success":font_success,"font_unresolved_styles":fonts_declared.zip(font_success).map(|(declared,success)|declared.saturating_sub(success)),
 
@@ -355,6 +366,7 @@ fn render(
         "asset_failure_reasons":failures,"source_presentation":if native.is_some(){"native-package"}else{"legacy-authored"},"native_frontend_consumed":native.as_ref().map(|_|!renders.is_empty()),"native_paint_ok":native.as_ref().map(|_|renders.iter().any(|r|r["ok"]==true)),
         "native_diagnostic":native.as_ref().and_then(|n|n.diagnostic()),
         "native_graph_depth":native.as_ref().and_then(|n|n.graph_depth()),
+        "native_graph_work":native.as_ref().and_then(|n|n.graph_work()).map(|(nodes,checkpoints)|json!({"nodes":nodes,"checkpoints":checkpoints,"node_budget":16384,"checkpoint_budget":1000000})),
         "widgets":face.widgets.len(),"visible":visible,"interactive":interactive,"bound":bound,
         "kinds":kinds,"placeholder_widgets":placeholders,"unsupported_params":properties,"geometry":geometry,
         "missing_images":missing.len(),"missing_image_hashes":missing,"missing_fonts":missing_fonts,"missing_font_hashes":missing_font_hashes,"assets":face.assets.len(),
@@ -464,12 +476,13 @@ pub fn one(id: &str, out: &Path) -> Value {
         mut total_interactive,
         mut any_heard,
         mut ui_error,
+        mut ui_incomplete,
         mut ui_missing,
         mut ui_missing_font,
         mut any_ui,
         mut any_blank,
         mut budget_hit,
-    ) = (true, 0, 0, false, false, false, false, false, false, false);
+    ) = (true, 0, 0, false, false, false, false, false, false, false, false);
     let mut load_ms = 0.;
     let load_started=Instant::now();
     result["onset_basis"]=json!("monotonic from first production program import; shared collector paints Original and auditions concurrently; first output excludes lexical metadata prepass");
@@ -506,12 +519,13 @@ pub fn one(id: &str, out: &Path) -> Value {
                         .unwrap()
                         .last_mut()
                         .unwrap();
-                    p["lua"] = json!({"init_faults":1,"runtime_faults":0,"init_first":metrics::message(&e),"budget_hits":usize::from(e.contains("time budget exceeded"))});
+                    p["lua"] = json!({"init_faults":1,"runtime_faults":0,"init_first":metrics::message(&e),"budget_hits":usize::from(e.contains("budget exceeded"))});
                     p["load_path"] = json!("scripted-worker");
                 }
                 continue;
             }
         };
+        let dsp_slots = loaded.instrument.as_ref().map(|i|coverage::slots(i)).unwrap_or(json!({"complete":false}));
         let ksp = ksp_observations();
         load_ms += start.elapsed().as_secs_f64() * 1000.;
         let mut symbols = BTreeMap::<String, usize>::new();
@@ -624,8 +638,12 @@ pub fn one(id: &str, out: &Path) -> Value {
             _ => "fallback",
         };
         let sample_zone_count=loaded.instrument.as_ref().map(|i|i.zones.len());
+        let family_native = loaded.instrument.as_ref().map(|i|coverage::native_family(i,pick,keyswitch)).unwrap_or(json!({"basis":"native-reader","unknown":"instrument-absent"}));
         let mut runtime_faults = Vec::new();
         let mut heard = false;
+        // Diagnostic repeats stay opt-in so gate load/onset timings keep their protocol.
+        let family_repeats = std::env::var("KONTRA_SCAN_FAMILY_REPEATS").ok().and_then(|v|v.parse::<usize>().ok()).unwrap_or(0).min(128);
+        let mut family_takes = Vec::new();
         result["stage"] = json!(format!("play program {program}"));
         metrics::checkpoint(out, &result);
         if let Some((key, velocity)) = pick {
@@ -644,6 +662,31 @@ pub fn one(id: &str, out: &Path) -> Value {
                 runtime_faults.extend(core.scan_runtime_faults(0));
             }
         }
+        if let Some((key, velocity)) = pick {
+            if family_repeats > 0 && family_native["script_driven"].as_array().is_some_and(Vec::is_empty) && family_native["unknown"].is_null() {
+                core.event(0, Event::midi1(0x80, key, 0));
+                core.render(128); // Finish the unrecorded audition before starting repeat evidence.
+                runtime_faults.extend(core.scan_runtime_faults(0));
+                core.scan_record_selections(0, true);
+                for repeat in 0..family_repeats {
+                    core.event(0, Event::midi1(0x90, key, velocity));
+                    for _ in 0..180 {
+                        std::thread::sleep(Duration::from_millis(3));
+                        core.render(128);
+                        runtime_faults.extend(core.scan_runtime_faults(0));
+                    }
+                    let attack = coverage::selections(core.scan_selections(0));
+                    core.event(0, Event::midi1(0x80, key, 0));
+                    for _ in 0..180 {
+                        std::thread::sleep(Duration::from_millis(3));
+                        core.render(128);
+                        runtime_faults.extend(core.scan_runtime_faults(0));
+                    }
+                    family_takes.push(json!({"repeat":repeat,"attack":attack,"release":coverage::selections(core.scan_selections(0))}));
+                }
+                core.scan_record_selections(0, false);
+            }
+        }
         result["stage"]=json!(format!("Original paint join program {program}"));
         metrics::checkpoint(out,&result);
         let views=paint.join().unwrap_or_else(|_|vec![json!({"renders":[{"ok":false,"budget_hit":false,"reason":"paint worker panicked"}]})]);
@@ -653,7 +696,8 @@ pub fn one(id: &str, out: &Path) -> Value {
             ui_missing |= view["missing_images"].as_u64().unwrap_or(0) > 0;
             ui_missing_font |= view["missing_fonts"].as_u64().unwrap_or(0) > 0;
             for r in view["renders"].as_array().unwrap() {
-                ui_error |= r["ok"] != true;
+                ui_incomplete |= r["incomplete"] == true;
+                ui_error |= r["ok"] != true && r["incomplete"] != true;
                 budget_hit |= r["budget_hit"] == true;
                 any_blank |= r["uniform"] == true && view["visible"].as_u64().unwrap_or(0) > 0;
             }
@@ -668,7 +712,7 @@ pub fn one(id: &str, out: &Path) -> Value {
         let lua = core.scan_lua(0);
         let lua_report = lua.as_ref().map(|l| json!({"init_faults":l.init_count,"runtime_faults":l.runtime_count,
             "init_first":l.init_first.as_deref().map(metrics::message),"runtime_first":l.runtime_first.as_deref().map(metrics::message),"budget_hits":l.budget_hits}));
-        result["programs"].as_array_mut().unwrap().push(json!({"authored_view_requests":view_requests,"native_frontend_consumed":native_consumed,"ksp":ksp,"ksp_runtime_faults":runtime_faults.iter().map(|(program,outcome)|json!({"program":program,"callback":sampler_ksp::callback_of(&loaded.scripts.views,*program),"category":match outcome{sampler_core::Outcome::FuelExhausted=>"fuel-budget",_=>"runtime-fault"},"core_error":match outcome{sampler_core::Outcome::Fault(e)=>Some(format!("{e:?}")),_=>None}})).collect::<Vec<_>>(),"lua":lua_report,"admitted_saved_entries_by_sigil":admitted,
+        result["programs"].as_array_mut().unwrap().push(json!({"family_native":family_native,"family_takes":family_takes,"dsp_slots":dsp_slots,"authored_view_requests":view_requests,"native_frontend_consumed":native_consumed,"ksp":ksp,"ksp_runtime_faults":runtime_faults.iter().map(|(program,outcome)|json!({"program":program,"callback":sampler_ksp::callback_of(&loaded.scripts.views,*program),"category":match outcome{sampler_core::Outcome::FuelExhausted=>"fuel-budget",_=>"runtime-fault"},"core_error":match outcome{sampler_core::Outcome::Fault(e)=>Some(format!("{e:?}")),_=>None}})).collect::<Vec<_>>(),"lua":lua_report,"admitted_saved_entries_by_sigil":admitted,
             "load_path":if is_uvi {if lua.is_some(){"scripted-worker"}else{"offline-loader"}}else{"kontakt-v2-loader"},
             "sample_zone_count":sample_zone_count,"decoded_zone_count":loaded.report.decoded.zones,"sample_count":loaded.report.decoded.samples,"sample_resident_bytes":sample_resident_bytes,"underruns":core.problems(0).underruns,
             "keyswitch":keyswitch,"selected_articulation":core.articulation(0),"fallback_note":pick_source=="fallback","zero_zone_reason":if sample_zone_count==Some(0) {Some("unknown")} else {None},"pick_source":pick_source,"native_valid_keys":native_valid,"native_key_conflicts":native.as_ref().map(|n|n.native_key_conflicts),"native_preferred_note":candidate.filter(|(k,_)|native_valid.contains(k)),
@@ -681,6 +725,8 @@ pub fn one(id: &str, out: &Path) -> Value {
         "budget-hit"
     } else if ui_error {
         "error"
+    } else if ui_incomplete {
+        "incomplete"
     } else if any_blank {
         "blank"
     } else if ui_missing_font {
@@ -692,6 +738,7 @@ pub fn one(id: &str, out: &Path) -> Value {
     } else {
         "original-ok"
     });
+    if ui_incomplete { result["incomplete"] = json!(true); }
     result["controls_bound"] = json!(format!("{total_bound}/{total_interactive}"));
     result["plays_note"] = json!(if any_heard {
         "yes"

@@ -49,6 +49,8 @@ pub struct GroupSettings {
     pub values: Vec<(Param, f32)>,
     pub bindings: Vec<(Param, Binding)>,
     filters: Vec<ir::Filter>,
+    ladders: Vec<ir::LadderLP4>,
+    chains: Vec<ir::ChainRef>,
     rate: u32,
 }
 impl Param {
@@ -57,6 +59,27 @@ impl Param {
     }
 }
 impl GroupSettings {
+    fn ladder(&self, p: Param) -> Option<&ir::LadderLP4> {
+        let binding = self.bindings.iter().find(|(q, _)| *q == p)?.1;
+        self.ladders.iter().find(|f| f.address.is_some_and(|a| {
+            a.group == binding.address.group && a.slot == binding.address.slot && a.generic == binding.address.generic
+        }))
+    }
+
+    pub fn frequency(&self, p: Param, n: f32) -> Option<f32> {
+        let binding = self.bindings.iter().find(|(q, _)| *q == p)?.1;
+        let native = binding.law.decode((n * 1e6).round() as i32) as f32;
+        Some(if matches!(p, Param::Cutoff(_)) && self.ladder(p).is_some() {
+            sampler_core::LadderSettings::cutoff_hz(native)
+        } else { native })
+    }
+
+    pub fn gain_db(&self, p: Param, n: f32) -> Option<f32> {
+        let binding = self.bindings.iter().find(|(q, _)| *q == p)?.1;
+        let native = binding.law.decode((n * 1e6).round() as i32) as f32;
+        Some(20. * native.max(1e-10).log10())
+    }
+
     pub fn magnitude(&self, hz: f32) -> f32 {
         self.filters
             .iter()
@@ -114,7 +137,9 @@ impl GroupSettings {
                     .map_or(1., |b| b.magnitude(hz as f64));
                 (if poles == 4 { m * m } else { m }) as f32
             })
-            .product()
+            .product::<f32>()
+            * self.ladders.iter().map(|f| sampler_core::LadderSettings::magnitude(
+                [f.cutoff as f32, f.resonance as f32, f.gain as f32], hz, self.rate)).product::<f32>()
     }
 }
 #[derive(Clone, PartialEq)]
@@ -161,6 +186,7 @@ impl Model {
                 }),
                 _ => None,
             });
+        let admitted = bindings;
         let bindings: Vec<_> = bindings
             .iter()
             .copied()
@@ -176,26 +202,38 @@ impl Model {
                     .map(|(_, v)| (p, b.law.encode(*v) as f32 / 1e6))
             })
             .collect();
-        let filters = i
-            .groups
-            .get(g)
-            .and_then(|g| g.chain)
-            .and_then(|r| i.chains.get(r.0))
-            .map_or_else(Vec::new, |c| {
-                c.pre_amplitude
-                    .iter()
-                    .chain(&c.post_amplitude)
-                    .filter_map(|p| match p {
-                        ir::Processor::Filter(f) => Some(*f),
-                        _ => None,
-                    })
-                    .collect()
-            });
+        // Native Kontakt group inserts live on shared zone voice chains.
+        let mut chains = Vec::new();
+        for reference in i.zones.iter().filter(|z| z.group == Some(ir::GroupRef(g)))
+            .filter_map(|z| z.chain).chain(i.groups.get(g).and_then(|group| group.chain))
+        {
+            if !chains.contains(&reference) { chains.push(reference); }
+        }
+        let processors = || chains.iter().filter_map(|r| i.chains.get(r.0))
+            .flat_map(|chain| chain.pre_amplitude.iter().chain(&chain.post_amplitude));
+        let filters = processors().filter_map(|p| match p {
+            ir::Processor::Filter(f) => Some(*f), _ => None,
+        }).collect();
+        let ladders = processors()
+            .filter_map(|p| if let ir::Processor::LadderLP4(f) = p { Some(*f) } else { None })
+            .map(|mut f| {
+                if let Some(a) = f.address {
+                    if let Some(binding) = admitted.iter().find(|b| b.address.group == a.group
+                        && b.address.slot == a.slot && b.address.generic == a.generic
+                        && Some(b.address.parameter) == sampler_core::engine_parameter_id("ENGINE_PAR_GAIN"))
+                    {
+                        if let Some((_, gain)) = values.iter().find(|(id, _)| id.0 == binding.control.0) { f.gain = *gain; }
+                    }
+                }
+                f
+            }).collect();
         let mut base = GroupSettings {
             envelope,
             values: vals,
             bindings,
             filters,
+            ladders,
+            chains,
             rate,
         };
         let mut playing = base.clone();
@@ -231,19 +269,32 @@ impl Model {
                         _ => {}
                     }
                 }
+                for ladder in &mut s.ladders {
+                    if !ladder.address.is_some_and(|a| a.group == b.address.group
+                        && a.slot == b.address.slot && a.generic == b.address.generic) { continue; }
+                    match p {
+                        Param::Cutoff(_) => ladder.cutoff = native,
+                        Param::Resonance(_) => ladder.resonance = native,
+                        _ => {}
+                    }
+                }
                 for target in i.processor_controls.iter().filter(|t| {
                     i.controls
                         .get(t.control.0)
                         .is_some_and(|c| sampler_core::lower::ir_control_id(&c.key) == b.control)
                 }) {
-                    // Filters in this group's chain, in native processor order.
-                    if i.groups.get(g).and_then(|g| g.chain) != Some(target.chain) {
+                    // Keep each native control on its own voice/group chain.
+                    if !s.chains.contains(&target.chain) {
                         continue;
                     }
                     let Some(chain) = i.chains.get(target.chain.0) else {
                         continue;
                     };
-                    let index = chain
+                    let preceding = s.chains.iter().take_while(|r| **r != target.chain)
+                        .filter_map(|r| i.chains.get(r.0))
+                        .flat_map(|c| c.pre_amplitude.iter().chain(&c.post_amplitude))
+                        .filter(|p| matches!(p, ir::Processor::Filter(_))).count();
+                    let index = preceding + chain
                         .pre_amplitude
                         .iter()
                         .chain(&chain.post_amplitude)
@@ -296,9 +347,10 @@ impl Model {
                 native / self.base.rate as f32
             }
             Param::Curve => n * 2. - 1.,
+            Param::Cutoff(_) | Param::Freq(..) => self.base.frequency(p, n).unwrap_or(native),
             Param::Resonance(_) => n,
             Param::Bandwidth(..) => ((0.5 / native).asinh() * 2. / std::f32::consts::LN_2),
-            Param::Gain(..) => 20. * native.max(1e-10).log10(),
+            Param::Gain(..) => self.base.gain_db(p, n).unwrap_or(native),
             _ => native,
         }
     }

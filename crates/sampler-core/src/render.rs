@@ -551,10 +551,14 @@ impl Runtime {
         };
         v.cursor = v.cursor.with_step(match points {
             None => v.base_step * expression.rendered.ratio,
-            Some(ramp) => (v.base_step
-                * expression.rendered.ratio
-                * ((ramp.from.pitch + ramp.to.pitch) / 24.0).exp2())
-            .clamp(super::resample::MIN_STEP, super::resample::MAX_STEP),
+            Some(ramp) => {
+                let exponent = (ramp.from.pitch + ramp.to.pitch) / 24.0;
+                if exponent != v.mod_pitch.0 {
+                    v.mod_pitch = (exponent, exponent.exp2());
+                }
+                (v.base_step * expression.rendered.ratio * v.mod_pitch.1)
+                    .clamp(super::resample::MIN_STEP, super::resample::MAX_STEP)
+            }
         });
         Some(Prelude {
             points,
