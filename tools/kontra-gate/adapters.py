@@ -118,6 +118,28 @@ def gesture_cell(cells, item, condition):
     return row
 
 
+def presented(run, source):
+    """Collect numeric live-GUI receipts; never build or install a plugin."""
+    from presented import presented_cell
+    manifest = json.loads((run / 'manifest.json').read_text())
+    observed = []
+    for path in (run / 'presented').glob('**/metrics.json'):
+        try:
+            row = json.loads(path.read_text())
+            if row.get('schema') == 1 and row.get('source_sha') == manifest['sha']:
+                observed.append(row)
+        except (OSError, ValueError):
+            pass
+    cells = [dict(presented_cell(observed, hashlib.sha256(line.split('\t', 1)[1].encode()).hexdigest(), condition, manifest['sha']),
+                  item_sha256=hashlib.sha256(line.split('\t', 1)[1].encode()).hexdigest(), condition=condition)
+             for line in (run / 'items.tsv').read_text().splitlines()
+             for condition in manifest.get('conditions', ['cold', 'product-warm', 'os-warm'])]
+    result = {'schema': 1, 'status': 'FAIL' if any(c['status'] == 'FAIL' for c in cells) else 'UNKNOWN',
+              'cells': cells, 'reason': 'presented-static-region-observations', 'plugin_host_run': bool(observed)}
+    (run / 'presented.json').write_text(json.dumps(result, indent=2) + '\n')
+    return result
+
+
 def gestures(run, source):
     result = {'schema': 1, 'status': 'UNKNOWN', 'scope': 'Original-editor-input-engine-readback-host-save-reload',
               'cells': [], 'reason': 'owner-test-absent', 'plugin_host_run': False}
