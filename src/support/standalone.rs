@@ -483,12 +483,9 @@ mod tests {
                 let expected = std::env::var("KONTRA_CAPTURE_EXPECT").unwrap();
                 assert_eq!(value["kind"], expected);
                 if expected == "platform_crash" {
-                    assert!(
-                        incident
-                            .preview_diagnostics()
-                            .contains(&std::env::var("KONTRA_CAPTURE_SIGNAL").unwrap())
-                    );
-                    assert!(incident.preview_diagnostics().contains("Native backtrace"));
+                    let delivered = super::super::crash::render_complete_diagnostics(&incident);
+                    assert!(delivered.contains(&std::env::var("KONTRA_CAPTURE_SIGNAL").unwrap()));
+                    assert!(delivered.contains("Native backtrace"));
                     let session =
                         std::fs::read_dir(super::super::crash::reports_dir().join("signals"))
                             .unwrap()
