@@ -2353,6 +2353,38 @@ mod tests {
     }
 
     #[test]
+    fn host_prefetch_requests_two_pages_before_consuming_the_resident_head_without_heap_work() {
+        let pcm = Pcm::headed(48000, PAGE_FRAMES * 3, &[[0.25; 2]; PAGE_FRAMES]).unwrap();
+        let plan = Prepared::new(48000, vec![pcm], vec![Region {
+            sample: 0, key_low: 0, key_high: 127, root_key: None,
+            velocity_low: 0., velocity_high: 1., gain: 1.,
+            envelope: Envelope::default(), playback: Playback::default(),
+        }], 128).unwrap();
+        let (cache, mut worker) = StreamCache::new(3).unwrap();
+        let limits = Limits::for_plan(&plan, 8, 8);
+        let runtime = Runtime::new(plan, limits).unwrap().with_stream_cache(cache);
+        let mut part = Part::new(runtime, MixTree::instrument("prefetch")).unwrap();
+        part.horizon = Some((8192 + MAX_BLOCK) as u32);
+        let mut core = V2Core::with_parts(1, 48000.);
+        core.install(0, Some(Box::new(part)));
+        core.event(0, on(HostNote { port: 0, channel: 0, key: 60, id: 1, clap: true }));
+        let calls = crate::plugin::tests::allocations(|| { assert!(loud(&core.render(64), 0, 64)); });
+        assert_eq!(calls, 0);
+        for page in [1, 2] {
+            let mut job = worker.next_job().expect("both future pages must be queued before the resident head is consumed");
+            assert_eq!(job.key().index, page);
+            job.frames_mut().fill([0.25; 2]);
+            worker.complete(job, Ok(())).unwrap();
+        }
+        assert!(worker.next_job().is_none());
+        let calls = crate::plugin::tests::allocations(|| {
+            for _ in 0..PAGE_FRAMES * 3 / 64 { core.render(64); }
+        });
+        assert_eq!(calls, 0, "completion admission and both page crossings must not allocate or free");
+        assert_eq!(core.problems(0).underruns, 0);
+    }
+
+    #[test]
     fn offline_sound_seam_waits_for_delayed_storage_without_changing_pcm() {
         fn player(pcm: Pcm, cache: Option<StreamCache>) -> V2Core {
             let plan = Prepared::new(48000, vec![pcm], vec![Region {
