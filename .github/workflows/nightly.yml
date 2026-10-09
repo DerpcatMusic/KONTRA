@@ -1,7 +1,7 @@
 name: Nightly
 
 # Every public main update builds an experimental versioned nightly snapshot.
-# GitHub Latest links serve the newest complete snapshot. Builds may be superseded; publishing must finish uninterrupted.
+# GitHub Latest links serve the newest complete snapshot. Each source snapshot publishes; publication finishes uninterrupted.
 # Standard GitHub-hosted runners are free for public repositories.
 
 on:
@@ -32,13 +32,13 @@ jobs:
   build:
     if: github.ref == 'refs/heads/main' && !github.event.repository.private
     concurrency:
-      group: nightly-build-${{ matrix.name }}
+      group: nightly-build-${{ matrix.name }}-${{ github.sha }}
       cancel-in-progress: true
     strategy:
       fail-fast: false
       matrix:
         include:
-          - {os: ubuntu-24.04, target: x86_64-unknown-linux-gnu, name: linux-x86_64}
+          - {os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, name: linux-x86_64}
           - {os: windows-2025, target: x86_64-pc-windows-msvc, name: windows-x86_64}
           - {os: macos-15, target: aarch64-apple-darwin, name: macos-arm64}
           - {os: macos-15-intel, target: x86_64-apple-darwin, name: macos-x86_64}
@@ -49,12 +49,16 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
       - name: Nightly version
         shell: bash
         run: |
           export SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")
           echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" >> "$GITHUB_ENV"
           python3 tools/version.py nightly --write
+          echo "KONTRA_NIGHTLY_BUILD=1" >> "$GITHUB_ENV"
       - name: License bundle checks
         shell: bash
         run: python3 tools/licenses.py --self-test
@@ -74,7 +78,7 @@ jobs:
             libasound2-dev libjack-jackd2-dev
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          key: nightly-${{ matrix.target }}-release
+          key: nightly-${{ matrix.os }}-${{ matrix.target }}-release
       - name: Install cargo-moose
         shell: bash
         run: cargo install --locked --git https://github.com/Matari-Audio/moose --rev "$MOOSE_REV" cargo-moose
@@ -97,6 +101,8 @@ jobs:
                       and not ({"clap", "vst3", "standalone"} - {format}) & features):
                       matches.append(path)
               assert len(matches) == 1, (format, matches)
+              if json.loads(pathlib.Path(matches[0]).read_text()).get("dirty") is not False:
+                  print(f"::warning::{format}: source provenance is dirty or unknown; preserving the build manifest")
               pathlib.Path(format + "-build-info.json").write_bytes(pathlib.Path(matches[0]).read_bytes())
           PYINFO
       - name: Standalone
@@ -111,6 +117,15 @@ jobs:
         shell: bash
         run: |
           stage="KONTRA-nightly-${{ matrix.name }}"
+          exe=kontakto-standalone; [ "$RUNNER_OS" = Windows ] && exe=kontakto-standalone.exe
+          "target/${{ matrix.target }}/release/$exe" --build-info > standalone-build-info.json
+          python3 -c 'import json; info = json.load(open("standalone-build-info.json")); print("::warning::standalone: source provenance is dirty or unknown; preserving the build manifest") if info.get("dirty") is not False else None'
+          if [ "$RUNNER_OS" != macOS ]; then
+            python3 .github/scripts/stage_nightly.py --platform "${{ matrix.name }}" --stage "$stage" \
+              --bundles "target/bundles/${{ matrix.target }}" --standalone "target/${{ matrix.target }}/release/$exe" \
+              --licenses license-bundle --revision "$GITHUB_SHA" --clap-info clap-build-info.json \
+              --vst3-info vst3-build-info.json --standalone-info standalone-build-info.json
+          else
           mkdir "$stage"
           cp -R "target/bundles/${{ matrix.target }}/KONTRA.clap" "target/bundles/${{ matrix.target }}/KONTRA.vst3" "$stage/"
           exe=kontakto-standalone; [ "$RUNNER_OS" = Windows ] && exe=kontakto-standalone.exe
@@ -122,7 +137,7 @@ jobs:
           cp -R license-bundle "$stage/licenses"
           cp clap-build-info.json vst3-build-info.json "$stage/"
           printf '%s\n' "$GITHUB_SHA" > "$stage/SOURCE_COMMIT.txt"
-          "$stage/$exe" --build-info > "$stage/build-info.json"
+          cp standalone-build-info.json "$stage/build-info.json"
           if [ "$RUNNER_OS" = macOS ]; then
             mkdir -p "$stage/KONTRA.app/Contents/MacOS"
             mv "$stage/$exe" "$stage/KONTRA.app/Contents/MacOS/KONTRA"
@@ -134,7 +149,13 @@ jobs:
           (stage / 'KONTRA.app/Contents/Info.plist').write_bytes(plistlib.dumps(app_info(json.loads((stage / 'build-info.json').read_text())['version'])))
           PYAPP
           fi
+          fi
           echo "STAGE=$stage" >> "$GITHUB_ENV"
+      - name: Verify Linux glibc baseline
+        if: runner.os == 'Linux'
+        run: |
+          python3 .github/scripts/check_glibc.py "$STAGE/KONTRA.clap" \
+            "$STAGE/KONTRA.vst3/Contents/x86_64-linux/KONTRA.so" "$STAGE/kontakto-standalone"
       - name: Normalize macOS bundle versions
         if: runner.os == 'macOS'
         run: |
@@ -183,6 +204,8 @@ jobs:
           path: |
             ${{ env.STAGE }}.zip
             ${{ env.STAGE }}.zip.sha256
+            ${{ env.STAGE }}.build.json
+            KONTRA-nightly-covered-source.zip
           if-no-files-found: error
           retention-days: 1
 
@@ -190,7 +213,7 @@ jobs:
     needs: build
     runs-on: macos-15
     concurrency:
-      group: nightly-build-macos-universal
+      group: nightly-build-macos-universal-${{ github.sha }}
       cancel-in-progress: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -273,6 +296,7 @@ jobs:
     concurrency:
       group: nightly-publish
       cancel-in-progress: false
+      queue: max
     permissions:
       contents: write
       actions: write

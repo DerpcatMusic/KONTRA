@@ -29,6 +29,9 @@ pub struct RuntimeStats {
     pub render_frames_last: u32,
     /// Bytes of stream cache pages, allocated whether resident or not.
     pub stream_cache_bytes: usize,
+    /// Starts rejected by page admission, separate from audible underruns.
+    pub stream_capacity_refusals: u64,
+    pub stream_disconnected_refusals: u64,
 }
 
 impl Runtime {
@@ -60,6 +63,8 @@ impl Runtime {
             render_nanos_peak: self.render_time[1],
             render_frames_last: self.render_time[2] as u32,
             stream_cache_bytes: self.stream_cache.as_ref().map_or(0, |c| c.bytes()),
+            stream_capacity_refusals: self.stream_admission_errors[0],
+            stream_disconnected_refusals: self.stream_admission_errors[1],
         }
     }
 
@@ -148,7 +153,12 @@ impl Runtime {
             return Err(Error::InvalidInput);
         }
         let start = std::time::Instant::now();
-        self.render_inner(output, outs)?;
+        self.stream_fault = None;
+        if self.signal_trace {
+            self.render_inner::<true>(output, outs)?;
+        } else {
+            self.render_inner::<false>(output, outs)?;
+        }
         let nanos = u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX);
         self.render_time = [
             nanos,
@@ -158,7 +168,7 @@ impl Runtime {
         Ok(())
     }
 
-    fn render_inner(
+    fn render_inner<const TRACE: bool>(
         &mut self,
         output: &mut [Frame],
         outs: &mut [&mut [Frame]],
@@ -178,7 +188,10 @@ impl Runtime {
             let boundary = self.commands.first().map_or(end, |c| c.at.min(end));
             let len = (boundary - self.now) as usize;
             let segment = &mut output[offset..offset + len];
-            self.render_segment(segment, outs, offset);
+            self.render_segment::<TRACE>(segment, outs, offset);
+            if self.stream_fault.is_some() {
+                return Err(Error::NotReady);
+            }
             for frame in segment {
                 if !frame.iter().all(|x| x.is_finite()) {
                     *frame = [0.0; 2];
@@ -197,8 +210,14 @@ impl Runtime {
         Ok(())
     }
 
-    fn render_segment(&mut self, output: &mut [Frame], outs: &mut [&mut [Frame]], offset: usize) {
-        let chunked = self.script_params
+    fn render_segment<const TRACE: bool>(
+        &mut self,
+        output: &mut [Frame],
+        outs: &mut [&mut [Frame]],
+        offset: usize,
+    ) {
+        let chunked = TRACE
+            || self.script_params
             || self.parallel.is_some()
             || self.plans.slots.iter().any(|s| {
                 s.value.as_ref().is_some_and(|g| {
@@ -208,11 +227,12 @@ impl Runtime {
                 })
             });
         if !chunked {
-            self.render_voices(output, self.now);
+            self.render_voices::<TRACE>(output, self.now);
             return;
         }
         // Chunks end on the absolute BLOCK grid, where voice modulation
         // evaluates, so host block sizes do not move control points.
+        let tone_cutoff = self.has_input_tone().then_some(self.part_tone_cutoff);
         let mut at = self.now;
         let mut rest = output;
         while !rest.is_empty() {
@@ -221,21 +241,75 @@ impl Runtime {
             rest = tail;
             for g in self.plans.slots.iter_mut().filter_map(|s| s.value.as_mut()) {
                 g.dsp.buses.begin();
+                if TRACE {
+                    if let Some(trace) = &mut g.dsp.trace {
+                        trace.begin(at, output.len());
+                    }
+                }
             }
-            self.render_voices(output, at);
+            self.render_voices::<TRACE>(output, at);
+            if self.stream_fault.is_some() {
+                return;
+            }
             for g in self.plans.slots.iter_mut().filter_map(|s| s.value.as_mut()) {
                 let start = offset + (at - self.now) as usize;
-                let faults = g
-                    .dsp
-                    .buses
-                    .render(&g.prepared.buses, output, outs, start, at);
+                let faults = g.dsp.buses.render::<TRACE>(
+                    &g.prepared.buses,
+                    output,
+                    outs,
+                    start,
+                    at,
+                    tone_cutoff,
+                    if TRACE {
+                        g.dsp
+                            .trace
+                            .as_mut()
+                            .zip(g.prepared.signal_trace.as_ref())
+                            .map(|(r, t)| (&*t.graph, r))
+                    } else {
+                        None
+                    },
+                );
                 self.nonfinite_frames = self.nonfinite_frames.saturating_add(faults);
+                if TRACE {
+                    if let Some(trace) = &mut g.dsp.trace {
+                        trace.end();
+                    }
+                }
             }
             at += output.len() as u64;
         }
     }
 
-    fn render_voices(&mut self, output: &mut [Frame], at: u64) {
+    fn render_voices<const TRACE: bool>(&mut self, output: &mut [Frame], at: u64) {
+        if self.offline {
+            // Modulation advance is cached on the absolute control grid. Prepare
+            // the exact steps before requesting pages; rendering at the same
+            // clock reads that ramp without advancing its sources again.
+            let mut next = self.voices.first;
+            while let Some(i) = next {
+                next = self.voices.slots[i].next;
+                self.prepare_voice(i, at, output.len());
+            }
+            if let Err(error) = self.wait_streaming(
+                output.len().min(u32::MAX as usize) as u32,
+                std::time::Duration::from_secs(5),
+            ) {
+                self.stream_fault = Some(error);
+                return;
+            }
+        }
+        if TRACE {
+            for word in 0..self.voice_activity.len() {
+                let mut occupied = self.voice_activity[word];
+                while occupied != 0 {
+                    let bit = occupied.trailing_zeros() as usize;
+                    occupied &= occupied - 1;
+                    self.render_voice::<true>(word * 64 + bit, output, at);
+                }
+            }
+            return;
+        }
         if self.render_voices_parallel(output, at) {
             return;
         }
@@ -255,13 +329,16 @@ impl Runtime {
                 // Dense runs retain the simple contiguous slot loop; sparse
                 // pools skip the untouched Voice storage between those runs.
                 for i in word * 64 + begin..word * 64 + end {
+                    if self.stream_fault.is_some() {
+                        return;
+                    }
                     let key = self.batch_key(i, output.len());
                     if key.is_none() || key != batch.0 || batch.2 == VOICES {
                         self.render_run(&batch.1[..batch.2], output, at);
                         batch = (key, [0; VOICES], 0);
                     }
                     if key.is_none() {
-                        self.render_voice(i, output, at);
+                        self.render_voice::<false>(i, output, at);
                     } else {
                         batch.1[batch.2] = i;
                         batch.2 += 1;
@@ -277,7 +354,7 @@ impl Runtime {
     pub(super) fn batch_key(&self, i: usize, frames: usize) -> Option<(usize, usize)> {
         let v = self.voices.slots[i].value.as_ref()?;
         let chain = v.chain?;
-        if !v.started || frames > super::dsp::BLOCK {
+        if !v.started || frames > super::dsp::BLOCK || v.cursor.waiting() {
             return None;
         }
         let f = self.families.get(v.family.0).unwrap();
@@ -296,7 +373,7 @@ impl Runtime {
     fn render_run(&mut self, voices: &[usize], output: &mut [Frame], at: u64) {
         match voices {
             [] => {}
-            [i] => self.render_voice(*i, output, at),
+            [i] => self.render_voice::<false>(*i, output, at),
             _ => self.render_batch(voices, output, at),
         }
     }
@@ -322,6 +399,7 @@ impl Runtime {
             let n = self.notes.get(f.note.0).unwrap();
             let expression = self.expressions.get(n.expression.0).unwrap();
             gains[lane] = expression.rendered.gains;
+            v.last_gains = gains[lane].map(|g| g * v.gain);
             v.cursor = v.cursor.with_step(v.base_step * expression.rendered.ratio);
             let plan = self.plans.get(n.plan.0).unwrap();
             plan_id = Some(n.plan.0);
@@ -391,7 +469,7 @@ impl Runtime {
         for (lane, &i) in voices.iter().enumerate() {
             let v = self.voices.slots[i].value.as_mut().unwrap();
             let len = batch.ends[2 * lane];
-            lanes::scale(&mut block, lane, &super::dsp::levels(v, len), len);
+            lanes::scale(&mut block, lane, &super::dsp::levels(v, len, 0), len);
         }
         sampler_simd::dispatch(
             #[inline(always)]
@@ -438,6 +516,9 @@ impl Runtime {
         for (lane, &i) in voices.iter().enumerate() {
             if done[lane] {
                 self.end_voice(VoiceId(self.voices.id(i)));
+            } else {
+                let step = self.voices.slots[i].value.as_ref().unwrap().cursor.step();
+                self.refresh_stream_reservation(i, step);
             }
         }
     }
@@ -519,10 +600,14 @@ impl Runtime {
         };
         v.cursor = v.cursor.with_step(match points {
             None => v.base_step * expression.rendered.ratio,
-            Some(ramp) => (v.base_step
-                * expression.rendered.ratio
-                * ((ramp.from.pitch + ramp.to.pitch) / 24.0).exp2())
-            .clamp(super::resample::MIN_STEP, super::resample::MAX_STEP),
+            Some(ramp) => {
+                let exponent = (ramp.from.pitch + ramp.to.pitch) / 24.0;
+                if exponent != v.mod_pitch.0 {
+                    v.mod_pitch = (exponent, exponent.exp2());
+                }
+                (v.base_step * expression.rendered.ratio * v.mod_pitch.1)
+                    .clamp(super::resample::MIN_STEP, super::resample::MAX_STEP)
+            }
         });
         Some(Prelude {
             points,
@@ -533,7 +618,7 @@ impl Runtime {
     }
 
     #[inline]
-    fn render_voice(&mut self, i: usize, segment: &mut [Frame], at: u64) {
+    fn render_voice<const TRACE: bool>(&mut self, i: usize, segment: &mut [Frame], at: u64) {
         let Some(Prelude {
             points,
             modulated,
@@ -550,6 +635,25 @@ impl Runtime {
         let n = self.notes.get(f.note.0).unwrap();
         let expression = self.expressions.get(n.expression.0).unwrap();
         let gains = expression.rendered.gains;
+        let cc = |controller: usize| {
+            if TRACE {
+                ((u64::from(
+                    self.performance_state
+                        .current(self.selections[f.note.0.index].performance)
+                        .controllers[controller],
+                ) * 127
+                    + u64::from(u32::MAX) / 2)
+                    / u64::from(u32::MAX)) as u8
+            } else {
+                0
+            }
+        };
+        let controllers = if TRACE {
+            [cc(1), cc(7), cc(11)]
+        } else {
+            [0; 3]
+        };
+        let stream_step = v.base_step * expression.rendered.ratio;
         // Prepared playback bounds and the cursor's contiguous spans stay
         // within immutable PCM; looping never changes asset ownership.
         let plan = self.plans.get_mut(n.plan.0).unwrap();
@@ -580,11 +684,108 @@ impl Runtime {
         let mut claimed = plan.dsp.cells.claim(i);
         let states = &mut claimed[..chain.map_or(0, |c| c.stages())];
         let mut delay = plan.dsp.delay_samples.claim(i);
+        let trace = if TRACE {
+            plan.prepared
+                .signal_trace
+                .as_ref()
+                .zip(plan.dsp.trace.as_mut())
+                .and_then(|(t, recorder)| {
+                    t.graph
+                        .voices
+                        .get(&v.source_zone)
+                        .map(|nodes| crate::trace::VoiceTrace {
+                            recorder,
+                            graph: &t.graph,
+                            nodes,
+                            envelope_parameters: v.envelope.trace_parameters(),
+                            identity: crate::trace::TraceIdentity {
+                                zone: v.source_zone,
+                                sample: v.sample,
+                                family: v.family.0.index,
+                                generation: v.family.0.generation,
+                                ratio: v.cursor.step(),
+                                source_frame: v.cursor.trace_position(),
+                                sample_start: v.cursor.trace_start(),
+                                velocity: n.velocity,
+                                key: n.pitch.key(),
+                                rr_sequence: plan
+                                    .prepared
+                                    .trace_region_take(nodes.region)
+                                    .map(|t| t.sequence),
+                                rr_take: plan
+                                    .prepared
+                                    .trace_region_take(nodes.region)
+                                    .map(|t| t.index),
+                                group: v.group,
+                                layer: v.bus,
+                                routed_to: v
+                                    .bus
+                                    .map(|b| t.graph.buses[b].input)
+                                    .or(Some(t.graph.master)),
+                                cc1: controllers[0],
+                                cc7: controllers[1],
+                                cc11: controllers[2],
+                                voice_gain: f64::from(v.gain),
+                                region_gain: plan.prepared.trace_region_gains(
+                                    nodes.region,
+                                    n.pitch.key(),
+                                    n.velocity,
+                                )[0],
+                                velocity_gain: plan.prepared.trace_region_gains(
+                                    nodes.region,
+                                    n.pitch.key(),
+                                    n.velocity,
+                                )[1],
+                                xfade_weight: plan.prepared.trace_region_gains(
+                                    nodes.region,
+                                    n.pitch.key(),
+                                    n.velocity,
+                                )[2],
+                                script_gain: plan
+                                    .script
+                                    .layer(v.group)
+                                    .stack(self.note_params[f.note.0.index].layer_at(at + 1))
+                                    .gains(1.)
+                                    .map(f64::from),
+                                note_gain: self.note_params[f.note.0.index]
+                                    .layer_at(at + 1)
+                                    .gains(1.)
+                                    .map(f64::from),
+                                amplifier_control_gain: points
+                                    .map_or([1.; 2], |r| r.gains_at(at + 1))
+                                    .map(f64::from),
+                                envelope_level: f64::from(v.envelope.current()),
+                                ..Default::default()
+                            },
+                        })
+                })
+        } else {
+            None
+        };
+        let mut parameter_scratch = (!plan.dsp.modulated_parameters.is_empty())
+            .then(|| plan.dsp.modulated_parameters.claim(0));
+        let parameters = if let Some(scratch) = parameter_scratch.as_mut() {
+            if plan.modulation.project_parameters(
+                &plan.prepared.voice_modulation,
+                i,
+                &plan.dsp.parameters,
+                &plan.prepared.dsp_bindings,
+                chain.map_or(0..0, |c| c.parameter_span.clone()),
+                scratch,
+            ) {
+                &scratch[..]
+            } else {
+                &plan.dsp.parameters[..]
+            }
+        } else {
+            &plan.dsp.parameters[..]
+        };
         let context = super::dsp::RenderContext {
+            trace,
             amplifier: chain.and(points),
             delay: &mut delay[..chain.map_or(0, |c| c.delay_frames)],
             expression: gains,
-            parameters: &plan.dsp.parameters,
+            parameters,
             filters: super::dsp::svf::FilterContext {
                 bank: &mut plan.dsp.filters.as_mut_slice()[0],
                 expression: Some((n.expression, expression.value)),
@@ -601,7 +802,7 @@ impl Runtime {
                 frames,
                 levels: guard.as_deref().map_or(&[], |l| l),
             };
-            render_source(v, &pcm, segment, chain, states, context, &self.kernel)
+            render_source::<TRACE>(v, &pcm, segment, chain, states, context, &self.kernel)
         } else {
             asset.touch(at + segment.len() as u64);
             let head = asset.try_head();
@@ -614,11 +815,15 @@ impl Runtime {
                 asset: asset.asset_id(),
                 head: head.as_deref().map_or(&[], |h| h),
             };
-            render_source(v, &source, segment, chain, states, context, &self.kernel)
+            render_source::<TRACE>(v, &source, segment, chain, states, context, &self.kernel)
         };
-        drop((claimed, delay));
+        drop((claimed, delay, parameter_scratch));
         if let (Some(ramp), Some(target)) = (points, mixed) {
-            let ramp = if chain.is_some() { ramp.without_gains() } else { ramp };
+            let ramp = if chain.is_some() {
+                ramp.without_gains()
+            } else {
+                ramp
+            };
             plan.dsp.filters.as_mut_slice()[0].modulation = [1.0; 2];
             if modulated {
                 plan.modulation
@@ -645,6 +850,7 @@ impl Runtime {
             let m = |c: usize| r.from.gains[c].abs().max(r.to.gains[c].abs());
             [gains[0] * m(0), gains[1] * m(1)]
         });
+        v.last_gains = applied.map(|g| g * v.gain);
         let done = done || stop || inaudible(v, produced, applied);
         self.nonfinite_frames = self.nonfinite_frames.saturating_add(faults);
         self.stream_underruns = self.stream_underruns.saturating_add(u64::from(underrun));
@@ -653,6 +859,8 @@ impl Runtime {
         }
         if done {
             self.end_voice(VoiceId(self.voices.id(i)));
+        } else {
+            self.refresh_stream_reservation(i, stream_step);
         }
     }
 }
@@ -675,7 +883,7 @@ pub(super) fn ramp_mix(
     }
 }
 
-pub(super) fn render_source(
+pub(super) fn render_source<const TRACE: bool>(
     voice: &mut super::Voice,
     source: &(impl super::source::ReadFrames + ?Sized),
     output: &mut [Frame],
@@ -686,7 +894,8 @@ pub(super) fn render_source(
 ) -> (usize, bool, u64, bool) {
     let was_starved = voice.cursor.starved();
     let (produced, done, faults) = if let Some(chain) = chain {
-        let (produced, faults) = chain.render(voice, source, output, states, context, kernel);
+        let (produced, faults) =
+            chain.render::<TRACE>(voice, source, output, states, context, kernel);
         (produced, chain.done(voice), faults)
     } else {
         let produced = voice.cursor.render(
@@ -705,4 +914,14 @@ pub(super) fn render_source(
         faults,
         !was_starved && voice.cursor.starved(),
     )
+}
+
+impl Runtime {
+    /// Clone the control-side drain endpoint; never call file I/O from render.
+    pub fn signal_trace_reader(&self) -> Option<crate::trace::TraceReader> {
+        self.plans
+            .get(self.active_plan.0)?
+            .prepared
+            .signal_trace_reader()
+    }
 }

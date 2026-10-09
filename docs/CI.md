@@ -31,6 +31,10 @@ The shipping release profile itself is unchanged.
 
 Rust 1.99.0 matches the compiler in the successful baseline run linked below.
 Actions use immutable commit pins; Cargo commands use the committed lockfile.
+Editor validation uses the locally retained MUI workflow from revision
+`dcf0796082feec053af1418e3a38a302ee61da0a`. Its display/graphics setup gets two
+three-minute attempts inside a seven-minute step deadline, with bounded network
+waits and package recovery before retrying.
 Caches are separated by OS/target, profile and feature set. The cache action also
 keys the compiler, Cargo manifests/lockfile and compiler-related environment.
 Caches are accelerators, not test evidence or release artifacts.
@@ -39,7 +43,7 @@ Caches are accelerators, not test evidence or release artifacts.
 
 Every push or merge to public `main`, including documentation-only changes, starts
 Nightly. Manual **Actions → Nightly → Run workflow → main** also rechecks and
-rebuilds the selected commit. An unchanged version rerun preserves the rollback.
+rebuilds the selected commit. An unchanged version rerun preserves every release.
 Shipping verification is always forced; documentation filtering applies only to
 routine CI. Each native shipping-check and packaging job derives the same nightly
 SemVer and `SOURCE_DATE_EPOCH` from that exact source commit.
@@ -49,11 +53,15 @@ The graph is:
 1. Check out the event's exact source SHA
 2. Call this commit's CI workflow with `release_validation: true`
 3. Require release-profile Linux tests and Windows/macOS compilation
-4. Build CLAP, VST3 and standalone for Linux x64, Windows x64, macOS arm64 and macOS x64
+4. Build CLAP, VST3 and standalone for Linux x64, Windows x64, macOS arm64 and macOS x64.
+   Linux packages use Ubuntu 22.04 and reject any artifact requiring glibc newer than 2.35.
 5. Verify all four ZIP checksum sidecars, required binaries/legal files and embedded
-   build identities, then publish only if that SHA is still `main`. Each ZIP includes
-   `SOURCE_COMMIT.txt`, `clap-build-info.json`, `vst3-build-info.json` and standalone
-   `build-info.json`; the published `release-manifest.json` records version, source, identities and SHA256.
+   build identities, then publish the event SHA after confirming it belongs to `main`.
+   Linux and Windows ZIPs contain the three products, README, install/uninstall
+   scripts and consolidated `LICENSES.txt`. Source and build JSON move to the
+   published `release-manifest.json`; build JSON sidecars remain transient.
+   MPL covered source is a separate release asset. macOS publishes the universal
+   installer only; its architecture ZIPs remain internal packaging inputs.
    Sidecars are transient build-to-publisher checks; release checksums are in the
    downloadable manifest. cargo-moose builds CLAP and VST3 separately with
    `--no-default-features`, each format plus the non-format defaults and requested
@@ -62,29 +70,29 @@ The graph is:
    full nightly version remains in `KONTRAVersion` and embedded build JSON. See
    Apple's [bundle build version](https://developer.apple.com/documentation/bundleresources/information-property-list/cfbundleversion)
    and [release version](https://developer.apple.com/documentation/bundleresources/information-property-list/cfbundleshortversionstring) formats.
-6. Publish under an immutable `v<nightly SemVer>` tag with GitHub's Latest flag.
-   Generate reviewed Added/Changed/Fixed/Known limits deltas against the previous
-   release's source CHANGELOG.md, with full shipped public commit messages and
-   merged PR descriptions. The same versioned notes appear in the release body and
-   `release-manifest.json`; no local Git history or README bot commit is required.
-   A missing previous changelog is an explicit bootstrap, not an empty release.
+6. Publish under an immutable `v<nightly SemVer>` tag. Latest points to the newest
+   complete source snapshot, even when runs finish out of order. Generate plain
+   New/Fixed/Improved bullets from ledger IDs newly accepted since the previous
+   published source, plus at most five user-facing Known issues from CHANGELOG.
+   Installation links the README; source range and checksums are collapsed.
+   The same notes appear in the release body and `release-manifest.json`.
+   A missing previous ledger bootstraps from current accepted entries.
    The base patch is checked against explicitly accepted logical IDs in
    `release-fixes.json`, and all binaries derive it from Cargo before packaging.
    These are experimental nightlies, not stable-quality releases. GitHub's
    prerelease flag is false because prereleases cannot serve its permanent
    `/releases/latest/download/<asset>` URLs. The SemVer itself remains a nightly.
    See [GitHub release API](https://docs.github.com/en/rest/releases/releases).
-   Keep the newest and one previous complete release without editing historical
-   tags or release records. This works with the built-in `GITHUB_TOKEN`: historical
-   targets containing changed workflows otherwise require Workflows write permission,
-   which that token cannot receive. Preserve immutable stable source tags.
-   Only after successful publication or a safe superseded-head exit,
+   Keep every published nightly and its immutable source tag. Only transient
+   staging releases and abandoned drafts are removed. After successful publication,
    remove this run's transient Actions artifacts. Failed builds/uploads retain their
    artifacts for one day. Release downloads are independent of Actions artifacts.
 
 No PR workflow publishes. Downloads come only from the same Nightly run, not a
-cache or a different PR. Obsolete verification/build jobs can cancel; the publish
-critical section cannot. Existing read/write permission boundaries are preserved.
+cache or a different PR. Release verification and build concurrency groups include
+the source SHA, so consecutive main pushes do not cancel one another. Publication
+uses [GitHub's FIFO queue](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)
+with cancellation disabled. Existing read/write permission boundaries are preserved.
 These checks are automated regression coverage, not DAW or Kontakt certification.
 
 To test shipping optimization without publishing, use **Actions → CI → Run
@@ -112,6 +120,12 @@ durations and total runner-minutes on real runs before claiming realized savings
 For branch protection, select the stable **CI required** check after it has run
 successfully. This PR does not change repository protection/settings. Existing
 required check names must be reviewed by a maintainer before changing them.
+
+The Linux dependency step keeps its exact downloaded `.deb` files in the plugin artifact.
+Editor jobs verify the cache hashes and configure those packages offline, with five
+bounded attempts and exponential backoff. A complete preinstalled Xvfb/graphics/tool
+stack needs no installation. Vulkan/GL diagnostics, the screen recording, editor
+reopen and MUI first-frame checks remain required.
 
 ## Why this setup / primary references
 

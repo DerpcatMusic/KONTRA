@@ -5,10 +5,14 @@ use rtrb::{Consumer, Producer, PushError, RingBuffer};
 
 #[derive(Debug)]
 pub enum ControlOperation {
+    MidiComplete(crate::MidiCompletion),
+    MidiCapture(crate::MidiCompletion),
     Invoke(super::ControlContext, ControlWrite),
     HostParameter(super::ControlContext, u16, f64),
     InvokeWidget(super::ControlContext, Vec<crate::WidgetEdit>),
     CaptureWidget(Vec<crate::WidgetEdit>),
+    CaptureScriptState(crate::ScriptStateBuffer),
+    RestoreScriptState(crate::ScriptStateBuffer),
     Edit(Box<[ControlWrite]>),
     Recall(Box<[ControlWrite]>),
     Capture(Box<[ControlWrite]>),
@@ -16,9 +20,15 @@ pub enum ControlOperation {
 impl ControlOperation {
     fn len(&self) -> usize {
         match self {
-            Self::Invoke(..) | Self::HostParameter(..) => 1,
+            Self::MidiComplete(..)
+            | Self::MidiCapture(..)
+            | Self::Invoke(..)
+            | Self::HostParameter(..) => 1,
             Self::InvokeWidget(_, v) | Self::CaptureWidget(v) => v.len(),
             Self::Edit(v) | Self::Recall(v) | Self::Capture(v) => v.len(),
+            Self::CaptureScriptState(v) | Self::RestoreScriptState(v) => {
+                v.values.len().saturating_add(v.callbacks.len())
+            }
         }
     }
 }
@@ -163,6 +173,12 @@ impl Runtime {
         // Share ordering with direct controls and the native musical timeline.
         self.apply_due();
         reply.result = match &mut command.operation {
+            ControlOperation::MidiComplete(output) => self
+                .complete_midi(command.plan, output)
+                .map(|_| (1, self.control_revision(command.plan).unwrap_or(0))),
+            ControlOperation::MidiCapture(output) => self
+                .capture_midi(command.plan, output)
+                .map(|_| (1, self.control_revision(command.plan).unwrap_or(0))),
             ControlOperation::Invoke(context, write) => self
                 .invoke_control(*context, command.plan, command.expected_revision, *write)
                 .map(|(revision, behavior)| {
@@ -176,9 +192,21 @@ impl Runtime {
                     (edits.len(), revision)
                 }),
             ControlOperation::HostParameter(context, address, value) => self
-                .dispatch_host_parameter_in(*context, command.plan, command.expected_revision, *address, *value)
+                .dispatch_host_parameter_in(
+                    *context,
+                    command.plan,
+                    command.expected_revision,
+                    *address,
+                    *value,
+                )
                 .map(|revision| (1, revision)),
             ControlOperation::CaptureWidget(output) => self.capture_widgets(command.plan, output),
+            ControlOperation::CaptureScriptState(output) => {
+                self.capture_script_state(command.plan, output)
+            }
+            ControlOperation::RestoreScriptState(state) => {
+                self.restore_script_state(command.plan, command.expected_revision, state)
+            }
             ControlOperation::Edit(writes) => self
                 .edit_controls_now(command.plan, command.expected_revision, writes)
                 .map(|rev| (writes.len(), rev)),

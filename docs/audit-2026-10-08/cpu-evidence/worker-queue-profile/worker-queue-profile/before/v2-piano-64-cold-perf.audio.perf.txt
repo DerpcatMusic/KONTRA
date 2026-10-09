@@ -1,0 +1,37 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 936  of event 'cycles:u'
+# Event count (approx.): 301970179
+#
+# Overhead  Command     Shared Object     Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      
+# ........  ..........  ................  ............................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+    20.36%  integrated  integrated        [.] sampler_core::dsp::process
+    10.94%  integrated  integrated        [.] <sampler_core::bus::BusState>::render
+     8.63%  integrated  integrated        [.] <sampler_core::source::Cursor>::render_filtered::<sampler_core::source::PagedFrames>
+     6.53%  integrated  integrated        [.] <sampler_core::Runtime>::service_streaming
+     5.88%  integrated  integrated        [.] <sampler_core::resample::Kernel>::sample_window
+     3.23%  integrated  integrated        [.] <sampler_core::voice_mod::VoiceModState>::evaluate
+     3.08%  integrated  integrated        [.] sampler_core::render::render_source::<sampler_core::source::PagedFrames>
+     2.92%  integrated  integrated        [.] sampler_simd::dispatch::v3::<(), sampler_simd::dispatch::run_fused<(&mut sampler_core::source::Cursor, &mut [[f32; 2]], &mut sampler_core::envelope::EnvelopeState), (), <sampler_core::source::Cursor>::render_run<sampler_core::source::PagedFrames>::{closure#3}, <sampler_core::source::Cursor>::render_run<sampler_core::source::PagedFrames>::{closure#4}>::{closure#0}>
+     2.87%  integrated  integrated        [.] <sampler_core::stream::StreamCache>::protect
+     1.89%  integrated  integrated        [.] <sampler_core::dsp::PreparedVoiceChain>::finish
+     1.68%  integrated  integrated        [.] <sampler_core::Runtime>::render_split
+     1.64%  integrated  integrated        [.] <sampler_core::voice_mod::VoiceModState>::mix
+     1.64%  integrated  integrated        [.] <sampler_core::Runtime>::prepare_voice
+     1.59%  integrated  integrated        [.] <kontakto::sound::v2::V2Core as kontakto::sound::Core>::render
+     1.48%  integrated  integrated        [.] <sampler_core::Runtime>::render_voice
+     1.45%  integrated  integrated        [.] <sampler_core::Runtime>::voice_demand
+     1.45%  integrated  integrated        [.] <sampler_core::stream::StreamCache>::request
+     1.27%  integrated  integrated        [.] <sampler_core::dsp::PreparedVoiceChain>::begin::<sampler_core::source::PagedFrames>
+     1.23%  integrated  integrated        [.] <core::slice::iter::Iter<sampler_core::dsp::ProcessorState> as core::iter::traits::iterator::Iterator>::all::<<sampler_core::dsp::ProcessorState>::finite>
+     1.12%  integrated  libc.so.6         [.] 0x00000000001b837b
+     1.03%  integrated  integrated        [.] <sampler_core::stream::PageReader>::span
+
+
+#
+# (Tip: For memory address profiling, try: perf mem record / perf mem report)
+#

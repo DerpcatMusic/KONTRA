@@ -116,6 +116,7 @@ impl Runtime {
     /// Start the active plan's plan programs once. Full callback capacity or
     /// no performance skips them.
     pub(super) fn start_plan_programs(&mut self) {
+        self.start_midi_jobs(self.active_plan);
         if self.started_plan == Some(self.active_plan) {
             return;
         }

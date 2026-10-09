@@ -94,19 +94,35 @@ end
 function methods.setValue(w, v, arg, callChanged)
   local d = data(w)
   if d.kind == "Table" then
-    if v < 1 or v > d.length or v % 1 ~= 0 then error("table index out of range") end
-    d.values[v] = clamp(w, arg)
-    ui.revision = ui.revision + 1
-    if callChanged ~= false then notify(w, v) end
+    if rawtype(v) ~= 'number' or v ~= v or math.abs(v) == math.huge then error('invalid table index') end
+    v = v < 0 and math.ceil(v) or math.floor(v)
+    -- v1/Workstation-observed, Falcon unverified: boundary writes are
+    -- ignored; programmatic values are independent of the display range.
+    if v < 1 or v > d.length then report('widget_index_out_of_range',''); return end
+    if rawtype(arg) ~= 'number' or arg ~= arg or math.abs(arg) == math.huge then error('invalid table value') end
+    if d.integer then arg = arg < 0 and math.ceil(arg) or math.floor(arg) end
+    local old = d.values[v]
+    d.values[v] = arg
+    if old ~= arg then ui.revision = ui.revision + 1 end
+    if callChanged ~= false and old ~= arg then notify(w, v) end
     return
   end
   if d.kind ~= "ParameterValue" then v = clamp(w, v) end
+  local old = w.value
   if d.element then d.element:setParameter(d.parameter, v) else d.value = v end
-  ui.revision = ui.revision + 1
-  if arg ~= false then notify(w) end
+  -- v1/Workstation-observed, Falcon unverified: identical writes/restoration
+  -- do not call changed, including a parameter setter that ignored its write.
+  if old ~= w.value then
+    ui.revision = ui.revision + 1
+    if arg ~= false then notify(w) end
+  end
 end
 function methods.getValue(w, i)
-  if w.kind == "Table" then return data(w).values[i] or 0 end
+  if w.kind == "Table" then
+    if rawtype(i) ~= 'number' or i ~= i or math.abs(i) == math.huge then error('invalid table index') end
+    i = i < 0 and math.ceil(i) or math.floor(i)
+    return data(w).values[i] or data(w).default
+  end
   return w.value
 end
 function methods.setRange(w, lo, hi) w.min, w.max = lo, hi end
@@ -193,6 +209,7 @@ widget = function(kind, ...)
   local w = setmetatable({__data=d}, widget_mt)
   if kind == "Table" then
     d.length,d.value,d.min,d.max,d.integer = value or 0,0,args[4] or 0,args[5] or 1,args[6]==true
+    d.default = args[3] or 0
     d.values = {}; for i=1,d.length do d.values[i] = args[3] or 0 end
   elseif kind == "Menu" or kind == "MultiStateButton" then
     d.items,d.value,d.integer = value or named.items or {},lo or 1,true
@@ -262,18 +279,27 @@ function __restore()
 end
 function __ui_edit(id, component, value)
   local w = registry[id]; if not w or not w.enabled then error("invalid UI control") end
-  if w.kind == "Table" then w:setValue(component,value)
+  if w.kind == "Table" then
+    if component < 1 or component > w.length then error('invalid UI table cell') end
+    w:setValue(component,value)
   elseif w.kind == "XY" then
+    if component ~= 1 and component ~= 2 then error('invalid UI axis') end
     local name = component==1 and w.paramX or w.paramY
     for _, target in ipairs(registry) do if target.name==name then target:setValue(value); return end end
     error("unbound XY axis")
   elseif w.kind == "Button" then
+    if component ~= 0 then error('invalid UI component') end
     if value >= 0.5 then notify(w) end
-  else w:setValue(value) end
+  else
+    if component ~= 0 then error('invalid UI component') end
+    w:setValue(value)
+  end
 end
 
 -- Elements -----------------------------------------------------------------
 local element = {}
+local collections = {layers=true,keygroups=true,oscillators=true,inserts=true,auxs=true,
+  sends=true,modulations=true,eventProcessors=true,connections=true}
 element.__index = function(t, k)
   local m = rawget(element, k)
   if m then return m end
@@ -282,13 +308,27 @@ element.__index = function(t, k)
     rawset(t, k, defs)
     return defs
   end
-  if k == "numParams" then return #t.parameterDefinitions end
+  if k == "numParams" then
+    local defs=rawget(t,'parameterDefinitions')
+    return defs and #defs or native.paramCount(rawget(t,'__id'))
+  end
+  if k == 'mods' then
+    local list = t.modulations; rawset(t,k,list); return list
+  end
+  if collections[k] or k == 'synthChildren' then
+    local list = {}; if collections[k] then setmetatable(list,__list_mt) end
+    rawset(t,k,list); return list
+  end
   return nil
+end
+local function parameter_name(self,id)
+  local defs=rawget(self,'parameterDefinitions')
+  if defs then local def=defs[id]; return def and def.name end
+  return native.paramName(rawget(self,'__id'),id)
 end
 function element.getParameter(self, name)
   if type(name) == "number" then
-    local d = self.parameterDefinitions[name]; if not d then error("invalid parameter id") end
-    name = d.name
+    name = parameter_name(self,name); if not name then error("invalid parameter id") end
   end
   local overlay = rawget(self, "__set")
   if overlay and overlay[name] ~= nil then return overlay[name] end
@@ -300,24 +340,36 @@ function element.getParameter(self, name)
   return v
 end
 function element.hasParameter(self, name)
-  return self.parameterDefinitions[name] ~= nil or native.param(rawget(self,'__id'), name) ~= nil
+  if type(name)=='number' then return parameter_name(self,name) ~= nil end
+  local defs=rawget(self,'parameterDefinitions')
+  return (defs and defs[name] ~= nil) or native.hasParameter(rawget(self,'__id'),name)
 end
 __touched = {}
 function element.setParameter(self, name, value)
   if name == nil then report("setParameter", "nil name"); return end
   if type(name) == "number" then
-    local d = self.parameterDefinitions[name]; if not d then error("invalid parameter id") end
-    name = d.name
+    name = parameter_name(self,name); if not name then error("invalid parameter id") end
   end
-  local def = self.parameterDefinitions[name]
-  if def then
-    if def.type == 'bool' then
-      if type(value) ~= 'boolean' then error('expected boolean parameter') end
-    else
-      if type(value) ~= 'number' or value ~= value or math.abs(value) == math.huge then error('expected finite parameter') end
+  local defs = rawget(self, 'parameterDefinitions')
+  local expected, min, max
+  if defs then
+    local def = defs[name]
+    if def then expected,min,max=def.type,def.min,def.max end
+  else expected,min,max=native.definition(rawget(self,'__id'),name) end
+  if expected then
+    -- v1/Workstation-observed, Falcon unverified: mismatched scalar writes
+    -- are ignored. Only lossless int-to-float widening is accepted.
+    local actual = type(value)
+    if actual == 'boolean' then actual = 'bool'
+    elseif actual == 'number' then actual = value == math.floor(value) and 'int' or 'float' end
+    if actual ~= expected and not (expected == 'float' and actual == 'int') then
+      native.setterMismatch(expected,actual)
+      return
+    end
+    if actual == 'int' or actual == 'float' then
+      if value ~= value or math.abs(value) == math.huge then error('expected finite parameter') end
       -- Keep reversed documented bounds intact; native semantics need a measurement.
-      if def.min <= def.max then value = math.max(def.min, math.min(def.max, value)) end
-      if def.type == 'int' then value = math.floor(value + 0.5) end
+      if min ~= nil and max ~= nil and min <= max then value = math.max(min, math.min(max, value)) end
     end
   end
   local overlay = rawget(self, "__set")
@@ -331,8 +383,7 @@ function element.setParameter(self, name, value)
 end
 function element.getParameterConnections(self, name)
   if type(name) == 'number' then
-    local d = self.parameterDefinitions[name]; if not d then error('invalid parameter id') end
-    name = d.name
+    name = parameter_name(self,name); if not name then error('invalid parameter id') end
   end
   local result = {}
   for _, c in ipairs(self.connections or {}) do
@@ -462,7 +513,13 @@ end
 function setBackground(path) ui.background = native.resourcePath(path) end
 function setSize(w, h) ui.width, ui.height = w, h end
 function setBackgroundColour(c) ui.backgroundColour = c end
-function setKeyColour(key, c) ui.keys[key+1] = c; ui.revision = ui.revision + 1 end
-function resetKeyColour(key) ui.keys[key+1] = nil; ui.revision = ui.revision + 1 end
+function setKeyColour(key, c)
+  ui.keys[key+1] = c; ui.revision = ui.revision + 1
+  if native.scanKey then native.scanKey("setKeyColour", {key, c}) end
+end
+function resetKeyColour(key)
+  ui.keys[key+1] = nil; ui.revision = ui.revision + 1
+  if native.scanKey then native.scanKey("resetKeyColour", {key}) end
+end
 function makePerformanceView() ui.performance = true end
 __ui = ui

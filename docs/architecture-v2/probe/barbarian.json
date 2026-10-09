@@ -1,0 +1,1261 @@
+{
+ "instrument": "barbarian",
+ "name": "Barbarian Brass",
+ "notes": 48,
+ "engines": {
+  "kontra": {
+   "identified": 32,
+   "silent_notes": 15,
+   "kontakt_audible_engine_silent": 0,
+   "same_direction_pct": 100.0,
+   "same_start_offset_pct": 100.0,
+   "attack_db_error_mean": 3.1,
+   "onset_ms_diff_mean": -5.9,
+   "same_sample_pct": 50.0,
+   "same_velocity_layer_pct": 50.0,
+   "rr_groups": 8,
+   "rr_sequence_equal": 4,
+   "rr_same_set": 4,
+   "level_db_mean": 2.13,
+   "level_db_worst": 2.33,
+   "articulations": [
+    "-"
+   ],
+   "rr_detail": [
+    {
+     "key": 48,
+     "vel": 20,
+     "kontakt_distinct": 1,
+     "engine_distinct": 1,
+     "sequence_equal": true
+    },
+    {
+     "key": 48,
+     "vel": 60,
+     "kontakt_distinct": 1,
+     "engine_distinct": 1,
+     "sequence_equal": true
+    },
+    {
+     "key": 48,
+     "vel": 100,
+     "kontakt_distinct": 1,
+     "engine_distinct": 1,
+     "sequence_equal": true
+    },
+    {
+     "key": 48,
+     "vel": 127,
+     "kontakt_distinct": 1,
+     "engine_distinct": 1,
+     "sequence_equal": true
+    },
+    {
+     "key": 60,
+     "vel": 20,
+     "kontakt_distinct": 1,
+     "engine_distinct": 1,
+     "sequence_equal": false
+    },
+    {
+     "key": 60,
+     "vel": 60,
+     "kontakt_distinct": 1,
+     "engine_distinct": 1,
+     "sequence_equal": false
+    },
+    {
+     "key": 60,
+     "vel": 100,
+     "kontakt_distinct": 1,
+     "engine_distinct": 1,
+     "sequence_equal": false
+    },
+    {
+     "key": 60,
+     "vel": 127,
+     "kontakt_distinct": 1,
+     "engine_distinct": 1,
+     "sequence_equal": false
+    }
+   ],
+   "per_note": [
+    {
+     "i": 16,
+     "key": 60,
+     "vel": 20,
+     "kontakt": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn1_Marc_60_01.ncw",
+      "ncc": 0.6650000214576721,
+      "layer": [
+       [
+        1,
+        42
+       ]
+      ],
+      "rms_db": -26.98
+     },
+     "engine": {
+      "asset": "AFL2_BarbarianBrass_Close_Dyn2_SusNonAcc_60.ncw",
+      "ncc": 0.9070000052452087,
+      "layer": [
+       [
+        1,
+        127
+       ]
+      ],
+      "rms_db": -24.87
+     }
+    },
+    {
+     "i": 17,
+     "key": 60,
+     "vel": 20,
+     "kontakt": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn1_Marc_60_01.ncw",
+      "ncc": 0.6650000214576721,
+      "layer": [
+       [
+        1,
+        42
+       ]
+      ],
+      "rms_db": -27.0
+     },
+     "engine": {
+      "asset": "AFL2_BarbarianBrass_Close_Dyn2_SusNonAcc_60.ncw",
+      "ncc": 0.9070000052452087,
+      "layer": [
+       [
+        1,
+        127
+       ]
+      ],
+      "rms_db": -24.87
+     }
+    },
+    {
+     "i": 18,
+     "key": 60,
+     "vel": 20,
+     "kontakt": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn1_Marc_60_01.ncw",
+      "ncc": 0.6650000214576721,
+      "layer": [
+       [
+        1,
+        42
+       ]
+      ],
+      "rms_db": -26.99
+     },
+     "engine": {
+      "asset": "AFL2_BarbarianBrass_Close_Dyn2_SusNonAcc_60.ncw",
+      "ncc": 0.9070000052452087,
+      "layer": [
+       [
+        1,
+        127
+       ]
+      ],
+      "rms_db": -24.87
+     }
+    },
+    {
+     "i": 19,
+     "key": 60,
+     "vel": 20,
+     "kontakt": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn1_Marc_60_01.ncw",
+      "ncc": 0.6650000214576721,
+      "layer": [
+       [
+        1,
+        42
+       ]
+      ],
+      "rms_db": -26.97
+     },
+     "engine": {
+      "asset": "AFL2_BarbarianBrass_Close_Dyn2_SusNonAcc_60.ncw",
+      "ncc": 0.9070000052452087,
+      "layer": [
+       [
+        1,
+        127
+       ]
+      ],
+      "rms_db": -24.87
+     }
+    },
+    {
+     "i": 20,
+     "key": 60,
+     "vel": 60,
+     "kontakt": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn1_Marc_60_01.ncw",
+      "ncc": 0.6650000214576721,
+      "layer": [
+       [
+        1,
+        42
+       ]
+      ],
+      "rms_db": -26.99
+     },
+     "engine": {
+      "asset": "AFL2_BarbarianBrass_Close_Dyn2_SusNonAcc_60.ncw",
+      "ncc": 0.9070000052452087,
+      "layer": [
+       [
+        1,
+        127
+       ]
+      ],
+      "rms_db": -24.87
+     }
+    },
+    {
+     "i": 21,
+     "key": 60,
+     "vel": 60,
+     "kontakt": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn1_Marc_60_01.ncw",
+      "ncc": 0.6650000214576721,
+      "layer": [
+       [
+        1,
+        42
+       ]
+      ],
+      "rms_db": -26.97
+     },
+     "engine": {
+      "asset": "AFL2_BarbarianBrass_Close_Dyn2_SusNonAcc_60.ncw",
+      "ncc": 0.9070000052452087,
+      "layer": [
+       [
+        1,
+        127
+       ]
+      ],
+      "rms_db": -24.87
+     }
+    },
+    {
+     "i": 22,
+     "key": 60,
+     "vel": 60,
+     "kontakt": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn1_Marc_60_01.ncw",
+      "ncc": 0.6650000214576721,
+      "layer": [
+       [
+        1,
+        42
+       ]
+      ],
+      "rms_db": -27.0
+     },
+     "engine": {
+      "asset": "AFL2_BarbarianBrass_Close_Dyn2_SusNonAcc_60.ncw",
+      "ncc": 0.9070000052452087,
+      "layer": [
+       [
+        1,
+        127
+       ]
+      ],
+      "rms_db": -24.87
+     }
+    },
+    {
+     "i": 23,
+     "key": 60,
+     "vel": 60,
+     "kontakt": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn1_Marc_60_01.ncw",
+      "ncc": 0.6650000214576721,
+      "layer": [
+       [
+        1,
+        42
+       ]
+      ],
+      "rms_db": -26.97
+     },
+     "engine": {
+      "asset": "AFL2_BarbarianBrass_Close_Dyn2_SusNonAcc_60.ncw",
+      "ncc": 0.9070000052452087,
+      "layer": [
+       [
+        1,
+        127
+       ]
+      ],
+      "rms_db": -24.87
+     }
+    },
+    {
+     "i": 24,
+     "key": 60,
+     "vel": 100,
+     "kontakt": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn1_Marc_60_01.ncw",
+      "ncc": 0.6650000214576721,
+      "layer": [
+       [
+        1,
+        42
+       ]
+      ],
+      "rms_db": -27.0
+     },
+     "engine": {
+      "asset": "AFL2_BarbarianBrass_Close_Dyn2_SusNonAcc_60.ncw",
+      "ncc": 0.9070000052452087,
+      "layer": [
+       [
+        1,
+        127
+       ]
+      ],
+      "rms_db": -24.87
+     }
+    },
+    {
+     "i": 25,
+     "key": 60,
+     "vel": 100,
+     "kontakt": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn1_Marc_60_01.ncw",
+      "ncc": 0.6650000214576721,
+      "layer": [
+       [
+        1,
+        42
+       ]
+      ],
+      "rms_db": -27.0
+     },
+     "engine": {
+      "asset": "AFL2_BarbarianBrass_Close_Dyn2_SusNonAcc_60.ncw",
+      "ncc": 0.9070000052452087,
+      "layer": [
+       [
+        1,
+        127
+       ]
+      ],
+      "rms_db": -24.87
+     }
+    },
+    {
+     "i": 26,
+     "key": 60,
+     "vel": 100,
+     "kontakt": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn1_Marc_60_01.ncw",
+      "ncc": 0.6660000085830688,
+      "layer": [
+       [
+        1,
+        42
+       ]
+      ],
+      "rms_db": -26.97
+     },
+     "engine": {
+      "asset": "AFL2_BarbarianBrass_Close_Dyn2_SusNonAcc_60.ncw",
+      "ncc": 0.9070000052452087,
+      "layer": [
+       [
+        1,
+        127
+       ]
+      ],
+      "rms_db": -24.87
+     }
+    },
+    {
+     "i": 27,
+     "key": 60,
+     "vel": 100,
+     "kontakt": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn1_Marc_60_01.ncw",
+      "ncc": 0.6650000214576721,
+      "layer": [
+       [
+        1,
+        42
+       ]
+      ],
+      "rms_db": -26.98
+     },
+     "engine": {
+      "asset": "AFL2_BarbarianBrass_Close_Dyn2_SusNonAcc_60.ncw",
+      "ncc": 0.9070000052452087,
+      "layer": [
+       [
+        1,
+        127
+       ]
+      ],
+      "rms_db": -24.87
+     }
+    },
+    {
+     "i": 28,
+     "key": 60,
+     "vel": 127,
+     "kontakt": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn1_Marc_60_01.ncw",
+      "ncc": 0.6650000214576721,
+      "layer": [
+       [
+        1,
+        42
+       ]
+      ],
+      "rms_db": -26.97
+     },
+     "engine": {
+      "asset": "AFL2_BarbarianBrass_Close_Dyn2_SusNonAcc_60.ncw",
+      "ncc": 0.9070000052452087,
+      "layer": [
+       [
+        1,
+        127
+       ]
+      ],
+      "rms_db": -24.87
+     }
+    },
+    {
+     "i": 29,
+     "key": 60,
+     "vel": 127,
+     "kontakt": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn1_Marc_60_01.ncw",
+      "ncc": 0.6650000214576721,
+      "layer": [
+       [
+        1,
+        42
+       ]
+      ],
+      "rms_db": -27.0
+     },
+     "engine": {
+      "asset": "AFL2_BarbarianBrass_Close_Dyn2_SusNonAcc_60.ncw",
+      "ncc": 0.9070000052452087,
+      "layer": [
+       [
+        1,
+        127
+       ]
+      ],
+      "rms_db": -24.87
+     }
+    },
+    {
+     "i": 30,
+     "key": 60,
+     "vel": 127,
+     "kontakt": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn1_Marc_60_01.ncw",
+      "ncc": 0.6650000214576721,
+      "layer": [
+       [
+        1,
+        42
+       ]
+      ],
+      "rms_db": -26.98
+     },
+     "engine": {
+      "asset": "AFL2_BarbarianBrass_Close_Dyn2_SusNonAcc_60.ncw",
+      "ncc": 0.9070000052452087,
+      "layer": [
+       [
+        1,
+        127
+       ]
+      ],
+      "rms_db": -24.87
+     }
+    },
+    {
+     "i": 31,
+     "key": 60,
+     "vel": 127,
+     "kontakt": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn1_Marc_60_01.ncw",
+      "ncc": 0.6650000214576721,
+      "layer": [
+       [
+        1,
+        42
+       ]
+      ],
+      "rms_db": -27.0
+     },
+     "engine": {
+      "asset": "AFL2_BarbarianBrass_Close_Dyn2_SusNonAcc_60.ncw",
+      "ncc": 0.9070000052452087,
+      "layer": [
+       [
+        1,
+        127
+       ]
+      ],
+      "rms_db": -24.87
+     }
+    },
+    {
+     "i": 32,
+     "key": 72,
+     "vel": 20,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 33,
+     "key": 72,
+     "vel": 20,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 34,
+     "key": 72,
+     "vel": 20,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 35,
+     "key": 72,
+     "vel": 20,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 36,
+     "key": 72,
+     "vel": 60,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 37,
+     "key": 72,
+     "vel": 60,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 38,
+     "key": 72,
+     "vel": 60,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 39,
+     "key": 72,
+     "vel": 60,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 40,
+     "key": 72,
+     "vel": 100,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 41,
+     "key": 72,
+     "vel": 100,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 42,
+     "key": 72,
+     "vel": 100,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 43,
+     "key": 72,
+     "vel": 100,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 44,
+     "key": 72,
+     "vel": 127,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 45,
+     "key": 72,
+     "vel": 127,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 46,
+     "key": 72,
+     "vel": 127,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 47,
+     "key": 72,
+     "vel": 127,
+     "kontakt": null,
+     "engine": null
+    }
+   ]
+  },
+  "v1": {
+   "identified": 32,
+   "silent_notes": 15,
+   "kontakt_audible_engine_silent": 0,
+   "same_direction_pct": 100.0,
+   "same_start_offset_pct": 100.0,
+   "attack_db_error_mean": 3.4,
+   "onset_ms_diff_mean": -5.8,
+   "same_sample_pct": 50.0,
+   "same_velocity_layer_pct": 50.0,
+   "rr_groups": 8,
+   "rr_sequence_equal": 4,
+   "rr_same_set": 4,
+   "level_db_mean": -9.3,
+   "level_db_worst": -12.81,
+   "articulations": [
+    "-"
+   ],
+   "rr_detail": [
+    {
+     "key": 48,
+     "vel": 20,
+     "kontakt_distinct": 1,
+     "engine_distinct": 1,
+     "sequence_equal": true
+    },
+    {
+     "key": 48,
+     "vel": 60,
+     "kontakt_distinct": 1,
+     "engine_distinct": 1,
+     "sequence_equal": true
+    },
+    {
+     "key": 48,
+     "vel": 100,
+     "kontakt_distinct": 1,
+     "engine_distinct": 1,
+     "sequence_equal": true
+    },
+    {
+     "key": 48,
+     "vel": 127,
+     "kontakt_distinct": 1,
+     "engine_distinct": 1,
+     "sequence_equal": true
+    },
+    {
+     "key": 60,
+     "vel": 20,
+     "kontakt_distinct": 1,
+     "engine_distinct": 1,
+     "sequence_equal": false
+    },
+    {
+     "key": 60,
+     "vel": 60,
+     "kontakt_distinct": 1,
+     "engine_distinct": 1,
+     "sequence_equal": false
+    },
+    {
+     "key": 60,
+     "vel": 100,
+     "kontakt_distinct": 1,
+     "engine_distinct": 1,
+     "sequence_equal": false
+    },
+    {
+     "key": 60,
+     "vel": 127,
+     "kontakt_distinct": 1,
+     "engine_distinct": 1,
+     "sequence_equal": false
+    }
+   ],
+   "per_note": [
+    {
+     "i": 16,
+     "key": 60,
+     "vel": 20,
+     "kontakt": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn1_Marc_60_01.ncw",
+      "ncc": 0.6650000214576721,
+      "layer": [
+       [
+        1,
+        42
+       ]
+      ],
+      "rms_db": -26.98
+     },
+     "engine": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn2_leg_60_00.ncw",
+      "ncc": 0.550000011920929,
+      "layer": [
+       [
+        16,
+        16
+       ]
+      ],
+      "rms_db": -39.79
+     }
+    },
+    {
+     "i": 17,
+     "key": 60,
+     "vel": 20,
+     "kontakt": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn1_Marc_60_01.ncw",
+      "ncc": 0.6650000214576721,
+      "layer": [
+       [
+        1,
+        42
+       ]
+      ],
+      "rms_db": -27.0
+     },
+     "engine": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn2_leg_60_00.ncw",
+      "ncc": 0.5509999990463257,
+      "layer": [
+       [
+        16,
+        16
+       ]
+      ],
+      "rms_db": -38.61
+     }
+    },
+    {
+     "i": 18,
+     "key": 60,
+     "vel": 20,
+     "kontakt": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn1_Marc_60_01.ncw",
+      "ncc": 0.6650000214576721,
+      "layer": [
+       [
+        1,
+        42
+       ]
+      ],
+      "rms_db": -26.99
+     },
+     "engine": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn2_leg_60_00.ncw",
+      "ncc": 0.5509999990463257,
+      "layer": [
+       [
+        16,
+        16
+       ]
+      ],
+      "rms_db": -38.61
+     }
+    },
+    {
+     "i": 19,
+     "key": 60,
+     "vel": 20,
+     "kontakt": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn1_Marc_60_01.ncw",
+      "ncc": 0.6650000214576721,
+      "layer": [
+       [
+        1,
+        42
+       ]
+      ],
+      "rms_db": -26.97
+     },
+     "engine": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn2_leg_60_00.ncw",
+      "ncc": 0.5509999990463257,
+      "layer": [
+       [
+        16,
+        16
+       ]
+      ],
+      "rms_db": -38.61
+     }
+    },
+    {
+     "i": 20,
+     "key": 60,
+     "vel": 60,
+     "kontakt": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn1_Marc_60_01.ncw",
+      "ncc": 0.6650000214576721,
+      "layer": [
+       [
+        1,
+        42
+       ]
+      ],
+      "rms_db": -26.99
+     },
+     "engine": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn2_leg_60_00.ncw",
+      "ncc": 0.5509999990463257,
+      "layer": [
+       [
+        16,
+        16
+       ]
+      ],
+      "rms_db": -38.61
+     }
+    },
+    {
+     "i": 21,
+     "key": 60,
+     "vel": 60,
+     "kontakt": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn1_Marc_60_01.ncw",
+      "ncc": 0.6650000214576721,
+      "layer": [
+       [
+        1,
+        42
+       ]
+      ],
+      "rms_db": -26.97
+     },
+     "engine": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn2_leg_60_00.ncw",
+      "ncc": 0.5509999990463257,
+      "layer": [
+       [
+        16,
+        16
+       ]
+      ],
+      "rms_db": -38.61
+     }
+    },
+    {
+     "i": 22,
+     "key": 60,
+     "vel": 60,
+     "kontakt": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn1_Marc_60_01.ncw",
+      "ncc": 0.6650000214576721,
+      "layer": [
+       [
+        1,
+        42
+       ]
+      ],
+      "rms_db": -27.0
+     },
+     "engine": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn2_leg_60_00.ncw",
+      "ncc": 0.5509999990463257,
+      "layer": [
+       [
+        16,
+        16
+       ]
+      ],
+      "rms_db": -38.61
+     }
+    },
+    {
+     "i": 23,
+     "key": 60,
+     "vel": 60,
+     "kontakt": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn1_Marc_60_01.ncw",
+      "ncc": 0.6650000214576721,
+      "layer": [
+       [
+        1,
+        42
+       ]
+      ],
+      "rms_db": -26.97
+     },
+     "engine": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn2_leg_60_00.ncw",
+      "ncc": 0.5509999990463257,
+      "layer": [
+       [
+        16,
+        16
+       ]
+      ],
+      "rms_db": -38.61
+     }
+    },
+    {
+     "i": 24,
+     "key": 60,
+     "vel": 100,
+     "kontakt": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn1_Marc_60_01.ncw",
+      "ncc": 0.6650000214576721,
+      "layer": [
+       [
+        1,
+        42
+       ]
+      ],
+      "rms_db": -27.0
+     },
+     "engine": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn2_leg_60_00.ncw",
+      "ncc": 0.5509999990463257,
+      "layer": [
+       [
+        16,
+        16
+       ]
+      ],
+      "rms_db": -38.61
+     }
+    },
+    {
+     "i": 25,
+     "key": 60,
+     "vel": 100,
+     "kontakt": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn1_Marc_60_01.ncw",
+      "ncc": 0.6650000214576721,
+      "layer": [
+       [
+        1,
+        42
+       ]
+      ],
+      "rms_db": -27.0
+     },
+     "engine": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn2_leg_60_00.ncw",
+      "ncc": 0.5509999990463257,
+      "layer": [
+       [
+        16,
+        16
+       ]
+      ],
+      "rms_db": -38.61
+     }
+    },
+    {
+     "i": 26,
+     "key": 60,
+     "vel": 100,
+     "kontakt": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn1_Marc_60_01.ncw",
+      "ncc": 0.6660000085830688,
+      "layer": [
+       [
+        1,
+        42
+       ]
+      ],
+      "rms_db": -26.97
+     },
+     "engine": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn2_leg_60_00.ncw",
+      "ncc": 0.5509999990463257,
+      "layer": [
+       [
+        16,
+        16
+       ]
+      ],
+      "rms_db": -38.61
+     }
+    },
+    {
+     "i": 27,
+     "key": 60,
+     "vel": 100,
+     "kontakt": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn1_Marc_60_01.ncw",
+      "ncc": 0.6650000214576721,
+      "layer": [
+       [
+        1,
+        42
+       ]
+      ],
+      "rms_db": -26.98
+     },
+     "engine": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn2_leg_60_00.ncw",
+      "ncc": 0.5509999990463257,
+      "layer": [
+       [
+        16,
+        16
+       ]
+      ],
+      "rms_db": -38.61
+     }
+    },
+    {
+     "i": 28,
+     "key": 60,
+     "vel": 127,
+     "kontakt": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn1_Marc_60_01.ncw",
+      "ncc": 0.6650000214576721,
+      "layer": [
+       [
+        1,
+        42
+       ]
+      ],
+      "rms_db": -26.97
+     },
+     "engine": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn2_leg_60_00.ncw",
+      "ncc": 0.5509999990463257,
+      "layer": [
+       [
+        16,
+        16
+       ]
+      ],
+      "rms_db": -38.61
+     }
+    },
+    {
+     "i": 29,
+     "key": 60,
+     "vel": 127,
+     "kontakt": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn1_Marc_60_01.ncw",
+      "ncc": 0.6650000214576721,
+      "layer": [
+       [
+        1,
+        42
+       ]
+      ],
+      "rms_db": -27.0
+     },
+     "engine": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn2_leg_60_00.ncw",
+      "ncc": 0.5509999990463257,
+      "layer": [
+       [
+        16,
+        16
+       ]
+      ],
+      "rms_db": -38.61
+     }
+    },
+    {
+     "i": 30,
+     "key": 60,
+     "vel": 127,
+     "kontakt": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn1_Marc_60_01.ncw",
+      "ncc": 0.6650000214576721,
+      "layer": [
+       [
+        1,
+        42
+       ]
+      ],
+      "rms_db": -26.98
+     },
+     "engine": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn2_leg_60_00.ncw",
+      "ncc": 0.5509999990463257,
+      "layer": [
+       [
+        16,
+        16
+       ]
+      ],
+      "rms_db": -38.61
+     }
+    },
+    {
+     "i": 31,
+     "key": 60,
+     "vel": 127,
+     "kontakt": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn1_Marc_60_01.ncw",
+      "ncc": 0.6650000214576721,
+      "layer": [
+       [
+        1,
+        42
+       ]
+      ],
+      "rms_db": -27.0
+     },
+     "engine": {
+      "asset": "AFL2_BarbarianBrass_MidHall_Dyn2_leg_60_00.ncw",
+      "ncc": 0.5509999990463257,
+      "layer": [
+       [
+        16,
+        16
+       ]
+      ],
+      "rms_db": -38.61
+     }
+    },
+    {
+     "i": 32,
+     "key": 72,
+     "vel": 20,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 33,
+     "key": 72,
+     "vel": 20,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 34,
+     "key": 72,
+     "vel": 20,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 35,
+     "key": 72,
+     "vel": 20,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 36,
+     "key": 72,
+     "vel": 60,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 37,
+     "key": 72,
+     "vel": 60,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 38,
+     "key": 72,
+     "vel": 60,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 39,
+     "key": 72,
+     "vel": 60,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 40,
+     "key": 72,
+     "vel": 100,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 41,
+     "key": 72,
+     "vel": 100,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 42,
+     "key": 72,
+     "vel": 100,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 43,
+     "key": 72,
+     "vel": 100,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 44,
+     "key": 72,
+     "vel": 127,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 45,
+     "key": 72,
+     "vel": 127,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 46,
+     "key": 72,
+     "vel": 127,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 47,
+     "key": 72,
+     "vel": 127,
+     "kontakt": null,
+     "engine": null
+    }
+   ]
+  }
+ },
+ "kontakt": {
+  "identified": 32,
+  "silent": 15,
+  "distinct_samples": 2,
+  "articulations": [
+   "-"
+  ]
+ }
+}

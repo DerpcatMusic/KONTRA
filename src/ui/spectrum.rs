@@ -111,7 +111,11 @@ impl Analyser {
         for (x, w) in self.input.iter_mut().zip(&self.window) {
             *x *= w;
         }
-        if self.fft.process_with_scratch(&mut self.input, &mut self.bins, &mut self.scratch).is_err() {
+        if self
+            .fft
+            .process_with_scratch(&mut self.input, &mut self.bins, &mut self.scratch)
+            .is_err()
+        {
             return self.shape.clone();
         }
         // Hann's coherent gain is 1/2: a full-scale sine reads 0 dB.
@@ -122,7 +126,10 @@ impl Analyser {
         let bands: Vec<f32> = (0..BANDS)
             .map(|i| {
                 let hz = band_hz(i);
-                let (lo, hi) = ((hz / step / bin_hz) as usize, (hz * step / bin_hz).ceil() as usize);
+                let (lo, hi) = (
+                    (hz / step / bin_hz) as usize,
+                    (hz * step / bin_hz).ceil() as usize,
+                );
                 if hi <= lo + 1 {
                     // Narrower than a bin: between the two nearest.
                     let at = hz / bin_hz;
@@ -136,19 +143,31 @@ impl Analyser {
         for i in 0..BANDS {
             let hz = band_hz(i);
             // A quarter octave or so across neighbours: a smooth line, not bins.
-            let p = 0.5 * bands[i] + 0.25 * (bands[i.saturating_sub(1)] + bands[(i + 1).min(BANDS - 1)]);
+            let p = 0.5 * bands[i]
+                + 0.25 * (bands[i.saturating_sub(1)] + bands[(i + 1).min(BANDS - 1)]);
             let db = 10. * (p.max(1e-20)).log10() + 20. * norm.log10() + TILT * (hz / 1000.).log2();
             let db = db.max(FLOOR_DB);
             let level = &mut self.level[i];
-            *level = if db > *level { *level + (db - *level) * 0.6 } else { db.max(*level - FALL * dt) };
+            *level = if db > *level {
+                *level + (db - *level) * 0.6
+            } else {
+                db.max(*level - FALL * dt)
+            };
             if *level >= self.peak[i] {
                 (self.peak[i], self.peak_at[i]) = (*level, now);
             } else if (now - self.peak_at[i]).as_secs_f32() > HOLD {
                 self.peak[i] = (self.peak[i] - PEAK_FALL * dt).max(*level);
             }
         }
-        let points = |v: &[f32]| (0..BANDS).map(|i| [freq_x(band_hz(i)), db_y(v[i])]).collect();
-        self.shape = Arc::new(Shape { level: points(&self.level), peak: points(&self.peak) });
+        let points = |v: &[f32]| {
+            (0..BANDS)
+                .map(|i| [freq_x(band_hz(i)), db_y(v[i])])
+                .collect()
+        };
+        self.shape = Arc::new(Shape {
+            level: points(&self.level),
+            peak: points(&self.peak),
+        });
         self.shape.clone()
     }
 
@@ -167,14 +186,23 @@ pub fn draw(out: &mut Vec<Draw>, shape: &Shape, place: impl Fn([f32; 2]) -> Poin
     let floor = [[last[0], 0.], [first[0], 0.]];
     let area = DrawPath::polyline(shape.level.iter().chain(&floor).map(|&p| place(p)), true);
     out.push(Draw::fill(area, Role::Ink.alpha(0.08)));
-    out.push(Draw::stroke(DrawPath::polyline(shape.level.iter().map(|&p| place(p)), false), Role::Ink.alpha(0.2), 1.));
-    out.push(Draw::stroke(DrawPath::polyline(shape.peak.iter().map(|&p| place(p)), false), Role::Ink.alpha(0.28), 1.));
+    out.push(Draw::stroke(
+        DrawPath::polyline(shape.level.iter().map(|&p| place(p)), false),
+        Role::Ink.alpha(0.2),
+        1.,
+    ));
+    out.push(Draw::stroke(
+        DrawPath::polyline(shape.peak.iter().map(|&p| place(p)), false),
+        Role::Ink.alpha(0.28),
+        1.,
+    ));
 }
 
 /// A spectrum on its own: a scale behind, frequencies under it.
 pub fn panel(shape: Arc<Shape>, name: &str) -> El {
     let graph = canvas(move |s| {
-        let place = |[x, y]: [f32; 2]| Point::new(f64::from(x) * s.width, (1. - f64::from(y)) * s.height);
+        let place =
+            |[x, y]: [f32; 2]| Point::new(f64::from(x) * s.width, (1. - f64::from(y)) * s.height);
         let mut out = Vec::new();
         for hz in [100., 1000., 10_000.] {
             let x = place([freq_x(hz), 0.]).x.round();
@@ -195,8 +223,14 @@ pub fn panel(shape: Arc<Shape>, name: &str) -> El {
     .named(name.to_owned());
     col![
         graph,
-        row![caption("20 Hz").fill(secondary()), spacer(), caption("1 kHz").fill(secondary()), spacer(), caption("20 kHz").fill(secondary())]
-            .shrink(0)
+        row![
+            caption("20 Hz").fill(secondary()),
+            spacer(),
+            caption("1 kHz").fill(secondary()),
+            spacer(),
+            caption("20 kHz").fill(secondary())
+        ]
+        .shrink(0)
     ]
     .gap(TIGHT)
     .flex(1)
@@ -227,8 +261,14 @@ mod tests {
             a.at = None;
             a.update(&scope, 1, rate);
         }
-        let i = (0..BANDS).max_by(|&x, &y| a.level[x].total_cmp(&a.level[y])).unwrap();
-        assert!((band_hz(i) / hz).log2().abs() < 0.1, "peak at {} Hz", band_hz(i));
+        let i = (0..BANDS)
+            .max_by(|&x, &y| a.level[x].total_cmp(&a.level[y]))
+            .unwrap();
+        assert!(
+            (band_hz(i) / hz).log2().abs() < 0.1,
+            "peak at {} Hz",
+            band_hz(i)
+        );
         // -6 dBFS, no tilt at 1 kHz, a little under once spread over its neighbours.
         assert!((-10.0..=-5.0).contains(&a.level[i]), "{} dB", a.level[i]);
         assert!(a.level[0] < -60., "20 Hz reads {}", a.level[0]);

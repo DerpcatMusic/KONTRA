@@ -73,25 +73,37 @@ impl super::VoiceChain {
 }
 
 impl super::PreparedVoiceChain {
-    pub(super) fn process_section(
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn process_section<const TRACE: bool>(
         &self,
         before: bool,
         states: &mut [super::ProcessorState],
         block: &mut Planar,
         len: usize,
+        held: usize,
         at: u64,
         context: &mut super::RenderContext<'_>,
     ) -> bool {
+        if held == len {
+            return false;
+        }
+        if held > 0 {
+            for channel in block.iter_mut() {
+                channel.copy_within(held..len, 0);
+            }
+        }
+        let len = len - held;
+        let at = at + held as u64;
         let stages = if before { &self.pre } else { &self.post };
         let mut first = 0;
         let mut fault = false;
-        for tap in &self.taps {
+        for (tap_index, tap) in self.taps.iter().enumerate() {
             let after = match (before, tap.position) {
                 (true, VoiceSendPosition::BeforeAmplitude(n))
                 | (false, VoiceSendPosition::AfterAmplitude(n)) => n,
                 _ => continue,
             };
-            fault |= super::process(
+            fault |= super::process::<TRACE>(
                 &stages[first..after],
                 &mut states[first..after],
                 block,
@@ -100,29 +112,83 @@ impl super::PreparedVoiceChain {
                 at,
                 context.delay,
                 &mut context.filters,
+                if TRACE {
+                    context.trace.as_mut().map(|t| crate::trace::Section {
+                        recorder: &mut *t.recorder,
+                        graph: t.graph,
+                        nodes: if before {
+                            &t.nodes.pre[first..after]
+                        } else {
+                            &t.nodes.post[first..after]
+                        },
+                        identity: t.identity,
+                    })
+                } else {
+                    None
+                },
             );
             first = after;
             let feed = &mut context.feeds[tap.bus].samples;
+            let mut tapped = [[0.; super::BLOCK]; 2];
+            let mut applied = 0.;
             for i in 0..len {
                 let gain = tap.gain.value(context.parameters, at + i as u64, None)
                     * (1.0 - tap.bypass.value(context.parameters, at + i as u64, None));
+                if TRACE {
+                    applied += gain / len.max(1) as f64;
+                }
                 for c in 0..2 {
                     let value = block[c][i] * gain;
                     fault |= !value.is_finite();
-                    feed[c][i] += value;
+                    feed[c][held + i] += value;
+                    if TRACE {
+                        tapped[c][i] = value;
+                    }
+                }
+            }
+            if TRACE {
+                if let Some(t) = context.trace.as_mut() {
+                    t.record(
+                        t.nodes.taps[tap_index],
+                        block,
+                        &tapped,
+                        len,
+                        [applied; 2],
+                        context.parameters,
+                    );
                 }
             }
         }
+        fault |= super::process::<TRACE>(
+            &stages[first..],
+            &mut states[first..],
+            block,
+            len,
+            context.parameters,
+            at,
+            context.delay,
+            &mut context.filters,
+            if TRACE {
+                context.trace.as_mut().map(|t| crate::trace::Section {
+                    recorder: &mut *t.recorder,
+                    graph: t.graph,
+                    nodes: if before {
+                        &t.nodes.pre[first..]
+                    } else {
+                        &t.nodes.post[first..]
+                    },
+                    identity: t.identity,
+                })
+            } else {
+                None
+            },
+        );
+        if held > 0 {
+            for channel in block.iter_mut() {
+                channel.copy_within(..len, held);
+                channel[..held].fill(0.);
+            }
+        }
         fault
-            | super::process(
-                &stages[first..],
-                &mut states[first..],
-                block,
-                len,
-                context.parameters,
-                at,
-                context.delay,
-                &mut context.filters,
-            )
     }
 }

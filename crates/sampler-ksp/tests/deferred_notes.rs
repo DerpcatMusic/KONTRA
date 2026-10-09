@@ -1,6 +1,8 @@
 //! Notes a script plays start when its callback waits or ends, so it can pick
 //! their groups right after `play_note` (Audio Imperia's legato releases do).
 use sampler_core::{Envelope, Input, Limits, Pcm, Playback, Prepared, Protocol, Region, Runtime};
+#[path = "../../sampler-core/tests/support/mod.rs"]
+mod support;
 
 fn region(sample: usize, key: u8) -> Region {
     Region {
@@ -19,6 +21,10 @@ fn region(sample: usize, key: u8) -> Region {
 /// Peak of one block after playing key 60 into a script that plays key 61,
 /// whose group 0 sample is 1.0 and group 1 sample is 0.25.
 fn peak(body: &str) -> f32 {
+    peak_with_later_slot(body, false)
+}
+
+fn peak_with_later_slot(body: &str, later_slot: bool) -> f32 {
     let environment = sampler_ksp::Environment {
         groups: vec!["loud".into(), "quiet".into()],
         ..Default::default()
@@ -45,7 +51,14 @@ fn peak(body: &str) -> f32 {
         .with_groups(2, vec![Some(0), Some(1)])
         .unwrap();
     let note_cells = script.note_cells() * 8;
-    let plan = script.bind(prepared).unwrap();
+    let plan = if later_slot {
+        let later =
+            sampler_ksp::compile("on note end on", 48000, sampler_ksp::Limits::LIBRARY, &[])
+                .unwrap();
+        sampler_ksp::bind_modules(vec![script, later], prepared).unwrap()
+    } else {
+        script.bind(prepared).unwrap()
+    };
     let behavior_cells = plan.behavior_local_count() * 8;
     let mut rt = Runtime::new(
         plan,
@@ -73,10 +86,33 @@ fn peak(body: &str) -> f32 {
         key: 60,
         external_id: Some(60),
     };
-    rt.trigger(input, 60, 1.).unwrap();
     let mut block = [[0.; 2]; 64];
-    rt.render(&mut block).unwrap();
+    support::without_heap(|| {
+        rt.trigger(input, 60, 1.).unwrap();
+        for chunk in block.chunks_mut(7) {
+            rt.render(chunk).unwrap();
+        }
+    });
     block.iter().flatten().fold(0.0f32, |m, v| m.max(v.abs()))
+}
+
+#[test]
+fn played_note_group_edits_reach_a_later_script_slot() {
+    let all = peak_with_later_slot("$id := play_note(61, 100, 0, 0)", true);
+    let quiet = peak_with_later_slot(
+        "$id := play_note(61, 100, 0, 0)
+         set_event_par_arr($id, $EVENT_PAR_ALLOW_GROUP, 0, $ALL_GROUPS)
+         set_event_par_arr($id, $EVENT_PAR_ALLOW_GROUP, 1, 1)",
+        true,
+    );
+    assert!((quiet / all - 0.2).abs() < 0.02, "{quiet} of {all}");
+    let late = peak_with_later_slot(
+        "$id := play_note(61, 100, 0, 0)
+         wait(100)
+         set_event_par_arr($id, $EVENT_PAR_ALLOW_GROUP, 0, $ALL_GROUPS)",
+        true,
+    );
+    assert!((late - all).abs() < 0.02, "{late} vs {all}");
 }
 
 #[test]

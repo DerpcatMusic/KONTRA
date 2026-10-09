@@ -47,35 +47,40 @@ fn source_mapping_preserves_signed_ranges_units_versions_and_opaque_metadata() {
     fields.extend(999i32.to_le_bytes());
     let required = fields.len();
     fields.extend([0xde, 0xad]);
-    let bytes = record_bytes(None, 0x95, &fields);
-    support::without_heap(|| {
-        let group = Group::parse(record(&bytes)).unwrap();
-        assert_eq!(group.name.data(), [0, 0xd8, b'a', 0]);
-        assert_eq!((group.gain, group.pan, group.tune), (2., -0.25, 0.5));
-        assert!(
-            group.key_tracking && group.release_trigger && group.release_monophonic && group.soloed
-        );
-        assert!(!group.reverse && !group.muted);
-        assert_eq!(
-            (
-                group.release_counter,
-                group.midi_channel,
-                group.voice_group,
-                group.amp_split,
-                group.interpolation
-            ),
-            (7, -1, -1, 4, 999)
-        );
-        assert_eq!(group.extension.data(), [0xde, 0xad]);
-        assert_eq!(group.object.private.data(), [0xca, 0xfe]);
-    });
+    for version in [0x95, 0x96] {
+        let bytes = record_bytes(None, version, &fields);
+        support::without_heap(|| {
+            let group = Group::parse(record(&bytes)).unwrap();
+            assert_eq!(group.name.data(), [0, 0xd8, b'a', 0]);
+            assert_eq!((group.gain, group.pan, group.tune), (2., -0.25, 0.5));
+            assert!(
+                group.key_tracking
+                    && group.release_trigger
+                    && group.release_monophonic
+                    && group.soloed
+            );
+            assert!(!group.reverse && !group.muted);
+            assert_eq!(
+                (
+                    group.release_counter,
+                    group.midi_channel,
+                    group.voice_group,
+                    group.amp_split,
+                    group.interpolation
+                ),
+                (7, -1, -1, 4, 999)
+            );
+            assert_eq!(group.extension.data(), [0xde, 0xad]);
+            assert_eq!(group.object.private.data(), [0xca, 0xfe]);
+        });
+    }
     for end in 0..required {
         let bytes = record_bytes(None, 0x95, &fields[..end]);
         support::without_heap(|| {
             assert!(Group::parse(record(&bytes)).is_err());
         });
     }
-    for version in [0x95, 0x98, 0x9a] {
+    for version in [0x95, 0x98, 0x99, 0x9a, 0x9c] {
         let mut fields = Vec::new();
         for value in [3i32, -2, -1] {
             fields.extend(value.to_le_bytes());
@@ -87,7 +92,7 @@ fn source_mapping_preserves_signed_ranges_units_versions_and_opaque_metadata() {
         for bits in [2.5f32.to_bits(), 1.5f32.to_bits(), 0x7fc01234] {
             fields.extend(bits.to_le_bytes());
         }
-        if version == 0x9a {
+        if version >= 0x9a {
             fields.extend([9, 8, 7, 6, 5, 4]);
         }
         fields.extend(0x80000042u32.to_le_bytes());
@@ -111,7 +116,7 @@ fn source_mapping_preserves_signed_ranges_units_versions_and_opaque_metadata() {
             assert_eq!(zone.filename_id as u32, 0x80000042);
             assert_eq!(
                 zone.filename_prefix.map(|b| b.data()),
-                (version == 0x9a).then_some([9, 8, 7, 6, 5, 4].as_slice())
+                (version >= 0x9a).then_some([9, 8, 7, 6, 5, 4].as_slice())
             );
             assert_eq!(zone.metadata.data(), [0xb0, 0x0b]);
         });

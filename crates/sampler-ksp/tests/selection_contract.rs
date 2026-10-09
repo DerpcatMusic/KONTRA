@@ -552,3 +552,257 @@ fn affected_group_search_uses_dynamic_length() {
     });
     assert_eq!([cell(&rt, 0, 0), cell(&rt, 0, 1)], [0, -1]);
 }
+
+#[test]
+fn note_off_by_marks_releases_matching_event() {
+    let mut rt = runtime(
+        "on note if ($EVENT_NOTE = 60) set_event_mark($EVENT_ID, $MARK_1) end if end on on controller note_off(by_marks($MARK_1)) end on",
+    );
+    let matching = note(&mut rt);
+    let other = rt
+        .trigger(
+            Input {
+                key: 61,
+                ..input(2)
+            },
+            61,
+            1.,
+        )
+        .unwrap();
+    support::without_heap(|| {
+        let domain = rt.performance(0).unwrap();
+        rt.dispatch_controller(domain, input(1).channel_address(), 1, 1, 1)
+            .unwrap();
+        assert_eq!(rt.key_down(matching), Ok(false));
+        assert_eq!(rt.key_down(other), Ok(true));
+    });
+}
+
+#[test]
+fn pitch_bend_can_trigger_controller_callback() {
+    let mut rt = runtime(
+        "on init declare $out declare $value declare $touched end on on controller $out := $CC_NUM $value := %CC[$CC_NUM] $touched := %CC_TOUCHED[$CC_NUM] end on",
+    );
+    support::without_heap(|| {
+        let domain = rt.performance(0).unwrap();
+        rt.dispatch_controller(domain, input(1).channel_address(), 1, 128, 0x80000000)
+            .unwrap();
+        assert_eq!(
+            (cell(&rt, 0, 0), cell(&rt, 0, 1), cell(&rt, 0, 2)),
+            (128, 0, 1)
+        );
+        assert_eq!(rt.input_controller(domain, 128), Ok(0x80000000));
+        assert_eq!(rt.controller(domain, 128), Ok(0x80000000));
+        assert_eq!(
+            rt.dispatch_controller(domain, input(1).channel_address(), 1, 130, 0),
+            Err(Error::InvalidInput)
+        );
+    });
+}
+
+#[test]
+fn note_off_all_events_releases_unaliased_notes() {
+    let mut rt = runtime("on controller note_off($ALL_EVENTS) end on");
+    let a = note(&mut rt);
+    let b = rt.trigger(input(2), 61, 1.).unwrap();
+    let domain = rt.performance(0).unwrap();
+    support::without_heap(|| {
+        rt.dispatch_controller(domain, input(1).channel_address(), 1, 1, 1)
+            .unwrap();
+    });
+    assert_eq!((rt.key_down(a), rt.key_down(b)), (Ok(false), Ok(false)));
+}
+
+#[test]
+fn virtual_controllers_keep_signed_script_units_and_consumed_input() {
+    let mut rt = runtime(
+        "on init declare $bend declare $pressure end on on controller $bend := $PITCH_BEND $pressure := %CC[129] ignore_controller end on",
+    );
+    let domain = rt.performance(0).unwrap();
+    for (value, expected) in [(0, -8192), (0x80000000, 0), (u32::MAX, 8191)] {
+        support::without_heap(|| {
+            rt.dispatch_controller(domain, input(1).channel_address(), 1, 128, value)
+                .unwrap();
+            assert_eq!(cell(&rt, 0, 0), expected);
+            assert_eq!(rt.input_controller(domain, 128), Ok(value));
+            assert_eq!(rt.controller(domain, 128), Ok(0x80000000));
+        });
+        rt.flush_behaviors(|_, _, _| true);
+    }
+    rt.dispatch_controller(domain, input(1).channel_address(), 1, 129, u32::MAX)
+        .unwrap();
+    assert_eq!(cell(&rt, 0, 1), 127);
+    assert_eq!(rt.controller(domain, 129), Ok(0));
+}
+
+#[test]
+fn generated_pitch_bend_projects_into_the_next_script_stage() {
+    let mut rt = runtime_scripts(vec![
+        compile("on controller set_controller(128, 8191) ignore_controller end on"),
+        compile_in(
+            "on init declare $bend declare $number end on on controller $bend := $PITCH_BEND $number := $CC_NUM end on",
+            &Environment {
+                slot: 1,
+                ..Default::default()
+            },
+        ),
+    ]);
+    let domain = rt.performance(0).unwrap();
+    let n = note(&mut rt);
+    support::without_heap(|| {
+        rt.dispatch_controller(domain, input(1).channel_address(), 1, 128, 0x80000000)
+            .unwrap();
+        assert_eq!((cell(&rt, 1, 0), cell(&rt, 1, 1)), (8191, 128));
+        assert_eq!(rt.input_controller(domain, 128), Ok(0x80000000));
+        assert_eq!(rt.controller(domain, 128), Ok(u32::MAX));
+        assert_eq!(rt.note_controller(n, 128), Ok(0x80000000));
+    });
+}
+
+#[test]
+fn mark_selection_is_a_union_and_zero_mask_has_no_targets() {
+    let mut rt = runtime(
+        "on init declare $marks end on on note if ($EVENT_NOTE = 60) set_event_mark($EVENT_ID, $MARK_1) else set_event_mark($EVENT_ID, $MARK_2) end if end on on controller note_off(by_marks($marks)) $marks := $MARK_1 .or. $MARK_2 end on",
+    );
+    let a = note(&mut rt);
+    let b = rt.trigger(input(2), 61, 1.).unwrap();
+    let domain = rt.performance(0).unwrap();
+    rt.dispatch_controller(domain, input(1).channel_address(), 1, 1, 1)
+        .unwrap();
+    assert_eq!((rt.key_down(a), rt.key_down(b)), (Ok(true), Ok(true)));
+    rt.flush_behaviors(|_, _, _| true);
+    rt.dispatch_controller(domain, input(1).channel_address(), 1, 1, 1)
+        .unwrap();
+    assert_eq!((rt.key_down(a), rt.key_down(b)), (Ok(false), Ok(false)));
+}
+
+#[test]
+fn dynamic_event_parameter_reads_route_a_generated_release_note() {
+    let mut rt = runtime_scripts(vec![
+        compile(
+            "on init declare $child end on
+            on note ignore_event($EVENT_ID) end on
+            on release ignore_event($EVENT_ID)
+                $child := play_note(60,100,0,1000)
+                set_event_par($child,$EVENT_PAR_0,3)
+            end on",
+        ),
+        compile(
+            "on init declare $parameter := 0 declare $tag end on
+            on note
+                $tag := get_event_par($EVENT_ID,$parameter)
+                if ($tag = 3) disallow_group($ALL_GROUPS) end if
+            end on",
+        ),
+    ]);
+    let mut audio = [[0.; 2]; 64];
+    support::without_heap(|| {
+        let note = rt.trigger(input(60), 60, 100. / 127.).unwrap();
+        rt.render(&mut audio).unwrap();
+        rt.key_up(note, None).unwrap();
+        rt.render(&mut audio).unwrap();
+    });
+    assert_eq!(
+        cell(&rt, 1, 1),
+        3,
+        "a computed selector must read the child's tag"
+    );
+    assert_eq!(
+        audio, [[0.; 2]; 64],
+        "the dispatch event must not restart the dry sample"
+    );
+}
+
+#[test]
+fn dynamic_event_parameter_reads_match_static_fields_and_pending_projection() {
+    let mut rt = runtime(
+        "on init declare $parameter declare %values[17] end on
+      on note
+        change_note($EVENT_ID,64)
+        change_velo($EVENT_ID,99)
+        set_event_par($EVENT_ID,0,123)
+        set_event_par($EVENT_ID,$EVENT_PAR_VOLUME,1000)
+        while ($parameter < 17)
+          %values[$parameter] := get_event_par($EVENT_ID,$parameter)
+          inc($parameter)
+        end while
+      end on",
+    );
+    support::without_heap(|| {
+        note(&mut rt);
+    });
+    let expected = [123, 0, 0, 0, 1000, 0, 0, 64, 99, 0, 0, -1, 0, 0, 0, 0, 0];
+    for (parameter, expected) in expected.into_iter().enumerate() {
+        assert_eq!(
+            cell(&rt, 0, 1 + parameter as u32),
+            expected,
+            "parameter {parameter}"
+        );
+    }
+}
+
+#[test]
+fn legacy_event_parameter_array_routes_a_generated_release_note() {
+    let mut rt = runtime_scripts(vec![
+        compile(
+            "on init declare $child end on
+          on note ignore_event($EVENT_ID) end on
+          on release ignore_event($EVENT_ID)
+            $child := play_note(60,100,0,1000)
+            set_event_par($child,$EVENT_PAR_0,3)
+          end on",
+        ),
+        compile(
+            "on init declare $tag end on
+          on note $tag := %EVENT_PAR[0]
+            select (%EVENT_PAR[0])
+              case 3 disallow_group($ALL_GROUPS)
+            end select
+          end on",
+        ),
+    ]);
+    let mut audio = [[0.; 2]; 64];
+    support::without_heap(|| {
+        let note = rt.trigger(input(1), 60, 100. / 127.).unwrap();
+        rt.key_up(note, None).unwrap();
+        rt.render(&mut audio).unwrap();
+    });
+    assert_eq!(
+        cell(&rt, 1, 0),
+        3,
+        "legacy array must read the child's event tag"
+    );
+    assert_eq!(
+        audio, [[0.; 2]; 64],
+        "dispatch note must not restart the dry sample"
+    );
+}
+
+#[test]
+fn legacy_event_parameter_array_writes_share_custom_storage_and_validate_indexes() {
+    let mut rt = runtime(
+        "on init declare $a declare $b declare $c declare $d end on
+      on note
+        %EVENT_PAR[0] := 27
+        %EVENT_PAR[15] := 931
+        $a := get_event_par($EVENT_ID,$EVENT_PAR_0)
+        $b := get_event_par_arr($EVENT_ID,$EVENT_PAR_CUSTOM,15)
+        %EVENT_PAR[-1] := 123
+        %EVENT_PAR[16] := 456
+        $c := %EVENT_PAR[-1]
+        $d := %EVENT_PAR[16]
+      end on",
+    );
+    support::without_heap(|| {
+        note(&mut rt);
+    });
+    assert_eq!(
+        (
+            cell(&rt, 0, 0),
+            cell(&rt, 0, 1),
+            cell(&rt, 0, 2),
+            cell(&rt, 0, 3)
+        ),
+        (27, 931, 0, 0)
+    );
+}

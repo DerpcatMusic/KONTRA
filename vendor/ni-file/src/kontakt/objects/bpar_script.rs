@@ -1,9 +1,9 @@
 use std::io::Cursor;
 
 use crate::{
-    Error,
-    kontakt::{Chunk, error::KontaktError, structured_object::StructuredObject},
+    kontakt::{error::KontaktError, structured_object::StructuredObject, Chunk},
     read_bytes::ReadBytesExt,
+    Error,
 };
 
 const CHUNK_ID: u16 = 0x06;

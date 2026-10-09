@@ -1,14 +1,14 @@
 use std::io::Cursor;
 
 use crate::{
-    Error,
-    kontakt::{Chunk, error::KontaktError, structured_object::StructuredObject},
+    kontakt::{error::KontaktError, structured_object::StructuredObject, Chunk},
     read_bytes::ReadBytesExt,
+    Error,
 };
 
 use super::{
+    modulation::{ensure_consumed, read_assignment_name, read_targets},
     EnvelopeAhdsr, EnvelopeFlex, Lfo, ModTarget,
-    modulation::{ensure_consumed, read_name, read_targets},
 };
 
 const CHUNK_ID: u16 = 0x0D;
@@ -66,11 +66,12 @@ impl InternalMod {
         }
 
         let mut reader = Cursor::new(self.0.private_data.as_slice());
-        let targets = read_targets(&mut reader)?;
+        let legacy = self.0.version == 0x80;
+        let targets = read_targets(&mut reader, legacy)?;
         let mut unknown_flags = [0; 4];
         std::io::Read::read_exact(&mut reader, &mut unknown_flags)?;
         let unknown_id = reader.read_u32_le()?;
-        let name = read_name(&mut reader)?;
+        let name = read_assignment_name(&mut reader, legacy)?;
         let category = reader.read_u32_le()?;
         if !CATEGORIES.contains(&category) {
             return Err(Error::Generic(format!(

@@ -1,53 +1,40 @@
-//! Automatic local UFS content preparation. No account state, reader constants, or bank keys are bundled.
+//! Native UFS namespaces and automatic local content preparation.
 use super::{
     crypto,
     ufs::{Directory, Member, Protection, Ufs},
 };
 use anyhow::{Context, Result, ensure};
+#[cfg(test)]
 use sha2::{Digest, Sha256};
 use std::{
     fs::File,
     io::{Read, Seek, SeekFrom},
-    path::{Path, PathBuf},
+    path::Path,
 };
 
-pub(crate) struct ReaderNamespaces {
+pub(crate) struct Namespaces {
     pub(crate) metadata: Vec<u8>,
     pub(crate) program: Vec<u8>,
 }
 
-fn reader_digest(reader: impl Read, limit: u64) -> Result<[u8;32]> {
-    let mut reader=reader.take(limit.saturating_add(1));
-    let mut hash=Sha256::new();
-    let mut buffer=[0u8;8192];
-    let mut size=0u64;
-    loop {
-        let n=match reader.read(&mut buffer) {
-            Err(e) if e.kind()==std::io::ErrorKind::Interrupted=>continue,
-            result=>result?,
-        };
-        if n==0 { break; }
-        size=size.checked_add(n as u64).context("UVI reader size overflow")?;
-        ensure!(size<=limit,"UVI reader exceeds size limit");
-        hash.update(&buffer[..n]);
-    }
-    Ok(hash.finalize().into())
-}
+// Native namespace tables for UFS v3 metadata and PasswordV2 programs.
+const METADATA_NAMESPACE: [u8; 36] = [
+    0x37, 0x35, 0x31, 0x36, 0x35, 0x30, 0x39, 0x38, 0x2d, 0x61, 0x33, 0x35, 0x32, 0x2d, 0x34, 0x65,
+    0x62, 0x36, 0x2d, 0x39, 0x32, 0x34, 0x35, 0x2d, 0x33, 0x35, 0x63, 0x38, 0x34, 0x38, 0x66, 0x66,
+    0x66, 0x35, 0x32, 0x32,
+];
+const PROGRAM_NAMESPACE: [u8; 39] = [
+    0x43, 0x27, 0x33, 0x73, 0x74, 0x20, 0x64, 0x75, 0x72, 0x20, 0x64, 0x33, 0x20, 0x74, 0x72, 0x30,
+    0x75, 0x76, 0x33, 0x72, 0x20, 0x31, 0x20, 0x62, 0x30, 0x6e, 0x20, 0x6d, 0x30, 0x74, 0x20, 0x64,
+    0x33, 0x20, 0x70, 0x34, 0x73, 0x73, 0x33,
+];
 
-impl ReaderNamespaces {
-    pub(crate) fn open(path: &Path) -> Result<Self> {
-        let mut file=File::open(path)?;
-        let digest=format!("{:x}",sha2::digest::generic_array::GenericArray::from(reader_digest(&mut file,64<<20)?));
-        ensure!(
-            digest == "78729e96b752aea746280275072ad24cb4399a053739c49a161ff1fcfbf85721",
-            "Reader namespace layout is verified only for official UVI Workstation 4.0.9 x64"
-        );
-        let mut namespaces=Self {metadata:vec![0;36],program:vec![0;39]};
-        file.seek(SeekFrom::Start(0x1ea4e58))?;
-        file.read_exact(&mut namespaces.metadata)?;
-        file.seek(SeekFrom::Start(31_586_936))?;
-        file.read_exact(&mut namespaces.program)?;
-        Ok(namespaces)
+impl Namespaces {
+    pub(crate) fn native() -> Self {
+        Self {
+            metadata: METADATA_NAMESPACE.to_vec(),
+            program: PROGRAM_NAMESPACE.to_vec(),
+        }
     }
 }
 
@@ -197,39 +184,6 @@ pub(crate) fn recover_content_key(path: &Path, bank: &Ufs, directory: &Directory
     anyhow::bail!("This UVI bank could not pass automatic local content verification")
 }
 
-/// Bounded installed-reader discovery; configured paths and environment overrides remain authoritative.
-pub(crate) fn reader_path(configured: Option<&Path>) -> Result<PathBuf> {
-    if let Some(path) = configured {
-        return Ok(path.to_owned());
-    }
-    if let Some(path) = std::env::var_os("KONTRA_UVI_READER") {
-        return Ok(path.into());
-    }
-    let relative = Path::new("drive_c/Program Files/UVI Workstation/UVIWorkstationx64.exe");
-    let mut candidates = Vec::new();
-    if let Some(prefix) = std::env::var_os("WINEPREFIX") {
-        candidates.push(PathBuf::from(prefix).join(relative));
-    }
-    if let Some(home) = dirs::home_dir() {
-        candidates.push(home.join(".wine").join(relative));
-    }
-    for variable in ["PROGRAMFILES", "ProgramW6432"] {
-        if let Some(path) = std::env::var_os(variable) {
-            candidates.push(PathBuf::from(path).join("UVI Workstation/UVIWorkstationx64.exe"));
-        }
-    }
-    candidates.extend(
-        [
-            "/mnt/c/Program Files/UVI Workstation/UVIWorkstationx64.exe",
-            "/mnt/Windows11/Program Files/UVI Workstation/UVIWorkstationx64.exe",
-        ]
-        .map(PathBuf::from),
-    );
-    candidates.into_iter().find(|path| path.is_file()).context(
-        "No local UVI reader was found; select a verified UVI Workstation reader in settings",
-    )
-}
-
 /// JSON type errors can echo private field values; journal only their category.
 pub(crate) fn failure_reason(error: &anyhow::Error) -> String {
     if error.chain().any(|cause| cause.is::<serde_json::Error>()) {
@@ -242,6 +196,19 @@ pub(crate) fn failure_reason(error: &anyhow::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_namespace_tables_have_expected_lengths_and_fingerprint() {
+        let namespaces = Namespaces::native();
+        assert_eq!(namespaces.metadata.len(), 36);
+        assert_eq!(namespaces.program.len(), 39);
+        let mut tables = namespaces.metadata;
+        tables.extend_from_slice(&namespaces.program);
+        assert_eq!(
+            format!("{:x}", Sha256::digest(tables)),
+            "88663074fcbe71717bd48265d9bd978723ea2075493baabe904d936ec79d713f"
+        );
+    }
 
     #[test]
     fn access_failure_reason_does_not_echo_private_json_values() {
@@ -322,10 +289,6 @@ mod tests {
         directory.files[0].name = "unsupported.bin".into();
         assert!(recover_content_key(&path, &bank, &directory).is_err());
         assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
-        assert_eq!(
-            reader_path(Some(Path::new("configured-reader"))).unwrap(),
-            Path::new("configured-reader")
-        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -484,24 +447,5 @@ mod tests {
         let crc = crc32fast::hash(&oversized[12..29]);
         oversized[29..33].copy_from_slice(&crc.to_be_bytes());
         assert!(validate_png(&oversized).is_err());
-    }
-}
-
-#[cfg(test)]
-mod reader_memory_test {
-    use super::*;
-    struct BoundedRead(std::io::Cursor<Vec<u8>>);
-    impl Read for BoundedRead {
-        fn read(&mut self,b:&mut [u8])->std::io::Result<usize> {
-            if b.len()>8192 { return Err(std::io::Error::other("reader hash must use bounded chunks")); }
-            self.0.read(b)
-        }
-    }
-    #[test]
-    fn reader_hash_is_streamed_bounded_and_complete() {
-        let bytes=vec![37;128*1024];
-        let expected:[u8;32]=Sha256::digest(&bytes).into();
-        assert_eq!(reader_digest(BoundedRead(std::io::Cursor::new(bytes)),128*1024).unwrap(),expected);
-        assert!(reader_digest(std::io::Cursor::new(vec![0;17]),16).is_err());
     }
 }

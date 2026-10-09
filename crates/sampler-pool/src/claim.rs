@@ -43,7 +43,13 @@ impl<T> Drop for Claim<'_, T> {
 // SAFETY: a claim is unique access to `[T]`, like `&mut [T]`.
 unsafe impl<T: Send> Send for Claim<'_, T> {}
 
-fn take<'a, T>(ptr: *mut T, len: usize, unit: usize, flags: &'a [AtomicBool], i: usize) -> Claim<'a, T> {
+fn take<'a, T>(
+    ptr: *mut T,
+    len: usize,
+    unit: usize,
+    flags: &'a [AtomicBool],
+    i: usize,
+) -> Claim<'a, T> {
     let flag = &flags[i];
     assert!(
         !flag.swap(true, Ordering::Acquire),
@@ -74,7 +80,12 @@ impl<T> Slab<T> {
     pub fn new(items: Box<[T]>, unit: usize) -> Self {
         let unit = unit.max(1);
         let flags = Claims::new(items.len().div_ceil(unit));
-        Self { items, flags, unit, idle: AtomicBool::new(false) }
+        Self {
+            items,
+            flags,
+            unit,
+            idle: AtomicBool::new(false),
+        }
     }
     /// Take the storage back.
     pub fn into_items(self) -> Box<[T]> {
@@ -104,7 +115,13 @@ impl<T> Slab<T> {
                 _borrow: PhantomData,
             };
         }
-        take(self.items.as_ptr().cast_mut(), self.items.len(), self.unit, &self.flags.0, i)
+        take(
+            self.items.as_ptr().cast_mut(),
+            self.items.len(),
+            self.unit,
+            &self.flags.0,
+            i,
+        )
     }
 }
 // SAFETY: `&Slab` only yields `&mut T` through claims, which never overlap.
@@ -124,8 +141,17 @@ impl<'a, T> Disjoint<'a, T> {
     /// `flags` needs `items.len().div_ceil(unit)` units.
     pub fn new(items: &'a mut [T], unit: usize, flags: &'a Claims) -> Self {
         let unit = unit.max(1);
-        assert!(flags.0.len() >= items.len().div_ceil(unit), "too few claim flags");
-        Self { ptr: items.as_mut_ptr(), len: items.len(), unit, flags: &flags.0, _borrow: PhantomData }
+        assert!(
+            flags.0.len() >= items.len().div_ceil(unit),
+            "too few claim flags"
+        );
+        Self {
+            ptr: items.as_mut_ptr(),
+            len: items.len(),
+            unit,
+            flags: &flags.0,
+            _borrow: PhantomData,
+        }
     }
     pub fn claim(&self, i: usize) -> Claim<'_, T> {
         take(self.ptr, self.len, self.unit, self.flags, i)

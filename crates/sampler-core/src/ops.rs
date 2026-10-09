@@ -157,6 +157,18 @@ pub enum TextPart {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Op {
+    Midi {
+        action: crate::MidiAction,
+        args: u16,
+        local: u16,
+        text: Option<TextRef>,
+    },
+    MidiFilename {
+        text: TextRef,
+    },
+    WaitMidi {
+        local: u16,
+    },
     /// lhs := lhs op rhs.
     Real {
         lhs: u16,
@@ -250,6 +262,10 @@ pub enum Op {
         format: u16,
         text: TextRef,
     },
+    /// The UI identity of the shared program entry.
+    ReadCallbackUiId {
+        local: u16,
+    },
     ReadWidgetDropCount {
         ui: i32,
         kind: u8,
@@ -331,14 +347,25 @@ impl Op {
             TextRef::Element { index, .. } => usize::from(index) + 1,
         };
         match self {
+            Self::Midi {
+                action,
+                args,
+                local,
+                text,
+            } => (usize::from(*args) + action.arguments())
+                .max(usize::from(*local) + 1)
+                .max(text.as_ref().map_or(0, reg)),
+            Self::MidiFilename { text } => reg(text),
             Self::Real { lhs, rhs, .. }
             | Self::CompareReal { lhs, rhs, .. }
             | Self::Integer { lhs, rhs, .. }
             | Self::Random { lhs, rhs } => usize::from(*lhs.max(rhs)) + 1,
             Self::RealUnary { local, .. }
+            | Self::WaitMidi { local }
             | Self::IntegerToReal { local }
             | Self::RealToInteger { local }
             | Self::ReadWidgetDropCount { local, .. }
+            | Self::ReadCallbackUiId { local }
             | Self::ReadWidgetEventParameter { local }
             | Self::ReadWidgetInteraction { local, .. }
             | Self::ReadHost { local, .. }
@@ -407,7 +434,11 @@ impl Op {
             TextRef::Element { array, .. } => array.end(),
         };
         Ok(match self {
-            Self::TextClear { text } => (cell(text)?, 0),
+            Self::Midi {
+                text: Some(text), ..
+            }
+            | Self::MidiFilename { text }
+            | Self::TextClear { text } => (cell(text)?, 0),
             Self::TextAppend { text, part } => match part {
                 TextPart::Constant(c) => (cell(text)?, usize::from(*c) + 1),
                 TextPart::Text(r) => (cell(text)?.max(cell(r)?), 0),
@@ -433,6 +464,8 @@ impl Op {
 }
 
 /// Fixed-capacity UTF-8 text.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "cache", serde(try_from = "String", into = "String"))]
 #[derive(Clone, Copy)]
 pub struct Text {
     len: u16,
@@ -555,7 +588,7 @@ impl Store {
     }
 }
 
-/// One script instance's mutable state, cloned into each plan generation.
+/// One script instance's mutable state, owned by its live plan generation.
 #[derive(Debug, Default)]
 pub(crate) struct ScriptBank {
     pub cells: Box<[i64]>,
@@ -563,18 +596,35 @@ pub(crate) struct ScriptBank {
     pub store: Store,
     pub controls: Box<[Option<ControlId>]>,
     pub text_properties: Vec<([i32; STORE_KEY], Text)>,
+    pub persistence_callback: Option<(BehaviorId, Option<crate::Outcome>)>,
 }
 
-impl Clone for ScriptBank {
-    fn clone(&self) -> Self {
-        let mut text_properties = Vec::with_capacity(self.text_properties.capacity());
-        text_properties.extend_from_slice(&self.text_properties);
-        Self {
+/// Immutable preparation keeps compact shared strings; only a live generation
+/// needs fixed-capacity mutable text buffers for allocation-free script writes.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ScriptInitial {
+    pub cells: Box<[i64]>,
+    pub texts: Box<[std::sync::Arc<str>]>,
+    pub store: Store,
+    pub controls: Box<[Option<ControlId>]>,
+    pub text_properties: Vec<([i32; STORE_KEY], std::sync::Arc<str>)>,
+}
+
+impl ScriptInitial {
+    pub fn bank(&self) -> ScriptBank {
+        let mut text_properties = Vec::with_capacity(self.store.capacity);
+        text_properties.extend(
+            self.text_properties
+                .iter()
+                .map(|(key, text)| (*key, Text::new(text))),
+        );
+        ScriptBank {
             cells: self.cells.clone(),
-            texts: self.texts.clone(),
+            texts: self.texts.iter().map(|text| Text::new(text)).collect(),
             store: self.store.clone(),
             controls: self.controls.clone(),
             text_properties,
+            persistence_callback: None,
         }
     }
 }
@@ -591,15 +641,19 @@ pub struct ScriptResources {
     pub controls: Vec<Option<ControlId>>,
 }
 impl ScriptResources {
-    pub(crate) fn apply(self, bank: &mut ScriptBank) -> Result<(), Error> {
-        bank.texts = self.texts.iter().map(|t| Text::new(t)).collect();
+    pub(crate) fn apply(self, bank: &mut ScriptInitial) -> Result<(), Error> {
+        bank.texts = self
+            .texts
+            .into_iter()
+            .map(|text| std::sync::Arc::from(Text::new(&text).as_str()))
+            .collect();
         bank.store = Store::new(self.store, self.store_capacity)?;
         bank.controls = self.controls.into_boxed_slice();
-        bank.text_properties = Vec::with_capacity(self.store_capacity);
+        bank.text_properties = Vec::with_capacity(self.text_properties.len());
         bank.text_properties.extend(
             self.text_properties
                 .into_iter()
-                .map(|(key, text)| (key, Text::new(&text))),
+                .map(|(key, text)| (key, std::sync::Arc::from(Text::new(&text).as_str()))),
         );
         Ok(())
     }
@@ -623,8 +677,8 @@ impl Effect {
 /// Subroutine return positions retained by a suspended continuation.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Frames {
-    returns: [u32; CALL_DEPTH],
-    depth: u8,
+    pub(super) returns: [u32; CALL_DEPTH],
+    pub(super) depth: u8,
 }
 impl Default for Frames {
     fn default() -> Self {
@@ -632,6 +686,11 @@ impl Default for Frames {
             returns: [0; CALL_DEPTH],
             depth: 0,
         }
+    }
+}
+impl Frames {
+    pub(crate) fn callers(&self) -> &[u32] {
+        &self.returns[..usize::from(self.depth)]
     }
 }
 
@@ -692,6 +751,12 @@ impl Runtime {
     pub fn dropped_engine_parameter_outcomes(&self) -> u64 {
         self.ops.dropped_engine_outcomes
     }
+    fn callback_ui_id(&self, id: BehaviorId) -> Result<i32, Error> {
+        let c = self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
+        let plan = self.behavior_plan(c.owner)?;
+        Ok(self.plans.get(plan.0).unwrap().prepared.programs[c.program].ui_id)
+    }
+
     fn record_engine_outcome(
         &mut self,
         id: BehaviorId,
@@ -778,13 +843,29 @@ impl Runtime {
             .ok_or(Error::InvalidInput)
     }
 
-    fn behavior_bank(&mut self, id: BehaviorId) -> Result<&mut ScriptBank, Error> {
+    fn behavior_bank(&self, id: BehaviorId) -> Result<&ScriptBank, Error> {
+        let c = *self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
+        let plan = self.behavior_plan(c.owner)?;
+        let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
+        let instance = generation.prepared.programs[c.program]
+            .script_instance
+            .ok_or(Error::InvalidInput)?;
+        generation
+            .scripts
+            .get(usize::from(instance.0))
+            .ok_or(Error::InvalidInput)
+    }
+
+    fn behavior_bank_mut(&mut self, id: BehaviorId) -> Result<&mut ScriptBank, Error> {
         let c = *self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
         let plan = self.behavior_plan(c.owner)?;
         let generation = self.plans.get_mut(plan.0).ok_or(Error::StaleHandle)?;
         let instance = generation.prepared.programs[c.program]
             .script_instance
             .ok_or(Error::InvalidInput)?;
+        // ponytail: any mutable script storage invalidates the full snapshot;
+        // track persistent addresses if frequently-written large tables remain costly.
+        generation.script_revision = generation.script_revision.wrapping_add(1);
         generation
             .scripts
             .get_mut(usize::from(instance.0))
@@ -829,7 +910,7 @@ impl Runtime {
             None => None,
         })
     }
-    fn text_cell(&self, id: BehaviorId, text: TextRef) -> Result<usize, Error> {
+    pub(super) fn text_cell(&self, id: BehaviorId, text: TextRef) -> Result<usize, Error> {
         Ok(match text {
             TextRef::Cell(cell) => cell as usize,
             TextRef::Element { array, index } => array.cell(self.reg(id, index)?)? as usize,
@@ -848,6 +929,74 @@ impl Runtime {
         op: Op,
     ) -> Result<bool, Error> {
         match op {
+            Op::Midi {
+                action,
+                args,
+                local,
+                text,
+            } => {
+                let mut values = [0; 5];
+                for (index, value) in values.iter_mut().take(action.arguments()).enumerate() {
+                    *value = i32_of(self.reg(id, args + index as u16)?)?;
+                }
+                let text = match text {
+                    Some(text) => {
+                        let cell = self.text_cell(id, text)?;
+                        Some(
+                            *self
+                                .behavior_bank(id)?
+                                .texts
+                                .get(cell)
+                                .ok_or(Error::InvalidInput)?,
+                        )
+                    }
+                    None => None,
+                };
+                let plan = self.behavior_plan(owner)?;
+                let value = if action.asynchronous() {
+                    self.request_midi(id, plan, action, values, text)?
+                } else {
+                    self.plans
+                        .get_mut(plan.0)
+                        .ok_or(Error::StaleHandle)?
+                        .midi_object
+                        .apply(action, &values, text)?
+                };
+                self.set_reg(id, local, i64::from(value))?;
+            }
+            Op::WaitMidi { local } => {
+                let job = i32_of(self.reg(id, local)?)?;
+                let plan = self.behavior_plan(owner)?;
+                if self
+                    .plans
+                    .get(plan.0)
+                    .ok_or(Error::StaleHandle)?
+                    .midi_object
+                    .jobs
+                    .iter()
+                    .any(|j| j.id == job)
+                {
+                    let c = self.behaviors.get_mut(id.0).ok_or(Error::StaleHandle)?;
+                    if !c.disable_wait {
+                        c.waiting = true;
+                        c.async_wait = Some(job);
+                        // An admitted async wait also ends continuous preemption.
+                        c.yielded_at = None;
+                        return Ok(true);
+                    }
+                }
+            }
+            Op::MidiFilename { text } => {
+                let plan = self.behavior_plan(owner)?;
+                let value = self
+                    .plans
+                    .get(plan.0)
+                    .ok_or(Error::StaleHandle)?
+                    .midi_object
+                    .filename;
+                let cell = self.text_cell(id, text)?;
+                self.behavior_bank_mut(id)?.texts[cell].push(value.as_str());
+            }
             Op::Real {
                 lhs,
                 rhs,
@@ -927,7 +1076,7 @@ impl Runtime {
             }
             Op::TextClear { text } => {
                 let cell = self.text_cell(id, text)?;
-                self.behavior_bank(id)?
+                self.behavior_bank_mut(id)?
                     .texts
                     .get_mut(cell)
                     .ok_or(Error::InvalidInput)?
@@ -935,16 +1084,40 @@ impl Runtime {
             }
             Op::TextAppend { text, part } => {
                 let cell = self.text_cell(id, text)?;
+                let constant = match part {
+                    TextPart::Constant(index) => Some(usize::from(index)),
+                    TextPart::Table { base, count, index } => {
+                        let at = self.reg(id, index)?;
+                        u16::try_from(at)
+                            .ok()
+                            .filter(|at| *at < count)
+                            .map(|at| usize::from(base) + usize::from(at))
+                    }
+                    _ => None,
+                };
+                if let Some(index) = constant {
+                    let c = *self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
+                    let plan = self.behavior_plan(c.owner)?;
+                    let generation = self.plans.get_mut(plan.0).ok_or(Error::StaleHandle)?;
+                    let program = &generation.prepared.programs[c.program];
+                    let source = program.texts.get(index).ok_or(Error::InvalidInput)?;
+                    let instance = program.script_instance.ok_or(Error::InvalidInput)?;
+                    generation.script_revision = generation.script_revision.wrapping_add(1);
+                    let target = generation
+                        .scripts
+                        .get_mut(usize::from(instance.0))
+                        .and_then(|bank| bank.texts.get_mut(cell))
+                        .ok_or(Error::InvalidInput)?;
+                    let before = target.len;
+                    // v1 pushes the borrowed constant directly into mutable text storage.
+                    target.push(source);
+                    if usize::from(target.len - before) < source.len() {
+                        self.ops.truncated_texts += 1;
+                    }
+                    return Ok(false);
+                }
                 let mut piece = Text::default();
                 match part {
-                    TextPart::Constant(index) => {
-                        let c = *self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
-                        let plan = self.behavior_plan(c.owner)?;
-                        piece = *self.plans.get(plan.0).unwrap().prepared.programs[c.program]
-                            .texts
-                            .get(usize::from(index))
-                            .ok_or(Error::InvalidInput)?;
-                    }
                     TextPart::Text(source) => {
                         let source = self.text_cell(id, source)?;
                         piece = *self
@@ -958,22 +1131,10 @@ impl Runtime {
                         let _ = write!(piece, "{}", self.reg(id, local)?);
                     }
                     TextPart::Real(local) => write_real(&mut piece, real(self.reg(id, local)?)),
-                    TextPart::Table { base, count, index } => {
-                        let at = self.reg(id, index)?;
-                        if let Ok(at) = u16::try_from(at)
-                            && at < count
-                        {
-                            let c = *self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
-                            let plan = self.behavior_plan(c.owner)?;
-                            piece = *self.plans.get(plan.0).unwrap().prepared.programs[c.program]
-                                .texts
-                                .get(usize::from(base) + usize::from(at))
-                                .ok_or(Error::InvalidInput)?;
-                        }
-                    }
+                    TextPart::Constant(_) | TextPart::Table { .. } => {}
                 }
                 let target = self
-                    .behavior_bank(id)?
+                    .behavior_bank_mut(id)?
                     .texts
                     .get_mut(cell)
                     .ok_or(Error::InvalidInput)?;
@@ -1017,7 +1178,7 @@ impl Runtime {
                     .get(usize::from(base)..usize::from(base) + usize::from(count))
                     .ok_or(Error::InvalidInput)?
                     .iter()
-                    .position(|t| t.as_str().eq_ignore_ascii_case(name.as_str()));
+                    .position(|t| t.eq_ignore_ascii_case(name.as_str()));
                 self.set_reg(id, local, found.map_or(-1, |i| i as i64))?;
             }
             Op::TextIndex { text, local } => {
@@ -1054,7 +1215,7 @@ impl Runtime {
                     *v = self.reg(id, key + i as u16)? as i32;
                 }
                 let cell = self.text_cell(id, text)?;
-                let bank = self.behavior_bank(id)?;
+                let bank = self.behavior_bank_mut(id)?;
                 if write {
                     let value = *bank.texts.get(cell).ok_or(Error::InvalidInput)?;
                     if let Some((_, v)) = bank.text_properties.iter_mut().find(|(key, _)| *key == k)
@@ -1152,7 +1313,7 @@ impl Runtime {
                     }
                 }
                 *self
-                    .behavior_bank(id)?
+                    .behavior_bank_mut(id)?
                     .texts
                     .get_mut(cell)
                     .ok_or(Error::InvalidInput)? = result;
@@ -1222,7 +1383,7 @@ impl Runtime {
                 }
                 if write {
                     let value = self.reg(id, local)?;
-                    self.behavior_bank(id)?.store.set(k, value);
+                    self.behavior_bank_mut(id)?.store.set(k, value);
                 } else if let Some(value) = self.behavior_bank(id)?.store.get(k) {
                     self.set_reg(id, local, value)?;
                 }
@@ -1310,9 +1471,18 @@ impl Runtime {
                     _ => return Err(Error::InvalidInput),
                 });
                 let cell = self.text_cell(id, text)?;
-                self.behavior_bank(id)?.texts[cell] = result;
+                self.behavior_bank_mut(id)?.texts[cell] = result;
+            }
+            Op::ReadCallbackUiId { local } => {
+                let ui = self.callback_ui_id(id)?;
+                self.set_reg(id, local, i64::from(ui))?;
             }
             Op::ReadWidgetDropCount { ui, kind, local } => {
+                let ui = if ui == i32::MIN {
+                    self.callback_ui_id(id)?
+                } else {
+                    ui
+                };
                 if kind >= 3 {
                     return Err(Error::InvalidInput);
                 }
@@ -1329,13 +1499,18 @@ impl Runtime {
                 index,
                 text,
             } => {
+                let ui = if ui == i32::MIN {
+                    self.callback_ui_id(id)?
+                } else {
+                    ui
+                };
                 if kind >= 3 {
                     return Err(Error::InvalidInput);
                 }
                 let index =
                     usize::try_from(self.reg(id, index)?).map_err(|_| Error::InvalidInput)?;
                 let path = if let Some(drop) = self.callback_drop_storage(id, ui)? {
-                    let bank = self.behavior_bank(id)?;
+                    let bank = self.behavior_bank_mut(id)?;
                     if index >= bank.cells[drop.counts as usize + kind as usize] as usize {
                         Text::default()
                     } else {
@@ -1347,7 +1522,7 @@ impl Runtime {
                     Text::default()
                 };
                 let cell = self.text_cell(id, text)?;
-                self.behavior_bank(id)?.texts[cell] = path;
+                self.behavior_bank_mut(id)?.texts[cell] = path;
             }
             Op::ReadWidgetEventParameter { local } => {
                 let index =
@@ -1378,11 +1553,20 @@ impl Runtime {
                 self.set_reg(id, local, value)?;
             }
             Op::ReadHost { local, slot } => {
-                let value = *self
-                    .ops
-                    .host
-                    .get(usize::from(slot))
-                    .ok_or(Error::InvalidInput)?;
+                let result = self
+                    .behaviors
+                    .get(id.0)
+                    .ok_or(Error::StaleHandle)?
+                    .async_result;
+                let value = match (slot, result) {
+                    (6, Some((job, _))) => i64::from(job),
+                    (7, Some((_, status))) => i64::from(status),
+                    _ => *self
+                        .ops
+                        .host
+                        .get(usize::from(slot))
+                        .ok_or(Error::InvalidInput)?,
+                };
                 self.set_reg(id, local, value)?;
             }
             Op::ReadClock { local, micros } => {
@@ -1441,5 +1625,50 @@ impl Runtime {
             }
         }
         Ok(false)
+    }
+}
+
+#[cfg(test)]
+mod initial_text_tests {
+    use super::*;
+    #[test]
+    fn shared_initial_texts_make_independent_mutable_banks() {
+        let mut initial = ScriptInitial::default();
+        ScriptResources {
+            texts: vec!["seed".into()],
+            text_properties: vec![([1, 0, 0, 0], "named".into())],
+            store_capacity: 4,
+            ..Default::default()
+        }
+        .apply(&mut initial)
+        .unwrap();
+        let clone = initial.clone();
+        assert!(std::sync::Arc::ptr_eq(&initial.texts[0], &clone.texts[0]));
+        assert!(std::sync::Arc::ptr_eq(
+            &initial.text_properties[0].1,
+            &clone.text_properties[0].1
+        ));
+        let mut first = initial.bank();
+        let second = clone.bank();
+        first.texts[0].push(" changed");
+        first.text_properties[0].1.clear();
+        assert_eq!(second.texts[0].as_str(), "seed");
+        assert_eq!(second.text_properties[0].1.as_str(), "named");
+        assert!(first.text_properties.capacity() >= 4);
+        assert_eq!(&*initial.texts[0], "seed");
+    }
+}
+
+#[cfg(feature = "cache")]
+impl From<Text> for String {
+    fn from(value: Text) -> Self {
+        value.as_str().to_owned()
+    }
+}
+#[cfg(feature = "cache")]
+impl TryFrom<String> for Text {
+    type Error = Error;
+    fn try_from(value: String) -> Result<Self, Error> {
+        Self::try_new(&value)
     }
 }

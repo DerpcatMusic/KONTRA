@@ -1,0 +1,40 @@
+{
+  "status": "PASS",
+  "criterion": "matched preload/voice census/underruns; CPU ranges overlap and median difference <=5%",
+  "cells": {
+    "piano": {
+      "process_cpu_seconds": {
+        "frozen": [
+          0.915523,
+          0.7256509999999999,
+          0.7267319999999999
+        ],
+        "adapter": [
+          0.741883,
+          0.7471089999999999,
+          0.815201
+        ]
+      },
+      "median_delta": 0.028039222161677202,
+      "ranges_overlap": true,
+      "passed": true
+    },
+    "fx": {
+      "process_cpu_seconds": {
+        "frozen": [
+          4.091667,
+          3.389125,
+          3.422015
+        ],
+        "adapter": [
+          3.542506,
+          3.4735669999999996,
+          3.727262
+        ]
+      },
+      "median_delta": 0.035210541157768116,
+      "ranges_overlap": true,
+      "passed": true
+    }
+  }
+}

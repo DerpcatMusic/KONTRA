@@ -29,10 +29,47 @@ pub struct Environment {
     /// script loads with `load_performance_view`. Names the script uses but
     /// it lacks stay unbound script handles, with a diagnostic.
     pub performance_view: model::PerformanceView,
+    /// The instrument's MIDI object, including earlier slots' init selection.
+    pub midi_object: sampler_core::MidiObject,
 }
 
 /// Steps one `on init` may take before evaluation is abandoned.
 pub const INIT_FUEL: u64 = 200_000_000;
+
+/// Detect suspension before evaluating a callback, so its prefix is never replayed.
+fn may_suspend<'a>(hir: &'a Hir, body: &'a [Stmt], async_wait_suspends: bool) -> bool {
+    let mut pending = vec![body];
+    let mut seen = vec![false; hir.functions.len()];
+    while let Some(body) = pending.pop() {
+        for stmt in body {
+            match &stmt.kind {
+                StmtKind::Builtin(builtin, _) => {
+                    if matches!(builtin, Builtin::Wait | Builtin::WaitTicks)
+                        || async_wait_suspends && *builtin == Builtin::WaitAsync
+                    {
+                        return true;
+                    }
+                }
+                StmtKind::If(_, yes, no) => {
+                    pending.push(yes);
+                    pending.push(no);
+                }
+                StmtKind::While(_, body) => pending.push(body),
+                StmtKind::Select(_, cases) => {
+                    pending.extend(cases.iter().map(|case| case.body.as_slice()));
+                }
+                StmtKind::Call(id) => {
+                    let index = id.0 as usize;
+                    if !std::mem::replace(&mut seen[index], true) {
+                        pending.push(&hir.functions[index].body);
+                    }
+                }
+                StmtKind::Assign(_, _) | StmtKind::Fill(_, _) => {}
+            }
+        }
+    }
+    false
+}
 
 pub fn int_arith(op: Arith, a: i32, b: i32) -> i32 {
     use sampler_core::IntegerBinary as I;
@@ -120,10 +157,13 @@ impl V {
 
 /// Initial state after `on init`.
 pub struct Initial {
+    pub midi_object: sampler_core::MidiObject,
     pub cells: Vec<i64>,
     pub texts: Vec<String>,
     /// Values of host-owned controls, by UI index.
     pub controls: Vec<i32>,
+    /// Effective persistence, including declarations reached through init functions.
+    pub persistence: Vec<Persistence>,
     pub model: model::Model,
     /// Positioned non-fatal problems (Kontakt reports these and continues).
     pub warnings: Vec<Fault>,
@@ -153,6 +193,9 @@ struct Eval<'h> {
     consumed: BTreeSet<VarId>,
     pending_menus: BTreeMap<usize, i32>,
     callback_type: i32,
+    async_result: Option<(i32, i32)>,
+    async_depth: u8,
+    profile: Option<HashMap<&'static str, (u64, u128)>>,
 }
 
 pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
@@ -162,9 +205,11 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
         hir,
         env,
         st: Initial {
+            midi_object: env.midi_object.clone(),
             cells: vec![0; hir.cells as usize],
             texts: vec![String::new(); hir.texts as usize],
             controls: vec![0; hir.uis.len()],
+            persistence: hir.vars.iter().map(|v| v.persistence).collect(),
             model,
             warnings: Vec::new(),
             engine: HashMap::new(),
@@ -177,9 +222,17 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
         consumed: BTreeSet::new(),
         pending_menus: BTreeMap::new(),
         callback_type: b::cb::INIT,
+        async_result: None,
+        async_depth: 0,
+        profile: std::env::var_os("KONTRA_AUDIT_KSP_PROFILE").map(|_| HashMap::new()),
     };
-    #[cfg(feature="scan")]
-    crate::scan::present(hir.callbacks.iter().any(|c|c.kind==CallbackKind::Init),hir.callbacks.iter().any(|c|c.kind==CallbackKind::PersistenceChanged));
+    #[cfg(feature = "scan")]
+    crate::scan::present(
+        hir.callbacks.iter().any(|c| c.kind == CallbackKind::Init),
+        hir.callbacks
+            .iter()
+            .any(|c| c.kind == CallbackKind::PersistenceChanged),
+    );
     // Kontakt's defaults: knobs/sliders start at their minimum when 0 is outside.
     for (index, ui) in hir.uis.iter().enumerate() {
         if let Some((lo, hi)) = declared_range(ui) {
@@ -187,18 +240,18 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
         }
     }
     if let Some(init) = hir.callbacks.iter().find(|c| c.kind == CallbackKind::Init) {
-        #[cfg(feature="scan")]
+        #[cfg(feature = "scan")]
         crate::scan::stage("init");
-        let r=e.block(&init.body);
-        #[cfg(feature="scan")]
-        crate::scan::phase("init",r.as_ref().err());
+        let r = e.block(&init.body);
+        #[cfg(feature = "scan")]
+        crate::scan::phase("init", r.as_ref().err());
         r?;
     }
     // On load Kontakt restores saved persistent values, then runs
     // `on persistence_changed`, before the interface is shown.
     for (i, var) in hir.vars.iter().enumerate() {
         if !e.consumed.contains(&VarId(i as u32))
-            && (var.persistence != Persistence::None
+            && (e.st.persistence[i] != Persistence::None
                 || matches!(var.home, Home::Control(_))
                     && e.env
                         .control_values
@@ -213,21 +266,49 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
         .iter()
         .find(|c| c.kind == CallbackKind::PersistenceChanged)
     {
-        #[cfg(feature="scan")] crate::scan::stage("persistence_changed");
-        let result=e.block(&cb.body);
-        #[cfg(feature="scan")] crate::scan::phase("persistence_changed",result.as_ref().err());
-        e.st.model.persistence_completion = match result {
-            Ok(_) => model::PersistenceCompletion::Completed,
-            Err(f) => {
-                let category = if e.fuel == 0 {
-                    model::EvaluationFailure::Budget
-                } else {
-                    model::EvaluationFailure::InvalidValue
-                };
-                e.warn(f.span, "on persistence_changed did not complete".to_owned());
-                model::PersistenceCompletion::Failed {category, offset:f.span.start, builtin:f.builtin}
-            }
-        };
+        if may_suspend(hir, &cb.body, true) {
+            e.st.model.persistence_completion = model::PersistenceCompletion::Scheduled;
+            #[cfg(feature = "scan")]
+            crate::scan::phase("persistence_scheduled", None);
+        } else {
+            #[cfg(feature = "scan")]
+            crate::scan::stage("persistence_changed");
+            let result = e.block(&cb.body);
+            #[cfg(feature = "scan")]
+            crate::scan::phase("persistence_changed", result.as_ref().err());
+            e.st.model.persistence_completion = match result {
+                Ok(_) => model::PersistenceCompletion::Completed,
+                Err(f) => {
+                    let category = if e.fuel == 0 {
+                        model::EvaluationFailure::Budget
+                    } else {
+                        model::EvaluationFailure::InvalidValue
+                    };
+                    e.warn(f.span, "on persistence_changed did not complete".to_owned());
+                    model::PersistenceCompletion::Failed {
+                        category,
+                        offset: f.span.start,
+                        builtin: f.builtin,
+                    }
+                }
+            };
+        }
+    }
+    if let Some(profile) = &e.profile {
+        eprintln!(
+            "AUDIT {{\"stage\":\"ksp_eval_profile\",\"fuel_used\":{},\"widgets\":{},\"requests\":{},\"properties\":{},\"warnings\":{}}}",
+            INIT_FUEL - e.fuel,
+            hir.uis.len(),
+            e.st.model.requests.len(),
+            e.st.properties.len(),
+            e.st.warnings.len()
+        );
+        for (builtin, (calls, ns)) in profile {
+            eprintln!(
+                "AUDIT {{\"stage\":\"ksp_builtin_profile\",\"builtin\":\"{}\",\"calls\":{},\"ns\":{}}}",
+                builtin, calls, ns
+            );
+        }
     }
     Ok(e.st)
 }
@@ -258,7 +339,7 @@ impl Eval<'_> {
     fn block(&mut self, body: &[Stmt]) -> Result<Flow> {
         for s in body {
             if self.fuel == 0 {
-                #[cfg(feature="scan")]
+                #[cfg(feature = "scan")]
                 crate::scan::category("fuel-budget");
                 return fault(s.span, "on init exceeded its evaluation budget");
             }
@@ -294,9 +375,9 @@ impl Eval<'_> {
             StmtKind::While(cond, body) => {
                 while self.expr(cond)?.int() != 0 {
                     if self.fuel == 0 {
-                        #[cfg(feature="scan")]
-                crate::scan::category("fuel-budget");
-                return fault(s.span, "on init exceeded its evaluation budget");
+                        #[cfg(feature = "scan")]
+                        crate::scan::category("fuel-budget");
+                        return fault(s.span, "on init exceeded its evaluation budget");
                     }
                     self.fuel -= 1;
                     match self.block(body)? {
@@ -585,6 +666,8 @@ impl Eval<'_> {
         match sys {
             NumGroups => self.env.groups.len() as i32,
             CallbackType => self.callback_type,
+            AsyncId => self.async_result.map_or(0, |v| v.0),
+            AsyncExitStatus => self.async_result.map_or(0, |v| v.1),
             DurationQuarter => 500_000,
             DurationEighth => 250_000,
             DurationSixteenth => 125_000,
@@ -762,7 +845,8 @@ impl Eval<'_> {
                 Arg::Var(v, _) => V::S(self.hir.vars[v.0 as usize].name.to_string()),
                 // Record symbolic parameter keys by name; opaque ids cannot cross the IR.
                 _ if (i == 0 && builtin == Builtin::SetEnginePar)
-                    || (i == 1 && builtin == Builtin::SetUiWfProperty) => {
+                    || (i == 1 && builtin == Builtin::SetUiWfProperty) =>
+                {
                     let id = self.int(args, i)?;
                     symbol_name(self.hir, id).map_or(V::I(id), V::S)
                 }
@@ -777,10 +861,21 @@ impl Eval<'_> {
         Ok(())
     }
 
-    fn builtin(&mut self,builtin:Builtin,args:&[Arg],span:Span)->Result<V> {
-        let result=self.builtin_inner(builtin,args,span);
-        #[cfg(feature="scan")]
-        crate::scan::builtin(result.as_ref().err().map(|_|builtin.name()));
+    fn builtin(&mut self, builtin: Builtin, args: &[Arg], span: Span) -> Result<V> {
+        let begin = self.profile.as_ref().map(|_| std::time::Instant::now());
+        let result = self.builtin_inner(builtin, args, span);
+        #[cfg(feature = "scan")]
+        crate::scan::builtin(result.as_ref().err().map(|_| builtin.name()));
+        if let Some(begin) = begin {
+            let entry = self
+                .profile
+                .as_mut()
+                .unwrap()
+                .entry(builtin.name())
+                .or_default();
+            entry.0 += 1;
+            entry.1 += begin.elapsed().as_nanos();
+        }
         result
     }
 
@@ -1224,7 +1319,15 @@ impl Eval<'_> {
                 }
                 V::I(0)
             }
-            MakePersistent | MakeInstrPersistent => V::I(0),
+            MakePersistent | MakeInstrPersistent => {
+                let var = Self::var(args, 0);
+                self.st.persistence[var.0 as usize] = if builtin == MakeInstrPersistent {
+                    Persistence::Instrument
+                } else {
+                    Persistence::Snapshot
+                };
+                V::I(0)
+            }
             ReadPersistentVar => {
                 let var = Self::var(args, 0);
                 self.restore(var);
@@ -1301,6 +1404,118 @@ impl Eval<'_> {
                 self.st.model.listeners.insert(signal, value);
                 V::I(0)
             }
+            builtin @ (MfGetFirst | MfGetLast | MfGetNext | MfGetPrev | MfGetNextAt
+            | MfGetPrevAt | MfGetId | MfGetCommand | MfSetCommand | MfGetByteOne
+            | MfSetByteOne | MfGetByteTwo | MfSetByteTwo | MfGetChannel
+            | MfSetChannel | MfGetPos | MfSetPos | MfGetLength | MfSetLength
+            | MfGetTrackIdx | MfSetTrackIdx | MfGetEventPar | MfSetEventPar
+            | MfGetNumTracks | MfGetBufferSize | MfSetBufferSize | MfInsertEvent
+            | MfRemoveEvent | MfGetMark | MfSetMark | MfSetExportArea
+            | MfSetNumExportAreas | MfCopyExportArea | MfReset | MfInsertFile
+            | LoadMidiFile | SaveMidiFile) => {
+                let action = builtin.midi().unwrap();
+                let has_text = matches!(
+                    action,
+                    sampler_core::MidiAction::ExportArea
+                        | sampler_core::MidiAction::InsertFile
+                        | sampler_core::MidiAction::SaveFile
+                );
+                let text = if has_text {
+                    Some(sampler_core::Text::new(&self.text(args, 0)?))
+                } else {
+                    None
+                };
+                let mut values = [0; 5];
+                for (index, value) in values.iter_mut().take(action.arguments()).enumerate() {
+                    *value = self.int(args, index + usize::from(has_text))?;
+                }
+                if matches!(
+                    action,
+                    sampler_core::MidiAction::SetBufferSize
+                        | sampler_core::MidiAction::ExportCount
+                        | sampler_core::MidiAction::ExportArea
+                ) {
+                    self.st.midi_object.prepare_live();
+                }
+                let synchronous = self.callback_type == b::cb::INIT
+                    && matches!(
+                        action,
+                        sampler_core::MidiAction::InsertFile
+                            | sampler_core::MidiAction::SetBufferSize
+                    );
+                let value = if action.asynchronous() && !synchronous {
+                    self.st
+                        .midi_object
+                        .queue_initial(self.env.slot, action, values, text)
+                        .map_err(|_| crate::diag::Fault {
+                            span,
+                            builtin: Some(builtin.name()),
+                            message: "MIDI async job capacity".into(),
+                        })?
+                } else if action == sampler_core::MidiAction::InsertFile {
+                    self.st
+                        .midi_object
+                        .insert_file(
+                            text.unwrap_or_default().as_str(),
+                            [values[0], values[1], values[2]],
+                        )
+                        .map_or(0, |_| 1)
+                } else {
+                    self.st
+                        .midi_object
+                        .apply(action, &values, text)
+                        .map_err(|_| crate::diag::Fault {
+                            span,
+                            builtin: Some(builtin.name()),
+                            message: "invalid MIDI object operation".into(),
+                        })?
+                };
+                V::I(value)
+            }
+            WaitAsync => {
+                let id = self.int(args, 0)?;
+                // Init completes MIDI jobs synchronously; only clock waits defer their callback.
+                let deferred = self
+                    .hir
+                    .callbacks
+                    .iter()
+                    .find(|c| c.kind == CallbackKind::AsyncComplete)
+                    .is_some_and(|c| may_suspend(self.hir, &c.body, false));
+                if let Some(status) =
+                    self.st
+                        .midi_object
+                        .finish_initial(self.env.slot, id, deferred)
+                {
+                    if deferred {
+                        return Ok(V::I(0));
+                    }
+                    // ponytail: cap nested init completions at eight; use an interpreter trampoline if deeper nesting is needed.
+                    if self.async_depth >= 8 {
+                        return fault(span, "async completion nesting limit");
+                    }
+                    self.async_depth += 1;
+                    let previous = (self.callback_type, self.async_result);
+                    self.callback_type = b::cb::ASYNC_COMPLETE;
+                    self.async_result = Some((id, status));
+                    let result = if let Some(cb) = self
+                        .hir
+                        .callbacks
+                        .iter()
+                        .find(|c| c.kind == CallbackKind::AsyncComplete)
+                    {
+                        self.block(&cb.body)
+                    } else {
+                        Ok(Flow::Next)
+                    };
+                    (self.callback_type, self.async_result) = previous;
+                    self.async_depth -= 1;
+                    result?;
+                }
+                V::I(0)
+            }
+            MfGetLastFilename => V::S(self.st.midi_object.last_filename().to_owned()),
+            ByTrack => V::I(self.int(args, 0)? | sampler_core::MIDI_TRACK_FLAG),
+            ByMarks => V::I(self.int(args, 0)? | sampler_core::MIDI_MARKS_FLAG),
             SetEnginePar => {
                 let key = [
                     self.int(args, 0)?,
@@ -1382,14 +1597,27 @@ impl Eval<'_> {
             OutputChannelName | GetFolder | FsGetFilename => V::S(String::new()),
             FindZone => V::I(b::NOT_FOUND),
             GetNumZones | GetZoneId | GetZonePar | GetPurgeState | GetVoiceLimit
-            | GetUiWfProperty | EventStatus | GetEventPar | GetEventParArr | GetEventMark
-            | ByMarks => V::I(0),
+            | GetUiWfProperty | EventStatus | GetEventPar | GetEventParArr | GetEventMark => {
+                V::I(0)
+            }
             // No host consumes zone writes (FindZone finds nothing at init), and
             // Conflux issues three million of them: logging each cost ~1 GB.
             SetZonePar => V::I(0),
-            PurgeGroup | SetVoiceLimit | LoadIrSample | LoadArray | SaveArray | LoadArrayStr
-            | SaveArrayStr | AttachLevelMeter | AttachZone | SetUiWfProperty | FsNavigate
-            | LoadNativeUi | SetNksNavName | SetNksNavPar | ResetNksNav => {
+            LoadArray => {
+                // NI load/save contract: load_array in init implicitly persists
+                // its target; saved state is restored after the init callback.
+                let var = Self::var(args, 0);
+                if self.callback_type == b::cb::INIT
+                    && self.st.persistence[var.0 as usize] == Persistence::None
+                {
+                    self.st.persistence[var.0 as usize] = Persistence::Snapshot;
+                }
+                self.request(builtin, args)?;
+                V::I(0)
+            }
+            PurgeGroup | SetVoiceLimit | LoadIrSample | SaveArray | LoadArrayStr | SaveArrayStr
+            | AttachLevelMeter | AttachZone | SetUiWfProperty | FsNavigate | LoadNativeUi
+            | SetNksNavName | SetNksNavPar | ResetNksNav => {
                 self.request(builtin, args)?;
                 V::I(0)
             }
@@ -1407,7 +1635,7 @@ impl Eval<'_> {
             | ChangeNote | FadeIn | FadeOut | SetEventPar | SetEventParArr | AllowGroup
             | DisallowGroup | SetEventMark | DeleteEventMark | GetEventIds | IgnoreController
             | SetNoteController | SetRpn | SetNrpn | ResetRlsTrigCounter | WillNeverTerminate
-            | RedirectOutput | Wait | WaitTicks | WaitAsync | StopWait => {
+            | RedirectOutput | Wait | WaitTicks | StopWait => {
                 self.warn(span, format!("{} has no effect in on init", builtin.name()));
                 V::I(0)
             }

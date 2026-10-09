@@ -103,9 +103,16 @@ resolve=function(element,path,context,depth)
             out={kind='Group',props={},children={out},modifiers={},path=path}
         end
     else
-        out={kind=element.component,props=props,children={},modifiers={},path=path}
+        -- Retain resolved children, without also retaining their source factories.
+        local resolved_props={}
+        for key,value in pairs(props) do
+            if key~='children' and not (type(key)=='number' and key>=1 and key%1==0) then
+                resolved_props[key]=value
+            end
+        end
+        out={kind=element.component,props=resolved_props,children={},modifiers={},path=path}
         for _,key in ipairs({'paint','on_accept','on_change'}) do
-            if type(props[key])=='function' then props[key]=bind(props[key],path,child_context) end
+            if type(props[key])=='function' then resolved_props[key]=bind(props[key],path,child_context) end
         end
         if out.kind=='ForEach' then
             out.kind='Group'
