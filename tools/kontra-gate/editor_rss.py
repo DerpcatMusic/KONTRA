@@ -15,7 +15,7 @@ import tempfile
 import time
 
 from evidence import Capture
-from live_host import V1, sha, private_settings, v1_state, native_selection, log_rows, load_status, keyed, sized
+from live_host import V1, sha, private_settings, v1_state, native_selection, log_rows, keyed, sized
 
 PHASES = ('loaded', 'open', 'closed', 'reopened')
 
@@ -40,6 +40,14 @@ def summarize(rows):
     result['reopen_delta_mib'] = result['reopened']['rss_mib']-result['loaded']['rss_mib']
     return result
 
+
+def selected_loads(rows, item, programs):
+    latest = {}
+    for row in rows:
+        if (row.get('event') == 'load_finished' and row.get('path') == str(item)
+                and row.get('program') in programs):
+            latest[row['program']] = row.get('data',{}).get('status')
+    return latest
 
 def author_state(template, item):
     assert item.suffix.lower() != '.nkm' or item.name == 'Big Screen.nkm', 'only the inventoried two-part Big Screen multi is supported'
@@ -94,17 +102,18 @@ def observe(host, plugin, item, folder):
                 while job.poll() is None:
                     assert time.monotonic() < deadline, 'host lifecycle deadline'
                     if not ready.exists():
-                        status = load_status(log_rows(capture.root))
-                        loaded_rows = [r for r in log_rows(capture.root) if r.get('event') == 'load_finished' and r.get('data',{}).get('status') in ('loaded','partial')]
-                        if status == 'READY' and len(loaded_rows) >= len(programs): ready.touch()
-                        assert status != 'FAILED', 'plugin load failed'
+                        selected = selected_loads(log_rows(capture.root), item, programs)
+                        if len(selected) == len(programs) and all(s in ('loaded','partial') for s in selected.values()): ready.touch()
+                        assert 'failed' not in selected.values(), 'selected plugin load failed'
                     time.sleep(.05)
                 output.seek(0); raw = output.read()
             receipt.update(returncode=job.returncode, stdout_sha256=hashlib.sha256(raw).hexdigest())
             rows = [json.loads(line) for line in raw.splitlines()]
             receipt['samples'] = rows
             logs = log_rows(capture.root)
-            finished = [r['data']['status'] for r in logs if r.get('event') == 'load_finished']
+            selected = selected_loads(logs,item,programs)
+            finished = list(selected.values())
+            receipt['selected_loads'] = selected
             receipt['renderer_stages'] = [label for r in logs if r.get('event') == 'native_window'
                 for text,label in [('GPU ready','gpu-ready'),('GPU unavailable','gpu-unavailable'),('waiting for first frame','window-ready')]
                 if text in r.get('data',{}).get('reason','')]
