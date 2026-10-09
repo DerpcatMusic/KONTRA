@@ -452,3 +452,60 @@ fn w10_uvi_catalogued_protected_programs_keep_rows_and_show_bank_reason() {
         }
     }
 }
+
+#[test]
+fn w10_uvi_search_and_favorites_keep_the_bank_member_identity() {
+    let p = Arc::new(SamplerParams::new());
+    let tmp = tempfile::tempdir().unwrap();
+    for (bank, color) in [("Alpha", [45, 110, 190, 255]), ("Beta", [160, 90, 60, 255])] {
+        let path = tmp.path().join(format!("{bank}.ufs"));
+        std::fs::write(&path, b"artwork uses only the named cover").unwrap();
+        let mut encoder = png::Encoder::new(std::fs::File::create(path.with_extension("png")).unwrap(), 512, 128);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.write_header().unwrap().write_image_data(&color.repeat(512 * 128)).unwrap();
+    }
+    let alpha = tmp.path().join("Alpha.ufs/preset.uvip");
+    let beta = tmp.path().join("Beta.ufs/preset.uvip");
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        view.shelf = Arc::new(crate::library::Shelf::new(["Alpha", "Beta"].into_iter().map(|name| {
+            crate::library::Library { dir: tmp.path().join(format!("{name}.ufs")), name: name.into(), instruments: 1, ..Default::default() }
+        }).collect()));
+        view.artwork = crate::artwork::scan(&view.shelf.libraries);
+        assert_eq!(view.artwork.len(), 2);
+        view.files = Arc::new(vec![alpha.clone(), beta.clone()]);
+        view.scanned = p.shared.libraries.wanted();
+    }
+    let mut h = Harness::new(&p, 900., 600.);
+    h.press("bank-uvi");
+    h.press("library-0");
+    h.press("star-0");
+    assert_eq!(p.selection.read().unwrap().favorites, [alpha.to_string_lossy()]);
+    h.press("library-1");
+    h.press("star-0");
+    assert_eq!(p.selection.read().unwrap().favorites.len(), 2, "same-named presets in different banks stay distinct");
+    h.press("source-favorites");
+    #[cfg(feature = "shots")]
+    if let Some(out) = std::env::var_os("KONTRA_UVI_FIXTURE_SHOTS").map(PathBuf::from) {
+        std::fs::create_dir_all(&out).unwrap();
+        h.idle(30);
+        moose::core::screenshot::save_png(&out.join("uvi-favorites-900.png"), &pixels(&h.ui, 900, 600), 900, 600);
+    }
+    assert!(h.ui.scene().unwrap().surface("instrument-1").is_some());
+    h.ui.focus("search");
+    h.tick(Input { text: "UVI preset".into(), ..Default::default() });
+    h.idle(3);
+    assert!(h.ui.scene().unwrap().surface("instrument-0").is_some());
+    assert!(h.ui.scene().unwrap().surface("instrument-1").is_some(), "v1 searches the UVI provider name as well as preset/folder names");
+    #[cfg(feature = "shots")]
+    if let Some(out) = std::env::var_os("KONTRA_UVI_FIXTURE_SHOTS").map(PathBuf::from) {
+        moose::core::screenshot::save_png(&out.join("uvi-search-900.png"), &pixels(&h.ui, 900, 600), 900, 600);
+    }
+    h.press("star-1");
+    assert_eq!(p.selection.read().unwrap().favorites, [alpha.to_string_lossy()], "search must unstar the matched full bank/member path");
+    use moose::core::custom_state::State;
+    let selection = p.selection.read().unwrap();
+    let restored = crate::plugin::Selection::deserialize(&selection.serialize()).unwrap();
+    assert_eq!(restored.favorites, selection.favorites, "favourites retain bank/member identity after state reload");
+}

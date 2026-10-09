@@ -25,22 +25,56 @@ fn library_artwork_searches_nested_resources_after_a_bad_wallpaper() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
-/// Library panels, including nested loose artwork and UVI bank resources.
+#[cfg(test)]
+#[test]
+fn w10_uvi_bank_art_uses_its_named_sidecar() {
+    let dir = tempfile::tempdir().unwrap();
+    let bank = dir.path().join("Authored.ufs");
+    std::fs::write(&bank, b"not opened for artwork").unwrap();
+    std::fs::write(bank.with_extension("png"), b"bad png").unwrap();
+    let mut encoded = Vec::new();
+    let mut encoder = png::Encoder::new(&mut encoded, 512, 128);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.write_header().unwrap().write_image_data(&[40, 70, 90, 255].repeat(512 * 128)).unwrap();
+    // Decode fallback is exercised with PNG bytes in the named JPEG sidecar.
+    std::fs::write(bank.with_extension("jpg"), encoded).unwrap();
+    let library = crate::library::Library { name: "Authored".into(), dir: bank, ..Default::default() };
+    let art = scan(&[library]);
+    assert_eq!(art.get("Authored").map(|i| (i.width, i.height)), Some((512, 128)));
+}
+
+/// Library panels from nested loose artwork; UVI banks use named cover sidecars.
 pub fn scan(libraries: &[crate::library::Library]) -> HashMap<String, Arc<Image>> {
+    let (mut sidecar_bytes, mut sidecar_pixels) = (64usize << 20, 16usize << 20);
     libraries.iter().filter_map(|library| {
+        // Port v1's bank-cover selection: an instrument panel is not bank artwork.
+        if library.dir.is_file() && library.dir.extension().is_some_and(|e| e.eq_ignore_ascii_case("ufs")) {
+            return ["png", "jpg", "jpeg"].into_iter().find_map(|ext| {
+                let path = library.dir.with_extension(ext);
+                let image = cached_header(&path, || {
+                    let image = sidecar_header(&path, &mut sidecar_bytes)?;
+                    (image.width >= 180 && image.height >= 60).then_some(image)
+                })?;
+                let pixels = image.width as usize * image.height as usize;
+                if pixels > sidecar_pixels { return None; }
+                sidecar_pixels -= pixels;
+                Some((library.name.clone(), image))
+            });
+        }
         let mut candidates: Vec<PathBuf> = walkdir::WalkDir::new(&library.dir).follow_links(false).into_iter()
             .filter_entry(|e| !(e.depth() > 0 && e.file_type().is_dir() && {
                 let name = e.file_name().to_string_lossy().to_ascii_lowercase();
                 name == "samples" || name.starts_with('.')
             })).flatten().filter(|e| e.file_type().is_file()).map(|e| e.into_path())
-            .filter(|p| p.extension().is_some_and(|e| ["png", "jpg", "jpeg", "nicnt", "nkr", "ufs"].iter().any(|ext| e.eq_ignore_ascii_case(ext))))
+            .filter(|p| p.extension().is_some_and(|e| ["png", "jpg", "jpeg", "nicnt", "nkr"].iter().any(|ext| e.eq_ignore_ascii_case(ext))))
             .collect();
         candidates.sort_by_key(|p| {
             let ext = p.extension().unwrap_or_default().to_string_lossy().to_ascii_lowercase();
             let name = p.file_name().unwrap_or_default().to_string_lossy().to_ascii_lowercase();
             let priority = if name == "wallpaper.png" { 0 }
                 else if name.contains("libbrowser") { 1 }
-                else if ext == "nicnt" { 2 } else if ext == "nkr" { 3 } else if ext == "ufs" { 4 }
+                else if ext == "nicnt" { 2 } else if ext == "nkr" { 3 }
                 else { 5 + ["cover", "artwork", "banner", "logo", "background"].iter().position(|word| name.contains(word)).unwrap_or(5) };
             (priority, p.clone())
         });
@@ -49,7 +83,6 @@ pub fn scan(libraries: &[crate::library::Library]) -> HashMap<String, Arc<Image>
                 let ext = path.extension()?.to_string_lossy().to_ascii_lowercase();
                 let image = match ext.as_str() {
                     "nicnt" | "nkr" => nicnt_picture(&path),
-                    "ufs" => ufs_picture(&path),
                     _ => decode_header(&read_file(&path).ok()?),
                 }?;
                 (image.width >= 180 && image.height >= 60).then_some(image)
@@ -59,24 +92,24 @@ pub fn scan(libraries: &[crate::library::Library]) -> HashMap<String, Arc<Image>
     }).collect()
 }
 
-fn ufs_picture(path: &Path) -> Option<Image> {
-    #[cfg(feature = "library-access")]
-    {
-        let bank = sampler_uvi::Bank::open(path).ok()?;
-        let mut names: Vec<_> = bank.members().into_iter().filter(|n| {
-            let n = n.to_ascii_lowercase(); n.ends_with(".png") || n.ends_with(".jpg") || n.ends_with(".jpeg")
-        }).collect();
-        names.sort_by_key(|name| {
-            let lower = name.to_ascii_lowercase();
-            (["libbrowser", "wallpaper", "cover", "artwork", "banner", "logo", "background"].iter().position(|word| lower.contains(word)).unwrap_or(7), name.clone())
-        });
-        names.iter().find_map(|name| {
-            let image = decode_header(&bank.ui_resource_result("", name).ok()??)?;
-            (image.width >= 180 && image.height >= 60).then_some(image)
-        })
+// v1's nonblocking, bounded sidecar read with the existing v2 display decoder.
+fn sidecar_header(path: &Path, remaining: &mut usize) -> Option<Image> {
+    let limit = (*remaining).min(32 << 20);
+    if limit == 0 { return None; }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)] {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
     }
-    #[cfg(not(feature = "library-access"))]
-    { let _ = path; None }
+    let mut file = options.open(path).ok()?;
+    let metadata = file.metadata().ok()?;
+    if !metadata.is_file() || metadata.len() > limit as u64 { return None; }
+    let mut bytes = Vec::new();
+    let result = file.by_ref().take((limit + 1) as u64).read_to_end(&mut bytes);
+    *remaining = remaining.saturating_sub(bytes.len());
+    if result.is_err() || bytes.len() > limit { return None; }
+    decode_header(&bytes)
 }
 
 // Library scanning already runs on its import worker (library::Index::rescan).
