@@ -292,7 +292,9 @@ pub(super) fn decode(
         if len > PIXELS * 4 {
             return None;
         }
-        let mut data = vec![0; len];
+        let mut data = Vec::new();
+        data.try_reserve_exact(w as usize * h as usize * 4).ok()?;
+        data.resize(len, 0);
         decoder.read_image(&mut data).ok()?;
         if !decoder.has_alpha() {
             let pixels = data.len() / 3;
