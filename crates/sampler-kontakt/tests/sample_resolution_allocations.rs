@@ -7,7 +7,8 @@ mod support;
 #[test]
 fn loose_sources_do_not_allocate_virtual_members_for_each_parent() {
     let root = std::env::temp_dir().join(format!("kontra-source-alloc-{}", std::process::id()));
-    let folder = root.join("a-repeated-directory-component")
+    let folder = root
+        .join("a-repeated-directory-component")
         .join("another-repeated-directory-component")
         .join("a-third-repeated-directory-component");
     std::fs::create_dir_all(&folder).unwrap();
@@ -24,7 +25,10 @@ fn loose_sources_do_not_allocate_virtual_members_for_each_parent() {
     }
     std::fs::remove_dir_all(&root).unwrap();
     for (bytes, path_bytes) in measured {
-        assert!(bytes <= 2 * path_bytes,
-            "loose source should only retain its path, not construct a member for every parent: {bytes} bytes");
+        println!("source_lookup_alloc_bytes={bytes} path_bytes={path_bytes}");
+        assert!(
+            bytes <= 2 * path_bytes,
+            "loose source should only retain its path, not construct a member for every parent: {bytes} bytes"
+        );
     }
 }
