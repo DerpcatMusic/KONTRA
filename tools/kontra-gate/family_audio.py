@@ -9,7 +9,7 @@ def validate(run):
     assert type(run.get('events_dispatched')) is int and run['events_dispatched'] == run.get('events_planned') > 0
     notes = run['note_audio']
     assert notes, 'per-note evidence absent'
-    for note in notes:
+    for note in [*notes, dict(run['family_audio'], event_index=0, key=0, velocity=1, start_frame=0)]:
         for key in ['event_index', 'key', 'velocity', 'start_frame', 'window_frames', 'length_frames']:
             assert type(note[key]) is int and note[key] >= 0
         assert note['key'] < 128 and 0 < note['velocity'] < 128
@@ -47,4 +47,10 @@ def compare(v1, v2):
     mean = lambda spectra: [sum(band)/len(spectra) for band in zip(*spectra)]
     distribution = [dict(key=k[0], velocity=k[1], window_frames=k[2], repeats=len(a), mean_spectral_cosine=cosine(mean(a),mean(b)))
                     for k,(a,b) in families.items()]
-    return dict(status='UNKNOWN', basis='host-audio-numeric-leads; native family identity unverified', per_note=rows, distributions=distribution)
+    a,b = v1['family_audio'],v2['family_audio']
+    assert a['window_frames']==b['window_frames'], 'different full-instrument windows'
+    full = dict(onset_delta_frames=b['onset_frame']-a['onset_frame'] if min(a['onset_frame'],b['onset_frame']) >= 0 else None,
+                length_delta_frames=b['length_frames']-a['length_frames'], rms_ratio=b['rms']/a['rms'] if a['rms'] else None,
+                v1_rms=a['rms'], v2_rms=b['rms'], spectral_cosine=cosine(a['spectrum'],b['spectrum']))
+    return dict(status='MEASURED', reference='frozen-v1', family_identity='UNKNOWN', basis='full-instrument and note-window fingerprints; no PCM null or native-host claim',
+                full_instrument=full, per_note=rows, distributions=distribution)

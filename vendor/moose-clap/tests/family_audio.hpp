@@ -44,6 +44,10 @@ struct FamilyAudio {
         return m;
     }
     template<class Events> void report(const Events& events) const {
+        auto full = measure(pcm, 0, pcm.size());
+        std::printf("{\"kind\":\"family_audio\",\"window_frames\":%zu,\"onset_frame\":%lld,\"length_frames\":%lld,\"peak\":%.9g,\"rms\":%.9g,\"spectrum\":[", pcm.size(), (long long)full.onset, (long long)(full.last < 0 ? 0 : full.last - full.onset + 1), full.peak, full.rms);
+        for (size_t band = 0; band < full.spectrum.size(); ++band) std::printf("%s%.9g", band ? "," : "", full.spectrum[band]);
+        std::puts("]}");
         for (size_t note = 0; note < events.size(); ++note) {
             const auto& event = events[note];
             if ((event.status & 0xf0) != 0x90 || event.b == 0 || event.frame >= pcm.size()) continue;
