@@ -145,7 +145,7 @@ No new dependency, public API, importer law, control binding, CPU artifact or
 release/install change. Corpus/native parity and callback timing are not
 measured by this slice. Next: W8 direct handoff, frozen CPU window, then W13.
 
-## Remaining consolidation slice (validation pending)
+## Remaining consolidation slice (READY)
 
 Implementation `494bb088`, test-only checkpoints `a6b17c70` / `a4c9e2cd`.
 The remaining eight scalar/lane sample-math sites now call shared primitives:
@@ -174,11 +174,27 @@ Baseline gate on test-only `a4c9e2cd`: optimized `cargo test --locked --release
 -p sampler-core --lib shared_` PASS (9 tests; five new frozen oracles plus four
 existing shared tests), before validating the extracted math. Logs:
 `~/.cache/kontakto-w6/universal-dsp/remaining-baseline.log`.
-Post-extraction bit checks, allocator gates and area no-run are pending the
-coordinator's serial validation slot at the start of W6's quiet window.
-Do not treat this second slice as READY until that receipt is appended.
+Post-extraction validation at `b2fe9e77` passed on 2026-10-09 after W12's
+direct machine release, serially through `kontakto-heavy`:
+
+- Release area no-run for core lib and DSP/SVF/Gainer/control/compressor tests: PASS.
+- Five independent frozen PCM/state bit oracles: 5 PASS.
+- Compressor static-transfer sweep and invalid-input checks: 2 PASS.
+- Existing DSP/SVF/Gainer/control/compressor integration and allocator checks:
+  20 PASS, including zero callback heap-allocation assertions.
+- Clean source and `git diff --check`: PASS.
+
+Receipt and logs: `/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w6-universal-dsp/`.
+This establishes refactor parity with the existing core equations. It does
+not establish native DSP fidelity or a CPU improvement.
+
+`CompressorSettings::transfer_db(input_db)` returns `(output_db, reduction_db)`
+using playback's shared detector/gain law. It is an off-audio static detector
+curve; attack/release history and channel linking remain outside that curve.
+Zero makeup produces negative-infinity output. No live gain-reduction meter
+is exported; the existing hard-knee law remains a native-unverified approximation.
 
 CPU acceptance continues to use the unchanged frozen exact-5fc artifact.
-Updated quiet order: W9 → W8 (six cells) → W5 (≤20 min) → W6 (42 CPU cells) → W13.
-W6 starts only after W5's direct release, validates the source slice before
+Updated quiet order: W8 → W9 → W12 format validation → W6 → W13 → W11.
+W6 starts only after W12's direct release, validates the source slice before
 any timing, and publishes READY independently of the frozen CPU verdict.
