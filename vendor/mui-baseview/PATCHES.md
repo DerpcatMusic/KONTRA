@@ -45,3 +45,32 @@ GPU errors use `Host::observe_gpu_error` once per observer and device
 generation. The upstream callback keeps recording errors and losses; the
 window forwards them to KONTRA's sink before/after present, outside the model
 lock. Errors between ticks coalesce according to MUI's observation contract.
+
+Native rendering also uses MUI's retained CPU rasterizer and native presenter.
+`MUI_RENDERER=cpu` bypasses GPU initialization. GPU initialization, terminal
+resize/present, and surface-recovery failures detach the GPU and select CPU
+rendering for that window, without periodically retrying the failed driver.
+CPU presentation keeps model snapshots outside the native present call, uses
+reference-resolved welding, and preserves input, pointer, IME, accessibility,
+portal parenting and native timing. A successful CPU submission uses the existing
+`Presented` timing outcome and records `mui-baseview/cpu_frame_presented` once.
+CPU presenter failures stay pending and retry after 500 ms; they do not clear
+the unpainted scene. CPU target-size limits remain MUI's existing limits.
+
+The shared X11 CPU regression checks actual opaque green window pixels,
+re-presentation after Expose, idle retention, close/reopen, and recovery after
+a destroyed GPU device causes resize failure. Run on an isolated X11 server:
+
+```sh
+MUI_RENDERER=cpu xvfb-run -a cargo test --locked -p kontra-native-host \
+  native_cpu_fallback_presents_and_reopens -- --ignored --test-threads=1
+WGPU_BACKEND=metal xvfb-run -a cargo test --locked -p kontra-native-host \
+  native_cpu_fallback_presents_and_reopens -- --ignored --test-threads=1
+xvfb-run -a cargo test --locked -p kontra-native-host \
+  native_resize_failure_falls_back_and_presents -- --ignored --test-threads=1
+```
+
+`native_destroyed_parent_and_drawable_stop_callbacks` deletes a real X11
+host parent and a standalone drawable without calling editor close first. It
+asserts server deletion, spontaneous handler release, one `WillClose`, and no
+further frame/resize callbacks. It runs in the same ignored native-host suite.

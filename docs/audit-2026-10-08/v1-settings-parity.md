@@ -1,6 +1,6 @@
 # v1 settings and feature parity
 
-Baseline: v1 **0cb7a8a0 (GAS)**; v2 **67dafc61**, `origin/integrate/core-v2` at the start of W4's resumed task. This is a source inventory of reachable product controls and behavior, not a performance certification. **Present** means the control and its backing path exist; **missing** means absent; **worse** means only a subset or read-only replacement exists. Runtime correctness still requires the unified release gate. No release build or install is authorized before that gate.
+Baseline: v1 **0cb7a8a0 (GAS)**; v2 **67dafc61**, `origin/integrate/core-v2` at the start of W4's resumed task. This is a source inventory of reachable product controls and behavior, not a performance certification. **Present** means the control and its backing path exist; **missing** means absent; **worse** means only a subset or read-only replacement exists. Runtime correctness still requires the unified release gate. The initial release hold is historical: the user's resumed alpha-release directive authorizes normal releases through W0 while parity work continues.
 
 The current implementation status is tracked below. Source references are relative to the named revision. CPU-relevant rows carry **W9**; this includes settings that affect load/RSS/disk work as well as render CPU. Authored library controls are data-driven and potentially unbounded: their entire supported widget/engine behavior is inventoried by kind, rather than treating one library's knobs as global settings.
 
@@ -24,6 +24,9 @@ The current implementation status is tracked below. Source references are relati
 | Appearance Plain / library color / artwork | ui/menu.rs:573 | Present: ui/menu.rs | W9 UI assets |
 | Artwork blur toggle; sticky part headers toggle | ui/menu.rs:585 | Present: ui/menu.rs | W9 UI |
 | Master volume drag / wheel / type / double-click reset, output meter | ui/header.rs:45 | Present, changed default/reset −12 dB → 0 dB (intentional v2 gain policy; compare at matched gains) | W9 matched benchmark |
+| Global host Attack, 0.1 ms–5 s, default 2 ms | plugin.rs:317–319; engine/mod.rs:1453–1464 | Missing at inventory baseline; now ported with stable ID 0x95b8fd, fallback-only scope | W9 voice DSP |
+| Global host Release, 1 ms–10 s, default 150 ms | plugin.rs:320–321; engine/mod.rs:1453–1464 | Missing at inventory baseline; now ported with stable ID 0x36ae7e, fallback-only scope | W9 voice count/CPU |
+| Global host Tone, 20 Hz–20 kHz, default dry bypass | plugin.rs:322–329; engine/mod.rs:1416 | Missing at inventory baseline; now present with stable ID 0x62f120; worse placement: post-FX instead of v1 pre-insert | W9 bus DSP |
 | MIDI Thru; QWERTY enabled; panic / all notes off | ui/header.rs:70 | Present: ui/header.rs; plugin.rs | — |
 | Save multi by typed name and native dialog; load saved rack + every part setting | ui/header.rs:401; plugin::SavedMulti | Present: version-2 multis only. Missing settings cannot yet round-trip | — |
 | Create library from sample folder, native dialog and CLI fallback | ui/menu.rs:282,795; creator.rs | Missing: creator and dialog removed | W9 load |
@@ -173,3 +176,86 @@ The branch now includes landed integration `0f62e503` (W5/W7 shared parameter se
 Failing-first `red-editor-offsets.log` records the missing service. `green-editor-offsets2.log`: **2 passed** for composition, live script movement, exact reset, clamping and atomic rejection. `green-editor-audio.log`: **1 passed** and verifies an existing physical gain lane renders at 0.35 under a +0.1 offset while its script base stays 0.25; resetting restores 0.25. `editor-core-no-run.log`: the area compile-only gate passed. W9: base/offset/index arrays are allocated during preparation; writes and offset application allocate nothing on audio. The editor UI port and timing remain in progress.
 
 `green-editor-offsets-final.log`: 2 passed after host/script-state capture was adapted to save the base and restore through the layer. `editor-root-no-run-final.log`: root compile-only gate passed. The shared service and gain render witness are ready; no editor controls are claimed restored by this foundation checkpoint.
+
+### Native sound-editor port
+
+Direct copies of v1 `src/ui/editor.rs`, `src/ui/viz.rs`, `src/ui/chain.rs` and the sparse `src/engine/overrides.rs` layer now replace the read-only Sound summary. Restored: previous/next group, persisted group choice, All groups / This group scope, Compact / Expanded, envelope and static filter/EQ response graphs, native-base ghosts, part-output spectrum, graph dragging, Shift fine dragging, typed readouts with physical units, per-value / per-graph / per-part reset, and complete zone/modulation/effect lists. The copied envelope handles also gain a wheel action: failing-first `editor-widgets-final5.log` showed the v1 handle's missing wheel target; the next revision fixes it through the same offset layer.
+
+The view adapts admitted v2 engine bindings and their laws; scripts and host capture still see the base. The six native amplitude lanes can occupy different physical modulator slots in different groups. The user-layer selector spans those actual amplitude lanes, while script addresses remain physical and unsupported module addresses remain unsupported. Filter/EQ handles are offered only for admitted native bindings. The response uses the native coefficients and authored IR; nonlinear filters such as Daft and module bindings not yet supplied by their reader/DSP owners still need that owner seam before complete editor parity can be claimed. Source IR and articulation identities remain unchanged.
+
+`red-editor-ui.log`: missing group control before the port. `green-editor-ui3.log`: reachable controls pass. `editor-widgets-final6.log`: **3 passed**, testing typed milliseconds/seconds/dB, invalid entry, silence, plugin-state round trip, navigation, compact mode, resets, graph drag, Shift precision, wheel and double-click typed entry. `editor-offsets-ui2.log`: **3 passed**, including global plus one-group amplitude edits across distinct physical slots, with script bases unchanged. `editor-no-run-final6.log`: root compile gate passed. Screenshot: `~/.cache/kontakto-fix-settings-parity/screenshots/settings-editor.png` (our actual UI, synthetic native fixture).
+
+W9: sparse edits and binding tables are prepared on the worker; offset application allocates nothing on audio. The fixed 16-voice probe walks occupied voices and currently publishes only the visible editor part at the existing 100 ms polling cadence. Moving the copied v1 probe publication to each audio block remains in the follow-up so playhead cadence reaches v1 parity. Timing, automatic measurements and the remaining native module-binding seams are still open; no release or v2-beats-v1 claim follows from these targeted gates.
+
+
+## Signed-law and editor follow-up (2026-10-08)
+
+The local branch merges published `9993db69` after the requested `0f62e503` merge. The signed native gain law exposed a user-layer clamp regression: negative normalized bases with nonzero offsets clamped to zero. `signed-red.log` records the failure; `172ac0f4` lets the existing binding law own its admitted bounds. `signed-green.log`: **4 passed**, including negative base/offset composition, signed lower bounds, live script movement and exact reset.
+
+`editor-followup-red2.log` records three failures: unedited native curve zero appeared exponential, saved offsets were lost on first load/reload, and changing the selected part could render two editor owners in one frame. The direct v1 editor adaptation now preserves exact native base values, retains the worker's sparse saved layer, skips rebinding unchanged edits, and permits one selected editor per frame. The visible part's fixed probe publishes each processed audio buffer, matching v1's cadence. `editor-followup-green.log`: **6 passed**, including these regressions and the existing interaction checks. Inspected actual UI: `~/.cache/kontakto-fix-settings-parity/screenshots/settings-editor-followup.png`.
+
+W9: measure the per-buffer 16-voice probe with the editor visible and closed; sparse-layer equality still scans saved edit entries on mix updates, but unchanged layers no longer rebind every engine binding. The native nonlinear filter/module-binding gaps listed above remain open.
+
+## Timing source checkpoint held by disk headroom (2026-10-08)
+
+`timing-red.log` records missing reported latency/queued host ownership and unreachable Auto-align controls. `timing-exclusion-red.log` records the incorrect zero-hold exclusion path. The direct v1 timing analysis/scheduler, native backend wiring and menu ports are prepared in source; their **green checks and compile gate remain pending**. Exclusion follows v1: hold the full host latency to cancel early MIDI delivery and preserve the library's original lateness. The fresh-loader measurement regression is added but has not run; the retained/cancelable measurement worker is still prepared outside the source tree.
+
+Latest Toolchains free space is 16,492,933,120 bytes, below the clarified **18 GiB** build threshold. No new heavy job started below that threshold. Only W4's own idle outputs were pruned. These local checkpoints are **not READY or published**: the required latest root `cargo test --profile ci --no-run` and timing validation await disk capacity. Resume steps are in `~/.cache/kontakto-fix-settings-parity/resume-editor-timing.md`. No release/install or v2-beats-v1 claim follows from the targeted tests.
+
+
+## Timing worker continuation (2026-10-08 UTC; validation held by quiet collection)
+
+Published integration `52438eb49b3d9daa45e88eeead48f610c9dfaa95` is merged into this branch at `8a0d3e03`. The merge retains the landed signal-graph tracing, core changes and every existing UI test. The prior signed-law/editor follow-up targeted receipts remain valid historical evidence; the updated branch still needs its root compile gate.
+
+`timing-resume-red.log` records the missing fresh-loader measurement connection (15-second timeout). Its real backend test passes: a queued exact host note owns its tuple immediately and starts after exactly 480 held frames. The menu regression initially focused an anonymous caption; the corrected fixture selects the actionable menu row and now also exercises earlier/later, measured reset, exclusion and remeasure.
+
+`timing-ownership-red.log` establishes two adapter bugs before correction: the first plan swap frees 50 allocations on audio, and CC123 clears physical key rows while retaining the exact host held flag. `timing-switch-owner-red.log` establishes a consumed CLAP keyswitch losing its exact NOTE_END owner. Source corrections share the initial worker-owned plan, release scheduler owners on channel stops and retain consumed switch identities for host retirement.
+
+The v1 `src/plugin.rs` alignment job delivery is now adapted into the loader: one retained worker per instance, fresh native loading and scripts, saved editor offsets before playback, source/snapshot/generation guards, cancellation and teardown joining, manual/exclusion preservation, and the copied 1500 ms latency settling. Worker-completed measurements round-trip through the existing part timing state. New fixtures cover stale results, settling, transport flush, replacement cancellation and NOTE_END refusal/retry. These new source paths have **not passed green validation yet**.
+
+A further source review identified that master tracing under alignment reads the final render segment's scratch buffer rather than the assembled output. The gain-ramp/assembled-buffer regression is added but has not run; the production trace correction awaits that failing-first result.
+
+W9's quiet request first blocked validation at the pre-job guard. After that request cleared, W5's new RSS collection request appeared while the wrapper was waiting; W4 terminated its waiting wrapper before cargo started. No W4 heavy job remains. Parser checks and `git diff --check` pass, but this is a local **HOLD**, not READY or a pushed implementation slice. W9: benchmark the scheduler only with its recorded on/off/transport settings, and keep the fresh measurement worker out of audio-thread comparisons; no CPU/RSS/native-host parity claim follows from these source changes.
+
+
+### Targeted timing result and next queued regressions
+
+`timing-worker-green.log` initially exposed a return-type typo in the settling branch; the corrected source then ran in `timing-worker-targeted.log`: **9 passed, 1 failed**. Fresh generated-WAV measurement, state round-trip, source/snapshot/generation rejection, latency settling, allocation-free initial plan swap, 480-frame hold, transport/replacement NOTE_END ownership, channel-stop ownership, consumed-switch ownership and the actionable timing menus all passed. The failed trace regression measured returned audio RMS **0.125** while the master trace reported **0.0**. The adapter correction now selects the assembled aligned output and retains the aggregate live-bus mask; its green check is pending.
+
+W13's live-host quiet request blocked the next wrapper command at the pre-job guard (exit 75). No job was queued during that window. Root no-run and push remain pending; this slice stays **HOLD**. Additional source-only regressions await their first run: upper-MPE on-screen keyboard bend reaching all members, and articulation routes surviving rack growth, source reload and later-slot installation. Their production corrections have not been applied before observing the failures.
+
+The fixed 16-voice editor publication limit matches v1 `src/engine/overrides.rs:218–259`, which also walks the first occupied voices. This is a retained bound, not a newly introduced settings-parity regression. A selected group's playhead can fall outside those 16 in both implementations; it is not part of this timing slice's READY claim. W9 should continue recording editor visibility when measuring probe overhead.
+
+
+## Green editor/timing handoff (2026-10-08, resumed alpha release)
+
+The three requested timing regressions are green: the first plan swap performs zero audio-thread allocations/frees; CC123 releases exact scheduler-owner held flags; and consumed CLAP keyswitches retain their exact NOTE_END owner. `timing-final-green2.log`: **10 passed** (fresh measurements, persistence, guards, settling, menu interactions, real holds, ownership and tracing). `timing-units-green.log`: **7 passed** (onset/transition analysis, exclusion policy, exact stacked ownership, MIDI2 payloads, stable articulation identities and velocity fallback). `timing-root-no-run.log`: root `cargo test --profile ci --no-run` passed.
+
+The master-trace fixture now combines both 64-frame trace records by frame count before comparing their RMS with the returned 128-frame aligned output. The adapter reads the assembled output and its aggregate live mask. The two unrun MPE/growth follow-up fixtures were parked in the worker cache and removed from this green source handoff; they are the next item, not release blockers. Earlier HOLD notes above are historical checkpoints. The user now authorizes normal alpha releases through W0; this handoff does not claim a new full-suite, timed CPU or native-host gate.
+
+
+## Rack-growth routing preservation (2026-10-08)
+
+`growth-route-red.log` reproduces a remapped trigger selecting saved default articulation 1 instead of articulation 0 after growing the rack and reloading the part. The direct v1 `src/plugin.rs:PreparedGrowth::preserve!(routers)` loop now preserves existing per-part routes in the larger worker-prepared vector before swapping storage. `growth-route-green.log`: **1 passed**, covering both native and script-owned switching, source reload, a later slot's new remap and zero allocations/frees during audio adoption. `growth-route-no-run.log`: root compile gate passed. W9: adoption swaps route storage without allocation or clone churn; no timed performance claim is made. Source IR and authored articulation identity stay unchanged.
+
+## Upper-MPE keyboard manager routing (2026-10-08)
+
+`upper-mpe-keyboard-red.log` establishes that a keyboard bend addressed to channel 1 misses the upper zone's manager and fails to reach held member notes. The v1 `src/engine/mod.rs:service_channel` selection is ported to direct part keyboard input using the loaded MIDI adapter's existing manager. MIDI1 and MIDI2 channel-voice input use that manager; exact host-note tuples and external port routing retain their identities. The adapter exposes its existing zone manager through a five-line getter, without another MPE model.
+
+`upper-mpe-keyboard-green.log`: **2 passed**, including both keyboard bend formats reaching two upper-zone members and an external member bend remaining isolated. `upper-mpe-keyboard-no-run.log`: root `cargo test --profile ci --no-run` passed. This is functional routing evidence; no timed CPU or native-host parity gate is claimed.
+
+## Sound-editor probe lifetime (2026-10-08)
+
+`editor-probe-close-red.log` establishes that closing the actual editor leaves `editor_watch=0`, so the audio thread continues publishing the closed Sound editor's taps. The v1 `src/ui/mod.rs` visible-only probe policy is extended to the existing close/drop hook: clear the owner with the same sentinel used when no Sound view is drawn. `editor-probe-close-green.log`: **1 passed**, exercising close, drop without close and a subsequent visible frame restoring ownership. `editor-probe-close-no-run.log`: required root compile gate passed. W9: closed-editor measurements must use the cleared owner; this functional test does not quantify CPU savings.
+
+## Global host Attack, Release and Tone (2026-10-08)
+
+W13's 84-row source inventory at `765c7769:docs/audit-2026-10-08/w13-settings-parity.md` exposed these three missing host controls. The declarations and fallback-default assignment are ported directly from `0cb7a8a0:src/plugin.rs:317–329,3683–3685` and `src/engine/mod.rs:228–233,1453–1464`, adapted to v2's existing envelope and shared DSP. Volume remains 0xe0698f; all 2,049 generic slot IDs remain 0x4b000000 through 0x4b000800. The host now exposes 2,053 parameters. Parameter values use the existing host state collection/restore path; source IR stays immutable.
+
+Attack and Release affect new fallback voices only. Authored AHDSR, FLEX and routed amplitude envelopes exclude those defaults. Host automation reaches the actual plugin process at the supplied sample offsets. Tone is a part/output-stage control, separate from the legacy per-voice Tone that W15 preserves. It uses the existing shared OnePoleLowPass kernel without changing that kernel. At 20 kHz the output is exactly dry and each stereo history tracks its last sample before enable. Each part and direct output pair has separate history.
+
+Failing-first evidence in `~/.cache/kontakto-fix-settings-parity/`: `global-host-params-red.log` has two metadata/count failures; `global-host-audio-red.log` has two actual-audio failures before backend wiring. `global-host-plugin-green.log`: **4 passed**, including real plugin host events and zero audio-thread allocations/frees. `global-host-count-green.log`: **2 passed**, including all generic IDs and state round-trip. `global-host-core-green2.log`: **2 passed**, covering authored-envelope exclusion, immutable IR, exact dry bypass, enable seeding, stereo histories and invalid input. Metadata coverage overlaps between the plugin and count receipts. `global-host-no-run.log`: root `cargo test --profile ci --no-run` passed. The shared f64 one-pole differs from the copied v1 f32 equation by at most **1.1920929e-7** in the synthetic stereo fixture; this is not a bit-exact claim.
+
+Known limitation, authorized for this slice by the coordinator/W15: Tone runs after native FX, before part faders/rack routing. v1 runs it before instrument inserts. A correct pre-FX port requires a cross-format IR input-bus marker: Kontakt's actual instrument-insert entry and UVI's actual program-output entry, which can follow auxiliary buses and is not necessarily bus 0. Direct-output paths also need provenance so a filtered descendant is not filtered twice. No CLAP/VST3 binary-host, real-library or timed performance claim follows from these functional tests. W9: record fallback times and Tone cutoff in performance cells; dry Tone only updates fixed histories, and wet Tone uses the shared preallocated filter cache. Fresh timing workers still use the existing source-default envelope outside the plugin; matching their default fallback to the host is a separate follow-up.
+
+NEXT: cross-format pre-insert Tone marker and direct-output coverage; preserve the independent legacy per-voice control.

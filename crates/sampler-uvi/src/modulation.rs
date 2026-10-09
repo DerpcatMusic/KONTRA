@@ -191,6 +191,8 @@ fn smoothable(retrigger: bool, starts_at_zero: bool) -> Result<(), &'static str>
 
 impl Translation {
     fn gap(&mut self, connection: Node, gap: Gap) {
+        #[cfg(feature="scan")]
+        self.dropped_connections.insert(connection.id());
         let what = format!(
             "{} -> {}",
             connection.attribute("Source").unwrap_or_default(),

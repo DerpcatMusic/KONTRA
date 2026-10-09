@@ -1,0 +1,126 @@
+# W6 render port at 52438eb4
+
+Base: `52438eb49b3d9daa45e88eeead48f610c9dfaa95`. Branch: `v2/w6-cpu-52438`.
+Receipt directory: `~/.cache/kontakto-w6/cpu-52438/`.
+
+## Stage localization
+
+Six GDB runs use the existing cpu_audit schedule at 48 kHz / 64 frames on the
+same gate cells: Una Corda Cotton, ANALOG STRINGS and Areia Full Ensemble.
+V1 is the frozen `cpu-audit-v1`, SHA256 `b9998ca2ce2f2ed4f9f88bbfb11c5e884fa162a87cdf89f26ece6f1248fdc6ab`.
+V2 is exact base source, symbolized corpus/ThinLTO (no default features;
+clap,library-access), SHA256 `d90996bf914827be006cb42d65d98d028566e467ad5a1d88c7947accf4aa14da`.
+Gate timing instead uses ci/no-LTO/default features; these are diagnostic
+profiles, not acceptance timings. V1 integrity checks passed. No perf or system
+settings changed. Sampling records named frames and source locations, no values,
+registers, sample payloads or memory dumps.
+
+Each sample stops the process during the four-second sequence, reads the main
+audio thread's stack, then continues. Sleeping samples are excluded; attribution uses the
+first project source frame, including inline frames. Samples cover the whole
+sequence, not only steady notes. Counts are approximate stage localization,
+not a decomposition of p50/p99 or cycle-weighted CPU. Low counts on Cotton and
+Analog preclude fine percentage conclusions. Debugger timings are unscored.
+
+| Exclusive bucket | Cotton v1/v2 | Analog v1/v2 | Areia v1/v2 |
+| --- | ---: | ---: | ---: |
+| Voice loop/transport | 1 / 6 | 4 / 13 | 6 / 37 |
+| Resampler | 0 / 2 | 0 / 2 | 0 / 61 |
+| Envelopes/modulation | 1 / 1 | 1 / 4 | 45 / 34 |
+| Filters | 0 / 0 | 6 / 0 | 0 / 0 |
+| FX | 0 / 0 | 4 / 6 | 2 / 1 |
+| Mixing | 0 / 1 | 0 / 2 | 0 / 51 |
+| Streaming | 0 / 5 | 0 / 5 | 2 / 81 |
+| KSP | 0 / 0 | 10 / 0 | 1 / 0 |
+| Event dispatch | 0 / 0 | 0 / 0 | 0 / 0 |
+| Active samples | 2 / 15 | 25 / 32 | 56 / 265 |
+
+Zeros mean no sampled IP in that bucket, not zero cost. The exact raw stacks,
+source locations, logs and classification are in the receipt directory.
+
+Areia localizes v2's bulk cost to streaming (31%), resampling (23%) and mixing
+(19%). W9 retains streaming ownership. The first DSP target is the block cubic
+path from `0cb7a8a0:src/engine/voice.rs::mix_avx2`.
+
+## Port and preservation boundary
+
+Copy v1's tap-column staging and Catmull-Rom polynomial into a separate four-frame
+kernel, adapting its fixed-point/f32 phases to v2's full f64 phase and coefficient
+law. Wider CPU dispatch uses the existing sampler-simd mechanism. V2's sequential
+fractional cursor recurrence, f32 sample conversion, envelope advancement,
+nonfinite guards and multiplication/addition order are preserved. Short tails,
+seams, reverse traversal, high quality and downsampling keep their scalar paths.
+No cache, demand, streaming, filter/FX trait or mod-evaluation API changes.
+
+Targeted checks compare the new columns with the scalar kernel and compare
+complete output/cursor/envelope state through all tail sizes, fractional steps
+and curved envelope transitions. The offline witness renders the cpu_audit note
+schedule to float WAVs for an A/B comparison; those WAVs must be deleted after
+comparison, with only hashes and numeric errors retained.
+
+Validation: both optimized bit-exact tests pass, along with 44 source,
+resampling and paged-render regression tests. Root `cargo test --no-run` passes.
+Matching scalar/cubic cpu_audit and WAV witnesses use ci/default features, the
+same configuration as the gate. The scalar witness compiles the new branch out;
+all other source and build settings match the candidate. Exact binary hashes
+are in `cubic-BUILD.json` in the receipt directory.
+
+Signal witness: Cotton, Analog Strings and Areia each produced identical scalar,
+scalar-repeat and cubic PCM hashes at block 64. All 384,000 float samples per
+cell match exactly; max absolute and RMS errors are zero. The comparison
+receipts are `wav/<item>/comparison.json`; all generated WAVs were deleted.
+
+Status: targeted correctness checks are green and the stack is pushed for alpha
+integration under the coordinator's resumed release policy. Quiet CPU acceptance
+remains UNKNOWN: no timing result is claimed. Acceptance must use unprofiled
+matching binaries against frozen v1 in a quiet A/B. W0 owns release and install.
+
+## Follow-up: unchanged pitch ratio
+
+Port `0cb7a8a0:src/engine/voice.rs::Voice::plan`'s `(pitch, ratio)` cache into
+private v2 Voice storage. Cache the existing exact `(from.pitch + to.pitch) / 24`
+exponent and its `exp2`, recomputing whenever that exponent changes. Expression
+ratio and base step still multiply on every preparation; source and control
+clocks still advance. Each voice onset resets the cache with a NaN key.
+No public interface or kernel-facing API changes. The new storage is 16 bytes
+per reserved voice; acceptance must include its CPU/memory tradeoff.
+
+Twenty-three envelope, expression and voice-modulation regression tests pass
+(one timing benchmark ignored). A separate no-allocation test compares changing
+and held CC pitch with independently applied note expression, bit-for-bit across
+transition cells; it also passes. Root no-run passes after the test addition. Matching ci pitch
+CPU/WAV binaries are recorded separately in `pitch-BUILD.json`; earlier scalar
+and cubic binaries remain frozen. Cotton, Analog Strings and Areia pitch-cache PCM hashes all match the original
+scalar baseline exactly (zero sample error); generated WAVs were deleted.
+Quiet CPU acceptance remains pending.
+
+## Follow-up: settled modulation results
+
+Port the settled-result reuse in
+`0cb7a8a0:src/engine/voice.rs::Voice::plan` and its convergence check in
+`src/engine/params.rs::Mods::modulate` into v2's existing flat source values.
+V1 invalidates with a global input stamp; v2 compares the exact raw source
+bits before repeating route transforms and output conversions. Only programs
+whose sources have no clocks and whose routes have zero lag qualify. Changes
+to controllers, pressure, timbre, bend and script values still reevaluate.
+Every voice onset forces evaluation, including reuse with another program.
+
+Age and control-grid clocks advance on cache hits. Addressed processor values
+copy to their previous endpoints before returning, so a held filter does not
+repeat the prior transition. There is no new voice storage or allocation and
+no public or kernel-facing API change. The targeted fixture covers changed and
+held cutoff, then reuses a voice with the same input and a different route.
+
+Validation: 22 targeted unit, voice-modulation and expression checks pass
+(one timing benchmark ignored), and root locked no-run passes. Matching ci/default
+feature binaries are recorded in `settled-BUILD.json`. Cotton, Analog Strings
+and Areia each match the original scalar PCM hash bit-for-bit: 384,000 samples
+per cell, zero unequal samples and zero max/RMS error. Receipts are
+`settled-wav/<item>/comparison.json`; all generated WAVs were deleted.
+No CPU benefit is claimed.
+The original stage profile and all witnesses above predate W15's prepared-filter
+registry. Quiet CPU acceptance must include that registry and its additional
+native-address scratch work in the combined stack, rather than score this old
+base in isolation. Current quiet order is W13 then W9; W6 has no request.
+
+NEXT: combined-stack quiet CPU including W15 registry after W13 and W9.
