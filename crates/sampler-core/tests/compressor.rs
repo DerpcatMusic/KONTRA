@@ -40,19 +40,23 @@ fn source() -> Vec<[f32; 2]> {
 
 fn settings(link: bool) -> CompressorSettings {
     CompressorSettings {
-        threshold_db: -20.,
-        ratio: 4.,
-        attack_seconds: 0.0005,
-        release_seconds: 0.002,
+        threshold_db: Parameter::Constant(-20.),
+        ratio: Parameter::Constant(4.),
+        attack_seconds: Parameter::Constant(0.0005),
+        release_seconds: Parameter::Constant(0.002),
         makeup: 1.5,
         link,
     }
 }
 
 fn reference(input: &[[f32; 2]], s: CompressorSettings) -> Vec<[f64; 2]> {
+    let [threshold, ratio, attack, release] =
+        [s.threshold_db, s.ratio, s.attack_seconds, s.release_seconds].map(|p| {
+            let Parameter::Constant(v) = p else { panic!("reference constants"); }; v
+        });
     let (a, r) = (
-        (-1. / (s.attack_seconds * f64::from(RATE))).exp(),
-        (-1. / (s.release_seconds * f64::from(RATE))).exp(),
+        (-1. / (attack * f64::from(RATE))).exp(),
+        (-1. / (release * f64::from(RATE))).exp(),
     );
     let mut gr = [0f64; 2];
     input
@@ -68,7 +72,7 @@ fn reference(input: &[[f32; 2]], s: CompressorSettings) -> Vec<[f64; 2]> {
             for c in 0..2 {
                 let c_in = if s.link { 0 } else { c };
                 let level = 20. * det[c_in].max(1e-300).log10();
-                let target = ((level - s.threshold_db) * (1. - 1. / s.ratio)).max(0.);
+                let target = ((level - threshold) * (1. - 1. / ratio)).max(0.);
                 let k = if target > gr[c_in] { a } else { r };
                 if c == c_in {
                     gr[c] = target + k * (gr[c] - target);
@@ -162,6 +166,84 @@ fn voice_and_bus_compressors_follow_the_recurrence_across_block_sizes() {
                 )
                 .unwrap();
             close(&run(bus, block), &expected);
+        }
+    }
+}
+
+#[test]
+fn invalid_compressor_control_domains_are_rejected_before_rendering() {
+    for (field, low, high) in [(0, 0., 7000.), (1, 0.5, 4.), (2, -0.01, 1.), (3, 0., -0.01)] {
+        let mut s = settings(true);
+        let parameter = Parameter::Control(ControlRange {
+            control: ControlId(1),
+            low,
+            high,
+            ramp_frames: 0,
+        });
+        match field {
+            0 => s.threshold_db = parameter,
+            1 => s.ratio = parameter,
+            2 => s.attack_seconds = parameter,
+            _ => s.release_seconds = parameter,
+        }
+        let result = VoiceChain::new(vec![Processor::Compressor(s)], vec![], 0);
+        assert!(matches!(result, Err(Error::InvalidInput)), "field {field}");
+    }
+}
+
+#[test]
+fn held_compressor_controls_preserve_the_existing_recurrence() {
+    for link in [true, false] {
+        let original = settings(link);
+        let expected = reference(&source(), original);
+        let mut controlled = original;
+        let defaults = [
+            original.threshold_db,
+            original.ratio,
+            original.attack_seconds,
+            original.release_seconds,
+        ];
+        let ranges = [(-60., 0.), (1., 20.), (0., 1.), (0., 5.)];
+        let definitions = defaults
+            .into_iter()
+            .zip(ranges)
+            .enumerate()
+            .map(|(n, (p, (min, max)))| {
+                let Parameter::Constant(default) = p else {
+                    unreachable!()
+                };
+                ControlDefinition {
+                    id: ControlId(n as u128 + 1),
+                    domain: ControlDomain::Real { min, max },
+                    default: ControlValue::Real(default),
+                }
+            })
+            .collect::<Vec<_>>();
+        let [threshold, ratio, attack, release] = std::array::from_fn(|n| {
+            Parameter::Control(ControlRange {
+                control: definitions[n].id,
+                low: ranges[n].0,
+                high: ranges[n].1,
+                ramp_frames: 480,
+            })
+        });
+        controlled.threshold_db = threshold;
+        controlled.ratio = ratio;
+        controlled.attack_seconds = attack;
+        controlled.release_seconds = release;
+        for block in [1, 7, 64, 129, 300] {
+            let prepared = plan()
+                .with_controls(definitions.clone())
+                .unwrap()
+                .with_voice_chains(
+                    vec![
+                        VoiceChain::new(vec![Processor::Compressor(controlled)], vec![], 0)
+                            .unwrap(),
+                    ],
+                    vec![Some(0)],
+                )
+                .unwrap();
+            close(&run(prepared, block), &expected);
         }
     }
 }

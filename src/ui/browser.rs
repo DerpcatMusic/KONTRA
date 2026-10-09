@@ -459,12 +459,6 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         if count > unsupported { message.push_str(&format!("{} UVI banks could not be read. ", count - unsupported)); }
         message.push_str("See Logs for the affected locations.");
         rows.insert(0, hint(&message).id("uvi-bank-problem"));
-        for (n, root) in settings.roots.iter().enumerate().rev() {
-            if let Some(problem) = catalog.bank_problem(Path::new(&root.path)) {
-                let message = format!("{}\n{problem}", root.path);
-                rows.insert(1, hint(&message).tip(message.clone()).id(format!("uvi-bank-root-{n}")));
-            }
-        }
     }
     if !bank_problem && arranged.is_empty() && scanning.is_none() {
         if presets.is_empty() {
@@ -475,6 +469,12 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         }
     } else if !bank_problem && sources.is_empty() {
         rows.push(hint("No library matches that filter."));
+    }
+    for (n, root) in settings.roots.iter().enumerate().rev() {
+        if let Some(problem) = catalog.root_problem(Path::new(&root.path)) {
+            let message = format!("{}\n{problem}", root.path);
+            rows.insert(usize::from(bank_problem), hint(&message).tip(message.clone()).id(format!("uvi-bank-root-{n}")));
+        }
     }
     let reveal = chosen_at.filter(|_| cx.state.browse.reveal_source > 0);
     let sources_id = format!("browser-sources-{uvi}");
@@ -1150,7 +1150,9 @@ fn split_divider(ui: &mut Ui, cx: &mut Cx) -> El {
 
 /// A search field with its glyph, placeholder and clear button. The arrows
 /// and Enter still work from inside it.
-fn search_field(ui: &mut Ui, id: &str, text: &mut String, placeholder: &str, name: &str) -> El {
+pub(super) fn search_field(ui: &mut Ui, id: &str, text: &mut String, placeholder: &str, name: &str) -> El {
+    let box_id = format!("{id}-box");
+    if ui.get(box_id.as_str()).clicked { ui.focus(id); }
     let field = text_input(ui, id, text);
     let empty = text.is_empty() && !ui.focused(id);
     let (clear, clear_el) = icon_button(ui, format!("{id}-clear"), Icon::Close, "Clear", false);
@@ -1158,12 +1160,11 @@ fn search_field(ui: &mut Ui, id: &str, text: &mut String, placeholder: &str, nam
         text.clear();
     }
     let mut layers = vec![
-        field
-            .el
+        // The text canvas uses fixed internal insets; reserve glyph space in its parent.
+        row![field.el.flex(1).min_w(0).h(CONTROL + TIGHT).named(name.to_owned())]
             .w(Len::Pct(100.))
             .h(CONTROL + TIGHT)
-            .pad(edges(0., CONTROL + TIGHT, 0., CONTROL))
-            .named(name.to_owned()),
+            .pad(edges(0., CONTROL + TIGHT, 0., CONTROL)),
         glyph(Icon::Search, TEXT + 2., secondary())
             .anchor(Align::Start, Align::Center)
             .offset(SPACE, 0.),
@@ -1178,7 +1179,7 @@ fn search_field(ui: &mut Ui, id: &str, text: &mut String, placeholder: &str, nam
     if !text.is_empty() {
         layers.push(clear_el.anchor(Align::End, Align::Center));
     }
-    stack(layers).h(CONTROL + TIGHT).shrink(0)
+    stack(layers).h(CONTROL + TIGHT).fill(Role::Field).shrink(0).id(box_id)
 }
 
 /// The keys on the list: Up and Down (and the pages, Home and End) move the

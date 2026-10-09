@@ -59,6 +59,13 @@ with tempfile.TemporaryDirectory() as tmp:
         observed = contention.snapshot()
         assert contention.status(observed) == 'QUIET'
         assert observed['processes'][-1]['waiting'] and observed['units'][0]['waiting']
+        # A normal systemd shell/Python runner waits above its heavy wrapper.
+        parent = root / '29'; parent.mkdir()
+        parent.joinpath('stat').write_text('29 (fixture) S 1')
+        parent.joinpath('cmdline').write_bytes(b'python3\0runner.py')
+        parent.joinpath('cgroup').write_text('0::/kontakto-build.service\n')
+        proc.joinpath('stat').write_text('30 (fixture) S 29')
+        assert contention.status(contention.snapshot()) == 'QUIET'
         child = root / '31'; child.mkdir()
         child.joinpath('stat').write_text('31 (fixture) S 30')
         child.joinpath('cmdline').write_bytes(b'sleep\0' + b'5')
@@ -129,10 +136,17 @@ with tempfile.TemporaryDirectory() as tmp:
     assert result['axes']['beats-v1-every-metric'] == 'UNKNOWN'
     assert 'CONTENDED' in run.joinpath('summary.md').read_text()
 
+    # A rejected held-note plan is no valid silence observation.
+    for status, expected in [('invalid-note-plan', 'UNKNOWN'), ('audition-mismatch', 'UNKNOWN'), ('matched-note-plan', 'FAIL')]:
+        row.update(plays_note='silent', audition_status=status)
+        with folder.joinpath('results.tsv').open('w') as output:
+            writer = csv.DictWriter(output, row.keys(), delimiter='\t'); writer.writeheader(); writer.writerow(row)
+        assert gate.summarize(run)['axes']['DSP'] == expected, status
+
 import adapters
 with tempfile.TemporaryDirectory() as tmp:
     root = Path(tmp)
-    with patch.object(adapters, 'HEAVY', Path('/usr/bin/env')), patch.dict(os.environ, {'KONTRA_GATE_REQUIRE_QUIET': '0'}):
+    with patch.object(adapters, 'QUIET_REQUEST', root / 'quiet-request'), patch.object(adapters, 'HEAVY', Path('/usr/bin/env')), patch.dict(os.environ, {'KONTRA_GATE_REQUIRE_QUIET': '0'}):
         records, witness, _ = adapters.capture([sys.executable, '-c', 'print("{\\"block\\":64}")'], root, timed=True)
     assert records == [{'block': 64}] and witness['returncode'] == 0
     assert witness['contention'] in ['QUIET', 'CONTENDED', 'UNKNOWN']
@@ -146,7 +160,7 @@ with tempfile.TemporaryDirectory() as tmp:
         root.joinpath('activity.json').write_text(json.dumps({'status': 'WAITING' if waiting else 'QUIET'}))
         if not waiting: kwargs['stdout'].write(b'{"block":64}\n')
         return SimpleNamespace(returncode=75 if waiting else 0)
-    with patch.dict(os.environ, {'KONTRA_GATE_REQUIRE_QUIET': '1'}), patch.object(adapters, 'wait_for_quiet') as wait, patch.object(adapters.subprocess, 'run', side_effect=admitted):
+    with patch.object(adapters, 'QUIET_REQUEST', root / 'quiet-request'), patch.dict(os.environ, {'KONTRA_GATE_REQUIRE_QUIET': '1'}), patch.object(adapters, 'wait_for_quiet') as wait, patch.object(adapters.subprocess, 'run', side_effect=admitted):
         records, witness, _ = adapters.capture(['fixture-worker'], root, timed=True)
     assert records == [{'block': 64}] and witness['contention'] == 'QUIET' and wait.call_count == 2
     assert len(calls) == 2 and Path(calls[0][4]).name == 'contention.py'

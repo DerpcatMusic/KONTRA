@@ -21,10 +21,11 @@ pub struct BParamArrayBParFX8 {
 }
 
 impl BParamArrayBParFX8 {
+    // ponytail: inline arrays lack serializer context; v11 slot-word framing needs a bounded chunk.
     pub fn read<R: ReadBytesExt>(mut reader: R, num_items: u32) -> Result<Self, Error> {
         let is_structured_data = reader.read_bool()?;
         let version = reader.read_u16_le()?;
-        if is_structured_data || !matches!(version, 0x10 | 0x12 | 0x13) {
+        if is_structured_data || !matches!(version, 0x10..=0x13) {
             return Err(NIFileError::Generic(format!(
                 "Unsupported BParamArrayBParFX8 v{version:x} (structured: {is_structured_data})"
             )));
@@ -37,7 +38,8 @@ impl BParamArrayBParFX8 {
         }
         let mut items = Vec::with_capacity(num_items as usize);
         for _ in 0..num_items {
-            items.push(match reader.read_u8()? {
+            let flag = reader.read_u8()?;
+            items.push(match flag {
                 0 => None,
                 1 => Some(Chunk::read(&mut reader)?),
                 flag => {
@@ -79,6 +81,13 @@ impl std::convert::TryFrom<&Chunk> for BParamArrayBParFX8 {
                 got: chunk.id,
             }
             .into());
+        }
+        if chunk.data.get(..3) == Some(&[0, 0x11, 0]) {
+            let object = super::super::StructuredObject::try_from(chunk)?;
+            let occupied = super::modulation::read_param_slots(&object, 8)?;
+            let mut items: Vec<_> = (0..8).map(|_| None).collect();
+            for (slot, child) in occupied { items[slot] = Some(child); }
+            return Ok(Self { version: object.version, items });
         }
         let reader = Cursor::new(&chunk.data);
         Self::read(reader, 8)

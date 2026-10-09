@@ -1742,3 +1742,111 @@ fn registered_peak_frequency_and_width_use_normalized_knob_domains() {
         }
     }
 }
+
+#[test]
+fn compressor_descriptors_have_live_typed_physical_lanes() {
+    use sampler_core::{ParameterRole, ParameterUnit};
+    let mut i = instrument();
+    i.sequences.clear();
+    i.zones = vec![ir::Zone {
+        chain: Some(ir::ChainRef(0)),
+        pitch: ir::KeyTracking::Fixed,
+        velocity: ir::VelocityResponse::None,
+        ..ir::Zone::new(ir::AssetRef(0))
+    }];
+    i.assets.truncate(1);
+    i.chains = vec![ir::Chain {
+        scope: ir::Scope::Voice,
+        pre_amplitude: vec![],
+        post_amplitude: vec![ir::Processor::Compressor(ir::Compressor {
+            threshold_db: -12.,
+            ratio: 4.,
+            attack: ir::Time::Seconds(0.01),
+            release: ir::Time::Seconds(0.1),
+            makeup: ir::Gain::Linear(1.),
+            link: true,
+        })],
+    }];
+    i.register_compressor_controls();
+    i.register_compressor_controls(); // Re-registration preserves identities.
+    assert_eq!(i.controls.len(), 4);
+    let plan = lower(&i, 48000, vec![constant(0.8)], no_behaviors).unwrap();
+    let lanes: Vec<_> = plan.parameter_registry().descriptors().cloned().collect();
+    assert_eq!(lanes.len(), 4);
+    for (lane, role, unit, default) in [
+        (
+            &lanes[0],
+            ParameterRole::Threshold,
+            ParameterUnit::Decibels,
+            -12.,
+        ),
+        (&lanes[1], ParameterRole::Ratio, ParameterUnit::Linear, 4.),
+        (
+            &lanes[2],
+            ParameterRole::Attack,
+            ParameterUnit::Seconds,
+            0.01,
+        ),
+        (
+            &lanes[3],
+            ParameterRole::Release,
+            ParameterUnit::Seconds,
+            0.1,
+        ),
+    ] {
+        assert_eq!(lane.role, role);
+        assert_eq!(lane.unit, unit);
+        assert_eq!(lane.default, default);
+    }
+    // Each physical edit changes the envelope, including release after a quiet section.
+    let render = |edited: Option<usize>| {
+        let pcm = Pcm::new(
+            48000,
+            (0..24000)
+                .map(|n| [if n < 12000 { 0.8 } else { 0.08 }; 2])
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        )
+        .unwrap();
+        let plan = lower(&i, 48000, vec![pcm], no_behaviors).unwrap();
+        let mut rt = Runtime::new(plan, limits()).unwrap();
+        let mut out = vec![[0.; 2]; 24000];
+        support::without_heap(|| {
+            rt.trigger(input(60), 60, 1.).unwrap();
+            for block in out[..1024].chunks_mut(37) {
+                rt.render(block).unwrap();
+            }
+            if let Some(n) = edited {
+                rt.edit_controls(
+                    rt.active_plan(),
+                    None,
+                    &[sampler_core::ControlWrite {
+                        id: lanes[n].control,
+                        value: sampler_core::ControlValue::Real([0., 1., 0.2, 1.][n]),
+                    }],
+                )
+                .unwrap();
+            }
+            for block in out[1024..].chunks_mut(37) {
+                rt.render(block).unwrap();
+            }
+        });
+        assert_eq!(rt.stats().nonfinite_frames, 0);
+        out
+    };
+    let baseline = render(None);
+    for n in 0..4 {
+        let edited = render(Some(n));
+        assert_eq!(baseline[..1024], edited[..1024]);
+        let difference: f64 = baseline
+            .iter()
+            .flatten()
+            .zip(edited.iter().flatten())
+            .map(|(a, b)| f64::from(a - b).powi(2))
+            .sum();
+        assert!(
+            difference > 1e-3,
+            "compressor lane {n} is inert: {difference}"
+        );
+    }
+}

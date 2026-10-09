@@ -999,22 +999,7 @@ pub(crate) fn chain_with(
             out.notes.push((
                 fx.slot,
                 "effect".into(),
-                format!(
-                    "{name} v{:#x} {params:?}{}",
-                    fx.version,
-                    // An unparsed payload: keep its head so a survey can group the layouts.
-                    if params.is_none() {
-                        let head: String = fx
-                            .public
-                            .iter()
-                            .take(40)
-                            .map(|b| format!("{b:02x}"))
-                            .collect();
-                        format!(" len {} head {head}", fx.public.len())
-                    } else {
-                        String::new()
-                    }
-                ),
+                format!("{name} v{:#x} len {}", fx.version, fx.public.len()),
                 sampler_ir::Reason::NotModeled,
             ));
         }
@@ -1716,6 +1701,25 @@ mod tests {
             output_set: true,
             public,
         }
+    }
+
+    #[test]
+    fn unsupported_effect_diagnostics_group_without_public_payload_bytes() {
+        let mut values = Vec::new();
+        for byte in [0xa1, 0xb2] {
+            let mut authored = slot(0xfe, vec![byte; 64], 1.0);
+            authored.slot = 6;
+            let out = chain(&[authored], Scope::Voice);
+            let (physical_slot, feature, value, reason) = out.notes.iter()
+                .find(|(_, feature, _, _)| feature == "effect").expect("missing effect diagnostic");
+            assert_eq!((*physical_slot, feature.as_str(), *reason),
+                (6, "effect", sampler_ir::Reason::NotModeled));
+            assert!(value.contains("unknown effect 0xfe") && value.contains("v0x50"));
+            assert!(value.contains("len 64"));
+            assert!(!value.contains("head") && !value.contains(&format!("{byte:02x}")));
+            values.push(value.clone());
+        }
+        assert_eq!(values[0], values[1], "diagnostic groups must not depend on payload content");
     }
 
     #[test]

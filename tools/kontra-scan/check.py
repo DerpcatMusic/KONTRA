@@ -89,6 +89,10 @@ with tempfile.TemporaryDirectory() as tmp:
     row=scanner.extra_columns({'path':item,'ui':'no-ui','programs':[{'source':'uvi','program':0,'pick':[62,64],'pick_source':'shared-note-plan'}]})
     assert json.loads(row['pick_source'])=={'0':'native_declared'}
     assert row['programs'][0]['adapter_pick_source']=='shared-note-plan'
+    scanner.atomic(cache/(scanner.signature(item,'v2')+'.json'),{'programs':[{'program':0,'pick':[62,64],'held_key':63,'pick_source':'native_declared'}]})
+    different_input=scanner.extra_columns({'path':item,'ui':'no-ui','programs':[{'source':'uvi','program':0,'pick':[62,64],'pick_source':'shared-note-plan'}]})
+    assert json.loads(different_input['pick_source'])=={'0':'unknown'}
+
     row=scanner.extra_columns({'path':item,'ui':'no-ui','programs':[{'source':'uvi','program':0,'pick':[40,64],'pick_source':'shared-note-plan'}]})
     assert json.loads(row['pick_source'])=={'0':'unknown'} # unequal notes never inherit native-valid provenance
 timing=scanner.extra_columns({'loads':'yes','ui':'original-ok','first_audio_ms':12.5,'cache_state':'cold','programs':[{'source':'kontakt','views':[{'renders':[{'ok':True,'ui_first_frame_ms':20.},{'ok':True,'ui_first_frame_ms':18.}]}]}]})
@@ -152,3 +156,38 @@ try:
 finally:
     if old_seed is None: os.environ.pop('KONTRA_UVI_AUDIT_SEED',None)
     else: os.environ['KONTRA_UVI_AUDIT_SEED']=old_seed
+
+# A worker that ignores a required held input cannot certify the frozen plan.
+with tempfile.TemporaryDirectory() as tmp:
+    root=Path(tmp); previous_root=scanner.NOTE_ROOT; scanner.NOTE_ROOT=root/'notes'; scanner.NOTE_ROOT.mkdir()
+    item=str(root/'performance.nki'); Path(item).touch()
+    scanner.atomic(scanner.note_path(item),{'programs':{'0':{'key':60,'velocity':64,'held_key':61}},'policy':'native-held-interval'})
+    engine=root/'engine'
+    try:
+        for actual in [None,62,61]:
+            result={'loads':'yes','programs':[{'program':0,'pick':[60,64],'held_key':actual}]}
+            engine.write_text('#!/usr/bin/env python3\nimport json\nprint('+repr(json.dumps(result))+')\n')
+            engine.chmod(0o755)
+            observed=scanner.probe(engine,item,root/('work-'+str(actual)),2,False)
+            assert observed['audition_status']==('matched-note-plan' if actual==61 else 'audition-mismatch')
+            assert json.loads(scanner.note_path(item).read_text())['programs']['0']['held_key']==61
+    finally:
+        scanner.NOTE_ROOT=previous_root
+print('PASS: required held input is part of plan identity')
+
+# Rejected held-note plans must be retried instead of reusing invalid receipts.
+from unittest.mock import patch
+with tempfile.TemporaryDirectory() as tmp:
+    root=Path(tmp); item=str(root/'performance.nki'); Path(item).touch()
+    engine=root/'engine'; engine.write_text('synthetic worker identity')
+    manifest=root/'items.tsv'; manifest.write_text('kontakt\t'+item+'\n')
+    out=root/'out'; (out/'cache').mkdir(parents=True)
+    revision=scanner.hashlib.sha256(engine.read_bytes()).hexdigest()
+    cached=out/'cache'/(scanner.signature(item,revision)+'.json')
+    argv=[str(driver),'--engine',str(engine),'--list',str(manifest),'--count','1','--out',str(out)]
+    for status, calls in [('invalid-note-plan',1),('audition-mismatch',1),('matched-note-plan',0)]:
+        scanner.atomic(cached,{'audition_status':status})
+        with patch.object(sys,'argv',argv), patch.object(scanner,'probe',return_value={'loads':'yes','ui':'original-ok','programs':[]}) as probe, patch.object(scanner,'export',return_value=1):
+            assert scanner.main()==0
+            assert probe.call_count==calls, status
+print('PASS: invalid held-note plans are retried')
