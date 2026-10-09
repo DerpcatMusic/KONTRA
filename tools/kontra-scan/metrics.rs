@@ -127,6 +127,20 @@ pub fn planned_keyswitch(program: u32) -> Option<Option<u8>> {
     Some(if key.is_null() { None } else { Some(u8::try_from(key.as_u64()?).ok()?.min(127)) })
 }
 
+/// Explicit held input from the native-intent audition plan; never guess a neighbor.
+pub fn planned_held_key(program: u32) -> Result<Option<u8>, &'static str> {
+    let Some(path) = std::env::var_os("KONTRA_SCAN_NOTE_PLAN") else { return Ok(None) };
+    let bytes = std::fs::read(path).map_err(|_| "invalid-note-plan")?;
+    let value: Value = serde_json::from_slice(&bytes).map_err(|_| "invalid-note-plan")?;
+    held_key(&value["programs"][program.to_string()])
+}
+fn held_key(program: &Value) -> Result<Option<u8>, &'static str> {
+    match program.get("held_key") {
+        None | Some(Value::Null) => Ok(None),
+        Some(key) => key.as_u64().filter(|key| *key < 128).map(|key| Some(key as u8)).ok_or("invalid-held-key"),
+    }
+}
+
 pub fn background(rgba: &[u8], colour: Option<[u8; 4]>) -> Value {
     let n = rgba.len() / 4;
     let target = colour.unwrap_or_else(|| {
@@ -153,6 +167,17 @@ pub fn budget(raw: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn held_note_plan_rejects_malformed_midi_instead_of_clamping() {
+        use serde_json::json;
+        assert_eq!(super::held_key(&json!({})), Ok(None));
+        assert_eq!(super::held_key(&json!({"held_key":null})), Ok(None));
+        assert_eq!(super::held_key(&json!({"held_key":61})), Ok(Some(61)));
+        for key in [json!(-1),json!(128),json!(true),json!("61"),json!(61.5)] {
+            assert_eq!(super::held_key(&json!({"held_key":key})), Err("invalid-held-key"));
+        }
+    }
+
     #[test]
     fn scanner_metrics_skip_source_text_and_detect_uniform_render() {
         assert_eq!(super::fallback_note(&Default::default()), Some((60,64)));
