@@ -475,7 +475,7 @@ mod tests {
     fn product_cache_roundtrip_and_corruption_fallback() {
         let f = Fixture::new();
         let preset = f.0.join("fixture.nki");
-        std::fs::write(&preset, b"numeric fixture").unwrap();
+        std::fs::write(&preset, [0; 16]).unwrap();
         let dir = f.0.join("cache");
         let mut k = kontakt(&f.0);
         store_in(&dir, &preset, 0, &mut k, &[]);
@@ -500,7 +500,7 @@ mod tests {
     fn product_cache_restores_host_values_engine_state_and_invalidates_dependencies() {
         let f = Fixture::new();
         let preset = f.0.join("fixture.nki");
-        std::fs::write(&preset, b"numeric fixture").unwrap();
+        std::fs::write(&preset, [0; 16]).unwrap();
         let dir = f.0.join("cache");
         let source = "on init\ndeclare ui_knob $k(0,100,1)\nmake_persistent($k)\nread_persistent_var($k)\nset_engine_par($ENGINE_PAR_VOLUME,12345,-1,-1,-1)\nend on";
         let id = sampler_ksp::derived_control_id(0, "$k");
@@ -578,7 +578,7 @@ mod tests {
     fn impulse_cache_contains_only_recipe_and_reconstructs_identical_audio() {
         let f = Fixture::new();
         let preset = f.0.join("fixture.nki");
-        std::fs::write(&preset, b"fixture").unwrap();
+        std::fs::write(&preset, [0; 16]).unwrap();
         let dir = f.0.join("cache");
         let source = f.0.join("impulse.wav");
         let mut wav = b"RIFF\0\0\0\0WAVEfmt \x10\0\0\0".to_vec();
