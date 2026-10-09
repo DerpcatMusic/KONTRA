@@ -2371,6 +2371,10 @@ fn keyswitch_audit_installed_preset() {
     let mut core = V2Core::with_parts(1, 48000.);
     core.install(0, loaded.part.take());
     let ids = crate::sound::articulation::identities(&inst.articulations);
+    let out = Path::new(&output); std::fs::create_dir_all(out).unwrap();
+    let mut report=serde_json::json!({"path":path,"name":inst.name,"owner":format!("{:?}",inst.switching.owner),"articulations":inst.articulations.iter().map(|a|serde_json::json!({"name":a.name,"source":a.source,"keys":a.switch_keys,"switches":[]})).collect::<Vec<_>>(),"authored_keys":authored_keys,"authored_choices":authored_choices,"feedback_complete":ids.is_empty()});
+    std::fs::write(out.join("audit.json"),serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+    if ids.is_empty() {return;}
     let mut ui = Harness::new(&p, 1180., 780.);
     if !ids.is_empty() { ui.press("view-0-Articulations"); }
     let mut rows = Vec::new();
@@ -2388,8 +2392,8 @@ fn keyswitch_audit_installed_preset() {
         }
         rows.push(serde_json::json!({"name":a.name,"source":a.source,"keys":a.switch_keys,"default":a.default,"control":a.control.map(|c|format!("{c:032x}")),"switches":switches}));
     }
-    let out = Path::new(&output); std::fs::create_dir_all(out).unwrap();
-    std::fs::write(out.join("audit.json"), serde_json::to_vec_pretty(&serde_json::json!({"path":path,"name":inst.name,"owner":format!("{:?}",inst.switching.owner),"articulations":rows,"authored_keys":authored_keys,"authored_choices":authored_choices})).unwrap()).unwrap();
+    report["articulations"]=serde_json::json!(rows);report["feedback_complete"]=true.into();
+    std::fs::write(out.join("audit.json"), serde_json::to_vec_pretty(&report).unwrap()).unwrap();
     if !ids.is_empty() {
         moose::core::screenshot::save_png(&out.join("panel-1180.png"), &pixels(&ui.ui,1180,780),1180,780);
         ui.resize(Size::new(900.,640.)); ui.idle(3);
@@ -2416,6 +2420,7 @@ fn keyswitch_real_areia_rows_match_authored_names_and_live_selection() {
         assert_eq!(core.articulation(0),Some(n),"authored key {key} switches the actual runtime");
         p.shared.part(0).unwrap().articulation.store(n as u32,Ordering::Relaxed);h.idle(3);
         assert!(matches!(h.ui.scene().unwrap().surface(&format!("{}-name",super::inside::row_id(0,&ids[n]))).unwrap().semantics.as_ref().unwrap().role,A11y::Toggle {on:true}));
+        if n>0 { assert!(matches!(h.ui.scene().unwrap().surface(&format!("{}-name",super::inside::row_id(0,&ids[n-1]))).unwrap().semantics.as_ref().unwrap().role,A11y::Toggle {on:false}),"the previous row loses its highlight when the next key switches"); }
     }
     if let Some(output)=std::env::var_os("KONTRA_KEYSWITCH_SHOTS") {
         let key=inst.articulations[0].switch_keys[0];core.event(0,Event::midi1(0x90,key,100));core.render(16);core.event(0,Event::midi1(0x80,key,0));core.render(16);
@@ -2426,4 +2431,13 @@ fn keyswitch_real_areia_rows_match_authored_names_and_live_selection() {
             moose::core::screenshot::save_png(&out.join(format!("areia-selected-{w}.png")),&pixels(&h.ui,w,height),w as u32,height as u32);
         }
     }
+}
+
+#[test]
+fn keyswitch_real_analog_strings_does_not_invent_preset_browser_articulations() {
+    use crate::sound::{CoreLoader,LoadRequest,v2::V2Loader};
+    let path=Path::new("/mnt/MAIN_STORAGE/Libraries/Kontakt/ANALOG STRINGS/Instruments/ANALOG STRINGS.nki");
+    if !path.is_file() {eprintln!("SKIP: Analog Strings audit preset missing");return;}
+    let loaded=V2Loader.prepare(&LoadRequest {path:path.into(),sample_rate:48000.,..Default::default()},&mut |_|{},&||false).unwrap();
+    assert!(loaded.instrument.unwrap().articulations.is_empty(),"preset browser entries and zero-sized auxiliary controls must not become articulation rows");
 }
