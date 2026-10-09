@@ -1625,7 +1625,9 @@ impl V2Core {
                 }
             }
             #[cfg(test)]
-            if let (Some(t), Some(a)) = (audit_start, self.onset_audit.as_mut()) { a[0] += t.elapsed().as_nanos() as u64; }
+            if let (Some(t), Some(a)) = (audit_start, self.onset_audit.as_mut()) {
+                a[0] += t.elapsed().as_nanos() as u64;
+            }
             let pairs = |direct: u32| (0..BUSES).filter(move |pair| direct & 1 << pair != 0);
             for pair in pairs(part.direct) {
                 self.direct[pair][..n].fill([0.0; 2]);
@@ -1654,20 +1656,26 @@ impl V2Core {
                 }
             }
             #[cfg(test)]
-            if let (Some(t), Some(a)) = (audit_start, self.onset_audit.as_mut()) { a[1] += t.elapsed().as_nanos() as u64; }
+            if let (Some(t), Some(a)) = (audit_start, self.onset_audit.as_mut()) {
+                a[1] += t.elapsed().as_nanos() as u64;
+            }
             #[cfg(test)]
             let audit_start = self.onset_audit.map(|_| std::time::Instant::now());
             if let Some(horizon) = part.horizon {
                 // Pending pages play silent and count as underruns.
                 let readiness = part.runtime.service_streaming(horizon);
                 #[cfg(test)]
-                if let Some(a) = self.onset_audit.as_mut() { a[4] += u64::from(matches!(readiness, Ok(false))); }
+                if let Some(a) = self.onset_audit.as_mut() {
+                    a[4] += u64::from(matches!(readiness, Ok(false)));
+                }
                 if let Err(error) = readiness {
                     record_stream_error(&mut part.problems, error);
                 }
             }
             #[cfg(test)]
-            if let (Some(t), Some(a)) = (audit_start, self.onset_audit.as_mut()) { a[2] += t.elapsed().as_nanos() as u64; }
+            if let (Some(t), Some(a)) = (audit_start, self.onset_audit.as_mut()) {
+                a[2] += t.elapsed().as_nanos() as u64;
+            }
             let out = &mut self.scratch[..n];
             let mut outs: [&mut [Frame]; BUSES] = self.direct.each_mut().map(|d| &mut d[..n]);
             #[cfg(test)]
@@ -1680,8 +1688,14 @@ impl V2Core {
                 continue;
             }
             #[cfg(test)]
-            if let (Some(t), Some(a)) = (audit_start, self.onset_audit.as_mut()) { a[3] += t.elapsed().as_nanos() as u64; }
-            let cutoff = if part.runtime.has_input_tone() { 20_000. } else { self.performance.map_or(20_000., |p| p[2]) };
+            if let (Some(t), Some(a)) = (audit_start, self.onset_audit.as_mut()) {
+                a[3] += t.elapsed().as_nanos() as u64;
+            }
+            let cutoff = if part.runtime.has_input_tone() {
+                20_000.
+            } else {
+                self.performance.map_or(20_000., |p| p[2])
+            };
             let at = part.runtime.now().saturating_sub(n as u64);
             let _ = part
                 .tone
@@ -1824,8 +1838,13 @@ impl V2Core {
             }
         }
         #[cfg(test)]
-        if let (Some(t), Some(a)) = (audit_start, self.onset_audit.as_mut()) { a[5] += t.elapsed().as_nanos() as u64; }
-        Rendered { buses: &self.buses, live: self.written }
+        if let (Some(t), Some(a)) = (audit_start, self.onset_audit.as_mut()) {
+            a[5] += t.elapsed().as_nanos() as u64;
+        }
+        Rendered {
+            buses: &self.buses,
+            live: self.written,
+        }
     }
 
     /// Port v1 Align::release: stable original events, with their captured articulation.
