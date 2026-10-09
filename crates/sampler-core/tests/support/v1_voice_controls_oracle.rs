@@ -7,6 +7,10 @@ const MAX_STEP: f64 = 32.;
 const FIXED_ONE: f64 = (1u64 << 32) as f64;
 const SILENT: f32 = 1e-4;
 const VOICE_MODS: usize = 8;
+fn frequency(lfo: &PitchLfo, tempo: f32) -> f32 {
+    let tempo = if tempo.is_finite() && tempo >= 0.1 { tempo } else { 120. };
+    (tempo / (60. * lfo.note_value * lfo.count)).clamp(0.01, 210.)
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Stage {
     Attack,
@@ -956,7 +960,7 @@ mod lfo {
                     if self.offset == 0 || !self.initialized {
                         let mut point = 0.;
                         for lfo in lfos.iter().filter(|l| !l.bypassed) {
-                            let hz = f64::from(lfo.frequency(tempo));
+                            let hz = f64::from(frequency(lfo, tempo));
                             let phase = (f64::from(lfo.start_phase)
                                 + self.phase[lfo.slot as usize]
                                 + i as f64 * hz / f64::from(rate))
@@ -993,7 +997,7 @@ mod lfo {
                             let slot = usize::from(source.slot);
                             let phase = (f64::from(source.start_phase)
                                 + self.phase[slot]
-                                + i as f64 * f64::from(source.frequency(tempo)) / f64::from(rate))
+                                + i as f64 * f64::from(frequency(source, tempo)) / f64::from(rate))
                             .rem_euclid(1.);
                             // The admitted volume source has no fade. Its bipolar
                             // signal enters the native target before unipolar range
@@ -1032,7 +1036,7 @@ mod lfo {
             }
             for lfo in lfos.iter().filter(|l| !l.bypassed) {
                 let phase = &mut self.phase[lfo.slot as usize];
-                *phase = (*phase + f64::from(lfo.frequency(tempo)) * n as f64 / f64::from(rate))
+                *phase = (*phase + f64::from(frequency(lfo, tempo)) * n as f64 / f64::from(rate))
                     .rem_euclid(1.);
             }
             for lfo in volume_lfos.iter().filter(|l| !l.source.bypassed) {
@@ -1042,7 +1046,7 @@ mod lfo {
                 if !lfos.iter().any(|l| l.slot == source.slot && !l.bypassed) {
                     let phase = &mut self.phase[usize::from(source.slot)];
                     *phase = (*phase
-                        + f64::from(source.frequency(tempo)) * n as f64 / f64::from(rate))
+                        + f64::from(frequency(source, tempo)) * n as f64 / f64::from(rate))
                     .rem_euclid(1.);
                 }
             }
