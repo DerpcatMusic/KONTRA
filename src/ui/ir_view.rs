@@ -870,7 +870,6 @@ pub(super) fn widget_state(
                     h,
                     scale,
                 ),
-                // A slider about as tall as wide was drawn as a knob by its strip.
                 // Kontakt's stock knob: its name over the dial, the value under it.
                 None if matches!(wd.kind, Kind::Knob { .. }) => {
                     let value = match (&wd.kind, &wd.value_text) {
@@ -899,12 +898,6 @@ pub(super) fn widget_state(
                     }
                     col(parts).gap(0).align(Align::Center)
                 }
-                None if (0.75..=1.33).contains(&(w / h.max(1.))) => dial_face(
-                    unit(v),
-                    unit(range.min.max(0.).min(range.max)),
-                    lift,
-                    ui.focus_visible(&id),
-                ),
                 None => fader_face(unit(v), 0., None, vertical, lift, ui.focus_visible(&id)),
             }
             .cursor(if vertical {
