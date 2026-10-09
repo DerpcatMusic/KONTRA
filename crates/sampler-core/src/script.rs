@@ -152,7 +152,7 @@ impl Runtime {
         // Port v1 refresh_range's changed-value test into the shared writer.
         let changed = *target != value;
         *target = value;
-        if changed && super::ops::captures_cell(bank.captured_cells.as_deref(), cell) {
+        if bank.mark_captured_cell(cell, changed) {
             generation.script_revision = generation.script_revision.wrapping_add(1);
         }
         Ok(())
