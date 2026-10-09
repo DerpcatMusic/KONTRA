@@ -268,11 +268,7 @@ def main():
     manifest = dict(version=version, revision=SHA, workflow_run=os.environ["GITHUB_RUN_ID"], assets=assets, changelog=changelog)
     data = (json.dumps(manifest, indent=2) + "\n").encode()
     Path("dist/release-manifest.json").write_bytes(data)
-    Path("notes.md").write_text(f"""Automated **{version}** snapshot of [{SHA[:12]}](https://github.com/{REPO}/commit/{SHA}).
-Source tag: [`v{version}`](https://github.com/{REPO}/tree/v{version}).
-<!-- kontra-source-tag: v{version} -->
-
-{inline_changelog}
+    Path("notes.md").write_text(f"""{inline_changelog}
 
 Every download comes from this source commit. `release-manifest.json` records their sizes and SHA256 checksums; each Linux/Windows archive includes separate `clap-build-info.json`, `vst3-build-info.json` and standalone `build-info.json` with their actual feature sets.
 Experimental nightly snapshot, not a stable-quality release. GitHub marks it Latest solely to provide permanent download links.
