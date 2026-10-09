@@ -99,6 +99,8 @@ pub struct Instrument {
     /// Authored source modules and fields retained for format/DSP handoff.
     /// Includes bypassed modules and unmodeled fields. Lowering does not execute
     /// these records; executable semantics remain in processors/routes above.
+    // Source handoff records can contain opaque payloads; keep them in RAM only.
+    #[cfg_attr(feature = "cache", serde(skip))]
     pub source_parameters: Vec<SourceParameterRecord>,
     /// Source meaning this description does not carry. Lowering never reads it;
     /// it exists so a caller can show or reject what was not translated.
@@ -111,11 +113,13 @@ pub struct Instrument {
     pub native_start_mod_groups: Option<Vec<u32>>,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct NativeFamily {
     pub zones: Vec<NativeFamilyZone>,
     pub unknown: Option<&'static str>,
 }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct NativeFamilyZone {
     pub id: u32,
@@ -129,6 +133,7 @@ pub struct NativeFamilyZone {
     pub reverse: bool,
     pub loops: Vec<NativeFamilyLoop>,
 }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct NativeFamilyLoop {
     pub slot: usize,
@@ -142,6 +147,7 @@ pub struct NativeFamilyLoop {
 }
 
 /// One occupied native slot; addresses never compact around holes.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DspSlot {
     pub kind: DspSlotKind,
@@ -153,6 +159,7 @@ pub struct DspSlot {
     pub targets: Vec<DspTarget>,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DspTarget {
     pub ordinal: usize,
@@ -164,9 +171,11 @@ pub struct DspTarget {
     pub disposition: DspDisposition,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DspSlotKind { Fx, Filter, Mod }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DspDisposition {
     Implemented,
@@ -174,6 +183,7 @@ pub enum DspDisposition {
     Dropped(DspSlotReason),
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DspSlotReason {
     NotModeled,
