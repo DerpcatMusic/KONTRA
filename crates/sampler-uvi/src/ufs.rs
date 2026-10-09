@@ -35,7 +35,7 @@ pub struct Header {
 pub(crate) struct NeedsMetadataNamespace;
 impl std::fmt::Display for NeedsMetadataNamespace {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Encoded UFS names or metadata-protected members require a reader metadata namespace")
+        f.write_str("Encoded UFS names or metadata-protected members require a metadata namespace")
     }
 }
 impl std::error::Error for NeedsMetadataNamespace {}
@@ -594,11 +594,10 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "requires the user's local UFS corpus and pinned reader image"]
+    #[ignore = "requires the local UFS numeric corpus"]
     fn reference_directories_match_independent_numeric_index() {
         let corpus = std::env::var_os("KONTRA_UFS_CORPUS").expect("KONTRA_UFS_CORPUS");
-        let reader = std::env::var_os("KONTRA_UVI_REFERENCE_READER").expect("KONTRA_UVI_REFERENCE_READER");
-        let namespaces = super::super::access::ReaderNamespaces::open(Path::new(&reader)).unwrap();
+        let namespaces = super::super::access::Namespaces::native();
         let corpus: serde_json::Value = serde_json::from_slice(&std::fs::read(corpus).unwrap()).unwrap();
         let mut files = 0;
         let mut folders = 0;
@@ -836,7 +835,7 @@ mod tests {
         assert_eq!(directory.directories[1].child_count, Some(2));
         assert_eq!(directory.records.last().unwrap().available, 288);
         assert_eq!(directory.warnings.len(), 1);
-        // Clear directory names use the same framing and need no reader namespace.
+        // Clear directory names use the same framing and need no namespace.
         let mut clear = bytes.clone();
         clear[304] = 0;
         for pointer in [root, a, b, a_file, a_other, b_file] {
