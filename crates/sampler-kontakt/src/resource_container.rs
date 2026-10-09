@@ -71,7 +71,7 @@ impl ResourceContainer {
     /// All authored resource names, including picture layout `.txt` companions.
     pub fn names(&self) -> Vec<&str> {
         let mut names: Vec<_> = match &self.index {
-            Index::Archive(archive) => archive.entries.values().map(|e| e.name.as_str()).collect(),
+            Index::Archive(archive) => archive.members().map(|e| e.name.as_str()).collect(),
             Index::Files(files) => files.items.iter().map(|e| e.filename.as_str()).collect(),
         };
         names.sort_unstable();
