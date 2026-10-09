@@ -1583,6 +1583,7 @@ impl Runtime {
         match op {
             Instruction::ForwardController => {
                 self.forward_controller(id)?;
+                self.flush_deferred(id);
             }
             Instruction::SuppressController => {
                 self.controller_event_mut(id)?.pending = false;
@@ -1676,6 +1677,7 @@ impl Runtime {
                 } else {
                     self.forward_attack(note)?;
                 }
+                self.flush_deferred(id);
             }
             Instruction::ForwardReleaseGroups => {
                 if let Some(NoteStage::Release(stage)) =
@@ -1685,6 +1687,7 @@ impl Runtime {
                 } else {
                     self.forward_release_groups(owner.note()?)?;
                 }
+                self.flush_deferred(id);
             }
             Instruction::SuppressAttack => {
                 let note = owner.note()?;
@@ -2447,23 +2450,41 @@ impl Runtime {
     fn flush_deferred(&mut self, id: BehaviorId) {
         while let Some(at) = self.deferred.iter().position(|d| d.0 == id) {
             let (_, note, entry) = self.deferred.remove(at);
-            match self.commit_note_attack(note, entry) {
-                Ok(true) => {
-                    let plan = self.notes.get(note.0).unwrap().plan;
-                    let end = self.plans.get(plan.0).unwrap().prepared.stages.len();
-                    self.project_note(note, entry, end);
-                    let _ = self
-                        .plans
-                        .get_mut(plan.0)
-                        .unwrap()
-                        .projections
-                        .get_mut(note.0.index, end)
-                        .map(|p| p.forwarded = true);
+            let ready_begin = self.behavior_ready.len();
+            let callbacks = std::mem::take(&mut self.note_events[note.0.index].pending_callbacks);
+            if callbacks != 0 {
+                self.behaviors.unreserve(callbacks);
+                self.begin_note_stages(note, entry);
+            } else {
+                match self.commit_note_attack(note, entry) {
+                    Ok(true) => {
+                        let plan = self.notes.get(note.0).unwrap().plan;
+                        let end = self.plans.get(plan.0).unwrap().prepared.stages.len();
+                        self.project_note(note, entry, end);
+                        let _ = self
+                            .plans
+                            .get_mut(plan.0)
+                            .unwrap()
+                            .projections
+                            .get_mut(note.0.index, end)
+                            .map(|p| p.forwarded = true);
+                    }
+                    Ok(false) | Err(Error::ClosedNote) => {}
+                    // No room once the selection was edited: drop the note.
+                    Err(_) => {
+                        let _ = self.suppress_attack(note);
+                    }
                 }
-                Ok(false) | Err(Error::ClosedNote) => {}
-                // No room once the selection was edited: drop the note.
-                Err(_) => {
-                    let _ = self.suppress_attack(note);
+            }
+            let child = *self.notes.get(note.0).unwrap();
+            if let (Some(parent), super::ReleaseLink::Stage(stage)) =
+                (child.parent, child.release_link)
+            {
+                let projection = self.plans.get(child.plan.0).unwrap().projections
+                    .get(parent.0.index, stage).unwrap();
+                if projection.release != super::note_event::ReleaseStage::Unreached {
+                    // A linked release follows the child's edited note route.
+                    self.queue_note_release(note, None, ready_begin);
                 }
             }
             self.notes.get_mut(note.0).unwrap().work -= 1;
@@ -2584,7 +2605,6 @@ impl Runtime {
         // own later release families and commands. Neither may consume the other.
         let command = usize::from(at.is_some_and(|at| at != self.now));
         self.reserved_commands += command;
-        let ready_begin = self.behavior_ready.len();
         let child = self.select(
             origin,
             pitch,
@@ -2596,21 +2616,8 @@ impl Runtime {
         self.reserved_commands -= command;
         let child = child?;
         if linked && let Some(stage) = source_stage {
-            let parent = callback.owner.note()?;
             self.notes.get_mut(child.0).unwrap().release_link =
                 super::ReleaseLink::Stage(stage.index());
-            let plan = self.notes.get(parent.0).unwrap().plan;
-            if self
-                .plans
-                .get(plan.0)
-                .unwrap()
-                .projections
-                .get(parent.0.index, stage.index())?
-                .release
-                != super::note_event::ReleaseStage::Unreached
-            {
-                self.queue_note_release(child, None, ready_begin);
-            }
         }
         self.note_events[child.0.index].fixed_duration = frames.is_some();
         self.notes.get_mut(child.0).unwrap().retire_when_silent = duration == Duration::UntilSilent;
