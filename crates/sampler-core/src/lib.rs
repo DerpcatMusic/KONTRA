@@ -76,7 +76,7 @@ pub use resample::{ResampleQuality, read_radius};
 mod dsp;
 pub use dsp::{
     Biquad, LoFiSettings, CompressorSettings, ControlRange, ConvolutionUpload, DaftSettings, Decimator, Delay,
-    FilterKind, Impulse, LadderSettings, MAX_IMPULSE_FRAMES, OutputLowPass, Parameter, Processor, Rectifier, ReverbSettings,
+    FilterKind, Impulse, LadderSettings, MAX_IMPULSE_FRAMES, OutputLowPass, Parameter, PeakingEq, Processor, Rectifier, ReverbSettings,
     StateVariableFilter, StereoSettings, SvfMode, VoiceChain, VoiceSendPosition, VoiceSendTap,
 };
 mod envelope;
