@@ -395,6 +395,7 @@ fn held_mix_reads_controls_once_per_block_in_scalar_and_lanes() {
         PreparedProcessor::Gain(0.75)];
     let parameters = [ControlRamp::test_ramp(0., 0.2, 0, 0),
         ControlRamp::test_ramp(0., 0.8, 0, 0), ControlRamp::test_ramp(0., 0.25, 0, 0)];
+    check(&stages, &[], &parameters);
     let mut states = [ProcessorState::default(); 2];
     let mut block = [[0.125; BLOCK]; 2];
     let mut bank = FilterBank::new(&[], 0).unwrap();
@@ -404,6 +405,7 @@ fn held_mix_reads_controls_once_per_block_in_scalar_and_lanes() {
     assert!(!super::process::<false>(&stages, &mut states, &mut block, 32,
         &parameters, 0, &mut [], &mut context, None));
     let reads = RAMP_READS.with(|n| n.get());
+    eprintln!("held scalar mix reads={reads} frames=32");
     assert!(reads <= 8, "held scalar mix performed {reads} target reads for 32 frames");
     let slab = Slab::new(vec![ProcessorState::default(); 2].into_boxed_slice(), 2);
     let mut cells: Cells<'_> = std::array::from_fn(|v| (v == 0).then(|| slab.claim(v)));
@@ -412,5 +414,6 @@ fn held_mix_reads_controls_once_per_block_in_scalar_and_lanes() {
     RAMP_READS.with(|n| n.set(0));
     lanes::process(&stages, 0, &mut cells, &batch, &mut block, &parameters, 0, &mut bank);
     let reads = RAMP_READS.with(|n| n.get());
+    eprintln!("held lane mix reads={reads} frames=32");
     assert!(reads <= 8, "held lane mix performed {reads} target reads for 32 frames");
 }
