@@ -714,3 +714,40 @@ fn report_is_one_tab_and_settings_uses_the_workspace() {
     assert!(h.ui.scene().unwrap().surface("settings-body").is_none());
 
 }
+
+#[test]
+#[cfg(feature = "shots")]
+fn w13_report_settings_feedback_shots() {
+    let Some(out) = std::env::var_os("KONTRA_REPORT_SETTINGS_SHOTS").map(PathBuf::from) else { return };
+    std::fs::create_dir_all(&out).unwrap();
+    for (width, height) in [(900, 600), (1180, 780)] {
+        let p = specimen();
+        {
+            let mut view = p.shared.view.lock().unwrap();
+            let report = Arc::make_mut(view.parts[0].report.as_mut().unwrap());
+            report.missing.push(crate::sound::report::Missing {
+                location: "Main".into(), feature: "script".into(),
+                value: format!("42:9: {}", "Synthetic long error detail for wrapping and scrolling. ".repeat(30)),
+                reason: crate::sound::report::MissingReason::NotModeled,
+            });
+        }
+        let mut h = Harness::new(&p, width as f64, height as f64);
+        let save = |name: &str, h: &mut Harness| {
+            h.idle(20);
+            moose::core::screenshot::save_png(&out.join(format!("{name}-{width}.png")),
+                &pixels(&h.ui, width, height), width.into(), height.into());
+        };
+        h.press("tab-report");
+        save("report-closed", &mut h);
+        h.press("report-entry-0");
+        save("report-expanded", &mut h);
+        h.press("logs-about-button");
+        save("report-about", &mut h);
+        h.press("logs-close-about");
+        h.press("app-menu"); h.press("menu-item-5");
+        save("settings-top", &mut h);
+        let at = tests::center(&h.ui, "settings-body");
+        h.tick(Input { wheel: Vec2::new(0., 1000.), pointer: PointerInput { pos: Some(at), ..Default::default() }, ..Default::default() });
+        save("settings-lower", &mut h);
+    }
+}

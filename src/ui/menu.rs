@@ -73,7 +73,7 @@ pub enum Command {
     Solo(usize),
     Move(usize, i32),
     Audition(u8),
-    /// Show or hide the library folders strip.
+    /// Show or hide the Settings workspace.
     Folders,
     /// Add a library folder (`true`) or a folder of libraries.
     AddFolder(bool),
@@ -300,7 +300,7 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 act("Find installed libraries", "", Command::ImportKontakt),
                 act("Create library from folder…", "", Command::CreateLibrary),
                 Item::Rule,
-                act("Library folders…", "", Command::Folders),
+                act("Settings…", "", Command::Folders),
                 act("Reset library order to A–Z", "", Command::ResetLibraryOrder),
             ];
             if cx.p.shared.libraries.scanning().is_some() {
@@ -433,10 +433,10 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             let mut items = vec![
                 check("Browser", cx.state.browser, Command::Browser),
                 check("Keyboard", cx.state.keyboard, Command::Keyboard),
-                act("Logs and support report…", "", Command::Logs),
+                act("Report…", "", Command::Logs),
                 act("About KONTRA…", "", Command::About),
                 Item::Rule,
-                act("Library folders…", "", Command::Folders),
+                act("Settings…", "", Command::Folders),
                 act("Rescan libraries", "", Command::Rescan),
                 Item::Rule,
             ];
@@ -765,8 +765,8 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
             }
         }
         Command::Browser => cx.state.browser ^= true,
-        Command::Logs => cx.state.tab = super::Tab::Logs,
-        Command::About => { cx.state.tab = super::Tab::Logs; cx.state.logs.about = true; },
+        Command::Logs => { cx.state.tab = super::Tab::Report; cx.state.settings = false; cx.state.logs.show_entries(); },
+        Command::About => { cx.state.settings = false; cx.state.tab = super::Tab::Report; cx.state.logs.about = true; },
         Command::Appearance(look) => cx.selection.appearance = look as u8,
         Command::ArtworkBlur => cx.selection.sharp_artwork ^= true,
         Command::StickyHeaders => cx.selection.sticky_off ^= true,
