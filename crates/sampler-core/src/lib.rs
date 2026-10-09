@@ -68,6 +68,8 @@ pub use stream::{
     DecodeFailure, DecodeJob, PAGE_FRAMES, PageKey, PageStatus, PageUpdate, RejectedDecode,
     StreamCache, StreamError, StreamWorker,
 };
+mod wavetable;
+pub use sampler_ir::Wavetable;
 mod source;
 pub use source::{Direction, Loop, LoopMode, LoopShape, LoopSlot, Playback, SampleDemand};
 mod bus;
@@ -1598,7 +1600,7 @@ impl Runtime {
         }
         let owner = self.notes.get(f.note.0).unwrap().expression;
         let base_step = cursor.step();
-        let step = self.pitch_range(owner, true)?.apply(base_step)?;
+        let step = self.pitch_range(owner, true)?.apply_source(base_step, cursor.wavetable().is_some())?;
         let cursor = cursor.with_step(step);
         let note = self.notes.get(f.note.0).unwrap();
         let asset = &self.plans.get(note.plan.0).unwrap().prepared.pcm[sample];
