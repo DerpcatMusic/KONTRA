@@ -212,7 +212,7 @@ pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
     if many || one {
         add_folder(cx, one);
     }
-    let (import, import_el) = action(ui, "root-import", "Import from Kontakt", false);
+    let (import, import_el) = action(ui, "root-import", "Find installed libraries", false);
     if import {
         cx.p.shared.libraries.import_kontakt();
     }
