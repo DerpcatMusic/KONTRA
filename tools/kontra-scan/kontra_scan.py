@@ -402,7 +402,7 @@ def main():
             cached = args.out / 'cache' / (key + '.json')
             if cached.exists():
                 previous = json.loads(cached.read_text())
-                if previous.get('audition_status') != 'audition-mismatch' and (os.environ.get('KONTRA_GATE_REQUIRE_QUIET') != '1' or previous.get('contention') == 'QUIET'):
+                if previous.get('audition_status') not in ['audition-mismatch', 'invalid-note-plan'] and (os.environ.get('KONTRA_GATE_REQUIRE_QUIET') != '1' or previous.get('contention') == 'QUIET'):
                     reused += 1
                     continue
             remaining = args.budget_seconds - (time.monotonic() - started)

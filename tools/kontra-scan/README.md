@@ -77,7 +77,10 @@ Explicit native-intent plans may add `held_key` (an integer 0..127 distinct from
 the audition key and keyswitch). The companion starts 128 frames before the
 primary note and releases 128 frames after it. The scanner and live host retain
 this field in receipts; omitting or changing it is `audition-mismatch`, and an
-invalid value is `invalid-note-plan`. The frozen scanner cannot execute this
+invalid value is `invalid-note-plan`. Invalid receipts are retried; their silence
+cannot supply an audio failure. The static family oracle requires a native
+capture for every held-note plan, including receipts without an UNKNOWN marker.
+The frozen scanner cannot execute this
 addition, so its old single-note cell cannot certify a paired audition. Scripted
 or multi-note family selection remains UNKNOWN pending a native capture.
 
