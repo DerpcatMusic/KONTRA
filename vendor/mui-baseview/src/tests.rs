@@ -31,8 +31,17 @@ fn close_cycles_release_gui_thread_render_trees_before_model_drop() {
         assert!(owner.upgrade().is_some(), "opened canvas must own its art");
         h.on_event_inner(&Event::Window(WindowEvent::WillClose));
         drop(h);
+        assert!(owner.upgrade().is_none(), "close releases the tree while the model survives");
+        let mut reopened = Handler::new(shared.clone(), Arc::default(), (64, 64), 1.);
+        reopened.step();
+        let reopened_owner = lock(&shared).view.0.clone();
+        assert!(reopened_owner.upgrade().is_some(), "reopen must rebuild its canvas");
+        reopened.on_event_inner(&Event::Window(WindowEvent::WillClose));
+        drop(reopened);
+        assert!(reopened_owner.upgrade().is_none(), "reopened canvas releases on close");
         std::thread::spawn(move || drop(shared)).join().unwrap();
         owners.push(owner);
+        owners.push(reopened_owner);
         retained.push(owners.iter().filter_map(|owner| owner.upgrade()).map(|art| art.len()).sum::<usize>());
     }
     assert_eq!(retained, [0; 4], "closed render bytes must remain flat at zero");
