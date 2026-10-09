@@ -1,12 +1,20 @@
 # Changelog
 
 Human-reviewed changes belong in the unreleased section before publication. Nightly
-notes compare those entries with the previous published source, retain known limits,
-and include the complete shipped public commit messages and merged PR descriptions.
+notes use accepted ledger entries added since the previous published source,
+with a short user-facing known-issues list and collapsed source/checksum details.
 Each published release manifest also retains its versioned changelog. Frozen entries
 below record reviewed source checkpoints; they are not claims about pending work.
 
 ## Unreleased
+
+### Known issues
+
+- Some Kontakt and Falcon effects, modulation and script actions remain incomplete.
+- Saving and reopening a project may not restore every Kontakt script setting.
+- Some instrument controls and artwork may differ from the original interface.
+- Large libraries can use substantial memory, and performance may be worse than KONTRA v1.
+- Some Vista and Pacific patches cannot yet find all required sample resources.
 
 ### Fixed after 0.3.224
 
