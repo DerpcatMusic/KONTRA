@@ -219,6 +219,8 @@ impl Processor {
 }
 
 mod compressor;
+#[cfg(test)]
+mod kernel_tests;
 pub(super) mod control;
 mod convolution;
 mod daft;
