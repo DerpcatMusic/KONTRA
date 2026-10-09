@@ -18,6 +18,8 @@ use std::{
 // The editor builder is Send; its Lua VM is created and kept on the GUI thread.
 // Weak lifetime tokens let any subsequent GUI paint retire a dropped Face.
 struct Local {
+    #[cfg(test)]
+    package: Arc<Package>,
     lifetime: std::sync::Weak<AtomicBool>,
     session: Session,
     graph: Option<Table>,
@@ -73,6 +75,19 @@ pub(super) fn gate_targets(slot: usize) -> Vec<(String, &'static str)> {
     })
 }
 static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+#[cfg(test)]
+pub(super) fn audit_memory(collect: bool) -> usize {
+    LOCAL.with(|local| local.borrow().values().map(|local| {
+        if collect { local.session.lua().gc_collect().unwrap(); }
+        local.session.lua().used_memory()
+    }).sum())
+}
+#[cfg(test)]
+pub(super) fn audit_assets() -> (usize, usize, usize) {
+    LOCAL.with(|local| local.borrow().values().fold((0,0,0), |(encoded,decoded,pending),local| {
+        (encoded+local.package.audit_bytes(), decoded+local.package.images.bytes(), pending+local.package.images.pending())
+    }))
+}
 pub(super) struct State {
     id: u64,
     loading: std::sync::mpsc::Receiver<anyhow::Result<Arc<Package>>>,
@@ -319,6 +334,8 @@ impl State {
                 local.insert(
                     self.id,
                     Local {
+                        #[cfg(test)]
+                        package: package.clone(),
                         lifetime: Arc::downgrade(&self.canceled),
                         session,
                         graph: None,
@@ -1384,13 +1401,13 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("Resources/native_ui")).unwrap();
         std::fs::write(dir.path().join("Resources/native_ui/main.nui"), b"return function() return nil end").unwrap();
         let package = Arc::new(Package::load(&dir.path().join("fixture.nki")).unwrap());
-        let session = Session::new(package, "main", vec![]).unwrap();
+        let session = Session::new(package.clone(), "main", vec![]).unwrap();
         let graph = session.lua().create_table().unwrap();
         graph.set("kind", "TextInput").unwrap(); graph.set("path", "root").unwrap();
         for field in ["children", "modifiers"] { graph.set(field, session.lua().create_table().unwrap()).unwrap(); }
         let lifetime = Arc::new(AtomicBool::new(false));
         LOCAL.with(|local| { local.borrow_mut().insert(97, Local {
-            lifetime: Arc::downgrade(&lifetime), session, graph: Some(graph), hovered: Default::default(), drafts: Default::default(),
+            package: package.clone(), lifetime: Arc::downgrade(&lifetime), session, graph: Some(graph), hovered: Default::default(), drafts: Default::default(),
         }); });
         GATE_PAINTED.with(|painted| { painted.borrow_mut().insert(0, 97); });
         assert_eq!(gate_targets(0), vec![("nui-97-root-text".into(), "text")]);

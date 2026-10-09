@@ -37,14 +37,14 @@ pub(super) fn record(ptr: *mut u8, bytes: usize, freed: bool) {
         busy.set(false);
     });
 }
-pub(super) fn start() {
+pub(crate) fn start() {
     let mut pcs = [std::ptr::null_mut(); DEPTH];
     // Load the unwinder before recording, avoiding its one-time allocations.
     unsafe { backtrace(pcs.as_mut_ptr(), DEPTH as i32); }
     NEXT.store(0, Ordering::Relaxed);
     ENABLED.store(true, Ordering::SeqCst);
 }
-pub(super) fn finish(path: &std::path::Path) {
+pub(crate) fn finish(path: &std::path::Path) {
     ENABLED.store(false, Ordering::SeqCst);
     while WRITERS.load(Ordering::SeqCst) != 0 { std::thread::yield_now(); }
     let count = NEXT.load(Ordering::Relaxed);
