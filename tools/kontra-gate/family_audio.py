@@ -32,6 +32,10 @@ def cosine(a, b):
 
 
 def compare(v1, v2):
+    assert v1.get('version')=='v1' and v2.get('version')=='v2', 'paired plugin versions required'
+    assert v1.get('plugin_sha256')=='20ff6b471069d6891d2847e72a4f863db5b50ce24265fda82d083b713b3496de', 'frozen-v1 plugin required'
+    assert v1.get('host_sha256') and v1['host_sha256']==v2.get('host_sha256'), 'matched host required'
+    assert v1.get('native_selection_sha256') and v1['native_selection_sha256']==v2.get('native_selection_sha256'), 'matched source/program/routing required'
     left, right = validate(v1), validate(v2)
     assert v1['audition_sha256'] == v2['audition_sha256'], 'different schedules'
     identity = lambda n: tuple(n[k] for k in ['event_index', 'key', 'velocity', 'start_frame', 'window_frames'])
