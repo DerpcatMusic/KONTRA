@@ -50,3 +50,36 @@ UNKNOWN. No performance verdict is implied by preparation or self-checks.
 
 Checks: C++ host `--self-check`, `check-live-host.py`, `check-load-host.py`,
 Python byte compilation, and root `cargo test --locked --lib --no-run`.
+
+## 2026-10-09 measured receipt
+
+All six cells are QUIET, audible, have verified native selection readback and zero
+process swap. Frozen v1 checksum verification and every 326 artifact digest
+passed. Receipt: `/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w8-load-030326-608a20a1/`.
+No product build or install was performed.
+
+| Preset | v1 ready ms | 326 ready ms | v1 first audio ms | 326 first audio ms | v1/326 ready RSS MiB | v1/326 after-audio RSS MiB |
+|---|---:|---:|---:|---:|---:|---:|
+| Conflux | 186.84 | 442.08 | 285.99 | 543.14 | 398.88 / 138.54 | 416.91 / 138.75 |
+| Pacific 10 Cellos – Legato Sustains | 78.67 | 1238.61 | 179.30 | 1344.45 | 341.75 / 133.40 | 460.27 / 134.78 |
+| ANALOG STRINGS | 3438.75 | 2750.16 | 3539.10 | 2856.68 | 581.91 / 836.40 | 1222.75 / 846.52 |
+
+This single trial is an exported-CLAP, editor-closed observation with the fixed
+100 ms post-ready warmup included. It establishes neither editor-open RSS nor
+native sound parity. V1 reported 1/1/2 underruns for Conflux/Pacific/Analog;
+326 reported zero. The readiness and memory axes are independent of those
+underruns. V1 plugin initialization already held about 249–251 MiB before state
+load; 326 about 21 MiB. Full process RSS is reported, not sample counters.
+
+The first attempt retained two completed Conflux cells and stopped on an audit
+bug: `native.state` was reused while the state exporter requires create-new.
+Each preset now uses a unique state filename. A provenance-checked `--resume`
+retained those two observations and ran only the four remaining cells. The
+original and resumed driver digests are recorded. A mock exporter enforcing
+create-new proves unique filenames and no repeated auditions during resume.
+An unrelated KURV build delayed the resumed pregrant; it ended before those
+four cells began. No measurement overlapped it; all six activity timelines are
+QUIET. Both owned quiet requests/grants were removed, and the final unit has
+MainPID 0. The next quiet owner is W5, then W6 and W13.
+
+NEXT: exact shipping 0.3.344 Kontakt load/audio sweep after timed owners clear.
