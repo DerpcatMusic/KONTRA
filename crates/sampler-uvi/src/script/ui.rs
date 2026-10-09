@@ -134,6 +134,7 @@ impl ScriptHost {
     }
     /// Current declaration, with script-driven geometry, visibility and text.
     pub fn interface(&self) -> ui::Interface {
+        let _budget = self.shared.inspection_budget();
         let _span = sampler_kontakt::audit::Span::new("uvi_lua_ui_snapshot");
         let mut out = ui::Interface {
             source: ui::Source::FalconLua,
