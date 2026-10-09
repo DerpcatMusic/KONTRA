@@ -442,16 +442,36 @@ mod tests {
 on persistence_changed inc($calls) wait(1000) inc($done) end on";
         let init = crate::initialize(source, crate::Limits::LIBRARY, &Default::default()).unwrap();
         let bytes = serde_json::to_vec(&init.capture_initialized().unwrap()).unwrap();
-        let restored = super::restore_initialized(source, crate::Limits::LIBRARY, serde_json::from_slice(&bytes).unwrap()).unwrap();
-        let script = crate::compile_initialized(source, 48000, crate::Limits::LIBRARY, &[], restored).unwrap();
-        assert_eq!(script.model().persistence_completion, crate::model::PersistenceCompletion::Scheduled);
-        let plan = script.bind(sampler_core::Prepared::new(48000, vec![], vec![], 0).unwrap()).unwrap();
+        let restored = super::restore_initialized(
+            source,
+            crate::Limits::LIBRARY,
+            serde_json::from_slice(&bytes).unwrap(),
+        )
+        .unwrap();
+        let script =
+            crate::compile_initialized(source, 48000, crate::Limits::LIBRARY, &[], restored)
+                .unwrap();
+        assert_eq!(
+            script.model().persistence_completion,
+            crate::model::PersistenceCompletion::Scheduled
+        );
+        let plan = script
+            .bind(sampler_core::Prepared::new(48000, vec![], vec![], 0).unwrap())
+            .unwrap();
         let limits = sampler_core::Limits::for_plan(&plan, 4, 4);
         let mut runtime = sampler_core::Runtime::new(plan, limits).unwrap();
         let plan = runtime.active_plan();
-        for _ in 0..2 { runtime.render(&mut [[0.; 2]; 64]).unwrap(); }
-        assert_eq!(runtime.script_cell(plan, sampler_core::ScriptInstanceId(0), 0), Ok(1));
-        assert_eq!(runtime.script_cell(plan, sampler_core::ScriptInstanceId(0), 1), Ok(1));
+        for _ in 0..2 {
+            runtime.render(&mut [[0.; 2]; 64]).unwrap();
+        }
+        assert_eq!(
+            runtime.script_cell(plan, sampler_core::ScriptInstanceId(0), 0),
+            Ok(1)
+        );
+        assert_eq!(
+            runtime.script_cell(plan, sampler_core::ScriptInstanceId(0), 1),
+            Ok(1)
+        );
     }
     #[test]
     fn cached_initializer_preserves_native_state_model_and_engine_without_reinit() {
