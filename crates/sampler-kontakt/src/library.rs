@@ -1528,8 +1528,9 @@ fn raw_zone(r: &mut Cursor<&[u8]>) -> Result<RawZone, String> {
         params.filename_id,
     );
     let [lv, hv, lk, hk, f0, f1, f2, f3, root] = ranges;
+    let sample_present = params.sample_present;
     let midi = |value: i16, what| {
-        if !params.sample_present { return Ok(0); }
+        if !sample_present { return Ok(0); }
         u8::try_from(value)
             .ok()
             .filter(|v| *v < 128)
@@ -1564,7 +1565,6 @@ fn raw_zone(r: &mut Cursor<&[u8]>) -> Result<RawZone, String> {
             slots: Vec::new(),
         },
     };
-    let sample_present = params.sample_present;
     let source = crate::objects::zone(source_zone.0.version, group as u32, params, &loops);
     Ok(RawZone {
         sample_present,
