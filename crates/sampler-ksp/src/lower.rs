@@ -68,6 +68,11 @@ fn pgs_key(g: &Gen, args: &[Arg], index: Key) -> [Key; 4] {
 
 /// `[LISTENER_TAG, signal, 0, LISTENER_TAG]`: a listener's `set_listener` value.
 pub const LISTENER_TAG: i32 = i32::MIN + 2;
+pub const MENU_TAG: i32 = i32::MIN + 3;
+pub const MENU_VALUE: i32 = 0;
+pub const MENU_VISIBLE: i32 = 1;
+pub const MENU_COUNT: i32 = 2;
+pub const MENU_TEXT: i32 = 3;
 
 /// Host value slot for a system variable; see `Runtime::set_host_value`.
 pub fn host_slot(sys: SysVar) -> Option<u8> {
@@ -1231,6 +1236,15 @@ impl Gen<'_, '_> {
                 self.cover(Builtin::FsGetFilename, Coverage::Native);
                 return Ok(());
             }
+            ExprKind::Builtin(Builtin::GetMenuItemStr, args) => {
+                let text = self.scratch();
+                self.menu_key(args, free, MENU_TEXT)?;
+                self.emit(I::Op(Op::TextProperty { key: free, text, write: false }))?;
+                self.emit(I::Op(Op::TextAppend { text: dst, part: TextPart::Text(text) }))?;
+                self.tdepth -= 1;
+                self.cover(Builtin::GetMenuItemStr, Coverage::Native);
+                return Ok(());
+            }
             ExprKind::Builtin(Builtin::GetControlParStr, args) => {
                 self.property_key(args, free, None)?;
                 self.emit(I::Op(Op::TextProperty {
@@ -1896,6 +1910,11 @@ impl Gen<'_, '_> {
                 self.emit(I::SuppressController)?;
                 true
             }
+            IgnoreController => {
+                self.cover(builtin, Coverage::Native);
+                self.report(None, crate::diag::Kind::Warning, "ignore_controller outside on controller is ignored".into());
+                return Ok(());
+            }
             SetController => {
                 self.arg(args, 0, dst)?;
                 self.arg(args, 1, t)?;
@@ -2076,7 +2095,7 @@ impl Gen<'_, '_> {
                 if matches!(
                     self.const_int(args, 1),
                     Some(b::event_par::CUSTOM | b::event_par::MOD_VALUE_ID)
-                ) && !self.selects_many(builtin, args, 0) =>
+                ) && (builtin == SetEventParArr || !self.selects_many(builtin, args, 0)) =>
             {
                 let custom = self.const_int(args, 1) == Some(b::event_par::CUSTOM);
                 let id = reg(dst, 2)?;
@@ -2339,6 +2358,73 @@ impl Gen<'_, '_> {
                 return self.set_control_par(builtin, args, dst);
             }
             GetControlPar | GetControlParArr => return self.get_control_par(builtin, args, dst),
+            GetMenuItemValue | GetMenuItemVisibility | GetNumMenuItems => {
+                let field = match builtin { GetMenuItemValue => MENU_VALUE, GetMenuItemVisibility => MENU_VISIBLE, _ => MENU_COUNT };
+                self.menu_key(args, dst + 1, field)?;
+                self.set(dst, 0)?;
+                self.emit(I::Op(Op::Store { key: dst + 1, local: dst, write: false }))?;
+                true
+            }
+            GetZonePar => {
+                let selectors = ["$ZONE_PAR_GROUP", "$ZONE_PAR_LOW_KEY", "$ZONE_PAR_HIGH_KEY"]
+                    .map(|name| self.u.hir.symbols.iter().position(|symbol| &**symbol == name)
+                        .map(|index| OPAQUE_BASE + index as i32));
+                if let Some(parameter) = self.const_int(args, 1)
+                    && !selectors.contains(&Some(parameter)) {
+                    self.ignore(builtin, "zone parameter is not implemented; result 0");
+                    return self.set(dst, 0);
+                }
+                self.arg(args, 0, dst)?;
+                self.arg(args, 1, dst + 1)?;
+                self.emit(I::Op(Op::ZoneParameter { zone: dst, parameter: dst + 1, selectors, local: dst }))?;
+                true
+            }
+            AddMenuItem => {
+                self.menu_key(args, dst + 1, MENU_COUNT)?;
+                let missing = self.menu_missing(dst + 1, MENU_COUNT, MENU_COUNT)?;
+                self.set(dst, 0)?;
+                self.emit(I::Op(Op::Store { key: dst + 1, local: dst, write: false }))?;
+                self.set(dst + 3, 0)?;
+                self.emit(I::Binary32 { lhs: dst + 3, rhs: dst, operation: IB::Add })?;
+                self.set(dst + 2, i64::from(MENU_TEXT))?;
+                if let Some(text) = self.text_arg(args, 1, dst + 7)? {
+                    self.emit(I::Op(Op::TextProperty { key: dst + 1, text, write: true }))?;
+                    self.tdepth -= 1;
+                }
+                for (field, value) in [(MENU_VALUE, None), (MENU_VISIBLE, Some(1))] {
+                    self.set(dst + 2, i64::from(field))?;
+                    if let Some(value) = value { self.set(dst, value)?; }
+                    else { self.arg(args, 2, dst)?; }
+                    self.emit(I::Op(Op::Store { key: dst + 1, local: dst, write: true }))?;
+                }
+                self.set(dst, 1)?;
+                self.emit(I::Binary32 { lhs: dst, rhs: dst + 3, operation: IB::Add })?;
+                self.set(dst + 2, i64::from(MENU_COUNT))?;
+                self.set(dst + 3, -1)?;
+                self.emit(I::Op(Op::Store { key: dst + 1, local: dst, write: true }))?;
+                self.land(missing);
+                return self.effect(builtin, args, dst);
+            }
+            SetMenuItemStr | SetMenuItemValue | SetMenuItemVisibility => {
+                let field = match builtin { SetMenuItemStr => MENU_TEXT, SetMenuItemValue => MENU_VALUE, _ => MENU_VISIBLE };
+                self.menu_key(args, dst + 1, field)?;
+                let missing = self.menu_missing(dst + 1, field, MENU_VALUE)?;
+                if builtin == SetMenuItemStr {
+                    if let Some(text) = self.text_arg(args, 2, dst + 7)? {
+                        self.emit(I::Op(Op::TextProperty { key: dst + 1, text, write: true }))?;
+                        self.tdepth -= 1;
+                    }
+                } else {
+                    self.arg(args, 2, dst)?;
+                    if builtin == SetMenuItemVisibility {
+                        self.set(dst + 7, 0)?;
+                        self.emit(I::CompareLocal { lhs: dst, rhs: dst + 7, comparison: Cmp::NotEqual })?;
+                    }
+                    self.emit(I::Op(Op::Store { key: dst + 1, local: dst, write: true }))?;
+                }
+                self.land(missing);
+                return self.effect(builtin, args, dst);
+            }
             PgsSetKeyVal => {
                 // Shared by every script slot; on pgs_changed runs in each.
                 self.arg(args, 2, dst)?;
@@ -2407,10 +2493,6 @@ impl Gen<'_, '_> {
             | MoveControl
             | MoveControlPx
             | HidePart
-            | AddMenuItem
-            | SetMenuItemStr
-            | SetMenuItemVisibility
-            | SetMenuItemValue
             | SetTableStepsShown
             | SetSkinOffset
             | SetUiColor
@@ -3257,6 +3339,30 @@ impl Gen<'_, '_> {
             self.land(e);
         }
         Ok(())
+    }
+
+    fn menu_key(&mut self, args: &[Arg], base: u16, field: i32) -> Result<()> {
+        if let Some(ui) = self.ui_index(args, 0) {
+            self.set(base, i64::from(b::FIRST_UI_ID + ui as i32))?;
+        } else {
+            self.arg(args, 0, base)?;
+        }
+        self.set(base + 1, i64::from(field))?;
+        if field == MENU_COUNT { self.set(base + 2, -1)?; }
+        else { self.arg(args, 1, base + 2)?; }
+        self.set(base + 3, i64::from(MENU_TAG))
+    }
+
+    fn menu_missing(&mut self, base: u16, field: i32, presence: i32) -> Result<usize> {
+        // Menu values are signed-32; the 64-bit sentinel cannot be an item value.
+        self.set(base + 1, i64::from(presence))?;
+        self.set(base + 4, i64::MIN)?;
+        self.emit(I::Op(Op::Store { key: base, local: base + 4, write: false }))?;
+        self.set(base + 5, i64::MIN)?;
+        self.emit(I::CompareLocal { lhs: base + 4, rhs: base + 5, comparison: Cmp::NotEqual })?;
+        let missing = self.jump_if_zero(base + 4)?;
+        self.set(base + 1, i64::from(field))?;
+        Ok(missing)
     }
 
     fn property_key(&mut self, args: &[Arg], base: u16, index: Option<usize>) -> Result<()> {
