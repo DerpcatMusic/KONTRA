@@ -42,7 +42,7 @@ fn wait_ticks_reads_host_tempo_when_the_wait_begins() {
 
 #[test]
 fn beat_listener_reads_current_tempo_each_period() {
-    let mut rt = runtime("on init declare $ticks end on
+    let mut rt = runtime("on init declare $ticks set_listener($NI_SIGNAL_TIMER_BEAT,0) end on
         on persistence_changed wait(1) set_listener($NI_SIGNAL_TIMER_BEAT,4) end on
         on listener inc($ticks) end on");
     rt.set_host_value(8, 250_000).unwrap();
