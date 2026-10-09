@@ -15,36 +15,63 @@ fn close_cycles_release_gui_thread_render_trees_before_model_drop() {
                 mui::prelude::canvas(move |_| {
                     std::hint::black_box(&art);
                     Vec::new()
-                }).w(64.).h(64.)
+                })
+                .w(64.)
+                .h(64.)
             })
         }
-        fn changed(&mut self) -> bool { false }
-        fn request_resize(&mut self, _: u32, _: u32) -> bool { false }
+        fn changed(&mut self) -> bool {
+            false
+        }
+        fn request_resize(&mut self, _: u32, _: u32) -> bool {
+            false
+        }
     }
     let mut owners = Vec::new();
     let mut retained = Vec::new();
     for _ in 0..4 {
-        let shared = Arc::new(Mutex::new(Shared { ui: Ui::default(), view: Memo(Default::default()) }));
+        let shared = Arc::new(Mutex::new(Shared {
+            ui: Ui::default(),
+            view: Memo(Default::default()),
+        }));
         let mut h = Handler::new(shared.clone(), Arc::default(), (64, 64), 1.);
         h.step();
         let owner = lock(&shared).view.0.clone();
         assert!(owner.upgrade().is_some(), "opened canvas must own its art");
         h.on_event_inner(&Event::Window(WindowEvent::WillClose));
         drop(h);
-        assert!(owner.upgrade().is_none(), "close releases the tree while the model survives");
+        assert!(
+            owner.upgrade().is_none(),
+            "close releases the tree while the model survives"
+        );
         let mut reopened = Handler::new(shared.clone(), Arc::default(), (64, 64), 1.);
         reopened.step();
         let reopened_owner = lock(&shared).view.0.clone();
-        assert!(reopened_owner.upgrade().is_some(), "reopen must rebuild its canvas");
+        assert!(
+            reopened_owner.upgrade().is_some(),
+            "reopen must rebuild its canvas"
+        );
         reopened.on_event_inner(&Event::Window(WindowEvent::WillClose));
         drop(reopened);
-        assert!(reopened_owner.upgrade().is_none(), "reopened canvas releases on close");
+        assert!(
+            reopened_owner.upgrade().is_none(),
+            "reopened canvas releases on close"
+        );
         std::thread::spawn(move || drop(shared)).join().unwrap();
         owners.push(owner);
         owners.push(reopened_owner);
-        retained.push(owners.iter().filter_map(|owner| owner.upgrade()).map(|art| art.len()).sum::<usize>());
+        retained.push(
+            owners
+                .iter()
+                .filter_map(|owner| owner.upgrade())
+                .map(|art| art.len())
+                .sum::<usize>(),
+        );
     }
-    assert_eq!(retained, [0; 4], "closed render bytes must remain flat at zero");
+    assert_eq!(
+        retained, [0; 4],
+        "closed render bytes must remain flat at zero"
+    );
 }
 
 #[test]

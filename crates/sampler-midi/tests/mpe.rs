@@ -1097,13 +1097,23 @@ fn script_owned_attacks_keep_mpe_expression_pairing_and_release() {
     apply(&mut mpe, &mut rt, bend(1, 9216)).unwrap();
     support::without_heap(|| {
         let word = packet(0x90, 1, 60, 100);
-        let Applied::Started(note) = mpe.apply_silent(&mut rt, Packets::new(&[word]).next().unwrap().unwrap()).unwrap() else { panic!("silent note not admitted") };
+        let Applied::Started(note) = mpe
+            .apply_silent(&mut rt, Packets::new(&[word]).next().unwrap().unwrap())
+            .unwrap()
+        else {
+            panic!("silent note not admitted")
+        };
         assert_eq!(rt.voice_count(), 0, "the Lua owner selects the attack");
-        assert_eq!(expression(&rt, note).pitch_semitones, pitch(12288, 2.0) + pitch(9216, 48.0));
+        assert_eq!(
+            expression(&rt, note).pitch_semitones,
+            pitch(12288, 2.0) + pitch(9216, 48.0)
+        );
         rt.forward_attack(note).unwrap();
         assert_eq!(rt.voice_count(), 1);
         let off = packet(0x80, 1, 60, 0);
-        assert!(matches!(mpe.apply_silent(&mut rt, Packets::new(&[off]).next().unwrap().unwrap()).unwrap(), Applied::Released { note: released, .. } if released == note));
+        assert!(
+            matches!(mpe.apply_silent(&mut rt, Packets::new(&[off]).next().unwrap().unwrap()).unwrap(), Applied::Released { note: released, .. } if released == note)
+        );
         assert!(!rt.key_down(note).unwrap());
         rt.render(&mut [[0.; 2]; 512]).unwrap();
         assert_eq!(rt.voice_count(), 0);

@@ -1160,24 +1160,58 @@ impl Translation {
         let mut wavetable = None;
         match group.source_identity() {
             Ok(source) if source.mode == 9 => {
-                wavetable = group.wavetable_source()?.as_ref().and_then(|source| crate::wavetable::admitted(source, v.key_tracking));
+                wavetable = group
+                    .wavetable_source()?
+                    .as_ref()
+                    .and_then(|source| crate::wavetable::admitted(source, v.key_tracking));
                 if let Some(wave) = &mut wavetable {
-                    for (name, target) in [("ENGINE_PAR_WT_POSITION", &mut wave.position), ("ENGINE_PAR_WT_PHASE", &mut wave.phase), ("ENGINE_PAR_WT_FORM", &mut wave.form1), ("ENGINE_PAR_WT_FORM2", &mut wave.form2)] {
+                    for (name, target) in [
+                        ("ENGINE_PAR_WT_POSITION", &mut wave.position),
+                        ("ENGINE_PAR_WT_PHASE", &mut wave.phase),
+                        ("ENGINE_PAR_WT_FORM", &mut wave.form1),
+                        ("ENGINE_PAR_WT_FORM2", &mut wave.form2),
+                    ] {
                         if let Some(value) = self.script_par(name, index as i32, -1, -1) {
-                            *target = sampler_core::EngineParameterLaw::Linear { low: 0., high: 1. }.decode(value) as f32;
+                            *target = sampler_core::EngineParameterLaw::Linear { low: 0., high: 1. }
+                                .decode(value) as f32;
                         }
                     }
-                    for (name, target) in [("ENGINE_PAR_WT_FORM_MODE", &mut wave.form1_type), ("ENGINE_PAR_WT_FORM2_MODE", &mut wave.form2_type)] {
+                    for (name, target) in [
+                        ("ENGINE_PAR_WT_FORM_MODE", &mut wave.form1_type),
+                        ("ENGINE_PAR_WT_FORM2_MODE", &mut wave.form2_type),
+                    ] {
                         if let Some(value) = self.script_par(name, index as i32, -1, -1) {
-                            if matches!(value, 0 | 16) { *target = value as u8; }
-                            else { self.unsupported(&at, "wavetable phase form write", value, ir::Reason::NotModeled); }
+                            if matches!(value, 0 | 16) {
+                                *target = value as u8;
+                            } else {
+                                self.unsupported(
+                                    &at,
+                                    "wavetable phase form write",
+                                    value,
+                                    ir::Reason::NotModeled,
+                                );
+                            }
                         }
                     }
-                    if self.dynamic { self.unsupported(&at, "wavetable live engine parameters", source.mode, not_modeled); }
-                } else { self.unsupported(&at, "wavetable source", source.mode, not_modeled); }
+                    if self.dynamic {
+                        self.unsupported(
+                            &at,
+                            "wavetable live engine parameters",
+                            source.mode,
+                            not_modeled,
+                        );
+                    }
+                } else {
+                    self.unsupported(&at, "wavetable source", source.mode, not_modeled);
+                }
             }
             // v1 plays every other mode as a sampler, with an explicit limitation.
-            Ok(source) if source.mode != 0 => self.unsupported(&at, "source mode (played as a sampler)", source.mode, not_modeled),
+            Ok(source) if source.mode != 0 => self.unsupported(
+                &at,
+                "source mode (played as a sampler)",
+                source.mode,
+                not_modeled,
+            ),
             Ok(_) => {}
             Err(error) => self.unsupported(&at, "source module", error, ir::Reason::Unknown),
         }
@@ -1233,9 +1267,16 @@ impl Translation {
                     });
                     chain = Some(ir::ChainRef(self.ir.chains.len() - 1));
                     for &(slot, processor) in &filter_slots {
-                        if slots.iter().find(|s| s.slot == slot).is_some_and(|s|
-                            matches!(s.params(), Some(crate::effects::Params::Filter { kind: 2 | 3, .. }))) {
-                            self.cutoff_octaves.insert((chain.unwrap().0, processor), crate::effects::LEGACY_CUTOFF_OCTAVES);
+                        if slots.iter().find(|s| s.slot == slot).is_some_and(|s| {
+                            matches!(
+                                s.params(),
+                                Some(crate::effects::Params::Filter { kind: 2 | 3, .. })
+                            )
+                        }) {
+                            self.cutoff_octaves.insert(
+                                (chain.unwrap().0, processor),
+                                crate::effects::LEGACY_CUTOFF_OCTAVES,
+                            );
                         }
                     }
                     self.eq_controls(index, chain.unwrap(), &filter_slots);
@@ -1753,10 +1794,26 @@ impl Translation {
                 "Gain" if native => ir::ProcessorParameter::Gain,
                 _ => return None,
             };
-            let depth = if native { ir::Depth::Normalized(i) }
-                else { ir::Depth::Pitch(ir::Pitch::Semitones(
-                    12. * self.cutoff_octaves.get(&(chain.0, *index)).copied().unwrap_or(10.) * i)) };
-            Some((ir::Target::Processor { chain, index: *index, parameter }, depth))
+            let depth = if native {
+                ir::Depth::Normalized(i)
+            } else {
+                ir::Depth::Pitch(ir::Pitch::Semitones(
+                    12. * self
+                        .cutoff_octaves
+                        .get(&(chain.0, *index))
+                        .copied()
+                        .unwrap_or(10.)
+                        * i,
+                ))
+            };
+            Some((
+                ir::Target::Processor {
+                    chain,
+                    index: *index,
+                    parameter,
+                },
+                depth,
+            ))
         });
         if target.slot.is_some() && addressed.is_none() {
             return report(
@@ -3205,18 +3262,38 @@ mod modulation {
     #[test]
     fn legacy_cutoff_span_does_not_change_an_adjacent_sv_slot() {
         let mut t = translation();
-        let filter = ir::Processor::Filter(ir::Filter { kind: ir::FilterKind::LowPass { poles: 2 },
-            cutoff: ir::Frequency::Hertz(1000.), resonance: ir::Resonance::Q(0.7) });
-        t.ir.chains.push(ir::Chain { scope: ir::Scope::Voice,
-            pre_amplitude: vec![filter], post_amplitude: vec![filter] });
-        t.cutoff_octaves.insert((0, 1), crate::effects::LEGACY_CUTOFF_OCTAVES);
+        let filter = ir::Processor::Filter(ir::Filter {
+            kind: ir::FilterKind::LowPass { poles: 2 },
+            cutoff: ir::Frequency::Hertz(1000.),
+            resonance: ir::Resonance::Q(0.7),
+        });
+        t.ir.chains.push(ir::Chain {
+            scope: ir::Scope::Voice,
+            pre_amplitude: vec![filter],
+            post_amplitude: vec![filter],
+        });
+        t.cutoff_octaves
+            .insert((0, 1), crate::effects::LEGACY_CUTOFF_OCTAVES);
         for (slot, expected) in [(0, -30.), (5, -26.88)] {
-            let route = t.route("group", ir::ModulatorRef(0), true,
-                &ModTarget { slot: Some(slot), ..target("filterCutoff", -0.25) },
-                Some((ir::ChainRef(0), &[(0, 0), (5, 1)]))).unwrap();
-            let ir::Depth::Pitch(depth) = t.ir.routes[route.0].depth else { panic!("pitch depth") };
-            assert!((depth.semitones() - expected).abs() < 1e-6,
-                "a legacy post-amplitude slot must not change the neighboring SV law");
+            let route = t
+                .route(
+                    "group",
+                    ir::ModulatorRef(0),
+                    true,
+                    &ModTarget {
+                        slot: Some(slot),
+                        ..target("filterCutoff", -0.25)
+                    },
+                    Some((ir::ChainRef(0), &[(0, 0), (5, 1)])),
+                )
+                .unwrap();
+            let ir::Depth::Pitch(depth) = t.ir.routes[route.0].depth else {
+                panic!("pitch depth")
+            };
+            assert!(
+                (depth.semitones() - expected).abs() < 1e-6,
+                "a legacy post-amplitude slot must not change the neighboring SV law"
+            );
         }
     }
 

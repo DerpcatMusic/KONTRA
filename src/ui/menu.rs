@@ -216,8 +216,18 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                     });
                 }
             }
-            if !items.is_empty() { items.push(Item::Rule); }
-            items.push(check("Original instrument", part.snapshot.is_empty(), Command::SelectSnapshot { slot: *slot, source: part.source(), path: String::new() }));
+            if !items.is_empty() {
+                items.push(Item::Rule);
+            }
+            items.push(check(
+                "Original instrument",
+                part.snapshot.is_empty(),
+                Command::SelectSnapshot {
+                    slot: *slot,
+                    source: part.source(),
+                    path: String::new(),
+                },
+            ));
             items.push(act("Load preset…", "", Command::LoadSnapshot(*slot)));
             items
         }
@@ -480,12 +490,35 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
         }
         Target::LibrarySort => {
             use super::browser::Source;
-            let mut items: Vec<_> = crate::library::Sort::ALL.into_iter()
-                .map(|sort| check(sort.label(), cx.settings.sort == sort, Command::SortLibraries(sort))).collect();
-            items.extend([Item::Rule, Item::Info("Show presets".into()),
-                check("All libraries", cx.state.source.is_none(), Command::BrowseSource(None)),
-                check("Favorites", cx.state.source == Some(Source::Favorites), Command::BrowseSource(Some(Source::Favorites))),
-                check("Recent", cx.state.source == Some(Source::Recent), Command::BrowseSource(Some(Source::Recent)))]);
+            let mut items: Vec<_> = crate::library::Sort::ALL
+                .into_iter()
+                .map(|sort| {
+                    check(
+                        sort.label(),
+                        cx.settings.sort == sort,
+                        Command::SortLibraries(sort),
+                    )
+                })
+                .collect();
+            items.extend([
+                Item::Rule,
+                Item::Info("Show presets".into()),
+                check(
+                    "All libraries",
+                    cx.state.source.is_none(),
+                    Command::BrowseSource(None),
+                ),
+                check(
+                    "Favorites",
+                    cx.state.source == Some(Source::Favorites),
+                    Command::BrowseSource(Some(Source::Favorites)),
+                ),
+                check(
+                    "Recent",
+                    cx.state.source == Some(Source::Recent),
+                    Command::BrowseSource(Some(Source::Recent)),
+                ),
+            ]);
             items
         }
         Target::Libraries => {
@@ -574,9 +607,14 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 ),
                 Item::Rule,
             ]);
-            if cx.selection.auto_align {timing_items(cx,slot,&mut items);}
-            if part.snapshot_base() { items.insert(1, act("Load preset…", "", Command::LoadSnapshot(slot))); }
-            items.extend([Item::Info("MPE".into()),
+            if cx.selection.auto_align {
+                timing_items(cx, slot, &mut items);
+            }
+            if part.snapshot_base() {
+                items.insert(1, act("Load preset…", "", Command::LoadSnapshot(slot)));
+            }
+            items.extend([
+                Item::Info("MPE".into()),
                 check("MPE off", !part.mpe, Command::MpeZone(slot, 0)),
                 check(
                     "Lower zone",
@@ -1082,7 +1120,8 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
             {
                 cx.snapshot(slot, path);
             } else {
-                cx.state.notice = "Preset ignored: the base instrument changed while its menu was open.".into();
+                cx.state.notice =
+                    "Preset ignored: the base instrument changed while its menu was open.".into();
             }
         }
         Command::LoadSnapshot(slot) => {
@@ -1101,7 +1140,9 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
                     from,
                 };
                 if !cx.state.picker.ask(ask) {
-                    cx.state.notice = "No file dialog here: drop a .nksn preset onto this instrument's header.".into();
+                    cx.state.notice =
+                        "No file dialog here: drop a .nksn preset onto this instrument's header."
+                            .into();
                 }
             }
         }
@@ -1123,7 +1164,10 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
         Command::BrowseSource(source) => {
             cx.state.source = source;
             cx.state.cursor = None;
-            cx.p.shared.libraries.edit(|settings| { settings.last_library.clear(); settings.last_row.clear(); });
+            cx.p.shared.libraries.edit(|settings| {
+                settings.last_library.clear();
+                settings.last_row.clear();
+            });
         }
         Command::SortLibraries(sort) => shared.libraries.edit(|s| s.sort = sort),
         Command::Pin(dir) => {

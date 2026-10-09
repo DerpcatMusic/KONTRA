@@ -404,10 +404,18 @@ pub(crate) fn start_ranges(
     for zone in &instrument.zones {
         let (asset, playback) = (zone.asset.0, &zone.playback);
         let pcm = &assets[asset];
-        if zone.group.is_some_and(|g| instrument.groups[g.0].wavetable.is_some()) {
+        if zone
+            .group
+            .is_some_and(|g| instrument.groups[g.0].wavetable.is_some())
+        {
             // port v1 bank.rs::spans: any cycle can be read at every oscillator sample.
-            let end = playback.end.unwrap_or(pcm.frame_count() as u64).min(pcm.frame_count() as u64);
-            if playback.start < end { ranges[asset].push(playback.start as usize..end as usize); }
+            let end = playback
+                .end
+                .unwrap_or(pcm.frame_count() as u64)
+                .min(pcm.frame_count() as u64);
+            if playback.start < end {
+                ranges[asset].push(playback.start as usize..end as usize);
+            }
             continue;
         }
         let ratio = f64::from(pcm.sample_rate()) / f64::from(rate);
@@ -641,14 +649,25 @@ impl Streamer {
         pinned_wavetables: HashSet<AssetId>,
     ) -> io::Result<(Self, usize)> {
         let span = crate::audit::Span::new("sample_preload");
-        let table: HashMap<_, _> = assets.iter().zip(ranges).map(|(pcm, ranges)| (pcm.asset_id(), ranges)).collect();
-        let mandatory = pinned_wavetables.iter().try_fold(0usize, |sum, id| {
-            table.get(id)?.iter().try_fold(sum, |sum, range| {
-                sum.checked_add((range.end - range.start).checked_mul(size_of::<sampler_core::Frame>())?)
+        let table: HashMap<_, _> = assets
+            .iter()
+            .zip(ranges)
+            .map(|(pcm, ranges)| (pcm.asset_id(), ranges))
+            .collect();
+        let mandatory = pinned_wavetables
+            .iter()
+            .try_fold(0usize, |sum, id| {
+                table.get(id)?.iter().try_fold(sum, |sum, range| {
+                    sum.checked_add(
+                        (range.end - range.start).checked_mul(size_of::<sampler_core::Frame>())?,
+                    )
+                })
             })
-        }).ok_or_else(|| io::Error::other("invalid wavetable residency size"))?;
+            .ok_or_else(|| io::Error::other("invalid wavetable residency size"))?;
         if mandatory > head_budget {
-            return Err(io::Error::other("complete wavetable cycles exceed the resident head budget"));
+            return Err(io::Error::other(
+                "complete wavetable cycles exceed the resident head budget",
+            ));
         }
         let mut bytes = 0;
         let mut read = HashSet::new();
@@ -723,7 +742,11 @@ impl Streamer {
         let mut held: usize = assets.iter().map(bytes).sum();
         let mut idle: Vec<&Pcm> = assets
             .iter()
-            .filter(|pcm| !self.pinned_wavetables.contains(&pcm.asset_id()) && pcm.head_frames() > 0 && pcm.last_played() < before)
+            .filter(|pcm| {
+                !self.pinned_wavetables.contains(&pcm.asset_id())
+                    && pcm.head_frames() > 0
+                    && pcm.last_played() < before
+            })
             .collect();
         idle.sort_unstable_by_key(|pcm| pcm.last_played());
         let mut freed = 0;
@@ -916,7 +939,16 @@ impl Streamed {
         report.pool_bytes = cache.bytes();
         drop(pool_span);
         let ranges = start_ranges(&loaded.instrument, &kept, rate, head, &policy);
-        let pinned_wavetables = loaded.instrument.zones.iter().filter(|zone| zone.group.is_some_and(|g| loaded.instrument.groups[g.0].wavetable.is_some())).map(|zone| kept[zone.asset.0].asset_id()).collect();
+        let pinned_wavetables = loaded
+            .instrument
+            .zones
+            .iter()
+            .filter(|zone| {
+                zone.group
+                    .is_some_and(|g| loaded.instrument.groups[g.0].wavetable.is_some())
+            })
+            .map(|zone| kept[zone.asset.0].asset_id())
+            .collect();
         let (streamer, bytes) = Streamer::start(
             sources,
             &kept,
