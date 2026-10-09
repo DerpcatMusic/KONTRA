@@ -102,12 +102,16 @@ def observe(host, plugin, item, folder):
                 job = subprocess.Popen([str(host), str(plugin), str(native), '5', str(ready), str(prefix)],
                                        stdout=output, stderr=capture.stderr, env=env)
                 deadline = time.monotonic()+150
+                checkpoints = {}
                 while job.poll() is None:
                     assert time.monotonic() < deadline, 'host lifecycle deadline'
                     if not ready.exists():
                         selected = selected_loads(log_rows(capture.root), item, programs)
                         if len(selected) == len(programs) and all(s in ('loaded','partial') for s in selected.values()): ready.touch()
                         assert 'failed' not in selected.values(), 'selected plugin load failed'
+                    for phase in PHASES:
+                        if phase not in checkpoints and Path(str(prefix)+'.'+phase).exists():
+                            checkpoints[phase] = selected_loads(log_rows(capture.root), item, programs)
                     time.sleep(.05)
                 output.seek(0); raw = output.read()
             receipt.update(returncode=job.returncode, stdout_sha256=hashlib.sha256(raw).hexdigest())
@@ -119,6 +123,7 @@ def observe(host, plugin, item, folder):
             selected = selected_loads(logs,item,programs)
             finished = list(selected.values())
             receipt['selected_loads'] = selected
+            receipt['selected_loads_at_native_state_save'] = checkpoints
             receipt['renderer_stages'] = [label for r in logs if r.get('event') == 'native_window'
                 for text,label in [('GPU ready','gpu-ready'),('GPU unavailable','gpu-unavailable'),('waiting for first frame','window-ready')]
                 if text in r.get('data',{}).get('reason','')]
