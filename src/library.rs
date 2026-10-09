@@ -375,6 +375,8 @@ pub struct Shelf {
     pub libraries: Vec<Library>,
     pub snapshots: HashMap<PathBuf, Snapshots>,
     pub bank_issues: Vec<BankIssue>,
+    /// Catalogued banks whose programs declare additional access requirements.
+    pub bank_status: BTreeMap<PathBuf, String>,
     /// Unavailable filesystem entries retained for per-root diagnostics.
     pub path_issues: BTreeMap<PathBuf, String>,
     /// Prepared once by the library worker, never scanned during painting.
@@ -407,7 +409,7 @@ impl Shelf {
             .map(|(n, l)| (l.dir.clone(), n))
             .collect();
         let by_name = libraries.iter().enumerate().map(|(n, l)| (l.name.clone(), n)).collect();
-        Self { libraries, by_dir, by_name, per_root: Vec::new(), snapshots: HashMap::new(), bank_issues: Vec::new(), path_issues: BTreeMap::new() }
+        Self { libraries, by_dir, by_name, per_root: Vec::new(), snapshots: HashMap::new(), bank_issues: Vec::new(), bank_status: BTreeMap::new(), path_issues: BTreeMap::new() }
     }
 
     /// The library `path` is in: the nearest library folder above it.
@@ -478,6 +480,7 @@ pub struct Progress {
     pub running: AtomicBool,
     bank_issues: Mutex<BTreeMap<(bool, String), BTreeSet<PathBuf>>>,
     path_issues: Mutex<BTreeMap<PathBuf, String>>,
+    bank_status: Mutex<BTreeMap<PathBuf, String>>,
 }
 
 /// One catalog problem and every bank affected by it.
@@ -799,10 +802,13 @@ fn cached_presets(dir: &Path, progress: &Progress, cache: &mut cache::Cache) -> 
             cache.observe(path);
             out.push(e.into_path());
         } else if path.extension().is_some_and(|x| x.eq_ignore_ascii_case("ufs")) {
-            if let Some(cache::Metadata::Bank(members)) = cache.memo(path, || match sampler_uvi::Bank::catalog(path) {
-                Ok(members) => Some(cache::Metadata::Bank(members)),
+            if let Some(cache::Metadata::Bank(members, status)) = cache.memo(path, || match sampler_uvi::Bank::catalog_status(path) {
+                Ok((members, status)) => Some(cache::Metadata::Bank(members, status)),
                 Err(e) => { progress.bank_issue(path, e); None }
-            }) { out.extend(members.into_iter().map(|member| path.join(member))); }
+            }) {
+                if let Some(status) = status { lock(&progress.bank_status).insert(path.into(), status); }
+                out.extend(members.into_iter().map(|member| path.join(member)));
+            }
         }
     }
     let mut matched = HashMap::new();
@@ -898,6 +904,7 @@ fn cached_scan(roots: &[Root], progress: &Progress, cache: &mut cache::Cache) ->
     shelf.per_root = per_root;
     shelf.snapshots = snapshots;
     shelf.path_issues = lock(&progress.path_issues).clone();
+    shelf.bank_status = lock(&progress.bank_status).clone();
     shelf.bank_issues = lock(&progress.bank_issues).iter().map(|((unsupported, message), locations)| BankIssue {
         unsupported: *unsupported, message: message.clone(), locations: locations.iter().cloned().collect(),
     }).collect();
@@ -1208,11 +1215,13 @@ impl Scanner {
                     let per_root = std::mem::take(&mut shelf.per_root);
                     let snapshots = std::mem::take(&mut shelf.snapshots);
                     let bank_issues = std::mem::take(&mut shelf.bank_issues);
+                    let bank_status = std::mem::take(&mut shelf.bank_status);
                     let path_issues = std::mem::take(&mut shelf.path_issues);
                     let mut shelf = Shelf::new(shelf.libraries);
                     shelf.per_root = per_root;
                     shelf.snapshots = snapshots;
                     shelf.bank_issues = bank_issues;
+                    shelf.bank_status = bank_status;
                     shelf.path_issues = path_issues;
                     Scanned { shelf: Arc::new(shelf), files: Arc::new(files), artwork, imported }
                 });
@@ -1266,7 +1275,7 @@ impl Scanner {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     #[test]
     fn looking_up_library_size_does_not_walk_sample_directories() {
         let scanner = super::Scanner::default();
@@ -1322,7 +1331,7 @@ mod tests {
     }
 
     #[cfg(feature = "library-access")]
-    fn clear_bank(path: &Path) {
+    pub(crate) fn clear_bank(path: &Path) {
         fn append(bytes: &mut Vec<u8>, payload: &[u8]) -> u64 {
             let pointer = bytes.len() as u64 + 8;
             bytes.extend((payload.len() as u64).to_le_bytes());
@@ -1366,6 +1375,43 @@ mod tests {
         std::fs::write(path, bytes).unwrap();
     }
 
+    #[cfg(feature = "library-access")]
+    pub(crate) fn clear_sample_bank(path: &Path, wav: &[u8]) {
+        clear_bank(path);
+        let mut bytes = std::fs::read(path).unwrap();
+        let point = |bytes: &mut [u8], at: usize, value: u64| bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+        let append = |bytes: &mut Vec<u8>, payload: &[u8]| {
+            let offset = bytes.len() + 8;
+            bytes.extend((payload.len() as u64).to_le_bytes());
+            bytes.extend(payload);
+            offset
+        };
+        let member = bytes.windows(4).position(|x| x == 0x675850e4u32.to_le_bytes()).unwrap();
+        let xml = br#"<UVI4><Program Name="Clear tone"><Layers><Layer><Keygroups><Keygroup LowKey="60" HighKey="60"><Oscillators><SamplePlayer SamplePath="note.wav" BaseNote="60"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program></UVI4>"#;
+        let offset = append(&mut bytes, xml);
+        point(&mut bytes, member + 260, xml.len() as u64);
+        point(&mut bytes, member + 268, offset as u64);
+        let mut file = vec![0; 289];
+        file[..4].copy_from_slice(&0x675850e4u32.to_le_bytes());
+        file[4..12].copy_from_slice(b"note.wav");
+        let sample = append(&mut bytes, &file);
+        let offset = append(&mut bytes, wav);
+        point(&mut bytes, sample + 260, wav.len() as u64);
+        point(&mut bytes, sample + 268, offset as u64);
+        let mut leaf = vec![0; 8 + 2 * 264 + 16];
+        leaf[..4].copy_from_slice(&0x3ca86aafu32.to_le_bytes());
+        leaf[4..8].copy_from_slice(&2u32.to_le_bytes());
+        leaf[8..19].copy_from_slice(b"preset.uvip");
+        point(&mut leaf, 264, member as u64);
+        leaf[272..280].copy_from_slice(b"note.wav");
+        point(&mut leaf, 528, sample as u64);
+        leaf[536..].fill(255);
+        let table = append(&mut bytes, &leaf);
+        let descriptor = bytes.windows(4).position(|x| x == 0x1847b398u32.to_le_bytes()).unwrap();
+        for offset in [4, 12, 20] { point(&mut bytes, descriptor + offset, table as u64); }
+        std::fs::write(path, bytes).unwrap();
+    }
+
     #[test]
     #[cfg(feature = "library-access")]
     fn w10_uvi_catalog_does_not_prepare_unavailable_member_payloads() {
@@ -1375,9 +1421,15 @@ mod tests {
         let mut bytes = std::fs::read(&path).unwrap();
         let member = bytes.windows(4).position(|x| x == 0x675850e4u32.to_le_bytes()).unwrap();
         bytes[member + 276] = 2;
-        std::fs::write(&path, bytes).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
         let (shelf, files) = scan(&[Root { path: root.to_string_lossy().into_owned(), single: false }], &Progress::default()).unwrap();
         assert_eq!((shelf.libraries.len(), files.len()), (1, 1), "cataloging requires directory metadata, not content preparation");
+        assert_eq!(shelf.bank_status.get(&path).map(String::as_str), Some("1 of 1 presets need content access before they can load."));
+        bytes[member + 276] = 9;
+        std::fs::write(&path, &bytes).unwrap();
+        let (unknown, files) = scan(&[Root { path: root.to_string_lossy().into_owned(), single: false }], &Progress::default()).unwrap();
+        assert_eq!(files.len(), 1, "an unknown protection mode must not hide a catalogued preset");
+        assert_eq!(unknown.bank_status.get(&path).map(String::as_str), Some("1 of 1 presets use an unsupported protection mode."));
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -1387,6 +1439,11 @@ mod tests {
         let root = tree("uvi-flat-banks", &[]);
         clear_bank(&root.join("Alpha.ufs"));
         clear_bank(&root.join("Beta.UFS"));
+        let alpha = root.join("Alpha.ufs");
+        let mut bytes = std::fs::read(&alpha).unwrap();
+        let member = bytes.windows(4).position(|x| x == 0x675850e4u32.to_le_bytes()).unwrap();
+        bytes[member + 276] = 2;
+        std::fs::write(&alpha, bytes).unwrap();
         let roots = [Root { path: root.to_string_lossy().into_owned(), single: false }];
         let mut cache = cache::Cache::default();
         let (shelf, files) = cached_scan(&roots, &Progress::default(), &mut cache).unwrap();
@@ -1397,7 +1454,9 @@ mod tests {
         let mut cache = cache::Cache::load(Some(&index));
         let (warm, warm_files) = cached_scan(&roots, &Progress::default(), &mut cache).unwrap();
         assert_eq!((warm.libraries.len(), warm_files), (2, files));
-        assert_eq!(cache.stats.reads, 0, "unchanged accessible banks retain their catalog");
+        assert_eq!(cache.stats.reads, 0, "unchanged banks retain their catalog and access status");
+        assert_eq!(warm.bank_status, shelf.bank_status);
+        assert_eq!(warm.bank_status.len(), 1, "clear bank must not receive an access warning");
         std::fs::remove_dir_all(root).unwrap();
     }
 
