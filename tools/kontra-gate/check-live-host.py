@@ -35,6 +35,20 @@ assert measured_status(complete) == 'MEASURED'
 for change in [{'contention':'CONTENDED'}, {'contention':'UNKNOWN'}, {'peak':0}, {'nonfinite':1}, {'returncode':1}, {'events_dispatched':11}, {'native_state_verified':False}, {'native_state_verified':None}]:
     assert measured_status(dict(complete, **change)) == 'UNKNOWN'
 print('PASS: silent, incomplete and contended runs cannot certify live playback')
+audit = dict(complete, cpu_audit={'steady': {'blocks': 141}, 'steady_peak': .2}, underruns=0, profiled=False)
+assert measured_status(audit) == 'MEASURED'
+for change in [{'cpu_audit': {}}, {'cpu_audit': {'steady': {'blocks': 141}, 'steady_peak': 0}},
+               {'underruns': None}, {'profiled': True}, {'profiled': True, 'profiler_exit_code': 1}]:
+    assert measured_status(dict(audit, **change)) == 'UNKNOWN'
+for code in (0, -2):
+    assert measured_status(dict(audit, profiled=True, profiler_exit_code=code, profile_samples_steady=10)) == 'MEASURED'
+assert measured_status(dict(audit, profiled=True, profiler_exit_code=0, profile_samples_steady=0)) == 'UNKNOWN'
+print('PASS: audit requires audible steady window, underrun evidence and successful requested profiler')
+from live_host import steady_leaf_samples
+leaves = '\n'.join(f'100.{fraction}: 123 (fixture)' for fraction in ('249999999', '250000000', '999999999')) + '\n101.000000000: 123 (fixture)\n'
+assert len(steady_leaf_samples(leaves, 100_000_000_000)) == 2
+assert steady_leaf_samples(leaves + 'invalid timestamp\n', 100_000_000_000) == []
+print('PASS: realtime leaf-IP profile excludes attack, release and teardown')
 
 from pathlib import Path
 import json, tempfile
