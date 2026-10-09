@@ -853,6 +853,40 @@ fn nis_and_raw_chunks_roundtrip_without_losing_opaque_metadata() {
 }
 
 #[test]
+fn ahdsr_legacy_and_current_layouts_keep_their_versions() {
+    use ni_file::kontakt::{Chunk, objects::EnvelopeAhdsr};
+    for (version, tail) in [(0x10u16, 16), (0x11, 52), (0x11, 55)] {
+        let mut data = vec![0];
+        data.extend(version.to_le_bytes());
+        for value in [-0.0f32, 10.0, 500.0, 20.0, 300.0, 0.5] {
+            data.extend(value.to_le_bytes());
+        }
+        data.push(0x93);
+        data.extend(0..tail);
+        let original = Chunk { id: 0x3f, data };
+        let mut envelope = EnvelopeAhdsr::try_from(&original).unwrap();
+        assert_eq!(envelope.to_chunk().unwrap().data, original.data);
+        assert_eq!(envelope.hold_ms, 20.0);
+        envelope.attack_ms = 1234.5;
+        let edited = envelope.to_chunk().unwrap();
+        assert_eq!(&edited.data[1..3], &version.to_le_bytes());
+        assert_eq!(EnvelopeAhdsr::try_from(&edited).unwrap(), envelope);
+        let minimum = if version == 0x10 { 44 } else { 80 };
+        for end in 0..minimum {
+            assert!(EnvelopeAhdsr::try_from(&Chunk { id: 0x3f, data: original.data[..end].to_vec() }).is_err());
+        }
+        let mut wrong = original.data.clone();
+        wrong[1] = if version == 0x10 { 0x11 } else { 0x10 };
+        assert!(EnvelopeAhdsr::try_from(&Chunk { id: 0x3f, data: wrong }).is_err());
+        let mut unknown = original.data.clone();
+        unknown[1] = 0x12;
+        assert!(EnvelopeAhdsr::try_from(&Chunk { id: 0x3f, data: unknown }).is_err());
+        envelope.sustain = f32::NAN;
+        assert!(envelope.to_chunk().is_err());
+    }
+}
+
+#[test]
 fn envelope_records_preserve_metadata_and_validate_edits() {
     use ni_file::kontakt::{
         Chunk,
