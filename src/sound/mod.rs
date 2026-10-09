@@ -22,6 +22,7 @@
 
 pub mod articulation;
 pub mod edits;
+pub(crate) mod effect_controls;
 pub mod event;
 pub mod mics;
 pub mod mix;
@@ -375,6 +376,7 @@ pub trait Core: Send {
     fn set_control(&mut self, part: usize, control: sampler_ui_ir::ControlId, value: f64) -> bool;
     /// The control's current value, which scripts may also change.
     fn control_value(&self, part: usize, control: sampler_ui_ir::ControlId) -> Option<f64>;
+    fn effect_value(&self, _part: usize, _address: sampler_core::ParameterAddress) -> Option<f64> { None }
     /// Hand `part`'s queued script effects to `each` with their script
     /// instance, in order, until it returns false; the rest stay queued.
     fn take_effects(&mut self, part: usize, each: &mut dyn FnMut(usize, &sampler_core::Effect) -> bool);
