@@ -131,6 +131,7 @@ pub fn view(
     for band in clusters(face, controls, true, SECTION_GAP) {
         let mut sections = Vec::new();
         for group in clusters(face, band, false, SECTION_GAP) {
+            let section_index = group[0].0;
             let top = group
                 .iter()
                 .map(|&n| face.page_rect(n).y)
@@ -181,9 +182,10 @@ pub fn view(
                         _ => (152., CONTROL),
                     };
                     let (width, height) = (width * scale, height * scale);
+                    let label = name(face, n);
                     cells.push(
                         col![
-                            caption(name(face, n)).lines(1).fill(secondary()),
+                            caption(label.clone()).lines(1).min_w(0).fill(secondary()).tip(label).id(format!("{namespace}-caption-{}", n.0)),
                             ir_view::widget_state(
                                 ui,
                                 namespace,
@@ -206,16 +208,15 @@ pub fn view(
                 }
                 strips.push(col(cells).gap(SPACE).align(Align::Center).shrink(0));
             }
-            let body = row(strips).gap(INSET).align(Align::Start).shrink(0);
+            let body = row(strips).wrap().gap(INSET).align(Align::Start).w(Len::Pct(100.)).min_w(0).shrink(0);
             sections.push(
                 match title {
-                    Some(t) => col![section(&t), rule(), body].gap(SPACE),
+                    Some(t) => col![section(&t).tip(t).id(format!("{namespace}-section-{section_index}")), rule(), body].gap(SPACE),
                     None => col![body],
                 }
                 .pad(INSET)
-                .radius(2)
                 .fill(Role::Ink.alpha(0.035))
-                .shrink(0),
+                .min_w(0),
             );
         }
         bands.push(
@@ -233,5 +234,5 @@ pub fn view(
     let body=col(bands).gap(INSET).pad(INSET).w(Len::Pct(100.)).shrink(0).named("KONTRA performance controls");
     let mut layers=vec![body];
     if let Some(popup)=ir_view::menu_popup(ui,namespace,face,scale,values,input,size.width,size.height) {layers.push(popup);}
-    stack(layers).w(Len::Pct(100.)).shrink(0).id(root)
+    stack(layers).w(Len::Pct(100.)).min_w(0).shrink(0).id(root)
 }

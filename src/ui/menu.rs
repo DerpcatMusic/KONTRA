@@ -601,6 +601,7 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, window: Size) -> Option<El> {
                 .h(ROW)
                 .focusable()
                 .a11y(A11y::Button)
+                .tip(label.clone())
                 .named(label)
                 .when(tip.is_some(), |e| e.tip(tip.unwrap()))
                 .id(id)
