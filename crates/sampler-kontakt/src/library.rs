@@ -1155,17 +1155,27 @@ impl Translation {
             ir::GroupRef(self.ir.groups.len()),
             v.start_criteria.clone(),
         ));
+        let mut wavetable = None;
         match group.source_identity() {
-            // v1 plays every mode but wavetable (9) as a sampler; so does this.
             Ok(source) if source.mode == 9 => {
-                self.unsupported(&at, "wavetable source", source.mode, not_modeled)
+                wavetable = group.wavetable_source()?.as_ref().and_then(|source| crate::wavetable::admitted(source, v.key_tracking));
+                if let Some(wave) = &mut wavetable {
+                    for (name, target) in [("ENGINE_PAR_WT_POSITION", &mut wave.position), ("ENGINE_PAR_WT_PHASE", &mut wave.phase), ("ENGINE_PAR_WT_FORM", &mut wave.form1), ("ENGINE_PAR_WT_FORM2", &mut wave.form2)] {
+                        if let Some(value) = self.script_par(name, index as i32, -1, -1) {
+                            *target = sampler_core::EngineParameterLaw::Linear { low: 0., high: 1. }.decode(value) as f32;
+                        }
+                    }
+                    for (name, target) in [("ENGINE_PAR_WT_FORM_MODE", &mut wave.form1_type), ("ENGINE_PAR_WT_FORM2_MODE", &mut wave.form2_type)] {
+                        if let Some(value) = self.script_par(name, index as i32, -1, -1) {
+                            if matches!(value, 0 | 16) { *target = value as u8; }
+                            else { self.unsupported(&at, "wavetable phase form write", value, ir::Reason::NotModeled); }
+                        }
+                    }
+                    if self.dynamic { self.unsupported(&at, "wavetable live engine parameters", source.mode, not_modeled); }
+                } else { self.unsupported(&at, "wavetable source", source.mode, not_modeled); }
             }
-            Ok(source) if source.mode != 0 => self.unsupported(
-                &at,
-                "source mode (played as a sampler)",
-                source.mode,
-                not_modeled,
-            ),
+            // v1 plays every other mode as a sampler, with an explicit limitation.
+            Ok(source) if source.mode != 0 => self.unsupported(&at, "source mode (played as a sampler)", source.mode, not_modeled),
             Ok(_) => {}
             Err(error) => self.unsupported(&at, "source module", error, ir::Reason::Unknown),
         }
@@ -1485,6 +1495,7 @@ impl Translation {
             )));
         }
         self.ir.groups.push(ir::Group {
+            wavetable,
             name: v.name,
             gain: ir::Gain::Linear(f64::from(v.volume)),
             pan: ir::Pan {
