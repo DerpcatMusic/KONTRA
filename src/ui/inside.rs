@@ -525,7 +525,6 @@ fn info(cx: &Cx, slot: usize, inst: Option<&ir::Instrument>) -> El {
         row![caption(k.to_owned()).fill(secondary()).w(TEXT * 8.).shrink(0), body(val.clone()).lines(1).min_w(0).tip(val).id(format!("info-{slot}-{k}"))].gap(SPACE).align(Align::Center).shrink(0)
     };
     let mut rows = Vec::new();
-    rows.push(pair("Instrument", super::rack::name(cx, slot)));
     rows.push(pair("File", cx.selection.parts[slot].path.clone()));
     if let Some(r) = &v.report {
         let d = &r.decoded;
