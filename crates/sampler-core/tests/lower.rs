@@ -1850,3 +1850,80 @@ fn compressor_descriptors_have_live_typed_physical_lanes() {
         );
     }
 }
+
+
+fn native_primary_fixture() -> ir::Instrument {
+    let mut ir = ir::Instrument {
+        assets: vec![asset("native-primary")],
+        groups: vec![ir::Group::default()],
+        zones: vec![ir::Zone {
+            group: Some(ir::GroupRef(0)),
+            amplitude: Some(ir::ModulatorRef(0)),
+            pitch: ir::KeyTracking::Fixed,
+            velocity: ir::VelocityResponse::None,
+            ..ir::Zone::new(ir::AssetRef(0))
+        }],
+        modulators: vec![ir::Modulator {
+            scope: ir::Scope::Voice,
+            source: ir::ModulationSource::Envelope(ir::Envelope {
+                attack: ir::Time::Milliseconds(125.01293),
+                attack_shape: ir::Curve::Exponential(12.),
+                release: ir::Time::Milliseconds(250.0013),
+                ..Default::default()
+            }),
+        }],
+        ..Default::default()
+    };
+    ir.source_indices.modulators.push(ir::SourceModulator {
+        group: 0, slot: 7, external: false, name: "primary".into(),
+        runtime: Some(ir::ModulatorRef(0)),
+    });
+    ir.source_indices.ahdsrs.push(ir::SourceAhdsr {
+        group: 0, slot: 7, attack_ms: 125.01293, attack_curve: -1.,
+        hold_ms: 0., decay_ms: 0., sustain: 1., release_ms: 250.0013,
+        ahd_only: false, native_amplitude: true,
+    });
+    ir
+}
+
+#[test]
+fn lowered_native_primary_runs_the_pinned_evaluator_in_production_voice() {
+    use sampler_core::v1_voice_controls::{Ahdsr, ControlDescription, ControlPlan, ControlState};
+    for processed in [false, true] {
+        let mut ir = native_primary_fixture();
+        if processed {
+            ir.chains.push(ir::Chain {
+                scope: ir::Scope::Voice,
+                post_amplitude: vec![ir::Processor::Gain(ir::Gain::Linear(1.))],
+                pre_amplitude: vec![]
+            });
+            ir.zones[0].chain = Some(ir::ChainRef(0));
+        }
+        let plan = ControlPlan::prepare(ControlDescription {
+            amplitude: Ahdsr::from(&ir.source_indices.ahdsrs[0]),
+            native_amplitude: true, ..Default::default()
+        }, 48000.).unwrap();
+        let mut expected = ControlState::new(&plan);
+        let mut rt = Runtime::new(lower(&ir, 48000, vec![constant(1.)], no_behaviors).unwrap(), limits()).unwrap();
+        let mut output = [[0.; 2]; 128];
+        let mut amp = [0.; 128];
+        let mut positions = [0; 128];
+        for reuse in 0..2 {
+            expected = if reuse == 0 { expected } else { ControlState::new(&plan) };
+            support::without_heap(|| { rt.trigger(input(60), 60, 1.).unwrap(); });
+            for (block, n) in [1, 7, 31, 32, 33, 64, 17, 3].into_iter().enumerate() {
+                output.fill([0.; 2]);
+                if block == 5 {
+                    expected.release(&plan);
+                    support::without_heap(|| { rt.note_off(input(60), None).unwrap(); });
+                }
+                expected.render(&plan, 120., 1., &mut amp[..n], None, None, &mut positions[..n]).unwrap();
+                support::without_heap(|| rt.render(&mut output[..n]).unwrap());
+                for (i, (frame, value)) in output[..n].iter().zip(&amp).enumerate() {
+                    assert_eq!(frame.map(f32::to_bits), [value.to_bits(); 2], "processed={processed} reuse={reuse} block={block} frame={i}");
+                }
+            }
+            rt.panic();
+        }
+    }
+}
