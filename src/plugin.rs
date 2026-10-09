@@ -1957,7 +1957,7 @@ fn prepare_snapshot(
         trace.finish("canceled");
         return None;
     }
-    params.shared.view.lock_unpoisoned().parts[request.slot].status = "Loading snapshot…".into();
+    params.shared.view.lock_unpoisoned().parts[request.slot].status = "Loading preset…".into();
     let part = params.selection.read_unpoisoned().parts[request.slot].clone();
     let rack_streaming = params.selection.read_unpoisoned().streaming;
     let load = LoadRequest {
@@ -2050,7 +2050,7 @@ fn prepare_snapshot(
             trace.fail(&message);
             let report = trace.finish("failed");
             let mut view = params.shared.view.lock_unpoisoned();
-            view.parts[request.slot].status = format!("Snapshot was not loaded: {message}");
+            view.parts[request.slot].status = format!("Preset was not loaded: {message}");
             view.parts[request.slot].trace = Some(report);
             None
         }
@@ -3904,26 +3904,11 @@ mod settings_parity_tests {
         assert_eq!(report["status"], "failed");
         assert!(report["failure"].is_string());
         crate::diagnostics::flush(std::time::Duration::from_secs(5)).unwrap();
-        assert!(
-            crate::diagnostics::snapshot()
-                .events
-                .iter()
-                .any(
-                    |event| event.load_id.as_deref() == report["load_id"].as_str()
-                        && event.event == "load_finished"
-                        && event.details["status"] == "failed"
-                ),
-            "failed validation is retained in the diagnostic journal"
-        );
-        assert!(
-            p.shared.view.lock_unpoisoned().parts[0]
-                .status
-                .contains("Snapshot was not loaded")
-        );
-        assert!(
-            p.shared
-                .queue_snapshot(0, &part, "/unavailable-kontakto/stale.nksn".into())
-        );
+        assert!(crate::diagnostics::snapshot().events.iter().any(|event|
+            event.load_id.as_deref() == report["load_id"].as_str() && event.event == "load_finished"
+                && event.details["status"] == "failed"), "failed validation is retained in the diagnostic journal");
+        assert!(p.shared.view.lock_unpoisoned().parts[0].status.contains("Preset was not loaded"));
+        assert!(p.shared.queue_snapshot(0, &part, "/unavailable-kontakto/stale.nksn".into()));
         p.selection.write_unpoisoned().parts[0].snapshot = "replacement.nksn".into();
         p.shared.view.lock_unpoisoned().parts[0].status = "replacement".into();
         assert!(prepare_snapshot(&p).is_none());
