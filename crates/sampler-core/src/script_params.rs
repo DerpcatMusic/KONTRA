@@ -698,7 +698,15 @@ impl Runtime {
         if id > 1000 && !user {
             return Ok(());
         }
-        if let Some(note) = self.resolve_source_event(plan, event)? {
+        // Port v1's bounded target scan for a mark union or all source events.
+        let many = event == 0x3fff_fffe || (event > 0 && event & 0x2000_0000 != 0);
+        let single = if many { None } else { self.resolve_source_event(plan, event)? };
+        let range = if many { 0..self.notes.slots.len() }
+            else if let Some(note) = single { note.0.index..note.0.index + 1 } else { 0..0 };
+        for index in range {
+            let Some(note) = self.notes.slots[index].value else { continue };
+            if note.plan != plan || (many && event != 0x3fff_fffe
+                && self.note_events[index].marks & (event as u32 & 0x0fff_ffff) == 0) { continue; }
             // Modulator values are normalized to +-1e6; user parameters keep
             // any integer (a script stores event ids in them).
             let limit = if user { i64::from(i32::MAX) } else { 1_000_000 };
@@ -707,7 +715,7 @@ impl Runtime {
             } else {
                 value.clamp(-limit, limit)
             } as i32;
-            self.note_params[note.0.index].mods.set(id, value);
+            self.note_params[index].mods.set(id, value);
         }
         Ok(())
     }

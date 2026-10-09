@@ -25,6 +25,8 @@ pub struct Environment {
     pub slot: u8,
     pub engine_values: BTreeMap<[i32; 4], i32>,
     pub engine_lookups: Vec<sampler_core::EngineLookup>,
+    /// Physical source zone id -> group, low key, high key.
+    pub zones: BTreeMap<u32, [i32; 3]>,
     /// The Creator Tools performance view (`.nckp`, see [`crate::nckp`]) the
     /// script loads with `load_performance_view`. Names the script uses but
     /// it lacks stay unbound script handles, with a diagnostic.
@@ -1586,7 +1588,18 @@ impl Eval<'_> {
             }
             OutputChannelName | GetFolder | FsGetFilename => V::S(String::new()),
             FindZone => V::I(b::NOT_FOUND),
-            GetNumZones | GetZoneId | GetZonePar | GetPurgeState | GetVoiceLimit
+            GetZonePar => {
+                let zone = self.int(args, 0)?;
+                let parameter = self.int(args, 1)?;
+                let field = match symbol_name(self.hir, parameter).as_deref() {
+                    Some("$ZONE_PAR_GROUP") => Some(0),
+                    Some("$ZONE_PAR_LOW_KEY") => Some(1),
+                    Some("$ZONE_PAR_HIGH_KEY") => Some(2),
+                    _ => None,
+                };
+                V::I(field.and_then(|field| self.env.zones.get(&u32::try_from(zone).ok()?).map(|values| values[field])).unwrap_or(0))
+            }
+            GetNumZones | GetZoneId | GetPurgeState | GetVoiceLimit
             | GetUiWfProperty | EventStatus | GetEventPar | GetEventParArr | GetEventMark => V::I(0),
             // No host consumes zone writes (FindZone finds nothing at init), and
             // Conflux issues three million of them: logging each cost ~1 GB.
