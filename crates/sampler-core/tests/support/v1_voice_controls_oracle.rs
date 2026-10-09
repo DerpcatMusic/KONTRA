@@ -865,7 +865,7 @@ mod lfo_volume {
     }
 }
 mod lfo {
-    use super::{FIXED_ONE, MAX_STEP, PitchLfo, VolumeLfo};
+    use super::{FIXED_ONE, MAX_STEP, PitchLfo, VolumeLfo, frequency};
     /// One note's native source phases and retained pitch/volume interpolators.
     /// The native source clock pauses when bypassed; its audio interpolation
     /// offset advances separately, including short event fragments.
