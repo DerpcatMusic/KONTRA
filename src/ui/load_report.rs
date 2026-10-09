@@ -355,6 +355,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn single_load_problem_expands_to_every_labelled_detail() {
+        let report = Report { missing: vec![Missing::ScriptError {
+            script: "Main".into(), line: 42, column: 9, message: "Long error detail ".repeat(80),
+        }], ..Default::default() };
+        let mut state = State::default();
+        let mut ui = super::super::theme::ui();
+        for _ in 0..3 {
+            let root = view(&mut ui, &mut state, &report).w(500.).h(400.);
+            ui.frame(root, Some(Size::new(500.,400.)), Input::default(), 1./60.).unwrap();
+        }
+        assert!(ui.scene().unwrap().surface("report-entry-0").is_some(), "every problem is an expandable entry, including a single error");
+        assert!(ui.scene().unwrap().surface("report-detail-0").is_none());
+        ui.focus("report-entry-0");
+        for input in [Input { keys: vec![KeyPress { key: Key::Enter, mods: Mods::default() }], ..Default::default() }, Input::default(), Input::default()] {
+            let root = view(&mut ui, &mut state, &report).w(500.).h(400.);
+            ui.frame(root, Some(Size::new(500.,400.)), input, 1./60.).unwrap();
+        }
+        assert!(ui.scene().unwrap().surface("report-detail-0").is_some());
+    }
+
+    #[test]
     fn severe_groups_first_and_samples_collapse() {
         let missing = vec![
             Missing::Effect { module: "Convolution".into(), location: "group 3".into(), params: vec![] },
