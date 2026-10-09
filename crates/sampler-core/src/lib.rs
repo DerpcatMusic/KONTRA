@@ -903,6 +903,7 @@ impl Runtime {
         let rate = plan.rate;
         let mut plans = Arena::new(id, 1);
         let active_plan = PlanId(plans.insert(Generation {
+            script_revision: 0,
             native_cycle: 0,
             native_seed: 0,
             request: 0,
