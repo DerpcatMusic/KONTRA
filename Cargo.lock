@@ -2701,7 +2701,6 @@ dependencies = [
 [[package]]
 name = "mui"
 version = "0.4.0"
-source = "git+https://github.com/Matari-Audio/MUI#dcf0796082feec053af1418e3a38a302ee61da0a"
 dependencies = [
  "color",
  "mui-geometry",
