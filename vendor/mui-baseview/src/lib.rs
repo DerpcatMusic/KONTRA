@@ -346,6 +346,7 @@ pub struct Handler<V> {
     applied_cursor: Option<MouseCursor>,
     /// The current scene is not on screen yet: paint it.
     unpainted: bool,
+    last_panic: Option<String>,
     /// A screen reader's side; only a real window has one.
     a11y: Option<A11y>,
     /// A child of a host's window: keep it pinned to the parent's top.
@@ -409,6 +410,7 @@ impl<V: View> Handler<V> {
             gpu_retry_at: Instant::now(),
             applied_cursor: None,
             unpainted: true,
+            last_panic: None,
             a11y: None,
             parented: false,
             scale,
@@ -550,7 +552,7 @@ impl<V: View> Handler<V> {
                 sample.new_scene = fresh;
             }
             // KONTAKTO patch: the app says whether the pointer hides.
-            let hook = self.requests.pointer.lock().ok().and_then(|h| h.clone());
+            let hook = self.requests.pointer.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
             if let Some(hook) = hook {
                 let mut hook = hook.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 hide = hook(&s.ui);
@@ -762,7 +764,7 @@ impl<V: View> Handler<V> {
             Event::Ime(event) => d.ime(mui_native::native::ime_event(event)),
             Event::Keyboard(key) => {
                 let event = key_event(key);
-                let hook = self.requests.keys.lock().ok().and_then(|h| h.clone());
+                let hook = self.requests.keys.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
                 if let Some(hook) = hook {
                     let mut hook = hook
                         .lock()
@@ -929,9 +931,23 @@ fn drain_events<T>(queue: &RefCell<VecDeque<T>>, mut deliver: impl FnMut(T)) {
 /// panic kills the process before it gets here.
 fn guard<V: View, R>(h: &mut Handler<V>, f: impl FnOnce(&mut Handler<V>) -> R) -> Option<R> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(h))) {
-        Ok(r) => Some(r),
+        Ok(r) => {
+            h.last_panic = None;
+            Some(r)
+        }
         Err(payload) => {
-            log(&h.shared, &format!("mui-baseview: panic in the window, swallowed at the FFI edge: {}", panic_message(payload.as_ref())));
+            let message = panic_message(payload.as_ref());
+            let mut end = message.len().min(4096);
+            while !message.is_char_boundary(end) { end -= 1; }
+            let message = &message[..end];
+            if h.last_panic.as_deref() != Some(message) {
+                log(&h.shared, &format!("mui-baseview: panic in the window, swallowed at the FFI edge: {message}"));
+                h.last_panic = Some(message.to_owned());
+            }
+            h.driver.redraw();
+            h.unpainted = true;
+            if let Some(gpu) = &mut h.gpu { gpu.invalidate(); }
+            if let Some(software) = &mut h.software { software.invalidate(); }
             None
         }
     }

@@ -858,7 +858,7 @@ pub(crate) fn spawn_detached(
 }
 
 /// Keeps the module holding KONTRA's code loaded for the life of the process.
-fn pin_own_module() -> Result<(), String> {
+pub(super) fn pin_own_module() -> Result<(), String> {
     pin_module_containing(pin_own_module as *const std::ffi::c_void)
 }
 
@@ -880,6 +880,10 @@ fn pin_module_containing(address: *const std::ffi::c_void) -> Result<(), String>
             std::ffi::CStr::from_ptr(info.dli_fname).to_bytes(),
         ))
     };
+    #[cfg(target_os = "linux")]
+    if main_executable_contains(address) {
+        return Ok(());
+    }
     // The executable itself (a test binary, a standalone build) is never unloaded.
     let canonical = |path: &std::path::Path| path.canonicalize().ok();
     if canonical(&path).is_some()
@@ -888,6 +892,27 @@ fn pin_module_containing(address: *const std::ffi::c_void) -> Result<(), String>
         return Ok(());
     }
     Err(format!("dlopen refused {}", path.display()))
+}
+
+#[cfg(target_os = "linux")]
+fn main_executable_contains(address: *const std::ffi::c_void) -> bool {
+    unsafe extern "C" fn visit(info: *mut libc::dl_phdr_info, _: usize, data: *mut std::ffi::c_void) -> i32 {
+        // SAFETY: dl_iterate_phdr supplies live loader records; data points to our address.
+        unsafe {
+            let info = &*info;
+            if info.dlpi_name.is_null() || *info.dlpi_name != 0 { return 0; }
+            let address = *data.cast::<usize>();
+            for header in std::slice::from_raw_parts(info.dlpi_phdr, usize::from(info.dlpi_phnum)) {
+                if header.p_type != libc::PT_LOAD { continue; }
+                let start = (info.dlpi_addr as usize).saturating_add(header.p_vaddr as usize);
+                if address >= start && address < start.saturating_add(header.p_memsz as usize) { return 1; }
+            }
+            0
+        }
+    }
+    let mut address = address as usize;
+    // SAFETY: the callback only reads loader records and this stack-local address.
+    unsafe { libc::dl_iterate_phdr(Some(visit), (&mut address as *mut usize).cast()) == 1 }
 }
 
 #[cfg(target_os = "windows")]
@@ -4652,6 +4677,14 @@ mod tests {
                 Ok(())
             );
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn standalone_module_detection_uses_loaded_addresses_not_argv_or_cwd() {
+        assert!(main_executable_contains(pin_own_module as *const std::ffi::c_void));
+        assert!(!main_executable_contains(libc::getpid as *const std::ffi::c_void));
+        assert!(!main_executable_contains(std::ptr::null()));
     }
 
     /// Unload returns while work that waits on the user (an open file dialog) is still blocked.
