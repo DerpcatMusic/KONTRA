@@ -85,6 +85,16 @@ pub(crate) enum PreparedParameter {
     },
 }
 impl PreparedParameter {
+    pub(super) fn held(self, parameters: &[ControlRamp], at: u64, len: usize) -> Option<f64> {
+        #[cfg(test)]
+        PARAMETER_READS.with(|n| n.set(n.get() + 1));
+        match self {
+            Self::Constant(value) => Some(value),
+            Self::Control(lane) => parameters[lane].held(at, len),
+            Self::Expression { .. } => None,
+        }
+    }
+
     pub(super) fn projected(self, parameters: &[ControlRamp]) -> bool {
         matches!(self, Self::Control(lane) if parameters[lane].modulation.is_some())
     }
@@ -97,7 +107,8 @@ impl PreparedParameter {
         at: u64,
         expression: Option<&crate::Expression>,
     ) -> f64 {
-        #[cfg(test)] PARAMETER_READS.with(|n| n.set(n.get() + 1));
+        #[cfg(test)]
+        PARAMETER_READS.with(|n| n.set(n.get() + 1));
         match self {
             Self::Constant(value) => value,
             Self::Control(lane) => parameters[lane].value(at),
@@ -159,6 +170,15 @@ pub(crate) struct ControlRamp {
     modulation: Option<(f64, [f64; 2])>,
 }
 impl ControlRamp {
+    pub(super) fn held(self, at: u64, len: usize) -> Option<f64> {
+        let first = self.value(at);
+        if at.saturating_sub(self.start) >= u64::from(self.frames) || self.from == self.target {
+            return Some(first);
+        }
+        // A linear ramp plus a held modulation offset and clamp is monotone.
+        (first == self.value(at + len.saturating_sub(1) as u64)).then_some(first)
+    }
+
     #[cfg(test)]
     pub(super) fn test_ramp(from: f64, target: f64, start: u64, frames: u32) -> Self {
         Self { from, target, start, frames, modulation: None }
@@ -268,6 +288,19 @@ fn edit_parameters(
 #[cfg(test)]
 mod projection_tests {
     use super::*;
+
+    #[test]
+    fn held_controls_keep_ramp_edges_and_clamped_plateaus() {
+        let ramp = ControlRamp::test_ramp(0., 2., 10, 100);
+        assert_eq!(ramp.held(0, 10), Some(0.));
+        assert_eq!(ramp.held(10, 32), None);
+        assert_eq!(ramp.held(100, 32), None);
+        assert_eq!(ramp.held(110, 32), Some(2.));
+        let projected = ControlRamp { modulation: Some((-1., [0., 2.])), ..ramp };
+        assert_eq!(projected.held(10, 32), Some(0.));
+        assert_eq!(projected.held(40, 32), None);
+        assert_eq!(projected.held(110, 32), Some(1.));
+    }
 
     #[test]
     fn projection_clamps_after_the_base_ramp_and_ordered_route_sum() {
