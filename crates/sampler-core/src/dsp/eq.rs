@@ -153,6 +153,69 @@ impl Eq {
 mod tests {
     use super::*;
 
+    // Literal v1 Section::process_body two-frame SSE arithmetic, expressed as scalars.
+    #[cfg(target_arch = "x86_64")]
+    fn v1_section(c: [f32; 6], s: &mut [f32; 4], left: &mut [f64], right: &mut [f64]) {
+        let [a1,a2,a3,m0,m1,m2] = c;
+        let (b1,b2,b3) = (2.*a1-1.,2.*a2,2.*a3);
+        let (e11,e12,e21,e22) = (b1-1.,-b2,b2,-b3);
+        let f11=e11*e11+e12*e21+2.*e11;
+        let f12=e11*e12+e12*e22+2.*e12;
+        let f21=e21*e11+e22*e21+2.*e21;
+        let f22=e21*e12+e22*e22+2.*e22;
+        let (g1,g2)=(b2+e11*b2+e12*b3,b3+e21*b2+e22*b3);
+        let (c1,c2,d)=(m1*a1+m2*a2,m2*(1.-a3)-m1*a2,m0+m1*a2+m2*a3);
+        let n=left.len();
+        for i in (0..n/2*2).step_by(2) {
+            for ch in 0..2 {
+                let frames=if ch==0 { &mut *left } else { &mut *right };
+                let (x0,x1)=(frames[i] as f32,frames[i+1] as f32);
+                let (s1,s2)=(s[2*ch],s[2*ch+1]);
+                let (u1,u2)=(b2*x0+0.*x1,b3*x0+0.*x1);
+                let (t1,t2)=((e11*s1+u1)+(e12*s2+s1),(e21*s1+u2)+(e22*s2+s2));
+                frames[i]=f64::from((c1*s1+c2*s2)+d*x0);
+                frames[i+1]=f64::from((c1*t1+c2*t2)+d*x1);
+                let (u1,u2)=(g1*x0+b2*x1,g2*x0+b3*x1);
+                s[2*ch]=(f11*s1+u1)+(f12*s2+s1);
+                s[2*ch+1]=(f21*s1+u2)+(f22*s2+s2);
+            }
+        }
+        if n%2==1 {
+            for ch in 0..2 {
+                let frames=if ch==0 { &mut *left } else { &mut *right };
+                let x=frames[n-1] as f32;let (s1,s2)=(s[2*ch],s[2*ch+1]);
+                frames[n-1]=f64::from((c1*s1+c2*s2)+d*x);
+                s[2*ch]=(e11*s1+b2*x)+(e12*s2+s1);
+                s[2*ch+1]=(e21*s1+b3*x)+(e22*s2+s2);
+            }
+        }
+        *s=s.map(|v|if v.abs()<1e-20 {0.} else {v});
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn held_eq_nulls_against_literal_v1_two_frame_section() {
+        use super::super::control::PreparedParameter;
+        let eq=Eq {rate:48000,frequency:PreparedParameter::Constant(0.6),
+            bandwidth:PreparedParameter::Constant(0.4),gain:PreparedParameter::Constant(6.)};
+        let c=coefficients(48000,0.6,0.4,6.);
+        for len in [1,2,3,7,31,32,33,127,128] {
+            let mut state=ProcessorState::default();state.z=[[0.11,-0.02],[0.21,-0.03]];
+            let mut oracle=[0.11,-0.02,0.21,-0.03];
+            for block in 0..3 {
+                let mut actual: Planar=std::array::from_fn(|ch|std::array::from_fn(|i|
+                    f64::from(((i+ch*17+block*3) as f32*0.13).sin()*0.25)));
+                let mut expected=actual;
+                let [l,r]=&mut expected;v1_section(c,&mut oracle,&mut l[..len],&mut r[..len]);
+                eq.process(&mut state,&[],&mut actual,len,(block*len) as u64);
+                assert_eq!(actual.map(|c|c.map(f64::to_bits)),expected.map(|c|c.map(f64::to_bits)),
+                    "v1 two-frame output for len={len} block={block}");
+                assert_eq!(state.z.map(|c|c.map(|v|(v as f32).to_bits())),
+                    [[oracle[0].to_bits(),oracle[1].to_bits()],[oracle[2].to_bits(),oracle[3].to_bits()]]);
+            }
+        }
+    }
+
     #[test]
     fn held_eq_reads_controls_once_and_reuses_coefficients() {
         use super::super::control::{PreparedParameter, PARAMETER_READS};
