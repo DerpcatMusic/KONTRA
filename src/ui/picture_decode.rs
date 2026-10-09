@@ -1,4 +1,5 @@
 //! Bounded authored-image preparation. PNG strips are read a scanline at a time.
+use crate::support::MutexExt;
 use moose::mui::mui::scene::Image;
 use sampler_ui_ir as ir;
 use std::io::Cursor;
@@ -237,7 +238,7 @@ pub(super) fn decode(
     window: Option<[u32; 4]>,
     canceled: impl Fn() -> bool,
 ) -> Option<Image> {
-    let _permit = DECODE.lock().ok()?;
+    let _permit = DECODE.lock_unpoisoned();
     if bytes.starts_with(b"\x89PNG") {
         return png(bytes, meta, frame, target, window, canceled);
     }
