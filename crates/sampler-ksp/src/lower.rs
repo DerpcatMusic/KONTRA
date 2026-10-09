@@ -1063,7 +1063,7 @@ impl Gen<'_, '_> {
     fn sys_readable(&self, array: SysArray) -> bool {
         match array {
             SysArray::Cc | SysArray::KeyDown => true,
-            SysArray::EventPar => self.ui_id.is_some(),
+            SysArray::EventPar => self.ui_id.is_some() || self.note_context(),
             SysArray::GroupsAffected => self.note_context(),
             SysArray::CcTouched => self.ctx == Context::Controller,
             _ => false,
@@ -1091,6 +1091,24 @@ impl Gen<'_, '_> {
                 })
             }
             SysArray::KeyDown => self.emit(I::ReadKeyHeld { local: at }),
+            SysArray::EventPar if self.note_context() => {
+                let (event, bound) = (reg(at, 1)?, reg(at, 2)?);
+                self.set(bound, 0)?;
+                self.emit(I::CompareLocal { lhs: bound, rhs: at, comparison: Cmp::LessEqual })?;
+                let negative = self.jump_if_zero(bound)?;
+                self.set(bound, 16)?;
+                self.emit(I::CompareLocal { lhs: bound, rhs: at, comparison: Cmp::Greater })?;
+                let beyond = self.jump_if_zero(bound)?;
+                self.emit(I::AddLocal { local: at, value: i64::from(sampler_core::USER_EVENT_PAR) })?;
+                self.emit(I::ReadEventId { local: event })?;
+                self.emit(I::ReadModValue { event, id: at, local: at })?;
+                let end = self.jump()?;
+                self.land(negative);
+                self.land(beyond);
+                self.set(at, 0)?;
+                self.land(end);
+                Ok(())
+            }
             SysArray::EventPar => self.emit(I::Op(Op::ReadWidgetEventParameter { local: at })),
             SysArray::GroupsAffected => self.emit(I::ReadAffectedGroup {
                 index: Some(at),

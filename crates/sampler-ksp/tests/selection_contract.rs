@@ -740,3 +740,69 @@ fn dynamic_event_parameter_reads_match_static_fields_and_pending_projection() {
         );
     }
 }
+
+#[test]
+fn legacy_event_parameter_array_routes_a_generated_release_note() {
+    let mut rt = runtime_scripts(vec![
+        compile(
+            "on init declare $child end on
+          on note ignore_event($EVENT_ID) end on
+          on release ignore_event($EVENT_ID)
+            $child := play_note(60,100,0,1000)
+            set_event_par($child,$EVENT_PAR_0,3)
+          end on",
+        ),
+        compile(
+            "on init declare $tag end on
+          on note $tag := %EVENT_PAR[0]
+            select (%EVENT_PAR[0])
+              case 3 disallow_group($ALL_GROUPS)
+            end select
+          end on",
+        ),
+    ]);
+    let mut audio = [[0.; 2]; 64];
+    support::without_heap(|| {
+        let note = rt.trigger(input(1), 60, 100. / 127.).unwrap();
+        rt.key_up(note, None).unwrap();
+        rt.render(&mut audio).unwrap();
+    });
+    assert_eq!(
+        cell(&rt, 1, 0),
+        3,
+        "legacy array must read the child's event tag"
+    );
+    assert_eq!(
+        audio, [[0.; 2]; 64],
+        "dispatch note must not restart the dry sample"
+    );
+}
+
+#[test]
+fn legacy_event_parameter_array_writes_share_custom_storage_and_validate_indexes() {
+    let mut rt = runtime(
+        "on init declare $a declare $b declare $c declare $d end on
+      on note
+        %EVENT_PAR[0] := 27
+        %EVENT_PAR[15] := 931
+        $a := get_event_par($EVENT_ID,$EVENT_PAR_0)
+        $b := get_event_par_arr($EVENT_ID,$EVENT_PAR_CUSTOM,15)
+        %EVENT_PAR[-1] := 123
+        %EVENT_PAR[16] := 456
+        $c := %EVENT_PAR[-1]
+        $d := %EVENT_PAR[16]
+      end on",
+    );
+    support::without_heap(|| {
+        note(&mut rt);
+    });
+    assert_eq!(
+        (
+            cell(&rt, 0, 0),
+            cell(&rt, 0, 1),
+            cell(&rt, 0, 2),
+            cell(&rt, 0, 3)
+        ),
+        (27, 931, 0, 0)
+    );
+}
