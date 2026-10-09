@@ -188,6 +188,10 @@ fn schema(
 }
 
 impl Persistence {
+    #[cfg(all(test, feature = "shots"))]
+    pub(super) fn addresses(&self) -> Vec<Address> {
+        self.state.values.iter().map(|entry| entry.address).collect()
+    }
     fn new(
         runtime: &mut Runtime,
         views: &[sampler_ksp::ScriptView],
