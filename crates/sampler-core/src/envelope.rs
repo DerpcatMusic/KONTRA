@@ -91,6 +91,7 @@ pub struct Envelope {
     release: u32,
     one_shot: bool,
     curves: [Curve; 3],
+    native: Option<crate::v1_voice_controls::native::Native>,
 }
 
 impl Default for Envelope {
@@ -104,6 +105,7 @@ impl Default for Envelope {
             release: 0,
             one_shot: false,
             curves: [Curve::default(); 3],
+            native: None,
         }
     }
 }
@@ -161,6 +163,7 @@ impl Envelope {
         }
     }
     pub(crate) fn with_control(mut self, stage: crate::EnvelopeStage, value: f64) -> Self {
+        self.native = None;
         match stage {
             crate::EnvelopeStage::Sustain => self.sustain = value.clamp(0., 1.) as f32,
             crate::EnvelopeStage::AttackCurve => {
@@ -174,6 +177,8 @@ impl Envelope {
     /// Replace one stage's frames (or Sustain's 0..=1000 level), keeping
     /// the stage's curvature. Script engine parameters; see `script_params`.
     pub(crate) fn with_stage(mut self, stage: crate::EnvelopeStage, value: u32) -> Self {
+        // ponytail: live frame-valued setters use v2 until original native knob values reach this owner.
+        self.native = None;
         use crate::EnvelopeStage as S;
         let recurve = |curve: Curve, frames| Curve::new(EnvelopeCurve(curve.curvature), frames);
         match stage {
@@ -209,7 +214,17 @@ impl Envelope {
         self
     }
 
+    pub(crate) fn with_native_primary(mut self, source: &sampler_ir::SourceAhdsr, rate: u32) -> Result<Self, Error> {
+        let params = crate::v1_voice_controls::Ahdsr::from(source);
+        if !crate::v1_voice_controls::valid_ahdsr(&params) || rate < 10 {
+            return Err(Error::InvalidInput);
+        }
+        self.native = Some(crate::v1_voice_controls::native::Native::new(&params, rate as f32));
+        Ok(self)
+    }
+
     pub fn with_delay(mut self, frames: u32) -> Self {
+        self.native = None;
         self.delay = frames;
         self
     }
@@ -221,6 +236,7 @@ impl Envelope {
         decay: EnvelopeCurve,
         release: EnvelopeCurve,
     ) -> Self {
+        self.native = None;
         self.curves = [
             Curve::new(attack, self.attack),
             Curve::new(decay, self.decay),
@@ -308,6 +324,9 @@ impl EnvelopeState {
     }
 
     fn level(&self) -> f32 {
+        if let Some(native) = &self.shape.native {
+            return native.level();
+        }
         let e = self.shape;
         let curved = self.curve().curvature != 0.0 || self.curve().step;
         let position = self.progress.clamp(0.0, 1.0);
@@ -335,6 +354,10 @@ impl EnvelopeState {
 
     /// Repeated cleanup must never restart an already progressing release.
     pub(super) fn release(&mut self) {
+        if let Some(native) = &mut self.shape.native {
+            native.release();
+            return;
+        }
         if !self.shape.one_shot && !matches!(self.phase, Phase::Release | Phase::Done) {
             self.release_level = self.level();
             self.enter(Phase::Release);
@@ -344,6 +367,8 @@ impl EnvelopeState {
     /// A note released before its storage onset enters release from sustain;
     /// its source and release clock still wait for the first complete window.
     pub(super) fn release_onset(&mut self) {
+        // Storage-onset release starts from sustain under the existing v2 policy.
+        self.shape.native = None;
         if !self.shape.one_shot && !matches!(self.phase, Phase::Release | Phase::Done) {
             self.release_level = self.shape.sustain;
             self.enter(Phase::Release);
@@ -352,32 +377,48 @@ impl EnvelopeState {
 
     /// Capture any curved stage's next level, then apply a non-extending linear fade.
     pub(super) fn choke(&mut self, frames: u32) {
+        if self.shape.native.is_some() && frames as usize >= self.remaining() {
+            return;
+        }
         if (self.shape.one_shot || matches!(self.phase, Phase::Release | Phase::Done))
             && frames as usize >= self.remaining()
         {
             return;
         }
         self.release_level = self.level();
+        self.shape.native = None;
         self.shape.release = frames;
         self.shape.curves[2] = Curve::default();
         self.enter(Phase::Release);
     }
 
     pub(super) fn releasing(&self) -> bool {
+        if let Some(native) = &self.shape.native { return matches!(native.phase(), crate::v1_voice_controls::Phase::Release | crate::v1_voice_controls::Phase::Done); }
         matches!(self.phase, Phase::Release | Phase::Done)
     }
 
-    pub(super) fn editor_phase(&self)->u8 {match self.phase {Phase::Attack=>0,Phase::Hold=>1,Phase::Decay=>2,Phase::Sustain=>3,Phase::Release=>4,Phase::Delay=>5,Phase::Done=>6}}
+    pub(super) fn editor_phase(&self)->u8 {
+        if let Some(native) = &self.shape.native {
+            use crate::v1_voice_controls::Phase as N;
+            return match native.phase() { N::Attack=>0, N::Hold=>1, N::Decay=>2, N::Sustain=>3, N::Release=>4, N::Done=>6, N::Flex=>5 };
+        }
+        match self.phase {Phase::Attack=>0,Phase::Hold=>1,Phase::Decay=>2,Phase::Sustain=>3,Phase::Release=>4,Phase::Delay=>5,Phase::Done=>6}}
     /// The level the next frame starts from.
     pub(super) fn current(&self) -> f32 {
         self.level()
     }
 
     pub(super) fn done(&self) -> bool {
+        if let Some(native) = &self.shape.native {
+            return native.done();
+        }
         self.phase == Phase::Done
     }
 
     pub(super) fn remaining(&self) -> usize {
+        if let Some(native) = &self.shape.native {
+            return native.remaining();
+        }
         let frames = match self.phase {
             Phase::Done => 0,
             Phase::Release => u64::from(self.shape.release - self.age),
@@ -398,6 +439,10 @@ impl EnvelopeState {
 
     /// Only return levels that remain constant indefinitely: callers may skip clocks.
     pub(super) fn constant_level(&self) -> Option<f32> {
+        // Native destination interpolation must drain even after the source reaches sustain.
+        if self.shape.native.is_some() {
+            return None;
+        }
         if self.phase == Phase::Sustain {
             return Some(self.shape.sustain);
         }
@@ -415,6 +460,10 @@ impl EnvelopeState {
     /// Linear stages jump; curved stages still step per frame.
     // ponytail: curved stages step per frame; jump with Curve::at if modulation envelopes get hot.
     pub(super) fn advance(&mut self, mut frames: u32) -> f32 {
+        if let Some(native) = &mut self.shape.native {
+            native.skip(frames as usize);
+            return native.level();
+        }
         while frames > 0 && !matches!(self.phase, Phase::Sustain | Phase::Done) {
             if self.curve().curvature != 0.0 {
                 self.next();
@@ -432,6 +481,11 @@ impl EnvelopeState {
     }
 
     pub(super) fn next(&mut self) -> f32 {
+        if let Some(native) = &mut self.shape.native {
+            let mut out = [0.];
+            native.render(&mut out);
+            return out[0];
+        }
         let value = self.level();
         if matches!(self.phase, Phase::Sustain | Phase::Done) {
             return value;
@@ -462,6 +516,60 @@ impl EnvelopeState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn native_shape(ahd_only: bool) -> Envelope {
+        Envelope::new(96, 32, 96, 0.3, 96).unwrap().with_native_primary(&sampler_ir::SourceAhdsr {
+            group: 0, slot: 0, attack_ms: 2., attack_curve: -0.5,
+            hold_ms: 1., decay_ms: 2., sustain: 0.3, release_ms: 2.,
+            ahd_only, native_amplitude: true,
+        }, 48000).unwrap()
+    }
+
+    #[test]
+    fn native_retirement_bound_counts_the_last_interpolated_point() {
+        for ahd in [false, true] {
+            for offset in [0, 1, 7, 31, 32, 33, 87, 150] {
+                let mut state = EnvelopeState::new(native_shape(ahd));
+                state.advance(offset);
+                if !ahd { state.release(); }
+                let initial = state.remaining();
+                assert!(initial < 1024);
+                for remaining in (1..=initial).rev() {
+                    assert!(!state.done(), "ahd={ahd} offset={offset} initial={initial} remaining={remaining}");
+                    assert_eq!(state.remaining(), remaining, "ahd={ahd} offset={offset}");
+                    state.next();
+                }
+                assert!(state.done());
+                assert_eq!(state.remaining(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn native_setters_fall_back_and_chokes_keep_the_current_level() {
+        let shape = native_shape(false);
+        for stage in crate::engine_parameters::ENVELOPE_STAGES {
+            assert!(shape.with_stage(stage, 17).native.is_none());
+            assert!(shape.with_control(stage, 0.5).native.is_none());
+        }
+        let mut state = EnvelopeState::new(shape);
+        state.advance(63);
+        let current = state.current();
+        state.choke(7);
+        assert_eq!(state.next().to_bits(), current.to_bits());
+        assert_eq!(state.remaining(), 6);
+        state.choke(100);
+        assert_eq!(state.remaining(), 6);
+        state.advance(6);
+        assert!(state.done());
+        let mut releasing = EnvelopeState::new(shape);
+        releasing.advance(80);
+        releasing.release();
+        let mut unchanged = releasing;
+        releasing.choke(releasing.remaining() as u32 + 1);
+        for _ in 0..128 { assert_eq!(releasing.next().to_bits(), unchanged.next().to_bits()); }
+    }
+
 
     #[test]
     fn long_curves_keep_finite_monotone_endpoints_without_counter_overflow() {
