@@ -5871,7 +5871,7 @@ fn rack_interfaces_have_independent_input_identities() {
         col![
             ir_view::view_state(
                 ui,
-                "part-0-",
+                "part-0",
                 &face,
                 ir::PageRef(0),
                 &assets,
@@ -5882,7 +5882,7 @@ fn rack_interfaces_have_independent_input_identities() {
             ),
             ir_view::view_state(
                 ui,
-                "part-1-",
+                "part-1",
                 &face,
                 ir::PageRef(0),
                 &assets,
