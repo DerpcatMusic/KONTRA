@@ -73,20 +73,30 @@ impl Stereo {
             } else {
                 matrix(l, r, width)
             };
-            left[i] = f64::from(l * (1.0 - pan.max(0.0)));
-            right[i] = f64::from(r * (1.0 + pan.min(0.0)));
-            width += (target_width - width) * (1.0f32 / 180.0);
-            // Native SIMD's fourth advance reuses the third delta. Scalar
-            // remainder samples compute a fresh delta (groups restart per call).
-            if i >= len / 4 * 4 || i % 4 != 3 {
-                pan_delta = (target_pan - pan) * f32::from_bits(0x3a11a2b4);
-            }
-            pan += pan_delta;
+            [left[i], right[i]] = balance(l, r, pan);
+            [width, pan, pan_delta] = advance([width, pan, pan_delta], [target_width, target_pan], i, len);
         }
         (state.aux[0], state.aux[1]) = (f64::from(width), f64::from(pan));
     }
 }
 
+#[inline(always)]
+pub(super) fn balance(l: f32, r: f32, pan: f32) -> [f64; 2] {
+    [f64::from(l * (1.0 - pan.max(0.0))), f64::from(r * (1.0 + pan.min(0.0)))]
+}
+
+#[inline(always)]
+pub(super) fn advance([width, mut pan, mut delta]: [f32; 3], [tw, tp]: [f32; 2], i: usize, len: usize) -> [f32; 3] {
+    let width = super::kernels::one_pole32(width, tw, 1.0f32 / 180.0);
+    // Native SIMD reuses the third delta on the fourth sample; groups restart per call.
+    if i >= len / 4 * 4 || i % 4 != 3 {
+        delta = (tp - pan) * f32::from_bits(0x3a11a2b4);
+    }
+    pan += delta;
+    [width, pan, delta]
+}
+
+#[inline(always)]
 pub(super) fn matrix(l: f32, r: f32, width: f32) -> (f32, f32) {
     if width >= 0.5 {
         let spread = 2.0 * width - 1.0;
