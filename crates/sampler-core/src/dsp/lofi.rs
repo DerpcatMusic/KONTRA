@@ -157,3 +157,68 @@ mod tests {
         assert_eq!(reset, whole);
     }
 }
+
+#[cfg(test)]
+mod frozen_kernel_tests {
+    use super::*;
+    fn frozen_process(kernel: &LoFi, state: &mut ProcessorState, block: &mut Planar, len: usize) {
+        let mut retained = std::array::from_fn::<_, 5, _>(|i| state.aux[i] as f32);
+        let mut phase = retained[4];
+        let mut rng = if state.delay_position == 0 {
+            0x9E37_79B9
+        } else {
+            state.delay_position
+        };
+        for i in 0..len {
+            phase += kernel.rate;
+            if phase >= 1.0 {
+                phase -= 1.0;
+                retained[0] = block[0][i] as f32;
+                retained[1] = block[1][i] as f32;
+            }
+            for ch in 0..2 {
+                let mut y = retained[ch];
+                if kernel.step > 0.0 {
+                    y = (y / kernel.step).round() * kernel.step;
+                }
+                if kernel.noise > 0.0 {
+                    rng ^= rng << 13;
+                    rng ^= rng >> 17;
+                    rng ^= rng << 5;
+                    let white = rng as i32 as f32 * (1.0 / 2_147_483_648.0);
+                    retained[2 + ch] += kernel.color * (white - retained[2 + ch]) + 1e-20;
+                    y += kernel.noise * retained[2 + ch];
+                }
+                block[ch][i] = f64::from(y);
+            }
+        }
+        retained[4] = phase;
+        for (out, v) in state.aux.iter_mut().zip(retained) {
+            *out = f64::from(v);
+        }
+        state.delay_position = rng;
+    }
+
+    #[test]
+    fn shared_lofi_matches_frozen_pcm_and_state_bits() {
+        for rate in [44100, 48000, 96000] {
+            let kernel = LoFiSettings { bits: 0.17, frequency: 0.37, noise: 0.63, color: 0.7 }.compile(rate);
+            for len in [0, 1, 3, 4, 17, super::super::BLOCK] {
+                let (mut state, mut expected_state) = (ProcessorState::default(), ProcessorState::default());
+                for block_index in 0..8 {
+                    let mut actual = std::array::from_fn(|c| std::array::from_fn(|i| match block_index {
+                        0 => if i == 0 { 1. } else { 0. },
+                        1 => ((i + 11 * c) as f64 * 0.31).sin() * 0.1,
+                        _ => if i % 2 == 0 { -0. } else { f64::from_bits(1) },
+                    }));
+                    let mut expected = actual;
+                    kernel.process(&mut state, &mut actual, len);
+                    frozen_process(&kernel, &mut expected_state, &mut expected, len);
+                    assert_eq!(actual.map(|c| c.map(f64::to_bits)), expected.map(|c| c.map(f64::to_bits)));
+                    assert_eq!(state.aux.map(f64::to_bits), expected_state.aux.map(f64::to_bits));
+                    assert_eq!(state.delay_position, expected_state.delay_position);
+                }
+            }
+        }
+    }
+}
