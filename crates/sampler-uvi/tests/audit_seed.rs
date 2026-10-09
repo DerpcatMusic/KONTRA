@@ -51,6 +51,7 @@ fn audit_barrier_drains_events_and_due_coroutines_at_virtual_clock() {
     thread.drain(&mut commands);
     assert!(matches!(&commands[..], [Command::Play(p)] if p.key==61 && p.at_ms==2.));
     assert_eq!(thread.next_due(), None);
+    assert!(thread.ui().scan_progress().is_none(), "progress must be explicitly enabled");
 }
 #[test]
 fn audit_barrier_survives_command_and_event_queue_backpressure() {
@@ -124,4 +125,81 @@ fn audit_barrier_publishes_ui_and_faults_before_reply() {
     assert_eq!(loaded.ui.runtime_faults(),(1,0),
         "a completed audit barrier must publish callback faults");
     assert_eq!(thread.scan_faults().runtime_count,1);
+}
+
+#[test]
+fn owner_progress_remains_readable_while_callback_is_blocked() {
+    use sampler_uvi::script::{Files, diagnostics::OwnerPhase};
+    use std::{sync::mpsc, time::Duration};
+    struct HeldModule { entered: mpsc::Sender<()>, release: mpsc::Receiver<()> }
+    impl Files for HeldModule {
+        fn script(&self, module: &str) -> Option<String> {
+            assert_eq!(module, "hold");
+            self.entered.send(()).unwrap();
+            self.release.recv_timeout(Duration::from_secs(5)).unwrap();
+            Some("return {}".into())
+        }
+    }
+    let xml = "<UVI4><Program><EventProcessors><ScriptProcessor><script>
+      function onNote(e) require('hold'); wait(2); playNote(e.note,e.velocity) end
+    </script></ScriptProcessor></EventProcessors></Program></UVI4>";
+    let (entered, waiting) = mpsc::channel();
+    let (release, held) = mpsc::channel();
+    let (mut thread, _) = ScriptThread::spawn(xml.into(), HeldModule { entered, release: held }, Config {
+        audit_seed: Some(42), audit_progress: true, ..Config::default()
+    }).unwrap();
+    let progress = thread.ui().scan_progress().unwrap();
+    let initial = progress.snapshot();
+    thread.set_time(5.);
+    let worker = std::thread::spawn(move || {
+        thread.note_on(1,60,64);
+        let mut commands = Vec::new();
+        thread.drain(&mut commands);
+        assert!(commands.is_empty());
+        assert_eq!(thread.next_due(), Some(7.));
+        thread.tick(7.);
+        thread.drain(&mut commands);
+        assert!(matches!(&commands[..], [Command::Play(p)] if p.key==60 && p.at_ms==7.));
+    });
+    waiting.recv_timeout(Duration::from_secs(5)).unwrap();
+    // A blocked Lua callback cannot service an owner-thread readback request.
+    // These observations use only atomics and must return before release.
+    let busy = progress.snapshot();
+    assert_eq!(busy.phase, OwnerPhase::Events);
+    assert_eq!(busy.clock_ms,5.);
+    assert!(busy.vm_checkpoints > initial.vm_checkpoints);
+    assert!(busy.coroutine_resumes > initial.coroutine_resumes);
+    assert!(busy.work_remaining > 0 && !busy.work_exhausted);
+    assert_eq!(busy.completed_barriers,0);
+    release.send(()).unwrap();
+    worker.join().unwrap();
+    let done = progress.snapshot();
+    assert_eq!((done.requested_barriers,done.completed_barriers),(2,2));
+    assert_eq!((done.requested_clock_ms,done.completed_clock_ms,done.clock_ms),(7.,7.,7.));
+    assert!(done.vm_checkpoints >= busy.vm_checkpoints);
+    assert!(done.coroutine_resumes > busy.coroutine_resumes);
+    println!("synthetic owner busy={busy:?}; complete={done:?}");
+}
+
+#[test]
+fn owner_progress_reports_exhaustion_without_refilling_work() {
+    let xml = "<UVI4><Program><EventProcessors><ScriptProcessor><script>
+      function onNote(e) while true do end end
+    </script></ScriptProcessor></EventProcessors></Program></UVI4>";
+    let mut host = ScriptHost::new(xml, (), Config {
+        audit_seed: Some(42), audit_progress: true, callback_work: 16, ..Config::default()
+    }).unwrap();
+    host.note_on(1,60,64,0);
+    let progress = host.scan_progress().unwrap();
+    let stopped = progress.snapshot();
+    assert_eq!(stopped.work_remaining,0);
+    assert!(stopped.work_exhausted);
+    host.interface();
+    let inspected = progress.snapshot();
+    assert_eq!(inspected.work_remaining,0);
+    assert!(inspected.work_exhausted);
+    let ordinary = ScriptHost::new(xml, (), Config {
+        audit_progress: true, ..Config::default()
+    }).unwrap();
+    assert!(ordinary.scan_progress().is_none(), "unseeded hosts never collect progress");
 }
