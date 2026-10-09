@@ -22,6 +22,7 @@ print('PASS: event plan, native v1-only envelope, unavailable diagnostics')
 
 complete = {'returncode':0, 'events_dispatched':12, 'events_planned':12, 'peak':.5, 'nonfinite':0, 'contention':'QUIET', 'native_state_verified':True}
 assert measured_status(complete) == 'MEASURED'
+assert measured_status(dict(complete, scheduling_diagnostic=True)) == 'UNKNOWN', 'instrumented scheduler diagnostics must not claim CPU acceptance'
 for change in [{'contention':'CONTENDED'}, {'contention':'UNKNOWN'}, {'peak':0}, {'nonfinite':1}, {'returncode':1}, {'events_dispatched':11}, {'native_state_verified':False}, {'native_state_verified':None}]:
     assert measured_status(dict(complete, **change)) == 'UNKNOWN'
 print('PASS: silent, incomplete and contended runs cannot certify live playback')
