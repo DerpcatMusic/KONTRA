@@ -78,7 +78,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    # Cold release-profile test executables exhausted the former 40-minute job.
+    timeout-minutes: 90
     concurrency:
       group: ci-linux-${{ github.workflow }}-${{ github.ref }}
       cancel-in-progress: true
