@@ -422,6 +422,19 @@ fn through(inserts: &str, name: &str) -> Vec<[f32; 2]> {
 
 #[test]
 fn wave_shaper_rectifies_and_comp_exp_compresses() {
+    let translated = sampler_uvi::translate(&insert_program(Some(
+        r#"<CompExp CompThreshold="-30" CompRatio="30" CompAttack="0" CompRelease="100"/>"#,
+    )), std::path::Path::new(".")).unwrap();
+    for (role, default) in [(ir::ProcessorParameter::Threshold, -30.),
+        (ir::ProcessorParameter::Ratio, 30.), (ir::ProcessorParameter::Attack, 0.),
+        (ir::ProcessorParameter::Release, 0.1)] {
+        let binding = translated.instrument.processor_controls.iter()
+            .find(|b| b.parameter == role).expect("compressor role missing");
+        let ir::ControlValue::Continuous { min, max, default: actual, .. } =
+            translated.instrument.controls[binding.control.0].value else { panic!("physical owner") };
+        assert_eq!(actual, default);
+        assert!((min..=max).contains(&default));
+    }
     let peak = |out: &[[f32; 2]]| out[1000..].iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
     let plain = through(r#"<Gain Volume="1"/>"#, "plain");
     let full = through(r#"<WaveShaper Mode="6"/>"#, "full");

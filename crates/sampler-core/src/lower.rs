@@ -950,6 +950,7 @@ impl Lowering<'_> {
             let id = ir_control_id(&control.key);
             let aliases: Vec<_> = plan.engine_parameters.iter().filter(|b| b.control == id).collect();
             registry.register(ParameterDescriptor {
+                role: binding.parameter,
                 address, control: id, name: if control.label.is_empty() { control.key.clone() } else { control.label.clone() }, range: [min, max], default,
                 unit: match unit {
                     ir::ControlUnit::None => ParameterUnit::Linear,
@@ -1371,6 +1372,10 @@ impl Lowering<'_> {
             (Processor::PeakingEq(eq), Gain) => eq.gain_db = parameter,
             (Processor::PeakingEq(eq), Cutoff) => eq.frequency = parameter,
             (Processor::PeakingEq(eq), Resonance) => eq.bandwidth = parameter,
+            (Processor::Compressor(c), Threshold) => c.threshold_db = parameter,
+            (Processor::Compressor(c), Ratio) => c.ratio = parameter,
+            (Processor::Compressor(c), Attack) => c.attack_seconds = parameter,
+            (Processor::Compressor(c), Release) => c.release_seconds = parameter,
             (Processor::StereoModeller(settings), Width) => settings.width = parameter,
             (Processor::StereoModeller(settings), Pan) => settings.pan = parameter,
             _ => return Ok(false),
@@ -1541,10 +1546,10 @@ impl Lowering<'_> {
                 width: r.width,
             }),
             ir::Processor::Compressor(c) => Processor::Compressor(CompressorSettings {
-                threshold_db: c.threshold_db,
-                ratio: c.ratio,
-                attack_seconds: c.attack.seconds(),
-                release_seconds: c.release.seconds(),
+                threshold_db: Parameter::Constant(c.threshold_db),
+                ratio: Parameter::Constant(c.ratio),
+                attack_seconds: Parameter::Constant(c.attack.seconds()),
+                release_seconds: Parameter::Constant(c.release.seconds()),
                 makeup: c.makeup.linear(),
                 link: c.link,
             }),

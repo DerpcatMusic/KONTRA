@@ -770,7 +770,7 @@ impl TraceGraph {
                 "compressor",
                 c.trace_parameters()
                     .into_iter()
-                    .map(|(n, v)| constant(n, v))
+                    .map(|(n, v)| parameter(n, v))
                     .collect(),
                 0,
             ),

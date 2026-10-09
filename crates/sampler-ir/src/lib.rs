@@ -414,6 +414,85 @@ pub struct Zone {
 }
 
 impl Instrument {
+    /// Register physical compressor owners for editors, without claiming native
+    /// normalized laws. Existing authored bindings keep their identities.
+    pub fn register_compressor_controls(&mut self) {
+        let existing: std::collections::BTreeSet<_> = self
+            .processor_controls
+            .iter()
+            .map(|b| (b.chain.0, b.index, b.parameter as u8))
+            .collect();
+        for (chain, processors) in self.chains.iter().enumerate() {
+            for (index, processor) in processors
+                .pre_amplitude
+                .iter()
+                .chain(&processors.post_amplitude)
+                .enumerate()
+            {
+                let Processor::Compressor(c) = *processor else {
+                    continue;
+                };
+                for (parameter, label, default, low, high, unit) in [
+                    (
+                        ProcessorParameter::Threshold,
+                        "Threshold",
+                        c.threshold_db,
+                        -60_f64,
+                        0_f64,
+                        ControlUnit::Decibels,
+                    ),
+                    (
+                        ProcessorParameter::Ratio,
+                        "Ratio",
+                        c.ratio,
+                        1_f64,
+                        20_f64,
+                        ControlUnit::None,
+                    ),
+                    (
+                        ProcessorParameter::Attack,
+                        "Attack",
+                        c.attack.seconds(),
+                        0_f64,
+                        1_f64,
+                        ControlUnit::Seconds,
+                    ),
+                    (
+                        ProcessorParameter::Release,
+                        "Release",
+                        c.release.seconds(),
+                        0_f64,
+                        5_f64,
+                        ControlUnit::Seconds,
+                    ),
+                ] {
+                    if existing.contains(&(chain, index, parameter as u8)) {
+                        continue;
+                    }
+                    let control = ControlRef(self.controls.len());
+                    self.controls.push(Control {
+                        key: format!("compressor:{chain}:{index}:{label}"),
+                        label: label.into(),
+                        value: ControlValue::Continuous {
+                            min: low.min(default),
+                            max: high.max(default),
+                            default,
+                            unit,
+                        },
+                        automation: Automation::None,
+                    });
+                    self.processor_controls.push(ProcessorControl {
+                        control,
+                        chain: ChainRef(chain),
+                        index,
+                        parameter,
+                        ramp: Time::Milliseconds(10.),
+                    });
+                }
+            }
+        }
+    }
+
     /// The controllers that scale zone amplitude, most zones first (ties by
     /// number): the instrument's dynamics or volume sources, so a host can
     /// show "dynamics: CC1" and an expression layer can target it. Counts zones
@@ -1131,6 +1210,10 @@ pub enum ProcessorParameter {
     Cutoff,
     Resonance,
     Gain,
+    Threshold,
+    Ratio,
+    Attack,
+    Release,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
