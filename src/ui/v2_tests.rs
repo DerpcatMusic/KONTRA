@@ -2114,3 +2114,66 @@ fn mapping_audition_editor_close_releases_held_note() {
         assert_eq!(p.shared.keyboard.pop(),Some((0,crate::plugin::Play::Note(60,0))));
     }
 }
+
+#[test]
+fn v1_eq_handles_use_each_band_gain_and_graph_drag_scale() {
+    use sampler_core::{EngineParameterBinding, EngineParameterLaw};
+    use sampler_ir as I;
+    use crate::sound::edits::{Edits, Override, Param};
+    let mut i = I::Instrument::default();
+    i.groups.push(I::Group { chain:Some(I::ChainRef(0)), ..Default::default() });
+    let filter = |kind, hz| I::Processor::Filter(I::Filter { kind,
+        cutoff:I::Frequency::Hertz(hz), resonance:I::Resonance::Q(1.) });
+    i.chains.push(I::Chain { scope:I::Scope::Group(I::GroupRef(0)),
+        pre_amplitude:vec![filter(I::FilterKind::LowPass { poles:2 }, 500.),
+            filter(I::FilterKind::Peak { gain:I::Gain::Decibels(6.) }, 1000.),
+            filter(I::FilterKind::Peak { gain:I::Gain::Decibels(-6.) }, 2000.)],
+        post_amplitude:vec![] });
+    let mut bindings = Vec::new();
+    let mut values = Vec::new();
+    for (band, hz, db, range) in [(0, 1000., 6., 18.), (1, 2000., -6., 24.)] {
+        for (param, parameter, law, native) in [
+            (Param::Freq(3,band), I::ProcessorParameter::Cutoff,
+                EngineParameterLaw::Exponential { low:20., high:20000. }, hz),
+            (Param::Bandwidth(3,band), I::ProcessorParameter::Resonance,
+                EngineParameterLaw::Exponential { low:0.1, high:10. }, 1.),
+            (Param::Gain(3,band), I::ProcessorParameter::Gain,
+                EngineParameterLaw::DecibelGain { low_db:-range, high_db:range }, 10f64.powf(db/20.)),
+        ] {
+            let key = format!("eq-handle-{}", bindings.len());
+            let control = sampler_core::lower::ir_control_id(&key);
+            let reference = I::ControlRef(i.controls.len());
+            i.controls.push(I::Control { key, label:String::new(), value:I::ControlValue::Continuous {
+                min:law.decode(0), max:law.decode(1000000), default:native,
+                unit:I::ControlUnit::None }, automation:I::Automation::None });
+            i.processor_controls.push(I::ProcessorControl { control:reference, chain:I::ChainRef(0),
+                index:usize::from(band)+1, parameter, ramp:I::Time::Milliseconds(0.) });
+            bindings.push(EngineParameterBinding { control, law, address:param.address(0) });
+            values.push((ir::ControlId(control.0),native));
+        }
+    }
+    let make = |edits:&Edits| super::editor_model::Model::new(&i,0,edits,&bindings,&values,48000.);
+    let model = make(&Edits::default());
+    let handles = super::viz::filter_handles(&model.playing);
+    for (band, db, range) in [(0,6.,18.),(1,-6.,24.)] {
+        let param = Param::Gain(3,band);
+        let handle = handles.iter().find(|h| h.x.unwrap().0 == Param::Freq(3,band)).unwrap();
+        assert!((handle.at[1] - super::viz::db_y(db)).abs() < 1e-5,
+            "each EQ handle shows its own gain, independent of other bands and serial filters");
+        assert!((handle.y.unwrap().1 - 60./(2.*range)).abs() < 1e-5,
+            "vertical graph motion must use the admitted gain range");
+        assert_eq!(handle.wheel,Some(Param::Bandwidth(3,band)));
+        let typed = model.typed(param,&format!("{db} dB")).unwrap();
+        assert!((model.display(param,typed)-db).abs() < 0.001);
+        let mut edits = Edits::default();
+        edits.set(Override { group:None, param, offset:handle.y.unwrap().1*0.1 });
+        let changed = make(&edits);
+        let moved = super::viz::filter_handles(&changed.playing);
+        let moved = moved.iter().find(|h| h.x.unwrap().0 == Param::Freq(3,band)).unwrap();
+        assert!((moved.at[1]-handle.at[1]-0.1).abs() < 1e-5,
+            "dragging up one tenth of the graph raises the band's gain by 6 dB");
+        assert!(changed.base == model.base,"player edits preserve the script-set base");
+        edits.reset(param);
+        assert_eq!(super::viz::filter_handles(&make(&edits).playing),handles);
+    }
+}
