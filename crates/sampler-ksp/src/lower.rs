@@ -1,6 +1,5 @@
-//! HIR -> sampler-core programs. One program per callback; functions a callback
-//! reaches are appended to its program as subroutines lowered in the caller's
-//! event context. Expressions evaluate into a destination register and use the
+//! HIR -> sampler-core programs. Callbacks share functions lowered once per
+//! event context; each callback keeps its own entry and admission requirements. Expressions evaluate into a destination register and use the
 //! registers above it as temporaries, keeping callbacks within small budgets.
 use crate::builtins::{self as b, Builtin, SysArray, SysVar};
 use crate::diag::{Fault, Result, Span, fault};
@@ -12,7 +11,10 @@ use sampler_core::{
     ParamScope, Program, RealBinary, RealUnary, ScriptArray, SlotKind, TextPart, TextRef,
     WaitLifetime, real_bits,
 };
-use std::collections::{BTreeMap, HashMap};
+use std::{
+    collections::{BTreeMap, HashSet},
+    ops::Range,
+};
 
 /// Event context a program runs in; decides which event operands exist.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -112,6 +114,17 @@ pub fn name_hash(name: &str) -> i32 {
     h as i32
 }
 
+#[derive(Default)]
+pub struct Module {
+    code: Vec<I>,
+    texts: Vec<String>,
+    group_table: Option<u16>,
+    calls: Vec<(usize, FnId)>,
+    starts: Vec<u32>,
+    ends: Vec<u32>,
+    entries: Vec<(usize, Vec<Range<usize>>, i32, Span)>,
+}
+
 pub struct Unit<'h> {
     pub hir: &'h Hir,
     /// Host control per UI index.
@@ -127,11 +140,13 @@ pub struct Unit<'h> {
     pub warnings: Vec<(Fault, crate::diag::Kind)>,
     /// Scratch text cells used above `hir.texts`.
     pub scratch: u32,
+    pub modules: Vec<(Context, i32, Option<i32>, Module)>,
 }
 
 impl<'h> Unit<'h> {
     pub fn program(
         &mut self,
+        index: usize,
         body: &[Stmt],
         span: Span,
         context: Context,
@@ -144,55 +159,154 @@ impl<'h> Unit<'h> {
                 .map(|ui| b::FIRST_UI_ID + ui as i32),
             _ => None,
         };
+        let cb = callback_type(kind);
+        let module_index = self
+            .modules
+            .iter()
+            .position(|(ctx, ty, sig, _)| (*ctx, *ty, *sig) == (context, cb, signal))
+            .unwrap_or_else(|| {
+                self.modules.push((
+                    context,
+                    cb,
+                    signal,
+                    Module {
+                        starts: vec![u32::MAX; self.hir.functions.len()],
+                        ends: vec![0; self.hir.functions.len()],
+                        ..Module::default()
+                    },
+                ));
+                self.modules.len() - 1
+            });
+        let module = std::mem::take(&mut self.modules[module_index].3);
         let mut g = Gen {
             u: self,
             ctx: context,
-            callback_type: callback_type(kind),
+            callback_type: cb,
             ui_id,
-            code: Vec::new(),
-            texts: Vec::new(),
-            group_table: None,
-            calls: Vec::new(),
-            starts: HashMap::new(),
+            code: module.code,
+            texts: module.texts,
+            group_table: module.group_table,
+            calls: module.calls,
+            starts: module.starts,
+            ends: module.ends,
             loops: Vec::new(),
             span,
             tdepth: 0,
             signal,
         };
+        let start = g.code.len();
+        let first_call = g.calls.len();
         g.block(body)?;
         g.forward()?;
         g.emit(I::End)?;
-        // Append reached functions breadth-first; calls are patched afterwards.
-        let mut next = 0;
+        let end = g.code.len();
+        let root_calls: Vec<_> = g.calls[first_call..].iter().map(|(_, f)| *f).collect();
+        // A function is emitted once per callback context, not once per callback.
+        let mut next = first_call;
         while next < g.calls.len() {
             let f = g.calls[next].1;
             next += 1;
-            if g.starts.contains_key(&f) {
+            if g.starts[f.0 as usize] != u32::MAX {
                 continue;
             }
-            g.starts.insert(f, g.code.len());
+            g.starts[f.0 as usize] = g.code.len() as u32;
             let function = &g.u.hir.functions[f.0 as usize];
             g.span = function.span;
             g.block(&function.body)?;
             g.emit(I::Op(Op::Return))?;
+            g.ends[f.0 as usize] = g.code.len() as u32;
         }
-        for &(at, f) in &g.calls {
+        for &(at, f) in &g.calls[first_call..] {
             g.code[at] = I::Op(Op::Call {
-                target: g.starts[&f] as u32,
+                target: g.starts[f.0 as usize],
             });
         }
-        let texts: Vec<&str> = g.texts.iter().map(String::as_str).collect();
-        Program::new(g.code)
-            .and_then(|p| p.with_texts(&texts))
-            .map(|p| {
-                p.with_wait_lifetime(WaitLifetime::Callback)
-                    .with_source_slot(g.u.slot)
-            })
-            .map_err(|e| Fault {
-                span,
-                builtin: None,
-                message: format!("invalid lowered program: {e:?}"),
-            })
+        let mut ranges = vec![start..end];
+        let mut visited = HashSet::new();
+        let mut reached = root_calls;
+        while let Some(f) = reached.pop() {
+            if !visited.insert(f) {
+                continue;
+            }
+            let range = g.starts[f.0 as usize] as usize..g.ends[f.0 as usize] as usize;
+            reached.extend(
+                g.calls
+                    .iter()
+                    .filter(|(at, _)| range.contains(at))
+                    .map(|(_, f)| *f),
+            );
+            ranges.push(range);
+        }
+        if std::env::var_os("KONTRA_AUDIT_LOWER").is_some() {
+            eprintln!(
+                "AUDIT {{\"stage\":\"ksp_code_owners\",\"slot\":{},\"callback_type\":{},\"body_instructions\":{},\"function_instructions\":{},\"functions\":{},\"calls\":{},\"text_constants\":{},\"text_payload_bytes\":{}}}",
+                g.u.slot,
+                cb,
+                end - start,
+                g.code.len() - end,
+                visited.len(),
+                g.calls.len() - first_call,
+                g.texts.len(),
+                g.texts.iter().map(String::len).sum::<usize>()
+            );
+        }
+        if g.texts.len() > usize::from(u16::MAX) + 1 {
+            return fault(span, "too many shared text constants");
+        }
+        let mut entries = module.entries;
+        entries.push((index, ranges, ui_id.unwrap_or(0), span));
+        let module = Module {
+            code: g.code,
+            texts: g.texts,
+            group_table: g.group_table,
+            calls: g.calls,
+            starts: g.starts,
+            ends: g.ends,
+            entries,
+        };
+        self.modules[module_index].3 = module;
+        Program::new(Vec::new()).map_err(|e| Fault {
+            span,
+            builtin: None,
+            message: format!("invalid lowered program: {e:?}"),
+        })
+    }
+
+    pub fn finish(&mut self, programs: &mut [Program]) -> Result<()> {
+        for (_, _, _, module) in std::mem::take(&mut self.modules) {
+            if std::env::var_os("KONTRA_AUDIT_LOWER").is_some() {
+                eprintln!(
+                    "AUDIT {{\"stage\":\"ksp_shared_module\",\"slot\":{},\"entries\":{},\"instructions\":{},\"instruction_bytes\":{},\"text_constants\":{},\"text_payload_bytes\":{}}}",
+                    self.slot,
+                    module.entries.len(),
+                    module.code.len(),
+                    std::mem::size_of::<I>(),
+                    module.texts.len(),
+                    module.texts.iter().map(String::len).sum::<usize>()
+                );
+            }
+            let texts: Vec<_> = module.texts.iter().map(String::as_str).collect();
+            let shared = Program::new(module.code)
+                .and_then(|p| p.with_texts(&texts))
+                .map_err(|e| Fault {
+                    span: Span::default(),
+                    builtin: None,
+                    message: format!("invalid lowered module: {e:?}"),
+                })?
+                .with_wait_lifetime(WaitLifetime::Callback)
+                .with_source_slot(self.slot);
+            for (index, ranges, ui_id, span) in module.entries {
+                programs[index] = shared
+                    .clone()
+                    .with_entry(ranges[0].start, &ranges, ui_id)
+                    .map_err(|e| Fault {
+                        span,
+                        builtin: None,
+                        message: format!("invalid lowered entry: {e:?}"),
+                    })?;
+            }
+        }
+        Ok(())
     }
 
     /// The group volume, pan and tune writes `on init` left, as one program
@@ -236,6 +350,13 @@ impl<'h> Unit<'h> {
                 write: true,
             }));
         }
+        if std::env::var_os("KONTRA_AUDIT_LOWER").is_some() {
+            eprintln!(
+                "AUDIT {{\"stage\":\"ksp_engine_start_code\",\"slot\":{},\"instructions\":{}}}",
+                self.slot,
+                code.len()
+            );
+        }
         Program::new(code)
             .map(|p| p.with_wait_lifetime(WaitLifetime::Callback))
             .map_err(|e| Fault {
@@ -258,7 +379,8 @@ impl<'h> Unit<'h> {
             texts: Vec::new(),
             group_table: None,
             calls: Vec::new(),
-            starts: HashMap::new(),
+            starts: Vec::new(),
+            ends: Vec::new(),
             loops: Vec::new(),
             span,
             tdepth: 0,
@@ -350,7 +472,8 @@ struct Gen<'u, 'h> {
     /// Base of the group names, appended once as consecutive text constants.
     group_table: Option<u16>,
     calls: Vec<(usize, FnId)>,
-    starts: HashMap<FnId, usize>,
+    starts: Vec<u32>,
+    ends: Vec<u32>,
     /// Condition position of each enclosing `while`, for `continue`.
     loops: Vec<usize>,
     span: Span,
@@ -605,8 +728,8 @@ impl Gen<'_, '_> {
 
     fn assign(&mut self, place: &Place, value: &Expr) -> Result<()> {
         let v = place.var();
-        let var = self.var(v).clone();
-        match (place, var.home) {
+        let home = self.var(v).home;
+        match (place, home) {
             (Place::Var(_), Home::Text(cell)) => self.text_into(value, TextRef::Cell(cell), 0),
             (Place::Elem(_, index), Home::Texts { offset, len }) => {
                 self.value(index, 0)?;
@@ -623,8 +746,8 @@ impl Gen<'_, '_> {
                 })
             }
             (Place::Var(_), _) => {
-                if let (Home::Control(ui), Some(Const::Int(n))) =
-                    (var.home, fold(self.u.hir, value))
+                if let Home::Control(ui) = home
+                    && let Some(Const::Int(n)) = fold(self.u.hir, value)
                 {
                     let (lo, hi) = self.range(ui);
                     self.set(0, i64::from(n.clamp(lo, hi)))?;
@@ -875,6 +998,10 @@ impl Gen<'_, '_> {
 
     fn sys(&mut self, s: SysVar, dst: u16) -> Result<()> {
         let note = self.note_context();
+        if s == SysVar::PitchBend {
+            self.set(dst, 128)?;
+            return self.sys_read(SysArray::Cc, dst);
+        }
         let op = match s {
             SysVar::EventId if note => I::ReadEventId { local: dst },
             SysVar::CallbackId => I::ReadCallbackId { local: dst },
@@ -897,9 +1024,10 @@ impl Gen<'_, '_> {
                 local: dst,
                 value: i64::from(self.callback_type),
             },
+            SysVar::UiId if self.ui_id.is_some() => I::Op(Op::ReadCallbackUiId { local: dst }),
             SysVar::UiId => I::SetLocal {
                 local: dst,
-                value: i64::from(self.ui_id.unwrap_or(0)),
+                value: 0,
             },
             SysVar::SignalType if self.signal.is_some() => I::SetLocal {
                 local: dst,
@@ -935,7 +1063,7 @@ impl Gen<'_, '_> {
     fn sys_readable(&self, array: SysArray) -> bool {
         match array {
             SysArray::Cc | SysArray::KeyDown => true,
-            SysArray::EventPar => self.ui_id.is_some(),
+            SysArray::EventPar => self.ui_id.is_some() || self.note_context(),
             SysArray::GroupsAffected => self.note_context(),
             SysArray::CcTouched => self.ctx == Context::Controller,
             _ => false,
@@ -946,13 +1074,56 @@ impl Gen<'_, '_> {
     fn sys_read(&mut self, array: SysArray, at: u16) -> Result<()> {
         match array {
             SysArray::Cc => {
+                let number = reg(at, 1)?;
+                self.set(number, 0)?;
+                self.emit(I::Binary32 {
+                    lhs: number,
+                    rhs: at,
+                    operation: IB::Or,
+                })?;
                 self.emit(I::ReadInputController {
-                    controller: at,
+                    controller: number,
                     local: at,
                 })?;
-                self.emit(I::ControllerToMidi7 { local: at })
+                self.emit(I::ControllerToScript {
+                    controller: number,
+                    local: at,
+                })
             }
             SysArray::KeyDown => self.emit(I::ReadKeyHeld { local: at }),
+            SysArray::EventPar if self.note_context() => {
+                let (event, bound) = (reg(at, 1)?, reg(at, 2)?);
+                self.set(bound, 0)?;
+                self.emit(I::CompareLocal {
+                    lhs: bound,
+                    rhs: at,
+                    comparison: Cmp::LessEqual,
+                })?;
+                let negative = self.jump_if_zero(bound)?;
+                self.set(bound, 16)?;
+                self.emit(I::CompareLocal {
+                    lhs: bound,
+                    rhs: at,
+                    comparison: Cmp::Greater,
+                })?;
+                let beyond = self.jump_if_zero(bound)?;
+                self.emit(I::AddLocal {
+                    local: at,
+                    value: i64::from(sampler_core::USER_EVENT_PAR),
+                })?;
+                self.emit(I::ReadEventId { local: event })?;
+                self.emit(I::ReadModValue {
+                    event,
+                    id: at,
+                    local: at,
+                })?;
+                let end = self.jump()?;
+                self.land(negative);
+                self.land(beyond);
+                self.set(at, 0)?;
+                self.land(end);
+                Ok(())
+            }
             SysArray::EventPar => self.emit(I::Op(Op::ReadWidgetEventParameter { local: at })),
             SysArray::GroupsAffected => self.emit(I::ReadAffectedGroup {
                 index: Some(at),
@@ -1003,7 +1174,7 @@ impl Gen<'_, '_> {
                 self.value(index, free)?;
                 let scratch = self.scratch();
                 self.emit(I::Op(Op::ReadWidgetDropText {
-                    ui: self.ui_id.unwrap_or(0),
+                    ui: self.ui_id.map_or(0, |_| i32::MIN),
                     kind: array.drop_kind().unwrap(),
                     index: free,
                     text: scratch,
@@ -1021,7 +1192,7 @@ impl Gen<'_, '_> {
             ExprKind::Load(v) if e.ty == Ty::Str => match self.var(*v).home {
                 Home::Text(cell) => TextPart::Text(TextRef::Cell(cell)),
                 Home::Const(k) => match &self.u.hir.consts[k as usize] {
-                    Const::Str(s) => TextPart::Constant(self.constant(&s.clone())),
+                    Const::Str(s) => TextPart::Constant(self.constant(&s)),
                     _ => return Ok(()),
                 },
                 _ => return Ok(()),
@@ -1058,6 +1229,11 @@ impl Gen<'_, '_> {
                         return Ok(());
                     }
                 }
+            }
+            ExprKind::Builtin(Builtin::MfGetLastFilename, _) => {
+                self.emit(I::Op(Op::MidiFilename { text: dst }))?;
+                self.cover(Builtin::MfGetLastFilename, Coverage::Native);
+                return Ok(());
             }
             ExprKind::Builtin(Builtin::FsGetFilename, args) => {
                 self.arg(args, 0, free)?;
@@ -1226,10 +1402,33 @@ impl Gen<'_, '_> {
             if usize::from(count) == sampler_core::EFFECT_ARGS {
                 break;
             }
-            if i == 0 && matches!(builtin, Builtin::SetText | Builtin::AddTextLine | Builtin::SetKnobLabel | Builtin::SetKnobUnit | Builtin::SetKnobDefval | Builtin::SetControlHelp | Builtin::MoveControl | Builtin::MoveControlPx | Builtin::HidePart | Builtin::AddMenuItem | Builtin::SetTableStepsShown) {
-                if let Some(ui) = self.ui_index(args, 0) { self.set(reg(dst, count)?, i64::from(crate::builtins::FIRST_UI_ID + ui as i32))?; }
-                else { self.arg(args, i, reg(dst, count)?)?; }
-            } else { self.arg(args, i, reg(dst, count)?)?; }
+            if i == 0
+                && matches!(
+                    builtin,
+                    Builtin::SetText
+                        | Builtin::AddTextLine
+                        | Builtin::SetKnobLabel
+                        | Builtin::SetKnobUnit
+                        | Builtin::SetKnobDefval
+                        | Builtin::SetControlHelp
+                        | Builtin::MoveControl
+                        | Builtin::MoveControlPx
+                        | Builtin::HidePart
+                        | Builtin::AddMenuItem
+                        | Builtin::SetTableStepsShown
+                )
+            {
+                if let Some(ui) = self.ui_index(args, 0) {
+                    self.set(
+                        reg(dst, count)?,
+                        i64::from(crate::builtins::FIRST_UI_ID + ui as i32),
+                    )?;
+                } else {
+                    self.arg(args, i, reg(dst, count)?)?;
+                }
+            } else {
+                self.arg(args, i, reg(dst, count)?)?;
+            }
             count += 1;
         }
         let service = self.u.service(builtin);
@@ -1556,7 +1755,7 @@ impl Gen<'_, '_> {
                     && let Some(kind) = array.drop_kind()
                 {
                     self.emit(I::Op(Op::ReadWidgetDropCount {
-                        ui: self.ui_id.unwrap_or(0),
+                        ui: self.ui_id.map_or(0, |_| i32::MIN),
                         kind,
                         local: dst,
                     }))?;
@@ -1584,9 +1783,7 @@ impl Gen<'_, '_> {
                 true
             }
             PlayNote => return self.play(args, dst),
-            NoteOff | IgnoreEvent | ChangeNote | ChangeVelo
-                if self.selects_many(builtin, args, 0) =>
-            {
+            ChangeNote | ChangeVelo if self.selects_many(builtin, args, 0) => {
                 return Ok(());
             }
             NoteOff => {
@@ -1610,14 +1807,12 @@ impl Gen<'_, '_> {
                 true
             }
             IgnoreEvent => {
-                // ponytail: another event is released rather than discarded.
                 self.arg(args, 0, dst)?;
-                self.emit(I::KeyUpEvent {
+                self.emit(I::DiscardEvent {
                     event: dst,
-                    delay: None,
+                    current_release: self.ctx == Context::Release,
                 })?;
-                self.cover(builtin, Coverage::Approximate);
-                return Ok(());
+                true
             }
             ChangeNote | ChangeVelo => {
                 self.event_write(builtin == ChangeNote, args, 0, 1, dst)?;
@@ -1719,7 +1914,10 @@ impl Gen<'_, '_> {
             SetController => {
                 self.arg(args, 0, dst)?;
                 self.arg(args, 1, t)?;
-                self.emit(I::ControllerFromMidi7 { local: t })?;
+                self.emit(I::ControllerFromScript {
+                    controller: dst,
+                    local: t,
+                })?;
                 self.emit(I::WriteController {
                     controller: dst,
                     value: t,
@@ -1995,6 +2193,18 @@ impl Gen<'_, '_> {
                 }
                 true
             }
+            GetEventPar
+                if self.const_int(args, 1).is_none() && !self.selects_many(builtin, args, 0) =>
+            {
+                self.arg(args, 0, dst)?;
+                self.arg(args, 1, t)?;
+                self.emit(I::ReadEventParameter {
+                    event: dst,
+                    parameter: t,
+                    local: dst,
+                })?;
+                true
+            }
             FadeIn | FadeOut if !self.selects_many(builtin, args, 0) => {
                 self.arg(args, 0, dst)?;
                 self.arg(args, 1, t)?;
@@ -2058,6 +2268,48 @@ impl Gen<'_, '_> {
                     Key::Fixed(LISTENER_TAG),
                 ];
                 self.store(args, key, dst, true)?;
+                true
+            }
+            builtin if builtin.midi().is_some() => {
+                let action = builtin.midi().unwrap();
+                let has_text = matches!(
+                    action,
+                    sampler_core::MidiAction::ExportArea
+                        | sampler_core::MidiAction::InsertFile
+                        | sampler_core::MidiAction::SaveFile
+                );
+                let text = if has_text {
+                    let text = self.scratch();
+                    self.emit(I::Op(Op::TextClear { text }))?;
+                    if let Some(Arg::Expr(e)) = args.first() {
+                        self.append(e, text, reg(dst, 6)?)?;
+                    }
+                    Some(text)
+                } else {
+                    None
+                };
+                for i in 0..action.arguments() {
+                    self.arg(args, i + usize::from(has_text), reg(dst, 1 + i as u16)?)?;
+                }
+                self.emit(I::Op(Op::Midi {
+                    action,
+                    args: reg(dst, 1)?,
+                    local: dst,
+                    text,
+                }))?;
+                if has_text {
+                    self.tdepth -= 1;
+                }
+                true
+            }
+            ByTrack => {
+                self.arg(args, 0, dst)?;
+                self.set(t, i64::from(sampler_core::MIDI_TRACK_FLAG))?;
+                self.emit(I::Binary32 {
+                    lhs: dst,
+                    rhs: t,
+                    operation: IB::Or,
+                })?;
                 true
             }
             GetUiId => {
@@ -2141,7 +2393,12 @@ impl Gen<'_, '_> {
                 self.emit(I::Op(Op::ResetTimer))?;
                 true
             }
-            WaitAsync | DisableLogging | WatchVar | WatchArrayIdx => {
+            WaitAsync => {
+                self.arg(args, 0, dst)?;
+                self.emit(I::Op(Op::WaitMidi { local: dst }))?;
+                true
+            }
+            DisableLogging | WatchVar | WatchArrayIdx => {
                 // Effects complete immediately; logging switches have no runtime state.
                 true
             }
@@ -2162,8 +2419,6 @@ impl Gen<'_, '_> {
             | SetVoiceLimit
             | LoadIrSample
             | AttachLevelMeter
-            | SetControlParStr
-            | SetControlParStrArr
             | SetText
             | AddTextLine
             | SetKnobLabel
@@ -2215,8 +2470,8 @@ impl Gen<'_, '_> {
                     IgnoreController => "outside on controller is ignored",
                     MakePersistent | MakeInstrPersistent | ReadPersistentVar | LoadNativeUi
                     | LoadPerformanceView | MakePerfview | ExposeControls | SetSnapshotType
-                    | ShowLibraryTab | SetUiHeight | SetUiHeightPx
-                    | SetUiWidthPx | SetScriptTitle | GetFontId => "only takes effect in on init",
+                    | ShowLibraryTab | SetUiHeight | SetUiHeightPx | SetUiWidthPx
+                    | SetScriptTitle | GetFontId => "only takes effect in on init",
                     _ => "is not executed at runtime; result 0",
                 };
                 self.ignore(builtin, why);
@@ -3232,8 +3487,8 @@ fn host_service(builtin: Builtin) -> Coverage {
         | SetMenuItemVisibility
         | SetMenuItemValue
         | SetTableStepsShown
-            | SetSkinOffset
-            | SetUiColor
+        | SetSkinOffset
+        | SetUiColor
         | SetUiWfProperty
         | AttachLevelMeter
         | FsNavigate

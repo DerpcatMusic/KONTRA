@@ -26,14 +26,15 @@ pub fn name(cx: &Cx, slot: usize) -> String {
     if !part.name.is_empty() {
         return part.name.clone();
     }
-    let full = cx.instrument_name(slot).unwrap_or_else(|| super::header::stem(&part.path));
+    let full = cx
+        .instrument_name(slot)
+        .unwrap_or_else(|| super::header::stem(&part.path));
     without_library(&full, &cx.library_of(Path::new(&part.path))).to_owned()
 }
 
 /// A header's height with the rule under it: one line of controls. Parts
 /// shrink no further, and stuck headers stack at this pitch.
 pub const SLIM: f64 = CONTROL + 6.;
-
 
 /// Parts built in a frame before the rack knows where they are.
 const UNPLACED: usize = 4;
@@ -55,29 +56,51 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
     }
     let (view_h, content_h) = {
         let frame = |id: &str| ui.scene().and_then(|s| s.surface(id)).map(|s| s.frame);
-        (frame("rack-view").map_or(0., |f| f.size.height), frame("rack-content").map_or(0., |f| f.size.height))
+        (
+            frame("rack-viewport")
+                .or_else(|| frame("rack-view"))
+                .map_or(0., |f| f.size.height),
+            frame("rack-content").map_or(0., |f| f.size.height),
+        )
     };
     // Offscreen rows have no widget subtree or surface. Reconstruct their
     // positions from the same known body/fixed heights used by part(), rather
     // than asking the layout to keep every header alive just to locate it.
     let mut top = 0.;
     let mut measured = Vec::with_capacity(order.len());
-    let frames: Vec<Option<(f64, f64)>> = order.iter().map(|&slot| {
-        let frame = |id: String| ui.scene().and_then(|s| s.surface(&id)).map(|s| s.frame.size.height);
-        if let Some(body) = frame(format!("body-{slot}")) { cx.state.bodies.insert(slot, body); }
-        let part = &cx.selection.parts[slot];
-        let natural = cx.state.bodies.get(&slot).map(|b| SLIM + b);
-        let set = (!part.collapsed && part.height > 0.).then_some(f64::from(part.height));
-        let target = target_height(part.collapsed, set, natural);
-        let prior = frame(format!("part-{slot}"));
-        measured.push(part.collapsed || natural.is_some() || prior.is_some());
-        let height = cx.state.resizing.filter(|(s, _)| *s == slot).map(|(_, h)| h)
-            .or_else(|| target.map(|h| ui.tween_with(format!("part-h-{slot}"), h, quick()).round()))
-            .or(prior).unwrap_or(SLIM).max(SLIM);
-        let result = Some((top, height));
-        top += height;
-        result
-    }).collect();
+    let frames: Vec<Option<(f64, f64)>> = order
+        .iter()
+        .map(|&slot| {
+            let frame = |id: String| {
+                ui.scene()
+                    .and_then(|s| s.surface(&id))
+                    .map(|s| s.frame.size.height)
+            };
+            if let Some(body) = frame(format!("body-{slot}")) {
+                cx.state.bodies.insert(slot, body);
+            }
+            let part = &cx.selection.parts[slot];
+            let natural = cx.state.bodies.get(&slot).map(|b| SLIM + b);
+            let set = (!part.collapsed && part.height > 0.).then_some(f64::from(part.height));
+            let target = target_height(part.collapsed, set, natural);
+            let prior = frame(format!("part-{slot}"));
+            measured.push(part.collapsed || natural.is_some() || prior.is_some());
+            let height = cx
+                .state
+                .resizing
+                .filter(|(s, _)| *s == slot)
+                .map(|(_, h)| h)
+                .or_else(|| {
+                    target.map(|h| ui.tween_with(format!("part-h-{slot}"), h, quick()).round())
+                })
+                .or(prior)
+                .unwrap_or(SLIM)
+                .max(SLIM);
+            let result = Some((top, height));
+            top += height;
+            result
+        })
+        .collect();
     let sticky = !cx.selection.sticky_off;
     let n = order.len();
     // Where part `i`'s header shows with the rack scrolled to `y`: in place,
@@ -94,7 +117,11 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
             return at.max(0.).min(at + frames[i].map_or(SLIM, |f| f.1) - SLIM);
         }
         let (above, below) = (i as f64 * SLIM, view_h - (n - i) as f64 * SLIM);
-        if at < above { above } else { at.min(below).max(above) }
+        if at < above {
+            above
+        } else {
+            at.min(below).max(above)
+        }
     };
     // Which headers are stuck, and which parts are near enough the view to
     // build, from where the rack was last drawn.
@@ -128,7 +155,12 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
     let mut shape = {
         use std::hash::{DefaultHasher, Hash};
         let mut h = DefaultHasher::new();
-        (&stuck, &near, cx.state.resizing.map(|(s, h)| (s, h.to_bits()))).hash(&mut h);
+        (
+            &stuck,
+            &near,
+            cx.state.resizing.map(|(s, h)| (s, h.to_bits())),
+        )
+            .hash(&mut h);
         h
     };
     let mut omitted = 0.;
@@ -143,44 +175,79 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
         }
         items.push(part(ui, cx, slot, stuck[i], true, &mut shape));
     }
-    if omitted > 0. { items.push(block(Len::Pct(100.), omitted).shrink(0)); }
+    if omitted > 0. {
+        items.push(block(Len::Pct(100.), omitted).shrink(0));
+    }
     if order.is_empty() {
         add_drop(ui, cx, "rack-welcome");
         // The welcome itself uses flex-basis zero to fill its parent. Give
         // that parent a measured height so it remains a real drop surface.
-        items.push(col![instrument::welcome(cx)]
-            .h((view_h - CONTROL - 2. * SPACE).max(240.))
-            .shrink(0)
-            .id("rack-welcome"));
+        items.push(
+            col![instrument::welcome(cx)]
+                .h((view_h - CONTROL - 2. * SPACE).max(240.))
+                .shrink(0)
+                .id("rack-welcome"),
+        );
     }
     items.push(foot(ui, cx));
     // Keep a viewport of quiet canvas after Add. It belongs to this rack's
     // existing scroll content, so the footer can scroll completely above it.
     items.push(empty(ui, cx, view_h.max(240.)));
     let headers: Vec<(usize, El)> = (0..n)
-        .filter(|&i| stuck[i] && frames[i].is_some_and(|(top, _)| {
-            let at = place(i, top, drawn);
-            at + SLIM > 0. && at < view_h
-        }))
-        .map(|i| (i, col![header_at(ui, cx, order[i], true), rule()].gap(0).w(Len::Pct(100.))))
+        .filter(|&i| {
+            stuck[i]
+                && frames[i].is_some_and(|(top, _)| {
+                    let at = place(i, top, drawn);
+                    at + SLIM > 0. && at < view_h
+                })
+        })
+        .map(|i| {
+            (
+                i,
+                col![header_at(ui, cx, order[i], true), rule()]
+                    .gap(0)
+                    .w(Len::Pct(100.)),
+            )
+        })
         .collect();
     // A knob under the pointer turns; the rack scrolls otherwise.
     let mut taken = wheel_taken();
     let mut offsets = std::collections::HashMap::new();
     if let Some(scene) = ui.scene() {
         for surface in scene.surfaces() {
-            if surface.content.height <= surface.frame.size.height && surface.content.width <= surface.frame.size.width { continue; }
+            if surface.content.height <= surface.frame.size.height
+                && surface.content.width <= surface.frame.size.width
+            {
+                continue;
+            }
             let mut parent = surface.parent.clone();
             let mut in_rack = false;
             while let Some(id) = parent {
-                if id.as_str() == "rack-view" { in_rack = true; break; }
+                if id.as_str() == "rack-view" {
+                    in_rack = true;
+                    break;
+                }
                 parent = scene.surface(id.as_str()).and_then(|s| s.parent.clone());
             }
-            if !in_rack { continue; }
+            if !in_rack {
+                continue;
+            }
             let key = surface.key.as_str();
             let offset = ui.scroll(key);
-            let at = ui.pointer().pos.is_some_and(|p| p.x >= surface.frame.x && p.x < surface.frame.x+surface.frame.size.width && p.y >= surface.frame.y && p.y < surface.frame.y+surface.frame.size.height);
-            if at && ui.get("rack-view").wheel != Vec2::ZERO && cx.state.rack_scrolls.get(key).is_some_and(|previous| *previous != offset) {
+            let at = ui.pointer().pos.is_some_and(|p| {
+                p.x >= surface.frame.x
+                    && p.x < surface.frame.x + surface.frame.size.width
+                    && p.y >= surface.frame.y
+                    && p.y < surface.frame.y + surface.frame.size.height
+            });
+            if at
+                && ui.get("rack-view").wheel != Vec2::ZERO
+                && cx
+                    .state
+                    .rack_scrolls
+                    .get(key)
+                    .is_some_and(|previous| *previous != offset)
+            {
                 taken = true;
             }
             offsets.insert(key.to_owned(), offset);
@@ -194,7 +261,13 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
     if let Some(w) = wheel {
         state.rack_y += w.y;
     }
-    let pitch = |i: usize| if sticky && n as f64 * SLIM <= view_h { i as f64 * SLIM } else { 0. };
+    let pitch = |i: usize| {
+        if sticky && n as f64 * SLIM <= view_h {
+            i as f64 * SLIM
+        } else {
+            0.
+        }
+    };
     if let Some(at) = (state.reveal)
         .and_then(|slot| order.iter().position(|s| *s == slot))
         .and_then(|i| measured[i].then(|| frames[i].unwrap().0 - pitch(i)))
@@ -213,7 +286,12 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
     let shape = (std::hash::Hasher::finish(&shape) % 1_000_000) as f64;
     ui.tween_with("rack-shape", shape, Spring::instant());
 
-    let content = col(items).gap(0).align(Align::Stretch).w(Len::Pct(100.)).shrink(0).id("rack-content");
+    let content = col(items)
+        .gap(0)
+        .align(Align::Stretch)
+        .w(Len::Pct(100.))
+        .shrink(0)
+        .id("rack-content");
     // A scroll node for its clip and squeeze, slid by the rack itself: the
     // wheel it claims never reaches the runtime's scrolling, and it shows
     // the rack's own bar instead of the runtime's.
@@ -226,14 +304,50 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
         .no_scrollbar()
         .scrolled(0., y)
         .id("rack-view");
+    let (mut top_clip, mut bottom_clip) = (0.0f64, view_h);
+    for (i, _) in &headers {
+        let top = frames[*i].map_or(0., |f| f.0);
+        let at = place(*i, top, y);
+        if at > top - y + 0.5 {
+            top_clip = top_clip.max(at + SLIM);
+        } else if at < top - y - 0.5 {
+            bottom_clip = bottom_clip.min(at);
+        }
+    }
+    // Clip below sticky chrome, including its translucent rules, without moving the body.
+    let viewport = if view_h > 0. && (top_clip > 0. || bottom_clip < view_h) {
+        stack![viewport.h(view_h).at(0., -top_clip)]
+            .w(Len::Pct(100.))
+            .h((bottom_clip - top_clip).max(0.))
+            .min_h(0)
+            .at(0., top_clip)
+            .clip()
+    } else {
+        viewport
+    };
     let mut layers = vec![viewport];
     for (i, header) in headers {
         let top = frames[i].map_or(0., |f| f.0);
         layers.push(header.at(0., place(i, top, y).round()));
     }
-    let mut row_items = vec![stack(layers).flex(1).min_w(0).min_h(0).h(Len::Pct(100.)).clip()];
+    let mut row_items = vec![
+        stack(layers)
+            .flex(1)
+            .min_w(0)
+            .min_h(0)
+            .h(Len::Pct(100.))
+            .clip()
+            .id("rack-viewport"),
+    ];
     if content_h > view_h + 0.5 && view_h > 0. {
-        row_items.push(scrollbar(ui, "rack-bar", "Scroll the rack", y, view_h, content_h));
+        row_items.push(scrollbar(
+            ui,
+            "rack-bar",
+            "Scroll the rack",
+            y,
+            view_h,
+            content_h,
+        ));
     } else {
         // Reserve the bar's width before the first measured layout. The
         // scroll tail always overflows; appearing later must not move controls.
@@ -256,12 +370,26 @@ fn target_height(collapsed: bool, set: Option<f64>, natural: Option<f64>) -> Opt
 /// it) and follows the edge exactly while it is dragged; a double-click on
 /// the edge folds or unfolds it. A header `stuck` at the rack's edge leaves
 /// its room here; a part not `near` the view keeps its room unbuilt.
-fn part(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool, near: bool, shape: &mut impl std::hash::Hasher) -> El {
+fn part(
+    ui: &mut Ui,
+    cx: &mut Cx,
+    slot: usize,
+    stuck: bool,
+    near: bool,
+    shape: &mut impl std::hash::Hasher,
+) -> El {
     use std::hash::Hash;
     let edge_id = format!("resize-{slot}");
     let (part_h, body_h) = {
-        let height = |id: String| ui.scene().and_then(|s| s.surface(&id)).map(|s| s.frame.size.height);
-        (height(format!("part-{slot}")), height(format!("body-{slot}")))
+        let height = |id: String| {
+            ui.scene()
+                .and_then(|s| s.surface(&id))
+                .map(|s| s.frame.size.height)
+        };
+        (
+            height(format!("part-{slot}")),
+            height(format!("body-{slot}")),
+        )
     };
     if let Some(h) = body_h {
         cx.state.bodies.insert(slot, h);
@@ -269,13 +397,26 @@ fn part(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool, near: bool, shape: &
     // All of it: the header, then its notices and controls.
     let natural = cx.state.bodies.get(&slot).map(|b| SLIM + b);
     // A click anywhere on the part that no control takes selects it.
-    if [format!("part-{slot}"), format!("body-{slot}"), format!("stage-{slot}"), format!("inside-{slot}")].into_iter().any(|id| ui.get(id).clicked) {
+    if [
+        format!("part-{slot}"),
+        format!("body-{slot}"),
+        format!("stage-{slot}"),
+        format!("inside-{slot}"),
+    ]
+    .into_iter()
+    .any(|id| ui.get(id).clicked)
+    {
         cx.state.select(slot);
     }
     let r = ui.get(edge_id.as_str());
     let state = &mut *cx.state;
     if r.dragged {
-        let from = state.resizing.filter(|(s, _)| *s == slot).map(|(_, h)| h).or(part_h).unwrap_or(SLIM);
+        let from = state
+            .resizing
+            .filter(|(s, _)| *s == slot)
+            .map(|(_, h)| h)
+            .or(part_h)
+            .unwrap_or(SLIM);
         let to = (from + r.drag_delta.y).max(SLIM);
         state.resizing = Some((slot, natural.map_or(to, |n| to.min(n))));
     }
@@ -304,9 +445,18 @@ fn part(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool, near: bool, shape: &
     let height = dragging.or(target).map(|to| {
         // On whole points: the rack below stays sharp while it springs.
         let sprung = ui.tween_with(format!("part-h-{slot}"), to, quick()).round();
-        if dragging.is_some() { to.round() } else { sprung }
+        if dragging.is_some() {
+            to.round()
+        } else {
+            sprung
+        }
     });
-    (p.collapsed, set.map(f64::to_bits), natural.map(f64::to_bits)).hash(shape);
+    (
+        p.collapsed,
+        set.map(f64::to_bits),
+        natural.map(f64::to_bits),
+    )
+        .hash(shape);
 
     let mut lines = vec![if stuck {
         block(Len::Pct(100.), SLIM - 1.).shrink(0)
@@ -316,16 +466,29 @@ fn part(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool, near: bool, shape: &
     let room = height.map(|h| h - SLIM);
     if room.is_none_or(|r| r >= 0.5) {
         let body = if near {
-            let mut body: Vec<El> = instrument::notices(cx, slot).into_iter().collect();
+            let mut body: Vec<El> = snapshot_row(ui, cx, slot)
+                .into_iter()
+                .chain(instrument::notices(cx, slot))
+                .collect();
             let stage = instrument::stage(ui, cx, slot);
             body.push(behind(cx, slot, stage));
-            col(body).gap(0).align(Align::Stretch).shrink(0).id(format!("body-{slot}"))
+            col(body)
+                .gap(0)
+                .align(Align::Stretch)
+                .shrink(0)
+                .id(format!("body-{slot}"))
         } else {
             block(Len::Pct(100.), room.unwrap_or(0.)).shrink(0)
         };
         lines.push(match room {
             // What the height shows of it: the rest is clipped.
-            Some(room) => col![body].gap(0).align(Align::Stretch).w(Len::Pct(100.)).h(room).shrink(0).clip(),
+            Some(room) => col![body]
+                .gap(0)
+                .align(Align::Stretch)
+                .w(Len::Pct(100.))
+                .h(room)
+                .shrink(0)
+                .clip(),
             None => body,
         });
     }
@@ -333,19 +496,21 @@ fn part(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool, near: bool, shape: &
     let lift = edge_lift(ui, &edge_id);
     // Over the rule at the part's foot, the accent line.
     let edge = canvas(move |s| edge_mark(s, s.height - 1., false, lift))
-    .w(Len::Pct(100.))
-    .h(EDGE_GRAB + 2.)
-    .anchor(Align::Start, Align::End)
-    .cursor(Cursor::ResizeV)
-    .tip("Drag to size the part, double-click to fold or unfold it")
-    .named("Resize part")
-    .id(edge_id);
-    stack![col(lines).gap(0).align(Align::Stretch).w(Len::Pct(100.)), edge]
         .w(Len::Pct(100.))
-        .shrink(0)
-        .id(format!("part-{slot}"))
+        .h(EDGE_GRAB + 2.)
+        .anchor(Align::Start, Align::End)
+        .cursor(Cursor::ResizeV)
+        .tip("Drag to size the part, double-click to fold or unfold it")
+        .named("Resize part")
+        .id(edge_id);
+    stack![
+        col(lines).gap(0).align(Align::Stretch).w(Len::Pct(100.)),
+        edge
+    ]
+    .w(Len::Pct(100.))
+    .shrink(0)
+    .id(format!("part-{slot}"))
 }
-
 
 /// A part's controls over what the appearance puts behind them.
 fn behind(cx: &mut Cx, slot: usize, stage: El) -> El {
@@ -359,7 +524,10 @@ fn behind(cx: &mut Cx, slot: usize, stage: El) -> El {
             Some(tint) => stage.fill(Color::oklch(0.225, 0.026, tint.hue())),
             None => stage,
         },
-        _ => match cx.looks(&library).and_then(|l| l.backdrop[usize::from(cx.blurred())].clone()) {
+        _ => match cx
+            .looks(&library)
+            .and_then(|l| l.backdrop[usize::from(cx.blurred())].clone())
+        {
             Some(image) => stack![
                 block(Len::Pct(100.), Len::Pct(100.))
                     .fill(Fill::Image(image, moose::mui::mui::scene::Fit::Cover)),
@@ -415,7 +583,15 @@ fn foot(ui: &mut Ui, cx: &mut Cx) -> El {
         format!("Add an instrument · {loaded} loaded")
     };
     let el = row![
-        glyph(Icon::Plus, TEXT, if dragging { Fill::from(Role::Ink) } else { secondary() }),
+        glyph(
+            Icon::Plus,
+            TEXT,
+            if dragging {
+                Fill::from(Role::Ink)
+            } else {
+                secondary()
+            }
+        ),
         caption(text).fill(secondary()).lines(1)
     ]
     .gap(SPACE)
@@ -428,7 +604,9 @@ fn foot(ui: &mut Ui, cx: &mut Cx) -> El {
     .focusable()
     .a11y(A11y::Button)
     .named("Add to rack")
-    .tip("Drop a preset here to add it, or click to search the browser")
+    .tip(
+        "Drop a preset here to add it, or click to search the browser. Multis load the whole rack.",
+    )
     .id("rack-drop")
     .shrink(0);
     interactive(el, false)
@@ -456,7 +634,11 @@ fn neighbors(cx: &mut Cx, slot: usize) -> [Option<String>; 2] {
     let path = cx.selection.parts[slot].path.clone();
     let (files, root, known) = &mut cx.state.neighbors;
     let shelf = Arc::as_ptr(&cx.view.shelf) as usize;
-    if !files.upgrade().is_some_and(|f| Arc::ptr_eq(&f, &cx.view.files)) || *root != shelf {
+    if !files
+        .upgrade()
+        .is_some_and(|f| Arc::ptr_eq(&f, &cx.view.files))
+        || *root != shelf
+    {
         (*files, *root) = (Arc::downgrade(&cx.view.files), shelf);
         known.clear();
     }
@@ -480,7 +662,10 @@ pub const BANNER: (f64, f64) = (TEXT * 36., TEXT * 7.);
 /// How far `slot`'s samples have loaded, 0..1, while they load.
 pub(super) fn loading(cx: &Cx, slot: usize) -> Option<f64> {
     cx.view.parts[slot].loading.then(|| {
-        let done = cx.p.shared.part(slot).map_or(0, |part| part.load_progress.load(Ordering::Relaxed));
+        let done =
+            cx.p.shared
+                .part(slot)
+                .map_or(0, |part| part.load_progress.load(Ordering::Relaxed));
         (f64::from(done) / f64::from(crate::sound::Progress::DONE.0)).clamp(0., 1.)
     })
 }
@@ -538,7 +723,11 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
         ui,
         format!("collapse-{slot}"),
         if collapsed { Icon::Right } else { Icon::Down },
-        if collapsed { "Show controls" } else { "Hide controls" },
+        if collapsed {
+            "Show controls"
+        } else {
+            "Hide controls"
+        },
         false,
     );
     if fold {
@@ -546,18 +735,42 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
     }
     let [before, after] = neighbors(cx, slot);
     let arrow = |ui: &mut Ui, id: String, icon: Icon, name: &str, there: bool| {
-        if there { icon_button(ui, id, icon, name, false) } else { (false, dead_icon(icon, name)) }
+        if there {
+            icon_button(ui, id, icon, name, false)
+        } else {
+            (false, dead_icon(icon, name))
+        }
     };
-    let (previous, prev_el) = arrow(ui, format!("preset-prev-{slot}"), Icon::Left, "Previous preset", before.is_some());
-    let (next, next_el) = arrow(ui, format!("preset-next-{slot}"), Icon::Right, "Next preset", after.is_some());
+    let (previous, prev_el) = arrow(
+        ui,
+        format!("preset-prev-{slot}"),
+        Icon::Left,
+        "Previous preset",
+        before.is_some(),
+    );
+    let (next, next_el) = arrow(
+        ui,
+        format!("preset-next-{slot}"),
+        Icon::Right,
+        "Next preset",
+        after.is_some(),
+    );
     if let Some(path) = before.filter(|_| previous).or(after.filter(|_| next)) {
         cx.replace(slot, path);
     }
     let view_el = super::part::available(cx, slot).then(|| {
         let id = format!("view-{slot}");
         let mode = super::part::mode(cx, slot);
-        let (hit, el) = icon_button(ui, &id, Icon::Picture, &format!("Performance view: {}", mode.label()), mode == crate::library::ViewMode::Original);
-        if hit { menu::open_under(ui, cx, menu::Target::View(slot), &id); }
+        let (hit, el) = icon_button(
+            ui,
+            &id,
+            Icon::Picture,
+            &format!("Performance view: {}", mode.label()),
+            mode == crate::library::ViewMode::Original,
+        );
+        if hit {
+            menu::open_under(ui, cx, menu::Target::View(slot), &id);
+        }
         el
     });
     let more_id = format!("more-{slot}");
@@ -565,8 +778,16 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
     if more {
         menu::open_under(ui, cx, menu::Target::Part(slot), &more_id);
     }
-    let (remove, remove_el) = if narrow { (false, None) } else {
-        let (hit, el) = icon_button(ui, format!("remove-{slot}"), Icon::Close, "Remove from rack", false);
+    let (remove, remove_el) = if narrow {
+        (false, None)
+    } else {
+        let (hit, el) = icon_button(
+            ui,
+            format!("remove-{slot}"),
+            Icon::Close,
+            "Remove from rack",
+            false,
+        );
         (hit, Some(el))
     };
 
@@ -584,16 +805,49 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
     } else {
         format!("{}{channel}", char::from(b'A' + part.port.min(3)))
     };
-    let output_text = cx.selection.bus(part.output.into()).label(part.output.into());
+    let output_text = cx
+        .selection
+        .bus(part.output.into())
+        .label(part.output.into());
     let (midi, midi_el) = if narrow {
-        icon_button(ui, midi_id.as_str(), Icon::MidiIn, &format!("MIDI input: {midi_text}"), false)
-    } else { route(ui, midi_id.as_str(), Icon::MidiIn, &midi_text, "D16", "MIDI input") };
+        icon_button(
+            ui,
+            midi_id.as_str(),
+            Icon::MidiIn,
+            &format!("MIDI input: {midi_text}"),
+            false,
+        )
+    } else {
+        route(
+            ui,
+            midi_id.as_str(),
+            Icon::MidiIn,
+            &midi_text,
+            "D16",
+            "MIDI input",
+        )
+    };
     if midi {
         menu::open_under(ui, cx, menu::Target::Midi(slot), &midi_id);
     }
     let (output, output_el) = if narrow {
-        icon_button(ui, output_id.as_str(), Icon::AudioOut, &format!("Output: {output_text}"), false)
-    } else { route(ui, output_id.as_str(), Icon::AudioOut, &output_text, "st.16", "Output") };
+        icon_button(
+            ui,
+            output_id.as_str(),
+            Icon::AudioOut,
+            &format!("Output: {output_text}"),
+            false,
+        )
+    } else {
+        route(
+            ui,
+            output_id.as_str(),
+            Icon::AudioOut,
+            &output_text,
+            "st.16",
+            "Output",
+        )
+    };
     if output {
         menu::open_under(ui, cx, menu::Target::Output(slot), &output_id);
     }
@@ -603,7 +857,9 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
     let failed = cx.view.parts[slot].status.starts_with("Load failed");
     let selected = cx.state.chosen() == Some(slot);
     let library = cx.library_of(Path::new(&cx.selection.parts[slot].path));
-    let banner = cx.looks(&library).and_then(|l| l.banner[usize::from(cx.blurred())].clone());
+    let banner = cx
+        .looks(&library)
+        .and_then(|l| l.banner[usize::from(cx.blurred())].clone());
 
     let part = &mut cx.selection.parts[slot];
     let mut gain = f64::from(part.gain);
@@ -621,8 +877,16 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
     (part.solo, part.mute) = (solo, mute);
     let shared = cx.p.shared.part(slot);
     let meter = shared.clone();
-    let level = move || meter.as_ref().map_or([0.; 2], |part| crate::plugin::Meters::read(&part.meter));
-    let dot = activity_dot(move || shared.as_ref().is_some_and(|part| crate::plugin::Meters::read(&part.meter) != [0.; 2]));
+    let level = move || {
+        meter
+            .as_ref()
+            .map_or([0.; 2], |part| crate::plugin::Meters::read(&part.meter))
+    };
+    let dot = activity_dot(move || {
+        shared
+            .as_ref()
+            .is_some_and(|part| crate::plugin::Meters::read(&part.meter) != [0.; 2])
+    });
     if remove {
         cx.remove(slot);
     }
@@ -631,14 +895,26 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
     let chip = match progress {
         Some(_) if narrow => None,
         Some(done) => Some(load_chip(done, true)),
-        None => failed.then(|| caption("Failed to load").text_size(SMALL - 1.).fill(secondary()).lines(1).shrink(0)),
+        None => failed.then(|| {
+            caption("Failed to load")
+                .text_size(SMALL - 1.)
+                .fill(secondary())
+                .lines(1)
+                .shrink(0)
+        }),
     };
     let mut name_row = vec![title, prev_el, next_el];
     name_row.extend(chip);
     let name_row = row(name_row).gap(0).align(Align::Center).flex(1).min_w(0);
-    let mix = cluster(vec![midi_el, output_el, pan_el, gain_el, tune_el]).gap(if narrow { TIGHT } else { SPACE });
+    let mix = cluster(vec![midi_el, output_el, pan_el, gain_el, tune_el]).gap(if narrow {
+        TIGHT
+    } else {
+        SPACE
+    });
     let mut tail = vec![switches];
-    if !narrow { tail.push(dot); }
+    if !narrow {
+        tail.push(dot);
+    }
     tail.extend(view_el);
     tail.push(more_el);
     tail.extend(remove_el);
@@ -666,17 +942,30 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
             block(BANNER.0 * 0.75, Len::Pct(100.))
                 .fill(Gradient::linear(
                     90.,
-                    [(0., Role::Surface.alpha(0.7)), (0.5, Role::Surface.alpha(0.45)), (1., Role::Surface.alpha(0.))],
+                    [
+                        (0., Role::Surface.alpha(0.7)),
+                        (0.5, Role::Surface.alpha(0.45)),
+                        (1., Role::Surface.alpha(0.)),
+                    ],
                 ))
                 .anchor(Align::Start, Align::Start),
         );
     }
-    layers.push(row![edge, body, meter].gap(0).align(Align::Stretch).w(Len::Pct(100.)).h(Len::Pct(100.)));
+    layers.push(
+        row![edge, body, meter]
+            .gap(0)
+            .align(Align::Stretch)
+            .w(Len::Pct(100.))
+            .h(Len::Pct(100.)),
+    );
     layers.extend(progress.map(|done| {
         canvas(move |s| {
             vec![
                 Draw::fill(rect(0., 0., s.width, s.height), Role::Ink.alpha(0.1)),
-                Draw::fill(rect(0., 0., (s.width * done).max(SPACE), s.height), Role::Ink.alpha(0.6)),
+                Draw::fill(
+                    rect(0., 0., (s.width * done).max(SPACE), s.height),
+                    Role::Ink.alpha(0.6),
+                ),
             ]
         })
         .w(Len::Pct(100.))
@@ -689,8 +978,14 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
     stack(layers)
         .w(Len::Pct(100.))
         .h(SLIM - 1.)
-        .fill(if selected { Role::Level(3) } else { Role::Surface })
-        .when(selected, |e| e.stroke(Role::Ink.alpha(0.55)).stroke_width(1))
+        .fill(if selected {
+            Role::Level(3)
+        } else {
+            Role::Surface
+        })
+        .when(selected, |e| {
+            e.stroke(Role::Ink.alpha(0.55)).stroke_width(1)
+        })
         .when(over, |e| e.stroke(Role::Ink).stroke_width(1))
         .clip()
         .a11y(A11y::Group)
@@ -707,7 +1002,10 @@ fn facts(cx: &Cx, slot: usize) -> String {
     let library = library_label(&library);
     let mut facts = vec![library.split(" [").next().unwrap_or_default().to_owned()];
     if let Some(r) = &v.report {
-        facts.push(format!("{} groups · {} zones", r.decoded.groups, r.decoded.zones));
+        facts.push(format!(
+            "{} groups · {} zones",
+            r.decoded.groups, r.decoded.zones
+        ));
     }
     if v.status.starts_with("Load failed") {
         facts.push("failed to load".into());
@@ -728,7 +1026,10 @@ fn title(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
             ui.focus(edit_id.as_str());
         }
         let field = text_edit(ui, edit_id.as_str(), text, TextOpts::default());
-        let cancel = ui.keys(edit_id.as_str()).iter().any(|k| k.key == Key::Escape);
+        let cancel = ui
+            .keys(edit_id.as_str())
+            .iter()
+            .any(|k| k.key == Key::Escape);
         let done = field.changed.submitted || (existed && !ui.focused(edit_id.as_str()));
         let el = field.el.h(STRIP).flex(1).min_w(NAME_MIN).named("Part name");
         if cancel {
@@ -737,7 +1038,9 @@ fn title(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
             let text = cx.state.renaming.take().map(|(_, t)| t).unwrap_or_default();
             let text = text.trim();
             let part = &cx.selection.parts[slot];
-            let default = cx.instrument_name(slot).unwrap_or_else(|| super::header::stem(&part.path));
+            let default = cx
+                .instrument_name(slot)
+                .unwrap_or_else(|| super::header::stem(&part.path));
             let shown = without_library(&default, &cx.library_of(Path::new(&part.path)));
             cx.selection.parts[slot].name = if text == default || text == shown || text.is_empty() {
                 String::new()
@@ -762,12 +1065,91 @@ fn title(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     body(name.clone())
         .text_size(TEXT + 1.)
         .text_weight(Weight::SEMIBOLD)
-        .fill(if muted { secondary() } else { Fill::from(Role::Ink) })
+        .fill(if muted {
+            secondary()
+        } else {
+            Fill::from(Role::Ink)
+        })
         .lines(1)
         .min_w(NAME_MIN)
         .shrink(1)
         .cursor(Cursor::Grab)
-        .tip(format!("{name}\n{facts}\nDrag to reorder · double-click to rename"))
+        .tip(format!(
+            "{name}\n{facts}\nDrag to reorder · double-click to rename"
+        ))
         .named(name)
         .id(name_id)
+}
+
+// Port from v1 0cb7a8a0:src/ui/rack.rs.
+fn snapshot_row(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
+    let part = cx.selection.parts.get(slot)?;
+    if !part.snapshot_base() {
+        return None;
+    }
+    let paths = cx
+        .view
+        .shelf
+        .snapshots
+        .get(Path::new(&part.path))
+        .map(|s| s.paths.as_slice())
+        .unwrap_or(&[]);
+    if paths.is_empty() && part.snapshot.is_empty() {
+        return None;
+    }
+    let chosen = paths.iter().position(|p| p == Path::new(&part.snapshot));
+    let previous = chosen
+        .and_then(|i| i.checked_sub(1))
+        .and_then(|i| paths.get(i))
+        .cloned();
+    let next = chosen
+        .map_or_else(|| paths.first(), |i| paths.get(i + 1))
+        .cloned();
+    let title = if part.snapshot.is_empty() {
+        "Select snapshot…".into()
+    } else {
+        super::header::stem(&part.snapshot)
+    };
+    let id = format!("snapshot-{slot}");
+    let (hit, selector) = dropdown(ui, id.as_str(), &title, "Snapshot");
+    if hit {
+        menu::open_under(ui, cx, menu::Target::Snapshots(slot), &id);
+    }
+    let selector = selector.flex(1);
+    let arrow = |ui: &mut Ui, id: String, picture: Icon, label: &str, enabled: bool| {
+        if enabled {
+            icon_button(ui, id, picture, label, false)
+        } else {
+            (false, dead_icon(picture, label))
+        }
+    };
+    let (prev_hit, prev) = arrow(
+        ui,
+        format!("snapshot-prev-{slot}"),
+        Icon::Left,
+        "Previous snapshot",
+        previous.is_some(),
+    );
+    let (next_hit, next_el) = arrow(
+        ui,
+        format!("snapshot-next-{slot}"),
+        Icon::Right,
+        "Next snapshot",
+        next.is_some(),
+    );
+    if let Some(path) = previous.filter(|_| prev_hit).or(next.filter(|_| next_hit)) {
+        cx.snapshot(slot, path.to_string_lossy().into_owned());
+    }
+    Some(
+        col![
+            row![selector, prev, next_el]
+                .gap(TIGHT)
+                .align(Align::Center)
+                .pad((SPACE, TIGHT))
+                .w(Len::Pct(100.)),
+            rule()
+        ]
+        .gap(0)
+        .shrink(0),
+    )
 }

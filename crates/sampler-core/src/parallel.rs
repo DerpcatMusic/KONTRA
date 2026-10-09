@@ -288,16 +288,33 @@ impl Runtime {
                 let v = self.voices.slots[i].value.as_ref().unwrap();
                 let bus = v.bus;
                 let f = self.families.get(v.family.0).unwrap();
-                let plan = self.notes.get(f.note.0).unwrap().plan.0;
+                let note = self.notes.get(f.note.0).unwrap();
+                let plan = note.plan.0;
+                let stream_step = v.base_step
+                    * self
+                        .expressions
+                        .get(note.expression.0)
+                        .unwrap()
+                        .rendered
+                        .ratio;
                 let generation = self.plans.get_mut(plan).unwrap();
                 let (dsp, modulation) = (&mut generation.dsp, &mut generation.modulation);
                 let target = match bus {
                     Some(bus) => dsp.buses.input(bus, frames),
                     None => &mut *output,
                 };
-                match par.preps[i].and_then(|p| p.points.map(|r| {
-                    (p.modulated, if v.chain.is_some() { r.without_gains() } else { r })
-                })) {
+                match par.preps[i].and_then(|p| {
+                    p.points.map(|r| {
+                        (
+                            p.modulated,
+                            if v.chain.is_some() {
+                                r.without_gains()
+                            } else {
+                                r
+                            },
+                        )
+                    })
+                }) {
                     Some((true, ramp)) => {
                         modulation.mix(
                             i,
@@ -325,6 +342,9 @@ impl Runtime {
                 self.stream_underruns = self
                     .stream_underruns
                     .saturating_add(u64::from(outcome.underrun));
+                if !outcome.done {
+                    self.refresh_stream_reservation(i, stream_step);
+                }
             }
         }
         for run in &par.runs {
@@ -385,11 +405,30 @@ impl View<'_> {
         let mut scratch = self.scratch.claim(i);
         let segment = &mut scratch[0][..self.frames];
         segment.fill([0.; 2]);
+        let mut parameter_scratch = (!plan.dsp.modulated_parameters.is_empty())
+            .then(|| plan.dsp.modulated_parameters.claim(lane));
+        let parameters = if let Some(scratch) = parameter_scratch.as_mut() {
+            if plan.modulation.project_parameters(
+                &plan.prepared.voice_modulation,
+                i,
+                &plan.dsp.parameters,
+                &plan.prepared.dsp_bindings,
+                chain.map_or(0..0, |c| c.parameter_span.clone()),
+                scratch,
+            ) {
+                &scratch[..]
+            } else {
+                &plan.dsp.parameters[..]
+            }
+        } else {
+            &plan.dsp.parameters[..]
+        };
         let context = RenderContext {
+            trace: None,
             amplifier: chain.and(prelude.and_then(|p| p.points)),
             delay: &mut delay[..chain.map_or(0, |c| c.delay_frames)],
             expression: expression.rendered.gains,
-            parameters: &plan.dsp.parameters,
+            parameters,
             filters: FilterContext {
                 bank: &mut bank[0],
                 expression: Some((n.expression, expression.value)),
@@ -416,7 +455,7 @@ impl View<'_> {
                 frames,
                 levels: guard.as_deref().map_or(&[], |l| l),
             };
-            render_source(v, &pcm, segment, chain, states, context, self.kernel)
+            render_source::<false>(v, &pcm, segment, chain, states, context, self.kernel)
         } else {
             asset.touch(self.at + self.frames as u64);
             let head = asset.try_head();
@@ -425,7 +464,7 @@ impl View<'_> {
                 asset: asset.asset_id(),
                 head: head.as_deref().map_or(&[], |h| h),
             };
-            render_source(v, &source, segment, chain, states, context, self.kernel)
+            render_source::<false>(v, &source, segment, chain, states, context, self.kernel)
         };
         if prelude.is_some_and(|p| p.points.is_some()) {
             bank[0].modulation = [1.0; 2];
@@ -528,7 +567,7 @@ impl View<'_> {
         for (k, slot) in slots.iter_mut().enumerate().take(voices.len()) {
             let v = slot.as_mut().unwrap()[0].value.as_mut().unwrap();
             let len = batch.ends[2 * k];
-            lanes::scale(&mut block, k, &crate::dsp::levels(v, len), len);
+            lanes::scale(&mut block, k, &crate::dsp::levels(v, len, 0), len);
         }
         sampler_simd::dispatch(
             #[inline(always)]

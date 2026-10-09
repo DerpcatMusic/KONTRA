@@ -28,14 +28,18 @@ impl NIFileContainer {
         limit: u64,
     ) -> Result<Vec<u8>, Error> {
         let mut matching = self.items.iter().filter(|item| item.index == index);
-        let item = matching.next().ok_or(Error::Static("NI FileContainer member index not found"))?;
+        let item = matching
+            .next()
+            .ok_or(Error::Static("NI FileContainer member index not found"))?;
         if matching.next().is_some() {
             return Err(Error::Static("Ambiguous NI FileContainer member index"));
         }
         if item.file_size > limit {
             return Err(Error::Static("NI FileContainer member exceeds read limit"));
         }
-        let offset = self.file_section_offset.checked_add(item.file_start_offset)
+        let offset = self
+            .file_section_offset
+            .checked_add(item.file_start_offset)
             .ok_or(Error::Static("NI FileContainer member offset overflow"))?;
         let size = usize::try_from(item.file_size)
             .map_err(|_| Error::Static("NI FileContainer member exceeds address space"))?;
@@ -84,7 +88,8 @@ impl NIFileContainer {
 
             let file_start_offset = offset;
             let file_end_offset = reader.read_u64_le()?;
-            let file_size = file_end_offset.checked_sub(file_start_offset)
+            let file_size = file_end_offset
+                .checked_sub(file_start_offset)
                 .filter(|_| file_end_offset <= total_size)
                 .ok_or(Error::Static("Invalid NI FileContainer member range"))?;
             offset = file_end_offset;
@@ -144,7 +149,11 @@ mod tests {
         for (index, name, end) in [(42u64, "OurPatch.nki", 3u64), (900, "OurSample.wav", 7)] {
             bytes.extend(index.to_le_bytes());
             bytes.extend([0; 16]);
-            let mut filename = name.encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect::<Vec<_>>();
+            let mut filename = name
+                .encode_utf16()
+                .chain([0])
+                .flat_map(u16::to_le_bytes)
+                .collect::<Vec<_>>();
             filename.resize(600, 0);
             bytes.extend(filename);
             bytes.extend(0u64.to_le_bytes());
@@ -157,16 +166,28 @@ mod tests {
         bytes.extend(b"nkiwave");
         let container = NIFileContainer::read(Cursor::new(&bytes)).unwrap();
         assert_eq!(container.items[0].filename, "OurPatch.nki");
-        assert_eq!(container.read_member(Cursor::new(&bytes), 42, 3).unwrap(), b"nki");
-        assert_eq!(container.read_member(Cursor::new(&bytes), 900, 4).unwrap(), b"wave");
+        assert_eq!(
+            container.read_member(Cursor::new(&bytes), 42, 3).unwrap(),
+            b"nki"
+        );
+        assert_eq!(
+            container.read_member(Cursor::new(&bytes), 900, 4).unwrap(),
+            b"wave"
+        );
         assert!(container.read_member(Cursor::new(&bytes), 42, 2).is_err());
         assert!(container.read_member(Cursor::new(&bytes), 0, 100).is_err());
-        assert!(container.read_member(Cursor::new(&bytes[..bytes.len() - 1]), 900, 4).is_err());
+        assert!(container
+            .read_member(Cursor::new(&bytes[..bytes.len() - 1]), 900, 4)
+            .is_err());
         for end in 0..bytes.len() {
-            assert!(NIFileContainer::read(Cursor::new(&bytes[..end])).is_err(), "truncated at {end}");
+            assert!(
+                NIFileContainer::read(Cursor::new(&bytes[..end])).is_err(),
+                "truncated at {end}"
+            );
         }
         for at in [0, 288, 2208] {
-            let mut damaged = bytes.clone(); damaged[at] ^= 1;
+            let mut damaged = bytes.clone();
+            damaged[at] ^= 1;
             assert!(NIFileContainer::read(Cursor::new(damaged)).is_err());
         }
         let mut duplicate = NIFileContainer::read(Cursor::new(&bytes)).unwrap();

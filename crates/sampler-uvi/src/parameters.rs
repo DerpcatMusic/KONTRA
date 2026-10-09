@@ -13,15 +13,22 @@ pub struct Parameter {
 
 pub fn definitions(kind: &str) -> &'static [Parameter] {
     static CATALOG: OnceLock<BTreeMap<&str, Vec<Parameter>>> = OnceLock::new();
-    CATALOG.get_or_init(|| {
-        let mut out = BTreeMap::<_, Vec<_>>::new();
-        for line in include_str!("parameters.tsv").lines() {
-            let p: Vec<_> = line.split('\t').collect();
-            out.entry(p[0]).or_default().push(Parameter {
-                name: p[1], kind: p[2], min: p[3].parse().unwrap(),
-                max: p[4].parse().unwrap(), default: p[5].parse().unwrap(), unit: p[6],
-            });
-        }
-        out
-    }).get(kind).map_or(&[], Vec::as_slice)
+    CATALOG
+        .get_or_init(|| {
+            let mut out = BTreeMap::<_, Vec<_>>::new();
+            for line in include_str!("parameters.tsv").lines() {
+                let p: Vec<_> = line.split('\t').collect();
+                out.entry(p[0]).or_default().push(Parameter {
+                    name: p[1],
+                    kind: p[2],
+                    min: p[3].parse().unwrap(),
+                    max: p[4].parse().unwrap(),
+                    default: p[5].parse().unwrap(),
+                    unit: p[6],
+                });
+            }
+            out
+        })
+        .get(kind)
+        .map_or(&[], Vec::as_slice)
 }

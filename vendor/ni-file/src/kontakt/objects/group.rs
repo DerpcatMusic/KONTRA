@@ -3,9 +3,9 @@
 use std::io::{Cursor, Write};
 
 use crate::{
-    Error,
-    kontakt::{StructuredObject, objects::start_criteria_list::StartCriteriaList},
+    kontakt::{objects::start_criteria_list::StartCriteriaList, StructuredObject},
     read_bytes::ReadBytesExt,
+    Error,
 };
 
 /// Type:           Chunk
@@ -62,7 +62,8 @@ impl WavetableSource {
             form_type: reader.read_u32_le()?,
             quality: reader.read_u32_le()?,
             inharmonic_enabled: match reader.read_u8()? {
-                0 => false, 1 => true,
+                0 => false,
+                1 => true,
                 _ => return Err(Error::Static("Invalid wavetable inharmonic flag")),
             },
             inharmonic: reader.read_f32_le()?,
@@ -72,7 +73,11 @@ impl WavetableSource {
             mod_type: reader.read_u32_le()?,
             mod_amount: reader.read_f32_le()?,
             mod_tune: reader.read_f32_le()?,
-            unknown_tail: { let mut tail = [0; 16]; reader.read_exact(&mut tail)?; tail },
+            unknown_tail: {
+                let mut tail = [0; 16];
+                reader.read_exact(&mut tail)?;
+                tail
+            },
         };
         result.validate()?;
         Ok(result)
@@ -83,9 +88,12 @@ impl WavetableSource {
             || !(1..=34).contains(&self.form_type)
             || !(1..=34).contains(&self.form2_type)
             || !(1..=4).contains(&self.quality)
-            || self.mod_wave > 9 || self.mod_type > 12
+            || self.mod_wave > 9
+            || self.mod_type > 12
         {
-            return Err(Error::Static("Unsupported or malformed v0x106 wavetable source record"));
+            return Err(Error::Static(
+                "Unsupported or malformed v0x106 wavetable source record",
+            ));
         }
         Ok(())
     }
@@ -98,17 +106,25 @@ impl WavetableSource {
         for value in [self.position, self.form1, self.phase, self.phase_random] {
             writer.write_all(&value.to_le_bytes())?;
         }
-        for value in [self.form_type, self.quality] { writer.write_all(&value.to_le_bytes())?; }
+        for value in [self.form_type, self.quality] {
+            writer.write_all(&value.to_le_bytes())?;
+        }
         writer.write_all(&[u8::from(self.inharmonic_enabled)])?;
-        for value in [self.inharmonic, self.form2] { writer.write_all(&value.to_le_bytes())?; }
-        for value in [self.form2_type, self.mod_wave, self.mod_type] { writer.write_all(&value.to_le_bytes())?; }
-        for value in [self.mod_amount, self.mod_tune] { writer.write_all(&value.to_le_bytes())?; }
+        for value in [self.inharmonic, self.form2] {
+            writer.write_all(&value.to_le_bytes())?;
+        }
+        for value in [self.form2_type, self.mod_wave, self.mod_type] {
+            writer.write_all(&value.to_le_bytes())?;
+        }
+        for value in [self.mod_amount, self.mod_tune] {
+            writer.write_all(&value.to_le_bytes())?;
+        }
         writer.write_all(&self.unknown_tail)?;
         Ok(())
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GroupParams {
     pub name: String,
     /// Linear amplitude ratio (0.5 is -6 dB).
@@ -132,6 +148,7 @@ pub struct GroupParams {
     // Children: InternalModArray16 0x3B, ExternalModArray32 0x3C,
     // BParGroupDynamics 0x4A (256 zero bytes in every local preset).
     pub start_criteria: StartCriteriaList,
+    pub unknown_tail: Vec<u8>,
 }
 
 /// Group private data: 136 records of `(u32 8, u32 flags, u32 0)`, then 24
@@ -172,8 +189,18 @@ impl Group {
         let mut reader = self.private_rack_reader()?;
         super::BParamArrayBParFX8::read(&mut reader, 8)?;
         let flag = reader.read_u8()?;
-        if flag > 1 { return Err(Error::Static("Invalid group source flag")); }
+        if flag > 1 {
+            return Err(Error::Static("Invalid group source flag"));
+        }
         Ok((reader, flag))
+    }
+
+    /// Full versioned source parameters, followed by retained private state.
+    pub fn source_params(&self) -> Result<(super::BParSrcMode, &[u8]), Error> {
+        let (mut reader, _) = self.source_reader()?;
+        let params = super::BParSrcMode::read(&mut reader)?;
+        let tail = &reader.get_ref()[reader.position() as usize..];
+        Ok((params, tail))
     }
 
     /// Read only the seven-byte identity whose location is verified in legacy
@@ -183,13 +210,22 @@ impl Group {
     pub fn source_identity(&self) -> Result<SourceIdentity, Error> {
         let (mut reader, flag) = self.source_reader()?;
         if reader.read_u8()? != 0 {
-            return Err(Error::Static("Unsupported structured group source identity"));
+            return Err(Error::Static(
+                "Unsupported structured group source identity",
+            ));
         }
         let version = reader.read_u16_le()?;
-        if !matches!(version, 0x102 | 0x103 | 0x104 | 0x106) {
-            return Err(Error::Generic(format!("Unsupported group source identity version 0x{version:x}")));
+        if !matches!(version, 0x100..=0x106) {
+            return Err(Error::Generic(format!(
+                "Unsupported group source identity version 0x{version:x}"
+            )));
         }
-        Ok(SourceIdentity { flag, structured: false, version, mode: reader.read_u32_le()? })
+        Ok(SourceIdentity {
+            flag,
+            structured: false,
+            version,
+            mode: reader.read_u32_le()?,
+        })
     }
 
     /// Opaque v0x102 source state after the private insert rack. Exposing its
@@ -206,7 +242,9 @@ impl Group {
     }
 
     pub fn wavetable_source(&self) -> Result<Option<WavetableSource>, Error> {
-        if self.source_identity()?.mode != 9 { return Ok(None); }
+        if self.source_identity()?.mode != 9 {
+            return Ok(None);
+        }
         WavetableSource::read(self.source_reader()?.0).map(Some)
     }
 
@@ -246,6 +284,7 @@ impl Group {
                 .find_first(0x38)
                 .ok_or(Error::Static("Group has no start criteria list"))?
                 .try_into()?,
+            unknown_tail: reader.read_all()?,
         })
     }
 }
@@ -258,11 +297,24 @@ mod tests {
     fn wavetable_source_roundtrip_edits_preserve_opaque_state_and_bounds() {
         let mut common = [0xA5; 30];
         common[..7].copy_from_slice(&[0, 6, 1, 9, 0, 0, 0]);
-        let source = WavetableSource { common, position: 0.25, form1: 0.5,
-            phase: 0.125, phase_random: 0.75, form_type: 17, quality: 3,
-            inharmonic_enabled: false, inharmonic: 0.375, form2: 0.625,
-            form2_type: 1, mod_wave: 6, mod_type: 0, mod_amount: -12.0,
-            mod_tune: f32::from_bits(0x7fc01234), unknown_tail: [0xDE; 16] };
+        let source = WavetableSource {
+            common,
+            position: 0.25,
+            form1: 0.5,
+            phase: 0.125,
+            phase_random: 0.75,
+            form_type: 17,
+            quality: 3,
+            inharmonic_enabled: false,
+            inharmonic: 0.375,
+            form2: 0.625,
+            form2_type: 1,
+            mod_wave: 6,
+            mod_type: 0,
+            mod_amount: -12.0,
+            mod_tune: f32::from_bits(0x7fc01234),
+            unknown_tail: [0xDE; 16],
+        };
         let mut bytes = Vec::new();
         source.write(&mut bytes).unwrap();
         assert_eq!(bytes.len(), 99);
@@ -270,20 +322,33 @@ mod tests {
         let mut roundtrip = Vec::new();
         parsed.write(&mut roundtrip).unwrap();
         assert_eq!(roundtrip, bytes);
-        for end in 0..99 { assert!(WavetableSource::read(Cursor::new(&bytes[..end])).is_err()); }
+        for end in 0..99 {
+            assert!(WavetableSource::read(Cursor::new(&bytes[..end])).is_err());
+        }
         for (offset, value) in [(1, 5), (54, 2), (46, 0), (50, 5), (67, 10), (71, 13)] {
-            let mut invalid = bytes.clone(); invalid[offset] = value;
+            let mut invalid = bytes.clone();
+            invalid[offset] = value;
             assert!(WavetableSource::read(Cursor::new(invalid)).is_err());
         }
         let mut private = Vec::new();
-        for _ in 0..136 { private.extend(8u32.to_le_bytes()); private.extend([0; 8]); }
+        for _ in 0..136 {
+            private.extend(8u32.to_le_bytes());
+            private.extend([0; 8]);
+        }
         private.extend([0; 24]);
-        private.extend([0, 0x13, 0]); private.extend(8u32.to_le_bytes()); private.extend([0; 8]);
+        private.extend([0, 0x13, 0]);
+        private.extend(8u32.to_le_bytes());
+        private.extend([0; 8]);
         private.push(1);
         let start = private.len();
-        private.extend(&bytes); private.extend([0xFE; 22]);
-        let mut group = Group(StructuredObject { version: 1, private_data: private,
-            public_data: Vec::new(), children: Vec::new() });
+        private.extend(&bytes);
+        private.extend([0xFE; 22]);
+        let mut group = Group(StructuredObject {
+            version: 1,
+            private_data: private,
+            public_data: Vec::new(),
+            children: Vec::new(),
+        });
         let before = group.0.private_data.clone();
         let mut edited = group.wavetable_source().unwrap().unwrap();
         edited.position = 0.75;
@@ -300,7 +365,10 @@ mod tests {
     #[test]
     fn source_identity_reads_known_headers_without_interpreting_opaque_state() {
         let mut private = Vec::new();
-        for _ in 0..136 { private.extend(8u32.to_le_bytes()); private.extend([0; 8]); }
+        for _ in 0..136 {
+            private.extend(8u32.to_le_bytes());
+            private.extend([0; 8]);
+        }
         private.extend([0; 24]);
         private.extend([0, 0x13, 0]);
         private.extend(8u32.to_le_bytes());
@@ -309,11 +377,16 @@ mod tests {
         let source = private.len();
         private.extend([0; 7]);
         private.extend([0xde, 0xad]); // Unknown remaining source fields.
-        let mut group = Group(StructuredObject { version: 1, private_data: private,
-            public_data: Vec::new(), children: Vec::new() });
-        for version in [0x102u16, 0x103, 0x104, 0x106] {
+        let mut group = Group(StructuredObject {
+            version: 1,
+            private_data: private,
+            public_data: Vec::new(),
+            children: Vec::new(),
+        });
+        for version in 0x100u16..=0x106 {
             for mode in [0u32, 3, 9] {
-                group.0.private_data[source + 1..source + 3].copy_from_slice(&version.to_le_bytes());
+                group.0.private_data[source + 1..source + 3]
+                    .copy_from_slice(&version.to_le_bytes());
                 group.0.private_data[source + 3..source + 7].copy_from_slice(&mode.to_le_bytes());
                 let original = group.0.private_data.clone();
                 let identity = group.source_identity().unwrap();
@@ -325,7 +398,7 @@ mod tests {
         group.0.private_data.truncate(source + 6);
         assert!(group.source_identity().is_err());
         group.0.private_data.resize(source + 7, 0);
-        group.0.private_data[source + 1..source + 3].copy_from_slice(&0x105u16.to_le_bytes());
+        group.0.private_data[source + 1..source + 3].copy_from_slice(&0x107u16.to_le_bytes());
         assert!(group.source_identity().is_err());
         group.0.private_data[source + 1..source + 3].copy_from_slice(&0x104u16.to_le_bytes());
         group.0.private_data[source] = 1;

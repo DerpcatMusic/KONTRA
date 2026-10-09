@@ -1,0 +1,64 @@
+[package]
+name = "mui"
+version = "0.4.0"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT"
+
+[features]
+default = []
+reporting = ["mui-vello/reporting"]
+gpu-effects = ["mui-vello/gpu-effects"]
+cpu = ["mui-vello/cpu"]
+cpu-threads = ["mui-vello/cpu-threads"]
+software-window = ["mui-vello/software-window"]
+
+[dependencies]
+color = "0.3"
+mui-scene = { git = "https://github.com/Matari-Audio/MUI" }
+mui-material = { git = "https://github.com/Matari-Audio/MUI" }
+mui-motion = { git = "https://github.com/Matari-Audio/MUI" }
+mui-layout = { git = "https://github.com/Matari-Audio/MUI" }
+mui-geometry = { git = "https://github.com/Matari-Audio/MUI" }
+mui-input = { git = "https://github.com/Matari-Audio/MUI" }
+rustc-hash = "2"
+mui-text = { git = "https://github.com/Matari-Audio/MUI" }
+mui-vello = { git = "https://github.com/Matari-Audio/MUI" }
+unicode-segmentation = "1.13"
+
+[dev-dependencies]
+epaint_default_fonts = "0.36"
+png = "0.18"
+ttf-inter = { version = "0.1", default-features = false, features = ["v"] }
+libc = "0.2"
+
+[workspace]
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+allow_attributes_without_reason = "warn"
+allow_attributes = "warn"
+dbg_macro = "deny"
+todo = "deny"
+semicolon_if_nothing_returned = "warn"
+redundant_closure_for_method_calls = "warn"
+manual_let_else = "warn"
+needless_pass_by_value = "warn"
+cloned_instead_of_copied = "warn"
+explicit_iter_loop = "warn"
+map_unwrap_or = "warn"
+inefficient_to_string = "warn"
+implicit_clone = "warn"
+unnested_or_patterns = "warn"
+default_trait_access = "warn"
+uninlined_format_args = "warn"
+single_match_else = "warn"
+match_same_arms = "warn"
+redundant_else = "warn"
+if_not_else = "warn"
+items_after_statements = "warn"
+unreadable_literal = "allow"

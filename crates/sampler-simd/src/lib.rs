@@ -11,6 +11,9 @@
 //!
 //! aarch64 always has NEON in its baseline, so it needs no dispatch.
 
+mod v1_section;
+pub use v1_section::process as filter_section_v1;
+
 /// The instruction set [`dispatch`] runs kernels with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Level {

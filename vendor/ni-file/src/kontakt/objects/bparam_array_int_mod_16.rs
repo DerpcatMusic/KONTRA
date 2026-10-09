@@ -1,9 +1,9 @@
 use crate::{
+    kontakt::{error::KontaktError, structured_object::StructuredObject, Chunk},
     Error,
-    kontakt::{Chunk, error::KontaktError, structured_object::StructuredObject},
 };
 
-use super::{InternalMod, modulation::read_param_slots};
+use super::{modulation::read_param_slots, InternalMod};
 
 const CHUNK_ID: u16 = 0x3B;
 const SLOTS: usize = 16;
@@ -14,7 +14,7 @@ const SLOTS: usize = 16;
 ///
 /// Type:           Chunk<StructuredObject>
 /// SerType:        0x3B
-/// Versions:       0x10, 0x12 (0x11 unsupported)
+/// Versions:       0x10, 0x11, 0x12, 0x13
 /// Kontakt 7:      BParameterArraySerBParInternalMod16
 /// KontaktIO:      BParamArray<16>
 #[derive(Debug)]

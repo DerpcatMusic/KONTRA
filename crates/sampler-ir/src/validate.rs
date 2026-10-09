@@ -9,6 +9,7 @@ use std::fmt;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reference {
     Asset(usize),
+    Zone(usize),
     Group(usize),
     Sequence(usize),
     Articulation(usize),
@@ -89,6 +90,7 @@ impl Check<'_> {
         let ir = self.ir;
         let present = match reference {
             Reference::Asset(i) => i < ir.assets.len(),
+            Reference::Zone(i) => i < ir.zones.len(),
             Reference::Group(i) => i < ir.groups.len(),
             Reference::Sequence(i) => i < ir.sequences.len(),
             Reference::Articulation(i) => i < ir.articulations.len(),
@@ -211,12 +213,33 @@ impl Check<'_> {
                     self.within(pan, -1.0..=1.0, "stereo pan")?;
                 }
                 Processor::Pan(pan) => self.pan(pan, "pan")?,
+                Processor::LoFi {
+                    bits,
+                    frequency,
+                    noise,
+                    color,
+                } => {
+                    for (v, field) in [
+                        (bits, "lofi bits"),
+                        (frequency, "lofi frequency"),
+                        (noise, "lofi noise"),
+                        (color, "lofi color"),
+                    ] {
+                        self.within(f64::from(v), 0.0..=1.0, field)?;
+                    }
+                }
                 Processor::Rectify(_) => {}
+                Processor::SendReturnGate { .. } => {}
                 Processor::Branch { gain, .. } => self.gain(gain, "branch gain")?,
                 Processor::Daft(d) => {
                     self.within(d.gain, 0.0..=1.0, "daft gain")?;
                     self.within(d.cutoff, 0.0..=1.0, "daft cutoff")?;
                     self.within(d.resonance, 0.0..=1.0, "daft resonance")?;
+                }
+                Processor::LadderLP4(d) => {
+                    self.within(d.gain, -1.0..=1.0, "ladder gain")?;
+                    self.within(d.cutoff, 0.0..=1.0, "ladder cutoff")?;
+                    self.within(d.resonance, 0.0..=1.0, "ladder resonance")?;
                 }
                 Processor::Reverb(r) => {
                     for (v, field) in [
@@ -282,6 +305,15 @@ impl Instrument {
             ir: self,
             owner: String::new(),
         };
+        if let Some(bus) = self.input_bus {
+            check.output(Output::Bus(bus))?;
+        }
+        for (source, zone) in self.source_indices.zones.iter().enumerate() {
+            check.owner = format!("source zone {source}");
+            if let Some(zone) = zone {
+                check.exists(Reference::Zone(zone.0))?;
+            }
+        }
         for (i, impulse) in self.impulses.iter().enumerate() {
             check.owner = format!("impulse {i}");
             check.within(f64::from(impulse.rate), 1.0..=f64::from(u32::MAX), "rate")?;
@@ -482,6 +514,29 @@ impl Instrument {
             })?;
             check.time(binding.ramp, "ramp")?;
         }
+        for (i, alias) in self.source_indices.control_aliases.iter().enumerate() {
+            check.owner = format!("source control alias {i}");
+            check.exists(Reference::Control(alias.control.0))?;
+            check.within(
+                f64::from(alias.address.slot),
+                0.0..=f64::from(i32::MAX),
+                "native module alias slot",
+            )?;
+            if !matches!(
+                self.controls[alias.control.0].value,
+                crate::ControlValue::Continuous { .. }
+            ) || !self
+                .processor_controls
+                .iter()
+                .any(|binding| binding.control == alias.control)
+            {
+                return Err(ValidationError::OutOfRange {
+                    owner: check.owner.clone(),
+                    field: "unbound native control alias",
+                    value: i as f64,
+                });
+            }
+        }
         for (i, tap) in self.voice_send_taps.iter().enumerate() {
             check.owner = format!("voice send tap {i}");
             check.exists(Reference::Chain(tap.chain.0))?;
@@ -580,10 +635,13 @@ impl Instrument {
             if !needed {
                 return fail(&check.owner, "no value for the active driver");
             }
-            if switching.owner == SwitchOwner::Behavior && a.switch_keys.is_empty() {
+            if switching.owner == SwitchOwner::Behavior
+                && a.switch_keys.is_empty()
+                && a.control.is_none()
+            {
                 return fail(
                     &check.owner,
-                    "behavior-owned articulation has no key to tap",
+                    "behavior-owned articulation has no key or selection control",
                 );
             }
             for b in &self.articulations[..i] {

@@ -1,0 +1,469 @@
+{
+ "instrument": "una_cotton",
+ "name": "Una Corda Cotton",
+ "notes": 48,
+ "engines": {
+  "kontra": {
+   "identified": 48,
+   "silent_notes": 0,
+   "kontakt_audible_engine_silent": 0,
+   "same_direction_pct": 100.0,
+   "same_start_offset_pct": 84.1,
+   "attack_db_error_mean": 0.6,
+   "onset_ms_diff_mean": -0.8,
+   "same_sample_pct": 91.7,
+   "same_velocity_layer_pct": 91.7,
+   "rr_groups": 12,
+   "rr_sequence_equal": 8,
+   "rr_same_set": 8,
+   "level_db_mean": 0.06,
+   "level_db_worst": 0.76,
+   "articulations": [
+    "-"
+   ],
+   "rr_detail": [
+    {
+     "key": 36,
+     "vel": 20,
+     "kontakt_distinct": 2,
+     "engine_distinct": 1,
+     "sequence_equal": false
+    },
+    {
+     "key": 36,
+     "vel": 60,
+     "kontakt_distinct": 2,
+     "engine_distinct": 1,
+     "sequence_equal": false
+    },
+    {
+     "key": 36,
+     "vel": 100,
+     "kontakt_distinct": 1,
+     "engine_distinct": 1,
+     "sequence_equal": true
+    },
+    {
+     "key": 36,
+     "vel": 127,
+     "kontakt_distinct": 2,
+     "engine_distinct": 1,
+     "sequence_equal": false
+    },
+    {
+     "key": 60,
+     "vel": 20,
+     "kontakt_distinct": 1,
+     "engine_distinct": 1,
+     "sequence_equal": true
+    },
+    {
+     "key": 60,
+     "vel": 60,
+     "kontakt_distinct": 1,
+     "engine_distinct": 1,
+     "sequence_equal": true
+    },
+    {
+     "key": 60,
+     "vel": 100,
+     "kontakt_distinct": 2,
+     "engine_distinct": 1,
+     "sequence_equal": false
+    },
+    {
+     "key": 60,
+     "vel": 127,
+     "kontakt_distinct": 1,
+     "engine_distinct": 1,
+     "sequence_equal": true
+    },
+    {
+     "key": 84,
+     "vel": 20,
+     "kontakt_distinct": 1,
+     "engine_distinct": 1,
+     "sequence_equal": true
+    },
+    {
+     "key": 84,
+     "vel": 60,
+     "kontakt_distinct": 1,
+     "engine_distinct": 1,
+     "sequence_equal": true
+    },
+    {
+     "key": 84,
+     "vel": 100,
+     "kontakt_distinct": 1,
+     "engine_distinct": 1,
+     "sequence_equal": true
+    },
+    {
+     "key": 84,
+     "vel": 127,
+     "kontakt_distinct": 1,
+     "engine_distinct": 1,
+     "sequence_equal": true
+    }
+   ],
+   "per_note": [
+    {
+     "i": 0,
+     "key": 36,
+     "vel": 20,
+     "kontakt": {
+      "asset": "GI_UC_Flag_REL_C1n.ncw",
+      "ncc": 0.6489999890327454,
+      "layer": [
+       [
+        1,
+        127
+       ]
+      ],
+      "rms_db": -41.35
+     },
+     "engine": {
+      "asset": "GI_UC_COTT_C1_280_20150623an.ncw",
+      "ncc": 0.7559999823570251,
+      "layer": [
+       [
+        19,
+        27
+       ]
+      ],
+      "rms_db": -41.29
+     }
+    },
+    {
+     "i": 6,
+     "key": 36,
+     "vel": 60,
+     "kontakt": {
+      "asset": "GI_UC_Cott_Reso_C1_p_196_20150530n.ncw",
+      "ncc": 0.5929999947547913,
+      "layer": [
+       [
+        1,
+        41
+       ],
+       [
+        1,
+        127
+       ],
+       [
+        42,
+        90
+       ]
+      ],
+      "rms_db": -32.29
+     },
+     "engine": {
+      "asset": "GI_UC_COTT_C1_205_20150623bn.ncw",
+      "ncc": 0.9259999990463257,
+      "layer": [
+       [
+        53,
+        60
+       ]
+      ],
+      "rms_db": -32.23
+     }
+    },
+    {
+     "i": 15,
+     "key": 36,
+     "vel": 127,
+     "kontakt": {
+      "asset": "GI_UC_COTT_C1_014_20150623n.ncw",
+      "ncc": 0.8009999990463257,
+      "layer": [
+       [
+        123,
+        127
+       ]
+      ],
+      "rms_db": -16.4
+     },
+     "engine": {
+      "asset": "GI_UC_COTT_C1_028_20150623n.ncw",
+      "ncc": 0.7630000114440918,
+      "layer": [
+       [
+        1,
+        127
+       ],
+       [
+        118,
+        122
+       ]
+      ],
+      "rms_db": -16.34
+     }
+    },
+    {
+     "i": 25,
+     "key": 60,
+     "vel": 100,
+     "kontakt": {
+      "asset": "GI_UC_FELT_REL_C3_046_00192_20150807n.ncw",
+      "ncc": 0.718999981880188,
+      "layer": [
+       [
+        99,
+        112
+       ]
+      ],
+      "rms_db": -23.79
+     },
+     "engine": {
+      "asset": "gi_uc_cott_c3_079_20150726dn.ncw",
+      "ncc": 0.8199999928474426,
+      "layer": [
+       [
+        95,
+        100
+       ]
+      ],
+      "rms_db": -23.77
+     }
+    }
+   ]
+  },
+  "v1": {
+   "identified": 48,
+   "silent_notes": 0,
+   "kontakt_audible_engine_silent": 0,
+   "same_direction_pct": 100.0,
+   "same_start_offset_pct": 81.8,
+   "attack_db_error_mean": 1.1,
+   "onset_ms_diff_mean": -2.0,
+   "same_sample_pct": 91.7,
+   "same_velocity_layer_pct": 91.7,
+   "rr_groups": 12,
+   "rr_sequence_equal": 8,
+   "rr_same_set": 8,
+   "level_db_mean": -6.0,
+   "level_db_worst": -6.08,
+   "articulations": [
+    "-"
+   ],
+   "rr_detail": [
+    {
+     "key": 36,
+     "vel": 20,
+     "kontakt_distinct": 2,
+     "engine_distinct": 1,
+     "sequence_equal": false
+    },
+    {
+     "key": 36,
+     "vel": 60,
+     "kontakt_distinct": 2,
+     "engine_distinct": 1,
+     "sequence_equal": false
+    },
+    {
+     "key": 36,
+     "vel": 100,
+     "kontakt_distinct": 1,
+     "engine_distinct": 1,
+     "sequence_equal": true
+    },
+    {
+     "key": 36,
+     "vel": 127,
+     "kontakt_distinct": 2,
+     "engine_distinct": 1,
+     "sequence_equal": false
+    },
+    {
+     "key": 60,
+     "vel": 20,
+     "kontakt_distinct": 1,
+     "engine_distinct": 1,
+     "sequence_equal": true
+    },
+    {
+     "key": 60,
+     "vel": 60,
+     "kontakt_distinct": 1,
+     "engine_distinct": 1,
+     "sequence_equal": true
+    },
+    {
+     "key": 60,
+     "vel": 100,
+     "kontakt_distinct": 2,
+     "engine_distinct": 1,
+     "sequence_equal": false
+    },
+    {
+     "key": 60,
+     "vel": 127,
+     "kontakt_distinct": 1,
+     "engine_distinct": 1,
+     "sequence_equal": true
+    },
+    {
+     "key": 84,
+     "vel": 20,
+     "kontakt_distinct": 1,
+     "engine_distinct": 1,
+     "sequence_equal": true
+    },
+    {
+     "key": 84,
+     "vel": 60,
+     "kontakt_distinct": 1,
+     "engine_distinct": 1,
+     "sequence_equal": true
+    },
+    {
+     "key": 84,
+     "vel": 100,
+     "kontakt_distinct": 1,
+     "engine_distinct": 1,
+     "sequence_equal": true
+    },
+    {
+     "key": 84,
+     "vel": 127,
+     "kontakt_distinct": 1,
+     "engine_distinct": 1,
+     "sequence_equal": true
+    }
+   ],
+   "per_note": [
+    {
+     "i": 0,
+     "key": 36,
+     "vel": 20,
+     "kontakt": {
+      "asset": "GI_UC_Flag_REL_C1n.ncw",
+      "ncc": 0.6489999890327454,
+      "layer": [
+       [
+        1,
+        127
+       ]
+      ],
+      "rms_db": -41.35
+     },
+     "engine": {
+      "asset": "GI_UC_COTT_C1_280_20150623an.ncw",
+      "ncc": 0.7559999823570251,
+      "layer": [
+       [
+        19,
+        27
+       ]
+      ],
+      "rms_db": -47.36
+     }
+    },
+    {
+     "i": 6,
+     "key": 36,
+     "vel": 60,
+     "kontakt": {
+      "asset": "GI_UC_Cott_Reso_C1_p_196_20150530n.ncw",
+      "ncc": 0.5929999947547913,
+      "layer": [
+       [
+        1,
+        41
+       ],
+       [
+        1,
+        127
+       ],
+       [
+        42,
+        90
+       ]
+      ],
+      "rms_db": -32.29
+     },
+     "engine": {
+      "asset": "GI_UC_COTT_C1_205_20150623bn.ncw",
+      "ncc": 0.9259999990463257,
+      "layer": [
+       [
+        53,
+        60
+       ]
+      ],
+      "rms_db": -38.29
+     }
+    },
+    {
+     "i": 15,
+     "key": 36,
+     "vel": 127,
+     "kontakt": {
+      "asset": "GI_UC_COTT_C1_014_20150623n.ncw",
+      "ncc": 0.8009999990463257,
+      "layer": [
+       [
+        123,
+        127
+       ]
+      ],
+      "rms_db": -16.4
+     },
+     "engine": {
+      "asset": "GI_UC_COTT_C1_028_20150623n.ncw",
+      "ncc": 0.7630000114440918,
+      "layer": [
+       [
+        1,
+        127
+       ],
+       [
+        118,
+        122
+       ]
+      ],
+      "rms_db": -22.4
+     }
+    },
+    {
+     "i": 25,
+     "key": 60,
+     "vel": 100,
+     "kontakt": {
+      "asset": "GI_UC_FELT_REL_C3_046_00192_20150807n.ncw",
+      "ncc": 0.718999981880188,
+      "layer": [
+       [
+        99,
+        112
+       ]
+      ],
+      "rms_db": -23.79
+     },
+     "engine": {
+      "asset": "gi_uc_cott_c3_079_20150726dn.ncw",
+      "ncc": 0.8199999928474426,
+      "layer": [
+       [
+        95,
+        100
+       ]
+      ],
+      "rms_db": -29.83
+     }
+    }
+   ]
+  }
+ },
+ "kontakt": {
+  "identified": 48,
+  "silent": 0,
+  "distinct_samples": 14,
+  "articulations": [
+   "-"
+  ]
+ }
+}

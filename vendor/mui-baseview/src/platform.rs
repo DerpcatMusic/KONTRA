@@ -12,14 +12,17 @@ use raw_window_handle::RawWindowHandle;
 #[cfg(target_os = "macos")]
 #[expect(unsafe_code, reason = "pure libSystem query of the current thread")]
 pub fn main_thread_status() -> Option<bool> {
-    unsafe extern "C" { fn pthread_main_np() -> std::ffi::c_int; }
+    unsafe extern "C" {
+        fn pthread_main_np() -> std::ffi::c_int;
+    }
     // SAFETY: pthread_main_np takes no arguments and only reads thread state.
     Some(unsafe { pthread_main_np() } != 0)
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn main_thread_status() -> Option<bool> { None }
-
+pub fn main_thread_status() -> Option<bool> {
+    None
+}
 
 #[cfg(target_os = "macos")]
 #[repr(C)]
@@ -168,13 +171,25 @@ pub fn warp_pointer(window: &baseview::WindowContext, x: f64, y: f64, _scale: f6
     };
     let Some(display) = d.display else { return };
     // ponytail: loads libX11 on each call; it runs once per drag let go.
-    let Ok(xlib) = x11_dl::xlib::Xlib::open() else { return };
+    let Ok(xlib) = x11_dl::xlib::Xlib::open() else {
+        return;
+    };
     // SAFETY: `display` is baseview's open Xlib display and `target` its
     // window, both alive while the handler that calls this is; XWarpPointer
     // and XFlush only queue and send a request on it, on its own thread.
     unsafe {
         let display = display.as_ptr().cast();
-        (xlib.XWarpPointer)(display, 0, target, 0, 0, 0, 0, x.round() as i32, y.round() as i32);
+        (xlib.XWarpPointer)(
+            display,
+            0,
+            target,
+            0,
+            0,
+            0,
+            0,
+            x.round() as i32,
+            y.round() as i32,
+        );
         (xlib.XFlush)(display);
     }
 }
@@ -242,12 +257,18 @@ pub fn warp_pointer(window: &baseview::WindowContext, x: f64, y: f64, scale: f64
         }
         // Points in the (flipped) view, to the window, to the screen, whose
         // origin is bottom left; Quartz counts from the main screen's top.
-        let local = NsPoint { x: x / scale, y: y / scale };
+        let local = NsPoint {
+            x: x / scale,
+            y: y / scale,
+        };
         let nil: *mut Object = std::ptr::null_mut();
         let in_window: NsPoint = msg_send![view, convertPoint: local toView: nil];
         let on_screen: NsPoint = msg_send![ns_window, convertPointToScreen: in_window];
         let frame: NsRect = msg_send![main, frame];
-        CGWarpMouseCursorPosition(NsPoint { x: on_screen.x, y: frame.size.height - on_screen.y });
+        CGWarpMouseCursorPosition(NsPoint {
+            x: on_screen.x,
+            y: frame.size.height - on_screen.y,
+        });
         // A warp holds the pointer still a moment unless reconnected.
         CGAssociateMouseAndMouseCursorPosition(1);
     }

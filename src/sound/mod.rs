@@ -20,6 +20,9 @@
 //! lock or touch files. Preparation and dropping happen on workers: [`Core::install`]
 //! hands the replaced part back as [`Core::Retired`] instead of dropping it.
 
+pub mod articulation;
+pub mod edits;
+pub(crate) mod effect_controls;
 pub mod event;
 pub mod mics;
 pub mod mix;
@@ -71,7 +74,12 @@ pub struct LoadFailure {
 impl LoadFailure {
     /// A failure with only a message (a source that does not stage its errors).
     pub fn message(message: impl fmt::Display) -> Self {
-        Self { message: message.to_string(), stage: None, kind: None, at: None }
+        Self {
+            message: message.to_string(),
+            stage: None,
+            kind: None,
+            at: None,
+        }
     }
 }
 
@@ -158,8 +166,24 @@ pub struct LoadRequest {
     pub dynamics_start: Option<u8>,
     /// Voice-rendering threads (`None`: one, the audio thread alone).
     pub threads: Option<ThreadChoice>,
+    pub streaming: Streaming,
+    /// MPE manager on channel 16 instead of channel 1.
+    pub mpe_upper: bool,
+    /// Snapshot applied to an explicit base instrument.
+    pub snapshot: Option<std::path::PathBuf>,
     /// Host-saved Kontakt UI values (menus carry item values, not positions).
     pub control_values: Vec<(sampler_ui_ir::ControlId, f64)>,
+}
+
+/// Where sample data plays from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Streaming {
+    /// Preload sample starts and stream the rest from disk.
+    #[default]
+    Auto,
+    /// Load every sample whole: no disk reads or streaming while playing.
+    /// Samples that do not fit the free RAM stream as with `Auto`.
+    RamOnly,
 }
 
 /// A request for voice-rendering threads.
@@ -200,7 +224,11 @@ pub struct Stream {
 impl Stream {
     /// Bytes held in memory: start data plus the page pool.
     pub fn resident_bytes(&self) -> u64 {
-        let heads: usize = self.assets.iter().map(sampler_core::Pcm::resident_bytes).sum();
+        let heads: usize = self
+            .assets
+            .iter()
+            .map(sampler_core::Pcm::resident_bytes)
+            .sum();
         (heads + self.report.pool_bytes) as u64
     }
 
@@ -209,7 +237,11 @@ impl Stream {
     /// `budget` bytes; they read again from disk when next played.
     pub fn trim(&self, budget: u64, before: u64) -> usize {
         let pool = self.report.pool_bytes as u64;
-        self.streamer.trim(&self.assets, budget.saturating_sub(pool).try_into().unwrap_or(usize::MAX), before)
+        self.streamer.trim(
+            &self.assets,
+            budget.saturating_sub(pool).try_into().unwrap_or(usize::MAX),
+            before,
+        )
     }
 }
 
@@ -228,7 +260,7 @@ pub struct KeyLook {
 pub struct ScriptUi {
     pub uvi: Option<std::sync::Arc<sampler_uvi::scripted::UiBridge>>,
     pub uvi_revision: u64,
-    pub uvi_source: Option<(String, u32)>,
+    pub uvi_source: Option<(String, u32, String)>,
     /// By script instance ([`sampler_core::ScriptInstanceId`]).
     pub views: Vec<sampler_ksp::ScriptView>,
     pub resources: Option<sampler_kontakt::Resources>,
@@ -237,7 +269,9 @@ pub struct ScriptUi {
 impl ScriptUi {
     /// Apply an effect script `instance` emitted; true when it changed a view.
     pub fn apply(&mut self, instance: usize, effect: &sampler_core::Effect) -> bool {
-        self.views.get_mut(instance).is_some_and(|v| v.apply_ui_effect(effect))
+        self.views
+            .get_mut(instance)
+            .is_some_and(|v| v.apply_ui_effect(effect))
     }
 
     /// The keyboard as the scripts colour and name it, 128 keys; a later
@@ -274,7 +308,10 @@ impl ScriptUi {
         }
         let resources = std::cell::RefCell::new(&mut self.resources);
         let picture = |path: &str| resources.borrow_mut().as_mut()?.picture(path);
-        self.views.iter().filter_map(|v| v.ui(&picture).ok()).collect()
+        self.views
+            .iter()
+            .filter_map(|v| v.ui(&picture).ok())
+            .collect()
     }
 }
 
@@ -314,11 +351,18 @@ pub trait Core: Send {
     /// Host input from MIDI/note port `port`, to every part listening there.
     fn event(&mut self, port: u8, event: event::Event);
     /// Input straight to one part, bypassing port and channel routing.
+    /// Part keyboard MIDI uses its MPE manager; exact host-note tuples stay intact.
     fn play(&mut self, part: usize, event: event::Event);
     /// Whether a host note on `channel` and `key` still sounds (keyboard display).
     fn key_held(&self, channel: u8, key: u8) -> bool;
     /// Render `frames` (≤ [`MAX_BLOCK`]) onto the output pairs.
     fn render(&mut self, frames: usize) -> Rendered<'_>;
+    /// Optional shared-engine trace of the host master gain, after rack mixing.
+    fn trace_master(&mut self, _gains: &[f32]) -> bool {
+        false
+    }
+    /// Observe physical host channels after routing, summing and mono conversion.
+    fn trace_output(&mut self, _port: usize, _frames: &[[f32; 2]], _channels: u8) {}
     /// Whether anything still owns exact host note `note`. A note-on that
     /// created no owner ends at once.
     fn owns(&self, note: event::HostNote) -> bool;
@@ -328,6 +372,8 @@ pub trait Core: Send {
 
     /// The mixer: parts, output pairs and each part's tree nodes.
     fn set_mix(&mut self, mix: &mix::Mix);
+    /// Global fallback-envelope times in seconds and part-output Tone cutoff in Hz.
+    fn set_performance(&mut self, attack: f64, release: f64, cutoff: f64);
     /// Host output port of each pair, as last set by [`set_mix`](Self::set_mix).
     fn bus_ports(&self) -> [u8; BUSES];
     /// Copy `part`'s post-fader mono signal during [`render`](Self::render).
@@ -340,6 +386,9 @@ pub trait Core: Send {
     /// call (after the node's own fader); taking them resets them.
     fn take_node_peaks(&mut self, part: usize, each: &mut dyn FnMut(usize, [f32; 2]));
 
+    /// Select the immutable source articulation independently of its input mapping.
+    fn select_articulation(&mut self, part: usize, articulation: usize) -> bool;
+
     /// Edit one of `part`'s controls as its widget would: the value is
     /// clamped to the control's range (integers rounded, toggles at 0.5) and
     /// the script's `on ui_control` callback runs. False when the part has
@@ -347,11 +396,21 @@ pub trait Core: Send {
     fn set_control(&mut self, part: usize, control: sampler_ui_ir::ControlId, value: f64) -> bool;
     /// The control's current value, which scripts may also change.
     fn control_value(&self, part: usize, control: sampler_ui_ir::ControlId) -> Option<f64>;
+    fn effect_value(&self, _part: usize, _address: sampler_core::ParameterAddress) -> Option<f64> {
+        None
+    }
     /// Hand `part`'s queued script effects to `each` with their script
     /// instance, in order, until it returns false; the rest stay queued.
-    fn take_effects(&mut self, part: usize, each: &mut dyn FnMut(usize, &sampler_core::Effect) -> bool);
+    fn take_effects(
+        &mut self,
+        part: usize,
+        each: &mut dyn FnMut(usize, &sampler_core::Effect) -> bool,
+    );
 
     fn voices(&self) -> Voices;
+    fn voice_taps(&self, _part: usize) -> [Option<sampler_core::VoiceTap>; 16] {
+        [None; 16]
+    }
     /// `part`'s runtime problems since it was installed.
     fn problems(&self, part: usize) -> report::RuntimeProblems;
     /// The articulation `part` plays, by index in its instrument, when the

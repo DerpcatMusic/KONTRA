@@ -32,6 +32,8 @@ pub enum Switch {
     Articulation(u32),
     /// Tap this key (on, then off) so behaviors that own switching see it.
     Tap(u8),
+    /// Invoke an authored choice control for a keyless articulation.
+    Control { id: u128, articulation: u32 },
 }
 
 /// One driver range. `controller` is the CC number for [`Driver::Controller`]
@@ -44,13 +46,28 @@ pub struct Selector {
     pub switch: Switch,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Switching {
     driver: Driver,
     keys: SwitchKeys,
     /// Bit `k` set for keyswitch key `k`.
     switch_keys: u128,
-    selectors: Box<[Selector]>,
+    selectors: std::sync::Arc<[Selector]>,
+    key_inputs: Option<std::sync::Arc<[Option<Switch>; 128]>>,
+    blocked: u128,
+}
+
+impl Default for Switching {
+    fn default() -> Self {
+        Self {
+            driver: Driver::Keys,
+            keys: SwitchKeys::Keep,
+            switch_keys: 0,
+            selectors: Vec::new().into(),
+            key_inputs: None,
+            blocked: 0,
+        }
+    }
 }
 
 impl Switching {
@@ -78,8 +95,47 @@ impl Switching {
             driver,
             keys,
             switch_keys: table,
-            selectors: selectors.into_boxed_slice(),
+            selectors: selectors.into(),
+            key_inputs: None,
+            blocked: 0,
         })
+    }
+
+    /// Worker-prepared user inputs. Duplicates/bad keys are rejected, never clamped.
+    pub fn set_key_inputs(
+        &mut self,
+        inputs: Vec<(u8, Switch)>,
+        blocked: u128,
+    ) -> Result<(), Error> {
+        let inputs_nonempty = !inputs.is_empty();
+        let mut keys = [None; 128];
+        for (key, switch) in inputs {
+            if matches!(switch, Switch::Tap(k) if k > 127) {
+                return Err(Error::InvalidInput);
+            }
+            if keys
+                .get_mut(usize::from(key))
+                .ok_or(Error::InvalidInput)?
+                .replace(switch)
+                .is_some()
+            {
+                return Err(Error::InvalidInput);
+            }
+        }
+        self.key_inputs = inputs_nonempty.then(|| std::sync::Arc::new(keys));
+        self.blocked = blocked;
+        Ok(())
+    }
+
+    pub fn key_input(&self, key: u8) -> Option<Switch> {
+        self.key_inputs
+            .as_ref()?
+            .get(usize::from(key))
+            .copied()
+            .flatten()
+    }
+    pub fn blocked(&self, key: u8) -> bool {
+        key < 128 && self.blocked >> key & 1 != 0
     }
 
     pub fn driver(&self) -> Driver {
@@ -141,6 +197,15 @@ impl Runtime {
         &mut self,
         switching: Switching,
         switches: Vec<crate::Keyswitch>,
+    ) -> Result<(), Error> {
+        self.set_switching_table(switching, &switches)
+    }
+
+    /// Install worker-prepared tables without allocating on the audio thread.
+    pub fn set_switching_table(
+        &mut self,
+        switching: Switching,
+        switches: &[crate::Keyswitch],
     ) -> Result<(), Error> {
         let mut keys = [None; 128];
         for switch in switches {

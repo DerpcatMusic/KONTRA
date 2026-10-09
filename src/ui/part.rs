@@ -24,25 +24,69 @@ pub struct Face {
     pub presentation: Presentation,
     values: ir_view::Values,
     pub input: ir_view::InputState,
-    native:Option<super::native_ui::State>,
+    native: Option<super::native_ui::State>,
 }
 
 impl Face {
-    fn new(path: &std::path::Path, generation: u64, from: Arc<[ir::Interface]>, shown: usize, presentation: Presentation) -> Self {
+    fn new(
+        path: &std::path::Path,
+        generation: u64,
+        from: Arc<[ir::Interface]>,
+        shown: usize,
+        presentation: Presentation,
+    ) -> Self {
         let face = ir_view::resolved(&from[shown]);
-        let native=face.native_ui.as_ref().map(|n|super::native_ui::State::new(path,&n.entry,from.iter().flat_map(|f|f.widgets.iter().enumerate().map(move |(n,w)|(f.source,n,w.clone()))).collect()));
-        let mut out = Self { from, path: path.into(), generation, revision: u64::MAX, patch: Default::default(), page: ir::PageRef(0), shown, face, assets: Default::default(), presentation, values: Default::default(), input:Default::default(), native };
+        let native = face.native_ui.as_ref().map(|n| {
+            super::native_ui::State::new(
+                path,
+                &n.entry,
+                from.iter()
+                    .flat_map(|f| {
+                        f.widgets
+                            .iter()
+                            .enumerate()
+                            .map(move |(n, w)| (f.source, n, w.clone()))
+                    })
+                    .collect(),
+            )
+        });
+        let mut out = Self {
+            from,
+            path: path.into(),
+            generation,
+            revision: u64::MAX,
+            patch: Default::default(),
+            page: ir::PageRef(0),
+            shown,
+            face,
+            assets: Default::default(),
+            presentation,
+            values: Default::default(),
+            input: Default::default(),
+            native,
+        };
         out.sync();
         out
     }
 
     fn update(&mut self, patch: ir::InterfacePatch) {
-        if patch == self.patch { return; }
-        let mut changed: Vec<_> = self.patch.widgets.iter().chain(&patch.widgets).map(|(n, _)| *n).collect();
-        changed.sort_unstable(); changed.dedup();
+        if patch == self.patch {
+            return;
+        }
+        let mut changed: Vec<_> = self
+            .patch
+            .widgets
+            .iter()
+            .chain(&patch.widgets)
+            .map(|(n, _)| *n)
+            .collect();
+        changed.sort_unstable();
+        changed.dedup();
         let assets_changed = patch.assets != self.patch.assets;
         patch.apply(&self.from[self.shown], &self.patch, &mut self.face);
-        if assets_changed { changed = (0..self.face.widgets.len()).collect(); }
+        if assets_changed {
+            changed = (0..self.face.widgets.len()).collect();
+        }
         ir_view::resolve_changed(&mut self.face, changed);
         self.patch = patch;
         self.page.0 = self.page.0.min(self.face.pages.len().saturating_sub(1));
@@ -51,22 +95,47 @@ impl Face {
 
     /// Decoded picture bytes the view keeps.
     pub fn bytes(&self) -> usize {
-        self.assets.bytes()+self.native.as_ref().map_or(0,|n|n.bytes())
+        self.assets.bytes() + self.native.as_ref().map_or(0, |n| n.bytes())
     }
 
     fn sync(&mut self) {
-        let entry=self.face.native_ui.as_ref().map(|n|n.entry.as_str());
-        if self.native.as_ref().map(|n|n.entry())!=entry {
-            self.native=entry.map(|entry|super::native_ui::State::new(&self.path,entry,self.from.iter().flat_map(|f|f.widgets.iter().enumerate().map(move |(n,w)|(f.source,n,w.clone()))).collect()));
+        let entry = self.face.native_ui.as_ref().map(|n| n.entry.as_str());
+        if self.native.as_ref().map(|n| n.entry()) != entry {
+            self.native = entry.map(|entry| {
+                super::native_ui::State::new(
+                    &self.path,
+                    entry,
+                    self.from
+                        .iter()
+                        .flat_map(|f| {
+                            f.widgets
+                                .iter()
+                                .enumerate()
+                                .map(move |(n, w)| (f.source, n, w.clone()))
+                        })
+                        .collect(),
+                )
+            });
         }
-        if self.native.is_some() && self.presentation==Presentation::Bitmap {return;}
-        self.assets.prepare(&self.path,&self.face,self.page,self.presentation,1.,&self.values);
+        if self.native.is_some() && self.presentation == Presentation::Bitmap {
+            return;
+        }
+        self.assets.prepare(
+            &self.path,
+            &self.face,
+            self.page,
+            self.presentation,
+            1.,
+            &self.values,
+        );
     }
 }
 
 /// The interface the rack opens on: the script with the most controls.
 fn main_face(faces: &[ir::Interface]) -> Option<usize> {
-    (0..faces.len()).filter(|&n| !faces[n].widgets.is_empty()).max_by_key(|&n| faces[n].widgets.len())
+    (0..faces.len())
+        .filter(|&n| !faces[n].widgets.is_empty())
+        .max_by_key(|&n| faces[n].widgets.len())
 }
 
 /// One resolver for saved v1 overrides and the global preference.
@@ -74,34 +143,70 @@ pub fn mode(cx: &Cx, slot: usize) -> crate::library::ViewMode {
     resolve_mode(&cx.selection.parts[slot], &cx.settings)
 }
 
-fn resolve_mode(part: &crate::plugin::Part, settings: &crate::library::Settings) -> crate::library::ViewMode {
+fn resolve_mode(
+    part: &crate::plugin::Part,
+    settings: &crate::library::Settings,
+) -> crate::library::ViewMode {
     use crate::library::ViewMode;
-    match part.view { 1 => ViewMode::Original, 2 => ViewMode::Kontra, 3 => ViewMode::Vectorized, _ => settings.instrument_views.get(&part.path).copied().unwrap_or(settings.view_mode) }
+    match part.view {
+        1 => ViewMode::Original,
+        2 => ViewMode::Kontra,
+        3 => ViewMode::Vectorized,
+        _ => settings
+            .instrument_views
+            .get(&part.path)
+            .copied()
+            .unwrap_or(settings.view_mode),
+    }
 }
 
-pub fn available(cx: &Cx, slot: usize) -> bool { main_face(&cx.view.parts[slot].interfaces).is_some() }
+pub fn available(cx: &Cx, slot: usize) -> bool {
+    main_face(&cx.view.parts[slot].interfaces).is_some()
+}
 
 pub(super) fn scale_to_fit(room: Size, authored: Size, setting: f32) -> f64 {
-    if setting.is_finite() && setting > 0. { return f64::from(setting); }
-    if room.width <= 0. || authored.width <= 0. { return 1.; }
+    if setting.is_finite() && setting > 0. {
+        return f64::from(setting);
+    }
+    if room.width <= 0. || authored.width <= 0. {
+        return 1.;
+    }
     let mut fit = room.width / authored.width;
-    if room.height > 0. && authored.height > 0. { fit = fit.min(room.height / authored.height); }
+    if room.height > 0. && authored.height > 0. {
+        fit = fit.min(room.height / authored.height);
+    }
     if fit >= 1. { fit.floor() } else { fit }
 }
 
 fn room_height(ui: &Ui, slot: usize) -> f64 {
     let Some(scene) = ui.scene() else { return 0. };
-    let (Some(rack), Some(part), Some(stage)) = (scene.surface("rack-view"), scene.surface(&format!("part-{slot}")), scene.surface(&format!("stage-{slot}"))) else { return 0. };
-    let tabs = scene.surface(&format!("face-bar-{slot}")).map_or(0., |s| s.frame.size.height);
-    let perf = scene.surface(&format!("perf-{slot}")).map_or(0., |s| s.frame.size.height);
+    let (Some(rack), Some(part), Some(stage)) = (
+        scene.surface("rack-view"),
+        scene.surface(&format!("part-{slot}")),
+        scene.surface(&format!("stage-{slot}")),
+    ) else {
+        return 0.;
+    };
+    let tabs = scene
+        .surface(&format!("face-bar-{slot}"))
+        .map_or(0., |s| s.frame.size.height);
+    let perf = scene
+        .surface(&format!("perf-{slot}"))
+        .map_or(0., |s| s.frame.size.height);
     (rack.frame.size.height - (stage.frame.y - part.frame.y).max(0.) - tabs - perf).max(0.)
 }
 
 pub(super) fn interaction(edit: &ir_view::Edit) -> sampler_core::WidgetInteraction {
-    sampler_core::WidgetInteraction { index: edit.index, cursor: edit.cursor, event: edit.event,
+    sampler_core::WidgetInteraction {
+        index: edit.index,
+        cursor: edit.cursor,
+        event: edit.event,
         mouse_over: edit.mouse_over,
-        modifiers: u8::from(edit.mods.shift) | (u8::from(edit.mods.ctrl || edit.mods.cmd) << 1) | (u8::from(edit.mods.alt) << 2),
-        ..Default::default() }
+        modifiers: u8::from(edit.mods.shift)
+            | (u8::from(edit.mods.ctrl || edit.mods.cmd) << 1)
+            | (u8::from(edit.mods.alt) << 2),
+        ..Default::default()
+    }
 }
 
 /// `slot`'s library interface, when its scripts declare one.
@@ -112,15 +217,32 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
     let published = &cx.view.parts[slot];
     let generation = published.generation;
     let mode = mode(cx, slot);
-    let presentation = if mode == crate::library::ViewMode::Original { Presentation::Bitmap } else { Presentation::Vector };
-    let stale = cx.state.faces.get(&slot).is_none_or(|f| f.path != path || f.generation != generation);
+    let presentation = if mode == crate::library::ViewMode::Original {
+        Presentation::Bitmap
+    } else {
+        Presentation::Vector
+    };
+    let stale = cx
+        .state
+        .faces
+        .get(&slot)
+        .is_none_or(|f| f.path != path || f.generation != generation);
     if stale {
-        cx.state.faces.insert(slot, Face::new(&path, generation, from.clone(), main, presentation));
+        cx.state.faces.insert(
+            slot,
+            Face::new(&path, generation, from.clone(), main, presentation),
+        );
     }
     let face = cx.state.faces.get_mut(&slot)?;
     if !Arc::ptr_eq(&face.from, &from) || face.revision != published.ui_revision {
-        if !from.get(face.shown).is_some_and(|f| !f.widgets.is_empty()) { face.shown = main; }
-        let patch = published.updates.get(face.shown).cloned().unwrap_or_default();
+        if !from.get(face.shown).is_some_and(|f| !f.widgets.is_empty()) {
+            face.shown = main;
+        }
+        let patch = published
+            .updates
+            .get(face.shown)
+            .cloned()
+            .unwrap_or_default();
         if !Arc::ptr_eq(&face.from, &from) {
             face.face = ir_view::resolved(&from[face.shown]);
             face.patch = Default::default();
@@ -129,21 +251,37 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
         face.update(patch);
         face.revision = published.ui_revision;
     }
-    if face.presentation != presentation { face.presentation = presentation; face.sync(); }
+    if face.presentation != presentation {
+        face.presentation = presentation;
+        face.sync();
+    }
 
     // Which script's view, when several have one, and how it is drawn.
     let mut bar: Vec<El> = lead.into_iter().collect();
-    let with: Vec<usize> = (0..from.len()).filter(|&n| !from[n].widgets.is_empty()).collect();
+    let with: Vec<usize> = (0..from.len())
+        .filter(|&n| !from[n].widgets.is_empty())
+        .collect();
     let mut pick = None;
     if with.len() > 1 {
         let tabs: Vec<El> = with
             .iter()
             .map(|&n| {
-                let label = from[n].pages.first().map(|p| p.name.clone()).filter(|s| !s.is_empty()).unwrap_or_else(|| match from[n].source {
-                    ir::Source::Ksp { slot } => format!("Script {}", slot + 1),
-                    _ => format!("View {}", n + 1),
-                });
-                let (hit, el) = latch(ui, format!("face-{slot}-{n}"), &label, "Show this script's view", face.shown == n);
+                let label = from[n]
+                    .pages
+                    .first()
+                    .map(|p| p.name.clone())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| match from[n].source {
+                        ir::Source::Ksp { slot } => format!("Script {}", slot + 1),
+                        _ => format!("View {}", n + 1),
+                    });
+                let (hit, el) = latch(
+                    ui,
+                    format!("face-{slot}-{n}"),
+                    &label,
+                    "Show this script's view",
+                    face.shown == n,
+                );
                 if hit {
                     pick = Some(n);
                 }
@@ -153,19 +291,55 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
         bar.push(segmented(tabs));
     }
     if face.face.pages.len() > 1 {
-        let pages = face.face.pages.iter().enumerate().map(|(n, p)| {
-            let label = if p.name.is_empty() { format!("Page {}", n + 1) } else { p.name.clone() };
-            let (hit, el) = latch(ui, format!("face-page-{slot}-{n}"), &label, "Show this page", face.page.0 == n);
-            if hit { face.page = ir::PageRef(n); }
-            el
-        }).collect();
+        let pages = face
+            .face
+            .pages
+            .iter()
+            .enumerate()
+            .map(|(n, p)| {
+                let label = if p.name.is_empty() {
+                    format!("Page {}", n + 1)
+                } else {
+                    p.name.clone()
+                };
+                let (hit, el) = latch(
+                    ui,
+                    format!("face-page-{slot}-{n}"),
+                    &label,
+                    "Show this page",
+                    face.page.0 == n,
+                );
+                if hit {
+                    face.page = ir::PageRef(n);
+                }
+                el
+            })
+            .collect();
         bar.push(segmented(pages));
     }
     bar.push(spacer());
     let original = mode == crate::library::ViewMode::Original;
-    let (a, orig) = latch(ui, format!("face-original-{slot}"), "Original", "The library's own artwork", original);
-    let (b, vect) = latch(ui, format!("face-vector-{slot}"), "Vector", "The library's background with KONTRA's controls; frees the control pictures", mode == crate::library::ViewMode::Vectorized);
-    let (c, generated) = latch(ui, format!("face-kontra-{slot}"), "KONTRA", "Readable sections and channel strips", mode == crate::library::ViewMode::Kontra);
+    let (a, orig) = latch(
+        ui,
+        format!("face-original-{slot}"),
+        "Original",
+        "The library's own artwork",
+        original,
+    );
+    let (b, vect) = latch(
+        ui,
+        format!("face-vector-{slot}"),
+        "Vector",
+        "The library's background with KONTRA's controls; frees the control pictures",
+        mode == crate::library::ViewMode::Vectorized,
+    );
+    let (c, generated) = latch(
+        ui,
+        format!("face-kontra-{slot}"),
+        "KONTRA",
+        "Readable sections and channel strips",
+        mode == crate::library::ViewMode::Kontra,
+    );
     bar.push(segmented(vec![orig, vect, generated]));
     if let Some(n) = pick.filter(|&n| n != face.shown) {
         let presentation = face.presentation;
@@ -179,61 +353,195 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
         face.sync();
     }
     if a || b || c {
-        cx.selection.parts[slot].view = if b { 3 } else if c { 2 } else { 1 };
-        let chosen = if b { crate::library::ViewMode::Vectorized } else if c { crate::library::ViewMode::Kontra } else { crate::library::ViewMode::Original };
-        cx.p.shared.libraries.edit(|settings| { settings.instrument_views.insert(path.to_string_lossy().into_owned(), chosen); });
-        face.presentation = if a { Presentation::Bitmap } else { Presentation::Vector };
+        cx.selection.parts[slot].view = if b {
+            3
+        } else if c {
+            2
+        } else {
+            1
+        };
+        let chosen = if b {
+            crate::library::ViewMode::Vectorized
+        } else if c {
+            crate::library::ViewMode::Kontra
+        } else {
+            crate::library::ViewMode::Original
+        };
+        cx.p.shared.libraries.edit(|settings| {
+            settings
+                .instrument_views
+                .insert(path.to_string_lossy().into_owned(), chosen);
+        });
+        face.presentation = if a {
+            Presentation::Bitmap
+        } else {
+            Presentation::Vector
+        };
         face.sync();
     }
 
     let held = face.bytes() as f64 / (1024. * 1024.);
-    bar.insert(bar.len() - 1, caption(format!("{held:.1} MB pictures")).fill(secondary()).lines(1).tip("Decoded artwork this view keeps in memory"));
-    let mode = if a { crate::library::ViewMode::Original } else if b { crate::library::ViewMode::Vectorized } else if c { crate::library::ViewMode::Kontra } else { mode };
+    bar.insert(
+        bar.len() - 1,
+        caption(format!("{held:.1} MB pictures"))
+            .fill(secondary())
+            .lines(1)
+            .tip("Decoded artwork this view keeps in memory"),
+    );
+    let mode = if a {
+        crate::library::ViewMode::Original
+    } else if b {
+        crate::library::ViewMode::Vectorized
+    } else if c {
+        crate::library::ViewMode::Kontra
+    } else {
+        mode
+    };
     let page = &face.face.pages[face.page.0];
-    let avail = ui.scene().and_then(|s| s.surface(&format!("face-{slot}"))).map_or(f64::from(page.size.width), |s| s.frame.size.width);
+    let avail = ui
+        .scene()
+        .and_then(|s| s.surface(&format!("face-{slot}")))
+        .map_or(f64::from(page.size.width), |s| s.frame.size.width);
     let room = room_height(ui, slot);
-    let scale = scale_to_fit(Size::new(avail, room), Size::new(f64::from(page.size.width), f64::from(ir_view::height(&face.face, face.page))), cx.settings.view_scale);
+    let scale = scale_to_fit(
+        Size::new(avail, room),
+        Size::new(
+            f64::from(page.size.width),
+            f64::from(ir_view::height(&face.face, face.page)),
+        ),
+        cx.settings.view_scale,
+    );
     // The core's values (scripts change them too); edits go back as widget edits.
     let shared = cx.p.shared.part(slot);
-    face.assets.meter=shared.clone().map(|part|Arc::new(move |_bus: Option<u32>,channel: u8| {
-        let levels=part.meter.each_ref().map(|v|f32::from_bits(v.load(std::sync::atomic::Ordering::Relaxed)));
-        if channel==0 {levels}else{[levels[(channel as usize).min(1)];2]}
-    }) as Arc<dyn Fn(Option<u32>,u8)->[f32;2]+Send+Sync>);
-    let current: Vec<_> = shared.as_ref().map(|p| p.display_values()).unwrap_or_default();
+    face.assets.meter = shared.clone().map(|part| {
+        Arc::new(move |_bus: Option<u32>, channel: u8| {
+            let levels = part
+                .meter
+                .each_ref()
+                .map(|v| f32::from_bits(v.load(std::sync::atomic::Ordering::Relaxed)));
+            if channel == 0 {
+                levels
+            } else {
+                [levels[(channel as usize).min(1)]; 2]
+            }
+        }) as Arc<dyn Fn(Option<u32>, u8) -> [f32; 2] + Send + Sync>
+    });
+    let current: Vec<_> = shared
+        .as_ref()
+        .map(|p| p.display_values())
+        .unwrap_or_default();
     face.values.extend(current.iter().copied());
     if let Some(shared) = &shared {
         face.input.values.extend(shared.widget_values(&face.face));
         face.input.meters = shared.widget_meters(&face.face, generation);
-        let waveforms = shared.widget_waveforms(&face.face, generation, scale * ui.scale().unwrap_or(1.));
-        face.input.wave_duration_us = waveforms.iter().map(|(widget, envelope)| (*widget, envelope.duration_us)).collect();
-        face.input.peaks = waveforms.into_iter().map(|(widget, envelope)| (widget, envelope.peaks)).collect();
+        let waveforms =
+            shared.widget_waveforms(&face.face, generation, scale * ui.scale().unwrap_or(1.));
+        face.input.wave_duration_us = waveforms
+            .iter()
+            .map(|(widget, envelope)| (*widget, envelope.duration_us))
+            .collect();
+        face.input.peaks = waveforms
+            .into_iter()
+            .map(|(widget, envelope)| (widget, envelope.peaks))
+            .collect();
     }
-    if face.native.is_none() || face.presentation!=Presentation::Bitmap {face.assets.prepare(&face.path,&face.face,face.page,face.presentation,scale*ui.scale().unwrap_or(1.),&face.values);}
+    if face.native.is_none() || face.presentation != Presentation::Bitmap {
+        face.assets.prepare(
+            &face.path,
+            &face.face,
+            face.page,
+            face.presentation,
+            scale * ui.scale().unwrap_or(1.),
+            &face.values,
+        );
+    }
     let namespace = format!("part-{slot}-epoch-{generation}-script-{}", face.shown);
-    let view = if mode==crate::library::ViewMode::Original && let Some(native)=&mut face.native {
-        for (index,source) in face.from.iter().enumerate() {
-            let current=published.updates.get(index).filter(|patch|**patch!=Default::default()).map(|patch| {let mut current=source.clone();patch.apply(source,&Default::default(),&mut current);current});
-            let current=current.as_ref().unwrap_or(source);
-            let typed=shared.as_ref().map(|shared|shared.widget_values(current)).unwrap_or_default();
-            native.update_view(current,&face.values,&typed);
+    let view = if mode == crate::library::ViewMode::Original
+        && let Some(native) = &mut face.native
+    {
+        for (index, source) in face.from.iter().enumerate() {
+            let current = published
+                .updates
+                .get(index)
+                .filter(|patch| **patch != Default::default())
+                .map(|patch| {
+                    let mut current = source.clone();
+                    patch.apply(source, &Default::default(), &mut current);
+                    current
+                });
+            let current = current.as_ref().unwrap_or(source);
+            let typed = shared
+                .as_ref()
+                .map(|shared| shared.widget_values(current))
+                .unwrap_or_default();
+            let meters = shared
+                .as_ref()
+                .map(|shared| shared.widget_meters(current, generation))
+                .unwrap_or_default();
+            native.update_view(current, &face.values, &typed, &meters);
         }
-        let authored=native.authored();let scale=scale_to_fit(Size::new(avail,room),authored,cx.settings.view_scale);
-        let view=native.view(ui,slot,scale,&face.face,&face.values,&face.input);
+        let authored = native.authored();
+        let scale = scale_to_fit(Size::new(avail, room), authored, cx.settings.view_scale);
+        let view = native.view(ui, slot, scale, &face.face, &face.values, &face.input);
         for edit in native.edits() {
-            let widget=if edit.source==face.face.source {face.face.widgets.get(edit.widget.0)} else {face.from.iter().find(|f|f.source==edit.source).and_then(|f|f.widgets.get(edit.widget.0))};
-            let admitted=widget.is_some_and(|widget| {
-                let source_slot=match edit.source {ir::Source::Ksp{slot}=>slot,_=>0};
-                cx.p.shared.set_widget_at(slot,generation,source_slot,widget,edit.index,edit.value.clone())
+            let widget = if edit.source == face.face.source {
+                face.face.widgets.get(edit.widget.0)
+            } else {
+                face.from
+                    .iter()
+                    .find(|f| f.source == edit.source)
+                    .and_then(|f| f.widgets.get(edit.widget.0))
+            };
+            let admitted = widget.is_some_and(|widget| {
+                let source_slot = match edit.source {
+                    ir::Source::Ksp { slot } => slot,
+                    _ => 0,
+                };
+                cx.p.shared.set_widget_at(
+                    slot,
+                    generation,
+                    source_slot,
+                    widget,
+                    edit.index,
+                    edit.value.clone(),
+                )
             });
-            if !admitted {cx.state.notice="This authored widget edit could not be applied.".into();}
+            if !admitted {
+                cx.state.notice = "This authored widget edit could not be applied.".into();
+            }
         }
         view
     } else if mode == crate::library::ViewMode::Kontra {
-        super::generated::view(ui, &namespace, &face.face, face.page, &face.assets, scale, &mut face.values, &mut face.input)
+        super::generated::view(
+            ui,
+            &namespace,
+            &face.face,
+            face.page,
+            &face.assets,
+            scale,
+            &mut face.values,
+            &mut face.input,
+        )
     } else {
-        ir_view::view_state(ui, &namespace, &face.face, face.page, &face.assets, face.presentation, scale, &mut face.values, &mut face.input)
+        ir_view::view_state(
+            ui,
+            &namespace,
+            &face.face,
+            face.page,
+            &face.assets,
+            face.presentation,
+            scale,
+            &mut face.values,
+            &mut face.input,
+        )
     };
-    let mut edits: std::collections::HashMap<ir::WidgetRef, (std::collections::BTreeMap<u32, ir::Value>, sampler_core::WidgetInteraction)> = Default::default();
+    let mut edits: std::collections::HashMap<
+        ir::WidgetRef,
+        (
+            std::collections::BTreeMap<u32, ir::Value>,
+            sampler_core::WidgetInteraction,
+        ),
+    > = Default::default();
     for edit in face.input.edits.drain(..) {
         let entry = edits.entry(edit.widget).or_default();
         entry.1 = interaction(&edit);
@@ -241,10 +549,26 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
     }
     let mut edited_controls = std::collections::HashSet::new();
     for (n, (edits, interaction)) in edits {
-        let Some(widget) = face.face.widgets.get(n.0) else { continue };
-        if let ir::Binding::Control(id) = widget.binding { edited_controls.insert(id); }
-        let source_slot=match face.face.source {ir::Source::Ksp{slot}=>slot,_=>0};
-        if !cx.p.shared.set_widget_batch_at(slot, generation, source_slot, widget, edits.into_iter().collect(), interaction) { face.input.values.remove(&n); }
+        let Some(widget) = face.face.widgets.get(n.0) else {
+            continue;
+        };
+        if let ir::Binding::Control(id) = widget.binding {
+            edited_controls.insert(id);
+        }
+        let source_slot = match face.face.source {
+            ir::Source::Ksp { slot } => slot,
+            _ => 0,
+        };
+        if !cx.p.shared.set_widget_batch_at(
+            slot,
+            generation,
+            source_slot,
+            widget,
+            edits.into_iter().collect(),
+            interaction,
+        ) {
+            face.input.values.remove(&n);
+        }
     }
     for &(id, was) in &current {
         if let Some(&now) = face.values.get(&id)
@@ -256,8 +580,17 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
     }
     Some(
         col![
-            row(bar).id(format!("face-bar-{slot}")).gap(SPACE).align(Align::Center).pad((TIGHT, INSET)).w(Len::Pct(100.)).shrink(0),
-            row![spacer(), view, spacer()].w(Len::Pct(100.)).shrink(0).id(format!("face-{slot}"))
+            row(bar)
+                .id(format!("face-bar-{slot}"))
+                .gap(SPACE)
+                .align(Align::Center)
+                .pad((TIGHT, INSET))
+                .w(Len::Pct(100.))
+                .shrink(0),
+            row![spacer(), view, spacer()]
+                .w(Len::Pct(100.))
+                .shrink(0)
+                .id(format!("face-{slot}"))
         ]
         .gap(0)
         .align(Align::Stretch)
@@ -268,21 +601,23 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
 
 /// The empty rack.
 pub fn welcome(cx: &Cx) -> El {
-    let mut lines = vec![
-        title("Pick an instrument").text_weight(Weight::SEMIBOLD),
-        body("Choose a library on the left and click an instrument, or drag it onto the rack. Multis load the whole rack.")
-            .fill(secondary())
-            .lines(3)
-            .max_size(Size::new(TEXT * 35., CONTROL * 3.)),
-    ];
+    let mut lines = vec![title("Pick an instrument").text_weight(Weight::SEMIBOLD)];
     if !cx.view.multi_status.is_empty() {
-        lines.push(caption(cx.view.multi_status.clone()).fill(secondary()).lines(2));
+        lines.push(
+            caption(cx.view.multi_status.clone())
+                .fill(secondary())
+                .lines(2),
+        );
     }
-    col![spacer(), col(lines).gap(SPACE).align(Align::Start), spacer()]
-        .align(Align::Center)
-        .pad(INSET * 3.)
-        .flex(1)
-        .min_h(0)
+    col![
+        spacer(),
+        col(lines).gap(SPACE).align(Align::Start),
+        spacer()
+    ]
+    .align(Align::Center)
+    .pad(INSET * 3.)
+    .flex(1)
+    .min_h(0)
 }
 
 /// Why `slot` is silent or incomplete, in words a player can act on.
@@ -290,17 +625,38 @@ pub fn notices(cx: &Cx, slot: usize) -> Option<El> {
     let v = &cx.view.parts[slot];
     let mut out = Vec::new();
     if let Some(reason) = v.status.strip_prefix("Load failed: ") {
-        out.push(banner(Role::Danger, format!("This instrument could not be loaded: {reason}.")));
+        out.push(banner(
+            Role::Danger,
+            format!("This instrument could not be loaded: {reason}."),
+        ));
     }
-    if v.report.as_ref().is_some_and(|r| r.missing.iter().any(|m| m.feature == "native interface")) {
-        out.push(banner(Role::Warning, "The requested native performance view is unavailable. Showing the script controls."));
+    if v.report
+        .as_ref()
+        .is_some_and(|r| r.missing.iter().any(|m| m.feature == "native interface"))
+    {
+        out.push(banner(
+            Role::Warning,
+            "The requested native performance view is unavailable. Showing the script controls.",
+        ));
     }
     if let Some(p) = v.report.as_ref().map(|r| r.runtime) {
         if p.capacity_drops > 0 {
-            out.push(banner(Role::Warning, format!("{} notes were dropped: the part ran out of voices.", p.capacity_drops)));
+            out.push(banner(
+                Role::Warning,
+                format!(
+                    "{} notes were dropped: the part ran out of voices.",
+                    p.capacity_drops
+                ),
+            ));
         }
         if p.ignored_input > 0 {
-            out.push(banner(Role::Warning, format!("{} MIDI messages this part does not play yet were ignored.", p.ignored_input)));
+            out.push(banner(
+                Role::Warning,
+                format!(
+                    "{} MIDI messages this part does not play yet were ignored.",
+                    p.ignored_input
+                ),
+            ));
         }
     }
     (!out.is_empty()).then(|| col(out).gap(0).align(Align::Stretch).shrink(0))
@@ -310,8 +666,16 @@ pub fn notices(cx: &Cx, slot: usize) -> Option<El> {
 /// arrives, then CC7 cubed (`sampler_ir::HostVolume`).
 pub fn volume_text(inst: &sampler_ir::Instrument) -> Option<String> {
     let v = inst.host_volume?;
-    let db = if v.saved > 0. { 20. * v.saved.log10() } else { f64::NEG_INFINITY };
-    Some(if db.is_finite() { format!("CC{} {db:+.1} dB", v.controller) } else { format!("CC{} off", v.controller) })
+    let db = if v.saved > 0. {
+        20. * v.saved.log10()
+    } else {
+        f64::NEG_INFINITY
+    };
+    Some(if db.is_finite() {
+        format!("CC{} {db:+.1} dB", v.controller)
+    } else {
+        format!("CC{} off", v.controller)
+    })
 }
 
 /// The dynamics badge: the picked start (what the next load uses) wins over
@@ -325,7 +689,7 @@ pub fn badge_text(controllers: &str, picked: i16, loaded: u8, needs: bool) -> St
 }
 
 /// What the part plays and listens to, in one line under its header: the
-/// articulation (with its switch keys), the instrument volume, the dynamics
+/// articulation (with its effective trigger), the instrument volume, the dynamics
 /// controller it waits for (one click sets where it starts) and MPE.
 pub fn performance(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
     let v = cx.view.parts.get(slot)?;
@@ -333,33 +697,63 @@ pub fn performance(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
     if inst.is_none() && report.is_none() {
         return None;
     }
+    let mut rows = Vec::new();
     let mut items = Vec::new();
     if let Some(inst) = inst.as_deref() {
         if let Some(n) = inside::active(cx, slot).filter(|&n| n < inst.articulations.len()) {
             let a = &inst.articulations[n];
-            let keys = a.switch_keys.iter().map(|&k| note_name(k)).collect::<Vec<_>>().join(" ");
-            let text = if keys.is_empty() { a.name.clone() } else { format!("{} · {keys}", a.name) };
-            items.push(row![caption("Articulation").fill(secondary()), body(text).lines(1)].gap(SPACE).align(Align::Center).named("Articulation").id(format!("perf-art-{slot}")));
+            let id = &crate::sound::articulation::identities(&inst.articulations)[n];
+            let input = cx.selection.parts[slot].articulation_overlay.input(
+                id,
+                a,
+                inside::mode(cx, slot, inst),
+            );
+            let text = format!("{} · {}", a.name, inside::input_label(&input));
+            rows.push(
+                row![
+                    caption("Articulation").fill(secondary()).lines(1).shrink(0),
+                    body(text.clone()).lines(1).flex(1).min_w(0)
+                ]
+                .gap(SPACE)
+                .align(Align::Center)
+                .tip(text)
+                .named("Articulation")
+                .id(format!("perf-art-{slot}")),
+            );
         }
         if let Some(text) = volume_text(inst) {
             items.push(
                 row![caption("Volume").fill(secondary()), body(text).lines(1)]
                     .gap(SPACE)
                     .align(Align::Center)
+                    .shrink(0)
                     .tip("The instrument's saved volume until CC7 arrives; then CC7 cubed")
                     .id(format!("perf-vol-{slot}")),
             );
         }
     }
-    let dynamics = report.as_ref().map(|r| r.decoded.dynamics.clone()).unwrap_or_default();
-    let moving: Vec<_> = dynamics.iter().filter(|&&(cc, _)| cc != 11).map(|&(cc, _)| format!("CC{cc}")).collect();
+    let dynamics = report
+        .as_ref()
+        .map(|r| r.decoded.dynamics.clone())
+        .unwrap_or_default();
+    let moving: Vec<_> = dynamics
+        .iter()
+        .filter(|&&(cc, _)| cc != 11)
+        .map(|&(cc, _)| format!("CC{cc}"))
+        .collect();
     if !moving.is_empty() {
         let now = cx.selection.parts[slot].dynamics;
         let mut picked = now;
         let tabs = [(-1, "Kontakt"), (64, "64"), (127, "127")]
             .into_iter()
             .map(|(value, label)| {
-                let (hit, el) = latch(ui, format!("dyn-{slot}-{value}"), label, &format!("Start {} at {label}", moving.join("/")), now == value);
+                let (hit, el) = latch(
+                    ui,
+                    format!("dyn-{slot}-{value}"),
+                    label,
+                    &format!("Start {} at {label}", moving.join("/")),
+                    now == value,
+                );
                 if hit {
                     picked = value;
                 }
@@ -368,17 +762,52 @@ pub fn performance(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
             .collect();
         cx.selection.parts[slot].dynamics = picked;
         // The picked start is what the next load uses; the report shows the last load's.
-        let loaded = dynamics.iter().find(|&&(cc, _)| cc != 11).map_or(0, |d| d.1);
+        let loaded = dynamics
+            .iter()
+            .find(|&&(cc, _)| cc != 11)
+            .map_or(0, |d| d.1);
         let needs = report.as_ref().is_some_and(|r| r.decoded.needs_controller);
         let words = badge_text(&moving.join("/"), picked, loaded, needs);
         let badge = if words.starts_with("Needs") {
-            caption(words).fill(Role::Warning).tip("Near-silent until the controller moves; set where it starts")
+            caption(words.clone()).fill(Role::Warning).tip(format!(
+                "{words}\nNear-silent until the controller moves; set where it starts"
+            ))
         } else {
-            caption(words).fill(secondary())
+            caption(words.clone()).fill(secondary()).tip(words)
         };
-        items.push(row![badge.id(format!("perf-needs-{slot}")), segmented(tabs)].gap(SPACE).align(Align::Center));
+        items.push(
+            row![
+                badge
+                    .lines(1)
+                    .flex(1)
+                    .min_w(0)
+                    .id(format!("perf-needs-{slot}")),
+                segmented(tabs).shrink(0)
+            ]
+            .gap(SPACE)
+            .align(Align::Center)
+            .flex(1)
+            .min_w(CONTROL * 9.),
+        );
     }
-    Some(row(items).gap(SPACE * 2.).align(Align::Center).pad((SPACE, TIGHT)).w(Len::Pct(100.)).shrink(0).id(format!("perf-{slot}")))
+    if !items.is_empty() {
+        rows.push(
+            row(items)
+                .wrap()
+                .gap(SPACE * 2.)
+                .line_gap(TIGHT)
+                .align(Align::Center),
+        );
+    }
+    Some(
+        col(rows)
+            .gap(TIGHT)
+            .align(Align::Stretch)
+            .pad((INSET, TIGHT))
+            .w(Len::Pct(100.))
+            .shrink(0)
+            .id(format!("perf-{slot}")),
+    )
 }
 
 /// The part's view switch, then the view: its interface, articulations,
@@ -389,11 +818,31 @@ pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     if view == inside::View::Interface
         && let Some(face) = interface(ui, cx, slot, tabs.clone())
     {
-        return col(perf.into_iter().chain([face]).collect::<Vec<_>>()).gap(0).align(Align::Stretch).w(Len::Pct(100.)).shrink(0).id(format!("stage-{slot}"));
+        return col(perf.into_iter().chain([face]).collect::<Vec<_>>())
+            .gap(0)
+            .align(Align::Stretch)
+            .w(Len::Pct(100.))
+            .shrink(0)
+            .id(format!("stage-{slot}"));
     }
-    let tabs = tabs.map(|t| row![t, spacer()].align(Align::Center).pad((TIGHT, INSET)).w(Len::Pct(100.)).shrink(0));
+    let tabs = tabs.map(|t| {
+        row![t, spacer()]
+            .align(Align::Center)
+            .pad((TIGHT, INSET))
+            .w(Len::Pct(100.))
+            .shrink(0)
+    });
     let body = inside::view(ui, cx, slot, view).unwrap_or_else(|| spacer().h(0));
-    col(perf.into_iter().chain(tabs).chain([body]).collect::<Vec<_>>()).gap(0).align(Align::Stretch).w(Len::Pct(100.)).shrink(0).id(format!("stage-{slot}"))
+    col(perf
+        .into_iter()
+        .chain(tabs)
+        .chain([body])
+        .collect::<Vec<_>>())
+    .gap(0)
+    .align(Align::Stretch)
+    .w(Len::Pct(100.))
+    .shrink(0)
+    .id(format!("stage-{slot}"))
 }
 
 #[cfg(test)]
@@ -402,45 +851,77 @@ mod tests {
 
     #[test]
     fn publication_preserves_presentation_script_page_and_values() {
-        let script = sampler_ksp::compile("on init make_perfview declare ui_knob $k(0,100,1) end on", 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+        let script = sampler_ksp::compile(
+            "on init make_perfview declare ui_knob $k(0,100,1) end on",
+            48000,
+            sampler_ksp::Limits::LIBRARY,
+            &[],
+        )
+        .unwrap();
         let mut authored = script.ui(&|_| None).unwrap();
         authored.pages.push(authored.pages[0].clone());
         let from: Arc<[ir::Interface]> = vec![authored.clone(), authored.clone()].into();
-        let mut face = Face::new(std::path::Path::new("/missing/synthetic.nki"), 7, from.clone(), 1, Presentation::Bitmap);
+        let mut face = Face::new(
+            std::path::Path::new("/missing/synthetic.nki"),
+            7,
+            from.clone(),
+            1,
+            Presentation::Bitmap,
+        );
         face.page = ir::PageRef(1);
         face.values.insert(ir::ControlId(9), 31.);
-        face.input.values.insert(ir::WidgetRef(0),ir::Value::Text("Retained draft".into()));
+        face.input
+            .values
+            .insert(ir::WidgetRef(0), ir::Value::Text("Retained draft".into()));
         let mut current = authored.clone();
         current.widgets[0].value_text = Some("Changed".into());
         current.widgets[0].rect.x += 10;
         let patch = ir::InterfacePatch::between(&authored, &current);
         face.update(patch.clone());
-        assert_eq!((face.shown, face.page, face.presentation), (1, ir::PageRef(1), Presentation::Bitmap));
+        assert_eq!(
+            (face.shown, face.page, face.presentation),
+            (1, ir::PageRef(1), Presentation::Bitmap)
+        );
         assert!(Arc::ptr_eq(&face.from, &from));
         assert_eq!(face.values[&ir::ControlId(9)], 31.);
-        assert_eq!(face.input.values[&ir::WidgetRef(0)],ir::Value::Text("Retained draft".into()));
+        assert_eq!(
+            face.input.values[&ir::WidgetRef(0)],
+            ir::Value::Text("Retained draft".into())
+        );
         assert_eq!(face.face.widgets[0].value_text.as_deref(), Some("Changed"));
         let first = face.face.clone();
         face.update(patch);
         assert_eq!(face.face, first);
         face.update(Default::default());
-        assert_eq!(face.face, ir_view::resolved(&authored), "reverted source properties return to their authored values");
+        assert_eq!(
+            face.face,
+            ir_view::resolved(&authored),
+            "reverted source properties return to their authored values"
+        );
     }
 
     #[test]
     fn saved_override_wins_and_factory_default_is_original() {
         use crate::library::{Settings, ViewMode};
         let mut settings = Settings::default();
-        let mut part = crate::plugin::Part { path: "synthetic.nki".into(), ..Default::default() };
+        let mut part = crate::plugin::Part {
+            path: "synthetic.nki".into(),
+            ..Default::default()
+        };
         assert_eq!(resolve_mode(&part, &settings), ViewMode::Original);
         settings.view_mode = ViewMode::Vectorized;
         assert_eq!(resolve_mode(&part, &settings), ViewMode::Vectorized);
-        settings.instrument_views.insert(part.path.clone(), ViewMode::Kontra);
+        settings
+            .instrument_views
+            .insert(part.path.clone(), ViewMode::Kontra);
         assert_eq!(resolve_mode(&part, &settings), ViewMode::Kontra);
         part.view = 1;
         assert_eq!(resolve_mode(&part, &settings), ViewMode::Original);
-        let restored = serde_json::from_str::<crate::plugin::Part>(&serde_json::to_string(&part).unwrap()).unwrap();
-        let settings = serde_json::from_str::<Settings>(&serde_json::to_string(&settings).unwrap()).unwrap();
+        let restored =
+            serde_json::from_str::<crate::plugin::Part>(&serde_json::to_string(&part).unwrap())
+                .unwrap();
+        let settings =
+            serde_json::from_str::<Settings>(&serde_json::to_string(&settings).unwrap()).unwrap();
         assert_eq!(resolve_mode(&restored, &settings), ViewMode::Original);
         part.view = 0;
         assert_eq!(resolve_mode(&part, &settings), ViewMode::Kontra);
@@ -452,6 +933,11 @@ mod tests {
         assert_eq!(scale_to_fit(Size::new(1200., 400.), page, 0.), 0.5);
         assert_eq!(scale_to_fit(Size::new(300., 1600.), page, 0.), 0.5);
         assert_eq!(scale_to_fit(Size::new(1200., 2000.), page, 0.), 2.);
-        for zoom in [1., 1.5, 2.] { assert_eq!(scale_to_fit(Size::new(300., 400.), page, zoom), f64::from(zoom)); }
+        for zoom in [1., 1.5, 2.] {
+            assert_eq!(
+                scale_to_fit(Size::new(300., 400.), page, zoom),
+                f64::from(zoom)
+            );
+        }
     }
 }

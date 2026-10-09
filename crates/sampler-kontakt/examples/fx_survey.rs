@@ -45,8 +45,14 @@ fn main() {
         let mut any = false;
         with_ir += usize::from(!kontakt.instrument.impulses.is_empty());
         for u in &kontakt.instrument.unsupported {
-            if let Some(want) = std::env::var_os("VALUES") && u.feature == want.to_string_lossy() {
-                println!("VALUE\t{}\t{}", u.value, u.location.split(' ').next().unwrap_or(""));
+            if let Some(want) = std::env::var_os("VALUES")
+                && u.feature == want.to_string_lossy()
+            {
+                println!(
+                    "VALUE\t{}\t{}",
+                    u.value,
+                    u.location.split(' ').next().unwrap_or("")
+                );
             }
             let f = features.entry(u.feature.clone()).or_default();
             f.0.insert(i);
