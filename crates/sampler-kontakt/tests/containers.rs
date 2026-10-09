@@ -33,15 +33,19 @@ fn container_children_are_found_by_id_and_truncated_references_are_errors() {
             .program_list()
             .is_err()
     );
-    for version in [0x95, 0x99, 0x9a, 0xa0] {
+    for version in [0x95, 0x99, 0x9a, 0x9c] {
         let at = if version >= 0x9a { 48 } else { 42 };
         let mut public = vec![0; at];
+        if version >= 0x9a {
+            public[43] = 1;
+        }
         public.extend(123i32.to_le_bytes());
         let mut zone = Zone(object(vec![], version, public));
         assert_eq!(zone.filename_id().unwrap(), 123);
         zone.0.public_data.pop();
         assert!(zone.filename_id().is_err());
     }
+    assert!(Zone(object(vec![], 0xa0, vec![0; 52])).filename_id().is_err());
 }
 
 #[test]
