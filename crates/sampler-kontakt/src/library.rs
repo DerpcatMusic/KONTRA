@@ -479,6 +479,7 @@ fn translate(
     drop(span);
     let _span = crate::audit::Span::new("translate_keys_validate");
     crate::keyswitch::translate(&mut out.ir, &out.start_criteria);
+    out.ir.register_compressor_controls();
     out.ir.unsupported.dedup();
     #[cfg(feature = "scan")]
     { out.ir.dsp_slots = crate::coverage::slots(&program, &out.ir, dynamic, &out.engine, &out.target_outcomes).ok(); out.ir.native_start_mod_groups = crate::coverage::start_mod_groups(&program).ok(); }
