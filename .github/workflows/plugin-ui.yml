@@ -44,30 +44,36 @@ jobs:
       PLUGIN_PATH: ${{ inputs.plugin-path }}
       REQUIRE_MUI_DIAGNOSTICS: ${{ inputs.require-mui-diagnostics }}
     steps:
-      - name: Install virtual display and software graphics
-        timeout-minutes: 7
-        run: |
-          for attempt in 1 2; do
-            if sudo timeout --kill-after=10s 3m bash -e -c '
-              dpkg --configure -a
-              apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
-              apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends xvfb xauth dbus-x11 \
-                mesa-vulkan-drivers libgl1-mesa-dri libegl1 mesa-utils vulkan-tools \
-                libasound2t64 libfreetype6 libfontconfig1 libx11-6 libxext6 \
-                libxrender1 libxinerama1 libxcursor1 libxrandr2 ffmpeg unzip ripgrep
-            '; then
-              break
-            fi
-            if [[ "$attempt" == 2 ]]; then
-              echo '::error::Virtual display setup failed after two bounded attempts'
-              exit 1
-            fi
-            sleep 5
-          done
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ inputs.artifact-name }}
           path: plugin
+      - name: Install virtual display and software graphics
+        timeout-minutes: 7
+        run: |
+          set -euo pipefail
+          ready() {
+            for tool in xvfb-run xauth dbus-run-session glxinfo vulkaninfo ffmpeg unzip rg; do
+              command -v "$tool" >/dev/null || return 1
+            done
+            dpkg -L mesa-vulkan-drivers | rg -q '/lvp_icd[^/]*\.json$'
+          }
+          # The build job cached all newly installed dependencies; no apt/network here.
+          ready && exit 0
+          test -s plugin/editor-debs/SHA256SUMS
+          (cd plugin/editor-debs && sha256sum --check SHA256SUMS)
+          for attempt in 1 2 3 4 5; do
+            if sudo timeout --kill-after=10s 60s bash -e -c '
+              dpkg --unpack "$@"
+              dpkg --configure -a
+            ' _ "$PWD"/plugin/editor-debs/*.deb && ready; then
+              exit 0
+            fi
+            [[ "$attempt" == 5 ]] && break
+            sleep "$((5 * 2 ** (attempt - 1)))"
+          done
+          echo '::error::Offline virtual display setup failed after five bounded attempts'
+          exit 1
       - name: Install pinned pluginval
         run: |
           curl --fail --location --retry 3 --output pluginval.zip \
