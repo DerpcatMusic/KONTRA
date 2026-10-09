@@ -94,3 +94,42 @@ measurements, rather than reinstalling an already integrated optimization.
 
 NEXT: bounded numeric stage attribution, then current-source cold/warm load
 and editor-open RSS comparison against frozen v1.
+
+## Current-source follow-up, 2026-10-09
+
+The repaired collector's normal-FIFO frozen326 diagnostic captured 33/21/33
+ordered records for Conflux/Pacific/Analog, with zero dropped records. All three
+were CONTENDED; these times cannot establish performance parity. Native state
+readback passed and nonfinite output was zero. Numeric receipt:
+`/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w8-load-attribution-326-numeric-20261009/FINAL.json`.
+
+Analog has 95,624 region templates. RSS rose from 255,080 KiB after sample
+resolution to 757,044 KiB at sample preload, then 833,044 KiB during runtime
+allocation. Eager preload admitted zero heads and took 0.97 ms. The major
+increase therefore precedes runtime storage and is not eager sample data.
+Current integration already contains immutable chain sharing, so repeating
+that patch would not address a current-source deficit.
+
+The remaining resolver allocation was concrete: `archive_member_where` built
+a normalized member string for every ancestor, including ordinary loose-file
+directories. The shared helper now uses v1 `0cb7a8a0:src/import.rs` directly:
+check archive suffix and file existence before constructing the member.
+Resolution, decoding, streaming-source lookup, numeric-cache admission and
+frame lookup all reach this helper. Existing validation and errors remain.
+The isolated source test failed first at 687 allocation bytes and now passes
+at 147/161 bytes, exactly the corresponding path lengths, including a loose
+file inside a directory named `directory.nkx`. Three existing sample tests and
+optimized default-feature root `cargo test --profile ci --lib --no-run` pass.
+
+The contention observer also recognizes an idle shell/Python runner above a
+normal wrapper waiter, only when every child is already classified as waiting.
+Cargo, an unknown worker, a working sibling and observed cgroup CPU/I/O still
+count as contention. The real W13 crash wrapper can queue normally without
+being mistaken for a quiet-window intruder. Its failing-first fixture passes.
+
+These changes are on `v2/w8-load-attribution-resume`: collector/receipt
+`4c0a72a8`, resolver regression `892f2aaf`, v1 port `cf79b2cf`, observer
+`f9d69ce6`, numeric allocation evidence `6a1e031c`. No KSP service, UI
+publication, authored picture or callback-CPU implementation was changed.
+All new run artifacts live under
+`/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w8-load-attribution-resume/`.
