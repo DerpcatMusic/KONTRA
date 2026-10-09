@@ -279,6 +279,7 @@ pub(crate) struct RuntimeLog {
     program: u32,
     collector: Collector,
     observed_counts: BTreeMap<(String, String), u64>,
+    summary_logged: bool,
 }
 #[cfg(feature = "plugin")]
 impl RuntimeLog {
@@ -289,6 +290,7 @@ impl RuntimeLog {
             program,
             collector: Collector::default(),
             observed_counts: BTreeMap::new(),
+            summary_logged: false,
         }
     }
     pub(crate) fn fault(&mut self, callback: usize, outcome: sampler_core::Outcome) {
@@ -397,7 +399,7 @@ impl RuntimeLog {
             );
         }
     }
-    pub(crate) fn summary(&self) -> serde_json::Value {
+    pub(crate) fn summary(&mut self) -> serde_json::Value {
         let journal = super::log_path().expect("diagnostic session path");
         let sidecar = write_sidecar(
             &self.collector,
@@ -406,13 +408,14 @@ impl RuntimeLog {
         );
         let value = serde_json::json!({"schema":SCHEMA,"load_id":self.load_id,"path":self.path,"program":self.program,
             "groups":self.collector.groups(),"locations_sidecar":sidecar.as_ref().ok(),"locations_error":sidecar.err().map(|e|e.to_string())});
-        // Per-group summaries remain below the journal's event byte limit.
-        for group in self.collector.groups() {
+        // Live counts remain in the report and sidecar; polling must not churn the journal.
+        if !self.summary_logged {
+            self.summary_logged = true;
             super::event(
                 super::LogLevel::Info,
                 "runtime",
                 "runtime_diagnostics_summary",
-                serde_json::json!({"load_id":self.load_id,"path":self.path,"program":self.program,"group":group,"locations_sidecar":value["locations_sidecar"],"locations_error":value["locations_error"]}),
+                serde_json::json!({"load_id":self.load_id,"path":self.path,"program":self.program,"groups":self.collector.rows.len(),"locations_sidecar":value["locations_sidecar"],"locations_error":value["locations_error"]}),
             );
         }
         value
@@ -473,6 +476,34 @@ mod tests {
             sampler_core::Outcome::Fault(sampler_core::Error::InvalidInput),
         );
         assert_eq!(log.collector.groups()[0].counts.enabled, 41);
+    }
+
+    #[test]
+    #[cfg(feature = "plugin")]
+    fn runtime_summary_logs_once_but_keeps_live_counts_and_sidecar() {
+        let id = format!("runtime-summary-once-{}", std::process::id());
+        let mut log = RuntimeLog::new(&id, "/Libraries/Kontakt/A/a.nki", 0);
+        log.fault(0, sampler_core::Outcome::FuelExhausted);
+        assert_eq!(log.summary()["groups"][0]["enabled"], 1);
+        log.fault(1, sampler_core::Outcome::FuelExhausted);
+        let latest = log.summary();
+        assert_eq!(latest["groups"][0]["enabled"], 2);
+        let sidecar: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(latest["locations_sidecar"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(sidecar["locations"].as_array().unwrap().len(), 2);
+        let snapshot = super::super::snapshot();
+        assert_eq!(
+            snapshot
+                .events
+                .iter()
+                .filter(|e| e.code.as_deref() == Some("runtime_diagnostics_summary")
+                    && e.load_id.as_deref() == Some(id.as_str()))
+                .count(),
+            1,
+            "one journal summary per load, not per refresh"
+        );
     }
 
     #[test]
