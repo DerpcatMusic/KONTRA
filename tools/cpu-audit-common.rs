@@ -16,6 +16,31 @@ fn thread_cpu_ns() -> u64 {
     0
 }
 
+// Adapt W13 d0c89ffb's callback counters; pacing sleeps stay outside the sample.
+#[cfg(target_os = "linux")]
+fn thread_switches() -> Option<[u64; 2]> {
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    if unsafe { libc::getrusage(libc::RUSAGE_THREAD, &mut usage) } != 0 {
+        return None;
+    }
+    Some([
+        usage.ru_nvcsw.try_into().ok()?,
+        usage.ru_nivcsw.try_into().ok()?,
+    ])
+}
+#[cfg(not(target_os = "linux"))]
+fn thread_switches() -> Option<[u64; 2]> {
+    None
+}
+
+fn switch_delta(before: Option<[u64; 2]>, after: Option<[u64; 2]>) -> Option<[u64; 2]> {
+    let (before, after) = (before?, after?);
+    Some([
+        after[0].checked_sub(before[0])?,
+        after[1].checked_sub(before[1])?,
+    ])
+}
+
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
@@ -63,6 +88,17 @@ fn main() {
     let args: Vec<_> = std::env::args().collect();
     if args.get(1).is_some_and(|s| s == "--check") {
         assert_eq!(quantiles(vec![1000, 2000, 3000])["p50_us"], 2.);
+        assert_eq!(switch_delta(Some([3, 5]), Some([4, 9])), Some([1, 4]));
+        assert_eq!(switch_delta(Some([3, 5]), Some([3, 5])), Some([0, 0]));
+        assert_eq!(switch_delta(None, Some([0, 0])), None);
+        assert_eq!(switch_delta(Some([0, 0]), None), None);
+        assert_eq!(switch_delta(Some([3, 5]), Some([2, 9])), None);
+        assert_eq!(switch_delta(Some([3, 5]), Some([4, 4])), None);
+        #[cfg(target_os = "linux")]
+        assert!(
+            switch_delta(thread_switches(), thread_switches()).is_some(),
+            "thread switch counters must be available and monotonic"
+        );
         #[cfg(target_os = "linux")]
         assert!(
             thread_cpu_ns() > 0,
@@ -80,6 +116,13 @@ fn main() {
     let block: usize = args[2].parse().unwrap();
     assert!([32, 64, 256].contains(&block));
     let schedule = audit_schedule(&args[3]);
+    let scheduling_diagnostic = std::env::var("KONTRA_HOST_SCHED_DIAGNOSTIC").as_deref() == Ok("1");
+    if scheduling_diagnostic {
+        assert!(
+            thread_switches().is_some(),
+            "thread switch diagnostic unavailable on this platform"
+        );
+    }
     let start = Instant::now();
     let (mut p, mut info) = Player::load(Path::new(&args[1]));
     info["load_seconds"] = json!(start.elapsed().as_secs_f64());
@@ -131,6 +174,11 @@ fn main() {
     for begin in (0..schedule.frames).step_by(block) {
         let before = CALLS.get();
         COUNT.set(true);
+        let switches_before = if scheduling_diagnostic {
+            thread_switches()
+        } else {
+            None
+        };
         let cpu_start = thread_cpu_ns();
         let t = Instant::now();
         while next < events.len() && events[next].0 < begin + block {
@@ -144,9 +192,20 @@ fn main() {
         let got = p.render(block);
         let ns = t.elapsed().as_nanos() as u64;
         let cpu_ns = thread_cpu_ns().saturating_sub(cpu_start);
+        let switches_after = if scheduling_diagnostic {
+            thread_switches()
+        } else {
+            None
+        };
         COUNT.set(false);
         if ns > block as u64 * 1_000_000_000 / 48000 {
-            miss_detail.push((begin, ns, cpu_ns, v));
+            miss_detail.push((
+                begin,
+                ns,
+                cpu_ns,
+                v,
+                switch_delta(switches_before, switches_after),
+            ));
         }
         allocations += CALLS.get() - after_events;
         if trace_stream {
@@ -197,8 +256,13 @@ fn main() {
     } else {
         "unavailable"
     });
-    info["deadline_miss_detail"] = json!(miss_detail.iter().map(|&(frame, wall_ns, cpu_ns, voices)| json!({
+    info["scheduling_diagnostic"] = json!(scheduling_diagnostic);
+    if scheduling_diagnostic {
+        info["timing_status"] = json!("DIAGNOSTIC-NOT-ACCEPTANCE");
+    }
+    info["deadline_miss_detail"] = json!(miss_detail.iter().map(|&(frame, wall_ns, cpu_ns, voices, switches)| json!({
         "frame":frame, "wall_us":wall_ns as f64 / 1000., "thread_cpu_us":cpu_ns as f64 / 1000., "voices":voices,
+        "voluntary_switches":switches.map(|s| s[0]), "involuntary_switches":switches.map(|s| s[1]),
         "phase":if frame == 0 { "first_block" } else if frame < 12000 { "startup" } else if frame < 48000 { "steady" } else if frame < 144000 { "sustain" } else { "release" },
     })).collect::<Vec<_>>());
     info["render_heap_calls"] = json!(allocations);
