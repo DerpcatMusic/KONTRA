@@ -675,3 +675,68 @@ fn mark_selection_is_a_union_and_zero_mask_has_no_targets() {
         .unwrap();
     assert_eq!((rt.key_down(a), rt.key_down(b)), (Ok(false), Ok(false)));
 }
+
+#[test]
+fn dynamic_event_parameter_reads_route_a_generated_release_note() {
+    let mut rt = runtime_scripts(vec![
+        compile(
+            "on init declare $child end on
+            on note ignore_event($EVENT_ID) end on
+            on release ignore_event($EVENT_ID)
+                $child := play_note(60,100,0,1000)
+                set_event_par($child,$EVENT_PAR_0,3)
+            end on",
+        ),
+        compile(
+            "on init declare $parameter := 0 declare $tag end on
+            on note
+                $tag := get_event_par($EVENT_ID,$parameter)
+                if ($tag = 3) disallow_group($ALL_GROUPS) end if
+            end on",
+        ),
+    ]);
+    let mut audio = [[0.; 2]; 64];
+    support::without_heap(|| {
+        let note = rt.trigger(input(60), 60, 100. / 127.).unwrap();
+        rt.render(&mut audio).unwrap();
+        rt.key_up(note, None).unwrap();
+        rt.render(&mut audio).unwrap();
+    });
+    assert_eq!(
+        cell(&rt, 1, 1),
+        3,
+        "a computed selector must read the child's tag"
+    );
+    assert_eq!(
+        audio, [[0.; 2]; 64],
+        "the dispatch event must not restart the dry sample"
+    );
+}
+
+#[test]
+fn dynamic_event_parameter_reads_match_static_fields_and_pending_projection() {
+    let mut rt = runtime(
+        "on init declare $parameter declare %values[17] end on
+      on note
+        change_note($EVENT_ID,64)
+        change_velo($EVENT_ID,99)
+        set_event_par($EVENT_ID,0,123)
+        set_event_par($EVENT_ID,$EVENT_PAR_VOLUME,1000)
+        while ($parameter < 17)
+          %values[$parameter] := get_event_par($EVENT_ID,$parameter)
+          inc($parameter)
+        end while
+      end on",
+    );
+    support::without_heap(|| {
+        note(&mut rt);
+    });
+    let expected = [123, 0, 0, 0, 1000, 0, 0, 64, 99, 0, 0, -1, 0, 0, 0, 0, 0];
+    for (parameter, expected) in expected.into_iter().enumerate() {
+        assert_eq!(
+            cell(&rt, 0, 1 + parameter as u32),
+            expected,
+            "parameter {parameter}"
+        );
+    }
+}
