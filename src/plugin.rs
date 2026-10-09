@@ -2383,7 +2383,7 @@ moose::plugin! { logic:Sampler, params:SamplerParams, tasks:[Load] }
 
 #[cfg(all(test, target_os = "linux", target_env = "gnu"))]
 #[path = "allocation_audit.rs"]
-mod allocation_audit;
+pub(crate) mod allocation_audit;
 
 #[cfg(test)]
 pub(crate) mod tests {

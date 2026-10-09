@@ -2313,14 +2313,43 @@ fn shared_context_menu_never_fades_over_interactive_content() {
     }
 }
  pub(super) fn audit_frames(p: &Arc<SamplerParams>) -> serde_json::Value {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    let allocations = std::env::var_os("PROBE_EDITOR_ALLOCS");
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    if allocations.is_some() { crate::plugin::allocation_audit::start(); }
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    let heap_before = unsafe { libc::mallinfo2() };
     let start = std::time::Instant::now();
     let mut h=Harness::new(p,1180.,760.);
     h.idle(4);
+    if std::env::var_os("PROBE_EDITOR_SETTLE").is_some() {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            h.idle(1);
+            if super::native_ui::audit_memory(false) > 0 && super::native_ui::audit_assets().2 == 0 { break; }
+            assert!(std::time::Instant::now() < deadline, "Native editor did not settle");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
     let build_ms = start.elapsed().as_secs_f64() * 1000.;
     std::thread::sleep(std::time::Duration::from_secs(4));
+    let lua_bytes = super::native_ui::audit_memory(false);
+    let assets = super::native_ui::audit_assets();
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    let heap_after = unsafe { libc::mallinfo2() };
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    if let Some(path) = allocations { crate::plugin::allocation_audit::finish(Path::new(&path)); }
+    let lua_after_gc = if std::env::var_os("PROBE_EDITOR_GC").is_some() {
+        Some(super::native_ui::audit_memory(true))
+    } else { None };
     let status=std::fs::read_to_string("/proc/self/status").unwrap();
     let kb=|key:&str| status.lines().find_map(|l|l.strip_prefix(key)?.split_whitespace().next()?.parse::<u64>().ok()).unwrap_or(0);
-    serde_json::json!({"build_ms":build_ms,"rss_live_mb":kb("VmRSS:") as f64/1024.,"hwm_live_mb":kb("VmHWM:") as f64/1024.})
+    let mut report=serde_json::json!({"build_ms":build_ms,"rss_live_mb":kb("VmRSS:") as f64/1024.,"hwm_live_mb":kb("VmHWM:") as f64/1024.,"native_lua_bytes":lua_bytes,"native_lua_after_gc_bytes":lua_after_gc,"native_package_bytes":assets.0,"native_decoded_bytes":assets.1,"native_pending":assets.2});
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    for (key,heap) in [("malloc_before",heap_before),("malloc_after",heap_after)] {
+        report[key]=serde_json::json!({"allocated_bytes":heap.uordblks+heap.hblkhd,"free_arena_bytes":heap.fordblks,"arena_bytes":heap.arena,"mapped_bytes":heap.hblkhd});
+    }
+    report
  }
 
 #[test]
