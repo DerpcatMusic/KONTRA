@@ -592,11 +592,17 @@ impl Store {
 #[derive(Debug, Default)]
 pub(crate) struct ScriptBank {
     pub cells: Box<[i64]>,
+    pub captured_cells: Option<Box<[u64]>>,
     pub texts: Box<[Text]>,
     pub store: Store,
     pub controls: Box<[Option<ControlId>]>,
     pub text_properties: Vec<([i32; STORE_KEY], Text)>,
     pub persistence_callback: Option<(BehaviorId, Option<crate::Outcome>)>,
+}
+
+#[inline]
+pub(super) fn captures_cell(mask: Option<&[u64]>, cell: usize) -> bool {
+    mask.is_none_or(|mask| mask.get(cell / 64).is_some_and(|word| word & (1 << (cell % 64)) != 0))
 }
 
 /// Immutable preparation keeps compact shared strings; only a live generation
@@ -620,6 +626,7 @@ impl ScriptInitial {
         );
         ScriptBank {
             cells: self.cells.clone(),
+            captured_cells: None,
             texts: self.texts.iter().map(|text| Text::new(text)).collect(),
             store: self.store.clone(),
             controls: self.controls.clone(),
@@ -863,8 +870,8 @@ impl Runtime {
         let instance = generation.prepared.programs[c.program]
             .script_instance
             .ok_or(Error::InvalidInput)?;
-        // ponytail: any mutable script storage invalidates the full snapshot;
-        // track persistent addresses if frequently-written large tables remain costly.
+        // ponytail: text/store writes conservatively invalidate snapshots; filter their
+        // addresses too if measured text-heavy callbacks still copy large arrays.
         generation.script_revision = generation.script_revision.wrapping_add(1);
         generation
             .scripts
