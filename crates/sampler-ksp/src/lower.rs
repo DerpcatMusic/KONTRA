@@ -2419,8 +2419,6 @@ impl Gen<'_, '_> {
             | SetVoiceLimit
             | LoadIrSample
             | AttachLevelMeter
-            | SetControlParStr
-            | SetControlParStrArr
             | SetText
             | AddTextLine
             | SetKnobLabel
