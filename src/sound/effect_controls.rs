@@ -100,7 +100,7 @@ pub(crate) mod tests {
         });
         instrument.chains = vec![ir::Chain {
             scope: ir::Scope::Group(ir::GroupRef(3)),
-            pre_amplitude: vec![ir::Processor::Gain(ir::Gain(1.))],
+            pre_amplitude: vec![ir::Processor::Gain(ir::Gain::UNITY)],
             post_amplitude: vec![processor],
         }];
         let descriptors = [
