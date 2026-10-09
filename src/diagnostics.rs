@@ -369,6 +369,22 @@ pub fn log_path() -> Option<PathBuf> {
 pub fn event(level: LogLevel, module: &str, code: &str, details: Value) {
     emit(json!({"level":level,"module":module,"event":code,"code":code,"data":details}));
 }
+
+/// Panic/recovery paths may already hold any diagnostics mutex. Never wait or initialize here.
+pub(crate) fn try_event(level: LogLevel, module: &str, code: &str, details: Value) -> bool {
+    let Some(manager) = MANAGER.get() else { return false };
+    let Some(session) = manager.try_lock().ok().and_then(|manager| manager.clone()) else { return false };
+    let Ok(sender) = session.sender.try_lock() else { return false };
+    let sender = sender.clone();
+    let Ok(mut history) = session.history.try_lock() else { return false };
+    let (mut row, bytes, truncated) = prepare_event(&session.id, session.started,
+        json!({"level":level,"module":module,"event":code,"code":code,"data":details}));
+    retain_event(&mut history, &mut row, bytes, truncated);
+    if sender.is_none_or(|sender| sender.try_send(Command::Event(row)).is_err()) {
+        history.status.dropped_events += 1;
+    }
+    true
+}
 /// Enabled only at editor construction. The completed fixed buffer moves once
 /// to the joined diagnostics worker; native callbacks never summarize or format it.
 #[cfg(feature = "plugin")]
@@ -1797,6 +1813,22 @@ pub fn code(message: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn panic_diagnostics_never_wait_for_an_already_held_diagnostics_lock() {
+        let _lease = acquire();
+        let active = session();
+        let manager = MANAGER.get().unwrap().lock().unwrap();
+        assert!(!try_event(LogLevel::Error, "support", "probe_panic", json!({})));
+        drop(manager);
+        let history = active.history.lock().unwrap();
+        assert!(!try_event(LogLevel::Error, "support", "probe_panic", json!({})));
+        drop(history);
+        let sender = active.sender.lock().unwrap();
+        assert!(!try_event(LogLevel::Error, "support", "probe_panic", json!({})));
+        drop(sender);
+        assert!(try_event(LogLevel::Error, "support", "probe_panic", json!({})));
+    }
+
     #[test]
     fn manual_support_export_preserves_private_crash_originals_and_reports_missing_or_busy_sources() {
         const CHILD: &str = "KONTRA_MANUAL_CRASH_EXPORT_CHILD";

@@ -21,7 +21,7 @@ fn snapshot(p: &SamplerParams) -> Perf {
     let s = &p.shared;
     let (memory, freed) = s.memory_snapshot();
     let underruns = s.with_parts(|parts| parts.iter().map(|p| p.problems().underruns).sum());
-    let loaded_parts = s.view.lock().unwrap().parts.iter()
+    let loaded_parts = s.view.lock_unpoisoned().parts.iter()
         .filter(|v| !v.loading && v.instrument.is_some()).count() as u64;
     Perf {
         busy_ns: s.busy_ns.load(Ordering::Relaxed),
@@ -63,11 +63,11 @@ pub fn export_multi_state(multi: &Path, destination: &Path) -> anyhow::Result<()
         ..Default::default()
     };
     let plugin = Plugin::create();
-    *plugin.params().selection.write().unwrap() = selection.clone();
+    *plugin.params().selection.write_unpoisoned() = selection.clone();
     let bytes = state::snapshot_plugin(&plugin);
     let mut restored = Plugin::create();
     state::restore_plugin(&mut restored, &bytes).map_err(|e| anyhow::anyhow!("{e}"))?;
-    anyhow::ensure!(*restored.params().selection.read().unwrap() == selection, "state round-trip changed rack");
+    anyhow::ensure!(*restored.params().selection.read_unpoisoned() == selection, "state round-trip changed rack");
     std::fs::OpenOptions::new().write(true).create_new(true).open(destination)?.write_all(&bytes)?;
     Ok(())
 }

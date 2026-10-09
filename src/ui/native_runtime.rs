@@ -1,5 +1,6 @@
 //! Bounded legacy .nui execution over the published UI IR. No filesystem Lua API.
 use super::pictures::Source;
+use crate::support::MutexExt;
 use mlua::{Function, Lua, Table, UserData, UserDataFields, UserDataMethods, Value as LuaValue};
 use moose::mui::mui::{prelude::Font, scene::Image};
 use sampler_ui_ir as ir;
@@ -42,7 +43,7 @@ impl Images {
         {
             return None;
         }
-        let mut cache = self.cache.lock().ok()?;
+        let mut cache = self.cache.lock_unpoisoned();
         cache.tick = cache.tick.wrapping_add(1);
         let tick = cache.tick;
         if let Some(image) = cache.loaded.get(&name) {
@@ -57,24 +58,22 @@ impl Images {
         None
     }
     pub fn pending(&self) -> usize {
-        self.cache.lock().map_or(0, |c| c.pending.len())
+        self.cache.lock_unpoisoned().pending.len()
     }
     pub fn bytes(&self) -> usize {
-        self.cache.lock().map_or(0, |c| c.bytes)
+        self.cache.lock_unpoisoned().bytes
     }
     #[cfg(feature = "shots")]
     pub fn scan(&self) -> super::pictures::Scan {
-        self.cache.lock().map_or(Default::default(), |c| c.scan)
+        self.cache.lock_unpoisoned().scan
     }
     #[cfg(feature = "shots")]
     pub fn failures(&self) -> Vec<String> {
-        self.cache.lock().map_or(Vec::new(), |c| {
-            c.loaded
+        self.cache.lock_unpoisoned().loaded
                 .iter()
                 .filter(|(_, v)| v.is_none())
                 .map(|(k, _)| blake3::hash(k.as_bytes()).to_hex().to_string())
                 .collect()
-        })
     }
 }
 impl Package {
@@ -175,7 +174,7 @@ impl Package {
                     let Some(cache) = worker_cache.upgrade() else {
                         return;
                     };
-                    let Ok(mut cache) = cache.lock() else { return };
+                    let mut cache = cache.lock_unpoisoned();
                     let bytes = image.as_ref().map_or(0, |i| i.rgba.len());
                     while cache.bytes + bytes > 48 << 20 || cache.loaded.len() >= 4096 {
                         let Some(old) = cache
@@ -341,13 +340,13 @@ fn value(lua: &Lua, value: &ir::Value, index: Option<usize>) -> mlua::Result<Lua
 }
 impl UserData for Parameter {
     fn add_fields<F:UserDataFields<Self>>(fields:&mut F) {
-        fields.add_field_method_get("connected",|_,this|Ok(this.bridge.lock().unwrap().controls.get(this.binding).is_some()));
+        fields.add_field_method_get("connected",|_,this|Ok(this.bridge.lock_unpoisoned().controls.get(this.binding).is_some()));
     }
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("value", |lua, this, index: Option<usize>| {
             #[cfg(test)]
             trace_parameter(lua,this,"value")?;
-            let mut bridge = this.bridge.lock().unwrap();
+            let mut bridge = this.bridge.lock_unpoisoned();
             let Some(widget) = bridge.controls.get(this.binding) else {
                 if bridge.unavailable.len() < 128 {
                     bridge.unavailable.insert(this.identifier.clone());
@@ -389,7 +388,7 @@ impl UserData for Parameter {
             |_lua, this, (v, index): (LuaValue, Option<usize>)| {
                 #[cfg(test)]
                 trace_parameter(_lua,this,"write")?;
-                let mut bridge = this.bridge.lock().unwrap();
+                let mut bridge = this.bridge.lock_unpoisoned();
                 let Some(widget) = bridge.controls.get(this.binding) else {return Ok(())};
                 let value = match v {
                     LuaValue::String(s) => {
@@ -455,7 +454,7 @@ impl UserData for Parameter {
             |lua, this, (property, index): (i32, Option<usize>)| {
                 #[cfg(test)]
                 trace_parameter(lua,this,"property")?;
-                let bridge = this.bridge.lock().unwrap();
+                let bridge = this.bridge.lock_unpoisoned();
                 let Some(w) = bridge.controls.get(this.binding) else {
                     return Ok(match property {
                         0 | 1 | 14 | 18 => LuaValue::String(lua.create_string("")?),
@@ -496,14 +495,13 @@ impl UserData for Parameter {
             },
         );
         methods.add_method("update_touch", |_, this, index: Option<usize>| {
-            let mut bridge=this.bridge.lock().unwrap();
+            let mut bridge=this.bridge.lock_unpoisoned();
             if bridge.controls.get(this.binding).is_some() {bridge.touches.insert((this.binding,index.unwrap_or(0)));}
             Ok(())
         });
         methods.add_method("end_touch", |_, this, index: Option<usize>| {
             this.bridge
-                .lock()
-                .unwrap()
+                .lock_unpoisoned()
                 .touches
                 .remove(&(this.binding, index.unwrap_or(0)));
             Ok(())
@@ -511,15 +509,14 @@ impl UserData for Parameter {
         methods.add_method("is_touch_active", |_, this, index: Option<usize>| {
             Ok(this
                 .bridge
-                .lock()
-                .unwrap()
+                .lock_unpoisoned()
                 .touches
                 .contains(&(this.binding, index.unwrap_or(0))))
         });
         methods.add_method("is_midi_learn_active", |_, _, _: Option<usize>| Ok(false));
         for name in ["begin_midi_learn", "end_midi_learn"] {
             methods.add_method(name, |_, this, _: Option<usize>| {
-                if this.bridge.lock().unwrap().controls.get(this.binding).is_none() {return Ok(())};
+                if this.bridge.lock_unpoisoned().controls.get(this.binding).is_none() {return Ok(())};
                 Err::<(), _>(mlua::Error::external("NativeUI MIDI learn is unavailable"))
             });
         }
@@ -598,7 +595,7 @@ impl Session {
         // KSP expose_controls: duplicate identifiers use the first script slot,
         // regardless of the order in which source interfaces are published.
         let names = {
-            let bridge=bridge.lock().unwrap();
+            let bridge=bridge.lock_unpoisoned();
             let mut names=HashMap::new();
             let priority=|index:usize| match bridge.locations[index].0 {
                 ir::Source::Ksp{slot}=>(slot,index), _=>(u8::MAX,index),
@@ -638,7 +635,7 @@ impl Session {
                 meter.set(
                     "level_value",
                     lua.create_function(move |_, _: LuaValue| {
-                        Ok(binding.and_then(|binding|bridge.lock().unwrap().meters.get(&binding).copied()).unwrap_or(0.))
+                        Ok(binding.and_then(|binding|bridge.lock_unpoisoned().meters.get(&binding).copied()).unwrap_or(0.))
                     })?,
                 )?;
                 Ok(meter)
@@ -684,7 +681,7 @@ impl Session {
         typed: &HashMap<ir::WidgetRef, ir::Value>,
         meters: &HashMap<ir::WidgetRef, f64>,
     ) {
-        let mut bridge = self.bridge.lock().unwrap();
+        let mut bridge = self.bridge.lock_unpoisoned();
         for at in 0..bridge.controls.len() {
             let (source, index) = bridge.locations[at];
             if source != face.source {continue;}
@@ -712,7 +709,7 @@ impl Session {
         }
     }
     pub fn update_meters(&self, mut meter: impl FnMut(&ir::Widget) -> f64) {
-        let mut bridge = self.bridge.lock().unwrap();
+        let mut bridge = self.bridge.lock_unpoisoned();
         let values = bridge
             .controls
             .iter()
@@ -784,12 +781,11 @@ impl Session {
         Ok(event)
     }
     pub fn take_edits(&self) -> Vec<Edit> {
-        self.bridge.lock().unwrap().edits.drain(..).collect()
+        self.bridge.lock_unpoisoned().edits.drain(..).collect()
     }
     pub fn unavailable_controls(&self) -> Vec<String> {
         self.bridge
-            .lock()
-            .unwrap()
+            .lock_unpoisoned()
             .unavailable
             .iter()
             .cloned()
@@ -819,7 +815,7 @@ mod tests {
         let mut package=package;
         assert!(package.images.get("queued.png").is_none());
         for n in 0..5000 {assert!(package.images.get(&format!("rejected-{n}.png")).is_none());}
-        assert_eq!(package.images.cache.lock().unwrap().touch.len(),1,
+        assert_eq!(package.images.cache.lock_unpoisoned().touch.len(),1,
             "a full worker queue must not retain rejected image-name metadata");
         let supplied=Arc::get_mut(&mut package).unwrap();
         supplied.fonts.insert("unrelated-file.ttf".into(),font.clone());
@@ -853,7 +849,7 @@ mod tests {
         .unwrap();
         let source = ir::Interface {
             source: ir::Source::Ksp { slot: 2 },
-            widgets: vec![session.bridge.lock().unwrap().controls[1].clone()],
+            widgets: vec![session.bridge.lock_unpoisoned().controls[1].clone()],
             ..Default::default()
         };
         session.update_view(
@@ -866,16 +862,16 @@ mod tests {
             &Default::default(),
         );
         assert_eq!(
-            session.bridge.lock().unwrap().controls[1].value,
+            session.bridge.lock_unpoisoned().controls[1].value,
             Some(ir::Value::Text("callback readback".into()))
         );
-        assert_eq!(session.bridge.lock().unwrap().controls[0].value,Some(ir::Value::Integer(20)),
+        assert_eq!(session.bridge.lock_unpoisoned().controls[0].value,Some(ir::Value::Integer(20)),
             "another source is not overwritten by this source's scalar fallback");
         let mut typed_source=source.clone();
         for saved in [ir::Value::Text("published text".into()),ir::Value::Integers(vec![1,2,3]),ir::Value::Reals(vec![0.25,0.5])] {
             typed_source.widgets[0].value=Some(saved.clone());
             session.update_view(&typed_source,&HashMap::from([(ir::ControlId(42),75.)]),&Default::default(),&Default::default());
-            assert_eq!(session.bridge.lock().unwrap().controls[1].value,Some(saved),"scalar telemetry must preserve declared text/array values");
+            assert_eq!(session.bridge.lock_unpoisoned().controls[1].value,Some(saved),"scalar telemetry must preserve declared text/array values");
         }
         session.update_view(
             &source,
@@ -913,7 +909,7 @@ mod tests {
             missing:end_touch()
         "#).exec().unwrap();
         assert!(session.take_edits().is_empty(),"unconnected bindings cannot edit a declared control");
-        assert!(session.bridge.lock().unwrap().touches.is_empty());
+        assert!(session.bridge.lock_unpoisoned().touches.is_empty());
         assert!(
             session
                 .lua()
