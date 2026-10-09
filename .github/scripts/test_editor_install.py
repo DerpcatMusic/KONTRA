@@ -54,6 +54,7 @@ class EditorInstall(unittest.TestCase):
                         [[ "$FAILURE" != timeout || "$count" != 1 ]] || exit 124
                         exec "$@"
                     ''',
+                    'rg': '#!/bin/bash\nexec grep -E "$@"\n',
                     'apt-get': '#!/bin/bash\nexit 99\n',
                 }
                 for tool in ['xvfb-run', 'xauth', 'dbus-run-session', 'glxinfo', 'vulkaninfo', 'ffmpeg', 'unzip']:
