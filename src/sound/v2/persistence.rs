@@ -317,6 +317,70 @@ impl Part {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adding_dsp_owners_recalls_only_the_exact_previous_script_schema() {
+        let make = |register_dsp: bool| {
+            let script = sampler_ksp::compile(
+                "on init\n declare $saved := 0\n declare @name\n make_persistent($saved)\n make_persistent(@name)\n end on",
+                48000,
+                sampler_ksp::Limits::LIBRARY,
+                &[],
+            ).unwrap();
+            let view = script.view();
+            let owner = sampler_core::ControlId(900);
+            let mut plan = sampler_core::Prepared::new(48000, vec![], vec![], 0).unwrap()
+                .with_controls(vec![ControlDefinition {
+                    id: owner,
+                    domain: ControlDomain::Real { min: 0., max: 1. },
+                    default: ControlValue::Real(0.5),
+                }]).unwrap();
+            if register_dsp {
+                let mut registry = sampler_core::ParameterRegistry::default();
+                registry.register(sampler_core::ParameterDescriptor {
+                    address: sampler_core::ParameterAddress { scope: sampler_core::ParameterScope::Plan, node: 9, parameter: 0 },
+                    control: owner,
+                    name: "fixture DSP owner".into(),
+                    unit: sampler_core::ParameterUnit::Normalized,
+                    range: [0., 1.],
+                    default: 0.5,
+                    law: sampler_core::ParameterLaw::Linear,
+                    display: Default::default(),
+                }).unwrap();
+                plan = plan.with_parameter_registry(registry).unwrap();
+            }
+            let plan = script.bind(plan).unwrap();
+            let limits = sampler_core::Limits::for_plan(&plan, 8, 0);
+            (Runtime::new(plan, limits).unwrap(), [view], owner)
+        };
+        let (mut old, views, _) = make(false);
+        let mut state = sampler_ksp::persistent_state_buffer(&views).unwrap();
+        old.capture_script_state(old.active_plan(), &mut state).unwrap();
+        for entry in &mut state.values {
+            entry.value = match entry.value {
+                Value::Cell(_) => Value::Cell(837),
+                Value::Text(_) => Value::Text(sampler_core::Text::new("legacy saved text")),
+                value => value,
+            };
+        }
+        old.restore_script_state(old.active_plan(), None, &mut state).unwrap();
+        let saved = Persistence::new(&mut old, &views, "").unwrap().snapshot.save();
+        let (mut current, views, owner) = make(true);
+        let recalled = Persistence::new(&mut current, &views, &saved)
+            .expect("adding DSP owners must preserve the exact previous v2 script save");
+        assert!(recalled.state.values.iter().any(|e| e.value == Value::Cell(837)));
+        assert!(recalled.state.values.iter().any(|e| e.value == Value::Text(sampler_core::Text::new("legacy saved text"))));
+        assert_eq!(current.control_base_value(current.active_plan(), owner), Ok(ControlValue::Real(0.5)));
+
+        let mut corrupt: Saved = serde_json::from_str(&saved).unwrap();
+        corrupt.schema = "unknown schema".into();
+        assert!(Persistence::new(&mut current, &views, &serde_json::to_string(&corrupt).unwrap()).is_err());
+        let mut corrupt: Saved = serde_json::from_str(&saved).unwrap();
+        corrupt.values[0] = SavedValue::Toggle(true);
+        assert!(Persistence::new(&mut current, &views, &serde_json::to_string(&corrupt).unwrap()).is_err());
+        assert_eq!(current.control_base_value(current.active_plan(), owner), Ok(ControlValue::Real(0.5)));
+    }
+
     fn values(value: i64) -> ScriptStateBuffer {
         ScriptStateBuffer {
             values: vec![
