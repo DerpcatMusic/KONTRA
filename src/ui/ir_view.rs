@@ -2063,3 +2063,84 @@ mod mapper_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod page_layout_tests {
+    use super::*;
+
+    fn face(source: ir::Source) -> Interface {
+        let rects = [
+            (10, 10, 20, 20),
+            (10, 500, 20, 20),
+            (500, 10, 20, 20),
+            (-40, 10, 20, 20),
+            (-10, 10, 20, 20),
+            (10, 10, 0, 20),
+            (10, -40, 20, 20),
+            (10, 50, 20, 20),
+        ];
+        Interface {
+            source,
+            pages: vec![ir::Page {
+                size: ir::Size {
+                    width: 100,
+                    height: 60,
+                },
+                ..Default::default()
+            }],
+            widgets: rects
+                .into_iter()
+                .map(|(x, y, w, h)| {
+                    ir::Widget::new(
+                        "fixture",
+                        PageRef(0),
+                        ir::Rect::new(x, y, w, h),
+                        Kind::Button { momentary: false },
+                    )
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn authored_page_height_does_not_follow_off_page_controls() {
+        let mut face = face(ir::Source::Ksp { slot: 0 });
+        assert_eq!(height(&face, PageRef(0)), 60);
+        face.pages[0].size.height = 80;
+        face.widgets[1].hidden = true;
+        assert_eq!(height(&face, PageRef(0)), 80);
+    }
+
+    #[test]
+    fn authored_page_layout_retains_intersections_in_script_order() {
+        for source in [ir::Source::Ksp { slot: 0 }, ir::Source::FalconLua] {
+            let face = face(source);
+            let mut ui = super::super::theme::ui();
+            let root = view(
+                &mut ui,
+                &face,
+                PageRef(0),
+                &Assets::default(),
+                Presentation::Vector,
+                1.,
+                &mut Values::default(),
+            );
+            ui.frame(root, Some(Size::new(100., 60.)), Input::default(), 1. / 60.)
+                .unwrap();
+            let scene = ui.scene().unwrap();
+            for n in [0, 4, 7] {
+                assert!(
+                    scene.surface(&format!("ir-{n}")).is_some(),
+                    "missing {source:?} {n}"
+                );
+            }
+            for n in [1, 2, 3, 5, 6] {
+                assert!(
+                    scene.surface(&format!("ir-{n}")).is_none(),
+                    "off-page {source:?} {n}"
+                );
+            }
+        }
+    }
+}
