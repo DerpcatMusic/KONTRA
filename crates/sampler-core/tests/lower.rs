@@ -2025,7 +2025,7 @@ fn lowered_whole_voice_flex_is_bit_exact_through_dsp_release_and_reuse() {
             curve: 0.5,
         },
     ];
-    for processed in [false, true] {
+    for (processed, primary) in [(false,true),(true,true),(false,false),(true,false)] {
         let mut ir = native_primary_fixture();
         ir.source_indices.ahdsrs[0].native_amplitude = false;
         ir.modulators.push(ir::Modulator {
@@ -2077,9 +2077,17 @@ fn lowered_whole_voice_flex_is_bit_exact_through_dsp_release_and_reuse() {
             });
             ir.zones[0].chain = Some(ir::ChainRef(0));
         }
+        let amplitude = if primary { Ahdsr::from(&ir.source_indices.ahdsrs[0]) } else { Ahdsr::UNITY };
+        if !primary {
+            ir.modulators[0].source = ir::ModulationSource::Envelope(ir::Envelope {
+                release: ir::Time::Milliseconds(3.), release_shape: ir::Curve::Step, ..Default::default()
+            });
+            ir.source_indices.modulators.remove(0);
+            ir.source_indices.ahdsrs.clear();
+        }
         let plan = ControlPlan::prepare(
             ControlDescription {
-                amplitude: Ahdsr::from(&ir.source_indices.ahdsrs[0]),
+                amplitude,
                 native_amplitude: false,
                 flex: Some(Flex::from_kontakt(&points, 1).unwrap()),
                 ..Default::default()
@@ -2127,7 +2135,7 @@ fn lowered_whole_voice_flex_is_bit_exact_through_dsp_release_and_reuse() {
                     assert_eq!(
                         out[i].map(f32::to_bits),
                         [(amp[i] * flex[i]).to_bits(); 2],
-                        "processed={processed} reuse={reuse} block={block} frame={i}"
+                        "processed={processed} primary={primary} reuse={reuse} block={block} frame={i}"
                     );
                 }
             }
