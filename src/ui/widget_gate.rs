@@ -274,8 +274,8 @@ impl Gate {
     }
 }
 
-fn changed(before: &Values, after: &Values, _submitted: &BTreeSet<String>) -> Vec<String> {
-    after.iter().filter(|(key, value)| before.get(*key).is_some_and(|old| old != *value))
+fn changed(before: &Values, after: &Values, submitted: &BTreeSet<String>) -> Vec<String> {
+    after.iter().filter(|(key, value)| submitted.contains(*key) && before.get(*key).is_some_and(|old| old != *value))
         .map(|(key, _)| key.clone()).collect()
 }
 
@@ -390,18 +390,21 @@ fn original_widget_gestures() {
                 gate.current_target = Some(results.len());
                 let mut reason = "parameter-unchanged";
                 let mut keys = Vec::new();
+                let mut submitted_parameters = 0;
                 if Instant::now() >= deadline { exhausted = true; reason = "probe-budget"; }
                 else if let Some(at) = gate.hit(&id) {
                     for attempt in 0..6 {
                         keys = gate.gesture(&id, &kind, at, attempt);
+                        submitted_parameters = submitted_parameters.max(gate.submitted.len());
                         if !keys.is_empty() { reason = "persistence-pending"; break; }
                         if gate.editor.ui.scene().unwrap().surface(&id).is_none() { reason = "navigation-only"; break; }
                     }
+                    if reason == "parameter-unchanged" && submitted_parameters == 0 { reason = "widget-edit-not-submitted"; }
                 } else { reason = "occluded-or-outside-viewport"; }
                 let faults = gate.faults();
                 initial_faults += faults;
                 if faults > 0 { reason = "script-or-render-fault"; }
-                results.push((serde_json::json!({"target_sha256": sha2::Sha256::digest(id.as_bytes()).iter().map(|b|format!("{b:02x}")).collect::<String>(), "source": source, "page": page, "kind": kind, "reason": reason, "parameter_changes": keys.len(), "value_changed": !keys.is_empty(), "parameter_reached": !keys.is_empty(), "persistence": false}), keys));
+                results.push((serde_json::json!({"target_sha256": sha2::Sha256::digest(id.as_bytes()).iter().map(|b|format!("{b:02x}")).collect::<String>(), "source": source, "page": page, "kind": kind, "reason": reason, "submitted_parameters": submitted_parameters, "parameter_changes": keys.len(), "value_changed": !keys.is_empty(), "parameter_reached": !keys.is_empty(), "persistence": false}), keys));
                 if exhausted { break; }
             }
             if exhausted { break; }
