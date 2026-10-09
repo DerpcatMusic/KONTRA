@@ -34,7 +34,7 @@ shared-target build failures are transport failures and are excluded.
 | Width and height calls | Evaluator → page dimensions → renderer | W11 owns literal v1 exclusion of controls wholly outside the authored page, retaining partial intersections. |
 | Visibility and z-order | IR visibility and ordered children → renderer | Preserve script order and hidden state; a source reference count is not an executed-call receipt. |
 | Text and font state | Text properties and state styles → renderer | Paths exist; no blanket typography acceptance claim. |
-| Plain `ui_slider` | Authored kind → renderer | Square dimensions currently select a dial without authored type intent. Pending renderer semantics review; no change in this slice. |
+| Plain `ui_slider` | Authored kind → renderer | Follow-up removes the dimension-based dial choice. Authored `MOUSE_BEHAVIOUR` axis changes slider pixels; `ui_knob` retains its dial pixels. W2 separately owns input semantics. |
 
 The detailed `KSP-UI-CALL-CHECKLIST.json` includes all eleven Kontakt libraries
 and 835 observed instruments/multis from the complete historical census at
@@ -73,6 +73,20 @@ missing `Button.push`, and an invented constructor grid. W10 owns their v1
 `4bffbb18` port, module/resource semantics, publication and production pixel
 receipts. A prepared port or a recognized call does not establish runtime support;
 its GREEN/no-run/READY results are pending and must be cited separately.
+
+## Authored control type follow-up
+
+The CPU pixel regression compiles square, same-size KSP controls with title/value
+hidden: a horizontal slider, a vertical slider, and a knob. In RED all three
+rendered the same dial (`a1eb117a…`). Removing seven renderer lines makes the
+slider hashes distinct (`90e33a6b…` horizontal, `d2ab697b…` vertical), while the
+knob hash stays `a1eb117a…`. The focused test, area no-run and scanner build pass.
+Receipt: `/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w3-authored-control-kind-394`.
+
+V1's `perf_view::knob_like` also guessed from picture names and dimensions; that
+heuristic is intentionally not ported under the current authored-call directive.
+This change leaves page bounds, hit geometry and input axis/sensitivity to their
+owners. It selects the visual control type supplied by the script.
 
 ## Acceptance limits
 
