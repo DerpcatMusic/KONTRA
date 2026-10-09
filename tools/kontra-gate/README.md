@@ -61,6 +61,38 @@ all programs named by the same-run scanner receipt, one heavy invocation per pro
 Missing, crashed, timed-out, empty or partially enumerated probes cannot pass. A legacy
 Conflux Vector/readback witness cannot certify another cell.
 
+Presented-window coverage is separate from the headless editor. `presented-host.cpp`
+opens the exported CLAP GUI in a mapped X11 parent, processes audio on a separate
+thread, waits for the loaded-part counter, and reads the visible window with
+`XGetImage`. Its binary RGB stdout must stay in a pipe/RAM, never a disk file.
+On Hyprland/Xwayland, those pixels can be black despite a mapped window; the driver
+uses `grim` on the compositor bounds of the probe-owned window as its pixel witness.
+It refuses a window outside the host process family. Pillow/NumPy, `grim` and
+`hyprctl` are required only for this live capture, not the numeric gate collector.
+Compile using the official CLAP headers with `-lX11 -lXtst -ldl -pthread`, through
+`kontakto-heavy`. `presented.py PLUGIN STATE_AUTHOR_CLI HOST ITEM OUT --source-sha
+FULL_SHA --ram-dir PRIVATE_DEV_SHM_DIR` separately submits the native state export
+and GUI host through the wrapper; do not wrap the Python driver. It retains before/
+last PNGs and state only in the caller's private `/dev/shm` directory for the render
+owner. Remove that directory after handoff. It never builds or installs a plugin.
+The host forwards actual ConfigureNotify sizes through CLAP GUI `set_size`, accepts
+bounded GUI resize requests, and arms the opt-in native timing capture with a safe
+two-pixel primary drag on the resize grip. Idle captures intentionally have no
+native timing record. Timing reports arrive at capture finish/close, not per frame.
+
+The numeric receipt detects large pure-black rectangles, translated copies of a
+varied chrome template, and repeated edge appearance/disappearance over N frames.
+Only selected static chrome tiles are asserted; authored animated tiles remain
+findings. Black artwork needs a fresh reference before being called an occlusion.
+Screenshot intervals are capture times, not display FPS. Existing opt-in native
+callback timing is collected separately; shared-device GPU counters do not prove
+GPU completion or attribute memory to the plugin. Contended timings stay UNKNOWN.
+Retain numeric `metrics.json` under `RUN/presented/...`, then run `--adapter
+presented` to incorporate exact-source, item/condition-bound findings. Missing,
+partial and mismatched receipts remain UNKNOWN; detected artifacts fail the UI
+axis. A clean static capture does not certify every interaction. Checks:
+`python3 tools/kontra-gate/check-presented.py`.
+
 `gestures/<condition>/<item-sha256>/metrics.json` contains passed/total counts,
 per-program observations and typed reasons: parameter-unchanged, navigation-only,
 occluded-or-outside-viewport, save-reload-mismatch, save-reload-load-failed,
