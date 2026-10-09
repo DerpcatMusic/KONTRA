@@ -3765,6 +3765,17 @@
       "category": "Fixed",
       "accepted": true,
       "validation": "Owner publication5, script-free recall1, previous-schema1, persistence8 and root no-run PASS; exact pushed candidate reviewed. W0 combined W9/W15 and broad gates pending before publication; synthetic fixtures only."
+    },
+    {
+      "id": "async-wait-preemption-age",
+      "summary": "End continuous callback preemption age after admitted enabled MIDI waits",
+      "source_commits": [
+        "0ad6b3f9ee6e8de4eaa2add0fd70ad6bcf196eda"
+      ],
+      "release_note": "Keep finite script callbacks alive across admitted asynchronous MIDI waits.",
+      "category": "Fixed",
+      "accepted": true,
+      "validation": "W5 owner2 host-budget callback witnesses/26core+15MIDI+rootno-run reviewed. W0 combined-source RED reproduces admitted wait FuelExhausted while regular waits pass; invalid/disabled runaway guards retained. Final combined GREEN gate pending before publication; Glaze/Horns actual-library attribution unknown."
     }
   ]
 }
