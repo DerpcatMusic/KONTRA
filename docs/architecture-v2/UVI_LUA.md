@@ -152,3 +152,23 @@ The historical 11/21 timeouts remain incomplete observations. This UI-publicatio
 race does not establish their cause or a PCM difference. W8's frozen matching
 0be9 witnesses remain valid for their reported PCM comparisons; counter snapshots
 from those witnesses do not imply a fully published owner boundary.
+
+### Optional owner progress
+
+Scan callers may set both `Config.audit_seed` and `Config.audit_progress` to
+observe the owner through `UiBridge::scan_progress()` (or the inline host's
+getter). Ordinary hosts and seeded scans with progress disabled allocate no
+progress observer. `ScanProgress::snapshot()` reads atomics only: phase,
+requested/completed barrier counts and target clocks, actual Lua clock,
+remaining work, exhaustion, VM checkpoints and coroutine resumes. It never
+asks the busy Lua owner to service a readback. Fields are independent live
+observations; they are not a transactional snapshot. A completed barrier is
+recorded after UI, fault and scan publication, immediately before its reply.
+
+The clear synthetic `owner_progress_remains_readable_while_callback_is_blocked`
+witness holds a `require` provider during an event, reads progress before
+releasing it, then completes barriers at 5 and 7 ms with the note emitted at
+7 ms. `owner_progress_reports_exhaustion_without_refilling_work` also observes
+zero work/exhaustion after a bounded runaway and confirms that UI inspection
+preserves both. These fixtures use no reader, Wine, bank, sample or installed
+application and do not establish attribution for the earlier library timeouts.
