@@ -1,8 +1,9 @@
 # W9: shipped 0.3.344 slow callbacks in Dolce and Areia
 
-Status: source fix prepared; targeted RED/GREEN, root no-run and the non-quiet
-Harmonics pathology pair are pending the explicit W8 machine handoff. Streaming
-remains HOLD. This is not CPU parity evidence.
+Status: targeted RED→GREEN, root no-run and the requested non-quiet Harmonics
+pair complete. Code READY: `5592510e64630e433f4607c2f43d1ff49cf489d3`, pushed
+and remote-verified. The machine was released directly to W12 after all owned
+jobs drained. Streaming remains HOLD; this is not CPU parity evidence.
 
 ## Attribution
 
@@ -70,8 +71,8 @@ v2's coherent typed snapshot and skip unchanged work rather than expose a
 partially refreshed host save. Conservative remaining limit: a write anywhere
 in script storage invalidates the full snapshot, including nonpersistent cells;
 a frequently changing large table can still require an expensive publication.
-The short before/after reproduction must establish whether the idle gate closes
-this reported pathology. A quiet slot is still required for CPU parity.
+The requested short reproduction no longer shows the severe continuous
+slow-callback class. A quiet slot is still required for CPU parity.
 
 Regression commit: `7fa595e8` (unchanged 32K-cell block must neither visit staging
 storage nor change the published slot). Fix: `034a4e4f`; no-heap restore/read
@@ -80,5 +81,54 @@ next host save, script fast/general/array/text mutations to advance the token,
 and reads to leave it unchanged. Existing KSP capture/restore and concurrent
 host-save tests are included in targeted validation.
 
-NEXT: W8 release → targeted RED/GREEN, root no-run, one non-quiet Harmonics pair
-→ direct W6 release.
+## Validation and non-quiet before/after
+
+The failing-first test at `7fa595e8` failed on the intended assertion: an idle
+block changed poisoned staging `Cell(-123)` back to live `Cell(17)`. With the fix:
+
+- One core revision/fast/general/array/text/no-heap test passed.
+- All five KSP state tests passed, including exact values, restore rejection,
+  callback outcomes and allocation-free transport.
+- All four host persistence tests passed: DSP-only `ControlOperation::Edit` →
+  next save, unchanged 32K-cell skip, allocation-free restore/publication,
+  exact scalar/text preservation and coherent concurrent saves.
+- Root `cargo test --no-run` passed. No full-suite/gate run was added.
+
+The diagnostic CLAP (no release/install) was built in release with
+`clap,library-access,plugin`, source `5592510e`, SHA-256
+`774bb65d2b384c51f4f9948124877a300e8f16fac62604fc92553a9aae96e8c1`.
+The pair used the same frozen host and exporter, identical native-state hash
+`2f93521bb0d843f7b6eb4a81b125088196c2f64b026a2270ea8281a79c9eefed`, and identical
+audition-event hash `5d1a5e68a01801748ea48bb00e066441d7e3db8b625dca0e118dd3252645a2a2`.
+Harmonics program0, key73/velocity64, 48kHz/64 frames, two audio seconds:
+
+| Observation | Shipped 344 | Candidate |
+|---|---:|---:|
+| Callback wall p50 µs | 73,806.225 | 12.410 |
+| Callback wall p99 µs | 88,011.783 | 161.663 |
+| Audio-thread CPU p50 µs | 73,337.189 | 13.150 |
+| Audio-thread CPU p99 µs | 86,847.782 | 160.391 |
+| Observer wall seconds | 118.973 | 5.729 |
+| Observer wall / audio seconds | 59.487 | 2.864 |
+| Callback deadline misses / 1,500 | 1,500 | 14 |
+| Wake deadline misses | 1,499 | 736 |
+| Reported stream underruns | 0 | 0 |
+
+Both completed all 1,500 blocks and four expected events, with finite audible
+output and verified native readback. The wall observation includes load, audition,
+host save and collector completion; it is not pure render time. Peaks differed
+(0.0465093 versus 0.0383650); this was not a seeded PCM-equivalence test.
+
+There was no quiet request/grant. The observer labelled before CONTENDED and
+after QUIET, so this asymmetric one-shot pair remains UNKNOWN for CPU parity.
+Product cache was disabled; OS cache was uncontrolled, with no separate cold/warm
+claim. No candidate Areia/CHORUS or other Dolce preset was retested in this short
+slot. The shared hot frame was confirmed on Areia before the fix.
+
+Receipts: `validation/{SUMMARY.json,factor-pair.json,BUILD.json}` and numeric
+host diagnostics under the run folder. Raw library state and journals remained
+in tmpfs and were destroyed. Validation unit ended not-found/inactive/dead,
+MainPID0, with no owned job/waiter/request/grant. W12 received the explicit direct
+release with `validation/direct-handoff-W12.json`; W12 releases W6 after its GREEN.
+
+NEXT: W12 format-fix GREEN → W6 → W13 → W11; W9 CPU ports resume afterward.
