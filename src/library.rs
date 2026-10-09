@@ -1377,6 +1377,11 @@ pub(crate) mod tests {
 
     #[cfg(feature = "library-access")]
     pub(crate) fn clear_sample_bank(path: &Path, wav: &[u8]) {
+        clear_sample_bank_xml(path, wav, br#"<UVI4><Program Name="Clear tone"><Layers><Layer><Keygroups><Keygroup LowKey="60" HighKey="60"><Oscillators><SamplePlayer SamplePath="note.wav" BaseNote="60"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program></UVI4>"#);
+    }
+
+    #[cfg(feature = "library-access")]
+    pub(crate) fn clear_sample_bank_xml(path: &Path, wav: &[u8], xml: &[u8]) {
         clear_bank(path);
         let mut bytes = std::fs::read(path).unwrap();
         let point = |bytes: &mut [u8], at: usize, value: u64| bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
@@ -1387,7 +1392,6 @@ pub(crate) mod tests {
             offset
         };
         let member = bytes.windows(4).position(|x| x == 0x675850e4u32.to_le_bytes()).unwrap();
-        let xml = br#"<UVI4><Program Name="Clear tone"><Layers><Layer><Keygroups><Keygroup LowKey="60" HighKey="60"><Oscillators><SamplePlayer SamplePath="note.wav" BaseNote="60"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program></UVI4>"#;
         let offset = append(&mut bytes, xml);
         point(&mut bytes, member + 260, xml.len() as u64);
         point(&mut bytes, member + 268, offset as u64);
