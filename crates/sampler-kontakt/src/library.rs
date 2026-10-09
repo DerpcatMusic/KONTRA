@@ -97,10 +97,17 @@ fn read_overlaid(
             .ok_or_else(|| invalid("not a single-instrument preset"))?,
     )
     .map_err(|e| decode("program", e))?;
-    let (table, others) = match chunks.find_first(FILE_TABLE) {
+    let (table, others, containers) = match chunks.find_first(FILE_TABLE) {
         Some(chunk) => {
             let t = FNTableImpl::try_from(chunk).map_err(|e| decode("sample file table", e))?;
-            (t.sample_filetable, t.other_filetable)
+            (
+                t.sample_filetable,
+                t.other_filetable,
+                t.special_filetable
+                    .into_values()
+                    .filter(|name| name.to_ascii_lowercase().ends_with(".nkr"))
+                    .collect(),
+            )
         }
         None => {
             let chunk = chunks
@@ -108,7 +115,14 @@ fn read_overlaid(
                 .ok_or_else(|| invalid("missing sample file table"))?;
             let t =
                 FileNameListPreK51::try_from(chunk).map_err(|e| decode("legacy file table", e))?;
-            (t.sample_filetable, t.other_filetable)
+            (
+                t.sample_filetable,
+                t.other_filetable,
+                t.special_filetable
+                    .into_values()
+                    .filter(|name| name.to_ascii_lowercase().ends_with(".nkr"))
+                    .collect(),
+            )
         }
     };
     drop(span);
@@ -118,6 +132,7 @@ fn read_overlaid(
         program,
         table,
         others,
+        containers,
         snapshot,
         control_values,
         snapshot.is_none().then_some(0),
@@ -177,17 +192,25 @@ pub fn read_program_with_controls(
         .into_iter()
         .nth(index)
         .ok_or_else(|| invalid("the multi has no such program"))?;
-    let (table, others) = match chunks
+    let (table, others, containers) = match chunks
         .filename_tables()
         .map_err(|e| decode("multi file table", e))?
     {
-        Some(t) => (t.sample_filetable, t.other_filetable),
+        Some(t) => (
+            t.sample_filetable,
+            t.other_filetable,
+            t.special_filetable
+                .into_values()
+                .filter(|name| name.to_ascii_lowercase().ends_with(".nkr"))
+                .collect(),
+        ),
         None => (
             chunks
                 .filename_table()
                 .ok_or_else(|| invalid("missing multi sample table"))?
                 .map_err(|e| decode("multi file table", e))?,
             Default::default(),
+            Vec::new(),
         ),
     };
     drop(span);
@@ -197,6 +220,7 @@ pub fn read_program_with_controls(
         program,
         table,
         others,
+        containers,
         None,
         control_values,
         u32::try_from(index).ok(),
@@ -204,11 +228,13 @@ pub fn read_program_with_controls(
     .map_err(|e| e.at(crate::Stage::Translate))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn translate(
     path: PathBuf,
     mut program: Program,
     table: HashMap<u32, String>,
     others: HashMap<u32, String>,
+    containers: Vec<String>,
     snapshot: Option<&crate::SnapshotState>,
     control_values: &[(sampler_core::ControlId, i32)],
     cache_program: Option<u32>,
@@ -500,7 +526,7 @@ fn translate(
                 .and_then(|i| others.get(&i))
                 .ok_or_else(|| format!("index {index} is not in the file table"))?;
             let at = samples
-                .resolve(parent, name)
+                .resolve_impulse(parent, name, &containers)
                 .map_err(|e| e.to_string())?
                 .ok_or_else(|| format!("{name} was not found"))?;
             impulse_sources.insert(index, at.clone());
@@ -2753,6 +2779,7 @@ mod saved_tests {
                 program,
                 Default::default(),
                 Default::default(),
+                Default::default(),
                 None,
                 &[],
                 None,
@@ -2823,6 +2850,7 @@ mod saved_tests {
                 menu_program(),
                 Default::default(),
                 Default::default(),
+                Default::default(),
                 None,
                 &controls,
                 None,
@@ -2869,6 +2897,7 @@ mod saved_tests {
         let translated = super::translate(
             path.clone(),
             menu_program(),
+            Default::default(),
             Default::default(),
             Default::default(),
             None,
