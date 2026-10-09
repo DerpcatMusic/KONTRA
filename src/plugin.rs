@@ -2752,7 +2752,7 @@ pub(crate) mod tests {
         let stream = atoms.stream.lock_unpoisoned();
         let stream = stream.as_ref().map(|s| serde_json::json!({"heads":s.report.head_bytes,"head_frames":s.report.head_frames,"pool_bytes":s.report.pool_bytes,"full_bytes":s.report.full_bytes,"resident_bytes":s.resident_bytes()}));
         let view = params.shared.view.lock_unpoisoned();
-        let decoded = view.parts[0].report.as_ref().map(|r| serde_json::json!({"zones":r.decoded.zones,"groups":r.decoded.groups,"samples":r.decoded.samples,"scripts":r.decoded.scripts,"missing":r.missing.len()}));
+        let decoded = view.parts[0].report.as_ref().map(|r| r.audit_counts());
         drop(view);
         let extra = serde_json::json!({"stream":stream,"decoded":decoded,"problems":format!("{:?}",dsp.core.problems(0))});
         let trace = params.shared.view.lock_unpoisoned().parts[0].trace.as_deref().cloned();
