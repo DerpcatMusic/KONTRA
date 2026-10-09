@@ -64,10 +64,33 @@ Owned evidence directory: `~/.cache/kontakto-w5/ksp-coverage/`.
 - Frozen gallery v2 executable SHA256:
   `7ce04ef47e7250d196a64a56e65017a7926d15cb8d610469f135a8361f7bc6c0`.
 
-The production probe is not a presented-plugin or audio parity test. This change
-records attribution only; no product behavior or scanner correction is included.
-W3 owns the scanner seam and received the matched witness: settle and apply UI
-effects before capturing the face. The independent Conflux GPU transparency
-failure is not explained by this result.
+The attribution probe is not a presented-plugin or audio parity test. The
+independent Conflux GPU transparency failure is not explained by this result.
 
-NEXT: remaining semantic-command declaration and contract attribution.
+## Scanner correction
+
+W5 now owns the scanner fix. `settle_snapshot` runs the frozen adapter's ten
+480-sample ticks in `MAX_BLOCK` chunks, applies drained effects to `ScriptUi`,
+and regenerates changed interfaces before face capture and control-value reads.
+It uses offline blocks, retains runtime faults in the existing scanner report,
+and completes the block lifecycle. The scanner reports `snapshot_settle_ms`
+separately from its loader metric.
+
+The ignored, authored-library test
+`areia_scanner_snapshot_applies_listener_before_face_capture` uses the production
+`V2Loader` with all keys, the owned translation manifest, and numeric visibility
+assertions. Before the fix it fails because the warning remains visible; after
+the fix it passes with the articulation list visible, zero runtime faults and
+zero streaming/offline failures. No authored source or identifiers are logged.
+Run it explicitly with `cargo test --profile ci --features shots --lib
+areia_scanner_snapshot_applies_listener_before_face_capture -- --ignored
+--nocapture` through the normal wrapper.
+
+Frozen before test executable SHA256:
+`7f9e3aa18ed26433995c388ecd08cb69fe3488b0df7d313bd962a1fb9e34449d`.
+Frozen after test executable SHA256:
+`dc9a3086822dc571139c7650d3cdb9d597cf8e16f123ac3f790ca70539ab01b4`.
+The before executable is the intentionally failing fixture on source base
+`bc318a1f` with an empty settle seam; the after executable contains the correction.
+
+NEXT: quiet before/after snapshot scan-time receipt, then READY to W0.
