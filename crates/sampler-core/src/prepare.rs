@@ -761,11 +761,18 @@ impl Prepared {
     /// Bind per-voice modulation programs: one optional program per authored
     /// region, and per region the source frames a full sample-start route spans.
     pub fn with_voice_modulation(
-        mut self,
+        self,
         programs: Vec<super::ModProgram>,
         regions: Vec<Option<usize>>,
         start_ranges: Vec<u32>,
     ) -> Result<Self, Error> {
+        let native = std::iter::repeat_with(|| None).take(programs.len()).collect();
+        self.with_voice_modulation_and_v1(programs, regions, start_ranges, native)
+    }
+    pub(crate) fn with_voice_modulation_and_v1(mut self,
+        programs: Vec<super::ModProgram>, regions: Vec<Option<usize>>, start_ranges: Vec<u32>,
+        mut native: Vec<Option<crate::whole_voice::Program>>) -> Result<Self, Error> {
+        if native.len() != programs.len() { return Err(Error::InvalidInput); }
         if regions.len() != self.regions.len()
             || programs
                 .iter()
@@ -797,10 +804,12 @@ impl Prepared {
             }
         }
         let mut programs = programs;
-        for program in &mut programs {
+        for (index, program) in programs.iter_mut().enumerate() {
             let mut routes = Vec::new();
-            for route in &program.routes {
-                if route.target.compiled().is_some() { routes.push(*route); continue; }
+            let mut native_routes = Vec::new();
+            for (ordinal, route) in program.routes.iter().enumerate() {
+                let control = native[index].as_ref().map_or(crate::whole_voice::Route::Residual, |n| n.routes[ordinal]);
+                if route.target.compiled().is_some() { routes.push(*route); native_routes.push(control); continue; }
                 if route.target.scope != super::ParameterScope::Voice { return Err(Error::InvalidInput); }
                 let descriptor = self.parameter_registry.resolve(route.target)
                     .and_then(|lane| self.parameter_registry.descriptor(lane)).ok_or(Error::InvalidInput)?;
@@ -808,6 +817,7 @@ impl Prepared {
                     .filter(|(_, binding)| binding.control == descriptor.control).collect();
                 if consumers.is_empty() { return Err(Error::InvalidInput); }
                 for (lane, binding) in consumers {
+                    native_routes.push(control);
                     // Compiled control addresses are private to this preparation call.
                     routes.push(super::ModRoute { target: super::ParameterAddress {
                         scope: super::ParameterScope::Voice, node: u32::try_from(lane).map_err(|_| Error::Capacity)?, parameter: u32::MAX - 13,
@@ -815,9 +825,10 @@ impl Prepared {
                 }
             }
             program.routes = routes;
+            if let Some(native) = &mut native[index] { native.routes = native_routes; }
         }
         self.voice_modulation = super::voice_mod::VoiceModulation::new_resolved(
-            programs, regions, start_ranges, |address| (address.parameter == u32::MAX - 13).then_some(address.node as usize))?;
+            programs, regions, start_ranges, native, |address| (address.parameter == u32::MAX - 13).then_some(address.node as usize))?;
         Ok(self)
     }
 

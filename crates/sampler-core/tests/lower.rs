@@ -1939,7 +1939,7 @@ fn native_primary_requires_unique_physical_identity_and_rejects_bad_coefficients
         out
     };
     let mut generic = native_primary_fixture();
-    generic.source_indices.ahdsrs[0].native_amplitude = false;
+    generic.source_indices.ahdsrs.clear();
     let expected = render(&generic);
     for case in 0..4 {
         let mut ir = native_primary_fixture();
@@ -1985,5 +1985,267 @@ fn lowered_whole_voice_uses_v1_ordinary_amplitude_clock() {
         for (i, (frame, value)) in output[..n].iter().zip(&amp).enumerate() {
             assert_eq!(frame.map(f32::to_bits), [value.to_bits(); 2], "whole voice block={block} frame={i}");
         }
+    }
+}
+
+
+fn original_volume_target(intensity: f32) -> ir::kontakt::ModulationTarget {
+    ir::kontakt::ModulationTarget {
+        param: "volume".into(),
+        intensity,
+        lag_ms: 0,
+        name: String::new(),
+        slot: None,
+        invert: false,
+        shaper: None,
+        unknown_i16: 0,
+        flags: 0,
+    }
+}
+
+#[test]
+fn lowered_whole_voice_flex_is_bit_exact_through_dsp_release_and_reuse() {
+    use sampler_core::v1_voice_controls::{
+        Ahdsr, ControlDescription, ControlPlan, ControlState, Flex,
+    };
+    let points = vec![
+        ir::kontakt::FlexPoint {
+            time_ms: 12.5,
+            level: 0.8,
+            curve: 0.25,
+        },
+        ir::kontakt::FlexPoint {
+            time_ms: 2.5,
+            level: 0.3,
+            curve: 0.75,
+        },
+        ir::kontakt::FlexPoint {
+            time_ms: 3.0,
+            level: 0.0,
+            curve: 0.5,
+        },
+    ];
+    for processed in [false, true] {
+        let mut ir = native_primary_fixture();
+        ir.source_indices.ahdsrs[0].native_amplitude = false;
+        ir.modulators.push(ir::Modulator {
+            scope: ir::Scope::Voice,
+            source: ir::ModulationSource::Breakpoints(ir::Breakpoints {
+                points: points
+                    .iter()
+                    .map(|p| ir::Breakpoint {
+                        time: ir::Time::Milliseconds(f64::from(p.time_ms)),
+                        level: f64::from(p.level),
+                        shape: { let c = f64::from(p.curve) - 0.5; if c.abs() < 1e-4 { ir::Curve::Linear } else { ir::Curve::Exponential(-17. * c) } },
+                    })
+                    .collect(),
+                sustain: Some(1),
+            }),
+        });
+        ir.routes.push(ir::Route::new(
+            ir::ModulatorRef(1),
+            ir::Target::Amplitude,
+            ir::Depth::Normalized(1.),
+        ));
+        ir.zones[0].routes.push(ir::RouteRef(0));
+        ir.source_indices.modulators.push(ir::SourceModulator {
+            group: 0,
+            slot: 9,
+            external: false,
+            name: "flex".into(),
+            runtime: Some(ir::ModulatorRef(1)),
+            settings: Some(ir::kontakt::Modulation {
+                version: 1,
+                source: ir::kontakt::ModulationSource::Internal {
+                    flags: [0; 4],
+                    unknown_id: 0,
+                    source: ir::kontakt::InternalSource::Flex {
+                        points: points.clone(),
+                        sustain: 1,
+                        unknown_index: 0,
+                        unknown_tail: vec![],
+                    },
+                },
+                targets: vec![original_volume_target(1.)],
+            }),
+        });
+        if processed {
+            ir.chains.push(ir::Chain {
+                scope: ir::Scope::Voice,
+                pre_amplitude: vec![],
+                post_amplitude: vec![ir::Processor::Gain(ir::Gain::Linear(1.))],
+            });
+            ir.zones[0].chain = Some(ir::ChainRef(0));
+        }
+        let plan = ControlPlan::prepare(
+            ControlDescription {
+                amplitude: Ahdsr::from(&ir.source_indices.ahdsrs[0]),
+                native_amplitude: false,
+                flex: Some(Flex::from_kontakt(&points, 1).unwrap()),
+                ..Default::default()
+            },
+            48000.,
+        )
+        .unwrap();
+        let mut rt = Runtime::new(
+            lower(&ir, 48000, vec![constant(1.)], no_behaviors).unwrap(),
+            limits(),
+        )
+        .unwrap();
+        for reuse in 0..2 {
+            let mut oracle = ControlState::new(&plan);
+            support::without_heap(|| {
+                rt.trigger(input(60), 60, 1.).unwrap();
+            });
+            for (block, n) in [1, 7, 31, 32, 33, 64, 17, 3, 64, 64, 64]
+                .into_iter()
+                .enumerate()
+            {
+                if block == 5 {
+                    oracle.release(&plan);
+                    support::without_heap(|| {
+                        rt.note_off(input(60), None).unwrap();
+                    });
+                }
+                let mut out = [[0.; 2]; 64];
+                let mut amp = [0.; 64];
+                let mut flex = [0.; 64];
+                let mut positions = [0; 64];
+                oracle
+                    .render(
+                        &plan,
+                        120.,
+                        1.,
+                        &mut amp[..n],
+                        Some(&mut flex[..n]),
+                        None,
+                        &mut positions[..n],
+                    )
+                    .unwrap();
+                support::without_heap(|| rt.render(&mut out[..n]).unwrap());
+                for i in 0..n {
+                    assert_eq!(
+                        out[i].map(f32::to_bits),
+                        [(amp[i] * flex[i]).to_bits(); 2],
+                        "processed={processed} reuse={reuse} block={block} frame={i}"
+                    );
+                }
+            }
+            support::without_heap(|| rt.panic());
+        }
+        assert_eq!(rt.stats().v1_control_starts, 2);
+        assert!(rt.stats().v1_control_blocks > 0);
+    }
+}
+
+#[test]
+fn lowered_whole_voice_external_uses_current_depth_and_full_resolution_cc() {
+    let mut ir = native_primary_fixture();
+    ir.source_indices.ahdsrs[0].attack_ms = 0.;
+    ir.source_indices.ahdsrs[0].native_amplitude = false;
+    ir.modulators[0].source = ir::ModulationSource::Envelope(Default::default());
+    ir.modulators.push(ir::Modulator {
+        scope: ir::Scope::Voice,
+        source: ir::ModulationSource::Controller(11),
+    });
+    ir.routes.push(ir::Route::new(
+        ir::ModulatorRef(1),
+        ir::Target::Amplitude,
+        ir::Depth::Normalized(f64::from(0.4f32)),
+    ));
+    ir.zones[0].routes.push(ir::RouteRef(0));
+    ir.source_indices.modulators.push(ir::SourceModulator {
+        group: 0,
+        slot: 3,
+        external: true,
+        name: "expression".into(),
+        runtime: Some(ir::ModulatorRef(1)),
+        settings: Some(ir::kontakt::Modulation {
+            version: 1,
+            source: ir::kontakt::ModulationSource::External {
+                source: ir::kontakt::ExternalSource::MidiCc(11),
+                unknown_id: 0,
+                unknown_source_data: vec![],
+                unknown_tail: vec![],
+            },
+            targets: vec![original_volume_target(0.7)],
+        }),
+    });
+    for raw in [0, u32::MAX, 0x2345_6789] {
+        let mut rt = Runtime::new(
+            lower(&ir, 48000, vec![constant(1.)], no_behaviors).unwrap(),
+            limits(),
+        )
+        .unwrap();
+        let performance = rt.performance(0).unwrap();
+        let mut out = [[0.; 2]; 64];
+        support::without_heap(|| {
+            rt.set_controller(performance, 11, raw).unwrap();
+            rt.trigger(input(60), 60, 1.).unwrap();
+            rt.render(&mut out).unwrap();
+        });
+        let value = (f64::from(raw) / f64::from(u32::MAX)) as f32;
+        let expected = 1. - 0.4f32 * (1. - value);
+        assert!(
+            out.iter()
+                .all(|f| f.map(f32::to_bits) == [expected.to_bits(); 2]),
+            "raw={raw} first={:?}",
+            out[0]
+        );
+        assert_eq!(rt.stats().v1_control_starts, 1);
+    }
+    // An unrepresentable live depth cannot be substituted with the saved 0.7.
+    ir.routes[0].depth = ir::Depth::Normalized(0.40000000001);
+    let mut rt = Runtime::new(
+        lower(&ir, 48000, vec![constant(1.)], no_behaviors).unwrap(),
+        limits(),
+    )
+    .unwrap();
+    rt.trigger(input(60), 60, 1.).unwrap();
+    rt.render(&mut [[0.; 2]; 64]).unwrap();
+    assert_eq!(rt.stats().v1_control_starts, 0);
+}
+
+
+#[test]
+fn lowered_whole_voice_state_survives_pool_growth_on_serial_and_parallel_paths() {
+    for threads in [1,2] {
+        let mut ir = native_primary_fixture();
+        ir.source_indices.ahdsrs[0].native_amplitude = false;
+        let make = |voices| {
+            let mut sizes = limits(); sizes.voices = voices;
+            sizes.notes = 64; sizes.families = 64; sizes.expressions = 64;
+            let plan = lower(&ir,48000,vec![constant(1.)],no_behaviors).unwrap();
+            let (rt,control) = Runtime::with_plan_updates(plan,sizes,2,1).unwrap();
+            (rt.with_threads(sampler_core::Threads::Fixed(threads)),control)
+        };
+        let (mut reference,_reference_control) = make(64);
+        let (mut actual,mut control) = make(1);
+        support::without_heap(|| {
+            reference.trigger(input(60),60,1.).unwrap(); actual.trigger(input(60),60,1.).unwrap();
+        });
+        for block in 0..8 {
+            if block == 2 { assert_eq!(control.grow_voices(64),Ok(64)); }
+            if block == 3 {
+                support::without_heap(|| {
+                    for id in 1..64 {
+                        let note = Input { external_id: Some(id), ..input(60) };
+                        reference.trigger(note,60,1.).unwrap(); actual.trigger(note,60,1.).unwrap();
+                    }
+                });
+            }
+            if block == 4 {
+                support::without_heap(|| {
+                    reference.note_off(input(60),None).unwrap(); actual.note_off(input(60),None).unwrap();
+                });
+            }
+            let mut expected = [[0.;2];37]; let mut output = [[0.;2];37];
+            support::without_heap(|| { reference.render(&mut expected).unwrap(); actual.render(&mut output).unwrap(); });
+            assert_eq!(output,expected,"threads={threads} block={block}");
+        }
+        assert_eq!(actual.stats().voice_growths,1);
+        assert_eq!(actual.stats().v1_control_starts,64);
+        if threads == 2 { assert!(actual.parallel_blocks() > 0); }
+        assert!(actual.stats().v1_control_blocks > 0);
     }
 }
