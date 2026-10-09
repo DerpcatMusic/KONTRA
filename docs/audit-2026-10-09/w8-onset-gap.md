@@ -63,3 +63,32 @@ remain allocation-free. The compact candidate timing is pending.
 Text/store invalidation and actual mutations of very large saved arrays still
 require a complete coherent capture. This document
 makes no full v1 parity, all-14 acceptance, or release claim.
+
+
+The compact candidate Areia row is QUIET: onset 26.681 ms, CPU editor RSS
+555.598 MiB, capture before first sound 16.996 ms. Dolce observes 16.767 ms and
+452.563 MiB but is CONTENDED, so it is UNKNOWN for acceptance.
+
+A further failing-first fixture writes one element of an authored 32,768-cell
+saved array. Full capture exceeds v1's 16,384-value refresh budget even for this
+scalar change. The shared writers now retain dirty captured-cell bits; restores
+and integer/real widget edits mark them too. Each coherent slot keeps its own
+pending cells, so slot rotation cannot resurrect an earlier value. All three
+slots start from the complete prepared state. Only an unpinned slot is updated;
+it becomes published after all pending values and current controls/text succeed.
+Dirty bits clear after a successful capture. Unregistered domains conservatively
+capture fully. This adapts v1's changed-range refresh to the existing v2 coherent
+slots without rolling snapshots that mix changes from different audio blocks.
+
+The scalar regression now passes over six publications, crosses cells 63/64,
+retains every earlier change and covers a subsequent restore at cell 32,767.
+Typed integer-table and real-XY edits without callbacks publish exact values.
+Nine host persistence tests pass, including zero allocations and concurrent save
+coherence; core revision/array/control, KSP script-state, same-block streaming,
+offline exact PCM, widget callback and root no-run checks pass. Cross-scope files:
+core behavior, script, ops, widget and control/script_state plus revision tests.
+There is no KSP engine-parameter service change.
+
+Bulk rewrites remain proportional to the number of changed values. This slice
+makes no claim that an arbitrary million-value restore meets an audio deadline.
+The sparse candidate's real-library onset results are pending.
