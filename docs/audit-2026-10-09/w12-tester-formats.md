@@ -4,8 +4,9 @@
 Atmoraffe `c1359117`. Local history also contains the earlier equivalent
 `79d495db` pick (`ee8b7454`); integrators should take `4fb8bd5f` plus this final
 framing/validation commit after `c1359117`, excluding duplicate envelope hunks.
-W6's separate compact-snapshot slice remains preserved on
-`v2/fix-tester-reader-versions`; this receipt does not claim its validation.
+W6's separate reader slice is superseded by W12's consolidated
+`f3519531` → `4b8a8293` → `bd485fe5` → `f84a8777`; see
+`w12-reader-consolidation.md` for its recorded validation.
 
 | Tester class | Shared cause and change | Failing-first evidence |
 | --- | --- | --- |
@@ -51,4 +52,22 @@ setup failures are retained separately; neither is counted as behavioral RED.
 The metadata probe privacy guard caught authored group names in existing IR
 locations before emission; the successful probe emits only numeric indices.
 
-NEXT: direct handoff to W6; W0 integrates the format slice after c1359117.
+## Tester-class handoff (2026-10-09)
+
+All four assigned reader classes have authored failing-first coverage in the
+already-pushed READY stack `c1359117` + `4fb8bd5f` → `7bc29b21`.
+This maps failure classes to shared parser repairs; it does not certify the
+exact tester files, which were absent from both installed-library roots.
+
+- (5) Evolve R2, Retro Machines Mk2, Maverick: `tester_parameter_array_v11_keeps_holes_and_opaque_slot_words` and `tester_parameter_array_v11_presence_only_is_bounded_and_inline`; `red.log` / `framing-red.log` → `final-reader-green.log`.
+- (6) Chris Hein Ensemble Strings, KFL2 Hurdy Gurdy: `tester_legacy_modulation_nullable_names_keep_target_alignment` and `tester_source_targets_do_not_consume_graphical_shaper_kind_as_boolean`; `red.log` reproduces name length 4294967295, `nested-and-bool-red.log` reproduces boolean byte 2 → both pass in `final-reader-green.log`.
+- (7) Ashlight, Pharlight, Straylight: `tester_zone_without_sample_stops_at_native_presence_flag`; `red.log` reproduces cursor Some(48), required 4 bytes → `final-reader-green.log`. The translator guard `tester_sampleless_zone_preserves_native_mapping_without_a_file_reference` also has `translate-red.log` → `final-translate-green.log`.
+- (10 in the assignment; TRIAGE table row 8) True Strike 2: `tester_group_nested_ahdsr_v10_keeps_revision_and_physical_slot`; `nested-and-bool-red.log` reproduces expected 17 / got 16 → `final-reader-green.log`, with envelope prerequisite `c1359117`.
+
+The later extras READY `bd485fe5` keeps invalid booleans rejected with field
+context; it is not a second fix for the graphical-shaper alignment case.
+No additional reader mechanism is uncovered by these recorded signatures.
+A tester retry of these exact programs on the integrated stack is still needed
+to establish that their native records use the repaired layouts.
+
+NEXT: W0 integrates the READY stack; exact tester-file retry remains open.
