@@ -1,5 +1,5 @@
 //! BUFFR's crash recovery and acknowledged support transport, adapted for KONTRA.
-//! Panic observation chains the host's hook; no signal or exception handler is installed.
+//! Plugin panic observation chains the host's hook; standalone capture is explicitly installed.
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
