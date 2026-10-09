@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -1080,13 +1080,11 @@ mod tests {
         assert!(started.elapsed() >= Duration::from_millis(50));
 
         release.join().expect("release blocked writer");
-        assert!(
-            recorder
-                .worker
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner())
-                .is_none()
-        );
+        assert!(recorder
+            .worker
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .is_none());
         drop(recorder);
         let _ = fs::remove_file(path);
     }

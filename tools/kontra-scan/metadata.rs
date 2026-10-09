@@ -20,7 +20,9 @@ pub fn sigil(bytes: &[u8]) -> &'static str {
 }
 // Bounded framing check: params() deliberately suppresses malformed saved tables.
 fn table(data: &[u8], version: u16) -> (&'static str, BTreeMap<String, usize>) {
-    if version!=0x50 {return ("unknown",BTreeMap::new())}
+    if version != 0x50 {
+        return ("unknown", BTreeMap::new());
+    }
     fn word(d: &mut &[u8]) -> Option<usize> {
         let (a, b) = d.split_at_checked(4)?;
         *d = b;
@@ -70,29 +72,49 @@ fn table(data: &[u8], version: u16) -> (&'static str, BTreeMap<String, usize>) {
         tags,
     )
 }
-pub fn inspect(chunks: &[Chunk]) -> Value { inspect_with(chunks,table) }
-pub fn inspect_with(chunks: &[Chunk], validate: fn(&[u8],u16)->(&'static str,BTreeMap<String,usize>)) -> Value {
+pub fn inspect(chunks: &[Chunk]) -> Value {
+    inspect_with(chunks, table)
+}
+pub fn inspect_with(
+    chunks: &[Chunk],
+    validate: fn(&[u8], u16) -> (&'static str, BTreeMap<String, usize>),
+) -> Value {
     let mut out = Vec::new();
     let mut next = 0;
     for c in chunks {
-        walk(c, "file", 0, &mut next, &mut out,validate);
+        walk(c, "file", 0, &mut next, &mut out, validate);
     }
     json!({"slots":out,"symbol_whitelist_count":include_str!("ui-symbols.txt").lines().count(),"symbol_whitelist_hash":blake3::hash(include_str!("ui-symbols.txt").as_bytes()).to_hex().to_string()})
 }
 
 // Saved-table integrity is independent of successfully decoded source parameters.
 fn source_category(bypassed: bool, empty: bool, linked: bool) -> &'static str {
-    if bypassed {"bypassed"} else if !empty {"inline_nonempty"} else if linked {"linked_only"} else {"empty"}
+    if bypassed {
+        "bypassed"
+    } else if !empty {
+        "inline_nonempty"
+    } else if linked {
+        "linked_only"
+    } else {
+        "empty"
+    }
 }
 
-fn children(chunks: &[Chunk], owner: &str, program: u32, next: &mut u32, out: &mut Vec<Value>, validate: fn(&[u8],u16)->(&'static str,BTreeMap<String,usize>)) {
+fn children(
+    chunks: &[Chunk],
+    owner: &str,
+    program: u32,
+    next: &mut u32,
+    out: &mut Vec<Value>,
+    validate: fn(&[u8], u16) -> (&'static str, BTreeMap<String, usize>),
+) {
     let mut slot = 0;
     for c in chunks {
         if c.id == 6 {
             let raw = BParScript::try_from(c);
             let (integrity, raw_tags) = raw
                 .as_ref()
-                .map(|r| validate(&r.0.public_data,r.0.version))
+                .map(|r| validate(&r.0.public_data, r.0.version))
                 .unwrap_or(("unknown", BTreeMap::new()));
             match raw.and_then(|s|s.params()) {
                 Ok(s) => {
@@ -109,12 +131,19 @@ fn children(chunks: &[Chunk], owner: &str, program: u32, next: &mut u32, out: &m
             }
             slot += 1;
         } else {
-            walk(c, owner, program, next, out,validate);
+            walk(c, owner, program, next, out, validate);
         }
     }
 }
 
-fn walk(c: &Chunk, owner: &str, program: u32, next: &mut u32, out: &mut Vec<Value>, validate: fn(&[u8],u16)->(&'static str,BTreeMap<String,usize>)) {
+fn walk(
+    c: &Chunk,
+    owner: &str,
+    program: u32,
+    next: &mut u32,
+    out: &mut Vec<Value>,
+    validate: fn(&[u8], u16) -> (&'static str, BTreeMap<String, usize>),
+) {
     match c.id {
         0x28 | 0x29 => {
             if let Ok(o) = StructuredObject::try_from(c) {
@@ -132,26 +161,33 @@ fn walk(c: &Chunk, owner: &str, program: u32, next: &mut u32, out: &mut Vec<Valu
                 } else {
                     ("bank-container", program)
                 };
-                children(&o.children, owner, program, next, out,validate);
+                children(&o.children, owner, program, next, out, validate);
             }
         }
         3 => {
             if let Ok(bank) = Bank::try_from(c) {
-                children(&bank.0.children, "bank-global", program, next, out,validate);
+                children(
+                    &bank.0.children,
+                    "bank-global",
+                    program,
+                    next,
+                    out,
+                    validate,
+                );
                 if let Ok(list) = bank.slot_list() {
                     for (_, slot) in list.slots {
                         if let Ok(list) = slot.program_list() {
                             for p in list.programs {
                                 let n = *next;
                                 *next += 1;
-                                children(&p.0.children, "embedded-program", n, next, out,validate);
+                                children(&p.0.children, "embedded-program", n, next, out, validate);
                             }
                         }
                     }
                 }
             }
         }
-        6 => children(std::slice::from_ref(c), owner, program, next, out,validate),
+        6 => children(std::slice::from_ref(c), owner, program, next, out, validate),
         _ => (),
     }
 }
@@ -160,29 +196,32 @@ fn walk(c: &Chunk, owner: &str, program: u32, next: &mut u32, out: &mut Vec<Valu
 mod tests {
     #[test]
     fn scanner_counts_fixed_sigils_and_saved_framing() {
-        assert_eq!(super::source_category(false,false,true), "inline_nonempty");
-        assert_eq!(super::source_category(true,false,true), "bypassed");
-        assert_eq!(super::source_category(false,true,true), "linked_only");
-        assert_eq!(super::source_category(false,true,false), "empty");
+        assert_eq!(
+            super::source_category(false, false, true),
+            "inline_nonempty"
+        );
+        assert_eq!(super::source_category(true, false, true), "bypassed");
+        assert_eq!(super::source_category(false, true, true), "linked_only");
+        assert_eq!(super::source_category(false, true, false), "empty");
         let mut d = Vec::new();
         d.extend(u32::MAX.to_le_bytes());
         d.extend([0; 3]);
         d.extend(0u32.to_le_bytes());
         d.extend(u32::MAX.to_le_bytes());
         d.extend(u32::MAX.to_le_bytes());
-        assert_eq!(super::table(&d,0x50).0, "absent");
-        assert_eq!(super::table(&d,0x51).0, "unknown");
+        assert_eq!(super::table(&d, 0x50).0, "absent");
+        assert_eq!(super::table(&d, 0x51).0, "unknown");
         d.extend(3u32.to_le_bytes());
         for e in [b"!private payload".as_slice(), b"$private 1", b" private"] {
             d.extend((e.len() as u32).to_le_bytes());
             d.extend(e);
         }
-        let (integrity, tags) = super::table(&d,0x50);
+        let (integrity, tags) = super::table(&d, 0x50);
         assert_eq!(integrity, "decoded");
         assert_eq!(tags.get("!"), Some(&1));
         assert_eq!(tags.get("other"), Some(&1));
         assert!(!format!("{tags:?}").contains("private"));
         d.pop();
-        assert_eq!(super::table(&d,0x50).0, "malformed");
+        assert_eq!(super::table(&d, 0x50).0, "malformed");
     }
 }

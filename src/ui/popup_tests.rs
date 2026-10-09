@@ -294,8 +294,13 @@ fn authored_dropdown_scrolls_inside_its_popup_boundary() {
         {
             layers.push(popup);
         }
-        ui.frame(stack(layers).size(300., 200.).id("dropdown-ir-view"), None, input, 1. / 60.)
-            .unwrap();
+        ui.frame(
+            stack(layers).size(300., 200.).id("dropdown-ir-view"),
+            None,
+            input,
+            1. / 60.,
+        )
+        .unwrap();
     };
     for _ in 0..3 {
         tick(&mut ui, &mut values, &mut state, Input::default());

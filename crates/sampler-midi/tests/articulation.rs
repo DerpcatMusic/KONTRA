@@ -334,15 +334,46 @@ fn a_remap_while_a_note_is_held_keeps_its_articulation_and_strands_no_key() {
 fn keyswitch_input_remap_preserves_release_ownership_per_channel() {
     let mut rig = Rig::new(runtime(Driver::Keys, SwitchKeys::Keep, Vec::new(), true));
     let mut table = rig.rt.switching().clone();
-    table.set_key_inputs(vec![(49, Switch::Articulation(2))], 1 << 26).unwrap();
-    rig.rt.set_switching_table(table, &[Keyswitch { key: 24, articulation: 0 }, Keyswitch { key: 25, articulation: 1 }, Keyswitch { key: 26, articulation: 2 }]).unwrap();
+    table
+        .set_key_inputs(vec![(49, Switch::Articulation(2))], 1 << 26)
+        .unwrap();
+    rig.rt
+        .set_switching_table(
+            table,
+            &[
+                Keyswitch {
+                    key: 24,
+                    articulation: 0,
+                },
+                Keyswitch {
+                    key: 25,
+                    articulation: 1,
+                },
+                Keyswitch {
+                    key: 26,
+                    articulation: 2,
+                },
+            ],
+        )
+        .unwrap();
     assert!(rig.send(0x2090_3164), "remapped key 49 is a silent switch");
     rig.rt.render(&mut [[0.; 2]; 1]).unwrap();
-    assert_eq!(rig.rt.articulation(rig.rt.performance(0).unwrap()).unwrap(), 2);
-    assert!(rig.send(0x2091_3164), "another channel can hold the same switch");
+    assert_eq!(
+        rig.rt.articulation(rig.rt.performance(0).unwrap()).unwrap(),
+        2
+    );
+    assert!(
+        rig.send(0x2091_3164),
+        "another channel can hold the same switch"
+    );
     // Remove mappings while both keys are held. Their releases must still be consumed.
-    rig.rt.set_switching_table(Switching::default(), &[]).unwrap();
+    rig.rt
+        .set_switching_table(Switching::default(), &[])
+        .unwrap();
     assert!(rig.send(0x2080_3100));
     assert!(rig.send(0x2081_3100));
-    assert!(!rig.send(0x2090_3164), "the same key can play normally after release");
+    assert!(
+        !rig.send(0x2090_3164),
+        "the same key can play normally after release"
+    );
 }

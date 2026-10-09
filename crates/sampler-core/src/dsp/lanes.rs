@@ -78,18 +78,32 @@ pub(crate) fn process(
                         filters,
                     );
                 }
-                for (i, (x, d)) in block[..len].iter_mut().zip(&dry_block).enumerate() {
-                    let t = at + i as u64;
-                    let b = bypass.value(t);
-                    let gains = super::kernels::mix_gains(dry.value(t), wet.value(t), b);
-                    for (v, d) in x.iter_mut().zip(d) {
-                        *v = super::kernels::mix(*d, *v, gains, off);
+                let held = dry
+                    .held(at, len)
+                    .zip(wet.held(at, len))
+                    .zip(bypass.held(at, len));
+                if let Some(((dry, wet), bypass)) = held {
+                    let gains = super::kernels::mix_gains(dry, wet, bypass);
+                    for (x, d) in block[..len].iter_mut().zip(&dry_block) {
+                        for (v, d) in x.iter_mut().zip(d) {
+                            *v = super::kernels::mix(*d, *v, gains, off);
+                        }
+                    }
+                } else {
+                    for (i, (x, d)) in block[..len].iter_mut().zip(&dry_block).enumerate() {
+                        let t = at + i as u64;
+                        let b = bypass.value(t);
+                        let gains = super::kernels::mix_gains(dry.value(t), wet.value(t), b);
+                        for (v, d) in x.iter_mut().zip(d) {
+                            *v = super::kernels::mix(*d, *v, gains, off);
+                        }
                     }
                 }
             }
             PreparedProcessor::Gain(gain) => {
                 for x in &mut block[..len] {
-                    x.iter_mut().for_each(|v| *v = super::kernels::gain(*v, *gain));
+                    x.iter_mut()
+                        .for_each(|v| *v = super::kernels::gain(*v, *gain));
                 }
             }
             PreparedProcessor::StereoMatrix(m) => {
@@ -110,8 +124,12 @@ pub(crate) fn process(
                 for (i, x) in block[..len].iter_mut().enumerate() {
                     let target = gain.value(parameters, at + i as u64, None) as f32;
                     for v in 0..batch.count {
-                        if i >= batch.ends[2 * v] { continue; }
-                        if !initialized[v] { (current[v], initialized[v]) = (target, true); }
+                        if i >= batch.ends[2 * v] {
+                            continue;
+                        }
+                        if !initialized[v] {
+                            (current[v], initialized[v]) = (target, true);
+                        }
                         let (m, next) = super::kernels::gainer(current[v], target, *dry, *k as f32);
                         x[2 * v] = super::kernels::gain(x[2 * v], m);
                         x[2 * v + 1] = super::kernels::gain(x[2 * v + 1], m);
@@ -139,19 +157,30 @@ pub(crate) fn process(
                     let [target_width, target_pan] = stereo.targets(parameters, at + i as u64);
                     for v in 0..batch.count {
                         let end = batch.ends[2 * v];
-                        if i >= end { continue; }
+                        if i >= end {
+                            continue;
+                        }
                         if !initialized[v] {
                             (width[v], pan[v], initialized[v]) = (target_width, target_pan, true);
                         }
-                        let (l, r) = super::stereo::matrix(x[2 * v] as f32, x[2 * v + 1] as f32, width[v]);
+                        let (l, r) =
+                            super::stereo::matrix(x[2 * v] as f32, x[2 * v + 1] as f32, width[v]);
                         [x[2 * v], x[2 * v + 1]] = super::stereo::balance(l, r, pan[v]);
                         [width[v], pan[v], delta[v]] = super::stereo::advance(
-                            [width[v], pan[v], delta[v]], [target_width, target_pan], i, end);
+                            [width[v], pan[v], delta[v]],
+                            [target_width, target_pan],
+                            i,
+                            end,
+                        );
                     }
                 }
                 for v in 0..batch.count {
                     let state = &mut cells[v].as_mut().expect("batch voice")[cell];
-                    (state.aux[0], state.aux[1], state.aux[2]) = (f64::from(width[v]), f64::from(pan[v]), if initialized[v] { 1.0 } else { 0.0 });
+                    (state.aux[0], state.aux[1], state.aux[2]) = (
+                        f64::from(width[v]),
+                        f64::from(pan[v]),
+                        if initialized[v] { 1.0 } else { 0.0 },
+                    );
                 }
             }
             PreparedProcessor::Rectify(mode) => {
@@ -163,7 +192,8 @@ pub(crate) fn process(
                 let ramp = parameters[*lane];
                 for (i, x) in block[..len].iter_mut().enumerate() {
                     let gain = ramp.value(at + i as u64);
-                    x.iter_mut().for_each(|v| *v = super::kernels::gain(*v, gain));
+                    x.iter_mut()
+                        .for_each(|v| *v = super::kernels::gain(*v, gain));
                 }
             }
             PreparedProcessor::Biquad(filter) => {
@@ -186,14 +216,22 @@ pub(crate) fn process(
                 }
             }
             PreparedProcessor::PeakingEq(eq) => {
-                if eq.is_flat(parameters, at, len) { continue; }
+                if eq.is_flat(parameters, at, len) {
+                    continue;
+                }
                 for v in 0..batch.count {
                     let end = batch.ends[2 * v];
                     let mut planar = [[0.; BLOCK]; 2];
                     for (i, x) in block[..end].iter().enumerate() {
                         (planar[0][i], planar[1][i]) = (x[2 * v], x[2 * v + 1]);
                     }
-                    eq.process(&mut cells[v].as_mut().expect("batch voice")[cell], parameters, &mut planar, end, at);
+                    eq.process(
+                        &mut cells[v].as_mut().expect("batch voice")[cell],
+                        parameters,
+                        &mut planar,
+                        end,
+                        at,
+                    );
                     for (i, x) in block[..end].iter_mut().enumerate() {
                         (x[2 * v], x[2 * v + 1]) = (planar[0][i], planar[1][i]);
                     }
@@ -373,8 +411,8 @@ fn recurrence<const MASK: bool>(
     for (i, x) in block[..batch.len].iter_mut().enumerate() {
         let [a1, a2, a3, km] = coefficients(i);
         for k in 0..LANES {
-            let (out, next) = super::svf::sample(x[k], [s0[k], s1[k]],
-                [a1[k], a2[k], a3[k], km[k]], [m0, m2]);
+            let (out, next) =
+                super::svf::sample(x[k], [s0[k], s1[k]], [a1[k], a2[k], a3[k], km[k]], [m0, m2]);
             if !MASK || i < batch.ends[k] {
                 (s0[k], s1[k]) = (next[0], next[1]);
             }
@@ -386,8 +424,8 @@ fn recurrence<const MASK: bool>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::{Biquad, FilterKind};
+    use super::*;
 
     #[test]
     fn eq_lane_pcm_and_histories_match_scalar_across_flat_and_masked_blocks() {
@@ -395,36 +433,76 @@ mod tests {
             for hz in [20., 1000., f64::from(rate) * 0.49] {
                 for width in [0.3, 3.] {
                     for len in [0usize, 1, 3, 17, BLOCK] {
-                        let initial: Vec<_> = (0..VOICES).map(|v| {
-                            let mut state = ProcessorState::default();
-                            state.z = [[v as f64 * 0.003, -0.02], [0.01, v as f64 * -0.004]];
-                            state
-                        }).collect();
+                        let initial: Vec<_> = (0..VOICES)
+                            .map(|v| {
+                                let mut state = ProcessorState::default();
+                                state.z = [[v as f64 * 0.003, -0.02], [0.01, v as f64 * -0.004]];
+                                state
+                            })
+                            .collect();
                         let mut expected_state = initial.clone();
                         let slab = sampler_pool::Slab::new(initial.into_boxed_slice(), 1);
                         let mut cells: Cells<'_> = std::array::from_fn(|v| Some(slab.claim(v)));
-                        let batch = Batch { count: VOICES, expressions: [None; VOICES],
-                            ends: std::array::from_fn(|k| len.saturating_sub(k / 2)), len };
+                        let batch = Batch {
+                            count: VOICES,
+                            expressions: [None; VOICES],
+                            ends: std::array::from_fn(|k| len.saturating_sub(k / 2)),
+                            len,
+                        };
                         let mut bank = FilterBank::new(&[], 0).unwrap();
                         for gain in [12., 0., -12.] {
-                            let eq = super::super::PeakingEq { frequency: super::super::Parameter::Constant(((hz / 20f64).log10() / 3.).clamp(0., 1.)), bandwidth: super::super::Parameter::Constant(((width - 0.3f64) / 2.7).clamp(0., 1.)),
-                                gain_db: super::super::Parameter::Constant(gain) }.compile(rate, &mut Vec::new()).unwrap();
-                            let mut block: LaneBlock = std::array::from_fn(|i| std::array::from_fn(|k|
-                                ((i + k) as f64 * 0.137).sin() * 0.2));
+                            let eq = super::super::PeakingEq {
+                                frequency: super::super::Parameter::Constant(
+                                    ((hz / 20f64).log10() / 3.).clamp(0., 1.),
+                                ),
+                                bandwidth: super::super::Parameter::Constant(
+                                    ((width - 0.3f64) / 2.7).clamp(0., 1.),
+                                ),
+                                gain_db: super::super::Parameter::Constant(gain),
+                            }
+                            .compile(rate, &mut Vec::new())
+                            .unwrap();
+                            let mut block: LaneBlock = std::array::from_fn(|i| {
+                                std::array::from_fn(|k| ((i + k) as f64 * 0.137).sin() * 0.2)
+                            });
                             let mut expected = block;
                             for v in 0..VOICES {
                                 let end = batch.ends[2 * v];
                                 let mut planar = [[0.; BLOCK]; 2];
-                                for i in 0..end { (planar[0][i], planar[1][i]) = (expected[i][2 * v], expected[i][2 * v + 1]); }
+                                for i in 0..end {
+                                    (planar[0][i], planar[1][i]) =
+                                        (expected[i][2 * v], expected[i][2 * v + 1]);
+                                }
                                 eq.process(&mut expected_state[v], &[], &mut planar, end, 0);
-                                for i in 0..end { (expected[i][2 * v], expected[i][2 * v + 1]) = (planar[0][i], planar[1][i]); }
+                                for i in 0..end {
+                                    (expected[i][2 * v], expected[i][2 * v + 1]) =
+                                        (planar[0][i], planar[1][i]);
+                                }
                             }
-                            process(&[PreparedProcessor::PeakingEq(eq)], 0, &mut cells, &batch, &mut block, &[], 0, &mut bank);
-                            assert_eq!(block.map(|f| f.map(f64::to_bits)), expected.map(|f| f.map(f64::to_bits)));
+                            process(
+                                &[PreparedProcessor::PeakingEq(eq)],
+                                0,
+                                &mut cells,
+                                &batch,
+                                &mut block,
+                                &[],
+                                0,
+                                &mut bank,
+                            );
+                            assert_eq!(
+                                block.map(|f| f.map(f64::to_bits)),
+                                expected.map(|f| f.map(f64::to_bits))
+                            );
                             for v in 0..VOICES {
                                 let actual = &cells[v].as_ref().unwrap()[0];
-                                assert_eq!(actual.z.map(|c| c.map(f64::to_bits)), expected_state[v].z.map(|c| c.map(f64::to_bits)));
-                                assert_eq!(actual.aux.map(f64::to_bits), expected_state[v].aux.map(f64::to_bits));
+                                assert_eq!(
+                                    actual.z.map(|c| c.map(f64::to_bits)),
+                                    expected_state[v].z.map(|c| c.map(f64::to_bits))
+                                );
+                                assert_eq!(
+                                    actual.aux.map(f64::to_bits),
+                                    expected_state[v].aux.map(f64::to_bits)
+                                );
                             }
                         }
                     }
@@ -444,11 +522,17 @@ mod tests {
     fn biquad_scalar_and_lanes_match_frozen_pcm_and_state_bits() {
         for rate in [44100, 48000, 96000] {
             for kind in [
-                FilterKind::LowPass, FilterKind::HighPass, FilterKind::BandPass,
-                FilterKind::Notch, FilterKind::AllPass,
-                FilterKind::Peak { gain_db: -12. }, FilterKind::Peak { gain_db: 12. },
-                FilterKind::LowShelf { gain_db: -12. }, FilterKind::LowShelf { gain_db: 12. },
-                FilterKind::HighShelf { gain_db: -12. }, FilterKind::HighShelf { gain_db: 12. },
+                FilterKind::LowPass,
+                FilterKind::HighPass,
+                FilterKind::BandPass,
+                FilterKind::Notch,
+                FilterKind::AllPass,
+                FilterKind::Peak { gain_db: -12. },
+                FilterKind::Peak { gain_db: 12. },
+                FilterKind::LowShelf { gain_db: -12. },
+                FilterKind::LowShelf { gain_db: 12. },
+                FilterKind::HighShelf { gain_db: -12. },
+                FilterKind::HighShelf { gain_db: 12. },
             ] {
                 for hz in [40., 1000., f64::from(rate) * 0.49] {
                     for q in [0.2, 0.707, 4.] {
@@ -458,7 +542,13 @@ mod tests {
                                 let batch = Batch {
                                     count: VOICES,
                                     expressions: [None; VOICES],
-                                    ends: std::array::from_fn(|k| if masked { len.saturating_sub(k / 2) } else { len }),
+                                    ends: std::array::from_fn(|k| {
+                                        if masked {
+                                            len.saturating_sub(k / 2)
+                                        } else {
+                                            len
+                                        }
+                                    }),
                                     len,
                                 };
                                 let mut z = [[0.; LANES]; 2];
@@ -466,13 +556,25 @@ mod tests {
                                 let mut scalar = [ProcessorState::default()];
                                 let mut bank = FilterBank::new(&[], 0).unwrap();
                                 for block_index in 0..3 {
-                                    let mut block: LaneBlock = std::array::from_fn(|i| std::array::from_fn(|k| {
-                                        match block_index {
-                                            0 => if i == 0 { 1. - k as f64 * 0.1 } else { 0. },
+                                    let mut block: LaneBlock = std::array::from_fn(|i| {
+                                        std::array::from_fn(|k| match block_index {
+                                            0 => {
+                                                if i == 0 {
+                                                    1. - k as f64 * 0.1
+                                                } else {
+                                                    0.
+                                                }
+                                            }
                                             1 => ((i + k) as f64 * 0.137).sin() * 0.2,
-                                            _ => if i % 2 == 0 { -0.0 } else { f64::from_bits(1) },
-                                        }
-                                    }));
+                                            _ => {
+                                                if i % 2 == 0 {
+                                                    -0.0
+                                                } else {
+                                                    f64::from_bits(1)
+                                                }
+                                            }
+                                        })
+                                    });
                                     let mut expected = block;
                                     let mut planar = [[0.; BLOCK]; 2];
                                     for i in 0..BLOCK {
@@ -480,10 +582,15 @@ mod tests {
                                     }
                                     for (i, frame) in expected[..len].iter_mut().enumerate() {
                                         for k in 0..LANES {
-                                            let (y, next) = reference(filter, frame[k], [expected_z[0][k], expected_z[1][k]]);
+                                            let (y, next) = reference(
+                                                filter,
+                                                frame[k],
+                                                [expected_z[0][k], expected_z[1][k]],
+                                            );
                                             frame[k] = y;
                                             if i < batch.ends[k] {
-                                                (expected_z[0][k], expected_z[1][k]) = (next[0], next[1]);
+                                                (expected_z[0][k], expected_z[1][k]) =
+                                                    (next[0], next[1]);
                                             }
                                         }
                                     }
@@ -492,25 +599,46 @@ mod tests {
                                     } else {
                                         biquad::<false>(&mut z, &mut block, &batch, &filter);
                                         super::super::process::<false>(
-                                            &[PreparedProcessor::Biquad(filter)], &mut scalar,
-                                            &mut planar, len, &[], 0, &mut [],
+                                            &[PreparedProcessor::Biquad(filter)],
+                                            &mut scalar,
+                                            &mut planar,
+                                            len,
+                                            &[],
+                                            0,
+                                            &mut [],
                                             &mut super::super::svf::FilterContext {
-                                                bank: &mut bank, expression: None,
-                                                reverbs: &mut [], convolutions: &mut [],
-                                            }, None,
+                                                bank: &mut bank,
+                                                expression: None,
+                                                reverbs: &mut [],
+                                                convolutions: &mut [],
+                                            },
+                                            None,
                                         );
                                         for i in 0..len {
                                             for c in 0..2 {
-                                                assert_eq!(planar[c][i].to_bits(), expected[i][c].to_bits());
+                                                assert_eq!(
+                                                    planar[c][i].to_bits(),
+                                                    expected[i][c].to_bits()
+                                                );
                                             }
                                         }
                                         for c in 0..2 {
-                                            assert_eq!(scalar[0].z[c].map(f64::to_bits),
-                                                [expected_z[0][c], expected_z[1][c]].map(flush).map(f64::to_bits));
+                                            assert_eq!(
+                                                scalar[0].z[c].map(f64::to_bits),
+                                                [expected_z[0][c], expected_z[1][c]]
+                                                    .map(flush)
+                                                    .map(f64::to_bits)
+                                            );
                                         }
                                     }
-                                    assert_eq!(block.map(|frame| frame.map(f64::to_bits)), expected.map(|frame| frame.map(f64::to_bits)));
-                                    assert_eq!(z.map(|row| row.map(f64::to_bits)), expected_z.map(|row| row.map(f64::to_bits)));
+                                    assert_eq!(
+                                        block.map(|frame| frame.map(f64::to_bits)),
+                                        expected.map(|frame| frame.map(f64::to_bits))
+                                    );
+                                    assert_eq!(
+                                        z.map(|row| row.map(f64::to_bits)),
+                                        expected_z.map(|row| row.map(f64::to_bits))
+                                    );
                                     // Both public processing paths flush retained histories per block.
                                     z = z.map(|row| row.map(flush));
                                     expected_z = expected_z.map(|row| row.map(flush));

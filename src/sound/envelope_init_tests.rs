@@ -106,9 +106,14 @@ fn dolce_authored_envelope_init_reaches_production_pcm() {
                     == 6
             }));
         }
+        println!(
+            "DOLCE_PRODUCTION_PCM case={case} peak={peak:.8} voices={voices} underruns=0 faults={} error={}",
+            core.problems(0).fault_program,
+            core.problems(0).fault_error
+        );
         assert!(
             peak > 1e-5,
-            "case {case}: init must retain a nonzero authored envelope without manual restoration"
+            "case {case}: production initialization and note admission must render authored sound"
         );
         assert!(
             voices > 0,
@@ -128,7 +133,6 @@ fn dolce_authored_envelope_init_reaches_production_pcm() {
                 .stream_underruns,
             0
         );
-        println!("DOLCE_PRODUCTION_PCM case={case} peak={peak:.8} voices={voices} underruns=0");
         tested += 1;
     }
     println!("DOLCE_PRODUCTION_PCM tested={tested}");

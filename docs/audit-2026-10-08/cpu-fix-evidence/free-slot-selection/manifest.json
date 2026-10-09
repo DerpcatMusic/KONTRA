@@ -1,0 +1,15 @@
+{
+  "status": "HOLD: library CPU gate fails",
+  "parent": "da95f973",
+  "binaries": {
+    "integrated": "9444810001a446a889c07e78558c1b42e466391428f62e759f32522ebe05790e",
+    "admission-free-slots": "30f9aa2ab224c50c9fecac731f6b89f985c6118ffcadae4a31fdff92e036f5a5",
+    "page-clock-sparse-before": "68ff04211db83ddd513cf0d4b7bccd379e01f0d272331c196db8e768bb215584",
+    "page-free-slots": "5f1680169cf3799dd77e62da6f647b6f682fb71b9f7b39d2786262f7b0f76a87"
+  },
+  "source_sha256": {
+    "crates/sampler-core/src/stream.rs": "31880402fbb94d7d866bb06acb09e61ca242e222831550eb94ca481b4a19501b",
+    "crates/sampler-core/examples/page_admission.rs": "e111639f235ec19b30aa50ebca502ef4a640e00c4a48fded8bc52367f1099b44",
+    "crates/sampler-core/tests/stream_policy.rs": "59ddb182e4b6ca459c51538ab411acef6fc005e382fd9f92600f9adf2b1c28a0"
+  }
+}

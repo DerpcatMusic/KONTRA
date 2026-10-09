@@ -34,7 +34,7 @@ def category(fix):
     return 'Fixed'
 
 
-def render(repo, revision, version, changes, issues, previous, checksums=()):
+def render(repo, revision, version, changes, issues, previous, checksums=(), reviewed=None):
     groups = {name:[] for name in ('New','Fixed','Improved')}
     for fix in changes:
         note = plain(fix.get('release_note',fix['summary']))
@@ -43,9 +43,12 @@ def render(repo, revision, version, changes, issues, previous, checksums=()):
     lines = [f'KONTRA **{version}**', '',
              f'This nightly includes {len(changes)} changes since the previous published release.' if previous else 'This is the first published snapshot of the changes below.',
              'It is an experimental build; check the known issues before updating.', '']
-    for name, notes in groups.items():
-        if notes: lines += [f'### {name}', '', *('- '+note for note in notes), '']
-    if issues:lines += ['### Known issues','',*('- '+plain(issue) for issue in issues[:5]),'']
+    if reviewed is not None:
+        lines = [f'KONTRA **{version}**', '', reviewed, '']
+    else:
+        for name, notes in groups.items():
+            if notes: lines += [f'### {name}', '', *('- '+note for note in notes), '']
+        if issues:lines += ['### Known issues','',*('- '+plain(issue) for issue in issues[:5]),'']
     lines += ['### Install','',f'[Installation and system requirements](https://github.com/{repo}/blob/v{version}/README.md).',
               'Linux and Windows: extract the ZIP, read README.txt, then run the included install script. Use the uninstall script to remove the installed files.',
               'macOS: run the universal .pkg installer.', '', '<details>', '<summary>Source range and SHA-256 checksums</summary>', '']
@@ -86,4 +89,9 @@ def generate(api, repo, revision, version, previous, changelog=None, checksums=(
         assert changes,'Missing ledger and reviewed changelog changes'
     issues=blocks(current,'Known issues')
     if not issues:issues=blocks(current,'Known limits')
-    return render(repo,revision,version,changes,issues,previous,checksums)
+    # A reviewed version section takes precedence only for that release base.
+    base = version.split('-', 1)[0]
+    reviewed = next((part.partition('\n')[2].strip()
+                     for part in re.split(r'(?m)^## ', current)[1:]
+                     if part.partition('\n')[0].strip() == base), None)
+    return render(repo,revision,version,changes,issues,previous,checksums,reviewed)
