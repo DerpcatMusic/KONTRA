@@ -2383,6 +2383,53 @@ pub(crate) mod tests {
     use super::*;
 
     #[test]
+    fn poisoned_editor_state_recovers_without_reset_or_frame_panics() {
+        let p = SamplerParams::new();
+        let poison = |f: &mut dyn FnMut()| {
+            assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).is_err());
+        };
+        poison(&mut || {
+            let mut view = p.shared.view.lock().unwrap();
+            view.status = "retained editor state".into();
+            panic!("synthetic original UI fault");
+        });
+        poison(&mut || {
+            let mut selection = p.selection.write().unwrap();
+            selection.parts = vec![Part { program: 77, ..Default::default() }];
+            panic!("synthetic selection fault");
+        });
+        poison(&mut || {
+            let _parts = p.shared.parts.lock().unwrap();
+            panic!("synthetic registry fault");
+        });
+        assert!(p.shared.view.is_poisoned());
+        for _ in 0..64 {
+            p.reload_ui_controls();
+            assert_eq!(p.shared.with_parts(|parts| parts.len()), RACK_SLOTS);
+        }
+        let report = p.diagnostic_report();
+        assert_eq!(report["rack"]["parts"][0]["program"], 77);
+        assert_eq!(p.shared.view.lock().unwrap().status, "retained editor state");
+        assert!(!p.shared.view.is_poisoned());
+        assert!(!p.selection.is_poisoned());
+        assert!(!p.shared.parts.is_poisoned());
+    }
+
+    #[test]
+    fn poisoned_nonblocking_controls_resume_publication() {
+        let part = PartShared::default();
+        let id = sampler_ui_ir::ControlId(1);
+        *part.controls.lock().unwrap() = vec![ControlCell::new(id, 0.25)].into();
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = part.controls.lock().unwrap();
+            panic!("synthetic control publication fault");
+        })).is_err());
+        assert_eq!(allocations(|| part.refresh_controls(|_| Some(0.75))), 0);
+        assert_eq!(part.control_values(), [(id, 0.75)]);
+        assert!(!part.controls.is_poisoned());
+    }
+
+    #[test]
     fn storage_failures_survive_the_plugin_report_without_heap_work() {
         let shared = PartShared::default();
         let expected = RuntimeProblems {
