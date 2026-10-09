@@ -82,6 +82,7 @@ fn main() {
     let (mut next, mut peak, mut voice_sum, mut voice_peak, mut misses) =
         (0, 0.0f32, 0usize, 0usize, 0usize);
     let (mut allocations, mut event_allocations) = (0u64, 0u64);
+    let mut steady_voice_blocks = 0usize;
     let (io0, rchar0) = (
         proc_value("/proc/self/io", "read_bytes:"),
         proc_value("/proc/self/io", "rchar:"),
@@ -122,6 +123,7 @@ fn main() {
         misses += usize::from(ns > block as u64 * 1_000_000_000 / 48000);
         all.push(ns);
         if (12000..48000).contains(&begin) && v > 0 {
+            steady_voice_blocks += v;
             steady.push(ns);
             per_voice.push(ns / v as u64)
         }
@@ -141,6 +143,7 @@ fn main() {
     info["idle"] = quantiles(idle);
     info["all"] = quantiles(all.clone());
     if !steady.is_empty() {
+        info["steady_voice_blocks"] = json!(steady_voice_blocks);
         info["steady"] = quantiles(steady);
         info["amortized_per_voice"] = quantiles(per_voice)
     }
