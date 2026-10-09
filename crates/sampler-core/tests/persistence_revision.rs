@@ -117,3 +117,41 @@ fn persistence_revision_tracks_fast_and_general_writes_but_not_reads_without_hea
         );
     });
 }
+
+#[test]
+fn registered_snapshot_tracks_only_captured_cells_in_fast_and_general_paths() {
+    let programs = vec![
+        vec![Instruction::SetLocal { local: 0, value: 42 }, Instruction::WriteScriptCell { cell: 1, local: 0 }],
+        vec![Instruction::SetLocal { local: 0, value: 42 }, Instruction::WriteScriptCell { cell: 70, local: 0 }],
+        vec![Instruction::SetLocal { local: 0, value: 0 }, Instruction::SetLocal { local: 1, value: 42 },
+             Instruction::WriteScriptArray { array: ScriptArray { offset: 0, len: 1 }, index: 0, local: 1 }],
+        vec![Instruction::ReadEventIds { array: ScriptArray { offset: 1, len: 1 } }],
+        vec![Instruction::ReadEventIds { array: ScriptArray { offset: 70, len: 1 } }],
+    ].into_iter().map(|code| Program::new(code).unwrap()
+        .with_script_instance(ScriptInstanceId(0)).with_wait_lifetime(WaitLifetime::Callback)).collect();
+    let prepared = Prepared::new(48000, vec![], vec![], 0).unwrap()
+        .with_script_instances(vec![vec![17; 72]]).unwrap().with_programs(programs, None).unwrap();
+    let limits = Limits::for_plan(&prepared, 128, 8);
+    let mut runtime = Runtime::new(prepared, limits).unwrap();
+    let plan = runtime.active_plan();
+    let watched = [0, 70].map(|index| ScriptStateEntry {
+        address: ScriptStateAddress::Cell { instance: ScriptInstanceId(0), index },
+        value: ScriptStateValue::Cell(0),
+    });
+    runtime.watch_script_state_values(plan, &watched).unwrap();
+    let before = runtime.script_state_revision(plan).unwrap();
+    assert_eq!(runtime.watch_script_state_values(plan, &[ScriptStateEntry {
+        address: ScriptStateAddress::Cell { instance: ScriptInstanceId(0), index: 72 },
+        value: ScriptStateValue::Cell(0),
+    }]), Err(Error::InvalidInput));
+    assert_eq!(runtime.script_state_revision(plan).unwrap(), before);
+    support::without_heap(|| {
+        for (program, changes) in [(0,false), (1,true), (1,false), (2,true), (2,false), (3,false), (4,true), (4,false)] {
+            let before = runtime.script_state_revision(plan).unwrap();
+            let id = runtime.start_plan_behavior(plan, program).unwrap();
+            assert_eq!(runtime.behavior_outcome(id), Ok(Some(Outcome::Finished)));
+            assert_eq!(runtime.script_state_revision(plan).unwrap() != before, changes);
+            runtime.flush_behaviors(|_, _, _| true);
+        }
+    });
+}
