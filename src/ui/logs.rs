@@ -1142,6 +1142,34 @@ mod tests {
     }
 
     #[test]
+    fn report_entries_expand_inline_and_close_without_a_permanent_detail_pane() {
+        let params = Arc::new(SamplerParams::new());
+        let mut ui = super::super::theme::ui();
+        let mut state = State::default();
+        state.snapshot = Some(Arc::new(DiagnosticSnapshot {
+            revision: 1,
+            events: vec![serde_json::from_value(json!({
+                "schema_version":1,"sequence":1,"timestamp_ms":1759392000000u64,
+                "monotonic_ms":0,"session_id":"report-ui-fixture", "level":"error",
+                "module":"loader","event":"failed","reason":"Full error detail ".repeat(80),
+                "data":{"reason":"uncropped detail"}
+            })).unwrap()],
+            status: Default::default(), build: json!({"fixture":true}),
+        }));
+        for _ in 0..3 { tick(&mut ui, &mut state, &params, Input::default()); }
+        assert!(ui.scene().unwrap().surface("logs-details").is_none(), "closed entries leave the whole list usable");
+        press(&mut ui, &mut state, &params, "log-event-1");
+        let scene = ui.scene().unwrap();
+        let entry = scene.surface("log-event-1").unwrap().frame;
+        let detail = scene.surface("logs-details").unwrap().frame;
+        assert!(detail.y >= entry.y && detail.y + detail.size.height <= entry.y + entry.size.height + 0.5,
+            "details expand within their entry: {detail:?} in {entry:?}");
+        assert!(state.detail.as_ref().unwrap().1.contains(&"Full error detail ".repeat(80)));
+        press(&mut ui, &mut state, &params, "log-event-1-title");
+        assert!(ui.scene().unwrap().surface("logs-details").is_none(), "clicking again collapses the entry");
+    }
+
+    #[test]
     fn crash_receipts_remain_visible_with_default_filters_and_copy_only_public_issues() {
         let params = Arc::new(SamplerParams::new());
         let clipboard = Arc::new(Mutex::new(String::new()));
