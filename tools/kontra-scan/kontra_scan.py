@@ -140,16 +140,20 @@ def extra_columns(r):
     r['first_script_error']=next((x['first_error'] for x in ksp if x.get('first_error')), next((f.get('core_error') or f.get('category','runtime-fault') for p in programs for f in p.get('ksp_runtime_faults',[])),r.get('first_script_error','')))
     paths=sorted({p['load_path'] for p in programs if p.get('load_path')})
     r['load_path']=' + '.join(paths) or 'unknown'
-    errors=[x for x in renders if x.get('ok') is False]
+    incomplete=[x for x in renders+views if x.get('incomplete')]
+    errors=[x for x in renders if x.get('ok') is False and not x.get('incomplete')]
     # v1's retained full-editor render is itself the render record.
-    errors += [v for v in views if v.get('ok') is False]
+    errors += [v for v in views if v.get('ok') is False and not v.get('incomplete')]
     if any(x.get('budget_hit') for x in errors): r['ui']='budget-hit'
+    if incomplete:
+        r['incomplete']=True
+        if not errors and r.get('ui') not in {'error','budget-hit'}: r['ui']='incomplete'
     font_failures=count(views,'missing_fonts')
     if not errors and r.get('ui') in {'original-ok','missing-images','missing_font'} and isinstance(font_failures,(int,float)) and font_failures>0:
         r['ui']='missing_font'
-    r['paint_ok']='no' if errors else 'yes' if renders or any(v.get('ok') is True for v in views) else 'no-ui' if r.get('ui')=='no-ui' else 'unknown'
+    r['paint_ok']='no' if errors else 'unknown' if incomplete else 'yes' if renders or any(v.get('ok') is True for v in views) else 'no-ui' if r.get('ui')=='no-ui' else 'unknown'
     r['paint_error']=next((x.get('reason','paint error') for x in errors),'')
-    native_failures=[v for v in views if v.get('native_diagnostic') or (v.get('source_presentation')=='native-package' and v.get('font_declared') is None)]
+    native_failures=[v for v in views if v.get('native_diagnostic') or (v.get('source_presentation')=='native-package' and v.get('font_declared') is None and not v.get('incomplete') and not any(x.get('incomplete') for x in v.get('renders',[])))]
     if native_failures:
         r['ui']='budget-hit' if r.get('ui')=='budget-hit' or any('budget' in str(v.get('native_diagnostic','')).lower() for v in native_failures) else 'error'
         r['paint_ok']='no'
@@ -310,9 +314,17 @@ def probe(engine, item, work, timeout, shots):
             r = json.loads((work / 'progress.json').read_text())
         except (ValueError, OSError):
             r = {}
-        r.update(loads='no', plays_note='no')
-        r.setdefault('ui', 'error')
-        r['reason'] = ('timeout' if timed_out else f'worker exit {child.returncode}') + ' at ' + r.get('stage', 'start')
+        if not timed_out:
+            r.update(loads='no', plays_note='no')
+            r.setdefault('ui', 'error')
+            r['reason'] = f'worker exit {child.returncode} at ' + r.get('stage', 'start')
+    if timed_out:
+        r['stage'] = r.get('stage', 'worker-start')
+        r.update(incomplete=True, ui='incomplete')
+        for key in ['loads', 'plays_note']:
+            if r.get(key) != 'yes': r[key] = 'incomplete'
+        r['operational_timeout'] = {'stage': r['stage'], 'timeout_seconds': timeout}
+        r['reason'] = 'incomplete: operational timeout at ' + r['stage']
     if cache_stats is not None:
         files = [p for p in cache.rglob('*') if p.is_file()]
         cache_stats.update(after_files=len(files), after_bytes=sum(p.stat().st_size for p in files))
