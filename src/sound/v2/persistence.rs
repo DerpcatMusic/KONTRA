@@ -162,6 +162,30 @@ pub(super) struct Persistence {
     state: ScriptStateBuffer,
     pub(super) snapshot: Arc<Snapshot>,
 }
+
+fn schema(
+    runtime: &Runtime,
+    views: &[sampler_ksp::ScriptView],
+    state: &ScriptStateBuffer,
+) -> Result<String, CoreError> {
+    let mut hash = blake3::Hasher::new();
+    for view in views {
+        hash.update(format!("{:?}", view.model().persistent).as_bytes());
+    }
+    for entry in &state.values {
+        hash.update(format!("{:?}:{}", entry.address, Atom::new(entry.value, 0).kind).as_bytes());
+    }
+    for widget in runtime
+        .widget_definitions(runtime.active_plan())
+        .map_err(|error| CoreError::Invalid(format!("Script persistence: {error:?}")))?
+    {
+        hash.update(
+            format!("{:?}:{:?}:{:?}", widget.id, widget.instance, widget.storage).as_bytes(),
+        );
+    }
+    Ok(hash.finalize().to_hex().to_string())
+}
+
 impl Persistence {
     fn new(
         runtime: &mut Runtime,
@@ -171,9 +195,6 @@ impl Persistence {
         let core = |error| CoreError::Invalid(format!("Script persistence: {error:?}"));
         let plan = runtime.active_plan();
         let mut state = sampler_ksp::persistent_state_buffer(views).map_err(core)?;
-        for descriptor in runtime.parameter_registry(plan).map_err(core)?.descriptors() {
-            state.values.push(ScriptStateEntry { address: Address::Control(descriptor.control), value: Value::Control(ControlValue::Real(0.)) });
-        }
         // Widget values also survive recall when the author omitted make_persistent.
         for widget in runtime.widget_definitions(plan).map_err(core)? {
             let (offset, len, text) = match widget.storage {
@@ -218,30 +239,48 @@ impl Persistence {
         runtime
             .capture_script_state(plan, &mut state)
             .map_err(core)?;
-        let mut hash = blake3::Hasher::new();
-        for view in views {
-            hash.update(format!("{:?}", view.model().persistent).as_bytes());
+        // Admit the exact old roster so adding DSP owners cannot lose existing project state.
+        let previous_schema = schema(runtime, views, &state)?;
+        let previous_addresses: Vec<_> = state.values.iter().map(|entry| entry.address).collect();
+        for descriptor in runtime
+            .parameter_registry(plan)
+            .map_err(core)?
+            .descriptors()
+        {
+            state.values.push(ScriptStateEntry {
+                address: Address::Control(descriptor.control),
+                value: Value::Control(
+                    runtime
+                        .control_base_value(plan, descriptor.control)
+                        .map_err(core)?,
+                ),
+            });
         }
-        for entry in &state.values {
-            hash.update(
-                format!("{:?}:{}", entry.address, Atom::new(entry.value, 0).kind).as_bytes(),
-            );
-        }
-        for widget in runtime.widget_definitions(plan).map_err(core)? {
-            hash.update(
-                format!("{:?}:{:?}:{:?}", widget.id, widget.instance, widget.storage).as_bytes(),
-            );
-        }
-        let schema = hash.finalize().to_hex().to_string();
+        state.values.sort_by_key(|entry| entry.address);
+        state.values.dedup_by_key(|entry| entry.address);
+        let schema = if state.values.len() == previous_addresses.len() {
+            previous_schema.clone()
+        } else {
+            schema(runtime, views, &state)?
+        };
         if !saved.is_empty() {
             let saved: Saved = serde_json::from_str(saved)
                 .map_err(|_| CoreError::Invalid("Saved script state is malformed".into()))?;
-            if saved.schema != schema || saved.values.len() != state.values.len() {
+            let previous =
+                saved.schema == previous_schema && saved.values.len() == previous_addresses.len();
+            if !previous && (saved.schema != schema || saved.values.len() != state.values.len()) {
                 return Err(CoreError::Invalid(
                     "Saved script state schema changed".into(),
                 ));
             }
-            for (entry, value) in state.values.iter_mut().zip(saved.values) {
+            for (entry, value) in state
+                .values
+                .iter_mut()
+                .filter(|entry| {
+                    !previous || previous_addresses.binary_search(&entry.address).is_ok()
+                })
+                .zip(saved.values)
+            {
                 entry.value = match (entry.value, value) {
                     (Value::Control(ControlValue::Integer(_)), SavedValue::Integer(v)) => {
                         Value::Control(ControlValue::Integer(v))
@@ -287,7 +326,15 @@ impl Part {
         views: &[sampler_ksp::ScriptView],
         saved: &str,
     ) -> Result<(), CoreError> {
-        if views.is_empty() && self.runtime.parameter_registry(self.runtime.active_plan()).map_err(|error| CoreError::Invalid(format!("Script persistence: {error:?}")))?.descriptors().len() == 0 {
+        if views.is_empty()
+            && self
+                .runtime
+                .parameter_registry(self.runtime.active_plan())
+                .map_err(|error| CoreError::Invalid(format!("Script persistence: {error:?}")))?
+                .descriptors()
+                .len()
+                == 0
+        {
             return Ok(());
         }
         let persistence = Persistence::new(&mut self.runtime, views, saved)?;
@@ -329,24 +376,32 @@ mod tests {
             ).unwrap();
             let view = script.view();
             let owner = sampler_core::ControlId(900);
-            let mut plan = sampler_core::Prepared::new(48000, vec![], vec![], 0).unwrap()
+            let mut plan = sampler_core::Prepared::new(48000, vec![], vec![], 0)
+                .unwrap()
                 .with_controls(vec![ControlDefinition {
                     id: owner,
                     domain: ControlDomain::Real { min: 0., max: 1. },
                     default: ControlValue::Real(0.5),
-                }]).unwrap();
+                }])
+                .unwrap();
             if register_dsp {
                 let mut registry = sampler_core::ParameterRegistry::default();
-                registry.register(sampler_core::ParameterDescriptor {
-                    address: sampler_core::ParameterAddress { scope: sampler_core::ParameterScope::Plan, node: 9, parameter: 0 },
-                    control: owner,
-                    name: "fixture DSP owner".into(),
-                    unit: sampler_core::ParameterUnit::Normalized,
-                    range: [0., 1.],
-                    default: 0.5,
-                    law: sampler_core::ParameterLaw::Linear,
-                    display: Default::default(),
-                }).unwrap();
+                registry
+                    .register(sampler_core::ParameterDescriptor {
+                        address: sampler_core::ParameterAddress {
+                            scope: sampler_core::ParameterScope::Plan,
+                            node: 9,
+                            parameter: 0,
+                        },
+                        control: owner,
+                        name: "fixture DSP owner".into(),
+                        unit: sampler_core::ParameterUnit::Normalized,
+                        range: [0., 1.],
+                        default: 0.5,
+                        law: sampler_core::ParameterLaw::Linear,
+                        display: Default::default(),
+                    })
+                    .unwrap();
                 plan = plan.with_parameter_registry(registry).unwrap();
             }
             let plan = script.bind(plan).unwrap();
@@ -355,7 +410,8 @@ mod tests {
         };
         let (mut old, views, _) = make(false);
         let mut state = sampler_ksp::persistent_state_buffer(&views).unwrap();
-        old.capture_script_state(old.active_plan(), &mut state).unwrap();
+        old.capture_script_state(old.active_plan(), &mut state)
+            .unwrap();
         for entry in &mut state.values {
             entry.value = match entry.value {
                 Value::Cell(_) => Value::Cell(837),
@@ -363,22 +419,58 @@ mod tests {
                 value => value,
             };
         }
-        old.restore_script_state(old.active_plan(), None, &mut state).unwrap();
-        let saved = Persistence::new(&mut old, &views, "").unwrap().snapshot.save();
+        old.restore_script_state(old.active_plan(), None, &mut state)
+            .unwrap();
+        let saved = Persistence::new(&mut old, &views, "")
+            .unwrap()
+            .snapshot
+            .save();
         let (mut current, views, owner) = make(true);
         let recalled = Persistence::new(&mut current, &views, &saved)
             .expect("adding DSP owners must preserve the exact previous v2 script save");
-        assert!(recalled.state.values.iter().any(|e| e.value == Value::Cell(837)));
-        assert!(recalled.state.values.iter().any(|e| e.value == Value::Text(sampler_core::Text::new("legacy saved text"))));
-        assert_eq!(current.control_base_value(current.active_plan(), owner), Ok(ControlValue::Real(0.5)));
+        assert!(
+            recalled
+                .state
+                .values
+                .iter()
+                .any(|e| e.value == Value::Cell(837))
+        );
+        assert!(
+            recalled
+                .state
+                .values
+                .iter()
+                .any(|e| e.value == Value::Text(sampler_core::Text::new("legacy saved text")))
+        );
+        assert_eq!(
+            current.control_base_value(current.active_plan(), owner),
+            Ok(ControlValue::Real(0.5))
+        );
 
         let mut corrupt: Saved = serde_json::from_str(&saved).unwrap();
         corrupt.schema = "unknown schema".into();
-        assert!(Persistence::new(&mut current, &views, &serde_json::to_string(&corrupt).unwrap()).is_err());
+        assert!(
+            Persistence::new(
+                &mut current,
+                &views,
+                &serde_json::to_string(&corrupt).unwrap()
+            )
+            .is_err()
+        );
         let mut corrupt: Saved = serde_json::from_str(&saved).unwrap();
         corrupt.values[0] = SavedValue::Toggle(true);
-        assert!(Persistence::new(&mut current, &views, &serde_json::to_string(&corrupt).unwrap()).is_err());
-        assert_eq!(current.control_base_value(current.active_plan(), owner), Ok(ControlValue::Real(0.5)));
+        assert!(
+            Persistence::new(
+                &mut current,
+                &views,
+                &serde_json::to_string(&corrupt).unwrap()
+            )
+            .is_err()
+        );
+        assert_eq!(
+            current.control_base_value(current.active_plan(), owner),
+            Ok(ControlValue::Real(0.5))
+        );
     }
 
     fn values(value: i64) -> ScriptStateBuffer {
