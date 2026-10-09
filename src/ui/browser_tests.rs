@@ -590,3 +590,44 @@ fn browser_redesign_shots() {
         save("empty", &mut h);
     }
 }
+
+#[test]
+fn catalog_ordering_is_reused_across_queries_and_invalidated_by_new_files() {
+    let p = redesign_catalog(false);
+    let mut h = Harness::new(&p, 1180., 760.);
+    let query = |h: &mut Harness, text: &str| {
+        h.ui.focus("search");
+        h.tick(Input { keys: vec![KeyPress { key: Key::Char('a'), mods: Mods { ctrl: true, ..Default::default() } }], ..Default::default() });
+        h.tick(Input { text: text.into(), ..Default::default() });
+        h.idle(3);
+    };
+    browser::WORK.with(|n| n.set([0; 6]));
+    for text in ["brass", "warm preset", "strings", "audio imperia"] { query(&mut h, text); }
+    let work = browser::WORK.with(|n| n.get());
+    assert!(work[0] >= 4, "queries must still refresh the result rows");
+    assert_eq!(work[1], 0, "the catalog order is reused instead of sorting every query");
+    let path = PathBuf::from("/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/Brass 11.nki");
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        let mut files = (*view.files).clone();
+        files.push(path.clone());
+        view.files = Arc::new(files);
+    }
+    query(&mut h, "brass 11");
+    assert!(h.ui.scene().unwrap().surface("instrument-0").unwrap().tip.as_deref().is_some_and(|tip| tip.contains("Brass 11.nki")),
+        "a changed catalog replaces the ordered paths");
+    assert!(browser::WORK.with(|n| n.get()[1]) > 0, "new files invalidate the catalog order");
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        let mut shelf = crate::library::Shelf::new(view.shelf.libraries.clone());
+        shelf.snapshots.insert(view.files[0].clone(), crate::library::Snapshots {
+            instrument: "Brass 01".into(), paths: vec![PathBuf::from("/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Snapshots/Cool preset.nksn")],
+        });
+        view.shelf = Arc::new(shelf);
+    }
+    query(&mut h, "cool preset");
+    assert!(h.ui.scene().unwrap().surface("instrument-0").unwrap().tip.as_deref().is_some_and(|tip| tip.contains("Cool preset.nksn")),
+        "a shelf-only change replaces the cached native presets");
+    query(&mut h, "warm preset");
+    assert!(h.ui.scene().unwrap().surface("instrument-0").is_none(), "removed native presets leave the cache");
+}
