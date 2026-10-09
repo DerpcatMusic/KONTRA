@@ -628,7 +628,7 @@ impl Cx<'_> {
         let accepted = self.selection.parts.get(slot)
             .is_some_and(|part| self.p.shared.queue_snapshot(slot, part, path));
         if accepted { self.show(slot); }
-        else { self.state.notice = "Select a base NKI instrument before loading a snapshot.".into(); }
+        else { self.state.notice = "Select a base NKI instrument before loading a preset.".into(); }
     }
 
     /// Put another instrument (or a multi) in `slot`.
@@ -1096,7 +1096,7 @@ fn picked(cx: &mut Cx) {
         Some(picker::Picked::Snapshot { slot, source, path }) => {
             if cx.selection.parts.get(slot).is_some_and(|p| p.source() == source) {
                 cx.snapshot(slot, path.to_string_lossy().into_owned());
-            } else { cx.state.notice = "Snapshot ignored: the base instrument changed while its dialog was open.".into(); }
+            } else { cx.state.notice = "Preset ignored: the base instrument changed while its dialog was open.".into(); }
         }
         Some(picker::Picked::Multi(mut path)) => {
             if !library::is_multi(&path) {

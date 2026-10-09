@@ -1,24 +1,15 @@
-//! The browser, split like Bitwig's: the libraries above, with Favorites and
-//! Recent over them, and the chosen one's presets below, in its folders.
-//!
-//! The libraries list in the order the player picks (dragged by hand, by
-//! name, by last use or by vendor; pinned ones first), and a filter over
-//! them (Ctrl+F or /) narrows them by name or vendor: the arrows walk the
-//! matches, Enter opens one, Esc clears. A library shows its folders as on
-//! disk, each folding open and shut and remembered; the search lists flat
-//! matches instead, each with its folder under it. Click selects, Enter
-//! loads into the selected part, Shift+Enter into a new one, double-click
-//! loads, drag drops onto the rack, right-click offers the rest; the arrows
-//! walk each pane (Left and Right fold), and Tab crosses between them. The
-//! divider and the browser's edge both drag. The library and row last
-//! shown come back with the editor.
+//! Independently scrollable Kontakt and Falcon/UVI browsers. One query matches
+//! libraries, vendors, folders and presets; selecting a card narrows the result.
+//! With the query cleared, the selected library shows its collapsible hierarchy.
+//! Cards preserve drag/reorder and context menus. Arrow keys walk each pane,
+//! Enter loads, Tab crosses panes, and Ctrl+F or / focuses the shared search.
 
 use super::{Cx, RackDrag, menu, theme::*};
 use crate::library as import;
 use crate::library::{Folder, Library};
 use moose::mui::mui::prelude::*;
 use moose::mui::mui::scene::Fit;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -27,7 +18,7 @@ use std::sync::Arc;
 mod geometry;
 
 /// What the lower pane lists.
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Source {
     Favorites,
     Recent,
@@ -53,9 +44,9 @@ const INDENT: f64 = TEXT;
 #[derive(Default)]
 pub struct Browse {
     positions: [Position; 2],
-    /// The quick filter over the libraries, and as it was last drawn.
-    pub filter: String,
+    /// The shared query last drawn and its matching libraries, cached by catalog identity.
     filtered: String,
+    matching: (Option<u64>, HashSet<String>),
     /// How far each pane is slid.
     sources_y: f64,
     list_y: f64,
@@ -71,7 +62,7 @@ pub struct Browse {
     /// The browser's field holding the focus as the last frame ended: Esc
     /// takes the focus before the frame, so the field is told it this way.
     typing: Option<&'static str>,
-    /// Ctrl+F opened the browser: the filter takes the focus once it is drawn.
+    /// Ctrl+F opened the browser: the search takes the focus once it is drawn.
     pub find: bool,
     /// A library display name being typed, keyed by its stable folder.
     pub renaming: Option<(String, String)>,
@@ -82,7 +73,6 @@ struct Position {
     source: Option<Source>,
     cursor: Option<String>,
     search: String,
-    filter: String,
     sources_y: f64,
     list_y: f64,
     listing: u64,
@@ -238,7 +228,6 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
                 let browse = &mut cx.state.browse;
                 browse.positions[uvi as usize] = Position {
                     source: cx.state.source.take(), cursor: cx.state.cursor.take(), search: std::mem::take(&mut cx.state.search),
-                    filter: std::mem::take(&mut browse.filter),
                     sources_y: browse.sources_y, list_y: browse.list_y, listing: browse.listing,
                 };
                 let position = std::mem::take(&mut browse.positions[multi as usize]);
@@ -246,8 +235,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
                 cx.state.cursor = position.cursor;
                 cx.state.search = position.search;
                 (browse.sources_y, browse.list_y, browse.listing) = (position.sources_y, position.list_y, position.listing);
-                browse.filter = position.filter;
-                browse.filtered = browse.filter.clone();
+                browse.filtered = cx.state.search.clone();
                 browse.restored = true;
                 browse.reveal_source = 0;
                 cx.state.uvi = multi;
@@ -260,58 +248,65 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     // Where the focus goes, moved once every row has read this frame's keys
     // with the focus where it was: a key acts once.
     let mut focus_to: Option<String> = None;
-    // Ctrl+F or / goes to the library filter; Ctrl+F there goes on to the
-    // preset search, and back.
+    // Ctrl+F and / always address the one query; Escape clears it before releasing focus.
     let ctrl_f = |k: &KeyPress| matches!(k.key, Key::Char('f' | 'F')) && (k.mods.ctrl || k.mods.cmd);
     let slash = |k: &KeyPress| k.key == Key::Char('/') && !(k.mods.ctrl || k.mods.cmd);
     if std::mem::take(&mut cx.state.browse.find)
         || ui.shortcuts().iter().any(|k| ctrl_f(k) || slash(k))
         || ui.keys("search").iter().any(ctrl_f)
     {
-        focus_to = Some("library-filter".into());
-    } else if ui.keys("library-filter").iter().any(ctrl_f) {
         focus_to = Some("search".into());
     }
-    // Esc in a field clears it and keeps it focused; in an empty one it lets go.
-    let escaped = (cx.state.browse.typing.take()).filter(|_| ui.shortcuts().iter().any(|k| k.key == Key::Escape));
-    for (id, text) in [("library-filter", &mut cx.state.browse.filter), ("search", &mut cx.state.search)] {
-        if escaped == Some(id) && !text.is_empty() {
-            text.clear();
-            focus_to = Some(id.into());
-        }
+    let escaped = cx.state.browse.typing.take().is_some()
+        && ui.shortcuts().iter().any(|k| k.key == Key::Escape);
+    if escaped && !cx.state.search.is_empty() {
+        cx.state.search.clear();
+        focus_to = Some("search".into());
     }
-    let filter_keys = ui.keys("library-filter").to_vec();
-    let filter = search_field(ui, "library-filter", &mut cx.state.browse.filter, "Filter libraries", "Filter libraries by name or vendor");
-    let (sort, sort_el) = dropdown(ui, "library-sort", settings.sort.label(), "Sort the libraries");
+    let search = search_field(ui, "search", &mut cx.state.search,
+        "Search", "Search libraries, vendors, presets and folders");
+    let (sort, sort_el) = icon_button(ui, "browser-filter", Icon::Filter, "Sort and filter", false);
     if sort {
-        menu::open_under(ui, cx, menu::Target::LibrarySort, "library-sort");
+        menu::open_under(ui, cx, menu::Target::LibrarySort, "browser-filter");
     }
-
-    // The upper pane: the two pseudo-entries, then every library the filter
-    // lets through.
-    let words: Vec<String> = cx.state.browse.filter.to_lowercase().split_whitespace().map(str::to_owned).collect();
+    let sort_label = caption(match settings.sort {
+        import::Sort::Name => "A–Z", import::Sort::Custom => "Custom",
+        import::Sort::Recent => "Recent", import::Sort::Vendor => "Vendor",
+    }).text_size(SMALL * 0.85).fill(secondary()).lines(1)
+        .tip(format!("Sort: {}", settings.sort.label())).id("browser-sort-label");
+    let needle = cx.state.search.to_lowercase();
+    let words: Vec<&str> = needle.split_whitespace().collect();
+    let mut hash = DefaultHasher::new();
+    (Arc::as_ptr(&presets) as usize, Arc::as_ptr(&catalog) as usize,
+        uvi, &needle, &settings.names).hash(&mut hash);
+    let matching_key = hash.finish();
+    if cx.state.browse.matching.0 != Some(matching_key) {
+        let matching = arranged.iter().filter(|library| {
+            matches_query(library, None, &words, &settings)
+                || library_paths(&cx.view, &grouped, &library.name).into_iter()
+                    .any(|path| matches_query(library, Some(path), &words, &settings))
+        }).map(|library| library.name.clone()).collect();
+        cx.state.browse.matching = (Some(matching_key), matching);
+    }
     let mut sources = Vec::new();
     if words.is_empty() {
         sources.push(("source-favorites".to_owned(), Source::Favorites));
         sources.push(("source-recent".to_owned(), Source::Recent));
     }
     for (n, library) in arranged.iter().enumerate() {
-        let hay = format!("{} {} {}", settings.library_name(library), library.name, library.vendor).to_lowercase();
-        if words.iter().all(|w| hay.contains(w.as_str())) {
+        if cx.state.browse.matching.1.contains(&library.name) {
             sources.push((format!("library-{n}"), Source::Library(library.name.clone())));
         }
     }
     // Which folder each row shows, for a picture dropped on one.
     *super::lock(&cx.state.picker.rows) = arranged.iter().map(|l| Some(l.dir.clone())).collect();
-    // A new filter picks its first match, unless the chosen one still matches.
-    let chosen_listed = |cx: &Cx| sources.iter().any(|(_, s)| Some(s) == cx.state.source.as_ref());
-    if cx.state.browse.filter != cx.state.browse.filtered {
-        cx.state.browse.filtered = cx.state.browse.filter.clone();
-        if !words.is_empty() && !chosen_listed(cx) && let Some((_, first)) = sources.first() {
-            cx.state.source = Some(first.clone());
-            cx.state.cursor = None;
-        }
-        cx.state.browse.reveal_source = 2;
+    // Typing a new query searches the entire selected provider. A card can narrow it afterwards.
+    if cx.state.search != cx.state.browse.filtered {
+        cx.state.browse.filtered = cx.state.search.clone();
+        if !words.is_empty() { cx.state.source = None; }
+        cx.state.cursor = None;
+        cx.state.browse.sources_y = 0.;
+        cx.state.browse.reveal_source = 0;
     }
     if cx.state.source.as_ref().is_some_and(|s| matches!(s, Source::Library(name) if !grouped.contains_key(name))) {
         cx.state.source = None;
@@ -325,19 +320,6 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         (Key::Up, None) => Some(len - 1),
         _ => None,
     };
-    for k in &filter_keys {
-        let at = sources.iter().position(|(_, s)| Some(s) == cx.state.source.as_ref());
-        if let Some(next) = step(at, k.key, sources.len()).filter(|_| !sources.is_empty()) {
-            cx.state.source = Some(sources[next].1.clone());
-            cx.state.cursor = None;
-            cx.state.browse.reveal_source = 2;
-        }
-        if k.key == Key::Enter && at.is_some() {
-            enter = true;
-            cx.state.browse.reveal_source = 2;
-            keep_place(cx);
-        }
-    }
     let mut rows = Vec::new();
     // Where the chosen entry sits in the pane, to bring it into view.
     let (mut top, mut chosen_at) = (TIGHT, None);
@@ -396,13 +378,14 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
                     .and_then(|_| cx.view.artwork.get(name)).cloned()
                     .or_else(|| cx.looks(name).and_then(|l| l.thumb.clone()));
                 let width = (cx.state.sidebar - 2. * TIGHT).max(1.);
-                let height = image.as_ref().map_or(width / 4., |i| width * f64::from(i.height) / f64::from(i.width));
+                let height = width / BANNER_RATIO;
                 let art = match image {
-                    Some(image) => block(Len::Pct(100.), height).fill(Fill::Image(image, Fit::Contain)),
+                    Some(image) => block(Len::Pct(100.), height).fill(Fill::Image(image, Fit::Cover)),
                     None => stack![glyph(Icon::Sidebar, TEXT, secondary()).centered()].w(Len::Pct(100.)).h(height).fill(Role::Raised),
                 }.id(format!("{id}-art")).disabled().shrink(0);
                 (catalog.named(name).map_or_else(|| library_label(name), |l| settings.library_name(l)),
-                    grouped[name].len(), art, height + SOURCE_ROW + 2. * TIGHT, true)
+                    preset_count(&catalog, &grouped, name),
+                    art, height + 2. * TIGHT, true)
             },
         };
         let chosen = cx.state.source.as_ref() == Some(source);
@@ -462,13 +445,13 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     }
     if !bank_problem && arranged.is_empty() && scanning.is_none() {
         if presets.is_empty() {
-            // First, so its buttons are in view above favorites and recent.
-            rows.insert(0, empty_state(ui, cx));
+            // Keep the empty-state hint above favorites and recent.
+            rows.insert(0, empty_state());
         } else {
             rows.push(hint(if uvi { "No Falcon / UVI libraries." } else { "No Kontakt libraries." }));
         }
     } else if !bank_problem && sources.is_empty() {
-        rows.push(hint("No library matches that filter."));
+        rows.push(hint("No libraries or presets match that search."));
     }
     for (n, root) in settings.roots.iter().enumerate().rev() {
         if let Some(problem) = catalog.root_problem(Path::new(&root.path)) {
@@ -486,15 +469,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     if chosen_at.is_none() { cx.state.browse.reveal_source = 0; }
     else if revealed { cx.state.browse.reveal_source = cx.state.browse.reveal_source.saturating_sub(1); }
 
-    // The lower pane: the chosen source's presets, the search filtering them.
-    let search = search_field(
-        ui,
-        "search",
-        &mut cx.state.search,
-        "Search presets",
-        "Search presets",
-    );
-    let needle = cx.state.search.to_lowercase();
+    // The lower pane uses the same query over the selected provider or source.
     let made_of = {
         let mut h = DefaultHasher::new();
         (Arc::as_ptr(&presets) as usize, presets.len(), Arc::as_ptr(&catalog) as usize, uvi).hash(&mut h);
@@ -594,13 +569,13 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     if let Some(id) = focus_to {
         ui.focus(id);
     }
-    cx.state.browse.typing = ["library-filter", "search"].into_iter().find(|id| ui.focused(*id));
+    cx.state.browse.typing = ui.focused("search").then_some("search");
     cx.state.pane = ui.focus_key().and_then(pane_of);
     // How many presets are listed, folded away or not; all of them before
     // a library is chosen.
     let count = match &cx.state.source {
-        Some(Source::Library(name)) if needle.is_empty() => grouped.get(name).map_or(0, Vec::len),
-        None if needle.is_empty() => grouped.values().map(Vec::len).sum(),
+        Some(Source::Library(name)) if needle.is_empty() => preset_count(&catalog, &grouped, name),
+        None if needle.is_empty() => arranged.iter().map(|l| preset_count(&catalog, &grouped, &l.name)).sum(),
         _ => listed.presets,
     };
     let counted = caption(count.to_string())
@@ -636,30 +611,22 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     // Fixed chrome takes its own rows; the lists share the remaining height
     // without squeezing either viewport below useful rows.
     grid![1;
-        section_bar(
-            "Browser",
-            vec![counted, add_el, hide_el]
-        ),
-        row(kinds).gap(INSET + TIGHT).pad(edges(0., INSET, 0., INSET)).shrink(0),
+        row![search.flex(1).min_w(0), cluster(vec![sort_label, sort_el]).gap(TIGHT), add_el, hide_el]
+            .gap(TIGHT).align(Align::Center).pad((INSET, SPACE)).shrink(0),
+        row![row(kinds).gap(INSET + TIGHT).flex(1), counted]
+            .align(Align::Center).pad(edges(0., INSET, 0., INSET)).shrink(0),
         scan_line,
-        row![filter.flex(1).min_w(0), sort_el.shrink(0)]
-            .gap(TIGHT)
-            .align(Align::Center)
-            .pad(edges(SPACE, INSET, TIGHT, INSET))
-            .shrink(0),
         rule(),
         pane(sources_list, sources_bar).h(Len::Pct(100.)).min_h(0),
         split,
-        col![search.w(Len::Pct(100.))].pad(edges(SPACE, INSET, SPACE, INSET)).shrink(0),
         col(above).gap(0).align(Align::Stretch).shrink(0),
         pane(list, list_bar).h(Len::Pct(100.)).min_h(0),
     ]
     .grid_tracks([GridTrack::MinFr { min: 0., fr: 1. }])
     .grid_rows([
-        GridTrack::MaxContent, GridTrack::MaxContent, GridTrack::MaxContent,
-        GridTrack::MaxContent, GridTrack::MaxContent,
+        GridTrack::MaxContent, GridTrack::MaxContent, GridTrack::MaxContent, GridTrack::MaxContent,
         GridTrack::MinFr { min: SOURCE_ROW, fr: cx.state.split * 100. },
-        GridTrack::MaxContent, GridTrack::MaxContent, GridTrack::MaxContent,
+        GridTrack::MaxContent, GridTrack::MaxContent,
         GridTrack::MinFr { min: ROW2 * 2., fr: (1. - cx.state.split) * 100. },
     ])
     .align(Align::Stretch)
@@ -690,16 +657,17 @@ fn list(
             None => (String::new(), path.parent().map(stem).unwrap_or_default()),
         }
     };
-    // Its name or its folders hold every word.
-    let hit = |path: &Path, folders: &str| {
-        words.is_empty() || {
-            let hay = format!("{} {folders}", stem(path)).to_lowercase();
-            words.iter().all(|w| hay.contains(w))
-        }
-    };
     let flat = |path: &Path, with_library: bool| -> Option<Row> {
         let (library, folders) = place(path);
-        hit(path, &folders).then(|| {
+        let owner = view.shelf.of(path).or_else(|| view.shelf.snapshots.iter()
+            .find(|(_, saved)| saved.paths.iter().any(|p| p == path))
+            .and_then(|(base, _)| view.shelf.of(base)));
+        let hit = owner.map_or_else(|| {
+            let hay = format!("{} {folders}", stem(path)).to_lowercase();
+            words.iter().all(|word| hay.contains(word))
+        }, |owner| matches_query(owner, Some(path), &words, &cx.settings));
+        let library = owner.map_or(library, |owner| cx.settings.library_name(owner));
+        hit.then(|| {
             let under = match (with_library, library.is_empty(), folders.is_empty()) {
                 (true, false, false) => format!("{library} / {folders}"),
                 (true, false, true) => library,
@@ -708,12 +676,8 @@ fn list(
             Row::Preset { path: path.to_path_buf(), depth: 0, under, index: 0 }
         })
     };
-    let files = |name: &str| -> Vec<&Path> {
-        let mut paths: Vec<_> = grouped.get(name).into_iter().flatten().map(|&n| view.files[n].as_path()).collect();
-        if let Some(library) = view.shelf.named(name) {
-            paths.extend(view.shelf.snapshots.iter().filter(|(base, _)| view.shelf.of(base).is_some_and(|l| l.dir == library.dir))
-                .flat_map(|(_, snapshots)| snapshots.paths.iter().map(PathBuf::as_path)));
-        }
+    let files = |name: &str| {
+        let mut paths = library_paths(view, grouped, name);
         paths.sort_by_cached_key(|p| import::natural(&p.to_string_lossy()));
         paths.dedup();
         paths
@@ -736,12 +700,33 @@ fn list(
     }
 }
 
+fn matches_query(library: &Library, path: Option<&Path>, words: &[&str], settings: &import::Settings) -> bool {
+    let hay = format!("{} {} {} {} {}", settings.library_name(library), library.name, library.vendor,
+        path.map(stem).unwrap_or_default(), path.map(|p| folders(&library.dir, p)).unwrap_or_default()).to_lowercase();
+    words.iter().all(|word| hay.contains(word))
+}
+
+fn preset_count(shelf: &import::Shelf, grouped: &super::Libraries, name: &str) -> usize {
+    grouped.get(name).map_or(0, Vec::len) + shelf.snapshots.iter()
+        .filter(|(base, _)| shelf.of(base).is_some_and(|l| l.name == name))
+        .map(|(_, presets)| presets.paths.len()).sum::<usize>()
+}
+
+fn library_paths<'a>(view: &'a super::View, grouped: &super::Libraries, name: &str) -> Vec<&'a Path> {
+    let mut paths: Vec<_> = grouped.get(name).into_iter().flatten().map(|&n| view.files[n].as_path()).collect();
+    if let Some(library) = view.shelf.named(name) {
+        paths.extend(view.shelf.snapshots.iter().filter(|(base, _)| view.shelf.of(base).is_some_and(|l| l.dir == library.dir))
+            .flat_map(|(_, presets)| presets.paths.iter().map(PathBuf::as_path)));
+    }
+    paths
+}
+
 fn categories(library: &Library, paths: &[&Path], open: &BTreeMap<String, bool>) -> Vec<Row> {
     let mut out = Vec::new();
-    for name in ["Instruments", "Multis", "Presets", "Snapshots"] {
+    for name in ["Instruments", "Multis", "Presets"] {
         let mut selected: Vec<&Path> = paths.iter().copied().filter(|p| {
             let category = if import::is_multi(p) || p.extension().is_some_and(|e| e.eq_ignore_ascii_case("nkm")) { "Multis" }
-                else if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("nksn")) { "Snapshots" }
+                else if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("nksn")) { "Presets" }
                 else if is_uvi(p) { "Presets" } else { "Instruments" };
             category == name
         }).collect();
@@ -753,6 +738,7 @@ fn categories(library: &Library, paths: &[&Path], open: &BTreeMap<String, bool>)
             let bank = root.join(first.as_os_str());
             if bank.extension().is_some_and(|e| e.eq_ignore_ascii_case("ufs")) && selected.iter().all(|p| p.starts_with(&bank)) { root = bank; }
         }
+        if name == "Presets" && selected.iter().all(|p| p.starts_with(&root.join("Snapshots"))) { root = root.join("Snapshots"); }
         let category = root.join(name);
         if selected.iter().all(|p| p.starts_with(&category)) { root = category; }
         let key = library.dir.join(name).to_string_lossy().into_owned();
@@ -775,7 +761,7 @@ fn flatten(folder: &Folder, depth: usize, open: &BTreeMap<String, bool>, paths: 
         let is_open = open.get(&sub.path).copied().unwrap_or(only);
         out.push(Row::Folder {
             path: sub.path.clone(),
-            name: sub.name.strip_suffix(".ufs").unwrap_or(&sub.name).to_owned(),
+            name: if sub.name.eq_ignore_ascii_case("Snapshots") { "Presets".into() } else { sub.name.strip_suffix(".ufs").unwrap_or(&sub.name).to_owned() },
             depth,
             count: sub.count,
             open: is_open,
@@ -795,7 +781,7 @@ fn folders(library: &Path, path: &Path) -> String {
     folder
         .into_iter()
         .flat_map(|f| f.components())
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .map(|c| { let name = c.as_os_str().to_string_lossy(); if name.eq_ignore_ascii_case("Snapshots") { "Presets".into() } else { name.into_owned() } })
         .collect::<Vec<_>>()
         .join(" / ")
 }
@@ -851,7 +837,7 @@ pub enum Pane {
 fn pane_of(id: &str) -> Option<Pane> {
     if id.starts_with("library-") || id.starts_with("source-") {
         Some(Pane::Sources)
-    } else if id.starts_with("instrument-") || id.starts_with("folder-") || id.starts_with("star-") || id == "search" {
+    } else if id.starts_with("instrument-") || id.starts_with("folder-") || id.starts_with("star-") {
         Some(Pane::Presets)
     } else {
         None
@@ -860,6 +846,8 @@ fn pane_of(id: &str) -> Option<Pane> {
 
 /// A library thumbnail's size in the upper pane.
 pub const THUMB: (f64, f64) = (TEXT * 3., TEXT * 1.75);
+/// Widest installed official browser banner: Afflatus Chapter II Brass, 905×99.
+pub const BANNER_RATIO: f64 = 905. / 99.;
 
 /// A pseudo-entry's mark where a library shows its artwork.
 fn symbol(icon: Icon) -> El {
@@ -903,24 +891,31 @@ fn source_row(
     about: Option<String>,
     edit: Option<El>,
 ) -> El {
+    let editing = edit.is_some();
     let name = edit.unwrap_or_else(|| body(label.clone())
         .text_size(TEXT)
-        .fill(if chosen || loading.is_some() { Fill::from(Role::Ink) } else { secondary() })
-        .lines(1)
-        .min_w(0));
+        .fill(if card { Fill::from(Color::srgb(1., 1., 1.)) }
+            else if chosen || loading.is_some() { Fill::from(Role::Ink) } else { secondary() })
+        .lines(1).min_w(0).id(format!("{id}-name")).disabled());
     let named = format!("{label}, {count} presets");
-    let (name, count) = match loading {
-        Some(done) => (
-            col![name, progress_bar(done)].gap(3).align(Align::Start).flex(1).min_w(0),
-            super::rack::load_chip(done, false),
-        ),
-        None => (name.flex(1), caption(count.to_string()).text_size(SMALL).fill(secondary())),
-    };
-    let mark = block(2, THUMB.1).fill(if chosen { Fill::from(accent()) } else { Role::Ink.alpha(0.) });
+    let count = caption(count.to_string()).text_size(SMALL * 0.85)
+        .fill(if card { Color::srgb(0.9, 0.9, 0.9).into() } else { secondary() })
+        .id(format!("{id}-count")).disabled().shrink(0);
+    let mark = block(2, if card { height - 2. * TIGHT } else { THUMB.1 })
+        .fill(if chosen { Fill::from(accent()) } else { Role::Ink.alpha(0.) }).disabled();
+    let name = name.flex(1).min_w(0);
     let el = if card {
-        col![thumb, row![mark, name, count].gap(SPACE).align(Align::Center)
-            .pad(edges(0., INSET, 0., 0.)).h(SOURCE_ROW)]
-            .gap(0).align(Align::Stretch).pad((TIGHT, TIGHT)).h(height)
+        let scrim = block(Len::Pct(100.), Len::Pct(100.)).fill(Gradient::linear(90., [
+            (0., Color::srgb(0., 0., 0.).with_alpha(0.88)),
+            (0.65, Color::srgb(0., 0., 0.).with_alpha(0.72)),
+            (1., Color::srgb(0., 0., 0.).with_alpha(0.72)),
+        ])).disabled();
+        let label_row = row![mark, name, count].gap(TIGHT).align(Align::Center)
+            .pad((SPACE, 0)).h(Len::Pct(100.)).when(!editing, El::disabled);
+        let mut layers = vec![thumb, scrim, label_row];
+        if let Some(done) = loading { layers.push(progress_bar(done).disabled().anchor(Align::Start, Align::End)); }
+        col![stack(layers).w(Len::Pct(100.)).h(height - 2. * TIGHT).clip()]
+            .pad((TIGHT, TIGHT)).h(height)
     } else {
         row![mark, thumb, name, count].gap(SPACE).align(Align::Center)
             .pad(edges(0., INSET, 0., 0.)).h(height)
@@ -998,7 +993,9 @@ fn crumbs(ui: &mut Ui, cx: &mut Cx, library: &Library, listed: &Listed) -> Optio
     let mut path = library.dir.clone();
     for (n, part) in inside.components().enumerate() {
         path.push(part);
-        let key = path.to_string_lossy().into_owned();
+        let key = if n == 0 && part.as_os_str().to_string_lossy().eq_ignore_ascii_case("Snapshots") {
+            library.dir.join("Presets").to_string_lossy().into_owned()
+        } else { path.to_string_lossy().into_owned() };
         let id = format!("crumb-{n}");
         if ui.get(id.as_str()).activated() {
             cx.state.cursor = Some(key.clone());
@@ -1008,7 +1005,8 @@ fn crumbs(ui: &mut Ui, cx: &mut Cx, library: &Library, listed: &Listed) -> Optio
             items.push(caption("/").fill(secondary()).shrink(0));
         }
         let here = cx.state.cursor.as_deref() == Some(key.as_str());
-        let name = part.as_os_str().to_string_lossy().into_owned();
+        let name = part.as_os_str().to_string_lossy();
+        let name = if name.eq_ignore_ascii_case("Snapshots") { "Presets".to_owned() } else { name.into_owned() };
         items.push(interactive(
             row![caption(name.clone()).fill(if here { Fill::from(Role::Ink) } else { secondary() }).lines(1).min_w(0)]
                 .pad((TIGHT, 0))
@@ -1053,22 +1051,10 @@ fn scan_line(ui: &mut Ui, cx: &mut Cx, scanning: Option<(usize, usize)>) -> El {
     .named("Library scan progress")
 }
 
-/// No libraries yet: how to add them, and the two ways to.
-fn empty_state(ui: &mut Ui, cx: &mut Cx) -> El {
-    let (many, many_el) = action(ui, "empty-add-many", "Add folder of libraries…", false);
-    let (one, one_el) = action(ui, "empty-add-one", "Add library folder…", false);
-    if many || one {
-        super::header::add_folder(cx, one);
-    }
-    col![
-        body("No libraries yet").text_size(TEXT).lines(1),
-        many_el.tip("Add the folder that holds your libraries; each library is found, with or without a library file."),
-        one_el.tip("Add one library's own folder."),
-    ]
-    .gap(SPACE)
-    .align(Align::Start)
-    .pad(edges(SPACE, INSET, SPACE, INSET))
-    .shrink(0)
+/// The plus menu is the single entry point for adding libraries.
+fn empty_state() -> El {
+    col![body("No libraries yet").text_size(TEXT).lines(1).tip("Use + to add a library or a folder of libraries.")]
+        .pad(edges(SPACE, INSET, SPACE, INSET)).shrink(0)
 }
 
 /// A thin track filling with the accent to `done` (0..1).
@@ -1413,9 +1399,9 @@ mod tests {
         let paths: Vec<_> = paths.iter().map(Path::new).collect();
         let rows = categories(&library, &paths, &BTreeMap::new());
         let names: Vec<_> = rows.iter().filter_map(|r| match r { Row::Folder { name, .. } => Some(name.as_str()), _ => None }).collect();
-        assert_eq!(names, ["Instruments", "Multis", "Snapshots"]);
+        assert_eq!(names, ["Instruments", "Multis", "Presets"]);
         let files: Vec<_> = rows.iter().filter_map(|r| match r { Row::Preset { path, .. } => Some(path.as_path()), _ => None }).collect();
-        assert_eq!(files, [Path::new("/lib/Patch 2.nki"), Path::new("/lib/Patch 10.nki")]);
+        assert_eq!(files, [Path::new("/lib/Patch 2.nki"), Path::new("/lib/Patch 10.nki"), Path::new("/lib/Snap.nksn")]);
         let rows = categories(&library, &paths, &BTreeMap::from([("/lib/Multis".into(), true)]));
         assert!(rows.iter().any(|r| matches!(r, Row::Preset { path, .. } if path.ends_with("Rack.nkm"))));
     }
