@@ -986,7 +986,26 @@ impl Eval<'_> {
             // Runtime-maintained arrays are all zero while initializing.
             return Ok(match builtin {
                 NumElements => V::I(array.len() as i32),
-                Search => V::I(if self.int(args, 1)? == 0 { 0 } else { -1 }),
+                Search => {
+                    let needle = self.int(args, 1)?;
+                    // No affected groups exist before a note callback.
+                    let len = if *array == b::SysArray::GroupsAffected {
+                        0
+                    } else {
+                        array.len() as i32
+                    };
+                    let (lo, hi) = if args.len() == 4 {
+                        (self.int(args, 2)?, self.int(args, 3)?)
+                    } else {
+                        (0, len - 1)
+                    };
+                    let lo = lo.max(0);
+                    V::I(if needle == 0 && lo <= hi.min(len - 1) {
+                        lo
+                    } else {
+                        -1
+                    })
+                }
                 _ => V::I(0),
             });
         }
@@ -1138,11 +1157,9 @@ impl Eval<'_> {
             ArrayEqual => {
                 let (a, b2) = (Self::var(args, 0), Self::var(args, 1));
                 let len = self.hir.vars[a.0 as usize].len.unwrap_or(0);
-                let equal = len == self.hir.vars[b2.0 as usize].len.unwrap_or(0)
-                    && (0..len as i32).all(|i| {
-                        format!("{:?}", self.read_elem(a, i, span))
-                            == format!("{:?}", self.read_elem(b2, i, span))
-                    });
+                // Sema admits only same-sized declared integer arrays.
+                let equal = (0..len as i32)
+                    .all(|i| self.read_elem(a, i, span).int() == self.read_elem(b2, i, span).int());
                 V::I(i32::from(equal))
             }
             GetUiId => V::I(b::FIRST_UI_ID + self.ui_of(Self::var(args, 0)).unwrap_or(0) as i32),
