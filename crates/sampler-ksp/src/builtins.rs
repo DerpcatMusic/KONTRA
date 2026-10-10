@@ -491,6 +491,8 @@ pub mod cb {
     pub const CONTROLLER: i32 = 3;
     pub const POLY_AT: i32 = 4;
     pub const UI_CONTROL: i32 = 7;
+    pub const UI_UPDATE: i32 = 8;
+    pub const UI_CONTROLS: i32 = 13;
     pub const LISTENER: i32 = 9;
     pub const PGS_CHANGED: i32 = 10;
     pub const PERSISTENCE_CHANGED: i32 = 11;
@@ -619,6 +621,8 @@ const VALUED: &[(&str, i32)] = &[
     ("$NI_CB_TYPE_CONTROLLER", cb::CONTROLLER),
     ("$NI_CB_TYPE_POLY_AT", cb::POLY_AT),
     ("$NI_CB_TYPE_UI_CONTROL", cb::UI_CONTROL),
+    ("$NI_CB_TYPE_UI_UPDATE", cb::UI_UPDATE),
+    ("$NI_CB_TYPE_UI_CONTROLS", cb::UI_CONTROLS),
     ("$NI_CB_TYPE_LISTENER", cb::LISTENER),
     ("$NI_CB_TYPE_PGS", cb::PGS_CHANGED),
     ("$NI_CB_TYPE_PERSISTENCE_CHANGED", cb::PERSISTENCE_CHANGED),
