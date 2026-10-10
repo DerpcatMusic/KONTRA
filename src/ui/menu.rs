@@ -53,6 +53,9 @@ pub enum Command {
     Aux(usize, i16),
     RenameStrip(u64),
     ResetStrip(u64),
+    RouteStrip(u64),
+    /// Show a part's envelope, filter and effects in the Sound tab.
+    EditSound(usize),
     Streaming(Streaming),
     PartStreaming(usize, Option<Streaming>),
     LoadSnapshot(usize),
@@ -425,14 +428,23 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             }));
             items
         }
-        Target::Mixer(id) => vec![
-            act("Rename…", "", Command::RenameStrip(*id)),
-            act(
-                "Reset strip",
-                "Level, pan, switches and send; routing and name stay",
-                Command::ResetStrip(*id),
-            ),
-        ],
+        Target::Mixer(id) => {
+            let mut items = vec![
+                act("Rename…", "", Command::RenameStrip(*id)),
+                act(
+                    "Reset strip",
+                    "Level, pan, switches and send; routing and name stay",
+                    Command::ResetStrip(*id),
+                ),
+                Item::Rule,
+                act("Route to…", "", Command::RouteStrip(*id)),
+            ];
+            if *id >> 16 != 0 && *id & 0xffff == 0 {
+                let slot = (*id >> 16) as usize - 1;
+                items.extend([Item::Rule, act("Edit sound", "", Command::EditSound(slot))]);
+            }
+            items
+        }
         Target::Library(name) => {
             let Some(library) = cx.view.shelf.named(name) else {
                 return Vec::new();
@@ -553,6 +565,7 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             let position = cx.selection.order.iter().position(|n| *n as usize == slot);
             let last = cx.selection.order.len().saturating_sub(1);
             let mut items = vec![
+                act("Edit sound", "", Command::EditSound(slot)),
                 act("Rename…", "", Command::Rename(slot)),
                 act("Duplicate", "Ctrl+D", Command::Duplicate(slot)),
                 Item::Rule,
@@ -1060,6 +1073,19 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
             }
         }
         Command::ResetStrip(id) => super::bridge::reset(cx, id),
+        Command::RouteStrip(id) => {
+            if super::bridge::tree(cx).nodes.iter().any(|node| node.id == id) {
+                cx.state.tab = super::Tab::Mixer;
+                cx.state.mix_tree.picking = Some(id);
+            }
+        }
+        Command::EditSound(slot) => {
+            cx.show(slot);
+            cx.state.tab = super::Tab::Rack;
+            let state = cx.state.inside.entry(slot).or_default();
+            state.view = Some(super::inside::View::Sound);
+            state.sound_tab = super::inside::SoundTab::Controls;
+        }
         Command::Art(slot, action) => super::inside::action(ui, cx, slot, action),
         Command::Open(path) => cx.open(Path::new(&path)),
         Command::OpenNew(path) => cx.add(path),
