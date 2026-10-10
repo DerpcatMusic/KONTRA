@@ -1,0 +1,307 @@
+{
+  "status": "SOURCE_PACKET_COMPLETE_STOPPED_FRESH_COMBINED_REVIEW_PENDING",
+  "workspace": "/home/derpcat/.t3/worktrees/KONTAKTO/ksp-following-reviewed-three-fixes",
+  "branch": "pi/ksp-following-reviewed-three-fixes",
+  "session": {
+    "provider": "openai",
+    "model": "gpt-6.1-sol",
+    "reasoning": "high",
+    "harness": "direct visible Pi"
+  },
+  "base": {
+    "commit": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+    "tree": "4af7c9babd93c49cdb0a026a63d25e6c433498b0",
+    "parent": "7abcf606db1bb085f06c047d8ca9dcc187e7f0b6"
+  },
+  "source_candidate": {
+    "commit": "23683f0032a8cb2d29239919d24e931c601c1309",
+    "tree": "ffe9e45ddfd9d0affa27960577688fe5f9d94e2a",
+    "parent": "fb283cf78aa12457422c94c45c96b4d8320396fd"
+  },
+  "audit_commit": "18c5e31217a8c960b24e68ce2bf0717f8881c774",
+  "audit_tree": "a2c288172cf853106dfbd80fa92291366fcd1ef6",
+  "ordered_cherries": [
+    {
+      "original": "54c4dd897d5fd7d6ede2fc050cc74d4da060160e",
+      "assembled": "7792bb8194134cf802a8a121d0bf9b93973cd335",
+      "canonical_original_id": "87502a3083c671c2595f09486d0098827848fa59",
+      "canonical_assembled_id": "87502a3083c671c2595f09486d0098827848fa59",
+      "ambient_original_id": "58857add09cbe6d523c0129919f1d3101f295c60",
+      "ambient_assembled_id": "58857add09cbe6d523c0129919f1d3101f295c60",
+      "ambient_delta_equal": true
+    },
+    {
+      "original": "360b14f698051d5300de7a8da96bbba746cd4eb3",
+      "assembled": "7ac37b54014152ff58acd29b89232ad806e8c474",
+      "canonical_original_id": "5f441388d298244fc1f87673daa99bca80428d4e",
+      "canonical_assembled_id": "3b7683f746d64ac8726622cf52a827365316a259",
+      "ambient_original_id": "5f441388d298244fc1f87673daa99bca80428d4e",
+      "ambient_assembled_id": "3b7683f746d64ac8726622cf52a827365316a259",
+      "ambient_delta_equal": true
+    },
+    {
+      "original": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "assembled": "1f0d1cfefa305c7958dd2d0bb8467ed9ae278f12",
+      "canonical_original_id": "ecc1fb95f0eac9214e60b46e78a2ba8778b824ea",
+      "canonical_assembled_id": "ecc1fb95f0eac9214e60b46e78a2ba8778b824ea",
+      "ambient_original_id": "ecc1fb95f0eac9214e60b46e78a2ba8778b824ea",
+      "ambient_assembled_id": "ecc1fb95f0eac9214e60b46e78a2ba8778b824ea",
+      "ambient_delta_equal": true
+    },
+    {
+      "original": "48bb0479b314c5a86535d3b45483ef6815afc933",
+      "assembled": "fb283cf78aa12457422c94c45c96b4d8320396fd",
+      "canonical_original_id": "ac8edf9d352d84fc706464448367ae1c7e4f139b",
+      "canonical_assembled_id": "ac8edf9d352d84fc706464448367ae1c7e4f139b",
+      "ambient_original_id": "ac8edf9d352d84fc706464448367ae1c7e4f139b",
+      "ambient_assembled_id": "ac8edf9d352d84fc706464448367ae1c7e4f139b",
+      "ambient_delta_equal": true
+    },
+    {
+      "original": "93dad7882992ef6a63bfcfd7e432c644dfd9d60d",
+      "assembled": "23683f0032a8cb2d29239919d24e931c601c1309",
+      "canonical_original_id": "8d7b98bc0f02ad8098bfaa45625f8428b6ca73c8",
+      "canonical_assembled_id": "8d7b98bc0f02ad8098bfaa45625f8428b6ca73c8",
+      "ambient_original_id": "8d7b98bc0f02ad8098bfaa45625f8428b6ca73c8",
+      "ambient_assembled_id": "8d7b98bc0f02ad8098bfaa45625f8428b6ca73c8",
+      "ambient_delta_equal": true
+    }
+  ],
+  "ordered_assembled_source_test_audit_commits": [
+    "7792bb8194134cf802a8a121d0bf9b93973cd335",
+    "7ac37b54014152ff58acd29b89232ad806e8c474",
+    "1f0d1cfefa305c7958dd2d0bb8467ed9ae278f12",
+    "fb283cf78aa12457422c94c45c96b4d8320396fd",
+    "23683f0032a8cb2d29239919d24e931c601c1309"
+  ],
+  "documentation_seal": "18c5e31217a8c960b24e68ce2bf0717f8881c774",
+  "committed_artifacts": [
+    {
+      "path": "docs/audit-2026-10-10/ksp-following-reviewed-three-fixes/REPORT.md",
+      "sha256": "2cb5336e62912f73e68aa6fdc6a3ada4bb66b81f5f5124c9562bc68f77b628dc"
+    },
+    {
+      "path": "docs/audit-2026-10-10/ksp-following-reviewed-three-fixes/source-manifest.json",
+      "sha256": "ff900e62430d2f0fa4e29f2020b000c436fdd3b77b090d4b54e385af2a4d24bc"
+    }
+  ],
+  "clean_worktree": true,
+  "conflicts": [],
+  "semantic_adapters": [],
+  "baseline_preservation": {
+    "all_paths_outside_exact_cherry_allowlist_blob_identical": true,
+    "unchanged_tracked_paths": 2353,
+    "sorted_unchanged_inventory_sha256": "110dc94b5ec20c5247b4699b426193bd4144226c6583446f4c2ff85c9af55138",
+    "product_source_reconstructed_from_original_literal_hunks": true,
+    "all_shared_RPN_WF_Store_initcache_localrange_sourceidentity_highlight_remap_Switch_UVI_NCKP_semis_outside_reviewed_hunks_preserved": true,
+    "no_whole_file_replacement": true
+  },
+  "source_evidence": {
+    "paths": 14,
+    "connecting_spans": 41,
+    "qualified_test_spans": 14,
+    "original_review_input_hashes_verified": true,
+    "cached_primary_archives_and_exact_excerpts_verified": true,
+    "canonical_added_removed_patch_bytes_equal_all_five": true,
+    "all_stable_patch_ids_equal": false,
+    "function_exit_patch_id_context_difference": true,
+    "git_diff_check": true,
+    "whole_changed_file_literal_patch_reconstruction": true
+  },
+  "test_accounting": {
+    "added": 13,
+    "changed_existing": 1,
+    "new_ignored": 0,
+    "tests": [
+      {
+        "target": "compile",
+        "filter": "real_sgn_note_evaluates_operand_once_and_preserves_following_rng_draw",
+        "lines": [
+          1301,
+          1356
+        ],
+        "package": "sampler-ksp",
+        "exact": true,
+        "status": "NOT_RUN_NOT_COMPILED"
+      },
+      {
+        "target": "compile",
+        "filter": "real_sgn_note_reuses_full_operand_bits_and_preserves_comparison_policy",
+        "lines": [
+          1358,
+          1403
+        ],
+        "package": "sampler-ksp",
+        "exact": true,
+        "status": "NOT_RUN_NOT_COMPILED"
+      },
+      {
+        "target": "functions",
+        "filter": "function_exit_init_resumes_nested_and_repeated_callers_but_callback_exit_stops",
+        "lines": [
+          263,
+          290
+        ],
+        "package": "sampler-ksp",
+        "exact": true,
+        "status": "NOT_RUN_NOT_COMPILED"
+      },
+      {
+        "target": "functions",
+        "filter": "function_exit_runtime_resumes_callers_without_forwarding_intermediate_pitch",
+        "lines": [
+          292,
+          327
+        ],
+        "package": "sampler-ksp",
+        "exact": true,
+        "status": "NOT_RUN_NOT_COMPILED"
+      },
+      {
+        "target": "functions",
+        "filter": "function_and_callback_exit_deliver_note_release_controller_once_and_stop_plan_tail",
+        "lines": [
+          355,
+          401
+        ],
+        "package": "sampler-ksp",
+        "exact": true,
+        "status": "NOT_RUN_NOT_COMPILED"
+      },
+      {
+        "target": "functions",
+        "filter": "function_exit_after_wait_preserves_wait_time_stage_delivery_without_duplicates",
+        "lines": [
+          403,
+          446
+        ],
+        "package": "sampler-ksp",
+        "exact": true,
+        "status": "NOT_RUN_NOT_COMPILED"
+      },
+      {
+        "target": "functions",
+        "filter": "function_exit_returns_are_not_deferred_note_flush_barriers",
+        "lines": [
+          448,
+          470
+        ],
+        "package": "sampler-ksp",
+        "exact": true,
+        "status": "NOT_RUN_NOT_COMPILED"
+      },
+      {
+        "target": "functions",
+        "filter": "function_exit_frames_survive_each_pc_fuel_boundary_wait_and_plan_switch_by_instance",
+        "lines": [
+          472,
+          523
+        ],
+        "package": "sampler-ksp",
+        "exact": true,
+        "status": "NOT_RUN_NOT_COMPILED"
+      },
+      {
+        "target": "functions",
+        "filter": "function_exit_never_hides_invalid_unreachable_source",
+        "lines": [
+          525,
+          536
+        ],
+        "package": "sampler-ksp",
+        "exact": true,
+        "status": "NOT_RUN_NOT_COMPILED"
+      },
+      {
+        "target": "lib",
+        "filter": "lower::display_ext_tests::display_ext_constant_operands_keep_value_group_slot_and_generic_distinct",
+        "lines": [
+          96,
+          138
+        ],
+        "package": "sampler-ksp",
+        "exact": true,
+        "status": "NOT_RUN_NOT_COMPILED"
+      },
+      {
+        "target": "lib",
+        "filter": "lower::display_ext_tests::display_ext_dynamic_operands_are_loaded_once_into_nonaliasing_registers",
+        "lines": [
+          140,
+          163
+        ],
+        "package": "sampler-ksp",
+        "exact": true,
+        "status": "NOT_RUN_NOT_COMPILED"
+      },
+      {
+        "target": "lib",
+        "filter": "lower::display_ext_tests::display_ext_semantic_admission_still_requires_all_five_integer_operands",
+        "lines": [
+          165,
+          174
+        ],
+        "package": "sampler-ksp",
+        "exact": true,
+        "status": "NOT_RUN_NOT_COMPILED"
+      },
+      {
+        "target": "strings",
+        "filter": "display_ext_supplied_constant_and_dynamic_values_use_existing_pan_volume_tune_formatter",
+        "lines": [
+          742,
+          818
+        ],
+        "package": "sampler-ksp",
+        "exact": true,
+        "status": "NOT_RUN_NOT_COMPILED"
+      },
+      {
+        "target": "functions",
+        "filter": "nested_function_branches_loops_and_exit_keep_polyphonic_state_and_caller_targets",
+        "lines": [
+          147,
+          188
+        ],
+        "package": "sampler-ksp",
+        "exact": true,
+        "status": "NOT_RUN_NOT_COMPILED"
+      }
+    ],
+    "changed_legacy": "23->123: resumed caller adds100; NO_INHERITED_PASS"
+  },
+  "execution": {
+    "product_build": 0,
+    "cargo": 0,
+    "rustc": 0,
+    "clippy": 0,
+    "tests": 0,
+    "rust_parser": 0,
+    "typecheck": 0,
+    "product_runtime_script": 0,
+    "heap_audio_performance": 0,
+    "native_host_wine_official_reader_proprietary_bank_PCM_dump_keys": 0,
+    "public_fetch": 0,
+    "nested_agents": 0,
+    "schedules_servers_watch": 0,
+    "PR_push_publish_install_dependency_version": 0,
+    "target_wrapper_environment_changes": 0
+  },
+  "rea": {
+    "operation": "current_document",
+    "attempts": 1,
+    "result": "target_unavailable",
+    "message": "No app is open.",
+    "followup": 0
+  },
+  "following_only": true,
+  "integration7_appended": false,
+  "current_13_checkout_or_external_v2_plan_or_shared_target_written": false,
+  "fresh_independent_combined_source_review": "PENDING_ROOT_OWNED_NOT_STARTED_HERE",
+  "root_next": "Fresh combined source review of exact audit tip; later batch selection only after current compiled receipts. No standalone build request.",
+  "standalone_build_request": false,
+  "native_parity": "UNKNOWN",
+  "polished_product_CPU_AND_RAM_below_BOTH_v1_Kontakt": "UNACHIEVED",
+  "prior_findings_responses_gaps_ignoreds": "Preserved in committed manifest through exact immutable input hashes, original review contracts/responses/gaps, unmodified inherited source/audit receipts; no status promoted to current PASS.",
+  "stop": "Source work stopped at handback. No review/nested agent/next task started."
+}
