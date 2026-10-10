@@ -644,7 +644,7 @@ fn serialized_scripts_enabled_schema_shift_preserves_depth_bypass_pcm_and_voice_
                 value: sampler_core::ControlValue::Integer(73),
             }],
         )
-        .unwrap()
+        .unwrap();
     });
     close(last(&mut rt), [0.1875, 0.375]); // UI cell must not become route depth/bypass.
     let amplitude = address("ENGINE_PAR_MOD_TARGET_INTENSITY", 7, 0);
@@ -707,7 +707,7 @@ fn serialized_scripts_enabled_live_writes_match_unbound_pcm_across_partitions() 
                     value: sampler_core::ControlValue::Integer(91),
                 }],
             )
-            .unwrap()
+            .unwrap();
     });
     for (a, value, settled) in [
         (
