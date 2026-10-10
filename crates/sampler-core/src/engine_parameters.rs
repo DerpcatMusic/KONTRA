@@ -445,6 +445,80 @@ fn slot_parameter(name: &str) -> Option<SlotKind> {
 mod law_tests {
     use super::*;
     #[test]
+    fn exponential_parameter_endpoints_are_exact_and_reject_exterior_neighbors() {
+        for (law, low, high) in [
+            (
+                EngineParameterLaw::Exponential {
+                    low: 20.,
+                    high: 20_000.,
+                },
+                20.,
+                20_000.,
+            ),
+            (
+                EngineParameterLaw::Exponential {
+                    low: 20.,
+                    high: 20.,
+                },
+                20.,
+                20.,
+            ),
+            (
+                EngineParameterLaw::ShiftedExponential {
+                    low: 2.,
+                    high: 15_002.,
+                    offset: 2.,
+                },
+                0.,
+                15_000.,
+            ),
+            (
+                EngineParameterLaw::ShiftedExponential {
+                    low: 2.,
+                    high: 25_002.,
+                    offset: 2.,
+                },
+                0.,
+                25_000.,
+            ),
+        ] {
+            assert_eq!(law.decode(0), low, "{law:?}");
+            assert_eq!(law.decode(1_000_000), high, "{law:?}");
+            assert_eq!(law.decode(i32::MIN), low, "{law:?}");
+            assert_eq!(law.decode(i32::MAX), high, "{law:?}");
+            assert_eq!(law.normalized_value(low), Ok(0), "{law:?}");
+            assert_eq!(
+                law.normalized_value(high),
+                Ok(if low == high { 0 } else { 1_000_000 }),
+                "{law:?}"
+            );
+            for value in [
+                low.next_down(),
+                high.next_up(),
+                f64::NAN,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+            ] {
+                assert_eq!(
+                    law.normalized_value(value),
+                    Err(Error::InvalidInput),
+                    "{law:?}: {value}"
+                );
+            }
+            if low != high {
+                for value in [low.next_up(), high.next_down()] {
+                    assert!(law.normalized_value(value).is_ok(), "{law:?}: {value}");
+                }
+                assert_eq!(
+                    law.normalized_value(law.decode(500_000)),
+                    Ok(500_000),
+                    "{law:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn native_parameter_laws_are_invertible_and_reject_invalid_ranges() {
         let laws = [
             EngineParameterLaw::Linear { low: -2., high: 4. },

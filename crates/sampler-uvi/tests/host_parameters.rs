@@ -2,10 +2,12 @@ use sampler_uvi::script::{Config, ScriptHost};
 
 #[test]
 fn named_parameter_checks_and_writes_do_not_build_full_catalogs() {
+    use sampler_uvi::script::Command;
     let xml = r#"<UVI4><Program><Inserts><OnePole/><OnePole Custom='text'/></Inserts><EventProcessors><ScriptProcessor><script>
       local e=Program.inserts[1]
       assert(e:hasParameter('Freq') and not e:hasParameter('Missing'))
-      e:setParameter('Freq',99999); assert(e:getParameter('Freq')==20000)
+      e:setParameter('Freq',99999); assert(e:getParameter('Freq')==20000,'clamped cutoff maximum rejected')
+      e:setParameter('Freq',20); assert(e:getParameter('Freq')==20,'cutoff minimum rejected')
       e:setParameter('Bypass',1); assert(e:getParameter('Bypass')==false)
       assert(e.numParams==4)
       local id=Program.inserts[2].parameterDefinitions.Freq.id
@@ -25,8 +27,46 @@ fn named_parameter_checks_and_writes_do_not_build_full_catalogs() {
       e:setParameter(defs.Freq.id,100); assert(e:getParameter(defs.Freq.id)==100)
     </script></ScriptProcessor></EventProcessors></Program></UVI4>"#;
     let xml = xml.replace("<Program>", "<Program Custom='text'>");
-    let h = ScriptHost::new(&xml, (), Config::default()).unwrap();
-    assert!(h.fault_counts().init.is_empty(), "{:?}", h.fault_counts());
+    let mut h = ScriptHost::new(&xml, (), Config::default()).unwrap();
+    assert!(
+        h.fault_counts().init.is_empty(),
+        "{:?}; findings: {:?}",
+        h.fault_counts(),
+        h.findings()
+    );
+    let doc = roxmltree::Document::parse(&xml).unwrap();
+    let node = doc
+        .descendants()
+        .find(|n| n.has_tag_name("OnePole"))
+        .unwrap()
+        .id()
+        .get_usize();
+    let law = sampler_core::EngineParameterLaw::Exponential {
+        low: 20.,
+        high: 20_000.,
+    };
+    let commands = h.take_commands();
+    assert_eq!(commands.len(), 4, "{commands:?}");
+    for (command, expected) in commands.iter().zip([
+        1_000_000,
+        0,
+        law.normalized_value(100.).unwrap(),
+        law.normalized_value(100.).unwrap(),
+    ]) {
+        assert!(
+            matches!(command, Command::EngineParameter { address, value }
+            if address.parameter == sampler_core::engine_parameter_id("ENGINE_PAR_CUTOFF").unwrap()
+            && address.group == -1 && address.slot == -1 && address.generic == node as i32
+            && *value == expected),
+            "{command:?}; expected normalized cutoff {expected}"
+        );
+    }
+    let overrides = h.insert_overrides();
+    assert_eq!(overrides.len(), 1, "{overrides:?}");
+    assert_eq!(
+        (overrides[0].0, &*overrides[0].1, &*overrides[0].2),
+        (node, "Freq", "100")
+    );
 }
 
 #[test]
