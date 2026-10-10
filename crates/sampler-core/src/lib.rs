@@ -106,7 +106,7 @@ pub use parameter_registry::{
     ParameterRole, ParameterScope, ParameterUnit, PreparedParameterRegistry,
 };
 mod voice_mod;
-pub use plan_programs::{PlanProgram, SignalProgram};
+pub use plan_programs::{ParameterKind, ParameterProgram, PlanProgram, SignalProgram};
 pub use script_params::{EnvelopeStage, GroupParams, ParamScope};
 pub use steal::{Kill, Stealing, VoiceLimit};
 pub use voice_mod::{
