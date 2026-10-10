@@ -4355,6 +4355,15 @@
       "accepted": true,
       "validation": "Product a8c29411380e0c60b9b6671b8697a0c305ce6da5: workspace2224/0/269ignored; scheduler48/0, reader45/0/1ignored, keyswitch3; focused bytecode/zone/class/keyboard and compilation/offline/GPU checks PASS. Native Conflux1/Vista2/browser1, scanner15/15 audible/12Original unchanged; full quick retry72/72 loaded/68audible, finite/zero audio allocations, strict stuck guards PASS. First quick retirement variability retained and also observed in frozen403 A/B. Receipts w0-batch-after403/combined-verdict.json and native-verdict.json. Full gestures/native payload fidelity and quiet CPU/RSS/deadline/retirement stability remain unverified.",
       "release_note": "Keep the first authored matching menu caption when its selected item is hidden."
+    },
+    {
+      "id": "modulation-control-schema-remap",
+      "summary": "Preserve live modulation control identity when scripts replace the control schema",
+      "source_commits": [
+        "275494599eb9b3f9758e7c63a99827ea1ef382b0"
+      ],
+      "validation": "Independent source review resolved the stale-index defect. Exact ff60de20eeae95fdd736f3b064325d1ef9f6a84c release build passed; all 101 selected runs passed with 593 pass invocations, zero failures, 48 ignored, all 293 mandatory tests passed, including remap schema and scripts-enabled production modulation witnesses. Native behavior and comparative performance remain unverified.",
+      "accepted": true
     }
   ]
 }
