@@ -1,6 +1,7 @@
 //! Bounded legacy .nui execution over the published UI IR. No filesystem Lua API.
 use super::pictures::Source;
 use crate::support::MutexExt;
+use crate::plugin::ui_activity::{Activity, Phase};
 use mlua::{Function, Lua, Table, UserData, UserDataFields, UserDataMethods, Value as LuaValue};
 use moose::mui::mui::{prelude::Font, scene::Image};
 use sampler_ui_ir as ir;
@@ -641,6 +642,7 @@ pub(super) fn update_widget(
 pub struct Session {
     lua: Lua,
     root: Function,
+    activity: Option<Arc<Activity>>,
     bridge: Arc<Mutex<Bridge>>,
     fuel: Arc<AtomicUsize>,
 }
@@ -807,9 +809,13 @@ impl Session {
         Ok(Self {
             lua,
             root,
+            activity: None,
             bridge,
             fuel,
         })
+    }
+    pub(super) fn set_activity(&mut self, activity: Option<Arc<Activity>>) {
+        self.activity = activity;
     }
     pub fn update_view(
         &self,
@@ -858,6 +864,7 @@ impl Session {
         bridge.meters.extend(values);
     }
     pub fn render(&self) -> anyhow::Result<Table> {
+        let _script = self.activity.as_ref().map(|a| a.span(Phase::UiNativeScript));
         self.fuel.store(1_000_000, Ordering::Relaxed);
         if let Ok(error) = self.lua.globals().get::<String>("__canvas_error") {
             anyhow::bail!("NativeUI canvas: {error}");
@@ -882,18 +889,24 @@ impl Session {
             1_000_000usize.saturating_sub(self.fuel.load(Ordering::Relaxed)),
         )
     }
+    pub(super) fn activity(&self) -> Option<Arc<Activity>> {
+        self.activity.clone()
+    }
     pub fn lua(&self) -> &Lua {
         &self.lua
     }
     pub fn paint_callback(&self, paint: Function) -> mlua::Result<Function> {
         let fuel = self.fuel.clone();
+        let activity = self.activity.clone();
         self.lua.create_function(move |_, args: mlua::MultiValue| {
+            let _script = activity.as_ref().map(|a| a.span(Phase::UiNativeScript));
             // Deferred Canvas starts its own work allowance after layout.
             fuel.store(100_000, Ordering::Relaxed);
             paint.call::<()>(args)
         })
     }
     pub fn call<A: mlua::IntoLuaMulti>(&self, function: Function, args: A) -> mlua::Result<()> {
+        let _script = self.activity.as_ref().map(|a| a.span(Phase::UiNativeScript));
         self.fuel.store(100_000, Ordering::Relaxed);
         function.call(args)
     }
@@ -1104,6 +1117,36 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn native_profiler_counts_connected_script_and_deferred_paint_calls() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("Resources/native_ui")).unwrap();
+        std::fs::write(
+            dir.path().join("Resources/native_ui/main.nui"),
+            br#"local ui=require("native_ui")
+                return function() return @ui.Rectangle {}.frame(width=8,height=8) end"#,
+        ).unwrap();
+        let package = Arc::new(Package::load(&dir.path().join("fixture.nki")).unwrap());
+        let mut session = Session::new(package, "main", vec![]).unwrap();
+        // The ordinary disabled session renders without collecting timings.
+        session.render().unwrap();
+        assert!(session.activity().is_none());
+        let activity = Arc::new(Activity::new(true));
+        session.set_activity(Some(activity.clone()));
+        session.render().unwrap();
+        let failed: Function = session.lua().load("return function() error('owned failure') end").eval().unwrap();
+        assert!(session.call(failed, ()).is_err());
+        let paint: Function = session.lua().load("return function() end").eval().unwrap();
+        let deferred = session.paint_callback(paint).unwrap();
+        deferred.call::<()>(()).unwrap();
+        let values = activity.phase_snapshot().unwrap();
+        let at = Phase::UiNativeScript as usize * 3;
+        assert_eq!(values[at], 3, "render, failed event and deferred paint all close spans");
+        assert!(values[at + 1] >= values[at + 2], "total includes maximum");
+        assert!(values.iter().enumerate().all(|(n, v)| (at..at + 3).contains(&n) || *v == 0));
+        assert_eq!(activity.snapshot().unwrap(), [0; crate::plugin::ui_activity::FIELDS.len()]);
+    }
+
     #[test]
     fn legacy_component_reads_the_published_ir_and_produces_a_typed_edit() {
         assert_eq!(
