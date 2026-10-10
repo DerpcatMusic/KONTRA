@@ -96,5 +96,5 @@ print(json.dumps({
     "rust_compilation": "NOT_COMPILED",
     "native": "UNKNOWN",
     "CPU_AND_RAM_vs_both_references": "UNACHIEVED",
-    "scope_limit": "direct restore_initialized trusts supplied cached model; product cache stamp includes KSP sources and rejects old importer hashes", 
+    "scope_limit": "direct restore_initialized trusts supplied cached model; product cache stamp includes KSP sources and rejects old importer hashes",
 }, indent=2))
