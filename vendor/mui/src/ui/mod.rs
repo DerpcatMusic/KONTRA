@@ -595,10 +595,7 @@ impl Ui {
             .any(|k| matches!(k.key, Key::Enter | Key::Space));
         if self.wheel != Vec2::ZERO
             && let Some(scene) = self.scene.as_deref()
-            && let (Some(p), Some(s)) = (
-                self.pointer.pos,
-                scene.surface(id),
-            )
+            && let (Some(p), Some(s)) = (self.pointer.pos, scene.surface(id))
             && self.inside_surface(s, p)
             && self.owns_wheel(scene, s)
         {
@@ -730,6 +727,13 @@ impl Ui {
         self.keys.clear();
         self.typed.clear();
         self.delivered.clear();
+        // Render closures belong to the GUI thread, which may not drop the model.
+        TREES.with(|trees| trees.borrow_mut().retain(|(ui, _), _| *ui != self.me));
+        self.kept.clear();
+        self.memo_ids.clear();
+        self.scene = None;
+        self.ghosts.clear();
+        self.resolver = Resolver::default();
         std::mem::take(&mut self.edits)
     }
     /// The smallest the last resolved tree can be squeezed to, for a host that
@@ -1246,13 +1250,18 @@ impl Ui {
         scene
             .surfaces()
             .rev()
-            .find(|s| (s.captures_wheel || self.popup_wheel_scopes.contains(&s.key))
-                && !s.disabled && self.inside_surface(s, pointer))
+            .find(|s| {
+                (s.captures_wheel || self.popup_wheel_scopes.contains(&s.key))
+                    && !s.disabled
+                    && self.inside_surface(s, pointer)
+            })
             .map(|s| s.key.clone())
     }
 
     fn owns_wheel(&self, scene: &ResolvedScene, surface: &mui_scene::ResolvedSurface) -> bool {
-        let Some(owner) = &self.wheel_capture else { return true };
+        let Some(owner) = &self.wheel_capture else {
+            return true;
+        };
         let mut current = Some(surface);
         while let Some(s) = current {
             if s.key == *owner {
@@ -1328,7 +1337,8 @@ impl Ui {
             )
         });
         self.delivered = std::mem::take(&mut self.edits);
-        self.popup_wheel_scopes.retain(|id| scene.surface(id.as_str()).is_some());
+        self.popup_wheel_scopes
+            .retain(|id| scene.surface(id.as_str()).is_some());
         if let Some(old) = self.scene.replace(Arc::new(scene))
             && let Ok(old) = Arc::try_unwrap(old)
         {

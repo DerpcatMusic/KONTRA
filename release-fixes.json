@@ -697,9 +697,10 @@
         "1296d3fa914fbc8e324e34d3062f572cbd866449",
         "b6653e6df75ba1f10dfcbb7a2d2655376c092e6a",
         "3fe32935d574faa939723123b891e55309133c90",
-        "76a4fe49c2a54dff22d2a21411b4b6ec46d8a9b9"
+        "76a4fe49c2a54dff22d2a21411b4b6ec46d8a9b9",
+        "61158054b809bb89f650e6659b32798517a33c21"
       ],
-      "validation": "Thirteen focused processing/import/write/lifetime/heap gates and nine actual Conflux captures across three patches passed. Octave ratios are exactly two and actual source census confirms five 2048-frame cycles, zero underruns. High/Best anti-aliasing, additional forms and active inharmonic/audio-rate modes remain unsupported; preset tuning and scripted pedal intent remain unresolved. Actual64469ee metadata confirms saved -1200/+1200 cent WT tuning and accepted333334/666666 native TUNE writes. Native bandwidth-table preparation remains missing for ALL qualities; no quality is claimed exact.",
+      "validation": "Thirteen focused processing/import/write/lifetime/heap gates and nine actual Conflux captures across three patches passed. Octave ratios are exactly two and actual source census confirms five 2048-frame cycles, zero underruns. High/Best anti-aliasing, additional forms and active inharmonic/audio-rate modes remain unsupported; preset tuning and scripted pedal intent remain unresolved. Actual64469ee metadata confirms saved -1200/+1200 cent WT tuning and accepted333334/666666 native TUNE writes. Native bandwidth-table preparation remains missing for ALL qualities; no quality is claimed exact. Extended same playback defect with admitted v1 oscillator/residency port61158054; Corrected isolated product source4725f39a: workspace2135 PASS/0failed, scheduler48, reader45/1ignored, normalization3; installed Conflux1 and Vista2 PASS; scanner15/15 loads+audible and quick72/72 loads (68 audible), finite/zero audio allocations, no matched stage/audibility regression. Receipts w0-stable-383/combined-verdict.json and native-verdict.json; authored full-widget/native-DSP and quiet performance parity remain unverified.",
       "accepted": true
     },
     {
@@ -3988,6 +3989,109 @@
       "validation": "Codex P2 authored exact/suffix collision RED1\u2192GREEN3 monolith tests; Kontakt lib97PASS/5ignored and area no-run PASS. Case and separator normalization retained; ambiguous fallback still fails closed. Existing full f1 workspace/native regression receipts precede this isolated correction.",
       "accepted": true,
       "category": "Fixed"
+    },
+    {
+      "id": "uvi-midi-lua-physical-release",
+      "summary": "Run UVI MIDI attacks through Lua and pair releases with their physical note",
+      "source_commits": [
+        "0833711d0b17b13631aa46d2d934f2a0d3a2caa2"
+      ],
+      "release_note": "MIDI note-ons now reach the UVI Lua onNote callback, and note-offs retain their matching input identity.",
+      "accepted": true,
+      "validation": "Corrected isolated product source4725f39a: workspace2135 PASS/0failed, scheduler48, reader45/1ignored, normalization3; installed Conflux1 and Vista2 PASS; scanner15/15 loads+audible and quick72/72 loads (68 audible), finite/zero audio allocations, no matched stage/audibility regression. Receipts w0-stable-383/combined-verdict.json and native-verdict.json; authored full-widget/native-DSP and quiet performance parity remain unverified."
+    },
+    {
+      "id": "uvi-favourite-bank-uuid-relocation",
+      "summary": "Keep UVI favourites attached to bank UUID and program member after relocation",
+      "source_commits": [
+        "4978ef66c85276f9438ba1d73fdc1ff5710826de"
+      ],
+      "release_note": "Keep UVI favourites when a bank moves, while rejecting missing or ambiguous matches.",
+      "accepted": true,
+      "validation": "Corrected isolated product source4725f39a: workspace2135 PASS/0failed, scheduler48, reader45/1ignored, normalization3; installed Conflux1 and Vista2 PASS; scanner15/15 loads+audible and quick72/72 loads (68 audible), finite/zero audio allocations, no matched stage/audibility regression. Receipts w0-stable-383/combined-verdict.json and native-verdict.json; authored full-widget/native-DSP and quiet performance parity remain unverified."
+    },
+    {
+      "id": "script-captured-domain-invalidation",
+      "summary": "Avoid publishing saved-state snapshots for uncaptured temporary script writes",
+      "source_commits": [
+        "6885c2907f8f065b01666299950672ba200db8bd"
+      ],
+      "release_note": "Avoid recopying saved script state when only temporary values change.",
+      "accepted": true,
+      "validation": "Corrected isolated product source4725f39a: workspace2135 PASS/0failed, scheduler48, reader45/1ignored, normalization3; installed Conflux1 and Vista2 PASS; scanner15/15 loads+audible and quick72/72 loads (68 audible), finite/zero audio allocations, no matched stage/audibility regression. Receipts w0-stable-383/combined-verdict.json and native-verdict.json; authored full-widget/native-DSP and quiet performance parity remain unverified."
+    },
+    {
+      "id": "yielded-note-same-block-stream-request",
+      "summary": "Request the first streaming page in the same block as a resumed script note",
+      "source_commits": [
+        "6885c2907f8f065b01666299950672ba200db8bd"
+      ],
+      "release_note": "Request sample data in the same audio block when a resumed script callback creates a note.",
+      "accepted": true,
+      "validation": "Corrected isolated product source4725f39a: workspace2135 PASS/0failed, scheduler48, reader45/1ignored, normalization3; installed Conflux1 and Vista2 PASS; scanner15/15 loads+audible and quick72/72 loads (68 audible), finite/zero audio allocations, no matched stage/audibility regression. Receipts w0-stable-383/combined-verdict.json and native-verdict.json; authored full-widget/native-DSP and quiet performance parity remain unverified."
+    },
+    {
+      "id": "compact-coherent-sparse-script-capture",
+      "summary": "Capture script state directly into compact coherent slots and refresh changed cells",
+      "source_commits": [
+        "7436689bfd0bbd01b494fe7af9f36ccd1d72ffe3",
+        "323c5ccdf44fbeb7796ea70afdd9408dd3239fde"
+      ],
+      "release_note": "Store script snapshots compactly and refresh changed cells without mixing values from different audio blocks.",
+      "accepted": true,
+      "validation": "Corrected isolated product source4725f39a: workspace2135 PASS/0failed, scheduler48, reader45/1ignored, normalization3; installed Conflux1 and Vista2 PASS; scanner15/15 loads+audible and quick72/72 loads (68 audible), finite/zero audio allocations, no matched stage/audibility regression. Receipts w0-stable-383/combined-verdict.json and native-verdict.json; authored full-widget/native-DSP and quiet performance parity remain unverified."
+    },
+    {
+      "id": "editor-close-render-owner-release",
+      "summary": "Release memoized render owners and scene caches on window close with model retained",
+      "source_commits": [
+        "901968c60438adfdeab5eb97078344ce2164d349",
+        "3197d008a945407a404a5ec77f60bb2a6618b85b"
+      ],
+      "release_note": "Release retained editor render owners when closing a window and rebuild them when reopening it.",
+      "accepted": true,
+      "validation": "Corrected isolated product source4725f39a: workspace2135 PASS/0failed, scheduler48, reader45/1ignored, normalization3; installed Conflux1 and Vista2 PASS; scanner15/15 loads+audible and quick72/72 loads (68 audible), finite/zero audio allocations, no matched stage/audibility regression. Receipts w0-stable-383/combined-verdict.json and native-verdict.json; authored full-widget/native-DSP and quiet performance parity remain unverified."
+    },
+    {
+      "id": "kontakt-legacy-filter-slot-retention",
+      "summary": "Retain saved legacy lowpass/highpass slots and their addressed cutoff routes",
+      "source_commits": [
+        "415cb38384444d0a5ea7a251064afbf0270371ab",
+        "d7bdd7702dd40578fb2353370f0fb8bd44a7eb4e"
+      ],
+      "release_note": "Restore saved Vista legacy low-pass and high-pass filters and their cutoff-envelope routes using the v1 proxy.",
+      "accepted": true,
+      "validation": "Corrected isolated product source4725f39a: workspace2135 PASS/0failed, scheduler48, reader45/1ignored, normalization3; installed Conflux1 and Vista2 PASS; scanner15/15 loads+audible and quick72/72 loads (68 audible), finite/zero audio allocations, no matched stage/audibility regression. Receipts w0-stable-383/combined-verdict.json and native-verdict.json; authored full-widget/native-DSP and quiet performance parity remain unverified."
+    },
+    {
+      "id": "digital-multi-zero-delay-sine-admission",
+      "summary": "Preserve measured zero-delay Digital Multi sine modulation with authored weight",
+      "source_commits": [
+        "484baae4c20f83e7eed9ab7b42bda54aa5b3e816"
+      ],
+      "release_note": "Restore 124 supported saved Conflux Digital Multi sine sources without discarding their signed weight.",
+      "accepted": true,
+      "validation": "Corrected isolated product source4725f39a: workspace2135 PASS/0failed, scheduler48, reader45/1ignored, normalization3; installed Conflux1 and Vista2 PASS; scanner15/15 loads+audible and quick72/72 loads (68 audible), finite/zero audio allocations, no matched stage/audibility regression. Receipts w0-stable-383/combined-verdict.json and native-verdict.json; authored full-widget/native-DSP and quiet performance parity remain unverified."
+    },
+    {
+      "id": "keyswitch-authored-note-labels",
+      "summary": "Use agreeing authored key names for generated note-labelled articulation rows",
+      "source_commits": [
+        "a123ef2271baae25ecd8088edbd342fffbc84dff"
+      ],
+      "release_note": "Show authored Areia technique names in place of generated note labels when the key names agree.",
+      "accepted": true,
+      "validation": "Corrected isolated product source4725f39a: workspace2135 PASS/0failed, scheduler48, reader45/1ignored, normalization3; installed Conflux1 and Vista2 PASS; scanner15/15 loads+audible and quick72/72 loads (68 audible), finite/zero audio allocations, no matched stage/audibility regression. Receipts w0-stable-383/combined-verdict.json and native-verdict.json; authored full-widget/native-DSP and quiet performance parity remain unverified."
+    },
+    {
+      "id": "keyswitch-preset-list-rejection",
+      "summary": "Require real row geometry and switching evidence before inferring an articulation list",
+      "source_commits": [
+        "26ea80797948c9340dc89bdf5235248b1affb528"
+      ],
+      "release_note": "Stop presenting Analog Strings preset-browser and zero-height controls as articulation choices.",
+      "accepted": true,
+      "validation": "Corrected isolated product source4725f39a: workspace2135 PASS/0failed, scheduler48, reader45/1ignored, normalization3; installed Conflux1 and Vista2 PASS; scanner15/15 loads+audible and quick72/72 loads (68 audible), finite/zero audio allocations, no matched stage/audibility regression. Receipts w0-stable-383/combined-verdict.json and native-verdict.json; authored full-widget/native-DSP and quiet performance parity remain unverified."
     }
   ]
 }
