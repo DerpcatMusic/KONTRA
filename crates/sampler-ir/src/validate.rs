@@ -431,8 +431,21 @@ impl Instrument {
                     }
                 }
                 ModulationSource::Lfo(lfo) => {
-                    if let crate::LfoShape::SineScaled(level) = lfo.shape {
+                    if let crate::LfoShape::DigitalSine { level, .. }
+                    | crate::LfoShape::SineScaled(level) = lfo.shape
+                    {
                         check.within(level, -1.0..=1.0, "sine level")?;
+                    }
+                    if let crate::LfoShape::DigitalSine { fade_ms, .. } = lfo.shape {
+                        check.within(f64::from(fade_ms), 0.0..=5000.0, "digital fade")?;
+                        if modulator.scope != Scope::Voice
+                            || !lfo.retrigger
+                            || matches!(lfo.rate, crate::Frequency::Beats(_))
+                            || lfo.delay.seconds() != 0.
+                            || lfo.fade_in.seconds() != 0.
+                        {
+                            check.within(f64::NAN, 0.0..=0.0, "digital fade clock")?;
+                        }
                     }
                     let rate = match lfo.rate {
                         crate::Frequency::Hertz(hz) => hz,

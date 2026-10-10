@@ -1360,15 +1360,27 @@ impl Translation {
         let shape = match (lfo.waveform, lfo.trailing_values) {
             // Digital Multi's falling sine retains subunit weights; normalization
             // divides by max(1, sum(abs(weights))), not by the sole weight.
-            // ponytail: other waves and nonzero native fades need measured source clocks.
+            // Other components, synchronized fades and the alternate mode remain unverified.
             (6, Some([sine, 0., 0., 0., 0.]))
                 if sine.is_finite()
                     && sine.abs() <= 1.
-                    && fade_ms == 0.
+                    && (0. ..=5000.).contains(&fade_ms)
+                    && (fade_ms == 0. || (retrigger
+                        && !lfo.trailing_flag
+                        && !lfo.records[1].flag
+                        && lfo.records[0].values[0] == -1.
+                        && (0. ..=1.).contains(&phase)))
                     && lfo.records[1].values[0] == -1.
                     && lfo.additional_flag == Some(false) =>
             {
-                ir::LfoShape::SineScaled(-f64::from(sine))
+                if fade_ms == 0. {
+                    ir::LfoShape::SineScaled(-f64::from(sine))
+                } else {
+                    ir::LfoShape::DigitalSine {
+                        level: -f64::from(sine),
+                        fade_ms: lfo.initial_values[0],
+                    }
+                }
             }
             // Native core 0x140b07290: the five weighted components sum to zero.
             // Verified original-byte waveform checks; the bipolar view is still 0.5.
@@ -1423,7 +1435,11 @@ impl Translation {
             shape,
             rate,
             delay: ir::Time::ZERO,
-            fade_in: ir::Time::Milliseconds(fade_ms.max(0.0)),
+            fade_in: if matches!(shape, ir::LfoShape::DigitalSine { .. }) {
+                ir::Time::ZERO
+            } else {
+                ir::Time::Milliseconds(fade_ms.max(0.0))
+            },
             phase: phase.rem_euclid(1.0),
             retrigger,
         })
@@ -2547,7 +2563,7 @@ mod modulation {
     }
 
     #[test]
-    fn digital_sine_keeps_saved_level_phase_sync_and_unsupported_fade_diagnostic() {
+    fn digital_sine_keeps_saved_level_phase_sync_and_checked_fade_diagnostic() {
         let mut t = translation();
         let mut raw = Lfo {
             structured: false,
@@ -2584,8 +2600,43 @@ mod modulation {
         raw.initial_values[0] = 10.;
         assert!(
             t.lfo("g", &raw, true).is_none(),
-            "native nonzero fade must stay diagnosed"
+            "frequency-synced fade remains unverified"
         );
+        raw.records[0].values[0] = -1.;
+        let faded = t.lfo("g", &raw, true).unwrap();
+        assert_eq!(
+            faded.shape,
+            ir::LfoShape::DigitalSine {
+                level: -f64::from(0.3f32),
+                fade_ms: 10.
+            }
+        );
+        assert_eq!(faded.fade_in, ir::Time::ZERO);
+        raw.records[1].flag = true;
+        assert!(t.lfo("g", &raw, true).is_none(), "synced fade remains unverified");
+        raw.records[1].flag = false;
+        raw.initial_values[3] = 2.;
+        assert!(t.lfo("g", &raw, true).is_none(), "unbounded phase remains unverified");
+        raw.initial_values[3] = 0.25;
+        raw.additional_flag = Some(true);
+        assert!(t.lfo("g", &raw, true).is_none(), "alternate fade remains unverified");
+        raw.additional_flag = Some(false);
+        assert!(
+            t.lfo("g", &raw, false).is_none(),
+            "free-running fade remains unverified"
+        );
+        raw.trailing_flag = true;
+        assert!(
+            t.lfo("g", &raw, true).is_none(),
+            "delay-sync flag remains unverified"
+        );
+        raw.trailing_flag = false;
+        raw.initial_values[0] = -1.;
+        assert!(t.lfo("g", &raw, true).is_none());
+        raw.initial_values[0] = f32::NAN;
+        assert!(t.lfo("g", &raw, true).is_none());
+        raw.initial_values[0] = 5001.;
+        assert!(t.lfo("g", &raw, true).is_none());
         raw.initial_values[0] = 0.;
         raw.trailing_values = Some([f32::NAN, 0., 0., 0., 0.]);
         assert!(t.lfo("g", &raw, true).is_none());
@@ -2594,7 +2645,7 @@ mod modulation {
         raw.trailing_values = Some([0.3, 0., 0., 0., 0.]);
         raw.additional_flag = Some(true);
         assert!(t.lfo("g", &raw, true).is_none());
-        assert_eq!(t.ir.unsupported.len(), 4);
+        assert_eq!(t.ir.unsupported.len(), 12);
     }
 
     #[test]

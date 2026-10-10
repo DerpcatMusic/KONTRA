@@ -765,3 +765,36 @@ fn release_counter_reset_retargets_live_modulation_and_pedals_preserve_release_a
     assert_eq!(rt.release_context(note).unwrap().gate.unwrap().at, 320);
     assert_eq!(rt.release_context(note).unwrap().key.unwrap().at, 192);
 }
+
+#[test]
+fn saved_digital_fade_is_applied_to_the_initial_sample_start_without_heap() {
+    for (ms, start) in [(0., 0), (10., 50)] {
+        let source = ModSource::Lfo(Lfo {
+            shape: LfoShape::DigitalSine {
+                level: -1.,
+                fade: KontaktLfoFade::from_saved(ms, 48000.).unwrap(),
+            },
+            rate: LfoRate::Hertz(1.),
+            phase: 0.25,
+            delay: 0,
+            fade: 0,
+            retrigger: true,
+            shared: false,
+        });
+        let p = modulated(
+            plan(1024, Envelope::default()),
+            program(
+                vec![source],
+                vec![ModRoute::new(0, ModTarget::SampleStart, 1.)],
+            ),
+            100,
+        );
+        let mut rt = Runtime::new(p, limits()).unwrap();
+        let mut audio = [[0.; 2]; 1];
+        support::without_heap(|| {
+            rt.trigger(input(1), 60, 1.).unwrap();
+            rt.render(&mut audio).unwrap();
+        });
+        assert_eq!(audio[0][0], start as f32 / 1000.);
+    }
+}

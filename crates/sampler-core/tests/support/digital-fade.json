@@ -1,0 +1,691 @@
+{
+  "binary_sha256": "0fe6356e0879d058b6e5b73507c54c5e345cea451b35287c974e438291d4dae8",
+  "entries": [
+    "0x14072b380",
+    "0x140a74bf0",
+    "0x140977d85",
+    "0x1405f45a0",
+    "0x140b06c90"
+  ],
+  "helper_substitutions": [
+    "CRT pow \u2192 system libm.pow"
+  ],
+  "scope": "saved unsynchronized fade, false alternate mode; original getter/count/reset/fade instructions; native CRT rounding, host scheduler and live setters not certified",
+  "cases": [
+    {
+      "rate": 44100.0,
+      "saved": 0.0,
+      "duration_bits": "00000000",
+      "ticks": 0,
+      "factor_bits": "0000807f",
+      "checkpoints": [
+        {
+          "tick": 0,
+          "signal_bits": "9a9999be"
+        },
+        {
+          "tick": 1,
+          "signal_bits": "9a9999be"
+        }
+      ]
+    },
+    {
+      "rate": 44100.0,
+      "saved": 0.01,
+      "duration_bits": "0ad7233c",
+      "ticks": 0,
+      "factor_bits": "0000807f",
+      "checkpoints": [
+        {
+          "tick": 0,
+          "signal_bits": "9a9999be"
+        },
+        {
+          "tick": 1,
+          "signal_bits": "9a9999be"
+        }
+      ]
+    },
+    {
+      "rate": 44100.0,
+      "saved": 0.1,
+      "duration_bits": "cdcccc3d",
+      "ticks": 0,
+      "factor_bits": "0000807f",
+      "checkpoints": [
+        {
+          "tick": 0,
+          "signal_bits": "9a9999be"
+        },
+        {
+          "tick": 1,
+          "signal_bits": "9a9999be"
+        }
+      ]
+    },
+    {
+      "rate": 44100.0,
+      "saved": 0.6437108516693115,
+      "duration_bits": "3cca243f",
+      "ticks": 0,
+      "factor_bits": "0000807f",
+      "checkpoints": [
+        {
+          "tick": 0,
+          "signal_bits": "9a9999be"
+        },
+        {
+          "tick": 1,
+          "signal_bits": "9a9999be"
+        }
+      ]
+    },
+    {
+      "rate": 44100.0,
+      "saved": 1.0,
+      "duration_bits": "0000803f",
+      "ticks": 1,
+      "factor_bits": "aaaa8a40",
+      "checkpoints": [
+        {
+          "tick": 0,
+          "signal_bits": "00000080"
+        },
+        {
+          "tick": 1,
+          "signal_bits": "9a9999be"
+        },
+        {
+          "tick": 2,
+          "signal_bits": "9a9999be"
+        }
+      ]
+    },
+    {
+      "rate": 44100.0,
+      "saved": 10.0,
+      "duration_bits": "00002041",
+      "ticks": 13,
+      "factor_bits": "96488f3f",
+      "checkpoints": [
+        {
+          "tick": 0,
+          "signal_bits": "00000080"
+        },
+        {
+          "tick": 1,
+          "signal_bits": "fa1030bc"
+        },
+        {
+          "tick": 6,
+          "signal_bits": "1355b2bd"
+        },
+        {
+          "tick": 12,
+          "signal_bits": "3e0a57be"
+        },
+        {
+          "tick": 13,
+          "signal_bits": "9a9999be"
+        },
+        {
+          "tick": 14,
+          "signal_bits": "9a9999be"
+        }
+      ]
+    },
+    {
+      "rate": 44100.0,
+      "saved": 100.0,
+      "duration_bits": "0000c842",
+      "ticks": 137,
+      "factor_bits": "9b60813f",
+      "checkpoints": [
+        {
+          "tick": 0,
+          "signal_bits": "00000080"
+        },
+        {
+          "tick": 1,
+          "signal_bits": "01e07dba"
+        },
+        {
+          "tick": 68,
+          "signal_bits": "1953c5bd"
+        },
+        {
+          "tick": 136,
+          "signal_bits": "3e0a57be"
+        },
+        {
+          "tick": 137,
+          "signal_bits": "9a9999be"
+        },
+        {
+          "tick": 138,
+          "signal_bits": "9a9999be"
+        }
+      ]
+    },
+    {
+      "rate": 44100.0,
+      "saved": 5000.0,
+      "duration_bits": "00409c45",
+      "ticks": 6890,
+      "factor_bits": "f906803f",
+      "checkpoints": [
+        {
+          "tick": 0,
+          "signal_bits": "00000080"
+        },
+        {
+          "tick": 1,
+          "signal_bits": "67a6a0b7"
+        },
+        {
+          "tick": 3445,
+          "signal_bits": "c54cc7bd"
+        },
+        {
+          "tick": 6889,
+          "signal_bits": "3e0a57be"
+        },
+        {
+          "tick": 6890,
+          "signal_bits": "9a9999be"
+        },
+        {
+          "tick": 6891,
+          "signal_bits": "9a9999be"
+        }
+      ]
+    },
+    {
+      "rate": 44100.0,
+      "saved": 10000.0,
+      "duration_bits": "00401c46",
+      "ticks": 13781,
+      "factor_bits": "7d03803f",
+      "checkpoints": [
+        {
+          "tick": 0,
+          "signal_bits": "00000080"
+        },
+        {
+          "tick": 1,
+          "signal_bits": "cdcc20b7"
+        },
+        {
+          "tick": 6890,
+          "signal_bits": "e878c7bd"
+        },
+        {
+          "tick": 13780,
+          "signal_bits": "3e0a57be"
+        },
+        {
+          "tick": 13781,
+          "signal_bits": "9a9999be"
+        },
+        {
+          "tick": 13782,
+          "signal_bits": "9a9999be"
+        }
+      ]
+    },
+    {
+      "rate": 48000.0,
+      "saved": 0.0,
+      "duration_bits": "00000000",
+      "ticks": 0,
+      "factor_bits": "0000807f",
+      "checkpoints": [
+        {
+          "tick": 0,
+          "signal_bits": "9a9999be"
+        },
+        {
+          "tick": 1,
+          "signal_bits": "9a9999be"
+        }
+      ]
+    },
+    {
+      "rate": 48000.0,
+      "saved": 0.01,
+      "duration_bits": "0ad7233c",
+      "ticks": 0,
+      "factor_bits": "0000807f",
+      "checkpoints": [
+        {
+          "tick": 0,
+          "signal_bits": "9a9999be"
+        },
+        {
+          "tick": 1,
+          "signal_bits": "9a9999be"
+        }
+      ]
+    },
+    {
+      "rate": 48000.0,
+      "saved": 0.1,
+      "duration_bits": "cdcccc3d",
+      "ticks": 0,
+      "factor_bits": "0000807f",
+      "checkpoints": [
+        {
+          "tick": 0,
+          "signal_bits": "9a9999be"
+        },
+        {
+          "tick": 1,
+          "signal_bits": "9a9999be"
+        }
+      ]
+    },
+    {
+      "rate": 48000.0,
+      "saved": 0.6437108516693115,
+      "duration_bits": "3cca243f",
+      "ticks": 0,
+      "factor_bits": "0000807f",
+      "checkpoints": [
+        {
+          "tick": 0,
+          "signal_bits": "9a9999be"
+        },
+        {
+          "tick": 1,
+          "signal_bits": "9a9999be"
+        }
+      ]
+    },
+    {
+      "rate": 48000.0,
+      "saved": 1.0,
+      "duration_bits": "0000803f",
+      "ticks": 1,
+      "factor_bits": "aaaa8a40",
+      "checkpoints": [
+        {
+          "tick": 0,
+          "signal_bits": "00000080"
+        },
+        {
+          "tick": 1,
+          "signal_bits": "9a9999be"
+        },
+        {
+          "tick": 2,
+          "signal_bits": "9a9999be"
+        }
+      ]
+    },
+    {
+      "rate": 48000.0,
+      "saved": 10.0,
+      "duration_bits": "00002041",
+      "ticks": 15,
+      "factor_bits": "0f258d3f",
+      "checkpoints": [
+        {
+          "tick": 0,
+          "signal_bits": "00000080"
+        },
+        {
+          "tick": 1,
+          "signal_bits": "7a6d17bc"
+        },
+        {
+          "tick": 7,
+          "signal_bits": "c811b5bd"
+        },
+        {
+          "tick": 14,
+          "signal_bits": "3e0a57be"
+        },
+        {
+          "tick": 15,
+          "signal_bits": "9a9999be"
+        },
+        {
+          "tick": 16,
+          "signal_bits": "9a9999be"
+        }
+      ]
+    },
+    {
+      "rate": 48000.0,
+      "saved": 100.0,
+      "duration_bits": "0000c842",
+      "ticks": 150,
+      "factor_bits": "e641813f",
+      "checkpoints": [
+        {
+          "tick": 0,
+          "signal_bits": "00000080"
+        },
+        {
+          "tick": 1,
+          "signal_bits": "34c467ba"
+        },
+        {
+          "tick": 75,
+          "signal_bits": "be5fc7bd"
+        },
+        {
+          "tick": 149,
+          "signal_bits": "3e0a57be"
+        },
+        {
+          "tick": 150,
+          "signal_bits": "9a9999be"
+        },
+        {
+          "tick": 151,
+          "signal_bits": "9a9999be"
+        }
+      ]
+    },
+    {
+      "rate": 48000.0,
+      "saved": 5000.0,
+      "duration_bits": "00409c45",
+      "ticks": 7500,
+      "factor_bits": "6806803f",
+      "checkpoints": [
+        {
+          "tick": 0,
+          "signal_bits": "00000080"
+        },
+        {
+          "tick": 1,
+          "signal_bits": "9a9993b7"
+        },
+        {
+          "tick": 3750,
+          "signal_bits": "2655c7bd"
+        },
+        {
+          "tick": 7499,
+          "signal_bits": "3e0a57be"
+        },
+        {
+          "tick": 7500,
+          "signal_bits": "9a9999be"
+        },
+        {
+          "tick": 7501,
+          "signal_bits": "9a9999be"
+        }
+      ]
+    },
+    {
+      "rate": 48000.0,
+      "saved": 10000.0,
+      "duration_bits": "00401c46",
+      "ticks": 15000,
+      "factor_bits": "3403803f",
+      "checkpoints": [
+        {
+          "tick": 0,
+          "signal_bits": "00000080"
+        },
+        {
+          "tick": 1,
+          "signal_bits": "9a9913b7"
+        },
+        {
+          "tick": 7500,
+          "signal_bits": "c758c7bd"
+        },
+        {
+          "tick": 14999,
+          "signal_bits": "3e0a57be"
+        },
+        {
+          "tick": 15000,
+          "signal_bits": "9a9999be"
+        },
+        {
+          "tick": 15001,
+          "signal_bits": "9a9999be"
+        }
+      ]
+    },
+    {
+      "rate": 96000.0,
+      "saved": 0.0,
+      "duration_bits": "00000000",
+      "ticks": 0,
+      "factor_bits": "0000807f",
+      "checkpoints": [
+        {
+          "tick": 0,
+          "signal_bits": "9a9999be"
+        },
+        {
+          "tick": 1,
+          "signal_bits": "9a9999be"
+        }
+      ]
+    },
+    {
+      "rate": 96000.0,
+      "saved": 0.01,
+      "duration_bits": "0ad7233c",
+      "ticks": 0,
+      "factor_bits": "0000807f",
+      "checkpoints": [
+        {
+          "tick": 0,
+          "signal_bits": "9a9999be"
+        },
+        {
+          "tick": 1,
+          "signal_bits": "9a9999be"
+        }
+      ]
+    },
+    {
+      "rate": 96000.0,
+      "saved": 0.1,
+      "duration_bits": "cdcccc3d",
+      "ticks": 0,
+      "factor_bits": "0000807f",
+      "checkpoints": [
+        {
+          "tick": 0,
+          "signal_bits": "9a9999be"
+        },
+        {
+          "tick": 1,
+          "signal_bits": "9a9999be"
+        }
+      ]
+    },
+    {
+      "rate": 96000.0,
+      "saved": 0.6437108516693115,
+      "duration_bits": "3cca243f",
+      "ticks": 1,
+      "factor_bits": "aaaa8a40",
+      "checkpoints": [
+        {
+          "tick": 0,
+          "signal_bits": "00000080"
+        },
+        {
+          "tick": 1,
+          "signal_bits": "9a9999be"
+        },
+        {
+          "tick": 2,
+          "signal_bits": "9a9999be"
+        }
+      ]
+    },
+    {
+      "rate": 96000.0,
+      "saved": 1.0,
+      "duration_bits": "0000803f",
+      "ticks": 3,
+      "factor_bits": "78aed03f",
+      "checkpoints": [
+        {
+          "tick": 0,
+          "signal_bits": "00000080"
+        },
+        {
+          "tick": 1,
+          "signal_bits": "e05c68bd"
+        },
+        {
+          "tick": 2,
+          "signal_bits": "21cc18be"
+        },
+        {
+          "tick": 3,
+          "signal_bits": "9a9999be"
+        },
+        {
+          "tick": 4,
+          "signal_bits": "9a9999be"
+        }
+      ]
+    },
+    {
+      "rate": 96000.0,
+      "saved": 10.0,
+      "duration_bits": "00002041",
+      "ticks": 30,
+      "factor_bits": "6b69863f",
+      "checkpoints": [
+        {
+          "tick": 0,
+          "signal_bits": "00000080"
+        },
+        {
+          "tick": 1,
+          "signal_bits": "4dba93bb"
+        },
+        {
+          "tick": 15,
+          "signal_bits": "5c5fc7bd"
+        },
+        {
+          "tick": 29,
+          "signal_bits": "3e0a57be"
+        },
+        {
+          "tick": 30,
+          "signal_bits": "9a9999be"
+        },
+        {
+          "tick": 31,
+          "signal_bits": "9a9999be"
+        }
+      ]
+    },
+    {
+      "rate": 96000.0,
+      "saved": 100.0,
+      "duration_bits": "0000c842",
+      "ticks": 300,
+      "factor_bits": "8ea0803f",
+      "checkpoints": [
+        {
+          "tick": 0,
+          "signal_bits": "00000080"
+        },
+        {
+          "tick": 1,
+          "signal_bits": "6732e7b9"
+        },
+        {
+          "tick": 150,
+          "signal_bits": "275fc7bd"
+        },
+        {
+          "tick": 299,
+          "signal_bits": "3e0a57be"
+        },
+        {
+          "tick": 300,
+          "signal_bits": "9a9999be"
+        },
+        {
+          "tick": 301,
+          "signal_bits": "9a9999be"
+        }
+      ]
+    },
+    {
+      "rate": 96000.0,
+      "saved": 5000.0,
+      "duration_bits": "00409c45",
+      "ticks": 15000,
+      "factor_bits": "3403803f",
+      "checkpoints": [
+        {
+          "tick": 0,
+          "signal_bits": "00000080"
+        },
+        {
+          "tick": 1,
+          "signal_bits": "9a9913b7"
+        },
+        {
+          "tick": 7500,
+          "signal_bits": "c758c7bd"
+        },
+        {
+          "tick": 14999,
+          "signal_bits": "3e0a57be"
+        },
+        {
+          "tick": 15000,
+          "signal_bits": "9a9999be"
+        },
+        {
+          "tick": 15001,
+          "signal_bits": "9a9999be"
+        }
+      ]
+    },
+    {
+      "rate": 96000.0,
+      "saved": 10000.0,
+      "duration_bits": "00401c46",
+      "ticks": 30000,
+      "factor_bits": "9a01803f",
+      "checkpoints": [
+        {
+          "tick": 0,
+          "signal_bits": "00000080"
+        },
+        {
+          "tick": 1,
+          "signal_bits": "9a9993b6"
+        },
+        {
+          "tick": 15000,
+          "signal_bits": "965ac7bd"
+        },
+        {
+          "tick": 29999,
+          "signal_bits": "3e0a57be"
+        },
+        {
+          "tick": 30000,
+          "signal_bits": "9a9999be"
+        },
+        {
+          "tick": 30001,
+          "signal_bits": "9a9999be"
+        }
+      ]
+    }
+  ]
+}
