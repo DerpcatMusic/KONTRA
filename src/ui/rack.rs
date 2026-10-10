@@ -1106,12 +1106,12 @@ fn snapshot_row(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
         .map_or_else(|| paths.first(), |i| paths.get(i + 1))
         .cloned();
     let title = if part.snapshot.is_empty() {
-        "Select snapshot…".into()
+        "Select preset…".into()
     } else {
         super::header::stem(&part.snapshot)
     };
     let id = format!("snapshot-{slot}");
-    let (hit, selector) = dropdown(ui, id.as_str(), &title, "Snapshot");
+    let (hit, selector) = dropdown(ui, id.as_str(), &title, "Preset");
     if hit {
         menu::open_under(ui, cx, menu::Target::Snapshots(slot), &id);
     }
@@ -1127,14 +1127,14 @@ fn snapshot_row(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
         ui,
         format!("snapshot-prev-{slot}"),
         Icon::Left,
-        "Previous snapshot",
+        "Previous preset",
         previous.is_some(),
     );
     let (next_hit, next_el) = arrow(
         ui,
         format!("snapshot-next-{slot}"),
         Icon::Right,
-        "Next snapshot",
+        "Next preset",
         next.is_some(),
     );
     if let Some(path) = previous.filter(|_| prev_hit).or(next.filter(|_| next_hit)) {
