@@ -1,0 +1,645 @@
+{
+  "source_sha": "e6710e4e04c2404123a730d5b7977afa6a68c679",
+  "parent_sha": "b557602b540ab2e2b45875d4ec1fec1e38e8e587",
+  "count": 20,
+  "tests": [
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_filter": "compiled_raw_endpoints_and_distinct_symbolic_callbacks_without_heap",
+      "inventory_qualified_name": "sampler-ksp::rpn::compiled_raw_endpoints_and_distinct_symbolic_callbacks_without_heap",
+      "source_sha": "e6710e4e04c2404123a730d5b7977afa6a68c679",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 101,
+      "end_line": 134,
+      "span_sha256": "f5c9ea212826952cb350d31b4dc38a0f121bd4128e5cd04438dd4a982ca34389",
+      "status": "NOT_RUN",
+      "compile_status": "NOT_COMPILED_NOT_TYPECHECKED",
+      "fixtures": [
+        {
+          "sha256_of_rust_literal_bytes": "266f30b85650e04008742d9fdf00bd782746dfada3697f2ee0a04b6fd070d01d",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "dbb81e3b64aae837fce47b8327adde54d67900e536b375d49d7a7ae09b9ce7c3",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "ee9b122cb3aab0b9d569933580e914723a4a65a6dc6fd2511ce75a9316afca6a",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        }
+      ],
+      "inherited": true,
+      "strengthened": false
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_filter": "nested_named_callback_constants_reach_pcm_through_public_compiler",
+      "inventory_qualified_name": "sampler-ksp::rpn::nested_named_callback_constants_reach_pcm_through_public_compiler",
+      "source_sha": "e6710e4e04c2404123a730d5b7977afa6a68c679",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 137,
+      "end_line": 154,
+      "span_sha256": "b9d1e70af7f29b3f164689c952d9a5df709c4f8b56723e7ca3f8c8c86603f41f",
+      "status": "NOT_RUN",
+      "compile_status": "NOT_COMPILED_NOT_TYPECHECKED",
+      "fixtures": [
+        {
+          "sha256_of_rust_literal_bytes": "56933cd1f6d46b4040e192be7eb9ebfeb0f2c042199c41fa8a760b9b9c704ea7",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "dbe2041afeb0648098ac0d994d188e58134a3a8ba50c523128db362ecf1352cc",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        }
+      ],
+      "inherited": true,
+      "strengthened": false
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_filter": "payloads_survive_waits_and_other_messages_not_global_host_slots",
+      "inventory_qualified_name": "sampler-ksp::rpn::payloads_survive_waits_and_other_messages_not_global_host_slots",
+      "source_sha": "e6710e4e04c2404123a730d5b7977afa6a68c679",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 157,
+      "end_line": 184,
+      "span_sha256": "cf084c028846c2a8c3a296b90f3ed4761b9eee758779a334c28f031d148a8cb5",
+      "status": "NOT_RUN",
+      "compile_status": "NOT_COMPILED_NOT_TYPECHECKED",
+      "fixtures": [
+        {
+          "sha256_of_rust_literal_bytes": "bc17f49af4f5450727075af19315f5a823bd5dd2fbecd70ffc622b7942884872",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "60503cbeb296d2b313de6a467a773408f90d8028121f7e0ee67cdebde183d9ec",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        }
+      ],
+      "inherited": true,
+      "strengthened": false
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_filter": "same_kind_overlapping_waits_keep_independent_raw_payloads",
+      "inventory_qualified_name": "sampler-ksp::rpn::same_kind_overlapping_waits_keep_independent_raw_payloads",
+      "source_sha": "e6710e4e04c2404123a730d5b7977afa6a68c679",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 187,
+      "end_line": 198,
+      "span_sha256": "0072a51c37ebfc3a97294199d350cce06b3eb7e82f9be1b5e8346a94007114b2",
+      "status": "NOT_RUN",
+      "compile_status": "NOT_COMPILED_NOT_TYPECHECKED",
+      "fixtures": [
+        {
+          "sha256_of_rust_literal_bytes": "ff6973e928e2520bff6222329f6ba993ad865a59673b0b59a3736258ab9893fe",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "4982a6191aca43ff72796584deffa64e1ab0a27828d502101ba229227090951a",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        }
+      ],
+      "inherited": true,
+      "strengthened": false
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_filter": "later_stage_order_no_self_echo_and_monotonic_rebroadcast",
+      "inventory_qualified_name": "sampler-ksp::rpn::later_stage_order_no_self_echo_and_monotonic_rebroadcast",
+      "source_sha": "e6710e4e04c2404123a730d5b7977afa6a68c679",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 201,
+      "end_line": 237,
+      "span_sha256": "3ec1d7c55885c1124c1f448d71e2a19bf446cbed440343953e5d56ee60819f01",
+      "status": "NOT_RUN",
+      "compile_status": "NOT_COMPILED_NOT_TYPECHECKED",
+      "fixtures": [
+        {
+          "sha256_of_rust_literal_bytes": "ddda83807038f8b8568d598e092620773ec8c5ed6fd199ba52c0d006a4d606b9",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "506ef5ed5519e4b583b3eed4f2e9b0c6db79841f5317e83c1daaf50ce15d3bb1",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "e93ecb3142d4fdfb859461a2f5c3b3aa19405fa5b5999613b38d1403e7cafac8",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "b23e3aafd0b002d3cad3e565f851ac51991337e6ce2bccff9532fb429b89137c",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "f609711bb48b7213771c6a2ccd0df3b8fbd94427221e05c07e75b59611265ed9",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        }
+      ],
+      "inherited": true,
+      "strengthened": false
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_filter": "invalid_address_or_value_faults_sender_without_any_delivery",
+      "inventory_qualified_name": "sampler-ksp::rpn::invalid_address_or_value_faults_sender_without_any_delivery",
+      "source_sha": "e6710e4e04c2404123a730d5b7977afa6a68c679",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 240,
+      "end_line": 268,
+      "span_sha256": "06907da796e2b5fc903387f3405d907f2046764c2fb4004af76c893834e671a7",
+      "status": "NOT_RUN",
+      "compile_status": "NOT_COMPILED_NOT_TYPECHECKED",
+      "fixtures": [
+        {
+          "sha256_of_rust_literal_bytes": "cae68b0f47abecbc5a2a7c5c3607bed0c6532f70822693fc358d54c9b982e8af",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "274df2f029bf835fe088cc20e86895a5c4f841c530c6da452c1d37c3d22fb822",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "5c6d0f84c5f40eb51f73915d758632e46ff5b92fcbe68692d6ba2919811d3c71",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "c80a05ba03881a91300bf0bba65d68d831a1eb62aa4cf81dc8cc38080b68c502",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "c78a4a1b3d9eb7f58477aa5d85c023bce54990a12722997706f78dfe41ead9a3",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "ed0f3862506e166a485906ec8ab8e88f5d56a8545bd21bea9bcc2be248902d0f",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "069db32fc106c94d9dc41d00c3365b3951fcfcb96b99c132bd6618a3dfc9fd23",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "e46d9a4310a1053ad9f005b6b13d8ee3060e175962680e579063145077125d80",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        }
+      ],
+      "inherited": true,
+      "strengthened": false
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_filter": "insufficient_fanout_capacity_is_explicit_and_atomic",
+      "inventory_qualified_name": "sampler-ksp::rpn::insufficient_fanout_capacity_is_explicit_and_atomic",
+      "source_sha": "e6710e4e04c2404123a730d5b7977afa6a68c679",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 271,
+      "end_line": 289,
+      "span_sha256": "6de28bf6f22a0fe9597cc7ead13aba5c8801a1ad41fda912248a2eeb3ca9c9b2",
+      "status": "NOT_RUN",
+      "compile_status": "NOT_COMPILED_NOT_TYPECHECKED",
+      "fixtures": [
+        {
+          "sha256_of_rust_literal_bytes": "b23e3aafd0b002d3cad3e565f851ac51991337e6ce2bccff9532fb429b89137c",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "f609711bb48b7213771c6a2ccd0df3b8fbd94427221e05c07e75b59611265ed9",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        }
+      ],
+      "inherited": true,
+      "strengthened": false
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_filter": "repeated_messages_fill_waiting_arena_then_fault_without_unbounded_queue",
+      "inventory_qualified_name": "sampler-ksp::rpn::repeated_messages_fill_waiting_arena_then_fault_without_unbounded_queue",
+      "source_sha": "e6710e4e04c2404123a730d5b7977afa6a68c679",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 292,
+      "end_line": 310,
+      "span_sha256": "41501253980eb740d5ae90e568a33a584acb12363779707e951841c173bdf632",
+      "status": "NOT_RUN",
+      "compile_status": "NOT_COMPILED_NOT_TYPECHECKED",
+      "fixtures": [
+        {
+          "sha256_of_rust_literal_bytes": "8220ee6c28d99277800f34e8a67373ae570b0669071edc91e1ad9e52e9d8c4b0",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "f90af01a7edabf8f61e1a5697255ead2f4d8d4bbeffa13ec56325b2749544051",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        }
+      ],
+      "inherited": true,
+      "strengthened": false
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_filter": "initialization_remains_warn_noop_without_runtime_replay",
+      "inventory_qualified_name": "sampler-ksp::rpn::initialization_remains_warn_noop_without_runtime_replay",
+      "source_sha": "e6710e4e04c2404123a730d5b7977afa6a68c679",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 313,
+      "end_line": 331,
+      "span_sha256": "da3f44fa19f21cfe8dad22c21bffe7853449e71c3827e8e412f99c92772bf532",
+      "status": "NOT_RUN",
+      "compile_status": "NOT_COMPILED_NOT_TYPECHECKED",
+      "fixtures": [
+        {
+          "sha256_of_rust_literal_bytes": "453b9c3d551625526a3809cafb0da8f6386495ed156b68f235b56a7fae4496e4",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "453b9c3d551625526a3809cafb0da8f6386495ed156b68f235b56a7fae4496e4",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "e46d9a4310a1053ad9f005b6b13d8ee3060e175962680e579063145077125d80",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        }
+      ],
+      "inherited": true,
+      "strengthened": false
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_filter": "ordinary_controller_and_numeric_pgs_keep_their_existing_routes",
+      "inventory_qualified_name": "sampler-ksp::rpn::ordinary_controller_and_numeric_pgs_keep_their_existing_routes",
+      "source_sha": "e6710e4e04c2404123a730d5b7977afa6a68c679",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 334,
+      "end_line": 363,
+      "span_sha256": "944a8c6f7174af8be66705f7604dd542aa88ef71981ad9ee1c8e65bc1649c932",
+      "status": "NOT_RUN",
+      "compile_status": "NOT_COMPILED_NOT_TYPECHECKED",
+      "fixtures": [
+        {
+          "sha256_of_rust_literal_bytes": "05ca7b3c6c8b3baef77f6709f774ee32c389659fdc57bcf2a3a7064231dad619",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "999fb8d0942ab28b9682d38c1e79ee0e9d4a525f3400493fb770ef939395613e",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        }
+      ],
+      "inherited": true,
+      "strengthened": false
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_filter": "sender_and_receiver_waits_stay_in_retained_generation_and_part",
+      "inventory_qualified_name": "sampler-ksp::rpn::sender_and_receiver_waits_stay_in_retained_generation_and_part",
+      "source_sha": "e6710e4e04c2404123a730d5b7977afa6a68c679",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 366,
+      "end_line": 399,
+      "span_sha256": "9ce3ff63f2d811a7a90e9d7eda9d48400043661e4ba9cee0d606bbd9ebe545dd",
+      "status": "NOT_RUN",
+      "compile_status": "NOT_COMPILED_NOT_TYPECHECKED",
+      "fixtures": [
+        {
+          "sha256_of_rust_literal_bytes": "5d0b9370409f9f235681369a5b5e79df19728df89eb5bcbe48da04377d1499fe",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "9810a2ec2c23778343c13a7ca5571a8876be93c1a49e5699346d4eef20b6b280",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        }
+      ],
+      "inherited": true,
+      "strengthened": false
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_filter": "receiver_generated_note_retains_physical_origin_and_performance",
+      "inventory_qualified_name": "sampler-ksp::rpn::receiver_generated_note_retains_physical_origin_and_performance",
+      "source_sha": "e6710e4e04c2404123a730d5b7977afa6a68c679",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 402,
+      "end_line": 431,
+      "span_sha256": "94ab7a469bced94f76f4c19cf4421f99b13b5a843be1cb6ae95df42dd92c90af",
+      "status": "NOT_RUN",
+      "compile_status": "NOT_COMPILED_NOT_TYPECHECKED",
+      "fixtures": [
+        {
+          "sha256_of_rust_literal_bytes": "5c7a4a4760796c73838668e2e29db2bc6fe518adc8f6238cbb987f06d60617cb",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "4b9c6a87c524f02fcfcb65cb41ffbcbbf9e72986b15696083fce4cb017456066",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        }
+      ],
+      "inherited": true,
+      "strengthened": false
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_filter": "midi_and_nka_job_ids_wait_completion_and_instances_remain_independent",
+      "inventory_qualified_name": "sampler-ksp::rpn::midi_and_nka_job_ids_wait_completion_and_instances_remain_independent",
+      "source_sha": "e6710e4e04c2404123a730d5b7977afa6a68c679",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 434,
+      "end_line": 493,
+      "span_sha256": "f908702e03b8893627f12472af9f533f04cc7a83a4ec9da98e8162b2257ccb76",
+      "status": "NOT_RUN",
+      "compile_status": "NOT_COMPILED_NOT_TYPECHECKED",
+      "fixtures": [
+        {
+          "sha256_of_rust_literal_bytes": "28699f100f95407df2c0e7e9cca9fd33ea05ac31d052a0ff38d6e5d7e5662c74",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "762ba011d302aa001cb1315e77d981185ec206f439a7e18f703d5094eb93ee64",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "path": "crates/sampler-ksp/tests/fixtures/rpn-service-neighbors.ksp",
+          "sha256": "4de38f22c760774339b18d041b60034d1d42779fc7c191c5900ce69d2a6c3506"
+        }
+      ],
+      "inherited": true,
+      "strengthened": false
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_filter": "parameter_binding_rejects_invalid_stage_and_duplicate_kind_and_resets_with_programs",
+      "inventory_qualified_name": "sampler-ksp::rpn::parameter_binding_rejects_invalid_stage_and_duplicate_kind_and_resets_with_programs",
+      "source_sha": "e6710e4e04c2404123a730d5b7977afa6a68c679",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 496,
+      "end_line": 532,
+      "span_sha256": "2fbccc0f2f8d3d917800eac7380c3d99f808fbdbbcc0fe3e1774993a122a32bf",
+      "status": "NOT_RUN",
+      "compile_status": "NOT_COMPILED_NOT_TYPECHECKED",
+      "fixtures": [
+        {
+          "sha256_of_rust_literal_bytes": "370ebb95501b626cfe08e63e69505bd17f008cf56da032b7bd85c4c4833b95f4",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "cbcfae55b6c1415a177841e7fc65f6b9d9f03fcc808ca9aef9db81a6fe89bdc8",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        }
+      ],
+      "inherited": true,
+      "strengthened": true
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_filter": "compiled_three_module_rotation_requires_clear_and_exact_receiver_rebind",
+      "inventory_qualified_name": "sampler-ksp::rpn::compiled_three_module_rotation_requires_clear_and_exact_receiver_rebind",
+      "source_sha": "e6710e4e04c2404123a730d5b7977afa6a68c679",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 535,
+      "end_line": 601,
+      "span_sha256": "89ff9927fbf6cc9ecd0ac339e743d9558a4185746e3294d7cf93d6b6dce27bb4",
+      "status": "NOT_RUN",
+      "compile_status": "NOT_COMPILED_NOT_TYPECHECKED",
+      "fixtures": [
+        {
+          "sha256_of_rust_literal_bytes": "72b7731d3f3036fd6cf5fedc64501d363561dce997ea649c40a2e20080aa594d",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "fabae3217d75d50a5349483bbafbba041c3e7321de9cd1610aa193a86287562f",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "d7b33200ede686286f1cceff4808e4a19fa7023f5a6c72771c24e06249f4677d",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        }
+      ],
+      "inherited": false,
+      "strengthened": false
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_filter": "receiver_only_stage_setters_preserve_identical_schema_or_require_explicit_rebind",
+      "inventory_qualified_name": "sampler-ksp::rpn::receiver_only_stage_setters_preserve_identical_schema_or_require_explicit_rebind",
+      "source_sha": "e6710e4e04c2404123a730d5b7977afa6a68c679",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 604,
+      "end_line": 678,
+      "span_sha256": "a04a50029a403fe2c0640e802173d45a80e34e38abe131f7869438932dcbae81",
+      "status": "NOT_RUN",
+      "compile_status": "NOT_COMPILED_NOT_TYPECHECKED",
+      "fixtures": [
+        {
+          "sha256_of_rust_literal_bytes": "c22fb5e9646e17ed8ff27c7827f1f2571c40158aea9afe558bc5f3a593da9af0",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "2d7e198b8bc79f8d7abedc0a43c2aa20b8f8cff7803c3b46503f2cb778230d9c",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        }
+      ],
+      "inherited": false,
+      "strengthened": false
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_filter": "parameter_binding_rejects_unrelated_ordinary_and_mixed_receiver_owners",
+      "inventory_qualified_name": "sampler-ksp::rpn::parameter_binding_rejects_unrelated_ordinary_and_mixed_receiver_owners",
+      "source_sha": "e6710e4e04c2404123a730d5b7977afa6a68c679",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 681,
+      "end_line": 720,
+      "span_sha256": "8db4bab86dba3711415d968f8a49d4278f0f5c0f9239f147fe58d5dae1b5e11e",
+      "status": "NOT_RUN",
+      "compile_status": "NOT_COMPILED_NOT_TYPECHECKED",
+      "fixtures": [
+        {
+          "sha256_of_rust_literal_bytes": "370ebb95501b626cfe08e63e69505bd17f008cf56da032b7bd85c4c4833b95f4",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "cbcfae55b6c1415a177841e7fc65f6b9d9f03fcc808ca9aef9db81a6fe89bdc8",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "ad833dc134a3cac978b3a233715cee205e2bbd114898f19b48ebf9762c5222b9",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        }
+      ],
+      "inherited": false,
+      "strengthened": false
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_filter": "preempted_sender_defers_receivers_fifo_and_preserves_numeric_pgs_controller_order",
+      "inventory_qualified_name": "sampler-ksp::rpn::preempted_sender_defers_receivers_fifo_and_preserves_numeric_pgs_controller_order",
+      "source_sha": "e6710e4e04c2404123a730d5b7977afa6a68c679",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 723,
+      "end_line": 813,
+      "span_sha256": "1cf88bee27b14abf2180d8581b0e8f5853eb0783793dfc6aabf8fb8418477d9c",
+      "status": "NOT_RUN",
+      "compile_status": "NOT_COMPILED_NOT_TYPECHECKED",
+      "fixtures": [
+        {
+          "sha256_of_rust_literal_bytes": "e99a2c9c7be872c2ba6fef488aff5c9421c15d0561f78a651d99d57b982ccbb7",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "bf2b6ca2a9403f452ea3fd25a1bf8080c2cfa1d325081e0884b84f681cf3c70f",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "f73da64a71d334647275d8e69814a691d4faa8b2c4bd87f656bdbe4ce0499f87",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "1e0f56f733afc5af6d7b15bc6e67cfb06e32fc8f697ade1d8e05a445c1e9940f",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "9e38e3ba575740655ed8714127bfcd9a05623fdc09f6c5672bf9c9dc83da743f",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "kind": "format-generated synthetic sender",
+          "cases": [
+            "send=false",
+            "send=true"
+          ],
+          "public_block_budget": "1 -> queue younger work -> 8192; assert admitted receivers pc0"
+        }
+      ],
+      "inherited": false,
+      "strengthened": false
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_filter": "deferred_fanout_pressure_faults_atomically_without_heap_or_partial_second_message",
+      "inventory_qualified_name": "sampler-ksp::rpn::deferred_fanout_pressure_faults_atomically_without_heap_or_partial_second_message",
+      "source_sha": "e6710e4e04c2404123a730d5b7977afa6a68c679",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 816,
+      "end_line": 869,
+      "span_sha256": "b2f558fefc8e0b18bd888902da1d0b604ca7fa33d5efdb459e69996b218f3250",
+      "status": "NOT_RUN",
+      "compile_status": "NOT_COMPILED_NOT_TYPECHECKED",
+      "fixtures": [
+        {
+          "sha256_of_rust_literal_bytes": "8f60f526f900d305e5ca8ee803a56fca6ab12f6c41a451b4d7d31d31a1394934",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "714e56ca63532683674f213d7e21f3c30ab7f2dd15d9a5381cadcff2e4ea1549",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "714e56ca63532683674f213d7e21f3c30ab7f2dd15d9a5381cadcff2e4ea1549",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "kind": "inline synthetic deferred pressure",
+          "capacities": [
+            3,
+            5
+          ],
+          "public_block_budget": "1 -> queue younger work -> 8192; first/second-message atomic fault"
+        }
+      ],
+      "inherited": false,
+      "strengthened": false
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_filter": "sparse_physical_slots_nonzero_sender_and_separate_notes_keep_private_payloads",
+      "inventory_qualified_name": "sampler-ksp::rpn::sparse_physical_slots_nonzero_sender_and_separate_notes_keep_private_payloads",
+      "source_sha": "e6710e4e04c2404123a730d5b7977afa6a68c679",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 872,
+      "end_line": 920,
+      "span_sha256": "8e09e547da194900f5e1531d88f605ec74563ea212d3a562e2af158330e57aa9",
+      "status": "NOT_RUN",
+      "compile_status": "NOT_COMPILED_NOT_TYPECHECKED",
+      "fixtures": [
+        {
+          "sha256_of_rust_literal_bytes": "b23e3aafd0b002d3cad3e565f851ac51991337e6ce2bccff9532fb429b89137c",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "02b455c504c2affd865a3a87e55c0d0a20bbb21d72702545ad337d93d01c8de8",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "sha256_of_rust_literal_bytes": "5f7a374ba6d6e4639afc6e8aa2b1ee279261b74aaa14df8092a5bcc60600f86a",
+          "kind": "inline Rust literal / synthetic source or assertion"
+        },
+        {
+          "kind": "inline synthetic sparse source slots",
+          "slots": [
+            4,
+            0,
+            2
+          ],
+          "sender_instance": 1,
+          "separate_note_inputs": [
+            60,
+            61
+          ]
+        }
+      ],
+      "inherited": false,
+      "strengthened": false
+    }
+  ],
+  "required_future_package_targets": [
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "exact_harness_filters": [
+        "compiled_raw_endpoints_and_distinct_symbolic_callbacks_without_heap",
+        "nested_named_callback_constants_reach_pcm_through_public_compiler",
+        "payloads_survive_waits_and_other_messages_not_global_host_slots",
+        "same_kind_overlapping_waits_keep_independent_raw_payloads",
+        "later_stage_order_no_self_echo_and_monotonic_rebroadcast",
+        "invalid_address_or_value_faults_sender_without_any_delivery",
+        "insufficient_fanout_capacity_is_explicit_and_atomic",
+        "repeated_messages_fill_waiting_arena_then_fault_without_unbounded_queue",
+        "initialization_remains_warn_noop_without_runtime_replay",
+        "ordinary_controller_and_numeric_pgs_keep_their_existing_routes",
+        "sender_and_receiver_waits_stay_in_retained_generation_and_part",
+        "receiver_generated_note_retains_physical_origin_and_performance",
+        "midi_and_nka_job_ids_wait_completion_and_instances_remain_independent",
+        "parameter_binding_rejects_invalid_stage_and_duplicate_kind_and_resets_with_programs",
+        "compiled_three_module_rotation_requires_clear_and_exact_receiver_rebind",
+        "receiver_only_stage_setters_preserve_identical_schema_or_require_explicit_rebind",
+        "parameter_binding_rejects_unrelated_ordinary_and_mixed_receiver_owners",
+        "preempted_sender_defers_receivers_fifo_and_preserves_numeric_pgs_controller_order",
+        "deferred_fanout_pressure_faults_atomically_without_heap_or_partial_second_message",
+        "sparse_physical_slots_nonzero_sender_and_separate_notes_keep_private_payloads"
+      ]
+    }
+  ],
+  "authorization": "NONE. Following central combined offline/release -j1 cycle only after fresh review and new authorization."
+}
