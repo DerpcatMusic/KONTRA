@@ -185,9 +185,11 @@ fn fade_curve_array_selectors_reach_audio_and_use_time_mirrored_fade_out() {
                 }
                 let gain = if out { fade_out } else { fade_in };
                 assert!(
-                    close(audio[1200], [0.5 * gain; 2]),
-                    "curve {index}, out {out}, block {block}: {:?}",
-                    audio[1200]
+                    audio[1199]
+                        .iter()
+                        .all(|value| (value - 0.5 * gain).abs() < 2e-7),
+                    "curve {index}, out {out}, block {block}, elapsed1200: {:?}",
+                    audio[1199]
                 );
                 assert!(rt.take_fault().is_none());
             }
@@ -197,7 +199,7 @@ fn fade_curve_array_selectors_reach_audio_and_use_time_mirrored_fade_out() {
 
 #[test]
 fn fade_curve_inside_mix_cell_matches_exponential_not_endpoint_interpolation() {
-    // Frame16 is inside the engine's32-frame gain cell, not at its endpoints.
+    // Sample-end clock: index15 is elapsed16, inside the 64-frame gain cell.
     for out in [false, true] {
         for block in [1, 17, 128] {
             let call = if out {
@@ -214,13 +216,54 @@ fn fade_curve_inside_mix_cell_matches_exponential_not_endpoint_interpolation() {
             let t = 16.0_f32 / 384.0; // Exactly8000us at48kHz.
             let expected = 0.5 * if out { (1.0 - t).powi(2) } else { t.powi(2) };
             assert!(
-                audio[16]
+                audio[15]
                     .iter()
                     .all(|value| (value - expected).abs() < 1e-7),
-                "out {out}, block {block}, frame16: {:?}, expected {expected}",
-                audio[16]
+                "out {out}, block {block}, elapsed16: {:?}, expected {expected}",
+                audio[15]
             );
             assert!(rt.take_fault().is_none());
+        }
+    }
+}
+
+#[test]
+fn fade_curve_script_clock_and_omitted_linear_match_sample_end_control() {
+    for origin in [0, 128] {
+        for out in [false, true] {
+            for block in [1, 17, 128] {
+                let mut previous = None;
+                for selector in ["", ",$NI_FADE_LINEAR"] {
+                    let call = if out {
+                        format!("fade_out($EVENT_ID,8000,0{selector})")
+                    } else {
+                        format!("fade_in($EVENT_ID,8000{selector})")
+                    };
+                    let mut rt = runtime(&format!("on note {call} end on"));
+                    rt.render(&mut vec![[0.; 2]; origin]).unwrap();
+                    assert_eq!(rt.now(), origin as u64);
+                    rt.trigger(input(60), 60, 1.).unwrap();
+                    assert_eq!(rt.now(), origin as u64); // Callback runs synchronously.
+                    let mut audio = [[0.; 2]; 385];
+                    for chunk in audio.chunks_mut(block) {
+                        rt.render(chunk).unwrap();
+                    }
+                    for index in [0, 15, 383, 384] {
+                        let t = ((index + 1) as f32 / 384.).min(1.);
+                        let expected = 0.5 * if out { 1. - t } else { t };
+                        assert!(
+                            audio[index].iter().all(|v| (v - expected).abs() < 1e-7),
+                            "origin {origin}, out {out}, block {block}, index {index}: {:?}",
+                            audio[index]
+                        );
+                    }
+                    if let Some(default) = previous {
+                        assert_eq!(audio, default); // Optional selector keeps legacy PCM bits.
+                    }
+                    previous = Some(audio);
+                    assert!(rt.take_fault().is_none());
+                }
+            }
         }
     }
 }
