@@ -359,3 +359,72 @@ fn curved_release_choke_captures_the_next_level_and_never_extends_one_shot_compl
     assert_eq!(output.map(|f| f[0]), [1., 0.75, 0.5, 0.25, 0., 0.]);
     assert_eq!(rt.voice_count(), 0);
 }
+
+#[test]
+fn envelope_duration_controls_preserve_authored_step_curves_in_render() {
+    use sampler_core::{ControlValue, ControlWrite, EnvelopeCurve, engine_parameter_id};
+    let step = EnvelopeCurve::step();
+    let envelope = Envelope::new(2, 0, 2, 0.25, 2)
+        .unwrap()
+        .with_curves(step, step, step);
+    for block in [1, 3, 14] {
+        let plan = Prepared::new(
+            48000,
+            vec![Pcm::new(48000, Box::from([[1.; 2]; 64])).unwrap()],
+            vec![Region {
+                sample: 0,
+                key_low: 60,
+                key_high: 60,
+                root_key: None,
+                velocity_low: 0.,
+                velocity_high: 1.,
+                gain: 1.,
+                envelope,
+                playback: sampler_core::Playback::default(),
+            }],
+            1,
+        )
+        .unwrap()
+        .with_groups(1, vec![Some(0)])
+        .unwrap()
+        .with_group_envelope_parameters(0, 0, 5, envelope)
+        .unwrap();
+        let writes = [
+            "ENGINE_PAR_ATTACK",
+            "ENGINE_PAR_DECAY",
+            "ENGINE_PAR_RELEASE",
+        ]
+        .map(|name| {
+            let parameter = engine_parameter_id(name).unwrap();
+            let binding = plan
+                .engine_parameter_bindings()
+                .iter()
+                .find(|binding| binding.address.parameter == parameter)
+                .unwrap();
+            ControlWrite {
+                id: binding.control,
+                value: ControlValue::Real(4.),
+            }
+        });
+        let limits = Limits::for_plan(&plan, 2, 4);
+        let mut rt = Runtime::new(plan, limits).unwrap();
+        support::without_heap(|| {
+            rt.edit_controls(rt.active_plan(), None, &writes).unwrap();
+            let note = rt.trigger(input(1), 60, 1.).unwrap();
+            rt.schedule_event(8, Event::KeyUp(note, None)).unwrap();
+            let mut output = [[0.; 2]; 14];
+            for chunk in output.chunks_mut(block) {
+                rt.render(chunk).unwrap();
+            }
+            assert_eq!(
+                output.map(|frame| frame[0]),
+                [
+                    0., 0., 0., 0., 1., 1., 1., 1., 0.25, 0.25, 0.25, 0.25, 0., 0.
+                ],
+                "block {block}: duration edits must retain Step rather than become linear"
+            );
+            assert!(output.iter().all(|frame| frame[0] == frame[1]));
+            assert_eq!((rt.voice_count(), rt.family_count()), (0, 0));
+        });
+    }
+}
