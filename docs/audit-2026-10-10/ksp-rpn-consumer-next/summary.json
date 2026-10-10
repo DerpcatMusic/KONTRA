@@ -1,0 +1,182 @@
+{
+  "state": "SOURCE_AUTHORED_REVIEW_BLOCKED",
+  "source_ready_for_integration": false,
+  "green": false,
+  "branch": "pi/ksp-rpn-consumer-next",
+  "checkout": "/home/derpcat/.t3/worktrees/KONTAKTO/ksp-rpn-consumer-next",
+  "parent_sha": "2a243bcfa2262abb789265aa0951fd2a85854023",
+  "parent_tree": "c9504d7133090d35117048895189f50fdfa8fb6a",
+  "source_commit": "3cc0f94ea625715028897d4611c0d477ccfed724",
+  "source_tree": "f8e7a7457ddacd63e1c79e8f00d056abf343ce7a",
+  "source_commit_preserved_for_review": true,
+  "production_paths_changed": 8,
+  "source_and_test_paths_changed": 10,
+  "compile_status": "NOT_COMPILED_NOT_TYPECHECKED",
+  "authored_tests": {
+    "status": "NOT_RUN",
+    "count": 14,
+    "package": "sampler-ksp",
+    "target": "rpn",
+    "qualified_names": [
+      "compiled_raw_endpoints_and_distinct_symbolic_callbacks_without_heap",
+      "nested_named_callback_constants_reach_pcm_through_public_compiler",
+      "payloads_survive_waits_and_other_messages_not_global_host_slots",
+      "same_kind_overlapping_waits_keep_independent_raw_payloads",
+      "later_stage_order_no_self_echo_and_monotonic_rebroadcast",
+      "invalid_address_or_value_faults_sender_without_any_delivery",
+      "insufficient_fanout_capacity_is_explicit_and_atomic",
+      "repeated_messages_fill_waiting_arena_then_fault_without_unbounded_queue",
+      "initialization_remains_warn_noop_without_runtime_replay",
+      "ordinary_controller_and_numeric_pgs_keep_their_existing_routes",
+      "sender_and_receiver_waits_stay_in_retained_generation_and_part",
+      "receiver_generated_note_retains_physical_origin_and_performance",
+      "midi_and_nka_job_ids_wait_completion_and_instances_remain_independent",
+      "parameter_binding_rejects_invalid_stage_and_duplicate_kind_and_resets_with_programs"
+    ],
+    "fixtures_map": "tests.json"
+  },
+  "native": "UNKNOWN",
+  "native_check": {
+    "operation": "REA current_document",
+    "result": "target_unavailable",
+    "receipt": "rea-current-document.json",
+    "target_opened": false
+  },
+  "performance_goal": "CPU AND RAM below BOTH v1 and Kontakt UNACHIEVED",
+  "runtime_claims": false,
+  "initialization": {
+    "status": "UNSUPPORTED_GATE_PRESERVED",
+    "policy": "Evaluator warns/no-ops. No runtime replay or initialization parity claim."
+  },
+  "own_policy": {
+    "routing": "Matching later compiled stages, ascending starts, no sender instance; waits/preemption may interleave completion.",
+    "validation": "Raw integer address/value0..16383; InvalidInput fault. Immediate fanout capacity/ID preflight; Capacity fault before admission.",
+    "payload": "Private existing Continuation; plan/instance/captured physical origin/performance retained across waits; no host/UI message roundtrip.",
+    "generation": "Old sender/receiver waits remain in old retained plan, not active replacement or other runtime; retired handles stale.",
+    "constants": "Symbolic callback names use own existing internal discriminants; no NI numeric ABI5/6 claim."
+  },
+  "unresolved_objections": [
+    {
+      "id": "parameter-stage-identity-lifecycle",
+      "status": "SOURCE_FINDING_PRELIMINARY_REVIEW_PENDING",
+      "source_sha": "3cc0f94ea625715028897d4611c0d477ccfed724",
+      "finding": "with_parameter_programs validates stage range but not receiver script-instance/stage association. with_stages permits same-length reorder/replacement without remapping/rejecting parameter-stage identity. Swapped stages can suppress original receiver or run wrong projection context.",
+      "severity": "PENDING_TERMINAL_REVIEW",
+      "runtime_reproduction": "NOT_RUN_PENDING",
+      "blocks_future_integration": true,
+      "response": "Source3cc preserved unchanged; no broad/rushed fix/build. Root will assign fresh followup after terminal review.",
+      "missing_authored_regressions": [
+        "same-length stage reorder/replacement",
+        "wrong in-range script-instance/stage binding"
+      ]
+    }
+  ],
+  "static_evidence": {
+    "state": "STATIC_CUSTODY_VERIFIED_NOT_PRODUCT_VALIDATION",
+    "source_sha": "3cc0f94ea625715028897d4611c0d477ccfed724",
+    "parent_sha": "2a243bcfa2262abb789265aa0951fd2a85854023",
+    "source_files": 20,
+    "symbol_span_records": 39,
+    "versioned_spans": 67,
+    "historical_retraces": 13,
+    "tests_not_run": 14,
+    "immutable_archives": 4,
+    "sections_reextracted": 7,
+    "corruption_cases_rejected": [
+      "source_commit",
+      "source_tree",
+      "file_digest",
+      "git_blob",
+      "source_span_digest",
+      "test_name",
+      "test_credit",
+      "fixture_swap",
+      "archive_digest",
+      "excerpt_corruption"
+    ],
+    "native": "UNKNOWN",
+    "cpu_and_ram_below_both": "UNACHIEVED",
+    "limit": "Hash/metadata/source/scalar checks only; not Rust compilation, execution, native behavior, or performance evidence."
+  },
+  "artifacts": [
+    {
+      "path": "README.md",
+      "sha256": "57c4adce379ac1c492250d879ef262fb92104f243aaa9a1962145e7a9f68b99f"
+    },
+    {
+      "path": "build-evidence.py",
+      "sha256": "98577cf684cd23cc199738541ada9e703ce293a49f4c72f349fdcda0fa2ca9a5"
+    },
+    {
+      "path": "verify-evidence.py",
+      "sha256": "ba765b259d617db5c0c63e478ea5b9bfbabc0eac0da8b3233ee73b47132dcc17"
+    },
+    {
+      "path": "owners-and-callers.json",
+      "sha256": "8e6baa08245810b9aecb5e9ebaac42eb24cbbaa950ddc00a6ea87fcbd35a425c"
+    },
+    {
+      "path": "primary-authority.json",
+      "sha256": "1b49069c9e1cdf0f07252df1ee26ef9104bc48a8f032df31365343b0b1c4cc8b"
+    },
+    {
+      "path": "rea-current-document.json",
+      "sha256": "35c9f060b7f6a592f61b084c009c2bee4c4f1be4ef0e55e8df98362a1fd03749"
+    },
+    {
+      "path": "source-trace.json",
+      "sha256": "5e35c0e6c61bc81d6f6884e2bbca9ef7ee372c288b868125c1b19d60bb97ee08"
+    },
+    {
+      "path": "static-checks.json",
+      "sha256": "d7b464f4ac0549f58fe731a626f1850b9a554e1b036828bffadb47cd59a8dce7"
+    },
+    {
+      "path": "tests.json",
+      "sha256": "a4f812789df055779c947261659a4d7d64bf28ed60c100563acfeede23a6608c"
+    },
+    {
+      "path": "verification.json",
+      "sha256": "3b0c2f659ee39d67195ed59f38dc4403b5d86cea17011a95dfbe66c82fbd09e0"
+    }
+  ],
+  "constraints": {
+    "no_cargo_rustc_clippy_or_product_execution": true,
+    "no_native_host_reader_or_database_import": true,
+    "no_new_dependencies_options_or_generic_framework": true,
+    "no_pgs_string_scope": true,
+    "no_ui_plugin_or_frozen_endpoint_edits": true,
+    "no_target_or_wrapper_override": true,
+    "no_nested_agents_servers_timers_installs_push_publication_or_main_merge": true
+  },
+  "future_validation": {
+    "currently_authorized_here": false,
+    "integration_prerequisite": "Terminal independent review and root-assigned fresh stage-identity/setter-lifecycle correction; do not compose immutable3cc unchanged.",
+    "owner": "Root central sole combined validation owner, following batch after current frozenbatch; separate explicit authorization required.",
+    "package_targets": [
+      {
+        "package": "sampler-ksp",
+        "target": "rpn",
+        "qualified_names": [
+          "compiled_raw_endpoints_and_distinct_symbolic_callbacks_without_heap",
+          "nested_named_callback_constants_reach_pcm_through_public_compiler",
+          "payloads_survive_waits_and_other_messages_not_global_host_slots",
+          "same_kind_overlapping_waits_keep_independent_raw_payloads",
+          "later_stage_order_no_self_echo_and_monotonic_rebroadcast",
+          "invalid_address_or_value_faults_sender_without_any_delivery",
+          "insufficient_fanout_capacity_is_explicit_and_atomic",
+          "repeated_messages_fill_waiting_arena_then_fault_without_unbounded_queue",
+          "initialization_remains_warn_noop_without_runtime_replay",
+          "ordinary_controller_and_numeric_pgs_keep_their_existing_routes",
+          "sender_and_receiver_waits_stay_in_retained_generation_and_part",
+          "receiver_generated_note_retains_physical_origin_and_performance",
+          "midi_and_nka_job_ids_wait_completion_and_instances_remain_independent",
+          "parameter_binding_rejects_invalid_stage_and_duplicate_kind_and_resets_with_programs"
+        ]
+      }
+    ],
+    "policy": "ONE combined Cargo offline/release -j1 with shared target and existing sccache configuration; no standalone run/extra matrix requested by this lane."
+  },
+  "docs_path": "docs/audit-2026-10-10/ksp-rpn-consumer-next",
+  "requirement_handoff_sha256": "613adb5b09356b7616794e0db90b3b38a4d7ba4f54636f8e805c658c465009c7"
+}
