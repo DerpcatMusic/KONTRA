@@ -1291,9 +1291,12 @@ impl Runtime {
     }
 
     pub(super) fn drain_behavior(&mut self) {
-        if self.dispatching_behavior {
+        if self.dispatching_behavior || self.behavior_ready.is_empty() {
             return;
         }
+        let time = self.behavior_time_left;
+        let started = time.map(|_| std::time::Instant::now());
+        let mut time_check_steps = 64usize;
         self.dispatching_behavior = true;
         // A bounded explicit stack preserves synchronous nested callback ordering.
         // Each suspended caller retains its own remaining fuel, never a Rust frame.
@@ -1338,13 +1341,22 @@ impl Runtime {
                 self.behavior_ready.remove(index);
                 continue;
             };
+            if time_check_steps >= 64 {
+                time_check_steps = 0;
+                if started.zip(time).is_some_and(|(start, left)| start.elapsed() >= left) {
+                    self.block_fuel_left = 0;
+                }
+            }
             if fuel == 0 || self.block_fuel_left == 0 {
                 self.behavior_ready.remove(index);
                 self.yield_behavior(id);
                 continue;
             }
-            let ran = self.run_straight(id, fuel.min(self.block_fuel_left));
+            // Bound the interval between clock checks without timing every instruction.
+            let slice = if started.is_some() { 256 } else { usize::MAX };
+            let ran = self.run_straight(id, fuel.min(self.block_fuel_left).min(slice));
             if ran > 0 {
+                time_check_steps = time_check_steps.saturating_add(ran);
                 self.block_fuel_left = self.block_fuel_left.saturating_sub(ran);
                 self.behavior_ready[index] = Ready::Resume {
                     id,
@@ -1352,6 +1364,7 @@ impl Runtime {
                 };
                 continue;
             }
+            time_check_steps += 1;
             self.behavior_ready[index] = Ready::Resume { id, fuel: fuel - 1 };
             self.block_fuel_left = self.block_fuel_left.saturating_sub(1);
             self.behaviors.get_mut(id.0).unwrap().pc += 1;
@@ -1376,6 +1389,9 @@ impl Runtime {
                     self.behavior_ready.remove(index);
                 }
             }
+        }
+        if let Some((start, left)) = started.zip(time) {
+            self.behavior_time_left = Some(left.saturating_sub(start.elapsed()));
         }
         self.dispatching_behavior = false;
     }

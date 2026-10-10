@@ -39,6 +39,17 @@ impl Runtime {
     pub fn set_behavior_block_fuel(&mut self, fuel: usize) {
         self.block_fuel = fuel;
         self.block_fuel_left = fuel;
+        self.behavior_block_explicit = false;
+        self.behavior_time_left = None;
+    }
+
+    /// One host block's shared callback allowance, installed before its events.
+    /// MIDI, empty renders and render fragments consume the same allowance.
+    pub fn begin_behavior_block(&mut self, fuel: usize, time: Option<std::time::Duration>) {
+        self.block_fuel = fuel;
+        self.block_fuel_left = fuel;
+        self.behavior_time_left = time;
+        self.behavior_block_explicit = true;
     }
 
     pub fn behavior_block_fuel(&self) -> usize {
@@ -192,9 +203,9 @@ impl Runtime {
             offset += len;
         }
         debug_assert_eq!(self.now, end);
-        // The next block's events draw on a full allowance; the empty renders
-        // a host makes between events are not blocks.
-        if !output.is_empty() {
+        // Legacy render-driven callers refill per nonempty render. Explicit host
+        // blocks refill only at begin_behavior_block, never between fragments.
+        if !output.is_empty() && !self.behavior_block_explicit {
             self.block_fuel_left = self.block_fuel;
         }
         Ok(())
