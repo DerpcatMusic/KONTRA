@@ -1756,6 +1756,8 @@ impl Runtime {
             Op::Waveform { action, args, local, services } => {
                 use crate::waveform::Action;
                 let count = if action == Action::Set { 4 } else { 3 };
+                // Reject the complete window before any operand read or state access.
+                args.checked_add((count - 1) as u16).ok_or(Error::InvalidInput)?;
                 let mut values = [0; 4];
                 for (i, value) in values.iter_mut().take(count).enumerate() {
                     *value = i32_of(self.reg(id, args + i as u16)?)?;
