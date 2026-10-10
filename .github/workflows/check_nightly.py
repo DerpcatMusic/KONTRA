@@ -67,8 +67,9 @@ for case in ("valid", "missing", "duplicate"):
 
 signing = Path(__file__).resolve().parents[1].joinpath("scripts/notarize_macos.sh")
 assert "Developer ID sign and notarize macOS" in workflow and "--sign -" not in workflow
-for check in ("--options runtime --timestamp", "notarytool submit", "--wait --timeout", "stapler validate", "spctl --assess"):
+for check in ("--options runtime --timestamp", "/notarize.py", "stapler validate", "spctl --assess"):
     assert check in signing.read_text(), check
+subprocess.run(["python3", str(signing.with_name("test_notarize.py"))], check=True)
 clean_env = {k:v for k,v in os.environ.items() if not k.startswith("APPLE_")}
 result = subprocess.run(["bash", str(signing)], env=clean_env, capture_output=True, text=True)
 assert result.returncode == 1 and "Missing required signing secret:" in result.stderr
