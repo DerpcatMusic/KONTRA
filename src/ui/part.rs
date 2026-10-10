@@ -8,10 +8,54 @@ use moose::mui::mui::prelude::*;
 use sampler_ui_ir::{self as ir, Presentation};
 use std::sync::Arc;
 
+/// One current raw materialization per source, never a history of publications.
+#[derive(Default)]
+struct SourceProjection {
+    patch: ir::InterfacePatch,
+    raw: Option<ir::Interface>,
+}
+
+impl SourceProjection {
+    fn interface<'a>(&'a self, base: &'a ir::Interface) -> &'a ir::Interface {
+        self.raw.as_ref().unwrap_or(base)
+    }
+
+    /// Returns (materialized, bindings changed). Empty patches borrow the base.
+    fn update(&mut self, base: &ir::Interface, patch: &ir::InterfacePatch) -> (bool, bool) {
+        if self.patch == *patch {
+            return (false, false);
+        }
+        // ponytail: clone/apply only a changed source; sparse in-place updates if profiling warrants.
+        let raw = (patch != &ir::InterfacePatch::default()).then(|| {
+            let mut raw = base.clone();
+            patch.apply(base, &ir::InterfacePatch::default(), &mut raw);
+            raw
+        });
+        let before = self.interface(base);
+        let after = raw.as_ref().unwrap_or(base);
+        let bindings_changed = !same_bindings(before, after);
+        let materialized = raw.is_some();
+        self.raw = raw;
+        self.patch.clone_from(patch);
+        (materialized, bindings_changed)
+    }
+}
+
+// Native connection names/locations are fixed when its Session starts.
+fn same_bindings(a: &ir::Interface, b: &ir::Interface) -> bool {
+    a.source == b.source
+        && a.widgets.len() == b.widgets.len()
+        && a.widgets.iter().zip(&b.widgets).all(|(a, b)| {
+            a.name == b.name && a.source_id == b.source_id && a.binding == b.binding
+        })
+}
+
 /// A part's interface as drawn: resolved, with the pictures it needs.
 pub struct Face {
     /// The interfaces it was made from, to notice a reload.
     from: Arc<[ir::Interface]>,
+    sources: Vec<SourceProjection>,
+    updates: Arc<[ir::InterfacePatch]>,
     path: std::path::PathBuf,
     generation: u64,
     revision: u64,
@@ -36,21 +80,9 @@ impl Face {
         presentation: Presentation,
     ) -> Self {
         let face = ir_view::resolved(&from[shown]);
-        let native = face.native_ui.as_ref().map(|n| {
-            super::native_ui::State::new(
-                path,
-                &n.entry,
-                from.iter()
-                    .flat_map(|f| {
-                        f.widgets
-                            .iter()
-                            .enumerate()
-                            .map(move |(n, w)| (f.source, n, w.clone()))
-                    })
-                    .collect(),
-            )
-        });
         let mut out = Self {
+            sources: (0..from.len()).map(|_| SourceProjection::default()).collect(),
+            updates: Arc::from([]),
             from,
             path: path.into(),
             generation,
@@ -63,10 +95,90 @@ impl Face {
             presentation,
             values: Default::default(),
             input: Default::default(),
-            native,
+            native: None,
         };
         out.sync();
         out
+    }
+
+    /// Exact retained publication identity makes shell-only builds O(1) here.
+    /// The return value counts only newly materialized sources and their widgets.
+    fn publish(
+        &mut self,
+        from: Arc<[ir::Interface]>,
+        updates: Arc<[ir::InterfacePatch]>,
+        fallback: usize,
+    ) -> (usize, usize) {
+        let replaced = !Arc::ptr_eq(&self.from, &from);
+        if !replaced && Arc::ptr_eq(&self.updates, &updates) {
+            return (0, 0);
+        }
+        let previous = if replaced {
+            let sources = (0..from.len())
+                .map(|_| SourceProjection::default())
+                .collect();
+            let previous = (
+                std::mem::replace(&mut self.from, from),
+                std::mem::replace(&mut self.sources, sources),
+            );
+            if self.shown >= self.from.len() {
+                self.shown = fallback;
+                self.page = ir::PageRef(0);
+                self.input = Default::default();
+            }
+            Some(previous)
+        } else {
+            None
+        };
+        let mut work = (0, 0);
+        for (n, (source, projection)) in self.from.iter().zip(&mut self.sources).enumerate() {
+            let (materialized, bindings_changed) =
+                projection.update(source, updates.get(n).unwrap_or(&Default::default()));
+            if materialized {
+                work.0 += 1;
+                work.1 += projection.interface(source).widgets.len();
+            }
+            if bindings_changed && !replaced {
+                self.native = None;
+            }
+        }
+        if let Some((bases, sources)) = previous {
+            let same = bases.len() == self.from.len()
+                && bases.iter().zip(&sources)
+                    .zip(self.from.iter().zip(&self.sources))
+                    .all(|((a, old), (b, new))| {
+                        same_bindings(old.interface(a), new.interface(b))
+                    });
+            if !same {
+                self.native = None;
+            }
+            // Equivalent bindings preserve Lua state/drafts; changed names/count/source reseed.
+        }
+        self.updates = updates;
+        if replaced {
+            self.face = ir_view::resolved(self.sources[self.shown].interface(&self.from[self.shown]));
+            self.patch = self.sources[self.shown].patch.clone();
+            self.page.0 = self.page.0.min(self.face.pages.len().saturating_sub(1));
+            self.sync();
+        } else {
+            if self.patch != self.sources[self.shown].patch {
+                self.update(self.sources[self.shown].patch.clone());
+            }
+            // A different source can change Native bindings without changing the shown patch.
+            if self.native.is_none() && self.face.native_ui.is_some() {
+                self.sync();
+            }
+        }
+        work
+    }
+
+    fn show(&mut self, shown: usize) {
+        self.shown = shown;
+        self.page = ir::PageRef(0);
+        self.input = Default::default();
+        self.face = ir_view::resolved(self.sources[shown].interface(&self.from[shown]));
+        self.patch = self.sources[shown].patch.clone();
+        self.sync();
     }
 
     fn update(&mut self, patch: ir::InterfacePatch) {
@@ -82,12 +194,29 @@ impl Face {
             .collect();
         changed.sort_unstable();
         changed.dedup();
-        let assets_changed = patch.assets != self.patch.assets;
-        patch.apply(&self.from[self.shown], &self.patch, &mut self.face);
-        if assets_changed {
-            changed = (0..self.face.widgets.len()).collect();
+        let (_, bindings_changed) = self.sources[self.shown].update(&self.from[self.shown], &patch);
+        if bindings_changed {
+            self.native = None;
         }
-        ir_view::resolve_changed(&mut self.face, changed);
+        let raw = self.sources[self.shown].interface(&self.from[self.shown]);
+        if patch.assets != self.patch.assets
+            || patch.pages != self.patch.pages
+            || patch.source != self.patch.source
+            || patch.widget_count != self.patch.widget_count
+        {
+            // Image-size removal/reversion must normalize authored geometry, not old pixels.
+            self.face = ir_view::resolved(raw);
+        } else {
+            patch.apply(&self.from[self.shown], &self.patch, &mut self.face);
+            for &n in &changed {
+                if let (Some(widget), Some(authored)) =
+                    (self.face.widgets.get_mut(n), raw.widgets.get(n))
+                {
+                    widget.clone_from(authored);
+                }
+            }
+            ir_view::resolve_changed(&mut self.face, changed);
+        }
         self.patch = patch;
         self.page.0 = self.page.0.min(self.face.pages.len().saturating_sub(1));
         self.sync();
@@ -107,7 +236,9 @@ impl Face {
                     entry,
                     self.from
                         .iter()
-                        .flat_map(|f| {
+                        .zip(&self.sources)
+                        .flat_map(|(base, projection)| {
+                            let f = projection.interface(base);
                             f.widgets
                                 .iter()
                                 .enumerate()
@@ -245,17 +376,21 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
         );
     }
     let face = cx.state.faces.get_mut(&slot)?;
-    if !Arc::ptr_eq(&face.from, &from) || face.revision != published.ui_revision {
-        if from.get(face.shown).is_none() { face.shown = main; }
-        let patch = published.updates.get(face.shown).cloned().unwrap_or_default();
-        if !Arc::ptr_eq(&face.from, &from) {
-            face.face = ir_view::resolved(&from[face.shown]);
-            face.patch = Default::default();
-            face.from = from.clone();
-        }
+    if !Arc::ptr_eq(&face.from, &from)
+        || !Arc::ptr_eq(&face.updates, &published.updates)
+        || face.revision != published.ui_revision
+    {
         activity.add(Count::FaceUpdates, 1);
-        activity.add(Count::FaceNoops, u64::from(activity.enabled && patch == face.patch));
-        face.update(patch);
+        activity.add(
+            Count::FaceNoops,
+            u64::from(activity.enabled
+                && Arc::ptr_eq(&face.from, &from)
+                && published.updates.get(face.shown)
+                    .map_or(face.patch == Default::default(), |patch| *patch == face.patch)),
+        );
+        let (sources, widgets) = face.publish(from.clone(), published.updates.clone(), main);
+        activity.add(Count::NativeMaterializations, sources as u64);
+        activity.add(Count::NativeWidgets, widgets as u64);
         face.revision = published.ui_revision;
     }
     if face.presentation != presentation {
@@ -349,18 +484,7 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
     );
     bar.push(segmented(vec![orig, vect, generated]));
     if let Some(n) = pick.filter(|&n| n != face.shown) {
-        let presentation = face.presentation;
-        face.shown = n;
-        face.input = Default::default();
-        face.page = ir::PageRef(0);
-        face.face = ir_view::resolved(&from[n]);
-        face.patch = Default::default();
-        let patch = published.updates.get(n).cloned().unwrap_or_default();
-        activity.add(Count::FaceUpdates, 1);
-        activity.add(Count::FaceNoops, u64::from(activity.enabled && patch == face.patch));
-        face.update(patch);
-        face.presentation = presentation;
-        face.sync();
+        face.show(n);
     }
     if a || b || c {
         cx.selection.parts[slot].view = if b {
@@ -473,19 +597,8 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
     {
         native.set_activity(&activity);
         let projection = activity.span(Phase::UiProjectionSync);
-        for (index, source) in face.from.iter().enumerate() {
-            let current = published
-                .updates
-                .get(index)
-                .filter(|patch| **patch != Default::default())
-                .map(|patch| {
-                    activity.add(Count::NativeMaterializations, 1);
-                    activity.add(Count::NativeWidgets, source.widgets.len() as u64);
-                    let mut current = source.clone();
-                    patch.apply(source, &Default::default(), &mut current);
-                    current
-                });
-            let current = current.as_ref().unwrap_or(source);
+        for (source, projection) in face.from.iter().zip(&face.sources) {
+            let current = projection.interface(source);
             let typed = shared
                 .as_ref()
                 .map(|shared| shared.widget_values(current))
@@ -499,16 +612,20 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
         drop(projection);
         let authored = native.authored();
         let scale = scale_to_fit(Size::new(avail, room), authored, cx.settings.view_scale);
-        let view = native.view(ui, slot, scale, &face.face, &face.values, &face.input);
+        let view = native.view(
+            ui,
+            slot,
+            scale,
+            face.sources[face.shown].interface(&face.from[face.shown]),
+            &face.values,
+            &face.input,
+        );
         for edit in native.edits() {
-            let widget = if edit.source == face.face.source {
-                face.face.widgets.get(edit.widget.0)
-            } else {
-                face.from
-                    .iter()
-                    .find(|f| f.source == edit.source)
-                    .and_then(|f| f.widgets.get(edit.widget.0))
-            };
+            let widget = face.from.iter()
+                .zip(&face.sources)
+                .map(|(base, projection)| projection.interface(base))
+                .find(|f| f.source == edit.source)
+                .and_then(|f| f.widgets.get(edit.widget.0));
             let admitted = widget.is_some_and(|widget| {
                 let source_slot = match edit.source {
                     ir::Source::Ksp { slot } => slot,
@@ -892,6 +1009,273 @@ pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn projection_fixture(slot: u8) -> ir::Interface {
+        let mut widget = ir::Widget::new(
+            "$level",
+            ir::PageRef(0),
+            ir::Rect { x: 9, y: 7, width: 31, height: 17 },
+            ir::Kind::Knob {
+                range: ir::Range {
+                    min: 0., max: 100., default: 25., step: Some(1.),
+                },
+                display: Default::default(),
+            },
+        );
+        widget.source_id = Some(1);
+        widget.placement = ir::Placement::Grid { column: 2, row: 2 };
+        widget.auto_size = true;
+        ir::Interface {
+            source: ir::Source::Ksp { slot },
+            performance: true,
+            pages: vec![ir::Page {
+                size: ir::Size { width: 480, height: 240 },
+                height_rows: Some(3),
+                ..Default::default()
+            }],
+            widgets: vec![widget],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn shell_only_editor_repaints_do_not_rematerialize_authored_sources() {
+        use crate::plugin::{
+            SamplerParams,
+            ui_activity::{Activity, Count, Phase},
+        };
+        let mut params = SamplerParams::new();
+        params.shared.ui_activity = Arc::new(Activity::new(true));
+        let p = Arc::new(params);
+        p.shared.ensure_parts(1);
+        p.selection.write().unwrap().parts.push(crate::plugin::Part {
+            path: "/missing/synthetic-projection.nki".into(),
+            view: 3,
+            ..Default::default()
+        });
+        let base = projection_fixture(0);
+        let mut current = base.clone();
+        current.widgets[0].value_text = Some("Patched".into());
+        {
+            let mut view = p.shared.view.lock().unwrap();
+            view.parts[0].interfaces = vec![base.clone()].into();
+            view.parts[0].updates = vec![ir::InterfacePatch::between(&base, &current)].into();
+        }
+        let mut h = super::super::tests::Harness::new(&p, 1180., 780.);
+        h.ui.focus("tab-rack");
+        h.idle(4);
+        let counts = p.shared.ui_activity.snapshot().unwrap();
+        let phases = p.shared.ui_activity.phase_snapshot().unwrap();
+        assert_eq!(counts[Count::NativeMaterializations as usize], 1);
+        for n in 0..32 {
+            p.shared.voices.store(n, std::sync::atomic::Ordering::Relaxed);
+            // Key-look-only publications also change this broad revision.
+            p.shared.view.lock().unwrap().parts[0].ui_revision += 1;
+            h.idle(1);
+        }
+        let after = p.shared.ui_activity.snapshot().unwrap();
+        let after_phases = p.shared.ui_activity.phase_snapshot().unwrap();
+        assert_eq!(
+            after[Count::NativeMaterializations as usize],
+            counts[Count::NativeMaterializations as usize],
+        );
+        assert_eq!(after[Count::NativeWidgets as usize], counts[Count::NativeWidgets as usize]);
+        for phase in [Phase::UiBuildFrame, Phase::UiControlReadback] {
+            assert!(after_phases[phase as usize * 3] > phases[phase as usize * 3]);
+        }
+        assert!(h.ui.scene().unwrap().surface("part-0-epoch-0-script-0-ir-0").is_some());
+        p.shared.view.lock().unwrap().parts[0].generation = 1;
+        h.idle(2);
+        assert_eq!(
+            p.shared.ui_activity.snapshot().unwrap()[Count::NativeMaterializations as usize],
+            2,
+        );
+        let scene = h.ui.scene().unwrap();
+        assert!(scene.surface("part-0-epoch-1-script-0-ir-0").is_some());
+        assert!(scene.surface("part-0-epoch-0-script-0-ir-0").is_none());
+    }
+
+    #[test]
+    fn raw_projection_retains_unchanged_sources_and_releases_reverted_patches() {
+        let bases: Arc<[ir::Interface]> = vec![projection_fixture(0), projection_fixture(1)].into();
+        let mut a = bases[0].clone();
+        a.widgets[0].rect.x = 123;
+        let patch_a = ir::InterfacePatch::between(&bases[0], &a);
+        let updates: Arc<[ir::InterfacePatch]> = vec![patch_a.clone(), Default::default()].into();
+        let mut face = Face::new(
+            std::path::Path::new("/missing/projection.nki"),
+            7, bases.clone(), 0, Presentation::Vector,
+        );
+        assert_eq!(face.publish(bases.clone(), updates.clone(), 0), (1, 1));
+        assert_eq!(face.sources[0].interface(&bases[0]), &a);
+        assert_ne!(
+            face.face, a,
+            "raw grid/default-axis metadata is not resolved pixels",
+        );
+        let storage = face.sources[0].raw.as_ref().unwrap().widgets.as_ptr();
+        for _ in 0..64 {
+            assert_eq!(face.publish(bases.clone(), updates.clone(), 0), (0, 0));
+            assert_eq!(face.sources[0].raw.as_ref().unwrap().widgets.as_ptr(), storage);
+        }
+        // New Arc with equal content is also a no-op, not a new projection.
+        assert_eq!(face.publish(bases.clone(), updates.to_vec().into(), 0), (0, 0));
+        let mut b = bases[1].clone();
+        b.widgets[0].text = "Other source".into();
+        assert_eq!(
+            face.publish(
+                bases.clone(),
+                vec![patch_a, ir::InterfacePatch::between(&bases[1], &b)].into(),
+                0,
+            ),
+            (1, 1),
+        );
+        assert_eq!(face.sources[0].raw.as_ref().unwrap().widgets.as_ptr(), storage);
+        assert_eq!(face.sources[1].interface(&bases[1]), &b);
+        face.show(1);
+        assert_eq!(face.face, ir_view::resolved(&b));
+        assert_eq!(face.publish(bases.clone(), Arc::from([]), 0), (0, 0));
+        assert!(face.sources.iter().all(|source| source.raw.is_none()));
+        assert!(std::ptr::eq(face.sources[1].interface(&bases[1]), &bases[1]));
+        assert_eq!(face.face, ir_view::resolved(&bases[1]));
+    }
+
+    #[test]
+    fn projection_matches_raw_and_resolved_oracles_for_assets_pages_and_widget_count() {
+        let mut base = projection_fixture(0);
+        base.assets.push(ir::Asset {
+            path: "missing-strip.png".into(),
+            kind: ir::AssetKind::Image(ir::ImageMeta {
+                size: Some(ir::Size { width: 101, height: 79 }),
+                ..Default::default()
+            }),
+        });
+        base.widgets[0].images.push(ir::ImageUse::new(ir::AssetRef(0), ir::Role::Strip));
+        let bases: Arc<[ir::Interface]> = vec![base.clone()].into();
+        let mut face = Face::new(
+            std::path::Path::new("/missing/oracle.nki"),
+            1, bases.clone(), 0, Presentation::Vector,
+        );
+        let mut variants = Vec::new();
+        let mut current = base.clone();
+        if let ir::AssetKind::Image(meta) = &mut current.assets[0].kind {
+            meta.size = Some(ir::Size { width: 43, height: 29 });
+        }
+        variants.push(current);
+        current = base.clone();
+        current.assets.clear();
+        variants.push(current);
+        current = base.clone();
+        current.pages[0].height_rows = Some(5);
+        current.pages.push(current.pages[0].clone());
+        variants.push(current);
+        current = base.clone();
+        let mut added = current.widgets[0].clone();
+        added.name = "$second".into();
+        current.widgets.push(added);
+        variants.push(current);
+        current = base.clone();
+        current.widgets.clear();
+        variants.push(current);
+        current = base.clone();
+        current.source = ir::Source::FalconLua;
+        variants.push(current);
+        for current in variants {
+            let patch = ir::InterfacePatch::between(&base, &current);
+            face.publish(bases.clone(), vec![patch].into(), 0);
+            assert_eq!(face.sources[0].interface(&base), &current);
+            assert_eq!(face.face, ir_view::resolved(&current));
+            face.publish(bases.clone(), Arc::from([]), 0);
+            assert_eq!(face.face, ir_view::resolved(&base), "reversion restores authored sizing");
+        }
+    }
+
+    #[test]
+    fn whole_base_identity_and_source_count_replace_projection_without_losing_local_page() {
+        let mut base = projection_fixture(0);
+        base.pages.push(base.pages[0].clone());
+        let bases: Arc<[ir::Interface]> = vec![base.clone(), projection_fixture(1)].into();
+        let mut face = Face::new(
+            std::path::Path::new("/missing/identity.nki"),
+            7, bases.clone(), 0, Presentation::Vector,
+        );
+        face.page = ir::PageRef(1);
+        face.values.insert(ir::ControlId(9), 31.);
+        face.input.values.insert(ir::WidgetRef(0), ir::Value::Text("Retained draft".into()));
+        base.widgets[0].text = "New immutable base".into();
+        let replaced: Arc<[ir::Interface]> = vec![base.clone(), projection_fixture(1)].into();
+        face.publish(replaced.clone(), Arc::from([]), 0);
+        assert!(Arc::ptr_eq(&face.from, &replaced));
+        assert_eq!(face.face, ir_view::resolved(&base));
+        assert_eq!(
+            (face.shown, face.page, face.generation, face.presentation),
+            (0, ir::PageRef(1), 7, Presentation::Vector),
+        );
+        assert_eq!(face.values[&ir::ControlId(9)], 31.);
+        assert_eq!(
+            face.input.values[&ir::WidgetRef(0)],
+            ir::Value::Text("Retained draft".into()),
+        );
+        face.show(1);
+        face.input.values.insert(ir::WidgetRef(0), ir::Value::Text("Retired script".into()));
+        face.publish(vec![base].into(), Arc::from([]), 0);
+        assert_eq!(face.sources.len(), 1);
+        assert_eq!((face.shown, face.page), (0, ir::PageRef(0)));
+        assert!(
+            face.input.values.is_empty(),
+            "removed script drafts cannot cross source identity",
+        );
+    }
+
+    #[test]
+    fn native_entry_synchronizes_even_when_replaced_base_has_an_empty_patch() {
+        let mut base = projection_fixture(0);
+        base.native_ui = Some(ir::NativeUi { entry: "old_entry".into() });
+        let mut face = Face::new(
+            std::path::Path::new("/missing/native-identity.nki"),
+            1,
+            vec![base.clone()].into(),
+            0,
+            Presentation::Bitmap,
+        );
+        assert_eq!(face.native.as_ref().unwrap().entry(), "old_entry");
+        base.native_ui = Some(ir::NativeUi { entry: "new_entry".into() });
+        face.publish(vec![base.clone()].into(), Arc::from([]), 0);
+        assert_eq!(face.native.as_ref().unwrap().entry(), "new_entry");
+        base.native_ui = None;
+        face.publish(vec![base].into(), Arc::from([]), 0);
+        assert!(face.native.is_none());
+    }
+
+    #[test]
+    fn native_binding_identity_changes_only_for_connection_metadata() {
+        let base = projection_fixture(0);
+        let mut source = SourceProjection::default();
+        let mut current = base.clone();
+        current.widgets[0].text = "Caption only".into();
+        assert_eq!(
+            source.update(&base, &ir::InterfacePatch::between(&base, &current)),
+            (true, false),
+        );
+        current.widgets[0].name = "$renamed".into();
+        assert_eq!(
+            source.update(&base, &ir::InterfacePatch::between(&base, &current)),
+            (true, true),
+        );
+        assert_eq!(source.update(&base, &Default::default()), (false, true));
+        current = base.clone();
+        current.widgets.push(current.widgets[0].clone());
+        assert_eq!(
+            source.update(&base, &ir::InterfacePatch::between(&base, &current)),
+            (true, true),
+        );
+        assert!(!same_bindings(&current, &base));
+        let mut replaced = base.clone();
+        replaced.widgets[0].source_id = Some(99);
+        assert!(!same_bindings(&base, &replaced));
+        replaced = base.clone();
+        replaced.widgets[0].value_text = Some("New value".into());
+        assert!(same_bindings(&base, &replaced), "equivalent new base preserves Lua drafts");
+    }
 
     #[test]
     fn performance_and_native_intent_choose_sources_without_widget_heuristics() {
