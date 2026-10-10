@@ -207,12 +207,24 @@ fn fade_curve_inside_mix_cell_matches_exponential_not_endpoint_interpolation() {
             } else {
                 "fade_in($EVENT_ID,8000,$NI_FADE_EXPONENTIAL)"
             };
+            let mut control = runtime("on note end on");
+            control.trigger(input(60), 60, 1.).unwrap();
+            assert_eq!(control.voice_count(), 1);
+            let mut unfaded = [[0.; 2]; 129];
+            for chunk in unfaded.chunks_mut(block) {
+                control.render(chunk).unwrap();
+            }
+            assert!(unfaded.iter().all(|frame| *frame == [0.5; 2]));
             let mut rt = runtime(&format!("on note {call} end on"));
             rt.trigger(input(60), 60, 1.).unwrap();
+            assert_eq!(rt.voice_count(), 1);
+            assert!(rt.take_fault().is_none());
             let mut audio = [[0.; 2]; 129];
             for chunk in audio.chunks_mut(block) {
                 rt.render(chunk).unwrap();
             }
+            assert_eq!(rt.now(), control.now());
+            assert_ne!(audio[15], unfaded[15]);
             let t = 16.0_f32 / 384.0; // Exactly8000us at48kHz.
             let expected = 0.5 * if out { (1.0 - t).powi(2) } else { t.powi(2) };
             assert!(
@@ -270,16 +282,70 @@ fn fade_curve_script_clock_and_omitted_linear_match_sample_end_control() {
 
 #[test]
 fn fade_curve_unknown_selector_faults_without_a_silent_linear_substitution() {
+    for selector in [-1, 5, 99] {
+        let mut rt = runtime(&format!(
+            "on init declare $curve := {selector} declare $id := 0 end on
+             on note $id := $EVENT_ID end on
+             on controller fade_out($id,100000,1,$curve) end on"
+        ));
+        let note = rt.trigger(input(60), 60, 1.).unwrap();
+        assert_eq!(level(&mut rt), [0.5; 2]);
+        assert_eq!(rt.voice_count(), 1);
+        let origin = rt.now();
+        let performance = rt.performance(0).unwrap();
+        let callback = rt
+            .dispatch_controller(performance, input(60).channel_address(), 1, 1, u32::MAX)
+            .unwrap()
+            .unwrap();
+        assert_eq!(rt.now(), origin);
+        assert_eq!(
+            rt.behavior_outcome(callback),
+            Ok(Some(sampler_core::Outcome::Fault(sampler_core::Error::InvalidInput)))
+        );
+        assert!(matches!(
+            rt.take_fault(),
+            Some((_, sampler_core::Error::InvalidInput))
+        ));
+        // Plan-owned failure cannot close this note; rejection must not install a fade.
+        let mut audio = [[0.; 2]; 256];
+        rt.render(&mut audio).unwrap();
+        assert!(
+            audio.iter().all(|frame| *frame == [0.5; 2]),
+            "{selector}: {:?}",
+            audio[255]
+        );
+        assert_eq!(rt.now(), origin + 256);
+        assert_eq!(rt.note(note), Ok((60, 1., true)));
+        assert_eq!(rt.voice_count(), 1);
+        assert!(rt.take_fault().is_none());
+    }
+}
+
+#[test]
+fn fade_curve_note_owned_fault_releases_only_its_owner_at_the_callback_clock() {
     let mut rt = runtime(
         "on init declare $curve := 99 end on
-         on note fade_out($EVENT_ID,100000,1,$curve) end on",
+         on note if ($EVENT_NOTE = 60) fade_out($EVENT_ID,100000,1,$curve) end if end on",
     );
-    rt.trigger(input(60), 60, 1.).unwrap();
+    let unaffected = rt.trigger(input(61), 61, 1.).unwrap();
+    assert_eq!(level(&mut rt), [0.25; 2]);
+    let origin = rt.now();
+    let faulty = rt.trigger(input(60), 60, 1.).unwrap();
+    assert_eq!(rt.now(), origin);
     assert!(matches!(
         rt.take_fault(),
         Some((_, sampler_core::Error::InvalidInput))
     ));
-    assert!(close(level(&mut rt), [0.5; 2]));
+    // Existing fault policy closes the initiating note, not an unaffected note.
+    assert_eq!(rt.note(faulty), Ok((60, 1., false)));
+    assert_eq!(rt.note(unaffected), Ok((61, 1., true)));
+    assert_eq!(rt.voice_count(), 1);
+    let mut audio = [[0.; 2]; 256];
+    rt.render(&mut audio).unwrap();
+    assert!(audio.iter().all(|frame| *frame == [0.25; 2]));
+    assert_eq!(rt.now(), origin + 256);
+    assert_eq!(rt.note(unaffected), Ok((61, 1., true)));
+    assert!(rt.take_fault().is_none());
 }
 
 #[test]
