@@ -36,6 +36,10 @@ Implemented boundaries: menu count/value/text/visibility and live edits; init/ca
 
 Menu index scans retain hidden entries and return the first authored match for duplicate values, matching v1 `ControlState::selected_menu`. W5 owns runtime/logical value and index semantics; W3 owns caption rendering and popup visibility. Distinct native selection among duplicate-valued entries is unverified and cannot be represented by logical value alone; no new selection state is introduced without that evidence.
 
-READY is held: source review found read-modify-write setter arguments being re-evaluated after callback state changed, so host transport can differ from script readback. Seven retained contracts on853a1a34 cover named text, menu numeric/text/append, numeric/text properties and XY values. A source-only fix is prepared to share evaluated arguments between both consumers. The RED job is queued through the wrapper behind the active quiet window.
+## RMW closure, tested source4c9b0e62
 
-NEXT: menu RMW RED→GREEN→READY, then global ui_controls/ui_update dispatch. W8 owns per-host-block callback budgets; W6 owns optional native ModScale intensity laws.
+Seven retained read-modify-write contracts reproduce1 pass/6 failures on the first slice and now pass7/7. The general fix evaluates UI setter arguments once, then reuses the same numeric values, indexed values and text for immediate state and host transport. It also prevents append getter evaluation from clobbering the menu key. Hidden selected entries keep their authored index/logical value, and duplicate values select the first authored match, including hidden entries.
+
+The final corrected per-worktree run passes112 targeted checks with no failures, four-package area `--no-run`, and the production Conflux report (unknown0 in the five probed command classes). Exact commands, per-log hashes and exclusions are in `/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w5-ksp-parity-394/VALIDATION-FINAL.json`. No full scanner or timing verdict is claimed. The remaining edges above are still open.
+
+NEXT: global ui_controls/ui_update dispatch RED→GREEN in a separate slice. W8 owns per-host-block callback budgets; W6 owns optional native ModScale intensity laws.
