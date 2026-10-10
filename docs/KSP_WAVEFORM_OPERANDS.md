@@ -1,4 +1,11 @@
-# KSP waveform operands: source-ready initial fix, runtime gate open
+# KSP waveform operands: historical initial-fix receipt
+
+This receipt describes exact initial code `a09157e9` below, not the current
+runtime source status. The successor's admitted headless state path is authored
+at `d057af736d48cdbc0af0fca7293756b16a00a252`; see
+[KSP_WAVEFORM_RUNTIME.md](KSP_WAVEFORM_RUNTIME.md) for its contract, exact pins,
+NOT_RUN test filters and remaining gates. Initial evidence JSON and frozen
+checkouts remain unchanged; this header only marks the older report as historical.
 
 Base: `2a243bcfa2262abb789265aa0951fd2a85854023`.
 Code/tests: `a09157e92151250a1e9dcaf88ffa16c0be6a0570`.
