@@ -48,6 +48,8 @@ All six admitted rows QUIET; 141 steady blocks each, peak192 voices. Each cold e
 
 **REJECTED / DO NOT APPLY**: SSE fold cold median+0.25%, p99−23.32%; warm median+5.86%, p99+3.29%. No whole CPU speedup or v1 parity claim. Disassembly confirms the fold narrowed the bank dot loop from AVX256 (six YMM arithmetic instructions) to SSE128 (zero YMM arithmetic instructions). The isolated fold witness missed this surrounding-loop regression. Next correction must preserve the eight-lane wide accumulator through the fold.
 
+AVX correction frozen and untimed GREEN: source8c206006a751353382683f4492185bddd96a21c9, binary SHA256e4e148fb792891ae3209cbe7d5342d0b00cfb691264074a3cf396e13796a5853. A private checked CPU capability is prepared with the bank; the fold keeps all eight AVX lanes without an atomic feature check per sample. Baseline SSE/scalar paths retain the same add grouping. Generated largest-frame dot has six YMM FMA instructions and zero XMM FMA instructions. The first correction witness called the AVX helper from baseline code (ratio2.2613) and failed; rerunning both sides in production's existing wide dispatch gives RED101 ratio0.995327 → GREEN0 ratio0.467830 (legacy1404937ns/candidate657272ns per1048576 folds). All bit/resampling/SIMD/core no-run checks pass again. No corrected-candidate CPU claim or READY until its own quiet A/B, ordered after W10.
+
 Receipt: `/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w9-horns-frame-diff-20261010/`. W9 profiling unit drained exit0; DIRECT W10 sent before kernel verification.
 
-NEXT: AVX256 fold correction; W10 owns the handed-off timing window.
+NEXT: ordered frozen AVX256 correction A/B after W10 DIRECT.
