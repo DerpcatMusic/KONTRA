@@ -559,8 +559,8 @@ impl EditorState {
     }
 }
 
-/// The browser's files by library name, as indices into the scan.
-type Libraries = std::collections::BTreeMap<String, Vec<usize>>;
+/// The browser's naturally ordered paths by library, including native presets.
+type Libraries = std::collections::BTreeMap<String, Vec<PathBuf>>;
 
 /// One frame's inputs: the loader's view, the rack being edited, the editor state.
 struct Cx<'a> {
@@ -665,8 +665,33 @@ impl Cx<'_> {
         recent.truncate(6);
     }
 
+    fn is_favorite(&self, path: &str) -> bool {
+        crate::plugin::UviFavorite::at(Path::new(path), &self.view.shelf).is_some_and(|source| {
+            self.selection
+                .uvi_favorites
+                .iter()
+                .any(|old| old.same_program(&source))
+        }) || self.selection.favorites.iter().any(|old| old == path)
+    }
+
     /// Star `path`, or unstar it.
     fn toggle_favorite(&mut self, path: &str) {
+        // Port from v1 4bffbb18:src/ui/mod.rs::toggle_uvi_favorite; locator is not identity.
+        if let Some(source) = crate::plugin::UviFavorite::at(Path::new(path), &self.view.shelf) {
+            match self
+                .selection
+                .uvi_favorites
+                .iter()
+                .position(|old| old.same_program(&source))
+            {
+                Some(at) => {
+                    self.selection.uvi_favorites.remove(at);
+                }
+                None => self.selection.uvi_favorites.push(source),
+            }
+            self.selection.favorites.retain(|old| old != path);
+            return;
+        }
         let favorites = &mut self.selection.favorites;
         match favorites.iter().position(|p| p == path) {
             Some(at) => {
@@ -731,7 +756,7 @@ impl Cx<'_> {
         if accepted {
             self.show(slot);
         } else {
-            self.state.notice = "Select a base NKI instrument before loading a snapshot.".into();
+            self.state.notice = "Select a base NKI instrument before loading a preset.".into();
         }
     }
 
@@ -1329,8 +1354,7 @@ fn picked(cx: &mut Cx) {
                 cx.snapshot(slot, path.to_string_lossy().into_owned());
             } else {
                 cx.state.notice =
-                    "Snapshot ignored: the base instrument changed while its dialog was open."
-                        .into();
+                    "Preset ignored: the base instrument changed while its dialog was open.".into();
             }
         }
         Some(picker::Picked::Multi(mut path)) => {
@@ -1691,6 +1715,8 @@ impl Cx<'_> {
 
 #[cfg(feature = "shots")]
 pub use ir_view::uvi_ui_health;
+#[cfg(all(test, feature = "shots"))]
+mod browser_perf_tests;
 #[cfg(test)]
 mod browser_tests;
 #[cfg(test)]

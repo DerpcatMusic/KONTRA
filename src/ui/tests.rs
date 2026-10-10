@@ -85,6 +85,20 @@ impl Harness {
             .unwrap();
     }
 
+    #[cfg(feature = "shots")]
+    pub(crate) fn tick_cost(&mut self, input: Input) -> (usize, usize) {
+        let mut root = None;
+        let build = crate::plugin::tests::allocations(|| {
+            root = Some((self.build)(&mut self.ui, &mut self.bridge))
+        });
+        let frame = crate::plugin::tests::allocations(|| {
+            self.ui
+                .frame(root.unwrap(), Some(self.size), input, 1. / 60.)
+                .unwrap();
+        });
+        (build, frame)
+    }
+
     /// Frames until the library artwork asked for is made and drawn.
     pub(super) fn settle_art(&mut self) {
         loop {
@@ -532,7 +546,7 @@ fn the_browser_finds_by_library_and_folder() {
     // Shut, the browser opens on Ctrl+F.
     h.press("toggle-browser");
     h.idle(30);
-    assert!(!shown(&h, "library-filter"), "the browser shuts");
+    assert!(!shown(&h, "search"), "the browser shuts");
     h.tick(key(
         Key::Char('f'),
         Mods {
@@ -543,11 +557,12 @@ fn the_browser_finds_by_library_and_folder() {
     h.idle(30);
     assert_eq!(
         h.ui.focus_key(),
-        Some("library-filter"),
-        "Ctrl+F opens the browser on the library filter"
+        Some("search"),
+        "Ctrl+F opens the browser on its single search"
     );
+    // 042 alone also matches Patch 042 in other libraries; another preset word disambiguates.
     h.tick(Input {
-        text: "lib 042".into(),
+        text: "lib 042 099".into(),
         ..Default::default()
     });
     h.idle(2);
@@ -555,8 +570,18 @@ fn the_browser_finds_by_library_and_folder() {
         shown(&h, "library-42") && !shown(&h, "library-41"),
         "it narrows the libraries"
     );
+    // Search returns flat presets; choosing the card and clearing the query reveals its hierarchy.
+    h.press("library-42");
+    h.ui.focus("search");
+    h.idle(2);
+    tap(&mut h, Key::Escape);
+    h.ui.focus("library-42");
     tap(&mut h, Key::Enter);
-    assert_eq!(h.ui.focus_key(), Some("folder-0"), "Enter opens the match");
+    assert_eq!(
+        h.ui.focus_key(),
+        Some("folder-0"),
+        "Enter opens the chosen library hierarchy"
+    );
     // Instruments, all the library holds, starts open over its four folders.
     assert!(shown(&h, "folder-4") && !shown(&h, "instrument-5"));
     tap(&mut h, Key::Down);
@@ -611,7 +636,8 @@ fn the_browser_finds_by_library_and_folder() {
     );
 
     // Esc clears the filter; a library dragged onto another goes before it.
-    h.ui.focus("library-filter");
+    h.ui.focus("search");
+    h.idle(2);
     tap(&mut h, Key::Escape);
     // The list glides back to the chosen library: let it land first.
     h.idle(30);
@@ -1326,11 +1352,10 @@ fn split_browser_keeps_both_panes_usable_across_resize_and_scale() {
                         .unwrap_or_else(|| panic!("missing {id}"))
                         .frame
                 };
-                let (browser, sources, presets, filter, search, divider) = (
+                let (browser, sources, presets, search, divider) = (
                     frame("browser"),
                     frame("browser-sources-false"),
                     frame("browser-list"),
-                    frame("library-filter"),
                     frame("search"),
                     frame("browser-split"),
                 );
@@ -1342,10 +1367,9 @@ fn split_browser_keeps_both_panes_usable_across_resize_and_scale() {
                     sources.size.height >= browser::THUMB.1 + 2. * TIGHT - 0.5,
                     "one library row must fit: split={split} scale={scale} sources={sources:?}"
                 );
-                assert!(filter.y + filter.size.height <= sources.y + 0.5);
+                assert!(search.y + search.size.height <= sources.y + 0.5);
                 assert!(sources.y + sources.size.height <= divider.y + 0.5);
-                assert!(divider.y + divider.size.height <= search.y + 0.5);
-                assert!(search.y + search.size.height <= presets.y + 0.5);
+                assert!(divider.y + divider.size.height <= presets.y + 0.5);
                 assert!(
                     presets.y + presets.size.height <= browser.y + browser.size.height + 0.5,
                     "the preset pane stays inside the browser: split={split} scale={scale} size={size:?} browser={browser:?} sources={sources:?} presets={presets:?} search={search:?}"
@@ -1943,7 +1967,7 @@ fn screenshot() {
         ("browser-search", false, &["library-2"]),
         // The library filter typed into, and the sort menu.
         ("browser-filter", false, &[]),
-        ("browser-sort", false, &["library-sort"]),
+        ("browser-sort", false, &["browser-filter"]),
         ("settings", true, &["app-menu", "menu-item-5"]),
         ("menu", true, &["app-menu"]),
         ("save", true, &["app-menu", "menu-item-8"]),
@@ -2104,7 +2128,7 @@ fn screenshot() {
                     }
                 }
                 "browser-search" => typed(&mut h, "search", "a"),
-                "browser-filter" => typed(&mut h, "library-filter", "a"),
+                "browser-filter" => typed(&mut h, "search", "a"),
                 _ => {}
             }
             if state == "unselected" {
@@ -3145,7 +3169,7 @@ fn library_rename_edits_only_the_display_name_and_filter_follows_it() {
         "typed names retain their suffix"
     );
     drop(view);
-    h.ui.focus("library-filter");
+    h.ui.focus("search");
     h.tick(Input {
         text: "evening".into(),
         ..Default::default()
