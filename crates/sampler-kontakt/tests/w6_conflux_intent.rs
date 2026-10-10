@@ -280,6 +280,7 @@ fn conflux_digital_lfo_sources_are_retained() {
     let groups = GroupList::try_from(program.0.find_first(0x33).unwrap()).unwrap();
     let mut states = BTreeMap::new();
     let mut raw = 0;
+    let mut fades = BTreeMap::new();
     for group in &groups.groups {
         if let Some(c) = group.0.find_first(0x3b) {
             for (_, m) in InternalModArray16::try_from(c).unwrap().slots().unwrap() {
@@ -289,14 +290,16 @@ fn conflux_digital_lfo_sources_are_retained() {
                         continue;
                     }
                     raw += 1;
+                    count(&mut fades, format!("{:08x}", l.initial_values[0].to_bits()));
                     count(
                         &mut states,
                         format!(
-                            "sine_only_unit{} normalize{} zero_delay{} delay_unsynced{} frequency_unsynced{} retrigger{} extra{} component{:?} subunit{}",
+                            "sine_only_unit{} normalize{} zero_fade{} fade_unsynced{} fade_flags{}:{} frequency_unsynced{} retrigger{} extra{} component{:?} subunit{}",
                             l.trailing_values == Some([1., 0., 0., 0., 0.]),
                             l.records[0].flag,
                             l.initial_values[0] == 0.,
                             l.records[1].values[0] == -1.,
+                            l.trailing_flag, l.records[1].flag,
                             l.records[0].values[0] == -1.,
                             p.unknown_flags[2] != 0,
                             l.additional_flag == Some(true),
@@ -308,7 +311,7 @@ fn conflux_digital_lfo_sources_are_retained() {
             }
         }
     }
-    println!("DIGITAL_LFO_RAW {raw} STATES {states:?}");
+    println!("DIGITAL_LFO_RAW {raw} STATES {states:?} FADE_BITS_HISTOGRAM {fades:?}");
     assert_eq!(raw, 182);
     let library = sampler_kontakt::read(path).unwrap();
     let lost = library
@@ -318,8 +321,8 @@ fn conflux_digital_lfo_sources_are_retained() {
         .filter(|u| u.feature == "LFO waveform (id, multi weights, pulse width)")
         .count();
     assert_eq!(
-        lost, 58,
-        "zero-delay digital LFOs must reach the evaluator; nonzero native fade remains diagnosed"
+        lost, 0,
+        "all saved Digital Multi fades must reach the evaluator"
     );
     assert_eq!(
         library
@@ -328,7 +331,7 @@ fn conflux_digital_lfo_sources_are_retained() {
             .iter()
             .filter(|m| matches!(m.source, sampler_ir::ModulationSource::Lfo(_)))
             .count(),
-        124
+        182
     );
     let pan = library
         .instrument
@@ -343,7 +346,15 @@ fn conflux_digital_lfo_sources_are_retained() {
                 )
         })
         .count();
-    println!("DIGITAL_LFO_ADMITTED 124 NONZERO_PAN_ROUTES {pan}");
+    let fades = library.instrument.modulators.iter().filter(|m| {
+        matches!(m.source, sampler_ir::ModulationSource::Lfo(sampler_ir::Lfo {
+            shape: sampler_ir::LfoShape::DigitalSine { fade_ms, .. },
+            fade_in: sampler_ir::Time::ZERO, retrigger: true, ..
+        }) if fade_ms.to_bits() == 0x3f24ca3c)
+    }).count();
+    assert_eq!(fades, 58, "saved fade milliseconds survive translation exactly");
+    library.instrument.validate().unwrap();
+    println!("DIGITAL_LFO_ADMITTED 182 SAVED_FADES {fades} NONZERO_PAN_ROUTES {pan}");
     let identities = library
         .instrument
         .source_indices
@@ -360,7 +371,7 @@ fn conflux_digital_lfo_sources_are_retained() {
         })
         .count();
     assert_eq!(
-        identities, 124,
+        identities, 182,
         "admitted sources keep their physical internal-slot identity"
     );
 }

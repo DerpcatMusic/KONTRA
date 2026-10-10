@@ -1910,3 +1910,153 @@ fn compressor_descriptors_have_live_typed_physical_lanes() {
         );
     }
 }
+
+#[test]
+fn saved_digital_fade_plays_native_f32_growth_and_terminal_step_without_heap() {
+    // Shared modulation points are still on its 64-frame grid; the saved
+    // source fade must sample the native 32-frame recurrence at those points.
+    for rate in [44100, 48000, 96000] {
+        for fade_ms in [0., f32::from_bits(0x3f24ca3c), 10.] {
+            let ticks = (fade_ms * (rate as f32 / 32.) * 0.001) as usize;
+            let mut value = 0.3f32;
+            let factor = if ticks == 0 {
+                1.
+            } else {
+                (1. + 1. / f64::from(0.3f32)).powf(1. / ticks as f64) as f32
+            };
+            let mut gains = vec![];
+            for _ in 0..ticks {
+                gains.push(value - 0.3);
+                value = (value * factor).clamp(0., 1.);
+            }
+            gains.push(1.);
+            for block in [1, 7, 32, 61, 256] {
+                let instrument = ir::Instrument {
+                    assets: vec![asset("a")],
+                    zones: vec![ir::Zone {
+                        keys: ir::KeyRange { low: 60, high: 60 },
+                        pitch: ir::KeyTracking::Fixed,
+                        velocity: ir::VelocityResponse::None,
+                        routes: vec![ir::RouteRef(0)],
+                        ..ir::Zone::new(ir::AssetRef(0))
+                    }],
+                    modulators: vec![ir::Modulator {
+                        scope: ir::Scope::Voice,
+                        source: ir::ModulationSource::Lfo(ir::Lfo {
+                            shape: ir::LfoShape::DigitalSine {
+                                level: -f64::from(0.3f32),
+                                fade_ms,
+                            },
+                            rate: ir::Frequency::Hertz(1e-10),
+                            delay: ir::Time::ZERO,
+                            fade_in: ir::Time::ZERO,
+                            phase: 0.25,
+                            retrigger: true,
+                        }),
+                    }],
+                    routes: vec![ir::Route::new(
+                        ir::ModulatorRef(0),
+                        ir::Target::Amplitude,
+                        ir::Depth::Normalized(1.),
+                    )],
+                    ..Default::default()
+                };
+                let plan = lower(
+                    &instrument,
+                    rate,
+                    vec![Pcm::new(rate, vec![[0.5; 2]; 4800].into_boxed_slice()).unwrap()],
+                    no_behaviors,
+                )
+                .unwrap();
+                let mut rt = Runtime::new(plan, limits()).unwrap();
+                for _ in 0..2 {
+                    let mut audio = [[0.; 2]; 1024];
+                    support::without_heap(|| {
+                        rt.trigger(input(60), 60, 1.).unwrap();
+                        for chunk in audio.chunks_mut(block) {
+                            rt.render(chunk).unwrap();
+                        }
+                        rt.note_off(input(60), None).unwrap();
+                        rt.render(&mut [[0.; 2]; 128]).unwrap();
+                    });
+                    assert_eq!(rt.voice_count(), 0);
+                    for (i, frame) in audio.iter().enumerate() {
+                        let begin = i / 64 * 64;
+                        let at = |frame: usize| {
+                            0.5 * ((-0.3f32 * gains[(frame / 32).min(ticks)]) + 1.) * 0.5
+                        };
+                        let a = at(begin);
+                        let b = at(begin + 64);
+                        let expected = a + (b - a) * ((i % 64 + 1) as f32 / 64.);
+                        assert!(
+                            frame.iter().all(|v| (*v - expected).abs() < 1e-6),
+                            "rate={rate} fade={fade_ms} block={block} frame={i} actual={frame:?} native={expected}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn saved_digital_fade_rejects_unproven_clock_state_at_ir_boundary() {
+    let valid = ir::Lfo {
+        shape: ir::LfoShape::DigitalSine {
+            level: -0.3,
+            fade_ms: 10.,
+        },
+        rate: ir::Frequency::Hertz(1.),
+        phase: 0.25,
+        delay: ir::Time::ZERO,
+        fade_in: ir::Time::ZERO,
+        retrigger: true,
+    };
+    let instrument = |lfo| ir::Instrument {
+        modulators: vec![ir::Modulator {
+            scope: ir::Scope::Voice,
+            source: ir::ModulationSource::Lfo(lfo),
+        }],
+        ..Default::default()
+    };
+    assert!(instrument(valid).validate().is_ok());
+    let mut shared = instrument(valid);
+    shared.modulators[0].scope = ir::Scope::Master;
+    assert!(shared.validate().is_err());
+    for invalid in [
+        ir::Lfo {
+            delay: ir::Time::Milliseconds(1.),
+            ..valid
+        },
+        ir::Lfo {
+            fade_in: ir::Time::Milliseconds(1.),
+            ..valid
+        },
+        ir::Lfo {
+            retrigger: false,
+            ..valid
+        },
+        ir::Lfo {
+            rate: ir::Frequency::Beats(1.),
+            ..valid
+        },
+        ir::Lfo {
+            shape: ir::LfoShape::DigitalSine {
+                level: -0.3,
+                fade_ms: f32::NAN,
+            },
+            ..valid
+        },
+        ir::Lfo {
+            shape: ir::LfoShape::DigitalSine {
+                level: -0.3,
+                fade_ms: 5001.,
+            },
+            ..valid
+        },
+    ] {
+        let ir = instrument(invalid);
+        assert!(ir.validate().is_err());
+        assert!(lower(&ir, 48000, vec![], no_behaviors).is_err());
+    }
+}
