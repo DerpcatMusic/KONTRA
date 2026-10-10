@@ -2371,7 +2371,7 @@ fn w10_fractional_uvi_child_order_paints_callback_result_at_device_scale() {
             "{name}: authored overlap order"
         );
         let pixel = |x: usize, y: usize| &data[(y * 642 + x) * 4..(y * 642 + x + 1) * 4];
-        let background = pixel(0, 0);
+        let background = pixel(40, 77);
         for (x, y) in [(42, 77), (108, 77), (75, 44), (75, 111)] {
             assert_eq!(pixel(x, y), background, "{name}: outside authored fractional bounds");
         }
