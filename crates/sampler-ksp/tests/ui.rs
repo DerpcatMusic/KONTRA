@@ -63,7 +63,7 @@ fn ksp_interface_maps_to_validated_ui_ir() {
         })
         .unwrap();
     assert_eq!(ui.source, Source::Ksp { slot: 3 });
-    assert_eq!(ui.pages[0].size.height, 300);
+    assert_eq!(ui.pages[0].size.height, 300.0);
     assert_eq!(
         ui.assets[ui.pages[0].background.image.unwrap().0].path,
         "Resources/pictures/wall.png"
@@ -71,7 +71,7 @@ fn ksp_interface_maps_to_validated_ui_ir() {
     let [panel, knob, label, table, meter, button] = &ui.widgets[..] else {
         panic!("{:?}", ui.widgets);
     };
-    assert_eq!((panel.kind.clone(), panel.rect.x), (Kind::Panel, 10));
+    assert_eq!((panel.kind.clone(), panel.rect.x), (Kind::Panel, 10.0));
     assert_eq!(knob.parent, Some(sampler_ui_ir::WidgetRef(0)));
     assert!(knob.hide.title && !knob.hidden);
     let control = script.controls()[0].definition.id;
@@ -218,7 +218,7 @@ fn picture_size_is_one_frame_of_the_png() {
     assert_eq!(
         meta.size,
         Some(sampler_ui_ir::Size {
-            width: 64,
+            width: 64.0,
             height: 64
         })
     );

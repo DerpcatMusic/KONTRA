@@ -456,7 +456,7 @@ mod tests {
         face.input.values.insert(ir::WidgetRef(0),ir::Value::Text("Retained draft".into()));
         let mut current = authored.clone();
         current.widgets[0].value_text = Some("Changed".into());
-        current.widgets[0].rect.x += 10;
+        current.widgets[0].rect.x += 10.0;
         let patch = ir::InterfacePatch::between(&authored, &current);
         face.update(patch.clone());
         assert_eq!((face.shown, face.page, face.presentation), (1, ir::PageRef(1), Presentation::Bitmap));
