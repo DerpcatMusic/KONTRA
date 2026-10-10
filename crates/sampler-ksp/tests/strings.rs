@@ -786,15 +786,15 @@ fn display_ext_supplied_constant_and_dynamic_values_use_existing_pan_volume_tune
                     vec![],
                 )
             });
-            let text = |index| {
+            let text = [0, 1, 2, 3, 4].map(|index| {
                 rt.script_text(rt.active_plan(), ScriptInstanceId(0), index)
-                    .unwrap().as_str()
-            };
-            assert!(!text(0).is_empty());
-            assert_eq!(text(0), text(3), "{parameter}, {address:?}");
-            assert_eq!(text(1), text(4), "{parameter}, {address:?}");
-            assert_ne!(text(0), text(2), "Ext must not use the stored value");
-            assert_ne!(text(1), text(2), "Ext must not use the stored value");
+                    .unwrap()
+            });
+            assert!(!text[0].as_str().is_empty());
+            assert_eq!(text[0].as_str(), text[3].as_str(), "{parameter}, {address:?}");
+            assert_eq!(text[1].as_str(), text[4].as_str(), "{parameter}, {address:?}");
+            assert_ne!(text[0].as_str(), text[2].as_str(), "Ext must not use the stored value");
+            assert_ne!(text[1].as_str(), text[2].as_str(), "Ext must not use the stored value");
             assert_eq!((cell(&rt, 5), cell(&rt, 6)), (800000, 678901));
             // Real read/write consumers check complete address binding. Display
             // with a supplied value does NOT, so text above cannot replace this guard.
