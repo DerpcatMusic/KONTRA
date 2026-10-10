@@ -95,6 +95,12 @@ static Window open_editor(const clap_plugin_t* p, const clap_plugin_gui_t* gui, 
         // Tiling WMs may replace the requested size on map; keep this measurement viewport fixed.
         XSetWindowAttributes attributes{}; attributes.override_redirect=True;
         XChangeWindowAttributes(display,window,CWOverrideRedirect,&attributes);
+        // Xwayland can still present this parent as a managed toplevel. Advertise
+        // a fixed host viewport before map instead of fighting ConfigureNotify.
+        XSizeHints hints{}; hints.flags=PMinSize|PMaxSize;
+        hints.min_width=hints.max_width=width;
+        hints.min_height=hints.max_height=height;
+        XSetWMNormalHints(display,window,&hints);
     }
     XSelectInput(display, window, StructureNotifyMask);
     if (rss) {
