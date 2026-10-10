@@ -236,16 +236,16 @@ fn stolen_fading_voices_do_not_supply_a_zone() {
 }
 
 #[test]
-fn unknown_and_cached_group_selectors_keep_the_existing_zero_fallback() {
+fn wrapped_negative_literal_is_an_invalid_alias_and_selectors_keep_zero_fallback() {
     let source = "on init declare $parameter := $EVENT_PAR_ZONE_ID
-      declare $all := $ALL_EVENTS declare $marks declare $unknown declare $wide
+      declare $all := $ALL_EVENTS declare $marks declare $unknown declare $wrapped_negative
       declare $all_zone declare $mark_zone end on
       on note
         $marks := by_marks($MARK_1)
         set_event_mark($EVENT_ID,$MARK_1)
         wait(1)
         $unknown := get_event_par(99999,$EVENT_PAR_ZONE_ID)
-        $wide := get_event_par(2147483648,$parameter)
+        $wrapped_negative := get_event_par(2147483648,$parameter)
         $all_zone := get_event_par($all,$EVENT_PAR_ZONE_ID)
         $mark_zone := get_event_par($marks,$parameter)
       end on";
