@@ -253,6 +253,7 @@ pub fn interface(
     let mut bld = Builder {
         ui: ir::Interface {
             source: ir::Source::Ksp { slot },
+            performance: m.performance_view,
             ..Default::default()
         },
         assets: HashMap::new(),
