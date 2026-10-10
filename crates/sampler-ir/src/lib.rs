@@ -215,6 +215,8 @@ pub struct SourceIndices {
     pub engine_values: Vec<SourceEngineValue>,
     /// Native addresses aliasing real continuous processor controls.
     pub control_aliases: Vec<SourceControlAlias>,
+    /// Admitted outgoing route -> live depth and internal-source bypass controls.
+    pub route_controls: Vec<(RouteRef, ControlRef, ControlRef)>,
     pub slots: Vec<Option<usize>>,
 }
 

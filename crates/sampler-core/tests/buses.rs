@@ -956,6 +956,7 @@ fn voice_modulation_gain_is_at_the_amplifier_between_send_taps() {
             .unwrap()
             .with_voice_modulation(
                 vec![ModProgram {
+                    controls: vec![],
                     breakpoints: vec![],
                     sources: vec![ModSource::Envelope(
                         Envelope::new(64, 0, 0, 1.0, 0).unwrap(),

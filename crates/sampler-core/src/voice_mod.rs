@@ -299,6 +299,8 @@ pub struct Breakpoints {
 /// One voice modulation program, shared by the regions bound to it.
 #[derive(Clone, Debug, Default)]
 pub struct ModProgram {
+    /// Sparse outgoing route index -> live depth and source bypass controls.
+    pub controls: Vec<(usize, [crate::ControlId; 2])>,
     pub sources: Vec<ModSource>,
     pub breakpoints: Vec<Breakpoints>,
     pub routes: Vec<ModRoute>,
@@ -331,6 +333,7 @@ struct Program {
     breakpoints: Box<[Breakpoints]>,
     routes: Box<[ModRoute]>,
     targets: Box<[CompiledTarget]>,
+    controls: Box<[(usize, [usize; 2])]>,
     filter_indices: Box<[usize]>,
     shapes: Box<[Shape]>,
     /// Whether any route reaches each kind of output, so unused work is skipped.
@@ -400,7 +403,13 @@ impl VoiceModulation {
         regions: Vec<Option<usize>>,
         start_ranges: Vec<u32>,
     ) -> Result<Self, Error> {
-        Self::new_resolved(programs, regions, start_ranges, |_| None)
+        Self::new_resolved(
+            programs,
+            regions,
+            start_ranges,
+            |_| None,
+            |_| Err(Error::InvalidInput),
+        )
     }
 
     pub(crate) fn new_resolved(
@@ -408,6 +417,7 @@ impl VoiceModulation {
         regions: Vec<Option<usize>>,
         start_ranges: Vec<u32>,
         resolve: impl Fn(crate::ParameterAddress) -> Option<usize>,
+        control: impl Fn(crate::ControlId) -> Result<usize, Error>,
     ) -> Result<Self, Error> {
         if start_ranges.len() != regions.len()
             || regions.iter().flatten().any(|p| *p >= programs.len())
@@ -527,7 +537,22 @@ impl VoiceModulation {
                 .collect();
             filter_indices.sort_unstable();
             filter_indices.dedup();
+            let mut controls = program
+                .controls
+                .iter()
+                .map(|&(route, ids)| {
+                    if route >= program.routes.len() {
+                        return Err(Error::InvalidInput);
+                    }
+                    Ok((route, [control(ids[0])?, control(ids[1])?]))
+                })
+                .collect::<Result<Vec<_>, Error>>()?;
+            controls.sort_unstable_by_key(|b| b.0);
+            if controls.windows(2).any(|b| b[0].0 == b[1].0) {
+                return Err(Error::InvalidInput);
+            }
             compiled.push(Program {
+                controls: controls.into_boxed_slice(),
                 bipolar: program.sources.iter().map(ModSource::bipolar).collect(),
                 cacheable: sources.iter().all(|s| {
                     matches!(
@@ -542,7 +567,8 @@ impl VoiceModulation {
                             | Prepared::Script(_)
                             | Prepared::PitchBend
                     )
-                }) && program.routes.iter().all(|r| r.lag == 0),
+                }) && program.routes.iter().all(|r| r.lag == 0)
+                    && program.controls.is_empty(),
                 sources,
                 filter_indices: filter_indices.into_boxed_slice(),
                 envelopes: envelopes.into_boxed_slice(),
@@ -775,6 +801,7 @@ pub(crate) struct Inputs<'a> {
     pub script: &'a crate::script_params::ModValues,
     /// The note's raw pitch bend, -1..=1.
     pub bend: f64,
+    pub controls: &'a [crate::ControlValue],
 }
 
 impl<'a> Inputs<'a> {
@@ -784,6 +811,7 @@ impl<'a> Inputs<'a> {
         controllers: &'a [u32; 128],
         held: u64,
         script: &'a crate::script_params::ModValues,
+        controls: &'a [crate::ControlValue],
     ) -> Self {
         Self {
             velocity: note.velocity,
@@ -793,6 +821,7 @@ impl<'a> Inputs<'a> {
             controllers,
             held,
             script,
+            controls,
             bend: expression.bend,
         }
     }
@@ -1274,6 +1303,7 @@ impl VoiceModState {
         let mut resonance = 0.0;
         let mut cutoff = 0.0;
         let lagged = &mut self.lagged[voice * self.routes..][..p.routes.len()];
+        let mut controls = p.controls.iter().peekable();
         for (i, (route, lagged)) in p.routes.iter().zip(lagged).enumerate() {
             let bipolar = p.bipolar[route.source];
             let mut v = p.transform(route, values[route.source], bipolar);
@@ -1285,9 +1315,20 @@ impl VoiceModState {
                 v = *lagged + (v - *lagged) * alpha;
             }
             *lagged = v;
+            // Bypass masks the route, not the source clock/lag; resume never restarts it.
+            let base = match controls.peek().copied() {
+                Some(&(index, [depth, bypass])) if index == i => {
+                    controls.next();
+                    match (inputs.controls[depth], inputs.controls[bypass]) {
+                        (crate::ControlValue::Real(d), crate::ControlValue::Real(0.)) => d,
+                        _ => 0.,
+                    }
+                }
+                _ => route.depth,
+            };
             let d = route
                 .scale
-                .map_or(route.depth, |s| p.depth(route.depth, s, values[s.source]));
+                .map_or(base, |s| p.depth(base, s, values[s.source]));
             processor_values[i] = d * v;
             if onset {
                 previous_processor_values[i] = processor_values[i];
@@ -1734,6 +1775,7 @@ mod tests {
             held: 0,
             script: &script,
             bend: 0.0,
+            controls: &[],
         };
         let clock = |now| Clock {
             rate: 48000.0,
@@ -1936,6 +1978,7 @@ mod tests {
                 held: 0,
                 script: &Default::default(),
                 bend: 0.0,
+                controls: &[],
             };
             let clock = |now| Clock {
                 rate: 1000.0,

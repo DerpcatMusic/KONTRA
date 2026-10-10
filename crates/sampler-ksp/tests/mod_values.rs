@@ -39,6 +39,7 @@ fn from_script_modulator_values_drive_voice_modulation() {
         .unwrap()
         .with_voice_modulation(
             vec![ModProgram {
+                controls: vec![],
                 breakpoints: vec![],
                 sources: vec![ModSource::Script(1)],
                 routes: vec![ModRoute::new(0, ModTarget::Attenuate, 1.)],
