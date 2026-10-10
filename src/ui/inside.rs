@@ -75,6 +75,7 @@ impl Driver {
 pub enum SoundTab {
     #[default]
     Controls,
+    /// Legacy state redirects to the primary Mapping view.
     Mapping,
     Effects,
 }
@@ -96,6 +97,13 @@ pub struct State {
 impl State {
     pub fn editing(&self) -> bool {
         self.edit.is_some()
+    }
+
+    fn redirect_legacy_mapping(&mut self) {
+        if self.view == Some(View::Sound) && self.sound_tab == SoundTab::Mapping {
+            self.view = Some(View::Mapping);
+            self.sound_tab = SoundTab::Controls;
+        }
     }
 }
 
@@ -119,6 +127,7 @@ fn offered(cx: &Cx, slot: usize) -> Vec<View> {
 pub fn bar(ui: &mut Ui, cx: &mut Cx, slot: usize) -> (View, Option<El>) {
     let offered = offered(cx, slot);
     let st = cx.state.inside.entry(slot).or_default();
+    st.redirect_legacy_mapping();
     let view = st
         .view
         .filter(|v| offered.contains(v))
@@ -929,9 +938,9 @@ fn articulations(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument) -
 // Sound -----------------------------------------------------------------
 
 /// Stable shared widget contract: sound-tabs-{slot}, sound-tab-{slot}-{label}.
-fn sound(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrument>) -> El {
+fn sound(ui: &mut Ui, cx: &mut Cx, slot: usize, _inst: &Arc<ir::Instrument>) -> El {
     let mut picked = cx.state.inside.entry(slot).or_default().sound_tab;
-    let tabs = [SoundTab::Controls, SoundTab::Mapping, SoundTab::Effects]
+    let tabs = [SoundTab::Controls, SoundTab::Effects]
         .into_iter()
         .map(|tab| {
             let label = match tab {
@@ -955,15 +964,14 @@ fn sound(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrument>) -> E
     cx.state.inside.get_mut(&slot).unwrap().sound_tab = picked;
     let strip = segmented(tabs).id(format!("sound-tabs-{slot}"));
     let body = match picked {
-        SoundTab::Mapping => super::mapping::view(ui, cx, slot, inst),
         SoundTab::Effects => sound_effects(ui, cx, slot),
-        SoundTab::Controls
+        SoundTab::Controls | SoundTab::Mapping
             if cx.state.selected == slot
                 && cx.p.shared.editor_watch.load(Ordering::Relaxed) == usize::MAX =>
         {
             super::editor::view(ui, cx, slot)
         }
-        SoundTab::Controls => {
+        SoundTab::Controls | SoundTab::Mapping => {
             let (hit, button) =
                 super::theme::action(ui, format!("edit-open-{slot}"), "Edit sound", false);
             if hit {
@@ -1101,6 +1109,26 @@ pub fn switch_keys(cx: &Cx, slot: usize) -> Option<Arc<ir::Instrument>> {
 mod tests {
     use super::*;
     use crate::sound::articulation::Input;
+    #[test]
+    fn legacy_sound_mapping_redirects_without_losing_selection() {
+        let mut state = State {
+            view: Some(View::Sound),
+            sound_tab: SoundTab::Mapping,
+            group: Some(7),
+            active: Some(3),
+            ..Default::default()
+        };
+        state.redirect_legacy_mapping();
+        assert_eq!(state.view, Some(View::Mapping));
+        assert_eq!(state.sound_tab, SoundTab::Controls);
+        assert_eq!(state.group, Some(7));
+        assert_eq!(state.active, Some(3));
+        state.view = Some(View::Sound);
+        state.sound_tab = SoundTab::Effects;
+        state.redirect_legacy_mapping();
+        assert_eq!(state.view, Some(View::Sound));
+        assert_eq!(state.sound_tab, SoundTab::Effects);
+    }
     #[test]
     fn keyswitch_cells_show_actual_inputs_without_inventing_ranges() {
         assert_eq!(input_label(&Input::Keys(vec![49, 60, 73])), "C#2 +2");
