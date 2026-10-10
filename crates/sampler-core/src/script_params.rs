@@ -1027,12 +1027,13 @@ mod tests {
             p = p.with_voice_chains(vec![crate::VoiceChain::new(
                 vec![crate::Processor::Gain(1.)], vec![crate::Processor::Gain(1.)], 0).unwrap()], vec![Some(0)]).unwrap();
         }
-        let limits = crate::Limits::for_plan(&p, 4, 0);
+        let limits = crate::Limits::for_plan(&p, 4, 1);
         let mut rt = Runtime::new(p, limits).unwrap();
         let mut audio = vec![[0.; 2]; 160];
         {
             let note = rt.trigger(crate::Input { protocol: crate::Protocol::Native, port: 0, group: 0,
                 channel: 0, key: 60, external_id: None }, 60, 1.).unwrap();
+            assert_eq!(rt.voice_count(), 1);
             rt.fade_note(note, Some(if out { 1. } else { 0. }), if out { 0. } else { 1. }, 128, false).unwrap();
             rt.note_params[note.0.index].fade.as_mut().unwrap().curve = curve;
             for segment in audio.chunks_mut(block) {
