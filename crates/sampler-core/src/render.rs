@@ -889,10 +889,19 @@ pub(super) fn ramp_mix(
     let len = ramp.end.saturating_sub(ramp.begin).max(1) as f32;
     let step = [(to[0] - from[0]) / len, (to[1] - from[1]) / len];
     let offset = now.saturating_sub(ramp.begin) as f32;
-    for (i, (out, frame)) in output.iter_mut().zip(chunk).enumerate() {
-        let at = offset + (i + 1) as f32;
-        out[0] += frame[0] * (from[0] + step[0] * at);
-        out[1] += frame[1] * (from[1] + step[1] * at);
+    if let Some(fade) = ramp.script_fade {
+        for (i, (out, frame)) in output.iter_mut().zip(chunk).enumerate() {
+            let at = offset + (i + 1) as f32;
+            let gain = fade.at(now + i as u64 + 1) as f32;
+            out[0] += frame[0] * (from[0] + step[0] * at) * gain;
+            out[1] += frame[1] * (from[1] + step[1] * at) * gain;
+        }
+    } else {
+        for (i, (out, frame)) in output.iter_mut().zip(chunk).enumerate() {
+            let at = offset + (i + 1) as f32;
+            out[0] += frame[0] * (from[0] + step[0] * at);
+            out[1] += frame[1] * (from[1] + step[1] * at);
+        }
     }
 }
 
