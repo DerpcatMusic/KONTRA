@@ -3,30 +3,30 @@ use super::{ir_view, theme::*};
 use moose::mui::mui::prelude::*;
 use sampler_ui_ir::{self as ir, WidgetRef};
 
-const SECTION_GAP: i32 = 16;
-const COLUMN_GAP: i32 = 4;
+const SECTION_GAP: f64 = 16.;
+const COLUMN_GAP: f64 = 4.;
 
 /// Split authored geometry into bands/columns. Store references, never copied control state.
 fn clusters(
     face: &ir::Interface,
     mut widgets: Vec<WidgetRef>,
     vertical: bool,
-    gap: i32,
+    gap: f64,
 ) -> Vec<Vec<WidgetRef>> {
     let bounds = |n| {
         let r = face.page_rect(n);
         if vertical {
-            (r.y, r.y + r.height as i32)
+            (r.y, r.y + r.height)
         } else {
-            (r.x, r.x + r.width as i32)
+            (r.x, r.x + r.width)
         }
     };
-    widgets.sort_by_key(|&n| bounds(n).0);
+    widgets.sort_by(|&a, &b| bounds(a).0.total_cmp(&bounds(b).0));
     let mut groups: Vec<Vec<WidgetRef>> = Vec::new();
-    let mut end = i32::MIN;
+    let mut end = f64::NEG_INFINITY;
     for n in widgets {
         let (start, bottom) = bounds(n);
-        if groups.is_empty() || start.saturating_sub(end) > gap {
+        if groups.is_empty() || start - end > gap {
             groups.push(Vec::new());
             end = bottom;
         } else {
@@ -64,11 +64,11 @@ fn name(face: &ir::Interface, n: WidgetRef) -> String {
         })
         .filter_map(|(i, w)| {
             let l = face.page_rect(WidgetRef(i));
-            let distance = (r.y - l.y - l.height as i32).abs();
-            (distance <= 24 && l.x < r.x + r.width as i32 && r.x < l.x + l.width as i32)
+            let distance = (r.y - l.y - l.height).abs();
+            (distance <= 24. && l.x < r.x + r.width && r.x < l.x + l.width)
                 .then_some((distance, w))
         })
-        .min_by_key(|(d, _)| *d)
+        .min_by(|(a, _), (b, _)| a.total_cmp(b))
         .map(|(_, w)| clean(&w.text))
     {
         return label;
@@ -135,21 +135,21 @@ pub fn view(
             let top = group
                 .iter()
                 .map(|&n| face.page_rect(n).y)
-                .min()
-                .unwrap_or(0);
+                .min_by(f64::total_cmp)
+                .unwrap_or(0.);
             let left = group
                 .iter()
                 .map(|&n| face.page_rect(n).x)
-                .min()
-                .unwrap_or(0);
+                .min_by(f64::total_cmp)
+                .unwrap_or(0.);
             let right = group
                 .iter()
                 .map(|&n| {
                     let r = face.page_rect(n);
-                    r.x + r.width as i32
+                    r.x + r.width
                 })
-                .max()
-                .unwrap_or(0);
+                .max_by(f64::total_cmp)
+                .unwrap_or(0.);
             let title = face
                 .widgets
                 .iter()
@@ -157,16 +157,16 @@ pub fn view(
                 .filter(|(n, w)| matches!(w.kind, ir::Kind::Label) && face.visible(WidgetRef(*n)))
                 .filter_map(|(n, w)| {
                     let r = face.page_rect(WidgetRef(n));
-                    let distance = top - r.y - r.height as i32;
-                    ((0..=24).contains(&distance) && r.x < right && r.x + r.width as i32 > left)
+                    let distance = top - r.y - r.height;
+                    ((0. ..=24.).contains(&distance) && r.x < right && r.x + r.width > left)
                         .then_some((distance, clean(&w.text)))
                 })
-                .min_by_key(|(d, _)| *d)
+                .min_by(|(a, _), (b, _)| a.total_cmp(b))
                 .map(|(_, text)| text)
                 .filter(|s| !s.is_empty());
             let mut strips = Vec::new();
             for mut strip in clusters(face, group, false, COLUMN_GAP) {
-                strip.sort_by_key(|&n| face.page_rect(n).y);
+                strip.sort_by(|&a, &b| face.page_rect(a).y.total_cmp(&face.page_rect(b).y));
                 let mut cells = Vec::new();
                 for n in strip {
                     let (width, height) = match face.widgets[n.0].kind {
