@@ -46,7 +46,7 @@ pub struct Interface {
     /// The source explicitly declares an authored performance view.
     pub performance: bool,
     pub pages: Vec<Page>,
-    /// Declaration order; ties in [`Widget::z`] draw in this order.
+    /// Stable declaration order; default traversal ties in [`Widget::z`] use this order.
     pub widgets: Vec<Widget>,
     /// Authored back-to-front traversal; `None` uses the source's default order.
     pub paint_order: Option<Vec<WidgetRef>>,
@@ -124,7 +124,7 @@ pub struct Widget {
     pub auto_size: bool,
     /// Default width/height independently. Explicit zero stays zero.
     pub default_axes: [bool; 2],
-    /// Higher draws later: global layers for KSP, sibling layers for Lua.
+    /// Default traversal layers: global for KSP, siblings for Lua.
     pub z: i32,
     /// Hidden as a whole (`HIDE_WHOLE_CONTROL`, Lua `visible = false`).
     pub hidden: bool,
@@ -771,8 +771,8 @@ impl Interface {
         rect
     }
 
-    /// `page`'s widgets back to front by ([`Widget::z`], declaration order).
-    /// Kontakt uses global layers; native graphs order siblings and draw each
+    /// `page`'s authored traversal, or source-default back-to-front order.
+    /// Kontakt defaults to global layers; native graphs order siblings and draw each
     /// panel's contents straight after the panel.
     /// Requires a [validated](Self::validate) interface.
     pub fn draw_order(&self, page: PageRef) -> Vec<WidgetRef> {
