@@ -184,14 +184,30 @@ fn synthesis_tree_aliases_exist() {
 }
 
 #[test]
-#[ignore = "audit: async calls complete with a result or failure callback"]
-fn async_api_completes_instead_of_swallowing_callback() {
+fn missing_load_data_does_not_call_callback() {
+    // Vendor loadData explicitly excludes unreadable files from callback delivery.
+    // This owned-file characterization is not an executed native parity receipt.
+    let dir =
+        std::env::temp_dir().join(format!("kontra-owned-missing-data-{}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    let path = serde_json::to_string(dir.join("missing.json").to_str().unwrap()).unwrap();
     let mut h = host(
-        "result = false; loadData('does-not-exist', function(data) result = true end)",
+        &format!(
+            "result = false; task = loadData({path}, function(data) result = true end); spawn(function() while not task.finished do wait(1) end; done = task.success end)"
+        ),
         "",
     );
-    h.advance(1000.0);
-    assert_eq!(h.global_text("result"), "true");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut time = 0.0;
+    while h.global_text("done") != "true" {
+        assert!(std::time::Instant::now() < deadline, "{:?}", h.findings());
+        time += 1.0;
+        h.advance(time);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert_eq!(h.global_text("result"), "false");
+    drop(h);
+    std::fs::remove_dir(dir).unwrap();
 }
 
 #[test]
