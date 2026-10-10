@@ -17,6 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod async_data;
 mod modules;
 #[cfg(feature = "scan")]
 pub mod diagnostics;
@@ -444,6 +445,7 @@ struct Shared {
     findings: RefCell<BTreeMap<(String, Option<SetterTypes>), Finding>>,
     waiting: RefCell<Vec<Waiting>>,
     deferred: RefCell<Vec<(Thread, MultiValue, Option<u64>)>>,
+    data_loads: RefCell<async_data::DataLoads>,
     params: RefCell<Vec<Vec<(String, String)>>>,
     scopes: RefCell<Vec<Option<Scope>>>,
     nodes: RefCell<Vec<(usize, bool)>>,
@@ -665,6 +667,12 @@ impl Shared {
 pub struct ScriptHost {
     lua: Lua,
     shared: Rc<Shared>,
+}
+
+impl Drop for ScriptHost {
+    fn drop(&mut self) {
+        self.shared.data_loads.borrow_mut().stop();
+    }
 }
 
 fn number(value: &Value) -> Option<f64> {
@@ -971,6 +979,7 @@ impl ScriptHost {
             findings: RefCell::new(BTreeMap::new()),
             waiting: RefCell::new(Vec::new()),
             deferred: RefCell::new(Vec::new()),
+            data_loads: RefCell::new(async_data::DataLoads::default()),
             params: RefCell::new(Vec::new()),
             scopes: RefCell::new(Vec::new()),
             nodes: RefCell::new(Vec::new()),
@@ -1105,7 +1114,8 @@ impl ScriptHost {
 
         // Natives the prelude wraps (`__native`) and the engine API (globals).
         let native = lua.create_table()?;
-        for name in ["loadData", "loadSample", "loadImpulse"] {
+        async_data::install(lua, shared)?;
+        for name in ["loadSample", "loadImpulse"] {
             let s = shared.clone();
             globals.raw_set(
                 name,
@@ -2286,6 +2296,8 @@ impl ScriptHost {
             self.cycle();
         }
         self.shared.now.set(now_ms.max(self.shared.now.get()));
+        async_data::poll(self);
+        self.cycle();
         #[cfg(feature = "scan")]
         if let Some(progress) = &self.shared.progress {
             progress.clock(self.shared.now.get());
