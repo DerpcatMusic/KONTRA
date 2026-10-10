@@ -2531,7 +2531,13 @@ impl Gen<'_, '_> {
                 self.emit(I::Op(Op::ZoneParameter {
                     zone: dst,
                     parameter: dst + 1,
-                    selectors,
+                    selectors: selectors.map(|selector| selector.unwrap_or(0)),
+                    present: selectors
+                        .iter()
+                        .enumerate()
+                        .fold(0, |mask, (index, selector)| {
+                            mask | (u8::from(selector.is_some()) << index)
+                        }),
                     local: dst,
                 }))?;
                 true

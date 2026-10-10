@@ -383,6 +383,41 @@ fn runtime_zone_getter_preserves_source_ids_and_dynamic_parameter_identity() {
 }
 
 #[test]
+fn runtime_zone_getter_does_not_match_absent_parameter_selectors() {
+    let rt = run_shaped(
+        "on init declare $low declare $missing declare $parameter end on
+         on note
+            $parameter := $ZONE_PAR_LOW_KEY
+            $low := get_zone_par(73,$parameter)
+            $parameter := 0
+            $missing := get_zone_par(73,$parameter)
+         end on",
+        sampler_ksp::Environment::default(),
+        |_| {
+            Prepared::new(
+                48000,
+                vec![Pcm::new(48000, Box::from([[1.; 2]; 64])).unwrap()],
+                vec![Region {
+                    sample: 0,
+                    key_low: 7,
+                    key_high: 94,
+                    root_key: None,
+                    velocity_low: 0.,
+                    velocity_high: 1.,
+                    gain: 1.,
+                    envelope: Envelope::default(),
+                    playback: Playback::default(),
+                }],
+                128,
+            )?
+            .with_groups(3, vec![Some(2)])?
+            .with_source_zones(vec![73])
+        },
+    );
+    assert_eq!((cell(&rt, 0), cell(&rt, 1)), (7, 0));
+}
+
+#[test]
 fn init_zone_getter_reads_authored_physical_zone_fields() {
     let rt = run_in(
         "on init declare $g := get_zone_par(73,$ZONE_PAR_GROUP) declare $lo := get_zone_par(73,$ZONE_PAR_LOW_KEY) declare $hi := get_zone_par(73,$ZONE_PAR_HIGH_KEY) declare $missing := get_zone_par(1,$ZONE_PAR_HIGH_KEY) end on",
