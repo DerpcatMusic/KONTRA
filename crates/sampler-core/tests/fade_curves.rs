@@ -16,7 +16,7 @@ fn fade_curve_dispatch_and_chained_plain_render_do_not_allocate_or_free() {
                 for block in [1, 17, 128] {
                     let mut plan = Prepared::new(
                         48000,
-                        vec![Pcm::new(48000, vec![[0.5; 2]; 512]).unwrap()],
+                        vec![Pcm::new(48000, vec![[0.5; 2]; 512].into_boxed_slice()).unwrap()],
                         vec![Region {
                             sample: 0,
                             key_low: 60,
@@ -99,6 +99,26 @@ fn fade_curve_dispatch_and_chained_plain_render_do_not_allocate_or_free() {
                             rt.render(chunk).unwrap();
                         }
                     });
+                    // Independent frame16/384 values; an unfaded or cell-linear result fails.
+                    let gain = match (curve, out) {
+                        (FadeCurve::Linear, false) => 0.041666666666666664,
+                        (FadeCurve::Linear, true) => 0.9583333333333334,
+                        (FadeCurve::EqualPower, false) => 0.06540312923014306,
+                        (FadeCurve::EqualPower, true) => 0.9978589232386035,
+                        (FadeCurve::SCurve, false) => 0.004277569313094809,
+                        (FadeCurve::SCurve, true) => 0.9957224306869052,
+                        (FadeCurve::Exponential, false) => 0.001736111111111111,
+                        (FadeCurve::Exponential, true) => 0.9184027777777778,
+                        (FadeCurve::Logarithmic, false) => 0.08159722222222221,
+                        (FadeCurve::Logarithmic, true) => 0.9982638888888888,
+                    };
+                    assert!(
+                        audio[15]
+                            .iter()
+                            .all(|v| (*v - (0.5 * gain) as f32).abs() < 1e-7),
+                        "{curve:?}, out {out}, chain {chain}, block {block}: {:?}",
+                        audio[15]
+                    );
                     // Guard is meaningful only if the active fade actually rendered.
                     assert!(
                         audio[15]

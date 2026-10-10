@@ -1018,7 +1018,7 @@ mod tests {
     }
 
     fn curved_audio(curve: crate::FadeCurve, out: bool, chain: bool, block: usize) -> Vec<crate::Frame> {
-        let mut p = Prepared::new(48000, vec![crate::Pcm::new(48000, vec![[0.5; 2]; 512]).unwrap()],
+        let mut p = Prepared::new(48000, vec![crate::Pcm::new(48000, vec![[0.5; 2]; 512].into_boxed_slice()).unwrap()],
             vec![crate::Region { sample: 0, key_low: 60, key_high: 60, root_key: None,
                 velocity_low: 0., velocity_high: 1., gain: 1.,
                 envelope: crate::Envelope::new(0, 0, 0, 1., 64).unwrap(), playback: Default::default() }], 1).unwrap()
