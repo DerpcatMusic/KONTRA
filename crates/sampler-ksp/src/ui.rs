@@ -713,7 +713,6 @@ fn meter_address(model: &model::Model, ui_id: i32) -> Option<ir::MeterAddress> {
 }
 
 fn waveform(model: &model::Model, ui_id: i32) -> Option<ir::Waveform> {
-    let mut wave = None;
     let name = model
         .interface
         .widgets
@@ -721,21 +720,26 @@ fn waveform(model: &model::Model, ui_id: i32) -> Option<ir::Waveform> {
         .find(|w| w.ui_id == ui_id)?
         .name
         .as_str();
+    waveform_requests(model, ui_id, name)
+}
+
+/// Init has HIR identities but no assembled widget list yet.
+pub(crate) fn waveform_requests(model: &model::Model, ui_id: i32, name: &str) -> Option<ir::Waveform> {
+    let mut wave = None;
     for request in &model.requests {
         if !matches!(request.args.first(),Some(Value::Int(id)) if *id == ui_id)
             && !matches!(request.args.first(),Some(Value::Text(v)) if v == name)
         {
             continue;
         }
-        let int = |at| match request.args.get(at) {
-            Some(Value::Int(v)) => *v,
-            _ => 0,
-        };
         match request.command {
             "attach_zone" => {
+                let [_, Value::Int(zone), Value::Int(flags)] = request.args.as_slice() else {
+                    continue;
+                };
                 wave = Some(ir::Waveform {
-                    zone: int(1),
-                    flags: int(2) as u32,
+                    zone: *zone,
+                    flags: *flags as u32,
                     cursor_us: 0,
                     table: vec![],
                     highlighted: None,
@@ -743,29 +747,34 @@ fn waveform(model: &model::Model, ui_id: i32) -> Option<ir::Waveform> {
                 })
             }
             "set_ui_wf_property" => {
+                // NI: (variable, property, index, value). Do not accept the
+                // inconsistent three-operand setter in the getter's example.
+                let [_, Value::Text(property), Value::Int(index), Value::Int(value)] =
+                    request.args.as_slice()
+                else {
+                    continue;
+                };
                 if let Some(w) = wave.as_mut() {
                     // Property names are interned symbols, not guessed numeric ordinals.
-                    let property = match request.args.get(1) {
-                        Some(Value::Text(name)) => name.as_str(),
-                        _ => "",
-                    };
-                    match property {
-                        "$UI_WF_PROP_PLAY_CURSOR" => w.cursor_us = i64::from(int(2)),
-                        "$UI_WF_PROP_FLAGS" => w.flags = int(2) as u32,
+                    match property.as_str() {
+                        "$UI_WF_PROP_PLAY_CURSOR" => w.cursor_us = i64::from(*value),
+                        "$UI_WF_PROP_FLAGS" => w.flags = *value as u32,
                         // ponytail: bounded slice annotation snapshot; larger arrays need paged storage.
                         "$UI_WF_PROP_TABLE_VAL" => {
-                            if let Ok(index) = usize::try_from(int(3)) {
+                            if let Ok(index) = usize::try_from(*index) {
                                 if index < 65536 {
                                     w.table.resize(w.table.len().max(index + 1), 0);
-                                    w.table[index] = int(2);
+                                    w.table[index] = *value;
                                 }
                             }
                         }
                         "$UI_WF_PROP_TABLE_IDX_HIGHLIGHT" => {
-                            w.highlighted = u32::try_from(int(2)).ok()
+                            // Retain the indexed slice. The value's toggle law
+                            // is not established by the selected NI specification.
+                            w.highlighted = u32::try_from(*index).ok()
                         }
                         "$UI_WF_PROP_MIDI_DRAG_START_NOTE" => {
-                            w.midi_start_note = int(2).clamp(0, 127) as u8
+                            w.midi_start_note = (*value).clamp(0, 127) as u8
                         }
                         _ => {}
                     }

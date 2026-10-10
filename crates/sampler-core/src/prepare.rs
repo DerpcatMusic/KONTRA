@@ -466,6 +466,7 @@ pub struct Prepared {
     pub(super) control_programs: Box<[super::ControlCallback]>,
     pub(super) plan_programs: Box<[super::PlanProgram]>,
     pub(super) signal_programs: Box<[super::SignalProgram]>,
+    pub(super) parameter_programs: Box<[super::ParameterProgram]>,
     pub(super) shared_store: (Box<[StoreEntry]>, usize),
     pub(super) keyswitches: Box<[Option<u32>; 128]>,
     articulated: bool,
@@ -693,6 +694,7 @@ impl Prepared {
             control_programs: Box::new([]),
             plan_programs: Box::new([]),
             signal_programs: Box::new([]),
+            parameter_programs: Box::new([]),
             shared_store: (Box::new([]), 0),
             keyswitches: Box::new([None; 128]),
             articulated: false,
@@ -750,23 +752,27 @@ impl Prepared {
         self.control_programs = Box::new([]);
         self.plan_programs = Box::new([]);
         self.signal_programs = Box::new([]);
+        self.parameter_programs = Box::new([]);
         Ok(self)
     }
 
     /// Bind a physical-key release callback to triggered external inputs. It has
     /// an independently reserved continuation and may wait beyond gate closure.
-    /// Replacing the complete program table clears this binding.
-    pub fn with_release_program(mut self, program: usize) -> Result<Self, Error> {
+    /// Replacing the complete program table clears this binding. A changed
+    /// release binding is rejected while parameter receivers are installed;
+    /// clear and explicitly rebind those receivers when changing routing.
+    pub fn with_release_program(self, program: usize) -> Result<Self, Error> {
         if !self.programs.get(program).is_some_and(|p| {
             !p.requires_controller && p.wait_lifetime == super::WaitLifetime::Callback
         }) {
             return Err(Error::InvalidInput);
         }
-        if self.stages.is_empty() {
-            self.stages = Box::new([super::Stage::default()]);
+        let mut stages = self.stages.to_vec();
+        if stages.is_empty() {
+            stages.push(super::Stage::default());
         }
-        self.stages[0].release = Some(program);
-        Ok(self)
+        stages[0].release = Some(program);
+        self.with_stages(stages)
     }
 
     /// Bind per-voice modulation programs: one optional program per authored
@@ -778,6 +784,13 @@ impl Prepared {
         start_ranges: Vec<u32>,
     ) -> Result<Self, Error> {
         if regions.len() != self.regions.len()
+            || programs.iter().any(|p| {
+                p.controls.iter().any(|&(index, _)| {
+                    p.routes.get(index).is_none_or(|r| {
+                        r.target.compiled().is_none() || r.target == super::ModTarget::SampleStart
+                    })
+                })
+            })
             || programs
                 .iter()
                 .flat_map(|p| &p.routes)
@@ -833,8 +846,12 @@ impl Prepared {
         let mut programs = programs;
         for program in &mut programs {
             let mut routes = Vec::new();
-            for route in &program.routes {
+            let mut controls = Vec::new();
+            for (index, route) in program.routes.iter().enumerate() {
                 if route.target.compiled().is_some() {
+                    for &(_, ids) in program.controls.iter().filter(|b| b.0 == index) {
+                        controls.push((routes.len(), ids));
+                    }
                     routes.push(*route);
                     continue;
                 }
@@ -869,12 +886,23 @@ impl Prepared {
                 }
             }
             program.routes = routes;
+            program.controls = controls;
         }
         self.voice_modulation = super::voice_mod::VoiceModulation::new_resolved(
             programs,
             regions,
             start_ranges,
             |address| (address.parameter == u32::MAX - 13).then_some(address.node as usize),
+            |id| {
+                let index = self.control_index(id)?;
+                if !matches!(
+                    self.controls[index].domain,
+                    super::ControlDomain::Real { .. }
+                ) {
+                    return Err(Error::InvalidInput);
+                }
+                Ok(index)
+            },
         )?;
         Ok(self)
     }

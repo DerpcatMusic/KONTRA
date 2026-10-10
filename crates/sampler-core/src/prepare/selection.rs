@@ -933,6 +933,7 @@ impl Runtime {
                     &state.controllers,
                     held,
                     &self.note_params[note.0.index].mods,
+                    &self.plans.get(plan.0).unwrap().controls.base,
                 );
                 let start = prepared
                     .voice_modulation
@@ -1016,19 +1017,20 @@ impl Runtime {
                 let held = self.release_counter_frames(note).unwrap();
                 let n = self.notes.get(note.0).unwrap();
                 let controllers = &self.performance_state.states[snapshot].controllers;
+                let g = self.plans.get_mut(plan.0).unwrap();
                 let inputs = crate::voice_mod::Inputs::new(
                     n,
                     self.expressions.get(n.expression.0).unwrap().value,
                     controllers,
                     held,
                     &self.note_params[note.0.index].mods,
+                    &g.controls.base,
                 );
                 let clock = crate::voice_mod::Clock {
                     rate: f64::from(self.rate),
                     tempo: self.tempo,
                     now: self.now,
                 };
-                let g = self.plans.get_mut(plan.0).unwrap();
                 g.modulation.start(
                     &g.prepared.voice_modulation,
                     voice.0.index,

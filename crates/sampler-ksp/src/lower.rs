@@ -141,6 +141,7 @@ pub struct Unit<'h> {
     /// The whole script's instruction limit.
     pub limit: usize,
     pub services: Vec<Builtin>,
+    pub array_files: std::collections::BTreeSet<VarId>,
     pub coverage: BTreeMap<(&'static str, Coverage), usize>,
     pub warnings: Vec<(Fault, crate::diag::Kind)>,
     /// Scratch text cells used above `hir.texts`.
@@ -468,8 +469,8 @@ fn callback_type(kind: CallbackKind) -> i32 {
         CallbackKind::PgsChanged => b::cb::PGS_CHANGED,
         CallbackKind::PersistenceChanged => b::cb::PERSISTENCE_CHANGED,
         CallbackKind::AsyncComplete => b::cb::ASYNC_COMPLETE,
-        CallbackKind::Rpn => 5,
-        CallbackKind::Nrpn => 6,
+        CallbackKind::Rpn => b::cb::RPN,
+        CallbackKind::Nrpn => b::cb::NRPN,
     }
 }
 
@@ -1044,6 +1045,14 @@ impl Gen<'_, '_> {
                 local: dst,
                 value: i64::from(self.signal.unwrap()),
             },
+            SysVar::RpnAddress => I::ReadParameter {
+                local: dst,
+                value: false,
+            },
+            SysVar::RpnValue => I::ReadParameter {
+                local: dst,
+                value: true,
+            },
             SysVar::CurrentScriptSlot => I::SetLocal {
                 local: dst,
                 value: i64::from(self.u.slot),
@@ -1408,6 +1417,24 @@ impl Gen<'_, '_> {
         Ok(())
     }
 
+    fn waveform(&mut self, builtin: Builtin, args: &[Arg], dst: u16) -> Result<()> {
+        use sampler_core::waveform::Action;
+        let action = match builtin {
+            Builtin::AttachZone => Action::Attach,
+            Builtin::SetUiWfProperty => Action::Set,
+            _ => Action::Get,
+        };
+        // Arg::Var is the original HIR UI identity; every other operand once.
+        let (_, text) = self.effect_args(builtin, args, dst)?;
+        if text.is_some() { return fault(self.span, "waveform operands must be integers"); }
+        let services = [self.u.service(Builtin::AttachZone), self.u.service(Builtin::SetUiWfProperty)];
+        let local = reg(dst, 4)?;
+        self.emit(I::Op(Op::Waveform { action, args: dst, local, services }))?;
+        if action == Action::Get { self.copy_i32(local, dst)?; }
+        self.cover(builtin, Coverage::Approximate);
+        Ok(())
+    }
+
     fn emit_effect(&mut self, builtin: Builtin, args: &[Arg], dst: u16) -> Result<()> {
         let (count, text) = self.effect_args(builtin, args, dst)?;
         self.emit_prepared_effect(builtin, dst, count, text)?;
@@ -1542,6 +1569,9 @@ impl Gen<'_, '_> {
         let t = reg(dst, 1)?;
         let is_real = |i: usize| matches!(args.get(i), Some(Arg::Expr(e)) if e.ty == Ty::Real);
         let native = match builtin {
+            AttachZone | SetUiWfProperty | GetUiWfProperty => {
+                return self.waveform(builtin, args, dst);
+            }
             Exit => {
                 self.forward()?;
                 self.emit(I::End)?;
@@ -2277,17 +2307,26 @@ impl Gen<'_, '_> {
                 self.arg(args, 0, dst)?;
                 self.arg(args, 1, t)?;
                 self.emit(I::MicrosToFrames { local: t })?;
+                let curve_arg = if builtin == FadeIn { 2 } else { 3 };
+                let curve = if args.get(curve_arg).is_some() {
+                    let local = reg(dst, 2)?;
+                    self.arg(args, curve_arg, local)?;
+                    Some(local)
+                } else {
+                    None
+                };
                 let fade = |stop| I::FadeEvent {
                     event: dst,
                     frames: t,
                     out: builtin == FadeOut,
                     stop,
+                    curve,
                 };
                 match (builtin, self.const_int(args, 2)) {
                     (FadeIn, _) => self.emit(fade(false))?,
                     (_, Some(stop)) => self.emit(fade(stop != 0))?,
                     _ => {
-                        let flag = reg(dst, 2)?;
+                        let flag = reg(dst, 3)?;
                         self.arg(args, 2, flag)?;
                         let keep = self.jump_if_zero(flag)?;
                         self.emit(fade(true))?;
@@ -2336,6 +2375,41 @@ impl Gen<'_, '_> {
                     Key::Fixed(LISTENER_TAG),
                 ];
                 self.store(args, key, dst, true)?;
+                true
+            }
+            LoadArrayStr | SaveArrayStr => {
+                if ![
+                    b::cb::PERSISTENCE_CHANGED,
+                    b::cb::UI_CONTROL,
+                    b::cb::PGS_CHANGED,
+                ]
+                .contains(&self.callback_type)
+                {
+                    self.ignore(
+                        builtin,
+                        "outside init/persistence_changed/ui_control/pgs_changed; rejected",
+                    );
+                    return self.set(dst, -1);
+                }
+                let Some(Arg::Var(var, _)) = args.first() else {
+                    return self.set(dst, -1);
+                };
+                crate::array_file::array(self.u.hir, *var).map_err(|_| Fault {
+                    span: self.span,
+                    builtin: Some(builtin.name()),
+                    message: "invalid or oversized NKA typed array".into(),
+                })?;
+                self.u.array_files.insert(*var);
+                let Some(path) = self.text_arg(args, 1, reg(dst, 1)?)? else {
+                    return self.set(dst, -1);
+                };
+                self.emit(I::Op(Op::ArrayFile {
+                    array: var.0,
+                    path,
+                    write: builtin == SaveArrayStr,
+                    local: dst,
+                }))?;
+                self.tdepth -= 1;
                 true
             }
             builtin if builtin.midi().is_some() => {
@@ -2681,16 +2755,30 @@ impl Gen<'_, '_> {
                 // Effects complete immediately; logging switches have no runtime state.
                 true
             }
+            SetRpn | SetNrpn => {
+                self.arg(args, 0, dst)?;
+                let value = t;
+                self.arg(args, 1, value)?;
+                self.emit(I::SendParameter {
+                    kind: if builtin == SetRpn {
+                        sampler_core::ParameterKind::Rpn
+                    } else {
+                        sampler_core::ParameterKind::Nrpn
+                    },
+                    address: dst,
+                    value,
+                })?;
+                // Runtime-owned, but command-specific routing/timing is our policy.
+                false
+            }
             // Instrument, presentation and logging services the engine does not own.
             ChangeVol | ChangeTune | ChangePan | FadeIn | FadeOut | SetEventPar
-            | SetEventParArr | SetNoteController | SetRpn | SetNrpn | WillNeverTerminate
-            | RedirectOutput | SetZonePar | SetVoiceLimit | LoadIrSample | AttachLevelMeter
-            | AddTextLine | MoveControl | MoveControlPx | SetSkinOffset | SetUiColor
-            | AttachZone | SetUiWfProperty | FsNavigate | SetNksNavName | SetNksNavPar
-            | ResetNksNav | SetKeyColor | SetKeyName | SetKeyType | SetKeyPressed
-            | SetKeyPressedSupport | SetKeyrange | RemoveKeyrange | Message | LoadArray
-            | SaveArray | LoadArrayStr | SaveArrayStr | PgsSetStrKeyVal | PgsCreateKey
-            | PgsCreateStrKey => {
+            | SetEventParArr | SetNoteController | WillNeverTerminate | RedirectOutput
+            | SetZonePar | SetVoiceLimit | LoadIrSample | AttachLevelMeter | AddTextLine
+            | MoveControl | MoveControlPx | SetSkinOffset | SetUiColor | FsNavigate | SetNksNavName | SetNksNavPar | ResetNksNav
+            | SetKeyColor | SetKeyName | SetKeyType | SetKeyPressed | SetKeyPressedSupport
+            | SetKeyrange | RemoveKeyrange | Message | LoadArray | SaveArray | PgsSetStrKeyVal
+            | PgsCreateKey | PgsCreateStrKey => {
                 self.effect(builtin, args, dst)?;
                 if builtin.sig().ret != b::Ret::Void {
                     self.set(dst, 0)?;
@@ -3754,6 +3842,33 @@ impl Gen<'_, '_> {
                 _ => {}
             }
         }
+        let mut menu_exits = Vec::new();
+        if builtin == Builtin::GetControlPar && par.is_none() {
+            for selector in [
+                Some(b::CONTROL_PAR_NUM_ITEMS),
+                b::control_par("$CONTROL_PAR_SELECTED_ITEM_IDX"),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                self.arg(args, 1, dst + 1)?;
+                self.set(dst + 2, i64::from(selector))?;
+                self.emit(I::CompareLocal {
+                    lhs: dst + 1,
+                    rhs: dst + 2,
+                    comparison: Cmp::Equal,
+                })?;
+                let skip = self.jump_if_zero(dst + 1)?;
+                if selector == b::CONTROL_PAR_NUM_ITEMS {
+                    self.builtin(Builtin::GetNumMenuItems, args, dst, self.span)?;
+                } else {
+                    self.set(dst, -1)?;
+                    self.menu_selected_index(args, dst)?;
+                }
+                menu_exits.push(self.jump()?);
+                self.land(skip);
+            }
+        }
         self.set(dst, 0)?;
         self.store(args, PROPERTY_KEY, dst, false)?;
         if par == Some(b::CONTROL_PAR_VALUE) || par.is_none() {
@@ -3793,6 +3908,9 @@ impl Gen<'_, '_> {
         }
         if par == Some(b::CONTROL_PAR_VALUE) && builtin == Builtin::GetControlPar {
             self.menu_selected_index(args, dst)?;
+        }
+        for exit in menu_exits {
+            self.land(exit);
         }
         Ok(())
     }

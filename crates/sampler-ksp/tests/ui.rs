@@ -329,7 +329,7 @@ fn missing_performance_description_does_not_create_visible_unsized_knob() {
 
 #[test]
 fn typed_seed_meter_and_waveform_addresses_reach_ir() {
-    let script = sampler_ksp::compile(
+    let script = sampler_ksp::compile_with(
         r#"on init
         declare ui_table %t[4](1,1,100)
         set_control_par_arr(get_ui_id(%t),$CONTROL_PAR_VALUE,42,2)
@@ -339,14 +339,18 @@ fn typed_seed_meter_and_waveform_addresses_reach_ir() {
         attach_level_meter(get_ui_id($m),3,4,1,2)
         declare ui_waveform $w(1,1)
         attach_zone($w,27,3)
-        set_ui_wf_property($w,$UI_WF_PROP_PLAY_CURSOR,12000,0)
-        set_ui_wf_property($w,$UI_WF_PROP_TABLE_VAL,42,2)
+        set_ui_wf_property($w,$UI_WF_PROP_PLAY_CURSOR,0,12000)
+        set_ui_wf_property($w,$UI_WF_PROP_TABLE_VAL,3,77)
         declare ui_xy ?pad[4]
         set_control_par(get_ui_id(?pad),$CONTROL_PAR_ACTIVE_INDEX,2)
     end on"#,
         48000,
         sampler_ksp::Limits::LIBRARY,
         &[],
+        &sampler_ksp::Environment {
+            zones: [(27, [0, 0, 127])].into(),
+            ..Default::default()
+        },
     )
     .unwrap();
     let ui = script.ui(&|_| None).unwrap();
@@ -372,6 +376,7 @@ fn typed_seed_meter_and_waveform_addresses_reach_ir() {
         (waveform.zone, waveform.flags, waveform.cursor_us),
         (27, 3, 12000)
     );
-    assert_eq!(waveform.table, vec![0, 0, 42]);
+    assert_eq!(waveform.table, vec![0, 0, 0, 77]);
+    assert!(waveform.table.get(77).is_none());
     assert_eq!(ui.widgets[4].active_index, Some(2));
 }

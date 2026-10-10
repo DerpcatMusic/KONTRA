@@ -1,0 +1,388 @@
+{
+  "authority": "Primary vendor specification only; NOT installed-native execution",
+  "existing_archives_rehashed": [
+    {
+      "id": "uvi-element",
+      "requested_url": "https://lua.uvi.net/class_element.html",
+      "retrieved_utc": "2026-10-10T03:32:15.500746+00:00",
+      "status": 200,
+      "final_url": "https://lua.uvi.net/class_element.html",
+      "content_type": "text/html",
+      "etag": "\"6ac775e3-b11e\"",
+      "last_modified": "Thu, 08 Oct 2026 10:52:19 GMT",
+      "sha256": "b4516f54b9fd2061c5ba134afc30930b4c7922a4ed78b3badd022a395e5b5200",
+      "bytes": 45342,
+      "file": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/uvi-element.html"
+    },
+    {
+      "id": "uvi-program",
+      "requested_url": "https://lua.uvi.net/class_program.html",
+      "retrieved_utc": "2026-10-10T03:32:15.929734+00:00",
+      "status": 200,
+      "final_url": "https://lua.uvi.net/class_program.html",
+      "content_type": "text/html",
+      "etag": "\"6ac775e3-739e\"",
+      "last_modified": "Thu, 08 Oct 2026 10:52:19 GMT",
+      "sha256": "6737fb73889b3a5eef1cf4eb61fa74b0d8925fc6aca9c67ad948f8aa79e986bf",
+      "bytes": 29598,
+      "file": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/uvi-program.html"
+    },
+    {
+      "id": "uvi-layer",
+      "requested_url": "https://lua.uvi.net/class_layer.html",
+      "retrieved_utc": "2026-10-10T03:32:16.175658+00:00",
+      "status": 200,
+      "final_url": "https://lua.uvi.net/class_layer.html",
+      "content_type": "text/html",
+      "etag": "\"6ac775e3-704b\"",
+      "last_modified": "Thu, 08 Oct 2026 10:52:19 GMT",
+      "sha256": "0dcd5af14f8b525c4d11ef886c99583c08420a6f111acb364142c4f5fa01ef3f",
+      "bytes": 28747,
+      "file": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/uvi-layer.html"
+    },
+    {
+      "id": "uvi-keygroup",
+      "requested_url": "https://lua.uvi.net/class_keygroup.html",
+      "retrieved_utc": "2026-10-10T03:32:16.447022+00:00",
+      "status": 200,
+      "final_url": "https://lua.uvi.net/class_keygroup.html",
+      "content_type": "text/html",
+      "etag": "\"6ac775e3-7ff6\"",
+      "last_modified": "Thu, 08 Oct 2026 10:52:19 GMT",
+      "sha256": "7de0d5a623a3cb4d1251023ba333c2319db95d11ed9775655ddc550a984198c0",
+      "bytes": 32758,
+      "file": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/uvi-keygroup.html"
+    },
+    {
+      "id": "uvi-oscillator",
+      "requested_url": "https://lua.uvi.net/class_oscillator.html",
+      "retrieved_utc": "2026-10-10T03:32:16.715683+00:00",
+      "status": 200,
+      "final_url": "https://lua.uvi.net/class_oscillator.html",
+      "content_type": "text/html",
+      "etag": "\"6ac775e3-99f3\"",
+      "last_modified": "Thu, 08 Oct 2026 10:52:19 GMT",
+      "sha256": "a170da27d5829f709798ff25b320ed4ccd47859ff8f5c0c677cf813e2cd19cc0",
+      "bytes": 39411,
+      "file": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/uvi-oscillator.html"
+    }
+  ],
+  "existing_exact_sections": [
+    {
+      "url": "https://lua.uvi.net/class_keygroup.html#doc-content",
+      "section": "Detailed Description",
+      "document_sha256": "7de0d5a623a3cb4d1251023ba333c2319db95d11ed9775655ddc550a984198c0",
+      "retrieved_utc": "2026-10-10T03:32:16.447022+00:00",
+      "excerpt": "Detailed Description A range of keys and velocities. It contains one or several Oscillators as well as modulation and fxs",
+      "authority": "Primary vendor specification; requirements equivalent only, NOT native execution.",
+      "applicability": "Unversioned NI/UVI official document archived2026-10-10; installed Kontakt8.13.1/Falcon execution UNKNOWN. API warnings and asynchronous contracts are from the current archived page, not old own-test assumptions."
+    },
+    {
+      "url": "https://lua.uvi.net/class_element.html#a876941566822f111c98750e3c954a94c",
+      "section": "\u25c6 setParameter()",
+      "document_sha256": "b4516f54b9fd2061c5ba134afc30930b4c7922a4ed78b3badd022a395e5b5200",
+      "retrieved_utc": "2026-10-10T03:32:15.500746+00:00",
+      "excerpt": "void Element::setParameter ( string parameter , Value value ) Sets an Element parameter. Parameters parameter parameterName or parameterId value parameterValue (number|bool|string) according to definition Warning An unknown parameter name or id, or a value whose Lua type does not match the parameter type, is silently ignored: no error is raised. Check with Element::hasParameter when the name comes from user input or may differ between element types. See also Elements & parameters",
+      "authority": "Primary vendor specification; requirements equivalent only, NOT native execution.",
+      "applicability": "Unversioned NI/UVI official document archived2026-10-10; installed Kontakt8.13.1/Falcon execution UNKNOWN. API warnings and asynchronous contracts are from the current archived page, not old own-test assumptions."
+    },
+    {
+      "url": "https://lua.uvi.net/class_program.html#doc-content",
+      "section": "Detailed Description",
+      "document_sha256": "6737fb73889b3a5eef1cf4eb61fa74b0d8925fc6aca9c67ad948f8aa79e986bf",
+      "retrieved_utc": "2026-10-10T03:32:15.929734+00:00",
+      "excerpt": "Detailed Description A Patch that represents a monotimbral instrument. It contains one or several Layers as well as modulations, fxs and event processors",
+      "authority": "Primary vendor specification; requirements equivalent only, NOT native execution.",
+      "applicability": "Unversioned NI/UVI official document archived2026-10-10; installed Kontakt8.13.1/Falcon execution UNKNOWN. API warnings and asynchronous contracts are from the current archived page, not old own-test assumptions."
+    },
+    {
+      "url": "https://lua.uvi.net/class_layer.html#doc-content",
+      "section": "Detailed Description",
+      "document_sha256": "0dcd5af14f8b525c4d11ef886c99583c08420a6f111acb364142c4f5fa01ef3f",
+      "retrieved_utc": "2026-10-10T03:32:16.175658+00:00",
+      "excerpt": "Detailed Description A layer of sounds. It contains one or several Keygroups as well as modulation, fxs and event processors",
+      "authority": "Primary vendor specification; requirements equivalent only, NOT native execution.",
+      "applicability": "Unversioned NI/UVI official document archived2026-10-10; installed Kontakt8.13.1/Falcon execution UNKNOWN. API warnings and asynchronous contracts are from the current archived page, not old own-test assumptions."
+    },
+    {
+      "url": "https://lua.uvi.net/class_oscillator.html#a427edde61c85b7b00c8bd0790e5dc99f",
+      "section": "\u25c6 Parameters",
+      "document_sha256": "a170da27d5829f709798ff25b320ed4ccd47859ff8f5c0c677cf813e2cd19cc0",
+      "retrieved_utc": "2026-10-10T03:32:16.715683+00:00",
+      "excerpt": "enum Oscillator::Parameters Oscillator Parameters. Enumerator Pitch oscillator pitch NoteTracking keyboard note tracking on/off BaseNote base MIDI note for pitch mapping Gain oscillator output gain CoarseTune coarse tuning in semitones FineTune fine tuning in cents",
+      "authority": "Primary vendor specification; requirements equivalent only, NOT native execution.",
+      "applicability": "Unversioned NI/UVI official document archived2026-10-10; installed Kontakt8.13.1/Falcon execution UNKNOWN. API warnings and asynchronous contracts are from the current archived page, not old own-test assumptions."
+    },
+    {
+      "url": "https://lua.uvi.net/class_element.html#a249fb1fa90b51d0631486cb422b05841",
+      "section": "\u25c6 getParameter()",
+      "document_sha256": "b4516f54b9fd2061c5ba134afc30930b4c7922a4ed78b3badd022a395e5b5200",
+      "retrieved_utc": "2026-10-10T03:32:15.500746+00:00",
+      "excerpt": "Value Element::getParameter ( string parameter ) Gets an Element parameter. Parameters parameter parameterName or parameterId Returns parameterValue (number|bool|string) according to definition See also Elements & parameters",
+      "authority": "Primary vendor specification; requirements equivalent only, NOT native execution.",
+      "applicability": "Unversioned NI/UVI official document archived2026-10-10; installed Kontakt8.13.1/Falcon execution UNKNOWN. API warnings and asynchronous contracts are from the current archived page, not old own-test assumptions."
+    }
+  ],
+  "new_elements_archive": {
+    "url": "https://lua.uvi.net/_elements.html",
+    "status": 200,
+    "sha256": "ddca396e24ff7a05dbd3be9b2b073cb5a4a7adfb67fbd00d75e597f6c0a08d0f",
+    "bytes": 753534,
+    "archive": "/tmp/uvi-setter-next-elements.html",
+    "retrieved_utc": "2026-10-10T04:02:34.177667+00:00",
+    "limitation": "Full HTML is environment-local temporary evidence; selected verbatim rows are retained here."
+  },
+  "new_exact_parameter_tables": [
+    {
+      "url": "https://lua.uvi.net/_elements.html#Program",
+      "section": "Program parameter table",
+      "rows": [
+        [
+          "Gain",
+          "Volume",
+          "float",
+          "0.000",
+          "1.995",
+          "1.000",
+          "linear gain (1 is 0 dB)",
+          "yes",
+          "Output level of this element and of everything it contains"
+        ],
+        [
+          "Pan",
+          "Pan",
+          "float",
+          "-1.000",
+          "1.000",
+          "0.000",
+          "pan (-1 left, 0 centre, 1 right)",
+          "yes",
+          "Stereo placement of the element output"
+        ],
+        [
+          "TransposeSemiTones",
+          "TransposeSemiTones",
+          "integer",
+          "-24",
+          "24",
+          "0",
+          "",
+          "no",
+          "Transposes the incoming notes by semitones"
+        ],
+        [
+          "Polyphony",
+          "Polyphony",
+          "integer",
+          "1",
+          "256",
+          "16",
+          "",
+          "no",
+          "Maximum number of voices each layer of the program can play at once"
+        ]
+      ],
+      "document_sha256": "ddca396e24ff7a05dbd3be9b2b073cb5a4a7adfb67fbd00d75e597f6c0a08d0f"
+    },
+    {
+      "url": "https://lua.uvi.net/_elements.html#Layer",
+      "section": "Layer parameter table",
+      "rows": [
+        [
+          "Gain",
+          "Volume",
+          "float",
+          "0.000",
+          "1.995",
+          "1.000",
+          "linear gain (1 is 0 dB)",
+          "yes",
+          "Output level of this element and of everything it contains"
+        ],
+        [
+          "Pan",
+          "Pan",
+          "float",
+          "-1.000",
+          "1.000",
+          "0.000",
+          "pan (-1 left, 0 centre, 1 right)",
+          "yes",
+          "Stereo placement of the element output"
+        ],
+        [
+          "Mute",
+          "Mute",
+          "boolean",
+          "false",
+          "true",
+          "false",
+          "",
+          "yes",
+          "Silences the element output"
+        ]
+      ],
+      "document_sha256": "ddca396e24ff7a05dbd3be9b2b073cb5a4a7adfb67fbd00d75e597f6c0a08d0f"
+    },
+    {
+      "url": "https://lua.uvi.net/_elements.html#Keygroup",
+      "section": "Keygroup parameter table",
+      "rows": [
+        [
+          "Gain",
+          "Volume",
+          "float",
+          "0.000",
+          "1.995",
+          "1.000",
+          "linear gain (1 is 0 dB)",
+          "yes",
+          "Output level of this element and of everything it contains"
+        ],
+        [
+          "Pan",
+          "Pan",
+          "float",
+          "-1.000",
+          "1.000",
+          "0.000",
+          "pan (-1 left, 0 centre, 1 right)",
+          "yes",
+          "Stereo placement of the element output"
+        ],
+        [
+          "LowKey",
+          "LowKey",
+          "integer",
+          "0",
+          "127",
+          "0",
+          "midi key",
+          "no",
+          "Lowest note of the key range that triggers this keygroup"
+        ]
+      ],
+      "document_sha256": "ddca396e24ff7a05dbd3be9b2b073cb5a4a7adfb67fbd00d75e597f6c0a08d0f"
+    },
+    {
+      "url": "https://lua.uvi.net/_elements.html#SamplePlayer",
+      "section": "SamplePlayer parameter table",
+      "rows": [
+        [
+          "Gain",
+          "Volume",
+          "float",
+          "0.000",
+          "1.995",
+          "1.000",
+          "linear gain (1 is 0 dB)",
+          "yes",
+          "Sets the output level of the oscillator within the keygroup"
+        ],
+        [
+          "Pitch",
+          "Pitch",
+          "float",
+          "1.000",
+          "0.000",
+          "0.000",
+          "semitones",
+          "yes",
+          "Pitch offset in semitones, the tuning control meant to be modulated"
+        ],
+        [
+          "BaseNote",
+          "BaseNote",
+          "integer",
+          "0",
+          "127",
+          "60",
+          "midi key",
+          "no",
+          "Key at which the oscillator plays untransposed, the reference for note tracking"
+        ]
+      ],
+      "document_sha256": "ddca396e24ff7a05dbd3be9b2b073cb5a4a7adfb67fbd00d75e597f6c0a08d0f"
+    },
+    {
+      "url": "https://lua.uvi.net/_elements.html#OnePole",
+      "section": "OnePole parameter table",
+      "rows": [
+        [
+          "Bypass",
+          "Bypass",
+          "boolean",
+          "false",
+          "true",
+          "false",
+          "",
+          "yes",
+          "Takes the module out of the signal path while leaving it loaded"
+        ],
+        [
+          "Freq",
+          "Freq",
+          "float",
+          "20.000",
+          "20000.000",
+          "1000.000",
+          "Hz",
+          "yes",
+          "Filter cutoff frequency"
+        ],
+        [
+          "KeyTracking",
+          "Key Tracking",
+          "float",
+          "0.000",
+          "1.000",
+          "0.000",
+          "% normalized",
+          "yes",
+          "Filter key tracking relative to C3. if C4 is played with KeyTracking at 100%, the filter freq will be one octave higher than the parameters value. Tune the filter freq to C3 for the filter freq to follow the note's frequency"
+        ],
+        [
+          "Mode",
+          "Mode",
+          "integer",
+          "0",
+          "1",
+          "0",
+          "",
+          "yes",
+          "Chooses between a lowpass and a highpass response"
+        ]
+      ],
+      "document_sha256": "ddca396e24ff7a05dbd3be9b2b073cb5a4a7adfb67fbd00d75e597f6c0a08d0f"
+    },
+    {
+      "url": "https://lua.uvi.net/_elements.html#Gain",
+      "section": "Gain parameter table",
+      "rows": [
+        [
+          "Bypass",
+          "Bypass",
+          "boolean",
+          "false",
+          "true",
+          "false",
+          "",
+          "yes",
+          "Takes the module out of the signal path while leaving it loaded"
+        ],
+        [
+          "Volume",
+          "Volume",
+          "float",
+          "0.000",
+          "3.981",
+          "1.000",
+          "linear gain (1 is 0 dB)",
+          "yes",
+          "Boosts or cuts the level of the signal passing through"
+        ]
+      ],
+      "document_sha256": "ddca396e24ff7a05dbd3be9b2b073cb5a4a7adfb67fbd00d75e597f6c0a08d0f"
+    }
+  ]
+}

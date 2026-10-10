@@ -680,7 +680,16 @@ fn initialized_controller_and_widget_cutoff_writes_change_production_pcm() {
           local knob=Knob('Cutoff',1000,20,20000)
           function knob:changed() filter:setParameter('Freq',self.value) end
           function onInit() filter:setParameter('Freq',1000) end
-          function onController(e) filter:setParameter('Freq',10000) end
+          function onController(e)
+            filter:setParameter('Missing',4000)
+            filter:setParameter(1000000,4000)
+            filter:setParameter('Freq','wrong type')
+            filter:setParameter(filter.parameterDefinitions.Mode.id,1)
+            assert(filter:getParameter('Freq')==1000 and filter:getParameter('Mode')==0)
+            assert(not filter:hasParameter('Missing'))
+            filter:setParameter(filter.parameterDefinitions.Freq.id,10000)
+            assert(filter:getParameter('Freq')==10000)
+          end
         </script></ScriptProcessor></EventProcessors><Layers>"#,
         );
     let path = dir.join("Live.uvip");
@@ -793,7 +802,20 @@ fn streamed_bus_gain_has_live_catalog_defaults_and_controller_readback() {
         r#"<Inserts><Gain Volume="1"/></Inserts><EventProcessors><ScriptProcessor><script>
       local gain=Program.inserts[1]
       function onInit() gain:setParameter('Volume',0.25) end
-      function onController(e) gain:setParameter('Volume',0.5) end
+      function onController(e)
+        if e.controller==2 then
+          gain:setParameter('Missing',0.75)
+          gain:setParameter(1000000,0.75)
+          gain:setParameter('Volume','wrong type')
+          gain:setParameter(gain.parameterDefinitions.Bypass.id,true)
+          assert(gain:getParameter('Volume')==0.25 and gain:getParameter('Bypass')==false)
+          assert(not gain:hasParameter('Missing'))
+          controlChange(119,42)
+          return
+        end
+        gain:setParameter(gain.parameterDefinitions.Volume.id,0.5)
+        assert(gain:getParameter('Volume')==0.5)
+      end
     </script></ScriptProcessor></EventProcessors><Layers>"#,
     );
     let path = dir.join("Bus.uvip");
@@ -842,6 +864,38 @@ fn streamed_bus_gain_has_live_catalog_defaults_and_controller_readback() {
     .unwrap();
     let mut quiet = vec![[0.; 2]; 128];
     rt.render(&mut quiet).unwrap();
+    attached.driver.input(
+        &rt,
+        HostInput::Controller {
+            cc: 2,
+            value: 127,
+            channel: 0,
+        },
+    );
+    // The MIDI fence is emitted only after the rejection/readback assertions ran.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut rejected_callback_completed = false;
+    while !rejected_callback_completed {
+        attached.driver.wake(&mut rt).unwrap();
+        attached.driver.drain_midi(|m| {
+            rejected_callback_completed |= m.status == 0xb0 && m.a == 119 && m.b == 42;
+        });
+        assert!(
+            std::time::Instant::now() < deadline,
+            "rejected setter callback did not complete"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert_eq!(
+        rt.engine_parameter(address).unwrap(),
+        law.normalized_value(0.25).unwrap()
+    );
+    let mut rejected = vec![[0.; 2]; 128];
+    rt.render(&mut rejected).unwrap();
+    assert_eq!(
+        rejected[100], quiet[100],
+        "rejected writes must leave constant-input PCM unchanged"
+    );
     attached.driver.input(
         &rt,
         HostInput::Controller {

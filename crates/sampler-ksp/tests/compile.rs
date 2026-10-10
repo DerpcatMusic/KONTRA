@@ -125,6 +125,58 @@ fn authored_script_uses_new_native_ownership_after_input_release_without_heap() 
 }
 
 #[test]
+fn fade_curve_signatures_accept_documented_forms_and_reject_missing_stop_or_extra_args() {
+    for call in [
+        "fade_in($EVENT_ID,1000)",
+        "fade_in($EVENT_ID,1000,$NI_FADE_EQUAL_POWER)",
+        "fade_out($EVENT_ID,1000,0)",
+        "fade_out($EVENT_ID,1000,1,$NI_FADE_LOGARITHMIC)",
+    ] {
+        let source = format!("on note {call} end on");
+        let script = compile(&source, 48000, Limits::LIBRARY).unwrap();
+        assert!(script.warnings().is_empty(), "{call}");
+    }
+    for call in [
+        "fade_in($EVENT_ID)",
+        "fade_in($EVENT_ID,1000,$NI_FADE_LINEAR,1)",
+        "fade_out($EVENT_ID,1000)",
+        "fade_out($EVENT_ID,1000,1,$NI_FADE_LINEAR,1)",
+    ] {
+        let source = format!("on note {call} end on");
+        assert!(compile(&source, 48000, Limits::LIBRARY).is_err(), "{call}");
+    }
+}
+
+#[test]
+fn pgs_callback_alias_and_canonical_name_share_duplicate_detection() {
+    for (first, second) in [
+        ("pgs_changed", "_pgs_changed"),
+        ("_pgs_changed", "pgs_changed"),
+        ("_pgs_changed", "_pgs_changed"),
+        ("pgs_changed", "pgs_changed"),
+    ] {
+        let source = format!("on {first}\nend on\non {second}\nend on");
+        let error = match compile(&source, 48000, limits()) {
+            Err(error) => error,
+            Ok(_) => panic!("duplicate PGS callbacks accepted: {first}, {second}"),
+        };
+        assert_eq!(error.message, "duplicate callback", "{first}, {second}");
+        assert_eq!(error.line, 3, "{first}, {second}");
+    }
+}
+
+#[test]
+fn pgs_callback_alias_does_not_accept_a_ui_control_argument() {
+    let source = "on init\ndeclare ui_button $button\nend on\non _pgs_changed($button)\nend on";
+    let error = match compile(source, 48000, limits()) {
+        Err(error) => error,
+        Ok(_) => panic!("PGS alias with a UI control argument accepted"),
+    };
+    assert_eq!(error.message, "unsupported callback");
+    assert_eq!(error.line, 4);
+}
+
+#[test]
 fn unsupported_and_malformed_source_fails_explicitly_with_a_valid_offset() {
     let bodies = [
         "",

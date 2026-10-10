@@ -81,6 +81,7 @@ fn selection_records_the_executed_reverse_cursor_after_start_modulation() {
         .unwrap()
         .with_voice_modulation(
             vec![sampler_core::ModProgram {
+                controls: vec![],
                 breakpoints: vec![],
                 sources: vec![sampler_core::ModSource::Velocity],
                 routes: vec![sampler_core::ModRoute::new(

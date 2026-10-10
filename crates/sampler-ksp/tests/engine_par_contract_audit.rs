@@ -381,6 +381,62 @@ fn event_source_reports_creating_script_slot() {
 }
 
 #[test]
+fn dynamic_menu_properties_observe_callback_edits_and_other_properties() {
+    let mut rt = runtime(
+        "on init
+            declare $count
+            declare $selected
+            declare $hidden
+            declare $par
+            declare $id
+            declare ui_menu $menu
+            add_menu_item($menu,\"first\",20)
+            add_menu_item($menu,\"second\",80)
+            $menu := 80
+            $id := get_ui_id($menu)
+        end on
+        on note
+            add_menu_item($menu,\"third\",120)
+            $par := $CONTROL_PAR_NUM_ITEMS
+            $count := get_control_par($id,$par)
+            set_menu_item_value($id,1,81)
+            $menu := 81
+            set_menu_item_visibility($id,1,0)
+            $par := $CONTROL_PAR_SELECTED_ITEM_IDX
+            $selected := get_control_par($id,$par)
+            set_control_par($id,$CONTROL_PAR_HIDE,$HIDE_WHOLE_CONTROL)
+            $par := $CONTROL_PAR_HIDE
+            $hidden := get_control_par($id,$par)
+        end on",
+    );
+    note(&mut rt);
+    assert_eq!(cell(&rt, 0, 0), 3);
+    assert_eq!(cell(&rt, 0, 1), 1);
+    assert_eq!(cell(&rt, 0, 2), 16); // $HIDE_WHOLE_CONTROL
+}
+
+#[test]
+fn dynamic_menu_properties_keep_empty_menu_defaults() {
+    let mut rt = runtime(
+        "on init
+            declare $count
+            declare $selected
+            declare $par
+            declare ui_menu $menu
+        end on
+        on note
+            $par := $CONTROL_PAR_NUM_ITEMS
+            $count := get_control_par(get_ui_id($menu),$par)
+            $par := $CONTROL_PAR_SELECTED_ITEM_IDX
+            $selected := get_control_par(get_ui_id($menu),$par)
+        end on",
+    );
+    note(&mut rt);
+    assert_eq!(cell(&rt, 0, 0), 0);
+    assert_eq!(cell(&rt, 0, 1), -1);
+}
+
+#[test]
 fn dynamic_engine_parameter_write_changes_audio() {
     let mut rt = runtime(
         "on init declare $p := $ENGINE_PAR_VOLUME end on

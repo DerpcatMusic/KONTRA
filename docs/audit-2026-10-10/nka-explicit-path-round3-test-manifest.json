@@ -1,0 +1,309 @@
+{
+  "schema": 1,
+  "code_sha": "63178224f27e566aaaf05e91adb15b0ae23de91a",
+  "code_tree": "4421f478d1571a18a2d479306336864fe9529e8c",
+  "base_sha": "429e7dff3ecb0f53aef32c43201ab796ccc8c28c",
+  "status": "SOURCE_CANDIDATE_NOT_COMPILER_GREEN",
+  "rust": "NOT_RUN",
+  "native_runtime": "UNKNOWN",
+  "cpu_and_ram_vs_both": "UNACHIEVED",
+  "checks": {
+    "rustfmt_parse": "PASS_SYNTAX_ONLY",
+    "git_diff_check": "PASS",
+    "python_source_chain_assertions": "PASS_NOT_RUNTIME"
+  },
+  "source": {
+    "crates/sampler-core/src/array_file.rs": {
+      "sha256": "9723a7580f55958a000b6755c35326481d8ec1491f7a4187bf9373361e95260e",
+      "lines": 533
+    },
+    "crates/sampler-core/src/ops.rs": {
+      "sha256": "74aa2b21ef97cb5ceda3cbb25a47d3676d840ae06b103cc4ac1a0b7218838be2",
+      "lines": 1825
+    },
+    "crates/sampler-core/src/midi_object.rs": {
+      "sha256": "78cd52927ee9a17fd3a530381ff19db0f0cb0dfba4ec6168679981395b6f8cb3",
+      "lines": 1207
+    },
+    "crates/sampler-core/src/control/transfer.rs": {
+      "sha256": "2d4a59c560deada9c18e84e2c258c7382a82b9db7e5f1402be557c877b2a09bf",
+      "lines": 238
+    },
+    "crates/sampler-core/src/script.rs": {
+      "sha256": "52ff97654b9b2aee5b69f19f20de058966424c61f16ef99571dd2d5ac6a56dfd",
+      "lines": 176
+    },
+    "crates/sampler-ksp/src/array_file.rs": {
+      "sha256": "2a9402752f7a396de8c572208cf7d38ca6141e3f49bc3e8ac948401a8a5dc430",
+      "lines": 26
+    },
+    "crates/sampler-ksp/src/eval.rs": {
+      "sha256": "d6b633d6d8daab686a7b1206c68bacb59fccc285d1a8565dc679f0fb844800d7",
+      "lines": 1839
+    },
+    "crates/sampler-ksp/src/lower.rs": {
+      "sha256": "99f48e62f38c1148cb0412ed32cbaa6422c7e93f1d640469f90c7865bcc9bed5",
+      "lines": 4002
+    },
+    "crates/sampler-ksp/src/lib.rs": {
+      "sha256": "0d4d82b377797656c2ac7d80026dc484854c83eca3adf2f04868dab354c68758",
+      "lines": 1569
+    },
+    "crates/sampler-ksp/src/init_cache.rs": {
+      "sha256": "e794244b8dca3e5c9ebf59f9bb5a5a577cf668ac3c554db68a4014e7c9804cc5",
+      "lines": 577
+    },
+    "crates/sampler-ksp/tests/array_file.rs": {
+      "sha256": "71b240b9ce10acd010f9c5cd44de3b84d6406ca0d90b2a009a16a2ece97a7666",
+      "lines": 676
+    },
+    "src/sound/v2.rs": {
+      "sha256": "89bdcaa49f17e5f50ec27b43ebe1286e765b51228575628e4becb9a366c1b359",
+      "lines": 7044
+    },
+    "src/sound/v2/array_file.rs": {
+      "sha256": "04f682284969da03effb3056895addc34747dd773378f1428e5be499c0ed77b0",
+      "lines": 61
+    },
+    "src/plugin.rs": {
+      "sha256": "3038bb8429d147fea37e034e81278fee8c0f1f9c1441ebdefd3e01ebffb4be45",
+      "lines": 4417
+    },
+    "crates/sampler-core/src/lib.rs": {
+      "sha256": "d63941b8381de29d4c7e12a578659e23558a219d4f74b05498a49c19df4d1416",
+      "lines": 1952
+    },
+    "crates/sampler-core/tests/ops.rs": {
+      "sha256": "bfdb2b579703035dcd8bce71e3b600217c6b80c091d89cf7f3f0dd01f3710cbb",
+      "lines": 316
+    }
+  },
+  "tests": [
+    {
+      "name": "nka_sync_init_reads_integer_real_and_string_arrays_before_following_statements",
+      "path": "crates/sampler-ksp/tests/array_file.rs",
+      "line": 82,
+      "status": "NOT_RUN",
+      "feature": null,
+      "fixture": "authored tiny temporary NKA only; created by test, no proprietary or official-reader fixture",
+      "allocation_gate": "NO_AUDIO_ALLOCATION_EXECUTION_RECEIPT; source fixture/codec/preparation checks only"
+    },
+    {
+      "name": "nka_sync_save_roundtrips_all_three_types_and_explicit_load_does_not_persist",
+      "path": "crates/sampler-ksp/tests/array_file.rs",
+      "line": 116,
+      "status": "NOT_RUN",
+      "feature": null,
+      "fixture": "authored tiny temporary NKA only; created by test, no proprietary or official-reader fixture",
+      "allocation_gate": "NO_AUDIO_ALLOCATION_EXECUTION_RECEIPT; source fixture/codec/preparation checks only"
+    },
+    {
+      "name": "nka_runtime_load_preserves_non_ui_identity_and_resumes_wait_after_one_completion_without_heap",
+      "path": "crates/sampler-ksp/tests/array_file.rs",
+      "line": 157,
+      "status": "NOT_RUN",
+      "feature": null,
+      "fixture": "authored tiny temporary NKA only; created by test, no proprietary or official-reader fixture",
+      "allocation_gate": "AUTHOR_SOURCE_GUARD_ONLY_NOT_RUN; admission/capture/application/common completion use existing without_heap/root allocations; worker/control allocation intentionally permitted"
+    },
+    {
+      "name": "nka_async_save_snapshot_is_request_time_not_delayed_host_capture_time",
+      "path": "crates/sampler-ksp/tests/array_file.rs",
+      "line": 204,
+      "status": "NOT_RUN",
+      "feature": null,
+      "fixture": "authored tiny temporary NKA only; created by test, no proprietary or official-reader fixture",
+      "allocation_gate": "AUTHOR_SOURCE_GUARD_ONLY_NOT_RUN; admission/capture/application/common completion use existing without_heap/root allocations; worker/control allocation intentionally permitted"
+    },
+    {
+      "name": "nka_real_and_string_runtime_arrays_keep_typed_ownership",
+      "path": "crates/sampler-ksp/tests/array_file.rs",
+      "line": 224,
+      "status": "NOT_RUN",
+      "feature": null,
+      "fixture": "authored tiny temporary NKA only; created by test, no proprietary or official-reader fixture",
+      "allocation_gate": "AUTHOR_SOURCE_GUARD_ONLY_NOT_RUN; admission/capture/application/common completion use existing without_heap/root allocations; worker/control allocation intentionally permitted"
+    },
+    {
+      "name": "nka_persistence_assignment_defers_entire_prefix_until_live_activation",
+      "path": "crates/sampler-ksp/tests/array_file.rs",
+      "line": 253,
+      "status": "NOT_RUN",
+      "feature": null,
+      "fixture": "authored tiny temporary NKA only; created by test, no proprietary or official-reader fixture",
+      "allocation_gate": "AUTHOR_SOURCE_GUARD_ONLY_NOT_RUN; admission/capture/application/common completion use existing without_heap/root allocations; worker/control allocation intentionally permitted"
+    },
+    {
+      "name": "nka_failed_read_completes_with_zero_status_and_preserves_the_array",
+      "path": "crates/sampler-ksp/tests/array_file.rs",
+      "line": 290,
+      "status": "NOT_RUN",
+      "feature": null,
+      "fixture": "authored tiny temporary NKA only; created by test, no proprietary or official-reader fixture",
+      "allocation_gate": "AUTHOR_SOURCE_GUARD_ONLY_NOT_RUN; admission/capture/application/common completion use existing without_heap/root allocations; worker/control allocation intentionally permitted"
+    },
+    {
+      "name": "nka_wrong_instance_and_cancelled_job_cannot_install_or_complete_a_new_owner",
+      "path": "crates/sampler-ksp/tests/array_file.rs",
+      "line": 311,
+      "status": "NOT_RUN",
+      "feature": null,
+      "fixture": "authored tiny temporary NKA only; created by test, no proprietary or official-reader fixture",
+      "allocation_gate": "AUTHOR_SOURCE_GUARD_ONLY_NOT_RUN; admission/capture/application/common completion use existing without_heap/root allocations; worker/control allocation intentionally permitted"
+    },
+    {
+      "name": "nka_job_queue_is_bounded_and_midi_ids_remain_distinct_and_complete_independently",
+      "path": "crates/sampler-ksp/tests/array_file.rs",
+      "line": 342,
+      "status": "NOT_RUN",
+      "feature": null,
+      "fixture": "authored tiny temporary NKA only; created by test, no proprietary or official-reader fixture",
+      "allocation_gate": "AUTHOR_SOURCE_GUARD_ONLY_NOT_RUN; admission/capture/application/common completion use existing without_heap/root allocations; worker/control allocation intentionally permitted"
+    },
+    {
+      "name": "nka_completion_is_plan_scoped_across_adoption_and_never_edits_the_replacement",
+      "path": "crates/sampler-ksp/tests/array_file.rs",
+      "line": 371,
+      "status": "NOT_RUN",
+      "feature": null,
+      "fixture": "authored tiny temporary NKA only; created by test, no proprietary or official-reader fixture",
+      "allocation_gate": "AUTHOR_SOURCE_GUARD_ONLY_NOT_RUN; admission/capture/application/common completion use existing without_heap/root allocations; worker/control allocation intentionally permitted"
+    },
+    {
+      "name": "nka_runtime_concatenated_path_truncation_is_not_used_as_a_different_path",
+      "path": "crates/sampler-ksp/tests/array_file.rs",
+      "line": 415,
+      "status": "NOT_RUN",
+      "feature": null,
+      "fixture": "authored tiny temporary NKA only; created by test, no proprietary or official-reader fixture",
+      "allocation_gate": "AUTHOR_SOURCE_GUARD_ONLY_NOT_RUN; admission/capture/application/common completion use existing without_heap/root allocations; worker/control allocation intentionally permitted"
+    },
+    {
+      "name": "nka_unreachable_invalid_typed_ranges_and_snapshot_memory_limit_are_rejected_at_preparation",
+      "path": "crates/sampler-ksp/tests/array_file.rs",
+      "line": 432,
+      "status": "NOT_RUN",
+      "feature": null,
+      "fixture": "authored tiny temporary NKA only; created by test, no proprietary or official-reader fixture",
+      "allocation_gate": "NO_AUDIO_ALLOCATION_EXECUTION_RECEIPT; source fixture/codec/preparation checks only"
+    },
+    {
+      "name": "nka_unapproved_note_callback_is_rejected_without_file_effect",
+      "path": "crates/sampler-ksp/tests/array_file.rs",
+      "line": 491,
+      "status": "NOT_RUN",
+      "feature": null,
+      "fixture": "authored tiny temporary NKA only; created by test, no proprietary or official-reader fixture",
+      "allocation_gate": "NO_AUDIO_ALLOCATION_EXECUTION_RECEIPT; source fixture/codec/preparation checks only"
+    },
+    {
+      "name": "nka_codec_strict_header_type_shape_utf8_numeric_and_payload_failures_preserve_previous_values",
+      "path": "crates/sampler-ksp/tests/array_file.rs",
+      "line": 513,
+      "status": "NOT_RUN",
+      "feature": null,
+      "fixture": "authored tiny temporary NKA only; created by test, no proprietary or official-reader fixture",
+      "allocation_gate": "NO_AUDIO_ALLOCATION_EXECUTION_RECEIPT; source fixture/codec/preparation checks only"
+    },
+    {
+      "name": "nka_save_failures_preserve_old_bytes_and_do_not_create_missing_parent",
+      "path": "crates/sampler-ksp/tests/array_file.rs",
+      "line": 568,
+      "status": "NOT_RUN",
+      "feature": null,
+      "fixture": "authored tiny temporary NKA only; created by test, no proprietary or official-reader fixture",
+      "allocation_gate": "NO_AUDIO_ALLOCATION_EXECUTION_RECEIPT; source fixture/codec/preparation checks only"
+    },
+    {
+      "name": "nka_explicit_path_and_string_limits_reject_instead_of_truncating",
+      "path": "crates/sampler-ksp/tests/array_file.rs",
+      "line": 618,
+      "status": "NOT_RUN",
+      "feature": null,
+      "fixture": "authored tiny temporary NKA only; created by test, no proprietary or official-reader fixture",
+      "allocation_gate": "NO_AUDIO_ALLOCATION_EXECUTION_RECEIPT; source fixture/codec/preparation checks only"
+    },
+    {
+      "name": "nka_external_init_is_not_cached_or_replayed_from_an_old_cache",
+      "path": "crates/sampler-ksp/tests/array_file.rs",
+      "line": 655,
+      "status": "NOT_RUN",
+      "feature": "cache",
+      "fixture": "authored tiny temporary NKA only; created by test, no proprietary or official-reader fixture",
+      "allocation_gate": "NO_AUDIO_ALLOCATION_EXECUTION_RECEIPT; source fixture/codec/preparation checks only"
+    },
+    {
+      "name": "nka_service_uses_actual_worker_control_capture_and_exact_async_completion",
+      "path": "src/sound/v2.rs",
+      "line": 5259,
+      "status": "NOT_RUN",
+      "feature": null,
+      "fixture": "authored tiny temporary NKA only; created by test, no proprietary or official-reader fixture",
+      "allocation_gate": "AUTHOR_SOURCE_GUARD_ONLY_NOT_RUN; admission/capture/application/common completion use existing without_heap/root allocations; worker/control allocation intentionally permitted"
+    }
+  ],
+  "native_specification": [
+    {
+      "file": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/ksp-load.html",
+      "sha256": "9bcd5f671eac2301211c5d7c542d8fc506657c6517535709674fe31d14abffbf",
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/load-save-commands",
+      "evidence_type": "IMMUTABLE_AUTHORITATIVE_NATIVE_SPEC_REA_EQUIVALENT_NOT_LIVE_RUNTIME"
+    },
+    {
+      "file": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/ksp-callbacks.html",
+      "sha256": "f91a2a1411c18e84e15f4e89e74499c3ae74dec75f230bb8c99df65e316267ba",
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/callbacks",
+      "evidence_type": "IMMUTABLE_AUTHORITATIVE_NATIVE_SPEC_REA_EQUIVALENT_NOT_LIVE_RUNTIME"
+    }
+  ],
+  "validation_requests": [
+    {
+      "package": "sampler-ksp",
+      "target": "array_file",
+      "filter": null,
+      "features": [
+        "default",
+        "cache"
+      ],
+      "status": "REQUEST_ONLY_NOT_RUN"
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "midi_object",
+      "filter": null,
+      "status": "REQUEST_ONLY_NOT_RUN"
+    },
+    {
+      "package": "sampler-ksp",
+      "targets": [
+        "persistence_waits",
+        "script_state",
+        "initialized",
+        "arrays",
+        "strings",
+        "typed_widgets"
+      ],
+      "status": "REQUEST_ONLY_NOT_RUN"
+    },
+    {
+      "package": "sampler-core",
+      "targets": [
+        "ops",
+        "plans",
+        "controls",
+        "persistence_revision"
+      ],
+      "status": "REQUEST_ONLY_NOT_RUN"
+    },
+    {
+      "package": "kontakto",
+      "target": "lib",
+      "filters": [
+        "nka_service_uses_actual_worker_control_capture_and_exact_async_completion",
+        "midi_file_service_uses_the_host_control_queue_and_completes_its_source_slot"
+      ],
+      "status": "REQUEST_ONLY_NOT_RUN"
+    }
+  ],
+  "cache_gate": "nka_external_init_is_not_cached_or_replayed_from_an_old_cache: NOT_RUN; only compiled when cache feature enabled; no ignored test and no PASS inference from feature exclusion. Authored fixture is generated by test. Unavailable authorized temp filesystem must be recorded as blocked/NOT_RUN, never use a native/proprietary fallback."
+}

@@ -512,6 +512,8 @@ pub struct Streamer {
     threads: Vec<JoinHandle<()>>,
     reloader: Option<JoinHandle<()>>,
     head_budget: usize,
+    // Control/reload writers share one budget snapshot; audio never takes this lock.
+    head_mutation: Arc<Mutex<()>>,
 }
 
 impl Streamer {
@@ -692,6 +694,7 @@ impl Streamer {
             threads: Vec::new(),
             reloader: None,
             head_budget,
+            head_mutation: Arc::new(Mutex::new(())),
         };
         for _ in 0..decoders.max(1) {
             let thread = std::thread::Builder::new()
@@ -711,11 +714,13 @@ impl Streamer {
                 let assets: Arc<[Pcm]> = assets.into();
                 let (sources, ranges) = (streamer.sources.clone(), streamer.ranges.clone());
                 let stop = streamer.stop.clone();
+                let head_mutation = streamer.head_mutation.clone();
                 move || {
                     // Woken by the audio side (`StreamCache::set_reloader`) when a
                     // start finds an asset cold, and by Drop.
                     while !stop.load(Ordering::Relaxed) {
-                        if reload(&assets, &sources, &ranges, head_budget).is_err() {
+                        if reload(&assets, &sources, &ranges, head_budget, &head_mutation).is_err()
+                        {
                             std::thread::park_timeout(Duration::from_millis(100));
                         } else {
                             std::thread::park();
@@ -738,6 +743,10 @@ impl Streamer {
     /// `assets` take at most `budget` bytes; only assets not played since
     /// `before` are purged. Returns the bytes freed.
     pub fn trim(&self, assets: &[Pcm], budget: usize, before: u64) -> usize {
+        let _mutation = self
+            .head_mutation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let bytes = |pcm: &Pcm| pcm.head_bytes();
         let mut held: usize = assets.iter().map(bytes).sum();
         let mut idle: Vec<&Pcm> = assets
@@ -767,7 +776,13 @@ impl Streamer {
     /// Returns how many were reloaded.
     /// A background thread already does this when a start finds one cold.
     pub fn reload(&self, assets: &[Pcm]) -> io::Result<usize> {
-        reload(assets, &self.sources, &self.ranges, self.head_budget)
+        reload(
+            assets,
+            &self.sources,
+            &self.ranges,
+            self.head_budget,
+            &self.head_mutation,
+        )
     }
 }
 
@@ -776,8 +791,13 @@ fn reload(
     sources: &HashMap<AssetId, Arc<dyn AssetSource>>,
     ranges: &HashMap<AssetId, Vec<Range<usize>>>,
     budget: usize,
+    head_mutation: &Mutex<()>,
 ) -> io::Result<usize> {
+    let _mutation = head_mutation
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut count = 0;
+    let mut held = None;
     for pcm in assets {
         if pcm.resident_frames().is_some() || !pcm.take_cold() {
             continue;
@@ -789,27 +809,37 @@ fn reload(
         // Starts get their onset from the prioritized page workers as well.
         // Cache complete start ranges only within the fixed admission budget;
         // a large/offset-heavy source keeps streaming rather than growing RSS.
-        let estimate = ranges
-            .iter()
-            .map(|r| r.len().saturating_mul(size_of::<Frame>()))
-            .sum::<usize>();
-        let held = assets.iter().map(Pcm::head_bytes).sum::<usize>();
+        let estimate = ranges.iter().fold(0usize, |sum, range| {
+            sum.saturating_add(range.len().saturating_mul(size_of::<Frame>()))
+        });
+        // Scan once, only on a cold request; serialized writers keep this
+        // local total valid through all reads/publications in the batch.
+        let held = held.get_or_insert_with(|| {
+            assets
+                .iter()
+                .fold(0usize, |sum, pcm| sum.saturating_add(pcm.head_bytes()))
+        });
         if held.saturating_add(estimate) <= budget {
-            if let Err(error) = source
+            let previous = pcm.head_bytes();
+            let loaded = match source
                 .open_stream()
                 .and_then(|mut reader| load_ranges(pcm, &mut reader, ranges))
             {
-                if !matches!(
-                    error.kind(),
-                    io::ErrorKind::InvalidData
-                        | io::ErrorKind::UnexpectedEof
-                        | io::ErrorKind::NotFound
-                        | io::ErrorKind::PermissionDenied
-                ) {
-                    pcm.mark_cold();
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    if !matches!(
+                        error.kind(),
+                        io::ErrorKind::InvalidData
+                            | io::ErrorKind::UnexpectedEof
+                            | io::ErrorKind::NotFound
+                            | io::ErrorKind::PermissionDenied
+                    ) {
+                        pcm.mark_cold();
+                    }
+                    return Err(error);
                 }
-                return Err(error);
-            }
+            };
+            *held = held.saturating_sub(previous).saturating_add(loaded);
             count += 1;
         }
     }
@@ -983,6 +1013,185 @@ impl Streamed {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // No decoder/reloader threads: each test controls the exact cold-head order.
+    fn reload_fixture(count: usize, budget: usize) -> (Streamer, Vec<Pcm>) {
+        struct Head;
+        impl AssetSource for Head {
+            fn open(&self) -> io::Result<SampleReader> {
+                Ok(SampleReader::custom(48000, 64, |_, out| {
+                    out.fill([0.5; 2]);
+                    Ok(())
+                }))
+            }
+        }
+        let assets: Vec<_> = (0..count)
+            .map(|_| Pcm::streamed(48000, 64).unwrap())
+            .collect();
+        let streamer = Streamer {
+            pinned_wavetables: HashSet::new(),
+            sources: Arc::new(
+                assets
+                    .iter()
+                    .map(|pcm| (pcm.asset_id(), Arc::new(Head) as Arc<dyn AssetSource>))
+                    .collect(),
+            ),
+            ranges: Arc::new(
+                assets
+                    .iter()
+                    .map(|pcm| (pcm.asset_id(), vec![0..32]))
+                    .collect(),
+            ),
+            stop: Arc::new(AtomicBool::new(false)),
+            threads: Vec::new(),
+            reloader: None,
+            head_budget: budget,
+            head_mutation: Arc::new(Mutex::new(())),
+        };
+        (streamer, assets)
+    }
+
+    #[test]
+    fn reload_accounts_for_packed_replacements_throughout_one_batch() {
+        let (streamer, assets) = reload_fixture(3, 32 * 8 + 32 * 2);
+        assets[0]
+            .set_ranges(vec![(0, vec![[0.5; 2]; 32].into_boxed_slice())])
+            .unwrap();
+        for pcm in &assets {
+            pcm.mark_cold();
+        }
+        // First head is replaced, not charged twice. Each packed mono head
+        // takes 64 bytes, but admission still reserves 256 raw bytes per read.
+        assert_eq!(streamer.reload(&assets).unwrap(), 2);
+        assert_eq!(assets.iter().map(Pcm::head_bytes).sum::<usize>(), 128);
+        assert_eq!(assets[2].head_frames(), 0);
+    }
+
+    #[test]
+    fn reload_rescans_the_budget_after_trim_and_a_transient_read_failure() {
+        struct Unavailable;
+        impl AssetSource for Unavailable {
+            fn open(&self) -> io::Result<SampleReader> {
+                Err(io::Error::from(io::ErrorKind::WouldBlock))
+            }
+        }
+        let (mut streamer, assets) = reload_fixture(1, 32 * 8);
+        let source = streamer.sources.clone();
+        streamer.sources = Arc::new(HashMap::from([(
+            assets[0].asset_id(),
+            Arc::new(Unavailable) as Arc<dyn AssetSource>,
+        )]));
+        assets[0].mark_cold();
+        assert_eq!(
+            streamer.reload(&assets).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        assert_eq!(assets[0].head_bytes(), 0);
+        streamer.sources = source;
+        assert_eq!(
+            streamer.reload(&assets).unwrap(),
+            1,
+            "transient failure remains cold"
+        );
+        assert_eq!(streamer.trim(&assets, 0, 1), 64);
+        assets[0].mark_cold();
+        assert_eq!(
+            streamer.reload(&assets).unwrap(),
+            1,
+            "trim must not leave stale accounting"
+        );
+    }
+
+    struct PausedHead {
+        entered: std::sync::mpsc::Sender<()>,
+        resume: Mutex<std::sync::mpsc::Receiver<()>>,
+        frame: [f32; 2],
+    }
+    impl AssetSource for PausedHead {
+        fn open(&self) -> io::Result<SampleReader> {
+            self.entered.send(()).unwrap();
+            self.resume
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+            let frame = self.frame;
+            Ok(SampleReader::custom(48000, 64, move |_, out| {
+                out.fill(frame);
+                Ok(())
+            }))
+        }
+    }
+
+    #[test]
+    fn reload_serializes_publication_with_control_side_trim() {
+        let (mut streamer, assets) = reload_fixture(1, 32 * 8);
+        let (entered, received) = std::sync::mpsc::channel();
+        let (resume, resume_received) = std::sync::mpsc::channel();
+        streamer.sources = Arc::new(HashMap::from([(
+            assets[0].asset_id(),
+            Arc::new(PausedHead {
+                entered,
+                resume: Mutex::new(resume_received),
+                frame: [0.5; 2],
+            }) as Arc<dyn AssetSource>,
+        )]));
+        assets[0].mark_cold();
+        std::thread::scope(|scope| {
+            let loading = scope.spawn(|| streamer.reload(&assets));
+            let entered = received.recv_timeout(Duration::from_secs(5));
+            let locked = streamer.head_mutation.try_lock().is_err();
+            let trimming = scope.spawn(|| streamer.trim(&assets, 0, 1));
+            // Release even if an assertion fails, so scoped threads cannot hang.
+            resume.send(()).unwrap();
+            assert!(
+                entered.is_ok(),
+                "reload never reached the controlled reader"
+            );
+            assert!(
+                locked,
+                "head-budget writers must stay serialized through IO/publication"
+            );
+            assert_eq!(loading.join().unwrap().unwrap(), 1);
+            assert_eq!(trimming.join().unwrap(), 64);
+        });
+        assert_eq!(assets[0].head_bytes(), 0);
+    }
+
+    #[test]
+    fn concurrent_reloads_share_the_same_admission_budget() {
+        let (mut streamer, assets) = reload_fixture(2, 32 * 8);
+        let (entered, received) = std::sync::mpsc::channel();
+        let (resume, resume_received) = std::sync::mpsc::channel();
+        Arc::get_mut(&mut streamer.sources).unwrap().insert(
+            assets[0].asset_id(),
+            Arc::new(PausedHead {
+                entered,
+                resume: Mutex::new(resume_received),
+                frame: [0.1, 0.3], // Non-integer stereo PCM: occupies the whole raw budget.
+            }),
+        );
+        assets[0].mark_cold();
+        std::thread::scope(|scope| {
+            let first = scope.spawn(|| streamer.reload(&assets));
+            let entered = received.recv_timeout(Duration::from_secs(5));
+            let locked = streamer.head_mutation.try_lock().is_err();
+            assets[1].mark_cold();
+            let second = scope.spawn(|| streamer.reload(&assets));
+            resume.send(()).unwrap();
+            assert!(entered.is_ok());
+            assert!(
+                locked,
+                "a second reload cannot take a stale budget snapshot"
+            );
+            assert_eq!(
+                first.join().unwrap().unwrap() + second.join().unwrap().unwrap(),
+                1
+            );
+        });
+        assert_eq!(assets[0].head_bytes(), streamer.head_budget);
+        assert_eq!(assets[1].head_bytes(), 0);
+    }
 
     #[test]
     fn wavetable_start_ranges_keep_every_cycle_under_a_tiny_head_budget() {

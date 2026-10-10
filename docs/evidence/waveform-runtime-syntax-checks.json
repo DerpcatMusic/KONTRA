@@ -1,0 +1,219 @@
+{
+  "kind": "WASM syntax ONLY, not typechecking/runtime/native evidence",
+  "grammar_sha256": "dc7f9b4d182af6b8332b44cfb8d24c0b25892900b006af5ce7eafdef8c976d5a",
+  "baseline_sha": "d1fb71954431d858f4437d1fb8492db820d68f18",
+  "rust_tests": "NOT_RUN",
+  "typechecks": "NOT_RUN",
+  "files": [
+    {
+      "file": "crates/sampler-core/src/lib.rs",
+      "sha256": "2cf83558b0598c4386f45ac48a884cb2c97d975d1e393d21f8ff5fee391c0c20",
+      "errors": [],
+      "baseline_errors": [],
+      "unchanged_baseline_grammar_limitation": false,
+      "introduced_syntax_errors": 0
+    },
+    {
+      "file": "crates/sampler-core/src/ops.rs",
+      "sha256": "51371c92d25999aec73aeb1f8dc7567790482b87dcf6f7ea43011e4fe0a3f96a",
+      "errors": [],
+      "baseline_errors": [],
+      "unchanged_baseline_grammar_limitation": false,
+      "introduced_syntax_errors": 0
+    },
+    {
+      "file": "crates/sampler-core/src/waveform.rs",
+      "sha256": "6e7b0b30a310ae379b2d95bd2bfd9b0be24a940e9b0539314864da2352d8d14d",
+      "errors": [],
+      "baseline_errors": [],
+      "unchanged_baseline_grammar_limitation": false,
+      "introduced_syntax_errors": 0
+    },
+    {
+      "file": "crates/sampler-core/tests/waveform.rs",
+      "sha256": "bbb03f29c32c37e7f8450ad43611b2d1255145763b9e2bb1d7f7a20f7165fbe9",
+      "errors": [],
+      "baseline_errors": [],
+      "unchanged_baseline_grammar_limitation": false,
+      "introduced_syntax_errors": 0
+    },
+    {
+      "file": "crates/sampler-ksp/src/lib.rs",
+      "sha256": "aaa2f9e6ce3178392d5d6370a3edbe6eefa6495114dbee8037c14f0a33d1b6b8",
+      "errors": [
+        {
+          "type": "ERROR",
+          "text": "#[cfg(",
+          "start": {
+            "row": 1146,
+            "column": 8
+          },
+          "end": {
+            "row": 1146,
+            "column": 14
+          },
+          "context_sha256": "147903f59cb1aae7304a1e591b200789d661f21004ff74e0e6d1ebc2ea92d570"
+        },
+        {
+          "type": "}",
+          "text": "",
+          "start": {
+            "row": 1146,
+            "column": 21
+          },
+          "end": {
+            "row": 1146,
+            "column": 21
+          },
+          "context_sha256": "147903f59cb1aae7304a1e591b200789d661f21004ff74e0e6d1ebc2ea92d570"
+        },
+        {
+          "type": "ERROR",
+          "text": "\"scan\")]",
+          "start": {
+            "row": 1146,
+            "column": 24
+          },
+          "end": {
+            "row": 1146,
+            "column": 32
+          },
+          "context_sha256": "147903f59cb1aae7304a1e591b200789d661f21004ff74e0e6d1ebc2ea92d570"
+        },
+        {
+          "type": "ERROR",
+          "text": ": _,\n    }",
+          "start": {
+            "row": 1147,
+            "column": 23
+          },
+          "end": {
+            "row": 1148,
+            "column": 5
+          },
+          "context_sha256": "84ec367d2f3f5124d21a332c646b8c0fe5d0be44070f072fa9907486b8105a1b"
+        }
+      ],
+      "baseline_errors": [
+        {
+          "type": "ERROR",
+          "text": "#[cfg(",
+          "start": {
+            "row": 1111,
+            "column": 8
+          },
+          "end": {
+            "row": 1111,
+            "column": 14
+          },
+          "context_sha256": "147903f59cb1aae7304a1e591b200789d661f21004ff74e0e6d1ebc2ea92d570"
+        },
+        {
+          "type": "}",
+          "text": "",
+          "start": {
+            "row": 1111,
+            "column": 21
+          },
+          "end": {
+            "row": 1111,
+            "column": 21
+          },
+          "context_sha256": "147903f59cb1aae7304a1e591b200789d661f21004ff74e0e6d1ebc2ea92d570"
+        },
+        {
+          "type": "ERROR",
+          "text": "\"scan\")]",
+          "start": {
+            "row": 1111,
+            "column": 24
+          },
+          "end": {
+            "row": 1111,
+            "column": 32
+          },
+          "context_sha256": "147903f59cb1aae7304a1e591b200789d661f21004ff74e0e6d1ebc2ea92d570"
+        },
+        {
+          "type": "ERROR",
+          "text": ": _,\n    }",
+          "start": {
+            "row": 1112,
+            "column": 23
+          },
+          "end": {
+            "row": 1113,
+            "column": 5
+          },
+          "context_sha256": "84ec367d2f3f5124d21a332c646b8c0fe5d0be44070f072fa9907486b8105a1b"
+        }
+      ],
+      "unchanged_baseline_grammar_limitation": true,
+      "introduced_syntax_errors": 0
+    },
+    {
+      "file": "crates/sampler-ksp/src/eval.rs",
+      "sha256": "7c68524bfd5bca0635bf0483fd52f3c81745b25caf9e3bf7865c41cadc7d1425",
+      "errors": [],
+      "baseline_errors": [],
+      "unchanged_baseline_grammar_limitation": false,
+      "introduced_syntax_errors": 0
+    },
+    {
+      "file": "crates/sampler-ksp/src/lower.rs",
+      "sha256": "609780d305ede66386f5656ecc51df257b346a2f75809f689f4651b5d761f946",
+      "errors": [],
+      "baseline_errors": [],
+      "unchanged_baseline_grammar_limitation": false,
+      "introduced_syntax_errors": 0
+    },
+    {
+      "file": "crates/sampler-ksp/src/ui.rs",
+      "sha256": "e0af9df2379e1d6a45a3828cec7172fda57a297200be7fc9e1a76eb58519495d",
+      "errors": [],
+      "baseline_errors": [],
+      "unchanged_baseline_grammar_limitation": false,
+      "introduced_syntax_errors": 0
+    },
+    {
+      "file": "crates/sampler-ksp/src/waveform.rs",
+      "sha256": "b43c94ecb03fcf1fee8ed89fcc8f943b021167b1906e6fb53d872ba71a99ea96",
+      "errors": [],
+      "baseline_errors": [],
+      "unchanged_baseline_grammar_limitation": false,
+      "introduced_syntax_errors": 0
+    },
+    {
+      "file": "crates/sampler-ksp/tests/ui.rs",
+      "sha256": "63f578b5fda30e60bad407f55a1d80ca0cf258d1710160a22e924e2db67650a9",
+      "errors": [],
+      "baseline_errors": [],
+      "unchanged_baseline_grammar_limitation": false,
+      "introduced_syntax_errors": 0
+    },
+    {
+      "file": "crates/sampler-ksp/tests/waveform.rs",
+      "sha256": "736c0a13486a14c705a56fd85f9001fd388810be7ee67eac13bad490bbf210cb",
+      "errors": [],
+      "baseline_errors": [],
+      "unchanged_baseline_grammar_limitation": false,
+      "introduced_syntax_errors": 0
+    },
+    {
+      "file": "crates/sampler-ksp/tests/ui_callbacks.rs",
+      "sha256": "a8a4e7e6dca70ab0636a0f055ad21a1873da0ef3f05fd3091fa785cb5f3cb887",
+      "errors": [],
+      "baseline_errors": [],
+      "unchanged_baseline_grammar_limitation": false,
+      "introduced_syntax_errors": 0
+    },
+    {
+      "file": "crates/sampler-ksp/tests/waveform_runtime.rs",
+      "sha256": "5292a0f91bbdb9692e7569978f14dea10c15a3ccdf939c90a5e69d704513e4fc",
+      "errors": [],
+      "baseline_errors": [],
+      "unchanged_baseline_grammar_limitation": false,
+      "introduced_syntax_errors": 0
+    }
+  ]
+}

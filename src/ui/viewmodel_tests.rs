@@ -80,7 +80,7 @@ fn audit_ui_real_frames() {
     let read_ms = start.elapsed().as_secs_f64() * 1000.;
     let original = Arc::new(source.clone());
     // No samples are needed for UI initialization; keep group names and saved scripts.
-    source.zones.clear();
+    source.retain_zones(|_| false);
     source.assets.clear();
     let start = Instant::now();
     let loaded = sampler_kontakt::prepare(
@@ -105,6 +105,8 @@ fn audit_ui_real_frames() {
         original.unsupported.len()
     );
     let p = Arc::new(SamplerParams::new());
+    let native_face = loaded.interfaces.iter().position(|face| face.native_ui.is_some());
+    println!("AUDIT_UI native_face={native_face:?}");
     if let Some(scale) = std::env::var_os("KONTRA_AUDIT_UI_SCALE") {
         let scale: f32 = scale.to_str().unwrap().parse().unwrap();
         p.shared.libraries.edit(|settings| settings.view_scale = scale);
@@ -138,6 +140,7 @@ fn audit_ui_real_frames() {
     let mut cache = vello::Cache::default();
     let mut pix = Pixmap::new(width, height);
     for mode in ["Original", "Vector"] {
+        p.selection.write().unwrap().parts[0].view = if mode == "Original" { 1 } else { 3 };
         for _ in 0..4 {
             let tree = draw(&mut ui, &mut bridge);
             ui.frame(
@@ -148,20 +151,44 @@ fn audit_ui_real_frames() {
             )
             .unwrap();
         }
-        let id = format!("face-{}-0", mode.to_lowercase());
-        if ui.scene().unwrap().surface(&id).is_some() {
-            ui.focus(&id);
-            let tree = draw(&mut ui, &mut bridge);
-            ui.frame(
-                tree,
-                Some(Size::new(width as f64, height as f64)),
-                enter(),
-                1. / 60.,
-            )
-            .unwrap();
+        if let Some(index) = native_face {
+            let id = format!("face-0-{index}");
+            if ui.scene().unwrap().surface(&id).is_some() {
+                ui.focus(&id);
+                let tree = draw(&mut ui, &mut bridge);
+                ui.frame(tree, Some(Size::new(width as f64, height as f64)), enter(), 1. / 60.)
+                    .unwrap();
+            }
         }
+        if mode == "Original" && native_face.is_some() {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let (mut stable, mut decoded) = (0, 0);
+            loop {
+                let tree = draw(&mut ui, &mut bridge);
+                ui.frame(tree, Some(Size::new(width as f64, height as f64)), Input::default(), 1. / 60.)
+                    .unwrap();
+                #[cfg(feature = "shots")]
+                {
+                    let diagnostics = super::native_ui::gate_diagnostics();
+                    assert!(diagnostics.is_empty(), "NativeUI failed: {diagnostics:?}");
+                }
+                let assets = super::native_ui::audit_assets();
+                let painted = ui.scene().unwrap().surfaces().any(|surface| {
+                    surface.key.as_str().starts_with("nui-")
+                });
+                stable = if painted && assets.2 == 0 && assets.1 == decoded { stable + 1 } else { 0 };
+                decoded = assets.1;
+                if stable == 3 { break; }
+                assert!(Instant::now() < deadline,
+                    "NativeUI did not reach a rendered, resource-ready frame: painted={painted}, assets={assets:?}, phases={:?}",
+                    p.shared.ui_activity.phase_snapshot());
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        let mut phases_before = None;
         let mut timings: [Vec<f64>; 6] = Default::default();
         for frame in 0..32 {
+            if frame == 8 { phases_before = p.shared.ui_activity.phase_snapshot(); }
             let a = Instant::now();
             let tree = draw(&mut ui, &mut bridge);
             let b = Instant::now();
@@ -200,8 +227,21 @@ fn audit_ui_real_frames() {
                 }
             }
         }
-        let canvas = ui.scene().unwrap().surface("ir-view").or_else(|| ui.scene().unwrap().surface("part-0-epoch-0-script-0-ir-view")).unwrap().frame;
+        let scene = ui.scene().unwrap();
+        let canvas = if mode == "Original" && native_face.is_some() {
+            scene.surfaces().filter(|surface| surface.key.as_str().starts_with("nui-"))
+                .max_by(|a, b| (a.frame.size.width * a.frame.size.height)
+                    .total_cmp(&(b.frame.size.width * b.frame.size.height)))
+        } else {
+            scene.surfaces().find(|surface| surface.key.as_str().ends_with("-ir-view"))
+        }.expect("selected authored canvas").frame;
         println!("AUDIT_UI mode={mode} output={width}x{height} canvas={:.3}x{:.3}", canvas.size.width, canvas.size.height);
+        if let (Some(before), Some(after)) = (phases_before, p.shared.ui_activity.phase_snapshot()) {
+            for (n, (name, _)) in crate::plugin::ui_activity::PHASES.iter().enumerate() {
+                println!("AUDIT_UI_PHASE mode={mode} phase={name} count={} total_ns={} cumulative_max_ns={}",
+                    after[n * 3] - before[n * 3], after[n * 3 + 1] - before[n * 3 + 1], after[n * 3 + 2]);
+            }
+        }
         for (stage, mut t) in [
             "build",
             "layout",

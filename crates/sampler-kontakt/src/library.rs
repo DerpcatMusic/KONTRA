@@ -1346,7 +1346,7 @@ impl Translation {
                         &params,
                     )?);
                 // [router UI, bypass, retrigger, unknown]
-                if params.unknown_flags[1] != 0 || params.targets.is_empty() {
+                if params.targets.is_empty() {
                     continue;
                 }
                 let retrigger = params.unknown_flags[2] != 0;
@@ -1354,6 +1354,21 @@ impl Translation {
                     if t.param == "volume" && t.signed_intensity() == 1.0 && !t.invert
                         && t.slot.is_none() && t.lag_ms == 0
                         && !t.shaper.as_ref().is_some_and(|s| s.enabled));
+                // Keep the primary amplitude/Flex admission unchanged. Only connected
+                // outgoing AHDSR/LFO routes can carry a live bypass in this slice.
+                let live = (matches!(&params.modulator, Modulator::Lfo(_))
+                    || matches!(&params.modulator, Modulator::Ahdsr(_)) && retrigger && !volume)
+                    && params.targets.iter().all(|t| {
+                        t.slot.is_none()
+                            && matches!(t.param.as_str(), "volume" | "pitch" | "pan")
+                            && t.unknown_flags & 2 == 0
+                            && t.lag_ms == 0
+                            && !t.shaper.as_ref().is_some_and(|s| s.enabled)
+                            && (0. ..=1.).contains(&t.intensity)
+                    });
+                if params.unknown_flags[1] != 0 && !live {
+                    continue;
+                }
                 let source = match params.modulator {
                     Modulator::Ahdsr(env) => {
                         let ms = |ms: f32| ir::Time::Milliseconds(f64::from(ms.max(0.0)));
@@ -1442,6 +1457,7 @@ impl Translation {
                         .insert((index, usize::from(slot), false, 0), true);
                     continue;
                 }
+                let mut bypass = None;
                 for (_ordinal, target) in params.targets.iter().enumerate() {
                     let route = self.route(
                         &at,
@@ -1450,6 +1466,15 @@ impl Translation {
                         target,
                         chain.zip(Some(&filter_slots[..])),
                     );
+                    if live && let Some(route) = route {
+                        self.internal_route_controls(
+                            [index, usize::from(slot), _ordinal],
+                            route,
+                            target,
+                            params.unknown_flags[1] != 0,
+                            &mut bypass,
+                        );
+                    }
                     #[cfg(feature = "scan")]
                     self.target_outcomes
                         .insert((index, usize::from(slot), false, _ordinal), route.is_some());
@@ -1730,6 +1755,79 @@ impl Translation {
         u8::try_from(value.checked_sub(1000)?)
             .ok()
             .filter(|&n| n < 16)
+    }
+
+    // Only positive, simple outgoing targets use the documented linear knob here.
+    // Primary amplitude ownership, MP/sign, module targets and sample-start remain unbound.
+    fn internal_route_controls(
+        &mut self,
+        address: [usize; 3],
+        route: ir::RouteRef,
+        target: &ni_file::kontakt::objects::ModTarget,
+        saved_bypass: bool,
+        bypass: &mut Option<ir::ControlRef>,
+    ) {
+        let [group, slot, ordinal] = address;
+        let unit = match self.ir.routes[route.0].target {
+            ir::Target::Amplitude | ir::Target::Pan => 1.,
+            ir::Target::Pitch => 12.,
+            _ => return,
+        };
+        if target.unknown_flags & 2 != 0
+            || !target.intensity.is_finite()
+            || !(0. ..=1.).contains(&target.intensity)
+        {
+            return;
+        }
+        let mut lane = |name: &str, generic: i32, max: f64, saved: f64| {
+            let default = self
+                .script_par(name, group as i32, slot as i32, generic)
+                .map_or(saved, |v| {
+                    if name == "ENGINE_PAR_INTMOD_BYPASS" {
+                        f64::from(v != 0)
+                    } else {
+                        max * f64::from(v.clamp(0, 1_000_000)) / 1_000_000.
+                    }
+                });
+            let control = ir::ControlRef(self.ir.controls.len());
+            self.ir.controls.push(ir::Control {
+                key: format!("kontakt/group/{group}/mod/{slot}/{generic}/{name}"),
+                label: name.into(),
+                value: ir::ControlValue::Continuous {
+                    min: 0.,
+                    max,
+                    default,
+                    unit: ir::ControlUnit::Percent,
+                },
+                automation: ir::Automation::None,
+            });
+            self.ir
+                .source_indices
+                .control_aliases
+                .push(ir::SourceControlAlias {
+                    control,
+                    parameter: name.into(),
+                    address: ir::SlotAddress {
+                        group: group as i32,
+                        slot: slot as i32,
+                        generic,
+                    },
+                });
+            control
+        };
+        let bypass = *bypass.get_or_insert_with(|| {
+            lane("ENGINE_PAR_INTMOD_BYPASS", -1, 1., f64::from(saved_bypass))
+        });
+        let depth = lane(
+            "ENGINE_PAR_MOD_TARGET_INTENSITY",
+            ordinal as i32,
+            unit,
+            f64::from(target.intensity) * unit,
+        );
+        self.ir
+            .source_indices
+            .route_controls
+            .push((route, depth, bypass));
     }
 
     /// An instrument bus fader a script set (linear gain). Law: dB = 18 log2(v)

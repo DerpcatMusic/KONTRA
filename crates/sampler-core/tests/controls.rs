@@ -1025,3 +1025,278 @@ fn routed_control_contexts_are_validated_before_edits_and_survive_queued_waits()
         Ok(Some(Outcome::Finished))
     );
 }
+
+const MOD_DEPTH: ControlId = ControlId(1000);
+const MOD_BYPASS: ControlId = ControlId(3000);
+fn modulation_schema() -> Vec<ControlDefinition> {
+    [MOD_DEPTH, MOD_BYPASS]
+        .into_iter()
+        .zip([0.5, 0.])
+        .map(|(id, value)| ControlDefinition {
+            id,
+            domain: ControlDomain::Real { min: 0., max: 1. },
+            default: ControlValue::Real(value),
+        })
+        .collect()
+}
+fn modulation_plan() -> Prepared {
+    Prepared::new(
+        48000,
+        vec![Pcm::new(48000, vec![[0.5; 2]; 2048].into_boxed_slice()).unwrap()],
+        vec![Region {
+            sample: 0,
+            key_low: 60,
+            key_high: 60,
+            root_key: Some(60),
+            velocity_low: 0.,
+            velocity_high: 1.,
+            gain: 1.,
+            envelope: Envelope::default(),
+            playback: Playback::default(),
+        }],
+        1,
+    )
+    .unwrap()
+    .with_controls(modulation_schema())
+    .unwrap()
+    .with_voice_modulation(
+        vec![ModProgram {
+            controls: vec![(0, [MOD_DEPTH, MOD_BYPASS])],
+            sources: vec![ModSource::Constant],
+            routes: vec![ModRoute {
+                source: 0,
+                target: ModTarget::Pan,
+                depth: 0.5,
+                invert: false,
+                shape: None,
+                lag: 0,
+                scale: None,
+            }],
+            ..Default::default()
+        }],
+        vec![Some(0)],
+        vec![0],
+    )
+    .unwrap()
+}
+fn modulation_frame(rt: &mut Runtime) -> Frame {
+    let mut pcm = [[0.; 2]; 128];
+    support::without_heap(|| rt.render(&mut pcm).unwrap());
+    pcm[127]
+}
+fn assert_modulation_frame(actual: Frame, expected: Frame) {
+    assert!(
+        actual
+            .iter()
+            .zip(expected)
+            .all(|(a, b)| (*a - b).abs() < 2e-6),
+        "{actual:?} != {expected:?}"
+    );
+}
+
+#[test]
+fn modulation_inputs_follow_identity_after_reorder_append_and_real_default_replacement() {
+    for append in [false, true] {
+        let mut definitions = modulation_schema();
+        definitions[0].default = ControlValue::Real(0.25);
+        if append {
+            definitions.push(ControlDefinition {
+                id: ControlId(500),
+                domain: ControlDomain::Integer { min: 0, max: 100 },
+                default: ControlValue::Integer(17),
+            });
+            definitions.push(ControlDefinition {
+                id: ControlId(2000),
+                domain: ControlDomain::Toggle,
+                default: ControlValue::Toggle(true),
+            });
+        }
+        definitions.reverse();
+        let plan = modulation_plan().with_controls(definitions).unwrap();
+        // Repeated schema substitutions must use the immediately previous identity map.
+        let reversed = plan.controls().iter().rev().copied().collect();
+        let plan = plan.with_controls(reversed).unwrap();
+        let limits = Limits::for_plan(&plan, 2, 2);
+        let mut rt = Runtime::new(plan, limits).unwrap();
+        rt.trigger(
+            Input {
+                protocol: Protocol::Clap,
+                port: 0,
+                group: 0,
+                channel: 0,
+                key: 60,
+                external_id: Some(1),
+            },
+            60,
+            1.,
+        )
+        .unwrap();
+        assert_modulation_frame(modulation_frame(&mut rt), [0.375, 0.5]);
+        let owner = rt.active_plan();
+        support::without_heap(|| {
+            rt.edit_controls(owner, None, &[write(MOD_DEPTH, ControlValue::Real(0.5))])
+                .unwrap();
+        });
+        assert_modulation_frame(modulation_frame(&mut rt), [0.25, 0.5]);
+        support::without_heap(|| {
+            rt.edit_controls(owner, None, &[write(MOD_BYPASS, ControlValue::Real(1.))])
+                .unwrap();
+        });
+        assert_modulation_frame(modulation_frame(&mut rt), [0.5, 0.5]);
+        assert_eq!(rt.voice_count(), 1);
+        if append {
+            assert_eq!(
+                rt.control_value(owner, ControlId(500)).unwrap(),
+                ControlValue::Integer(17)
+            );
+            assert_eq!(
+                rt.control_value(owner, ControlId(2000)).unwrap(),
+                ControlValue::Toggle(true)
+            );
+        }
+    }
+}
+
+#[test]
+fn modulation_schema_rejects_removed_and_non_real_inputs_without_touching_active_plan() {
+    let plan = modulation_plan();
+    let limits = Limits::for_plan(&plan, 2, 2);
+    let mut rt = Runtime::new(plan, limits).unwrap();
+    rt.trigger(
+        Input {
+            protocol: Protocol::Clap,
+            port: 0,
+            group: 0,
+            channel: 0,
+            key: 60,
+            external_id: Some(1),
+        },
+        60,
+        1.,
+    )
+    .unwrap();
+    let owner = rt.active_plan();
+    for id in [MOD_DEPTH, MOD_BYPASS] {
+        let mut removed = modulation_schema();
+        removed.retain(|c| c.id != id);
+        assert!(matches!(
+            modulation_plan().with_controls(removed),
+            Err(Error::InvalidInput)
+        ));
+        for (domain, default) in [
+            (
+                ControlDomain::Integer { min: 0, max: 1 },
+                ControlValue::Integer(0),
+            ),
+            (ControlDomain::Toggle, ControlValue::Toggle(false)),
+        ] {
+            let mut definitions = modulation_schema();
+            let entry = definitions.iter_mut().find(|c| c.id == id).unwrap();
+            entry.domain = domain;
+            entry.default = default;
+            assert!(matches!(
+                modulation_plan().with_controls(definitions),
+                Err(Error::InvalidInput)
+            ));
+        }
+        assert_modulation_frame(modulation_frame(&mut rt), [0.25, 0.5]);
+        assert_eq!(rt.active_plan(), owner);
+        assert_eq!(rt.control_revision(owner), Ok(0));
+        assert_eq!(rt.voice_count(), 1);
+    }
+}
+
+#[test]
+fn schema_replacement_preserves_native_envelope_and_dsp_identity_consumers() {
+    let envelope = Envelope::new(0, 0, 0, 0.5, 64).unwrap();
+    let make_plan = || {
+        modulation_plan()
+            .with_groups(1, vec![Some(0)])
+            .unwrap()
+            .with_group_envelope_parameters(0, 0, 7, envelope)
+            .unwrap()
+            .with_voice_chains(
+                vec![
+                    VoiceChain::new(
+                        vec![],
+                        vec![Processor::ControlGain(ControlRange {
+                            control: MOD_DEPTH,
+                            low: 0.,
+                            high: 1.,
+                            ramp_frames: 0,
+                        })],
+                        0,
+                    )
+                    .unwrap(),
+                ],
+                vec![Some(0)],
+            )
+            .unwrap()
+    };
+    let plan = make_plan();
+    let sustain = plan
+        .engine_parameter_bindings()
+        .iter()
+        .find(|b| b.address.parameter == engine_parameter_id("ENGINE_PAR_SUSTAIN").unwrap())
+        .unwrap()
+        .control;
+    for change in [
+        None,
+        Some((ControlDomain::Toggle, ControlValue::Toggle(false))),
+    ] {
+        let mut definitions = make_plan().controls().to_vec();
+        if let Some((domain, default)) = change {
+            let entry = definitions.iter_mut().find(|c| c.id == sustain).unwrap();
+            entry.domain = domain;
+            entry.default = default;
+        } else {
+            definitions.retain(|c| c.id != sustain);
+        }
+        assert!(matches!(
+            make_plan().with_controls(definitions),
+            Err(Error::InvalidInput)
+        ));
+    }
+    let mut definitions = plan.controls().to_vec();
+    definitions.push(ControlDefinition {
+        id: ControlId(500),
+        domain: ControlDomain::Integer { min: 0, max: 100 },
+        default: ControlValue::Integer(17),
+    });
+    definitions.reverse();
+    let plan = plan.with_controls(definitions).unwrap();
+    let limits = Limits::for_plan(&plan, 2, 2);
+    let mut rt = Runtime::new(plan, limits).unwrap();
+    let owner = rt.active_plan();
+    let sustain_address = EngineParameterAddress {
+        parameter: engine_parameter_id("ENGINE_PAR_SUSTAIN").unwrap(),
+        group: 0,
+        slot: 7,
+        generic: -1,
+    };
+    support::without_heap(|| rt.set_engine_parameter(sustain_address, 1000000).unwrap());
+    rt.trigger(
+        Input {
+            protocol: Protocol::Clap,
+            port: 0,
+            group: 0,
+            channel: 0,
+            key: 60,
+            external_id: Some(1),
+        },
+        60,
+        1.,
+    )
+    .unwrap();
+    assert_modulation_frame(modulation_frame(&mut rt), [0.125, 0.25]); // DSP gain=.5, amplitude sustain=1, pan=.5.
+    assert_eq!(rt.engine_parameter(sustain_address), Ok(1000000));
+    assert_eq!(
+        rt.control_value(owner, ControlId(500)),
+        Ok(ControlValue::Integer(17))
+    );
+    support::without_heap(|| {
+        rt.edit_controls(owner, None, &[write(MOD_DEPTH, ControlValue::Real(0.25))])
+            .unwrap();
+    });
+    assert_modulation_frame(modulation_frame(&mut rt), [0.09375, 0.125]); // Both DSP parameter and modulation input retain the same ID.
+}

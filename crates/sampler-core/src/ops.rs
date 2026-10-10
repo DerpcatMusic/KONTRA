@@ -157,6 +157,13 @@ pub enum TextPart {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Op {
+    /// Explicit-path typed array service, keyed in the current script instance.
+    ArrayFile {
+        array: u32,
+        path: TextRef,
+        write: bool,
+        local: u16,
+    },
     Midi {
         action: crate::MidiAction,
         args: u16,
@@ -233,6 +240,14 @@ pub enum Op {
     TextIndex {
         text: TextRef,
         local: u16,
+    },
+    /// Validated waveform read/write/reset, plus an admitted UI mirror effect.
+    /// `services` are [attach_zone, set_ui_wf_property]. No generic Store change.
+    Waveform {
+        action: crate::waveform::Action,
+        args: u16,
+        local: u16,
+        services: [u16; 2],
     },
     /// Keyed integer state of the script instance; the key is `STORE_KEY`
     /// registers starting at `key`, each a signed-32 value. A read of a missing
@@ -355,6 +370,7 @@ impl Op {
             TextRef::Element { index, .. } => usize::from(index) + 1,
         };
         match self {
+            Self::ArrayFile { path, local, .. } => reg(path).max(usize::from(*local) + 1),
             Self::Midi {
                 action,
                 args,
@@ -363,6 +379,8 @@ impl Op {
             } => (usize::from(*args) + action.arguments())
                 .max(usize::from(*local) + 1)
                 .max(text.as_ref().map_or(0, reg)),
+            Self::Waveform { args, local, .. } =>
+                (usize::from(*args) + 4).max(usize::from(*local) + 1),
             Self::MidiFilename { text } => reg(text),
             Self::Real { lhs, rhs, .. }
             | Self::CompareReal { lhs, rhs, .. }
@@ -448,6 +466,7 @@ impl Op {
             TextRef::Element { array, .. } => array.end(),
         };
         Ok(match self {
+            Self::ArrayFile { path, .. } => (cell(path)?, 0),
             Self::Midi {
                 text: Some(text), ..
             }
@@ -483,12 +502,14 @@ impl Op {
 #[derive(Clone, Copy)]
 pub struct Text {
     len: u16,
+    truncated: bool,
     bytes: [u8; TEXT_CAPACITY],
 }
 impl Default for Text {
     fn default() -> Self {
         Self {
             len: 0,
+            truncated: false,
             bytes: [0; TEXT_CAPACITY],
         }
     }
@@ -511,8 +532,12 @@ impl Text {
         // Only whole characters are ever appended.
         std::str::from_utf8(&self.bytes[..usize::from(self.len)]).unwrap_or_default()
     }
+    pub fn is_truncated(&self) -> bool {
+        self.truncated
+    }
     pub fn clear(&mut self) {
         self.len = 0;
+        self.truncated = false;
     }
     /// Append whole characters while they fit.
     pub fn push(&mut self, text: &str) {
@@ -521,6 +546,7 @@ impl Text {
         while !text.is_char_boundary(end) {
             end -= 1;
         }
+        self.truncated |= end < text.len();
         self.bytes[start..start + end].copy_from_slice(&text.as_bytes()[..end]);
         self.len += end as u16;
     }
@@ -592,7 +618,16 @@ impl Store {
             .ok()
             .map(|i| self.entries[i].1)
     }
-    fn set(&mut self, key: [i32; STORE_KEY], value: i64) {
+    pub(crate) fn can_set(&self, key: [i32; STORE_KEY]) -> bool {
+        self.get(key).is_some() || self.entries.len() < self.capacity
+    }
+    pub(crate) fn clear_waveform_table(&mut self, ui: i32) {
+        self.entries.retain(|(key, _)| {
+            !(key[0] == ui && key[1] == crate::waveform::Property::Table as i32
+                && key[3] == crate::waveform::STATE_TAG)
+        });
+    }
+    pub(crate) fn set(&mut self, key: [i32; STORE_KEY], value: i64) {
         match self.entries.binary_search_by_key(&key, |e| e.0) {
             Ok(i) => self.entries[i].1 = value,
             // ponytail: O(n) insertion shift; a fixed hash table if stores grow large.
@@ -613,6 +648,7 @@ pub(crate) struct ScriptBank {
     pub controls: Box<[Option<ControlId>]>,
     pub text_properties: Vec<([i32; STORE_KEY], Text)>,
     pub persistence_callback: Option<(BehaviorId, Option<crate::Outcome>)>,
+    pub array_files: crate::array_file::ArrayFileState,
 }
 
 #[inline]
@@ -652,6 +688,7 @@ impl ScriptBank {
 /// needs fixed-capacity mutable text buffers for allocation-free script writes.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ScriptInitial {
+    pub array_files: Box<[crate::ArrayFileArray]>,
     pub cells: Box<[i64]>,
     pub texts: Box<[std::sync::Arc<str>]>,
     pub store: Store,
@@ -676,6 +713,7 @@ impl ScriptInitial {
             controls: self.controls.clone(),
             text_properties,
             persistence_callback: None,
+            array_files: crate::array_file::ArrayFileState::prepared(&self.array_files),
         }
     }
 }
@@ -683,6 +721,7 @@ impl ScriptInitial {
 /// Initial non-integer resources of one script instance.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ScriptResources {
+    pub array_files: Vec<crate::ArrayFileArray>,
     pub texts: Vec<String>,
     pub text_properties: Vec<([i32; STORE_KEY], String)>,
     pub store: Vec<([i32; STORE_KEY], i64)>,
@@ -693,6 +732,21 @@ pub struct ScriptResources {
 }
 impl ScriptResources {
     pub(crate) fn apply(self, bank: &mut ScriptInitial) -> Result<(), Error> {
+        crate::array_file::ArrayFileState::dimensions(&self.array_files)?;
+        for (index, array) in self.array_files.iter().enumerate() {
+            let end = (array.offset + array.len) as usize;
+            if end
+                > if array.kind == crate::ArrayFileKind::Text {
+                    self.texts.len()
+                } else {
+                    bank.cells.len()
+                }
+                || self.array_files[..index].iter().any(|a| a.key == array.key)
+            {
+                return Err(Error::InvalidInput);
+            }
+        }
+        bank.array_files = self.array_files.into_boxed_slice();
         bank.texts = self
             .texts
             .into_iter()
@@ -980,6 +1034,25 @@ impl Runtime {
         op: Op,
     ) -> Result<bool, Error> {
         match op {
+            Op::ArrayFile {
+                array,
+                path,
+                write,
+                local,
+            } => {
+                let cell = self.text_cell(id, path)?;
+                let path = *self
+                    .behavior_bank(id)?
+                    .texts
+                    .get(cell)
+                    .ok_or(Error::InvalidInput)?;
+                let plan = self.behavior_plan(owner)?;
+                // Queue saturation is an explicit rejection, not a fabricated completion.
+                let value = self
+                    .request_array_file(id, plan, array, path, write)
+                    .unwrap_or(-1);
+                self.set_reg(id, local, i64::from(value))?;
+            }
             Op::Midi {
                 action,
                 args,
@@ -1026,6 +1099,18 @@ impl Runtime {
                     .jobs
                     .iter()
                     .any(|j| j.id == job)
+                    || self
+                        .plans
+                        .get(plan.0)
+                        .ok_or(Error::StaleHandle)?
+                        .scripts
+                        .iter()
+                        .any(|bank| {
+                            bank.array_files
+                                .jobs
+                                .iter()
+                                .any(|j| j.id == job && j.id != 0)
+                        })
                 {
                     let c = self.behaviors.get_mut(id.0).ok_or(Error::StaleHandle)?;
                     if !c.disable_wait {
@@ -1191,6 +1276,7 @@ impl Runtime {
                     .ok_or(Error::InvalidInput)?;
                 let before = target.len;
                 target.push(piece.as_str());
+                target.truncated |= piece.truncated;
                 if usize::from(target.len - before) < piece.as_str().len() {
                     self.ops.truncated_texts += 1;
                 }
@@ -1667,6 +1753,44 @@ impl Runtime {
                 )?;
             }
             Op::ResetTimer => self.ops.timer_origin = std::time::Instant::now(),
+            Op::Waveform { action, args, local, services } => {
+                use crate::waveform::Action;
+                let count = if action == Action::Set { 4 } else { 3 };
+                // Reject the complete window before any operand read or state access.
+                args.checked_add((count - 1) as u16).ok_or(Error::InvalidInput)?;
+                let mut values = [0; 4];
+                for (i, value) in values.iter_mut().take(count).enumerate() {
+                    *value = i32_of(self.reg(id, args + i as u16)?)?;
+                }
+                let admitted = crate::waveform::admit(&self.behavior_bank(id)?.store, action, values)?;
+                let c = *self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
+                let plan = self.behavior_plan(c.owner)?;
+                let instance = self.plans.get(plan.0).unwrap().prepared.programs[c.program].script_instance;
+                let service = services[usize::from(action == Action::Set)];
+                // Only the immediate tail setter may coalesce. Attachments and
+                // every intervening command are ordering boundaries.
+                let coalesce = action == Action::Set && self.ops.effects.back().is_some_and(|e| {
+                    e.plan == plan && e.instance == instance && e.service == service
+                        && e.count == 4 && (0..3).all(|i| e.args[i] == i64::from(admitted.args[i]))
+                });
+                if action != Action::Get && !coalesce && self.ops.effects.len() == EFFECT_CAPACITY {
+                    return Err(Error::Capacity);
+                }
+                let result = crate::waveform::commit(&mut self.behavior_bank_mut(id)?.store, &admitted);
+                self.set_reg(id, local, result)?;
+                if action != Action::Get {
+                    let mut values = [0; EFFECT_ARGS];
+                    for (value, arg) in values.iter_mut().zip(admitted.args).take(count) {
+                        *value = i64::from(arg);
+                    }
+                    let effect = Effect { plan, instance, service, args: values, count: count as u8, text: None };
+                    if coalesce {
+                        if let Some(tail) = self.ops.effects.back_mut() { *tail = effect; }
+                    } else {
+                        self.ops.effects.push_back(effect);
+                    }
+                }
+            }
             Op::Emit {
                 service,
                 args,

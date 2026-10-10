@@ -1,6 +1,7 @@
 //! Bounded legacy .nui execution over the published UI IR. No filesystem Lua API.
 use super::pictures::Source;
 use crate::support::MutexExt;
+use crate::plugin::ui_activity::{Activity, Phase};
 use mlua::{Function, Lua, Table, UserData, UserDataFields, UserDataMethods, Value as LuaValue};
 use moose::mui::mui::{prelude::Font, scene::Image};
 use sampler_ui_ir as ir;
@@ -612,10 +613,36 @@ impl UserData for Parameter {
     }
 }
 
+pub(super) fn update_widget(
+    widget: &mut ir::Widget,
+    authored: Option<&ir::Widget>,
+    typed: Option<&ir::Value>,
+) {
+    if let Some(authored) = authored
+        && &*widget != authored
+    {
+        // A live readback alone must not recopy all authored metadata.
+        // shortcut: divergent authored heap values still clone here; revisit if profiling warrants it.
+        let previous = std::mem::replace(&mut widget.value, authored.value.clone());
+        if &*widget != authored {
+            widget.clone_from(authored);
+        }
+        if previous.is_some() && previous.as_ref() == typed {
+            widget.value = previous;
+        }
+    }
+    if let Some(value) = typed
+        && widget.value.as_ref() != Some(value)
+    {
+        widget.value = Some(value.clone());
+    }
+}
+
 /// One editor-owned Lua VM. Audio receives only the bounded numeric edits.
 pub struct Session {
     lua: Lua,
     root: Function,
+    activity: Option<Arc<Activity>>,
     bridge: Arc<Mutex<Bridge>>,
     fuel: Arc<AtomicUsize>,
 }
@@ -782,9 +809,13 @@ impl Session {
         Ok(Self {
             lua,
             root,
+            activity: None,
             bridge,
             fuel,
         })
+    }
+    pub(super) fn set_activity(&mut self, activity: Option<Arc<Activity>>) {
+        self.activity = activity;
     }
     pub fn update_view(
         &self,
@@ -799,21 +830,18 @@ impl Session {
             if source != face.source {
                 continue;
             }
-            if let Some(w) = face.widgets.get(index)
-                && &bridge.controls[at] != w
-            {
-                bridge.controls[at].clone_from(w);
-            }
+            let typed = typed.get(&ir::WidgetRef(index));
+            update_widget(&mut bridge.controls[at], face.widgets.get(index), typed);
             if let Some(level) = meters.get(&ir::WidgetRef(index)) {
                 bridge.meters.insert(at, *level);
             }
             let w = &mut bridge.controls[at];
-            if let Some(value) = typed.get(&ir::WidgetRef(index)) {
-                w.value = Some(value.clone());
-            } else if matches!(
-                w.value,
-                None | Some(ir::Value::Integer(_) | ir::Value::Real(_))
-            ) && let ir::Binding::Control(c) = w.binding
+            if typed.is_none()
+                && matches!(
+                    w.value,
+                    None | Some(ir::Value::Integer(_) | ir::Value::Real(_))
+                )
+                && let ir::Binding::Control(c) = w.binding
                 && let Some(&n) = values.get(&c)
             {
                 w.value = Some(if matches!(w.value, Some(ir::Value::Real(_))) {
@@ -836,6 +864,7 @@ impl Session {
         bridge.meters.extend(values);
     }
     pub fn render(&self) -> anyhow::Result<Table> {
+        let _script = self.activity.as_ref().map(|a| a.span(Phase::UiNativeScript));
         self.fuel.store(1_000_000, Ordering::Relaxed);
         if let Ok(error) = self.lua.globals().get::<String>("__canvas_error") {
             anyhow::bail!("NativeUI canvas: {error}");
@@ -860,18 +889,24 @@ impl Session {
             1_000_000usize.saturating_sub(self.fuel.load(Ordering::Relaxed)),
         )
     }
+    pub(super) fn activity(&self) -> Option<Arc<Activity>> {
+        self.activity.clone()
+    }
     pub fn lua(&self) -> &Lua {
         &self.lua
     }
     pub fn paint_callback(&self, paint: Function) -> mlua::Result<Function> {
         let fuel = self.fuel.clone();
+        let activity = self.activity.clone();
         self.lua.create_function(move |_, args: mlua::MultiValue| {
+            let _script = activity.as_ref().map(|a| a.span(Phase::UiNativeScript));
             // Deferred Canvas starts its own work allowance after layout.
             fuel.store(100_000, Ordering::Relaxed);
             paint.call::<()>(args)
         })
     }
     pub fn call<A: mlua::IntoLuaMulti>(&self, function: Function, args: A) -> mlua::Result<()> {
+        let _script = self.activity.as_ref().map(|a| a.span(Phase::UiNativeScript));
         self.fuel.store(100_000, Ordering::Relaxed);
         function.call(args)
     }
@@ -972,6 +1007,146 @@ mod tests {
         .exec()
         .unwrap();
     }
+    #[test]
+    fn native_readback_reuses_unchanged_widget_storage_and_keeps_source_semantics() {
+        let (request, _jobs) = std::sync::mpsc::sync_channel(1);
+        let package = Arc::new(Package {
+            members: BTreeMap::from([(
+                "main.nui".into(),
+                Arc::from(b"return function() return {} end".as_slice()),
+            )]),
+            fonts: BTreeMap::new(),
+            font_names: Vec::new(),
+            images: Images {
+                request,
+                cache: Arc::new(Mutex::new(ImageCache {
+                    loaded: HashMap::new(),
+                    pending: BTreeSet::new(),
+                    touch: HashMap::new(),
+                    tick: 0,
+                    bytes: 0,
+                    #[cfg(feature = "shots")]
+                    scan: Default::default(),
+                })),
+            },
+        });
+        let mut widget = ir::Widget::new(
+            "$readback",
+            ir::PageRef(0),
+            Default::default(),
+            ir::Kind::Label,
+        );
+        widget.binding = ir::Binding::Control(ir::ControlId(42));
+        widget.value = Some(ir::Value::Integer(20));
+        widget.text = "Authored caption".into();
+        widget.tooltip = "Authored help".into();
+        let mut face = ir::Interface {
+            source: ir::Source::Ksp { slot: 2 },
+            widgets: vec![widget.clone()],
+            ..Default::default()
+        };
+        let session = Session::new(
+            package,
+            "main",
+            vec![
+                (face.source, 0, widget.clone()),
+                (ir::Source::Ksp { slot: 4 }, 0, widget),
+            ],
+        )
+        .unwrap();
+        let values = HashMap::from([(ir::ControlId(42), 75.25)]);
+        let meters = HashMap::from([(ir::WidgetRef(0), 0.625)]);
+        for value in [
+            ir::Value::Text("Callback readback".into()),
+            ir::Value::Integers(vec![1, 2, 3]),
+            ir::Value::Reals(vec![0.25, 0.5]),
+            ir::Value::Integer(75),
+            ir::Value::Real(75.25),
+        ] {
+            let typed = HashMap::from([(ir::WidgetRef(0), value.clone())]);
+            session.update_view(&face, &values, &typed, &meters);
+            let heap_calls = crate::plugin::tests::allocations(|| {
+                for _ in 0..64 {
+                    session.update_view(&face, &values, &typed, &meters);
+                }
+            });
+            assert_eq!(
+                heap_calls, 0,
+                "unchanged Native readback recopied {value:?}"
+            );
+            let bridge = session.bridge.lock_unpoisoned();
+            assert_eq!(bridge.controls[0].value.as_ref(), Some(&value));
+            assert_eq!(bridge.controls[1].value, Some(ir::Value::Integer(20)));
+            assert_eq!(bridge.meters.get(&0), Some(&0.625));
+        }
+        let typed = HashMap::from([(
+            ir::WidgetRef(0),
+            ir::Value::Text("Callback readback".into()),
+        )]);
+        session.update_view(&face, &values, &typed, &meters);
+        face.widgets[0].text = "Changed caption".into();
+        face.widgets[0].hidden = true;
+        face.widgets[0].value = Some(ir::Value::Real(2.));
+        session.update_view(&face, &values, &typed, &meters);
+        {
+            let bridge = session.bridge.lock_unpoisoned();
+            assert_eq!(bridge.controls[0].text, "Changed caption");
+            assert!(bridge.controls[0].hidden);
+            assert_eq!(
+                bridge.controls[0].value.as_ref(),
+                typed.get(&ir::WidgetRef(0))
+            );
+        }
+        session.update_view(&face, &values, &Default::default(), &meters);
+        assert_eq!(
+            session.bridge.lock_unpoisoned().controls[0].value,
+            Some(ir::Value::Real(75.25)),
+            "typed removal uses the current authored numeric type"
+        );
+        for value in [
+            ir::Value::Text("Authored text".into()),
+            ir::Value::Integers(vec![9, 8]),
+            ir::Value::Reals(vec![0.75, 0.25]),
+        ] {
+            face.widgets[0].value = Some(value.clone());
+            session.update_view(&face, &values, &Default::default(), &meters);
+            assert_eq!(
+                session.bridge.lock_unpoisoned().controls[0].value.as_ref(),
+                Some(&value),
+                "scalar telemetry cannot replace an authored typed value"
+            );
+        }
+    }
+    #[test]
+    fn native_profiler_counts_connected_script_and_deferred_paint_calls() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("Resources/native_ui")).unwrap();
+        std::fs::write(
+            dir.path().join("Resources/native_ui/main.nui"),
+            br#"local ui=require("native_ui")
+                return function() return @ui.Rectangle {}.frame(width=8,height=8) end"#,
+        ).unwrap();
+        let package = Arc::new(Package::load(&dir.path().join("fixture.nki")).unwrap());
+        let mut session = Session::new(package, "main", vec![]).unwrap();
+        // The ordinary disabled session renders without collecting timings.
+        session.render().unwrap();
+        assert!(session.activity().is_none());
+        let activity = Arc::new(Activity::new(true));
+        session.set_activity(Some(activity.clone()));
+        session.render().unwrap();
+        let failed: Function = session.lua().load("return function() error('owned failure') end").eval().unwrap();
+        assert!(session.call(failed, ()).is_err());
+        let paint: Function = session.lua().load("return function() end").eval().unwrap();
+        let deferred = session.paint_callback(paint).unwrap();
+        deferred.call::<()>(()).unwrap();
+        let values = activity.phase_snapshot().unwrap();
+        let at = Phase::UiNativeScript as usize * 3;
+        assert_eq!(values[at], 3, "render, failed event and deferred paint all close spans");
+        assert!(values[at + 1] >= values[at + 2], "total includes maximum");
+        assert!(values.iter().enumerate().all(|(n, v)| (at..at + 3).contains(&n) || *v == 0));
+        assert_eq!(activity.snapshot().unwrap(), [0; crate::plugin::ui_activity::FIELDS.len()]);
+    }
+
     #[test]
     fn legacy_component_reads_the_published_ir_and_produces_a_typed_edit() {
         assert_eq!(

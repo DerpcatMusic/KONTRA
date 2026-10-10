@@ -3,6 +3,7 @@ use super::{
     native_runtime::{Edit, Package, Session},
     theme::*,
 };
+use crate::plugin::ui_activity::{Activity, Phase};
 use mlua::{Function, Table, Value};
 use moose::mui::mui::{geometry::Path as DrawPath, prelude::*, scene::Fit};
 use sampler_ui_ir as ir;
@@ -135,6 +136,7 @@ pub(super) fn audit_assets() -> (usize, usize, usize) {
 }
 pub(super) struct State {
     id: u64,
+    activity: Option<Arc<Activity>>,
     loading: std::sync::mpsc::Receiver<anyhow::Result<Arc<Package>>>,
     canceled: Arc<AtomicBool>,
     package: Option<Arc<Package>>,
@@ -243,6 +245,7 @@ impl State {
             });
         Self {
             id: NEXT.fetch_add(1, Ordering::Relaxed),
+            activity: None,
             loading,
             canceled,
             package: None,
@@ -288,10 +291,11 @@ impl State {
             if *source == face.source
                 && let Some(current) = face.widgets.get(*index)
             {
-                widget.clone_from(current);
-                if let Some(value) = typed.get(&ir::WidgetRef(*index)) {
-                    widget.value = Some(value.clone());
-                }
+                super::native_runtime::update_widget(
+                    widget,
+                    Some(current),
+                    typed.get(&ir::WidgetRef(*index)),
+                );
             }
         }
         LOCAL.with(|local| {
@@ -338,6 +342,9 @@ impl State {
             )
         })
     }
+    pub fn set_activity(&mut self, activity: &Arc<Activity>) {
+        self.activity = activity.enabled.then(|| activity.clone());
+    }
     pub fn entry(&self) -> &str {
         &self.entry
     }
@@ -382,6 +389,7 @@ impl State {
                     .is_some_and(|live| !live.load(Ordering::Acquire))
             });
             if !local.contains_key(&self.id) {
+                let _init = self.activity.as_ref().map(|a| a.span(Phase::UiNativeScript));
                 let session =
                     Session::new(package.clone(), &self.entry, std::mem::take(&mut self.seed))?;
                 local.insert(
@@ -399,8 +407,12 @@ impl State {
             }
             self.started = true;
             let local = local.get_mut(&self.id).unwrap();
+            local.session.set_activity(self.activity.clone());
             let session = &local.session;
-            session.update_view(face, values, &input.values, &input.meters);
+            {
+                let _sync = self.activity.as_ref().map(|a| a.span(Phase::UiProjectionSync));
+                session.update_view(face, values, &input.values, &input.meters);
+            }
             if let Some(graph) = &local.graph {
                 events(ui, graph, session, slot, scale, &mut local.hovered)?;
             }
@@ -414,6 +426,7 @@ impl State {
             {
                 self.graph_depth = Some(self.graph_depth.unwrap_or(0).max(graph_depth(&graph)?));
             }
+            let _submission = self.activity.as_ref().map(|a| a.span(Phase::UiAuthoredLayoutSubmission));
             let authored = authored_size(&graph);
             self.size = authored;
             let el = draw(
@@ -586,8 +599,33 @@ fn flexibility(node: &Table) -> (bool, bool) {
         return (flags & 1 != 0, flags & 2 != 0);
     }
     let kind = string(node, "kind");
+    let mut flex = intrinsic_flexibility(node, &kind);
+    for m in tables(node, "modifiers").unwrap_or_default() {
+        if string(&m, "name") == "frame" {
+            if let Ok(t) = m.get::<Table>("value") {
+                if number(&t, "width").is_some() {
+                    flex.0 = false;
+                } else if number(&t, "max_width").is_some_and(f64::is_finite) {
+                    flex.0 = false;
+                } else if number(&t, "max_width").is_some_and(|n| n.is_infinite()) {
+                    flex.0 = true;
+                }
+                if number(&t, "height").is_some() {
+                    flex.1 = false;
+                } else if number(&t, "max_height").is_some_and(f64::is_finite) {
+                    flex.1 = false;
+                } else if number(&t, "max_height").is_some_and(|n| n.is_infinite()) {
+                    flex.1 = true;
+                }
+            }
+        }
+    }
+    let _ = node.set("__host_flex", u8::from(flex.0) | (u8::from(flex.1) << 1));
+    flex
+}
+fn intrinsic_flexibility(node: &Table, kind: &str) -> (bool, bool) {
     let children = tables(node, "children").unwrap_or_default();
-    let mut flex = match kind.as_str() {
+    match kind {
         "ZStack" | "Group" | "HStack" | "VStack" => {
             let mut f = (false, false);
             for child in children {
@@ -620,29 +658,7 @@ fn flexibility(node: &Table) -> (bool, bool) {
             f
         }
         _ => (false, false),
-    };
-    for m in tables(node, "modifiers").unwrap_or_default() {
-        if string(&m, "name") == "frame" {
-            if let Ok(t) = m.get::<Table>("value") {
-                if number(&t, "width").is_some() {
-                    flex.0 = false;
-                } else if number(&t, "max_width").is_some_and(f64::is_finite) {
-                    flex.0 = false;
-                } else if number(&t, "max_width").is_some_and(|n| n.is_infinite()) {
-                    flex.0 = true;
-                }
-                if number(&t, "height").is_some() {
-                    flex.1 = false;
-                } else if number(&t, "max_height").is_some_and(f64::is_finite) {
-                    flex.1 = false;
-                } else if number(&t, "max_height").is_some_and(|n| n.is_infinite()) {
-                    flex.1 = true;
-                }
-            }
-        }
     }
-    let _ = node.set("__host_flex", u8::from(flex.0) | (u8::from(flex.1) << 1));
-    flex
 }
 fn expand(mut el: El, flex: (bool, bool)) -> El {
     if flex.0 {
@@ -1005,7 +1021,9 @@ fn draw_base(
         "Canvas" => {
             let paint = session.paint_callback(props.get("paint")?)?;
             let vm = session.lua().clone();
+            let activity = session.activity();
             canvas(move |size| {
+                let _submission = activity.as_ref().map(|a| a.span(Phase::UiNativeCanvasSubmission));
                 match canvas_draw(&vm, &paint, Size::new(size.width / s, size.height / s), s) {
                     Ok(draw) => draw,
                     Err(e) => {
@@ -1018,12 +1036,7 @@ fn draw_base(
         other => anyhow::bail!("Unsupported NativeUI primitive {other:?}"),
     }
     .shrink(0);
-    let base = session.lua().create_table()?;
-    base.set("kind", kind.clone())?;
-    base.set("props", props.clone())?;
-    base.set("children", node.get::<Table>("children")?)?;
-    base.set("modifiers", session.lua().create_table()?)?;
-    let mut flex = flexibility(&base);
+    let mut flex = intrinsic_flexibility(node, &kind);
     if matches!(kind.as_str(), "Canvas" | "Rectangle")
         || (kind == "Image" && boolean(&val(&props, "resizable")))
     {
@@ -1512,6 +1525,98 @@ pub(super) fn stack_peak((start, end, top): (usize, usize, usize)) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_seed_reuses_unchanged_readback_and_keeps_authored_scalar_policy() {
+        let (_done, loading) = std::sync::mpsc::sync_channel(1);
+        let mut widget = ir::Widget::new(
+            "$readback",
+            ir::PageRef(0),
+            Default::default(),
+            ir::Kind::Label,
+        );
+        widget.binding = ir::Binding::Control(ir::ControlId(42));
+        widget.value = Some(ir::Value::Integer(20));
+        widget.text = "Authored caption".into();
+        let mut face = ir::Interface {
+            source: ir::Source::Ksp { slot: 2 },
+            widgets: vec![widget.clone()],
+            ..Default::default()
+        };
+        // Exercise publication before a local VM exists, without a resource worker.
+        let mut state = State {
+            id: NEXT.fetch_add(1, Ordering::Relaxed),
+            activity: None,
+            loading,
+            canceled: Arc::new(AtomicBool::new(false)),
+            package: None,
+            failed: false,
+            failure: None,
+            started: false,
+            entry: "main".into(),
+            seed: vec![
+                (face.source, 0, widget.clone()),
+                (ir::Source::Ksp { slot: 4 }, 0, widget),
+            ],
+            size: Size::new(970., 600.),
+            #[cfg(feature = "shots")]
+            graph_depth: None,
+            #[cfg(feature = "shots")]
+            graph_work: None,
+        };
+        let values = HashMap::from([(ir::ControlId(42), 75.25)]);
+        let meters = HashMap::new();
+        for value in [
+            ir::Value::Text("Callback readback".into()),
+            ir::Value::Integers(vec![1, 2, 3]),
+            ir::Value::Reals(vec![0.25, 0.5]),
+            ir::Value::Integer(75),
+            ir::Value::Real(75.25),
+        ] {
+            let typed = HashMap::from([(ir::WidgetRef(0), value.clone())]);
+            state.update_view(&face, &values, &typed, &meters);
+            let heap_calls = crate::plugin::tests::allocations(|| {
+                for _ in 0..64 {
+                    state.update_view(&face, &values, &typed, &meters);
+                }
+            });
+            assert_eq!(heap_calls, 0, "unchanged Native seed recopied {value:?}");
+            assert_eq!(state.seed[0].2.value.as_ref(), Some(&value));
+            assert_eq!(state.seed[1].2.value, Some(ir::Value::Integer(20)));
+        }
+        face.widgets[0].text = "Changed caption".into();
+        face.widgets[0].hidden = true;
+        state.update_view(&face, &values, &Default::default(), &meters);
+        assert_eq!(state.seed[0].2.text, "Changed caption");
+        assert!(state.seed[0].2.hidden);
+        assert_eq!(
+            state.seed[0].2.value,
+            Some(ir::Value::Integer(20)),
+            "the seed retains authored scalars; only the local Session overlays telemetry"
+        );
+    }
+    #[test]
+    fn intrinsic_flexibility_retains_child_frames_without_allocating_a_wrapper() {
+        let lua = mlua::Lua::new();
+        let make: Function = lua.load(r#"
+            return function(kind, axis)
+                local child_frame = {[axis]=5}
+                local child = {kind='Spacer',props={},children={},modifiers={{name='frame',value=child_frame}}}
+                return {kind=kind,props={},children={child},modifiers={{name='frame',value={width=30,height=10}}}}
+            end
+        "#).eval().unwrap();
+        for (kind, axis, expected) in [
+            ("HStack", "height", (true, false)),
+            ("VStack", "width", (false, true)),
+        ] {
+            let node: Table = make.call((kind, axis)).unwrap();
+            assert_eq!(intrinsic_flexibility(&node, kind), expected);
+            assert_eq!(flexibility(&node), (false, false));
+            assert_eq!(intrinsic_flexibility(&node, kind), expected,
+                "cached outer-frame flags must not alter the primitive's intrinsic layout");
+            assert_eq!(tables(&node, "modifiers").unwrap().len(), 1);
+        }
+    }
 
     #[test]
     fn editor_memory_repeated_layout_queries_do_not_rewalk_the_subtree() {

@@ -1,0 +1,1046 @@
+{
+  "schema_version": 1,
+  "status": "SOURCE_READY_FOR_FRESH_REVIEW",
+  "source_review_clear": false,
+  "integration_ready": false,
+  "green": false,
+  "build_authorized": false,
+  "source_sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+  "source_tree": "11ed4942b0e4194bf73fd059ba903b003e379bcb",
+  "parent_sha": "273504189d92656e4444552e1c5d8ff548f4c2c2",
+  "parent_tree": "fd89663e613282411f9c612b6773d88221bd2b0c",
+  "branch": "pi/ksp-rpn-deferred-fixture-fix",
+  "checkout": "/home/derpcat/.t3/worktrees/KONTAKTO/ksp-rpn-deferred-fixture-fix",
+  "scope": {
+    "changed_source_files": [
+      "crates/sampler-ksp/tests/rpn.rs"
+    ],
+    "insertions": 64,
+    "deletions": 1,
+    "reserved_before_edit": [
+      "crates/sampler-ksp/tests/rpn.rs:795",
+      "insertion after parent813/before815"
+    ],
+    "production_changes": false
+  },
+  "finding": {
+    "id": "F2",
+    "priority": "P2",
+    "state": "fixture_source_correction_authored_pending_new_independent_review",
+    "prior_F1": "SOURCE-resolved_in_e671_runtime_closure_pending",
+    "original3cc": "REQUEST_CHANGES_preserved",
+    "e671": "REQUEST_CHANGES_F2_preserved",
+    "production_scheduler_bug_claim": false
+  },
+  "checks": {
+    "authority": "SOURCE_CUSTODY_SYNTAX_SCALAR_ONLY",
+    "source_sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+    "script_sha256": "7b2c55f67feae3467e22b5440c6861fbe713565b12fc1bee22438232d7f07cfc",
+    "exclusive_source_diff": [
+      "crates/sampler-ksp/tests/rpn.rs"
+    ],
+    "retained_parent_names": 20,
+    "current_test_count": 21,
+    "byte_identical_parent_bodies": [
+      "compiled_raw_endpoints_and_distinct_symbolic_callbacks_without_heap",
+      "nested_named_callback_constants_reach_pcm_through_public_compiler",
+      "payloads_survive_waits_and_other_messages_not_global_host_slots",
+      "same_kind_overlapping_waits_keep_independent_raw_payloads",
+      "later_stage_order_no_self_echo_and_monotonic_rebroadcast",
+      "invalid_address_or_value_faults_sender_without_any_delivery",
+      "insufficient_fanout_capacity_is_explicit_and_atomic",
+      "repeated_messages_fill_waiting_arena_then_fault_without_unbounded_queue",
+      "initialization_remains_warn_noop_without_runtime_replay",
+      "ordinary_controller_and_numeric_pgs_keep_their_existing_routes",
+      "sender_and_receiver_waits_stay_in_retained_generation_and_part",
+      "receiver_generated_note_retains_physical_origin_and_performance",
+      "midi_and_nka_job_ids_wait_completion_and_instances_remain_independent",
+      "parameter_binding_rejects_invalid_stage_and_duplicate_kind_and_resets_with_programs",
+      "compiled_three_module_rotation_requires_clear_and_exact_receiver_rebind",
+      "receiver_only_stage_setters_preserve_identical_schema_or_require_explicit_rebind",
+      "parameter_binding_rejects_unrelated_ordinary_and_mixed_receiver_owners",
+      "deferred_fanout_pressure_faults_atomically_without_heap_or_partial_second_message",
+      "sparse_physical_slots_nonzero_sender_and_separate_notes_keep_private_payloads"
+    ],
+    "byte_identical_original_bodies": [
+      "compiled_raw_endpoints_and_distinct_symbolic_callbacks_without_heap",
+      "nested_named_callback_constants_reach_pcm_through_public_compiler",
+      "payloads_survive_waits_and_other_messages_not_global_host_slots",
+      "same_kind_overlapping_waits_keep_independent_raw_payloads",
+      "later_stage_order_no_self_echo_and_monotonic_rebroadcast",
+      "invalid_address_or_value_faults_sender_without_any_delivery",
+      "insufficient_fanout_capacity_is_explicit_and_atomic",
+      "repeated_messages_fill_waiting_arena_then_fault_without_unbounded_queue",
+      "initialization_remains_warn_noop_without_runtime_replay",
+      "ordinary_controller_and_numeric_pgs_keep_their_existing_routes",
+      "sender_and_receiver_waits_stay_in_retained_generation_and_part",
+      "receiver_generated_note_retains_physical_origin_and_performance",
+      "midi_and_nka_job_ids_wait_completion_and_instances_remain_independent"
+    ],
+    "f1_bodies_unchanged": [
+      "later_stage_order_no_self_echo_and_monotonic_rebroadcast",
+      "parameter_binding_rejects_invalid_stage_and_duplicate_kind_and_resets_with_programs",
+      "receiver_only_stage_setters_preserve_identical_schema_or_require_explicit_rebind",
+      "parameter_binding_rejects_unrelated_ordinary_and_mixed_receiver_owners"
+    ],
+    "full_file_count": 10,
+    "selected_span_count": 18,
+    "primary_archives": 4,
+    "primary_sections": 7,
+    "rustfmt_syntax": {
+      "exit": 0,
+      "stdout_sha256": "c04d4952720af4606bf07f1c191b5962573ae74ba9ee42179b8b4645fb3e4eba",
+      "stderr": "",
+      "source_unchanged": true,
+      "compiled": false,
+      "typechecked": false
+    },
+    "scalar_expected_logs": [
+      345,
+      13425,
+      12
+    ],
+    "scalar_negative_controls": 3,
+    "custody_negative_controls": {
+      "one_byte_source_mutation_rejected": true,
+      "one_byte_excerpt_mutation_rejected": true,
+      "wrong_parent_rejected": true
+    },
+    "inputs": [
+      {
+        "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-lifecycle-successor-review.md",
+        "bytes": 16936,
+        "sha256": "82969949190b6837f85acb87fd1add6e9c2dd70eae6e13fef9c9ad1c8f36987c",
+        "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/inputs/ksp-rpn-lifecycle-successor-review.md"
+      },
+      {
+        "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-lifecycle-successor-review.json",
+        "bytes": 115835,
+        "sha256": "885876bba032b2a2cd0dc04fe7379ebefcb74d98b282c4814c48c9ff23e336ac",
+        "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/inputs/ksp-rpn-lifecycle-successor-review.json"
+      },
+      {
+        "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/root-ksp-rpn-lifecycle-successor-review-check.json",
+        "bytes": 465,
+        "sha256": "81b911eebcbbfb8124906b10ffa9277fa152223b291df661f7cb6e22c2ccea5c",
+        "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/inputs/root-ksp-rpn-lifecycle-successor-review-check.json"
+      },
+      {
+        "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-lifecycle-fix.md",
+        "bytes": 12724,
+        "sha256": "dcb765e9e54776857738b4f95afabe13a26906c5e493fc6fcf6c6d097954a433",
+        "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/inputs/ksp-rpn-lifecycle-fix.md"
+      },
+      {
+        "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-lifecycle-fix.json",
+        "bytes": 10015,
+        "sha256": "9e6203166800b3afea011056a3077ca448094e10f22214d38f2cf098e161fcaf",
+        "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/inputs/ksp-rpn-lifecycle-fix.json"
+      },
+      {
+        "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/round10-service-requirements.md",
+        "bytes": 35032,
+        "sha256": "fb2230c2c22efea51d9c08a70cbecb85b4c9d9a6f912b209d246bfc1b328f262",
+        "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/inputs/round10-service-requirements.md"
+      },
+      {
+        "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/round10-service-requirements.json",
+        "bytes": 289711,
+        "sha256": "613adb5b09356b7616794e0db90b3b38a4d7ba4f54636f8e805c658c465009c7",
+        "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/inputs/round10-service-requirements.json"
+      },
+      {
+        "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/round8-service-consumer-handoff.md",
+        "bytes": 24555,
+        "sha256": "0191590c938abe9bb86fe6c8e708b5059f0a22e9c268fe5eade1096a41fa3989",
+        "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/inputs/round8-service-consumer-handoff.md"
+      },
+      {
+        "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/round8-service-consumer-handoff.json",
+        "bytes": 48570,
+        "sha256": "744e8f04aba0b70fe112a21c8800f8f16c5db22d0104c766d1ab77a3b0da0776",
+        "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/inputs/round8-service-consumer-handoff.json"
+      },
+      {
+        "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/rpn-callback-constants-next.md",
+        "bytes": 1786,
+        "sha256": "6259cb2ef8cec645ad1065a4d0e38efd7479ba78c9caebf7dc38ca1ff6ed6af3",
+        "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/inputs/rpn-callback-constants-next.md"
+      },
+      {
+        "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-consumer-next.md",
+        "bytes": 12165,
+        "sha256": "23b8915336c2e07fa81950a7d212c9d3646e73098f0c7e19206666a431669ad0",
+        "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/inputs/ksp-rpn-consumer-next.md"
+      },
+      {
+        "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-consumer-next.json",
+        "bytes": 8926,
+        "sha256": "1f8bf025bea9497db14e5e1bce7a39797708e7cd53308463d254819ee2391151",
+        "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/inputs/ksp-rpn-consumer-next.json"
+      },
+      {
+        "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-consumer-source-review.md",
+        "bytes": 17228,
+        "sha256": "63f9f77c1614397804440d98a95796d9ebd80ccbb1860d8111e126d3681fa779",
+        "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/inputs/ksp-rpn-consumer-source-review.md"
+      },
+      {
+        "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-consumer-source-review.json",
+        "bytes": 94537,
+        "sha256": "f45d3b9347eb1dfd853a529dd07eee85f74b87bc92d7f13ae6e7ae6671d3c242",
+        "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/inputs/ksp-rpn-consumer-source-review.json"
+      }
+    ],
+    "tests": "ALL_21_NOT_RUN_NOT_COMPILED",
+    "heap": "UNOBSERVED",
+    "pcm": "UNOBSERVED",
+    "native": "UNKNOWN",
+    "cpu_and_ram_below_both": "UNACHIEVED",
+    "build_authorized": false
+  },
+  "source_spans": [
+    {
+      "path": "crates/sampler-core/src/plan_programs.rs",
+      "symbol": "send_parameter complete admission/deferred branch",
+      "start_line": 143,
+      "end_line": 241,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "a6619bfe4fb31675347c9d514982743c406287b8",
+      "file_sha256": "33acce08c7c92edbdfef78db240f769789e99dc9b9bc7a82974643e7bc9b9a25",
+      "span_sha256": "02749152099d9d7e41ce3bbe79a4327d514021ae60824ac9faaff4d4c6eea8cd"
+    },
+    {
+      "path": "crates/sampler-core/src/plan_programs.rs",
+      "symbol": "signal_programs complete scheduling",
+      "start_line": 245,
+      "end_line": 285,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "a6619bfe4fb31675347c9d514982743c406287b8",
+      "file_sha256": "33acce08c7c92edbdfef78db240f769789e99dc9b9bc7a82974643e7bc9b9a25",
+      "span_sha256": "afa67ef2a6b1b70c858d473bcb98d9ef4f8b17db4dde8fa77866011e2a46968c"
+    },
+    {
+      "path": "crates/sampler-core/src/behavior.rs",
+      "symbol": "start/admit plan context and private payload",
+      "start_line": 1126,
+      "end_line": 1173,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "a1ff442ba50002d089859623cc2524ad818c48c5",
+      "file_sha256": "9dc3f5d936d56a0234168c4a75ff992c916497d48880f693593e1c715d9cd678",
+      "span_sha256": "1510ae08a5e1d058b5737a014ae7189db75b394324751fed61662e78c2169dc0"
+    },
+    {
+      "path": "crates/sampler-core/src/behavior.rs",
+      "symbol": "queue_behavior and drain_behavior complete bodies",
+      "start_line": 1356,
+      "end_line": 1462,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "a1ff442ba50002d089859623cc2524ad818c48c5",
+      "file_sha256": "9dc3f5d936d56a0234168c4a75ff992c916497d48880f693593e1c715d9cd678",
+      "span_sha256": "6f6b360dc6cfc75806c63b221fa5e2ac22ac2e3723cc1f3eb5b11d4eedc1b2f4"
+    },
+    {
+      "path": "crates/sampler-core/src/behavior.rs",
+      "symbol": "yielded_plan/yield_behavior/resume_yielded",
+      "start_line": 1652,
+      "end_line": 1705,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "a1ff442ba50002d089859623cc2524ad818c48c5",
+      "file_sha256": "9dc3f5d936d56a0234168c4a75ff992c916497d48880f693593e1c715d9cd678",
+      "span_sha256": "b88b97607d5ff563ea5426c4e1cda3abeb518a0419f0b674eb1431c96d399f4c"
+    },
+    {
+      "path": "crates/sampler-core/src/behavior.rs",
+      "symbol": "SendParameter/ReadParameter/Signal VM dispatch",
+      "start_line": 2480,
+      "end_line": 2503,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "a1ff442ba50002d089859623cc2524ad818c48c5",
+      "file_sha256": "9dc3f5d936d56a0234168c4a75ff992c916497d48880f693593e1c715d9cd678",
+      "span_sha256": "a81e06978814c6db43999e596c778ce970fd3533c2fbe600c76085e1550e4eb2"
+    },
+    {
+      "path": "crates/sampler-core/src/render.rs",
+      "symbol": "public block fuel setter",
+      "start_line": 42,
+      "end_line": 45,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "da54746475583fb88dcaec08893c8ed8ea97239b",
+      "file_sha256": "de0c4943ae2206811774f723b8f0bc6109aa78a30e1db03e76e38906c3bed68d",
+      "span_sha256": "695a23ae121396a55b97325244da356de9e7a50a5a9b67667229e64cc165b0f8"
+    },
+    {
+      "path": "crates/sampler-core/src/render.rs",
+      "symbol": "render_inner yielded snapshot ownership",
+      "start_line": 171,
+      "end_line": 211,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "da54746475583fb88dcaec08893c8ed8ea97239b",
+      "file_sha256": "de0c4943ae2206811774f723b8f0bc6109aa78a30e1db03e76e38906c3bed68d",
+      "span_sha256": "137eecbc5e2b2c0053a7a0d21fb0484c5d037219eab388119cce3c00a3fa1470"
+    },
+    {
+      "path": "crates/sampler-core/src/controller_event.rs",
+      "symbol": "controller dispatch/admission",
+      "start_line": 51,
+      "end_line": 157,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "7c6bf111868890deb19f3a7d14a042a1ff5033e1",
+      "file_sha256": "5aa0906acdd92b5708d92ef8d5d13ad4f85e56a6a2ff5805696ee38152c6a1b8",
+      "span_sha256": "3121a29b2c594c91e542ba13b686a073c39d7f574a7f95eb347c69f8816f2c75"
+    },
+    {
+      "path": "crates/sampler-ksp/src/lower.rs",
+      "symbol": "callback-type grouping and entry start",
+      "start_line": 159,
+      "end_line": 245,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "40f26cd990ab88a4dee19856ea9812fb9cff3f4e",
+      "file_sha256": "ac156263263e009675cd63cad2bce50e1abe36032579a9edcc38ada5cefa0713",
+      "span_sha256": "b9b79ea6530d47ca7aac7070c89590c7b216e26783cdcf4acdb12f22ba66fbed"
+    },
+    {
+      "path": "crates/sampler-ksp/src/lower.rs",
+      "symbol": "PGS write/Signal suppression in PGS callback",
+      "start_line": 2695,
+      "end_line": 2706,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "40f26cd990ab88a4dee19856ea9812fb9cff3f4e",
+      "file_sha256": "ac156263263e009675cd63cad2bce50e1abe36032579a9edcc38ada5cefa0713",
+      "span_sha256": "b044445c5d544f176f56317a02c17684a8aa5b81742251286c404c0863f4ecf9"
+    },
+    {
+      "path": "crates/sampler-ksp/src/lib.rs",
+      "symbol": "public binder stage/instance owners",
+      "start_line": 614,
+      "end_line": 646,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "2c25451e53b775942929beffbbc39c106caa042e",
+      "file_sha256": "1b4ab9d7f580443d0e628c8af16d48e69474c5459a67df74042d3cee691d2c8e",
+      "span_sha256": "374499d520aac3af6abfd8bcbb1c414cd66eb286f0eb8a67e6b87300e1e75d51"
+    },
+    {
+      "path": "crates/sampler-ksp/src/lib.rs",
+      "symbol": "signal/parameter binding and final installation",
+      "start_line": 738,
+      "end_line": 808,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "2c25451e53b775942929beffbbc39c106caa042e",
+      "file_sha256": "1b4ab9d7f580443d0e628c8af16d48e69474c5459a67df74042d3cee691d2c8e",
+      "span_sha256": "16fa9812a0ef8fab3547ad81c7ca97b494871e26a9d534986107bdb75adb708d"
+    },
+    {
+      "path": "crates/sampler-core/tests/support/mod.rs",
+      "symbol": "without_heap allocation/deallocation guard",
+      "start_line": 1,
+      "end_line": 59,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "556402ece1f85fba69f811b509431c51b9909b37",
+      "file_sha256": "d4b3a59fb7f2e9b046e1feef38e1dbb3b4261efc8ff40bf5a89eac7d03100d46",
+      "span_sha256": "da6cecc58068f207949340937d64937a0444898c04b2e3dea0abe0095b96cd09"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "symbol": "public compiler/binder Runtime fixtures and cell helpers",
+      "start_line": 1,
+      "end_line": 98,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+      "file_sha256": "1ad9c5b5d8488ee3d2054bd084e0b4e9f4e74769c37affbb15c71346245af3c7",
+      "span_sha256": "c80d83363afc67c09ef7fe9e98b3f628c77cfb7197a512280e9958a4e87cc77b"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "symbol": "preserved F1 lifecycle witnesses",
+      "start_line": 534,
+      "end_line": 720,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+      "file_sha256": "1ad9c5b5d8488ee3d2054bd084e0b4e9f4e74769c37affbb15c71346245af3c7",
+      "span_sha256": "8f1337d069dc623ee39c077251b8523d0359b041598309f004eab77122b9e223"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/fixtures/rpn-service-neighbors.ksp",
+      "symbol": "unchanged synthetic service fixture",
+      "start_line": 1,
+      "end_line": 21,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "12026b77e7acb9dc05f5486611ed6b55c9f3d819",
+      "file_sha256": "4de38f22c760774339b18d041b60034d1d42779fc7c191c5900ce69d2a6c3506",
+      "span_sha256": "4de38f22c760774339b18d041b60034d1d42779fc7c191c5900ce69d2a6c3506"
+    },
+    {
+      "path": "crates/sampler-ksp/Cargo.toml",
+      "symbol": "actual sampler-ksp package/edition/dependencies",
+      "start_line": 1,
+      "end_line": 19,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "49ede8d2afbe27953c0b10a3df7731fcd96ce88a",
+      "file_sha256": "fa585189adb406695c2712f708e4550b0a4e1e205f4e62c40a97ab8acf6aa763",
+      "span_sha256": "919f4b813c13367f1c2f44a2fee992c294b6a0d1c6040dd5a4da59286f3dc190"
+    }
+  ],
+  "source_files": [
+    {
+      "path": "crates/sampler-core/src/plan_programs.rs",
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "a6619bfe4fb31675347c9d514982743c406287b8",
+      "sha256": "33acce08c7c92edbdfef78db240f769789e99dc9b9bc7a82974643e7bc9b9a25",
+      "bytes": 12324,
+      "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/source/crates/sampler-core/src/plan_programs.rs"
+    },
+    {
+      "path": "crates/sampler-core/src/behavior.rs",
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "a1ff442ba50002d089859623cc2524ad818c48c5",
+      "sha256": "9dc3f5d936d56a0234168c4a75ff992c916497d48880f693593e1c715d9cd678",
+      "bytes": 118054,
+      "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/source/crates/sampler-core/src/behavior.rs"
+    },
+    {
+      "path": "crates/sampler-core/src/render.rs",
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "da54746475583fb88dcaec08893c8ed8ea97239b",
+      "sha256": "de0c4943ae2206811774f723b8f0bc6109aa78a30e1db03e76e38906c3bed68d",
+      "bytes": 39470,
+      "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/source/crates/sampler-core/src/render.rs"
+    },
+    {
+      "path": "crates/sampler-core/src/controller_event.rs",
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "7c6bf111868890deb19f3a7d14a042a1ff5033e1",
+      "sha256": "5aa0906acdd92b5708d92ef8d5d13ad4f85e56a6a2ff5805696ee38152c6a1b8",
+      "bytes": 15268,
+      "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/source/crates/sampler-core/src/controller_event.rs"
+    },
+    {
+      "path": "crates/sampler-ksp/src/lower.rs",
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "40f26cd990ab88a4dee19856ea9812fb9cff3f4e",
+      "sha256": "ac156263263e009675cd63cad2bce50e1abe36032579a9edcc38ada5cefa0713",
+      "bytes": 147413,
+      "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/source/crates/sampler-ksp/src/lower.rs"
+    },
+    {
+      "path": "crates/sampler-ksp/src/lib.rs",
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "2c25451e53b775942929beffbbc39c106caa042e",
+      "sha256": "1b4ab9d7f580443d0e628c8af16d48e69474c5459a67df74042d3cee691d2c8e",
+      "bytes": 58093,
+      "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/source/crates/sampler-ksp/src/lib.rs"
+    },
+    {
+      "path": "crates/sampler-core/tests/support/mod.rs",
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "556402ece1f85fba69f811b509431c51b9909b37",
+      "sha256": "d4b3a59fb7f2e9b046e1feef38e1dbb3b4261efc8ff40bf5a89eac7d03100d46",
+      "bytes": 1901,
+      "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/source/crates/sampler-core/tests/support/mod.rs"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+      "sha256": "1ad9c5b5d8488ee3d2054bd084e0b4e9f4e74769c37affbb15c71346245af3c7",
+      "bytes": 36971,
+      "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/source/crates/sampler-ksp/tests/rpn.rs"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/fixtures/rpn-service-neighbors.ksp",
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "12026b77e7acb9dc05f5486611ed6b55c9f3d819",
+      "sha256": "4de38f22c760774339b18d041b60034d1d42779fc7c191c5900ce69d2a6c3506",
+      "bytes": 441,
+      "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/source/crates/sampler-ksp/tests/fixtures/rpn-service-neighbors.ksp"
+    },
+    {
+      "path": "crates/sampler-ksp/Cargo.toml",
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "49ede8d2afbe27953c0b10a3df7731fcd96ce88a",
+      "sha256": "fa585189adb406695c2712f708e4550b0a4e1e205f4e62c40a97ab8acf6aa763",
+      "bytes": 521,
+      "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/source/crates/sampler-ksp/Cargo.toml"
+    }
+  ],
+  "tests": [
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_name": "compiled_raw_endpoints_and_distinct_symbolic_callbacks_without_heap",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 100,
+      "end_line": 134,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+      "body_sha256": "b0416a9e8844f9267a135073d65e8765f041958b018505e59ee1c984ae1f748d",
+      "status": "NOT_RUN_NOT_COMPILED",
+      "byte_identical_to_parent": true,
+      "byte_identical_to_original": true
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_name": "nested_named_callback_constants_reach_pcm_through_public_compiler",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 136,
+      "end_line": 154,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+      "body_sha256": "f975862f2fcf6b35ded2701c9b238b21dbe1b2088472d4aabb9889a5efd72479",
+      "status": "NOT_RUN_NOT_COMPILED",
+      "byte_identical_to_parent": true,
+      "byte_identical_to_original": true
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_name": "payloads_survive_waits_and_other_messages_not_global_host_slots",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 156,
+      "end_line": 184,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+      "body_sha256": "8382bc426a7bd17274418e8c9395e2a2be63a61cd6dbca9a009b20f8689fc7d7",
+      "status": "NOT_RUN_NOT_COMPILED",
+      "byte_identical_to_parent": true,
+      "byte_identical_to_original": true
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_name": "same_kind_overlapping_waits_keep_independent_raw_payloads",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 186,
+      "end_line": 198,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+      "body_sha256": "7d3cc0b8caaf361fa200a33b76c4049254fa8f35e23435cb18414674548a9095",
+      "status": "NOT_RUN_NOT_COMPILED",
+      "byte_identical_to_parent": true,
+      "byte_identical_to_original": true
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_name": "later_stage_order_no_self_echo_and_monotonic_rebroadcast",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 200,
+      "end_line": 237,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+      "body_sha256": "45b70aee3a20e6ce0ea04ed39a07ec17c4033f80ce1dae9d54a17dd61965c706",
+      "status": "NOT_RUN_NOT_COMPILED",
+      "byte_identical_to_parent": true,
+      "byte_identical_to_original": true
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_name": "invalid_address_or_value_faults_sender_without_any_delivery",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 239,
+      "end_line": 268,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+      "body_sha256": "75fd99c4f587c51ea08fc998bafc9bba94dd8844a2e229b17bb576093f47895e",
+      "status": "NOT_RUN_NOT_COMPILED",
+      "byte_identical_to_parent": true,
+      "byte_identical_to_original": true
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_name": "insufficient_fanout_capacity_is_explicit_and_atomic",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 270,
+      "end_line": 289,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+      "body_sha256": "a3f08df0c6106d93176a0de646236491b1e7717877b00d8449d1737fd8ac8d65",
+      "status": "NOT_RUN_NOT_COMPILED",
+      "byte_identical_to_parent": true,
+      "byte_identical_to_original": true
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_name": "repeated_messages_fill_waiting_arena_then_fault_without_unbounded_queue",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 291,
+      "end_line": 310,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+      "body_sha256": "a6b30504aedc1c10abbe1c0f1f5bab0cb57fac23d1cab3c5b18d6c649ff6d7b3",
+      "status": "NOT_RUN_NOT_COMPILED",
+      "byte_identical_to_parent": true,
+      "byte_identical_to_original": true
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_name": "initialization_remains_warn_noop_without_runtime_replay",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 312,
+      "end_line": 331,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+      "body_sha256": "f1cbe371cd7fc7664f80ce894252478e48654f2487a77b0b4afeec3bf849c777",
+      "status": "NOT_RUN_NOT_COMPILED",
+      "byte_identical_to_parent": true,
+      "byte_identical_to_original": true
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_name": "ordinary_controller_and_numeric_pgs_keep_their_existing_routes",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 333,
+      "end_line": 363,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+      "body_sha256": "136572e89d2ceaaf2317bb14c13a2601733417d7571ed1e71ae32e7e1329852f",
+      "status": "NOT_RUN_NOT_COMPILED",
+      "byte_identical_to_parent": true,
+      "byte_identical_to_original": true
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_name": "sender_and_receiver_waits_stay_in_retained_generation_and_part",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 365,
+      "end_line": 399,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+      "body_sha256": "c4ca1e52907b5e43149f32985830c0fb94006413512306d7c6f7e3e87e530b5b",
+      "status": "NOT_RUN_NOT_COMPILED",
+      "byte_identical_to_parent": true,
+      "byte_identical_to_original": true
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_name": "receiver_generated_note_retains_physical_origin_and_performance",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 401,
+      "end_line": 431,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+      "body_sha256": "e631dbeca976f7edfa1fb4ab7d2ee34556f7bcdc8770f1e3643e5bba69cda3df",
+      "status": "NOT_RUN_NOT_COMPILED",
+      "byte_identical_to_parent": true,
+      "byte_identical_to_original": true
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_name": "midi_and_nka_job_ids_wait_completion_and_instances_remain_independent",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 433,
+      "end_line": 493,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+      "body_sha256": "720e42a5d398b0e11319811c3b2baf5c8ff08f1d041c5be34c48fcc592912e67",
+      "status": "NOT_RUN_NOT_COMPILED",
+      "byte_identical_to_parent": true,
+      "byte_identical_to_original": true
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_name": "parameter_binding_rejects_invalid_stage_and_duplicate_kind_and_resets_with_programs",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 495,
+      "end_line": 532,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+      "body_sha256": "d1bab49179b68dfc55f416889f1b3ae3c7e05cd3e723c294af78cddeb5389f8e",
+      "status": "NOT_RUN_NOT_COMPILED",
+      "byte_identical_to_parent": true,
+      "byte_identical_to_original": false
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_name": "compiled_three_module_rotation_requires_clear_and_exact_receiver_rebind",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 534,
+      "end_line": 601,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+      "body_sha256": "6a89693e2227ceb3c1f9b9886db3d05231025d2bdb9e6edd00560280500729f5",
+      "status": "NOT_RUN_NOT_COMPILED",
+      "byte_identical_to_parent": true,
+      "byte_identical_to_original": false
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_name": "receiver_only_stage_setters_preserve_identical_schema_or_require_explicit_rebind",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 603,
+      "end_line": 678,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+      "body_sha256": "7d474634f6fdb7531a496ddebbffdc1dc602657ef1f64e5ae4ba9e0adb2729e0",
+      "status": "NOT_RUN_NOT_COMPILED",
+      "byte_identical_to_parent": true,
+      "byte_identical_to_original": false
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_name": "parameter_binding_rejects_unrelated_ordinary_and_mixed_receiver_owners",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 680,
+      "end_line": 720,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+      "body_sha256": "4c18ef821b742cafcb92c54fefee0e677a6b85d6304542b0ed1a54620558cc89",
+      "status": "NOT_RUN_NOT_COMPILED",
+      "byte_identical_to_parent": true,
+      "byte_identical_to_original": false
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_name": "preempted_sender_defers_receivers_fifo_and_preserves_numeric_pgs_controller_order",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 722,
+      "end_line": 817,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+      "body_sha256": "d4cfec6996dcf8a5147e55023f320a52412ff74deca2a1346adb2f11a8ad4f34",
+      "status": "NOT_RUN_NOT_COMPILED",
+      "byte_identical_to_parent": false,
+      "byte_identical_to_original": false
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_name": "preempted_sender_defers_receivers_fifo_without_notification_interleaving",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 819,
+      "end_line": 876,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+      "body_sha256": "fb696ceef39209755a71bb654e2f74e45b944abee6ebe2add8a6a3479ec54cfa",
+      "status": "NOT_RUN_NOT_COMPILED",
+      "byte_identical_to_parent": false,
+      "byte_identical_to_original": false
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_name": "deferred_fanout_pressure_faults_atomically_without_heap_or_partial_second_message",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 878,
+      "end_line": 932,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+      "body_sha256": "070df2729a1039cff69a4c97735e6b7fc771f7527a569d1bdf2379ef49f5b3b3",
+      "status": "NOT_RUN_NOT_COMPILED",
+      "byte_identical_to_parent": true,
+      "byte_identical_to_original": false
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "harness_name": "sparse_physical_slots_nonzero_sender_and_separate_notes_keep_private_payloads",
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "start_line": 934,
+      "end_line": 983,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+      "body_sha256": "a52e13ff299d95f9e59af03be1f7f1d78ff7940d6b816013682a3ced0c8bcd18",
+      "status": "NOT_RUN_NOT_COMPILED",
+      "byte_identical_to_parent": true,
+      "byte_identical_to_original": false
+    }
+  ],
+  "primary": [
+    {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/general-commands#set_rpn---set_nrpn--",
+      "section": "set_rpn()/set_nrpn()",
+      "document_sha256": "9d71af86f192abff29804487e0c00d7b7b84b9fa191d04d4477f38b893cff0a2",
+      "excerpt_sha256": "4a06ff62784abdd1191c3b0a0e5ef59eda6e7619c8afa002b7d3458e95a3d818",
+      "own_archive_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/reference/ksp-general-commands.html",
+      "authority": "SPEC_ONLY_NOT_NATIVE"
+    },
+    {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/callbacks#on-rpn-nrpn",
+      "section": "on rpn/nrpn",
+      "document_sha256": "f91a2a1411c18e84e15f4e89e74499c3ae74dec75f230bb8c99df65e316267ba",
+      "excerpt_sha256": "b66a4b5ed58e05c550c0e58e7f3759de620870a7da0b20a0add34d31e035fda3",
+      "own_archive_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/reference/ksp-callbacks.html",
+      "authority": "SPEC_ONLY_NOT_NATIVE"
+    },
+    {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/built-in-variables-and-constants#events-and-midi",
+      "section": "Events and MIDI",
+      "document_sha256": "9a5ab14188022767684a1dea13a0ca0e060e0838a788073b7a26b50b0030247e",
+      "excerpt_sha256": "ac32835f066694494c6481952980781dbe7c0346f1e40072e89934b78387ee51",
+      "own_archive_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/reference/ksp-variables.html",
+      "authority": "SPEC_ONLY_NOT_NATIVE"
+    },
+    {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/built-in-variables-and-constants#callbacks-and-ui",
+      "section": "Callbacks and UI",
+      "document_sha256": "9a5ab14188022767684a1dea13a0ca0e060e0838a788073b7a26b50b0030247e",
+      "excerpt_sha256": "1aa244297052eb57e823211720516881eb8b2b16efc0951b57ebeb93caea03ab",
+      "own_archive_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/reference/ksp-variables.html",
+      "authority": "SPEC_ONLY_NOT_NATIVE"
+    },
+    {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/general-commands#set_controller--",
+      "section": "set_controller()",
+      "document_sha256": "9d71af86f192abff29804487e0c00d7b7b84b9fa191d04d4477f38b893cff0a2",
+      "excerpt_sha256": "f8ec1a90ad886d9c97bde8c7cac8cf06e44d34bbd0edfc772a073b2ebbbe211c",
+      "own_archive_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/reference/ksp-general-commands.html",
+      "authority": "SPEC_ONLY_NOT_NATIVE"
+    },
+    {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/callbacks#on-init",
+      "section": "on init",
+      "document_sha256": "f91a2a1411c18e84e15f4e89e74499c3ae74dec75f230bb8c99df65e316267ba",
+      "excerpt_sha256": "9a326286054dc7bdbc6d72bde55c2de01808f55d9d1ed90d98029656cbcdb188",
+      "own_archive_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/reference/ksp-callbacks.html",
+      "authority": "SPEC_ONLY_NOT_NATIVE"
+    },
+    {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/classic-view#-729095-11",
+      "section": "Script Editor",
+      "document_sha256": "846a09243ad7d17d8daa92bf5105418501ebb25cd358ba8d09108ffb5d4ae7c4",
+      "excerpt_sha256": "f4d896e81e7e38675d39eb89b83a7ced727489d264c32eaa6ea68d8e04888720",
+      "own_archive_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/reference/kontakt-classic.html",
+      "authority": "SPEC_ONLY_NOT_NATIVE"
+    }
+  ],
+  "future_validation": {
+    "owner": "Root central owner following batch after separately authorized new composition",
+    "authorization_granted": false,
+    "extra_matrix": false,
+    "append_to_current_parent_batch": false,
+    "package_targets": [
+      {
+        "package": "sampler-ksp",
+        "target": "rpn",
+        "exact_harness_names": [
+          "compiled_raw_endpoints_and_distinct_symbolic_callbacks_without_heap",
+          "nested_named_callback_constants_reach_pcm_through_public_compiler",
+          "payloads_survive_waits_and_other_messages_not_global_host_slots",
+          "same_kind_overlapping_waits_keep_independent_raw_payloads",
+          "later_stage_order_no_self_echo_and_monotonic_rebroadcast",
+          "invalid_address_or_value_faults_sender_without_any_delivery",
+          "insufficient_fanout_capacity_is_explicit_and_atomic",
+          "repeated_messages_fill_waiting_arena_then_fault_without_unbounded_queue",
+          "initialization_remains_warn_noop_without_runtime_replay",
+          "ordinary_controller_and_numeric_pgs_keep_their_existing_routes",
+          "sender_and_receiver_waits_stay_in_retained_generation_and_part",
+          "receiver_generated_note_retains_physical_origin_and_performance",
+          "midi_and_nka_job_ids_wait_completion_and_instances_remain_independent",
+          "parameter_binding_rejects_invalid_stage_and_duplicate_kind_and_resets_with_programs",
+          "compiled_three_module_rotation_requires_clear_and_exact_receiver_rebind",
+          "receiver_only_stage_setters_preserve_identical_schema_or_require_explicit_rebind",
+          "parameter_binding_rejects_unrelated_ordinary_and_mixed_receiver_owners",
+          "preempted_sender_defers_receivers_fifo_and_preserves_numeric_pgs_controller_order",
+          "preempted_sender_defers_receivers_fifo_without_notification_interleaving",
+          "deferred_fanout_pressure_faults_atomically_without_heap_or_partial_second_message",
+          "sparse_physical_slots_nonzero_sender_and_separate_notes_keep_private_payloads"
+        ]
+      }
+    ],
+    "focused_existing_neighbors": [
+      {
+        "package": "sampler-core",
+        "target": "controller_stages",
+        "harness_name": "empty_module_positions_preserve_projection_and_only_reserve_actual_callbacks",
+        "inventory_name": "sampler-core::controller_stages::empty_module_positions_preserve_projection_and_only_reserve_actual_callbacks",
+        "path": "crates/sampler-core/tests/controller_stages.rs",
+        "file_sha256": "4961c82e7bef3b6d5582a6f3299f260d88f727864627a036efbbfafea6134533",
+        "status": "NOT_RUN_NOT_COMPILED_IN_THIS_ROUND",
+        "selection": "Focused existing gates for root to include in one combined cycle; not an additional matrix/authorization",
+        "source_sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+        "blob": "fb78a7ec96019820cccdc121a7a60553ebb8e90e"
+      },
+      {
+        "package": "sampler-core",
+        "target": "controller_stages",
+        "harness_name": "deferred_forwarding_owns_downstream_capacity_and_original_projection_generation",
+        "inventory_name": "sampler-core::controller_stages::deferred_forwarding_owns_downstream_capacity_and_original_projection_generation",
+        "path": "crates/sampler-core/tests/controller_stages.rs",
+        "file_sha256": "4961c82e7bef3b6d5582a6f3299f260d88f727864627a036efbbfafea6134533",
+        "status": "NOT_RUN_NOT_COMPILED_IN_THIS_ROUND",
+        "selection": "Focused existing gates for root to include in one combined cycle; not an additional matrix/authorization",
+        "source_sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+        "blob": "fb78a7ec96019820cccdc121a7a60553ebb8e90e"
+      },
+      {
+        "package": "sampler-core",
+        "target": "controller_stages",
+        "harness_name": "unused_stage_reservations_return_on_consumption_completion_fault_and_cancellation",
+        "inventory_name": "sampler-core::controller_stages::unused_stage_reservations_return_on_consumption_completion_fault_and_cancellation",
+        "path": "crates/sampler-core/tests/controller_stages.rs",
+        "file_sha256": "4961c82e7bef3b6d5582a6f3299f260d88f727864627a036efbbfafea6134533",
+        "status": "NOT_RUN_NOT_COMPILED_IN_THIS_ROUND",
+        "selection": "Focused existing gates for root to include in one combined cycle; not an additional matrix/authorization",
+        "source_sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+        "blob": "fb78a7ec96019820cccdc121a7a60553ebb8e90e"
+      },
+      {
+        "package": "sampler-core",
+        "target": "note_stages",
+        "harness_name": "pending_note_reservations_return_on_suppression_fault_cancel_and_hard_stop",
+        "inventory_name": "sampler-core::note_stages::pending_note_reservations_return_on_suppression_fault_cancel_and_hard_stop",
+        "path": "crates/sampler-core/tests/note_stages.rs",
+        "file_sha256": "4da95ded5ce5c496badb30202a4034fbba97a8379e216f59fb882218eb97b7da",
+        "status": "NOT_RUN_NOT_COMPILED_IN_THIS_ROUND",
+        "selection": "Focused existing gates for root to include in one combined cycle; not an additional matrix/authorization",
+        "source_sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+        "blob": "ab638c51cdce86cf8aa6be49aa24c0aff0a1ddba"
+      },
+      {
+        "package": "sampler-core",
+        "target": "plans",
+        "harness_name": "old_callbacks_and_tails_keep_their_plan_across_sample_exact_adoption",
+        "inventory_name": "sampler-core::plans::old_callbacks_and_tails_keep_their_plan_across_sample_exact_adoption",
+        "path": "crates/sampler-core/tests/plans.rs",
+        "file_sha256": "f49a3b8a4ce5d714103b72041730d009cd9777bdf886ff3f7cc20282299c69a4",
+        "status": "NOT_RUN_NOT_COMPILED_IN_THIS_ROUND",
+        "selection": "Focused existing gates for root to include in one combined cycle; not an additional matrix/authorization",
+        "source_sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+        "blob": "2c73e1ffa9b4f2c979e6b8aa201a54ce876b1588"
+      },
+      {
+        "package": "sampler-core",
+        "target": "plans",
+        "harness_name": "control_thread_destroys_returned_assets_while_audio_only_moves_ownership",
+        "inventory_name": "sampler-core::plans::control_thread_destroys_returned_assets_while_audio_only_moves_ownership",
+        "path": "crates/sampler-core/tests/plans.rs",
+        "file_sha256": "f49a3b8a4ce5d714103b72041730d009cd9777bdf886ff3f7cc20282299c69a4",
+        "status": "NOT_RUN_NOT_COMPILED_IN_THIS_ROUND",
+        "selection": "Focused existing gates for root to include in one combined cycle; not an additional matrix/authorization",
+        "source_sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+        "blob": "2c73e1ffa9b4f2c979e6b8aa201a54ce876b1588"
+      },
+      {
+        "package": "sampler-core",
+        "target": "realtime",
+        "harness_name": "ownership_pressure_render_and_retirement_do_no_heap_work",
+        "inventory_name": "sampler-core::realtime::ownership_pressure_render_and_retirement_do_no_heap_work",
+        "path": "crates/sampler-core/tests/realtime.rs",
+        "file_sha256": "a797c3d529f93452cf4e7939f0dd5f383c13573e1adc1f4e28eea51d98b6a50d",
+        "status": "NOT_RUN_NOT_COMPILED_IN_THIS_ROUND",
+        "selection": "Focused existing gates for root to include in one combined cycle; not an additional matrix/authorization",
+        "source_sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+        "blob": "47e528711345fd31db5d4aeb142980f8086dc288"
+      },
+      {
+        "package": "sampler-ksp",
+        "target": "stages",
+        "harness_name": "generated_notes_and_controllers_cross_the_same_module_boundaries",
+        "inventory_name": "sampler-ksp::stages::generated_notes_and_controllers_cross_the_same_module_boundaries",
+        "path": "crates/sampler-ksp/tests/stages.rs",
+        "file_sha256": "311cf795f3a304ca94f491232502318d6706afa35583837831d90a1a57e9e9ec",
+        "status": "NOT_RUN_NOT_COMPILED_IN_THIS_ROUND",
+        "selection": "Focused existing gates for root to include in one combined cycle; not an additional matrix/authorization",
+        "source_sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+        "blob": "e1adbc960246c84ed14c1ec97f1a5c6453aac05d"
+      },
+      {
+        "package": "sampler-ksp",
+        "target": "callback_fuel",
+        "harness_name": "finite_ksp_loops_survive_long_waits_at_the_host_block_budget",
+        "inventory_name": "sampler-ksp::callback_fuel::finite_ksp_loops_survive_long_waits_at_the_host_block_budget",
+        "path": "crates/sampler-ksp/tests/callback_fuel.rs",
+        "file_sha256": "811670e2dad126420ec260601977e49b4d5c1c848af3ec708d62fc593c386cec",
+        "status": "NOT_RUN_NOT_COMPILED_IN_THIS_ROUND",
+        "selection": "Focused existing gates for root to include in one combined cycle; not an additional matrix/authorization",
+        "source_sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+        "blob": "7ce3b497d8a7973d57669f9deec7d6d0ef4fb34e"
+      },
+      {
+        "package": "sampler-ksp",
+        "target": "midi_object",
+        "harness_name": "async_buffer_reset_completion_is_slot_owned_retained_across_wait_and_cancelled_on_panic",
+        "inventory_name": "sampler-ksp::midi_object::async_buffer_reset_completion_is_slot_owned_retained_across_wait_and_cancelled_on_panic",
+        "path": "crates/sampler-ksp/tests/midi_object.rs",
+        "file_sha256": "71aad106ac257293c6bb5c8adaf6abc77dcd043f565804d846e8b4a770e13759",
+        "status": "NOT_RUN_NOT_COMPILED_IN_THIS_ROUND",
+        "selection": "Focused existing gates for root to include in one combined cycle; not an additional matrix/authorization",
+        "source_sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+        "blob": "4e14d5e1e0cb0f1d813efb0ba53ff23a51d31398"
+      },
+      {
+        "package": "sampler-ksp",
+        "target": "midi_object",
+        "harness_name": "wait_async_waits_for_midi_jobs_and_invalid_ids_continue_in_init_and_runtime",
+        "inventory_name": "sampler-ksp::midi_object::wait_async_waits_for_midi_jobs_and_invalid_ids_continue_in_init_and_runtime",
+        "path": "crates/sampler-ksp/tests/midi_object.rs",
+        "file_sha256": "71aad106ac257293c6bb5c8adaf6abc77dcd043f565804d846e8b4a770e13759",
+        "status": "NOT_RUN_NOT_COMPILED_IN_THIS_ROUND",
+        "selection": "Focused existing gates for root to include in one combined cycle; not an additional matrix/authorization",
+        "source_sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+        "blob": "4e14d5e1e0cb0f1d813efb0ba53ff23a51d31398"
+      },
+      {
+        "package": "sampler-ksp",
+        "target": "array_file",
+        "harness_name": "nka_runtime_load_preserves_non_ui_identity_and_resumes_wait_after_one_completion_without_heap",
+        "inventory_name": "sampler-ksp::array_file::nka_runtime_load_preserves_non_ui_identity_and_resumes_wait_after_one_completion_without_heap",
+        "path": "crates/sampler-ksp/tests/array_file.rs",
+        "file_sha256": "71b240b9ce10acd010f9c5cd44de3b84d6406ca0d90b2a009a16a2ece97a7666",
+        "status": "NOT_RUN_NOT_COMPILED_IN_THIS_ROUND",
+        "selection": "Focused existing gates for root to include in one combined cycle; not an additional matrix/authorization",
+        "source_sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+        "blob": "c5ca5eb0e114ba8f4b2927a19586745339c32907"
+      },
+      {
+        "package": "sampler-ksp",
+        "target": "array_file",
+        "harness_name": "nka_job_queue_is_bounded_and_midi_ids_remain_distinct_and_complete_independently",
+        "inventory_name": "sampler-ksp::array_file::nka_job_queue_is_bounded_and_midi_ids_remain_distinct_and_complete_independently",
+        "path": "crates/sampler-ksp/tests/array_file.rs",
+        "file_sha256": "71b240b9ce10acd010f9c5cd44de3b84d6406ca0d90b2a009a16a2ece97a7666",
+        "status": "NOT_RUN_NOT_COMPILED_IN_THIS_ROUND",
+        "selection": "Focused existing gates for root to include in one combined cycle; not an additional matrix/authorization",
+        "source_sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+        "blob": "c5ca5eb0e114ba8f4b2927a19586745339c32907"
+      },
+      {
+        "package": "sampler-ksp",
+        "target": "array_file",
+        "harness_name": "nka_completion_is_plan_scoped_across_adoption_and_never_edits_the_replacement",
+        "inventory_name": "sampler-ksp::array_file::nka_completion_is_plan_scoped_across_adoption_and_never_edits_the_replacement",
+        "path": "crates/sampler-ksp/tests/array_file.rs",
+        "file_sha256": "71b240b9ce10acd010f9c5cd44de3b84d6406ca0d90b2a009a16a2ece97a7666",
+        "status": "NOT_RUN_NOT_COMPILED_IN_THIS_ROUND",
+        "selection": "Focused existing gates for root to include in one combined cycle; not an additional matrix/authorization",
+        "source_sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+        "blob": "c5ca5eb0e114ba8f4b2927a19586745339c32907"
+      }
+    ],
+    "numeric_pgs_neighbor": "ordinary_controller_and_numeric_pgs_keep_their_existing_routes and preempted_sender_defers_receivers_fifo_and_preserves_numeric_pgs_controller_order in same rpn target",
+    "fresh_source_review_required_first": true,
+    "scope": "Selection inputs only; no per-lane run, extra matrix, current-batch append or build authorization."
+  },
+  "native": "UNKNOWN",
+  "compile": "NOT_COMPILED_NOT_TYPECHECKED",
+  "test_status": "ALL_21_NOT_RUN_NOT_COMPILED",
+  "heap": "UNOBSERVED",
+  "pcm": "UNOBSERVED",
+  "cpu_and_ram_below_both": "UNACHIEVED",
+  "evidence_root": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot",
+  "limitations": [
+    "Python selected source model is not Runtime execution",
+    "rustfmt is syntax-only, not type/borrow/KSP compilation",
+    "Inherited REA target_unavailable is not a fresh operation",
+    "Native scheduler/order/echo/timing UNKNOWN; neither12345 nor13425 is vendor ordering proof",
+    "Root must assign NEW independent successor review and separately obtain combined execution authorization",
+    "No current-batch append, extra matrix or per-lane build",
+    "Overall polished complete lower CPU AND RAM goal remains UNACHIEVED"
+  ],
+  "prohibited_operations_performed": false,
+  "stop_source_work": true
+}

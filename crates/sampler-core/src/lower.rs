@@ -653,6 +653,17 @@ pub fn lower_with(
     }
     engine_bindings.extend(native.into_values());
     for alias in &instrument.source_indices.control_aliases {
+        let routes = &instrument.source_indices.route_controls;
+        if routes
+            .iter()
+            .any(|b| b.1 == alias.control || b.2 == alias.control)
+            && !routes.iter().any(|b| {
+                (b.1 == alias.control || b.2 == alias.control)
+                    && instrument.zones.iter().any(|z| z.routes.contains(&b.0))
+            })
+        {
+            continue;
+        }
         let control = &instrument.controls[alias.control.0];
         let ir::ControlValue::Continuous { min, max, .. } = control.value else {
             return Err(unsupported(&control.key, Feature::Controls));
@@ -667,9 +678,13 @@ pub fn lower_with(
                 generic: alias.address.generic,
             },
             control: ir_control_id(&control.key),
-            law: crate::EngineParameterLaw::Linear {
-                low: min,
-                high: max,
+            law: if alias.parameter == "ENGINE_PAR_INTMOD_BYPASS" {
+                crate::EngineParameterLaw::Switch
+            } else {
+                crate::EngineParameterLaw::Linear {
+                    low: min,
+                    high: max,
+                }
             },
         });
     }
@@ -1380,6 +1395,21 @@ impl Lowering<'_> {
                 lag: self.frames(route.smoothing),
                 scale,
             };
+            if let Some(binding) = self
+                .ir
+                .source_indices
+                .route_controls
+                .iter()
+                .find(|binding| binding.0 == route_ref)
+            {
+                program.controls.push((
+                    program.routes.len(),
+                    [
+                        ir_control_id(&self.ir.controls[binding.1.0].key),
+                        ir_control_id(&self.ir.controls[binding.2.0].key),
+                    ],
+                ));
+            }
             program.routes.push(native);
             for index in processor_targets.into_iter().skip(1) {
                 let target = crate::ParameterAddress {

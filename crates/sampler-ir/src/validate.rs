@@ -497,6 +497,23 @@ impl Instrument {
                 Depth::Normalized(value) => check.finite(value, "depth")?,
             }
         }
+        for (i, &(route, depth, bypass)) in self.source_indices.route_controls.iter().enumerate() {
+            check.owner = format!("source route controls {i}");
+            check.exists(Reference::Route(route.0))?;
+            for control in [depth, bypass] {
+                check.exists(Reference::Control(control.0))?;
+            }
+            if self.source_indices.route_controls[..i]
+                .iter()
+                .any(|b| b.0 == route)
+            {
+                return Err(ValidationError::OutOfRange {
+                    owner: check.owner.clone(),
+                    field: "duplicate source route controls",
+                    value: i as f64,
+                });
+            }
+        }
         for (i, binding) in self.processor_controls.iter().enumerate() {
             check.owner = format!("processor control {i}");
             if self.processor_controls[..i].iter().any(|p| {
@@ -528,10 +545,15 @@ impl Instrument {
             if !matches!(
                 self.controls[alias.control.0].value,
                 crate::ControlValue::Continuous { .. }
-            ) || !self
+            ) || !(self
                 .processor_controls
                 .iter()
                 .any(|binding| binding.control == alias.control)
+                || self
+                    .source_indices
+                    .route_controls
+                    .iter()
+                    .any(|b| b.1 == alias.control || b.2 == alias.control))
             {
                 return Err(ValidationError::OutOfRange {
                     owner: check.owner.clone(),
