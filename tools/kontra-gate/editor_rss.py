@@ -47,6 +47,15 @@ def summarize(rows, phases=PHASES, viewport=(1180, 760)):
     return result
 
 
+# Matches plugin::ui_activity::FIELDS version 1. These are observations, not readiness.
+UI_ACTIVITY_VERSION = 1
+UI_ACTIVITY_FIELDS = ('readback_calls', 'readback_busy', 'readback_cells', 'readback_changes',
+                      'publication_calls', 'publication_changes', 'face_new', 'face_updates',
+                      'face_noops', 'native_materializations', 'native_widgets', 'typed_calls',
+                      'meter_calls', 'watch_calls', 'readout_polls', 'readout_changes',
+                      'watch_wakes', 'animation_wakes', 'pending_wakes', 'worker_ticks')
+
+
 def summarize_cycles(rows, viewport):
     result = summarize(rows, CYCLE_PHASES, viewport)
     counters = ('wall_ns', 'cpu_ns', 'audio_thread_cpu_ns', 'audio_blocks', 'audio_busy_ns', 'audio_callback_overruns')
@@ -57,10 +66,18 @@ def summarize_cycles(rows, viewport):
             for k in ('busy_ns', 'span_ns', 'voices', 'audible', 'dropouts', 'memory',
                       'freed', 'disk', 'underruns', 'loaded', 'blocks')), 'missing or invalid plugin perf counters'
         assert perf['loaded'] > 0, 'plugin reports no loaded parts'
+        activity = row.get('ui_activity')
+        assert (type(activity) is dict and type(activity.get('version')) is int
+                and activity['version'] == UI_ACTIVITY_VERSION), 'missing or unsupported UI activity version'
+        counts = activity.get('counts')
+        assert (type(counts) is list and len(counts) == len(UI_ACTIVITY_FIELDS)
+                and all(type(value) is int and 0 <= value <= 2**64-1 for value in counts)), 'invalid UI activity counters'
         assert type(row['threads']) is int and row['threads'] > 0, 'invalid live thread count'
     for previous, current in zip(rows, rows[1:]):
         assert current['wall_ns'] > previous['wall_ns'], 'nonmonotonic sample clock'
         assert all(current[k] >= previous[k] for k in counters[1:]), 'reset lifecycle counter'
+        assert all(after >= before for before, after in zip(previous['ui_activity']['counts'],
+                                                            current['ui_activity']['counts'])), 'reset UI activity counter'
     for index, phase in enumerate(CYCLE_PHASES):
         first, last = rows[index*10], rows[index*10+9]
         span = last['wall_ns']-first['wall_ns']
@@ -69,7 +86,10 @@ def summarize_cycles(rows, viewport):
                              audio_callback_busy_percent=100*(last['audio_busy_ns']-first['audio_busy_ns'])/span,
                              audio_thread_cpu_percent=100*(last['audio_thread_cpu_ns']-first['audio_thread_cpu_ns'])/span,
                              live_threads_max=max(r['threads'] for r in rows[index*10:index*10+10]),
-                             audio_callback_overruns=last['audio_callback_overruns']-first['audio_callback_overruns'])
+                             audio_callback_overruns=last['audio_callback_overruns']-first['audio_callback_overruns'],
+                             ui_activity_delta=dict(zip(UI_ACTIVITY_FIELDS, (
+                                 after-before for before, after in zip(first['ui_activity']['counts'],
+                                                                       last['ui_activity']['counts'])))))
     return dict(phases=result,
                 open_growth_mib=result['open_4']['rss_mib']-result['open_1']['rss_mib'],
                 closed_growth_mib=result['closed_4']['rss_mib']-result['closed_1']['rss_mib'])
