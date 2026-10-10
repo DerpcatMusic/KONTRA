@@ -64,9 +64,17 @@ impl Face {
     }
 }
 
-/// The interface the rack opens on: the script with the most controls.
-fn main_face(faces: &[ir::Interface]) -> Option<usize> {
-    (0..faces.len()).filter(|&n| !faces[n].widgets.is_empty()).max_by_key(|&n| faces[n].widgets.len())
+fn view_available(face: &ir::Interface, patch: Option<&ir::InterfacePatch>) -> bool {
+    patch.and_then(|p| p.performance).unwrap_or(face.performance)
+        || patch.and_then(|p| p.native_ui.as_ref()).unwrap_or(&face.native_ui).is_some()
+        || patch.and_then(|p| p.widget_count).unwrap_or(face.widgets.len()) > 0
+}
+
+/// Authored performance and native requests win, in source declaration order.
+fn main_face(faces: &[ir::Interface], updates: &[ir::InterfacePatch]) -> Option<usize> {
+    (0..faces.len()).find(|&n| updates.get(n).and_then(|p| p.performance).unwrap_or(faces[n].performance))
+        .or_else(|| (0..faces.len()).find(|&n| updates.get(n).and_then(|p| p.native_ui.as_ref()).unwrap_or(&faces[n].native_ui).is_some()))
+        .or_else(|| (0..faces.len()).find(|&n| view_available(&faces[n], updates.get(n))))
 }
 
 /// One resolver for saved v1 overrides and the global preference.
@@ -79,7 +87,10 @@ fn resolve_mode(part: &crate::plugin::Part, settings: &crate::library::Settings)
     match part.view { 1 => ViewMode::Original, 2 => ViewMode::Kontra, 3 => ViewMode::Vectorized, _ => settings.instrument_views.get(&part.path).copied().unwrap_or(settings.view_mode) }
 }
 
-pub fn available(cx: &Cx, slot: usize) -> bool { main_face(&cx.view.parts[slot].interfaces).is_some() }
+pub fn available(cx: &Cx, slot: usize) -> bool {
+    let part = &cx.view.parts[slot];
+    main_face(&part.interfaces, &part.updates).is_some()
+}
 
 pub(super) fn scale_to_fit(room: Size, authored: Size, setting: f32) -> f64 {
     if setting.is_finite() && setting > 0. { return f64::from(setting); }
@@ -107,7 +118,7 @@ pub(super) fn interaction(edit: &ir_view::Edit) -> sampler_core::WidgetInteracti
 /// `slot`'s library interface, when its scripts declare one.
 fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<El> {
     let from = cx.view.parts.get(slot)?.interfaces.clone();
-    let main = main_face(&from)?;
+    let main = main_face(&from, &cx.view.parts[slot].updates)?;
     let path = std::path::PathBuf::from(&cx.selection.parts[slot].path);
     let published = &cx.view.parts[slot];
     let generation = published.generation;
@@ -119,7 +130,7 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
     }
     let face = cx.state.faces.get_mut(&slot)?;
     if !Arc::ptr_eq(&face.from, &from) || face.revision != published.ui_revision {
-        if !from.get(face.shown).is_some_and(|f| !f.widgets.is_empty()) { face.shown = main; }
+        if from.get(face.shown).is_none() { face.shown = main; }
         let patch = published.updates.get(face.shown).cloned().unwrap_or_default();
         if !Arc::ptr_eq(&face.from, &from) {
             face.face = ir_view::resolved(&from[face.shown]);
@@ -133,7 +144,7 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
 
     // Which script's view, when several have one, and how it is drawn.
     let mut bar: Vec<El> = lead.into_iter().collect();
-    let with: Vec<usize> = (0..from.len()).filter(|&n| !from[n].widgets.is_empty()).collect();
+    let with: Vec<usize> = (0..from.len()).filter(|&n| n == face.shown || view_available(&from[n], published.updates.get(n))).collect();
     let mut pick = None;
     if with.len() > 1 {
         let tabs: Vec<El> = with
@@ -399,6 +410,34 @@ pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn performance_and_native_intent_choose_sources_without_widget_heuristics() {
+        let emit = |source| sampler_ksp::compile(source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap().ui(&|_| None).unwrap();
+        let auxiliary = emit("on init declare ui_label $a(1,1) declare ui_label $b(1,1) end on");
+        let native = emit("on init load_native_ui(\"entry\") end on");
+        let performance = emit("on init make_perfview set_ui_color(0123456H) end on");
+        assert!(native.widgets.is_empty() && !native.performance);
+        assert!(performance.widgets.is_empty() && performance.pages[0].background.color.is_some());
+        let mut faces = vec![auxiliary, native, performance];
+        assert_eq!(main_face(&faces, &[]), Some(2));
+        faces[2].performance = false;
+        assert_eq!(main_face(&faces, &[]), Some(1));
+        faces[1].native_ui = None;
+        let mut larger = faces[0].clone();
+        larger.widgets.push(larger.widgets[0].clone());
+        faces.push(larger);
+        assert_eq!(main_face(&faces, &[]), Some(0), "fallback keeps declaration order too");
+        let mut patches = vec![ir::InterfacePatch::default(); faces.len()];
+        patches[2].performance = Some(true);
+        assert_eq!(main_face(&faces, &patches), Some(2));
+        patches[0].performance = Some(true);
+        assert_eq!(main_face(&faces, &patches), Some(0), "declaration order breaks ties");
+        patches[0].performance = Some(false);
+        patches[2].performance = Some(false);
+        patches[1].native_ui = Some(Some(ir::NativeUi { entry: "updated".into() }));
+        assert_eq!(main_face(&faces, &patches), Some(1));
+    }
 
     #[test]
     fn publication_preserves_presentation_script_page_and_values() {
