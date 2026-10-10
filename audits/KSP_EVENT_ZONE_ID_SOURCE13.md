@@ -23,7 +23,7 @@ The same section says active events only and to run the voice first, e.g. `wait(
 
 The bounded scan is O(owned linked families + voices), no added storage or allocation. It can cost more than the former first-match return; this is not CPU/RAM acceptance evidence.
 
-## Authored production-path witnesses
+## Authored production-path and instruction witnesses
 
 `sampler-ksp`, integration target `event_zone`, seven `#[test]` functions:
 
@@ -33,21 +33,23 @@ The bounded scan is O(owned linked families + voices), no added storage or alloc
 4. `generated_alias_queries_its_own_zone_not_the_suppressed_parent`: child9001, parent-1, creating slot0; no cross-event voice scan.
 5. `highest_zone_spans_attack_and_release_families_while_tails_remain`: low-ID release family at list head does not hide high-ID attack tail.
 6. `stolen_fading_voices_do_not_supply_a_zone`: old live alias with stolen fade returns -1 despite linked physical voice.
-7. `unknown_and_cached_group_selectors_keep_the_existing_zero_fallback`: unknown, signed32 overflow, cached ALL/marks retain0; no fanout expansion.
+7. `wrapped_negative_literal_is_an_invalid_alias_and_selectors_keep_zero_fallback`: the KSP decimal literal `2147483648` wraps to `-2147483648` and exercises the invalid-alias zero fallback; unknown aliases and cached ALL/marks also retain0. It is not an i64 conversion-failure witness.
 
 All seven wrap runtime actions in the existing `support::without_heap`. These are authored checks, not executed evidence.
+
+`sampler-core/event_ids::event_zone_instructions_reject_out_of_range_i64_aliases_and_read_live_alias` sends `i64::from(i32::MAX) + 1` and `i64::from(i32::MIN) - 1` through both `ReadEventInfo` and computed `ReadEventParameter` selector10. Both out-of-range aliases expect0; a live alias resolved in the active plan reads physical zone9001 through both instructions. This is authored source coverage, NOT_RUN / NOT_COMPILED.
 
 ## Affected historical witnesses and alias neighbors
 
 - `sampler-ksp/strings::event_zone_id_is_nonzero_only_while_the_event_sounds` (274-288): executable assertions unchanged (nonzero live zone, unknown99999 ->0, channel0). Only misleading documentation corrected. Historical source3665 PASS is not transferred to this patch.
 - `sampler-ksp/selection_contract::dynamic_event_parameter_reads_match_static_fields_and_pending_projection` (717-743): expected index10 changes0 -> -1 because no stage forwarding occurred; all other selectors unchanged, especially PLAY_POS index12=0. NOT_RUN here.
 - All historical KSP test `get_event_par` occurrences were searched. No other literal ZoneId/selector10 assertion exists; other dynamic scalar fixtures read custom/source parameters. MIDI-object getters are a separate namespace.
-- Alias guards in `sampler-core/event_ids` remain byte-identical: `source_ids_are_not_host_ids_and_never_alias_reused_note_slots_or_panic`, `source_id_lookup_requires_the_original_generation_and_runtime`, `source_id_exhaustion_is_explicit_and_does_not_exhaust_native_note_ownership`, `generated_result_aliases_are_preflighted_and_do_not_pin_completed_children`. Inspected source only, NOT_RUN here.
+- The four existing alias guard tests in `sampler-core/event_ids` remain byte-identical: `source_ids_are_not_host_ids_and_never_alias_reused_note_slots_or_panic`, `source_id_lookup_requires_the_original_generation_and_runtime`, `source_id_exhaustion_is_explicit_and_does_not_exhaust_native_note_ownership`, `generated_result_aliases_are_preflighted_and_do_not_pin_completed_children`. The separate boundary witness above is appended to that target. Source inspected only; NOT_RUN / NOT_COMPILED.
 
 Related historical identities: `built-in-variables-and-constants:events-and-midi:symbol:$EVENT_PAR_ZONE_ID`, `...:symbol:$EVENT_ID`, `...:symbol:$EVENT_PAR_SOURCE`; `event-commands:get_event_par--:command:get_event_par`; `event-commands:get_event_ids--:command:get_event_ids`. This patch changes only the zone consumer, not their other contracts or published statuses.
 
 ## Validation and exclusions
 
-`python3 tools/check_event_zone_source13.py`: exact narrow source diff and untouched producer/alias/lifecycle pins; 13 independent Python model cases; authored witness inventory. PASS means Python source/model checks only.
+`python3 tools/check_event_zone_source13.py` passed on the original candidate: exact narrow source diff and untouched producer/alias/lifecycle pins, 13 independent Python model cases, authored witness inventory. The checker was updated for this successor but not rerun.
 
-Installed `rustfmt`1.99.0 parses the edited Rust; new witness formatting checked. Syntax success is not typechecking. `git diff --check` clean. No cargo/rustc/clippy/build/tests/native applications/banks/perf/host/install/publish were run. No nested work. No target/wrapper or manifest/official-ledger edits. No automatic merge. Root frozen checkout untouched; private branch only.
+`rustfmt --check` reported formatting diffs only in two pre-existing portions of `crates/sampler-core/tests/event_ids.rs` (around lines 89 and 485); it reported none in the appended boundary witness or renamed KSP witness. No cargo/rustc/clippy/build/tests/native applications/banks/perf/host/install/publish were run for this successor. No nested work. No target/wrapper or manifest/official-ledger edits. No automatic merge. Root frozen checkout untouched; private branch only.
