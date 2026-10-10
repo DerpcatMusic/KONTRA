@@ -908,7 +908,7 @@ fn widget_conflux_placement_and_capture() {
     let face = ir_view::resolved(loaded.interfaces.iter().max_by_key(|f|f.widgets.len()).unwrap());
     assert_eq!(face.widgets.len(),378,"unresolved handles must not publish widgets");
     let all_knobs = face.widgets.iter().filter(|w| matches!(w.kind,ir::Kind::Knob{..})).count();
-    let origins = face.widgets.iter().enumerate().filter(|(n,w)| face.visible(ir::WidgetRef(*n)) && matches!(w.kind,ir::Kind::Knob{..}|ir::Kind::Slider{..}) && face.page_rect(ir::WidgetRef(*n)).x == 0 && face.page_rect(ir::WidgetRef(*n)).y == 0).count();
+    let origins = face.widgets.iter().enumerate().filter(|(n,w)| face.visible(ir::WidgetRef(*n)) && matches!(w.kind,ir::Kind::Knob{..}|ir::Kind::Slider{..}) && face.page_rect(ir::WidgetRef(*n)).x == 0. && face.page_rect(ir::WidgetRef(*n)).y == 0.).count();
     println!("CONFLUX_PLACEMENT widgets={} all_knobs={all_knobs} visible_knobs_at_origin={origins}",face.widgets.len());
     assert_eq!(origins,0);
     let mut count = [0;3];
