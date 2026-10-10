@@ -10,6 +10,7 @@ use sampler_core::{
     ScriptInstanceId, ScriptResources,
 };
 use std::collections::{BTreeMap, BTreeSet};
+mod array_file;
 mod ast;
 mod builtins;
 mod diag;
@@ -1171,6 +1172,7 @@ fn compile_initialized_inner(
         budget: limits.instructions,
         limit: limits.instructions,
         services: Vec::new(),
+        array_files: BTreeSet::new(),
         coverage: BTreeMap::new(),
         warnings: Vec::new(),
         scratch: 0,
@@ -1448,7 +1450,17 @@ fn compile_initialized_inner(
     }
     // ponytail: fixed headroom for runtime-created keys; size from usage if exceeded.
     let store_capacity = store.len() + 4096;
+    let array_files = unit
+        .array_files
+        .iter()
+        .map(|&v| array_file::array(&hir, v))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| error("NKA typed array exceeds explicit-path service limits"))?;
+    if !array_files.is_empty() && texts.iter().any(|s| s.len() > sampler_core::TEXT_CAPACITY) {
+        return Err(error("NKA script initial text exceeds runtime capacity"));
+    }
     let resources = ScriptResources {
+        array_files,
         texts,
         text_properties,
         store,
