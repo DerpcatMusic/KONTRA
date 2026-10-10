@@ -1,0 +1,32 @@
+Source: 21bcdde3b545c20571ed3475b5285e6575119fce
+No native/plugin/library process executed. Subprocess paths mocked.
+
+RED pre-fix missing-selected-source main boundary (normal Python):
+F
+======================================================================
+FAIL: test_v2_requires_selected_source (__main__.Admission.test_v2_requires_selected_source)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/derpcat/.t3/worktrees/KONTAKTO/pi-perf-acceptance-next/tools/check-cpu-audit-receipts.py", line 59, in test_v2_requires_selected_source
+    self.reject_before_export()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/derpcat/.t3/worktrees/KONTAKTO/pi-perf-acceptance-next/tools/check-cpu-audit-receipts.py", line 52, in reject_before_export
+    with self.assertRaises(AssertionError):
+         ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+AssertionError: AssertionError not raised
+
+----------------------------------------------------------------------
+Ran 1 test in 0.002s
+
+FAILED (failures=1)
+{"status": "MEASURED", "scope": "loaded-native-clap-callback-plus-main-output-peak-scan", "scenario": "strings", "cache_condition": "unforced-source-cache", "profiled": false, "cli_sha256": "99bb88401742848e032fd6f51709415fb6be169a72d2e5d7fc44289255160d3c", "host_source_sha256": "76c617e404794084ee08ca7a8497c58f1810a684718efd5f2595ce5cf0d16a85", "driver_sha256": "675ac5c9320cfb633e95d2034f9e62a97f1f7ccf3a8b89b2f80fdf63ff861977", "render_heap_calls": null, "event_heap_calls": null, "voices_scope": "plugin diagnostics; no per-voice normalization"}
+
+GREEN source21b full fixtures (normal Python):
+......
+----------------------------------------------------------------------
+Ran 6 tests in 0.013s
+
+OK
+
+Existing schedule/live-host/contention/editor-cycle/audit-load checks PASS; JSON/source/native receipt hash consistency PASS; Python AST and git diff checks PASS.
+Rust/host/onset/CPU/RAM/native performance checks NOT RUN. Current618 combined receipt PENDING.
