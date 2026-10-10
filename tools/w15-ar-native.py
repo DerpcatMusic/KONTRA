@@ -126,9 +126,10 @@ class Oracle:
         frames = len(samples[0])
         assert 0 < channels <= 2 and frames <= 1024
         self.put(0xc, channels, 'I')
-        self.put(0x6c, int(ramp), 'B')
-        for flag in [0x2cd, 0x2f5, 0x31d]:
-            self.put(flag, int(ramp), 'B')
+        if ramp is not None:
+            self.put(0x6c, int(ramp), 'B')
+            for flag in [0x2cd, 0x2f5, 0x31d]:
+                self.put(flag, int(ramp), 'B')
         for ch, data in enumerate(samples):
             self.put(8 * ch, self.IO + 0x1000 + ch * 0x2000, 'Q', self.IO)
             self.put(0x100 + 8 * ch, self.IO + 0x2000 + ch * 0x2000, 'Q', self.IO)
