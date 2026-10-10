@@ -10,6 +10,19 @@ fn host(script: &str) -> ScriptHost {
 }
 
 #[test]
+fn performance_intent_reaches_ir_from_init_and_widget_callbacks() {
+    assert!(!host("Panel{'Auxiliary'}").interface().performance);
+    let face = host("makePerformanceView(); setBackground('wallpaper.png')").interface();
+    assert!(face.performance);
+    assert!(face.widgets.is_empty());
+    assert!(face.pages[0].background.image.is_some());
+    let mut h = host("local k=Knob{'K',0,0,1}; k.changed=function() makePerformanceView() end");
+    assert!(!h.interface().performance);
+    h.set_control(control_id(1, 0), 0.5).unwrap();
+    assert!(h.interface().performance);
+}
+
+#[test]
 fn geometry_and_typed_edits_reach_the_script_and_parameters() {
     let mut h = host(
         r#"
