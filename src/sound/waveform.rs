@@ -277,6 +277,207 @@ mod tests {
     use super::*;
 
     #[test]
+    fn native_ncw_stream_bins_match_resident_decode() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wave.ncw");
+        let pcm: Vec<i32> = (0..73200 * 2).map(|i| (i * 37 % 40000) - 20000).collect();
+        let bytes = ncw::encode_pcm(
+            &pcm,
+            ncw::PcmSpec {
+                channels: 2,
+                bits_per_sample: 16,
+                sample_rate: 48000,
+            },
+            ncw::StereoMode::Direct,
+        )
+        .unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        let decoded = sampler_kontakt::decode(&bytes).unwrap();
+        let resident = Source {
+            pcm: Pcm::new(decoded.rate, decoded.frames.into_boxed_slice()).unwrap(),
+            stream: None,
+        };
+        let stream = sampler_kontakt::Samples::new(dir.path())
+            .source(&path)
+            .unwrap();
+        let streamed = Source {
+            pcm: Pcm::streamed(48000, 73200).unwrap(),
+            stream: Some(Arc::new(stream)),
+        };
+        let stop = AtomicBool::new(false);
+        for (bins, range) in [
+            (512, None),
+            (4096, Some((4095, 8193))),
+            (4096, Some((8976, 9020))),
+        ] {
+            let a = envelope(&resident, bins, range, &stop).unwrap();
+            let b = envelope(&streamed, bins, range, &stop).unwrap();
+            assert_eq!(a.peaks, b.peaks);
+            assert_eq!(a.range, b.range);
+            assert_eq!(a.frames, b.frames);
+        }
+    }
+
+    #[test]
+    #[ignore = "owned Conflux NCW stage witness; RAM only, run after quiet"]
+    fn screenshot_ncw_source_decode_and_worker_peaks_stage_witness() {
+        use sampler_kontakt::AssetSource;
+        let root = std::path::Path::new(
+            "/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]",
+        );
+        assert!(root.exists(), "owned screenshot library is required");
+        for name in [
+            "AI002_WmTSylRlsFrDyn2RR1_1_Fah_50.ncw",
+            "AI002_WmTSylAtkClsDyn1RR1_1_Fah_50.ncw",
+        ] {
+            let mut samples = sampler_kontakt::Samples::new(root);
+            let location = samples
+                .resolve(&root.join("Instruments"), name)
+                .expect("source resolution")
+                .expect("source member");
+            let source = samples.source(&location).expect("source descriptor");
+            let mut reader = source.open().expect("native NCW open");
+            let count = reader.frames();
+            let rate = reader.rate();
+            assert_eq!((count, rate), (73200, 48000), "screenshot header identity");
+            let mut raw = vec![[0.; 2]; count];
+            for (i, chunk) in raw.chunks_mut(4096).enumerate() {
+                reader.read(i * 4096, chunk).expect("native NCW decode");
+            }
+            let nonzero = raw.iter().flatten().filter(|v| v.abs() > 0.00001).count();
+            let expected = Source {
+                pcm: Pcm::new(rate, raw.into_boxed_slice()).unwrap(),
+                stream: None,
+            };
+            let actual = Source {
+                pcm: Pcm::streamed(rate, count).unwrap(),
+                stream: Some(Arc::new(source)),
+            };
+            let stop = AtomicBool::new(false);
+            let a = envelope(&expected, 512, None, &stop).expect("resident reference peaks");
+            let prepared = sampler_core::Prepared::new(48000, vec![], vec![], 1).unwrap();
+            let limits = sampler_core::Limits::for_plan(&prepared, 1, 1);
+            let runtime = sampler_core::Runtime::new(prepared, limits).unwrap();
+            let (wake, ready) = std::sync::mpsc::channel();
+            let provider =
+                Provider::start(runtime.active_plan(), [(3, actual)].into(), move || {
+                    wake.send(()).ok();
+                })
+                .unwrap();
+            assert!(matches!(provider.state(3, 512, None), State::Loading));
+            ready
+                .recv_timeout(std::time::Duration::from_secs(15))
+                .expect("worker publication");
+            let State::Ready(b) = provider.state(3, 512, None) else {
+                panic!("worker peaks unavailable");
+            };
+            assert!(
+                a.peaks == b.peaks,
+                "worker peaks equal actual native NCW decode without exporting samples"
+            );
+            let max = b
+                .peaks
+                .iter()
+                .flat_map(|(a, b)| [a.abs(), b.abs()])
+                .fold(0f32, f32::max);
+            let varied = b.peaks.iter().filter(|(a, b)| b - a > 0.00001).count();
+            eprintln!(
+                "NCW_STAGE frames={count} rate={rate} nonzero={nonzero} bins={} max={max:.9} varied={varied} resolve=1 decode=1 publication=1",
+                b.peaks.len()
+            );
+            assert!(
+                nonzero > 0 && max > 0.00001 && varied > 0,
+                "a nonzero screenshot source must publish visible-amplitude peaks"
+            );
+        }
+    }
+
+    #[test]
+    fn worker_errors_are_terminal_and_idle_cache_work_is_bounded() {
+        let prepared = sampler_core::Prepared::new(48000, vec![], vec![], 1).unwrap();
+        let limits = sampler_core::Limits::for_plan(&prepared, 1, 1);
+        let runtime = sampler_core::Runtime::new(prepared, limits).unwrap();
+        let (wake, ready) = std::sync::mpsc::channel();
+        let source = Source {
+            pcm: Pcm::streamed(48000, 73200).unwrap(),
+            stream: None,
+        };
+        let provider = Provider::start(runtime.active_plan(), [(3, source)].into(), move || {
+            wake.send(()).ok();
+        })
+        .unwrap();
+        assert!(matches!(
+            provider.state(0, 512, None),
+            State::Unavailable(Stage::Source)
+        ));
+        assert!(matches!(
+            provider.state(9, 512, None),
+            State::Unavailable(Stage::Source)
+        ));
+        assert!(matches!(
+            provider.state(3, 512, Some((3, 3))),
+            State::Unavailable(Stage::Range)
+        ));
+        for bins in 1..=65 {
+            assert!(matches!(provider.state(3, bins, None), State::Loading));
+            ready
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap();
+            assert!(matches!(
+                provider.state(3, bins, None),
+                State::Unavailable(Stage::Open)
+            ));
+        }
+        for _ in 0..1000 {
+            assert!(matches!(
+                provider.state(3, 65, None),
+                State::Unavailable(Stage::Open)
+            ));
+        }
+        let cache = provider.cache.lock_unpoisoned();
+        assert_eq!(cache.values.len(), 64);
+        assert_eq!(cache.order.len(), 64);
+        assert!(cache.pending.is_empty());
+        assert!(
+            ready.try_recv().is_err(),
+            "idle/failure reads must not restart decode or wake the UI"
+        );
+    }
+
+    #[test]
+    fn source_open_header_decode_and_range_failures_keep_their_stage() {
+        struct Broken(u8);
+        impl sampler_kontakt::AssetSource for Broken {
+            fn open(&self) -> std::io::Result<sampler_kontakt::SampleReader> {
+                if self.0 == 0 {
+                    return Err(std::io::ErrorKind::NotFound.into());
+                }
+                Ok(sampler_kontakt::SampleReader::custom(
+                    48000,
+                    if self.0 == 1 { 7 } else { 8 },
+                    |_, _| Err(std::io::ErrorKind::InvalidData.into()),
+                ))
+            }
+        }
+        let stop = AtomicBool::new(false);
+        for (code, stage) in [(0, Stage::Open), (1, Stage::Header), (2, Stage::Decode)] {
+            let source = Source {
+                pcm: Pcm::streamed(48000, 8).unwrap(),
+                stream: Some(Arc::new(Broken(code))),
+            };
+            assert!(matches!(envelope(&source, 4, None, &stop), Err(actual) if actual == stage));
+        }
+        let source = Source {
+            pcm: Pcm::new(48000, vec![[0.; 2]; 8].into_boxed_slice()).unwrap(),
+            stream: None,
+        };
+        assert!(matches!(
+            envelope(&source, 4, Some((0, 9)), &stop),
+            Err(Stage::Range)
+        ));
+    }
+
+    #[test]
     fn aliased_zones_reuse_one_asset_envelope() {
         let pcm = Pcm::new(8, vec![[-0.8, 0.6]; 8].into_boxed_slice()).unwrap();
         let source = Source { pcm, stream: None };
