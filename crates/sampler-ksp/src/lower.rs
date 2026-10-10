@@ -68,6 +68,11 @@ fn pgs_key(g: &Gen, args: &[Arg], index: Key) -> [Key; 4] {
 
 /// `[LISTENER_TAG, signal, 0, LISTENER_TAG]`: a listener's `set_listener` value.
 pub const LISTENER_TAG: i32 = i32::MIN + 2;
+pub const MENU_TAG: i32 = i32::MIN + 3;
+pub const MENU_VALUE: i32 = 0;
+pub const MENU_VISIBLE: i32 = 1;
+pub const MENU_COUNT: i32 = 2;
+pub const MENU_TEXT: i32 = 3;
 
 /// Host value slot for a system variable; see `Runtime::set_host_value`.
 pub fn host_slot(sys: SysVar) -> Option<u8> {
@@ -157,6 +162,7 @@ impl<'h> Unit<'h> {
             CallbackKind::UiControl(var) => self.hir.vars[var.0 as usize]
                 .ui
                 .map(|ui| b::FIRST_UI_ID + ui as i32),
+            CallbackKind::UiControls => Some(0),
             _ => None,
         };
         let cb = callback_type(kind);
@@ -368,7 +374,6 @@ impl<'h> Unit<'h> {
 
     /// A timer listener's driver: every period, start `body` (the listener
     /// program for `signal`); a zero period polls every 10 ms until set.
-    // ponytail: $NI_SIGNAL_TIMER_BEAT assumes 120 BPM, like wait_ticks.
     pub fn listener_driver(&mut self, signal: i32, body: usize, span: Span) -> Result<Program> {
         let mut g = Gen {
             u: self,
@@ -403,7 +408,11 @@ impl<'h> Unit<'h> {
         let idle = g.jump_if_zero(period)?;
         let period = if signal == b::signal::TIMER_BEAT {
             // Signals per quarter note to microseconds.
-            g.set(t, 500_000)?;
+            g.emit(I::Op(Op::ReadHost {
+                local: t,
+                slot: host_slot(SysVar::DurationQuarter).unwrap(),
+            }))?;
+            g.clamp(t, 1, i32::MAX)?;
             g.emit(I::Binary32 {
                 lhs: t,
                 rhs: period,
@@ -453,6 +462,8 @@ fn callback_type(kind: CallbackKind) -> i32 {
         CallbackKind::Controller => b::cb::CONTROLLER,
         CallbackKind::PolyAt => b::cb::POLY_AT,
         CallbackKind::UiControl(_) => b::cb::UI_CONTROL,
+        CallbackKind::UiControls => b::cb::UI_CONTROLS,
+        CallbackKind::UiUpdate => b::cb::UI_UPDATE,
         CallbackKind::Listener => b::cb::LISTENER,
         CallbackKind::PgsChanged => b::cb::PGS_CHANGED,
         CallbackKind::PersistenceChanged => b::cb::PERSISTENCE_CHANGED,
@@ -1246,6 +1257,22 @@ impl Gen<'_, '_> {
                 self.cover(Builtin::FsGetFilename, Coverage::Native);
                 return Ok(());
             }
+            ExprKind::Builtin(Builtin::GetMenuItemStr, args) => {
+                let text = self.scratch();
+                self.menu_key(args, free, MENU_TEXT)?;
+                self.emit(I::Op(Op::TextProperty {
+                    key: free,
+                    text,
+                    write: false,
+                }))?;
+                self.emit(I::Op(Op::TextAppend {
+                    text: dst,
+                    part: TextPart::Text(text),
+                }))?;
+                self.tdepth -= 1;
+                self.cover(Builtin::GetMenuItemStr, Coverage::Native);
+                return Ok(());
+            }
             ExprKind::Builtin(Builtin::GetControlParStr, args) => {
                 self.property_key(args, free, None)?;
                 self.emit(I::Op(Op::TextProperty {
@@ -1382,6 +1409,20 @@ impl Gen<'_, '_> {
     }
 
     fn emit_effect(&mut self, builtin: Builtin, args: &[Arg], dst: u16) -> Result<()> {
+        let (count, text) = self.effect_args(builtin, args, dst)?;
+        self.emit_prepared_effect(builtin, dst, count, text)?;
+        if text.is_some() {
+            self.tdepth -= 1;
+        }
+        Ok(())
+    }
+
+    fn effect_args(
+        &mut self,
+        builtin: Builtin,
+        args: &[Arg],
+        dst: u16,
+    ) -> Result<(u8, Option<TextRef>)> {
         let mut count = 0u16;
         let mut text = None;
         for (i, a) in args.iter().enumerate() {
@@ -1431,17 +1472,23 @@ impl Gen<'_, '_> {
             }
             count += 1;
         }
+        Ok((count as u8, text))
+    }
+
+    fn emit_prepared_effect(
+        &mut self,
+        builtin: Builtin,
+        args: u16,
+        count: u8,
+        text: Option<TextRef>,
+    ) -> Result<()> {
         let service = self.u.service(builtin);
         self.emit(I::Op(Op::Emit {
             service,
-            args: dst,
-            count: count as u8,
+            args,
+            count,
             text,
-        }))?;
-        if text.is_some() {
-            self.tdepth -= 1;
-        }
-        Ok(())
+        }))
     }
 
     /// Keyed store access: key registers dst+1..=dst+4, value in dst.
@@ -1638,12 +1685,13 @@ impl Gen<'_, '_> {
             }
             Signbit => {
                 self.arg(args, 0, dst)?;
-                self.set(t, real_bits(0.0))?;
-                self.emit(I::Op(Op::CompareReal {
+                self.set(t, 0)?;
+                // Real locals carry IEEE bits, so signed integer comparison reads the sign bit.
+                self.emit(I::CompareLocal {
                     lhs: dst,
                     rhs: t,
                     comparison: Cmp::Less,
-                }))?;
+                })?;
                 true
             }
             Sgn => {
@@ -1730,6 +1778,24 @@ impl Gen<'_, '_> {
                     rhs: t,
                     operation: RealBinary::Power,
                 }))?;
+                true
+            }
+            Msb | Lsb => {
+                self.arg(args, 0, dst)?;
+                if builtin == Msb {
+                    self.set(t, 7)?;
+                    self.emit(I::Op(Op::Integer {
+                        lhs: dst,
+                        rhs: t,
+                        operation: IntegerExtra::ShiftRight,
+                    }))?;
+                }
+                self.set(t, 127)?;
+                self.emit(I::Binary32 {
+                    lhs: dst,
+                    rhs: t,
+                    operation: IB::And,
+                })?;
                 true
             }
             MsToTicks | TicksToMs => {
@@ -1911,6 +1977,15 @@ impl Gen<'_, '_> {
                 self.emit(I::SuppressController)?;
                 true
             }
+            IgnoreController => {
+                self.cover(builtin, Coverage::Native);
+                self.report(
+                    None,
+                    crate::diag::Kind::Warning,
+                    "ignore_controller outside on controller is ignored".into(),
+                );
+                return Ok(());
+            }
             SetController => {
                 self.arg(args, 0, dst)?;
                 self.arg(args, 1, t)?;
@@ -1927,20 +2002,13 @@ impl Gen<'_, '_> {
             Wait | WaitTicks => {
                 self.arg(args, 0, dst)?;
                 if builtin == WaitTicks {
-                    // ponytail: fixed 120 BPM tick length (520 us).
-                    self.set(t, 520)?;
-                    self.emit(I::Binary32 {
-                        lhs: dst,
-                        rhs: t,
-                        operation: IB::Multiply,
-                    })?;
+                    self.emit(I::Op(Op::TimeConversion {
+                        local: dst,
+                        ticks_to_micros: true,
+                    }))?;
                 }
                 self.forward()?;
                 self.emit(I::WaitMicros { local: dst })?;
-                if builtin == WaitTicks {
-                    self.cover(builtin, Coverage::Approximate);
-                    return Ok(());
-                }
                 true
             }
             FindGroup | GetGroupIdx if self.const_text(args, 0).is_none() => {
@@ -2091,7 +2159,7 @@ impl Gen<'_, '_> {
                 if matches!(
                     self.const_int(args, 1),
                     Some(b::event_par::CUSTOM | b::event_par::MOD_VALUE_ID)
-                ) && !self.selects_many(builtin, args, 0) =>
+                ) && (builtin == SetEventParArr || !self.selects_many(builtin, args, 0)) =>
             {
                 let custom = self.const_int(args, 1) == Some(b::event_par::CUSTOM);
                 let id = reg(dst, 2)?;
@@ -2336,17 +2404,57 @@ impl Gen<'_, '_> {
                 self.cover(builtin, Coverage::Native);
                 return self.set(dst, 0);
             }
-            SetControlParStr | SetControlParStrArr => {
-                self.property_key(
-                    args,
-                    dst,
-                    if builtin == SetControlParStrArr {
-                        Some(3)
-                    } else {
-                        None
-                    },
-                )?;
-                if let Some(text) = self.text_arg(args, 2, dst + 4)? {
+            HidePart | SetKnobDefval | SetKnobUnit | SetTableStepsShown => {
+                let par = match builtin {
+                    HidePart => b::CONTROL_PAR_HIDE,
+                    SetKnobDefval => b::CONTROL_PAR_DEFAULT_VALUE,
+                    SetKnobUnit => b::CONTROL_PAR_UNIT,
+                    _ => crate::eval::TABLE_STEPS_SHOWN,
+                };
+                self.ui_arg(args, 0, dst)?;
+                self.arg(args, 1, dst + 1)?;
+                let service = self.u.service(builtin);
+                self.emit(I::Op(Op::Emit {
+                    service,
+                    args: dst,
+                    count: 2,
+                    text: None,
+                }))?;
+                self.set(dst + 2, 0)?;
+                self.emit(I::Binary32 {
+                    lhs: dst + 2,
+                    rhs: dst,
+                    operation: IB::Add,
+                })?;
+                self.set(dst + 3, i64::from(par))?;
+                self.set(dst + 4, i64::from(PROPERTY_TAG))?;
+                self.set(dst + 5, i64::from(PROPERTY_TAG))?;
+                self.emit(I::Op(Op::Store {
+                    key: dst + 2,
+                    local: dst + 1,
+                    write: true,
+                }))?;
+                self.cover(builtin, host_service(builtin));
+                return Ok(());
+            }
+            SetText | SetKnobLabel | SetControlHelp => {
+                let par = match builtin {
+                    SetText => b::CONTROL_PAR_TEXT,
+                    SetKnobLabel => b::CONTROL_PAR_LABEL,
+                    _ => b::CONTROL_PAR_HELP,
+                };
+                self.ui_arg(args, 0, dst)?;
+                if let Some(text) = self.text_arg(args, 1, dst + 5)? {
+                    let service = self.u.service(builtin);
+                    self.emit(I::Op(Op::Emit {
+                        service,
+                        args: dst,
+                        count: 1,
+                        text: Some(text),
+                    }))?;
+                    self.set(dst + 1, i64::from(par))?;
+                    self.set(dst + 2, i64::from(PROPERTY_TAG))?;
+                    self.set(dst + 3, i64::from(PROPERTY_TAG))?;
                     self.emit(I::Op(Op::TextProperty {
                         key: dst,
                         text,
@@ -2354,12 +2462,183 @@ impl Gen<'_, '_> {
                     }))?;
                     self.tdepth -= 1;
                 }
-                return self.effect(builtin, args, dst);
+                self.cover(builtin, host_service(builtin));
+                return Ok(());
+            }
+            SetControlParStr | SetControlParStrArr => {
+                let (count, text) = self.effect_args(builtin, args, dst)?;
+                self.copy_i32(dst, dst + 4)?;
+                self.copy_i32(dst + 1, dst + 5)?;
+                if builtin == SetControlParStrArr {
+                    self.copy_i32(dst + 2, dst + 6)?;
+                } else {
+                    self.set(dst + 6, i64::from(PROPERTY_TAG))?;
+                }
+                self.set(dst + 7, i64::from(PROPERTY_TAG))?;
+                if let Some(text) = text {
+                    self.emit(I::Op(Op::TextProperty {
+                        key: dst + 4,
+                        text,
+                        write: true,
+                    }))?;
+                }
+                self.emit_prepared_effect(builtin, dst, count, text)?;
+                if text.is_some() {
+                    self.tdepth -= 1;
+                }
+                self.cover(builtin, host_service(builtin));
+                return Ok(());
             }
             SetControlPar | SetControlParReal | SetControlParArr | SetControlParRealArr => {
                 return self.set_control_par(builtin, args, dst);
             }
-            GetControlPar | GetControlParArr => return self.get_control_par(builtin, args, dst),
+            GetControlPar | GetControlParArr | GetControlParReal | GetControlParRealArr => {
+                return self.get_control_par(builtin, args, dst);
+            }
+            GetMenuItemValue | GetMenuItemVisibility | GetNumMenuItems => {
+                let field = match builtin {
+                    GetMenuItemValue => MENU_VALUE,
+                    GetMenuItemVisibility => MENU_VISIBLE,
+                    _ => MENU_COUNT,
+                };
+                self.menu_key(args, dst + 1, field)?;
+                self.set(dst, 0)?;
+                self.emit(I::Op(Op::Store {
+                    key: dst + 1,
+                    local: dst,
+                    write: false,
+                }))?;
+                true
+            }
+            GetZonePar => {
+                let selectors =
+                    ["$ZONE_PAR_GROUP", "$ZONE_PAR_LOW_KEY", "$ZONE_PAR_HIGH_KEY"].map(|name| {
+                        self.u
+                            .hir
+                            .symbols
+                            .iter()
+                            .position(|symbol| &**symbol == name)
+                            .map(|index| OPAQUE_BASE + index as i32)
+                    });
+                if let Some(parameter) = self.const_int(args, 1)
+                    && !selectors.contains(&Some(parameter))
+                {
+                    self.ignore(builtin, "zone parameter is not implemented; result 0");
+                    return self.set(dst, 0);
+                }
+                self.arg(args, 0, dst)?;
+                self.arg(args, 1, dst + 1)?;
+                self.emit(I::Op(Op::ZoneParameter {
+                    zone: dst,
+                    parameter: dst + 1,
+                    selectors: selectors.map(|selector| selector.unwrap_or(0)),
+                    present: selectors
+                        .iter()
+                        .enumerate()
+                        .fold(0, |mask, (index, selector)| {
+                            mask | (u8::from(selector.is_some()) << index)
+                        }),
+                    local: dst,
+                }))?;
+                true
+            }
+            AddMenuItem => {
+                let (count, text) = self.effect_args(builtin, args, dst)?;
+                self.copy_i32(dst, dst + 2)?;
+                self.set(dst + 3, i64::from(MENU_COUNT))?;
+                self.set(dst + 4, -1)?;
+                self.set(dst + 5, i64::from(MENU_TAG))?;
+                let missing = self.menu_missing(dst + 2, MENU_COUNT, MENU_COUNT)?;
+                self.set(dst + 6, 0)?;
+                self.emit(I::Op(Op::Store {
+                    key: dst + 2,
+                    local: dst + 6,
+                    write: false,
+                }))?;
+                self.copy_i32(dst + 6, dst + 4)?;
+                self.set(dst + 3, i64::from(MENU_TEXT))?;
+                if let Some(text) = text {
+                    self.emit(I::Op(Op::TextProperty {
+                        key: dst + 2,
+                        text,
+                        write: true,
+                    }))?;
+                }
+                self.set(dst + 3, i64::from(MENU_VALUE))?;
+                self.emit(I::Op(Op::Store {
+                    key: dst + 2,
+                    local: dst + 1,
+                    write: true,
+                }))?;
+                self.set(dst + 3, i64::from(MENU_VISIBLE))?;
+                self.set(dst + 7, 1)?;
+                self.emit(I::Op(Op::Store {
+                    key: dst + 2,
+                    local: dst + 7,
+                    write: true,
+                }))?;
+                self.emit(I::Binary32 {
+                    lhs: dst + 6,
+                    rhs: dst + 7,
+                    operation: IB::Add,
+                })?;
+                self.set(dst + 3, i64::from(MENU_COUNT))?;
+                self.set(dst + 4, -1)?;
+                self.emit(I::Op(Op::Store {
+                    key: dst + 2,
+                    local: dst + 6,
+                    write: true,
+                }))?;
+                self.land(missing);
+                self.emit_prepared_effect(builtin, dst, count, text)?;
+                if text.is_some() {
+                    self.tdepth -= 1;
+                }
+                self.cover(builtin, host_service(builtin));
+                return Ok(());
+            }
+            SetMenuItemStr | SetMenuItemValue | SetMenuItemVisibility => {
+                let (count, text) = self.effect_args(builtin, args, dst)?;
+                let field = match builtin {
+                    SetMenuItemStr => MENU_TEXT,
+                    SetMenuItemValue => MENU_VALUE,
+                    _ => MENU_VISIBLE,
+                };
+                self.copy_i32(dst, dst + 3)?;
+                self.set(dst + 4, i64::from(field))?;
+                self.copy_i32(dst + 1, dst + 5)?;
+                self.set(dst + 6, i64::from(MENU_TAG))?;
+                let missing = self.menu_missing(dst + 3, field, MENU_VALUE)?;
+                if let Some(text) = text {
+                    self.emit(I::Op(Op::TextProperty {
+                        key: dst + 3,
+                        text,
+                        write: true,
+                    }))?;
+                } else {
+                    self.copy_i32(dst + 2, dst + 7)?;
+                    if builtin == SetMenuItemVisibility {
+                        self.set(dst + 8, 0)?;
+                        self.emit(I::CompareLocal {
+                            lhs: dst + 7,
+                            rhs: dst + 8,
+                            comparison: Cmp::NotEqual,
+                        })?;
+                    }
+                    self.emit(I::Op(Op::Store {
+                        key: dst + 3,
+                        local: dst + 7,
+                        write: true,
+                    }))?;
+                }
+                self.land(missing);
+                self.emit_prepared_effect(builtin, dst, count, text)?;
+                if text.is_some() {
+                    self.tdepth -= 1;
+                }
+                self.cover(builtin, host_service(builtin));
+                return Ok(());
+            }
             PgsSetKeyVal => {
                 // Shared by every script slot; on pgs_changed runs in each.
                 self.arg(args, 2, dst)?;
@@ -2403,58 +2682,14 @@ impl Gen<'_, '_> {
                 true
             }
             // Instrument, presentation and logging services the engine does not own.
-            ChangeVol
-            | ChangeTune
-            | ChangePan
-            | FadeIn
-            | FadeOut
-            | SetEventPar
-            | SetEventParArr
-            | SetNoteController
-            | SetRpn
-            | SetNrpn
-            | WillNeverTerminate
-            | RedirectOutput
-            | SetZonePar
-            | SetVoiceLimit
-            | LoadIrSample
-            | AttachLevelMeter
-            | SetText
-            | AddTextLine
-            | SetKnobLabel
-            | SetKnobUnit
-            | SetKnobDefval
-            | SetControlHelp
-            | MoveControl
-            | MoveControlPx
-            | HidePart
-            | AddMenuItem
-            | SetMenuItemStr
-            | SetMenuItemVisibility
-            | SetMenuItemValue
-            | SetTableStepsShown
-            | SetSkinOffset
-            | SetUiColor
-            | AttachZone
-            | SetUiWfProperty
-            | FsNavigate
-            | SetNksNavName
-            | SetNksNavPar
-            | ResetNksNav
-            | SetKeyColor
-            | SetKeyName
-            | SetKeyType
-            | SetKeyPressed
-            | SetKeyPressedSupport
-            | SetKeyrange
-            | RemoveKeyrange
-            | Message
-            | LoadArray
-            | SaveArray
-            | LoadArrayStr
-            | SaveArrayStr
-            | PgsSetStrKeyVal
-            | PgsCreateKey
+            ChangeVol | ChangeTune | ChangePan | FadeIn | FadeOut | SetEventPar
+            | SetEventParArr | SetNoteController | SetRpn | SetNrpn | WillNeverTerminate
+            | RedirectOutput | SetZonePar | SetVoiceLimit | LoadIrSample | AttachLevelMeter
+            | AddTextLine | MoveControl | MoveControlPx | SetSkinOffset | SetUiColor
+            | AttachZone | SetUiWfProperty | FsNavigate | SetNksNavName | SetNksNavPar
+            | ResetNksNav | SetKeyColor | SetKeyName | SetKeyType | SetKeyPressed
+            | SetKeyPressedSupport | SetKeyrange | RemoveKeyrange | Message | LoadArray
+            | SaveArray | LoadArrayStr | SaveArrayStr | PgsSetStrKeyVal | PgsCreateKey
             | PgsCreateStrKey => {
                 self.effect(builtin, args, dst)?;
                 if builtin.sig().ret != b::Ret::Void {
@@ -3280,6 +3515,45 @@ impl Gen<'_, '_> {
         Ok(())
     }
 
+    fn ui_arg(&mut self, args: &[Arg], index: usize, dst: u16) -> Result<()> {
+        if let Some(ui) = self.ui_index(args, index) {
+            self.set(dst, i64::from(b::FIRST_UI_ID + ui as i32))
+        } else {
+            self.arg(args, index, dst)
+        }
+    }
+
+    fn menu_key(&mut self, args: &[Arg], base: u16, field: i32) -> Result<()> {
+        self.ui_arg(args, 0, base)?;
+        self.set(base + 1, i64::from(field))?;
+        if field == MENU_COUNT {
+            self.set(base + 2, -1)?;
+        } else {
+            self.arg(args, 1, base + 2)?;
+        }
+        self.set(base + 3, i64::from(MENU_TAG))
+    }
+
+    fn menu_missing(&mut self, base: u16, field: i32, presence: i32) -> Result<usize> {
+        // Menu values are signed-32; the 64-bit sentinel cannot be an item value.
+        self.set(base + 1, i64::from(presence))?;
+        self.set(base + 4, i64::MIN)?;
+        self.emit(I::Op(Op::Store {
+            key: base,
+            local: base + 4,
+            write: false,
+        }))?;
+        self.set(base + 5, i64::MIN)?;
+        self.emit(I::CompareLocal {
+            lhs: base + 4,
+            rhs: base + 5,
+            comparison: Cmp::NotEqual,
+        })?;
+        let missing = self.jump_if_zero(base + 4)?;
+        self.set(base + 1, i64::from(field))?;
+        Ok(missing)
+    }
+
     fn property_key(&mut self, args: &[Arg], base: u16, index: Option<usize>) -> Result<()> {
         self.arg(args, 0, base)?;
         self.arg(args, 1, base + 1)?;
@@ -3299,7 +3573,32 @@ impl Gen<'_, '_> {
         }
         Ok(())
     }
+    fn copy_i32(&mut self, from: u16, to: u16) -> Result<()> {
+        self.set(to, 0)?;
+        self.emit(I::Binary32 {
+            lhs: to,
+            rhs: from,
+            operation: IB::Add,
+        })
+    }
+
     fn indexed_value(&mut self, args: &[Arg], dst: u16, write: bool) -> Result<()> {
+        self.arg(args, 0, dst + 1)?;
+        self.arg(args, if write { 3 } else { 2 }, dst + 2)?;
+        if write {
+            self.arg(args, 2, dst)?;
+        }
+        self.indexed_value_at(dst + 1, dst + 2, dst, dst + 3, write)
+    }
+
+    fn indexed_value_at(
+        &mut self,
+        id: u16,
+        index: u16,
+        value: u16,
+        scratch: u16,
+        write: bool,
+    ) -> Result<()> {
         let widgets: Vec<_> = self
             .u
             .hir
@@ -3312,87 +3611,110 @@ impl Gen<'_, '_> {
             })
             .collect();
         for (ui, array) in widgets {
-            self.arg(args, 0, dst + 1)?;
-            self.set(dst + 2, i64::from(b::FIRST_UI_ID + ui as i32))?;
+            self.copy_i32(id, scratch)?;
+            self.set(scratch + 1, i64::from(b::FIRST_UI_ID + ui as i32))?;
             self.emit(I::CompareLocal {
-                lhs: dst + 1,
-                rhs: dst + 2,
+                lhs: scratch,
+                rhs: scratch + 1,
                 comparison: Cmp::Equal,
             })?;
-            let skip = self.jump_if_zero(dst + 1)?;
-            self.arg(args, if write { 3 } else { 2 }, dst + 1)?;
-            if write {
-                self.arg(args, 2, dst)?;
-                self.emit(I::WriteScriptArray {
+            let skip = self.jump_if_zero(scratch)?;
+            self.emit(if write {
+                I::WriteScriptArray {
                     array,
-                    index: dst + 1,
-                    local: dst,
-                })?;
+                    index,
+                    local: value,
+                }
             } else {
-                self.emit(I::ReadScriptArray {
+                I::ReadScriptArray {
                     array,
-                    index: dst + 1,
-                    local: dst,
-                })?;
-            }
+                    index,
+                    local: value,
+                }
+            })?;
             self.land(skip);
         }
         Ok(())
     }
+
     fn set_control_par(&mut self, builtin: Builtin, args: &[Arg], dst: u16) -> Result<()> {
         let par = self.const_int(args, 1);
-        if matches!(
+        // State and host transport consume the same evaluated arguments.
+        let (count, text) = self.effect_args(builtin, args, dst)?;
+        let array = matches!(
             builtin,
             Builtin::SetControlParArr | Builtin::SetControlParRealArr
-        ) {
-            if par == Some(b::CONTROL_PAR_VALUE) {
-                self.indexed_value(args, dst, true)?;
-            }
-            self.property_key(args, dst + 1, Some(3))?;
-            self.arg(args, 2, dst)?;
-            self.emit(I::Op(Op::Store {
-                key: dst + 1,
-                local: dst,
-                write: true,
-            }))?;
-            return self.effect(builtin, args, dst);
-        }
-        if par == Some(b::CONTROL_PAR_VALUE) && builtin != Builtin::SetControlParArr {
-            if let Some(ui) = self.ui_index(args, 0) {
-                let var = self.u.hir.uis[ui as usize].var;
-                if self.var(var).len.is_none() && self.var(var).ty != Ty::Str {
-                    self.arg(args, 2, dst)?;
-                    self.write_var(var, dst, true)?;
-                    self.cover(builtin, Coverage::Native);
-                    return Ok(());
+        );
+        if par == Some(b::CONTROL_PAR_VALUE) {
+            if array {
+                self.indexed_value_at(dst, dst + 3, dst + 2, dst + 8, true)?;
+            } else {
+                if let Some(ui) = self.ui_index(args, 0) {
+                    let var = self.u.hir.uis[ui as usize].var;
+                    if self.var(var).len.is_none() && self.var(var).ty != Ty::Str {
+                        self.write_var(var, dst + 2, true)?;
+                        self.cover(builtin, Coverage::Native);
+                        return Ok(());
+                    }
                 }
+                self.copy_i32(dst, dst + 8)?;
+                self.set(dst + 9, i64::from(b::FIRST_UI_ID))?;
+                self.emit(I::Binary32 {
+                    lhs: dst + 8,
+                    rhs: dst + 9,
+                    operation: IB::Subtract,
+                })?;
+                self.emit(I::Op(Op::ControlAt {
+                    index: dst + 8,
+                    local: dst + 2,
+                    write: true,
+                }))?;
             }
-            // Dynamic id: write the control if the id names one, and the mirror.
-            let (index, value) = (reg(dst, 5)?, reg(dst, 6)?);
-            self.arg(args, 0, index)?;
-            self.set(value, i64::from(b::FIRST_UI_ID))?;
-            self.emit(I::Binary32 {
-                lhs: index,
-                rhs: value,
-                operation: IB::Subtract,
-            })?;
-            self.arg(args, 2, value)?;
-            self.emit(I::Op(Op::ControlAt {
-                index,
-                local: value,
-                write: true,
-            }))?;
         }
-        // Property mirror (read back by get_control_par), then the host request.
-        self.arg(args, 2, dst)?;
-        self.store(args, PROPERTY_KEY, dst, true)?;
-        self.effect(builtin, args, dst)
+        self.copy_i32(dst, dst + 4)?;
+        self.copy_i32(dst + 1, dst + 5)?;
+        if array {
+            self.copy_i32(dst + 3, dst + 6)?;
+        } else {
+            self.set(dst + 6, i64::from(PROPERTY_TAG))?;
+        }
+        self.set(dst + 7, i64::from(PROPERTY_TAG))?;
+        self.emit(I::Op(Op::Store {
+            key: dst + 4,
+            local: dst + 2,
+            write: true,
+        }))?;
+        self.emit_prepared_effect(builtin, dst, count, text)?;
+        self.cover(builtin, host_service(builtin));
+        Ok(())
     }
 
     fn get_control_par(&mut self, builtin: Builtin, args: &[Arg], dst: u16) -> Result<()> {
         let par = self.const_int(args, 1);
         let ui = self.ui_index(args, 0);
-        if builtin == Builtin::GetControlParArr {
+        if matches!(
+            builtin,
+            Builtin::GetControlParReal | Builtin::GetControlParRealArr
+        ) && par != Some(b::CONTROL_PAR_VALUE)
+        {
+            self.ignore(builtin, "real control metadata is unavailable; result 0.0");
+            return self.set(dst, real_bits(0.0));
+        }
+        if builtin == Builtin::GetControlPar {
+            if par == b::control_par("$CONTROL_PAR_NUM_ITEMS") {
+                return self.builtin(Builtin::GetNumMenuItems, args, dst, self.span);
+            }
+            if par == b::control_par("$CONTROL_PAR_SELECTED_ITEM_IDX") {
+                self.set(dst, -1)?;
+                self.menu_selected_index(args, dst)?;
+                self.cover(builtin, Coverage::Native);
+                return Ok(());
+            }
+        }
+        if matches!(
+            builtin,
+            Builtin::GetControlParArr | Builtin::GetControlParRealArr
+        ) {
             self.property_key(args, dst + 1, Some(2))?;
             self.set(dst, 0)?;
             self.emit(I::Op(Op::Store {
@@ -3411,9 +3733,19 @@ impl Gen<'_, '_> {
             let var = self.u.hir.uis[ui as usize].var;
             match par {
                 Some(b::CONTROL_PAR_VALUE)
-                    if self.var(var).len.is_none() && self.var(var).ty == Ty::Int =>
+                    if self.var(var).len.is_none()
+                        && self.var(var).ty
+                            == if builtin == Builtin::GetControlParReal {
+                                Ty::Real
+                            } else {
+                                Ty::Int
+                            } =>
                 {
-                    return self.load(var, dst);
+                    self.load(var, dst)?;
+                    if self.u.hir.uis[ui as usize].kind == WidgetKind::Menu {
+                        self.menu_selected_index(args, dst)?;
+                    }
+                    return Ok(());
                 }
                 Some(b::CONTROL_PAR_TYPE) => {
                     let kind = self.u.hir.uis[ui as usize].kind.control_type();
@@ -3458,6 +3790,93 @@ impl Gen<'_, '_> {
                     write: false,
                 }))?;
             }
+        }
+        if par == Some(b::CONTROL_PAR_VALUE) && builtin == Builtin::GetControlPar {
+            self.menu_selected_index(args, dst)?;
+        }
+        Ok(())
+    }
+
+    fn menu_selected_index(&mut self, args: &[Arg], dst: u16) -> Result<()> {
+        let scratch = reg(dst, 8)?;
+        let menus: Vec<_> = self
+            .u
+            .hir
+            .uis
+            .iter()
+            .enumerate()
+            .filter(|(_, ui)| ui.kind == WidgetKind::Menu)
+            .map(|(index, ui)| (b::FIRST_UI_ID + index as i32, ui.var))
+            .collect();
+        let mut exits = Vec::new();
+        for (id, var) in menus {
+            self.arg(args, 0, dst + 1)?;
+            self.set(scratch, i64::from(id))?;
+            self.emit(I::CompareLocal {
+                lhs: scratch,
+                rhs: dst + 1,
+                comparison: Cmp::Equal,
+            })?;
+            let skip = self.jump_if_zero(scratch)?;
+            self.load(var, dst + 6)?;
+            for (offset, value) in [id, MENU_COUNT, -1, MENU_TAG].into_iter().enumerate() {
+                self.set(dst + 2 + offset as u16, i64::from(value))?;
+            }
+            self.set(dst + 7, 0)?;
+            self.emit(I::Op(Op::Store {
+                key: dst + 2,
+                local: dst + 7,
+                write: false,
+            }))?;
+            self.set(dst, -1)?;
+            self.set(dst + 3, i64::from(MENU_VALUE))?;
+            self.set(dst + 4, 0)?;
+            let top = self.here();
+            self.set(scratch, 0)?;
+            self.emit(I::Binary32 {
+                lhs: scratch,
+                rhs: dst + 4,
+                operation: IB::Add,
+            })?;
+            self.emit(I::CompareLocal {
+                lhs: scratch,
+                rhs: dst + 7,
+                comparison: Cmp::Less,
+            })?;
+            let done = self.jump_if_zero(scratch)?;
+            self.set(scratch, 0)?;
+            self.emit(I::Op(Op::Store {
+                key: dst + 2,
+                local: scratch,
+                write: false,
+            }))?;
+            self.emit(I::CompareLocal {
+                lhs: scratch,
+                rhs: dst + 6,
+                comparison: Cmp::Equal,
+            })?;
+            let miss = self.jump_if_zero(scratch)?;
+            self.set(dst, 0)?;
+            self.emit(I::Binary32 {
+                lhs: dst,
+                rhs: dst + 4,
+                operation: IB::Add,
+            })?;
+            exits.push(self.jump()?);
+            self.land(miss);
+            self.set(scratch, 1)?;
+            self.emit(I::Binary32 {
+                lhs: dst + 4,
+                rhs: scratch,
+                operation: IB::Add,
+            })?;
+            self.emit(I::Jump { target: top })?;
+            self.land(done);
+            exits.push(self.jump()?);
+            self.land(skip);
+        }
+        for exit in exits {
+            self.land(exit);
         }
         Ok(())
     }

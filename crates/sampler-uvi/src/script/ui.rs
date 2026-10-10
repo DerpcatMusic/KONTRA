@@ -19,6 +19,45 @@ fn text(t: &Table, key: &str) -> Option<String> {
         _ => None,
     }
 }
+fn mapper(t: &Table) -> Option<String> {
+    text(t, "mapper").or_else(|| {
+        let id = num(t, "mapper")?;
+        if id.fract() != 0. || !(0. ..=9.).contains(&id) { return None; }
+        ["Linear", "Exponential", "QuinticRoot", "QuarticRoot", "CubeRoot", "SquareRoot", "Quadratic", "Cubic", "Quartic", "Quintic"]
+            .get(id as usize).map(|name| (*name).to_owned())
+    })
+}
+fn unit(t: &Table) -> Option<f64> {
+    num(t,"unit").or_else(|| Some(match text(t,"unit")?.as_str() {
+        "Generic"=>0., "Percent"=>1., "PercentNormalized"=>2., "Seconds"=>3.,
+        "MilliSeconds"=>5., "Hertz"=>7., "Decibels"=>9., "UviFilter"=>10.,
+        "LinearGain"=>11., "Pan"=>12., "Megabyte"=>13., "SemiTones"=>14.,
+        "Cents"=>15., "MidiKey"=>16., _=>return None,
+    }))
+}
+
+// Numeric host IDs select the same readout formatter used by the renderer.
+fn unit_text(value: f64, integer: bool, unit: Option<f64>) -> String {
+    let name = match unit {
+        Some(1.) => "Percent",
+        Some(2.) => "PercentNormalized",
+        Some(3.) => "Seconds",
+        Some(5.) => "MilliSeconds",
+        Some(7.) => "Hertz",
+        Some(9.) => "Decibels",
+        Some(10.) => "UviFilter",
+        Some(11.) => "LinearGain",
+        Some(12.) => "Pan",
+        Some(13.) => "Megabyte",
+        Some(14.) => "SemiTones",
+        Some(15.) => "Cents",
+        Some(16.) => "MidiKey",
+        _ => "",
+    };
+    ui::Display { unit: name.into(), ..Default::default() }
+        .format_value(value, integer, ui::Source::FalconLua)
+}
+
 fn num(t: &Table, key: &str) -> Option<f64> {
     match t.get::<Value>(key).ok()? {
         Value::Number(n) => Some(n),
@@ -146,6 +185,7 @@ impl ScriptHost {
         let Ok(root) = self.lua.globals().raw_get::<Table>("__ui") else {
             return out;
         };
+        out.performance = flag(&root, "performance", false);
         let widgets = widgets(self);
         let mut assets = BTreeMap::<String, usize>::new();
         let mut asset = |path: &str, kind: ui::AssetKind, out: &mut ui::Interface| {
@@ -281,7 +321,10 @@ impl ScriptHost {
                 .map(|id| ui::WidgetRef(id as usize - 1));
             wd.automation.allowed = flag(w, "exported", false);
             wd.automation.id = num(w, "paramId").map(|n| n as u32);
-            wd.mapper = text(w, "mapper");
+            wd.mapper = mapper(w);
+            if wd.value_text.is_none() && matches!(wd.kind, ui::Kind::Knob { .. } | ui::Kind::Slider { .. } | ui::Kind::ValueEdit { .. }) {
+                wd.value_text = unit(w).map(|u| unit_text(value, flag(w,"integer",false), Some(u)));
+            }
             wd.menu_cycle = kind == "MultiStateButton";
             wd.colors.background = text(w, "backgroundColour").and_then(|c| color(&c));
             wd.colors.on = text(w, "backgroundColourOn").and_then(|c| color(&c));
@@ -366,6 +409,11 @@ impl ScriptHost {
                         } else {
                             1
                         },
+                        axis: if key == "stripImage" && flag(w, "stripHorizontal", false) {
+                            ui::Orientation::Horizontal
+                        } else {
+                            ui::Orientation::Vertical
+                        },
                         ..Default::default()
                     };
                     wd.images.push(ui::ImageUse::new(
@@ -437,6 +485,7 @@ impl ScriptHost {
                 "align",
                 "image",
                 "frames",
+                "stripHorizontal",
                 "stripImage",
                 "normalImage",
                 "pressedImage",
