@@ -5,6 +5,11 @@ mod support;
 use sampler_core::*;
 
 fn prepared(sources: &[&str]) -> Prepared {
+    let slots: Vec<_> = (0..sources.len()).map(|slot| slot as u8).collect();
+    prepared_slots(sources, &slots)
+}
+fn prepared_slots(sources: &[&str], slots: &[u8]) -> Prepared {
+    assert_eq!(sources.len(), slots.len());
     let scripts = sources
         .iter()
         .enumerate()
@@ -15,7 +20,7 @@ fn prepared(sources: &[&str]) -> Prepared {
                 sampler_ksp::Limits::LIBRARY,
                 &[],
                 &sampler_ksp::Environment {
-                    slot: slot as u8,
+                    slot: slots[slot],
                     ..Default::default()
                 },
             )
@@ -41,6 +46,26 @@ fn prepared(sources: &[&str]) -> Prepared {
         Prepared::new(48000, pcm.into(), regions, 0).unwrap(),
     )
     .unwrap()
+}
+// Resolve a test's binding from public compiler entries, not dense instance/slot
+// identity. Includes non-entry programs in each preceding module's base.
+fn entry(sources: &[&str], instance: usize, kind: sampler_ksp::EntryKind) -> usize {
+    let mut base = 0;
+    for (index, source) in sources.iter().enumerate() {
+        let script =
+            sampler_ksp::compile(source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+        if index == instance {
+            return base
+                + script
+                    .entries()
+                    .iter()
+                    .find(|e| e.kind == kind)
+                    .unwrap()
+                    .program;
+        }
+        base += script.view().program_count();
+    }
+    panic!("missing synthetic source instance");
 }
 fn limits(plan: &Prepared, behaviors: usize) -> Limits {
     let mut limits = Limits::for_plan(plan, 16, 16);
@@ -483,6 +508,13 @@ fn parameter_binding_rejects_invalid_stage_and_duplicate_kind_and_resets_with_pr
         Err(Error::InvalidInput)
     ));
     assert!(matches!(
+        plan().with_parameter_programs(vec![ParameterProgram {
+            stage: 0,
+            ..receiver
+        }]),
+        Err(Error::InvalidInput)
+    ));
+    assert!(matches!(
         plan().with_parameter_programs(vec![receiver, receiver]),
         Err(Error::InvalidInput)
     ));
@@ -497,4 +529,392 @@ fn parameter_binding_rejects_invalid_stage_and_duplicate_kind_and_resets_with_pr
             .with_stages(vec![])
             .is_ok()
     );
+}
+
+#[test]
+fn compiled_three_module_rotation_requires_clear_and_exact_receiver_rebind() {
+    use sampler_ksp::EntryKind as K;
+    let sources = [
+        "on controller ignore_controller set_rpn(13,16383) end on",
+        "on init declare $a := -1 declare $v := -1 end on
+         on controller end on
+         on rpn $a:=$RPN_ADDRESS $v:=$RPN_VALUE play_note(61,127,0,100000) end on",
+        "on controller end on",
+    ];
+    let receiver = ParameterProgram {
+        kind: ParameterKind::Rpn,
+        program: entry(&sources, 1, K::Rpn),
+        stage: 1,
+    };
+    let original = prepared(&sources).stages().to_vec();
+    let mut rotated = original.clone();
+    rotated.rotate_right(1); // A/B/C -> C/A/B; B remains genuinely later than A.
+    assert!(matches!(
+        prepared(&sources).with_stages(rotated.clone()),
+        Err(Error::InvalidInput)
+    ));
+    let mut replacement = original.clone();
+    replacement[1] = original[2]; // same-length replacement, not only permutation
+    assert!(matches!(
+        prepared(&sources).with_stages(replacement),
+        Err(Error::InvalidInput)
+    ));
+    let changed = || {
+        prepared(&sources)
+            .with_parameter_programs(vec![])
+            .unwrap()
+            .with_stages(rotated.clone())
+            .unwrap()
+    };
+    assert!(matches!(
+        changed().with_parameter_programs(vec![receiver]),
+        Err(Error::InvalidInput)
+    ));
+    for plan in [
+        prepared(&sources).with_stages(original).unwrap(),
+        changed()
+            .with_parameter_programs(vec![ParameterProgram {
+                stage: 2,
+                ..receiver
+            }])
+            .unwrap(),
+    ] {
+        let budget = limits(&plan, 16);
+        let mut rt = Runtime::new(plan, budget).unwrap();
+        support::without_heap(|| {
+            rt.dispatch_controller(
+                rt.performance(1).unwrap(),
+                input(60).channel_address(),
+                1 << 3,
+                1,
+                u32::MAX,
+            )
+            .unwrap();
+            assert_eq!((cell(&rt, 1, 0), cell(&rt, 1, 1)), (13, 16383));
+            // Actual generated-note/PCM route in original and explicitly rebound schema.
+            let mut audio = [[0.; 2]; 16];
+            rt.render(&mut audio).unwrap();
+            assert_eq!(audio[15], [0.25; 2]);
+            assert_eq!(rt.take_fault(), None);
+        });
+    }
+}
+
+#[test]
+fn receiver_only_stage_setters_preserve_identical_schema_or_require_explicit_rebind() {
+    use sampler_ksp::EntryKind as K;
+    let sources = [
+        "on note ignore_event($EVENT_ID) set_rpn(16383,0) end on
+         on controller end on on release end on",
+        "on init declare $a := -1 declare $v := -1 end on
+         on rpn $a:=$RPN_ADDRESS $v:=$RPN_VALUE end on on nrpn end on",
+    ];
+    let receiver = ParameterProgram {
+        kind: ParameterKind::Rpn,
+        program: entry(&sources, 1, K::Rpn),
+        stage: 1,
+    };
+    let controller = entry(&sources, 0, K::Controller);
+    let release = entry(&sources, 0, K::Release);
+    let schema = prepared(&sources).stages().to_vec();
+    assert_eq!(schema[1], Stage::default()); // no ordinary callback identity to infer
+    for plan in [
+        prepared(&sources).with_stages(schema.clone()).unwrap(),
+        prepared(&sources)
+            .with_controller_programs(vec![controller])
+            .unwrap(),
+        prepared(&sources).with_release_program(release).unwrap(),
+    ] {
+        let budget = limits(&plan, 16);
+        let mut rt = Runtime::new(plan, budget).unwrap();
+        support::without_heap(|| {
+            note(&mut rt, 60);
+            assert_eq!((cell(&rt, 1, 0), cell(&rt, 1, 1)), (16383, 0));
+            assert_eq!(rt.take_fault(), None);
+        });
+    }
+    assert!(matches!(
+        prepared(&sources).with_controller_programs(vec![]),
+        Err(Error::InvalidInput)
+    ));
+    assert!(matches!(
+        prepared(&sources).with_release_program(receiver.program),
+        Err(Error::InvalidInput)
+    ));
+    let mut occupied = schema.clone();
+    occupied[1] = schema[0];
+    assert!(matches!(
+        prepared(&sources).with_stages(occupied),
+        Err(Error::InvalidInput)
+    ));
+    // Explicitly assigning an empty receiver-only route requires clearing first.
+    // This is caller-selected routing, not automatic native module identity.
+    let mut extended = schema;
+    extended.push(Stage::default());
+    let plan = prepared(&sources)
+        .with_parameter_programs(vec![])
+        .unwrap()
+        .with_stages(extended)
+        .unwrap()
+        .with_parameter_programs(vec![ParameterProgram {
+            stage: 2,
+            ..receiver
+        }])
+        .unwrap();
+    let budget = limits(&plan, 16);
+    let mut rt = Runtime::new(plan, budget).unwrap();
+    support::without_heap(|| {
+        note(&mut rt, 60);
+        assert_eq!((cell(&rt, 1, 0), cell(&rt, 1, 1)), (16383, 0));
+        assert_eq!(rt.take_fault(), None);
+    });
+    assert!(
+        prepared(&sources)
+            .with_programs(vec![], None)
+            .unwrap()
+            .with_stages(vec![])
+            .is_ok()
+    );
+}
+
+#[test]
+fn parameter_binding_rejects_unrelated_ordinary_and_mixed_receiver_owners() {
+    use sampler_ksp::EntryKind as K;
+    let sources = [
+        "on note set_rpn(0,0) end on",
+        "on rpn end on",
+        "on nrpn end on",
+    ];
+    let rpn = ParameterProgram {
+        kind: ParameterKind::Rpn,
+        program: entry(&sources, 1, K::Rpn),
+        stage: 1,
+    };
+    let nrpn = ParameterProgram {
+        kind: ParameterKind::Nrpn,
+        program: entry(&sources, 2, K::Nrpn),
+        stage: 1,
+    };
+    assert!(matches!(
+        prepared(&sources).with_parameter_programs(vec![rpn, nrpn]),
+        Err(Error::InvalidInput)
+    ));
+    assert!(matches!(
+        prepared(&sources).with_parameter_programs(vec![ParameterProgram { stage: 0, ..rpn }]),
+        Err(Error::InvalidInput)
+    ));
+    assert!(matches!(
+        prepared(&sources).with_parameter_programs(vec![ParameterProgram { stage: 0, ..nrpn }]),
+        Err(Error::InvalidInput)
+    ));
+    // Different instances at different explicitly selected empty stages are legal.
+    // No instance-number-equals-stage rule is imposed.
+    assert!(
+        prepared(&sources)
+            .with_parameter_programs(vec![
+                ParameterProgram { stage: 2, ..rpn },
+                ParameterProgram { stage: 1, ..nrpn }
+            ])
+            .is_ok()
+    );
+}
+
+#[test]
+fn preempted_sender_defers_receivers_fifo_and_preserves_numeric_pgs_controller_order() {
+    use sampler_ksp::EntryKind as K;
+    for send in [false, true] {
+        let command = if send { "set_rpn(60,16383)" } else { "" };
+        let sender = format!(
+            "on init pgs_create_key(LOG,1) pgs_create_key(GO,1)
+            declare $i declare $sent declare $log end on
+            on note ignore_event($EVENT_ID) if ($EVENT_NOTE=60)
+                while ($i<32) inc($i) end while {command}
+                pgs_set_key_val(GO,0,1) $sent:=1 end if end on
+            on controller ignore_controller
+                pgs_set_key_val(LOG,0,pgs_get_key_val(LOG,0)*10+5)
+                $log:=pgs_get_key_val(LOG,0) end on"
+        );
+        let first =
+            "on init declare $logged declare $calls declare $a := -1 declare $v := -1 end on
+            on rpn inc($calls) $a:=$RPN_ADDRESS $v:=$RPN_VALUE
+                pgs_set_key_val(LOG,0,pgs_get_key_val(LOG,0)*10+1) wait(100000) end on
+            on pgs_changed if ($logged=0 and pgs_get_key_val(GO,0)=1)
+                $logged:=1 pgs_set_key_val(LOG,0,pgs_get_key_val(LOG,0)*10+3) end if end on";
+        let second =
+            "on init declare $logged declare $calls declare $a := -1 declare $v := -1 end on
+            on rpn inc($calls) $a:=$RPN_ADDRESS $v:=$RPN_VALUE
+                pgs_set_key_val(LOG,0,pgs_get_key_val(LOG,0)*10+2) wait(100000) end on
+            on pgs_changed if ($logged=0 and pgs_get_key_val(GO,0)=1)
+                $logged:=1 pgs_set_key_val(LOG,0,pgs_get_key_val(LOG,0)*10+4) end if end on";
+        let sources = [&sender[..], first, second];
+        let receivers = [entry(&sources, 1, K::Rpn), entry(&sources, 2, K::Rpn)];
+        let plan = prepared(&sources);
+        let budget = limits(&plan, 32);
+        let mut rt = Runtime::new(plan, budget).unwrap();
+        support::without_heap(|| {
+            // Exhaust the public per-block allowance before the send, then
+            // replenish for the next block. No core fuel/queue policy changes.
+            rt.set_behavior_block_fuel(1);
+            note(&mut rt, 60);
+            assert!(rt.preemptions() > 0);
+            note(&mut rt, 61); // younger same-plan continuation remains queued
+            rt.dispatch_controller(
+                rt.performance(1).unwrap(),
+                input(60).channel_address(),
+                1 << 3,
+                7,
+                u32::MAX,
+            )
+            .unwrap();
+            rt.set_behavior_block_fuel(8192);
+            let mut emitted = false;
+            for _ in 0..128 {
+                rt.render(&mut [[0.; 2]; 4]).unwrap();
+                if cell(&rt, 0, 1) == 1 {
+                    emitted = true;
+                    break;
+                }
+            }
+            assert!(emitted, "bounded fixture must reach its send checkpoint");
+            if send {
+                // Both admitted receivers are pc0: send_parameter used deferred
+                // FIFO, rather than the immediate ready LIFO start path.
+                let mut queued = 0;
+                rt.visit_behavior_progress(|p| {
+                    if receivers.contains(&p.program) {
+                        assert_eq!((p.pc, p.waiting, p.outcome), (0, false, None));
+                        queued += 1;
+                    }
+                });
+                assert_eq!(queued, 2);
+                assert_eq!((cell(&rt, 1, 1), cell(&rt, 2, 1)), (0, 0));
+            }
+            for _ in 0..256 {
+                rt.render(&mut [[0.; 2]; 4]).unwrap();
+            }
+            assert_eq!(cell(&rt, 0, 2), if send { 12345 } else { 345 });
+            assert_eq!((cell(&rt, 1, 0), cell(&rt, 2, 0)), (1, 1));
+            if send {
+                assert_eq!((cell(&rt, 1, 1), cell(&rt, 2, 1)), (1, 1));
+                assert_eq!(
+                    (
+                        cell(&rt, 1, 2),
+                        cell(&rt, 1, 3),
+                        cell(&rt, 2, 2),
+                        cell(&rt, 2, 3)
+                    ),
+                    (60, 16383, 60, 16383)
+                );
+            }
+            assert_eq!(rt.take_fault(), None);
+            rt.panic();
+        });
+    }
+}
+
+#[test]
+fn deferred_fanout_pressure_faults_atomically_without_heap_or_partial_second_message() {
+    use sampler_ksp::EntryKind as K;
+    let sources = [
+        "on init declare $i end on on note ignore_event($EVENT_ID)
+            if ($EVENT_NOTE=60) while ($i<32) inc($i) end while
+                set_rpn(0,16383) set_rpn(16383,0) end if end on",
+        "on init declare $calls declare $a := -1 declare $v := -1 end on
+            on rpn inc($calls) $a:=$RPN_ADDRESS $v:=$RPN_VALUE wait(100000) end on",
+        "on init declare $calls declare $a := -1 declare $v := -1 end on
+            on rpn inc($calls) $a:=$RPN_ADDRESS $v:=$RPN_VALUE wait(100000) end on",
+    ];
+    let receivers = [entry(&sources, 1, K::Rpn), entry(&sources, 2, K::Rpn)];
+    for capacity in [3, 5] {
+        let plan = prepared(&sources);
+        let budget = limits(&plan, capacity);
+        let mut rt = Runtime::new(plan, budget).unwrap();
+        support::without_heap(|| {
+            rt.set_behavior_block_fuel(1);
+            note(&mut rt, 60);
+            assert!(rt.preemptions() > 0);
+            note(&mut rt, 61);
+            rt.set_behavior_block_fuel(8192);
+            let mut fault = None;
+            for _ in 0..128 {
+                rt.render(&mut [[0.; 2]; 4]).unwrap();
+                fault = rt.take_fault();
+                if fault.is_some() {
+                    break;
+                }
+            }
+            assert_eq!(fault.map(|(_, error)| error), Some(Error::Capacity));
+            let mut admitted = 0;
+            rt.visit_behavior_progress(|p| {
+                if receivers.contains(&p.program) {
+                    assert_eq!((p.pc, p.waiting, p.outcome), (0, false, None));
+                    admitted += 1;
+                }
+            });
+            assert_eq!(admitted, if capacity == 3 { 0 } else { 2 });
+            for _ in 0..128 {
+                rt.render(&mut [[0.; 2]; 4]).unwrap();
+            }
+            for instance in [1, 2] {
+                assert_eq!(cell(&rt, instance, 0), if capacity == 3 { 0 } else { 1 });
+                assert_eq!(
+                    (cell(&rt, instance, 1), cell(&rt, instance, 2)),
+                    if capacity == 3 { (-1, -1) } else { (0, 16383) }
+                );
+            }
+            assert_eq!(rt.take_fault(), None);
+            rt.panic();
+        });
+    }
+}
+
+#[test]
+fn sparse_physical_slots_nonzero_sender_and_separate_notes_keep_private_payloads() {
+    let sources = [
+        "on init declare $calls end on on rpn inc($calls) end on",
+        "on init declare $self end on on rpn inc($self) end on
+            on note ignore_event($EVENT_ID) wait(500)
+                set_rpn($EVENT_NOTE,16383-$EVENT_NOTE) end on",
+        "on init declare $a := -1 declare $av := -1 declare $b := -1 declare $bv := -1
+            declare $child declare $source := -1 end on
+            on rpn wait(1000)
+                if ($RPN_ADDRESS=60) $a:=$RPN_ADDRESS $av:=$RPN_VALUE
+                else $b:=$RPN_ADDRESS $bv:=$RPN_VALUE end if
+                $child:=play_note(61,127,0,100000)
+                $source:=get_event_par($child,$EVENT_PAR_SOURCE) end on",
+    ];
+    let plan = prepared_slots(&sources, &[4, 0, 2]); // source slots != dense instances
+    let budget = limits(&plan, 16);
+    let mut rt = Runtime::new(plan, budget).unwrap();
+    support::without_heap(|| {
+        note(&mut rt, 60);
+        note(&mut rt, 61); // separate note-owned continuations, not two sends from one note
+        rt.render(&mut [[0.; 2]; 32]).unwrap();
+        let mut waiting = 0;
+        rt.visit_behavior_progress(|p| {
+            if p.waiting && matches!(p.owner, BehaviorOwner::Plan(_)) {
+                waiting += 1;
+            }
+        });
+        assert_eq!(waiting, 2);
+        assert_eq!((cell(&rt, 2, 0), cell(&rt, 2, 2)), (-1, -1));
+        rt.set_host_value(2, 999).unwrap();
+        rt.set_host_value(3, 1000).unwrap();
+        let mut audio = [[0.; 2]; 64];
+        rt.render(&mut audio).unwrap();
+        assert_eq!(
+            (
+                cell(&rt, 2, 0),
+                cell(&rt, 2, 1),
+                cell(&rt, 2, 2),
+                cell(&rt, 2, 3)
+            ),
+            (60, 16323, 61, 16322)
+        );
+        assert_eq!((cell(&rt, 0, 0), cell(&rt, 1, 0)), (0, 0));
+        assert_eq!(cell(&rt, 2, 5), 2); // child's provenance is receiver physical slot
+        assert_eq!(audio[63], [0.5; 2]); // two receiver-generated notes at 0.25 each
+        assert_eq!(rt.all_sound_off(input(60).channel_address()), Ok(2));
+        assert_eq!(rt.take_fault(), None);
+    });
 }
