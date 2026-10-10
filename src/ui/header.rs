@@ -324,6 +324,7 @@ pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
         rule(),
         section("MIDI / Output").id("settings-midi"),
         new_part_settings(ui, cx),
+        dynamics_settings(ui, cx),
         rule(),
         section("Performance").id("settings-performance"),
         thread_settings(ui, cx),
@@ -509,6 +510,68 @@ fn new_part_settings(ui: &mut Ui, cx: &mut Cx) -> El {
         .shrink(0)
 }
 
+/// The existing per-part override is read by the next load, never sent as CC.
+fn dynamics_settings(ui: &mut Ui, cx: &mut Cx) -> El {
+    let mut rows = Vec::new();
+    for (slot, part) in cx.selection.parts.iter_mut().enumerate() {
+        if part.path.is_empty() {
+            continue;
+        }
+        let source = stem(&part.path);
+        let name = if part.name.is_empty() {
+            &source
+        } else {
+            &part.name
+        };
+        let identity = format!("Part {} · {name}", slot + 1);
+        let mut choices = Vec::new();
+        for (value, label) in [(-1, "Kontakt / source"), (64, "64"), (127, "127")] {
+            let (hit, el) = latch(
+                ui,
+                format!("settings-dyn-{slot}-{value}"),
+                label,
+                &format!("{identity}: dynamics start at {label} on the next load"),
+                part.dynamics == value,
+            );
+            if hit {
+                part.dynamics = value;
+            }
+            choices.push(el);
+        }
+        rows.push(
+            row![
+                body(identity)
+                    .lines(1)
+                    .flex(1)
+                    .min_w(0)
+                    .tip(format!(
+                        "{}\nProgram {}",
+                        part.path,
+                        u64::from(part.program) + 1
+                    ))
+                    .id(format!("settings-dynamics-part-{slot}")),
+                segmented(choices),
+            ]
+            .gap(SPACE)
+            .wrap()
+            .align(Align::Center)
+            .w(Len::Pct(100.))
+            .shrink(0),
+        );
+    }
+    if rows.is_empty() {
+        return spacer().h(0);
+    }
+    col![
+        caption("Dynamics start (next load)").fill(secondary()),
+        col(rows).gap(TIGHT)
+    ]
+    .gap(TIGHT)
+    .align(Align::Stretch)
+    .shrink(0)
+    .id("settings-dynamics")
+}
+
 fn thread_settings(ui: &mut Ui, cx: &mut Cx) -> El {
     let libraries = &cx.p.shared.libraries;
     use crate::library::ThreadSetting as T;
@@ -688,4 +751,148 @@ pub fn stem(path: &str) -> String {
         .unwrap_or_default()
         .to_string_lossy()
         .into_owned()
+}
+
+#[cfg(test)]
+mod dynamics_settings_tests {
+    use super::*;
+    use crate::plugin::{Part, Selection};
+    use crate::ui::tests::Harness;
+    use moose::core::custom_state::StateField;
+    use std::sync::Arc;
+
+    fn open(p: &Arc<SamplerParams>, width: f64, height: f64) -> Harness {
+        let mut h = Harness::new(p, width, height);
+        h.press("app-menu");
+        h.press("menu-item-5");
+        let scene = h.ui.scene().unwrap();
+        let control = scene
+            .surface("settings-dyn-1-127")
+            .expect("Settings must expose per-part dynamics-start choices")
+            .frame;
+        let viewport = scene.surface("settings-body").unwrap().frame;
+        let reveal =
+            (control.y + control.size.height + super::SPACE - viewport.y - viewport.size.height)
+                .max(0.);
+        h.ui.set_scroll("settings-body", [0., reveal]);
+        h.idle(20);
+        h
+    }
+
+    fn specimen() -> Arc<SamplerParams> {
+        let p = Arc::new(SamplerParams::new());
+        let mut selection = p.selection.write().unwrap();
+        selection.parts = vec![
+            Part {
+                path: "/virtual/Strings.nki".into(),
+                name: "Upper strings".into(),
+                channel: 2,
+                ..Default::default()
+            },
+            Part {
+                path: "/virtual/Strings.nki".into(),
+                program: 1,
+                name: "Lower strings".into(),
+                channel: 5,
+                ..Default::default()
+            },
+            Part::default(),
+        ];
+        selection.order = vec![1, 0];
+        drop(selection);
+        p
+    }
+
+    #[test]
+    fn settings_dynamics_are_per_part_next_load_and_host_recalled() {
+        let p = specimen();
+        let mut h = open(&p, 1180., 780.);
+        assert_eq!(p.selection.read().unwrap().parts[0].dynamics, -1);
+        assert_eq!(p.selection.read().unwrap().parts[1].dynamics, -1);
+        for (slot, value) in [(1, 127), (0, 64), (1, -1)] {
+            let other = p.selection.read().unwrap().parts[1 - slot].dynamics;
+            h.press(&format!("settings-dyn-{slot}-{value}"));
+            let selection = p.selection.read().unwrap();
+            assert_eq!(selection.parts[slot].dynamics, value);
+            assert_eq!(selection.parts[1 - slot].dynamics, other);
+            assert_eq!(
+                (selection.parts[0].channel, selection.parts[1].channel),
+                (2, 5)
+            );
+            let mut bytes = Vec::new();
+            selection.write_field(&mut bytes);
+            let restored =
+                Selection::read_field(&mut moose::core::custom_state::StateCursor::new(&bytes))
+                    .unwrap();
+            assert!(
+                restored == *selection,
+                "each existing dynamics choice survives native host recall"
+            );
+        }
+        assert!(
+            p.shared.keyboard.pop().is_none(),
+            "choosing a start sends no immediate CC"
+        );
+        let selection = p.selection.read().unwrap().clone();
+        let mut bytes = Vec::new();
+        selection.write_field(&mut bytes);
+        let restored =
+            Selection::read_field(&mut moose::core::custom_state::StateCursor::new(&bytes))
+                .unwrap();
+        assert!(
+            restored == selection,
+            "the existing native host field retains per-part choices"
+        );
+        let mut replacement = restored.parts[0].clone();
+        crate::ui::replace_part(&mut replacement, "/virtual/Replacement.nki".into());
+        assert_eq!(replacement.dynamics, -1);
+        assert_eq!(replacement.channel, 2);
+    }
+
+    #[test]
+    fn settings_dynamics_show_source_identity_and_fit_both_viewports() {
+        for (width, height) in [(1180., 780.), (900., 640.)] {
+            let p = specimen();
+            let h = open(&p, width, height);
+            let scene = h.ui.scene().unwrap();
+            let viewport = scene.surface("settings-body").unwrap().frame;
+            for slot in 0..2 {
+                let identity = scene
+                    .surface(&format!("settings-dynamics-part-{slot}"))
+                    .unwrap();
+                let tip = identity.tip.as_deref().unwrap();
+                assert!(
+                    tip.contains("/virtual/Strings.nki")
+                        && tip.contains(&format!("Program {}", slot + 1))
+                );
+                let last = scene
+                    .surface(&format!("settings-dyn-{slot}-127"))
+                    .unwrap()
+                    .frame;
+                assert!(
+                    last.x >= viewport.x
+                        && last.x + last.size.width <= viewport.x + viewport.size.width
+                );
+                assert!(
+                    last.y >= viewport.y
+                        && last.y + last.size.height <= viewport.y + viewport.size.height
+                );
+            }
+            assert!(
+                scene.surface("settings-dynamics-part-2").is_none(),
+                "empty rack slots have no override"
+            );
+            #[cfg(feature = "shots")]
+            if let Some(out) = std::env::var_os("KONTRA_CHROME_SHOTS") {
+                let out = std::path::PathBuf::from(out);
+                std::fs::create_dir_all(&out).unwrap();
+                moose::core::screenshot::save_png(
+                    &out.join(format!("settings-dynamics-{width}x{height}.png")),
+                    &crate::ui::tests::pixels(&h.ui, width as u16, height as u16),
+                    width as u32,
+                    height as u32,
+                );
+            }
+        }
+    }
 }
