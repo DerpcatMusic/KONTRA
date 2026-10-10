@@ -1146,6 +1146,7 @@ impl Lowering<'_> {
                 Some(scale) => Some(ModScale {
                     source: source_of(scale.source, &mut program)?,
                     shape: None,
+                    law: Default::default(),
                 }),
             };
             let mut shape_of = |shape: ir::ShapeRef, program: &mut ModProgram| {
