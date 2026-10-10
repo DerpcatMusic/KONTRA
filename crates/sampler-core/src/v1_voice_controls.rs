@@ -1,6 +1,8 @@
 //! Controls copied from v1 0cb7a8a0 for W9's whole-voice adapter.
 //! Prepared descriptors retain v1 admission; unsupported sources stay in v2.
 use crate::Error;
+#[path = "digital_fade.rs"]
+mod digital_fade;
 use std::sync::Arc;
 
 pub const MAX_BLOCK: usize = 128;
@@ -1056,6 +1058,7 @@ mod lfo_volume {
 }
 mod lfo {
     use super::{FIXED_ONE, MAX_STEP, PitchLfo, VolumeLfo};
+    use super::digital_fade::KontaktLfoFade as Fade;
     /// One note's native source phases and retained pitch/volume interpolators.
     /// The native source clock pauses when bypassed; its audio interpolation
     /// offset advances separately, including short event fragments.
@@ -1072,42 +1075,6 @@ mod lfo {
         volume_previous: f32,
         volume_current: f32,
         volume_initialized: bool,
-    }
-
-    #[derive(Clone, Copy, Debug, Default)]
-    struct Fade {
-        remaining: u32,
-        value: f32,
-        factor: f32,
-    }
-
-    impl Fade {
-        fn new(ms: f32, rate: f32) -> Self {
-            // Native time getter returns milliseconds; DSP runs at rate / 32.
-            let remaining = (ms * (rate / 32.) * 0.001) as u32;
-            let factor = if remaining == 0 {
-                1.
-            } else {
-                (1. + 1. / f64::from(0.3f32)).powf(1. / f64::from(remaining)) as f32
-            };
-            Self {
-                remaining,
-                value: 0.3,
-                factor,
-            }
-        }
-
-        fn next(&mut self) -> f32 {
-            if self.remaining == 0 {
-                return 1.;
-            }
-            let gain = self.value - 0.3;
-            // v71/v72 set the native legacy switch false: its ceiling is 1,
-            // unlike v73's optional .3..1.3 mode. Only N points are scaled.
-            self.value = (self.value * self.factor).clamp(0., 1.);
-            self.remaining -= 1;
-            gain
-        }
     }
 
     impl Clock {

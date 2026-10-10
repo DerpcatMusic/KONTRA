@@ -99,6 +99,8 @@ mod steal;
 mod parameter_registry;
 pub use parameter_registry::{ParameterAddress, ParameterDescriptor, ParameterDisplay, ParameterLaw,
     ParameterRegistry, ParameterRole, ParameterScope, ParameterUnit, PreparedParameterRegistry};
+mod digital_fade;
+pub use digital_fade::KontaktLfoFade;
 mod voice_mod;
 pub use plan_programs::{PlanProgram, SignalProgram};
 pub use script_params::{EnvelopeStage, GroupParams, ParamScope};
