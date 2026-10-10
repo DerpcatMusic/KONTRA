@@ -138,7 +138,7 @@ impl ArKernel {
                     (value, second[1])
                 }
             };
-            detected = if family == 2 {
+            detected = if family == 0 || family == 2 {
                 detected + (band + band)
             } else {
                 (detected + band) + band
