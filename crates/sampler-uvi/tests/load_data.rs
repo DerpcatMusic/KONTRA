@@ -32,11 +32,13 @@ impl Drop for Fixture {
 fn path(path: &Path) -> String {
     serde_json::to_string(path.to_str().unwrap()).unwrap()
 }
-fn host(script: &str) -> ScriptHost {
-    let xml = format!(
+fn xml(script: &str) -> String {
+    format!(
         "<UVI4><Program><EventProcessors><ScriptProcessor><script><![CDATA[{script}]]></script></ScriptProcessor></EventProcessors></Program></UVI4>"
-    );
-    ScriptHost::new(&xml, (), Config::default()).unwrap()
+    )
+}
+fn host(script: &str) -> ScriptHost {
+    ScriptHost::new(&xml(script), (), Config::default()).unwrap()
 }
 fn until(h: &mut ScriptHost, global: &str, expected: &str) {
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -284,6 +286,49 @@ fn load_data_cancellation_queue_bounds_and_reload_are_isolated() {
         .collect();
     assert_eq!(notes, [60]);
     assert!(fresh.findings().is_empty());
+}
+
+#[test]
+fn load_data_wakes_parked_production_owner_without_events_or_clock_polling() {
+    use sampler_uvi::scripted::{Script, ScriptThread};
+    let fixture = Fixture::new();
+    let file = fixture.file("wake.json", b"67");
+    let script = format!(
+        r#"
+        local count = 0
+        local function loaded(data)
+            count = count + 1
+            if count == 32 then playNote(data, 100, 0)
+            else loadData({}, loaded) end
+        end
+        loadData({}, loaded)
+    "#,
+        path(&file),
+        path(&file)
+    );
+    let (mut thread, _) = ScriptThread::spawn(xml(&script), (), Config::default()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut commands = Vec::new();
+    loop {
+        // Drain only: do not tick, send an event, or otherwise wake the Lua owner.
+        thread.drain(&mut commands);
+        if commands.iter().any(|c| matches!(c, Command::Play(_))) {
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let plays: Vec<_> = commands
+        .into_iter()
+        .filter_map(|c| {
+            if let Command::Play(p) = c {
+                Some(p.key)
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(plays, [67]);
 }
 
 #[test]
