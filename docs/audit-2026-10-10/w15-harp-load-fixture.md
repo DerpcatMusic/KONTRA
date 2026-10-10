@@ -24,3 +24,10 @@ WAV header, after checking its subtype GUID, channels, rate and bit depth.
 This establishes shipping load safety for this instrument and these two
 script settings. It does not establish mode-3 audio parity; the repaired null
 is a separate pending measurement. Its frozen v1 WAV remains only in RAM.
+
+The repaired null next exposed another fixture-only validation error: clearing
+all buses left unused chains scoped to bus 0. The dry fixture now preserves bus
+owners, removes their chains/sends, routes groups to master and clears voice
+send taps. A bounded signal trace is enabled for the pending null; a failure
+prints stage metrics only. The latest fixture edits await their own area
+no-run after W0's quiet window. The shipping load verdict above is unchanged.
