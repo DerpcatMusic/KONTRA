@@ -263,6 +263,7 @@ fn translate(
         engine: Vec::new(),
         dynamic: false,
         eq_mod_slots: HashMap::new(),
+        cutoff_octaves: HashMap::new(),
         send_taps: Vec::new(),
         #[cfg(feature = "scan")]
         target_outcomes: HashMap::new(),
@@ -662,6 +663,7 @@ struct Translation {
     /// A script writes effect slots while playing.
     dynamic: bool,
     eq_mod_slots: HashMap<usize, Vec<usize>>,
+    cutoff_octaves: HashMap<(usize, usize), f64>,
     send_taps: Vec<(ir::ChainRef, crate::effects::SendTap)>,
     #[cfg(feature = "scan")]
     target_outcomes: crate::coverage::Targets,
@@ -1155,11 +1157,55 @@ impl Translation {
             ir::GroupRef(self.ir.groups.len()),
             v.start_criteria.clone(),
         ));
+        let mut wavetable = None;
         match group.source_identity() {
-            // v1 plays every mode but wavetable (9) as a sampler; so does this.
             Ok(source) if source.mode == 9 => {
-                self.unsupported(&at, "wavetable source", source.mode, not_modeled)
+                wavetable = group
+                    .wavetable_source()?
+                    .as_ref()
+                    .and_then(|source| crate::wavetable::admitted(source, v.key_tracking));
+                if let Some(wave) = &mut wavetable {
+                    for (name, target) in [
+                        ("ENGINE_PAR_WT_POSITION", &mut wave.position),
+                        ("ENGINE_PAR_WT_PHASE", &mut wave.phase),
+                        ("ENGINE_PAR_WT_FORM", &mut wave.form1),
+                        ("ENGINE_PAR_WT_FORM2", &mut wave.form2),
+                    ] {
+                        if let Some(value) = self.script_par(name, index as i32, -1, -1) {
+                            *target = sampler_core::EngineParameterLaw::Linear { low: 0., high: 1. }
+                                .decode(value) as f32;
+                        }
+                    }
+                    for (name, target) in [
+                        ("ENGINE_PAR_WT_FORM_MODE", &mut wave.form1_type),
+                        ("ENGINE_PAR_WT_FORM2_MODE", &mut wave.form2_type),
+                    ] {
+                        if let Some(value) = self.script_par(name, index as i32, -1, -1) {
+                            if matches!(value, 0 | 16) {
+                                *target = value as u8;
+                            } else {
+                                self.unsupported(
+                                    &at,
+                                    "wavetable phase form write",
+                                    value,
+                                    ir::Reason::NotModeled,
+                                );
+                            }
+                        }
+                    }
+                    if self.dynamic {
+                        self.unsupported(
+                            &at,
+                            "wavetable live engine parameters",
+                            source.mode,
+                            not_modeled,
+                        );
+                    }
+                } else {
+                    self.unsupported(&at, "wavetable source", source.mode, not_modeled);
+                }
             }
+            // v1 plays every other mode as a sampler, with an explicit limitation.
             Ok(source) if source.mode != 0 => self.unsupported(
                 &at,
                 "source mode (played as a sampler)",
@@ -1220,6 +1266,19 @@ impl Translation {
                         post_amplitude,
                     });
                     chain = Some(ir::ChainRef(self.ir.chains.len() - 1));
+                    for &(slot, processor) in &filter_slots {
+                        if slots.iter().find(|s| s.slot == slot).is_some_and(|s| {
+                            matches!(
+                                s.params(),
+                                Some(crate::effects::Params::Filter { kind: 2 | 3, .. })
+                            )
+                        }) {
+                            self.cutoff_octaves.insert(
+                                (chain.unwrap().0, processor),
+                                crate::effects::LEGACY_CUTOFF_OCTAVES,
+                            );
+                        }
+                    }
                     self.eq_controls(index, chain.unwrap(), &filter_slots);
                     self.send_taps
                         .extend(c.send_taps.into_iter().map(|tap| (chain.unwrap(), tap)));
@@ -1485,6 +1544,7 @@ impl Translation {
             )));
         }
         self.ir.groups.push(ir::Group {
+            wavetable,
             name: v.name,
             gain: ir::Gain::Linear(f64::from(v.volume)),
             pan: ir::Pan {
@@ -1737,7 +1797,14 @@ impl Translation {
             let depth = if native {
                 ir::Depth::Normalized(i)
             } else {
-                ir::Depth::Pitch(ir::Pitch::Semitones(120.0 * i))
+                ir::Depth::Pitch(ir::Pitch::Semitones(
+                    12. * self
+                        .cutoff_octaves
+                        .get(&(chain.0, *index))
+                        .copied()
+                        .unwrap_or(10.)
+                        * i,
+                ))
             };
             Some((
                 ir::Target::Processor {
@@ -1816,6 +1883,18 @@ impl Translation {
     ) -> Option<ir::Lfo> {
         let [fade_ms, rate, width, phase] = lfo.initial_values.map(f64::from);
         let shape = match (lfo.waveform, lfo.trailing_values) {
+            // Digital Multi's falling sine retains subunit weights; normalization
+            // divides by max(1, sum(abs(weights))), not by the sole weight.
+            // ponytail: other waves and nonzero native fades need measured source clocks.
+            (6, Some([sine, 0., 0., 0., 0.]))
+                if sine.is_finite()
+                    && sine.abs() <= 1.
+                    && fade_ms == 0.
+                    && lfo.records[1].values[0] == -1.
+                    && lfo.additional_flag == Some(false) =>
+            {
+                ir::LfoShape::SineScaled(-f64::from(sine))
+            }
             // Native core 0x140b07290: the five weighted components sum to zero.
             // Verified original-byte waveform checks; the bipolar view is still 0.5.
             (5, Some(weights)) if weights == [0.; 5] && width > 0. && width < 1. => {
@@ -2890,6 +2969,7 @@ mod modulation {
             engine: Vec::new(),
             dynamic: false,
             eq_mod_slots: HashMap::new(),
+            cutoff_octaves: HashMap::new(),
             send_taps: Vec::new(),
             #[cfg(feature = "scan")]
             target_outcomes: HashMap::new(),
@@ -3177,6 +3257,44 @@ mod modulation {
             t.route("g", source, true, &cutoff, Some((chain, &[])))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn legacy_cutoff_span_does_not_change_an_adjacent_sv_slot() {
+        let mut t = translation();
+        let filter = ir::Processor::Filter(ir::Filter {
+            kind: ir::FilterKind::LowPass { poles: 2 },
+            cutoff: ir::Frequency::Hertz(1000.),
+            resonance: ir::Resonance::Q(0.7),
+        });
+        t.ir.chains.push(ir::Chain {
+            scope: ir::Scope::Voice,
+            pre_amplitude: vec![filter],
+            post_amplitude: vec![filter],
+        });
+        t.cutoff_octaves
+            .insert((0, 1), crate::effects::LEGACY_CUTOFF_OCTAVES);
+        for (slot, expected) in [(0, -30.), (5, -26.88)] {
+            let route = t
+                .route(
+                    "group",
+                    ir::ModulatorRef(0),
+                    true,
+                    &ModTarget {
+                        slot: Some(slot),
+                        ..target("filterCutoff", -0.25)
+                    },
+                    Some((ir::ChainRef(0), &[(0, 0), (5, 1)])),
+                )
+                .unwrap();
+            let ir::Depth::Pitch(depth) = t.ir.routes[route.0].depth else {
+                panic!("pitch depth")
+            };
+            assert!(
+                (depth.semitones() - expected).abs() < 1e-6,
+                "a legacy post-amplitude slot must not change the neighboring SV law"
+            );
+        }
     }
 
     #[test]
@@ -3540,6 +3658,57 @@ mod modulation {
                 assert_eq!(t.ir.routes[0].invert, invert);
             }
         }
+    }
+
+    #[test]
+    fn digital_sine_keeps_saved_level_phase_sync_and_unsupported_fade_diagnostic() {
+        let mut t = translation();
+        let mut raw = Lfo {
+            structured: false,
+            version: 0x73,
+            waveform: 6,
+            initial_values: [0., 4., 0.5, 0.125],
+            records: [
+                LfoRecord {
+                    flag: true,
+                    values: [-1., 0., 0.],
+                },
+                LfoRecord {
+                    flag: false,
+                    values: [-1., 0., 0.],
+                },
+            ],
+            trailing_flag: false,
+            trailing_values: Some([0.3, 0., 0., 0., 0.]),
+            additional_flag: Some(false),
+        };
+        for normalize in [false, true] {
+            raw.records[0].flag = normalize;
+            let source = t.lfo("g", &raw, true).unwrap();
+            assert_eq!(source.shape, ir::LfoShape::SineScaled(-f64::from(0.3f32)));
+            assert_eq!(source.phase, 0.125);
+            assert_eq!(source.rate, ir::Frequency::Hertz(4.));
+            assert_eq!(source.fade_in, ir::Time::Milliseconds(0.));
+        }
+        raw.records[0].values[0] = 0.25;
+        assert_eq!(
+            t.lfo("g", &raw, true).unwrap().rate,
+            ir::Frequency::Beats(1.)
+        );
+        raw.initial_values[0] = 10.;
+        assert!(
+            t.lfo("g", &raw, true).is_none(),
+            "native nonzero fade must stay diagnosed"
+        );
+        raw.initial_values[0] = 0.;
+        raw.trailing_values = Some([f32::NAN, 0., 0., 0., 0.]);
+        assert!(t.lfo("g", &raw, true).is_none());
+        raw.trailing_values = Some([0.3, 0.2, 0., 0., 0.]);
+        assert!(t.lfo("g", &raw, true).is_none());
+        raw.trailing_values = Some([0.3, 0., 0., 0., 0.]);
+        raw.additional_flag = Some(true);
+        assert!(t.lfo("g", &raw, true).is_none());
+        assert_eq!(t.ir.unsupported.len(), 4);
     }
 
     #[test]
