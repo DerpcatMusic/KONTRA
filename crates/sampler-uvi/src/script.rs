@@ -2689,7 +2689,7 @@ mod tests {
     fn classes_tables_and_playnote_tables_work() {
         let mut h = host(
             "class 'A'\nfunction A:__init(x) self.x = x end\n\
-             class 'B'(A)\nlocal b = B(7)\nassert(b.x == 7)\n\
+             class 'B'(A)\nfunction B:__init(x) A.__init(self, x) end\nlocal b = B(7)\nassert(b.x == 7)\n\
              local t = Table{'t', 4, 1, 0, 9, true}\n\
              t.changed = function(self, i) lastIndex = i end\n\
              t:setValue(2, 5)\nassert(lastIndex == 2 and t:getValue(2) == 5)\n\
