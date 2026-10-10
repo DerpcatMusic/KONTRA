@@ -228,11 +228,19 @@ fn text_runs_handle_is_shared_and_bounded() {
 
 #[test]
 fn implicit_face_and_fallback_changes_rewalk_nested_paint_but_keep_memo_builds() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
     fn label() -> El {
         text("Hi😀").text_size(18.).w(100.).h(32.).id("environment-label")
     }
-    fn plain() -> El {
-        stack([stack([label()]).w(100.).h(32.)]).w(100.).h(32.)
+    fn panel(walks: Arc<AtomicUsize>) -> El {
+        let probe = canvas(move |_| {
+            walks.fetch_add(1, Ordering::Relaxed);
+            Vec::new()
+        }).w(1.).h(1.);
+        stack([label(), probe]).w(100.).h(32.)
+    }
+    fn plain(walks: Arc<AtomicUsize>) -> El {
+        stack([panel(walks)]).w(100.).h(32.)
     }
     #[cfg(feature = "cpu")]
     fn pixels(ui: &Ui) -> Vec<u8> {
@@ -251,6 +259,8 @@ fn implicit_face_and_fallback_changes_rewalk_nested_paint_but_keep_memo_builds()
     let ubuntu = Font::new(epaint_default_fonts::UBUNTU_LIGHT).unwrap();
     let emoji = Font::new(epaint_default_fonts::NOTO_EMOJI_REGULAR).unwrap();
     let (mut retained, mut eager) = (Ui::default().font(hack.clone()), Ui::default().font(hack.clone()));
+    let retained_walks = Arc::new(AtomicUsize::new(0));
+    let eager_walks = Arc::new(AtomicUsize::new(0));
     let mut builds = (0, 0);
     #[cfg(feature = "cpu")]
     let mut before_face_swap = Vec::new();
@@ -266,9 +276,9 @@ fn implicit_face_and_fallback_changes_rewalk_nested_paint_but_keep_memo_builds()
                 builds.0 += 1;
                 let child = ui.memo("environment-inner", 0, |_| {
                     builds.1 += 1;
-                    label()
+                    panel(retained_walks.clone())
                 });
-                stack([stack([child]).w(100.).h(32.)]).w(100.).h(32.)
+                stack([child]).w(100.).h(32.)
             });
             // Also swap after the tree was built: heating closures in a setter
             // alone would be too late to reject this frame's old paint span.
@@ -276,9 +286,13 @@ fn implicit_face_and_fallback_changes_rewalk_nested_paint_but_keep_memo_builds()
                 let font = if step == 2 { &ubuntu } else { &hack };
                 retained.set_font(Some(font.clone())); eager.set_font(Some(font.clone()));
             }
+            let before = retained_walks.load(Ordering::Relaxed);
             let animating = retained.frame(tree, Some(Size::new(100., 32.)), Input::default(), 0.016).unwrap().animating;
-            eager.frame(plain(), Some(Size::new(100., 32.)), Input::default(), 0.016).unwrap();
+            eager.frame(plain(eager_walks.clone()), Some(Size::new(100., 32.)), Input::default(), 0.016).unwrap();
             let context = format!("default face/fallback step={step}, warm={warm}");
+            assert_eq!(retained_walks.load(Ordering::Relaxed) - before, usize::from(warm == 0),
+                "{context}: each environment change walks paint once, then scene copying resumes");
+            assert_eq!(eager_walks.load(Ordering::Relaxed), step * 2 + warm + 1, "{context}: eager paint walks every frame");
             assert_eq!(builds, (1, 1), "{context}: both closure levels stay retained");
             assert!(!animating, "{context}: no permanent environment wake");
             assert_eq!(retained.scene().unwrap().paint, eager.scene().unwrap().paint, "{context}: exact glyph/font paint");
@@ -294,7 +308,7 @@ fn implicit_face_and_fallback_changes_rewalk_nested_paint_but_keep_memo_builds()
             }
             let spans = scene.memos_at("environment-label").collect::<Vec<_>>();
             assert_eq!(spans.len(), 2, "{context}: nested ancestors");
-            assert!(spans.iter().all(|(_, reused)| *reused == (warm > 0)), "{context}: one paint rewalk then reuse");
+            assert!(spans.iter().all(|(_, reused)| *reused == (step > 0 || warm > 0)), "{context}: both memo trees stay retained");
             #[cfg(feature = "cpu")]
             {
                 let actual = pixels(&retained);
