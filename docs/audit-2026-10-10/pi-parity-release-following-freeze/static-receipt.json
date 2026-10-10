@@ -1,0 +1,13 @@
+{
+  "static_custody": "VERIFIED_ONLY",
+  "review_table_spans": 120,
+  "committed_manifest_spans": 55,
+  "new_test_declarations": 13,
+  "mapped_tests": 14,
+  "Rust_KSP_native_execution": "NONE",
+  "verifier": "verify.py",
+  "commands": [
+    "python3 -B docs/audit-2026-10-10/pi-parity-release-following-freeze/verify.py",
+    "git diff --check"
+  ]
+}

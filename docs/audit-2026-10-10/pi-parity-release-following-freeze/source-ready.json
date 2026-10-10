@@ -1,0 +1,813 @@
+{
+  "status": "SOURCE_READY_PREPARATION_ONLY_NOT_AUTHORIZED_NOT_MERGED",
+  "caller_trace_commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+  "caller_trace": [
+    {
+      "path": "crates/sampler-ksp/src/lib.rs",
+      "lines": [
+        1033,
+        1111
+      ],
+      "role": "initialize -> lexer/parser/sema -> eval::run",
+      "evidence": {
+        "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+        "path": "crates/sampler-ksp/src/lib.rs",
+        "blob": "a5e57862e820c58880212998c22f6b6eee8f79dd",
+        "file_sha256": "d24d91ae107e400acb92fea9c437026ff0fbd6c297a0140ba765b046862b29be",
+        "lines": [
+          1033,
+          1111
+        ],
+        "span_sha256": "cc1737e38df8f125d25b9bdb4a9c7cad44a82f53d9421b150429391ff025a0bd"
+      }
+    },
+    {
+      "path": "crates/sampler-ksp/src/lib.rs",
+      "lines": [
+        1128,
+        1167
+      ],
+      "role": "compile_initialized consumes initialized state, validates rate/bindings",
+      "evidence": {
+        "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+        "path": "crates/sampler-ksp/src/lib.rs",
+        "blob": "a5e57862e820c58880212998c22f6b6eee8f79dd",
+        "file_sha256": "d24d91ae107e400acb92fea9c437026ff0fbd6c297a0140ba765b046862b29be",
+        "lines": [
+          1128,
+          1167
+        ],
+        "span_sha256": "730a79475d925407dd823595827860ffd012593482a5a8258f70b2f5f47c4910"
+      }
+    },
+    {
+      "path": "crates/sampler-ksp/src/lib.rs",
+      "lines": [
+        649,
+        713
+      ],
+      "role": "Script::bind -> bind_modules, existing binder",
+      "evidence": {
+        "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+        "path": "crates/sampler-ksp/src/lib.rs",
+        "blob": "a5e57862e820c58880212998c22f6b6eee8f79dd",
+        "file_sha256": "d24d91ae107e400acb92fea9c437026ff0fbd6c297a0140ba765b046862b29be",
+        "lines": [
+          649,
+          713
+        ],
+        "span_sha256": "578be348b37b6ad83b1afc8ab4eef93bd2cfc6d7137bac963051590e573258db"
+      }
+    },
+    {
+      "path": "crates/sampler-kontakt/src/load.rs",
+      "lines": [
+        770,
+        803
+      ],
+      "role": "production script initialization",
+      "evidence": {
+        "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+        "path": "crates/sampler-kontakt/src/load.rs",
+        "blob": "cefa61bc0f138d27e437722c5de21f588929195c",
+        "file_sha256": "881defcef92840a65e1a0b76c157ca293fbc41ddc202cc7ffe56c9432e6b8c94",
+        "lines": [
+          770,
+          803
+        ],
+        "span_sha256": "2968c167fa939821970a168ebc433efa37eae6a296b0699c3998be568b9be6ff"
+      }
+    },
+    {
+      "path": "crates/sampler-kontakt/src/load.rs",
+      "lines": [
+        843,
+        860
+      ],
+      "role": "production compile_initialized",
+      "evidence": {
+        "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+        "path": "crates/sampler-kontakt/src/load.rs",
+        "blob": "cefa61bc0f138d27e437722c5de21f588929195c",
+        "file_sha256": "881defcef92840a65e1a0b76c157ca293fbc41ddc202cc7ffe56c9432e6b8c94",
+        "lines": [
+          843,
+          860
+        ],
+        "span_sha256": "92857ea0093ee88019847ab75c5152981d242de4a3a6f08e2577603e4d8d1599"
+      }
+    },
+    {
+      "path": "crates/sampler-kontakt/src/load.rs",
+      "lines": [
+        995,
+        1017
+      ],
+      "role": "lower_with closure -> bind_modules",
+      "evidence": {
+        "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+        "path": "crates/sampler-kontakt/src/load.rs",
+        "blob": "cefa61bc0f138d27e437722c5de21f588929195c",
+        "file_sha256": "881defcef92840a65e1a0b76c157ca293fbc41ddc202cc7ffe56c9432e6b8c94",
+        "lines": [
+          995,
+          1017
+        ],
+        "span_sha256": "14090b7aba0a1fcd692a3c1bcd8419f58b775d2ec2577bd1a150d63f9e0b2dea"
+      }
+    },
+    {
+      "path": "crates/sampler-core/src/ops.rs",
+      "lines": [
+        1194,
+        1212
+      ],
+      "role": "normal Call/Return continuation frames",
+      "evidence": {
+        "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+        "path": "crates/sampler-core/src/ops.rs",
+        "blob": "5fd265bc6d4992014a070c42d66a119cf3419870",
+        "file_sha256": "f78db293b056889f8942264894ee7929b26dd0649cdaa0c05e9d00bca5b27b29",
+        "lines": [
+          1194,
+          1212
+        ],
+        "span_sha256": "aa9a5a26fa5850b7b1d607184c6734333bf57af604f3042109ebb803a199f6d2"
+      }
+    },
+    {
+      "path": "crates/sampler-core/src/behavior.rs",
+      "lines": [
+        1527,
+        1547
+      ],
+      "role": "run_straight Call/Return frames",
+      "evidence": {
+        "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+        "path": "crates/sampler-core/src/behavior.rs",
+        "blob": "a1ff442ba50002d089859623cc2524ad818c48c5",
+        "file_sha256": "9dc3f5d936d56a0234168c4a75ff992c916497d48880f693593e1c715d9cd678",
+        "lines": [
+          1527,
+          1547
+        ],
+        "span_sha256": "f619544a4d21108be589aa653a8ed7957e2574a88ccb890e89d3070246a42b24"
+      }
+    },
+    {
+      "path": "crates/sampler-core/src/ops.rs",
+      "lines": [
+        1451,
+        1490
+      ],
+      "role": "EngineDisplay Some(value) formats supplied value; None records bound read",
+      "evidence": {
+        "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+        "path": "crates/sampler-core/src/ops.rs",
+        "blob": "5fd265bc6d4992014a070c42d66a119cf3419870",
+        "file_sha256": "f78db293b056889f8942264894ee7929b26dd0649cdaa0c05e9d00bca5b27b29",
+        "lines": [
+          1451,
+          1490
+        ],
+        "span_sha256": "efe8f2a8ceb7194298cfbf64e981129609610a6ee6eaef7dae5821a20bc757c8"
+      }
+    },
+    {
+      "path": "crates/sampler-core/src/ops.rs",
+      "lines": [
+        916,
+        927
+      ],
+      "role": "Runtime::script_text returns copied owned Text",
+      "evidence": {
+        "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+        "path": "crates/sampler-core/src/ops.rs",
+        "blob": "5fd265bc6d4992014a070c42d66a119cf3419870",
+        "file_sha256": "f78db293b056889f8942264894ee7929b26dd0649cdaa0c05e9d00bca5b27b29",
+        "lines": [
+          916,
+          927
+        ],
+        "span_sha256": "c184fd34f92d5bf8e94fe1b55ca7540a4ae396d67dd8fff3e66df6f885bdf0ae"
+      }
+    },
+    {
+      "path": "crates/sampler-core/src/ops.rs",
+      "lines": [
+        528,
+        534
+      ],
+      "role": "Text::as_str borrows retained bytes",
+      "evidence": {
+        "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+        "path": "crates/sampler-core/src/ops.rs",
+        "blob": "5fd265bc6d4992014a070c42d66a119cf3419870",
+        "file_sha256": "f78db293b056889f8942264894ee7929b26dd0649cdaa0c05e9d00bca5b27b29",
+        "lines": [
+          528,
+          534
+        ],
+        "span_sha256": "39fbdaa524aaec9a990f07bb125f22b9bb22c5fe00706846f0c0f75e132507b6"
+      }
+    }
+  ],
+  "feature_plan": [
+    {"feature": "real SGN", "contract": "one runtime operand evaluation, full real bits, existing comparison policy", "test_targets": {"compile": 2}, "primary_sections": ["Basic Operators", "random()", "real()"], "limits": "Own RNG/numeric assertions only; no native seed, order, infinity or domain proof."},
+    {"feature": "function exit", "contract": "init consumes successful function exit at nearest call; runtime function Return resumes caller, callback exit forwards then ends", "test_targets": {"functions": 8}, "primary_sections": ["exit"], "limits": "Includes one changed legacy +100 expectation; waits/stages/fuel/plan/frame/heap assertions are unexecuted."},
+    {"feature": "Ext display operands + owned Text fixture", "contract": "address args 0/2/3/4; value arg1 in distinct register; retain five owned Texts before borrowing", "test_targets": {"lib": 3, "strings": 1}, "primary_sections": ["get_engine_par_disp_ext()"], "limits": "Provided-value display does not validate binding; retain separate actual read/write/outcome/wrong-address guards. Own formatter, not native text."}
+  ],
+  "review_disposition": {"verdict": "SOURCE_REVIEW_CLEAR_ONLY", "COMPOSED-EXT-TEST-001_F1": "RETIRED_IN_SOURCE_ONLY", "parent_tree_note": "a2c288 belongs to 18c5e312; 67c3d6 belongs to c40a41. Resolved, not a source defect.", "earlier_composed_review": "BLOCKED Markdown then 401 before JSON/final; not promoted to completion or clearance."},
+  "static_validation": {"exact_seven_commit_hunk_replays": true, "five_original_assembled_delta_pairs": true, "independently_checked_review_table_spans": 120, "original_committed_source_and_test_spans": 55, "primary_archive_hashes_and_reextracted_DOM_pairs": 5, "test_declarations_added": 13, "test_declarations_changed_legacy": 1, "git_diff_check": true, "Rust_typecheck_or_syntax_clearance": false},
+  "future_root_only_gates": ["Select this immutable candidate only for a later combined batch, not the CURRENT13 release.", "If integrating onto a different tree, retrace conflicts/shared spans and obtain fresh composed review; no automatic merge.", "Root retains all build authorization. This plan requests no build, standalone validation, authentication recovery or batch append.", "After root authorization, combined typecheck and all 14 exact authored regressions require fresh candidate-specific results; no inherited PASS or test-list credit.", "Heap/audio/stage/wait/fuel/plan/frame/result/retirement assertions remain unexecuted.", "Version-bound Kontakt/Falcon/UVI behavior, native numeric/seed/order/timing/text/localization/error/parameter laws remain UNKNOWN.", "Init display remains empty; full parameter laws, initializer RNG, array equality/search, indexed inc/dec and broad math remain separate unresolved gaps.", "Complete polished product CPU AND RAM below BOTH v1 and Kontakt remains UNACHIEVED."],
+  "base": {
+    "commit": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+    "tree": "4af7c9babd93c49cdb0a026a63d25e6c433498b0"
+  },
+  "candidate": {
+    "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+    "tree": "67c3d6bf29f767f7d0429583bcaac5796b6f576f"
+  },
+  "ordered_stack": [
+    {
+      "commit": "7792bb8194134cf802a8a121d0bf9b93973cd335",
+      "parent": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+      "tree": "de3e9c3a1e899b38871e4b6c780b33a605eb605a",
+      "subject": "fix(ksp): evaluate real sgn operand once without narrowing",
+      "patch_sha256": "97b10d74b14b2e32ab683881e4cda5384f68750708699739f99fa130b03ee7da",
+      "paths": [
+        "crates/sampler-ksp/src/lower.rs",
+        "crates/sampler-ksp/tests/compile.rs",
+        "docs/KSP_REAL_SGN_ONCE_NEXT.md"
+      ]
+    },
+    {
+      "commit": "7ac37b54014152ff58acd29b89232ad806e8c474",
+      "parent": "7792bb8194134cf802a8a121d0bf9b93973cd335",
+      "tree": "6ed95417d472d142b262ce36cbab07a07ba81d15",
+      "subject": "fix(ksp): return from function exit without ending its callback",
+      "patch_sha256": "c91bff767c44f9f6514053d69416521212d9110dbdd3b473f6838291227a93f4",
+      "paths": [
+        "crates/sampler-ksp/src/eval.rs",
+        "crates/sampler-ksp/src/lower.rs"
+      ]
+    },
+    {
+      "commit": "1f0d1cfefa305c7958dd2d0bb8467ed9ae278f12",
+      "parent": "7ac37b54014152ff58acd29b89232ad806e8c474",
+      "tree": "0cadb4f69029e45963af56a666b1445ff2e6933f",
+      "subject": "test(ksp): specify scoped exits across stages waits and preemption",
+      "patch_sha256": "88fd935a008c3b9af49ed29a7709cdd9422e784f06d2d6a1c4ffd1fd265b05df",
+      "paths": [
+        "crates/sampler-ksp/tests/functions.rs"
+      ]
+    },
+    {
+      "commit": "fb283cf78aa12457422c94c45c96b4d8320396fd",
+      "parent": "1f0d1cfefa305c7958dd2d0bb8467ed9ae278f12",
+      "tree": "70ad633a202462ad28a50c6e89ec3fd91fc68b32",
+      "subject": "docs: pin function exit source spec and no-build audit evidence",
+      "patch_sha256": "000c7bc45bffeb219152a6ff50039716866048fe43859da15ad5ef3e86eb8cd4",
+      "paths": [
+        "docs/audit-2026-10-10/ksp-function-exit-next/README.md",
+        "docs/audit-2026-10-10/ksp-function-exit-next/check_source.py",
+        "docs/audit-2026-10-10/ksp-function-exit-next/primary-exit.txt",
+        "docs/audit-2026-10-10/ksp-function-exit-next/source-checks.json",
+        "docs/audit-2026-10-10/ksp-function-exit-next/syntax.cjs",
+        "docs/audit-2026-10-10/ksp-function-exit-next/syntax.json"
+      ]
+    },
+    {
+      "commit": "23683f0032a8cb2d29239919d24e931c601c1309",
+      "parent": "fb283cf78aa12457422c94c45c96b4d8320396fd",
+      "tree": "ffe9e45ddfd9d0affa27960577688fe5f9d94e2a",
+      "subject": "fix(ksp): preserve display Ext value and address operands",
+      "patch_sha256": "4c26d7149c683c51767ebf3e195df142def67a5f2271aee66b6d122b6491b77c",
+      "paths": [
+        "audits/KSP_ENGINE_DISPLAY_EXT_OPERANDS.md",
+        "crates/sampler-ksp/src/lower.rs",
+        "crates/sampler-ksp/src/lower_display_ext_tests.rs",
+        "crates/sampler-ksp/tests/strings.rs"
+      ]
+    },
+    {
+      "commit": "18c5e31217a8c960b24e68ce2bf0717f8881c774",
+      "parent": "23683f0032a8cb2d29239919d24e931c601c1309",
+      "tree": "a2c288172cf853106dfbd80fa92291366fcd1ef6",
+      "subject": "docs(ksp): pin following three-fix composition and source-only custody",
+      "patch_sha256": "e3ff1b0d7f6b1ad5eea8420c8bbed8248ee5ae7186054b9041663e12b49206fd",
+      "paths": [
+        "docs/audit-2026-10-10/ksp-following-reviewed-three-fixes/REPORT.md",
+        "docs/audit-2026-10-10/ksp-following-reviewed-three-fixes/source-manifest.json"
+      ]
+    },
+    {
+      "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+      "parent": "18c5e31217a8c960b24e68ce2bf0717f8881c774",
+      "tree": "67c3d6bf29f767f7d0429583bcaac5796b6f576f",
+      "subject": "test(ksp): retain owned display text before borrowing it",
+      "patch_sha256": "29856b7bd10d22ffaa67ab66b710b5c1b56b501b66658b8c6ddb64cfd0329c0c",
+      "paths": [
+        "crates/sampler-ksp/tests/strings.rs"
+      ]
+    }
+  ],
+  "original_cherries": [
+    {
+      "original": "54c4dd897d5fd7d6ede2fc050cc74d4da060160e",
+      "assembled": "7792bb8194134cf802a8a121d0bf9b93973cd335",
+      "added_removed_bytes_equal": true,
+      "stable_patch_ids": [
+        "87502a3083c671c2595f09486d0098827848fa59",
+        "87502a3083c671c2595f09486d0098827848fa59"
+      ],
+      "stable_patch_ids_equal": true
+    },
+    {
+      "original": "360b14f698051d5300de7a8da96bbba746cd4eb3",
+      "assembled": "7ac37b54014152ff58acd29b89232ad806e8c474",
+      "added_removed_bytes_equal": true,
+      "stable_patch_ids": [
+        "5f441388d298244fc1f87673daa99bca80428d4e",
+        "3b7683f746d64ac8726622cf52a827365316a259"
+      ],
+      "stable_patch_ids_equal": false
+    },
+    {
+      "original": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "assembled": "1f0d1cfefa305c7958dd2d0bb8467ed9ae278f12",
+      "added_removed_bytes_equal": true,
+      "stable_patch_ids": [
+        "ecc1fb95f0eac9214e60b46e78a2ba8778b824ea",
+        "ecc1fb95f0eac9214e60b46e78a2ba8778b824ea"
+      ],
+      "stable_patch_ids_equal": true
+    },
+    {
+      "original": "48bb0479b314c5a86535d3b45483ef6815afc933",
+      "assembled": "fb283cf78aa12457422c94c45c96b4d8320396fd",
+      "added_removed_bytes_equal": true,
+      "stable_patch_ids": [
+        "ac8edf9d352d84fc706464448367ae1c7e4f139b",
+        "ac8edf9d352d84fc706464448367ae1c7e4f139b"
+      ],
+      "stable_patch_ids_equal": true
+    },
+    {
+      "original": "93dad7882992ef6a63bfcfd7e432c644dfd9d60d",
+      "assembled": "23683f0032a8cb2d29239919d24e931c601c1309",
+      "added_removed_bytes_equal": true,
+      "stable_patch_ids": [
+        "8d7b98bc0f02ad8098bfaa45625f8428b6ca73c8",
+        "8d7b98bc0f02ad8098bfaa45625f8428b6ca73c8"
+      ],
+      "stable_patch_ids_equal": true
+    }
+  ],
+  "changed_files": [
+    {
+      "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+      "path": "audits/KSP_ENGINE_DISPLAY_EXT_OPERANDS.md",
+      "blob": "edba2727a5a95a50f817c63224109d950c5e2a25",
+      "file_sha256": "74a1b5856f16aaf985b111b498a4d68603351b637b5483c182f3c8a8fe1b5e15",
+      "base_blob": null
+    },
+    {
+      "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+      "path": "crates/sampler-ksp/src/eval.rs",
+      "blob": "8e5e5a6e1e9e245963426f3be1e8d3f68a2ee9b6",
+      "file_sha256": "cc939009f991d3b643018e34e1eeba876c37ce533c4b1481bd287f734114c352",
+      "base_blob": "100644 blob aa2cdfde48f3a5c064deabae70a130bad601c719"
+    },
+    {
+      "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+      "path": "crates/sampler-ksp/src/lower.rs",
+      "blob": "d7e9f4ec95dec39d3c275234811e369390d840c9",
+      "file_sha256": "05dd39d4f9afa1346c7f8096829a1cc615abf8d78177da9c086babf821dff842",
+      "base_blob": "100644 blob 799d9dcf722c405fe9f6763f4c3e4b16107512e3"
+    },
+    {
+      "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+      "path": "crates/sampler-ksp/src/lower_display_ext_tests.rs",
+      "blob": "7b0c92419f00b3810c3f29817033789b7494b7c4",
+      "file_sha256": "8f86c187c26195d57400f95c5b357c2b786cda63ee14da0c94893ebe194aa46a",
+      "base_blob": null
+    },
+    {
+      "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+      "path": "crates/sampler-ksp/tests/compile.rs",
+      "blob": "08009ef41c2efc16857ab4088f4593b34c86d9ca",
+      "file_sha256": "c62ec5b46a9ae653e6e2694b8c0fd6075f1a456d991208e4bcf0251c02e4fc05",
+      "base_blob": "100644 blob 8c618b5adc7e8fa20872b14420bcf02c8f242345"
+    },
+    {
+      "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+      "path": "crates/sampler-ksp/tests/functions.rs",
+      "blob": "21a7dac1481ec7c3da9fdb9d872e82ec41808d49",
+      "file_sha256": "69c144e7de0f6f0cebdcbb7a4934dc18486628e6a876257e63385a3de5406a77",
+      "base_blob": "100644 blob 754be97cf96c80ab973b0bf5bd411042822c6f0f"
+    },
+    {
+      "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+      "path": "crates/sampler-ksp/tests/strings.rs",
+      "blob": "45bc514253ca5cedff12ea01b3f8341a4e6eb26c",
+      "file_sha256": "00e69c22f4e2d7762ada4499857366bc744d0f88bbbadf90deaf28106978a105",
+      "base_blob": "100644 blob 68f13dd17c2b92ac0d7d95bc3b04d73e1e9392f5"
+    },
+    {
+      "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+      "path": "docs/KSP_REAL_SGN_ONCE_NEXT.md",
+      "blob": "f9706beab9266f09f4666edd658673026a466aef",
+      "file_sha256": "2a1c5b3b8d0bb6a4f9ba7c2e7a5b36facf81c9bd5dede82114926994ef820302",
+      "base_blob": null
+    },
+    {
+      "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+      "path": "docs/audit-2026-10-10/ksp-following-reviewed-three-fixes/REPORT.md",
+      "blob": "65516c88c8e047b802bfcefbd4483fe7160ebdb8",
+      "file_sha256": "2cb5336e62912f73e68aa6fdc6a3ada4bb66b81f5f5124c9562bc68f77b628dc",
+      "base_blob": null
+    },
+    {
+      "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+      "path": "docs/audit-2026-10-10/ksp-following-reviewed-three-fixes/source-manifest.json",
+      "blob": "59819ad59d77edc8f10c2980f07e69408be5e7f4",
+      "file_sha256": "ff900e62430d2f0fa4e29f2020b000c436fdd3b77b090d4b54e385af2a4d24bc",
+      "base_blob": null
+    },
+    {
+      "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+      "path": "docs/audit-2026-10-10/ksp-function-exit-next/README.md",
+      "blob": "e759d9d408c12ac2adb72427d3afe5aa018320a8",
+      "file_sha256": "bcd64e78f02eb1f4f95ef94c91df603db78d92887bea22f525ac0f62ce548f56",
+      "base_blob": null
+    },
+    {
+      "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+      "path": "docs/audit-2026-10-10/ksp-function-exit-next/check_source.py",
+      "blob": "f31b0f68dff08cb898024841ee604e3104e621bb",
+      "file_sha256": "d5f5135a63eb63a77688ef235bd57078442b16d44f8ccb63774d6df7a9252ab9",
+      "base_blob": null
+    },
+    {
+      "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+      "path": "docs/audit-2026-10-10/ksp-function-exit-next/primary-exit.txt",
+      "blob": "c487042ac05a5b387d42a0f2c8337680c019cdd8",
+      "file_sha256": "b8395df4c13071247dcf0c80d8b644181f9ed246a0e6b77d0f1dbb82f60474e4",
+      "base_blob": null
+    },
+    {
+      "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+      "path": "docs/audit-2026-10-10/ksp-function-exit-next/source-checks.json",
+      "blob": "22547e52d0745788adfd9a023718565077ae4d82",
+      "file_sha256": "e67728e387eb3c595d630618842c97bca98bc45677ef5850ee52989747e09e70",
+      "base_blob": null
+    },
+    {
+      "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+      "path": "docs/audit-2026-10-10/ksp-function-exit-next/syntax.cjs",
+      "blob": "d895dee9dd25b084cbed26950db07d2fb63ece0d",
+      "file_sha256": "77855487aee853a34cc690ab96e3d7b42e138ad519cf6fd649f6c75667368104",
+      "base_blob": null
+    },
+    {
+      "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+      "path": "docs/audit-2026-10-10/ksp-function-exit-next/syntax.json",
+      "blob": "82fdfc4ae70b2da22088a7651b716723b06c91dc",
+      "file_sha256": "f35f0a3d180730d09adfa38a5a307a2152f274052e105253227a9232db6d8395",
+      "base_blob": null
+    }
+  ],
+  "preservation": {
+    "base_unchanged_paths": 2353,
+    "candidate_entries": 2369,
+    "all_seven_commit_patches_replayed_in_memory": true,
+    "only_two_production_files_changed": [
+      "crates/sampler-ksp/src/eval.rs",
+      "crates/sampler-ksp/src/lower.rs"
+    ]
+  },
+  "immutable_inputs": [
+    {
+      "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+      "path": "docs/audit-2026-10-10/ksp-following-reviewed-three-fixes/source-manifest.json",
+      "blob": "59819ad59d77edc8f10c2980f07e69408be5e7f4",
+      "file_sha256": "ff900e62430d2f0fa4e29f2020b000c436fdd3b77b090d4b54e385af2a4d24bc"
+    },
+    {
+      "path": "original-packet.json",
+      "sha256": "332dc443a65c77bf80abb3d65d1d8c2d565f10ba7d0850dc698d58621bd294eb"
+    },
+    {
+      "path": "review-snapshot.md",
+      "sha256": "61beb4dc441fb0a5f4b41bdbba7283d3165b3a365bbf9fef042195ca1390a89f"
+    }
+  ],
+  "primary_spec_only": [
+    {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/arithmetic-commands---operators#basic-operators",
+      "section": "Basic Operators",
+      "document_sha256": "3bef630209e32d0a099168af024bded981619209b48908b4cc00743617a3df8a",
+      "excerpt_sha256": "71ea38cee3883030dc52f54b403d463496b9536ce313c428953d3de69352a191",
+      "retrieved_utc": "2026-10-10T03:05:30.511268+00:00",
+      "excerpt": "Basic Operators The following operators work on both integers and real numbers. x := y Assignment (the value of y is assigned to x ). x + y Addition. x - y Subtraction. x * y Multiplication. x / y Division. -x Negative value. abs(x) Absolute value. signbit(x) Sign bit (returns 1 if the number is negative, 0 otherwise). sgn(x) Signum function (returns -1 if the number is negative, 0 if it's zero, 1 if it's positive)."
+    },
+    {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/arithmetic-commands---operators#random--",
+      "section": "random()",
+      "document_sha256": "3bef630209e32d0a099168af024bded981619209b48908b4cc00743617a3df8a",
+      "excerpt_sha256": "4378bfee255e1a292bc94aaf3b7e33c9e61927ee87138ef4345eb8e0f96c4fee",
+      "retrieved_utc": "2026-10-10T03:05:30.511268+00:00",
+      "excerpt": "random() random(<min>, <max>) Generates a random integer between (and including) <min> and <max> . Examples on init\n    declare $rnd_amt\n    declare $new_vel\nend on\n\non note\n    $rnd_amt := $EVENT_VELOCITY * 10 / 100\n    $new_vel := random($EVENT_VELOCITY - $rnd_amt, $EVENT_VELOCITY + $rnd_amt)\n\n    { mirror invalid velocity values into the allowed velocity range }\n    if ($new_vel > 127)\n        $new_vel := 127 - ($new_vel mod 127)\n    end if\n\n    if ($new_vel < 1)\n        $new_vel := 1 + abs($new_vel)\n    end if\n\n    change_velo($EVENT_ID, $new_vel)\nend on Randomly changing velocities by ±10 percent."
+    },
+    {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/arithmetic-commands---operators#real--",
+      "section": "real()",
+      "document_sha256": "3bef630209e32d0a099168af024bded981619209b48908b4cc00743617a3df8a",
+      "excerpt_sha256": "57270c689a05537fc392290b45bcbe775b05bcffa5591bf936c949a86cbebdf5",
+      "retrieved_utc": "2026-10-10T03:05:30.511268+00:00",
+      "excerpt": "real() real(<integer-value>) Converts an integer value into a real number. Examples on init\n    declare ~velocity_disp\nend on\n\non note\n    ~velocity_disp := real($EVENT_VELOCITY) / 127.0\n    message(~velocity_disp)\nend on Displays the event velocity in the range from 0.0 to 1.0. See Also int()"
+    },
+    {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/general-commands#exit",
+      "section": "exit",
+      "document_sha256": "9d71af86f192abff29804487e0c00d7b7b84b9fa191d04d4477f38b893cff0a2",
+      "excerpt_sha256": "b8395df4c13071247dcf0c80d8b644181f9ed246a0e6b77d0f1dbb82f60474e4",
+      "retrieved_utc": "2026-10-10T05:06:52.052195+00:00",
+      "excerpt": "exit exit Immediately stops a callback or exits a function. Remarks exit is a very strong command. Be careful when using it, especially when dealing with larger scripts. If used within a function, exit only exits the function, but not the entire callback. Examples on note\n    if (not in_range($EVENT_NOTE, 60, 71))\n        exit\n    end if\n\n    { from here on, only notes between C3 to B3 will be processed }\nend on Useful for quickly setting up key ranges to be affected by the script. See Also wait() stop_wait()"
+    },
+    {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameter-commands#get_engine_par_disp_ext--",
+      "section": "get_engine_par_disp_ext()",
+      "document_sha256": "df2fe7192f32df7c4a738c713663bafdfec3630c2821fd9afe1887c7d5ed006d",
+      "excerpt_sha256": "d1ed157ba48c640e622c65bf3c4481934e60f6c3e584c9ee5db1ca007ea156a4",
+      "retrieved_utc": "2026-10-10T03:03:28.593743+00:00",
+      "excerpt": "get_engine_par_disp_ext() get_engine_par_disp_ext(<parameter>, <value>, <group>, <slot>, <generic>) Returns the display value of a specific engine parameter with an arbitrary value, as a string. <parameter> Specifies the parameter by using one of the built-in engine parameter constants . <value> The value to which the specified parameter is set. The range of values is always 0 to 1000000 , except for switches, in which case it is 0 or 1 , and certain engine parameters which are stepped instead of continuous. These will either have specific constants provided, or a generic integer span of values, which will be separately noted in the Engine Parameters section. <group> The index (zero-based) of the group in which the specified parameter resides. If the specified parameter resides on an Instrument level, enter -1 . Buses and Main FX also reside on Instrument level, so you must set <group> to -1 if you want to address a bus. <slot> The slot index (zero-based) of the specified parameter. It applies only to group/instrument effects, modulators and modulation intensities. For group/instrument effects, this parameter specifies the slot in which the effect resides (zero-based). For modulators and modulation intensities, this parameters specifies the index which you can retrieve by using get_mod_idx() . For all other applications, set this parameter to -1 . <generic> This parameter applies to instrument effects and to internal modulators. For instrument effects, this parameter distinguishes between: $NI_SEND_BUS : Send Effect $NI_INSERT_BUS : Insert Effect $NI_MAIN_BUS : Main Effect For buses, this parameter specifies the actual bus: $NI_BUS_OFFSET + [0 ... 15] One of the 16 buses For internal modulators, this parameter specifies the modulation slider which you can retrieve by using get_target_idx() . For Flex Envelope, this parameter specifies which envelope stage to target when using $ENGINE_PAR_FLEXENV_STAGE_TIME , $ENGINE_PAR_FLEXENV_STAGE_LEVEL and $ENGINE_PAR_FLEXENV_STAGE_SLOPE . For Step Modulator, this parameter specifies which step value to target when using $ENGINE_PAR_STEPSEQ_STEP_VALUE . For all other applications, set this parameter to -1 . Examples on init\n    declare $value\n\n    declare ui_knob $Cutoff (0, 1000000, 1)\n    declare ui_knob $Macro (0, 1000000, 10000)\n    declare ui_knob $MacroAmt (-1000000, 1000000, 10000)\n\n    $MacroAmt := -500000\n\n    set_knob_defval($Cutoff, 1000000)\n    set_knob_defval($MacroAmt, 0)\n\n    set_knob_unit($Cutoff, $KNOB_UNIT_HZ)\n    set_knob_unit($Macro, $KNOB_UNIT_PERCENT)\n    set_knob_unit($MacroAmt, $KNOB_UNIT_PERCENT)\n\n    make_persistent($Cutoff)\n    make_persistent($Macro)\n    make_persistent($MacroAmt)\n\n    set_engine_par($ENGINE_PAR_EFFECT_TYPE, $EFFECT_TYPE_FILTER, -1, 0, $NI_INSERT_BUS)\nend on\n\nfunction SetCutoff()\n    $value := int(real($Cutoff) + (real($Macro) * real($MacroAmt) * 1.0e-6))\n\n    if ($value < 0)\n        $value := 0\n    end if\n\n    if ($value > 1000000)\n        $value := 1000000\n    end if\n\n    set_engine_par($ENGINE_PAR_CUTOFF, $value, -1, 0, $NI_INSERT_BUS)\n    set_knob_label($Cutoff, get_engine_par_disp_ext($ENGINE_PAR_CUTOFF, $Cutoff, -1, 0, $NI_INSERT_BUS))\nend function\n\non persistence_changed\n    call SetCutoff()\nend on\n\non ui_controls\n    call SetCutoff()\nend on Query the baseline filter cutoff value despite the actual engine parameter value being different, due to the additional offset from a macro-style control."
+    }
+  ],
+  "tests": [
+    {
+      "package": "sampler-ksp",
+      "target": "compile",
+      "filter": "real_sgn_note_evaluates_operand_once_and_preserves_following_rng_draw",
+      "exact": true,
+      "status": "NOT_RUN_NOT_COMPILED",
+      "evidence": {
+        "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+        "path": "crates/sampler-ksp/tests/compile.rs",
+        "blob": "08009ef41c2efc16857ab4088f4593b34c86d9ca",
+        "file_sha256": "c62ec5b46a9ae653e6e2694b8c0fd6075f1a456d991208e4bcf0251c02e4fc05",
+        "lines": [
+          1301,
+          1356
+        ],
+        "span_sha256": "1f4ba0a45278b8ce40e3841c91dfefcb082aca9562aa7791aac38f836d6210b2"
+      }
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "compile",
+      "filter": "real_sgn_note_reuses_full_operand_bits_and_preserves_comparison_policy",
+      "exact": true,
+      "status": "NOT_RUN_NOT_COMPILED",
+      "evidence": {
+        "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+        "path": "crates/sampler-ksp/tests/compile.rs",
+        "blob": "08009ef41c2efc16857ab4088f4593b34c86d9ca",
+        "file_sha256": "c62ec5b46a9ae653e6e2694b8c0fd6075f1a456d991208e4bcf0251c02e4fc05",
+        "lines": [
+          1358,
+          1403
+        ],
+        "span_sha256": "e5328067d0dc96f49aa1d8c62f0b0d9fc739e7cf8fe759776f1ea1fa691801f9"
+      }
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "functions",
+      "filter": "function_exit_init_resumes_nested_and_repeated_callers_but_callback_exit_stops",
+      "exact": true,
+      "status": "NOT_RUN_NOT_COMPILED",
+      "evidence": {
+        "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+        "path": "crates/sampler-ksp/tests/functions.rs",
+        "blob": "21a7dac1481ec7c3da9fdb9d872e82ec41808d49",
+        "file_sha256": "69c144e7de0f6f0cebdcbb7a4934dc18486628e6a876257e63385a3de5406a77",
+        "lines": [
+          263,
+          290
+        ],
+        "span_sha256": "6e9d42364eb806880ec0f405f8412fac9479bc4b99fe4e13cd7f6495be211849"
+      }
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "functions",
+      "filter": "function_exit_runtime_resumes_callers_without_forwarding_intermediate_pitch",
+      "exact": true,
+      "status": "NOT_RUN_NOT_COMPILED",
+      "evidence": {
+        "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+        "path": "crates/sampler-ksp/tests/functions.rs",
+        "blob": "21a7dac1481ec7c3da9fdb9d872e82ec41808d49",
+        "file_sha256": "69c144e7de0f6f0cebdcbb7a4934dc18486628e6a876257e63385a3de5406a77",
+        "lines": [
+          292,
+          327
+        ],
+        "span_sha256": "fa22d08e22781918ea8c5fe7cabc2a9010ed81272d3e7439e6fe25c146252448"
+      }
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "functions",
+      "filter": "function_and_callback_exit_deliver_note_release_controller_once_and_stop_plan_tail",
+      "exact": true,
+      "status": "NOT_RUN_NOT_COMPILED",
+      "evidence": {
+        "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+        "path": "crates/sampler-ksp/tests/functions.rs",
+        "blob": "21a7dac1481ec7c3da9fdb9d872e82ec41808d49",
+        "file_sha256": "69c144e7de0f6f0cebdcbb7a4934dc18486628e6a876257e63385a3de5406a77",
+        "lines": [
+          355,
+          401
+        ],
+        "span_sha256": "89fddc2d069db853f6cc8103f430aa85422fd2403c7f5246e50c261aaaf37691"
+      }
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "functions",
+      "filter": "function_exit_after_wait_preserves_wait_time_stage_delivery_without_duplicates",
+      "exact": true,
+      "status": "NOT_RUN_NOT_COMPILED",
+      "evidence": {
+        "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+        "path": "crates/sampler-ksp/tests/functions.rs",
+        "blob": "21a7dac1481ec7c3da9fdb9d872e82ec41808d49",
+        "file_sha256": "69c144e7de0f6f0cebdcbb7a4934dc18486628e6a876257e63385a3de5406a77",
+        "lines": [
+          403,
+          446
+        ],
+        "span_sha256": "5378f2cdd82550a0f1b4213a6cf5906a1f91004832d18a39627564598dbb3417"
+      }
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "functions",
+      "filter": "function_exit_returns_are_not_deferred_note_flush_barriers",
+      "exact": true,
+      "status": "NOT_RUN_NOT_COMPILED",
+      "evidence": {
+        "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+        "path": "crates/sampler-ksp/tests/functions.rs",
+        "blob": "21a7dac1481ec7c3da9fdb9d872e82ec41808d49",
+        "file_sha256": "69c144e7de0f6f0cebdcbb7a4934dc18486628e6a876257e63385a3de5406a77",
+        "lines": [
+          448,
+          470
+        ],
+        "span_sha256": "86216a15129171ac89204f81f402278c8379b4cf3153183030515641de060c79"
+      }
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "functions",
+      "filter": "function_exit_frames_survive_each_pc_fuel_boundary_wait_and_plan_switch_by_instance",
+      "exact": true,
+      "status": "NOT_RUN_NOT_COMPILED",
+      "evidence": {
+        "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+        "path": "crates/sampler-ksp/tests/functions.rs",
+        "blob": "21a7dac1481ec7c3da9fdb9d872e82ec41808d49",
+        "file_sha256": "69c144e7de0f6f0cebdcbb7a4934dc18486628e6a876257e63385a3de5406a77",
+        "lines": [
+          472,
+          523
+        ],
+        "span_sha256": "ac29485fdf09e19dfe91439c12e97713db22fe72ca0ce5aef5856d80652cc3ca"
+      }
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "functions",
+      "filter": "function_exit_never_hides_invalid_unreachable_source",
+      "exact": true,
+      "status": "NOT_RUN_NOT_COMPILED",
+      "evidence": {
+        "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+        "path": "crates/sampler-ksp/tests/functions.rs",
+        "blob": "21a7dac1481ec7c3da9fdb9d872e82ec41808d49",
+        "file_sha256": "69c144e7de0f6f0cebdcbb7a4934dc18486628e6a876257e63385a3de5406a77",
+        "lines": [
+          525,
+          536
+        ],
+        "span_sha256": "598268ec41d640f358ff0cac362cb32b1c3f5f708636f438f710b8ef7858dcc1"
+      }
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "lib",
+      "filter": "lower::display_ext_tests::display_ext_constant_operands_keep_value_group_slot_and_generic_distinct",
+      "exact": true,
+      "status": "NOT_RUN_NOT_COMPILED",
+      "evidence": {
+        "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+        "path": "crates/sampler-ksp/src/lower_display_ext_tests.rs",
+        "blob": "7b0c92419f00b3810c3f29817033789b7494b7c4",
+        "file_sha256": "8f86c187c26195d57400f95c5b357c2b786cda63ee14da0c94893ebe194aa46a",
+        "lines": [
+          96,
+          138
+        ],
+        "span_sha256": "ac4329b54a958bf440115463dba515ad9d3b4e8fb645826e2f5b403fc6acbdf2"
+      }
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "lib",
+      "filter": "lower::display_ext_tests::display_ext_dynamic_operands_are_loaded_once_into_nonaliasing_registers",
+      "exact": true,
+      "status": "NOT_RUN_NOT_COMPILED",
+      "evidence": {
+        "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+        "path": "crates/sampler-ksp/src/lower_display_ext_tests.rs",
+        "blob": "7b0c92419f00b3810c3f29817033789b7494b7c4",
+        "file_sha256": "8f86c187c26195d57400f95c5b357c2b786cda63ee14da0c94893ebe194aa46a",
+        "lines": [
+          140,
+          163
+        ],
+        "span_sha256": "3a6f2dcff3ee370ade49f0eada0ba4ff22a629d1799c4bd554aec4fafcd5d4d8"
+      }
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "lib",
+      "filter": "lower::display_ext_tests::display_ext_semantic_admission_still_requires_all_five_integer_operands",
+      "exact": true,
+      "status": "NOT_RUN_NOT_COMPILED",
+      "evidence": {
+        "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+        "path": "crates/sampler-ksp/src/lower_display_ext_tests.rs",
+        "blob": "7b0c92419f00b3810c3f29817033789b7494b7c4",
+        "file_sha256": "8f86c187c26195d57400f95c5b357c2b786cda63ee14da0c94893ebe194aa46a",
+        "lines": [
+          165,
+          174
+        ],
+        "span_sha256": "b48190664dfa5b908e728987f57454c8288533debc84aadc97e3c0f2fe8c7da8"
+      }
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "strings",
+      "filter": "display_ext_supplied_constant_and_dynamic_values_use_existing_pan_volume_tune_formatter",
+      "exact": true,
+      "status": "NOT_RUN_NOT_COMPILED",
+      "evidence": {
+        "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+        "path": "crates/sampler-ksp/tests/strings.rs",
+        "blob": "45bc514253ca5cedff12ea01b3f8341a4e6eb26c",
+        "file_sha256": "00e69c22f4e2d7762ada4499857366bc744d0f88bbbadf90deaf28106978a105",
+        "lines": [
+          742,
+          818
+        ],
+        "span_sha256": "5b6b2b266bf76bf7bc6407120c17b46b24d83790ec12a92b3e3cf0ed50886369"
+      }
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "functions",
+      "filter": "nested_function_branches_loops_and_exit_keep_polyphonic_state_and_caller_targets",
+      "exact": true,
+      "status": "NOT_RUN_NOT_COMPILED",
+      "evidence": {
+        "commit": "c40a41d87ec6f807e8db236fe9831f58132021fd",
+        "path": "crates/sampler-ksp/tests/functions.rs",
+        "blob": "21a7dac1481ec7c3da9fdb9d872e82ec41808d49",
+        "file_sha256": "69c144e7de0f6f0cebdcbb7a4934dc18486628e6a876257e63385a3de5406a77",
+        "lines": [
+          147,
+          188
+        ],
+        "span_sha256": "12582ea0285bdb1829d3d8648844d9d524bebeb34bdf012c0d23531428e39ee8"
+      }
+    }
+  ],
+  "limits": {
+    "new_tests": 13,
+    "changed_legacy_tests": 1,
+    "rust": "NOT_RUN_NOT_COMPILED",
+    "native": "UNKNOWN",
+    "CPU_AND_RAM_below_BOTH_v1_Kontakt": "UNACHIEVED",
+    "build_authorization": false,
+    "automatic_merge": false,
+    "release_checkout_writes": false,
+    "mutable_shared_evidence_dependencies": false
+  }
+}
