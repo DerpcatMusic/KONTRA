@@ -1,5 +1,6 @@
 { Synthetic own source, no library/bank/sample/native fixture. }
 on init
+    pgs_create_key(RPN_NKA_START, 1)
     declare %data[1] := (7)
     declare $m
     declare $a
@@ -12,7 +13,11 @@ on note
     $m := mf_reset()
     wait_async($m)
     set_nrpn(16383, 0)
-    $a := save_array_str(%data, "rpn-synthetic-neighbor.nka")
+    pgs_set_key_val(RPN_NKA_START, 0, 1)
+end on
+{ NKA jobs require an approved callback; on note is deliberately rejected. }
+on pgs_changed
+    $a := save_array_str(%data, "/rpn-synthetic-neighbor.nka")
     wait_async($a)
     $done := 42
 end on
