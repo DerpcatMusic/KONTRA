@@ -528,6 +528,7 @@ impl SamplerParams {
             "keyboard": {"heard": self.shared.heard.iter().map(|v| v.load(Ordering::Relaxed)).collect::<Vec<_>>(),
                 "played": self.shared.played.iter().map(|v| v.load(Ordering::Relaxed)).collect::<Vec<_>>()},
         });
+        context["ui_cpu_phases"] = self.shared.ui_activity.phase_report();
         context["log_flush_error"] =
             serde_json::json!(crate::diagnostics::flush(std::time::Duration::from_secs(2)).err());
         context
@@ -2124,7 +2125,10 @@ impl BackgroundTask for Load {
         let shared = &params.shared;
         shared.ui_activity.add(UiCount::WorkerTicks, 1);
         shared.flush_ready();
-        shared.apply_effects();
+        {
+            let _effects = shared.ui_activity.span(ui_activity::Phase::WorkerScriptEffects);
+            shared.apply_effects();
+        }
         shared.with_parts(|parts| {
             for part in parts {
                 if let Some(ingress) = part.ingress.lock_unpoisoned().as_mut()
