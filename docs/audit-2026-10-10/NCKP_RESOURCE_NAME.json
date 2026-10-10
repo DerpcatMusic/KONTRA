@@ -1,0 +1,186 @@
+{
+  "schema": "nckp-resource-discovery-evidence-v1",
+  "base_sha": "9075da681fbca5019640619822a4540bfd2a57a1",
+  "base_tree": "ee617e185aecada9d74e22b5e1c2ad499af23f28",
+  "implementation_sha": "8bbbbb978e5ad09b62373f88cee447b71f70ba3d",
+  "implementation_tree": "9613782fd95efd91fdd157f0693e29f4f8cfa389",
+  "native_requirements": [
+    {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#load_performance_view--",
+      "section": "load_performance_view()",
+      "document_sha256": "ad269b9e26a32e9f1a8aea9b00d8e199af43551adb3b47cf71b93a7234e09d5e",
+      "retrieved_utc": "2026-10-10T02:13:00.540072+00:00",
+      "excerpt": "load_performance_view() load_performance_view(<filename>) Loads a performance view file (.nckp) that was created in the Creator Tools GUI Designer. <filename> The filename of the .nckp file without extension, entered as a string. Remarks Only one .nkcp performance view file can be loaded per script slot. This command is only available in the on init callback. This command cannot be used alongside make_perfview . The performance view file (.nkcp) should be in the performance_view subfolder of the resource container. All contained controls are accessible as if they were declared and set up in KSP; variable names can be identified in Creator Tools. More information in the Creator Tools manual . Examples on init\n    load_performance_view(\u201cperformanceView\u201d)\nend on\n\non ui_control ($testButton)\n    if ($testButton = 0)\n        set_control_par(get_ui_id($testSlider), $CONTROL_PAR_HIDE, $HIDE_PART_WHOLE_CONTROL)\n    else\n        set_control_par(get_ui_id($testSlider), $CONTROL_PAR_HIDE, $HIDE_PART_NOTHING)\n    end if\nend on Loads a performance view file and then defines some basic behavior involving two of the contained controls. See Also Resource Container",
+      "authority": "Immutable official vendor specification; equivalent for requirements only, NOT native execution.",
+      "applicability": "Current unversioned official page archived2026-10-10. NI reference8.13.1 not executed; UVI installed-host version/native behavior UNKNOWN. Section wording takes precedence over older own-test expectations."
+    },
+    {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/advanced-concepts#preprocessor---system-scripts",
+      "section": "Preprocessor & System Scripts",
+      "document_sha256": "10063fe89b2b8b2bb1f5176154293b4351dcb02c3ccb53a872dedb171a91df14",
+      "archive_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/ksp-advanced.html",
+      "authority": "Static vendor specification; NOT native runtime parity"
+    }
+  ],
+  "rea_receipt": {
+    "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/roadmap-round4-rea-current-document.json",
+    "sha256": "c8e32e5a444e67b40f11d5b5c53fd2e3950f696febee4e8505270ffdd580f9ef",
+    "status": "target_unavailable; no native witness"
+  },
+  "source": [
+    {
+      "sha": "8bbbbb978e5ad09b62373f88cee447b71f70ba3d",
+      "path": "crates/sampler-ksp/src/nckp.rs",
+      "start_line": 17,
+      "end_line": 79,
+      "symbol": "view_name/view_in",
+      "file_sha256": "4ae831756a3fb76cf6481dd285cdf210d3ac569589842c94735c7083af26bf06",
+      "span_sha256": "ed962500bb35ecb12408332371a3cae2eb02733fd609faf12bfb08121e787adf",
+      "url": "https://github.com/DerpcatMusic/KONTRA/blob/8bbbbb978e5ad09b62373f88cee447b71f70ba3d/crates/sampler-ksp/src/nckp.rs#L17-L79",
+      "status": "SOURCE_ONLY_UNRUN"
+    },
+    {
+      "sha": "8bbbbb978e5ad09b62373f88cee447b71f70ba3d",
+      "path": "crates/sampler-kontakt/src/load.rs",
+      "start_line": 737,
+      "end_line": 791,
+      "symbol": "initialize_scripts production caller",
+      "file_sha256": "881defcef92840a65e1a0b76c157ca293fbc41ddc202cc7ffe56c9432e6b8c94",
+      "span_sha256": "fa865c6f09374be706a8295da41cd4f45c2e8ed2d27155d65a4d8c4073b3153d",
+      "url": "https://github.com/DerpcatMusic/KONTRA/blob/8bbbbb978e5ad09b62373f88cee447b71f70ba3d/crates/sampler-kontakt/src/load.rs#L737-L791",
+      "status": "SOURCE_ONLY_UNRUN"
+    },
+    {
+      "sha": "8bbbbb978e5ad09b62373f88cee447b71f70ba3d",
+      "path": "crates/sampler-ksp/src/lib.rs",
+      "start_line": 997,
+      "end_line": 1044,
+      "symbol": "initialize_inner compiler frontend",
+      "file_sha256": "444bec2d3835c21e33e672d07633ecd4d4f04109f1ec3236133e2905cf67182c",
+      "span_sha256": "14cc2e1dc4dd623819efc2119c949c0e6a7ea2aa4436fe7f1759b1cb5d6e6804",
+      "url": "https://github.com/DerpcatMusic/KONTRA/blob/8bbbbb978e5ad09b62373f88cee447b71f70ba3d/crates/sampler-ksp/src/lib.rs#L997-L1044",
+      "status": "SOURCE_ONLY_UNRUN"
+    },
+    {
+      "sha": "8bbbbb978e5ad09b62373f88cee447b71f70ba3d",
+      "path": "crates/sampler-ksp/src/sema.rs",
+      "start_line": 438,
+      "end_line": 506,
+      "symbol": "performance controls",
+      "file_sha256": "ebe71cd32cec320df7adffaaa41e06d644c3373705c00b6a4fcd3daa83b9f755",
+      "span_sha256": "85e596f42161ba16ae9c905183f13f7f1da3f19271888d1a2412d88067b04813",
+      "url": "https://github.com/DerpcatMusic/KONTRA/blob/8bbbbb978e5ad09b62373f88cee447b71f70ba3d/crates/sampler-ksp/src/sema.rs#L438-L506",
+      "status": "SOURCE_ONLY_UNRUN"
+    },
+    {
+      "sha": "8bbbbb978e5ad09b62373f88cee447b71f70ba3d",
+      "path": "crates/sampler-ksp/src/eval.rs",
+      "start_line": 794,
+      "end_line": 849,
+      "symbol": "apply_performance_view",
+      "file_sha256": "194f17650a36530ae02f5d3f6aceebc4bc8238966b4f350f3c69041597dde768",
+      "span_sha256": "c1b0b01ad7176324509c3436b61e1eed5dc81254e9d878b749f32f757506fb87",
+      "url": "https://github.com/DerpcatMusic/KONTRA/blob/8bbbbb978e5ad09b62373f88cee447b71f70ba3d/crates/sampler-ksp/src/eval.rs#L794-L849",
+      "status": "SOURCE_ONLY_UNRUN"
+    },
+    {
+      "sha": "8bbbbb978e5ad09b62373f88cee447b71f70ba3d",
+      "path": "crates/sampler-ksp/tests/nckp.rs",
+      "start_line": 4,
+      "end_line": 58,
+      "symbol": "resource_name_comes_from_a_complete_literal_init_command",
+      "file_sha256": "d9824c1a608fdbbe35d135d389672bd0b6592afb345ad417bd4c37f0a56d69e5",
+      "span_sha256": "afc59ce171c7564ec6d5fb75112725ce4e804e2b480a0ab854ea75bf83e7012d",
+      "url": "https://github.com/DerpcatMusic/KONTRA/blob/8bbbbb978e5ad09b62373f88cee447b71f70ba3d/crates/sampler-ksp/tests/nckp.rs#L4-L58",
+      "status": "SOURCE_ONLY_UNRUN"
+    },
+    {
+      "sha": "8bbbbb978e5ad09b62373f88cee447b71f70ba3d",
+      "path": "crates/sampler-ksp/tests/nckp.rs",
+      "start_line": 61,
+      "end_line": 94,
+      "symbol": "resource_name_never_guesses_from_nonliteral_or_ambiguous_source",
+      "file_sha256": "d9824c1a608fdbbe35d135d389672bd0b6592afb345ad417bd4c37f0a56d69e5",
+      "span_sha256": "111c737eb2b7c52af192c546b58deef8255a6ec3b90517c6972478fa1f0e4b7a",
+      "url": "https://github.com/DerpcatMusic/KONTRA/blob/8bbbbb978e5ad09b62373f88cee447b71f70ba3d/crates/sampler-ksp/tests/nckp.rs#L61-L94",
+      "status": "SOURCE_ONLY_UNRUN"
+    },
+    {
+      "sha": "8bbbbb978e5ad09b62373f88cee447b71f70ba3d",
+      "path": "crates/sampler-kontakt/tests/nckp_resources.rs",
+      "start_line": 66,
+      "end_line": 104,
+      "symbol": "precompile_discovery_loads_real_controls_not_comment_or_message_decoys",
+      "file_sha256": "1acaa8653a81742f59c1592a4c55edbf3cd38426a25510aba9cb674f06aedc92",
+      "span_sha256": "defc97d1139aeef0c71dc3b4dbb8f9029722251b8ee7a70e92746563e7c94cf6",
+      "url": "https://github.com/DerpcatMusic/KONTRA/blob/8bbbbb978e5ad09b62373f88cee447b71f70ba3d/crates/sampler-kontakt/tests/nckp_resources.rs#L66-L104",
+      "status": "SOURCE_ONLY_UNRUN"
+    },
+    {
+      "sha": "8bbbbb978e5ad09b62373f88cee447b71f70ba3d",
+      "path": "crates/sampler-kontakt/tests/nckp_resources.rs",
+      "start_line": 107,
+      "end_line": 135,
+      "symbol": "precompile_discovery_does_not_read_a_fragment_or_later_unrelated_literal",
+      "file_sha256": "1acaa8653a81742f59c1592a4c55edbf3cd38426a25510aba9cb674f06aedc92",
+      "span_sha256": "86ff33a2e0e50182707d222d05ebc2aba393f94823d999cf4a7afe54c6588aef",
+      "url": "https://github.com/DerpcatMusic/KONTRA/blob/8bbbbb978e5ad09b62373f88cee447b71f70ba3d/crates/sampler-kontakt/tests/nckp_resources.rs#L107-L135",
+      "status": "SOURCE_ONLY_UNRUN"
+    },
+    {
+      "sha": "8bbbbb978e5ad09b62373f88cee447b71f70ba3d",
+      "path": "crates/sampler-kontakt/tests/nckp_resources.rs",
+      "start_line": 138,
+      "end_line": 163,
+      "symbol": "literal_resource_read_failures_keep_the_existing_load_diagnostic",
+      "file_sha256": "1acaa8653a81742f59c1592a4c55edbf3cd38426a25510aba9cb674f06aedc92",
+      "span_sha256": "34e3fde2a6a967b3520e5740c0eb362923de83c19c54c1c251199f7e96c95938",
+      "url": "https://github.com/DerpcatMusic/KONTRA/blob/8bbbbb978e5ad09b62373f88cee447b71f70ba3d/crates/sampler-kontakt/tests/nckp_resources.rs#L138-L163",
+      "status": "SOURCE_ONLY_UNRUN"
+    }
+  ],
+  "source_only_checks": [
+    {
+      "command": "rustfmt --edition 2024 --check crates/sampler-ksp/src/nckp.rs crates/sampler-ksp/tests/nckp.rs crates/sampler-kontakt/tests/nckp_resources.rs",
+      "status": "PASS_FORMATTING_SYNTAX_ONLY"
+    },
+    {
+      "command": "git diff --cached --check",
+      "status": "PASS_WHITESPACE_ONLY"
+    }
+  ],
+  "validation_owner": "integration worker only; future combined serialized run",
+  "requested_test_targets": [
+    {
+      "package": "sampler-ksp",
+      "target": "nckp",
+      "tests": [
+        "resource_name_comes_from_a_complete_literal_init_command",
+        "resource_name_never_guesses_from_nonliteral_or_ambiguous_source"
+      ],
+      "status": "UNRUN"
+    },
+    {
+      "package": "sampler-kontakt",
+      "target": "nckp_resources",
+      "tests": [
+        "precompile_discovery_loads_real_controls_not_comment_or_message_decoys",
+        "precompile_discovery_does_not_read_a_fragment_or_later_unrelated_literal",
+        "literal_resource_read_failures_keep_the_existing_load_diagnostic"
+      ],
+      "fixtures": "only authored temporary loose JSON files; no native NKI/host/reader",
+      "status": "UNRUN"
+    }
+  ],
+  "limitations": [
+    "Literal-only precompile discovery; dynamic and complete concatenated expressions return None, never a fragment.",
+    "Multiple syntactic requests/outside-init/user-function requests or make_perfview conflicts return None conservatively.",
+    "Same current per-script empty inherited preprocessor set; native cross-slot conditions not proved.",
+    "None is not diagnostic PASS; existing fallback handles/default view remain.",
+    "Native escaping/resource-edge/keyboard/control-schema/Komplete UI/full UI parity UNKNOWN.",
+    "Extra preparation AST pass; no CPU or RAM improvement claimed."
+  ],
+  "native_parity": "UNKNOWN",
+  "comparative_cpu_ram_acceptance": "UNACHIEVED",
+  "next": "Cherry-pick only if coordinator approves; integration-owned future combined Rust validation, then native witnesses/comparable measurements"
+}
