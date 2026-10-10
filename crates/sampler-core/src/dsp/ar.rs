@@ -45,7 +45,7 @@ pub(crate) struct Ar {
     pub(crate) modulation_index: usize,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Ramp {
     current: f32,
     target: f32,
@@ -275,7 +275,7 @@ mod tests {
         assert!(!ramp.active);
     }
 
-    fn render(mode: u8, rate: u32, mask: u8, partition: usize) -> (Vec<[f32; 2]>, [[f64; 2]; CELLS]) {
+    fn render(mode: u8, rate: u32, mask: u8, partition: usize) -> (Vec<[f32; 2]>, [[f64; 2]; CELLS], Vec<[Ramp; 3]>) {
         let mut ar = ArSettings {
             mode,
             cutoff: Parameter::Constant(0.5135),
@@ -284,6 +284,7 @@ mod tests {
         let mut state = ProcessorState::default();
         let mut cells = [[0.; 2]; CELLS];
         let mut audio = Vec::new();
+        let mut snapshots = Vec::new();
         for (quantum, knobs) in [[0.5135, 0.7], [0.35, 0.3], [0.35, 0.3], [0.8, 0.9]].into_iter().enumerate() {
             ar.parameters = knobs.map(PreparedParameter::Constant);
             let mut offset = 0;
@@ -303,8 +304,51 @@ mod tests {
                 }
                 offset += len;
             }
+            let read = |i: usize| cells[i / 2][i % 2] as f32;
+            snapshots.push(std::array::from_fn(|i| {
+                let at = 22 + i * 5;
+                Ramp {
+                    current: read(at), target: read(at + 1), delta: read(at + 2),
+                    remaining: read(at + 3) as u32, active: read(at + 4) != 0.,
+                }
+            }));
         }
-        (audio, cells)
+        (audio, cells, snapshots)
+    }
+
+    #[test]
+    fn ar_test_only_runtime_matches_natural_native_wrapper_checkpoints() {
+        let native: serde_json::Value = serde_json::from_str(include_str!("ar_runtime_vectors.json")).unwrap();
+        assert_eq!(native["binary_sha256"].as_str().unwrap(),
+            "0fe6356e0879d058b6e5b73507c54c5e345cea451b35287c974e438291d4dae8");
+        let cases = native["cases"].as_array().unwrap();
+        assert_eq!(cases.len(), 180);
+        for case in cases {
+            let mode = case["mode"].as_u64().unwrap() as u8;
+            let rate = case["rate"].as_u64().unwrap() as u32;
+            let mask = case["mask"].as_u64().unwrap() as u8;
+            let (audio, _, ramps) = render(mode, rate, mask, 32);
+            for quantum in 0..4 {
+                for (point, at) in [0, 1, 7, 15, 31].into_iter().enumerate() {
+                    for ch in 0..2 {
+                        let actual = audio[quantum * 32 + at][ch];
+                        let expected = case["checkpoints"][quantum][point][ch].as_f64().unwrap() as f32;
+                        assert!((actual - expected).abs() <= 2e-6,
+                            "mode={mode} rate={rate} mask={mask} quantum={quantum} frame={at} ch={ch}: {actual} vs {expected}");
+                    }
+                }
+                for lane in 0..3 {
+                    let expected = &case["ramps"][quantum][lane];
+                    let actual = ramps[quantum][lane];
+                    assert_eq!([actual.current, actual.target, actual.delta],
+                        ["current", "target", "delta"].map(|key| expected[key].as_f64().unwrap() as f32),
+                        "mode={mode} rate={rate} mask={mask} quantum={quantum} lane={lane}");
+                    // Native inactive idle countdown is -1; ours has no active work at 0.
+                    assert_eq!(actual.remaining, expected["remaining"].as_i64().unwrap().max(0) as u32);
+                    assert_eq!(actual.active, expected["active"].as_u64().unwrap() != 0);
+                }
+            }
+        }
     }
 
     #[test]
