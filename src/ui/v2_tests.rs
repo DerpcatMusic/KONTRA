@@ -4747,6 +4747,19 @@ fn mapping_selected_source_ready_peaks_have_off_center_pixels() {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         let e = ready.expect("selected PartShared source reaches Ready");
+        if let Ok(frames) = std::env::var("KONTAKTO_MAPPING_PAINT_EXPECT_FRAMES") {
+            assert_eq!(
+                e.frames,
+                frames.parse::<u64>().expect("expected screenshot frames")
+            );
+        }
+        if let Ok(rate) = std::env::var("KONTAKTO_MAPPING_PAINT_EXPECT_RATE") {
+            assert_eq!(
+                e.sample_rate,
+                rate.parse::<u32>()
+                    .expect("expected screenshot sample rate")
+            );
+        }
         ui.idle(3);
         assert!(
             ui.ui
