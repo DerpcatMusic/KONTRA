@@ -47,6 +47,7 @@ use super::{
 };
 
 mod effect_controls;
+mod host_transport;
 #[cfg(test)]
 mod host_transport_tests;
 mod persistence;
@@ -480,6 +481,7 @@ pub struct V2Core {
     parts: Vec<Option<Box<Part>>>,
     performance: Option<[f64; 3]>,
     align: crate::timing::Align,
+    transport: host_transport::State,
     holding: bool,
     aligned_buses: Box<[Block; BUSES]>,
     aligned_tap: Box<[f32; MAX_BLOCK]>,
@@ -1570,6 +1572,7 @@ impl V2Core {
             onset_audit: None,
             performance: None,
             align: crate::timing::Align::with_slots(parts, mix.timing.clone()),
+            transport: host_transport::State::default(),
             holding: false,
             aligned_buses: Box::new([[[0.; MAX_BLOCK]; 2]; BUSES]),
             aligned_tap: Box::new([0.; MAX_BLOCK]),
@@ -2089,14 +2092,22 @@ impl Core for V2Core {
     }
 
     fn begin_block(&mut self, block: &BlockInfo) {
+        self.transport
+            .update(block.transport, self.align.clock, self.rate);
+        let values = self.transport.values();
+        for part in self.parts.iter_mut().flatten() {
+            part.runtime.set_offline(block.offline);
+            let _ = part.runtime.set_tempo(self.transport.tempo());
+            // sampler-ksp::lower::host_slot: documented duration/position/signature/running ABI.
+            for (slot, value) in values.into_iter().enumerate() {
+                let _ = part.runtime.set_host_value(8 + slot, value);
+            }
+        }
         let holding = self.align.holding(block.transport.playing);
         if self.holding && !holding {
             self.flush_aligned();
         }
         self.holding = holding;
-        for part in self.parts.iter_mut().flatten() {
-            part.runtime.set_offline(block.offline);
-        }
     }
 
     fn event(&mut self, port: u8, event: Event) {

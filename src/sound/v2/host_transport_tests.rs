@@ -155,6 +155,42 @@ fn missing_tempo_and_signature_use_defaults_then_retain_last_valid_pair() {
 }
 
 #[test]
+fn positive_signature_pair_is_raw_not_restricted_to_power_of_two_denominators() {
+    let mut core = core(SNAPSHOT);
+    block(&mut core, true, 120., 0., (255, 3), false);
+    assert_eq!(capture(&mut core)[6..], [170_000_000, 0, 255, 3, 1]);
+    block(&mut core, true, 120., 0., (7, 0), false);
+    assert_eq!(
+        capture(&mut core)[6..],
+        [170_000_000, 0, 255, 3, 1],
+        "an invalid pair cannot partly replace the signature"
+    );
+}
+
+#[test]
+fn stopped_block_state_is_visible_to_midi_flushed_from_alignment() {
+    let mut core = core(SNAPSHOT);
+    let mut mix = Mix::default();
+    mix.timing = Arc::new(crate::timing::Plan {
+        on: true,
+        transport_only: true,
+        ..Default::default()
+    });
+    core.set_mix(&mix);
+    block(&mut core, true, 120., 0., (4, 4), false);
+    core.event(0, Event::midi1(0x90, 60, 100));
+    block(&mut core, false, 240., 2., (7, 8), true);
+    core.render(1);
+    assert_eq!(
+        cells::<11>(&core, 0),
+        [
+            250_000, 125_000, 62_500, 166_666, 83_333, 41_666, 0, 1920, 7, 8, 0
+        ]
+    );
+    assert_eq!(core.problems(0).fault_program, 0);
+}
+
+#[test]
 fn missing_position_advances_rendered_time_then_stop_holds_and_seek_overrides() {
     let mut core = core(SNAPSHOT);
     block(&mut core, true, 120., 4., (4, 4), false);
