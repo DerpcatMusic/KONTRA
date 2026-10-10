@@ -219,7 +219,7 @@ fn picture_size_is_one_frame_of_the_png() {
         meta.size,
         Some(sampler_ui_ir::Size {
             width: 64.0,
-            height: 64
+            height: 64.0
         })
     );
 }
