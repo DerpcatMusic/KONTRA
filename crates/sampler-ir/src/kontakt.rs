@@ -186,12 +186,14 @@ pub struct Loop {
 
 /// Original source/target settings before init writes and playback admission.
 /// Physical identity lives in SourceModulator; target ordinals are vector indices.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Modulation {
     pub version: u16,
     pub source: ModulationSource,
     pub targets: Vec<ModulationTarget>,
 }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub enum ModulationSource {
     Internal {
@@ -206,6 +208,7 @@ pub enum ModulationSource {
         unknown_tail: Vec<u8>,
     },
 }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub enum InternalSource {
     Ahdsr {
@@ -229,6 +232,7 @@ pub enum InternalSource {
         chunk_id: u16,
     },
 }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FlexPoint {
     /// Delta from the preceding point in milliseconds, not absolute time.
@@ -237,6 +241,7 @@ pub struct FlexPoint {
     /// Serialized 0..1 curve, with 0.5 linear, not an exponential coefficient.
     pub curve: f32,
 }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Lfo {
     pub structured: bool,
@@ -250,11 +255,13 @@ pub struct Lfo {
     pub trailing_values: Option<[f32; 5]>,
     pub additional_flag: Option<bool>,
 }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LfoRecord {
     pub flag: bool,
     pub values: [f32; 3],
 }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExternalSource {
     PitchBend,
@@ -271,6 +278,7 @@ pub enum ExternalSource {
     Script(u32),
     Unassigned,
 }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModulationTarget {
     pub param: String,
@@ -294,16 +302,19 @@ impl ModulationTarget {
         }
     }
 }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModulationShaper {
     pub enabled: bool,
     pub curve: ShaperCurve,
 }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub enum ShaperCurve {
     Table(Vec<f32>),
     Breakpoints(Vec<ShaperPoint>),
 }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ShaperPoint {
     pub x: f32,
