@@ -581,6 +581,12 @@ pub struct Size {
     pub height: f64,
 }
 
+impl Size {
+    fn valid(self) -> bool {
+        self.width.is_finite() && self.height.is_finite() && self.width >= 0. && self.height >= 0.
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Rect {
     pub x: f64,
@@ -597,6 +603,18 @@ impl Rect {
             width: width as f64,
             height: height as f64,
         }
+    }
+
+    fn valid(self) -> bool {
+        self.x.is_finite()
+            && self.y.is_finite()
+            && Size {
+                width: self.width,
+                height: self.height,
+            }
+            .valid()
+            && (self.x + self.width).is_finite()
+            && (self.y + self.height).is_finite()
     }
 }
 
@@ -689,6 +707,13 @@ impl Interface {
     /// panel's contents straight after the panel.
     /// Requires a [validated](Self::validate) interface.
     pub fn draw_order(&self, page: PageRef) -> Vec<WidgetRef> {
+        if let Some(order) = &self.paint_order {
+            return order
+                .iter()
+                .copied()
+                .filter(|w| self.widgets[w.0].page == page)
+                .collect();
+        }
         if matches!(self.source, Source::Ksp { .. } | Source::PerformanceView) {
             let mut out: Vec<_> = self.widgets.iter().enumerate().filter(|(_,w)| w.page == page).map(|(n,_)| WidgetRef(n)).collect();
             out.sort_by_key(|n| (self.widgets[n.0].z, n.0));
@@ -720,9 +745,29 @@ impl Interface {
             Some(x) if matches!(x.kind, AssetKind::Image(_)) != image => Err(Error::AssetKind(a)),
             Some(_) => Ok(()),
         };
-        for p in &self.pages {
+        for (n, p) in self.pages.iter().enumerate() {
+            if !p.size.valid() {
+                return Err(Error::PageGeometry(PageRef(n)));
+            }
             if let Some(a) = p.background.image {
                 asset(a, true)?;
+            }
+        }
+        for (n, a) in self.assets.iter().enumerate() {
+            if let AssetKind::Image(m) = a.kind
+                && m.size.is_some_and(|s| !s.valid())
+            {
+                return Err(Error::AssetGeometry(AssetRef(n)));
+            }
+        }
+        if let Some(order) = &self.paint_order {
+            let mut seen = vec![false; self.widgets.len()];
+            for &w in order {
+                let at = seen.get_mut(w.0).ok_or(Error::MissingWidget(w))?;
+                if *at {
+                    return Err(Error::DuplicatePaintWidget(w));
+                }
+                *at = true;
             }
         }
         for s in &self.styles {
@@ -735,6 +780,9 @@ impl Interface {
         }
         for (n, w) in self.widgets.iter().enumerate() {
             let at = WidgetRef(n);
+            if !w.rect.valid() {
+                return Err(Error::WidgetGeometry(at));
+            }
             if w.page.0 >= self.pages.len() {
                 return Err(Error::MissingPage(at));
             }
@@ -757,12 +805,21 @@ impl Interface {
             let mut up = w.parent;
             for _ in 0..self.widgets.len() {
                 match up {
-                    Some(p) => up = self.widgets[p.0].parent,
+                    Some(p) => {
+                        up = self
+                            .widgets
+                            .get(p.0)
+                            .ok_or(Error::MissingParent(at))?
+                            .parent
+                    }
                     None => break,
                 }
             }
             if up.is_some() {
                 return Err(Error::ParentCycle(at));
+            }
+            if !self.page_rect(at).valid() {
+                return Err(Error::WidgetGeometry(at));
             }
         }
         if let Some(w) = self.unsupported.iter().filter_map(|u| u.widget).find(|w| w.0 >= self.widgets.len()) {
@@ -775,6 +832,10 @@ impl Interface {
 /// Why an [`Interface`] is malformed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
+    PageGeometry(PageRef),
+    WidgetGeometry(WidgetRef),
+    AssetGeometry(AssetRef),
+    DuplicatePaintWidget(WidgetRef),
     MissingAsset(AssetRef),
     /// An image slot names a font, or a font slot names an image.
     AssetKind(AssetRef),
@@ -791,6 +852,10 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::PageGeometry(p) => write!(f, "page {} has invalid geometry", p.0),
+            Self::WidgetGeometry(w) => write!(f, "widget {} has invalid geometry", w.0),
+            Self::AssetGeometry(a) => write!(f, "asset {} has invalid geometry", a.0),
+            Self::DuplicatePaintWidget(w) => write!(f, "widget {} repeats in paint order", w.0),
             Self::MissingAsset(a) => write!(f, "asset {} does not exist", a.0),
             Self::AssetKind(a) => write!(f, "asset {} is the wrong kind for its use", a.0),
             Self::MissingPage(w) => write!(f, "widget {} is on a page that does not exist", w.0),
@@ -834,7 +899,7 @@ mod tests {
             source: Source::Ksp { slot: 0 },
             pages: vec![Page {
                 name: "Main".into(),
-                size: Size { width: 633, height: 400 },
+                size: Size { width: 633.0, height: 400.0 },
                 background: Background { image: Some(AssetRef(0)), ..Background::default() },
                 ..Page::default()
             }],
@@ -892,6 +957,54 @@ mod tests {
         let mut ui = sample();
         ui.styles.push(TextStyle { font: Font::Bitmap(AssetRef(2)), size: None, color: Rgba::rgb(0), align: Align::Left });
         assert_eq!(ui.validate(), Err(Error::AssetKind(AssetRef(2))));
+    }
+
+    #[test]
+    fn authored_order_preserves_ids_and_explicit_empty_traversal() {
+        let mut ui = sample();
+        let declarations = ui.widgets.clone();
+        ui.paint_order = Some(vec![WidgetRef(2), WidgetRef(0), WidgetRef(1)]);
+        assert_eq!(ui.validate(), Ok(()));
+        assert_eq!(ui.draw_order(PageRef(0)), ui.paint_order.clone().unwrap());
+        assert_eq!(ui.widgets, declarations);
+        ui.paint_order = Some(vec![]);
+        assert!(ui.draw_order(PageRef(0)).is_empty());
+        ui.paint_order = Some(vec![WidgetRef(1), WidgetRef(1)]);
+        assert_eq!(
+            ui.validate(),
+            Err(Error::DuplicatePaintWidget(WidgetRef(1)))
+        );
+        ui.paint_order = Some(vec![WidgetRef(3)]);
+        assert_eq!(ui.validate(), Err(Error::MissingWidget(WidgetRef(3))));
+    }
+
+    #[test]
+    fn fractional_geometry_is_finite_through_parent_resolution() {
+        let mut ui = sample();
+        ui.widgets[0].rect.x = 10.25;
+        ui.widgets[1].rect.x = 5.125;
+        assert_eq!(ui.validate(), Ok(()));
+        assert_eq!(ui.page_rect(WidgetRef(1)).x, 15.375);
+        ui.widgets[1].rect.width = -0.25;
+        assert_eq!(ui.validate(), Err(Error::WidgetGeometry(WidgetRef(1))));
+        ui.widgets[1].rect.width = f64::NAN;
+        assert_eq!(ui.validate(), Err(Error::WidgetGeometry(WidgetRef(1))));
+        ui.widgets[1].rect.width = 40.;
+        ui.pages[0].size.height = f64::INFINITY;
+        assert_eq!(ui.validate(), Err(Error::PageGeometry(PageRef(0))));
+        ui.pages[0].size.height = 400.;
+        ui.widgets[0].rect.x = f64::MAX;
+        ui.widgets[1].rect.x = f64::MAX;
+        assert_eq!(ui.validate(), Err(Error::WidgetGeometry(WidgetRef(1))));
+        ui.widgets[0].rect.x = 10.;
+        ui.widgets[1].rect.x = 5.;
+        if let AssetKind::Image(meta) = &mut ui.assets[0].kind {
+            meta.size = Some(Size {
+                width: f64::NAN,
+                height: 10.,
+            });
+        }
+        assert_eq!(ui.validate(), Err(Error::AssetGeometry(AssetRef(0))));
     }
 }
 
