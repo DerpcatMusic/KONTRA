@@ -260,12 +260,10 @@ mod tests {
         assert_eq!(captured.valid_slots, 31);
         assert_eq!(captured.omitted_slots, 26);
         assert_eq!(captured.dropped_events, 87);
-        assert!(
-            !captured
-                .records
-                .iter()
-                .any(|r| r.action == "diagnostic_overflow")
-        );
+        assert!(!captured
+            .records
+            .iter()
+            .any(|r| r.action == "diagnostic_overflow"));
         assert_eq!(captured.bytes, original.len() as u64);
         assert_eq!(
             captured.blake3,

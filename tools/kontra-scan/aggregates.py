@@ -42,7 +42,7 @@ with tmp.open('w') as f:
  w=csv.writer(f,delimiter='\t',lineterminator='\n');w.writerow(['id','path','resource_class'])
  for path,r in sorted(records['v1'].items()):
   v2=records['v2'].get(path)
-  if r.get('ui')=='original-ok' and v2 and v2.get('ui') in ['missing-images','error','blank','budget-hit']:
+  if r.get('ui')=='original-ok' and v2 and v2.get('ui') in ['missing-images','missing_font','error','blank','budget-hit']:
    views=[v for p in v2.get('programs',[]) for v in p.get('views',[])]
    kind='image' if any(v.get('missing_images',0) for v in views) else 'unknown'
    w.writerow([path,path.split('::',1)[0],kind])

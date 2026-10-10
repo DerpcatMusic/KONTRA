@@ -71,6 +71,83 @@ fn play(duration: u32) -> Instruction {
 }
 
 #[test]
+fn progress_keeps_wait_preemption_and_call_path_without_consuming_the_owner() {
+    let mut rt = runtime(
+        vec![
+            Instruction::Op(sampler_core::Op::Call { target: 2 }),
+            Instruction::End,
+            Instruction::Wait(20),
+            Instruction::Jump { target: 3 },
+        ],
+        limits(),
+    );
+    let note = rt.note_on(input(), 60, 1.).unwrap();
+    let id = rt.start_behavior(note, 0).unwrap();
+    let snapshot = |rt: &Runtime| {
+        let mut observed = None;
+        support::without_heap(|| {
+            rt.visit_behavior_progress(|p| {
+                assert_eq!(p.owner, sampler_core::BehaviorOwner::Note(note));
+                observed = Some((
+                    p.program,
+                    p.pc,
+                    p.waiting,
+                    p.yielded_at,
+                    p.outcome,
+                    p.callers.len(),
+                    p.callers.first().copied(),
+                ));
+            })
+        });
+        observed
+    };
+    assert_eq!(snapshot(&rt), Some((0, 3, true, None, None, 1, Some(1))));
+    rt.render(&mut [[0.; 2]; 21]).unwrap();
+    assert_eq!(
+        snapshot(&rt),
+        Some((0, 3, false, Some(20), None, 1, Some(1)))
+    );
+    assert_eq!(rt.behavior_outcome(id), Ok(None));
+    rt.cancel_behavior(id).unwrap();
+    assert_eq!(snapshot(&rt).unwrap().4, Some(Outcome::Cancelled));
+    rt.flush_behaviors(|_, _, _| true);
+    assert_eq!(snapshot(&rt), None);
+}
+
+#[test]
+fn finite_preempted_callback_can_resume_after_a_long_wait() {
+    let mut code = vec![Instruction::SetLocal { local: 0, value: 0 }];
+    code.extend((0..12).map(|_| Instruction::AddLocal { local: 0, value: 1 }));
+    code.push(Instruction::Wait(96000));
+    code.extend((0..12).map(|_| Instruction::AddLocal { local: 0, value: 1 }));
+    code.push(Instruction::End);
+    let mut rt = runtime(
+        code,
+        Limits {
+            behavior_fuel: 4,
+            ..limits()
+        },
+    );
+    support::without_heap(|| {
+        let note = rt.note_on(input(), 60, 1.).unwrap();
+        let id = rt.start_behavior(note, 0).unwrap();
+        for _ in 0..800 {
+            rt.render(&mut [[0.; 2]; 128]).unwrap();
+            if rt.behavior_outcome(id).unwrap().is_some() {
+                break;
+            }
+        }
+        assert_eq!(rt.behavior_outcome(id), Ok(Some(Outcome::Finished)));
+        assert_eq!(rt.behavior_local(id, 0), Ok(24));
+        assert!(rt.preemptions() >= 4);
+        rt.flush_behaviors(|_, _, _| true);
+        rt.note_off(input(), None).unwrap();
+        rt.flush_ended(|_| true);
+        assert_eq!(rt.note_count(), 0);
+    });
+}
+
+#[test]
 fn native_waits_generated_notes_and_terminal_backpressure_are_sample_exact() {
     for block in 1..=32 {
         let mut rt = runtime(
@@ -534,6 +611,10 @@ fn branching_loops_obey_fuel_and_integer_arithmetic_never_wraps() {
     let cases = [
         (
             vec![Instruction::Jump { target: 0 }],
+            Outcome::FuelExhausted,
+        ),
+        (
+            vec![Instruction::Wait(0), Instruction::Jump { target: 0 }],
             Outcome::FuelExhausted,
         ),
         (

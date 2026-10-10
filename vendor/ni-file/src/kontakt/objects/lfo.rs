@@ -1,9 +1,9 @@
 use std::io::{Cursor, Write};
 
 use crate::{
-    Error,
     kontakt::{Chunk, StructuredObject},
     read_bytes::ReadBytesExt,
+    Error,
 };
 
 /// One packed flag followed by three opaque numeric fields.
@@ -234,13 +234,11 @@ mod tests {
                     lfo.write(&mut rewritten).unwrap();
                     assert_eq!(rewritten, expected);
                     for end in 0..original.data.len() {
-                        assert!(
-                            Lfo::try_from(&Chunk {
-                                id: 8,
-                                data: original.data[..end].to_vec()
-                            })
-                            .is_err()
-                        );
+                        assert!(Lfo::try_from(&Chunk {
+                            id: 8,
+                            data: original.data[..end].to_vec()
+                        })
+                        .is_err());
                     }
                     for offset in [20, 33, 46] {
                         let mut data = original.data.clone();
@@ -262,18 +260,14 @@ mod tests {
                     assert!(Lfo::try_from(&Chunk { id: 8, data }).is_err());
                     let mut data = original.data.clone();
                     data[1] = 0x70;
-                    assert!(
-                        Lfo::read_supported(&Chunk { id: 8, data })
-                            .unwrap()
-                            .is_none()
-                    );
+                    assert!(Lfo::read_supported(&Chunk { id: 8, data })
+                        .unwrap()
+                        .is_none());
                     let mut data = original.data;
                     data[public_offset] = 7;
-                    assert!(
-                        Lfo::read_supported(&Chunk { id: 8, data })
-                            .unwrap()
-                            .is_none()
-                    );
+                    assert!(Lfo::read_supported(&Chunk { id: 8, data })
+                        .unwrap()
+                        .is_none());
                 }
             }
         }

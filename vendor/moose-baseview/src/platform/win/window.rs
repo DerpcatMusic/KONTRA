@@ -15,6 +15,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::{HWND, POINT};
 use windows_sys::Win32::Graphics::Dwm::DwmFlush;
+use windows_sys::Win32::Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT};
 
 pub(crate) const BV_WINDOW_MUST_CLOSE: u32 = WM_USER + 1;
 /// MOOSE: posted by `set_keyboard_capture` to move focus outside of handler callbacks.
@@ -723,6 +724,18 @@ unsafe fn wnd_proc_inner(
             } else {
                 None
             }
+        }
+        WM_PAINT => {
+            // KONTRA: validate the expose, then force the GPU to repaint its retained scene.
+            let mut paint = PAINTSTRUCT::default();
+            BeginPaint(window.as_raw(), &mut paint);
+            EndPaint(window.as_raw(), &paint);
+            window_bv.handle_event(Event::Window(WindowEvent::RedrawRequested));
+            Some(0)
+        }
+        WM_SHOWWINDOW if wparam != 0 => {
+            window_bv.handle_event(Event::Window(WindowEvent::RedrawRequested));
+            None
         }
         WM_SETFOCUS => {
             window_bv.handle_event(Event::Window(WindowEvent::Focused));

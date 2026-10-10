@@ -461,4 +461,130 @@ fn mouse_area_admits_owned_drop_paths_and_native_enter_leave_metadata() {
     assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 2), Ok(0));
     assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 3), Ok(0));
     assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 4), Ok(0));
+    for event in [
+        WidgetEventType::LeftButtonDown,
+        WidgetEventType::LeftButtonUp,
+    ] {
+        rt.invoke_widget(
+            context(&rt),
+            plan,
+            None,
+            &[WidgetEdit {
+                id,
+                index: 0,
+                interaction: WidgetInteraction {
+                    event: event as i32,
+                    ..Default::default()
+                },
+                value: WidgetValue::Integer(0),
+            }],
+        )
+        .unwrap();
+    }
+    assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 1), Ok(4));
+    assert_eq!(rt.widget_value(plan, id, 0), Ok(WidgetValue::Integer(0)));
+}
+
+#[test]
+fn ordinary_mouse_area_buttons_need_no_drop_configuration() {
+    let mut rt = runtime(
+        "on init declare ui_mouse_area $area declare $calls declare $event end on on ui_control($area) inc($calls) $event := $NI_MOUSE_EVENT_TYPE end on",
+    );
+    let plan = rt.active_plan();
+    let id = rt.widget_id(plan, 0, 32768).unwrap();
+    for event in [
+        WidgetEventType::LeftButtonDown,
+        WidgetEventType::LeftButtonUp,
+    ] {
+        rt.invoke_widget(
+            context(&rt),
+            plan,
+            None,
+            &[WidgetEdit {
+                id,
+                index: 0,
+                value: WidgetValue::Integer(0),
+                interaction: WidgetInteraction {
+                    event: event as i32,
+                    ..Default::default()
+                },
+            }],
+        )
+        .unwrap();
+        assert_eq!(
+            rt.script_cell(plan, ScriptInstanceId(0), 2),
+            Ok(event as i64)
+        );
+    }
+    assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 1), Ok(2));
+}
+
+#[test]
+fn shared_ui_functions_read_the_invoking_callback_identity_and_text() {
+    let mut rt = runtime(
+        "on init declare ui_button $a declare ui_button $b declare $identity declare @text end on function leaf $identity := $NI_UI_ID @text := \"shared text\" end function function parent call leaf end function on ui_control($a) call parent end on on ui_control($b) call parent end on",
+    );
+    let plan = rt.active_plan();
+    for (name, identity) in [("$a", 32768), ("$b", 32769), ("$a", 32768)] {
+        let id = sampler_ksp::derived_control_id(0, name);
+        let context = context(&rt);
+        support::without_heap(|| {
+            rt.invoke_widget(
+                context,
+                plan,
+                None,
+                &[WidgetEdit {
+                    id,
+                    index: 0,
+                    interaction: WidgetInteraction::default(),
+                    value: WidgetValue::Integer(1),
+                }],
+            )
+            .unwrap();
+        });
+        assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 0), Ok(identity));
+        assert_eq!(
+            rt.script_text(plan, ScriptInstanceId(0), 0),
+            Ok(Text::new("shared text"))
+        );
+        assert!(rt.take_fault().is_none());
+    }
+}
+
+#[test]
+fn shared_ui_functions_use_each_widgets_owned_drop_storage() {
+    let mut rt = runtime(
+        "on init declare ui_mouse_area $a declare ui_mouse_area $b set_control_par(get_ui_id($a),$CONTROL_PAR_DND_ACCEPT_AUDIO,$NI_DND_ACCEPT_MULTIPLE) set_control_par(get_ui_id($b),$CONTROL_PAR_DND_ACCEPT_AUDIO,$NI_DND_ACCEPT_MULTIPLE) declare $count declare @path end on function drop $count := num_elements(!NI_DND_ITEMS_AUDIO) @path := !NI_DND_ITEMS_AUDIO[0] end function on ui_control($a) call drop end on on ui_control($b) call drop end on",
+    );
+    let plan = rt.active_plan();
+    for (ui, path) in [(32768, "first.wav"), (32769, "second.wav")] {
+        let id = rt.widget_id(plan, 0, ui).unwrap();
+        let context = context(&rt);
+        support::without_heap(|| {
+            rt.invoke_widget(
+                context,
+                plan,
+                None,
+                &[WidgetEdit {
+                    id,
+                    index: 0,
+                    interaction: WidgetInteraction {
+                        event: WidgetEventType::DndDrop as i32,
+                        ..Default::default()
+                    },
+                    value: WidgetValue::DropPath {
+                        kind: WidgetDropKind::Audio,
+                        path: Text::new(path),
+                    },
+                }],
+            )
+            .unwrap();
+        });
+        assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 2), Ok(1));
+        assert_eq!(
+            rt.script_text(plan, ScriptInstanceId(0), 0),
+            Ok(Text::new(path))
+        );
+        assert!(rt.take_fault().is_none());
+    }
 }

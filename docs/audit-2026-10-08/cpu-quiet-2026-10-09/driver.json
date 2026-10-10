@@ -1,0 +1,56 @@
+{
+  "exit_code": 1,
+  "elapsed_seconds": 312.3349697090016,
+  "results": [
+    {
+      "cell": "v1-adapter-equivalence",
+      "exit_code": 0
+    },
+    {
+      "side": "base",
+      "scenario": "strings",
+      "exit_code": 0
+    },
+    {
+      "side": "v1",
+      "scenario": "strings",
+      "exit_code": 0
+    },
+    {
+      "side": "candidate",
+      "scenario": "strings",
+      "exit_code": 1
+    },
+    {
+      "side": "v1",
+      "scenario": "fast-repeat",
+      "exit_code": 0
+    },
+    {
+      "side": "candidate",
+      "scenario": "fast-repeat",
+      "exit_code": 0
+    },
+    {
+      "side": "v1",
+      "scenario": "legato",
+      "exit_code": 0
+    },
+    {
+      "side": "candidate",
+      "scenario": "legato",
+      "exit_code": 0
+    },
+    {
+      "side": "v1",
+      "scenario": "cold-jump",
+      "exit_code": 0
+    },
+    {
+      "side": "candidate",
+      "scenario": "cold-jump",
+      "exit_code": 0
+    }
+  ],
+  "request_removed": true
+}

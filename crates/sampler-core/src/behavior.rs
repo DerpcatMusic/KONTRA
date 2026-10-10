@@ -1,5 +1,6 @@
 //! Native bounded musical instructions, independent of any vendor language VM.
 use super::{Action, Error, Handle, Inheritance, NoteId, Runtime};
+use std::{ops::Range, sync::Arc};
 
 #[derive(Clone, Copy, Debug)]
 pub enum Velocity {
@@ -72,6 +73,15 @@ pub enum Instruction {
         controller: u16,
         value: u16,
     },
+    /// Script units: pitch bend -8192..8191; other controllers 0..127.
+    ControllerToScript {
+        controller: u16,
+        local: u16,
+    },
+    ControllerFromScript {
+        controller: u16,
+        local: u16,
+    },
     ControllerToMidi7 {
         local: u16,
     },
@@ -140,6 +150,11 @@ pub enum Instruction {
     KeyUpEvent {
         event: u16,
         delay: Option<u16>,
+    },
+    /// Discard another source without key-up; an aliased current ID still suppresses its callback event.
+    DiscardEvent {
+        event: u16,
+        current_release: bool,
     },
     /// Quantize script-visible velocity to nearest MIDI 1 value without changing it.
     ReadVelocity7 {
@@ -319,6 +334,12 @@ pub enum Instruction {
         info: super::EventInfo,
         local: u16,
     },
+    /// Read an event field selected by a runtime native parameter number.
+    ReadEventParameter {
+        event: u16,
+        parameter: u16,
+        local: u16,
+    },
     /// Read a script layer's own value, in `WriteParam` units.
     ReadParam {
         scope: super::ParamScope,
@@ -380,8 +401,11 @@ impl Comparison {
     }
 }
 
+#[derive(Clone)]
 pub struct Program {
-    pub(super) code: Box<[Instruction]>,
+    pub(super) code: Arc<[Instruction]>,
+    pub(super) entry: usize,
+    pub(super) ui_id: i32,
     pub(super) locals: usize,
     pub(super) note_cells: usize,
     pub(super) note_base: usize,
@@ -392,23 +416,27 @@ pub struct Program {
     pub(super) requires_note: bool,
     pub(super) requires_controller: bool,
     pub(super) requires_performance: bool,
-    pub(super) texts: Box<[super::ops::Text]>,
-    pub(super) engine_symbols: Box<[(i32, u16)]>,
+    pub(super) texts: Arc<[Box<str>]>,
+    pub(super) engine_symbols: Arc<[(i32, u16)]>,
     pub(super) text_constants: usize,
     pub(super) script_texts: usize,
 }
 impl Program {
     pub fn with_engine_symbols(mut self, symbols: Vec<(i32, u16)>) -> Self {
-        self.engine_symbols = symbols.into_boxed_slice();
+        self.engine_symbols = symbols.into();
         self
     }
 
-    /// Whether it sets runtime effect slot parameters ([`Instruction::WriteSlot`]).
+    /// Whether it may set runtime effect slot parameters. Shared engine
+    /// addresses are computed in registers, so writes conservatively retain
+    /// live FX lanes even when their eventual address is not an effect.
     pub fn writes_slots(&self) -> bool {
         self.code.iter().any(|op| {
             matches!(
                 op,
-                Instruction::WriteSlot { .. } | Instruction::WriteGroupBus { .. }
+                Instruction::WriteSlot { .. }
+                    | Instruction::WriteGroupBus { .. }
+                    | Instruction::Op(super::ops::Op::EngineParameter { write: true, .. })
             )
         })
     }
@@ -420,16 +448,22 @@ impl Program {
         {
             return Err(Error::InvalidInput);
         }
-        self.texts = texts.iter().map(|t| super::ops::Text::new(t)).collect();
+        self.texts = texts.iter().map(|t| Box::<str>::from(*t)).collect();
         Ok(self)
     }
 
     /// Offset `StartProgram` targets by `base`, for a program table that
     /// concatenates several modules.
     pub fn with_program_base(mut self, base: usize) -> Self {
-        for op in self.code.iter_mut() {
-            if let Instruction::StartProgram { program } = op {
-                *program = program.saturating_add(base as u32);
+        if self
+            .code
+            .iter()
+            .any(|op| matches!(op, Instruction::StartProgram { .. }))
+        {
+            for op in Arc::make_mut(&mut self.code) {
+                if let Instruction::StartProgram { program } = op {
+                    *program = program.saturating_add(base as u32);
+                }
             }
         }
         self
@@ -462,6 +496,93 @@ impl Program {
     pub fn with_wait_lifetime(mut self, lifetime: WaitLifetime) -> Self {
         self.wait_lifetime = lifetime;
         self
+    }
+
+    /// An entry into shared code, with admission requirements from its entire
+    /// body and reachable functions, including authored dead code.
+    pub fn with_entry(
+        mut self,
+        entry: usize,
+        ranges: &[Range<usize>],
+        ui_id: i32,
+    ) -> Result<Self, Error> {
+        if entry >= self.code.len()
+            || !ranges.iter().any(|r| r.contains(&entry))
+            || ranges
+                .iter()
+                .any(|r| r.start > r.end || r.end > self.code.len())
+        {
+            return Err(Error::InvalidInput);
+        }
+        let instructions = ranges
+            .iter()
+            .flat_map(|range| self.code[range.clone()].iter());
+        (
+            self.requires_note,
+            self.requires_controller,
+            self.requires_performance,
+        ) = Self::requirements(instructions)?;
+        self.entry = entry;
+        self.ui_id = ui_id;
+        Ok(self)
+    }
+
+    fn requirements<'a>(
+        instructions: impl Iterator<Item = &'a Instruction> + Clone,
+    ) -> Result<(bool, bool, bool), Error> {
+        let requires_note = instructions.clone().any(|op| {
+            matches!(
+                op,
+                Instruction::ForwardAttack
+                    | Instruction::ForwardReleaseGroups
+                    | Instruction::SuppressAttack
+                    | Instruction::SuppressRelease
+                    | Instruction::Play { .. }
+                    | Instruction::PlayMidi {
+                        inheritance: Inheritance::Linked | Inheritance::Snapshot,
+                        ..
+                    }
+                    | Instruction::PlayMidi {
+                        duration: DurationValue::Fixed(Duration::Gate | Duration::FramesOrGate(_)),
+                        ..
+                    }
+                    | Instruction::ReadEventId { .. }
+                    | Instruction::ReadAffectedGroup { .. }
+                    | Instruction::ReadVelocity7 { .. }
+                    | Instruction::WriteEventKey { event: None, .. }
+                    | Instruction::WriteEventVelocity7 { event: None, .. }
+                    | Instruction::WriteGroup { .. }
+                    | Instruction::ReadKey { .. }
+                    | Instruction::ReadKeyDown { .. }
+                    | Instruction::ReadNoteCell { .. }
+                    | Instruction::WriteNoteCell { .. }
+            )
+        });
+        let requires_controller = instructions.clone().any(|op| {
+            matches!(
+                op,
+                Instruction::ForwardController
+                    | Instruction::SuppressController
+                    | Instruction::ReadControllerNumber { .. }
+                    | Instruction::ReadControllerPort { .. }
+                    | Instruction::ReadControllerGroup { .. }
+                    | Instruction::ReadControllerChannel { .. }
+                    | Instruction::ReadControllerValue { .. }
+            )
+        });
+        let requires_performance = requires_controller
+            || instructions.clone().any(|op| {
+                matches!(
+                    op,
+                    Instruction::ReadInputController { .. }
+                        | Instruction::WriteController { .. }
+                        | Instruction::PlayMidi { .. }
+                )
+            });
+        if requires_note && requires_controller {
+            return Err(Error::InvalidInput);
+        }
+        Ok((requires_note, requires_controller, requires_performance))
     }
 
     pub fn new(code: Vec<Instruction>) -> Result<Self, Error> {
@@ -561,7 +682,9 @@ impl Program {
             {
                 locals = locals.max(usize::from(lhs.max(rhs)) + 1);
             }
-            if let Instruction::ReadInputController { controller, local }
+            if let Instruction::ControllerToScript { controller, local }
+            | Instruction::ControllerFromScript { controller, local }
+            | Instruction::ReadInputController { controller, local }
             | Instruction::WriteController {
                 controller,
                 value: local,
@@ -580,6 +703,9 @@ impl Program {
             }
             if let Instruction::KeyUpEvent { event, delay } = *op {
                 locals = locals.max(usize::from(event.max(delay.unwrap_or(event))) + 1);
+            }
+            if let Instruction::DiscardEvent { event, .. } = *op {
+                locals = locals.max(usize::from(event) + 1);
             }
             if let Instruction::WriteParam {
                 index,
@@ -601,7 +727,12 @@ impl Program {
                 locals = locals.max(usize::from(index.max(local)) + 1);
             }
             if let Instruction::WriteModValue { event, id, local }
-            | Instruction::ReadModValue { event, id, local } = *op
+            | Instruction::ReadModValue { event, id, local }
+            | Instruction::ReadEventParameter {
+                event,
+                parameter: id,
+                local,
+            } = *op
             {
                 locals = locals.max(usize::from(event.max(id).max(local)) + 1);
             }
@@ -688,63 +819,15 @@ impl Program {
                 script_cells = script_cells.max(array.end()?);
             }
         }
-        let requires_note = code.iter().any(|op| {
-            matches!(
-                op,
-                Instruction::ForwardAttack
-                    | Instruction::ForwardReleaseGroups
-                    | Instruction::SuppressAttack
-                    | Instruction::SuppressRelease
-                    | Instruction::Play { .. }
-                    | Instruction::PlayMidi {
-                        inheritance: Inheritance::Linked | Inheritance::Snapshot,
-                        ..
-                    }
-                    | Instruction::PlayMidi {
-                        duration: DurationValue::Fixed(Duration::Gate | Duration::FramesOrGate(_)),
-                        ..
-                    }
-                    | Instruction::ReadEventId { .. }
-                    | Instruction::ReadAffectedGroup { .. }
-                    | Instruction::ReadVelocity7 { .. }
-                    | Instruction::WriteEventKey { event: None, .. }
-                    | Instruction::WriteEventVelocity7 { event: None, .. }
-                    | Instruction::WriteGroup { .. }
-                    | Instruction::ReadKey { .. }
-                    | Instruction::ReadKeyDown { .. }
-                    | Instruction::ReadNoteCell { .. }
-                    | Instruction::WriteNoteCell { .. }
-            )
-        });
-        let requires_controller = code.iter().any(|op| {
-            matches!(
-                op,
-                Instruction::ForwardController
-                    | Instruction::SuppressController
-                    | Instruction::ReadControllerNumber { .. }
-                    | Instruction::ReadControllerPort { .. }
-                    | Instruction::ReadControllerGroup { .. }
-                    | Instruction::ReadControllerChannel { .. }
-                    | Instruction::ReadControllerValue { .. }
-            )
-        });
-        let requires_performance = requires_controller
-            || code.iter().any(|op| {
-                matches!(
-                    op,
-                    Instruction::ReadInputController { .. }
-                        | Instruction::WriteController { .. }
-                        | Instruction::PlayMidi { .. }
-                )
-            });
-        if requires_note && requires_controller {
-            return Err(Error::InvalidInput);
-        }
+        let (requires_note, requires_controller, requires_performance) =
+            Self::requirements(code.iter())?;
         Ok(Self {
             requires_performance,
             requires_controller,
             requires_note,
-            code: code.into_boxed_slice(),
+            code: code.into(),
+            entry: 0,
+            ui_id: 0,
             locals,
             note_cells,
             note_base: 0,
@@ -752,8 +835,8 @@ impl Program {
             script_instance: None,
             source_slot: -1,
             wait_lifetime: WaitLifetime::Gate,
-            texts: Box::new([]),
-            engine_symbols: Box::new([]),
+            texts: Arc::from([]),
+            engine_symbols: Arc::from([]),
             text_constants,
             script_texts,
         })
@@ -767,9 +850,20 @@ pub struct BehaviorId(pub(super) Handle);
 pub enum Outcome {
     Finished,
     Cancelled,
-    /// Still running after one second of preemption (a runaway loop).
+    /// Still running after one second of continuous preemption (a runaway loop).
     FuelExhausted,
     Fault(Error),
+}
+
+/// Read-only callback progress for owner-thread diagnostics; no script values.
+pub struct BehaviorProgress<'a> {
+    pub program: usize,
+    pub pc: usize,
+    pub owner: BehaviorOwner,
+    pub yielded_at: Option<u64>,
+    pub waiting: bool,
+    pub outcome: Option<Outcome>,
+    pub callers: &'a [u32],
 }
 
 /// A callback can retain an instrument generation without inventing a MIDI note.
@@ -837,6 +931,8 @@ pub(super) struct Continuation {
     pub callback_id: i32,
     pub waiting: bool,
     pub disable_wait: bool,
+    pub async_result: Option<(i32, i32)>,
+    pub async_wait: Option<i32>,
 }
 
 #[derive(Clone, Copy)]
@@ -896,7 +992,7 @@ impl Runtime {
             context: PlanContext::Bare,
             note_stage,
             program,
-            pc: 0,
+            pc: plan.programs[program].entry,
             outcome: None,
             frames: Default::default(),
             yielded_at: None,
@@ -910,6 +1006,8 @@ impl Runtime {
             },
             waiting: false,
             disable_wait: false,
+            async_result: None,
+            async_wait: None,
         })?);
         n.work = work;
         let begin = id.0.index * self.behavior_stride;
@@ -970,6 +1068,18 @@ impl Runtime {
         program: usize,
         context: PlanContext,
     ) -> Result<BehaviorId, Error> {
+        let id = self.admit_plan_context(plan, program, context)?;
+        self.resume_behavior(id);
+        Ok(id)
+    }
+
+    /// Reserve ownership before a transaction runs any authored callback.
+    pub(super) fn admit_plan_context(
+        &mut self,
+        plan: super::PlanId,
+        program: usize,
+        context: PlanContext,
+    ) -> Result<BehaviorId, Error> {
         self.validate_plan_context(plan, program, context)?;
         let generation = self.plans.get_mut(plan.0).unwrap();
         let id = BehaviorId(self.behaviors.insert(Continuation {
@@ -977,7 +1087,7 @@ impl Runtime {
             context,
             note_stage: None,
             program,
-            pc: 0,
+            pc: generation.prepared.programs[program].entry,
             outcome: None,
             frames: Default::default(),
             yielded_at: None,
@@ -991,11 +1101,12 @@ impl Runtime {
             },
             waiting: false,
             disable_wait: false,
+            async_result: None,
+            async_wait: None,
         })?);
         generation.callbacks += 1;
         let begin = id.0.index * self.behavior_stride;
         self.behavior_locals[begin..begin + generation.prepared.programs[program].locals].fill(0);
-        self.resume_behavior(id);
         Ok(id)
     }
 
@@ -1022,6 +1133,27 @@ impl Runtime {
 
     pub fn behavior_outcome(&self, id: BehaviorId) -> Result<Option<Outcome>, Error> {
         Ok(self.behaviors.get(id.0).ok_or(Error::StaleHandle)?.outcome)
+    }
+
+    /// Inspect continuations without consuming outcomes or allocating.
+    pub fn visit_behavior_progress(&self, mut visit: impl FnMut(BehaviorProgress<'_>)) {
+        let mut next = self.behaviors.first;
+        while let Some(index) = next {
+            let slot = &self.behaviors.slots[index];
+            next = slot.next;
+            let Some(c) = slot.value.as_ref() else {
+                continue;
+            };
+            visit(BehaviorProgress {
+                program: c.program,
+                pc: c.pc,
+                owner: c.owner,
+                yielded_at: c.yielded_at,
+                waiting: c.waiting,
+                outcome: c.outcome,
+                callers: c.frames.callers(),
+            });
+        }
     }
 
     /// Callback-local integer state remains readable through waits and completion
@@ -1085,7 +1217,9 @@ impl Runtime {
         &mut self,
         accept: &mut dyn FnMut(BehaviorId, BehaviorOwner, Outcome, usize) -> bool,
     ) {
-        for i in 0..self.behaviors.slots.len() {
+        let mut next = self.behaviors.first;
+        while let Some(i) = next {
+            next = self.behaviors.slots[i].next;
             let Some(c) = self.behaviors.slots[i].value else {
                 continue;
             };
@@ -1097,6 +1231,7 @@ impl Runtime {
                 return;
             }
             self.release_controller_reserve(id);
+            self.record_script_state_outcome(id);
             self.behaviors.remove(id.0);
             match c.owner {
                 BehaviorOwner::Note(note) => self.notes.get_mut(note.0).unwrap().work -= 1,
@@ -1135,6 +1270,7 @@ impl Runtime {
             {
                 let id = BehaviorId(self.behaviors.id(i));
                 self.release_controller_reserve(id);
+                self.record_script_state_outcome(id);
                 self.behaviors.remove(id.0);
                 match c.owner {
                     BehaviorOwner::Note(note) => self.notes.get_mut(note.0).unwrap().work -= 1,
@@ -1149,6 +1285,7 @@ impl Runtime {
     pub(super) fn resume_behavior(&mut self, id: BehaviorId) {
         if let Some(c) = self.behaviors.get_mut(id.0) {
             c.waiting = false;
+            c.async_wait = None;
         }
         self.queue_behavior(id);
         self.drain_behavior();
@@ -1280,9 +1417,16 @@ impl Runtime {
         };
         let code = &generation.prepared.programs[program].code;
         let instance = generation.prepared.programs[program].script_instance;
-        let mut cells = instance
+        let (mut cells, captured_cells, mut dirty_cells) = instance
             .and_then(|i| generation.scripts.get_mut(usize::from(i.0)))
-            .map(|bank| &mut bank.cells[..]);
+            .map(|bank| {
+                (
+                    Some(&mut bank.cells[..]),
+                    bank.captured_cells.as_deref(),
+                    bank.dirty_cells.as_deref_mut(),
+                )
+            })
+            .unwrap_or((None, None, None));
         let base = id.0.index * self.behavior_stride;
         let Some(locals) = self
             .behavior_locals
@@ -1291,6 +1435,7 @@ impl Runtime {
             return 0;
         };
         let mut steps = 0;
+        let mut wrote_script = false;
         macro_rules! local {
             ($l:expr) => {
                 match locals.get_mut(usize::from($l)) {
@@ -1316,6 +1461,28 @@ impl Runtime {
             };
             let mut next = pc + 1;
             match op {
+                // v1 dispatches subroutine frames inside the local interpreter loop.
+                Instruction::Op(super::ops::Op::Call { target }) => {
+                    let c = self.behaviors.get_mut(id.0).unwrap();
+                    let depth = usize::from(c.frames.depth);
+                    if depth == super::ops::CALL_DEPTH {
+                        break;
+                    }
+                    let Ok(return_pc) = u32::try_from(next) else {
+                        break;
+                    };
+                    c.frames.returns[depth] = return_pc;
+                    c.frames.depth += 1;
+                    next = target as usize;
+                }
+                Instruction::Op(super::ops::Op::Return) => {
+                    let c = self.behaviors.get_mut(id.0).unwrap();
+                    if c.frames.depth == 0 {
+                        break;
+                    }
+                    c.frames.depth -= 1;
+                    next = c.frames.returns[usize::from(c.frames.depth)] as usize;
+                }
                 Instruction::SetLocal { local, value } => *local!(local) = value,
                 Instruction::AddLocal { local, value } => {
                     let cell = local!(local);
@@ -1366,7 +1533,15 @@ impl Runtime {
                 }
                 Instruction::WriteScriptCell { cell, local } => {
                     let value = *local!(local);
-                    *cell!(cell) = value;
+                    let target = cell!(cell);
+                    let changed = *target != value;
+                    *target = value;
+                    wrote_script |= super::ops::mark_captured_cell(
+                        captured_cells,
+                        dirty_cells.as_deref_mut(),
+                        cell as usize,
+                        changed,
+                    );
                 }
                 Instruction::ReadScriptArray {
                     array,
@@ -1388,12 +1563,23 @@ impl Runtime {
                         break;
                     };
                     let value = *local!(local);
-                    *cell!(at) = value;
+                    let target = cell!(at);
+                    let changed = *target != value;
+                    *target = value;
+                    wrote_script |= super::ops::mark_captured_cell(
+                        captured_cells,
+                        dirty_cells.as_deref_mut(),
+                        at as usize,
+                        changed,
+                    );
                 }
                 _ => break,
             }
             pc = next;
             steps += 1;
+        }
+        if wrote_script {
+            generation.script_revision = generation.script_revision.wrapping_add(1);
         }
         if steps > 0 {
             self.behaviors.get_mut(id.0).unwrap().pc = pc;
@@ -1410,7 +1596,7 @@ impl Runtime {
     }
 
     /// Out of fuel for this block: continue next block, unless it has been
-    /// running for a second, which only a runaway loop does.
+    /// continuously preempted for a second without an intentional wait.
     fn yield_behavior(&mut self, id: BehaviorId) {
         let now = self.now;
         let c = self.behaviors.get_mut(id.0).unwrap();
@@ -1474,6 +1660,7 @@ impl Runtime {
         match op {
             Instruction::ForwardController => {
                 self.forward_controller(id)?;
+                self.flush_deferred(id);
             }
             Instruction::SuppressController => {
                 self.controller_event_mut(id)?.pending = false;
@@ -1513,6 +1700,40 @@ impl Runtime {
                     .map_err(|_| Error::InvalidInput)?;
                 self.write_behavior_controller(id, number, value)?;
             }
+            Instruction::ControllerToScript { controller, local } => {
+                let number = *self.local_cell_mut(id, controller)?;
+                let cell = self.local_cell_mut(id, local)?;
+                let value = u32::try_from(*cell).map_err(|_| Error::InvalidInput)?;
+                *cell = if number == 128 {
+                    i64::from(value >> 18) - 8192
+                } else {
+                    ((u64::from(value) * 127 + u64::from(u32::MAX) / 2) / u64::from(u32::MAX))
+                        as i64
+                };
+            }
+            Instruction::ControllerFromScript { controller, local } => {
+                let number = *self.local_cell_mut(id, controller)?;
+                let cell = self.local_cell_mut(id, local)?;
+                if number == 128 {
+                    if !(-8192..=8191).contains(cell) {
+                        return Err(Error::InvalidInput);
+                    }
+                    let value = (*cell + 8192) as u32;
+                    // MIDI's min/centre/max 14-bit expansion, as used by ingress.
+                    let shifted = value << 18;
+                    let low = value & 8191;
+                    *cell = i64::from(if value <= 8192 {
+                        shifted
+                    } else {
+                        shifted | (low << 5) | (low >> 8)
+                    });
+                } else {
+                    if !(0..=127).contains(cell) {
+                        return Err(Error::InvalidInput);
+                    }
+                    *cell = (*cell * i64::from(u32::MAX)) / 127;
+                }
+            }
             Instruction::ControllerToMidi7 { local } => {
                 let cell = self.local_cell_mut(id, local)?;
                 let value = u32::try_from(*cell).map_err(|_| Error::InvalidInput)?;
@@ -1533,6 +1754,7 @@ impl Runtime {
                 } else {
                     self.forward_attack(note)?;
                 }
+                self.flush_deferred(id);
             }
             Instruction::ForwardReleaseGroups => {
                 if let Some(NoteStage::Release(stage)) =
@@ -1542,6 +1764,7 @@ impl Runtime {
                 } else {
                     self.forward_release_groups(owner.note()?)?;
                 }
+                self.flush_deferred(id);
             }
             Instruction::SuppressAttack => {
                 let note = owner.note()?;
@@ -1738,6 +1961,57 @@ impl Runtime {
                 let value = self.source_event_id(owner.note()?)?;
                 *self.local_cell_mut(id, local)? = i64::from(value);
             }
+            Instruction::DiscardEvent {
+                event,
+                current_release,
+            } => {
+                let event = i32::try_from(*self.local_cell_mut(id, event)?)
+                    .map_err(|_| Error::InvalidInput)?;
+                let plan = self.behavior_plan(owner)?;
+                let many = event == 0x3fff_fffe || (event > 0 && event & 0x2000_0000 != 0);
+                let single = if many {
+                    None
+                } else {
+                    self.resolve_source_event(plan, event)?
+                };
+                let range = if many {
+                    0..self.notes.slots.len()
+                } else if let Some(note) = single {
+                    note.0.index..note.0.index + 1
+                } else {
+                    0..0
+                };
+                for index in range {
+                    let Some(n) = self.notes.slots[index].value else {
+                        continue;
+                    };
+                    let note = NoteId(self.notes.id(index));
+                    let selected = if many {
+                        n.plan == plan
+                            && (event == 0x3fff_fffe
+                                || self.note_events[index].marks & (event as u32 & 0x0fff_ffff)
+                                    != 0)
+                    } else {
+                        single == Some(note)
+                    };
+                    if !selected {
+                        continue;
+                    }
+                    if owner.note().ok() == Some(note) {
+                        self.behavior_step(
+                            id,
+                            owner,
+                            if current_release {
+                                Instruction::SuppressRelease
+                            } else {
+                                Instruction::SuppressAttack
+                            },
+                        )?;
+                    } else {
+                        self.discard_note(note)?;
+                    }
+                }
+            }
             Instruction::KeyUpEvent { event, delay } => {
                 let event = i32::try_from(*self.local_cell_mut(id, event)?)
                     .map_err(|_| Error::InvalidInput)?;
@@ -1752,13 +2026,41 @@ impl Runtime {
                     .checked_add(u64::from(frames.unwrap_or(0)))
                     .ok_or(Error::ClockOverflow)?;
                 let plan = self.behavior_plan(owner)?;
-                if let Some(note) = self.resolve_source_event(plan, event)?
-                    && (frames.is_some() || !self.note_events[note.0.index].fixed_duration)
-                {
-                    if self.key_down(note)? {
-                        self.replace_script_key_up_at(note, at)?;
-                    } else if self.release_times[note.0.index].held {
-                        self.replace_release_forward_at(note, at)?;
+                // Port v1 src/ksp/runtime.rs::targets: plain ID, mark union or all.
+                // Release callbacks are queued until this instruction finishes, so
+                // the bounded slot scan cannot select their newly generated notes.
+                let many = event == 0x3fff_fffe || (event > 0 && event & 0x2000_0000 != 0);
+                let single = if many {
+                    None
+                } else {
+                    self.resolve_source_event(plan, event)?
+                };
+                let range = if many {
+                    0..self.notes.slots.len()
+                } else if let Some(note) = single {
+                    note.0.index..note.0.index + 1
+                } else {
+                    0..0
+                };
+                for index in range {
+                    let Some(n) = self.notes.slots[index].value else {
+                        continue;
+                    };
+                    let note = NoteId(self.notes.id(index));
+                    let selected = if many {
+                        n.plan == plan
+                            && (event == 0x3fff_fffe
+                                || self.note_events[index].marks & (event as u32 & 0x0fff_ffff)
+                                    != 0)
+                    } else {
+                        single == Some(note)
+                    };
+                    if selected && (frames.is_some() || !self.note_events[index].fixed_duration) {
+                        if self.key_down(note)? {
+                            self.replace_script_key_up_at(note, at)?;
+                        } else if self.release_times[index].held {
+                            self.replace_release_forward_at(note, at)?;
+                        }
                     }
                 }
             }
@@ -1854,12 +2156,12 @@ impl Runtime {
                 self.note_values[index] = *self.local_cell_mut(id, local)?;
             }
             Instruction::ReadScriptCell { local, cell } => {
-                let value = *self.behavior_script_cell_mut(id, cell)?;
+                let value = *self.behavior_script_cell(id, cell)?;
                 *self.local_cell_mut(id, local)? = value;
             }
             Instruction::WriteScriptCell { cell, local } => {
                 let value = *self.local_cell_mut(id, local)?;
-                *self.behavior_script_cell_mut(id, cell)? = value;
+                self.behavior_write_script_cell(id, cell, value)?;
             }
             Instruction::ReadScriptArray {
                 array,
@@ -1870,7 +2172,7 @@ impl Runtime {
                 // there instead of failing the callback (Dolce's rr table is read
                 // one past its end).
                 let value = match array.cell(*self.local_cell_mut(id, index)?) {
-                    Ok(cell) => *self.behavior_script_cell_mut(id, cell)?,
+                    Ok(cell) => *self.behavior_script_cell(id, cell)?,
                     Err(_) => 0,
                 };
                 *self.local_cell_mut(id, local)? = value;
@@ -1882,7 +2184,7 @@ impl Runtime {
             } => {
                 if let Ok(cell) = array.cell(*self.local_cell_mut(id, index)?) {
                     let value = *self.local_cell_mut(id, local)?;
-                    *self.behavior_script_cell_mut(id, cell)? = value;
+                    self.behavior_write_script_cell(id, cell, value)?;
                 }
             }
             Instruction::ReadControl { local, control } => {
@@ -1941,12 +2243,12 @@ impl Runtime {
                         if at == array.len {
                             break;
                         }
-                        *self.behavior_script_cell_mut(id, array.offset + at)? = i64::from(source);
+                        self.behavior_write_script_cell(id, array.offset + at, i64::from(source))?;
                         at += 1;
                     }
                 }
                 if at < array.len {
-                    *self.behavior_script_cell_mut(id, array.offset + at)? = 0;
+                    self.behavior_write_script_cell(id, array.offset + at, 0)?;
                 }
             }
             Instruction::ReadEventMark { event, mark, local } => {
@@ -2017,6 +2319,61 @@ impl Runtime {
                 let plan = self.behavior_plan(owner)?;
                 let event = *self.local_cell_mut(id, event)?;
                 *self.local_cell_mut(id, local)? = self.read_event_info(plan, event, info)?;
+            }
+            Instruction::ReadEventParameter {
+                event,
+                parameter,
+                local,
+            } => {
+                let plan = self.behavior_plan(owner)?;
+                let event = *self.local_cell_mut(id, event)?;
+                let parameter = *self.local_cell_mut(id, parameter)?;
+                // v1 calls.rs dispatches the numeric selector, including user tags.
+                let value = match parameter {
+                    0..=3 => self.read_mod_value(
+                        plan,
+                        event,
+                        i64::from(super::USER_EVENT_PAR) + parameter,
+                    )?,
+                    4..=6 => self.read_param(
+                        plan,
+                        super::ParamScope::Note,
+                        event,
+                        match parameter {
+                            4 => super::ModTarget::Decibels,
+                            5 => super::ModTarget::Pitch,
+                            _ => super::ModTarget::Pan,
+                        },
+                    )?,
+                    7 | 8
+                        if owner.note().ok().is_some_and(|note| {
+                            self.note_events[note.0.index].source_id_is(event)
+                        }) =>
+                    {
+                        let note = self
+                            .note_event_at(owner.note()?, self.behavior_stage(id)?)?
+                            .ok_or(Error::InvalidInput)?;
+                        if parameter == 7 {
+                            i64::from(note.pitch.key())
+                        } else {
+                            (note.velocity * 127.).round() as i64
+                        }
+                    }
+                    7 | 8 | 10 | 11 | 13 | 15 => self.read_event_info(
+                        plan,
+                        event,
+                        match parameter {
+                            7 => super::EventInfo::Key,
+                            8 => super::EventInfo::Velocity,
+                            10 => super::EventInfo::ZoneId,
+                            11 => super::EventInfo::Source,
+                            13 => super::EventInfo::MidiChannel,
+                            _ => super::EventInfo::ReleaseVelocity,
+                        },
+                    )?,
+                    _ => 0,
+                };
+                *self.local_cell_mut(id, local)? = value;
             }
             Instruction::ReadParam {
                 scope,
@@ -2250,25 +2607,49 @@ impl Runtime {
     fn flush_deferred(&mut self, id: BehaviorId) {
         while let Some(at) = self.deferred.iter().position(|d| d.0 == id) {
             let (_, note, entry) = self.deferred.remove(at);
-            match self.commit_note_attack(note, entry) {
-                Ok(true) => {
-                    let plan = self.notes.get(note.0).unwrap().plan;
-                    let end = self.plans.get(plan.0).unwrap().prepared.stages.len();
-                    self.project_note(note, entry, end);
-                    let _ = self
-                        .plans
-                        .get_mut(plan.0)
-                        .unwrap()
-                        .projections
-                        .get_mut(note.0.index, end)
-                        .map(|p| p.forwarded = true);
-                }
-                Ok(false) | Err(Error::ClosedNote) => {}
-                // No room once the selection was edited: drop the note.
-                Err(_) => {
-                    let _ = self.suppress_attack(note);
+            let ready_begin = self.behavior_ready.len();
+            let callbacks = std::mem::take(&mut self.note_events[note.0.index].pending_callbacks);
+            if callbacks != 0 {
+                self.behaviors.unreserve(callbacks);
+                self.begin_note_stages(note, entry);
+            } else {
+                match self.commit_note_attack(note, entry) {
+                    Ok(true) => {
+                        let plan = self.notes.get(note.0).unwrap().plan;
+                        let end = self.plans.get(plan.0).unwrap().prepared.stages.len();
+                        self.project_note(note, entry, end);
+                        let _ = self
+                            .plans
+                            .get_mut(plan.0)
+                            .unwrap()
+                            .projections
+                            .get_mut(note.0.index, end)
+                            .map(|p| p.forwarded = true);
+                    }
+                    Ok(false) | Err(Error::ClosedNote) => {}
+                    // No room once the selection was edited: drop the note.
+                    Err(_) => {
+                        let _ = self.suppress_attack(note);
+                    }
                 }
             }
+            let child = *self.notes.get(note.0).unwrap();
+            if let (Some(parent), super::ReleaseLink::Stage(stage)) =
+                (child.parent, child.release_link)
+            {
+                let projection = self
+                    .plans
+                    .get(child.plan.0)
+                    .unwrap()
+                    .projections
+                    .get(parent.0.index, stage)
+                    .unwrap();
+                if projection.release != super::note_event::ReleaseStage::Unreached {
+                    // A linked release follows the child's edited note route.
+                    self.queue_note_release(note, None, ready_begin);
+                }
+            }
+            self.notes.get_mut(note.0).unwrap().work -= 1;
         }
     }
 
@@ -2326,7 +2707,10 @@ impl Runtime {
         if self.available_commands() == 0 {
             return Err(Error::Capacity);
         }
-        self.behaviors.get_mut(id.0).unwrap().waiting = true;
+        let c = self.behaviors.get_mut(id.0).unwrap();
+        c.waiting = true;
+        // A scheduled wait ends the current burst of continuous preemption.
+        c.yielded_at = None;
         self.queue(at, Action::Resume(id));
         Ok(true)
     }
@@ -2386,7 +2770,6 @@ impl Runtime {
         // own later release families and commands. Neither may consume the other.
         let command = usize::from(at.is_some_and(|at| at != self.now));
         self.reserved_commands += command;
-        let ready_begin = self.behavior_ready.len();
         let child = self.select(
             origin,
             pitch,
@@ -2398,21 +2781,8 @@ impl Runtime {
         self.reserved_commands -= command;
         let child = child?;
         if linked && let Some(stage) = source_stage {
-            let parent = callback.owner.note()?;
             self.notes.get_mut(child.0).unwrap().release_link =
                 super::ReleaseLink::Stage(stage.index());
-            let plan = self.notes.get(parent.0).unwrap().plan;
-            if self
-                .plans
-                .get(plan.0)
-                .unwrap()
-                .projections
-                .get(parent.0.index, stage.index())?
-                .release
-                != super::note_event::ReleaseStage::Unreached
-            {
-                self.queue_note_release(child, None, ready_begin);
-            }
         }
         self.note_events[child.0.index].fixed_duration = frames.is_some();
         self.notes.get_mut(child.0).unwrap().retire_when_silent = duration == Duration::UntilSilent;
@@ -2491,5 +2861,36 @@ impl Runtime {
         }
         self.cancel_closed_work();
         self.release_controller_reserve(id);
+    }
+}
+
+#[cfg(test)]
+mod shared_program_tests {
+    use super::*;
+
+    #[test]
+    fn entries_share_code_and_unpadded_text_but_keep_admission_requirements() {
+        let shared = Program::new(vec![
+            Instruction::End,
+            Instruction::ReadInputController {
+                controller: 0,
+                local: 0,
+            },
+            Instruction::End,
+        ])
+        .unwrap()
+        .with_texts(&["short", "é"])
+        .unwrap();
+        let bare = shared.clone().with_entry(0, &[0..1], 1).unwrap();
+        let routed = shared.clone().with_entry(1, &[1..3], 2).unwrap();
+        assert!(Arc::ptr_eq(&bare.code, &routed.code));
+        assert!(Arc::ptr_eq(&bare.texts, &routed.texts));
+        assert_eq!(bare.texts.iter().map(|t| t.len()).sum::<usize>(), 7);
+        assert!(!bare.requires_performance());
+        assert!(routed.requires_performance());
+        assert_eq!((bare.ui_id, routed.ui_id), (1, 2));
+        assert!(shared.clone().with_entry(3, &[0..3], 0).is_err());
+        assert!(shared.clone().with_entry(0, &[0..4], 0).is_err());
+        assert!(shared.with_entry(0, &[], 0).is_err());
     }
 }

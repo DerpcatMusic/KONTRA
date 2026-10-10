@@ -88,7 +88,7 @@ fn callbacks_suppress_table_changes_and_ui_callbacks_cannot_yield() {
 }
 
 #[test]
-fn persistence_restores_widgets_before_init_and_custom_data_after_init() {
+fn persistence_restores_custom_data_before_widgets_and_init() {
     let script = r#"
       trace='body'
       local k=Knob('Gain',0,0,1)
@@ -97,7 +97,7 @@ fn persistence_restores_widgets_before_init_and_custom_data_after_init() {
       function onInit() trace=trace..'/init' end
       function onSave() return {a=true,text='ok',[2]={0.125}} end
       function onLoad(data)
-        assert(trace=='body/widget/init')
+        assert(trace=='body' and k.value==0)
         assert(data.a and data.text=='ok' and data[2][1]==0.125)
         trace=trace..'/load'
       end
@@ -110,7 +110,7 @@ fn persistence_restores_widgets_before_init_and_custom_data_after_init() {
     let state = serde_json::from_str(&encoded).unwrap();
     let b =
         ScriptHost::new_with_ui_state(&xml(script), (), Config::default(), Some(&state)).unwrap();
-    assert_eq!(b.global_text("trace"), "body/widget/init/load");
+    assert_eq!(b.global_text("trace"), "body/load/widget/init");
     assert_eq!(b.control_values()[1].1, 0.);
     assert!(
         host("function onSave() local t={} t.self=t return t end")
@@ -139,6 +139,21 @@ fn positional_widgets_restore_and_table_callbacks_keep_indices() {
         h.findings().iter().all(|f| f.feature != "lua error"),
         "{:?}",
         h.findings()
+    );
+}
+
+#[test]
+fn ready_snapshot_includes_widget_changes_from_on_save() {
+    let source = xml(
+        "local k=Knob('Gain',0.25,0,1); function onSave() k:setValue(0.75,false); return {} end",
+    );
+    let (_thread, loaded) =
+        sampler_uvi::scripted::ScriptThread::spawn(source, (), Config::default()).unwrap();
+    assert_eq!(loaded.ui.value(control_id(1, 0)), Some(0.75));
+    assert_eq!(*loaded.ui.interface(), loaded.interface);
+    assert_eq!(
+        loaded.ui.state().unwrap().widgets[0].2,
+        sampler_uvi::script::SavedValue::Number(0.75)
     );
 }
 
@@ -190,4 +205,83 @@ fn engine_objects_are_not_widget_options_and_logical_values_keep_their_type() {
         vec![control_id(3, 0), control_id(4, 0)]
     );
     h.set_control(control_id(3, 0), 0.375).unwrap();
+}
+
+#[test]
+fn script_thread_publishes_runtime_faults_without_widget_changes() {
+    use sampler_uvi::scripted::Script;
+    let source = xml("function onNote(e) error('first runtime fault') end");
+    let (mut thread, loaded) =
+        sampler_uvi::scripted::ScriptThread::spawn(source, (), Config::default()).unwrap();
+    let revision = loaded.ui.revision();
+    thread.note_on(1, 60, 100);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while loaded.ui.revision() == revision && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert!(
+        loaded.ui.revision() > revision,
+        "runtime findings must wake report consumers"
+    );
+    assert_eq!(loaded.ui.runtime_faults(), (1, 0));
+    assert_eq!(
+        loaded.ui.fault_counts().runtime[&sampler_uvi::script::FaultCategory::Lua],
+        1
+    );
+    assert!(loaded.ui.findings().iter().any(|f| f.feature == "lua error"
+        && f.count == 1
+        && f.value.contains("first runtime fault")));
+}
+
+fn live_thread_note_state(burst: usize) {
+    use sampler_uvi::{script::SavedValue, scripted::Script};
+    let source = xml(&format!(
+        "local notes=0; function onNote(e) notes=notes+1; for i=1,{burst} do postEvent{{type=Event.Controller,controller=1,value=17}} end end; function onSave() return {{notes=notes}} end"
+    ));
+    let (mut owner, loaded) =
+        sampler_uvi::scripted::ScriptThread::spawn(source, (), Config::default()).unwrap();
+    let revision = loaded.ui.revision();
+    owner.note_on(1, 60, 100);
+    let mut commands = Vec::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while commands.is_empty() {
+        owner.drain(&mut commands);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "calibrate that onNote completed"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    if burst > 1024 {
+        assert!(commands.len() < burst, "calibrate undrained audio commands");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(
+        loaded.ui.revision(),
+        revision,
+        "the state change must have no UI revision: {:?}",
+        loaded.ui.findings()
+    );
+    let state = loaded
+        .ui
+        .state()
+        .expect("host saves must complete even when audio is paused");
+    assert_eq!(
+        state.custom,
+        Some(SavedValue::Table(vec![(
+            SavedValue::String("notes".into()),
+            SavedValue::Number(1.)
+        )])),
+        "onSave must read live note state"
+    );
+}
+
+#[test]
+fn script_thread_state_runs_on_save_after_note_without_ui_revision() {
+    live_thread_note_state(1);
+}
+
+#[test]
+fn script_thread_state_survives_command_backpressure() {
+    live_thread_note_state(4096);
 }

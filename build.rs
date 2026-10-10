@@ -45,16 +45,51 @@ fn main() {
 // implementation. Emit the same stable slot IDs used by its runtime metadata.
 fn host_parameter_index() {
     let out = std::path::PathBuf::from(env::var_os("OUT_DIR").expect("cargo OUT_DIR"));
-    let target = out.ancestors().nth(4).expect("cargo build output layout");
-    let directory = target.join("param-index").join(env::var("CARGO_PKG_NAME").unwrap());
+    let triple = env::var("TARGET").expect("cargo target triple");
+    let target = parameter_target_dir(&out, &triple);
+    let directory = target
+        .join("param-index")
+        .join(env::var("CARGO_PKG_NAME").unwrap());
     std::fs::create_dir_all(&directory).expect("parameter index directory");
     let mut index = String::from("struct = \"HostAutomation\"\nscheme = \"hash\"\n");
     for address in 0..automation_ids::HOST_AUTOMATION_SLOTS {
         use std::fmt::Write;
-        writeln!(index, "[[param]]\nid = {}\nfield = \"slot_{address}\"\nname = \"Automation {address}\"\n",
-            automation_ids::HOST_AUTOMATION_BASE + u32::from(address)).unwrap();
+        writeln!(
+            index,
+            "[[param]]\nid = {}\nfield = \"slot_{address}\"\nname = \"Automation {address}\"\n",
+            automation_ids::HOST_AUTOMATION_BASE + u32::from(address)
+        )
+        .unwrap();
     }
-    std::fs::write(directory.join("HostAutomation.params.toml"), index).expect("host parameter index");
+    std::fs::write(directory.join("HostAutomation.params.toml"), index)
+        .expect("host parameter index");
+}
+
+fn parameter_target_dir<'a>(out: &'a Path, triple: &str) -> &'a Path {
+    let target = out.ancestors().nth(4).expect("cargo build output layout");
+    // Explicit --target adds a triple directory even when it equals the host.
+    if target.file_name().is_some_and(|name| name == triple) {
+        target.parent().expect("cargo target root")
+    } else {
+        target
+    }
+}
+
+#[test]
+fn parameter_index_uses_the_root_for_host_and_explicit_target_builds() {
+    let triple = "x86_64-unknown-linux-gnu";
+    let root = Path::new("workspace/target");
+    assert_eq!(
+        parameter_target_dir(&root.join("release/build/kontakto-hash/out"), triple),
+        root
+    );
+    assert_eq!(
+        parameter_target_dir(
+            &root.join(triple).join("release/build/kontakto-hash/out"),
+            triple
+        ),
+        root
+    );
 }
 
 fn git(args: &[&str]) -> Option<String> {
@@ -144,6 +179,7 @@ fn identity(import_hash: u64, build_hash: u64) {
         "SOURCE_DATE_EPOCH",
         "KONTRA_BUILD_REVISION",
         "KONTRA_SOURCE_REVISION",
+        "KONTRA_NIGHTLY_BUILD",
     ] {
         println!("cargo:rerun-if-env-changed={name}");
     }
@@ -181,7 +217,31 @@ fn identity(import_hash: u64, build_hash: u64) {
         .map(revision)
         .unwrap_or_else(|| rev.clone());
     // Untracked and ignored output is not a source modification.
-    let dirty = git(&["status", "--porcelain", "--untracked-files=no"]).map(|s| !s.is_empty());
+    let dirty = if env::var("KONTRA_NIGHTLY_BUILD").as_deref() == Ok("1") {
+        // Nightly changes only the root package versions; validate the entire delta.
+        let status = Command::new("python3")
+            .args(["tools/version.py", "nightly-dirty"])
+            .output();
+        match status {
+            Ok(status) if status.status.success() && status.stdout.trim_ascii() == b"false" => {
+                Some(false)
+            }
+            Ok(status) if status.status.success() && status.stdout.trim_ascii() == b"true" => {
+                println!(
+                    "cargo:warning=Nightly has source changes beyond its version stamp; dirty=true is recorded"
+                );
+                Some(true)
+            }
+            _ => {
+                println!(
+                    "cargo:warning=Nightly stamp validation unavailable; recording ordinary Git source status"
+                );
+                git(&["status", "--porcelain", "--untracked-files=no"]).map(|s| !s.is_empty())
+            }
+        }
+    } else {
+        git(&["status", "--porcelain", "--untracked-files=no"]).map(|s| !s.is_empty())
+    };
     let epoch = env::var("SOURCE_DATE_EPOCH")
         .map(|v| {
             v.parse()

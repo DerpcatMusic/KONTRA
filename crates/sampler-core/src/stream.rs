@@ -1,7 +1,9 @@
 //! Bounded decoded-page ownership. One audio cache and one worker coordinator.
-use crate::{AssetId, Error, Frame, Pcm};
+use crate::{AssetId, Error, Frame, Index, Pcm};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 use std::{
+    cmp::Reverse,
+    collections::BinaryHeap,
     ops::Range,
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -34,6 +36,8 @@ pub enum StreamError {
     Disconnected,
     SequenceExhausted,
     WrongWorker,
+    Timeout,
+    DecodeFailed(DecodeFailure),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PageUpdate {
@@ -100,6 +104,11 @@ struct Entry {
     request: Request,
     used: u64,
     state: State,
+    retries: u8,
+    retry_after: Option<std::time::Instant>,
+    next: Option<Index>,
+    previous_use: Option<Index>,
+    next_use: Option<Index>,
 }
 impl Entry {
     fn status(&self) -> PageStatus {
@@ -111,16 +120,23 @@ impl Entry {
     }
 }
 
+#[derive(Default)]
+struct PageList {
+    first: Option<Index>,
+    last: Option<Index>,
+}
+
 /// Audio-owned page slots. Construction/destruction belong off audio. Protect all
 /// current demand before requesting replacements in an epoch, so voice order
 /// cannot evict another voice's required page. A cache miss never waits.
 pub struct StreamCache {
     entries: Box<[Option<Entry>]>,
-    index: Vec<(PageKey, usize)>,
+    buckets: Box<[Option<Index>]>,
     requests: Producer<Request>,
     completed: Consumer<Completed>,
     recycled: Producer<Box<[Frame]>>,
     epoch: u64,
+    protected: usize,
     serial: u64,
     store: u64,
     /// Decoder threads to unpark after a service pushed requests.
@@ -128,8 +144,10 @@ pub struct StreamCache {
     pushed: bool,
     /// Set by a start that found an asset cold; wakes the reloader.
     cold: std::sync::atomic::AtomicBool,
-    /// Where the eviction sweep resumes.
-    hand: usize,
+    reloader: Option<std::thread::Thread>,
+    vacant: Vec<usize>,
+    idle: PageList,
+    active: PageList,
 }
 /// One coordinator serializes page requests/results around any worker executors.
 /// Jobs own buffers and can move to workers; this endpoint remains a single writer.
@@ -138,11 +156,18 @@ pub struct StreamWorker {
     completed: Producer<Completed>,
     recycled: Consumer<Box<[Frame]>>,
     pending: Box<[Option<Request>]>,
+    ready: BinaryHeap<Reverse<(u64, usize, u64)>>,
     launched: Box<[u64]>,
     free: Vec<Box<[Frame]>>,
     store: u64,
 }
 impl StreamCache {
+    /// Nominal streaming polyphony; exact horizon admission also checks shared
+    /// demand because pitch and crossfade windows can exceed three pages.
+    pub fn voice_budget(&self) -> usize {
+        (self.entries.len() / 3).max(1)
+    }
+
     /// Bytes of page buffers this cache owns once its worker has filled them.
     pub fn bytes(&self) -> usize {
         self.entries.len() * PAGE_FRAMES * size_of::<Frame>()
@@ -156,6 +181,10 @@ impl StreamCache {
         pages
             .checked_mul(PAGE_FRAMES)
             .and_then(|n| n.checked_mul(std::mem::size_of::<Frame>()))
+            .ok_or(Error::Capacity)?;
+        let buckets = pages
+            .checked_mul(2)
+            .and_then(usize::checked_next_power_of_two)
             .ok_or(Error::Capacity)?;
         let mut free = Vec::new();
         free.try_reserve_exact(pages).map_err(|_| Error::Capacity)?;
@@ -178,23 +207,28 @@ impl StreamCache {
         Ok((
             Self {
                 entries: (0..pages).map(|_| None).collect(),
-                index: Vec::with_capacity(pages),
+                buckets: vec![None; buckets].into_boxed_slice(),
                 requests,
                 completed,
                 recycled,
                 epoch: 1,
+                protected: 0,
                 serial: 0,
                 store,
                 wake: Vec::new(),
                 pushed: false,
                 cold: std::sync::atomic::AtomicBool::new(false),
-                hand: 0,
+                reloader: None,
+                vacant: (0..pages).rev().collect(),
+                idle: PageList::default(),
+                active: PageList::default(),
             },
             StreamWorker {
                 requests: incoming,
                 completed: outgoing,
                 recycled: returned,
                 pending: vec![None; pages].into_boxed_slice(),
+                ready: BinaryHeap::with_capacity(pages * 2),
                 launched: vec![0; pages].into_boxed_slice(),
                 free,
                 store,
@@ -207,28 +241,105 @@ impl StreamCache {
     pub fn set_wake(&mut self, threads: Vec<std::thread::Thread>) {
         self.wake = threads;
     }
-    /// Unpark the decoder threads if requests were queued since the last call.
+    /// Control side: start-range reloads wake only when a start found cold PCM.
+    pub fn set_reloader(&mut self, thread: Option<std::thread::Thread>) {
+        self.reloader = thread;
+    }
+    /// Unpark decoders for queued requests or returned storage. Head reloads
+    /// have a separate wake, so each page batch cannot scan every asset.
     fn wake(&mut self) {
-        if std::mem::take(&mut self.pushed)
-            | self.cold.swap(false, std::sync::atomic::Ordering::Relaxed)
-        {
+        let cold = self.cold.swap(false, std::sync::atomic::Ordering::Relaxed);
+        if std::mem::take(&mut self.pushed) | cold {
             for thread in &self.wake {
                 thread.unpark();
             }
         }
+        if cold && let Some(thread) = &self.reloader {
+            thread.unpark();
+        }
     }
     pub fn begin_epoch(&mut self) -> Result<(), StreamError> {
-        self.epoch = self
+        let epoch = self
             .epoch
             .checked_add(1)
             .ok_or(StreamError::SequenceExhausted)?;
+        // All previous protections expire together; splice the whole chain,
+        // without visiting its pages. Older idle pages stay ahead of it.
+        let active = std::mem::take(&mut self.active);
+        if let Some(first) = active.first {
+            if let Some(last) = self.idle.last {
+                self.entries[last.get()].as_mut().unwrap().next_use = Some(first);
+                self.entries[first.get()].as_mut().unwrap().previous_use = Some(last);
+            } else {
+                self.idle.first = Some(first);
+            }
+            self.idle.last = active.last;
+        }
+        self.epoch = epoch;
+        self.protected = 0;
         Ok(())
     }
+    fn unlink_use(&mut self, slot: usize) {
+        let entry = self.entries[slot].as_ref().unwrap();
+        let (previous, next) = (entry.previous_use, entry.next_use);
+        let list = if entry.used == self.epoch {
+            &mut self.active
+        } else {
+            &mut self.idle
+        };
+        if let Some(previous) = previous {
+            self.entries[previous.get()].as_mut().unwrap().next_use = next;
+        } else {
+            list.first = next;
+        }
+        if let Some(next) = next {
+            self.entries[next.get()].as_mut().unwrap().previous_use = previous;
+        } else {
+            list.last = previous;
+        }
+    }
+    fn append_active(&mut self, slot: usize) {
+        let entry = self.entries[slot].as_mut().unwrap();
+        entry.used = self.epoch;
+        entry.previous_use = self.active.last;
+        entry.next_use = None;
+        if let Some(last) = self.active.last {
+            self.entries[last.get()].as_mut().unwrap().next_use = Some(Index::new(slot));
+        } else {
+            self.active.first = Some(Index::new(slot));
+        }
+        self.active.last = Some(Index::new(slot));
+        self.protected += 1;
+    }
+    fn protect_slot(&mut self, slot: usize) {
+        if self.entries[slot].as_ref().unwrap().used != self.epoch {
+            self.unlink_use(slot);
+            self.append_active(slot);
+        }
+    }
     fn find(&self, key: PageKey) -> Option<usize> {
-        self.index
-            .binary_search_by_key(&key, |(key, _)| *key)
-            .ok()
-            .map(|i| self.index[i].1)
+        find(&self.entries, &self.buckets, key)
+    }
+    fn unlink(&mut self, slot: usize) {
+        let entry = self.entries[slot].as_ref().unwrap();
+        let bucket = bucket(entry.request.key, self.buckets.len());
+        let mut at = self.buckets[bucket];
+        let mut previous: Option<Index> = None;
+        while let Some(index) = at {
+            let i = index.get();
+            let next = self.entries[i].as_ref().unwrap().next;
+            if i == slot {
+                if let Some(p) = previous {
+                    self.entries[p.get()].as_mut().unwrap().next = next;
+                } else {
+                    self.buckets[bucket] = next;
+                }
+                return;
+            }
+            previous = Some(index);
+            at = next;
+        }
+        unreachable!("every admitted entry is indexed");
     }
     pub fn status(&self, key: PageKey) -> PageStatus {
         self.find(key).map_or(PageStatus::Missing, |i| {
@@ -244,19 +355,15 @@ impl StreamCache {
         let first = frames.start / PAGE_FRAMES;
         let last = (frames.end - 1) / PAGE_FRAMES;
         let mut ready = 0;
-        let begin = self.index.partition_point(|(key, _)| {
-            *key < PageKey {
+        for page in first..=last {
+            if let Some(slot) = self.find(PageKey {
                 asset: asset.asset_id(),
-                index: first,
+                index: page,
+            }) {
+                self.protect_slot(slot);
+                let entry = self.entries[slot].as_ref().unwrap();
+                ready += usize::from(entry.status() == PageStatus::Ready);
             }
-        });
-        for &(key, slot) in &self.index[begin..] {
-            if key.asset != asset.asset_id() || key.index > last {
-                break;
-            }
-            let entry = self.entries[slot].as_mut().unwrap();
-            entry.used = self.epoch;
-            ready += usize::from(entry.status() == PageStatus::Ready);
         }
         Ok(ready == last - first + 1)
     }
@@ -277,11 +384,12 @@ impl StreamCache {
             index: page,
         };
         if let Some(slot) = self.find(key) {
-            let entry = self.entries[slot].as_mut().unwrap();
+            let entry = self.entries[slot].as_ref().unwrap();
             if matches!(entry.state, State::Pending) && self.requests.is_abandoned() {
                 return Err(StreamError::Disconnected);
             }
-            entry.used = self.epoch;
+            self.protect_slot(slot);
+            let entry = self.entries[slot].as_mut().unwrap();
             if matches!(entry.state, State::Pending) && deadline < entry.request.deadline {
                 let request = Request {
                     deadline,
@@ -301,17 +409,14 @@ impl StreamCache {
         if self.requests.is_full() {
             return Err(StreamError::Capacity);
         }
-        // Clock sweep: the next free slot or page this epoch has not
-        // protected. ponytail: not strict LRU (a page idle one epoch goes as
-        // soon as one idle for many); amortized O(1) instead of a full scan.
-        let count = self.entries.len();
-        let slot = (0..count)
-            .map(|i| (self.hand + i) % count)
-            .find(|&i| {
-                self.entries[i]
-                    .as_ref()
-                    .is_none_or(|e| e.used != self.epoch)
-            })
+        // Port from v1 0cb7a8a0:src/engine/mod.rs: free.pop()/free.push().
+        // Shared decoded pages additionally reuse the oldest idle chain head.
+        // Neither allocation nor eviction searches the reserved slot array.
+        let slot = self
+            .vacant
+            .last()
+            .copied()
+            .or_else(|| self.idle.first.map(Index::get))
             .ok_or(StreamError::Capacity)?;
         if self.recycled.is_full()
             && self.entries[slot]
@@ -338,13 +443,13 @@ impl StreamCache {
             .expect("reserved request capacity");
         self.pushed = true;
         self.serial = serial;
-        self.hand = (slot + 1) % count;
+        if self.entries[slot].is_some() {
+            self.unlink_use(slot);
+            self.unlink(slot);
+        } else {
+            assert_eq!(self.vacant.pop(), Some(slot));
+        }
         if let Some(old) = self.entries[slot].take() {
-            let index = self
-                .index
-                .binary_search_by_key(&old.request.key, |(key, _)| *key)
-                .unwrap();
-            self.index.remove(index);
             if let State::Ready(samples) = old.state {
                 self.recycled
                     .push(samples)
@@ -355,11 +460,64 @@ impl StreamCache {
             request,
             used: self.epoch,
             state: State::Pending,
+            retries: 0,
+            retry_after: None,
+            next: self.buckets[bucket(key, self.buckets.len())],
+            previous_use: None,
+            next_use: None,
         });
-        let index = self.index.partition_point(|(found, _)| *found < key);
-        self.index.insert(index, (key, slot));
+        let bucket = bucket(key, self.buckets.len());
+        self.buckets[bucket] = Some(Index::new(slot));
+        self.append_active(slot);
         Ok(PageStatus::Pending)
     }
+    /// Client retry policy: transient unavailability gets three retries with
+    /// exponential wall-clock backoff. Invalid sample data never retries. Reuse
+    /// the protected slot and its generation; no invalidation or audio allocation.
+    pub fn request_retry(
+        &mut self,
+        asset: &Pcm,
+        page: usize,
+        deadline: u64,
+    ) -> Result<PageStatus, StreamError> {
+        let key = PageKey {
+            asset: asset.asset_id(),
+            index: page,
+        };
+        if let Some(slot) = self.find(key) {
+            let entry = self.entries[slot].as_mut().unwrap();
+            if let State::Failed(error) = entry.state {
+                if error != DecodeFailure::Unavailable || entry.retries == 3 {
+                    return Err(StreamError::DecodeFailed(error));
+                }
+                if entry
+                    .retry_after
+                    .is_some_and(|at| std::time::Instant::now() >= at)
+                {
+                    if self.requests.is_abandoned() {
+                        return Err(StreamError::Disconnected);
+                    }
+                    if self.requests.is_full() {
+                        return Err(StreamError::Capacity);
+                    }
+                    self.serial = self
+                        .serial
+                        .checked_add(1)
+                        .ok_or(StreamError::SequenceExhausted)?;
+                    entry.request.serial = self.serial;
+                    entry.request.deadline = deadline;
+                    self.requests
+                        .push(entry.request)
+                        .expect("reserved request capacity");
+                    entry.retries += 1;
+                    entry.state = State::Pending;
+                    self.pushed = true;
+                }
+            }
+        }
+        self.request(asset, page, deadline)
+    }
+
     /// Explicitly invalidate one page, including a failed request before retry.
     /// An in-flight result becomes stale; ready storage returns to the worker.
     pub fn invalidate(&mut self, key: PageKey) -> Result<bool, StreamError> {
@@ -373,17 +531,17 @@ impl StreamCache {
         {
             return Err(StreamError::Capacity);
         }
+        self.unlink_use(slot);
+        self.unlink(slot);
         let entry = self.entries[slot].take().unwrap();
+        self.protected -= usize::from(entry.used == self.epoch);
+        self.vacant.push(slot);
         if let State::Ready(samples) = entry.state {
             self.recycled
                 .push(samples)
                 .expect("reserved return capacity");
+            self.pushed = true;
         }
-        let index = self
-            .index
-            .binary_search_by_key(&key, |(key, _)| *key)
-            .unwrap();
-        self.index.remove(index);
         Ok(true)
     }
 
@@ -403,6 +561,7 @@ impl StreamCache {
             self.recycled
                 .push(samples)
                 .expect("reserved return capacity");
+            self.pushed = true;
             return Some(PageUpdate::Discarded(request.key));
         }
         let entry = entry.as_mut().unwrap();
@@ -415,7 +574,12 @@ impl StreamCache {
                 self.recycled
                     .push(samples)
                     .expect("reserved return capacity");
+                self.pushed = true;
                 entry.state = State::Failed(error);
+                entry.retry_after = Some(
+                    std::time::Instant::now()
+                        + std::time::Duration::from_millis(10 << entry.retries),
+                );
                 Some(PageUpdate::Failed(request.key, error))
             }
         }
@@ -424,7 +588,7 @@ impl StreamCache {
     pub fn reader(&self) -> PageReader<'_> {
         PageReader {
             entries: &self.entries,
-            index: &self.index,
+            buckets: &self.buckets,
         }
     }
     pub fn frame(&self, asset: AssetId, frame: usize) -> Option<Frame> {
@@ -436,18 +600,37 @@ impl StreamCache {
     }
 }
 
+// A fixed bucket table and intrusive slot links: admission never shifts all
+// resident keys. Collisions only visit their bucket; storage never grows on audio.
+fn bucket(key: PageKey, count: usize) -> usize {
+    use std::hash::{Hash, Hasher};
+    // Keys are process-owned asset revisions and validated page numbers.
+    let mut hash = rustc_hash::FxHasher::default();
+    key.hash(&mut hash);
+    hash.finish() as usize & (count - 1)
+}
+fn find(entries: &[Option<Entry>], buckets: &[Option<Index>], key: PageKey) -> Option<usize> {
+    let mut next = buckets[bucket(key, buckets.len())];
+    while let Some(index) = next {
+        let i = index.get();
+        let entry = entries[i].as_ref().unwrap();
+        if entry.request.key == key {
+            return Some(i);
+        }
+        next = entry.next;
+    }
+    None
+}
+
 /// Resident pages, read-only.
 #[derive(Clone, Copy)]
 pub struct PageReader<'a> {
     entries: &'a [Option<Entry>],
-    index: &'a [(PageKey, usize)],
+    buckets: &'a [Option<Index>],
 }
 impl<'a> PageReader<'a> {
     fn find(&self, key: PageKey) -> Option<usize> {
-        self.index
-            .binary_search_by_key(&key, |(key, _)| *key)
-            .ok()
-            .map(|i| self.index[i].1)
+        find(self.entries, self.buckets, key)
     }
     pub fn frame(&self, asset: AssetId, frame: usize) -> Option<Frame> {
         self.span(asset, frame..frame.checked_add(1)?).map(|s| s[0])
@@ -489,18 +672,29 @@ impl StreamWorker {
                 && self.pending[slot].is_none_or(|old| old.serial <= request.serial)
             {
                 self.pending[slot] = Some(request);
+                // Superseded priorities are discarded lazily, with a bounded
+                // rebuild. Allocation/selection stay on the worker endpoint.
+                if self.ready.len() == self.pending.len() * 2 {
+                    self.ready.clear();
+                    for request in self.pending.iter().flatten() {
+                        self.ready
+                            .push(Reverse((request.deadline, request.slot, request.serial)));
+                    }
+                } else {
+                    self.ready
+                        .push(Reverse((request.deadline, slot, request.serial)));
+                }
             }
         }
         if self.requests.is_abandoned() || self.free.is_empty() {
             return None;
         }
-        let slot = self
-            .pending
-            .iter()
-            .enumerate()
-            .filter_map(|(i, request)| request.map(|r| (i, r.deadline)))
-            .min_by_key(|(_, deadline)| *deadline)?
-            .0;
+        let slot = loop {
+            let Reverse((deadline, slot, serial)) = self.ready.pop()?;
+            if self.pending[slot].is_some_and(|r| r.serial == serial && r.deadline == deadline) {
+                break slot;
+            }
+        };
         let request = self.pending[slot].take().unwrap();
         self.launched[slot] = request.serial;
         let mut samples = self.free.pop().unwrap();
@@ -560,21 +754,127 @@ impl crate::Runtime {
     pub fn stream_cache_mut(&mut self) -> Option<&mut StreamCache> {
         self.stream_cache.as_mut()
     }
+    /// The horizon admitted with each start, matched to the frontend's service
+    /// horizon. Setup side; changing it does not allocate.
+    pub fn set_stream_horizon(&mut self, frames: u32) -> Result<(), Error> {
+        if frames == 0 {
+            return Err(Error::InvalidInput);
+        }
+        self.stream_horizon = frames;
+        self.refresh_stream_reservations();
+        Ok(())
+    }
     pub fn stream_underruns(&self) -> u64 {
         self.stream_underruns
     }
 
     /// Poll a bounded batch, protect every live source's horizon, then request its
     /// pages with first-use deadlines. No voice/clock advancement or worker waiting.
-    /// True means the complete snapshot horizon is resident; false includes pending
-    /// or failed pages (inspect page status and explicitly invalidate failures).
-    /// A queue/cache error leaves accepted requests intact and reports incomplete
-    /// service. Requery after events. Cold onsets require control-side preloading.
+    /// True means the complete snapshot horizon is resident. Transient decode
+    /// failures retry with bounded backoff; corruption and exhausted retries
+    /// return an error. Accepted requests survive errors. Requery after events.
     /// Start sources whose first frames are not resident (say, purged start
     /// ranges) silent, fading in once their pages arrive, instead of refusing
     /// them `NotReady`. They still mark the asset cold for reload.
     pub fn set_cold_starts(&mut self, on: bool) {
         self.cold_starts = on;
+    }
+
+    /// Offline waits occur only at render boundaries, after due callbacks and
+    /// delayed starts. Realtime service never sleeps or waits for storage.
+    pub fn set_offline(&mut self, offline: bool) {
+        self.offline = offline;
+    }
+
+    pub fn take_stream_fault(&mut self) -> Option<StreamError> {
+        self.stream_fault.take()
+    }
+
+    pub fn wait_streaming(
+        &mut self,
+        frames: u32,
+        timeout: std::time::Duration,
+    ) -> Result<(), StreamError> {
+        if self.stream_cache.is_none() {
+            return Ok(());
+        }
+        let until = std::time::Instant::now() + timeout;
+        loop {
+            match self.service_streaming(frames) {
+                Ok(true) => return Ok(()),
+                Ok(false) => {}
+                Err(error) => return Err(error),
+            }
+            if std::time::Instant::now() >= until {
+                return Err(StreamError::Timeout);
+            }
+            std::thread::sleep(std::time::Duration::from_micros(100));
+        }
+    }
+
+    /// Constant-size geometry and a preallocated-storage counter, like v1's
+    /// free stream slots. Page jobs/wakes belong to block service, not each start.
+    pub(crate) fn admit_streaming(
+        &self,
+        cursor: crate::source::Cursor,
+        cold: bool,
+    ) -> Result<usize, StreamError> {
+        let cache = self
+            .stream_cache
+            .as_ref()
+            .ok_or(StreamError::NotConfigured)?;
+        if cold && cache.requests.is_abandoned() {
+            return Err(StreamError::Disconnected);
+        }
+        let pages = cursor.reservation_pages(self.stream_horizon).max(1);
+        if self
+            .stream_reserved
+            .checked_add(pages)
+            .is_none_or(|n| n > cache.entries.len())
+        {
+            return Err(StreamError::Capacity);
+        }
+        Ok(pages)
+    }
+
+    /// Called in the existing render completion loop, and after pitch edits.
+    /// Starts only read the total; they never walk the other voices.
+    pub(super) fn refresh_stream_reservation(&mut self, index: usize, step: f64) {
+        let voice = self.voices.slots[index].value.as_mut().unwrap();
+        if voice.stream_pages == 0 {
+            return;
+        }
+        let mut pages = voice.cursor.reservation_pages(self.stream_horizon).max(1);
+        if step != voice.cursor.step() {
+            pages = pages.max(
+                voice
+                    .cursor
+                    .with_step(step)
+                    .reservation_pages(self.stream_horizon),
+            );
+        }
+        self.stream_reserved = self.stream_reserved - voice.stream_pages + pages;
+        voice.stream_pages = pages;
+    }
+
+    pub(super) fn refresh_stream_reservations(&mut self) {
+        if self.stream_cache.is_none() {
+            return;
+        }
+        let mut next = self.voices.first;
+        while let Some(index) = next {
+            next = self.voices.slots[index].next;
+            let voice = self.voices.slots[index].value.as_ref().unwrap();
+            let family = self.families.get(voice.family.0).unwrap();
+            let note = self.notes.get(family.note.0).unwrap();
+            let ratio = self
+                .expressions
+                .get(note.expression.0)
+                .unwrap()
+                .rendered
+                .ratio;
+            self.refresh_stream_reservation(index, voice.base_step * ratio);
+        }
     }
 
     pub fn service_streaming(&mut self, frames: u32) -> Result<bool, StreamError> {
@@ -585,6 +885,38 @@ impl crate::Runtime {
         // Temporarily detach only the audio-owned cache to borrow the immutable
         // voice/plan snapshot. The visitor cannot execute callbacks or mutate it.
         let result = self.service_cache(&mut cache, frames);
+        if matches!(
+            result,
+            Err(StreamError::DecodeFailed(_) | StreamError::Disconnected)
+        ) {
+            // A terminal source fault cannot leave a never-started onset held.
+            for word in 0..self.voice_activity.len() {
+                let mut bits = self.voice_activity[word];
+                while bits != 0 {
+                    let index = word * 64 + bits.trailing_zeros() as usize;
+                    bits &= bits - 1;
+                    let Some(voice) = self.voices.slots[index].value else {
+                        continue;
+                    };
+                    if !voice.cursor.holding_onset() {
+                        continue;
+                    }
+                    let note = self
+                        .notes
+                        .get(self.families.get(voice.family.0).unwrap().note.0)
+                        .unwrap();
+                    let asset =
+                        self.plans.get(note.plan.0).unwrap().prepared.pcm[voice.sample].asset_id();
+                    let failed = cache.requests.is_abandoned() || cache.entries.iter().flatten().any(|entry| {
+                        entry.request.key.asset == asset && matches!(entry.state,
+                            State::Failed(error) if error != DecodeFailure::Unavailable || entry.retries == 3)
+                    });
+                    if failed {
+                        self.end_voice(crate::VoiceId(self.voices.id(index)));
+                    }
+                }
+            }
+        }
         cache.wake();
         self.stream_cache = Some(cache);
         result
@@ -598,6 +930,7 @@ impl crate::Runtime {
         }
         cache.begin_epoch()?;
         let mut ready = true;
+        let mut first_error = None;
         // Protect all voices before any eviction: admission order must never evict
         // a page that a later voice already needs in this same snapshot horizon.
         for requesting in [false, true] {
@@ -626,7 +959,7 @@ impl crate::Runtime {
                 if asset.resident_frames().is_some() {
                     continue;
                 }
-                // A busy lock reads as nothing resident: pages are merely requested.
+                // Publication preserves the generation this demand pass borrows.
                 let head = asset.try_head();
                 let head = head.as_deref().map_or(&[][..], |h| h);
                 let mut failure = None;
@@ -647,7 +980,7 @@ impl crate::Runtime {
                                     .expect("validated source demand");
                                 continue;
                             }
-                            match cache.request(asset, page, deadline) {
+                            match cache.request_retry(asset, page, deadline) {
                                 Ok(status) => ready &= status == PageStatus::Ready,
                                 Err(error) => {
                                     failure = Some(error);
@@ -665,7 +998,9 @@ impl crate::Runtime {
                     continue;
                 };
                 let cursor = demand.cursor;
-                if let Some((reach, direction, lead)) = cursor.linear_reach(demand.frames) {
+                if let Some((reach, direction, lead)) =
+                    cursor.linear_reach(demand.frames.saturating_sub(1))
+                {
                     // A plain stretch: whole pages in traversal order, without
                     // walking every output frame.
                     let deadline =
@@ -694,7 +1029,7 @@ impl crate::Runtime {
                             break;
                         }
                     }
-                } else if let Some(reach) = cursor.loop_reach(demand.frames) {
+                } else if let Some(reach) = cursor.loop_reach(demand.frames.saturating_sub(1)) {
                     // A loop: its few ranges, each at its first deadline.
                     for (range, at) in reach.into_iter().flatten() {
                         if !visit(range, demand.at + u64::from(at)) {
@@ -709,11 +1044,12 @@ impl crate::Runtime {
                     debug_assert!(complete || failure.is_some());
                 }
                 if let Some(error) = failure {
-                    return Err(error);
+                    first_error.get_or_insert(error);
+                    ready = false;
                 }
             }
         }
-        Ok(ready)
+        first_error.map_or(Ok(ready), Err)
     }
 
     /// Whether a source can start: `Ok(true)` for a cold start (its first
@@ -751,5 +1087,319 @@ impl crate::Runtime {
         } else {
             Err(Error::NotReady)
         }
+    }
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use crate::*;
+
+    #[test]
+    fn worker_priorities_stay_bounded_while_all_buffers_are_in_flight() {
+        let pcm = Pcm::streamed(48000, PAGE_FRAMES * 4).unwrap();
+        let (mut cache, mut worker) = StreamCache::new(2).unwrap();
+        cache.request(&pcm, 0, 0).unwrap();
+        cache.request(&pcm, 1, 0).unwrap();
+        let first = worker.next_job().unwrap();
+        let second = worker.next_job().unwrap();
+        cache.begin_epoch().unwrap();
+        cache.request(&pcm, 2, 200).unwrap();
+        cache.request(&pcm, 3, 100).unwrap();
+        assert!(worker.next_job().is_none());
+        let capacity = worker.ready.capacity();
+        for deadline in (0..200).rev() {
+            cache.request(&pcm, 2, deadline).unwrap();
+            assert!(worker.next_job().is_none());
+            assert!(worker.ready.len() <= 4);
+            assert_eq!(worker.ready.capacity(), capacity);
+        }
+        worker.complete(first, Ok(())).unwrap();
+        worker.complete(second, Ok(())).unwrap();
+        assert!(matches!(cache.poll(), Some(PageUpdate::Discarded(_))));
+        assert!(matches!(cache.poll(), Some(PageUpdate::Discarded(_))));
+        let urgent = worker.next_job().unwrap();
+        let later = worker.next_job().unwrap();
+        assert_eq!((urgent.key().index, urgent.deadline()), (2, 0));
+        assert_eq!((later.key().index, later.deadline()), (3, 100));
+        worker.complete(urgent, Ok(())).unwrap();
+        worker.complete(later, Ok(())).unwrap();
+        assert!(matches!(cache.poll(), Some(PageUpdate::Loaded(_))));
+        assert!(matches!(cache.poll(), Some(PageUpdate::Loaded(_))));
+        assert!(worker.next_job().is_none());
+    }
+
+    #[test]
+    fn page_batches_do_not_wake_the_head_reloader() {
+        let pcm = Pcm::streamed(48000, PAGE_FRAMES).unwrap();
+        let (mut cache, _worker) = StreamCache::new(1).unwrap();
+        let (started, ready) = std::sync::mpsc::channel();
+        let (woken, wake) = std::sync::mpsc::channel();
+        let reloader = std::thread::spawn(move || {
+            started.send(()).unwrap();
+            std::thread::park();
+            woken.send(()).unwrap();
+        });
+        cache.set_reloader(Some(reloader.thread().clone()));
+        ready.recv().unwrap();
+        cache.request(&pcm, 0, 0).unwrap();
+        cache.wake();
+        let page_woke = wake
+            .recv_timeout(std::time::Duration::from_millis(20))
+            .is_ok();
+        cache.cold.store(true, std::sync::atomic::Ordering::Relaxed);
+        cache.wake();
+        let cold_woke = page_woke
+            || wake
+                .recv_timeout(std::time::Duration::from_millis(100))
+                .is_ok();
+        reloader.thread().unpark();
+        reloader.join().unwrap();
+        assert!(!page_woke, "ordinary page work must not reload heads");
+        assert!(cold_woke, "a cold start must wake its head reloader");
+    }
+
+    #[test]
+    fn returning_a_stale_buffer_wakes_a_decoder_waiting_for_storage() {
+        let pcm = Pcm::streamed(48000, PAGE_FRAMES * 2).unwrap();
+        let (mut cache, mut worker) = StreamCache::new(1).unwrap();
+        cache.request(&pcm, 0, 0).unwrap();
+        let stale = worker.next_job().unwrap();
+        cache.begin_epoch().unwrap();
+        cache.request(&pcm, 1, 0).unwrap();
+        assert!(
+            worker.next_job().is_none(),
+            "the only buffer is still in flight"
+        );
+        cache.wake(); // The pending request's first wake was already consumed.
+        let (ready, started) = std::sync::mpsc::channel();
+        let (finished, done) = std::sync::mpsc::channel();
+        let decoder = std::thread::spawn(move || {
+            worker.complete(stale, Ok(())).unwrap();
+            ready.send(()).unwrap();
+            loop {
+                std::thread::park();
+                if let Some(mut job) = worker.next_job() {
+                    job.frames_mut().fill([0.5; 2]);
+                    worker.complete(job, Ok(())).unwrap();
+                    finished.send(()).unwrap();
+                    break;
+                }
+            }
+        });
+        cache.set_wake(vec![decoder.thread().clone()]);
+        started.recv().unwrap();
+        assert_eq!(
+            cache.poll(),
+            Some(PageUpdate::Discarded(PageKey {
+                asset: pcm.asset_id(),
+                index: 0
+            }))
+        );
+        cache.wake();
+        let woke = done
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .is_ok();
+        // Always retire the test worker, including the failing-first run.
+        decoder.thread().unpark();
+        decoder.join().unwrap();
+        assert!(
+            woke,
+            "returning storage must wake the already queued decode"
+        );
+        assert_eq!(
+            cache.poll(),
+            Some(PageUpdate::Loaded(PageKey {
+                asset: pcm.asset_id(),
+                index: 1
+            }))
+        );
+        assert_eq!(cache.frame(pcm.asset_id(), PAGE_FRAMES), Some([0.5; 2]));
+    }
+
+    #[test]
+    fn epoch_splices_preserve_protected_pages_and_reuse_returned_slots() {
+        let pcm = Pcm::streamed(48000, PAGE_FRAMES * 16).unwrap();
+        let (mut cache, mut worker) = StreamCache::new(4).unwrap();
+        let fill = |cache: &mut StreamCache, worker: &mut StreamWorker, page| {
+            assert_eq!(cache.request(&pcm, page, 0), Ok(PageStatus::Pending));
+            let mut job = worker.next_job().unwrap();
+            job.frames_mut().fill([page as f32; 2]);
+            worker.complete(job, Ok(())).unwrap();
+            assert_eq!(
+                cache.poll(),
+                Some(PageUpdate::Loaded(PageKey {
+                    asset: pcm.asset_id(),
+                    index: page
+                }))
+            );
+        };
+        let check = |cache: &StreamCache| {
+            let mut seen = [false; 4];
+            let mut protected = 0;
+            for (list, active) in [(&cache.idle, false), (&cache.active, true)] {
+                let (mut next, mut previous) = (list.first, None);
+                while let Some(at) = next {
+                    assert!(
+                        !std::mem::replace(&mut seen[at.get()], true),
+                        "duplicate/cyclic list entry"
+                    );
+                    let entry = cache.entries[at.get()].as_ref().unwrap();
+                    assert_eq!(entry.previous_use, previous);
+                    assert_eq!(entry.used == cache.epoch, active);
+                    protected += usize::from(active);
+                    previous = Some(at);
+                    next = entry.next_use;
+                }
+                assert_eq!(previous, list.last);
+            }
+            assert_eq!(cache.protected, protected);
+            for &at in &cache.vacant {
+                assert!(
+                    !std::mem::replace(&mut seen[at], true),
+                    "free slots cannot be linked"
+                );
+                assert!(cache.entries[at].is_none());
+            }
+            assert!(seen.into_iter().all(|v| v));
+        };
+        for page in 0..4 {
+            fill(&mut cache, &mut worker, page);
+            check(&cache);
+        }
+        cache.begin_epoch().unwrap();
+        check(&cache);
+        for page in [0, 2, 3] {
+            cache
+                .protect(&pcm, page * PAGE_FRAMES..(page + 1) * PAGE_FRAMES)
+                .unwrap();
+            check(&cache);
+        }
+        fill(&mut cache, &mut worker, 4);
+        assert_eq!(cache.frame(pcm.asset_id(), PAGE_FRAMES), None);
+        check(&cache);
+        assert_eq!(cache.request(&pcm, 5, 0), Err(StreamError::Capacity));
+        cache
+            .invalidate(PageKey {
+                asset: pcm.asset_id(),
+                index: 2,
+            })
+            .unwrap();
+        check(&cache);
+        fill(&mut cache, &mut worker, 5);
+        cache.begin_epoch().unwrap();
+        for page in [0, 4] {
+            cache
+                .protect(&pcm, page * PAGE_FRAMES..(page + 1) * PAGE_FRAMES)
+                .unwrap();
+        }
+        fill(&mut cache, &mut worker, 6);
+        assert_eq!(cache.frame(pcm.asset_id(), 3 * PAGE_FRAMES), None);
+        fill(&mut cache, &mut worker, 7);
+        assert_eq!(cache.frame(pcm.asset_id(), 5 * PAGE_FRAMES), None);
+        check(&cache);
+        // Splice into a nonempty idle list; every page still has exactly one owner.
+        cache.begin_epoch().unwrap();
+        cache.protect(&pcm, 0..PAGE_FRAMES).unwrap();
+        cache.begin_epoch().unwrap();
+        check(&cache);
+        fill(&mut cache, &mut worker, 8);
+        check(&cache);
+    }
+
+    #[test]
+    fn failed_dsp_starts_do_not_leak_stream_credits_and_end_returns_them() {
+        let pcm = Pcm::headed(48000, PAGE_FRAMES * 2, &[[0.25; 2]; 32]).unwrap();
+        let plan = Prepared::new(48000, vec![pcm], vec![], 0).unwrap();
+        let limits = Limits::for_plan(&plan, 8, 1);
+        let (cache, _worker) = StreamCache::new(2).unwrap();
+        let mut rt = Runtime::new(plan, limits).unwrap().with_stream_cache(cache);
+        rt.set_stream_horizon(64).unwrap();
+        let input = |id| Input {
+            protocol: Protocol::Native,
+            port: 0,
+            group: 0,
+            channel: 0,
+            key: 60,
+            external_id: Some(id),
+        };
+        let first = rt.note_on(input(1), 60, 1.).unwrap();
+        let second = rt.note_on(input(2), 60, 1.).unwrap();
+        for _ in 0..1000 {
+            let voice = rt.start(first, 0, 0, 1.).unwrap();
+            assert_eq!(rt.stream_reserved, 1);
+            assert_eq!(rt.start(second, 0, 0, 1.), Err(Error::Capacity));
+            assert_eq!(rt.stream_reserved, 1);
+            rt.stop_voice(voice).unwrap();
+            assert_eq!(rt.stream_reserved, 0);
+            let voice = rt.start(second, 0, 0, 1.).unwrap();
+            rt.stop_voice(voice).unwrap();
+            assert_eq!(rt.stream_reserved, 0);
+        }
+    }
+
+    #[test]
+    fn colliding_page_keys_survive_middle_tail_head_removal_and_slot_reuse() {
+        let pcm = Pcm::streamed(48000, PAGE_FRAMES * 512).unwrap();
+        let (mut cache, mut worker) = StreamCache::new(4).unwrap();
+        let keys: Vec<_> = (0..512)
+            .map(|index| PageKey {
+                asset: pcm.asset_id(),
+                index,
+            })
+            .filter(|&key| super::bucket(key, cache.buckets.len()) == 0)
+            .take(6)
+            .collect();
+        assert_eq!(keys.len(), 6);
+        let fill = |cache: &mut StreamCache, worker: &mut StreamWorker, key: PageKey| {
+            assert_eq!(cache.request(&pcm, key.index, 0), Ok(PageStatus::Pending));
+            let mut job = worker.next_job().unwrap();
+            assert_eq!(job.key(), key);
+            job.frames_mut().fill([key.index as f32; 2]);
+            worker.complete(job, Ok(())).unwrap();
+            assert_eq!(cache.poll(), Some(PageUpdate::Loaded(key)));
+        };
+        for &key in &keys[..4] {
+            fill(&mut cache, &mut worker, key);
+        }
+        assert_eq!(cache.protected, 4);
+        assert_eq!(
+            cache.request(&pcm, keys[4].index, 0),
+            Err(StreamError::Capacity)
+        );
+        cache.begin_epoch().unwrap();
+        assert_eq!(
+            cache.protect(
+                &pcm,
+                keys[0].index * PAGE_FRAMES..(keys[0].index + 1) * PAGE_FRAMES
+            ),
+            Ok(true)
+        );
+        assert_eq!(cache.invalidate(keys[1]), Ok(true));
+        fill(&mut cache, &mut worker, keys[4]);
+        for &key in &[keys[0], keys[2], keys[3], keys[4]] {
+            assert_eq!(
+                cache.frame(key.asset, key.index * PAGE_FRAMES),
+                Some([key.index as f32; 2])
+            );
+        }
+        for &key in &[keys[3], keys[0], keys[4]] {
+            assert_eq!(cache.invalidate(key), Ok(true));
+            assert_eq!(cache.status(key), PageStatus::Missing);
+        }
+        assert_eq!(cache.protected, 0);
+        assert_eq!(cache.request(&pcm, keys[2].index, 0), Ok(PageStatus::Ready));
+        assert_eq!(cache.request(&pcm, keys[2].index, 0), Ok(PageStatus::Ready));
+        assert_eq!(
+            cache.protected, 1,
+            "duplicate hits consume one protection credit"
+        );
+        for &key in &[keys[0], keys[1], keys[3]] {
+            fill(&mut cache, &mut worker, key);
+        }
+        assert_eq!(cache.protected, 4);
+        assert_eq!(
+            cache.request(&pcm, keys[5].index, 0),
+            Err(StreamError::Capacity)
+        );
     }
 }

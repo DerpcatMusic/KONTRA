@@ -213,6 +213,12 @@ fn request(ask: &Ask, parent: Option<Parent>) -> Result<DialogRequest, String> {
     let open = DialogKind::OpenFile { multiple: false };
     let folder = DialogKind::PickFolder { multiple: false };
     let (title, kind, directory, filter): (_, _, _, Option<(&str, Vec<String>)>) = match ask {
+        Ask::Samples { out } => (
+            "A folder of WAV or AIFF samples",
+            folder,
+            Some(out.clone()),
+            None,
+        ),
         Ask::Folder { from, single } => (
             if *single {
                 "A Kontakt library folder"
@@ -222,6 +228,12 @@ fn request(ask: &Ask, parent: Option<Parent>) -> Result<DialogRequest, String> {
             folder,
             Some(from.clone()),
             None,
+        ),
+        Ask::Snapshot { from, .. } => (
+            "Load a preset for this instrument",
+            open,
+            Some(from.clone()),
+            Some(("Kontakt preset", vec!["nksn".into()])),
         ),
         Ask::Artwork { library } => (
             "A picture for the library's cover",
@@ -257,11 +269,13 @@ fn request(ask: &Ask, parent: Option<Parent>) -> Result<DialogRequest, String> {
 fn selected(ask: Ask, path: Option<PathBuf>) -> Option<Picked> {
     let path = path?;
     Some(match ask {
+        Ask::Samples { out } => super::created(path, out),
         Ask::Folder { single, .. } => Picked::Folder(path, single),
         Ask::Artwork { library } => Picked::Artwork {
             library,
             picture: path,
         },
+        Ask::Snapshot { slot, source, .. } => Picked::Snapshot { slot, source, path },
         Ask::Multi { .. } => Picked::Multi(path),
         Ask::Reveal(path) => Picked::Revealed(crate::ui::menu::reveal(&path)),
     })

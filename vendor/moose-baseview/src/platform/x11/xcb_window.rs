@@ -2,6 +2,7 @@ use crate::dpi::PhysicalSize;
 use crate::platform::x11::error::CookieExt;
 use crate::platform::x11::visual_info::WindowVisualConfig;
 use crate::platform::X11Connection;
+use std::cell::Cell;
 use std::num::{NonZero, NonZeroU32};
 use std::rc::Rc;
 use x11rb::connection::Connection;
@@ -18,6 +19,7 @@ use x11rb::xcb_ffi::XCBConnection;
 pub struct XcbWindow {
     connection: Rc<X11Connection>,
     window_id: NonZeroU32,
+    destroyed: Cell<bool>,
 }
 
 impl XcbWindow {
@@ -59,7 +61,7 @@ impl XcbWindow {
                 .border_pixel(0),
         )?;
 
-        Ok(Self { window_id, connection })
+        Ok(Self { window_id, connection, destroyed: Cell::new(false) })
     }
 
     pub fn map_window(&self) -> Result<VoidCookie<'_, XCBConnection>, ConnectionError> {
@@ -126,6 +128,14 @@ impl XcbWindow {
         size_hints.set_normal_hints(&self.connection.conn as &XCBConnection, self.window_id.get())
     }
 
+    pub fn mark_destroyed(&self) {
+        self.destroyed.set(true);
+    }
+
+    pub fn is_destroyed(&self) -> bool {
+        self.destroyed.get()
+    }
+
     #[inline]
     pub fn id(&self) -> NonZeroU32 {
         self.window_id
@@ -134,6 +144,10 @@ impl XcbWindow {
 
 impl Drop for XcbWindow {
     fn drop(&mut self) {
+        // A host destroying its parent already released this server resource.
+        if self.is_destroyed() {
+            return;
+        }
         match self.connection.conn.destroy_window(self.window_id.get()) {
             Err(e) => crate::warn!("Failed to send request to destroy X window: {}", e),
             Ok(cookie) => cookie.check_warn(),

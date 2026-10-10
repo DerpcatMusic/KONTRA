@@ -1,0 +1,18 @@
+{
+  "status": "HOLD: cold64 acceptance not established",
+  "parent": "4f848ad8",
+  "binaries": {
+    "integrated": "9444810001a446a889c07e78558c1b42e466391428f62e759f32522ebe05790e",
+    "admission-indexed": "1c0f6b833e9940f1e0fdb9d77b7c53ff4a4eaef2d83d668000a79e14b124fc18",
+    "admission-indexed-fx": "fc08e9270889ed76b6abbdba2febbef1fb177346575cc56ac59ad2ea9ffba681",
+    "page-index-before": "f14d6b5d7ec0a34c5c38ea98dc31eaf703382f8ff3507f63c4e3b28c0e29d4cc",
+    "page-index-after": "37a1f7a439bd8f8b531f05884dac6e279c834c8f35aef9dbf7026107eff6f852",
+    "page-index-fx": "aa9043ce3e69a2875e8ad67a6d29b6a77bcbb476dc92d9f095b90ba3fb046ab9"
+  },
+  "source_sha256": {
+    "crates/sampler-core/src/stream.rs": "5db56d466b5c228c75145a94b63041d8bc6ec25a5e67306dc4e4c75001f42027",
+    "crates/sampler-core/Cargo.toml": "1d8fa0a1815294fecf5600ac9455ae4e170c5777b18cdd2c410aff8cf0ce2286",
+    "Cargo.lock": "2b90825b896b02b9717e7b8ce2822179bea6435cd0a1ef9f2a366b9b5b63112e"
+  },
+  "profile_note": "Userspace leaf IPs only, audio TID; kernel work and inlined caller cost are not excluded."
+}

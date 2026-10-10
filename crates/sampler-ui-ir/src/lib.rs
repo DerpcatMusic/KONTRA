@@ -62,7 +62,9 @@ pub struct Interface {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NativeUi { pub entry: String }
+pub struct NativeUi {
+    pub entry: String,
+}
 
 /// Which frontend produced the interface.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -226,7 +228,9 @@ impl Widget {
     /// icon, baked words) or is a deliberately invisible hit area, so a
     /// vector presentation keeps it rather than draw a blank box.
     pub fn label_in_image(&self) -> bool {
-        matches!(self.kind, Kind::Button { .. } | Kind::Switch) && self.text.trim().is_empty() && self.image(Role::Strip).is_some()
+        matches!(self.kind, Kind::Button { .. } | Kind::Switch)
+            && self.text.trim().is_empty()
+            && self.image(Role::Strip).is_some()
     }
 }
 
@@ -255,7 +259,12 @@ pub struct Automation {
 
 impl Default for Automation {
     fn default() -> Self {
-        Self { name: None, short_name: None, allowed: true, id: None }
+        Self {
+            name: None,
+            short_name: None,
+            allowed: true,
+            id: None,
+        }
     }
 }
 
@@ -268,11 +277,18 @@ pub enum Value {
     Integers(Vec<i32>),
     Reals(Vec<f64>),
     /// Transient OS drop payload; never published as a widget value snapshot.
-    DropPath { kind: DropKind, path: String },
+    DropPath {
+        kind: DropKind,
+        path: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DropKind { Audio, Midi, Array }
+pub enum DropKind {
+    Audio,
+    Midi,
+    Array,
+}
 
 /// A physical meter tap, using the source's group, effect slot and bus identities.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -332,17 +348,31 @@ pub struct Parts {
 pub enum Kind {
     /// Container for other widgets; draws nothing of its own but its images.
     Panel,
-    Knob { range: Range, display: Display },
-    Slider { range: Range, orientation: Orientation },
+    Knob {
+        range: Range,
+        display: Display,
+    },
+    Slider {
+        range: Range,
+        orientation: Orientation,
+    },
     /// A latching on/off button (KSP `ui_button`, Lua `OnOffButton`) or a
     /// momentary one (Lua `Button`).
-    Button { momentary: bool },
+    Button {
+        momentary: bool,
+    },
     /// KSP `ui_switch`: latching, drawn as a switch.
     Switch,
-    Menu { items: Vec<MenuItem> },
+    Menu {
+        items: Vec<MenuItem>,
+    },
     Label,
     /// `arrows`: step buttons beside the value (KSP `SHOW_ARROWS`).
-    ValueEdit { range: Range, display: Display, arrows: bool },
+    ValueEdit {
+        range: Range,
+        display: Display,
+        arrows: bool,
+    },
     /// `cells`: initial values, one per column (may be shorter than `columns`);
     /// `steps_shown`: value steps drawn as grid lines (KSP `set_table_steps_shown`).
     Table {
@@ -355,15 +385,28 @@ pub enum Kind {
     /// `sensitivity`: per-axis drag sensitivity in source units (KSP
     /// `MOUSE_BEHAVIOUR_X`/`_Y`); `mouse_mode`: the source's pointer mode,
     /// verbatim (KSP `MOUSE_MODE`), until its meanings are verified.
-    Xy { cursors: u32, sensitivity: [Option<u32>; 2], mouse_mode: Option<i32> },
+    Xy {
+        cursors: u32,
+        sensitivity: [Option<u32>; 2],
+        mouse_mode: Option<i32>,
+    },
     Waveform,
     /// `view_mode`: the source's display mode, verbatim (KSP `WT_VIS_MODE`);
     /// `parallax`: 3D depth offset in pixels (KSP `PARALLAX_X`/`_Y`).
-    Wavetable { view_mode: Option<i32>, parallax: [i32; 2] },
-    LevelMeter { orientation: Orientation },
+    Wavetable {
+        view_mode: Option<i32>,
+        parallax: [i32; 2],
+    },
+    LevelMeter {
+        orientation: Orientation,
+    },
     /// `base_path`: the folder it opens at (KSP `BASEPATH`); `files`: what it lists;
     /// `column_width`: list column width in pixels.
-    FileSelector { base_path: Option<String>, files: Files, column_width: Option<u32> },
+    FileSelector {
+        base_path: Option<String>,
+        files: Files,
+        column_width: Option<u32>,
+    },
     TextEdit,
     /// A static picture (Lua `Image`); KSP pictures on labels are [`Kind::Label`].
     Image,
@@ -399,7 +442,10 @@ pub struct Display {
 
 impl Default for Display {
     fn default() -> Self {
-        Self { ratio: 1.0, unit: String::new() }
+        Self {
+            ratio: 1.0,
+            unit: String::new(),
+        }
     }
 }
 
@@ -454,7 +500,11 @@ pub struct ImageUse {
 
 impl ImageUse {
     pub const fn new(asset: AssetRef, role: Role) -> Self {
-        Self { asset, role, frame: None }
+        Self {
+            asset,
+            role,
+            frame: None,
+        }
     }
 }
 
@@ -517,7 +567,14 @@ pub struct ImageMeta {
 
 impl Default for ImageMeta {
     fn default() -> Self {
-        Self { frames: 1, axis: Orientation::Vertical, alpha: true, size: None, stretch: [false; 2], margins: Margins::default() }
+        Self {
+            frames: 1,
+            axis: Orientation::Vertical,
+            alpha: true,
+            size: None,
+            stretch: [false; 2],
+            margins: Margins::default(),
+        }
     }
 }
 
@@ -571,7 +628,12 @@ pub struct Rgba {
 impl Rgba {
     /// Opaque, from `0xRRGGBB`.
     pub const fn rgb(packed: u32) -> Self {
-        Self { r: (packed >> 16) as u8, g: (packed >> 8) as u8, b: packed as u8, a: 255 }
+        Self {
+            r: (packed >> 16) as u8,
+            g: (packed >> 8) as u8,
+            b: packed as u8,
+            a: 255,
+        }
     }
 }
 
@@ -650,7 +712,12 @@ impl Interface {
                 *k = true;
             }
         };
-        for a in self.pages.iter().filter_map(|p| p.background.image).chain(self.icon) {
+        for a in self
+            .pages
+            .iter()
+            .filter_map(|p| p.background.image)
+            .chain(self.icon)
+        {
             mark(a);
         }
         let vector = presentation == Presentation::Vector;
@@ -676,7 +743,9 @@ impl Interface {
         let mut at = Some(widget);
         // Bounded so a malformed (unvalidated) cycle cannot hang the caller.
         for _ in 0..=self.widgets.len() {
-            let Some(w) = at.and_then(|w| self.widgets.get(w.0)) else { return true };
+            let Some(w) = at.and_then(|w| self.widgets.get(w.0)) else {
+                return true;
+            };
             if w.hidden {
                 return false;
             }
@@ -715,7 +784,13 @@ impl Interface {
                 .collect();
         }
         if matches!(self.source, Source::Ksp { .. } | Source::PerformanceView) {
-            let mut out: Vec<_> = self.widgets.iter().enumerate().filter(|(_,w)| w.page == page).map(|(n,_)| WidgetRef(n)).collect();
+            let mut out: Vec<_> = self
+                .widgets
+                .iter()
+                .enumerate()
+                .filter(|(_, w)| w.page == page)
+                .map(|(n, _)| WidgetRef(n))
+                .collect();
             out.sort_by_key(|n| (self.widgets[n.0].z, n.0));
             return out;
         }
@@ -822,7 +897,12 @@ impl Interface {
                 return Err(Error::WidgetGeometry(at));
             }
         }
-        if let Some(w) = self.unsupported.iter().filter_map(|u| u.widget).find(|w| w.0 >= self.widgets.len()) {
+        if let Some(w) = self
+            .unsupported
+            .iter()
+            .filter_map(|u| u.widget)
+            .find(|w| w.0 >= self.widgets.len())
+        {
             return Err(Error::MissingWidget(w));
         }
         Ok(())
@@ -859,8 +939,12 @@ impl fmt::Display for Error {
             Self::MissingAsset(a) => write!(f, "asset {} does not exist", a.0),
             Self::AssetKind(a) => write!(f, "asset {} is the wrong kind for its use", a.0),
             Self::MissingPage(w) => write!(f, "widget {} is on a page that does not exist", w.0),
-            Self::MissingStyle(w) => write!(f, "widget {} names a text style that does not exist", w.0),
-            Self::MissingParent(w) => write!(f, "widget {} names a widget that does not exist", w.0),
+            Self::MissingStyle(w) => {
+                write!(f, "widget {} names a text style that does not exist", w.0)
+            }
+            Self::MissingParent(w) => {
+                write!(f, "widget {} names a widget that does not exist", w.0)
+            }
             Self::MissingWidget(w) => write!(f, "widget {} does not exist", w.0),
             Self::ParentNotPanel(w) => write!(f, "widget {}'s parent is not a panel", w.0),
             Self::ParentOnOtherPage(w) => write!(f, "widget {}'s parent is on another page", w.0),
@@ -876,20 +960,34 @@ mod tests {
     use super::*;
 
     fn image(path: &str, frames: u32) -> Asset {
-        Asset { path: path.into(), kind: AssetKind::Image(ImageMeta { frames, ..ImageMeta::default() }) }
+        Asset {
+            path: path.into(),
+            kind: AssetKind::Image(ImageMeta {
+                frames,
+                ..ImageMeta::default()
+            }),
+        }
     }
 
     /// Wallpaper, a panel with a background picture holding a strip knob, and a loose label.
     fn sample() -> Interface {
         let page = PageRef(0);
         let mut panel = Widget::new("$panel", page, Rect::new(10, 20, 200, 100), Kind::Panel);
-        panel.images.push(ImageUse::new(AssetRef(1), Role::Background));
+        panel
+            .images
+            .push(ImageUse::new(AssetRef(1), Role::Background));
         panel.z = 1;
         let mut knob = Widget::new(
             "$cutoff",
             page,
             Rect::new(5, 6, 40, 40),
-            Kind::Knob { range: Range { max: 1_000_000.0, ..Range::default() }, display: Display::default() },
+            Kind::Knob {
+                range: Range {
+                    max: 1_000_000.0,
+                    ..Range::default()
+                },
+                display: Display::default(),
+            },
         );
         knob.parent = Some(WidgetRef(0));
         knob.binding = Binding::Control(ControlId(7));
@@ -904,7 +1002,11 @@ mod tests {
                 ..Page::default()
             }],
             widgets: vec![panel, knob, label],
-            assets: vec![image("wallpaper.png", 1), image("panel_bg.png", 1), image("knob.png", 101)],
+            assets: vec![
+                image("wallpaper.png", 1),
+                image("panel_bg.png", 1),
+                image("knob.png", 101),
+            ],
             ..Interface::default()
         }
     }
@@ -922,11 +1024,20 @@ mod tests {
         let mut ui = sample();
         ui.widgets[1].z = 5;
         ui.widgets[2].z = 2;
-        assert_eq!(ui.draw_order(PageRef(0)), [WidgetRef(0), WidgetRef(2), WidgetRef(1)]);
+        assert_eq!(
+            ui.draw_order(PageRef(0)),
+            [WidgetRef(0), WidgetRef(2), WidgetRef(1)]
+        );
         ui.widgets[1].z = 2;
-        assert_eq!(ui.draw_order(PageRef(0)), [WidgetRef(0), WidgetRef(1), WidgetRef(2)]);
+        assert_eq!(
+            ui.draw_order(PageRef(0)),
+            [WidgetRef(0), WidgetRef(1), WidgetRef(2)]
+        );
         ui.widgets[0].hidden = true;
-        assert!(!ui.visible(WidgetRef(1)), "global layers retain inherited hiding");
+        assert!(
+            !ui.visible(WidgetRef(1)),
+            "global layers retain inherited hiding"
+        );
     }
 
     #[test]
@@ -934,7 +1045,10 @@ mod tests {
         let mut ui = sample();
         ui.source = Source::FalconLua;
         // Label (z 0) before the panel (z 1); the knob straight after its panel.
-        assert_eq!(ui.draw_order(PageRef(0)), [WidgetRef(2), WidgetRef(0), WidgetRef(1)]);
+        assert_eq!(
+            ui.draw_order(PageRef(0)),
+            [WidgetRef(2), WidgetRef(0), WidgetRef(1)]
+        );
         assert_eq!(ui.page_rect(WidgetRef(1)), Rect::new(15, 26, 40, 40));
     }
 
@@ -955,7 +1069,12 @@ mod tests {
         ui.widgets[0].parent = Some(WidgetRef(0));
         assert_eq!(ui.validate(), Err(Error::ParentCycle(WidgetRef(0))));
         let mut ui = sample();
-        ui.styles.push(TextStyle { font: Font::Bitmap(AssetRef(2)), size: None, color: Rgba::rgb(0), align: Align::Left });
+        ui.styles.push(TextStyle {
+            font: Font::Bitmap(AssetRef(2)),
+            size: None,
+            color: Rgba::rgb(0),
+            align: Align::Left,
+        });
         assert_eq!(ui.validate(), Err(Error::AssetKind(AssetRef(2))));
     }
 

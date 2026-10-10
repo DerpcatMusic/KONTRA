@@ -4,10 +4,8 @@
 //! `codex/uvi-latest-integration` (`src/uvi/program.rs`, `playback.rs`,
 //! `modulation.rs`). Clear `.uvip` with loose samples load through [`load`].
 //! With the `library-access` feature, installed UVI banks open through [`Bank`]
-//! (ported from v1 `src/uvi/{access,crypto,ufs}.rs` and `src/library/uvi.rs`):
-//! reader namespaces come from the user's own installed, hash-verified UVI
-//! Workstation and a bank's content state lives only in v1's owner-only private
-//! cache; neither is embedded, logged, printed or returned in an error. Every
+//! using the native UFS and PasswordV2 implementation. Recovered bank access
+//! state stays only in memory; it is never logged, printed or returned in an error. Every
 //! module this translator does not model is listed in `Instrument::unsupported`.
 
 #[cfg(feature = "library-access")]
@@ -16,16 +14,19 @@ mod access_error;
 mod audio;
 #[cfg(feature = "library-access")]
 mod bank;
+#[cfg(feature = "scan")]
+mod coverage;
 #[cfg(feature = "library-access")]
 mod crypto;
+mod engine_parameters;
 mod inserts;
 pub use inserts::InsertNode;
 mod modulation;
 #[cfg(not(feature = "library-access"))]
 mod no_access;
-pub mod script;
 mod resources;
-pub use resources::Resources;
+pub mod script;
+pub use resources::{ResourceError, Resources};
 pub mod scripted;
 mod stream;
 #[cfg(feature = "library-access")]
@@ -43,6 +44,9 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
 };
+
+/// Increment when native protected-library decoding changes, for cache invalidation.
+pub const LIBRARY_ACCESS_REVISION: u32 = 1;
 
 const XML_LIMIT: u64 = 32 << 20;
 
@@ -183,6 +187,26 @@ fn translate_bank(text: &str) -> Result<(ir::Instrument, Vec<String>), Translate
     translate_with(text, Source::Bank)
 }
 
+#[cfg(all(test, feature = "library-access"))]
+#[test]
+fn bank_volume_sample_reaches_the_bank_resource_resolver() {
+    let xml = r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators>
+        <SamplePlayer SamplePath="$Authored.ufs/Samples/note.wav"/>
+        </Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#;
+    let (bank, locations) = translate_bank(xml).unwrap();
+    assert_eq!(
+        bank.zones.len(),
+        1,
+        "bank authority resolves its own volume"
+    );
+    assert_eq!(locations, ["$Authored.ufs/Samples/note.wav"]);
+    let disk = translate(xml, Path::new(".")).unwrap();
+    assert!(
+        disk.instrument.zones.is_empty(),
+        "a loose file has no bank authority"
+    );
+}
+
 fn translate_with(text: &str, source: Source) -> Result<(ir::Instrument, Vec<String>), Translate> {
     translate_full(text, source).map(|(instrument, locations, ..)| (instrument, locations))
 }
@@ -236,6 +260,15 @@ fn translate_full(text: &str, source: Source) -> Result<FullTranslation, Transla
         shape_index: HashMap::new(),
         shared_sources: std::collections::HashSet::new(),
         used: Vec::new(),
+        #[cfg(feature = "scan")]
+        dropped_connections: Default::default(),
+        #[cfg(feature = "scan")]
+        native_player_ids: program
+            .descendants()
+            .filter(|n| n.has_tag_name("SamplePlayer"))
+            .enumerate()
+            .map(|(i, n)| (n.id(), i))
+            .collect(),
         osc_groups: Vec::new(),
         insert_nodes: Vec::new(),
         split: None,
@@ -262,6 +295,13 @@ fn translate_full(text: &str, source: Source) -> Result<FullTranslation, Transla
                 format!("{kind}{}", if bypassed { " (bypassed)" } else { "" }),
             );
         }
+    }
+    engine_parameters::register(&mut out.ir, &doc, &out.insert_nodes);
+    out.ir.register_compressor_controls();
+    #[cfg(feature = "scan")]
+    {
+        out.ir.dsp_slots = Some(coverage::slots(&out, program));
+        out.ir.native_family = Some(coverage::native_family(program));
     }
     out.ir
         .validate()
@@ -356,6 +396,10 @@ struct Translation {
     shared_sources: std::collections::HashSet<roxmltree::NodeId>,
     /// Nodes whose meaning was carried into the IR.
     used: Vec<roxmltree::NodeId>,
+    #[cfg(feature = "scan")]
+    dropped_connections: std::collections::HashSet<roxmltree::NodeId>,
+    #[cfg(feature = "scan")]
+    native_player_ids: HashMap<roxmltree::NodeId, usize>,
     osc_groups: Vec<OscGroup>,
     /// Where each insert element's processors sit, for script writes.
     insert_nodes: Vec<InsertNode>,
@@ -370,6 +414,8 @@ pub struct OscGroup {
     pub layer: u32,
     pub osc: u32,
     pub group: u32,
+    pub keygroup: usize,
+    pub oscillator: usize,
 }
 
 impl Translation {
@@ -387,6 +433,8 @@ impl Translation {
         for connection in connections(scope) {
             if number(connection, "Bypass", 0.0)? == 0.0 && number(connection, "Ratio", 1.0)? != 0.0
             {
+                #[cfg(feature = "scan")]
+                self.dropped_connections.insert(connection.id());
                 self.unsupported(
                     &path(connection),
                     "program or layer modulation",
@@ -402,16 +450,7 @@ impl Translation {
     }
 
     fn program(&mut self, program: Node) -> Result<(), String> {
-        let mut gain = number(program, "Gain", 1.0)?;
-        for insert in program
-            .children()
-            .filter(|n| n.has_tag_name("Inserts"))
-            .flat_map(|i| i.children().filter(|n| n.has_tag_name("Gain")))
-            .filter(|n| number(*n, "Bypass", 0.0).is_ok_and(|b| b == 0.0))
-        {
-            gain *= number(insert, "Volume", 1.0)?;
-            self.used.push(insert.id());
-        }
+        let gain = number(program, "Gain", 1.0)?;
         for processor in program
             .descendants()
             .filter(|n| n.has_tag_name("ScriptProcessor"))
@@ -468,6 +507,15 @@ impl Translation {
             });
             auxes.push((name, bus));
         }
+        let program_output = self.insert_bus(program, ir::Output::Master)?;
+        self.ir.input_bus = if let ir::Output::Bus(bus) = program_output {
+            Some(bus)
+        } else {
+            None
+        };
+        for (_, bus) in &auxes {
+            self.ir.buses[bus.0].output = program_output;
+        }
         for (ordinal, layer) in program
             .descendants()
             .filter(|n| n.has_tag_name("Layer"))
@@ -477,6 +525,7 @@ impl Translation {
                 continue;
             }
             self.scope_connections(layer)?;
+            let output = self.insert_bus(layer, program_output)?;
             let pan = number(layer, "Pan", 0.0)?;
             let mut base = ir::Group {
                 name: layer.attribute("Name").unwrap_or_default().into(),
@@ -485,6 +534,7 @@ impl Translation {
                     position: pan.clamp(-1.0, 1.0),
                     law: ir::PanLaw::Balance,
                 },
+                output,
                 ..Default::default()
             };
             // The layer's sends to aux buses, either side of its fader.
@@ -508,22 +558,11 @@ impl Translation {
                     pre_fader: number(router, "PreFader", 0.0)? != 0.0,
                 });
             }
-            // Oscillators get groups of their own only where a keygroup stacks
-            // several; otherwise the layer's group is oscillator 1.
-            let stacked = layer
-                .descendants()
-                .filter(|n| n.has_tag_name("Keygroup"))
-                .any(|k| k.descendants().filter(|n| n.has_tag_name("SamplePlayer")).count() > 1);
-            self.split = (scripted && stacked).then(|| (ordinal + 1, base.clone()));
+            // Scripts address individual keygroups/oscillators, including
+            // single-oscillator keygroups; no two original nodes may alias.
+            self.split = scripted.then(|| (ordinal + 1, base.clone()));
             if self.split.is_none() {
                 self.ir.groups.push(base);
-            }
-            if scripted && !stacked {
-                self.osc_groups.push(OscGroup {
-                    layer: ordinal as u32 + 1,
-                    osc: 1,
-                    group: self.ir.groups.len() as u32 - 1,
-                });
             }
             if pan != 0.0 {
                 self.unsupported(
@@ -629,8 +668,11 @@ impl Translation {
         };
         let gain = number(keygroup, "Gain", 1.0)?;
         let pan = number(keygroup, "Pan", 0.0)?;
-        let (processors, placed) =
-            self.inserts(keygroup, true, Some(((keys.0 as u16 + keys.1 as u16) / 2) as u8))?;
+        let (processors, placed) = self.inserts(
+            keygroup,
+            true,
+            Some(((keys.0 as u16 + keys.1 as u16) / 2) as u8),
+        )?;
         let chain = (!placed.is_empty()).then(|| {
             self.ir.chains.push(ir::Chain {
                 scope: ir::Scope::Voice,
@@ -641,6 +683,25 @@ impl Translation {
             self.place(chain, placed);
             chain
         });
+        if let Some(chain) = chain {
+            for insert in keygroup
+                .children()
+                .filter(|n| n.has_tag_name("Inserts"))
+                .flat_map(|n| n.descendants())
+                .filter(|n| n.has_tag_name("OnePole"))
+            {
+                if let Some(placed) = self
+                    .insert_nodes
+                    .iter()
+                    .find(|p| p.node == insert.id().get_usize() && p.count > 0)
+                    .copied()
+                {
+                    for connection in connections(insert) {
+                        self.connect_frequency(connection, chain, placed.first, &mut shared)?;
+                    }
+                }
+            }
+        }
         for (oscillator, player) in keygroup
             .descendants()
             .filter(|n| n.has_tag_name("SamplePlayer"))
@@ -649,7 +710,12 @@ impl Translation {
             if number(player, "Bypass", 0.0)? != 0.0 {
                 continue;
             }
-            let group = self.oscillator_group(group, oscillator as u32 + 1);
+            let group = self.oscillator_group(
+                group,
+                oscillator as u32 + 1,
+                keygroup.id().get_usize(),
+                player.id().get_usize(),
+            );
             let at = path(player);
             let Some(sample) = player.attribute("SamplePath").filter(|p| !p.is_empty()) else {
                 self.unsupported(&at, "sample player without a sample", "");
@@ -711,6 +777,15 @@ impl Translation {
                     "",
                 );
             }
+            #[cfg(feature = "scan")]
+            {
+                self.ir
+                    .source_indices
+                    .zones
+                    .resize(self.native_player_ids.len(), None);
+                self.ir.source_indices.zones[self.native_player_ids[&player.id()]] =
+                    Some(ir::ZoneRef(self.ir.zones.len()));
+            }
             self.ir.zones.push(ir::Zone {
                 group: Some(group),
                 keys: ir::KeyRange {
@@ -747,18 +822,20 @@ impl Translation {
     }
 
     /// The group a zone of oscillator `osc` goes to: the layer's own, or in a
-    /// scripted program one group per (layer, oscillator) so that `playNote`'s
-    /// `oscIndex` can select it.
-    fn oscillator_group(&mut self, layer_group: ir::GroupRef, osc: u32) -> ir::GroupRef {
+    /// scripted program one group per original oscillator so that scoped
+    /// parameter writes and `playNote` selection share the same identity.
+    fn oscillator_group(
+        &mut self,
+        layer_group: ir::GroupRef,
+        osc: u32,
+        keygroup: usize,
+        oscillator: usize,
+    ) -> ir::GroupRef {
         let Some((layer, base)) = &self.split else {
             return layer_group;
         };
         let layer = *layer as u32;
-        if let Some(found) = self
-            .osc_groups
-            .iter()
-            .find(|g| g.layer == layer && g.osc == osc)
-        {
+        if let Some(found) = self.osc_groups.iter().find(|g| g.oscillator == oscillator) {
             return ir::GroupRef(found.group as usize);
         }
         let mut group = base.clone();
@@ -769,6 +846,8 @@ impl Translation {
             layer,
             osc,
             group: index as u32,
+            keygroup,
+            oscillator,
         });
         ir::GroupRef(index)
     }
@@ -797,7 +876,11 @@ impl Translation {
             },
             decay: seconds("DecayTime", 30.0)?,
             // AHD has no sustain stage: it falls to zero after the decay.
-            sustain: if ahd { 0.0 } else { number(node, "SustainLevel", 1.0)?.clamp(0.0, 1.0) },
+            sustain: if ahd {
+                0.0
+            } else {
+                number(node, "SustainLevel", 1.0)?.clamp(0.0, 1.0)
+            },
             release: number(node, "ReleaseTime", 0.05)
                 .map(|t| ir::Time::Seconds(t.clamp(0.0, 10.0)))?,
             ..Default::default()
@@ -862,7 +945,9 @@ impl Translation {
             Some("ogg") => ir::Encoding::Ogg,
             _ => ir::Encoding::Unknown,
         };
-        if relative.starts_with('$') || relative.contains(".ufs/") {
+        if matches!(&self.source, Source::Disk(_))
+            && (relative.starts_with('$') || relative.contains(".ufs/"))
+        {
             self.unsupported(at, "sample outside the program's bank", sample);
             return None;
         }
@@ -954,7 +1039,7 @@ impl Translation {
 
 /// Load a loose program, a virtual `bank.ufs/member.uvip` path, or the first
 /// program in a UFS bank. [`load_program`] selects a specific bank member.
-/// Protected programs use the installed reader behind `library-access`.
+/// Protected programs use the native reader behind `library-access`.
 pub fn load(path: &Path, rate: u32) -> Result<sampler_kontakt::Loaded, Box<dyn std::error::Error>> {
     assemble_translated(translate_path(path)?, rate)
 }
@@ -976,6 +1061,8 @@ pub struct Translated {
 
 /// A program's scripts loaded on a script thread for a host that owns the runtime.
 pub struct AttachedScript {
+    /// Typed initial findings; runtime findings are published through the driver UI bridge.
+    pub findings: Vec<script::Finding>,
     pub driver: scripted::Driver<scripted::ScriptThread>,
     /// The script's widgets.
     pub interface: sampler_ui_ir::Interface,
@@ -994,32 +1081,46 @@ impl Translated {
         self.attach_script_with_ui_state(rate, config, None)
     }
 
-    pub fn attach_script_with_ui_state(&mut self, rate: u32, config: script::Config, state: Option<script::UiState>) -> Result<Option<AttachedScript>, sampler_kontakt::LoadError> {
+    pub fn attach_script_with_ui_state(
+        &mut self,
+        rate: u32,
+        mut config: script::Config,
+        state: Option<script::UiState>,
+    ) -> Result<Option<AttachedScript>, sampler_kontakt::LoadError> {
         if self.instrument.behaviors.is_empty() {
             return Ok(None);
         }
-        let (thread, loaded) =
-            scripted::ScriptThread::spawn_with_ui_state(self.text.clone(), self.lua.clone(), config, state).map_err(
-                |reason| {
-                    sampler_kontakt::LoadError::Invalid { path: "script".into(), reason }
-                        .at(sampler_kontakt::Stage::ScriptCompile)
-                },
-            )?;
+        config.rate = f64::from(rate);
+        let (thread, loaded) = scripted::ScriptThread::spawn_with_ui_state(
+            self.text.clone(),
+            self.lua.clone(),
+            config,
+            state,
+        )
+        .map_err(|reason| {
+            sampler_kontakt::LoadError::Invalid {
+                path: "script".into(),
+                reason,
+            }
+            .at(sampler_kontakt::Stage::ScriptCompile)
+        })?;
+        engine_parameters::initialize(&mut self.instrument, &loaded.insert_overrides);
         let unsupported = &mut self.instrument.unsupported;
         if scripted::Script::handles_notes(&thread) {
             unsupported.retain(|u| !u.feature.starts_with("keygroup oscillators all play"));
         }
         unsupported.retain(|u| !(u.feature == "script" && u.value.contains("no frontend")));
-        for finding in loaded.findings {
+        for finding in &loaded.findings {
             unsupported.push(ir::Unsupported {
                 location: "script".into(),
-                feature: finding.feature,
-                value: format!("{} (x{})", finding.value, finding.count),
+                feature: finding.feature.clone(),
+                value: finding.value.clone(),
                 reason: ir::Reason::NotModeled,
             });
         }
         let groups = self.groups.clone();
         Ok(Some(AttachedScript {
+            findings: loaded.findings,
             driver: scripted::Driver::new(thread, groups, rate),
             interface: loaded.interface,
         }))
@@ -1037,11 +1138,14 @@ pub fn translate_path(path: &Path) -> Result<Translated, Box<dyn std::error::Err
 /// scripts or samples: what a census needs, with no per-program bank open.
 #[cfg(feature = "library-access")]
 #[track_caller]
-pub fn translate_program(bank: &Bank, program: &str) -> Result<ir::Instrument, Box<dyn std::error::Error>> {
+pub fn translate_program(
+    bank: &Bank,
+    program: &str,
+) -> Result<ir::Instrument, Box<dyn std::error::Error>> {
     let translate = || -> Result<ir::Instrument, Box<dyn std::error::Error>> {
         let (text, _) = bank.program(program)?;
-        let (instrument, ..) = translate_full(&text, Source::Bank)
-            .map_err(|e| describe(Path::new(program), e))?;
+        let (instrument, ..) =
+            translate_full(&text, Source::Bank).map_err(|e| describe(Path::new(program), e))?;
         Ok(instrument)
     };
     translate().map_err(|e| staged(e, Path::new(program), sampler_kontakt::Stage::Translate))
@@ -1060,10 +1164,22 @@ fn staged(
     let (load, stage) = match error.downcast::<Error>() {
         Ok(e) => match *e {
             Error::Io { path, error } => (LoadError::Io { path, error }, Stage::Container),
-            Error::Xml { path, error } => (LoadError::Invalid { path, reason: error.to_string() }, stage),
+            Error::Xml { path, error } => (
+                LoadError::Invalid {
+                    path,
+                    reason: error.to_string(),
+                },
+                stage,
+            ),
             Error::Invalid { path, reason } => (LoadError::Invalid { path, reason }, stage),
         },
-        Err(other) => (LoadError::Invalid { path: path.into(), reason: other.to_string() }, stage),
+        Err(other) => (
+            LoadError::Invalid {
+                path: path.into(),
+                reason: other.to_string(),
+            },
+            stage,
+        ),
     };
     Box::new(load.at(stage))
 }
@@ -1073,7 +1189,9 @@ fn translate_untagged(path: &Path) -> Result<Translated, Box<dyn std::error::Err
         .ancestors()
         .find(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("ufs")))
     {
+        let span = sampler_kontakt::audit::Span::new("uvi_bank_open");
         let bank = Bank::open(bank_path)?;
+        drop(span);
         let member = path
             .strip_prefix(bank_path)?
             .to_string_lossy()
@@ -1089,10 +1207,16 @@ fn translate_untagged(path: &Path) -> Result<Translated, Box<dyn std::error::Err
         } else {
             member
         };
+        let span = sampler_kontakt::audit::Span::new("uvi_program_read_decrypt");
         let (text, program_path) = bank.program(&member)?;
-        let (instrument, locations, groups, inserts) = translate_full(&text, Source::Bank)
-            .map_err(|e| describe(Path::new(&member), e))?;
+        drop(span);
+        let span = sampler_kontakt::audit::Span::new("uvi_xml_translate_ir");
+        let (instrument, locations, groups, inserts) =
+            translate_full(&text, Source::Bank).map_err(|e| describe(Path::new(&member), e))?;
+        drop(span);
+        let span = sampler_kontakt::audit::Span::new("uvi_script_resources");
         let lua = bank.scripts();
+        drop(span);
         return Ok(Translated {
             instrument,
             locations,
@@ -1104,10 +1228,20 @@ fn translate_untagged(path: &Path) -> Result<Translated, Box<dyn std::error::Err
         });
     }
     let text = read_text(path)?;
-    let (instrument, locations, groups, inserts) =
-        translate_full(&text, Source::Disk(path.parent().unwrap_or(Path::new(".")).into()))
-            .map_err(|e| describe(path, e))?;
-    Ok(Translated { instrument, locations, bank: None, groups, inserts, text, lua: Default::default() })
+    let (instrument, locations, groups, inserts) = translate_full(
+        &text,
+        Source::Disk(path.parent().unwrap_or(Path::new(".")).into()),
+    )
+    .map_err(|e| describe(path, e))?;
+    Ok(Translated {
+        instrument,
+        locations,
+        bank: None,
+        groups,
+        inserts,
+        text,
+        lua: Default::default(),
+    })
 }
 
 /// Decode a [`translate_path`] result's samples and lower it.
@@ -1191,8 +1325,8 @@ pub fn load_streamed(
     policy: &sampler_kontakt::StreamPolicy,
 ) -> Result<sampler_kontakt::Streamed, Box<dyn std::error::Error>> {
     let folder = path.parent().unwrap_or(Path::new("."));
-    let (instrument, locations) =
-        translate_with(&read_text(path)?, Source::Disk(folder.into())).map_err(|e| describe(path, e))?;
+    let (instrument, locations) = translate_with(&read_text(path)?, Source::Disk(folder.into()))
+        .map_err(|e| describe(path, e))?;
     let sources = locations
         .iter()
         .map(|location| stream::source(vec![stream::Origin::File(location.into())]))
@@ -1223,15 +1357,36 @@ pub fn load_program_streamed(
 #[doc(hidden)]
 #[cfg(feature = "library-access")]
 pub fn check_stream(bank: &Bank, program_path: &str, path: &str) -> Result<usize, String> {
-    let full = audio::decode(&bank.resource(program_path, path).map_err(|e| e.to_string())?)?.0.frames;
-    let mut reader = bank.stream_source(program_path, path)?.open().map_err(|e| e.to_string())?;
+    let full = audio::decode(
+        &bank
+            .resource(program_path, path)
+            .map_err(|e| e.to_string())?,
+    )?
+    .0
+    .frames;
+    let mut reader = bank
+        .stream_source(program_path, path)?
+        .open()
+        .map_err(|e| e.to_string())?;
     if reader.frames() != full.len() {
-        return Err(format!("{} streamed frames, {} decoded", reader.frames(), full.len()));
+        return Err(format!(
+            "{} streamed frames, {} decoded",
+            reader.frames(),
+            full.len()
+        ));
     }
     let n = full.len();
-    for range in [0..n.min(5000), n / 2..(n / 2 + 9000).min(n), n.saturating_sub(7000)..n, 100.min(n)..300.min(n), 0..n.min(30000)] {
+    for range in [
+        0..n.min(5000),
+        n / 2..(n / 2 + 9000).min(n),
+        n.saturating_sub(7000)..n,
+        100.min(n)..300.min(n),
+        0..n.min(30000),
+    ] {
         let mut out = vec![[0.0; 2]; range.len()];
-        reader.read(range.start, &mut out).map_err(|e| e.to_string())?;
+        reader
+            .read(range.start, &mut out)
+            .map_err(|e| e.to_string())?;
         if out != full[range.clone()] {
             return Err(format!("frames {range:?} differ"));
         }
@@ -1269,14 +1424,24 @@ fn assemble_streamed(
     let usable: Vec<bool> = sources.iter().map(Result::is_ok).collect();
     let kept = instrument.retain_zones(|z| usable[z.asset.0]);
     let mut sources: Vec<_> = sources.into_iter().map(Result::ok).collect();
-    let sources = kept.iter().map(|&a| sources[a].take().expect("usable")).collect();
+    let sources = kept
+        .iter()
+        .map(|&a| sources[a].take().expect("usable"))
+        .collect();
     let labels = kept.iter().map(|&a| locations[a].clone()).collect();
     let options = sampler_kontakt::Options {
         rate,
         scripts: true,
         ..Default::default()
     };
-    Ok(sampler_kontakt::stream_instrument(instrument, sources, labels, &options, policy)?)
+    let bindings = engine_parameters::bindings(&instrument);
+    let mut streamed =
+        sampler_kontakt::stream_instrument(instrument, sources, labels, &options, policy)?;
+    streamed.loaded.plan = streamed
+        .loaded
+        .plan
+        .with_engine_parameters(bindings, Vec::new())?;
+    Ok(streamed)
 }
 
 /// Load a program inside an installed UVI bank. `bank` is an open [`Bank`]; `program`
@@ -1330,7 +1495,10 @@ pub fn load_program_scripted(
     program: &str,
     rate: u32,
 ) -> Result<scripted::Program, Box<dyn std::error::Error>> {
-    let options = sampler_kontakt::Options { rate, ..Default::default() };
+    let options = sampler_kontakt::Options {
+        rate,
+        ..Default::default()
+    };
     load_program_scripted_with_options(bank, program, &options)
 }
 
@@ -1344,8 +1512,8 @@ pub fn load_program_scripted_with_options(
     let (text, program_path) = bank.program(program)?;
     let host = script::ScriptHost::new(&text, bank.scripts(), script::Config::default())?;
     let patched = apply_overrides(&text, &host.insert_overrides());
-    let (mut instrument, locations, groups, inserts) = translate_full(&patched, Source::Bank)
-        .map_err(|e| describe(Path::new(program), e))?;
+    let (mut instrument, locations, groups, inserts) =
+        translate_full(&patched, Source::Bank).map_err(|e| describe(Path::new(program), e))?;
     let kept = instrument.retain_zones(|zone| {
         zone.keys.high >= *options.keys.start() && zone.keys.low <= *options.keys.end()
     });
@@ -1375,10 +1543,15 @@ pub fn load_program_scripted_with_options(
 /// its attributes, so the translation starts from the state the scripts leave.
 #[cfg(feature = "library-access")]
 fn apply_overrides(text: &str, overrides: &[(usize, String, String)]) -> String {
-    let Ok(doc) = roxmltree::Document::parse(text) else { return text.to_owned() };
+    let Ok(doc) = roxmltree::Document::parse(text) else {
+        return text.to_owned();
+    };
     let mut edits: Vec<(usize, usize, String)> = Vec::new();
     for node in doc.descendants().filter(|n| n.is_element()) {
-        for (_, name, value) in overrides.iter().filter(|(id, ..)| *id == node.id().get_usize()) {
+        for (_, name, value) in overrides
+            .iter()
+            .filter(|(id, ..)| *id == node.id().get_usize())
+        {
             match node.attribute_node(name.as_str()) {
                 Some(a) => {
                     let r = a.range_value();
@@ -1416,7 +1589,7 @@ fn note_script(host: &script::ScriptHost, instrument: &mut ir::Instrument) {
         instrument.unsupported.push(ir::Unsupported {
             location: "script".into(),
             feature: finding.feature,
-            value: format!("{} (x{})", finding.value, finding.count),
+            value: finding.value,
             reason: ir::Reason::NotModeled,
         });
     }
@@ -1434,14 +1607,20 @@ pub fn load_program_scripted_streamed(
     let (text, program_path) = bank.program(program)?;
     let host = script::ScriptHost::new(&text, bank.scripts(), script::Config::default())?;
     let patched = apply_overrides(&text, &host.insert_overrides());
-    let (instrument, locations, groups, inserts) = translate_full(&patched, Source::Bank)
-        .map_err(|e| describe(Path::new(program), e))?;
+    let (instrument, locations, groups, inserts) =
+        translate_full(&patched, Source::Bank).map_err(|e| describe(Path::new(program), e))?;
     let sources = locations
         .iter()
         .map(|authored| bank.stream_source(&program_path, authored))
         .collect();
     let streamed = assemble_streamed(instrument, locations, sources, rate, policy)?;
-    let sampler_kontakt::Streamed { loaded, assets, cache, streamer, report } = streamed;
+    let sampler_kontakt::Streamed {
+        loaded,
+        assets,
+        cache,
+        streamer,
+        report,
+    } = streamed;
     let mut instrument = loaded.instrument;
     note_script(&host, &mut instrument);
     Ok(scripted::Program {
@@ -1450,7 +1629,11 @@ pub fn load_program_scripted_streamed(
         host,
         groups,
         inserts,
-        stream: Some(scripted::Stream { cache: Some(cache), horizon: report.head_frames, _keep: (streamer, assets) }),
+        stream: Some(scripted::Stream {
+            cache: Some(cache),
+            horizon: report.head_frames,
+            _keep: (streamer, assets),
+        }),
     })
 }
 
@@ -1520,7 +1703,10 @@ fn assemble(
         pcm.push(sampler_core::Pcm::new(d.rate, d.frames.into_boxed_slice())?);
     }
     let labels: Vec<String> = kept.iter().map(|&a| locations[a].clone()).collect();
-    Ok(sampler_kontakt::finish(instrument, pcm, labels, options)?)
+    let bindings = engine_parameters::bindings(&instrument);
+    let mut loaded = sampler_kontakt::finish(instrument, pcm, labels, options)?;
+    loaded.plan = loaded.plan.with_engine_parameters(bindings, Vec::new())?;
+    Ok(loaded)
 }
 
 #[cfg(all(test, feature = "library-access"))]
@@ -1587,7 +1773,9 @@ mod survey {
         let mut inserts: std::collections::BTreeMap<String, (usize, usize)> = Default::default();
         let mut ranges: std::collections::BTreeMap<String, (f64, f64)> = Default::default();
         let mut files = Vec::new();
-        let mut stack = vec![std::path::PathBuf::from(std::env::var("KONTRA_UVI_LIBRARIES").unwrap())];
+        let mut stack = vec![std::path::PathBuf::from(
+            std::env::var("KONTRA_UVI_LIBRARIES").unwrap(),
+        )];
         while let Some(dir) = stack.pop() {
             for e in std::fs::read_dir(&dir).unwrap().flatten() {
                 let p = e.path();
@@ -1600,15 +1788,25 @@ mod survey {
         }
         files.sort();
         for f in files {
-            let Ok(bank) = crate::Bank::open(&f) else { continue };
+            let Ok(bank) = crate::Bank::open(&f) else {
+                continue;
+            };
             for program in bank.programs() {
                 index += 1;
                 if index % shards != shard {
                     continue;
                 }
-                let Ok((text, _)) = bank.program(&program) else { continue };
-                let Ok(doc) = crate::parse_program_xml(&text) else { continue };
-                let lib = f.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().replace(' ', "_")).unwrap_or_default();
+                let Ok((text, _)) = bank.program(&program) else {
+                    continue;
+                };
+                let Ok(doc) = crate::parse_program_xml(&text) else {
+                    continue;
+                };
+                let lib = f
+                    .parent()
+                    .and_then(|p| p.file_name())
+                    .map(|n| n.to_string_lossy().replace(' ', "_"))
+                    .unwrap_or_default();
                 let lib = lib.split("_-_").last().unwrap_or("").to_owned();
                 let mut seen = std::collections::BTreeSet::new();
                 for node in doc.descendants().filter(|n| n.is_element()) {
@@ -1622,7 +1820,9 @@ mod survey {
                             e.0 += 1;
                             for a in node.attributes() {
                                 if let Ok(v) = a.value().parse::<f64>() {
-                                    let r = ranges.entry(format!("{lib}|{tag}|{}", a.name())).or_insert((v, v));
+                                    let r = ranges
+                                        .entry(format!("{lib}|{tag}|{}", a.name()))
+                                        .or_insert((v, v));
                                     r.0 = r.0.min(v);
                                     r.1 = r.1.max(v);
                                 }
@@ -1645,7 +1845,15 @@ mod survey {
                 match crate::translate_bank(&text) {
                     Ok((ir, _)) => {
                         for u in &ir.unsupported {
-                            let key = format!("{}|{}", u.feature, u.value.chars().take(60).collect::<String>().replace(' ', "_"));
+                            let key = format!(
+                                "{}|{}",
+                                u.feature,
+                                u.value
+                                    .chars()
+                                    .take(60)
+                                    .collect::<String>()
+                                    .replace(' ', "_")
+                            );
                             if once.insert(key.clone()) {
                                 *dropped.entry(key).or_default() += 1;
                             }
@@ -1686,7 +1894,9 @@ mod survey {
             .map(str::to_owned)
             .collect();
         let mut files = Vec::new();
-        let mut stack = vec![std::path::PathBuf::from(std::env::var("KONTRA_UVI_LIBRARIES").unwrap())];
+        let mut stack = vec![std::path::PathBuf::from(
+            std::env::var("KONTRA_UVI_LIBRARIES").unwrap(),
+        )];
         while let Some(dir) = stack.pop() {
             for e in std::fs::read_dir(&dir).unwrap().flatten() {
                 let p = e.path();
@@ -1723,9 +1933,11 @@ mod survey {
                     while j < b.len() && (b[j] == b' ' || b[j] == b'\t') {
                         j += 1;
                     }
-                    let called = matches!(b.get(j), Some(b'(') | Some(b'{') | Some(b'"') | Some(b'\''));
+                    let called =
+                        matches!(b.get(j), Some(b'(') | Some(b'{') | Some(b'"') | Some(b'\''));
                     let assigned = b.get(j) == Some(&b'=') && b.get(j + 1) != Some(&b'=');
-                    let defined = assigned || matches!(prev.as_str(), "function" | "local" | "class");
+                    let defined =
+                        assigned || matches!(prev.as_str(), "function" | "local" | "class");
                     prev = w.clone();
                     out.push((w, called, defined));
                 } else {
@@ -1738,11 +1950,17 @@ mod survey {
             out
         };
         for f in files {
-            let Ok(bank) = crate::Bank::open(&f) else { continue };
+            let Ok(bank) = crate::Bank::open(&f) else {
+                continue;
+            };
             let lua = bank.scripts();
             for program in bank.programs() {
-                let Ok((text, _)) = bank.program(&program) else { continue };
-                let Ok(doc) = crate::parse_program_xml(&text) else { continue };
+                let Ok((text, _)) = bank.program(&program) else {
+                    continue;
+                };
+                let Ok(doc) = crate::parse_program_xml(&text) else {
+                    continue;
+                };
                 let mut sources: Vec<String> = doc
                     .descendants()
                     .filter(|n| n.has_tag_name("script"))
@@ -1819,7 +2037,10 @@ mod survey {
         fn script(&self, module: &str) -> Option<String> {
             let text = self.0.script(module)?;
             if let Some(dir) = std::env::var_os("KONTRA_DUMP") {
-                let _ = std::fs::write(std::path::Path::new(&dir).join(module.replace('/', "_")), &text);
+                let _ = std::fs::write(
+                    std::path::Path::new(&dir).join(module.replace('/', "_")),
+                    &text,
+                );
             }
             if std::env::var_os("KONTRA_TRACE").is_none() {
                 return Some(text);
@@ -1827,17 +2048,34 @@ mod survey {
             let mut out = String::new();
             for line in text.lines() {
                 let t = line.trim_start();
-                let tag = if t.starts_with("function theOnNote") { "A" }
-                    else if t.starts_with("if enote >= minNote") { "B" }
-                    else if t.starts_with("local isLegato = false") { "D" }
-                    else if t.starts_with("if ccVel > 0 then") { "E" }
-                    else if t.starts_with("function startNote(") { "S" }
-                    else if t.starts_with("function onNote") { "N" }
-                    else if t.starts_with("ids[enote] = playNote") { "P" }
-                    else { "" };
-                if tag.is_empty() { out.push_str(line); out.push('\n'); continue; }
-                if t.starts_with("function") { out.push_str(line); out.push_str(&format!(" t_{tag} = (t_{tag} or 0) + 1\n")); }
-                else { out.push_str(&format!("t_{tag} = (t_{tag} or 0) + 1\n{line}\n")); }
+                let tag = if t.starts_with("function theOnNote") {
+                    "A"
+                } else if t.starts_with("if enote >= minNote") {
+                    "B"
+                } else if t.starts_with("local isLegato = false") {
+                    "D"
+                } else if t.starts_with("if ccVel > 0 then") {
+                    "E"
+                } else if t.starts_with("function startNote(") {
+                    "S"
+                } else if t.starts_with("function onNote") {
+                    "N"
+                } else if t.starts_with("ids[enote] = playNote") {
+                    "P"
+                } else {
+                    ""
+                };
+                if tag.is_empty() {
+                    out.push_str(line);
+                    out.push('\n');
+                    continue;
+                }
+                if t.starts_with("function") {
+                    out.push_str(line);
+                    out.push_str(&format!(" t_{tag} = (t_{tag} or 0) + 1\n"));
+                } else {
+                    out.push_str(&format!("t_{tag} = (t_{tag} or 0) + 1\n{line}\n"));
+                }
             }
             Some(out)
         }
@@ -1856,7 +2094,9 @@ mod survey {
             .unwrap_or((0, 1));
         let mut index = 0;
         let mut files = Vec::new();
-        let mut stack = vec![std::path::PathBuf::from(std::env::var("KONTRA_UVI_LIBRARIES").unwrap())];
+        let mut stack = vec![std::path::PathBuf::from(
+            std::env::var("KONTRA_UVI_LIBRARIES").unwrap(),
+        )];
         while let Some(dir) = stack.pop() {
             for e in std::fs::read_dir(&dir).unwrap().flatten() {
                 let p = e.path();
@@ -1869,10 +2109,15 @@ mod survey {
         }
         files.sort();
         for f in files {
-            if std::env::var("KONTRA_ONLY").is_ok_and(|o| o.split_once("::").is_some_and(|(file, _)| !f.to_string_lossy().contains(file))) {
+            if std::env::var("KONTRA_ONLY").is_ok_and(|o| {
+                o.split_once("::")
+                    .is_some_and(|(file, _)| !f.to_string_lossy().contains(file))
+            }) {
                 continue;
             }
-            let Ok(bank) = crate::Bank::open(&f) else { continue };
+            let Ok(bank) = crate::Bank::open(&f) else {
+                continue;
+            };
             let scripts = bank.scripts();
             for program in bank.programs() {
                 index += 1;
@@ -1881,16 +2126,26 @@ mod survey {
                 }
                 if std::env::var("KONTRA_ONLY").is_ok_and(|o| {
                     let (file, member) = o.split_once("::").unwrap_or(("", &o));
-                    !(f.to_string_lossy().contains(file) && format!("{}::{program}", f.display()).contains(member))
+                    !(f.to_string_lossy().contains(file)
+                        && format!("{}::{program}", f.display()).contains(member))
                 }) {
                     continue;
                 }
-                let Ok((text, _)) = bank.program(&program) else { continue };
+                let Ok((text, _)) = bank.program(&program) else {
+                    continue;
+                };
                 let name = format!("{}::{program}", f.display());
-                let mut host = match crate::script::ScriptHost::new(&text, Marked(scripts.clone()), crate::script::Config::default()) {
+                let mut host = match crate::script::ScriptHost::new(
+                    &text,
+                    Marked(scripts.clone()),
+                    crate::script::Config::default(),
+                ) {
                     Ok(h) => h,
                     Err(e) => {
-                        println!("UL compile-fail {} {name}", e.chars().take(90).collect::<String>().replace(' ', "_"));
+                        println!(
+                            "UL compile-fail {} {name}",
+                            e.chars().take(90).collect::<String>().replace(' ', "_")
+                        );
                         continue;
                     }
                 };
@@ -1899,7 +2154,16 @@ mod survey {
                 host.note_off(1, 60, 64, 0);
                 host.advance(2000.0);
                 for f in host.findings() {
-                    println!("UA {}|{}|{}", f.feature, f.value.chars().take(200).collect::<String>().replace(' ', "_"), name);
+                    println!(
+                        "UA {}|{}|{}",
+                        f.feature,
+                        f.value
+                            .chars()
+                            .take(200)
+                            .collect::<String>()
+                            .replace(' ', "_"),
+                        name
+                    );
                 }
                 if std::env::var_os("KONTRA_TRACE").is_some() {
                     host.take_commands();
@@ -1907,19 +2171,67 @@ mod survey {
                     host.advance(500.0);
                     let mut clock = 500.0;
                     for key in [24u8, 36, 48, 59, 60, 72, 84] {
-                        host.note_on(1000 + u64::from(key), key, std::env::var("KONTRA_VEL").ok().and_then(|v| v.parse().ok()).unwrap_or(100), 0);
+                        host.note_on(
+                            1000 + u64::from(key),
+                            key,
+                            std::env::var("KONTRA_VEL")
+                                .ok()
+                                .and_then(|v| v.parse().ok())
+                                .unwrap_or(100),
+                            0,
+                        );
                         clock += 2000.0;
                         host.advance(clock);
                         let c = host.take_commands();
-                        let plays = c.iter().filter(|c| matches!(c, crate::script::Command::Play(_))).count();
-                        let globals = ["t_P", "t_A", "t_B", "t_D", "t_E", "t_S", "t_N", "latestNoteIdIncr", "lastNote", "lastKeyboardNote", "tuneOutAttackValueNote", "lastVelocityAnyNote", "MIDItransposeValue", "KEYSWtransposeValue", "hornModel", "ccVel", "minNote", "maxNote", "windCCValue", "isNoteOn"]
+                        let plays = c
                             .iter()
-                            .map(|g| format!("{g}={}", host.global_text(g)))
-                            .collect::<Vec<_>>()
-                            .join(" ");
-                        println!("UT key {key}: {} commands, {plays} plays; {globals}", c.len());
-                        for command in c.iter().filter(|c| matches!(c, crate::script::Command::Play(_) | crate::script::Command::Parameter { .. })).take(8) {
-                            println!("UT   {}", format!("{command:?}").chars().take(160).collect::<String>());
+                            .filter(|c| matches!(c, crate::script::Command::Play(_)))
+                            .count();
+                        let globals = [
+                            "t_P",
+                            "t_A",
+                            "t_B",
+                            "t_D",
+                            "t_E",
+                            "t_S",
+                            "t_N",
+                            "latestNoteIdIncr",
+                            "lastNote",
+                            "lastKeyboardNote",
+                            "tuneOutAttackValueNote",
+                            "lastVelocityAnyNote",
+                            "MIDItransposeValue",
+                            "KEYSWtransposeValue",
+                            "hornModel",
+                            "ccVel",
+                            "minNote",
+                            "maxNote",
+                            "windCCValue",
+                            "isNoteOn",
+                        ]
+                        .iter()
+                        .map(|g| format!("{g}={}", host.global_text(g)))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                        println!(
+                            "UT key {key}: {} commands, {plays} plays; {globals}",
+                            c.len()
+                        );
+                        for command in c
+                            .iter()
+                            .filter(|c| {
+                                matches!(
+                                    c,
+                                    crate::script::Command::Play(_)
+                                        | crate::script::Command::Parameter { .. }
+                                )
+                            })
+                            .take(8)
+                        {
+                            println!(
+                                "UT   {}",
+                                format!("{command:?}").chars().take(160).collect::<String>()
+                            );
                         }
                         host.note_off(1000 + u64::from(key), key, 64, 0);
                         clock += 4000.0;
@@ -1927,15 +2239,46 @@ mod survey {
                         host.take_commands();
                     }
                     for f in host.findings() {
-                        println!("UF {}|{}", f.feature, f.value.chars().take(300).collect::<String>().replace(' ', "_"));
+                        println!(
+                            "UF {}|{}",
+                            f.feature,
+                            f.value
+                                .chars()
+                                .take(300)
+                                .collect::<String>()
+                                .replace(' ', "_")
+                        );
                     }
                 }
                 if std::env::var_os("KONTRA_INSERTS").is_some() {
                     // survey aid: the inserts of the program with their main values
                     let doc = roxmltree::Document::parse(&text).unwrap();
-                    for n in doc.descendants().filter(|n| n.parent().is_some_and(|p| p.has_tag_name("Inserts"))) {
-                        let keep = ["Name", "Bypass", "SamplePath", "Dry", "Wet", "Gain_1_1", "Gain_1_2", "Gain_2_1", "Gain_2_2", "Time", "Freq", "Mode", "Volume", "OverallGain", "Gain"];
-                        let attrs: Vec<String> = n.attributes().filter(|a| keep.contains(&a.name())).map(|a| format!("{}={}", a.name(), a.value())).collect();
+                    for n in doc
+                        .descendants()
+                        .filter(|n| n.parent().is_some_and(|p| p.has_tag_name("Inserts")))
+                    {
+                        let keep = [
+                            "Name",
+                            "Bypass",
+                            "SamplePath",
+                            "Dry",
+                            "Wet",
+                            "Gain_1_1",
+                            "Gain_1_2",
+                            "Gain_2_1",
+                            "Gain_2_2",
+                            "Time",
+                            "Freq",
+                            "Mode",
+                            "Volume",
+                            "OverallGain",
+                            "Gain",
+                        ];
+                        let attrs: Vec<String> = n
+                            .attributes()
+                            .filter(|a| keep.contains(&a.name()))
+                            .map(|a| format!("{}={}", a.name(), a.value()))
+                            .collect();
                         println!("UN {} {}", n.tag_name().name(), attrs.join(" "));
                     }
                 }
@@ -1948,9 +2291,15 @@ mod survey {
                             }
                             continue;
                         }
-                        let Some((m, l)) = spec.split_once(':') else { continue };
+                        let Some((m, l)) = spec.split_once(':') else {
+                            continue;
+                        };
                         use crate::script::Files;
-                        let src = if m == "main" { text.clone() } else { scripts.script(m).unwrap_or_default() };
+                        let src = if m == "main" {
+                            text.clone()
+                        } else {
+                            scripts.script(m).unwrap_or_default()
+                        };
                         if let Some(pattern) = l.strip_prefix('~') {
                             for (i, line) in src.lines().enumerate() {
                                 if line.contains(pattern) {
@@ -1960,11 +2309,15 @@ mod survey {
                             continue;
                         }
                         let (l, to) = match l.split_once('-') {
-                            Some((a, b)) => (a.parse::<usize>().unwrap(), b.parse::<usize>().unwrap()),
+                            Some((a, b)) => {
+                                (a.parse::<usize>().unwrap(), b.parse::<usize>().unwrap())
+                            }
                             None => (l.parse::<usize>().unwrap(), l.parse::<usize>().unwrap() - 2),
                         };
                         for (i, line) in src.lines().enumerate() {
-                            if (to < l && i + 3 >= l && i < l + 1) || (to >= l && i + 1 >= l && i < to) {
+                            if (to < l && i + 3 >= l && i < l + 1)
+                                || (to >= l && i + 1 >= l && i < to)
+                            {
                                 println!("UX {m}:{}: {}", i + 1, line);
                             }
                         }
@@ -1973,7 +2326,15 @@ mod survey {
                 let ui = host.interface();
                 println!("UI {} {} {}", ui.widgets.len(), ui.unsupported.len(), name);
                 for u in &ui.unsupported {
-                    println!("UU {}|{}", u.feature, u.value.chars().take(40).collect::<String>().replace(' ', "_"));
+                    println!(
+                        "UU {}|{}",
+                        u.feature,
+                        u.value
+                            .chars()
+                            .take(40)
+                            .collect::<String>()
+                            .replace(' ', "_")
+                    );
                 }
             }
         }
@@ -2009,7 +2370,9 @@ mod survey {
         files.sort();
         let mut index = 0;
         for f in files {
-            let Ok(bank) = crate::Bank::open(&f) else { continue };
+            let Ok(bank) = crate::Bank::open(&f) else {
+                continue;
+            };
             for program in bank.programs() {
                 index += 1;
                 if index % shards != shard {
@@ -2017,7 +2380,8 @@ mod survey {
                 }
                 if std::env::var("KONTRA_ONLY").is_ok_and(|o| {
                     let (file, member) = o.split_once("::").unwrap_or(("", &o));
-                    !(f.to_string_lossy().contains(file) && format!("{}::{program}", f.display()).contains(member))
+                    !(f.to_string_lossy().contains(file)
+                        && format!("{}::{program}", f.display()).contains(member))
                 }) {
                     continue;
                 }
@@ -2035,8 +2399,12 @@ mod survey {
 
     #[cfg(feature = "library-access")]
     fn census_one(bank: &crate::Bank, program: &str) -> String {
-        let Ok((text, _)) = bank.program(program) else { return "open-fail -".into() };
-        let Ok((ir, _)) = crate::translate_bank(&text) else { return "translate-fail -".into() };
+        let Ok((text, _)) = bank.program(program) else {
+            return "open-fail -".into();
+        };
+        let Ok((ir, _)) = crate::translate_bank(&text) else {
+            return "translate-fail -".into();
+        };
         if ir.zones.is_empty() {
             return "no-zones -".into();
         }
@@ -2052,7 +2420,11 @@ mod survey {
             ir.zones.iter().map(|z| z.keys.low).min().unwrap(),
             ir.zones.iter().map(|z| z.keys.high).max().unwrap(),
         );
-        let widest = ir.zones.iter().max_by_key(|z| z.keys.high - z.keys.low).unwrap();
+        let widest = ir
+            .zones
+            .iter()
+            .max_by_key(|z| z.keys.high - z.keys.low)
+            .unwrap();
         let mut candidates = vec![
             mids[mids.len() / 2],
             60.clamp(lo, hi),
@@ -2076,20 +2448,47 @@ mod survey {
     #[cfg(feature = "library-access")]
     fn census_play(bank: &crate::Bank, program: &str, key: u8, cc1: bool) -> String {
         use sampler_core::Limits;
-        let program = match crate::load_program_scripted_streamed(bank, program, 48_000, &Default::default()) {
-            Ok(p) => p,
-            Err(e) => return format!("load-fail {}", e.to_string().chars().take(160).collect::<String>().replace(' ', "_")),
-        };
+        let program =
+            match crate::load_program_scripted_streamed(bank, program, 48_000, &Default::default())
+            {
+                Ok(p) => p,
+                Err(e) => {
+                    return format!(
+                        "load-fail {}",
+                        e.to_string()
+                            .chars()
+                            .take(160)
+                            .collect::<String>()
+                            .replace(' ', "_")
+                    );
+                }
+            };
         if std::env::var_os("KONTRA_CHAINS").is_some() {
             // survey aid: the chain of the zone covering `key`, and the buses' and groups' chains
             let ins = &program.instrument;
             let show = |label: &str, c: Option<sampler_ir::ChainRef>| {
                 if let Some(c) = c {
                     let ch = &ins.chains[c.0];
-                    println!("UK {label} {:?} pre={} post={}", ch.scope, format!("{:?}", ch.pre_amplitude).chars().take(400).collect::<String>(), format!("{:?}", ch.post_amplitude).chars().take(400).collect::<String>());
+                    println!(
+                        "UK {label} {:?} pre={} post={}",
+                        ch.scope,
+                        format!("{:?}", ch.pre_amplitude)
+                            .chars()
+                            .take(400)
+                            .collect::<String>(),
+                        format!("{:?}", ch.post_amplitude)
+                            .chars()
+                            .take(400)
+                            .collect::<String>()
+                    );
                 }
             };
-            for z in ins.zones.iter().filter(|z| z.keys.low <= key && key <= z.keys.high).take(2) {
+            for z in ins
+                .zones
+                .iter()
+                .filter(|z| z.keys.low <= key && key <= z.keys.high)
+                .take(2)
+            {
                 show("zone", z.chain);
             }
             for g in &ins.groups {
@@ -2098,7 +2497,15 @@ mod survey {
             for b in &ins.buses {
                 show(&format!("bus {}", b.name), b.chain);
             }
-            println!("UK zones={} chains={} impulses={:?}", ins.zones.len(), ins.chains.len(), ins.impulses.iter().map(|i| (i.rate, i.left.len())).collect::<Vec<_>>());
+            println!(
+                "UK zones={} chains={} impulses={:?}",
+                ins.zones.len(),
+                ins.chains.len(),
+                ins.impulses
+                    .iter()
+                    .map(|i| (i.rate, i.left.len()))
+                    .collect::<Vec<_>>()
+            );
         }
         let errors = program
             .instrument
@@ -2111,13 +2518,28 @@ mod survey {
             .unsupported
             .iter()
             .find(|u| u.feature == "lua error")
-            .map(|u| u.value.chars().take(70).collect::<String>().replace(' ', "_"))
+            .map(|u| {
+                u.value
+                    .chars()
+                    .take(70)
+                    .collect::<String>()
+                    .replace(' ', "_")
+            })
             .unwrap_or_else(|| "-".into());
         let scripted = program.host.handles_notes();
         let limits = Limits {
-            notes: 64, channels: 16, performances: 1, expressions: 64, families: 64,
-            decisions: 256, voices: 512, commands: 256, behaviors: 16,
-            behavior_fuel: 1 << 20, behavior_cells: 0, note_cells: 0,
+            notes: 64,
+            channels: 16,
+            performances: 1,
+            expressions: 64,
+            families: 64,
+            decisions: 256,
+            voices: 512,
+            commands: 256,
+            behaviors: 16,
+            behavior_fuel: 1 << 20,
+            behavior_cells: 0,
+            note_cells: 0,
         };
         let Ok(mut player) = crate::scripted::Player::new(program, limits, 48_000) else {
             return "player-fail -".into();
@@ -2132,7 +2554,11 @@ mod survey {
             Ok::<(), sampler_core::Error>(())
         };
         if cc1 {
-            player.input(crate::scripted::HostInput::Controller { cc: 1, value: 100, channel: 0 });
+            player.input(crate::scripted::HostInput::Controller {
+                cc: 1,
+                value: 100,
+                channel: 0,
+            });
         }
         let result = Ok::<(), sampler_core::Error>(())
             .and_then(|()| if cc1 { run(&mut player, 20) } else { Ok(()) })
@@ -2147,11 +2573,23 @@ mod survey {
             (true, false) => "silent",
         };
         let first = match failure {
-            Some(e) => e.to_string().chars().take(60).collect::<String>().replace(' ', "_"),
+            Some(e) => e
+                .to_string()
+                .chars()
+                .take(60)
+                .collect::<String>()
+                .replace(' ', "_"),
             None => first,
         };
-        let state = if cc1 && state == "sounds" { "sounds-with-cc1" } else { state };
-        format!("{state} peak={peak:.3} key={key} lua={} errs={errors} {first}", u8::from(scripted))
+        let state = if cc1 && state == "sounds" {
+            "sounds-with-cc1"
+        } else {
+            state
+        };
+        format!(
+            "{state} peak={peak:.3} key={key} lua={} errs={errors} {first}",
+            u8::from(scripted)
+        )
     }
 
     /// Which modulation translates and what stays reported, across the
@@ -2220,4 +2658,3 @@ mod survey {
         }
     }
 }
-

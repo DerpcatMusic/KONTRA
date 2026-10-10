@@ -1,12 +1,299 @@
 # Changelog
 
 Human-reviewed changes belong in the unreleased section before publication. Nightly
-notes compare those entries with the previous published source, retain known limits,
-and include the complete shipped public commit messages and merged PR descriptions.
+notes use accepted ledger entries added since the previous published source,
+with a short user-facing known-issues list and collapsed source/checksum details.
 Each published release manifest also retains its versioned changelog. Frozen entries
 below record reviewed source checkpoints; they are not claims about pending work.
 
+## 0.3.403
+
+This experimental update improves saved script state, UVI MIDI handling, supported Kontakt sound sources, library browsing and articulation labels.
+
+### Loading & files
+
+- Request the first sample page in the same block when a resumed script callback starts a note.
+- Keep supported oscillator tables resident so they remain available during playback and sample purging.
+
+### Sound/engine (v1 ports)
+
+- Use KONTRA v1's oscillator playback for the admitted saved Conflux wavetable state, including its source clock and supported form mapping.
+- Restore Vista's saved legacy low-pass and high-pass filter slots and their cutoff-envelope routes using the v1 proxy.
+- Retain 124 of Conflux's 182 saved Digital Multi sine sources, including their signed, subunit depth; the remaining 58 fade cases remain diagnosed.
+
+### KSP scripts
+
+- Temporary script writes no longer force a saved-state snapshot when they do not affect captured values.
+- Refresh changed saved array cells while keeping each published snapshot coherent.
+
+### UVI
+
+- Send MIDI note-ons through the authored Lua onNote callback and preserve the input identity used by note-offs.
+- Match favourites by bank UUID and program member so they survive library moves; missing and ambiguous matches remain explicit.
+
+### Saved projects
+
+- Capture script values directly into compact snapshot slots, removing the retained wide intermediate buffer.
+- Preserve the previous complete snapshot if a new capture cannot finish.
+
+### Editor/UI
+
+- Combine browser search and library banners, keep format-specific navigation, and reuse catalog order across queries.
+- Use authored Areia technique names for generated note labels when every key in the range agrees.
+- Stop treating Analog Strings preset-browser and zero-height controls as articulation choices.
+- Release retained toolkit render owners on window close and rebuild the canvas on reopen.
+
+### Memory & CPU
+
+- Reduce copying and storage for saved script snapshots, with sparse updates for changed cells.
+- In the owner's two-preset CPU-editor measurements, installed-to-first-sound fell from 517.556 to 11.648 ms for Areia and from 357.407 to 6.574 ms for Dolce. These are scoped results from the source fixes; v1 still reached first sound sooner.
+- Optional scheduler diagnostics help attribute deadline misses; instrumented runs are excluded from performance acceptance.
+
+### Fixes
+
+- Keep favourite identity independent of a bank's old file path.
+- Keep articulation source IDs, trigger ranges and existing authored labels intact while improving generated captions.
+
+### Known limits
+
+- This is not complete Kontakt/Falcon replacement or certified authored-UI, script or sound parity. Unsupported source modes, live wavetable controls and Digital Multi fades remain open.
+- The legacy filter port restores v1's proxy; native filter topology and control timing are unverified.
+- Full widget operation remains incomplete, including the reported Conflux/Analog/Dolce gesture failures and some key-label associations.
+- The editor close fix does not establish a production RSS reduction. Quiet CPU/load/RSS acceptance, protected installed UVI playback and real Windows/macOS DAW operation remain unverified for this batch.
+
+### Evidence
+
+- Corrected per-worktree product gate at `4725f39a`: 2,135 workspace tests passed, zero failed; 48 scheduler tests, 45 reader tests (one ignored), and three articulation normalization tests passed. Compilation, offline publication checks and GPU regressions passed.
+- Installed Conflux and Vista source/filter checks passed; ten browser captures were produced and the library/preset states at both sizes were reviewed. Native scanner: 15/15 loaded and audible, retaining 12 Original views. Native quick corpus: 72/72 loaded, 68 audible, finite audio, zero audio-thread allocations, and no matched stage/audibility changes from 0.3.393.
+- These native-only regressions use no third-party reader or Wine. They retain known covered-note silence and long releases; timings are not performance acceptance. Immutable source/log/binary hashes are in the W0 batch383 audit and release receipts.
+
+## 0.3.393
+
+KONTRA 0.3.393 brings together a broad set of loading, sound, scripting and editor improvements. This is an experimental release; the remaining limits are listed below.
+
+### Loading & files
+
+- Load supported older Kontakt presets and samples stored inside the instrument file.
+- Open the requested embedded sample when several stored files have similar names.
+- Reuse library path lookups and saved loading information to reduce repeated work.
+- Preserve saved effect settings and signed modulation amounts in more Kontakt formats.
+- Discover libraries through native paths and explicitly configured content folders.
+
+### Sound/engine (v1 ports)
+
+- Bring KONTRA v1 envelope, modulation and filter calculations into the supported playback paths.
+- Use KONTRA v1's paired EQ processing and reuse unchanged effect controls.
+- Preserve the order of tone shaping, instrument effects and rack routing.
+- Keep larger note combinations within the engine's supported playback capacity.
+
+### KSP scripts
+
+- Read authored engine settings when a script asks for a value that has no live override.
+- Preserve scheduled script callbacks when reopening an instrument from saved loading information.
+- Restore saved Kontakt controls with one initialization pass instead of applying them twice.
+- Carry saved script text, arrays and callback state through supported project recall paths.
+
+### UVI
+
+- Show catalogued banks as “Catalogued · loading limited” when their content cannot be opened.
+- Display the affected bank, loading reason and available preset list.
+- Prepare held-note storage before the first audio callback.
+- Find named bank artwork and include UVI libraries in browser searches.
+
+### Saved projects
+
+- Release old restored-state buffers away from audio processing when reopening CLAP or VST3 projects.
+- Preserve engine-setting information in saved loading data.
+
+### Editor/UI
+
+- Group Report entries with labelled details that scroll inside the Report window.
+- Organize Settings into clearer sections and explain remembered window sizing on hover.
+- Cancel MIDI learn when its control disappears and keep only one active assignment at a time.
+- Keep instrument slots within the window and make keyboard shortcuts easier to discover.
+
+### Memory & CPU
+
+- Reduce repeated work for unchanged EQ and effect settings.
+- In the measured Horns test with 256-frame blocks, typical audio-processing time fell from 2,884 to 1,942 µs, about 33%; this is a scoped result, and KONTRA v1 remains faster.
+- Release temporary editor factories and avoid duplicate artwork pixel allocations.
+- Reuse layout information while drawing the Original interface.
+- Store repeated loading information more compactly.
+
+### Fixes
+
+- Decode embedded AIFF samples using the same checked layout as standalone samples.
+- Distinguish untranslated instrument features from missing samples or impulse files in load reports.
+- Prepare the Linux editor test display without downloading packages during display startup, with bounded retries if startup fails.
+
+### Known limits
+
+- Some Kontakt and Falcon effects, modulation, script actions, controls and artwork remain incomplete.
+- Protected UVI banks can be catalogued while their sample content remains unavailable.
+- All 56 checked Vista and Pacific presets had no translated sample or impulse resource failures; this does not establish complete sound or feature parity.
+- Some Kontakt script settings may still fail to restore fully when reopening a project.
+- Large libraries can still use substantial memory; CPU, loading speed and memory use are not yet equal to KONTRA v1.
+- The newer resampling experiment and full voice-engine replacement remain deferred; complete sound comparisons and real-host timing remain unverified.
+- Windows and macOS DAW compatibility and crash handling outside Linux remain unverified.
+
+### Evidence
+
+[Integration and validation](https://github.com/DerpcatMusic/KONTRA/blob/v2/w0-sweep-382/docs/audit-2026-10-09/w0-full-sweep-382.md) · [Horns CPU comparison](https://github.com/DerpcatMusic/KONTRA/blob/v2/w0-sweep-382/docs/audit-2026-10-09/w9-held-shape-acceptance.md) · [Vista and Pacific resource checks](https://github.com/DerpcatMusic/KONTRA/blob/v2/w0-sweep-382/docs/audit-2026-10-09/w12-vista-pacific-resources.md)
+
 ## Unreleased
+
+### Fixed after 0.3.326
+
+- Open protected Falcon and UVI content with the native format implementation.
+- Bound UVI script evaluation by deterministic callback work.
+- Stop zero-wait coroutine wakeups from exhausting a callback indefinitely.
+- Publish complete authored UVI controls before audit replies while preserving live work limits.
+- Retain member identity without persisting instrument member names.
+- Yield long metadata census shards to waiting builds.
+- Avoid duplicate runtime fault summaries on unchanged refreshes.
+- Place part Tone before instrument effects as in KONTRA v1.
+- Execute authored KSP MIDI object commands and return host file completions.
+- Reject MIDI completions and captures for unpublished jobs.
+- Preserve every completed Nightly snapshot and publish source versions in order.
+- Show grouped failed UVI banks with accurate access causes and affected locations.
+- Keep the piano keyboard visible in the current Sound editor.
+- Keep wheel gestures inside dropdown and picker popups.
+- Remove the repeated instrument name in Info.
+- Preserve partial redraw coordinates for GPU vector rendering.
+- Show each EQ band gain and apply the correct graph drag scale.
+- Share identical immutable zone chains without changing audible PCM.
+
+### Added
+
+- Read-only Mapping workbench with shared Sound tabs, zone identity, waveform inspection and balanced audition.
+- Optional numeric audit progress and grouped diagnostics with location sidecars.
+
+### Internal
+
+- Scalar and batched voices use one shared biquad sample kernel; no control or coefficient law changes.
+
+
+### Fixed after 0.3.306
+
+- Native script host recall now restores callback context, text and arrays; UVI host saves retain immediate scalar and custom state.
+- Native UI uses deterministic work limits and reports asset/process watchdog expiry as incomplete. Picture cache rejects oversized wanted sets without endless requeues.
+- Bank-volume samples reach their existing UVI resolver. Browser artwork, chrome, versioned Settings, upper-zone MPE and editor telemetry ownership are corrected.
+- Native Ladder/Daft cutoff, Q and Gain routes are retained, authored zero-weight Multi LFOs stay bipolar Zero, and settled modulation results are reused without changing PCM.
+- Correction: Contrabassoon's 748 ms onRelease sample ends at 2,248 ms. Its voice at the old 2,000 ms check was legitimate. Quick checks now wait for zero voices, with a five-second maximum release drain; the separate empty script-note gate cleanup now ships in this follow-up.
+- Restore stable Attack/Release/Tone host controls alongside Volume and 2,049 generic IDs (2,053 total). Fallback envelopes exclude authored AHDSR/FLEX/amplitude routes; Tone bypasses exactly by default.
+
+- Retire duration-zero source-owned UVI script gates when their samples finish, preserving explicit looping release tails and physical input ownership.
+
+### Known limits for 0.3.326
+
+- Global Tone is currently after part FX, before faders/rack routing; v1 pre-insert placement remains unverified.
+- CPU/RSS and native-law parity remain incomplete. W9 streaming and W8 chain sharing remain excluded pending acceptance. Existing KSP compile and DSP gaps are retained in the fidelity ledger. Native persistence is restored in this follow-up; the exclusion below describes the historical 0.3.306 freeze.
+
+### Known issues
+
+- Some Kontakt and Falcon effects, modulation and script actions remain incomplete; controls and artwork can differ from the original interface.
+- Saving and reopening a project may not restore every Kontakt script setting.
+- Protected UVI banks can appear as catalogued with loading limits while their content remains unavailable.
+- Large libraries can use substantial memory, and performance may be worse than KONTRA v1.
+- All 56 installed Vista and Pacific presets passed sample and impulse resource checks on 0.3.381. Some features remain untranslated; full audio parity remains unverified.
+
+### Fixed after 0.3.224
+
+The user explicitly authorized shipping this alpha now. The former all-axis v1
+parity release hold is superseded for this release. Falcon/UVI stays always on.
+The version ledger accepts 81 additional logical fixes after 0.3.225; diagnostic
+features and follow-up commits do not increment the version separately.
+
+- Restore authored Native UI text/arrays, bindings, Canvas budgets, caption types,
+  stack-safe lowering and bounded cancellable resource preparation.
+- Preserve envelope initialization, exact ignored-event cancellation, delayed
+  correct-offset staccato playback, keyboard gates and host lifecycle ownership.
+- Reduce startup arenas, share script text/code, compact playback templates and
+  construct group envelopes once. Analog's shared KSP code saves about 406 MiB.
+- Restore Sound editor controls, native ladder laws, chain ownership, offset-cache
+  ownership and validated timing alignment and articulation routes through rack growth. Add persistent catalog metadata and
+  separate Kontakt/Falcon browser hierarchies.
+- Port v1 cubic interpolation and unchanged pitch-ratio reuse; add native Pan,
+  Formant I and LoFi processing. Include UVI bounded initialization, typed host
+  lookups, Assistant font resources and fresh custom host-save capture.
+- Verify native CLAP source and routing readback before accepting host receipts.
+- Improve GPU recovery, diagnostics and embedded native-window teardown.
+
+### Known limits for 0.3.306
+
+- CPU/RSS/load parity with v1 is incomplete. W6 PCM is bit-exact but its quiet CPU
+  improvement is unmeasured. W5 fresh A/B passes 8/9 cells; Conflux/256 remains
+  slower: p50 11.2→16.2 µs and p99 about +35 µs, above the A/A noise floor.
+  Dolce/32's original +14% result is retained; fresh matched A/B is within noise,
+  and does not establish a causal improvement. Analog still uses substantial RAM.
+- W12's pre-port native census finds dropped enabled/bypassed FX 377/1521,
+  filters 2109/4962 and modulators 20404/24478. W15 admits Pan, Formant I and LoFi;
+  a post-port recount is pending. Formant/LoFi approximations retain native
+  fidelity gaps. Native filter subtypes 30 and 106,
+  UVI MS20/Xpander, LFO/random sources and several
+  modulation targets still lack full native modeling. See the W12 fidelity ledger.
+- 21/22 scripted sample-family cells need native captures; static Pacific matches
+  do not prove scripted family parity. Native UI paint does not certify every
+  widget, OS/DAW gesture or source resource. Unmatched requested-face controls use
+  a provisional disconnected/inert policy.
+- Thirty of fifty audited multis retain 45 pre-existing KSP semantic/stage compile
+  faults. Earlier Vista/Pacific missing counts described untranslated features;
+  the source54d9 census finds no required sample or impulse resource failures
+  across7 Vista and49 Pacific installed NKI presets.
+- W9's predictive streaming stack is excluded: matched loaded RSS 819.92 MiB
+  versus 380.16 MiB on its baseline. Native callback-context persistence 65e345e3
+  is excluded because real Conflux recall rejects callbacks (InvalidInput).
+- Untested zone-vector trimming, settled-modulation work, nativeAlways and new
+  stream residency trials are excluded. Existing full Kontakt/UVI support ships
+  as implemented; this release does not claim complete native parity.
+
+
+### Accepted 0.3.225 — keyswitch panel and Program Change accounting
+
+One reviewed logical defect advances the accepted counter from 0.3.224.
+This source version uses the green integration checkpoint `67dafc61`.
+
+### Added after 0.3.224
+
+- Add the compact keyswitch panel, persistent articulation overlays, MIDI learn,
+  conflict swaps and the appended input palette.
+
+### Fixed after 0.3.224
+
+- Route MIDI 1 and MIDI 2 Program Change through authored Program selectors.
+  Selection changes without an ignored-input count; instruments without a
+  Program selector continue counting the message as ignored.
+
+### Known limits for 0.3.225
+
+- Historical 0.3.225 checkpoint: packaging was held pending all-axis parity.
+  The alpha authorization above supersedes that hold; the parity gaps remain.
+- The full integration shards, reader checks, keyswitch and App-menu tests pass.
+  The final shared scanner quick15 has 15 loads, seven Original UIs OK, eight
+  with missing images and 14 matched audible auditions, with no measured
+  regressions. Afflatus has no safe test key and is not auditioned.
+- Historical 0.3.225 checkpoint excluded later worker changes. This alpha
+  includes the subsequently validated integration work listed above.
+- This is a normal local build using the host glibc. CI targets Ubuntu 22.04
+  and checks a 2.35 maximum; actual CI artifact proof remains separate.
+
+### Accepted 0.3.224 — Original view, verified readers and runtime storage
+
+Sixteen reviewed logical fixes advance the accepted counter from 0.3.208.
+
+### Fixed after 0.3.208
+
+- Default to Original and preserve saved view selection, script/page state, control values and artwork identities through sparse runtime UI publications. Both selectors expose Original, Vector and generated KONTRA; fit uses both axes and explicit zoom remains exact.
+- Admit native scalar edits through their bounded request/reply service, guard replaced source generations, and route UI alias effects by widget identity. Picker results become visible only after the owned worker operation closes.
+- Decode complete verified versioned Program and NIS records. Program resource metadata uses the same public reader; neutral F1/F2 values retain their verified layout without guessed wallpaper semantics. Failed occupied FX slots remain diagnosed while valid siblings survive.
+- Traverse live note/callback owners, flush callback outcomes at host-block end, wait for exact offline sample readiness with bounded failure, and retry transient protected pages with backoff and storage counters.
+- Build CI Linux packages on Ubuntu 22.04 and reject GLIBC requirements newer than 2.35. Local user builds use the machine's normal toolchain.
+
+### Known limits for 0.3.224
+
+- The urgent local release uses the pinned ready W1 checkpoint and green integration no-run, root library, KSP/UI IR and release-core checks. Remaining post-install integration shards and current-HEAD quick regression follow; broader fix branches are queued.
+- Authored image/font gaps, specialized widget support and full native sound parity remain separate acceptance work. The CI baseline check is implemented; its actual KONTRA 2.35 artifact proof follows CI execution.
+
 
 ### Accepted 0.3.148 — primary envelope processing and visible crash receipts
 

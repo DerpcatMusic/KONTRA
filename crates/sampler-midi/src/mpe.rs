@@ -208,12 +208,35 @@ impl Mpe {
         (self.ranges[0], self.ranges[1])
     }
 
+    /// Manager channel for a part's keyboard and shared performance controls.
+    pub fn manager_channel(&self) -> u8 {
+        self.zone.manager()
+    }
+
     /// Apply at the current sample boundary, after due native work. Only this
     /// adapter should admit external notes in its configured input domain.
     pub fn apply(
         &mut self,
         runtime: &mut Runtime,
         packet: Packet<'_>,
+    ) -> Result<Applied, ApplyError> {
+        self.apply_with_attack(runtime, packet, false)
+    }
+
+    /// Preserve MIDI pairing and gestures, leaving note attacks to a script owner.
+    pub fn apply_silent(
+        &mut self,
+        runtime: &mut Runtime,
+        packet: Packet<'_>,
+    ) -> Result<Applied, ApplyError> {
+        self.apply_with_attack(runtime, packet, true)
+    }
+
+    fn apply_with_attack(
+        &mut self,
+        runtime: &mut Runtime,
+        packet: Packet<'_>,
+        silent: bool,
     ) -> Result<Applied, ApplyError> {
         if runtime.id() != self.runtime {
             return Err(Error::StaleHandle.into());
@@ -254,6 +277,7 @@ impl Mpe {
                 } else {
                     velocity.normalized()
                 },
+                silent,
             )?),
             Message::NoteOff {
                 key,
@@ -370,7 +394,7 @@ impl Mpe {
         runtime.render(&mut [])?;
         self.bindings
             .retain(|binding| runtime.note(binding.note).is_ok());
-        Ok(self.admit(runtime, channel, input, velocity)?)
+        Ok(self.admit(runtime, channel, input, velocity, false)?)
     }
 
     /// Offset every note of the zone, held or not, by `semitones` on top of its
@@ -402,6 +426,7 @@ impl Mpe {
         channel: u8,
         input: Input,
         velocity: f64,
+        silent: bool,
     ) -> Result<NoteId, Error> {
         if self.bindings.len() == self.limit {
             return Err(Error::Capacity);
@@ -413,13 +438,23 @@ impl Mpe {
         };
         let mut expression = member.expression(self.controls[usize::from(self.zone.manager())]);
         expression.pitch_semitones += self.transpose;
-        let note = runtime.trigger_in(
-            self.performance,
-            input,
-            NotePitch::Key(input.key),
-            velocity,
-            expression,
-        )?;
+        let note = if silent {
+            runtime.note_on_pitched_in(
+                self.performance,
+                input,
+                NotePitch::Key(input.key),
+                velocity,
+                expression,
+            )
+        } else {
+            runtime.trigger_in(
+                self.performance,
+                input,
+                NotePitch::Key(input.key),
+                velocity,
+                expression,
+            )
+        }?;
         self.bindings.push(Binding {
             note,
             channel,

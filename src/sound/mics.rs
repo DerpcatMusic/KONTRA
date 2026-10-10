@@ -6,9 +6,42 @@ use sampler_ir as ir;
 
 /// Words that name a position, matched whole against a group name's tokens.
 const POSITIONS: &[&str] = &[
-    "close", "room", "tree", "surround", "ambient", "ambience", "amb", "spot", "mix", "decca", "hall", "midhall",
-    "mid", "wide", "stage", "outrigger", "outriggers", "mic", "far", "rear", "overhead", "diffuse", "balcony", "direct",
-    "flank", "flanks", "front", "back", "main", "cls", "dcc", "fm", "fmp", "fr", "otrggr", "spt",
+    "close",
+    "room",
+    "tree",
+    "surround",
+    "ambient",
+    "ambience",
+    "amb",
+    "spot",
+    "mix",
+    "decca",
+    "hall",
+    "midhall",
+    "mid",
+    "wide",
+    "stage",
+    "outrigger",
+    "outriggers",
+    "mic",
+    "far",
+    "rear",
+    "overhead",
+    "diffuse",
+    "balcony",
+    "direct",
+    "flank",
+    "flanks",
+    "front",
+    "back",
+    "main",
+    "cls",
+    "dcc",
+    "fm",
+    "fmp",
+    "fr",
+    "otrggr",
+    "spt",
 ];
 
 /// A position word's full name, for the abbreviations libraries use.
@@ -29,12 +62,17 @@ fn words(name: &str) -> Vec<&str> {
     let mut start = 0;
     let mut prev: Option<char> = None;
     for (i, c) in name.char_indices() {
-        let boundary = !c.is_alphanumeric() || prev.is_some_and(|p| (p.is_lowercase() || p.is_ascii_digit()) && c.is_uppercase());
+        let boundary = !c.is_alphanumeric()
+            || prev.is_some_and(|p| (p.is_lowercase() || p.is_ascii_digit()) && c.is_uppercase());
         if boundary {
             if start < i {
                 out.push(&name[start..i]);
             }
-            start = if c.is_alphanumeric() { i } else { i + c.len_utf8() };
+            start = if c.is_alphanumeric() {
+                i
+            } else {
+                i + c.len_utf8()
+            };
         }
         prev = Some(c);
     }
@@ -47,15 +85,23 @@ fn words(name: &str) -> Vec<&str> {
 /// Buses that carry effects, not a position.
 fn effect_bus(name: &str) -> bool {
     let name = name.to_ascii_lowercase();
-    name == "insert" || name == "main" || name == "master" || name.starts_with("send") || name.starts_with("aux")
+    name == "insert"
+        || name == "main"
+        || name == "master"
+        || name.starts_with("send")
+        || name.starts_with("aux")
 }
 
 /// The position a group name spells: its last positional word, digits kept
 /// ("Spt2") so numbered spots stay apart.
 fn position(name: &str) -> Option<String> {
     words(name).into_iter().rev().find_map(|w| {
-        let word = w.trim_end_matches(|c: char| c.is_ascii_digit()).to_ascii_lowercase();
-        POSITIONS.contains(&word.as_str()).then(|| format!("{}{}", expand(&word), &w[word.len()..]))
+        let word = w
+            .trim_end_matches(|c: char| c.is_ascii_digit())
+            .to_ascii_lowercase();
+        POSITIONS
+            .contains(&word.as_str())
+            .then(|| format!("{}{}", expand(&word), &w[word.len()..]))
     })
 }
 
@@ -66,7 +112,9 @@ fn position(name: &str) -> Option<String> {
 pub fn infer(instrument: &ir::Instrument) -> Vec<(String, Vec<usize>)> {
     let mut by_bus: Vec<(String, Vec<usize>)> = Vec::new();
     for (i, group) in instrument.groups.iter().enumerate() {
-        let ir::Output::Bus(bus) = group.output else { continue };
+        let ir::Output::Bus(bus) = group.output else {
+            continue;
+        };
         let name = &instrument.buses[bus.0].name;
         if effect_bus(name) {
             continue;
@@ -81,7 +129,9 @@ pub fn infer(instrument: &ir::Instrument) -> Vec<(String, Vec<usize>)> {
     }
     let mut by_name: Vec<(String, Vec<usize>)> = Vec::new();
     for (i, group) in instrument.groups.iter().enumerate() {
-        let Some(mic) = position(&group.name) else { continue };
+        let Some(mic) = position(&group.name) else {
+            continue;
+        };
         match by_name.iter_mut().find(|(n, _)| *n == mic) {
             Some((_, groups)) => groups.push(i),
             None => by_name.push((mic, vec![i])),
@@ -106,22 +156,41 @@ mod tests {
     fn named(names: &[&str]) -> ir::Instrument {
         let mut i = ir::Instrument::default();
         for n in names {
-            i.groups.push(ir::Group { name: (*n).into(), ..Default::default() });
+            i.groups.push(ir::Group {
+                name: (*n).into(),
+                ..Default::default()
+            });
         }
         i
     }
 
     #[test]
     fn mics_come_from_group_name_positions() {
-        let i = named(&["BRASS_Breath_Close", "BRASS_Breath_Decca", "BRASS_Breath_Hall", "BRASS_Sus_Close", "BRASS_Sus_Decca", "BRASS_Sus_Hall"]);
+        let i = named(&[
+            "BRASS_Breath_Close",
+            "BRASS_Breath_Decca",
+            "BRASS_Breath_Hall",
+            "BRASS_Sus_Close",
+            "BRASS_Sus_Decca",
+            "BRASS_Sus_Hall",
+        ]);
         let mics = infer(&i);
-        assert_eq!(mics.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["Close", "Decca", "Hall"]);
+        assert_eq!(
+            mics.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+            ["Close", "Decca", "Hall"]
+        );
         assert_eq!(mics[0].1, [0, 3]);
     }
 
     #[test]
     fn abbreviations_in_camel_case_names_are_positions() {
-        let i = named(&["WmnLgtAhClsDyn1RR1", "WmnLgtAhDccDyn1RR1", "WmnLgtAhFMpDyn1RR1", "1VlnLgtSpt1Dyn1RR1", "1VlnLgtSpt2Dyn1RR1"]);
+        let i = named(&[
+            "WmnLgtAhClsDyn1RR1",
+            "WmnLgtAhDccDyn1RR1",
+            "WmnLgtAhFMpDyn1RR1",
+            "1VlnLgtSpt1Dyn1RR1",
+            "1VlnLgtSpt2Dyn1RR1",
+        ]);
         let names: Vec<_> = infer(&i).into_iter().map(|(n, _)| n).collect();
         assert_eq!(names, ["Close", "Decca", "Fmp", "Spot1", "Spot2"]);
     }
@@ -130,14 +199,25 @@ mod tests {
     fn one_position_or_unlabelled_groups_have_no_mics() {
         assert!(infer(&named(&["a_Close", "b_Close"])).is_empty());
         assert!(!infer(&named(&["Legato", "Staccato", "a_Close", "b_Room"])).is_empty());
-        assert!(infer(&named(&["Legato", "Staccato", "Marcato", "a_Close", "b_Room"])).is_empty());
+        assert!(
+            infer(&named(&[
+                "Legato", "Staccato", "Marcato", "a_Close", "b_Room"
+            ]))
+            .is_empty()
+        );
     }
 
     #[test]
     fn groups_on_separate_buses_are_mics() {
         let mut i = named(&["a", "b", "c"]);
         for (n, name) in ["Close", "Room"].into_iter().enumerate() {
-            i.buses.push(ir::Bus { name: name.into(), chain: None, sends: Vec::new(), output: ir::Output::Master, gain: ir::Gain::UNITY });
+            i.buses.push(ir::Bus {
+                name: name.into(),
+                chain: None,
+                sends: Vec::new(),
+                output: ir::Output::Master,
+                gain: ir::Gain::UNITY,
+            });
             i.groups[n].output = ir::Output::Bus(ir::BusRef(n));
         }
         let mics = infer(&i);
@@ -160,12 +240,20 @@ mod tests {
                         stack.push(p)
                     }
                 } else if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("nki")) {
-                    let Ok(k) = sampler_kontakt::read(&p) else { continue };
+                    let Ok(k) = sampler_kontakt::read(&p) else {
+                        continue;
+                    };
                     total += 1;
                     let mics = infer(&k.instrument);
                     if !mics.is_empty() {
                         with += 1;
-                        println!("MICS\t{}\t{:?}", p.display(), mics.iter().map(|(n, g)| (n.as_str(), g.len())).collect::<Vec<_>>());
+                        println!(
+                            "MICS\t{}\t{:?}",
+                            p.display(),
+                            mics.iter()
+                                .map(|(n, g)| (n.as_str(), g.len()))
+                                .collect::<Vec<_>>()
+                        );
                     }
                 }
             }

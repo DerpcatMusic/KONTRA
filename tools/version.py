@@ -69,31 +69,35 @@ def check():
     return pkg['version']
 
 
+MANIFESTS = [('Cargo.toml', '[package]'), ('Cargo.lock', '[[package]]')]
+
+
+def version_text(text, header, name, version):
+    pattern = re.compile(r'(?ms)^' + re.escape(header) + r'\n(?P<body>.*?)(?=^\[|\Z)')
+    count = 0
+    def replace(match):
+        nonlocal count
+        body = match['body']
+        if not re.search(r'^name\s*=\s*"' + re.escape(name) + r'"\s*$', body, re.M):
+            return match[0]
+        count += 1
+        body, n = re.subn(r'(?m)^version\s*=\s*"[^"]+"', f'version = "{version}"', body, count=1)
+        if n != 1:
+            raise ValueError(f'Missing version in {header}')
+        return header + '\n' + body
+    changed = pattern.sub(replace, text)
+    if count != 1:
+        raise ValueError(f'Expected one root package in {header}, found {count}')
+    return changed
+
+
 def write(version):
     validate(version)
     if '.'.join(validate(version).group(1, 2, 3)) != ledger_version():
         raise ValueError('Chosen version differs from the reviewed fix ledger')
     pkg = package()
-    updates = []
-    for filename, header in [('Cargo.toml', '[package]'), ('Cargo.lock', '[[package]]')]:
-        path = ROOT / filename
-        text = path.read_text()
-        pattern = re.compile(r'(?ms)^' + re.escape(header) + r'\n(?P<body>.*?)(?=^\[|\Z)')
-        count = 0
-        def replace(match):
-            nonlocal count
-            body = match['body']
-            if not re.search(r'^name\s*=\s*"' + re.escape(pkg['name']) + r'"\s*$', body, re.M):
-                return match[0]
-            count += 1
-            body, n = re.subn(r'(?m)^version\s*=\s*"[^"]+"', f'version = "{version}"', body, count=1)
-            if n != 1:
-                raise ValueError(f'Missing version in {filename}')
-            return header + '\n' + body
-        changed = pattern.sub(replace, text)
-        if count != 1:
-            raise ValueError(f'Expected one root package in {filename}, found {count}')
-        updates.append((path, changed))
+    updates = [(ROOT / filename, version_text((ROOT / filename).read_text(), header, pkg['name'], version))
+               for filename, header in MANIFESTS]
     # Validate both edits before changing either file.
     for path, changed in updates:
         path.write_text(changed)
@@ -112,6 +116,20 @@ def nightly(base, revision, epoch):
     return f'{base}-nightly.{date}.g{revision[:12].lower()}'
 
 
+def nightly_dirty():
+    """Only the exact reviewed checkout plus its deterministic version stamp is clean."""
+    if git('diff', '--name-only', 'HEAD', '--', '.', ':(exclude)Cargo.toml', ':(exclude)Cargo.lock'):
+        return True
+    if git('diff', '--summary', 'HEAD', '--', 'Cargo.toml', 'Cargo.lock'):
+        return True
+    originals = {name: subprocess.check_output(['git', '-C', str(ROOT), 'show', f'HEAD:{name}'], text=True)
+                 for name, _ in MANIFESTS}
+    pkg = tomllib.loads(originals['Cargo.toml'])['package']
+    stamp = nightly(pkg['version'], git('rev-parse', 'HEAD'), int(git('show', '-s', '--format=%ct', 'HEAD')))
+    return any((ROOT / name).is_symlink() or (ROOT / name).read_text() != version_text(originals[name], header, pkg['name'], stamp)
+               for name, header in MANIFESTS)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
@@ -127,7 +145,11 @@ def main():
     p = commands.add_parser('manifest', help='validate and print the exact build.rs package manifest')
     p.add_argument('--file', required=True, type=Path)
     commands.add_parser('self-test', help='check SemVer edge cases and deterministic nightly identity')
+    commands.add_parser('nightly-dirty', help='detect source edits beyond the exact Nightly version stamp')
     args = parser.parse_args()
+    if args.command == 'nightly-dirty':
+        print(json.dumps(nightly_dirty()))
+        return
     if args.command == 'self-test':
         for bad in ['01.2.3', '1.2.3-01', '1.2', '1.2.3-']:
             try:

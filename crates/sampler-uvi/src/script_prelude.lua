@@ -40,11 +40,7 @@ setmetatable(_G, {
       if v ~= nil then return v end
     end
     if type(name) ~= "string" then return nil end
-    if native.assigned(name) then return nil end
-    report("global " .. name, "")
-    local s = stub(name)
-    rawset(_G, name, s)
-    return s
+    return nil
   end,
 })
 
@@ -56,6 +52,8 @@ Event = {
   NoteOn = 1, NoteOff = 2, Controller = 3, PitchBend = 4, AfterTouch = 5,
   PolyAfterTouch = 6, ProgramChange = 7, Transport = 8,
 }
+Event.ControlChange = Event.Controller
+bit = bit32
 Unit = setmetatable({}, { __index = function(t, k) local v = k; rawset(t, k, v); return v end })
 Engine = setmetatable({}, { __index = function(t, k)
   report("Engine " .. tostring(k), "")
@@ -96,19 +94,35 @@ end
 function methods.setValue(w, v, arg, callChanged)
   local d = data(w)
   if d.kind == "Table" then
-    if v < 1 or v > d.length or v % 1 ~= 0 then error("table index out of range") end
-    d.values[v] = clamp(w, arg)
-    ui.revision = ui.revision + 1
-    if callChanged ~= false then notify(w, v) end
+    if rawtype(v) ~= 'number' or v ~= v or math.abs(v) == math.huge then error('invalid table index') end
+    v = v < 0 and math.ceil(v) or math.floor(v)
+    -- v1/Workstation-observed, Falcon unverified: boundary writes are
+    -- ignored; programmatic values are independent of the display range.
+    if v < 1 or v > d.length then report('widget_index_out_of_range',''); return end
+    if rawtype(arg) ~= 'number' or arg ~= arg or math.abs(arg) == math.huge then error('invalid table value') end
+    if d.integer then arg = arg < 0 and math.ceil(arg) or math.floor(arg) end
+    local old = d.values[v]
+    d.values[v] = arg
+    if old ~= arg then ui.revision = ui.revision + 1 end
+    if callChanged ~= false and old ~= arg then notify(w, v) end
     return
   end
   if d.kind ~= "ParameterValue" then v = clamp(w, v) end
+  local old = w.value
   if d.element then d.element:setParameter(d.parameter, v) else d.value = v end
-  ui.revision = ui.revision + 1
-  if arg ~= false then notify(w) end
+  -- v1/Workstation-observed, Falcon unverified: identical writes/restoration
+  -- do not call changed, including a parameter setter that ignored its write.
+  if old ~= w.value then
+    ui.revision = ui.revision + 1
+    if arg ~= false then notify(w) end
+  end
 end
 function methods.getValue(w, i)
-  if w.kind == "Table" then return data(w).values[i] or 0 end
+  if w.kind == "Table" then
+    if rawtype(i) ~= 'number' or i ~= i or math.abs(i) == math.huge then error('invalid table index') end
+    i = i < 0 and math.ceil(i) or math.floor(i)
+    return data(w).values[i] or data(w).default
+  end
   return w.value
 end
 function methods.setRange(w, lo, hi) w.min, w.max = lo, hi end
@@ -167,6 +181,9 @@ widget_mt.__index = function(w, k)
 end
 widget_mt.__newindex = function(w, k, v)
   local d = data(w)
+  if type(v) == 'string' and (k == 'font' or string.match(k, 'Image$') or k == 'image') then
+    v = native.resourcePath(v)
+  end
   if k == "value" or k == "selected" then
     if v ~= w.value then methods.setValue(w, v) end
     return
@@ -192,6 +209,7 @@ widget = function(kind, ...)
   local w = setmetatable({__data=d}, widget_mt)
   if kind == "Table" then
     d.length,d.value,d.min,d.max,d.integer = value or 0,0,args[4] or 0,args[5] or 1,args[6]==true
+    d.default = args[3] or 0
     d.values = {}; for i=1,d.length do d.values[i] = args[3] or 0 end
   elseif kind == "Menu" or kind == "MultiStateButton" then
     d.items,d.value,d.integer = value or named.items or {},lo or 1,true
@@ -202,7 +220,7 @@ widget = function(kind, ...)
     d.meter_element,d.stereo,d.channel,d.vertical,d.value,d.persistent = value,args[3]~=false,args[4] or 0,args[5]~=false,0,false
   elseif kind == "XY" then
     d.paramX,d.paramY,d.value = name,value,0
-  elseif kind == "Image" or kind == "SVG" then d.image = name
+  elseif kind == "Image" or kind == "SVG" then d.image = native.resourcePath(name)
   end
   if string.sub(kind,1,5) == "Param" or kind == "ParameterValue" then
     d.element,d.parameter = name,value
@@ -210,7 +228,8 @@ widget = function(kind, ...)
     d.bound = rawtype(name) == "table" and rawget(name,"__id") ~= nil
     if d.bound then
       for _, def in ipairs(name.parameterDefinitions) do
-        if def.id == value then
+        if def.id == value or def.name == value then
+          d.parameter = def.name
           d.min,d.max,d.integer,d.unit,d.mapper = def.min or 0,def.max or 1,def.type=="int",def.unit or "Generic",def.mapper or "Linear"
           break
         end
@@ -260,55 +279,57 @@ function __restore()
 end
 function __ui_edit(id, component, value)
   local w = registry[id]; if not w or not w.enabled then error("invalid UI control") end
-  if w.kind == "Table" then w:setValue(component,value)
+  if w.kind == "Table" then
+    if component < 1 or component > w.length then error('invalid UI table cell') end
+    w:setValue(component,value)
   elseif w.kind == "XY" then
+    if component ~= 1 and component ~= 2 then error('invalid UI axis') end
     local name = component==1 and w.paramX or w.paramY
     for _, target in ipairs(registry) do if target.name==name then target:setValue(value); return end end
     error("unbound XY axis")
   elseif w.kind == "Button" then
+    if component ~= 0 then error('invalid UI component') end
     if value >= 0.5 then notify(w) end
-  else w:setValue(value) end
+  else
+    if component ~= 0 then error('invalid UI component') end
+    w:setValue(value)
+  end
 end
 
 -- Elements -----------------------------------------------------------------
--- Parameters the shipped scripts look up by name on elements whose presets
--- often omit them (defaults).
-local known_params = {
-  Keygroup = { "Gain", "Pan" },
-  Layer = { "Gain", "Pan" },
-  SamplePlayer = { "Gain", "Pan", "Pitch" },
-  BusRouter = { "Gain" },
-  CombFilter = { "Freq", "Q", "Bypass", "Mode" },
-  MS20 = { "Freq", "Q", "Bypass" },
-  XpanderFilter = { "Freq", "Q", "Drive", "Mode", "Bypass" },
-  OnePole = { "Freq", "Bypass", "Mode" },
-  Flanger = { "Feedback", "Mix", "Speed", "Bypass" },
-  Phasor = { "Depth", "Feedback", "Speed", "Bypass" },
-  WaveShaper = { "Amount", "Mix", "Bypass" },
-  LFO = { "Depth", "Freq" },
-  MultiLFO = { "Depth", "Freq" },
-}
 local element = {}
+local collections = {layers=true,keygroups=true,oscillators=true,inserts=true,auxs=true,
+  sends=true,modulations=true,eventProcessors=true,connections=true}
 element.__index = function(t, k)
   local m = rawget(element, k)
   if m then return m end
   if k == "parameterDefinitions" then
-    -- `id` is what setParameter takes back: the parameter's name. Parameters
-    -- a preset leaves at their default are still defined.
-    local defs, seen = {}, {}
-    local function add(n)
-      if not seen[n] then
-        seen[n] = true
-        defs[#defs + 1] = { id = n, name = n, min = 0, max = 1, default = native.param(rawget(t, "__id"), n) or 0 }
-      end
-    end
-    for _, n in ipairs(native.paramNames(rawget(t, "__id"))) do add(n) end
-    for _, n in ipairs(known_params[rawget(t, "type")] or {}) do add(n) end
+    local defs = native.definitions(rawget(t, "__id"))
+    rawset(t, k, defs)
     return defs
+  end
+  if k == "numParams" then
+    local defs=rawget(t,'parameterDefinitions')
+    return defs and #defs or native.paramCount(rawget(t,'__id'))
+  end
+  if k == 'mods' then
+    local list = t.modulations; rawset(t,k,list); return list
+  end
+  if collections[k] or k == 'synthChildren' then
+    local list = {}; if collections[k] then setmetatable(list,__list_mt) end
+    rawset(t,k,list); return list
   end
   return nil
 end
+local function parameter_name(self,id)
+  local defs=rawget(self,'parameterDefinitions')
+  if defs then local def=defs[id]; return def and def.name end
+  return native.paramName(rawget(self,'__id'),id)
+end
 function element.getParameter(self, name)
+  if type(name) == "number" then
+    name = parameter_name(self,name); if not name then error("invalid parameter id") end
+  end
   local overlay = rawget(self, "__set")
   if overlay and overlay[name] ~= nil then return overlay[name] end
   local v = native.param(rawget(self, "__id"), name)
@@ -318,9 +339,39 @@ function element.getParameter(self, name)
   end
   return v
 end
+function element.hasParameter(self, name)
+  if type(name)=='number' then return parameter_name(self,name) ~= nil end
+  local defs=rawget(self,'parameterDefinitions')
+  return (defs and defs[name] ~= nil) or native.hasParameter(rawget(self,'__id'),name)
+end
 __touched = {}
 function element.setParameter(self, name, value)
   if name == nil then report("setParameter", "nil name"); return end
+  if type(name) == "number" then
+    name = parameter_name(self,name); if not name then error("invalid parameter id") end
+  end
+  local defs = rawget(self, 'parameterDefinitions')
+  local expected, min, max
+  if defs then
+    local def = defs[name]
+    if def then expected,min,max=def.type,def.min,def.max end
+  else expected,min,max=native.definition(rawget(self,'__id'),name) end
+  if expected then
+    -- v1/Workstation-observed, Falcon unverified: mismatched scalar writes
+    -- are ignored. Only lossless int-to-float widening is accepted.
+    local actual = type(value)
+    if actual == 'boolean' then actual = 'bool'
+    elseif actual == 'number' then actual = value == math.floor(value) and 'int' or 'float' end
+    if actual ~= expected and not (expected == 'float' and actual == 'int') then
+      native.setterMismatch(expected,actual)
+      return
+    end
+    if actual == 'int' or actual == 'float' then
+      if value ~= value or math.abs(value) == math.huge then error('expected finite parameter') end
+      -- Keep reversed documented bounds intact; native semantics need a measurement.
+      if min ~= nil and max ~= nil and min <= max then value = math.max(min, math.min(max, value)) end
+    end
+  end
   local overlay = rawget(self, "__set")
   if not overlay then
     overlay = {}; rawset(self, "__set", overlay)
@@ -330,17 +381,15 @@ function element.setParameter(self, name, value)
   if type(value) == "number" and native.setParam(rawget(self, "__id"), name, value) then return end
   report("setParameter " .. rawget(self, "type") .. "." .. tostring(name), "")
 end
--- Connections are not modeled: any index answers with one inert element.
-local inert, connections = {}, nil
-connections = setmetatable({}, { __index = function(_, k)
-  if type(k) == "number" then return inert end
-end })
-function inert.getParameterConnections() return connections end
-function inert.setParameter(_, n) report("setParameter", "connection." .. tostring(n)) end
-function inert.getParameter(_, n) report("getParameter", "connection." .. tostring(n)); return 0 end
 function element.getParameterConnections(self, name)
-  report("getParameterConnections " .. rawget(self, "type") .. "." .. tostring(name), "")
-  return connections
+  if type(name) == 'number' then
+    name = parameter_name(self,name); if not name then error('invalid parameter id') end
+  end
+  local result = {}
+  for _, c in ipairs(self.connections or {}) do
+    if c:getParameter('Destination') == name then result[#result+1] = c end
+  end
+  return result
 end
 function element.sendScriptModulation(self, ...) report("sendScriptModulation", "") end
 element.__element = true
@@ -360,25 +409,26 @@ function waitForRelease() return coroutine.yield("release") end
 
 function postEvent(e, delta)
   if delta and delta > 0 then
-    local id = native.nextId()
+    local id = e.id or e.voiceId
+    if not id then id = native.nextId(); e.id = id end
     spawn(function() wait(delta); postEvent(e) end)
     return id
   end
   local t = e.type
   if t == Event.NoteOn then
-    return playNote(e)
+    return native.postNote(e)
   elseif t == Event.NoteOff then
     if e.id or e.voiceId then releaseVoice(e.id or e.voiceId) end
   elseif t == Event.Controller then
     controlChange(e.controller or e.number or 0, e.value or 0, e.channel)
   elseif t == Event.PitchBend then
-    pitchBend(e.value or 0, e.channel)
+    pitchBend(e.bend or e.value or 0, e.channel)
   elseif t == Event.AfterTouch then
     afterTouch(e.value or 0, e.channel)
   elseif t == Event.PolyAfterTouch then
     polyAfterTouch(e.value or 0, e.note or 0, e.channel)
   elseif t == Event.ProgramChange then
-    programChange(e.value or 0, e.channel)
+    programChange(e.program or e.value or 0, e.channel)
   else
     report("postEvent", tostring(t))
   end
@@ -460,10 +510,16 @@ function type(v)
 end
 
 -- What the interface export reads (see ScriptHost::interface).
-function setBackground(path) ui.background = path end
+function setBackground(path) ui.background = native.resourcePath(path) end
 function setSize(w, h) ui.width, ui.height = w, h end
 function setBackgroundColour(c) ui.backgroundColour = c end
-function setKeyColour(key, c) ui.keys[key+1] = c; ui.revision = ui.revision + 1 end
-function resetKeyColour(key) ui.keys[key+1] = nil; ui.revision = ui.revision + 1 end
+function setKeyColour(key, c)
+  ui.keys[key+1] = c; ui.revision = ui.revision + 1
+  if native.scanKey then native.scanKey("setKeyColour", {key, c}) end
+end
+function resetKeyColour(key)
+  ui.keys[key+1] = nil; ui.revision = ui.revision + 1
+  if native.scanKey then native.scanKey("resetKeyColour", {key}) end
+end
 function makePerformanceView() ui.performance = true end
 __ui = ui

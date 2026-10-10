@@ -28,53 +28,80 @@ mod logs;
 mod menu;
 // The v2 views take plain data the core does not produce yet (submix/bus
 // nodes, effect and modulation reports).
-#[allow(dead_code)]
-mod mix_tree;
-mod ir_view;
+mod bridge;
+mod editor;
 mod generated;
 #[cfg(feature = "shots")]
-pub(crate) mod scan;
+pub(crate) mod health;
+mod inside;
+mod ir_view;
 #[allow(dead_code)]
 mod load_report;
-mod bridge;
-mod pictures;
-mod picture_decode;
-mod picture_worker;
+mod mapping;
+#[allow(dead_code)]
+mod mix_tree;
 mod native_runtime;
 mod native_ui;
+mod picture_decode;
+mod picture_worker;
+mod pictures;
 mod render_art;
-mod inside;
+#[cfg(feature = "shots")]
+pub(crate) mod scan;
+// ponytail: standalone until W11 publishes selected-effect metadata and a typed DSP route.
+mod chain;
+mod editor_model;
+#[allow(dead_code)]
+mod effects;
 mod part;
 pub(crate) mod picker;
 mod rack;
 mod spectrum;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
+mod theme;
 #[cfg(test)]
 mod v2_tests;
-mod theme;
+mod viz;
+#[cfg(all(test, feature = "shots"))]
+mod widget_gate;
 
 use crate::library;
 use crate::plugin::{Load, Part, PartView, SamplerParams, Selection, View, mix};
-use moose::mui::{Bridge, MuiEditor, mui::prelude::*, mui::prelude::Color};
+use crate::support::{MutexExt, RwLockExt};
+use moose::mui::{Bridge, MuiEditor, mui::prelude::Color, mui::prelude::*};
 use moose::prelude::*;
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant};
 use theme::*;
 
 pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
+    let mut config = mui::diagnostics::Config::new("kontra", env!("CARGO_PKG_VERSION"));
+    config.build = option_env!("APP_GIT_REVISION").unwrap_or("unknown").into();
+    config.mui_revision = "dcf0796082feec053af1418e3a38a302ee61da0a".into();
+    let reporter = mui::diagnostics::Reporter::start(config)
+        .inspect_err(|error| eprintln!("KONTRA MUI reporting: {error}"))
+        .ok();
     let meters = Arc::new(Meters::default());
     let computer = Arc::new(computer::Computer::default());
     #[cfg(target_os = "linux")]
-    let picker = Arc::new(picker::Picker::with_runtime(Arc::clone(&params.shared.dialog_runtime)));
+    let picker = Arc::new(picker::Picker::with_runtime(Arc::clone(
+        &params.shared.dialog_runtime,
+    )));
     #[cfg(not(target_os = "linux"))]
     let picker = Arc::new(picker::Picker::default());
     let art = Arc::new(art::Art::default());
-    let build = build(&params, meters.clone(), computer.clone(), picker.clone(), art.clone());
+    let build = build(
+        &params,
+        meters.clone(),
+        computer.clone(),
+        picker.clone(),
+        art.clone(),
+    );
     let (drop_params, drop_picker) = (params.clone(), picker.clone());
     let file_drag = Arc::new(std::sync::Mutex::new(None));
     let cancel_drag = file_drag.clone();
@@ -86,31 +113,63 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
     let size = params.shared.libraries.settings().editor_size();
     let zoom_params = params.clone();
     let close_params = params.clone();
+    let close_computer = computer.clone();
     let close_picker = Arc::clone(&picker);
     #[cfg(target_os = "linux")]
     let parent_picker = Arc::clone(&picker);
     let last_size = AtomicU64::new(0);
     let editor = MuiEditor::new(params, theme::ui(), size, build)
-        .on_log(|line| {
-            let failed = line.contains("unavailable") || line.contains("failed") || line.contains("panic");
-            crate::diagnostics::event(if failed { crate::diagnostics::LogLevel::Warning } else { crate::diagnostics::LogLevel::Info },
-                "renderer", "native_window", serde_json::json!({"stage":"renderer", "reason":line}));
+        .on_log(move |line| {
+            let _reporter = &reporter;
+            let failed =
+                line.contains("unavailable") || line.contains("failed") || line.contains("panic");
+            crate::diagnostics::event(
+                if failed {
+                    crate::diagnostics::LogLevel::Warning
+                } else {
+                    crate::diagnostics::LogLevel::Info
+                },
+                "renderer",
+                "native_window",
+                serde_json::json!({"stage":"renderer", "reason":line}),
+            );
             // Persist the attempt before entering native graphics code: an
             // access violation does not unwind or wait for queued log writes.
             if line.starts_with("mui-baseview: GPU init ")
-                || line.starts_with("mui-baseview: native window init entering native code ") {
+                || line.starts_with("mui-baseview: native window init entering native code ")
+            {
                 let _ = crate::diagnostics::flush(std::time::Duration::from_millis(100));
             }
         })
-        .on_files(move |ui, at, paths, dropped| native_files(&drop_params, &drop_picker, &file_drag, ui, at, paths, dropped))
+        .on_files(move |ui, at, paths, dropped| {
+            native_files(
+                &drop_params,
+                &drop_picker,
+                &file_drag,
+                ui,
+                at,
+                paths,
+                dropped,
+            )
+        })
         .on_cancel(move |ui| {
             let_go(&cancel_params, &cancel_computer);
-            native_files(&cancel_params, &cancel_picker, &cancel_drag, ui, Point::new(-1., -1.), &[], false);
+            native_files(
+                &cancel_params,
+                &cancel_picker,
+                &cancel_drag,
+                ui,
+                Point::new(-1., -1.),
+                &[],
+                false,
+            );
         })
         .on_key(move |ui, event| key_computer.key(ui, &key_params, event))
         .hide_pointer(theme::pointer_hidden)
         .native_timing(crate::diagnostics::native_timing_hook())
-        .changed(move || watch.changed(&watch_params, &meters, &computer) || picker.ready() || art.ready())
+        .changed(move || {
+            watch.changed(&watch_params, &meters, &computer) || picker.ready() || art.ready()
+        })
         .fixed_zoom()
         .user_zoom(move |window| {
             let size = (window.width.round() as u32, window.height.round() as u32);
@@ -121,6 +180,11 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
             zoom_params.shared.libraries.settings().editor_scale()
         })
         .on_close(move || {
+            let_go(&close_params, &close_computer);
+            close_params
+                .shared
+                .editor_watch
+                .store(usize::MAX, Ordering::Relaxed);
             close_picker.close();
             close_params.shared.libraries.flush_settings();
         })
@@ -132,6 +196,7 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
 
 /// Focus left or the window closes: every key the editor holds comes up.
 fn let_go(p: &SamplerParams, computer: &computer::Computer) {
+    p.shared.learn_target.store(0, Ordering::Relaxed);
     computer.release(p);
     p.shared.release_keyboard();
     // The next frame names the spectrum's strip again, if one still shows.
@@ -141,15 +206,15 @@ fn let_go(p: &SamplerParams, computer: &computer::Computer) {
 /// The lock's data even if a panicking thread held it: the editor shows what
 /// is there rather than taking the host down with it.
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(PoisonError::into_inner)
+    m.lock_unpoisoned()
 }
 
 fn read<T>(l: &RwLock<T>) -> RwLockReadGuard<'_, T> {
-    l.read().unwrap_or_else(PoisonError::into_inner)
+    l.read_unpoisoned()
 }
 
 fn write<T>(l: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
-    l.write().unwrap_or_else(PoisonError::into_inner)
+    l.write_unpoisoned()
 }
 
 /// The top bar's eased readouts, as [`Watch`] last sampled them: `f32` bits.
@@ -157,10 +222,11 @@ fn write<T>(l: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
 struct Meters {
     /// Audio thread load, 0..1.
     cpu: AtomicU32,
+    disk: AtomicU32,
     /// A view moves on its own (a spectrum or a peak hold falling): the
     /// last frame built says so, and frames keep coming until one does not.
     animating: AtomicBool,
-    /// Journal changes affect this editor only while its Logs pane is shown.
+    /// Journal changes affect this editor only while its Report pane is shown.
     logs_visible: AtomicBool,
 }
 
@@ -174,6 +240,9 @@ struct Watch {
     /// they are looked at ten times a second, not every tick.
     readouts: u64,
     cpu: f32,
+    disk: f32,
+    disk_read: u64,
+    disk_counter: Option<&'static AtomicU64>,
     /// The audio thread's render and rendered time when last sampled.
     busy: (u64, u64),
     /// When the readouts were last sampled.
@@ -187,31 +256,68 @@ const READOUT_MS: u64 = 100;
 const ANIMATION_MS: u64 = 33;
 
 impl Watch {
-    fn changed(&mut self, p: &SamplerParams, meters: &Meters, computer: &computer::Computer) -> bool {
+    fn changed(
+        &mut self,
+        p: &SamplerParams,
+        meters: &Meters,
+        computer: &computer::Computer,
+    ) -> bool {
         let now = Instant::now();
         let due = |at: Option<Instant>, every: u64| {
             at.is_none_or(|t| now - t >= Duration::from_millis(every))
         };
         if due(self.cpu_at, READOUT_MS) {
+            let since = self.cpu_at.map_or(0., |t| (now - t).as_secs_f32());
             self.cpu_at = Some(now);
             // Mean load since the last look, as Kontakt shows it. The peak
             // block's wall time read 20-80% at idle: one preempted block in
             // a tenth of a second is scheduling, not work.
-            let busy = (p.shared.busy_ns.load(Ordering::Relaxed), p.shared.span_ns.load(Ordering::Relaxed));
-            let (work, span) = (busy.0.saturating_sub(self.busy.0), busy.1.saturating_sub(self.busy.1));
+            let busy = (
+                p.shared.busy_ns.load(Ordering::Relaxed),
+                p.shared.span_ns.load(Ordering::Relaxed),
+            );
+            let (work, span) = (
+                busy.0.saturating_sub(self.busy.0),
+                busy.1.saturating_sub(self.busy.1),
+            );
             self.busy = busy;
-            let load = if span > 0 { work as f32 / span as f32 } else { 0. };
+            let load = if span > 0 {
+                work as f32 / span as f32
+            } else {
+                0.
+            };
             self.cpu = load * 0.5 + self.cpu * 0.5;
             if self.cpu < 0.005 {
                 self.cpu = 0.;
             }
             meters.cpu.store(self.cpu.to_bits(), Ordering::Relaxed);
+            // Disk throughput since the last look, eased; idle settles on 0.
+            let counter = self.disk_counter.unwrap_or(&sampler_kontakt::DISK_READ);
+            let read = counter.load(Ordering::Relaxed);
+            let rate = if since > 0. {
+                read.saturating_sub(self.disk_read) as f32 / 1_048_576. / since
+            } else {
+                0.
+            };
+            self.disk_read = read;
+            self.disk = self.disk * 0.5 + rate * 0.5;
+            if self.disk < 0.05 {
+                self.disk = 0.;
+            }
+            meters.disk.store(self.disk.to_bits(), Ordering::Relaxed);
             let mut h = DefaultHasher::new();
             ((self.cpu * 100.).round() as u32).hash(&mut h);
+            ((self.disk * 10.).round() as u32).hash(&mut h);
+            p.shared.memory_snapshot().hash(&mut h);
             p.shared.voices.load(Ordering::Relaxed).hash(&mut h);
             p.shared.audible.load(Ordering::Relaxed).hash(&mut h);
             p.shared.dropouts.load(Ordering::Relaxed).hash(&mut h);
-            p.shared.with_parts(|parts| { for part in parts { part.scalar_revision.load(Ordering::Acquire).hash(&mut h); part.native_revision.load(Ordering::Acquire).hash(&mut h); } });
+            p.shared.with_parts(|parts| {
+                for part in parts {
+                    part.scalar_revision.load(Ordering::Acquire).hash(&mut h);
+                    part.native_revision.load(Ordering::Acquire).hash(&mut h);
+                }
+            });
             self.readouts = h.finish();
         }
         let mut h = DefaultHasher::new();
@@ -225,6 +331,7 @@ impl Watch {
         // The wheels follow incoming MIDI as it moves them.
         p.shared.bend.load(Ordering::Relaxed).hash(&mut h);
         p.shared.modulation.load(Ordering::Relaxed).hash(&mut h);
+        p.shared.learned_note.load(Ordering::Relaxed).hash(&mut h);
         // Lit keys, and what the computer keyboard plays.
         for lit in p.shared.played.iter().chain(&p.shared.heard) {
             lit.load(Ordering::Relaxed).hash(&mut h);
@@ -240,7 +347,10 @@ impl Watch {
             let pending = view.scanned != p.shared.libraries.wanted()
                 || lock(&p.shared.multi_request).is_some()
                 || (0..view.parts.len().max(selection.parts.len())).any(|n| {
-                    let (path, program) = selection.parts.get(n).map_or(("", 0), |p| (p.path.as_str(), p.program));
+                    let (path, program) = selection
+                        .parts
+                        .get(n)
+                        .map_or(("", 0), |p| (p.path.as_str(), p.program));
                     match view.parts.get(n).and_then(|v| v.attempted.as_ref()) {
                         Some((a, b, ..)) => (a.as_str(), *b) != (path, program),
                         None => !path.is_empty(),
@@ -252,8 +362,15 @@ impl Watch {
         // level, frames run on the animation clock; the fall to silence
         // changes the signature, so the last one draws them empty.
         let m = &p.shared.meters;
-        let sounding = p.shared.with_parts(|parts| parts.iter().any(|part| crate::plugin::Meters::read(&part.meter) != [0.; 2]))
-            || m.buses.iter().chain([&m.master]).any(|meter| crate::plugin::Meters::read(meter) != [0.; 2]);
+        let sounding = p.shared.with_parts(|parts| {
+            parts
+                .iter()
+                .any(|part| crate::plugin::Meters::read(&part.meter) != [0.; 2])
+        }) || m
+            .buses
+            .iter()
+            .chain([&m.master])
+            .any(|meter| crate::plugin::Meters::read(meter) != [0.; 2]);
         sounding.hash(&mut h);
         // Progress and the sweep redraw on the animation's own clock.
         let moving = meters.animating.load(Ordering::Relaxed);
@@ -283,13 +400,20 @@ fn shown(view: &Mutex<View>) -> View {
 /// replaces wholesale, and the small fields it edits in place.
 fn fingerprint(view: &View, h: &mut DefaultHasher) {
     fn at<T>(a: &Option<Arc<T>>) -> usize {
-        a.as_ref().map_or(0, |a| Arc::as_ptr(a) as *const () as usize)
+        a.as_ref()
+            .map_or(0, |a| Arc::as_ptr(a) as *const () as usize)
     }
     (&view.status, &view.multi_status, view.scanned).hash(h);
     (Arc::as_ptr(&view.files) as usize, view.artwork.len()).hash(h);
     for v in &view.parts {
         (v.loading, &v.status, v.program, v.ui_revision, v.generation).hash(h);
-        (at(&v.tree), at(&v.report), at(&v.trace), Arc::as_ptr(&v.interfaces) as *const () as usize).hash(h);
+        (
+            at(&v.tree),
+            at(&v.report),
+            at(&v.trace),
+            Arc::as_ptr(&v.interfaces) as *const () as usize,
+        )
+            .hash(h);
     }
 }
 
@@ -318,7 +442,6 @@ enum Tab {
     Rack,
     Mixer,
     Report,
-    Logs,
 }
 
 /// Editor-only state that outlives a frame but not the window.
@@ -330,7 +453,7 @@ struct EditorState {
     /// share of the height.
     pane: Option<browser::Pane>,
     split: f64,
-    multis: bool,
+    uvi: bool,
     tab: Tab,
     settings: bool,
     /// The name a "Save multi…" is typing, and why the last try failed.
@@ -352,6 +475,7 @@ struct EditorState {
     unselected: bool,
     notice: String,
     root: String,
+    root_typing: bool,
     last_poll: Instant,
     /// The top bar's readouts, as [`Watch`] last eased them.
     meters: Arc<Meters>,
@@ -365,7 +489,6 @@ struct EditorState {
     /// A part's name while it is being edited.
     renaming: Option<(usize, String)>,
     /// The master spectrum shows under the mixer.
-    spectrum: bool,
     /// Each library's color, thumbnail, banner and backdrop, made from its
     /// artwork off the frame.
     art: Arc<art::Art>,
@@ -382,7 +505,11 @@ struct EditorState {
     /// Each part's notices and controls at their full height, as last laid out.
     bodies: HashMap<usize, f64>,
     /// Each preset's neighbors in its library folder, of which scan and shelf.
-    neighbors: (std::sync::Weak<Vec<PathBuf>>, usize, HashMap<String, [Option<String>; 2]>),
+    neighbors: (
+        std::sync::Weak<Vec<PathBuf>>,
+        usize,
+        HashMap<String, [Option<String>; 2]>,
+    ),
     started: Instant,
     /// The computer keyboard's octave, velocity and held keys.
     computer: Arc<computer::Computer>,
@@ -396,11 +523,11 @@ struct EditorState {
     /// The mixer's strip width and meter holds.
     /// The mixer shows the output tree, else the flat console.
     mix_tree: mix_tree::State,
-    report: load_report::State,
     /// Each part's library interface as drawn, by slot.
     faces: HashMap<usize, part::Face>,
     /// Each part's views beside its interface.
     inside: HashMap<usize, inside::State>,
+    editor: editor::State,
     /// The spectrum on screen, and the strip it shows this frame
     /// ([`crate::plugin::Scope::source`]; 0 for none).
     analyser: spectrum::Analyser,
@@ -432,8 +559,8 @@ impl EditorState {
     }
 }
 
-/// The browser's files by library name, as indices into the scan.
-type Libraries = std::collections::BTreeMap<String, Vec<usize>>;
+/// The browser's naturally ordered paths by library, including native presets.
+type Libraries = std::collections::BTreeMap<String, Vec<PathBuf>>;
 
 /// One frame's inputs: the loader's view, the rack being edited, the editor state.
 struct Cx<'a> {
@@ -461,8 +588,12 @@ impl Cx<'_> {
         let cover = || cover::Spec::new(&found.name, &found.vendor, found.hue);
         let dir = found.dir.to_string_lossy();
         let source = match (self.settings.covers.get(dir.as_ref()), artwork) {
-            (Some(crate::library::Cover::Custom { file, stamp }), _) => art::Source::File(file.into(), *stamp),
-            (Some(crate::library::Cover::Generated), artwork) => art::Source::Cover(cover(), artwork),
+            (Some(crate::library::Cover::Custom { file, stamp }), _) => {
+                art::Source::File(file.into(), *stamp)
+            }
+            (Some(crate::library::Cover::Generated), artwork) => {
+                art::Source::Cover(cover(), artwork)
+            }
             (None, None) => art::Source::Cover(cover(), None),
             (None, Some(image)) => art::Source::Image(image),
         };
@@ -489,7 +620,11 @@ impl Cx<'_> {
 
     /// The name of the instrument loaded in `slot`, once one is.
     fn instrument_name(&self, slot: usize) -> Option<String> {
-        self.view.parts.get(slot).map(|v| v.active.clone()).filter(|n| !n.is_empty())
+        self.view
+            .parts
+            .get(slot)
+            .map(|v| v.active.clone())
+            .filter(|n| !n.is_empty())
     }
 
     /// The selected part when it holds an instrument.
@@ -530,8 +665,33 @@ impl Cx<'_> {
         recent.truncate(6);
     }
 
+    fn is_favorite(&self, path: &str) -> bool {
+        crate::plugin::UviFavorite::at(Path::new(path), &self.view.shelf).is_some_and(|source| {
+            self.selection
+                .uvi_favorites
+                .iter()
+                .any(|old| old.same_program(&source))
+        }) || self.selection.favorites.iter().any(|old| old == path)
+    }
+
     /// Star `path`, or unstar it.
     fn toggle_favorite(&mut self, path: &str) {
+        // Port from v1 4bffbb18:src/ui/mod.rs::toggle_uvi_favorite; locator is not identity.
+        if let Some(source) = crate::plugin::UviFavorite::at(Path::new(path), &self.view.shelf) {
+            match self
+                .selection
+                .uvi_favorites
+                .iter()
+                .position(|old| old.same_program(&source))
+            {
+                Some(at) => {
+                    self.selection.uvi_favorites.remove(at);
+                }
+                None => self.selection.uvi_favorites.push(source),
+            }
+            self.selection.favorites.retain(|old| old != path);
+            return;
+        }
         let favorites = &mut self.selection.favorites;
         match favorites.iter().position(|p| p == path) {
             Some(at) => {
@@ -565,7 +725,10 @@ impl Cx<'_> {
     // the shared atomics before any header or control indexes the appended slot.
     fn ensure_parts(&mut self) {
         self.p.shared.ensure_parts(self.selection.parts.len());
-        self.view.parts.resize_with(self.view.parts.len().max(self.selection.parts.len()), PartView::default);
+        self.view.parts.resize_with(
+            self.view.parts.len().max(self.selection.parts.len()),
+            PartView::default,
+        );
     }
 
     /// Add an instrument to the first free slot and show it.
@@ -573,11 +736,28 @@ impl Cx<'_> {
         self.remember(&path);
         let mut slot = 0;
         for program in 0..program_count(&path) {
-            let part = Part { program, ..new_part(&self.selection, &self.settings, path.clone()) };
+            let part = Part {
+                program,
+                ..new_part(&self.selection, &self.settings, path.clone())
+            };
             slot = add_part(&mut self.selection, part);
         }
         self.ensure_parts();
         self.show(slot);
+    }
+
+    /// Apply to an explicit base, leaving the part intact until validation.
+    fn snapshot(&mut self, slot: usize, path: String) {
+        let accepted = self
+            .selection
+            .parts
+            .get(slot)
+            .is_some_and(|part| self.p.shared.queue_snapshot(slot, part, path));
+        if accepted {
+            self.show(slot);
+        } else {
+            self.state.notice = "Select a base NKI instrument before loading a preset.".into();
+        }
     }
 
     /// Put another instrument (or a multi) in `slot`.
@@ -641,18 +821,23 @@ fn library_of(shelf: &crate::library::Shelf, path: &Path) -> String {
 fn replace_part(part: &mut Part, path: String) {
     part.path = path;
     part.program = 0;
+    part.snapshot.clear();
     part.view = 0;
     part.name.clear();
     // Another instrument has another output tree, switching and dynamics.
     part.nodes.clear();
     part.switching = 0;
+    part.articulation_overlay = Default::default();
     part.dynamics = -1;
 }
 
 /// How many rack parts `path` opens as: one per program of a Kontakt multi.
 fn program_count(path: &str) -> u32 {
     let path = Path::new(path);
-    if !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("nkm")) {
+    if !path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("nkm"))
+    {
         return 1;
     }
     sampler_kontakt::read_multi(path).map_or(1, |m| m.programs.len().max(1) as u32)
@@ -744,47 +929,114 @@ fn sanitize(selection: &mut Selection) {
 
 /// The bounded current OS gesture; source epoch still guards admission.
 struct FileDrag {
-    slot: usize, epoch: u64, source_slot: u8, widget: sampler_ui_ir::Widget,
+    slot: usize,
+    epoch: u64,
+    source_slot: u8,
+    widget: sampler_ui_ir::Widget,
     paths: Vec<(u32, sampler_ui_ir::Value)>,
 }
 
-fn widget_files(p: &SamplerParams, drag: &std::sync::Mutex<Option<FileDrag>>, ui: &Ui, at: Point, paths: &[PathBuf], dropped: bool) -> Option<bool> {
+fn widget_files(
+    p: &SamplerParams,
+    drag: &std::sync::Mutex<Option<FileDrag>>,
+    ui: &Ui,
+    at: Point,
+    paths: &[PathBuf],
+    dropped: bool,
+) -> Option<bool> {
     let view = shown(&p.shared.view);
     let mut target = None;
     let mut rejected = false;
     for (slot, published) in view.parts.iter().enumerate() {
         for (shown, base) in published.interfaces.iter().enumerate() {
             let mut face = base.clone();
-            if let Some(patch) = published.updates.get(shown) { patch.apply(base, &Default::default(), &mut face); }
+            if let Some(patch) = published.updates.get(shown) {
+                patch.apply(base, &Default::default(), &mut face);
+            }
             let namespace = format!("part-{slot}-epoch-{}-script-{shown}", published.generation);
-            if ir_view::file_drop_target(ui, &namespace, &face, at).is_none() { continue; }
-            let Some((n, edits)) = ir_view::file_drop(ui, &namespace, &face, at, paths, dropped) else { rejected = true; break };
+            if ir_view::file_drop_target(ui, &namespace, &face, at).is_none() {
+                continue;
+            }
+            let Some((n, edits)) = ir_view::file_drop(ui, &namespace, &face, at, paths, dropped)
+            else {
+                rejected = true;
+                break;
+            };
             let interaction = part::interaction(&edits[0]);
-            let source_slot = match face.source { sampler_ui_ir::Source::Ksp { slot } => slot, _ => 0 };
+            let source_slot = match face.source {
+                sampler_ui_ir::Source::Ksp { slot } => slot,
+                _ => 0,
+            };
             let paths = edits.into_iter().map(|e| (e.index, e.value)).collect();
-            target = Some((FileDrag { slot, epoch: published.generation, source_slot, widget: face.widgets[n.0].clone(), paths }, interaction));
+            target = Some((
+                FileDrag {
+                    slot,
+                    epoch: published.generation,
+                    source_slot,
+                    widget: face.widgets[n.0].clone(),
+                    paths,
+                },
+                interaction,
+            ));
             break;
         }
-        if target.is_some() || rejected { break; }
+        if target.is_some() || rejected {
+            break;
+        }
     }
     let mut last = lock(drag);
     if let Some(previous) = last.take() {
-        let same = target.as_ref().is_some_and(|(next, _)| next.slot == previous.slot && next.epoch == previous.epoch
-            && next.source_slot == previous.source_slot && next.widget.source_id == previous.widget.source_id);
+        let same = target.as_ref().is_some_and(|(next, _)| {
+            next.slot == previous.slot
+                && next.epoch == previous.epoch
+                && next.source_slot == previous.source_slot
+                && next.widget.source_id == previous.widget.source_id
+        });
         if !same {
-            p.shared.set_widget_batch_at(previous.slot, previous.epoch, previous.source_slot, &previous.widget, previous.paths,
-                sampler_core::WidgetInteraction { event: 4, mouse_over: false, ..Default::default() });
+            p.shared.set_widget_batch_at(
+                previous.slot,
+                previous.epoch,
+                previous.source_slot,
+                &previous.widget,
+                previous.paths,
+                sampler_core::WidgetInteraction {
+                    event: 4,
+                    mouse_over: false,
+                    ..Default::default()
+                },
+            );
         }
     }
-    let Some((target, interaction)) = target else { return rejected.then_some(false) };
-    let accepted = p.shared.set_widget_batch_at(target.slot, target.epoch, target.source_slot, &target.widget, target.paths.clone(), interaction);
-    if accepted && !dropped { *last = Some(target); }
+    let Some((target, interaction)) = target else {
+        return rejected.then_some(false);
+    };
+    let accepted = p.shared.set_widget_batch_at(
+        target.slot,
+        target.epoch,
+        target.source_slot,
+        &target.widget,
+        target.paths.clone(),
+        interaction,
+    );
+    if accepted && !dropped {
+        *last = Some(target);
+    }
     Some(accepted)
 }
 
 /// Desktop files first target authored MouseAreas, then library/rack actions.
-fn native_files(p: &SamplerParams, picker: &picker::Picker, drag: &std::sync::Mutex<Option<FileDrag>>, ui: &Ui, at: Point, paths: &[PathBuf], dropped: bool) -> bool {
-    if let Some(accepted) = widget_files(p, drag, ui, at, paths, dropped) { return accepted; }
+fn native_files(
+    p: &SamplerParams,
+    picker: &picker::Picker,
+    drag: &std::sync::Mutex<Option<FileDrag>>,
+    ui: &Ui,
+    at: Point,
+    paths: &[PathBuf],
+    dropped: bool,
+) -> bool {
+    if let Some(accepted) = widget_files(p, drag, ui, at, paths, dropped) {
+        return accepted;
+    }
 
     let inside = |id: &str| {
         ui.scene().and_then(|s| s.surface(id)).is_some_and(|s| {
@@ -794,7 +1046,11 @@ fn native_files(p: &SamplerParams, picker: &picker::Picker, drag: &std::sync::Mu
     };
     // A picture on a library in the browser becomes its cover.
     let picture = |p: &PathBuf| {
-        p.extension().is_some_and(|e| ["png", "jpg", "jpeg"].iter().any(|x| e.eq_ignore_ascii_case(x)))
+        p.extension().is_some_and(|e| {
+            ["png", "jpg", "jpeg"]
+                .iter()
+                .any(|x| e.eq_ignore_ascii_case(x))
+        })
     };
     if paths.len() == 1 && picture(&paths[0]) {
         let rows = lock(&picker.rows).clone();
@@ -821,6 +1077,25 @@ fn native_files(p: &SamplerParams, picker: &picker::Picker, drag: &std::sync::Mu
         }
         return true;
     }
+    if paths.len() == 1
+        && paths[0]
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("nksn"))
+    {
+        let selection = read(&p.selection);
+        let target = (0..selection.parts.len()).find(|n| inside(&format!("header-{n}")));
+        let Some(slot) = target.filter(|&n| selection.parts[n].snapshot_base()) else {
+            return false;
+        };
+        if dropped {
+            p.shared.queue_snapshot(
+                slot,
+                &selection.parts[slot],
+                paths[0].to_string_lossy().into_owned(),
+            );
+        }
+        return true;
+    }
     if paths.is_empty() || !paths.iter().all(|p| library::is_instrument(p)) {
         return false;
     }
@@ -839,7 +1114,10 @@ fn native_files(p: &SamplerParams, picker: &picker::Picker, drag: &std::sync::Mu
                     let settings = p.shared.libraries.settings();
                     let mut slot = 0;
                     for program in 0..program_count(&path) {
-                        let part = Part { program, ..new_part(&selection, &settings, path.clone()) };
+                        let part = Part {
+                            program,
+                            ..new_part(&selection, &settings, path.clone())
+                        };
                         slot = add_part(&mut selection, part);
                     }
                     slot
@@ -866,7 +1144,7 @@ fn build(
             s if s > 0. => f64::from(s).clamp(browser::SPLIT_MIN, browser::SPLIT_MAX),
             _ => browser::SPLIT,
         },
-        multis: false,
+        uvi: false,
         tab: Tab::Rack,
         settings: false,
         saving: None,
@@ -884,6 +1162,7 @@ fn build(
         unselected: true,
         notice: String::new(),
         root: String::new(),
+        root_typing: false,
         last_poll: Instant::now() - Duration::from_secs(1),
         meters,
         menu: None,
@@ -891,7 +1170,6 @@ fn build(
         browse: Default::default(),
         logs: Default::default(),
         renaming: None,
-        spectrum: false,
         art,
         libraries: Default::default(),
         rack_y: 0.,
@@ -907,9 +1185,9 @@ fn build(
         modulation: None,
         picker,
         mix_tree: Default::default(),
-        report: Default::default(),
         faces: Default::default(),
         inside: Default::default(),
+        editor: Default::default(),
         analyser: Default::default(),
         scope: 0,
         corner: None,
@@ -923,10 +1201,14 @@ fn build(
             state.last_poll = Instant::now();
         }
         let p = bridge.params().clone();
+        p.shared.editor_watch.store(usize::MAX, Ordering::Relaxed);
         let mut selection = read(&p.selection).clone();
         p.shared.ensure_parts(selection.parts.len());
         let mut view = shown(&p.shared.view);
-        view.parts.resize_with(view.parts.len().max(selection.parts.len()), PartView::default);
+        view.parts.resize_with(
+            view.parts.len().max(selection.parts.len()),
+            PartView::default,
+        );
         let before = selection.clone();
         sanitize(&mut selection);
         let focus = p.shared.focus_request.swap(u64::MAX, Ordering::Relaxed);
@@ -935,7 +1217,9 @@ fn build(
             state.notice.clear();
         }
         state.selected = state.selected.min(selection.parts.len().saturating_sub(1));
-        p.shared.selected.store(state.played() as u64, Ordering::Relaxed);
+        p.shared
+            .selected
+            .store(state.played() as u64, Ordering::Relaxed);
         let window = ui
             .scene()
             .and_then(|s| s.surface("editor-root"))
@@ -948,20 +1232,32 @@ fn build(
             selection,
             state: &mut state,
         };
+        inside::release_learn(&mut cx);
+        mapping::release(ui, &mut cx);
         shortcuts(ui, &mut cx);
         picked(&mut cx);
         let top = header::top_bar(ui, &mut cx, bridge);
-        let settings = cx.state.settings.then(|| header::settings(ui, &mut cx));
-        let saving = cx.state.saving.is_some().then(|| header::save_multi(ui, &mut cx));
+        let saving = cx
+            .state
+            .saving
+            .is_some()
+            .then(|| header::save_multi(ui, &mut cx));
         let browser_w = cx
             .state
             .sidebar
             .clamp(SIDEBAR_MIN, SIDEBAR_MAX.min(window.width * 0.42));
         // The drawer slides out from under the left edge and back; drawn
         // only while any of it shows.
-        let open = ui.tween_with("sidebar-open", if cx.state.browser { 1. } else { 0. }, quick());
+        let open = ui.tween_with(
+            "sidebar-open",
+            if cx.state.browser { 1. } else { 0. },
+            quick(),
+        );
         let sidebar = (open > 0.005).then(|| {
-            let drawer = browser::sidebar(ui, &mut cx).w(browser_w).h(Len::Pct(100.)).shrink(0);
+            let drawer = browser::sidebar(ui, &mut cx)
+                .w(browser_w)
+                .h(Len::Pct(100.))
+                .shrink(0);
             stack![drawer.anchor(Align::End, Align::Start)]
                 .w((browser_w * open).round())
                 .h(Len::Pct(100.))
@@ -973,10 +1269,17 @@ fn build(
         let keys = keyboard::dock(ui, &mut cx);
         let menu = menu::view(ui, &mut cx, window);
         let ghost = ghost(ui, &cx);
-        cx.state.meters.logs_visible.store(cx.state.tab == Tab::Logs, Ordering::Relaxed);
+        cx.state.meters.logs_visible.store(
+            cx.state.tab == Tab::Report && !cx.state.settings,
+            Ordering::Relaxed,
+        );
 
         let ui_zoom = cx.settings.editor_scale();
-        let Cx { mut selection, view, .. } = cx;
+        let Cx {
+            mut selection,
+            view,
+            ..
+        } = cx;
         if selection != before {
             // Parts added, removed or rerouted are routed at once.
             p.shared.reroute(&mut selection);
@@ -989,10 +1292,11 @@ fn build(
                     .store(current.midi_thru, Ordering::Release);
             }
         }
-        p.shared.selected.store(state.played() as u64, Ordering::Relaxed);
+        p.shared
+            .selected
+            .store(state.played() as u64, Ordering::Relaxed);
 
         let mut shell = vec![top, header::loading_bar(&view, &p, state.started)];
-        shell.extend(settings);
         shell.extend(saving);
         let mut middle: Vec<El> = sidebar.into_iter().collect();
         middle.extend(splitter);
@@ -1000,7 +1304,10 @@ fn build(
         shell.push(row(middle).gap(0).flex(1).min_h(0));
         shell.push(rule());
         shell.push(keys);
-        let mut layers = vec![col(shell).gap(0).full(), resize_corner(ui, &mut state.corner, window, ui_zoom, bridge)];
+        let mut layers = vec![
+            col(shell).gap(0).full(),
+            resize_corner(ui, &mut state.corner, window, ui_zoom, bridge),
+        ];
         layers.extend(menu);
         layers.extend(ghost);
         stack(layers)
@@ -1016,14 +1323,38 @@ fn build(
 /// to save the rack as a multi.
 fn picked(cx: &mut Cx) {
     match cx.state.picker.take() {
-        Some(picker::Picked::DialogError(error)) => cx.state.notice = format!("The file picker could not open: {error}"),
+        Some(picker::Picked::DialogError(error)) => {
+            cx.state.notice = format!("The file picker could not open: {error}")
+        }
         Some(picker::Picked::Revealed(result)) => {
-            if let Err(error) = result { cx.state.notice = error; }
+            if let Err(error) = result {
+                cx.state.notice = error;
+            }
+        }
+        Some(picker::Picked::Created(Ok(path))) => {
+            cx.p.shared.libraries.add_root(&path, true);
+            cx.state.notice = format!("Library created in {}", path.display());
+        }
+        Some(picker::Picked::Created(Err(e))) => {
+            cx.state.notice = format!("No library was created: {e}")
         }
         Some(picker::Picked::Folder(path, single)) => cx.p.shared.libraries.add_root(&path, single),
         Some(picker::Picked::Artwork { library, picture }) => {
             if let Err(e) = cx.p.shared.libraries.set_artwork(&library, &picture) {
                 cx.state.notice = format!("The picture was not used: {e}");
+            }
+        }
+        Some(picker::Picked::Snapshot { slot, source, path }) => {
+            if cx
+                .selection
+                .parts
+                .get(slot)
+                .is_some_and(|p| p.source() == source)
+            {
+                cx.snapshot(slot, path.to_string_lossy().into_owned());
+            } else {
+                cx.state.notice =
+                    "Preset ignored: the base instrument changed while its dialog was open.".into();
             }
         }
         Some(picker::Picked::Multi(mut path)) => {
@@ -1042,21 +1373,33 @@ fn picked(cx: &mut Cx) {
 /// auditions it. The browser reads the arrows and Enter itself.
 fn shortcuts(ui: &mut Ui, cx: &mut Cx) {
     // A focused button takes Space for itself.
-    let free = ui
-        .focus_key()
-        .is_none_or(|k| k.starts_with("key-") || k.starts_with("header-") || k.starts_with("name-"));
+    let free = ui.focus_key().is_none_or(|k| {
+        k.starts_with("key-") || k.starts_with("header-") || k.starts_with("name-")
+    });
     let keys = ui.shortcuts().to_vec();
     let slot = cx.state.selected;
     let loaded = cx.part().is_some() && cx.state.chosen().is_some();
     for k in keys {
         let ctrl = k.mods.ctrl || k.mods.cmd;
         match k.key {
+            Key::Escape if cx.state.settings && cx.state.menu.is_none() => {
+                cx.state.settings = false
+            }
             Key::Delete if loaded && cx.state.renaming.is_none() => cx.remove(slot),
             Key::Char('d' | 'D') if ctrl && loaded => cx.duplicate(slot),
             // The browser shut: Ctrl+F opens it on its filter.
-            Key::Char('f' | 'F') if ctrl && !cx.state.browser => (cx.state.browser, cx.state.browse.find) = (true, true),
+            Key::Char('f' | 'F') if ctrl && !cx.state.browser => {
+                (cx.state.browser, cx.state.browse.find) = (true, true)
+            }
             Key::Char(' ') if free && loaded && !k.mods.shift => cx.p.shared.audition(None),
-            Key::Escape if cx.state.menu.is_none() && cx.state.renaming.is_none() && !cx.state.browse.typing() => cx.state.selected_none(),
+            Key::Escape
+                if cx.state.menu.is_none()
+                    && cx.state.renaming.is_none()
+                    && !cx.state.inside.values().any(inside::State::editing)
+                    && !cx.state.browse.typing() =>
+            {
+                cx.state.selected_none()
+            }
             _ => {}
         }
     }
@@ -1080,7 +1423,10 @@ fn splitter(ui: &mut Ui, cx: &mut Cx, width: f64) -> El {
     let lift = theme::edge_lift(ui, "splitter");
     // A hairline at rest, the accent under the hand; grabbed a little wide.
     canvas(move |s| {
-        let mut d = vec![Draw::fill(rect(0., 0., 1., s.height), Role::Ink.alpha(0.08))];
+        let mut d = vec![Draw::fill(
+            rect(0., 0., 1., s.height),
+            Role::Ink.alpha(0.08),
+        )];
         d.extend(theme::edge_mark(s, 1., true, lift));
         d
     })
@@ -1095,15 +1441,28 @@ fn splitter(ui: &mut Ui, cx: &mut Cx, width: f64) -> El {
 
 /// The window's resize corner, bottom right: drag it to size the window
 /// (the host decides), with the diagonal cursor and a grip that warms.
-fn resize_corner(ui: &mut Ui, from: &mut Option<Size>, window: Size, zoom: f64, bridge: &mut Bridge<SamplerParams>) -> El {
+fn resize_corner(
+    ui: &mut Ui,
+    from: &mut Option<Size>,
+    window: Size,
+    zoom: f64,
+    bridge: &mut Bridge<SamplerParams>,
+) -> El {
     let id = "window-corner";
     let r = ui.get(id);
     if r.pressed {
         *from = Some(window);
     }
     if let (true, Some(from)) = (r.dragged, *from) {
-        let (w, h) = (((from.width + r.drag_total.x) * zoom).max(900.), ((from.height + r.drag_total.y) * zoom).max(600.));
-        if (w.round(), h.round()) != ((window.width * zoom).round(), (window.height * zoom).round())
+        let (w, h) = (
+            ((from.width + r.drag_total.x) * zoom).max(900.),
+            ((from.height + r.drag_total.y) * zoom).max(600.),
+        );
+        if (w.round(), h.round())
+            != (
+                (window.width * zoom).round(),
+                (window.height * zoom).round(),
+            )
             && let Some(c) = bridge.context()
         {
             // A host that sizes only from its own frame says no; nothing to undo.
@@ -1116,13 +1475,20 @@ fn resize_corner(ui: &mut Ui, from: &mut Option<Size>, window: Size, zoom: f64, 
     moose::mui::window::resize_corner(r.hovered || r.held);
     let lift = theme::edge_lift(ui, id);
     canvas(move |s| {
-        let ink = if lift > 0.01 { Fill::from(accent().with_alpha(0.35 + 0.55 * lift)) } else { Role::Ink.alpha(0.2) };
+        let ink = if lift > 0.01 {
+            Fill::from(accent().with_alpha(0.35 + 0.55 * lift))
+        } else {
+            Role::Ink.alpha(0.2)
+        };
         // Two short diagonals in the corner, on pixel centres.
         [4., 8.]
             .into_iter()
             .map(|d| {
                 let path = moose::mui::mui::geometry::Path::polyline(
-                    [Point::new(s.width - d - 1.5, s.height - 1.5), Point::new(s.width - 1.5, s.height - d - 1.5)],
+                    [
+                        Point::new(s.width - d - 1.5, s.height - 1.5),
+                        Point::new(s.width - 1.5, s.height - d - 1.5),
+                    ],
                     false,
                 );
                 Draw::stroke(path, ink.clone(), 1.)
@@ -1155,18 +1521,19 @@ fn ghost(ui: &Ui, cx: &Cx) -> Option<El> {
     )
 }
 
-/// View tabs over the rack, the mixer or the logs.
+/// Workspace tabs; Settings temporarily occupies the same panel.
 fn main_view(ui: &mut Ui, cx: &mut Cx) -> El {
     let mut tabs = Vec::new();
     for (tab, label, id) in [
         (Tab::Rack, "Rack", "tab-rack"),
         (Tab::Mixer, "Mixer", "tab-mixer"),
         (Tab::Report, "Report", "tab-report"),
-        (Tab::Logs, "Logs", "tab-logs"),
     ] {
-        let (hit, el) = theme::tab(ui, id, label, cx.state.tab == tab);
+        let (hit, el) = theme::tab(ui, id, label, cx.state.tab == tab && !cx.state.settings);
         if hit {
             cx.state.tab = tab;
+            cx.state.settings = false;
+            cx.state.logs.show_entries();
         }
         tabs.push(el);
     }
@@ -1185,13 +1552,19 @@ fn main_view(ui: &mut Ui, cx: &mut Cx) -> El {
     // A spectrum shown below names its strip; none shown, none is copied.
     cx.state.scope = 0;
     cx.state.meters.animating.store(false, Ordering::Relaxed);
-    content.push(match cx.state.tab {
-        Tab::Rack => rack::view(ui, cx),
-        Tab::Mixer => mixer_view(ui, cx),
-        Tab::Report => report_view(ui, cx),
-        Tab::Logs => logs::view(ui, cx),
+    content.push(if cx.state.settings {
+        header::settings(ui, cx)
+    } else {
+        match cx.state.tab {
+            Tab::Rack => rack::view(ui, cx),
+            Tab::Mixer => mixer_view(ui, cx),
+            Tab::Report => logs::view(ui, cx),
+        }
     });
-    cx.p.shared.scope.source.store(cx.state.scope, Ordering::Relaxed);
+    cx.p.shared
+        .scope
+        .source
+        .store(cx.state.scope, Ordering::Relaxed);
     if cx.state.analyser.busy() && cx.state.scope != 0 {
         cx.state.meters.animating.store(true, Ordering::Relaxed);
     }
@@ -1211,33 +1584,121 @@ fn mixer_view(ui: &mut Ui, cx: &mut Cx) -> El {
     if outputs_hit {
         menu::open_under(ui, cx, menu::Target::Routing, "mix-outputs");
     }
-    let (spectrum_hit, spectrum) = latch(ui, "mix-spectrum", "Spectrum", "Everything sent to the host", cx.state.spectrum);
-    if spectrum_hit {
-        cx.state.spectrum = !cx.state.spectrum;
+    let m = &mut cx.state.mix_tree;
+    let (narrow_hit, narrow) = latch(
+        ui,
+        "mix-narrow",
+        "Narrow",
+        "Narrow strips: level and routing",
+        !m.wide,
+    );
+    let (wide_hit, wide) = latch(
+        ui,
+        "mix-wide",
+        "Wide",
+        "Wide strips: with the instrument's inserts",
+        m.wide,
+    );
+    if narrow_hit || wide_hit {
+        m.wide = wide_hit;
     }
-    let bar = strip(vec![section("Mixer"), spacer(), spectrum, section("Outputs"), outputs]).pad((INSET, TIGHT)).fill(Role::Surface);
+    let (off_hit, off) = latch(
+        ui,
+        "mix-spectrum-off",
+        "Off",
+        "No spectrum",
+        m.spectrum == mix_tree::Spectrum::Off,
+    );
+    let (part_hit, part) = latch(
+        ui,
+        "mix-spectrum-part",
+        "Part",
+        "The selected part's output",
+        m.spectrum == mix_tree::Spectrum::Part,
+    );
+    let (master_hit, master) = latch(
+        ui,
+        "mix-spectrum-master",
+        "Master",
+        "Everything sent to the host",
+        m.spectrum == mix_tree::Spectrum::Master,
+    );
+    for (hit, to) in [
+        (off_hit, mix_tree::Spectrum::Off),
+        (part_hit, mix_tree::Spectrum::Part),
+        (master_hit, mix_tree::Spectrum::Master),
+    ] {
+        if hit {
+            m.spectrum = to;
+        }
+    }
+    let bar = strip(vec![
+        section("Strips"),
+        segmented(vec![narrow, wide]),
+        spacer(),
+        section("Spectrum"),
+        segmented(vec![off, part, master]),
+        section("Outputs"),
+        outputs,
+    ])
+    .pad((INSET, TIGHT))
+    .fill(Role::Surface);
     let mut tree = bridge::tree(cx);
     let levels = bridge::levels(cx.p, &tree);
-    let height = ui.scene().and_then(|s| s.surface("mix-tree")).map_or(TEXT * 36., |s| s.frame.size.height - 2. * SPACE);
-    let body = mix_tree::view(ui, &mut tree, &mut cx.state.mix_tree, crate::sound::BUSES as u8, height, levels);
+    let height = ui
+        .scene()
+        .and_then(|s| s.surface("mix-tree"))
+        .map_or(TEXT * 36., |s| s.frame.size.height - 2. * SPACE);
+    let body = mix_tree::view(
+        ui,
+        &mut tree,
+        &mut cx.state.mix_tree,
+        crate::sound::BUSES as u8,
+        height,
+        levels,
+    );
     bridge::apply(cx, &tree);
+    for node in &tree.nodes {
+        let id = node.id;
+        if id >> 16 != 0 && id & 0xffff == 0 {
+            let anchor = format!("mt-aux-{id}");
+            if ui.get(anchor.as_str()).activated() {
+                menu::open_under(ui, cx, menu::Target::Aux((id >> 16) as usize - 1), &anchor);
+            }
+        }
+        if (id >> 16 == 0 || id & 0xffff == 0)
+            && [
+                format!("mt-strip-{id}"),
+                format!("mt-name-{id}"),
+                format!("mt-fader-{id}"),
+                format!("mt-pan-{id}"),
+            ]
+            .iter()
+            .any(|s| ui.get(s.as_str()).clicked_with(Button::Secondary))
+        {
+            menu::open(ui, cx, menu::Target::Mixer(id));
+        }
+    }
     cx.state.meters.animating.store(true, Ordering::Relaxed);
     let mut rows = vec![bar, rule(), body];
-    if cx.state.spectrum {
-        let shape = cx.spectrum(crate::plugin::SCOPE_MASTER);
-        rows.push(spectrum::panel(shape, "mix-spectrum-graph").h(TEXT * 10.).flex(0).pad(INSET).shrink(0));
+    if cx.state.mix_tree.spectrum != mix_tree::Spectrum::Off {
+        let source = match cx.state.mix_tree.spectrum {
+            mix_tree::Spectrum::Part => cx
+                .state
+                .chosen()
+                .map_or(crate::plugin::SCOPE_MASTER, |slot| slot + 1),
+            _ => crate::plugin::SCOPE_MASTER,
+        };
+        let shape = cx.spectrum(source);
+        rows.push(
+            spectrum::panel(shape, "mix-spectrum-graph")
+                .h(TEXT * 10.)
+                .flex(0)
+                .pad(INSET)
+                .shrink(0),
+        );
     }
     col(rows).gap(0).flex(1).min_h(0).min_w(0)
-}
-
-/// The selected part's load report.
-fn report_view(ui: &mut Ui, cx: &mut Cx) -> El {
-    if cx.part().is_none() {
-        return caption("Select a loaded instrument to see its report").fill(secondary());
-    }
-    let slot = cx.state.selected;
-    let report = bridge::report(cx, slot);
-    load_report::view(ui, &mut cx.state.report, &report)
 }
 
 impl Cx<'_> {
@@ -1246,11 +1707,31 @@ impl Cx<'_> {
     fn spectrum(&mut self, source: usize) -> Arc<spectrum::Shape> {
         self.state.scope = source;
         let rate = f64::from_bits(self.p.shared.rate.load(Ordering::Relaxed)) as f32;
-        self.state.analyser.update(&self.p.shared.scope, source, rate)
+        self.state
+            .analyser
+            .update(&self.p.shared.scope, source, rate)
     }
 }
 
 #[cfg(feature = "shots")]
 pub use ir_view::uvi_ui_health;
+#[cfg(all(test, feature = "shots"))]
+mod browser_perf_tests;
+#[cfg(test)]
+mod browser_tests;
+#[cfg(test)]
+mod chrome_tests;
+#[cfg(test)]
+mod distill_tests;
+#[cfg(test)]
+mod keyboard_tests;
 #[cfg(test)]
 mod loop_audit;
+#[cfg(test)]
+mod popup_tests;
+#[cfg(test)]
+pub(crate) fn audit_frames(p: &Arc<SamplerParams>) -> serde_json::Value {
+    tests::audit_frames(p)
+}
+#[cfg(all(test, feature = "library-access"))]
+mod uvi_audit;
