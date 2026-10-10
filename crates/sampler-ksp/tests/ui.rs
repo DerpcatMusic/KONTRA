@@ -329,7 +329,7 @@ fn missing_performance_description_does_not_create_visible_unsized_knob() {
 
 #[test]
 fn typed_seed_meter_and_waveform_addresses_reach_ir() {
-    let script = sampler_ksp::compile(
+    let script = sampler_ksp::compile_with(
         r#"on init
         declare ui_table %t[4](1,1,100)
         set_control_par_arr(get_ui_id(%t),$CONTROL_PAR_VALUE,42,2)
@@ -347,6 +347,10 @@ fn typed_seed_meter_and_waveform_addresses_reach_ir() {
         48000,
         sampler_ksp::Limits::LIBRARY,
         &[],
+        &sampler_ksp::Environment {
+            zones: [(27, [0, 0, 127])].into(),
+            ..Default::default()
+        },
     )
     .unwrap();
     let ui = script.ui(&|_| None).unwrap();

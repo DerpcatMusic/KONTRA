@@ -713,7 +713,6 @@ fn meter_address(model: &model::Model, ui_id: i32) -> Option<ir::MeterAddress> {
 }
 
 fn waveform(model: &model::Model, ui_id: i32) -> Option<ir::Waveform> {
-    let mut wave = None;
     let name = model
         .interface
         .widgets
@@ -721,6 +720,12 @@ fn waveform(model: &model::Model, ui_id: i32) -> Option<ir::Waveform> {
         .find(|w| w.ui_id == ui_id)?
         .name
         .as_str();
+    waveform_requests(model, ui_id, name)
+}
+
+/// Init has HIR identities but no assembled widget list yet.
+pub(crate) fn waveform_requests(model: &model::Model, ui_id: i32, name: &str) -> Option<ir::Waveform> {
+    let mut wave = None;
     for request in &model.requests {
         if !matches!(request.args.first(),Some(Value::Int(id)) if *id == ui_id)
             && !matches!(request.args.first(),Some(Value::Text(v)) if v == name)

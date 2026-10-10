@@ -8,7 +8,10 @@ fn runtime(source: &str) -> Runtime {
         48000,
         KspLimits::LIBRARY,
         &[],
-        &Environment::default(),
+        &Environment {
+            zones: [(27, [0, 0, 127]), (91, [0, 0, 127])].into(),
+            ..Environment::default()
+        },
     )
     .unwrap();
     let plan = script
@@ -205,10 +208,9 @@ fn update_without_global_controls_runs_after_local_and_on_widgets_without_local(
     assert!(rt.take_fault().is_none());
 }
 
-/// Acceptance gate, not evidence of implementation. Uses the existing runtime
-/// helper without a ScriptView or effect drain: GUI publication cannot own state.
+/// Authored NOT_RUN requirement using the public compiler/binder/Runtime.
+/// No ScriptView or effect drain: UI publication does not own script state.
 #[test]
-#[ignore = "UNIMPLEMENTED: runtime waveform attach/set/get state; NOT_RUN"]
 fn waveform_headless_initial_seed_and_runtime_roundtrip_requirement() {
     let mut rt = runtime(
         "on init
