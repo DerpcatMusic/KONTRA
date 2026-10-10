@@ -432,7 +432,7 @@ pub struct Range {
 pub struct Display {
     /// Shown value = raw value / `ratio` (KSP display ratio).
     pub ratio: f64,
-    /// Unit suffix, e.g. `"dB"`, `"%"`, `"Hz"`; empty for none.
+    /// Unit suffix or Falcon `Unit` name; empty for none.
     pub unit: String,
 }
 
@@ -442,6 +442,53 @@ impl Default for Display {
             ratio: 1.0,
             unit: String::new(),
         }
+    }
+}
+
+impl Display {
+    /// Formats a readout only; the raw value and edit conversion remain unchanged.
+    pub fn format_value(&self, value: f64, integer: bool, source: Source) -> String {
+        if source == Source::FalconLua {
+            // Port v1 4bffbb18:src/ui/uvi_instrument.rs::unit_text/number_text.
+            let number = |value: f64, integer: bool| {
+                if integer {
+                    format!("{value:.0}")
+                } else {
+                    format!("{value:.3}")
+                        .trim_end_matches('0')
+                        .trim_end_matches('.')
+                        .to_owned()
+                }
+            };
+            let (value, suffix) = match self.unit.as_str() {
+                "Percent" => (value, "%"),
+                "PercentNormalized" => (value * 100., "%"),
+                "Seconds" if value.abs() < 1. => (value * 1000., "ms"),
+                "Seconds" => (value, "s"),
+                "MilliSeconds" if value.abs() > 1000. => (value / 1000., "s"),
+                "MilliSeconds" => (value, "ms"),
+                "Hertz" if value.abs() > 1000. => (value / 1000., "kHz"),
+                "Hertz" => (value, "Hz"),
+                "Decibels" => (value, "dB"),
+                "LinearGain" if value <= 0. => return "-inf dB".into(),
+                "LinearGain" => (20. * value.log10(), "dB"),
+                "Pan" if value == 0. => return "Center".into(),
+                "SemiTones" => (value, "st"),
+                // shortcut: v1 leaves these units numeric; calibrate with native readouts before extending.
+                "" | "Generic" | "UviFilter" | "Pan" | "Megabyte" | "Cents" | "MidiKey" => {
+                    return number(value, integer);
+                }
+                suffix => (value, suffix),
+            };
+            return format!("{} {suffix}", number(value + 0., false));
+        }
+        let value = value / if self.ratio == 0. { 1. } else { self.ratio };
+        let number = if value.fract() == 0. {
+            format!("{value}")
+        } else {
+            format!("{value:.2}")
+        };
+        format!("{number} {}", self.unit).trim().to_owned()
     }
 }
 
@@ -895,6 +942,38 @@ impl std::error::Error for Error {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_display_conventions_do_not_change_ksp_ratio_or_suffix() {
+        let display = Display {
+            ratio: 100.,
+            unit: "dB".into(),
+        };
+        assert_eq!(
+            display.format_value(123., true, Source::Ksp { slot: 2 }),
+            "1.23 dB"
+        );
+        assert_eq!(
+            display.format_value(123., false, Source::Generated),
+            "1.23 dB"
+        );
+        assert_eq!(
+            Display {
+                ratio: 0.,
+                unit: String::new()
+            }
+            .format_value(1.125, false, Source::Ksp { slot: 0 }),
+            "1.12"
+        );
+        assert_eq!(
+            Display::default().format_value(1.125, false, Source::FalconLua),
+            "1.125"
+        );
+        assert_eq!(
+            Display::default().format_value(1.6, true, Source::FalconLua),
+            "2"
+        );
+    }
 
     fn image(path: &str, frames: u32) -> Asset {
         Asset {
