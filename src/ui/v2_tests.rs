@@ -6396,9 +6396,10 @@ fn w10_scripted_uvi_strips_positions_and_callback_paint_authored_pixels() {
       v:setStripImage('v.png',4,false)
       local label=p:Label{'State',bounds={130,0,150,32},text='Ready'}
       local button=p:Button{'Fire',bounds={20,80,90,25}}
+      local unitBox=p:NumBox{'Percent',0.25,0,1,bounds={130,80,110,25},unit=Unit.PercentNormalized,showLabel=false}
       button.changed=function()
         local root,kind=ChordRec.chordKind({60,64,67})
-        label.text=kind; h:setValue(1,false); v:setValue(1,false); setHeight(160)
+        label.text=kind; h:setValue(1,false); v:setValue(1,false); unitBox:setValue(0.5,false); setHeight(160)
       end
     ]]></script></ScriptProcessor></EventProcessors></Program></UVI4>"#;
     let patch = dir.path().join("preset.uvip");
@@ -6413,6 +6414,8 @@ fn w10_scripted_uvi_strips_positions_and_callback_paint_authored_pixels() {
         assert_eq!(face.page_rect(ir::WidgetRef(1)),ir::Rect::new(30,20,32,32));
         assert_eq!(face.page_rect(ir::WidgetRef(2)),ir::Rect::new(90,20,32,32));
         assert_eq!((face.pages[0].size.width,face.pages[0].size.height),(320,160));
+        assert_eq!(face.widgets[5].initial_value,if after {0.5} else {0.25});
+        assert_eq!(face.widgets[5].value_text.as_deref(),Some(if after {"50 %"} else {"25 %"}));
         for (control,value) in host.control_values() { values.insert(control,value); }
         let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
         loop {
