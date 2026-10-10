@@ -1,6 +1,6 @@
 //! The authored legacy NativeUI graph, using the shared resource service.
 use super::{
-    native_runtime::{Edit, Package, Session},
+    native_runtime::{Edit, Package, Session, UpdatePass},
     theme::*,
 };
 use mlua::{Function, Table, Value};
@@ -268,6 +268,9 @@ impl State {
             self.package.as_ref().map_or(0, |p| p.images.pending())
         }
     }
+    pub fn audit_updates(&self) -> Option<[super::native_runtime::UpdateAudit; 2]> {
+        LOCAL.with(|local| local.borrow().get(&self.id).and_then(|l| l.session.audit_updates()))
+    }
     pub fn edits(&self) -> Vec<Edit> {
         LOCAL.with(|local| {
             local
@@ -296,7 +299,7 @@ impl State {
         }
         LOCAL.with(|local| {
             if let Some(local) = local.borrow().get(&self.id) {
-                local.session.update_view(face, values, typed, meters);
+                local.session.update_view(face, values, typed, meters, UpdatePass::Publication);
             }
         });
     }
@@ -400,7 +403,7 @@ impl State {
             self.started = true;
             let local = local.get_mut(&self.id).unwrap();
             let session = &local.session;
-            session.update_view(face, values, &input.values, &input.meters);
+            session.update_view(face, values, &input.values, &input.meters, UpdatePass::Paint);
             if let Some(graph) = &local.graph {
                 events(ui, graph, session, slot, scale, &mut local.hovered)?;
             }
