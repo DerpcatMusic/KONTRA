@@ -1350,6 +1350,7 @@ fn vendor_name(name: &str) -> bool {
     [
         "NI_",
         "CONTROL_PAR_",
+        "UI_WF_PROP_",
         "EVENT_PAR_",
         "ENGINE_PAR_",
         "ZONE_PAR_",
