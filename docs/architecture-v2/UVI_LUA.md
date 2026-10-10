@@ -24,6 +24,11 @@ and remove the loading marker on error. Exact members win; relative slash/dot
 aliases must contain identical source, rather than selecting a shortest path.
 The module's source member remains its resource-resolution base.
 
+Named widget geometry follows v1 precedence: scalar fields, then `size`,
+`position`, `pos`, and `bounds`. Constructors preserve named parents and expose
+container children; parent IDs project into the shared hierarchy. Fractional
+geometry and authored child paint order remain open shared projection work.
+
 `class` and instances are native userdata copied from v1. Inheritance copies
 existing members except `__init`, and a constructor requires its own initializer.
 Names and bases are validated. The Luau adapter preserves Lua 5.1 self-identity
