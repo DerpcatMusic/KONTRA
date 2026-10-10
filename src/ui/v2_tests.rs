@@ -2250,7 +2250,7 @@ fn w10_scripted_uvi_strips_positions_and_callback_paint_authored_pixels() {
         let face=host.interface();
         assert_eq!(face.page_rect(ir::WidgetRef(1)),ir::Rect::new(30,20,32,32));
         assert_eq!(face.page_rect(ir::WidgetRef(2)),ir::Rect::new(90,20,32,32));
-        assert_eq!((face.pages[0].size.width,face.pages[0].size.height),(320,160));
+        assert_eq!((face.pages[0].size.width,face.pages[0].size.height),(320.,160.));
         assert_eq!(face.widgets[5].initial_value,if after {0.5} else {0.25});
         assert_eq!(face.widgets[5].value_text.as_deref(),Some(if after {"50 %"} else {"25 %"}));
         for (control,value) in host.control_values() { values.insert(control,value); }
@@ -2272,6 +2272,110 @@ fn w10_scripted_uvi_strips_positions_and_callback_paint_authored_pixels() {
         if let Some(out)=std::env::var_os("KONTRA_UVI_FIXTURE_SHOTS").map(std::path::PathBuf::from) {
             std::fs::create_dir_all(&out).unwrap();
             moose::core::screenshot::save_png(&out.join(name),&data,320,160);
+        }
+    }
+}
+
+#[test]
+fn w10_fractional_uvi_child_order_paints_callback_result_at_device_scale() {
+    let dir = tempfile::tempdir().unwrap();
+    let colours = [
+        [255, 0, 0, 255],
+        [0, 255, 0, 255],
+        [0, 0, 255, 255],
+        [255, 255, 0, 255],
+    ];
+    let data: Vec<u8> = (0..8)
+        .flat_map(|_| (0..32).flat_map(|x| colours[x / 8]))
+        .collect();
+    moose::core::screenshot::save_png(&dir.path().join("strip.png"), &data, 32, 8);
+    let xml = r#"<UVI4><Program><EventProcessors><ScriptProcessor><script><![CDATA[
+      setSize(320.5,160.25)
+      p=Panel{'Root',bounds={20.25,20.5,80.75,80.125}}
+      h=p:Knob{'Lower',0,0,1,bounds={1.25,2.25,32.125,32.375},showLabel=false,showValue=false}
+      v=p:Knob{'Upper',0.75,0,1,bounds={1.25,2.25,32.125,32.375},showLabel=false,showValue=false}
+      h:setStripImage('strip.png',4,true); v:setStripImage('strip.png',4,true)
+      function onController(e) p.children={v,h}; h:setValue(1,false) end
+    ]]></script></ScriptProcessor></EventProcessors></Program></UVI4>"#;
+    let patch = dir.path().join("preset.uvip");
+    std::fs::write(&patch, xml).unwrap();
+    let mut host = sampler_uvi::script::ScriptHost::new(xml, (), Default::default()).unwrap();
+    let mut assets = ir_view::Assets::default();
+    let mut values = ir_view::Values::default();
+    for (after, name, expected) in [
+        (false, "uvi-order-before.png", colours[2]),
+        (true, "uvi-order-after.png", colours[3]),
+    ] {
+        if after {
+            host.controller(1, 64, 0);
+        }
+        let face = host.interface();
+        assert_eq!(face.validate(), Ok(()));
+        assert!(host.findings().is_empty(), "{:?}", host.findings());
+        assert_eq!(
+            face.page_rect(ir::WidgetRef(1)),
+            ir::Rect {
+                x: 21.5,
+                y: 22.75,
+                width: 32.125,
+                height: 32.375
+            }
+        );
+        assert_eq!(
+            (face.pages[0].size.width, face.pages[0].size.height),
+            (320.5, 160.25)
+        );
+        assert_eq!(
+            face.draw_order(ir::PageRef(0)),
+            if after {
+                vec![ir::WidgetRef(0), ir::WidgetRef(2), ir::WidgetRef(1)]
+            } else {
+                vec![ir::WidgetRef(0), ir::WidgetRef(1), ir::WidgetRef(2)]
+            }
+        );
+        for (control, value) in host.control_values() {
+            values.insert(control, value);
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            assets.prepare(
+                &patch,
+                &face,
+                ir::PageRef(0),
+                ir::Presentation::Bitmap,
+                2.,
+                &values,
+            );
+            if assets.pending() == 0 {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let ui = settle(642., 322., |ui| {
+            ir_view::view(
+                ui,
+                &face,
+                ir::PageRef(0),
+                &assets,
+                ir::Presentation::Bitmap,
+                2.,
+                &mut values,
+            )
+        });
+        let data = pixels(&ui, 642, 322);
+        let at = (77 * 642 + 75) * 4;
+        assert_eq!(
+            &data[at..at + 4],
+            &expected,
+            "{name}: authored overlap order"
+        );
+        #[cfg(feature = "shots")]
+        if let Some(out) =
+            std::env::var_os("KONTRA_UVI_FIXTURE_SHOTS").map(std::path::PathBuf::from)
+        {
+            std::fs::create_dir_all(&out).unwrap();
+            moose::core::screenshot::save_png(&out.join(name), &data, 642, 322);
         }
     }
 }
