@@ -29,8 +29,9 @@ fn references(source: &str, counts: &mut BTreeMap<&'static str, usize>) {
 fn stats(faces: &[Interface]) -> serde_json::Value {
     let mut kinds = BTreeMap::<&str, usize>::new();
     let mut units = BTreeMap::<&str, usize>::new();
-    let (mut labels, mut empty_labels, mut pictured_labels, mut hidden_values, mut ratios, mut enum_units) = (0,0,0,0,0,0);
-    for w in faces.iter().flat_map(|f| &f.widgets) {
+    let (mut labels, mut empty_labels, mut pictured_labels, mut hidden_values, mut ratios, mut enum_units, mut visible_enum_units, mut pictured_uvi_readouts) = (0,0,0,0,0,0,0,0);
+    for face in faces {
+      for (index,w) in face.widgets.iter().enumerate() {
         let (kind, display) = match &w.kind {
             Kind::Knob {display,..} => ("knob", Some(display)),
             Kind::ValueEdit {display,..} => ("value_edit", Some(display)),
@@ -38,6 +39,8 @@ fn stats(faces: &[Interface]) -> serde_json::Value {
             _ => continue,
         };
         *kinds.entry(kind).or_default() += 1;
+        let value_visible = face.visible(sampler_ui_ir::WidgetRef(index)) && !w.hide.value;
+        pictured_uvi_readouts += usize::from(face.source == sampler_ui_ir::Source::FalconLua && kind == "knob" && value_visible && w.image(Role::Strip).is_some());
         hidden_values += usize::from(w.hide.value);
         if let Some(t) = &w.value_text {
             labels += 1;
@@ -51,10 +54,13 @@ fn stats(faces: &[Interface]) -> serde_json::Value {
                 "Percent" => "Percent", "PercentNormalized" => "PercentNormalized", "Seconds" => "Seconds", "MilliSeconds" => "MilliSeconds", "Hertz" => "Hertz", "Decibels" => "Decibels", "LinearGain" => "LinearGain", "Pan" => "Pan", "SemiTones" => "SemiTones", _ => "other",
             };
             *units.entry(unit).or_default() += 1;
-            enum_units += usize::from(matches!(unit, "Percent"|"PercentNormalized"|"Seconds"|"MilliSeconds"|"Hertz"|"Decibels"|"LinearGain"|"Pan"|"SemiTones"));
+            let mismatched = matches!(unit, "Percent"|"PercentNormalized"|"Seconds"|"MilliSeconds"|"Hertz"|"Decibels"|"LinearGain"|"Pan"|"SemiTones") && w.value_text.as_ref().is_none_or(|s| s.is_empty());
+            enum_units += usize::from(mismatched);
+            visible_enum_units += usize::from(mismatched && value_visible);
         }
+      }
     }
-    json!({"numeric_widgets":kinds,"authored_labels":labels,"empty_labels":empty_labels,"pictured_labels":pictured_labels,"hidden_values":hidden_values,"display_ratios":ratios,"units":units,"uvi_enum_unit_readouts":enum_units})
+    json!({"numeric_widgets":kinds,"authored_labels":labels,"empty_labels":empty_labels,"pictured_labels":pictured_labels,"hidden_values":hidden_values,"display_ratios":ratios,"units":units,"uvi_enum_unit_readouts":enum_units,"uvi_visible_enum_unit_readouts":visible_enum_units,"uvi_pictured_knob_readouts":pictured_uvi_readouts})
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
