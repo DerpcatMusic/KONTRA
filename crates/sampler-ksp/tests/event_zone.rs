@@ -44,11 +44,11 @@ fn prepared(zones: &[(u32, u8)], frames: usize) -> Prepared {
     .unwrap()
 }
 
-fn runtime(source: &str, prepared: Prepared) -> Runtime {
+fn runtime_with_note_capacity(source: &str, prepared: Prepared, notes: usize) -> Runtime {
     let script = sampler_ksp::compile(source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
     let plan = script.bind(prepared).unwrap();
     let limits = Limits {
-        notes: 8,
+        notes,
         channels: 1,
         performances: 1,
         families: 16,
@@ -59,9 +59,13 @@ fn runtime(source: &str, prepared: Prepared) -> Runtime {
         behaviors: 16,
         behavior_fuel: 4096,
         behavior_cells: plan.behavior_local_count() * 16,
-        note_cells: plan.note_cell_count() * 8,
+        note_cells: plan.note_cell_count() * notes,
     };
     Runtime::new(plan, limits).unwrap()
+}
+
+fn runtime(source: &str, prepared: Prepared) -> Runtime {
+    runtime_with_note_capacity(source, prepared, 8)
 }
 
 fn input(key: u8) -> Input {
@@ -133,7 +137,7 @@ fn live_unmapped_or_suppressed_event_has_no_zone_after_wait() {
 #[test]
 fn exhausted_voices_report_no_zone_until_alias_retirement_not_slot_reuse() {
     let source = QUERY.replace("$id := $EVENT_ID", "if ($id = 0) $id := $EVENT_ID end if");
-    let mut rt = runtime(&source, prepared(&[(73, 60)], 16));
+    let mut rt = runtime_with_note_capacity(&source, prepared(&[(73, 60)], 16), 1);
     support::without_heap(|| {
         let old = rt.trigger(input(60), 60, 1.).unwrap();
         let alias = rt.source_event_id(old).unwrap();
@@ -145,14 +149,41 @@ fn exhausted_voices_report_no_zone_until_alias_retirement_not_slot_reuse() {
             Some(old)
         );
         assert_eq!((cell(&rt, 3), cell(&rt, 4)), (-1, -1));
-        rt.key_up(old, None).unwrap();
+
+        let mut finished_note_callbacks = 0;
+        rt.visit_behavior_progress(|progress| {
+            if progress.owner == BehaviorOwner::Note(old) {
+                assert_eq!(progress.outcome, Some(Outcome::Finished));
+                finished_note_callbacks += 1;
+            }
+        });
+        assert_eq!(finished_note_callbacks, 1);
+        let mut flushed_note_callbacks = 0;
+        rt.flush_behaviors(|_, owner, outcome| {
+            if owner == BehaviorOwner::Note(old) {
+                assert_eq!(outcome, Outcome::Finished);
+                flushed_note_callbacks += 1;
+            }
+            true
+        });
+        assert_eq!(flushed_note_callbacks, 1);
+
+        assert_eq!(rt.note_off(input(60), None), Ok(old));
+        assert!(!rt.input_held(old).unwrap());
         rt.flush_ended(|_| true);
+        assert_eq!(rt.note_count(), 0);
         assert_eq!(
             rt.resolve_source_event(rt.active_plan(), alias).unwrap(),
             None
         );
         let new = rt.trigger(input(60), 60, 1.).unwrap();
+        assert_ne!(new, old);
+        assert_eq!(rt.note_count(), 1);
         assert_ne!(rt.source_event_id(new).unwrap(), alias);
+        assert_eq!(
+            rt.resolve_source_event(rt.active_plan(), alias).unwrap(),
+            None
+        );
         query(&mut rt);
         assert_eq!((cell(&rt, 3), cell(&rt, 4)), (0, 0));
     });
