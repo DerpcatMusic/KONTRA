@@ -1134,13 +1134,21 @@ fn vista_harp_mode3_nulls_against_frozen_v1() {
     for group in &mut library.instrument.groups {
         group.output = ir::Output::Master;
         group.sends.clear();
+        group.tap = None;
     }
-    library.instrument.buses.clear();
+    // Unused bus-scoped chains still refer to their buses during validation.
+    // Keep those owners while removing every dry-rack input and processor.
+    for bus in &mut library.instrument.buses {
+        bus.chain = None;
+        bus.sends.clear();
+        bus.output = ir::Output::Master;
+    }
+    library.instrument.voice_send_taps.clear();
     library.instrument.input_bus = None;
     let loaded = sampler_kontakt::load_read(library, &sampler_kontakt::Options {
         keys: 60..=60, scripts: false, mpe: None, ..Default::default()
     }, |_| {}, || false).unwrap();
-    let mut runtime = Runtime::new(loaded.plan, limits()).unwrap();
+    let mut runtime = Runtime::new(loaded.plan.with_signal_trace(8192).unwrap(), limits()).unwrap();
     runtime.trigger(input(60), 60, 1.).unwrap();
     let mut out = vec![[0.; 2]; 24_000];
     heap::without_heap(|| runtime.render(&mut out).unwrap());
@@ -1159,6 +1167,16 @@ fn vista_harp_mode3_nulls_against_frozen_v1() {
     assert!(power > 1e-8, "the reference must sound");
     println!("W15_HARP_MODE3 peak_error={peak} residual_db={} voices={}",
         10. * (residual / power).log10(), runtime.voice_count());
+    if peak > 1e-6 {
+        let reader = runtime.signal_trace_reader().unwrap();
+        let mut seen = std::collections::BTreeSet::new();
+        for row in reader.drain().into_iter().filter(|r| seen.insert(r.node)) {
+            let node = &reader.graph.nodes[row.node];
+            println!("W15_HARP_TRACE node={} processor={} input_rms={:?} output_rms={:?} gain={:?} region_gain={} envelope={}",
+                node.kind, node.processor, row.input.rms, row.output.rms, row.gain,
+                row.identity.region_gain, row.identity.envelope_level);
+        }
+    }
     assert!(peak <= 1e-6, "mode-3 playback must null against frozen v1");
 }
 
