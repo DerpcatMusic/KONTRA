@@ -178,5 +178,18 @@ all nine modes, five rates, four cutoff/resonance enabled-lane masks, four
 32-frame quanta with an unchanged repeated target. It compares original wrapper
 processing partitions `[32]` vs `[1,7,24]`, and retains synthetic PCM checkpoints
 and ramp-state snapshots. It never forces DSP active flags. Outer rack mixing
-helpers remain replaced. Native replay and the Rust comparison are still
-pending; importer/service-address/voice/bus/heap gates remain closed.
+helpers remain replaced. The integration worker replayed exact
+`6aa53daf1799d08c5551e1deb549c57e00287354`: all 180 cases passed, with
+original `[32]` vs `[1,7,24]` PCM and ramp-state exact equality. Receipt
+`takeover-dsp-20261010/ar-runtime-native.json` SHA-256 is
+`034dbd1c511162375e999703e6f19f5673ecc15a69f69fbcfb4738522f849a38`;
+`ar-runtime-native-run.json` records command, source identity and exit 0.
+Its log SHA-256 is `c956ed509fee34bd2aa957980b473aacd1063faf3d84e42445e79f8f8b36a834`.
+
+`ar_runtime_vectors.json` preserves all 180 cases and original ramp snapshots.
+The Rust comparison checks all retained stereo PCM checkpoints at strict 2e-6,
+plus exact f32 current/target/delta and active flags. The native inactive idle
+countdown -1 is represented as 0 remaining work in our unsigned state; only this
+unused idle representation is normalized. Partition tests compare the complete
+Rust PCM and instance state exactly. These Rust checks are still pending in the
+combined batch; importer/service-address/voice/bus/heap gates remain closed.
