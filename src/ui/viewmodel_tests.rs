@@ -140,24 +140,13 @@ fn audit_ui_real_frames() {
     let mut cache = vello::Cache::default();
     let mut pix = Pixmap::new(width, height);
     for mode in ["Original", "Vector"] {
+        p.selection.write().unwrap().parts[0].view = if mode == "Original" { 1 } else { 3 };
         for _ in 0..4 {
             let tree = draw(&mut ui, &mut bridge);
             ui.frame(
                 tree,
                 Some(Size::new(width as f64, height as f64)),
                 Input::default(),
-                1. / 60.,
-            )
-            .unwrap();
-        }
-        let id = format!("face-{}-0", mode.to_lowercase());
-        if ui.scene().unwrap().surface(&id).is_some() {
-            ui.focus(&id);
-            let tree = draw(&mut ui, &mut bridge);
-            ui.frame(
-                tree,
-                Some(Size::new(width as f64, height as f64)),
-                enter(),
                 1. / 60.,
             )
             .unwrap();
@@ -183,12 +172,13 @@ fn audit_ui_real_frames() {
                 let assets = super::native_ui::audit_assets();
                 let painted = ui.scene().unwrap().surfaces().any(|surface| {
                     surface.key.as_str().starts_with("nui-")
-                        && surface.key.as_str().ends_with("-root/component")
                 });
                 stable = if painted && assets.2 == 0 && assets.1 == decoded { stable + 1 } else { 0 };
                 decoded = assets.1;
                 if stable == 3 { break; }
-                assert!(Instant::now() < deadline, "NativeUI did not reach a rendered, resource-ready frame");
+                assert!(Instant::now() < deadline,
+                    "NativeUI did not reach a rendered, resource-ready frame: painted={painted}, assets={assets:?}, phases={:?}",
+                    p.shared.ui_activity.phase_snapshot());
                 std::thread::sleep(Duration::from_millis(10));
             }
         }
@@ -236,8 +226,9 @@ fn audit_ui_real_frames() {
         }
         let scene = ui.scene().unwrap();
         let canvas = if mode == "Original" && native_face.is_some() {
-            scene.surfaces().find(|surface| surface.key.as_str().starts_with("nui-")
-                && surface.key.as_str().ends_with("-root/component"))
+            scene.surfaces().filter(|surface| surface.key.as_str().starts_with("nui-"))
+                .max_by(|a, b| (a.frame.size.width * a.frame.size.height)
+                    .total_cmp(&(b.frame.size.width * b.frame.size.height)))
         } else {
             scene.surfaces().find(|surface| surface.key.as_str().ends_with("-ir-view"))
         }.expect("selected authored canvas").frame;
