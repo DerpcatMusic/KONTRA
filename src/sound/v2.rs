@@ -1271,8 +1271,8 @@ impl Core for V2Core {
         let parts = self.parts.iter().flatten().count().max(1);
         // Port v1 0cb7a8a0:src/ksp/runtime.rs begin_audio_block, before MIDI/UI callbacks.
         let fuel = if block.offline { 512 * 4096 } else { block.frames.saturating_mul(2048) / parts };
-        let time = (!block.offline).then(|| std::time::Duration::from_secs_f64(
-            block.frames as f64 / self.rate * 0.4 / parts as f64));
+        let time = (!block.offline).then(|| std::time::Duration::try_from_secs_f64(
+            block.frames as f64 / self.rate * 0.4 / parts as f64).unwrap_or_default());
         for part in self.parts.iter_mut().flatten() {
             part.runtime.set_offline(block.offline);
             part.runtime.begin_behavior_block(fuel, time);
@@ -2384,6 +2384,9 @@ mod tests {
         }
         core.begin_block(&BlockInfo { frames: 32, ..Default::default() });
         assert_eq!(core.parts[0].as_ref().unwrap().runtime.behavior_block_fuel(), 32 * 2048 / 2);
+        // An invalid host rate must exhaust time conservatively, never panic.
+        core.rate = f64::NAN;
+        core.begin_block(&BlockInfo { frames: 64, ..Default::default() });
     }
 
     #[test]
