@@ -438,6 +438,7 @@ impl State {
                 session,
                 slot,
                 scale,
+                authored,
                 &mut local.drafts,
                 &mut local.retention,
             )?;
@@ -1001,6 +1002,10 @@ impl PartialEq for PrimitiveKey {
             && self.style.hidden == other.style.hidden && self.style.font == other.style.font
     }
 }
+// ponytail: MUI capture and warm splice scan memo roots quadratically.
+// Bound this native build to 32 scopes; excess subtrees lower eagerly. A single
+// large pure root still retains. Raise only after indexed framework bookkeeping.
+const NATIVE_MEMO_SCOPE_LIMIT: usize = 32;
 #[derive(Default)]
 struct PrimitiveRetention {
     keys: HashMap<String, (PrimitiveKey, u64)>,
@@ -1021,14 +1026,16 @@ impl PrimitiveRetention {
 }
 fn draw_retained(
     ui: &mut Ui, node: &Table, package: &Arc<Package>, session: &Session,
-    slot: usize, s: f64, drafts: &mut HashMap<String, String>, retention: &mut PrimitiveRetention,
+    slot: usize, s: f64, authored: Size,
+    drafts: &mut HashMap<String, String>, retention: &mut PrimitiveRetention,
 ) -> anyhow::Result<El> {
     let plan = PrimitivePlan::analyze_for(node, |path| {
         ui.focused(format!("nui-{slot}-{path}-text"))
     })?;
     retention.live.clear();
+    // Reuse the caller\'s size: authored frame lookups can execute __index.
     let result = draw_impl(ui, node, package, session, slot, s, Style::default(), drafts,
-        plan.as_ref(), Some(retention), PrimitivePlacement::Root(authored_size(node)), true);
+        plan.as_ref(), Some(retention), PrimitivePlacement::Root(authored), true);
     retention.keys.retain(|path, _| retention.live.contains(path));
     result
 }
@@ -1097,7 +1104,9 @@ fn draw_impl(
                     nodes <= 16384 && depth <= 192,
                     "NativeUI graph budget exceeded"
                 );
-                if allow_memo && let Some((path, atoms, images)) = plan.and_then(|p| p.candidate(&node))
+                if allow_memo
+                    && retention.as_ref().is_some_and(|r| r.live.len() < NATIVE_MEMO_SCOPE_LIMIT)
+                    && let Some((path, atoms, images)) = plan.and_then(|p| p.candidate(&node))
                     && let Some(retention) = retention.as_deref_mut()
                 {
                     let revision = retention.revision(&path, PrimitiveKey {
@@ -1945,6 +1954,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("Resources/native_ui")).unwrap();
         std::fs::write(dir.path().join("Resources/native_ui/main.nui"), source).unwrap();
+        std::fs::write(dir.path().join("Resources/native_ui/fixture.ttf"), NOTO_SANS).unwrap();
         let mut package = Package::load(&dir.path().join("fixture.nki")).unwrap();
         package.images = super::super::native_runtime::Images::presentation_fixture();
         let package = Arc::new(package);
@@ -1955,11 +1965,12 @@ mod tests {
         ui: &mut Ui, graph: &Table, package: &Arc<Package>, session: &Session,
         scale: f64, retention: Option<&mut PrimitiveRetention>, shell: usize,
     ) {
+        let authored = authored_size(graph);
         let el = if let Some(retention) = retention {
-            draw_retained(ui, graph, package, session, 11, scale, &mut HashMap::new(), retention).unwrap()
+            draw_retained(ui, graph, package, session, 11, scale, authored, &mut HashMap::new(), retention).unwrap()
         } else {
             draw(ui, graph, package, session, 11, scale, Style::default(), &mut HashMap::new()).unwrap()
-                .w(authored_size(graph).width * scale).h(authored_size(graph).height * scale)
+                .w(authored.width * scale).h(authored.height * scale)
                 .clip().named("NativeUI performance view")
         };
         ui.frame(stack([el, text(shell.to_string()).at(48., 48.)]).w(64.).h(64.),
@@ -1970,6 +1981,323 @@ mod tests {
         let frames = |ui: &Ui| ui.scene().unwrap().surfaces().map(|surface| surface.frame).collect::<Vec<_>>();
         assert_eq!(frames(retained), frames(eager));
     }
+    // Preloaded package: no resource worker is needed to exercise State::view.
+    fn primitive_state(package: Arc<Package>) -> State {
+        let (_done, loading) = std::sync::mpsc::sync_channel(1);
+        State {
+            id: NEXT.fetch_add(1, Ordering::Relaxed),
+            activity: None,
+            loading,
+            canceled: Arc::new(AtomicBool::new(false)),
+            package: Some(package),
+            failed: false,
+            failure: None,
+            started: false,
+            entry: "main".into(),
+            seed: Vec::new(),
+            size: Size::new(970., 600.),
+            #[cfg(feature = "shots")]
+            graph_depth: None,
+            #[cfg(feature = "shots")]
+            graph_work: None,
+        }
+    }
+    fn primitive_uis() -> (Ui, Ui) {
+        // Same production theme and same font identity on both oracle sides.
+        let font = Font::new(NOTO_SANS).unwrap();
+        (super::super::theme::ui().font(font.clone()), super::super::theme::ui().font(font))
+    }
+    #[test]
+    fn native_state_view_preserves_eager_authored_size_lookup_order() {
+        let (package, eager_session) = primitive_fixture(r#"
+            local ui=require('native_ui')
+            return function()
+                _G.lookup_count=0; _G.lookup_sequence={}
+                local ink={r=0,g=0.2,b=0.4,a=1}
+                _G.sibling_ink=ink
+                local frame=setmetatable({height=32,min_width=0,min_height=0,
+                    max_width=100,max_height=100,alignment='left top'}, {
+                    __index=function(_,key)
+                        assert(key=='width')
+                        _G.lookup_count=_G.lookup_count+1
+                        _G.lookup_sequence[#_G.lookup_sequence+1]=key..':'.._G.lookup_count
+                        ink.r=_G.lookup_count/20
+                        return 24+_G.lookup_count
+                    end
+                })
+                return __node(ui.ZStack,function() return {
+                    __node(ui.Rectangle,function() return {color=ink} end):frame({width=10,height=10})
+                } end):frame(frame):on_tap_gesture({complete=function() end})
+            end
+        "#);
+        let mut state = primitive_state(package.clone());
+        let (mut retained, mut eager) = primitive_uis();
+        for scale in [1., 1., 1.5] {
+            let graph = eager_session.render().unwrap();
+            let authored = authored_size(&graph);
+            assert_eq!(authored, Size::new(25., 32.));
+            // Original order: one authored read before any primitive lowering.
+            let el = draw(&mut eager, &graph, &package, &eager_session, 11, scale,
+                Style::default(), &mut HashMap::new()).unwrap();
+            let el = PrimitivePlacement::Root(authored).apply(&graph, el, scale).unwrap();
+            eager.frame(stack([el, text("0").at(48., 48.)]).size(64., 64.),
+                Some(Size::new(64., 64.)), Input::default(), 1. / 60.).unwrap();
+            let el = state.view(&mut retained, 0, scale, &ir::Interface::default(),
+                &HashMap::new(), &super::super::ir_view::InputState::default());
+            assert!(!state.failed, "{:?}", state.failure);
+            retained.frame(stack([el, text("0").at(48., 48.)]).size(64., 64.),
+                Some(Size::new(64., 64.)), Input::default(), 1. / 60.).unwrap();
+            assert_eq!(state.authored(), authored);
+            let path = string(&graph, "path");
+            assert_eq!(retained.scene().unwrap().surface(&format!("nui-{}-{path}", state.id)).unwrap().frame.size,
+                Size::new(authored.width * scale, authored.height * scale));
+            primitive_oracle(&retained, &eager);
+            LOCAL.with(|locals| {
+                let locals = locals.borrow();
+                let local = &locals[&state.id];
+                let globals = local.session.lua().globals();
+                let expected = eager_session.lua().globals();
+                assert_eq!(globals.get::<usize>("lookup_count").unwrap(), expected.get::<usize>("lookup_count").unwrap());
+                let sequence = |globals: &Table| globals.get::<Table>("lookup_sequence").unwrap()
+                    .sequence_values::<String>().collect::<mlua::Result<Vec<_>>>().unwrap();
+                assert_eq!(sequence(&globals), sequence(&expected));
+                assert_eq!(number(&globals.get::<Table>("sibling_ink").unwrap(), "r"),
+                    number(&expected.get::<Table>("sibling_ink").unwrap(), "r"));
+                assert!(local.retention.keys.is_empty(), "metatable graph stays eager");
+            });
+        }
+        let id = state.id;
+        drop(state);
+        LOCAL.with(|locals| assert!(!locals.borrow().contains_key(&id)));
+    }
+    #[test]
+    fn native_state_view_typing_and_submit_keep_fresh_callbacks_and_later_sibling_mutations() {
+        let (package, eager_session) = primitive_fixture(r#"
+            local ui=require('native_ui')
+            local token=0; local ink={r=0.2,g=0.3,b=0.4,a=1}
+            return function()
+                token=token+1; local current=token
+                return @ui.VStack {
+                    @ui.TextInput {text='Edit',on_change=function(value)
+                        _G.change_count=(_G.change_count or 0)+1;_G.change_capture=current
+                        _G.changed_text=value;ink.r=0.8
+                    end,on_accept=function(value)
+                        _G.accept_count=(_G.accept_count or 0)+1;_G.accept_capture=current
+                        _G.accepted_text=value;ink.g=0.9
+                    end},
+                    @ui.Rectangle {color=ink}.frame(width=12,height=12)
+                }.font_size(12).frame(width=48,height=48)
+            end
+        "#);
+        let mut state = primitive_state(package.clone());
+        let (mut retained, mut eager) = primitive_uis();
+        let mut drafts = HashMap::new();
+        let frame = |ui: &mut Ui, el: El, input: Input| {
+            ui.frame(stack([el, text("0").at(48., 48.)]).size(64., 64.),
+                Some(Size::new(64., 64.)), input, 1. / 60.).unwrap();
+        };
+        for step in 1..=6 {
+            let graph = eager_session.render().unwrap();
+            let field = tables(&graph, "children").unwrap()[0].clone();
+            let field_id = format!("nui-{}-{}-text", state.id, string(&field, "path"));
+            if step == 3 {
+                retained.focus(field_id.as_str());
+                eager.focus(field_id.as_str());
+            }
+            let input = match step {
+                3 => Input { text: "x".into(), ..Default::default() },
+                5 => Input { keys: vec![KeyPress { key: Key::Enter, mods: Mods::default() }], ..Default::default() },
+                _ => Input::default(),
+            };
+            // Independent original eager lowering, with its real persistent draft.
+            let authored = authored_size(&graph);
+            let el = draw(&mut eager, &graph, &package, &eager_session, state.id as usize, 1.,
+                Style::default(), &mut drafts).unwrap();
+            let el = PrimitivePlacement::Root(authored).apply(&graph, el, 1.).unwrap();
+            frame(&mut eager, el, input.clone());
+            let el = state.view(&mut retained, 0, 1., &ir::Interface::default(),
+                &HashMap::new(), &super::super::ir_view::InputState::default());
+            assert!(!state.failed, "{:?}", state.failure);
+            frame(&mut retained, el, input);
+            primitive_oracle(&retained, &eager);
+            LOCAL.with(|locals| {
+                let locals = locals.borrow();
+                let local = &locals[&state.id];
+                let globals = local.session.lua().globals();
+                let expected = eager_session.lua().globals();
+                if step <= 2 { assert_eq!(local.retention.lowered, 1, "unfocused sibling warms once"); }
+                else { assert!(local.retention.keys.is_empty(), "active edit must invalidate sibling proof"); }
+                for key in ["change_count", "accept_count", "change_capture", "accept_capture"] {
+                    assert_eq!(globals.get::<usize>(key).unwrap_or(0), expected.get::<usize>(key).unwrap_or(0), "{key}, step={step}");
+                }
+                if step == 6 {
+                    assert_eq!(globals.get::<usize>("change_count").unwrap(), 1);
+                    assert_eq!(globals.get::<usize>("accept_count").unwrap(), 1);
+                    assert_eq!(globals.get::<usize>("change_capture").unwrap(), 4);
+                    assert_eq!(globals.get::<usize>("accept_capture").unwrap(), 6);
+                    for key in ["changed_text", "accepted_text"] {
+                        let value = globals.get::<String>(key).unwrap();
+                        assert!(value.contains('x'));
+                        assert_eq!(value, expected.get::<String>(key).unwrap());
+                    }
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn native_state_replacement_and_removed_subtrees_do_not_reuse_stale_memos() {
+        let (package, _session) = primitive_fixture(r#"
+            local ui=require('native_ui')
+            return function() return @ui.Group {
+                not absent and @ui.Text {text=caption or 'Hi'}
+            }.font_size(18).frame(width=48,height=32)
+                .on_tap_gesture({complete=function() end}) end
+        "#);
+        let mut state = primitive_state(package.clone());
+        let mut ui = super::super::theme::ui();
+        let tick = |state: &mut State, ui: &mut Ui| {
+            let el = state.view(ui, 0, 1., &ir::Interface::default(), &HashMap::new(),
+                &super::super::ir_view::InputState::default());
+            assert!(!state.failed, "{:?}", state.failure);
+            ui.frame(el, Some(Size::new(64., 64.)), Input::default(), 1. / 60.).unwrap();
+        };
+        tick(&mut state, &mut ui);
+        for (caption, absent, scopes, lowered) in [("Old", false, 1, 2), ("Old", true, 0, 2), ("Old", false, 1, 3)] {
+            LOCAL.with(|locals| {
+                let locals = locals.borrow();
+                let globals = locals[&state.id].session.lua().globals();
+                globals.set("caption", caption).unwrap();
+                globals.set("absent", absent).unwrap();
+            });
+            tick(&mut state, &mut ui);
+            LOCAL.with(|locals| {
+                let locals = locals.borrow();
+                assert_eq!(locals[&state.id].retention.keys.len(), scopes);
+                assert_eq!(locals[&state.id].retention.lowered, lowered);
+            });
+        }
+        let old_pixels = super::super::tests::pixels(&ui, 64, 64);
+        let old_id = state.id;
+        drop(state);
+        let mut replacement = primitive_state(package);
+        assert_ne!(replacement.id, old_id);
+        tick(&mut replacement, &mut ui);
+        assert_ne!(super::super::tests::pixels(&ui, 64, 64), old_pixels, "new session's Hi must replace Old");
+        LOCAL.with(|locals| {
+            let locals = locals.borrow();
+            assert!(!locals.contains_key(&old_id));
+            assert_eq!(locals[&replacement.id].retention.lowered, 1, "same Ui must lower a new session namespace");
+        });
+    }
+
+    #[test]
+    fn native_broad_mixed_graph_caps_memo_scopes_but_keeps_one_large_pure_root() {
+        let (package, session) = primitive_fixture(r#"
+            local ui=require('native_ui')
+            return function()
+                local children={}
+                if live then children[1]=__node(ui.Canvas,function() return {paint=function(p,frame)
+                    _G.canvas_calls=(_G.canvas_calls or 0)+1
+                    p.stroke_style=ui.Color.red;p:draw_line(0,0,frame.width,frame.height)
+                end} end):frame({width=8,height=8}) end
+                for i=1,count do children[#children+1]=__node(ui.Rectangle,function()
+                    return {color=ui.Color(30,80,120)} end):frame({width=2,height=2}) end
+                return __node(ui.ZStack,function() return children end):frame({width=32,height=32})
+            end
+        "#);
+        let globals = session.lua().globals();
+        for count in [8, NATIVE_MEMO_SCOPE_LIMIT, NATIVE_MEMO_SCOPE_LIMIT + 1, 256, 2048] {
+            for live in [true, false] {
+                globals.set("count", count).unwrap();
+                globals.set("live", live).unwrap();
+                let (mut retained, mut eager) = primitive_uis();
+                let mut cache = PrimitiveRetention::default();
+                let scopes = if live { count.min(NATIVE_MEMO_SCOPE_LIMIT) } else { 1 };
+                for shell in 0..2 {
+                    let graph = session.render().unwrap();
+                    let calls = || globals.get::<usize>("canvas_calls").unwrap_or(0);
+                    let before = calls();
+                    primitive_tick(&mut eager, &graph, &package, &session, 1., None, shell);
+                    let eager_delta = calls() - before;
+                    let before = calls();
+                    primitive_tick(&mut retained, &graph, &package, &session, 1., Some(&mut cache), shell);
+                    assert_eq!(calls() - before, eager_delta, "count={count}, live={live}, shell={shell}");
+                    if live { assert!(eager_delta > 0, "visible Canvas must paint on cold and warm frames"); }
+                    primitive_oracle(&retained, &eager);
+                    assert_eq!(cache.live.len(), scopes);
+                    assert_eq!(cache.keys.len(), scopes);
+                    assert_eq!(cache.lowered, scopes, "warm scopes reuse; excess siblings remain eager");
+                }
+            }
+        }
+    }
+    #[test]
+    fn native_text_caption_ink_and_bold_each_change_real_glyph_pixels() {
+        let (package, session) = primitive_fixture(r#"
+            local ui=require('native_ui')
+            return function() return @ui.Text {text=caption or 'Hi'}
+                .font_size(18).bold(font_bold or false).foreground_color(ui.Color(ink or 255,100,40))
+                .frame(width=48,height=32) end
+        "#);
+        for change in ["caption='Yo'", "ink=40", "font_bold=true"] {
+            let (mut retained, mut eager) = primitive_uis();
+            let mut cache = PrimitiveRetention::default();
+            let mut baseline = Vec::new();
+            for (index, update) in ["caption=nil;ink=nil;font_bold=false", change].into_iter().enumerate() {
+                session.lua().load(update).exec().unwrap();
+                for shell in 0..2 {
+                    let graph = session.render().unwrap();
+                    primitive_tick(&mut eager, &graph, &package, &session, 1., None, 0);
+                    primitive_tick(&mut retained, &graph, &package, &session, 1., Some(&mut cache), 0);
+                    primitive_oracle(&retained, &eager);
+                    assert!(retained.scene().unwrap().paint.iter().any(|paint| paint.text.as_ref()
+                        .is_some_and(|run| run.size == 18. && !run.glyphs.is_empty())), "authored glyphs must paint");
+                    let pixels = super::super::tests::pixels(&retained, 64, 64);
+                    if index == 0 { baseline = pixels; }
+                    else { assert_ne!(pixels, baseline, "isolated {change}, warm={shell}"); }
+                    assert_eq!(cache.lowered, index + 1);
+                }
+            }
+        }
+    }
+    #[test]
+    fn native_authored_font_file_family_and_inherited_identity_match_eager() {
+        let source = r#"
+            local ui=require('native_ui')
+            return function() return @ui.Group { @ui.Text {text='Hi'} }
+                .font(font_name or 'fixture.ttf').font_size(18).frame(width=48,height=32)
+                .on_tap_gesture({complete=function() end}) end
+        "#;
+        let (first_package, first_session) = primitive_fixture(source);
+        let (second_package, second_session) = primitive_fixture(source);
+        assert_ne!(first_package.font("fixture.ttf", false).unwrap().id(),
+            second_package.font("fixture.ttf", false).unwrap().id());
+        let (mut retained, mut eager) = primitive_uis();
+        let mut cache = PrimitiveRetention::default();
+        for (index, (package, session, name)) in [
+            (&first_package, &first_session, "fixture.ttf"),
+            (&first_package, &first_session, "Noto Sans"),
+            (&second_package, &second_session, "Noto Sans"),
+        ].into_iter().enumerate() {
+            session.lua().globals().set("font_name", name).unwrap();
+            let font = package.font(name, false).unwrap();
+            for shell in 0..2 {
+                let graph = session.render().unwrap();
+                primitive_tick(&mut eager, &graph, package, session, 1., None, shell);
+                primitive_tick(&mut retained, &graph, package, session, 1., Some(&mut cache), shell);
+                primitive_oracle(&retained, &eager);
+                assert_eq!(cache.keys.len(), 1);
+                assert!(cache.keys.values().all(|(key, _)| key.style.font.as_ref().unwrap().id() == font.id()));
+                assert!(retained.scene().unwrap().paint.iter().any(|paint| paint.text.as_ref()
+                    .is_some_and(|run| run.fonts[0].id() == font.id() && !run.glyphs.is_empty())), "authored font must reach glyph paint");
+                // File and family resolve to the same inherited font. Changing
+                // only its identity must rebuild the child, even with equal bytes.
+                assert_eq!(cache.lowered, if index < 2 { 1 } else { 2 });
+            }
+        }
+    }
+
     #[test]
     fn pure_native_subtree_is_lowered_once_across_forced_shell_builds() {
         let (package, session) = primitive_fixture(r#"
@@ -1986,7 +2314,7 @@ mod tests {
                     .background(__node(ui.Rectangle,function() return {color=ui.Color.black} end))
             end
         "#);
-        let (mut retained, mut eager) = (Ui::default(), Ui::default());
+        let (mut retained, mut eager) = primitive_uis();
         let mut cache = PrimitiveRetention::default();
         for shell in 0..4 {
             let graph = session.render().unwrap();
@@ -2015,31 +2343,39 @@ mod tests {
                     __node(ui.Canvas,function() return {paint=function(p,frame)
                         _G.canvas_calls=(_G.canvas_calls or 0)+1
                         p.stroke_style=ui.Color.red;p:draw_line(0,0,frame.width,frame.height)
-                    end} end):frame({width=8,height=8})
+                    end} end):frame({width=8,height=8}):offset({x=canvas_offset or 0,y=0})
                 } end):font_size(font_size or 8):bold(font_bold or false):foreground_color(ui.Color(ink or 255,80,30))
                     :disabled(disabled or false):hidden(hidden or false):frame({width=40,height=30})
             end
         "#);
-        let (mut retained, mut eager) = (Ui::default(), Ui::default());
+        let (mut retained, mut eager) = primitive_uis();
         let mut cache = PrimitiveRetention::default();
         let globals = session.lua().globals();
-        for (change, scale) in [
-            ("", 1.), ("", 1.), ("caption='Longer'", 1.),
-            ("font_size=12;font_bold=true;ink=40", 1.), ("flexible=true", 1.),
-            ("parent_kind='VStack';parent_alignment='right bottom'", 1.),
-            ("parent_kind='ZStack';spacing=-2", 1.), ("", 1.5),
-            ("disabled=true;hidden=true", 1.5), ("disabled=false;hidden=false", 1.5),
+        for (change, scale, visible) in [
+            ("", 1., true), ("", 1., true), ("caption='Longer'", 1., false),
+            ("font_size=12;font_bold=true;ink=40", 1., false), ("flexible=true", 1., false),
+            ("parent_kind='VStack';parent_alignment='right bottom'", 1., false),
+            ("parent_kind='ZStack';spacing=-2", 1., true), ("", 1.5, true),
+            ("disabled=true;hidden=true", 1.5, false), ("disabled=false;hidden=false", 1.5, true),
+            ("canvas_offset=200", 1.5, false), ("canvas_offset=0", 1.5, true),
         ] {
             session.lua().load(change).exec().unwrap();
             let graph = session.render().unwrap();
+            let calls = || globals.get::<usize>("canvas_calls").unwrap_or(0);
+            let before = calls();
             primitive_tick(&mut eager, &graph, &package, &session, scale, None, 0);
+            let eager_delta = calls() - before;
             let plan = PrimitivePlan::analyze(&graph).unwrap().unwrap();
             assert!(!plan.nodes[0].pure, "the deferred callback forbids caching its ancestor");
+            let before = calls();
             primitive_tick(&mut retained, &graph, &package, &session, scale, Some(&mut cache), 0);
+            let retained_delta = calls() - before;
+            assert_eq!(retained_delta, eager_delta, "Canvas callback delta: {change}, scale={scale}");
+            if visible { assert!(retained_delta > 0, "visible Canvas did not paint: {change}"); }
+            // Hidden/clipped callbacks follow the actual eager paint decision.
             primitive_oracle(&retained, &eager);
         }
         assert!(cache.lowered > 1);
-        assert!(globals.get::<usize>("canvas_calls").unwrap() >= 20, "both canvas paths stay live");
         assert!(cache.keys.values().all(|(key, _)| !key.atoms.iter().any(|atom| {
             matches!(atom, PrimitiveAtom::String(s) if s == b"Canvas")
         })));
@@ -2058,7 +2394,7 @@ mod tests {
                 end})
             end
         "#);
-        let mut ui = Ui::default();
+        let mut ui = super::super::theme::ui();
         let mut cache = PrimitiveRetention::default();
         for token in 1..=3 {
             let graph = session.render().unwrap();
@@ -2080,7 +2416,7 @@ mod tests {
             return function() return @ui.Image {file='photo.png',resizable=true}
                 .frame(width=16,height=16) end
         "#);
-        let (mut retained, mut eager) = (Ui::default(), Ui::default());
+        let (mut retained, mut eager) = primitive_uis();
         let mut cache = PrimitiveRetention::default();
         let mut prior = Vec::new();
         for (index, rgba) in [None, Some([255,0,0,255]), Some([0,255,0,255])].into_iter().enumerate() {
@@ -2122,7 +2458,7 @@ mod tests {
         props.set_metatable(Some(metamethod)).unwrap();
         assert!(PrimitivePlan::analyze(&graph).unwrap().is_none());
         assert_eq!(session.lua().globals().get::<Value>("lookups").unwrap().type_name(), "nil");
-        let mut ui = Ui::default();
+        let mut ui = super::super::theme::ui();
         let mut cache = PrimitiveRetention::default();
         for _ in 0..3 { primitive_tick(&mut ui, &graph, &package, &session, 1., Some(&mut cache), 0); }
         assert_eq!(cache.lowered, 0);
@@ -2168,7 +2504,7 @@ mod tests {
                 }.font_size(8).frame(width=48,height=24)
             end
         "#);
-        let (mut retained, mut eager) = (Ui::default(), Ui::default());
+        let (mut retained, mut eager) = primitive_uis();
         let mut cache = PrimitiveRetention::default();
         for token in 1..=3 {
             let graph = session.render().unwrap();
@@ -2215,7 +2551,7 @@ mod tests {
                 let graph: Table = make.call((depth, width)).unwrap();
                 assert!(PrimitivePlan::analyze(&graph).unwrap().is_none());
                 let eager = draw(&mut ui, &graph, &package, &session, 11, 1., Style::default(), &mut HashMap::new()).err().unwrap().to_string();
-                let retained = draw_retained(&mut ui, &graph, &package, &session, 11, 1., &mut HashMap::new(), &mut cache).err().unwrap().to_string();
+                let retained = draw_retained(&mut ui, &graph, &package, &session, 11, 1., authored_size(&graph), &mut HashMap::new(), &mut cache).err().unwrap().to_string();
                 assert_eq!(eager, "NativeUI graph budget exceeded");
                 assert_eq!(retained, eager);
             }
@@ -2223,7 +2559,7 @@ mod tests {
             let valid: Table = make.call((1, 0)).unwrap();
             primitive_tick(&mut ui, &valid, &package, &session, 1., Some(&mut cache), 0);
             valid.set("kind", "Unsupported").unwrap();
-            let error = draw_retained(&mut ui, &valid, &package, &session, 11, 1., &mut HashMap::new(), &mut cache).err().unwrap();
+            let error = draw_retained(&mut ui, &valid, &package, &session, 11, 1., authored_size(&valid), &mut HashMap::new(), &mut cache).err().unwrap();
             assert!(error.to_string().contains("Unsupported NativeUI primitive"));
         }).unwrap().join().unwrap();
     }
