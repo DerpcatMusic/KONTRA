@@ -361,6 +361,26 @@ fn authored_uvi_value_units_match_v1_readouts_without_changing_raw_values() {
     }
 }
 
+#[test]
+fn authored_uvi_value_captions_overlay_skin_without_changing_geometry() {
+    let host = sampler_uvi::script::ScriptHost::new("<UVI4><Program Name='P'><EventProcessors><ScriptProcessor><script><![CDATA[setSize(160,120); local k=Knob{'Readout',0.375,0,1,bounds={10,10,140,90},showLabel=false,displayText='Authored caption'}; k:setStripImage('synthetic.png',1)]]></script></ScriptProcessor></EventProcessors></Program></UVI4>", (), Default::default()).unwrap();
+    let face = host.interface();
+    assert_eq!(face.widgets[0].rect, ir::Rect::new(10, 10, 140, 90));
+    let mut hidden = face.clone();
+    hidden.widgets[0].hide.value = true;
+    let render = |f: &ir::Interface| {
+        let mut values = ir_view::Values::default();
+        let mut assets = ir_view::Assets::default();
+        assets.sync(f, ir::Presentation::Bitmap, |_| Some(picture(vec![solid(32, 32, [40, 50, 60, 255])])));
+        let ui = settle(160., 120., |ui| ir_view::view(ui, f, ir::PageRef(0), &assets, ir::Presentation::Bitmap, 1., &mut values));
+        let frame = ui.scene().unwrap().surface("ir-0").unwrap().frame;
+        assert_eq!(frame.size, Size::new(140., 90.));
+        pixels(&ui, 160, 120)
+    };
+    assert_ne!(render(&face), render(&hidden), "authored showValue must paint its caption over the strip");
+    assert_eq!(host.control_values()[0].1, 0.375);
+}
+
 /// Renders `face` in both presentations, shooting each as `{stem}-{mode}.png`
 /// under `dir`; returns the decoded bytes each keeps.
 fn both_modes(
