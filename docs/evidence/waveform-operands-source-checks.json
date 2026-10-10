@@ -1,0 +1,468 @@
+{
+  "kind": "SOURCE_SELECTOR_MODEL_AND_DIGEST_CHECKS_ONLY",
+  "baseline": "2a243bcfa2262abb789265aa0951fd2a85854023",
+  "code_sha": "a09157e92151250a1e9dcaf88ffa16c0be6a0570",
+  "same_frozen_operand_defect_source_pins": [
+    {
+      "sha": "2a243bcfa2262abb789265aa0951fd2a85854023",
+      "path": "crates/sampler-ksp/src/ui.rs",
+      "start_line": 715,
+      "end_line": 778,
+      "blob": "ed3ca850fce24d071529a4915319d35e7226fcf3",
+      "file_sha256": "96e5c4eccf3ef5ef3be8dae423329bad690066c0755cbcf00e63602fb693eba2",
+      "span_sha256": "59ec7ecca7fea661839ef1fc9c09846cd388298035cf538cdb4fcf8b48628b59",
+      "inspection": "Immutable source bytes/full inclusive LF span ONLY; not execution"
+    },
+    {
+      "sha": "366515c96b583747d1bd77c881b1f6909e86cf0d",
+      "path": "crates/sampler-ksp/src/ui.rs",
+      "start_line": 715,
+      "end_line": 778,
+      "blob": "ed3ca850fce24d071529a4915319d35e7226fcf3",
+      "file_sha256": "96e5c4eccf3ef5ef3be8dae423329bad690066c0755cbcf00e63602fb693eba2",
+      "span_sha256": "59ec7ecca7fea661839ef1fc9c09846cd388298035cf538cdb4fcf8b48628b59",
+      "inspection": "Immutable source bytes/full inclusive LF span ONLY; not execution"
+    }
+  ],
+  "baseline_selector_cases": [
+    {
+      "property": "PLAY_CURSOR",
+      "index": 0,
+      "value": 12000,
+      "expected": 12000,
+      "actual": 0,
+      "matches": false
+    },
+    {
+      "property": "FLAGS",
+      "index": 0,
+      "value": 11,
+      "expected": 11,
+      "actual": 0,
+      "matches": false
+    },
+    {
+      "property": "TABLE_VAL",
+      "index": 3,
+      "value": 77,
+      "expected": {
+        "index": 3,
+        "value": 77
+      },
+      "actual": {
+        "index": 77,
+        "value": 3
+      },
+      "matches": false
+    },
+    {
+      "property": "TABLE_VAL",
+      "index": 0,
+      "value": 2147483647,
+      "expected": {
+        "index": 0,
+        "value": 2147483647
+      },
+      "actual": null,
+      "matches": false
+    },
+    {
+      "property": "TABLE_VAL",
+      "index": -1,
+      "value": 9,
+      "expected": null,
+      "actual": {
+        "index": 9,
+        "value": -1
+      },
+      "matches": false
+    },
+    {
+      "property": "TABLE_VAL",
+      "index": 65536,
+      "value": 8,
+      "expected": null,
+      "actual": {
+        "index": 8,
+        "value": 65536
+      },
+      "matches": false
+    },
+    {
+      "property": "TABLE_IDX_HIGHLIGHT",
+      "index": 3,
+      "value": 1,
+      "expected": 3,
+      "actual": 3,
+      "matches": true
+    },
+    {
+      "property": "MIDI_DRAG_START_NOTE",
+      "index": 0,
+      "value": 65,
+      "expected": 65,
+      "actual": 0,
+      "matches": false
+    }
+  ],
+  "corrected_selector_cases": [
+    {
+      "property": "PLAY_CURSOR",
+      "index": 0,
+      "value": 12000,
+      "expected": 12000,
+      "actual": 12000,
+      "matches": true
+    },
+    {
+      "property": "FLAGS",
+      "index": 0,
+      "value": 11,
+      "expected": 11,
+      "actual": 11,
+      "matches": true
+    },
+    {
+      "property": "TABLE_VAL",
+      "index": 3,
+      "value": 77,
+      "expected": {
+        "index": 3,
+        "value": 77
+      },
+      "actual": {
+        "index": 3,
+        "value": 77
+      },
+      "matches": true
+    },
+    {
+      "property": "TABLE_VAL",
+      "index": 0,
+      "value": 2147483647,
+      "expected": {
+        "index": 0,
+        "value": 2147483647
+      },
+      "actual": {
+        "index": 0,
+        "value": 2147483647
+      },
+      "matches": true
+    },
+    {
+      "property": "TABLE_VAL",
+      "index": -1,
+      "value": 9,
+      "expected": null,
+      "actual": null,
+      "matches": true
+    },
+    {
+      "property": "TABLE_VAL",
+      "index": 65536,
+      "value": 8,
+      "expected": null,
+      "actual": null,
+      "matches": true
+    },
+    {
+      "property": "TABLE_IDX_HIGHLIGHT",
+      "index": 3,
+      "value": 1,
+      "expected": 3,
+      "actual": 3,
+      "matches": true
+    },
+    {
+      "property": "MIDI_DRAG_START_NOTE",
+      "index": 0,
+      "value": 65,
+      "expected": 65,
+      "actual": 65,
+      "matches": true
+    }
+  ],
+  "input_case_sha256": "c7639073eea0f61155009fe1082428e2e5536f842842eec543315ba8bc0c59b9",
+  "root_requirement_json_sha256": "de27c874818d4c2c792ef9e3d62abd32df26d06c65d55fb4e11cbd1a33e4eca3",
+  "root_requirement_md_sha256": "a01d1adc74485811e4693e49c1970475186a7d75ef853f2228e6453665fdb941",
+  "official_cached_spec_verified": [
+    {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#attach_zone--",
+      "section": "attach_zone()",
+      "document_sha256": "ad269b9e26a32e9f1a8aea9b00d8e199af43551adb3b47cf71b93a7234e09d5e",
+      "excerpt_sha256": "3d713aac8b97a88aa60682a50f445c8acae180563cb564c98549102638e9e599",
+      "archive": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/ksp-ui.html",
+      "owned_excerpt_file": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/round11-selected-sections/ksp-ui-attach_zone--.txt",
+      "authority": "Cached primary NI specification, not a version-bound native execution receipt.",
+      "applicability": "Unversioned vendor page cached2026-10-10; reference Kontakt8.13.1 behavior remains UNKNOWN."
+    },
+    {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#set_ui_wf_property--",
+      "section": "set_ui_wf_property()",
+      "document_sha256": "ad269b9e26a32e9f1a8aea9b00d8e199af43551adb3b47cf71b93a7234e09d5e",
+      "excerpt_sha256": "2a9471a493de93c180f0347fdbe5c79e5ac00ec8387c6dd2445a03f8ced165e4",
+      "archive": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/ksp-ui.html",
+      "owned_excerpt_file": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/round11-selected-sections/ksp-ui-set_ui_wf_property--.txt",
+      "authority": "Cached primary NI specification, not a version-bound native execution receipt.",
+      "applicability": "Unversioned vendor page cached2026-10-10; reference Kontakt8.13.1 behavior remains UNKNOWN."
+    },
+    {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#get_ui_wf_property--",
+      "section": "get_ui_wf_property()",
+      "document_sha256": "ad269b9e26a32e9f1a8aea9b00d8e199af43551adb3b47cf71b93a7234e09d5e",
+      "excerpt_sha256": "1cb17d2563736d61695192c94857f00cae950997980124b57a6244f6886c5263",
+      "archive": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/ksp-ui.html",
+      "owned_excerpt_file": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/round11-selected-sections/ksp-ui-get_ui_wf_property--.txt",
+      "authority": "Cached primary NI specification, not a version-bound native execution receipt.",
+      "applicability": "Unversioned vendor page cached2026-10-10; reference Kontakt8.13.1 behavior remains UNKNOWN."
+    },
+    {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-parameters#ui_waveform-731967",
+      "section": "ui_waveform",
+      "document_sha256": "8b1d2badc937f5980135c8b671b1d6c2bd906d2f4c80db520ccae270a766858c",
+      "excerpt_sha256": "2a656b21901e4fcd4871a3fe335159bbebb3f40abe609ba9c0a1e8590771cdd3",
+      "archive": "handoff/official-docs/ksp-control-pars.html",
+      "owned_excerpt_file": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/round11-selected-sections/ksp-control-pars-ui_waveform-731967.txt",
+      "authority": "Cached primary NI specification, not a version-bound native execution receipt.",
+      "applicability": "Unversioned vendor page cached2026-10-10; reference Kontakt8.13.1 behavior remains UNKNOWN."
+    },
+    {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-controls#ui_waveform",
+      "section": "ui_waveform",
+      "document_sha256": "c736e2f0a27e8131a8cf8fa2669a8f1b2ad26a27dadcbc916c20ea00f4ed518d",
+      "excerpt_sha256": "eed4be25411400bc47fe029b4aa04a4cff1588c08de47d84699285e98c1d713b",
+      "archive": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/ksp-controls.html",
+      "owned_excerpt_file": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/round11-selected-sections/ksp-controls-ui_waveform.txt",
+      "authority": "Cached primary NI specification, not a version-bound native execution receipt.",
+      "applicability": "Unversioned vendor page cached2026-10-10; reference Kontakt8.13.1 behavior remains UNKNOWN."
+    }
+  ],
+  "immutable_source_pins": [
+    {
+      "sha": "a09157e92151250a1e9dcaf88ffa16c0be6a0570",
+      "path": "crates/sampler-ksp/src/ui.rs",
+      "start_line": 715,
+      "end_line": 782,
+      "blob": "99b27de561ed68ce28e1c636cb965e98d1f4de43",
+      "file_sha256": "e4a9eab82573ad0e1d4077f5636898ac286ca4eedd53c730ae716c35d7600acd",
+      "span_sha256": "39ba3327d3e1d530ad6b24f6a94decd7cb42859ce0c1ac80b6a8f333a59653e0",
+      "inspection": "Immutable source bytes/full inclusive LF span ONLY; not execution"
+    },
+    {
+      "sha": "a09157e92151250a1e9dcaf88ffa16c0be6a0570",
+      "path": "crates/sampler-ksp/src/eval.rs",
+      "start_line": 897,
+      "end_line": 920,
+      "blob": "a682e4fee99ee3781a96732002db922aa93c88c6",
+      "file_sha256": "d6b633d6d8daab686a7b1206c68bacb59fccc285d1a8565dc679f0fb844800d7",
+      "span_sha256": "4ada4edebf5a39104444ca189ce3ed38f949282b58bb64e9f7e38487f7b28b7c",
+      "inspection": "Immutable source bytes/full inclusive LF span ONLY; not execution"
+    },
+    {
+      "sha": "a09157e92151250a1e9dcaf88ffa16c0be6a0570",
+      "path": "crates/sampler-ksp/src/eval.rs",
+      "start_line": 1665,
+      "end_line": 1690,
+      "blob": "a682e4fee99ee3781a96732002db922aa93c88c6",
+      "file_sha256": "d6b633d6d8daab686a7b1206c68bacb59fccc285d1a8565dc679f0fb844800d7",
+      "span_sha256": "09ac8320655c8a4049b6009ffbfeb19f6817bdfc39f10420cd0cf328e7202dce",
+      "inspection": "Immutable source bytes/full inclusive LF span ONLY; not execution"
+    },
+    {
+      "sha": "a09157e92151250a1e9dcaf88ffa16c0be6a0570",
+      "path": "crates/sampler-ksp/src/builtins.rs",
+      "start_line": 257,
+      "end_line": 269,
+      "blob": "6fb45fdd58d634565d3bf4d538cf623a0b119f94",
+      "file_sha256": "1a276c987f032c33a64f3f9d62431d7f87ce54dfe829e38595790e70a0712003",
+      "span_sha256": "332f63d70589bbce04d59c9b593ee1599e9cf198ea26a78760f7dd37f6819b12",
+      "inspection": "Immutable source bytes/full inclusive LF span ONLY; not execution"
+    },
+    {
+      "sha": "a09157e92151250a1e9dcaf88ffa16c0be6a0570",
+      "path": "crates/sampler-ksp/src/lower.rs",
+      "start_line": 1351,
+      "end_line": 1365,
+      "blob": "bf52f48066877fb0b2dbe3b3d007ce779d6222f3",
+      "file_sha256": "30ce457d29ecc0dea928e188139d9671bd1b6e7dd8070d6b0dbc8706c6f91cdf",
+      "span_sha256": "37f2ff9afb199dbb7826abb45083e3ca78f85d52f87cbcaec8a570c36f3a3c50",
+      "inspection": "Immutable source bytes/full inclusive LF span ONLY; not execution"
+    },
+    {
+      "sha": "a09157e92151250a1e9dcaf88ffa16c0be6a0570",
+      "path": "crates/sampler-ksp/src/lower.rs",
+      "start_line": 1404,
+      "end_line": 1493,
+      "blob": "bf52f48066877fb0b2dbe3b3d007ce779d6222f3",
+      "file_sha256": "30ce457d29ecc0dea928e188139d9671bd1b6e7dd8070d6b0dbc8706c6f91cdf",
+      "span_sha256": "7d8afd7a072b47795d1bdad95adc79eb8b83100f4eac18a3a5d7715c478122c2",
+      "inspection": "Immutable source bytes/full inclusive LF span ONLY; not execution"
+    },
+    {
+      "sha": "a09157e92151250a1e9dcaf88ffa16c0be6a0570",
+      "path": "crates/sampler-ksp/src/lower.rs",
+      "start_line": 2730,
+      "end_line": 2775,
+      "blob": "bf52f48066877fb0b2dbe3b3d007ce779d6222f3",
+      "file_sha256": "30ce457d29ecc0dea928e188139d9671bd1b6e7dd8070d6b0dbc8706c6f91cdf",
+      "span_sha256": "86cb2a06fb0753ffa31fd64e411f720f69e6fa32703b0467fe3bf5542629b1fa",
+      "inspection": "Immutable source bytes/full inclusive LF span ONLY; not execution"
+    },
+    {
+      "sha": "a09157e92151250a1e9dcaf88ffa16c0be6a0570",
+      "path": "crates/sampler-ksp/src/lower.rs",
+      "start_line": 3684,
+      "end_line": 3734,
+      "blob": "bf52f48066877fb0b2dbe3b3d007ce779d6222f3",
+      "file_sha256": "30ce457d29ecc0dea928e188139d9671bd1b6e7dd8070d6b0dbc8706c6f91cdf",
+      "span_sha256": "484a49427e21cb2185364dc71bf8f693a9161f52a1cfa3244f4d837b1212bfd4",
+      "inspection": "Immutable source bytes/full inclusive LF span ONLY; not execution"
+    },
+    {
+      "sha": "a09157e92151250a1e9dcaf88ffa16c0be6a0570",
+      "path": "crates/sampler-ksp/src/lib.rs",
+      "start_line": 296,
+      "end_line": 518,
+      "blob": "e8a2a2e5475403aaaa9f317172204d8f574d3eaf",
+      "file_sha256": "0d4d82b377797656c2ac7d80026dc484854c83eca3adf2f04868dab354c68758",
+      "span_sha256": "d234a55fb6a917ac3f53fb6968d76137ea7438ab78d1cf81cac89bc83823c50f",
+      "inspection": "Immutable source bytes/full inclusive LF span ONLY; not execution"
+    },
+    {
+      "sha": "a09157e92151250a1e9dcaf88ffa16c0be6a0570",
+      "path": "crates/sampler-ksp/src/lib.rs",
+      "start_line": 1368,
+      "end_line": 1455,
+      "blob": "e8a2a2e5475403aaaa9f317172204d8f574d3eaf",
+      "file_sha256": "0d4d82b377797656c2ac7d80026dc484854c83eca3adf2f04868dab354c68758",
+      "span_sha256": "ea097e910cd2a313292500f7b86c14a6d049afad72c3bd4a6dd90b85362e68b0",
+      "inspection": "Immutable source bytes/full inclusive LF span ONLY; not execution"
+    },
+    {
+      "sha": "a09157e92151250a1e9dcaf88ffa16c0be6a0570",
+      "path": "crates/sampler-core/src/ops.rs",
+      "start_line": 572,
+      "end_line": 639,
+      "blob": "ba75f9ab8f7e3c70bf415dc017f2fa6e08431825",
+      "file_sha256": "74aa2b21ef97cb5ceda3cbb25a47d3676d840ae06b103cc4ac1a0b7218838be2",
+      "span_sha256": "8104caf0cf2acec86e99ff84bed752df400332b2965f3e535ceeeee07ae9a0e6",
+      "inspection": "Immutable source bytes/full inclusive LF span ONLY; not execution"
+    },
+    {
+      "sha": "a09157e92151250a1e9dcaf88ffa16c0be6a0570",
+      "path": "crates/sampler-core/src/ops.rs",
+      "start_line": 1530,
+      "end_line": 1541,
+      "blob": "ba75f9ab8f7e3c70bf415dc017f2fa6e08431825",
+      "file_sha256": "74aa2b21ef97cb5ceda3cbb25a47d3676d840ae06b103cc4ac1a0b7218838be2",
+      "span_sha256": "94abcfa58e30dfde21116cb190211d46c0c6c2d63262c9c450795fa5e4c298da",
+      "inspection": "Immutable source bytes/full inclusive LF span ONLY; not execution"
+    },
+    {
+      "sha": "a09157e92151250a1e9dcaf88ffa16c0be6a0570",
+      "path": "crates/sampler-ui-ir/src/lib.rs",
+      "start_line": 300,
+      "end_line": 310,
+      "blob": "6e17fa6dfd1018113b27060306d5ff34f6141fb2",
+      "file_sha256": "6c55346a88280a12622054f8dce448c676f1cf7e15b43e0a822e354742456844",
+      "span_sha256": "8d670c3ea91d56a2faf4e51c1f58ba68dfc73050f58669bd2ca0d94a1868e6d3",
+      "inspection": "Immutable source bytes/full inclusive LF span ONLY; not execution"
+    },
+    {
+      "sha": "a09157e92151250a1e9dcaf88ffa16c0be6a0570",
+      "path": "src/plugin.rs",
+      "start_line": 666,
+      "end_line": 787,
+      "blob": "5595327ceeee59659777f53fe3a4552ba464cfe9",
+      "file_sha256": "3038bb8429d147fea37e034e81278fee8c0f1f9c1441ebdefd3e01ebffb4be45",
+      "span_sha256": "8464341cc8d27c35a9de929b49e65521aa57f651d434de6d69f4632160c7ab99",
+      "inspection": "Immutable source bytes/full inclusive LF span ONLY; not execution"
+    },
+    {
+      "sha": "a09157e92151250a1e9dcaf88ffa16c0be6a0570",
+      "path": "src/plugin.rs",
+      "start_line": 1727,
+      "end_line": 1795,
+      "blob": "5595327ceeee59659777f53fe3a4552ba464cfe9",
+      "file_sha256": "3038bb8429d147fea37e034e81278fee8c0f1f9c1441ebdefd3e01ebffb4be45",
+      "span_sha256": "d6d01d67252fe1c0d4842cbc072d6ba33e6737f0e8b50371bca1aad7baff3eb0",
+      "inspection": "Immutable source bytes/full inclusive LF span ONLY; not execution"
+    },
+    {
+      "sha": "a09157e92151250a1e9dcaf88ffa16c0be6a0570",
+      "path": "src/sound/waveform.rs",
+      "start_line": 26,
+      "end_line": 95,
+      "blob": "c4de40db1befa137188a23f6968fab57c07da658",
+      "file_sha256": "6dd9ac998062fc27582451058a4567fa157986e29015b92153886a5a7c0443f8",
+      "span_sha256": "1963bfe07b8ecfa5ad471f2cee9c9d35aa289aef3339f8f33e5a1b034baad091",
+      "inspection": "Immutable source bytes/full inclusive LF span ONLY; not execution"
+    },
+    {
+      "sha": "a09157e92151250a1e9dcaf88ffa16c0be6a0570",
+      "path": "src/sound/mod.rs",
+      "start_line": 259,
+      "end_line": 275,
+      "blob": "925c6cc51dcafc684950d055f14f4bb097b77231",
+      "file_sha256": "2be0b1636b7b94c360ce53917aa462437184773b76afdc1b7e752afc97fda3a9",
+      "span_sha256": "6af936c0d8e37739861bce1b52e827687c0574a3b192909c460973be567ab6fa",
+      "inspection": "Immutable source bytes/full inclusive LF span ONLY; not execution"
+    },
+    {
+      "sha": "a09157e92151250a1e9dcaf88ffa16c0be6a0570",
+      "path": "src/ui/ir_view.rs",
+      "start_line": 1610,
+      "end_line": 1616,
+      "blob": "3ae335e06b68fe27b2673daae55ff4126697966c",
+      "file_sha256": "268f909cee32102c5329a8e8170086600b3f42389f1cdc5510e5125e78a914e3",
+      "span_sha256": "0f42730cf830f7bdd771b4ec8352bf16e9fd307a17a79071449b76d33e615bee",
+      "inspection": "Immutable source bytes/full inclusive LF span ONLY; not execution"
+    },
+    {
+      "sha": "a09157e92151250a1e9dcaf88ffa16c0be6a0570",
+      "path": "src/ui/render_art.rs",
+      "start_line": 14,
+      "end_line": 85,
+      "blob": "9edd5c41919bb0cbaa2af737c0110055aaee6841",
+      "file_sha256": "e895bab21adb977e7d05cc1c48de2cf0065acb5e35192f5731768f6d15a45967",
+      "span_sha256": "a81070696471b4d72c8d967a6ad323c41970eb7547f28b3b4b501e75533b1dc8",
+      "inspection": "Immutable source bytes/full inclusive LF span ONLY; not execution"
+    },
+    {
+      "sha": "a09157e92151250a1e9dcaf88ffa16c0be6a0570",
+      "path": "crates/sampler-ksp/tests/ui.rs",
+      "start_line": 1,
+      "end_line": 378,
+      "blob": "db2772fbf6b7d001aeca0e6d83d5b5d5110687bd",
+      "file_sha256": "54c3e288cc6115410aa06fe33791ce847ef38537f31113da7a742538e88813d7",
+      "span_sha256": "54c3e288cc6115410aa06fe33791ce847ef38537f31113da7a742538e88813d7",
+      "inspection": "Immutable source bytes/full inclusive LF span ONLY; not execution"
+    },
+    {
+      "sha": "a09157e92151250a1e9dcaf88ffa16c0be6a0570",
+      "path": "crates/sampler-ksp/tests/waveform.rs",
+      "start_line": 1,
+      "end_line": 136,
+      "blob": "35e7035f15696cd3070651e66dc027da8e1ab1d6",
+      "file_sha256": "9e09c77a6fcb0e71c003017180ca2ca6efa29d2e4983b9d92ac9ce7e122bae04",
+      "span_sha256": "9e09c77a6fcb0e71c003017180ca2ca6efa29d2e4983b9d92ac9ce7e122bae04",
+      "inspection": "Immutable source bytes/full inclusive LF span ONLY; not execution"
+    },
+    {
+      "sha": "a09157e92151250a1e9dcaf88ffa16c0be6a0570",
+      "path": "crates/sampler-ksp/tests/ui_callbacks.rs",
+      "start_line": 1,
+      "end_line": 255,
+      "blob": "bcd40e4c4e278b4b5fdf28d076399e1eec2abfd5",
+      "file_sha256": "8549f115eb2a0377b34bb6b9e9ac1aae916c0c764280b2d5990dffc24a922fe0",
+      "span_sha256": "8549f115eb2a0377b34bb6b9e9ac1aae916c0c764280b2d5990dffc24a922fe0",
+      "inspection": "Immutable source bytes/full inclusive LF span ONLY; not execution"
+    }
+  ],
+  "rust_tests": "NOT_RUN",
+  "runtime_state": "UNIMPLEMENTED",
+  "native_runtime": "UNKNOWN",
+  "native_receipts": [],
+  "cpu_and_ram_below_both_references": "UNACHIEVED"
+}
