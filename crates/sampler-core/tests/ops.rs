@@ -124,6 +124,7 @@ fn reals_text_calls_store_controls_and_effects_run_without_heap() {
         .with_script_instances(vec![vec![]])
         .unwrap()
         .with_script_resources(vec![ScriptResources {
+            array_files: vec![],
             texts: vec![String::new()],
             text_properties: vec![],
             store: vec![],
@@ -245,6 +246,7 @@ fn borrowed_constants_and_tables_keep_utf8_truncation_and_self_append_without_he
         .with_script_instances(vec![vec![]])
         .unwrap()
         .with_script_resources(vec![ScriptResources {
+            array_files: vec![],
             texts: vec![String::new(), String::new()],
             text_properties: vec![],
             store: vec![],

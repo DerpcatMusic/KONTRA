@@ -5,6 +5,8 @@ use rtrb::{Consumer, Producer, PushError, RingBuffer};
 
 #[derive(Debug)]
 pub enum ControlOperation {
+    ArrayFileCapture(crate::ArrayFileCompletion),
+    ArrayFileComplete(crate::ArrayFileCompletion),
     MidiComplete(crate::MidiCompletion),
     MidiCapture(crate::MidiCompletion),
     Invoke(super::ControlContext, ControlWrite),
@@ -20,7 +22,9 @@ pub enum ControlOperation {
 impl ControlOperation {
     fn len(&self) -> usize {
         match self {
-            Self::MidiComplete(..)
+            Self::ArrayFileCapture(..)
+            | Self::ArrayFileComplete(..)
+            | Self::MidiComplete(..)
             | Self::MidiCapture(..)
             | Self::Invoke(..)
             | Self::HostParameter(..) => 1,
@@ -173,6 +177,12 @@ impl Runtime {
         // Share ordering with direct controls and the native musical timeline.
         self.apply_due();
         reply.result = match &mut command.operation {
+            ControlOperation::ArrayFileCapture(output) => self
+                .capture_array_file(command.plan, output)
+                .map(|_| (1, self.control_revision(command.plan).unwrap_or(0))),
+            ControlOperation::ArrayFileComplete(output) => self
+                .complete_array_file(command.plan, output)
+                .map(|_| (1, self.control_revision(command.plan).unwrap_or(0))),
             ControlOperation::MidiComplete(output) => self
                 .complete_midi(command.plan, output)
                 .map(|_| (1, self.control_revision(command.plan).unwrap_or(0))),

@@ -44,6 +44,9 @@ fn may_suspend<'a>(hir: &'a Hir, body: &'a [Stmt], async_wait_suspends: bool) ->
     let mut seen = vec![false; hir.functions.len()];
     while let Some(body) = pending.pop() {
         for stmt in body {
+            if async_wait_suspends && statement_has_array_file(&stmt.kind) {
+                return true;
+            }
             match &stmt.kind {
                 StmtKind::Builtin(builtin, _) => {
                     if matches!(builtin, Builtin::Wait | Builtin::WaitTicks)
@@ -71,6 +74,44 @@ fn may_suspend<'a>(hir: &'a Hir, body: &'a [Stmt], async_wait_suspends: bool) ->
         }
     }
     false
+}
+
+// File calls can appear in assignments/conditions, not just standalone statements.
+fn statement_has_array_file(stmt: &StmtKind) -> bool {
+    fn arg(a: &Arg) -> bool {
+        match a {
+            Arg::Expr(e) => expr(e),
+            Arg::Place(Place::Elem(_, e)) => expr(e),
+            _ => false,
+        }
+    }
+    fn expr(e: &Expr) -> bool {
+        match &e.kind {
+            ExprKind::Builtin(b, args) => {
+                matches!(b, Builtin::LoadArrayStr | Builtin::SaveArrayStr) || args.iter().any(arg)
+            }
+            ExprKind::LoadElem(_, e)
+            | ExprKind::SysElem(_, e)
+            | ExprKind::Neg(e)
+            | ExprKind::BitNot(e)
+            | ExprKind::Not(e)
+            | ExprKind::Cast(e) => expr(e),
+            ExprKind::Arith(_, a, b) | ExprKind::Compare(_, a, b) | ExprKind::Logic(_, a, b) => {
+                expr(a) || expr(b)
+            }
+            ExprKind::Concat(parts) => parts.iter().any(expr),
+            _ => false,
+        }
+    }
+    match stmt {
+        StmtKind::Assign(p, e) => expr(e) || matches!(p, Place::Elem(_, index) if expr(index)),
+        StmtKind::Fill(_, values) => values.iter().any(expr),
+        StmtKind::If(e, _, _) | StmtKind::While(e, _) | StmtKind::Select(e, _) => expr(e),
+        StmtKind::Builtin(b, args) => {
+            matches!(b, Builtin::LoadArrayStr | Builtin::SaveArrayStr) || args.iter().any(arg)
+        }
+        StmtKind::Call(_) => false,
+    }
 }
 
 pub fn int_arith(op: Arith, a: i32, b: i32) -> i32 {
@@ -1659,9 +1700,69 @@ impl Eval<'_> {
                 self.request(builtin, args)?;
                 V::I(0)
             }
-            PurgeGroup | SetVoiceLimit | LoadIrSample | SaveArray | LoadArrayStr | SaveArrayStr
-            | AttachLevelMeter | AttachZone | SetUiWfProperty | FsNavigate | LoadNativeUi
-            | SetNksNavName | SetNksNavPar | ResetNksNav => {
+            LoadArrayStr | SaveArrayStr => {
+                if self.callback_type != b::cb::INIT {
+                    self.warn(
+                        span,
+                        "explicit-path array I/O requires a scheduled runtime callback",
+                    );
+                    V::I(-1)
+                } else {
+                    let var = Self::var(args, 0);
+                    let path = self.text(args, 1)?;
+                    let id = self.st.midi_object.allocate_async_id().map_err(|_| Fault {
+                        span,
+                        builtin: Some(builtin.name()),
+                        message: "async ID exhausted".into(),
+                    })?;
+                    let operation = (|| {
+                        let array = crate::array_file::array(self.hir, var)?;
+                        let range = array.offset as usize..(array.offset + array.len) as usize;
+                        let write = builtin == SaveArrayStr;
+                        let (numbers, texts) = if write {
+                            if array.kind == sampler_core::ArrayFileKind::Text {
+                                (
+                                    Vec::new(),
+                                    self.st.texts[range]
+                                        .iter()
+                                        .map(|s| sampler_core::Text::try_new(s))
+                                        .collect::<std::result::Result<Vec<_>, _>>()?,
+                                )
+                            } else {
+                                (self.st.cells[range].to_vec(), Vec::new())
+                            }
+                        } else {
+                            (Vec::new(), Vec::new())
+                        };
+                        let mut output = sampler_core::ArrayFileCompletion::synchronous(
+                            array, &path, write, numbers, texts,
+                        )?;
+                        output.perform()?;
+                        if !write {
+                            let range = array.offset as usize..(array.offset + array.len) as usize;
+                            if array.kind == sampler_core::ArrayFileKind::Text {
+                                for (cell, value) in range.zip(output.texts()) {
+                                    self.st.texts[cell] = value.as_str().to_owned();
+                                }
+                            } else {
+                                self.st.cells[range].copy_from_slice(output.numbers());
+                            }
+                        }
+                        Ok::<(), sampler_core::Error>(())
+                    })();
+                    if operation.is_err() {
+                        self.warn(
+                            span,
+                            format!("{} failed; array/file unchanged", builtin.name()),
+                        );
+                    }
+                    // Sync init has no async callback. Share the monotonically increasing ID domain.
+                    V::I(id)
+                }
+            }
+            PurgeGroup | SetVoiceLimit | LoadIrSample | SaveArray | AttachLevelMeter
+            | AttachZone | SetUiWfProperty | FsNavigate | LoadNativeUi | SetNksNavName
+            | SetNksNavPar | ResetNksNav => {
                 self.request(builtin, args)?;
                 V::I(0)
             }

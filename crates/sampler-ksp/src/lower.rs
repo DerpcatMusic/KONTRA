@@ -141,6 +141,7 @@ pub struct Unit<'h> {
     /// The whole script's instruction limit.
     pub limit: usize,
     pub services: Vec<Builtin>,
+    pub array_files: std::collections::BTreeSet<VarId>,
     pub coverage: BTreeMap<(&'static str, Coverage), usize>,
     pub warnings: Vec<(Fault, crate::diag::Kind)>,
     /// Scratch text cells used above `hir.texts`.
@@ -2347,6 +2348,41 @@ impl Gen<'_, '_> {
                 self.store(args, key, dst, true)?;
                 true
             }
+            LoadArrayStr | SaveArrayStr => {
+                if ![
+                    b::cb::PERSISTENCE_CHANGED,
+                    b::cb::UI_CONTROL,
+                    b::cb::PGS_CHANGED,
+                ]
+                .contains(&self.callback_type)
+                {
+                    self.ignore(
+                        builtin,
+                        "outside init/persistence_changed/ui_control/pgs_changed; rejected",
+                    );
+                    return self.set(dst, -1);
+                }
+                let Some(Arg::Var(var, _)) = args.first() else {
+                    return self.set(dst, -1);
+                };
+                crate::array_file::array(self.u.hir, *var).map_err(|_| Fault {
+                    span: self.span,
+                    builtin: Some(builtin.name()),
+                    message: "invalid or oversized NKA typed array".into(),
+                })?;
+                self.u.array_files.insert(*var);
+                let Some(path) = self.text_arg(args, 1, reg(dst, 1)?)? else {
+                    return self.set(dst, -1);
+                };
+                self.emit(I::Op(Op::ArrayFile {
+                    array: var.0,
+                    path,
+                    write: builtin == SaveArrayStr,
+                    local: dst,
+                }))?;
+                self.tdepth -= 1;
+                true
+            }
             builtin if builtin.midi().is_some() => {
                 let action = builtin.midi().unwrap();
                 let has_text = matches!(
@@ -2698,8 +2734,7 @@ impl Gen<'_, '_> {
             | AttachZone | SetUiWfProperty | FsNavigate | SetNksNavName | SetNksNavPar
             | ResetNksNav | SetKeyColor | SetKeyName | SetKeyType | SetKeyPressed
             | SetKeyPressedSupport | SetKeyrange | RemoveKeyrange | Message | LoadArray
-            | SaveArray | LoadArrayStr | SaveArrayStr | PgsSetStrKeyVal | PgsCreateKey
-            | PgsCreateStrKey => {
+            | SaveArray | PgsSetStrKeyVal | PgsCreateKey | PgsCreateStrKey => {
                 self.effect(builtin, args, dst)?;
                 if builtin.sig().ret != b::Ret::Void {
                     self.set(dst, 0)?;

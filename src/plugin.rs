@@ -1732,7 +1732,9 @@ impl Shared {
             if part.generation.load(Ordering::Acquire) != epoch {
                 continue;
             }
-            if effect.service == sampler_core::MIDI_SERVICE {
+            if effect.service == sampler_core::MIDI_SERVICE
+                || effect.service == sampler_core::ARRAY_FILE_SERVICE
+            {
                 if let Some(ingress) = part.ingress.lock_unpoisoned().as_mut() {
                     ingress.service_midi(&effect);
                 }
