@@ -197,9 +197,9 @@ fn show(ask: Ask) -> Option<Picked> {
             .pick_file()
             .map(|picture| Picked::Artwork { library, picture }),
         Ask::Snapshot { slot, source, from } => rfd::FileDialog::new()
-            .set_title("Load a snapshot for this instrument")
+            .set_title("Load a preset for this instrument")
             .set_directory(from)
-            .add_filter("Kontakt snapshot", &["nksn"])
+            .add_filter("Kontakt preset", &["nksn"])
             .pick_file()
             .map(|path| Picked::Snapshot { slot, source, path }),
         Ask::Multi { from, name } => {

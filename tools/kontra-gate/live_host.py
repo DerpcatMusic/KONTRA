@@ -162,7 +162,7 @@ def private_settings(config):
     # Prevent first-run Kontakt/Wine auto-import in both native host versions.
     settings = config / 'kontra/settings.json'
     settings.parent.mkdir(parents=True, exist_ok=True)
-    settings.write_text(json.dumps({'version': 2, 'imported': True, 'roots': []}))
+    settings.write_text(json.dumps({'version': 2, 'imported': True, 'uvi_imported': True, 'roots': []}))
 
 
 def log_rows(root):
@@ -196,7 +196,7 @@ def frozen_underruns(rows):
 def measured_status(live):
     if live.get('family_observation'):
         return 'UNKNOWN'  # Opt-in audio capture is excluded from CPU/load acceptance.
-    complete = (live.get('returncode') == 0 and live.get('events_dispatched', 0) > 0
+    complete = (not live.get('scheduling_diagnostic', False) and live.get('returncode') == 0 and live.get('events_dispatched', 0) > 0
                 and live.get('events_dispatched') == live.get('events_planned')
                 and live.get('peak', 0) > 0 and live.get('nonfinite') == 0
                 and live.get('native_state_verified') is True)
@@ -345,12 +345,16 @@ def observe(host, plugin, state, plan, block, seconds, folder, version, load_pro
                     live['family_observation'] = True
                     live['note_audio'] = [r for r in records if r.get('kind') == 'note_audio']
                     live['family_audio'] = next((r for r in records if r.get('kind') == 'family_audio'), {})
+                live['scheduling_diagnostic'] = env.get('KONTRA_HOST_SCHED_DIAGNOSTIC') == '1'
+                live['callback_scheduling'] = next((r for r in records if r.get('kind') == 'callback_scheduling'), None)
+                live['deadline_switches'] = [r for r in records if r.get('kind') == 'deadline_switches']
+                assert not live['scheduling_diagnostic'] or live['callback_scheduling'] is not None, 'scheduling diagnostics absent'
                 views = [r for r in records if r.get('kind') == 'perf_view']
                 io = next((r for r in records if r.get('kind') == 'stream_io'), {})
                 rows = log_rows(capture.root)
                 capture.stderr.flush(); capture.stderr.seek(0)
                 errors = capture.stderr.read().decode(errors='replace')
-                for stage in ['native CLAP state load', 'native CLAP state save', 'matched zero-dB master', 'bounded load/readiness wait', 'dlopen plugin']:
+                for stage in ['native CLAP state load', 'native CLAP state save', 'callback scheduler policy', 'thread context switches', 'matched zero-dB master', 'bounded load/readiness wait', 'dlopen plugin']:
                     if 'FAIL: ' + stage in errors: live['host_failure'] = stage
                 saved = readback.read_bytes() if readback.exists() else b''
                 verified = verify_native_state(state, saved)
@@ -458,7 +462,7 @@ def main():
     receipt = {'scope': 'loaded-exported-CLAP-realtime-editor-closed', 'cells': cells,
                'v2_source_sha': build['source_sha'], 'v2_artifact': build,
                'gate_sha': json.loads((args.gate / 'manifest.json').read_text())['sha'],
-               'host_source_sha256': sha(Path(__file__).parents[2] / 'vendor/moose-clap/tests/live_performance.cpp'),
+               'host_source_sha256': build.get('host_source_sha256'),
                'driver_sha256': driver_sha256, 'frozen_v1_perf_view': 'UNKNOWN: frozen binary has no numeric readback export',
                'native_state_readback_scope': 'CLAP state.save after audition; keyed Selection path/program/MIDI/output/gain/aux and part order match authored state; excludes scripted widget/custom-state recall',
                'streaming_scope': 'whole plugin process /proc/self/io delta during audition, logical rchar minus first probe read and physical read_bytes; load wait excluded; OS page cache uncontrolled; sampler stream-underruns and host process/wake deadlines reported separately',
