@@ -10,7 +10,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 BASE = "9075da681fbca5019640619822a4540bfd2a57a1"
-SOURCE = "63a05d3745ef0ab4b5f8a1ee51feeebbe4590d8f"
+SOURCE = "ef9a21440b0dbbd501cc7678d62a7ac973c05a15"
 HANDOFF = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(
     "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff"
 )
@@ -42,6 +42,9 @@ assert "super::render::ramp_mix(&scratch[0][..frames], target, ramp, at);" in pa
 assert "rt.source_event_id(note)" in parallel
 assert "rt.resolve_source_event(plan, event), Ok(Some(note))" in parallel
 assert "assert_ne!(expected, linear" in parallel
+assert "no nonzero changed audio during the active fade" in parallel
+assert "expected.iter().flatten().all(|sample| sample.is_finite())" in parallel
+assert "expected[..64].iter().zip(&linear[..64])" in parallel
 assert "fade_curve_parallel_plain_mix_matches_serial_and_differs_from_linear" in parallel
 behavior = source("crates/sampler-core/src/behavior.rs")
 checked = span(behavior, "            Instruction::FadeEvent {\n                event,\n                frames,\n                out,\n                stop,\n                curve,\n            } => {", "            Instruction::WriteControl")

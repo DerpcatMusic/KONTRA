@@ -7,6 +7,10 @@ branch `pi/native-fade-fix-round4`, created clean from immutable frozen
 
 Fix commit **`63a05d3745ef0ab4b5f8a1ee51feeebbe4590d8f`** changes five files.
 Only production change is `render::ramp_mix`; all other changes are tests/fixtures.
+Required supplementary witness commit **`ef9a21440b0dbbd501cc7678d62a7ac973c05a15`**
+adds an explicit finite/nonzero/changed first64-frame assertion to the parallel
+regression; it changes no production code. Source snapshot for the final static
+receipt is ef9a2144, tree `b96549ccf5c46d1928fcbd0c1ee07a566d86bf51`.
 No changes to lowerer, enum, event clocks, admission/error policy, modulation
 state arrays, persistent Fade, Lua, Mapping, performance source, NKA or transport.
 Do not cherry-pick historical native/DSP branches or edit the frozen source.
@@ -95,8 +99,10 @@ as the frozen historical version. Exact native runtime parity is UNKNOWN.
    note, and uses the alias (`parallel.rs:697-710`). This repairs the fixture,
    not product admission. Its Linear scalar/parallel test remains. New
    `fade_curve_parallel_plain_mix_matches_serial_and_differs_from_linear`
-   (`721-740`) requires each nonlinear serial PCM result to differ from Linear,
-   then exact serial/2-thread/4-thread PCM and final voice-count equality, with
+   (`721-747` at supplementary ef9a2144) requires finite output and a NONZERO
+   changed sample frame within the active first64-frame window, then each
+   nonlinear serial PCM result to differ from Linear, then exact
+   serial/2-thread/4-thread PCM and final voice-count equality, with
    observed parallel-block-count assertion. It cannot pass by comparing two
    unfaded buffers. These are PREPARED, not executed.
 
@@ -161,7 +167,8 @@ No decompiled pseudocode, protected assets, sample/key dumps or reader processes
 
 ## Integration NEXT — one future combined megabatch only
 
-Compose fix63a05d37 with independently routed NKA/transport source as coordinator
+Compose fix63a05d37 plus required test-only ef9a2144 with independently routed
+NKA/transport source as coordinator
 chooses. Do not request another immediate Rust cycle or reopen old child threads.
 Integration is the sole validation owner. Within its next serialized combined
 release/offline/locked/-j1 cycle, require nonzero SHA-bound executable test lists
