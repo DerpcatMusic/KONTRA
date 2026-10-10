@@ -338,6 +338,30 @@ mod tests {
         }
     }
     #[test]
+    fn effect_storage_preserves_kind_version_float_bits_and_unassigned_bytes() {
+        // Own storage fixture only: this does not establish Tape's physical laws.
+        let words = [0x8000_0000u32, 0x7fc1_2345, 0x7f80_0000];
+        let mut bytes: Vec<_> = words.into_iter().flat_map(u32::to_le_bytes).collect();
+        bytes.push(0xa5);
+        let original = bytes.clone();
+        let parsed = EffectParameters::read(0x42, 0x10, &bytes).unwrap().unwrap();
+        assert_eq!((parsed.module, parsed.version), (0x42, 0x10));
+        for (field, expected) in parsed.fields[..3].iter().zip(words) {
+            let EffectValue::Float(value) = &field.value else {
+                panic!("float storage changed type")
+            };
+            assert_eq!(value.to_bits(), expected);
+        }
+        assert_eq!(parsed.fields[3].value, EffectValue::Byte(0xa5));
+        assert_eq!(bytes, original);
+        assert!(EffectParameters::read(0x65, 0x10, &bytes).unwrap().is_none());
+        assert_eq!(
+            bytes, original,
+            "an unknown kind must not mutate or alias the payload"
+        );
+    }
+
+    #[test]
     fn ladder_and_convolution_do_not_reinterpret_integer_or_flag_bytes() {
         let mut bytes = 33i32.to_le_bytes().to_vec();
         bytes.push(0xa5);
