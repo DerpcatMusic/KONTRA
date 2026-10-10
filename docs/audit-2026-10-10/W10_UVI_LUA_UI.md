@@ -29,6 +29,6 @@ Directory: `/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w10-uvi-scan-344`.
 
 [Per-bank checklist](W10_UVI_BANK_CHECKLIST.csv): 26 banks / 660 presets, based only on retained catalog metadata (manifest SHA256 `023d53cb37e043f50dc257bd88380ab13e5dc2c281504bb7b7ba2a1e128b1ed9`). Every installed-bank execution, artwork/font/filmstrip, position, ordering/visibility/tab, persistence and interaction cell remains UNKNOWN/PARKED. Protected payloads were not opened. V1 cells needing the official reader remain UNAVAILABLE-NO-THIRD-PARTY.
 
-Remaining source-observed parity work: class userdata/inheritance, named geometry precedence, real Unit/Mapper enum IDs, named-parent relationships and `setKeySwitches` publication. Those behaviors are not admitted by this slice. Callback deadline acceptance also remains UNKNOWN, awaiting the ordered W8 DIRECT handoff and a frozen diagnostic run. No timing or corpus improvement is claimed here.
+Class userdata/inheritance is separately READY in [W10_UVI_CLASS.md](W10_UVI_CLASS.md). Remaining source-observed parity work: named geometry precedence, real Unit/Mapper enum IDs, named-parent relationships and `setKeySwitches` publication. Those behaviors are not admitted by this slice. Callback deadline acceptance remains UNKNOWN; the ordered single frozen diagnostic recorded zero misses and captured no attribution events (see [W10_UVI_CALLBACK32.md](W10_UVI_CALLBACK32.md)). No timing or corpus improvement is claimed here.
 
-NEXT: targeted class userdata RED → v1 port → GREEN and area no-run.
+NEXT: named geometry and parent/children construction with targeted contracts and shared-renderer pixels.
