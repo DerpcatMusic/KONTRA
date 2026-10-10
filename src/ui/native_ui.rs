@@ -288,10 +288,11 @@ impl State {
             if *source == face.source
                 && let Some(current) = face.widgets.get(*index)
             {
-                widget.clone_from(current);
-                if let Some(value) = typed.get(&ir::WidgetRef(*index)) {
-                    widget.value = Some(value.clone());
-                }
+                super::native_runtime::update_widget(
+                    widget,
+                    Some(current),
+                    typed.get(&ir::WidgetRef(*index)),
+                );
             }
         }
         LOCAL.with(|local| {
