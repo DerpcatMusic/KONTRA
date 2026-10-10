@@ -6,6 +6,7 @@
 #include <atomic>
 #include <clap/clap.h>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 static const char *features[] = {CLAP_PLUGIN_FEATURE_INSTRUMENT, nullptr};
 static const clap_plugin_descriptor_t descriptor{CLAP_VERSION,
@@ -134,6 +135,8 @@ static clap_plugin_gui_t gui{
     [](const clap_plugin_t *, double) { return true; },
     [](const clap_plugin_t *p, uint32_t *w, uint32_t *h) {
         auto &f = Fixture::from(p);
+        if (std::getenv("WIDGET_FIXTURE_BAD_SIZE"))
+            return false;
         *w = f.width;
         *h = f.height;
         return true;
@@ -207,7 +210,7 @@ static clap_plugin_factory_t factory{
             [](const clap_plugin_t *p) {
                 auto &f = Fixture::from(p);
                 if (f.gui_created)
-                    gui.destroy(p);
+                    std::_Exit(74);
                 delete &f;
             },
             [](const clap_plugin_t *, double, uint32_t, uint32_t) { return true; },
