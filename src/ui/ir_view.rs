@@ -106,6 +106,7 @@ fn mapped(range: &ir::Range, mapper: Option<&str>, value: f64, inverse: bool) ->
         range.min + (range.max - range.min) * value.clamp(0., 1.).powf(power)
     }
 }
+#[allow(clippy::too_many_arguments)]
 fn drive_mapped(
     ui: &mut Ui,
     id: &str,
@@ -113,17 +114,28 @@ fn drive_mapped(
     range: &ir::Range,
     mapper: Option<&str>,
     vertical: bool,
+    travel: f64,
+    policy: GesturePolicy,
 ) -> bool {
+    // Accessibility advertises authored units, not the mapper's normalized position.
+    if let Some(next) = ui.requested_value(id) {
+        *value = quantized(next, range);
+        rebase_drag(ui, id, mapped(range, mapper, *value, true));
+        return ui.get(id).held;
+    }
     let mut position = mapped(range, mapper, *value, true);
     let before = position;
-    let held = drive(
+    let held = drive_widget_with_policy(
         ui,
         id,
         &mut position,
         &(0. ..=1.),
-        TRAVEL,
+        travel,
         vertical,
         mapped(range, mapper, range.default, true),
+        None,
+        false,
+        policy,
     );
     if position != before {
         *value = mapped(range, mapper, position, false);
@@ -273,7 +285,7 @@ pub struct InputState {
     pub wave_duration_us: HashMap<WidgetRef, u64>,
     pub edits: Vec<Edit>,
     menu: Option<WidgetRef>,
-    typing: Option<(WidgetRef, String)>,
+    typing: Option<(String, String)>,
     drafts: HashMap<WidgetRef, String>,
     cursors: HashMap<WidgetRef, usize>,
     xy_drags: HashMap<WidgetRef, (usize, [f64; 2], Point)>,
@@ -669,10 +681,11 @@ pub fn height(face: &Interface, page: PageRef) -> u32 {
 fn gesture(w: &ir::Widget, scale: f64) -> (bool, f64) {
     let vertical = match w.kind {
         Kind::Knob { .. } | Kind::ValueEdit { .. } => true,
-        Kind::Slider { orientation, .. } => w.drag.map_or(
-            orientation == ir::Orientation::Vertical,
-            |d| d.axis == ir::Orientation::Vertical,
-        ),
+        Kind::Slider { orientation, .. } => w
+            .drag
+            .map_or(orientation == ir::Orientation::Vertical, |d| {
+                d.axis == ir::Orientation::Vertical
+            }),
         _ => true,
     };
     let travel = match w.drag.filter(|d| d.sensitivity != 0) {
@@ -703,6 +716,76 @@ fn quantized(value: f64, range: &ir::Range) -> f64 {
         None => value,
     };
     value.clamp(range.min.min(range.max), range.min.max(range.max))
+}
+
+/// v1 perf_view::type_in, retaining IR display ratios and finite/step validation.
+#[allow(clippy::too_many_arguments)]
+fn numeric_entry(
+    ui: &mut Ui,
+    id: &str,
+    input: &mut InputState,
+    value: &mut f64,
+    range: &ir::Range,
+    display: &ir::Display,
+    can_edit: bool,
+) -> Option<El> {
+    let response = ui.get(id);
+    if can_edit && (response.double_clicked || ui.keys(id).iter().any(|k| k.key == Key::Enter)) {
+        input.typing = Some((
+            id.to_owned(),
+            format!(
+                "{}",
+                *value
+                    / if display.ratio == 0. {
+                        1.
+                    } else {
+                        display.ratio
+                    }
+            ),
+        ));
+    }
+    if !input.typing.as_ref().is_some_and(|(at, _)| at == id) {
+        return None;
+    }
+    let edit_id = format!("{id}-type");
+    let mounted = ui.scene().is_some_and(|s| s.surface(&edit_id).is_some());
+    let (_, text) = input.typing.as_mut().unwrap();
+    let field = text_edit(
+        ui,
+        edit_id.as_str(),
+        text,
+        TextOpts {
+            blur_on_submit: true,
+            ..Default::default()
+        },
+    );
+    if !mounted {
+        ui.focus(edit_id.as_str());
+    }
+    let cancel = !can_edit
+        || ui
+            .keys(edit_id.as_str())
+            .iter()
+            .any(|k| k.key == Key::Escape);
+    if cancel {
+        input.typing = None;
+    } else if field.changed.submitted || mounted && !ui.focused(edit_id.as_str()) {
+        if let Ok(number) = text.trim().parse::<f64>() {
+            if number.is_finite() {
+                *value = quantized(
+                    number
+                        * if display.ratio == 0. {
+                            1.
+                        } else {
+                            display.ratio
+                        },
+                    range,
+                );
+            }
+        }
+        input.typing = None;
+    }
+    Some(row![field.el].align(Align::Center))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -773,6 +856,12 @@ pub(super) fn widget_state(
         parent = p.parent;
     }
     let can_edit = enabled && wd.intercepts_mouse;
+    let policy = if face.source == ir::Source::FalconLua {
+        GesturePolicy::Falcon
+    } else {
+        GesturePolicy::Kontakt
+    };
+    let numeric_edit = input.typing.as_ref().is_some_and(|(at, _)| at == &id);
     let mut v = control
         .and_then(|c| values.get(&c).copied())
         .unwrap_or(initial);
@@ -826,86 +915,105 @@ pub(super) fn widget_state(
 
     let face_el: El = match &wd.kind {
         Kind::Knob { range, .. } | Kind::Slider { range, .. } => {
-            let (vertical, travel) = gesture(wd, scale);
-            let held = if can_edit {
-                if wd.mapper.is_some() {
-                    drive_mapped(ui, &id, &mut v, range, wd.mapper.as_deref(), vertical)
-                } else {
-                    drive_widget(
-                        ui,
-                        &id,
-                        &mut v,
-                        &(range.min..=range.max),
-                        travel,
-                        vertical,
-                        range.default,
-                        range.step,
-                        true,
-                    )
-                }
-            } else {
-                false
+            let plain_display = ir::Display::default();
+            let display = match &wd.kind {
+                Kind::Knob { display, .. } => display,
+                _ => &plain_display,
             };
-            if can_edit
-                && (ui.get(id.as_str()).dragged
-                    || ui.get(id.as_str()).wheel != Vec2::ZERO
-                    || !ui.keys(id.as_str()).is_empty())
-            {
-                v = quantized(v, range);
-            }
-            let lift = ui.state(id.as_str()).hover.max(if held { 1. } else { 0. }) as f32;
-            let unit = |x: f64| mapped(range, wd.mapper.as_deref(), x, true);
-            match strip {
-                Some(p) => art(
-                    face,
-                    wd.image(Use::Strip).unwrap(),
-                    p,
-                    fixed.unwrap_or_else(|| frame(unit(v), 0., 1., p.len())),
-                    w,
-                    h,
-                    scale,
-                ),
-                // Kontakt's stock knob: its name over the dial, the value under it.
-                None if matches!(wd.kind, Kind::Knob { .. }) => {
-                    let value = match (&wd.kind, &wd.value_text) {
-                        // The script's own label, even an empty one, replaces the number.
-                        (_, Some(t)) => t.clone(),
-                        (Kind::Knob { display, .. }, _) => number(v, display),
-                        _ => String::new(),
-                    };
-                    let mut parts = Vec::new();
-                    if !wd.hide.title && !wd.text.is_empty() {
-                        parts.push(words(wd.text.clone()));
-                    }
-                    parts.push(
-                        dial_face(
-                            unit(v),
-                            unit(range.min.max(0.).min(range.max)),
-                            lift,
-                            ui.focus_visible(&id),
-                        )
-                        .flex(1)
-                        .min_h(0)
-                        .w(Len::Pct(100.)),
-                    );
-                    if !wd.hide.value && !value.is_empty() {
-                        parts.push(words(value));
-                    }
-                    col(parts).gap(0).align(Align::Center)
-                }
-                None => fader_face(unit(v), 0., None, vertical, lift, ui.focus_visible(&id)),
-            }
-            .cursor(if vertical {
-                Cursor::ResizeV
+            if let Some(editor) = numeric_entry(ui, &id, input, &mut v, range, display, can_edit) {
+                editor
             } else {
-                Cursor::ResizeH
-            })
-            .focusable()
-            .a11y(A11y::Slider {
-                value: v,
-                min: range.min,
-                max: range.max,
-            })
+                let (vertical, travel) = gesture(wd, scale);
+                let held = if can_edit {
+                    if wd.mapper.is_some() {
+                        drive_mapped(
+                            ui,
+                            &id,
+                            &mut v,
+                            range,
+                            wd.mapper.as_deref(),
+                            vertical,
+                            travel,
+                            policy,
+                        )
+                    } else {
+                        drive_widget_with_policy(
+                            ui,
+                            &id,
+                            &mut v,
+                            &(range.min..=range.max),
+                            travel,
+                            vertical,
+                            range.default,
+                            range.step,
+                            false,
+                            policy,
+                        )
+                    }
+                } else {
+                    false
+                };
+                if can_edit
+                    && (ui.get(id.as_str()).dragged
+                        || ui.get(id.as_str()).wheel != Vec2::ZERO
+                        || !ui.keys(id.as_str()).is_empty())
+                {
+                    v = quantized(v, range);
+                }
+                let lift = ui.state(id.as_str()).hover.max(if held { 1. } else { 0. }) as f32;
+                let unit = |x: f64| mapped(range, wd.mapper.as_deref(), x, true);
+                match strip {
+                    Some(p) => art(
+                        face,
+                        wd.image(Use::Strip).unwrap(),
+                        p,
+                        fixed.unwrap_or_else(|| frame(unit(v), 0., 1., p.len())),
+                        w,
+                        h,
+                        scale,
+                    ),
+                    // Kontakt's stock knob: its name over the dial, the value under it.
+                    None if matches!(wd.kind, Kind::Knob { .. }) => {
+                        let value = match (&wd.kind, &wd.value_text) {
+                            // The script's own label, even an empty one, replaces the number.
+                            (_, Some(t)) => t.clone(),
+                            (Kind::Knob { display, .. }, _) => number(v, display),
+                            _ => String::new(),
+                        };
+                        let mut parts = Vec::new();
+                        if !wd.hide.title && !wd.text.is_empty() {
+                            parts.push(words(wd.text.clone()));
+                        }
+                        parts.push(
+                            dial_face(
+                                unit(v),
+                                unit(range.min.max(0.).min(range.max)),
+                                lift,
+                                ui.focus_visible(&id),
+                            )
+                            .flex(1)
+                            .min_h(0)
+                            .w(Len::Pct(100.)),
+                        );
+                        if !wd.hide.value && !value.is_empty() {
+                            parts.push(words(value));
+                        }
+                        col(parts).gap(0).align(Align::Center)
+                    }
+                    None => fader_face(unit(v), 0., None, vertical, lift, ui.focus_visible(&id)),
+                }
+                .cursor(if vertical {
+                    Cursor::ResizeV
+                } else {
+                    Cursor::ResizeH
+                })
+                .focusable()
+                .a11y(A11y::Slider {
+                    value: v,
+                    min: range.min,
+                    max: range.max,
+                })
+            }
         }
         Kind::Button { momentary: true } => {
             // UVI Button is stateless: one callback per activation, including keyboard.
@@ -1008,67 +1116,12 @@ pub(super) fn widget_state(
             display,
             arrows,
         } => {
-            let response = ui.get(id.as_str());
-            if can_edit
-                && (response.double_clicked
-                    || ui.keys(id.as_str()).iter().any(|k| k.key == Key::Enter))
-            {
-                input.typing = Some((
-                    n,
-                    format!(
-                        "{}",
-                        v / if display.ratio == 0. {
-                            1.
-                        } else {
-                            display.ratio
-                        }
-                    ),
-                ));
-            }
-            if input.typing.as_ref().is_some_and(|(at, _)| *at == n) {
-                let edit_id = format!("{id}-type");
-                let mounted = ui.scene().is_some_and(|s| s.surface(&edit_id).is_some());
-                let (_, text) = input.typing.as_mut().unwrap();
-                let field = text_edit(
-                    ui,
-                    edit_id.as_str(),
-                    text,
-                    TextOpts {
-                        blur_on_submit: true,
-                        ..Default::default()
-                    },
-                );
-                if !mounted {
-                    ui.focus(edit_id.as_str());
-                }
-                let cancel = !can_edit
-                    || ui
-                        .keys(edit_id.as_str())
-                        .iter()
-                        .any(|k| k.key == Key::Escape);
-                if cancel {
-                    input.typing = None;
-                } else if field.changed.submitted || mounted && !ui.focused(edit_id.as_str()) {
-                    if let Ok(number) = text.trim().parse::<f64>() {
-                        if number.is_finite() {
-                            v = quantized(
-                                number
-                                    * if display.ratio == 0. {
-                                        1.
-                                    } else {
-                                        display.ratio
-                                    },
-                                range,
-                            );
-                        }
-                    }
-                    input.typing = None;
-                }
-                row![field.el].align(Align::Center)
+            if let Some(editor) = numeric_entry(ui, &id, input, &mut v, range, display, can_edit) {
+                editor
             } else {
                 let (vertical, travel) = gesture(wd, scale);
                 if can_edit {
-                    drive_widget(
+                    drive_widget_with_policy(
                         ui,
                         &id,
                         &mut v,
@@ -1078,6 +1131,7 @@ pub(super) fn widget_state(
                         range.default,
                         range.step,
                         false,
+                        policy,
                     );
                 }
                 let mut parts = Vec::new();
@@ -1191,8 +1245,17 @@ pub(super) fn widget_state(
                         .and_then(|id| values.get(&id).copied())
                         .unwrap_or_else(|| cells.get(c).copied().unwrap_or(0.));
                     let key = format!("{id}-cell-{c}");
-                    if can_edit {
-                        drive(
+                    let editor = numeric_entry(
+                        ui,
+                        &key,
+                        input,
+                        &mut value,
+                        range,
+                        &ir::Display::default(),
+                        can_edit,
+                    );
+                    if can_edit && editor.is_none() {
+                        drive_widget_with_policy(
                             ui,
                             &key,
                             &mut value,
@@ -1200,6 +1263,9 @@ pub(super) fn widget_state(
                             TRAVEL,
                             true,
                             range.default,
+                            range.step,
+                            false,
+                            policy,
                         );
                     }
                     if let Some(step) = range.step {
@@ -1208,7 +1274,16 @@ pub(super) fn widget_state(
                     if let Some(id) = cid {
                         values.insert(id, value);
                     }
-                    super::render_art::table(vec![value], *range, *bipolar, *steps_shown, wd.colors)
+                    editor
+                        .unwrap_or_else(|| {
+                            super::render_art::table(
+                                vec![value],
+                                *range,
+                                *bipolar,
+                                *steps_shown,
+                                wd.colors,
+                            )
+                        })
                         .flex(1)
                         .h(h)
                         .id(key)
@@ -1318,8 +1393,18 @@ pub(super) fn widget_state(
                 let mut value = values.get(&cid).copied().unwrap_or(range.default);
                 let mapper = target.and_then(|w| w.mapper.as_deref());
                 let key = format!("{id}-axis-{axis}");
-                if can_edit {
-                    drive_mapped(ui, &key, &mut value, &range, mapper, false);
+                let plain_display = ir::Display::default();
+                let display = target
+                    .and_then(|w| match &w.kind {
+                        Kind::Knob { display, .. } | Kind::ValueEdit { display, .. } => {
+                            Some(display)
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or(&plain_display);
+                let editor = numeric_entry(ui, &key, input, &mut value, &range, display, can_edit);
+                if can_edit && editor.is_none() {
+                    drive_mapped(ui, &key, &mut value, &range, mapper, false, TRAVEL, policy);
                     if ui.get(id.as_str()).held
                         && let Some(p) = ui.local(&id)
                     {
@@ -1337,7 +1422,10 @@ pub(super) fn widget_state(
                 values.insert(cid, value);
                 xy[axis] = mapped(&range, mapper, value, true);
                 axes.push(
-                    fader_face(xy[axis], 0., None, false, 0., ui.focus_visible(&key))
+                    editor
+                        .unwrap_or_else(|| {
+                            fader_face(xy[axis], 0., None, false, 0., ui.focus_visible(&key))
+                        })
                         .h(16)
                         .flex(1)
                         .id(key)
@@ -1621,11 +1709,12 @@ pub(super) fn widget_state(
     {
         if can_edit && v.to_bits() != before.to_bits() {
             let response = ui.get(id.as_str());
-            let mods = if matches!(wd.kind, Kind::Menu { .. } | Kind::ValueEdit { .. }) {
-                Mods::default()
-            } else {
-                response.mods
-            };
+            let mods =
+                if numeric_edit || matches!(wd.kind, Kind::Menu { .. } | Kind::ValueEdit { .. }) {
+                    Mods::default()
+                } else {
+                    response.mods
+                };
             let value = match &wd.kind {
                 Kind::Knob { range, .. }
                 | Kind::Slider { range, .. }
@@ -2315,5 +2404,297 @@ mod gesture_policy_tests {
             assert!(f.ui.scene().unwrap().surface("ir-0-type").is_some());
             assert_eq!(f.value(), 0.4, "opening entry must not reset or submit");
         }
+    }
+
+    impl Fixture {
+        fn center_of(&self, id: &str) -> Point {
+            let frame = self.ui.scene().unwrap().surface(id).unwrap().frame;
+            Point::new(
+                frame.x + frame.size.width / 2.,
+                frame.y + frame.size.height / 2.,
+            )
+        }
+        fn open_entry(&mut self, id: &str) {
+            let at = self.center_of(id);
+            self.pointer(at, false, Mods::default());
+            for _ in 0..2 {
+                self.pointer(at, true, Mods::default());
+                self.pointer(at, false, Mods::default());
+            }
+            for _ in 0..2 {
+                self.tick(Input::default());
+            }
+            assert!(
+                self.ui
+                    .scene()
+                    .unwrap()
+                    .surface(&format!("{id}-type"))
+                    .is_some()
+            );
+            self.input.edits.clear();
+        }
+        fn replace_text(&mut self, text: &str) {
+            self.tick(Input {
+                keys: vec![KeyPress {
+                    key: Key::Char('a'),
+                    mods: Mods {
+                        ctrl: true,
+                        ..Default::default()
+                    },
+                }],
+                ..Default::default()
+            });
+            self.tick(Input {
+                text: text.into(),
+                ..Default::default()
+            });
+        }
+        fn finish_entry(&mut self, key: Key) {
+            self.tick(Input {
+                keys: vec![KeyPress {
+                    key,
+                    mods: Mods::default(),
+                }],
+                ..Default::default()
+            });
+            for _ in 0..2 {
+                self.tick(Input::default());
+            }
+        }
+    }
+    #[test]
+    fn numeric_entry_commits_ratio_and_step_once_for_all_continuous_kinds() {
+        for source in [ir::Source::Ksp { slot: 0 }, ir::Source::FalconLua] {
+            let range = ir::Range {
+                min: 0.,
+                max: 100.,
+                default: 20.,
+                step: Some(1.),
+            };
+            let display = ir::Display {
+                ratio: 10.,
+                unit: "%".into(),
+            };
+            for (kind, typed) in [
+                (
+                    Kind::Knob {
+                        range,
+                        display: display.clone(),
+                    },
+                    "3.7",
+                ),
+                (
+                    Kind::ValueEdit {
+                        range,
+                        display: display.clone(),
+                        arrows: true,
+                    },
+                    "3.7",
+                ),
+                (
+                    Kind::Slider {
+                        range,
+                        orientation: ir::Orientation::Horizontal,
+                    },
+                    "37.4",
+                ),
+            ] {
+                let mut f = Fixture::new(source, kind, 40., None);
+                f.open_entry("ir-0");
+                assert_eq!(f.value(), 40.);
+                f.replace_text(typed);
+                f.finish_entry(Key::Enter);
+                assert_eq!(f.value(), 37.);
+                assert_eq!(f.input.edits.len(), 1, "one owner callback per entry");
+                assert_eq!(f.input.edits[0].value, ir::Value::Integer(37));
+                assert!(f.input.typing.is_none());
+            }
+        }
+    }
+    #[test]
+    fn numeric_entry_escape_and_invalid_values_never_submit() {
+        for source in [ir::Source::Ksp { slot: 0 }, ir::Source::FalconLua] {
+            for (typed, key) in [
+                ("0.7", Key::Escape),
+                ("NaN", Key::Enter),
+                ("inf", Key::Enter),
+                ("bad", Key::Enter),
+            ] {
+                let mut f = knob(source);
+                f.open_entry("ir-0");
+                f.replace_text(typed);
+                f.finish_entry(key);
+                assert_eq!(f.value(), 0.4);
+                assert!(f.input.edits.is_empty());
+                assert!(f.input.typing.is_none());
+            }
+        }
+    }
+    #[test]
+    fn numeric_entry_blur_commits_and_bounds_the_value() {
+        for source in [ir::Source::Ksp { slot: 0 }, ir::Source::FalconLua] {
+            let mut f = knob(source);
+            f.open_entry("ir-0");
+            f.replace_text("2");
+            // Deliver the text before removing focus.
+            f.tick(Input::default());
+            f.ui.blur();
+            for _ in 0..2 {
+                f.tick(Input::default());
+            }
+            assert_eq!(f.value(), 1.);
+            assert_eq!(f.input.edits.len(), 1);
+        }
+    }
+    #[test]
+    fn source_fine_drag_returns_to_its_authored_grab() {
+        for (source, mods) in [
+            (
+                ir::Source::Ksp { slot: 0 },
+                Mods {
+                    shift: true,
+                    ..Default::default()
+                },
+            ),
+            (
+                ir::Source::FalconLua,
+                Mods {
+                    ctrl: true,
+                    ..Default::default()
+                },
+            ),
+        ] {
+            let mut f = knob(source);
+            let at = f.center();
+            f.pointer(at, false, mods);
+            f.pointer(at, true, mods);
+            for dy in [10., 20., 40., 20., 10., 0.] {
+                f.pointer(Point::new(at.x, at.y - dy), true, mods);
+            }
+            f.pointer(at, false, mods);
+            assert_eq!(f.value(), 0.4);
+        }
+    }
+    #[test]
+    fn kontakt_ctrl_and_cmd_reset_for_ksp_and_performance_view() {
+        for source in [
+            ir::Source::Ksp { slot: 0 },
+            ir::Source::PerformanceView,
+            ir::Source::Generated,
+        ] {
+            for mods in [
+                Mods {
+                    ctrl: true,
+                    ..Default::default()
+                },
+                Mods {
+                    cmd: true,
+                    ..Default::default()
+                },
+            ] {
+                let mut f = knob(source);
+                let at = f.center();
+                f.pointer(at, false, mods);
+                f.pointer(at, true, mods);
+                f.pointer(at, false, mods);
+                assert_eq!(f.value(), 0.2);
+            }
+        }
+    }
+    #[test]
+    fn component_faders_share_falcon_policy_and_numeric_entry() {
+        let range = ir::Range {
+            min: 0.,
+            max: 1.,
+            default: 0.2,
+            step: Some(0.01),
+        };
+        for (kind, key, vertical, expected) in [
+            (
+                Kind::Table {
+                    columns: 1,
+                    range,
+                    cells: vec![0.4],
+                    bipolar: false,
+                    steps_shown: None,
+                },
+                "ir-0-cell-0",
+                true,
+                0.42,
+            ),
+            (
+                Kind::Xy {
+                    cursors: 1,
+                    sensitivity: [None; 2],
+                    mouse_mode: None,
+                },
+                "ir-0-axis-0",
+                false,
+                0.4 + 4. / TRAVEL,
+            ),
+        ] {
+            let mut f = Fixture::new(ir::Source::FalconLua, kind, 0.4, None);
+            f.face.widgets[0].binding = Binding::None;
+            f.face.widgets[0].components = if vertical {
+                vec![ControlId(77)]
+            } else {
+                vec![ControlId(77), ControlId(78)]
+            };
+            f.tick(Input::default());
+            let at = f.center_of(key);
+            let mods = Mods {
+                ctrl: true,
+                ..Default::default()
+            };
+            f.pointer(at, false, mods);
+            f.pointer(at, true, mods);
+            for d in [10., 20., 40.] {
+                f.pointer(
+                    if vertical {
+                        Point::new(at.x, at.y - d)
+                    } else {
+                        Point::new(at.x + d, at.y)
+                    },
+                    true,
+                    mods,
+                );
+            }
+            f.pointer(at, false, mods);
+            assert!((f.value() - expected).abs() < 1e-9);
+            f.open_entry(key);
+            f.replace_text("0.7");
+            f.finish_entry(Key::Enter);
+            assert!((f.value() - 0.7).abs() < 1e-9);
+        }
+    }
+    #[test]
+    fn mapped_semantic_edit_rebases_an_active_pointer_grab() {
+        let range = ir::Range {
+            min: 20.,
+            max: 20000.,
+            default: 1000.,
+            step: Some(1.),
+        };
+        let mut f = Fixture::new(
+            ir::Source::FalconLua,
+            Kind::Knob {
+                range,
+                display: ir::Display::default(),
+            },
+            1000.,
+            Some("Exponential"),
+        );
+        let at = f.center();
+        f.pointer(at, false, Mods::default());
+        f.pointer(at, true, Mods::default());
+        f.pointer(Point::new(at.x, at.y - 20.), true, Mods::default());
+        f.pointer(Point::new(at.x, at.y - 40.), true, Mods::default());
+        assert!(f.ui.request_action(SemanticAction::set_value("ir-0", 1500.)));
+        f.pointer(Point::new(at.x, at.y - 40.), true, Mods::default());
+        assert_eq!(f.value(), 1500.);
+        f.pointer(Point::new(at.x, at.y - 50.), true, Mods::default());
+        f.pointer(Point::new(at.x, at.y - 50.), false, Mods::default());
+        let expected = quantized(1500. * (range.max / range.min).powf(10. / 200.), &range);
+        assert_eq!(f.value(), expected);
     }
 }
