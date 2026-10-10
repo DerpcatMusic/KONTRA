@@ -250,9 +250,29 @@ impl Polyphase {
             accumulate::<FUSED>(&mut sum, t, a, b, x);
         }
         // Fold in register order (lanes k and k + 4), then the stereo pairs.
-        // The lanes leave through memory: otherwise SLP vectorization permutes
-        // them to suit this stereo fold and turns every load into scalar loads.
-        let sum = std::hint::black_box(sum);
+        // Explicit paired-channel SIMD retains vector tap loads without spilling
+        // the accumulator through a black_box memory boundary for every frame.
+        fold_stereo(sum)
+    }
+}
+
+/// v1 Section::process_avx keeps paired channels in registers through the fold.
+#[inline(always)]
+fn fold_stereo(sum: [[f32; 4]; 2]) -> [f32; 2] {
+    #[cfg(target_arch = "x86_64")]
+    {
+        use std::arch::x86_64::*;
+        // SAFETY: SSE2 is baseline on x86_64; both loads read four owned lanes.
+        unsafe {
+            let half = _mm_add_ps(_mm_loadu_ps(sum[0].as_ptr()), _mm_loadu_ps(sum[1].as_ptr()));
+            let stereo = _mm_add_ps(half, _mm_movehl_ps(half, half));
+            let mut out = [0.; 2];
+            _mm_storel_epi64(out.as_mut_ptr().cast(), _mm_castps_si128(stereo));
+            return out;
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
         let half: [f32; 4] = std::array::from_fn(|k| sum[0][k] + sum[1][k]);
         [half[0] + half[2], half[1] + half[3]]
     }
@@ -378,6 +398,58 @@ impl Kernel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[inline(always)]
+    fn legacy_fold(sum: [[f32; 4]; 2]) -> [f32; 2] {
+        let sum = std::hint::black_box(sum);
+        let half: [f32; 4] = std::array::from_fn(|k| sum[0][k] + sum[1][k]);
+        [half[0] + half[2], half[1] + half[3]]
+    }
+
+    #[test]
+    fn register_fold_preserves_stereo_reduction_bits() {
+        let mut state = 0x5ac31b7du32;
+        for _ in 0..65536 {
+            let sum = std::array::from_fn(|_| std::array::from_fn(|_| {
+                state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+                (state as i32 as f32) * (1.0 / i32::MAX as f32)
+            }));
+            assert_eq!(fold_stereo(sum).map(f32::to_bits), legacy_fold(sum).map(f32::to_bits));
+        }
+        for sum in [ [[0.; 4]; 2], [[-0.; 4]; 2],
+            [[f32::MIN_POSITIVE, -f32::MIN_POSITIVE, 1., -1.], [-1., 1., f32::MIN_POSITIVE, -f32::MIN_POSITIVE]],
+            [[f32::MAX, -f32::MAX, 0., -0.], [-f32::MAX, f32::MAX, -0., 0.]] ] {
+            assert_eq!(fold_stereo(sum).map(f32::to_bits), legacy_fold(sum).map(f32::to_bits));
+        }
+    }
+
+    // Explicit performance witness; never run as a hosted timing test.
+    #[test]
+    #[ignore = "run the paired kernel budget explicitly on the audit host"]
+    fn register_fold_budget() {
+        use std::{hint::black_box, time::Instant};
+        let data: Vec<[[f32; 4]; 2]> = (0..256).map(|i| std::array::from_fn(|j|
+            std::array::from_fn(|k| ((i * 8 + j * 4 + k) as f32 * 0.731).sin()))).collect();
+        let measure = |legacy: bool| {
+            let t = Instant::now();
+            let mut result = [0.; 2];
+            for i in 0..1048576 {
+                let input = data[i & 255];
+                let out = if legacy { legacy_fold(input) } else { fold_stereo(input) };
+                result[0] += out[0]; result[1] += out[1];
+            }
+            black_box(result);
+            t.elapsed().as_nanos()
+        };
+        let (mut before, mut after) = (Vec::new(), Vec::new());
+        for i in 0..15 {
+            if i % 2 == 0 { before.push(measure(true)); after.push(measure(false)); }
+            else { after.push(measure(false)); before.push(measure(true)); }
+        }
+        before.sort(); after.sort();
+        eprintln!("fold median ns/million: legacy={} candidate={} ratio={}", before[7], after[7], after[7] as f64 / before[7] as f64);
+        assert!(after[7] * 10 < before[7] * 9, "register fold must remove at least 10% of isolated legacy fold cost");
+    }
 
     #[test]
     fn fractional_kernel_preserves_dc_passband_and_rejects_alias_band() {
