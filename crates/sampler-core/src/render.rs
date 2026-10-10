@@ -567,11 +567,18 @@ impl Runtime {
             let params = self.note_params[f.note.0.index];
             let group = plan.script.layer(v.group);
             let end = at + frames as u64;
+            let curved = params.fade.filter(|f| f.nonlinear() && !f.done(at));
             let fade = |t| {
-                params
-                    .fade
-                    .map_or(1.0, |f: super::script_params::Fade| f.at(t))
-                    * v.script_fade.map_or(1.0, |f| f.at(t))
+                params.fade.map_or(1.0, |f| {
+                    if !f.nonlinear() {
+                        f.at(t)
+                    } else if f.done(at) {
+                        f.at(at)
+                    } else {
+                        // The active curve is applied per sample, not between grid endpoints.
+                        1.0
+                    }
+                }) * v.script_fade.map_or(1.0, |f| f.at(t))
             };
             // Gains sit on the absolute control grid, like voice modulation, so
             // host block sizes and event splits cannot move them.
@@ -589,7 +596,9 @@ impl Runtime {
                 to: Default::default(),
                 begin,
                 end: grid_end,
+                script_fade: None,
             });
+            ramp.script_fade = curved;
             for (o, g, layer) in [(&mut ramp.from, from, first), (&mut ramp.to, to, last)] {
                 o.gains = [o.gains[0] * g[0], o.gains[1] * g[1]];
                 o.pitch += layer.semitones();
