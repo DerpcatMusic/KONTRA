@@ -796,7 +796,10 @@ fn event_zone_instructions_reject_out_of_range_i64_aliases_and_read_live_alias()
     .unwrap()
     .with_programs(vec![program], None)
     .unwrap();
-    let mut rt = Runtime::new(prepared, limits(8)).unwrap();
+    let mut test_limits = limits(8);
+    test_limits.behaviors = 1;
+    test_limits.behavior_cells = prepared.behavior_local_count();
+    let mut rt = Runtime::new(prepared, test_limits).unwrap();
     support::without_heap(|| {
         let note = rt.trigger(input(), 60, 1.).unwrap();
         rt.render(&mut [[0.; 2]; 1]).unwrap();
