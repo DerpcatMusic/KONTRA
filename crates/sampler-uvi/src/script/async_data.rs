@@ -84,6 +84,7 @@ struct Pending {
 struct Worker {
     requests: SyncSender<Request>,
     replies: Receiver<(u64, Result<Option<Vec<u8>>, &'static str>)>,
+    acknowledge: SyncSender<()>,
 }
 
 #[derive(Default)]
@@ -96,8 +97,10 @@ impl DataLoads {
     fn worker(&mut self) -> mlua::Result<&Worker> {
         if self.worker.is_none() {
             let (requests, incoming) = mpsc::sync_channel::<Request>(MAX_PENDING);
-            // Rendezvous publication: no completed payloads accumulate between owner turns.
-            let (outgoing, replies) = mpsc::sync_channel(0);
+            // Publish before waking the parked owner; wait for receipt before the next read.
+            let (outgoing, replies) = mpsc::sync_channel(1);
+            let (acknowledge, received) = mpsc::sync_channel(1);
+            let owner = std::thread::current();
             std::thread::Builder::new()
                 .name("uvi-data-io".into())
                 .spawn(move || {
@@ -111,10 +114,18 @@ impl DataLoads {
                         if outgoing.send((request.id, data)).is_err() {
                             break;
                         }
+                        owner.unpark();
+                        if received.recv().is_err() {
+                            break;
+                        }
                     }
                 })
                 .map_err(mlua::Error::external)?;
-            self.worker = Some(Worker { requests, replies });
+            self.worker = Some(Worker {
+                requests,
+                replies,
+                acknowledge,
+            });
         }
         self.worker
             .as_ref()
@@ -126,7 +137,7 @@ impl DataLoads {
             pending.status.cancel.store(true, Ordering::Release);
             pending.status.state.store(CANCELLED, Ordering::Release);
         }
-        // No join on a file read. Closing replies releases a worker blocked on publication.
+        // No join on file I/O. Closing replies/acknowledgements releases a publishing worker.
         self.worker = None;
     }
 
@@ -136,6 +147,7 @@ impl DataLoads {
         };
         // One payload per owner turn bounds transient Lua/JSON memory and preserves event service.
         if let Ok((id, data)) = worker.replies.try_recv() {
+            let _ = worker.acknowledge.try_send(());
             let Some(index) = self.pending.iter().position(|pending| pending.id == id) else {
                 return Ok(());
             };
