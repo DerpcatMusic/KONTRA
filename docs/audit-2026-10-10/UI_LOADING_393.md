@@ -36,7 +36,7 @@ shared-target build failures are transport failures and are excluded.
 | Visibility and z-order | IR visibility and ordered children → renderer | Preserve script order and hidden state; a source reference count is not an executed-call receipt. |
 | Text and font state | Text properties and state styles → renderer | Paths exist; no blanket typography acceptance claim. |
 | Plain `ui_slider` | Authored kind → renderer | Follow-up removes the dimension-based dial choice. Authored `MOUSE_BEHAVIOUR` axis changes slider pixels; `ui_knob` retains its dial pixels. W2 separately owns input semantics. |
-| Menu selected index and hidden selected item | KSP getter → menu IR → caption/popup | Source-review gaps routed to W5: the getter has no derived selected-index handling, and the caption filters hidden items before finding the selection. Runtime acceptance is pending. |
+| Menu selected index and hidden selected item | KSP getter → menu IR → caption/popup | W5 owns the getter/RMW contracts. W3 captured a real-KSP caption pixel RED: a hidden selected item displayed the first visible choice. The v1 caption-selection port passes GREEN 1/1 and area no-run. |
 
 The detailed `KSP-UI-CALL-CHECKLIST.json` includes all eleven Kontakt libraries
 and 835 observed instruments/multis from the complete historical census at
@@ -94,8 +94,12 @@ defines the selected menu index as a getter. The
 specifies menu `get_control_par(VALUE)` as an index and keeps a selected hidden
 item displayed until deselected. W5 confirms pending `f2c59e2c` covers the getter
 and hidden-entry lookup. W3 owns the caption fix: v1 `perf_view::caption_of`
-selects from all authored entries. The prepared pixel regression has not run;
-this source finding is not a measured library failure.
+selects from all authored entries. The real-KSP pixel regression now captures RED: hiding the selected entry
+changes its hash to the other visible entry. The renderer port selects from all authored entries. GREEN restores identical
+selected/hidden-selected hashes (`ed4f36e0…`); deselection remains distinct
+(`6e935bce…`). GREEN 1/1 and area no-run pass. Receipt:
+`w3-menu-caption-395/READY.json`. This fixture does not
+establish a measured failure in any particular installed library.
 
 ## Pacific and Vista resource handoff
 
