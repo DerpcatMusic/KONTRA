@@ -2400,6 +2400,157 @@ mod tests {
         }
     }
     #[test]
+    fn native_text_recovers_after_later_canvas_scene_error_and_settles_once() {
+        let (package, session) = primitive_fixture(r#"
+            local ui=require('native_ui')
+            return function()
+                _G.render_calls=(_G.render_calls or 0)+1
+                local capture=render_calls
+                return @ui.ZStack {
+                    @ui.Text {text='Hi'}.font_size(18).bold(font_bold or false).frame(width=48,height=32),
+                    @ui.Rectangle {color=ui.Color.red}.frame(width=4,height=4).offset(x=22,y=22),
+                    @ui.Canvas {paint=function(p,frame)
+                        _G.canvas_calls=(_G.canvas_calls or 0)+1; _G.paint_capture=capture
+                        p:move_to(0,0);p:line_to(bad_path and math.huge or 8,8)
+                        p.stroke_style=ui.Color.red;p:draw_path()
+                    end}.frame(width=8,height=8)
+                }.frame(width=48,height=48)
+            end
+        "#);
+        let (mut retained, mut eager) = primitive_uis();
+        let mut cache = PrimitiveRetention::default();
+        for warm in 0..2 {
+            let graph = session.render().unwrap();
+            primitive_tick(&mut eager, &graph, &package, &session, 1., None, 0);
+            primitive_tick(&mut retained, &graph, &package, &session, 1., Some(&mut cache), 0);
+            primitive_oracle_at(&retained, &eager, &format!("before partial scene error, warm={warm}"));
+        }
+        let graph = session.render().unwrap();
+        let rectangle = string(&tables(&graph, "children").unwrap()[1], "path");
+        let rectangle_revision = cache.keys[&rectangle].1;
+        let previous = retained.scene_snapshot().unwrap();
+        let rectangle_key = previous.surfaces().find(|s| s.frame.size == Size::new(4., 4.))
+            .expect("unrelated Rectangle surface").key.to_string();
+        let old_pixels = super::super::tests::pixels(&retained, 64, 64);
+        let calls = || session.lua().globals().get::<usize>("canvas_calls").unwrap();
+        session.lua().load("font_bold=true;bad_path=true").exec().unwrap();
+        let graph = session.render().unwrap();
+        let before = calls();
+        for (ui, retention) in [(&mut eager, None), (&mut retained, Some(&mut cache))] {
+            let tree = primitive_tree(ui, &graph, &package, &session, 1., retention, 0);
+            let error = primitive_frame(ui, tree).unwrap_err();
+            assert!(matches!(&error, moose::mui::mui::scene::SceneError::Geometry(
+                moose::mui::mui::geometry::Error::NonFinite)), "expected exact non-finite Canvas path error: {error:?}");
+        }
+        assert_eq!(calls() - before, 2, "both fresh Canvas callbacks run before scene rejection");
+        assert!(Arc::ptr_eq(&previous, &retained.scene_snapshot().unwrap()), "failed resolve must not commit");
+        assert_eq!(super::super::tests::pixels(&retained, 64, 64), old_pixels);
+        primitive_oracle_at(&retained, &eager, "partial scene error preserves committed A");
+        assert_eq!(cache.lowered, 3, "only the changed Text lowers on failed B");
+        session.lua().load("font_bold=false;bad_path=false").exec().unwrap();
+        for warm in 0..3 {
+            let graph = session.render().unwrap();
+            let before = calls();
+            let tree = primitive_tree(&mut eager, &graph, &package, &session, 1., None, 0);
+            primitive_frame(&mut eager, tree).unwrap();
+            let tree = primitive_tree(&mut retained, &graph, &package, &session, 1., Some(&mut cache), 0);
+            let animating = primitive_frame(&mut retained, tree).unwrap();
+            let context = format!("A recovery after B scene error, warm={warm}");
+            primitive_oracle_at(&retained, &eager, &context);
+            assert_eq!(calls() - before, 2, "{context}: Canvas stays live");
+            assert_eq!(session.lua().globals().get::<usize>("paint_capture").unwrap(),
+                session.lua().globals().get::<usize>("render_calls").unwrap(), "{context}: fresh callback capture");
+            let run = retained.scene().unwrap().paint.iter().filter_map(|p| p.text.as_ref())
+                .find(|t| t.size == 18.).unwrap();
+            assert_eq!(run.hint, warm != 0, "{context}: recovery hints on its next frame");
+            assert_eq!(animating, warm == 0, "{context}: exactly one recovery settling request");
+            assert_eq!(cache.keys[&rectangle].1, rectangle_revision, "{context}: Rectangle revision unchanged");
+            let memos = retained.scene().unwrap().memos_at(&rectangle_key).collect::<Vec<_>>();
+            assert_eq!(memos.len(), 1, "{context}: unrelated Rectangle memo exists");
+            assert!(memos[0].1, "{context}: unrelated Rectangle scene stays retained through recovery");
+            assert_eq!(cache.lowered, if warm == 0 { 4 } else { 5 }, "{context}: only affected Text settles, then reuse resumes");
+        }
+        // Recovery may keep the failed B revision too. Its retained tree did
+        // not have committed B paint: it must not copy successful A's span.
+        session.lua().load("font_bold=true;bad_path=true").exec().unwrap();
+        let graph = session.render().unwrap();
+        for (ui, retention) in [(&mut eager, None), (&mut retained, Some(&mut cache))] {
+            let tree = primitive_tree(ui, &graph, &package, &session, 1., retention, 0);
+            assert!(matches!(primitive_frame(ui, tree), Err(moose::mui::mui::scene::SceneError::Geometry(
+                moose::mui::mui::geometry::Error::NonFinite))));
+        }
+        assert_eq!(cache.lowered, 6);
+        session.lua().load("bad_path=false").exec().unwrap();
+        for warm in 0..3 {
+            let graph = session.render().unwrap();
+            primitive_tick(&mut eager, &graph, &package, &session, 1., None, 0);
+            let tree = primitive_tree(&mut retained, &graph, &package, &session, 1., Some(&mut cache), 0);
+            assert!(!primitive_frame(&mut retained, tree).unwrap(), "unchanged failed B is already settled in the coordinate cache");
+            primitive_oracle_at(&retained, &eager, &format!("same-revision B recovery, warm={warm}"));
+            assert_eq!(cache.lowered, 7, "failed fresh tree retries once even with equal deps, then retains");
+            let run = retained.scene().unwrap().paint.iter().filter_map(|p| p.text.as_ref()).find(|t| t.size == 18.).unwrap();
+            assert!(run.hint);
+            assert!(retained.scene().unwrap().memos_at(&rectangle_key).all(|(_, reused)| reused), "unrelated Rectangle still reuses");
+        }
+    }
+    #[test]
+    fn native_implicit_ui_font_identity_and_device_grid_invalidate_nested_scene_copy() {
+        let (package, session) = primitive_fixture(r#"
+            local ui=require('native_ui')
+            return function() return @ui.Text {text='Hi'}.font_size(17)
+                .frame(width=45,height=33).offset(x=0.3,y=0.2) end
+        "#);
+        let first = Font::new(NOTO_SANS).unwrap();
+        let second = Font::new(NOTO_SANS).unwrap();
+        assert_ne!(first.id(), second.id(), "identical bytes must still have different cache identities");
+        let (mut retained, mut eager) = primitive_uis();
+        let mut cache = PrimitiveRetention::default();
+        let mut outer_builds = 0;
+        let mut first_origin = None;
+        let mut grid_changed_origin = false;
+        for (step, (font, scale)) in [
+            (Some(first.clone()), None), (Some(second.clone()), None),
+            (Some(second.clone()), Some(1.)), (Some(second.clone()), Some(2.)),
+            (Some(second.clone()), Some(1.25)), (Some(second.clone()), None),
+            (None, None), (Some(first.clone()), None),
+        ].into_iter().enumerate() {
+            for ui in [&mut retained, &mut eager] {
+                ui.set_font(font.clone()); ui.set_scale(scale);
+            }
+            for warm in 0..2 {
+                let context = format!("implicit font/device grid: step={step}, scale={scale:?}, warm={warm}");
+                let graph = session.render().unwrap();
+                let tree = primitive_tree(&mut eager, &graph, &package, &session, 1., None, 0);
+                primitive_frame(&mut eager, stack([tree]).w(64.).h(64.)).unwrap();
+                let tree = retained.memo("native-environment-outer", 0, |ui| {
+                    outer_builds += 1;
+                    stack([primitive_tree(ui, &graph, &package, &session, 1., Some(&mut cache), 0)]).w(64.).h(64.)
+                });
+                let animating = primitive_frame(&mut retained, tree).unwrap();
+                primitive_oracle_at(&retained, &eager, &context);
+                assert!(!animating, "{context}: environment rewalk does not poll forever");
+                assert_eq!(outer_builds, 1, "{context}: outer closure still retained");
+                assert_eq!(cache.lowered, 1, "{context}: inner native lowering still retained");
+                assert!(cache.keys.values().all(|(key, _)| key.style.font.is_none()), "implicit, not authored font dependency");
+                let run = retained.scene().unwrap().paint.iter().find_map(|p| p.text.as_ref()
+                    .filter(|t| t.size == 17.).map(|t| (p, t)));
+                if let Some(font) = &font {
+                    let (paint, run) = run.expect("default-font glyph paint");
+                    assert!(!run.glyphs.is_empty(), "{context}: glyphs must paint");
+                    assert_eq!(run.fonts[0].id(), font.id(), "{context}: copied glyphs cannot keep the old default identity");
+                    let origin = *first_origin.get_or_insert(run.origin);
+                    if (2..=4).contains(&step) { grid_changed_origin |= run.origin != origin; }
+                    let spans = retained.scene().unwrap().memos_at(paint.key.as_str()).collect::<Vec<_>>();
+                    assert_eq!(spans.len(), 2, "{context}: outer and native inner ancestors");
+                    assert!(spans.iter().all(|(_, reused)| *reused == (warm > 0)), "{context}: environment blocks nested paint copying once, then restores it");
+                } else {
+                    assert!(run.is_none(), "{context}: removing the default font removes old glyph paint");
+                }
+            }
+        }
+        assert!(grid_changed_origin, "actual device scale, not native fit_scale, changes a fixed-frame glyph baseline");
+    }
+    #[test]
     fn native_authored_font_file_family_and_inherited_identity_match_eager() {
         let source = r#"
             local ui=require('native_ui')

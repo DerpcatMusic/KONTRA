@@ -225,3 +225,83 @@ fn text_runs_handle_is_shared_and_bounded() {
         assert!(runs.len() <= 2048);
     }
 }
+
+#[test]
+fn implicit_face_and_fallback_changes_rewalk_nested_paint_but_keep_memo_builds() {
+    fn label() -> El {
+        text("Hi😀").text_size(18.).w(100.).h(32.).id("environment-label")
+    }
+    fn plain() -> El {
+        stack([stack([label()]).w(100.).h(32.)]).w(100.).h(32.)
+    }
+    #[cfg(feature = "cpu")]
+    fn pixels(ui: &Ui) -> Vec<u8> {
+        use crate::vello::{self, vello_cpu::{Pixmap, RenderContext, Resources}};
+        let mut ctx = RenderContext::new(100, 32);
+        let mut resources = Resources::default();
+        vello::paint(&mut vello::Cpu {
+            ctx: &mut ctx, resources: &mut resources, cache: &mut vello::Cache::default(),
+        }, ui.scene().unwrap(), vello::kurbo::Affine::IDENTITY).unwrap();
+        ctx.flush();
+        let mut pix = Pixmap::new(100, 32);
+        ctx.render(&mut pix, &mut resources);
+        pix.take_unpremultiplied().iter().flat_map(|p| [p.r, p.g, p.b, p.a]).collect()
+    }
+    let hack = Font::new(epaint_default_fonts::HACK_REGULAR).unwrap();
+    let ubuntu = Font::new(epaint_default_fonts::UBUNTU_LIGHT).unwrap();
+    let emoji = Font::new(epaint_default_fonts::NOTO_EMOJI_REGULAR).unwrap();
+    let (mut retained, mut eager) = (Ui::default().font(hack.clone()), Ui::default().font(hack.clone()));
+    let mut builds = (0, 0);
+    #[cfg(feature = "cpu")]
+    let mut before_face_swap = Vec::new();
+    for step in 0..4 {
+        if step == 1 {
+            // The existing public fallback API appends; there is no remove/
+            // reorder setter. Exercise a real selected fallback, not just ids.
+            retained = retained.fallback_font(emoji.clone());
+            eager = eager.fallback_font(emoji.clone());
+        }
+        for warm in 0..2 {
+            let tree = retained.memo("environment-outer", 0, |ui| {
+                builds.0 += 1;
+                let child = ui.memo("environment-inner", 0, |_| {
+                    builds.1 += 1;
+                    label()
+                });
+                stack([stack([child]).w(100.).h(32.)]).w(100.).h(32.)
+            });
+            // Also swap after the tree was built: heating closures in a setter
+            // alone would be too late to reject this frame's old paint span.
+            if warm == 0 && step >= 2 {
+                let font = if step == 2 { &ubuntu } else { &hack };
+                retained.set_font(Some(font.clone())); eager.set_font(Some(font.clone()));
+            }
+            let animating = retained.frame(tree, Some(Size::new(100., 32.)), Input::default(), 0.016).unwrap().animating;
+            eager.frame(plain(), Some(Size::new(100., 32.)), Input::default(), 0.016).unwrap();
+            let context = format!("default face/fallback step={step}, warm={warm}");
+            assert_eq!(builds, (1, 1), "{context}: both closure levels stay retained");
+            assert!(!animating, "{context}: no permanent environment wake");
+            assert_eq!(retained.scene().unwrap().paint, eager.scene().unwrap().paint, "{context}: exact glyph/font paint");
+            let frames = |ui: &Ui| ui.scene().unwrap().surfaces().map(|s| s.frame).collect::<Vec<_>>();
+            assert_eq!(frames(&retained), frames(&eager), "{context}: all surface frames");
+            let scene = retained.scene().unwrap();
+            let run = scene.paint.iter().find(|p| p.key.as_str() == "environment-label").unwrap().text.as_ref().unwrap();
+            assert_eq!(run.fonts[0].id(), if step == 2 { ubuntu.id() } else { hack.id() }, "{context}: current default face");
+            assert!(!run.glyphs.is_empty(), "{context}: visible glyphs");
+            if step > 0 {
+                assert_eq!(run.fonts[1].id(), emoji.id(), "{context}: current fallback chain");
+                assert!(run.glyphs.iter().any(|g| g.font == 1 && g.id != 0), "{context}: emoji really selects the fallback");
+            }
+            let spans = scene.memos_at("environment-label").collect::<Vec<_>>();
+            assert_eq!(spans.len(), 2, "{context}: nested ancestors");
+            assert!(spans.iter().all(|(_, reused)| *reused == (warm > 0)), "{context}: one paint rewalk then reuse");
+            #[cfg(feature = "cpu")]
+            {
+                let actual = pixels(&retained);
+                assert_eq!(actual, pixels(&eager), "{context}: strict CPU pixels");
+                if step == 1 { before_face_swap = actual; }
+                else if step == 2 { assert_ne!(actual, before_face_swap, "{context}: genuinely different face changes pixels"); }
+            }
+        }
+    }
+}
