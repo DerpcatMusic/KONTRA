@@ -2365,16 +2365,49 @@ impl Gen<'_, '_> {
                 }
                 true
             }
-            SetListener | ChangeListenerPar => {
-                // The timer driver reads the period from the store.
-                self.arg(args, 1, dst)?;
-                let key = [
-                    Key::Fixed(LISTENER_TAG),
-                    Key::Arg(0),
-                    Key::Fixed(0),
-                    Key::Fixed(LISTENER_TAG),
-                ];
-                self.store(args, key, dst, true)?;
+            SetListener => {
+                // Functions are lowered in their caller's callback context.
+                return fault(span, "set_listener can only be used in on init");
+            }
+            ChangeListenerPar => {
+                self.arg(args, 0, dst)?;
+                self.arg(args, 1, t)?;
+                let check = reg(dst, 2)?;
+                let mut done = Vec::new();
+                for signal in [b::signal::TIMER_MS, b::signal::TIMER_BEAT] {
+                    self.set(check, i64::from(signal))?;
+                    self.emit(I::CompareLocal {
+                        lhs: check,
+                        rhs: dst,
+                        comparison: Cmp::Equal,
+                    })?;
+                    let miss = self.jump_if_zero(check)?;
+                    let zero = self.jump_if_zero(t)?;
+                    let (lo, hi) = crate::sema::listener_range(builtin, signal, span)?;
+                    self.in_range(t, lo, hi, check)?;
+                    let invalid = self.jump_if_zero(check)?;
+                    self.land(zero);
+                    // ponytail: invalid live values leave the period unchanged;
+                    // no new service or timer driver is needed for validation.
+                    self.store(
+                        args,
+                        [
+                            Key::Fixed(LISTENER_TAG),
+                            Key::Fixed(signal),
+                            Key::Fixed(0),
+                            Key::Fixed(LISTENER_TAG),
+                        ],
+                        t,
+                        true,
+                    )?;
+                    done.push(self.jump()?);
+                    self.land(invalid);
+                    self.land(miss);
+                }
+                for end in done {
+                    self.land(end);
+                }
+                self.set(dst, 0)?;
                 true
             }
             LoadArrayStr | SaveArrayStr => {
