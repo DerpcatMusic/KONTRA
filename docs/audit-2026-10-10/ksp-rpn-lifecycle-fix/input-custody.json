@@ -1,0 +1,52 @@
+{
+  "inputs": [
+    {
+      "path": "round10-service-requirements.md",
+      "sha256": "fb2230c2c22efea51d9c08a70cbecb85b4c9d9a6f912b209d246bfc1b328f262"
+    },
+    {
+      "path": "round10-service-requirements.json",
+      "sha256": "613adb5b09356b7616794e0db90b3b38a4d7ba4f54636f8e805c658c465009c7"
+    },
+    {
+      "path": "round8-service-consumer-handoff.md",
+      "sha256": "0191590c938abe9bb86fe6c8e708b5059f0a22e9c268fe5eade1096a41fa3989"
+    },
+    {
+      "path": "round8-service-consumer-handoff.json",
+      "sha256": "744e8f04aba0b70fe112a21c8800f8f16c5db22d0104c766d1ab77a3b0da0776"
+    },
+    {
+      "path": "rpn-callback-constants-next.md",
+      "sha256": "6259cb2ef8cec645ad1065a4d0e38efd7479ba78c9caebf7dc38ca1ff6ed6af3"
+    },
+    {
+      "path": "ksp-rpn-consumer-next.md",
+      "sha256": "23b8915336c2e07fa81950a7d212c9d3646e73098f0c7e19206666a431669ad0"
+    },
+    {
+      "path": "ksp-rpn-consumer-next.json",
+      "sha256": "1f8bf025bea9497db14e5e1bce7a39797708e7cd53308463d254819ee2391151"
+    },
+    {
+      "path": "ksp-rpn-consumer-source-review.md",
+      "sha256": "63f9f77c1614397804440d98a95796d9ebd80ccbb1860d8111e126d3681fa779"
+    },
+    {
+      "path": "ksp-rpn-consumer-source-review.json",
+      "sha256": "f45d3b9347eb1dfd853a529dd07eee85f74b87bc92d7f13ae6e7ae6671d3c242"
+    },
+    {
+      "path": "ksp-rpn-lifecycle-fix-rea.json",
+      "sha256": "06e3167489c54e4ba538cd821e87f2354740727ef5d0b1d1057a414c1133cf73"
+    }
+  ],
+  "archives": {
+    "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-lifecycle-fix-snapshot/reference/ksp-general-commands.html": "9d71af86f192abff29804487e0c00d7b7b84b9fa191d04d4477f38b893cff0a2",
+    "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-lifecycle-fix-snapshot/reference/ksp-callbacks.html": "f91a2a1411c18e84e15f4e89e74499c3ae74dec75f230bb8c99df65e316267ba",
+    "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-lifecycle-fix-snapshot/reference/ksp-variables.html": "9a5ab14188022767684a1dea13a0ca0e060e0838a788073b7a26b50b0030247e",
+    "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-lifecycle-fix-snapshot/reference/kontakt-classic.html": "846a09243ad7d17d8daa92bf5105418501ebb25cd358ba8d09108ffb5d4ae7c4"
+  },
+  "snapshot": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-lifecycle-fix-snapshot",
+  "parent_snapshot": "Git object copies of exactb557 retrieved after source edits; never mutable producer files."
+}
