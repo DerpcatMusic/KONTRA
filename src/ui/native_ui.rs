@@ -1959,16 +1959,16 @@ mod tests {
     #[test]
     fn native_retention_analysis_uses_the_opt_in_phase_sink() {
         use crate::plugin::ui_activity::{Activity, Phase};
-        let (package, mut session) = primitive_fixture("return function() return Text('phase') end");
+        let (package, mut session) = primitive_fixture("local ui=require('native_ui'); return function() return @ui.Text{text='phase'} end");
         let activity = Arc::new(Activity::new(true));
         session.set_activity(Some(activity.clone()));
         let graph = session.render().unwrap();
-        let mut ui = Ui::default();
+        let (mut ui, _) = primitive_uis();
         let mut retention = PrimitiveRetention::default();
-        primitive_tree(&mut ui, &graph, &package, &session, 1., Some(&mut retention), 0);
+        primitive_tick(&mut ui, &graph, &package, &session, 1., Some(&mut retention), 0);
         assert_eq!(activity.phase_snapshot().unwrap()[Phase::UiNativeRetentionAnalysis as usize * 3], 1);
         session.set_activity(Some(Arc::new(Activity::new(false))));
-        primitive_tree(&mut ui, &graph, &package, &session, 1., Some(&mut retention), 1);
+        primitive_tick(&mut ui, &graph, &package, &session, 1., Some(&mut retention), 1);
     }
 
     fn primitive_fixture(source: &str) -> (Arc<Package>, Session) {
