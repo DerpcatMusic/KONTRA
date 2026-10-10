@@ -1696,20 +1696,21 @@ impl Gen<'_, '_> {
                 true
             }
             Sgn => {
-                // (x > 0) - (x < 0); the argument is evaluated twice.
+                // (x > 0) - (0 > x), evaluating x once. CompareReal writes only
+                // lhs, so the first comparison preserves all IEEE bits in dst.
                 let u = reg(dst, 2)?;
                 self.arg(args, 0, dst)?;
-                self.arg(args, 0, u)?;
                 self.set(t, real_bits(0.0))?;
+                self.set(u, real_bits(0.0))?;
+                self.emit(I::Op(Op::CompareReal {
+                    lhs: u,
+                    rhs: dst,
+                    comparison: Cmp::Greater,
+                }))?;
                 self.emit(I::Op(Op::CompareReal {
                     lhs: dst,
                     rhs: t,
                     comparison: Cmp::Greater,
-                }))?;
-                self.emit(I::Op(Op::CompareReal {
-                    lhs: u,
-                    rhs: t,
-                    comparison: Cmp::Less,
                 }))?;
                 self.emit(I::Binary32 {
                     lhs: dst,
