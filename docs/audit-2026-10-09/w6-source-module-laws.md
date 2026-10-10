@@ -1,6 +1,6 @@
 # Original source-module control contracts
 
-Base: `c1d8f2ca`. W6 supplies checked DSP laws; W9 owns whole-voice consumption and W5 owns addressed engine-parameter binding/lowering. This slice does not broaden playback admission.
+Base: `c1d8f2ca`. W6 supplies checked DSP laws; W9 owns whole-voice consumption and W5 owns addressed engine-parameter binding/lowering. This work does not broaden imported-instrument or whole-voice playback admission.
 
 ## Normalized LFO frequency
 
@@ -29,6 +29,47 @@ The emitter probe substitutes only CRT memory operations (`malloc`, `free`, `mem
 
 The installed Conflux witness contains 198 nonzero Constant-to-intensity assignments: 66 each to physical internal slots 1, 2 and 3, whose outgoing target counts are respectively 7, 5 and 7. The test verifies those destination source rows and ordered targets exist. It does not claim those assignments execute.
 
+## ID25 in the shared modulation evaluator
+
+`ModScaleLaw::KontaktIntensity { depth, flags, unit }` represents one intensity
+assignment to one outgoing target. The shared voice evaluator reads that target's
+saved `ModRoute::depth`, divides it by the explicit signed `unit` (physical depth
+units per normalized intensity), applies ID25, and converts back. This keeps the
+additive branch correct for pitch/decibel units and for a zero saved target base.
+The existing generic scale law remains `Multiply`; the shared IR lowerer selects
+that default and does not create native assignments or new parameter bindings.
+
+`apply(normalized_base, processed_source, source_bipolar)` implements both emitted
+expressions. Its source-domain argument selects `(source + 1) / 2` for bipolar
+input, independently of target flags. Its input has already passed conditional
+inversion; it does not implement or claim the native `fcinv_*` intrinsics. Only
+flag0x04 selects the combination expression. The helper preserves the stated
+operator order without clamping or algebraic simplification.
+
+Preparation accepts only saved flags0x10/0x14, unit-range assignment depth and
+normalized saved base, and finite nonzero outgoing units. Lag, shaping,
+sample-start initialization, native defaulting (missing flag0x10), other flags
+including unverified inversion, and controller/pressure/timbre/bend/script live
+sources are rejected. No initialized/live parameter overlay or native importer
+admission is added. W9 still owns whole-voice consumption; W5 owns binding and
+lawful unit conversion.
+
+The compact fixture retains all512 captured emitter cases and their four unique
+expressions. A test interprets the captured operators at92160 numeric points
+across both source domains; opaque inversion calls receive already processed
+signals. Separate audio tests exercise both branches in the actual voice render,
+independent outgoing bases, signed physical units and heap guards. These verify
+the derived expression contract in product code, not numeric native callback
+parity. Pinned v1 `src/modulation.rs` rejects source-driven LFOs and supplies no
+ID25 evaluator to copy; its saved-only rejection remains applicable.
+
+Receipt: `/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w6-id25-intensity/SUMMARY.json`.
+The mathematical RED exits101; all four new rendered checks also fail before
+the shared evaluator fix. GREEN passes the512-case/92160-point matrix, all17
+voice-modulation tests (one timing test remains ignored), and core area no-run.
+Mathematical and rendered checks pass heap guards. Native compiled callback
+parity, timed metrics and corpus-wide acceptance are not claimed.
+
 ## Verification
 
 Receipt: `/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w6-source-module-laws/frequency-SUMMARY.json`. The corrected wrapper uses this owned worktree's target. RED fails against a linear-frequency stub; GREEN passes all 11 copied-control tests, including 45 original f64 increment checkpoints and heap guards. `sampler-core` area no-run and the installed Conflux intensity witness pass.
@@ -37,4 +78,4 @@ Receipt: `/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w6-source-module-laws/frequen
 
 `tools/dsp/verify_source_module_base.py` and `tools/dsp/verify_target_expression.py` retain the reproducible bounded getter/emitter checks. Their receipts are `native-source-module-base.json` and `native-target-expression.json` beside `intensity-SUMMARY.json`. These tools do not build or launch a Kontakt host. No cargo gate is repeated for this documentation/probe-only follow-up, and no CPU/RSS/corpus acceptance is claimed.
 
-NEXT: numerically verify per-target intensity combination, then saved Digital Multi fade geometry and W5/W9 admission.
+NEXT: ID25 intensity READY; saved Digital Multi remains a separate deliverable.
