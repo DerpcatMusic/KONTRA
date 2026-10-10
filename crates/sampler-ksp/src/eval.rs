@@ -1528,7 +1528,17 @@ impl Eval<'_> {
                 )
             }
             SetListener | ChangeListenerPar => {
+                if builtin == SetListener && self.callback_type != b::cb::INIT {
+                    return fault(span, "set_listener can only be used in on init");
+                }
                 let (signal, value) = (self.int(args, 0)?, self.int(args, 1)?);
+                let (lo, hi) = crate::sema::listener_range(builtin, signal, span)?;
+                if !(builtin == ChangeListenerPar && value == 0) && !(lo..=hi).contains(&value) {
+                    return fault(
+                        span,
+                        format!("{} parameter must be {lo}..={hi}", builtin.name()),
+                    );
+                }
                 self.st.model.listeners.insert(signal, value);
                 V::I(0)
             }
