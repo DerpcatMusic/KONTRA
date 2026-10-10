@@ -362,3 +362,261 @@ fn waveform_cache_hit_miss_roundtrip_and_missing_captured_source_rejection() {
     assert!(sampler_ksp::compile_initialized(&source,48000,KspLimits::LIBRARY,&[],bad).is_err());
     assert!(rt.take_fault().is_none());
 }
+
+#[test]
+fn waveform_projection_table_addresses_remain_per_index_in_final_write_order() {
+    let source = "on init declare $result declare ui_waveform $w(1,1)
+        attach_zone($w,27,3)
+        set_ui_wf_property($w,$UI_WF_PROP_TABLE_VAL,3,77)
+        set_ui_wf_property($w,$UI_WF_PROP_FLAGS,0,11)
+        set_ui_wf_property($w,$UI_WF_PROP_TABLE_VAL,4,88)
+        set_ui_wf_property($w,$UI_WF_PROP_TABLE_VAL,3,99)
+        $result := get_ui_wf_property($w,$UI_WF_PROP_TABLE_VAL,3) end on";
+    let (rt, view) = runtime(source); let plan = rt.active_plan(); let id = ui(&view, "$w");
+    assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 0), Ok(99));
+    assert_eq!(stored(&rt, plan, 0, id, Property::Table, 3), Some(99));
+    assert_eq!(stored(&rt, plan, 0, id, Property::Table, 4), Some(88));
+    assert_eq!(wave(&view, "$w").table, [0,0,0,99,88]);
+    let table: Vec<_> = view.model().requests.iter().filter(|r| {
+        r.args.get(1) == Some(&sampler_ksp::model::Value::Text("$UI_WF_PROP_TABLE_VAL".into()))
+    }).collect();
+    assert_eq!(table.len(), 2);
+    assert_eq!(table[0].args[2], sampler_ksp::model::Value::Int(4));
+    assert_eq!(table[1].args[2], sampler_ksp::model::Value::Int(3));
+}
+
+fn highlight_writes(name: &str, indices: &[i32]) -> String {
+    indices.iter().map(|index| format!(
+        "set_ui_wf_property({name},$UI_WF_PROP_TABLE_IDX_HIGHLIGHT,{index},1) "
+    )).collect::<Vec<_>>().join("")
+}
+
+#[test]
+fn waveform_init_highlight_revisit_and_clear_getters_match_seeded_scalar_state() {
+    for indices in [[3, 4, 3], [-1, 3, -1], [3, 3, 3]] {
+        let mut calls = String::new();
+        for (i, index) in indices.into_iter().enumerate() {
+            calls.push_str(&highlight_writes("$w", &[index]));
+            calls.push_str(&format!("%read[{i}] := get_ui_wf_property($w,$UI_WF_PROP_TABLE_IDX_HIGHLIGHT,0) "));
+        }
+        let source = format!("on init declare ui_table %read[3](1,1,100)
+            declare ui_waveform $w(1,1) attach_zone($w,27,3) {calls} end on");
+        let (rt, view) = runtime(&source); let plan = rt.active_plan(); let id = ui(&view, "$w");
+        let model = view.ui(&|_| None).unwrap();
+        assert_eq!(model.widgets.iter().find(|w| w.name == "%read").unwrap().value,
+            Some(sampler_ui_ir::Value::Integers(indices.to_vec())));
+        let expected = indices[2];
+        assert_eq!(stored(&rt, plan, 0, id, Property::Highlight, 0), Some(i64::from(expected)));
+        assert_eq!(wave(&view, "$w").highlighted, u32::try_from(expected).ok());
+    }
+}
+
+#[test]
+fn waveform_runtime_highlight_revisit_clear_and_unchanged_revisit_agree_before_and_after_drain() {
+    for indices in [[3, 4, 3], [-1, 3, -1], [3, 3, 3]] {
+        let mut calls = String::new();
+        for (name, index) in ["$first", "$second", "$last"].into_iter().zip(indices) {
+            calls.push_str(&highlight_writes("$w", &[index]));
+            calls.push_str(&format!("{name} := get_ui_wf_property($w,$UI_WF_PROP_TABLE_IDX_HIGHLIGHT,0) "));
+        }
+        let source = format!("on init declare $first declare $second declare $last
+            declare ui_waveform $w(1,1) declare ui_waveform $other(1,1) declare ui_button $apply
+            attach_zone($w,27,3) attach_zone($other,91,0)
+            {} {} end on on ui_control($apply) {calls} end on",
+            highlight_writes("$w", &[indices[0]]), highlight_writes("$other", &[9]));
+        let (mut rt, mut view) = runtime(&source); let plan = rt.active_plan();
+        let id = ui(&view, "$w"); let other_id = ui(&view, "$other");
+        let before = wave(&view, "$w");
+        let apply = sampler_ksp::derived_control_id(0, "$apply");
+        support::without_heap(|| {
+            invoke_id(&mut rt, plan, apply);
+            for (cell, expected) in indices.into_iter().enumerate() {
+                assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), cell as u32), Ok(i64::from(expected)));
+            }
+            assert_eq!(stored(&rt, plan, 0, id, Property::Highlight, 0), Some(i64::from(indices[2])));
+            assert_eq!(stored(&rt, plan, 0, other_id, Property::Highlight, 0), Some(9));
+            assert!(rt.take_fault().is_none());
+        });
+        assert_eq!(wave(&view, "$w"), before); // no fake dependence on drain
+        rt.drain_effects(|e| {
+            assert!(view.apply_ui_effect_for(plan, ScriptInstanceId(0), e)); true
+        });
+        assert_eq!(wave(&view, "$w").highlighted, u32::try_from(indices[2]).ok());
+        assert_eq!(wave(&view, "$other").highlighted, Some(9));
+        // Exact retained address: only Table is per index.
+        let highlights: Vec<_> = view.model().requests.iter().filter(|r| {
+            r.args.first() == Some(&sampler_ksp::model::Value::Int(id))
+                && r.args.get(1) == Some(&sampler_ksp::model::Value::Text("$UI_WF_PROP_TABLE_IDX_HIGHLIGHT".into()))
+        }).collect();
+        assert_eq!(highlights.len(), 1);
+        assert_eq!(highlights[0].args[2], sampler_ksp::model::Value::Int(indices[2]));
+    }
+}
+
+#[test]
+fn waveform_highlight_projection_preserves_reattach_table_widget_and_effect_boundaries() {
+    let source = format!("on init declare $result declare ui_waveform $w(1,1)
+        declare ui_waveform $other(1,1) declare ui_button $apply
+        attach_zone($w,27,3) attach_zone($other,27,0) {} end on
+        on ui_control($apply)
+        {} set_ui_wf_property($w,$UI_WF_PROP_TABLE_VAL,3,77)
+        message(5) {} {}
+        attach_zone($w,91,11) {}
+        set_ui_wf_property($w,$UI_WF_PROP_PLAY_CURSOR,0,24000) {}
+        $result := get_ui_wf_property($w,$UI_WF_PROP_TABLE_IDX_HIGHLIGHT,0) end on",
+        highlight_writes("$w", &[3]), highlight_writes("$w", &[4]),
+        highlight_writes("$other", &[8]), highlight_writes("$w", &[3]),
+        highlight_writes("$w", &[3, 4]), highlight_writes("$w", &[3]));
+    let (mut rt, mut view) = runtime(&source); let plan = rt.active_plan(); let id = ui(&view, "$w");
+    invoke(&mut rt, plan, 0, "$apply");
+    assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 0), Ok(3));
+    assert_eq!(stored(&rt, plan, 0, id, Property::Highlight, 0), Some(3));
+    assert_eq!(stored(&rt, plan, 0, id, Property::Table, 3), None);
+    let mut commands = Vec::new();
+    rt.drain_effects(|e| {
+        commands.push(view.service(e.service).unwrap());
+        // message is unrelated and need not be a UI-projectable service.
+        view.apply_ui_effect_for(plan, ScriptInstanceId(0), e); true
+    });
+    assert_eq!(commands, ["set_ui_wf_property", "set_ui_wf_property", "message",
+        "set_ui_wf_property", "set_ui_wf_property", "attach_zone",
+        "set_ui_wf_property", "set_ui_wf_property", "set_ui_wf_property", "set_ui_wf_property"]);
+    let w = wave(&view, "$w");
+    assert_eq!((w.zone, w.flags, w.cursor_us, w.highlighted), (91, 11, 24000, Some(3)));
+    assert!(w.table.is_empty());
+    assert_eq!(wave(&view, "$other").highlighted, Some(8));
+    assert!(rt.take_fault().is_none());
+}
+
+#[cfg(feature = "cache")]
+fn cached_compile(source: &str, json: serde_json::Value) -> Result<Script, sampler_ksp::Error> {
+    let restored = sampler_ksp::restore_initialized(source, KspLimits::LIBRARY,
+        serde_json::from_value(json).unwrap()).unwrap();
+    sampler_ksp::compile_initialized(source, 48000, KspLimits::LIBRARY, &[], restored)
+}
+
+#[cfg(feature = "cache")]
+#[test]
+fn waveform_cached_requests_reject_index_type_shape_ui_and_source_schema_bypass() {
+    use serde_json::json;
+    let source = INIT;
+    let init = sampler_ksp::initialize(source, KspLimits::LIBRARY, &environment(0)).unwrap();
+    let baseline = serde_json::to_value(init.capture_initialized().unwrap()).unwrap();
+    let id = ui(&script(source, 0).view(), "$w");
+    let int = |n| json!({"Int": n});
+    let text = |s: &str| json!({"Text": s});
+    let highlight = text("$UI_WF_PROP_TABLE_IDX_HIGHLIGHT");
+    let cursor = text("$UI_WF_PROP_PLAY_CURSOR");
+    let mut malformed = Vec::new();
+    for index in [-2, 65536, i32::MAX] {
+        malformed.push(("set_ui_wf_property", vec![int(id), highlight.clone(), int(index), int(1)]));
+    }
+    for index in [-1, 65536] {
+        malformed.push(("set_ui_wf_property", vec![int(id), text("$UI_WF_PROP_TABLE_VAL"), int(index), int(77)]));
+    }
+    malformed.extend([
+        ("set_ui_wf_property", vec![int(id), cursor.clone(), int(1), int(99)]),
+        ("set_ui_wf_property", vec![int(id), int(4), int(3), int(1)]),
+        ("set_ui_wf_property", vec![int(id), text("$UI_WF_PROP_UNKNOWN"), int(0), int(99)]),
+        ("set_ui_wf_property", vec![int(id), highlight.clone(), text("bad"), int(1)]),
+        ("set_ui_wf_property", vec![int(id), highlight.clone(), int(3), text("bad")]),
+        ("set_ui_wf_property", vec![int(id), highlight.clone(), int(3)]),
+        ("set_ui_wf_property", vec![int(id), highlight.clone(), int(3), int(1), int(9)]),
+        ("set_ui_wf_property", vec![int(id + 1), highlight.clone(), int(3), int(1)]), // button
+        ("set_ui_wf_property", vec![int(-1), highlight.clone(), int(3), int(1)]),
+        ("set_ui_wf_property", vec![text("$Missing"), highlight.clone(), int(3), int(1)]),
+        ("set_ui_wf_property", vec![json!({"Real": f64::from(id)}), highlight.clone(), int(3), int(1)]),
+        ("attach_zone", vec![int(id), int(0), int(3)]),
+        ("attach_zone", vec![int(id), int(-1), int(3)]),
+        ("attach_zone", vec![int(id), int(28), int(3)]),
+        ("attach_zone", vec![int(id), text("27"), int(3)]),
+        ("attach_zone", vec![int(id), int(27), text("3")]),
+        ("attach_zone", vec![int(id), int(27)]),
+        ("attach_zone", vec![int(id), int(27), int(3), int(9)]),
+    ]);
+    for (command, args) in malformed {
+        let mut json = baseline.clone();
+        json["model"]["requests"].as_array_mut().unwrap().push(json!({"command": command, "args": args}));
+        // No Script/Store/UI snapshot is returned for an incompatible recognized request.
+        assert!(cached_compile(source, json).is_err(), "{command}");
+    }
+    let mut no_attach = baseline.clone();
+    no_attach["model"]["requests"].as_array_mut().unwrap().retain(|r| r["command"] != "attach_zone");
+    assert!(cached_compile(source, no_attach).is_err());
+    // Even a malformed request later erased by reset must not be promoted silently.
+    let mut erased = baseline.clone();
+    let requests = erased["model"]["requests"].as_array_mut().unwrap();
+    requests.push(json!({"command": "set_ui_wf_property",
+        "args": [int(id), highlight, int(65536), int(1)]}));
+    requests.push(json!({"command": "attach_zone", "args": [int(id), int(91), int(11)]}));
+    assert!(cached_compile(source, erased).is_err());
+}
+
+#[cfg(feature = "cache")]
+#[test]
+fn waveform_cached_boundary_requests_and_imported_names_match_fresh_owned_state() {
+    use sampler_ksp::model::{PerformanceControl, PerformanceView, WidgetKind};
+    use serde_json::json;
+    let source = "on init load_performance_view(\"owned\")
+        declare ui_waveform $w(1,1) attach_zone($w,27,3)
+        attach_zone($Imported,91,0) end on";
+    let mut env = environment(0);
+    let mut imported = PerformanceControl::assumed("$Imported", WidgetKind::Waveform);
+    imported.params = vec![1,1];
+    env.performance_view = PerformanceView { controls: vec![imported], ..Default::default() };
+    let init = sampler_ksp::initialize(source, KspLimits::LIBRARY, &env).unwrap();
+    let baseline = serde_json::to_value(init.capture_initialized().unwrap()).unwrap();
+    for index in [-1, 0, 65535] {
+        let mut json = baseline.clone();
+        let requests = json["model"]["requests"].as_array_mut().unwrap();
+        requests.push(json!({"command": "set_ui_wf_property", "args": [
+            {"Text": "$Imported"}, {"Text": "$UI_WF_PROP_TABLE_IDX_HIGHLIGHT"}, {"Int": index}, {"Int": 1}]}));
+        for table_index in [0, 65535] {
+            requests.push(json!({"command": "set_ui_wf_property", "args": [
+                {"Text": "$w"}, {"Text": "$UI_WF_PROP_TABLE_VAL"}, {"Int": table_index}, {"Int": 77}]}));
+        }
+        requests.push(json!({"command": "set_ui_wf_property", "args": [
+            {"Text": "$w"}, {"Text": "$UI_WF_PROP_PLAY_CURSOR"}, {"Int": 0}, {"Int": 12000}]}));
+        let cached = cached_compile(source, json).unwrap();
+        let view = cached.view(); let imported_id = ui(&view, "$Imported"); let id = ui(&view, "$w");
+        let fresh_source = source.replace("end on", &format!("{}
+            set_ui_wf_property($w,$UI_WF_PROP_TABLE_VAL,0,77)
+            set_ui_wf_property($w,$UI_WF_PROP_TABLE_VAL,65535,77)
+            set_ui_wf_property($w,$UI_WF_PROP_PLAY_CURSOR,0,12000) end on",
+            highlight_writes("$Imported", &[index])));
+        let fresh = sampler_ksp::compile_with(&fresh_source, 48000, KspLimits::LIBRARY, &[], &env).unwrap();
+        assert_eq!(wave(&view, "$w"), wave(&fresh.view(), "$w"));
+        assert_eq!(wave(&view, "$Imported"), wave(&fresh.view(), "$Imported"));
+        let plan = prepared(vec![cached]); let limits = limits(&plan);
+        let rt = Runtime::new(plan, limits).unwrap(); let plan = rt.active_plan();
+        assert_eq!(stored(&rt, plan, 0, imported_id, Property::Highlight, 0), Some(i64::from(index)));
+        assert_eq!(stored(&rt, plan, 0, id, Property::Table, 65535), Some(77));
+        assert_eq!(stored(&rt, plan, 0, id, Property::Cursor, 0), Some(12000));
+    }
+}
+
+#[test]
+fn waveform_full_outbox_matching_tail_replacement_remains_admitted() {
+    let source = format!("{} on note message(5) end on on ui_control($apply)
+        inc($next) set_ui_wf_property($w,$UI_WF_PROP_PLAY_CURSOR,0,$next) end on",
+        INIT.replace("on init", "on init declare $next := 23999"));
+    let (mut rt, mut view) = runtime(&source); let plan = rt.active_plan(); let id = ui(&view, "$w");
+    for _ in 0..EFFECT_CAPACITY - 1 { trigger_once(&mut rt, 60); }
+    invoke(&mut rt, plan, 0, "$apply"); // append last admissible slot
+    let apply = sampler_ksp::derived_control_id(0, "$apply");
+    support::without_heap(|| { invoke_id(&mut rt, plan, apply); });
+    assert!(rt.take_fault().is_none());
+    assert_eq!(stored(&rt, plan, 0, id, Property::Cursor, 0), Some(24001));
+    let mut count = 0;
+    rt.drain_effects(|e| {
+        count += 1;
+        if view.service(e.service) == Some("set_ui_wf_property") {
+            assert_eq!(e.args()[3], 24001);
+            assert!(view.apply_ui_effect_for(plan, ScriptInstanceId(0), e));
+        }
+        true
+    });
+    assert_eq!(count, EFFECT_CAPACITY);
+    assert_eq!(rt.dropped_effects(), 0);
+    assert_eq!(wave(&view, "$w").cursor_us, 24001);
+}
