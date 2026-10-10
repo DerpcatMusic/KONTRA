@@ -1,0 +1,312 @@
+{
+  "source_sha": "c4fd26fd0a2f1dab3780d3c8b711c302f2713f53",
+  "source_tree": "f3963b8897d2a244a9da7630dc228094cbe9bda1",
+  "base_sha": "366515c96b583747d1bd77c881b1f6909e86cf0d",
+  "rust_tests": "NOT_RUN",
+  "native_parity": "UNKNOWN",
+  "cpu_ram_acceptance": "UNACHIEVED",
+  "files": [
+    {
+      "path": "crates/sampler-core/src/engine_parameters.rs",
+      "git_blob": "ec4d11366a62c48bc35baa841d7e328ca9dc822c",
+      "sha256": "966dd6391c61414af4894f07f554ec963e6c019ab7b9ab538918e87a2b9d13ba"
+    },
+    {
+      "path": "crates/sampler-core/src/lower.rs",
+      "git_blob": "1e89bc35d5aae301846bd2fee45f3422b3ba81a4",
+      "sha256": "436832f33a750790dacd151974662b608d5c6bca675500cc411add156e713f80"
+    },
+    {
+      "path": "crates/sampler-core/src/prepare.rs",
+      "git_blob": "0ec2b2d6d08eef080ed4ade0bcdc2ccc0c09c947",
+      "sha256": "c70a1d28185a0c3cd084ad2341ca429856248dfabb94fef919f34707d1550547"
+    },
+    {
+      "path": "crates/sampler-core/src/prepare/selection.rs",
+      "git_blob": "786d504a3698be773284c0a6eb0bdd7bb692cda1",
+      "sha256": "5c04db0f0458c03813d43cb23858c39901f62143f58199c9c3207af5b949d3d6"
+    },
+    {
+      "path": "crates/sampler-core/src/render.rs",
+      "git_blob": "da54746475583fb88dcaec08893c8ed8ea97239b",
+      "sha256": "de0c4943ae2206811774f723b8f0bc6109aa78a30e1db03e76e38906c3bed68d"
+    },
+    {
+      "path": "crates/sampler-core/src/voice_mod.rs",
+      "git_blob": "dc92774c91abca91c9889bebf9e6b53fda6a8e65",
+      "sha256": "6ed253db6d8262cc86b211ee0b3fd19499a8b8a3559fa7daa05d014d9b19f5c0"
+    },
+    {
+      "path": "crates/sampler-core/tests/buses.rs",
+      "git_blob": "1807cec8f3fe29866c11447541df3661142dcea0",
+      "sha256": "8b5cbd38f497e616e73d9a56903d2a30d67c5b487a8a05fc83c0e0d0ae85d309"
+    },
+    {
+      "path": "crates/sampler-core/tests/multicore.rs",
+      "git_blob": "dbb1df6edc85b7d545f7ff8040938363b53283c2",
+      "sha256": "315bd67225d783bbaca97967a94bbc77d69b21b53b35779863fee8d98de21f8e"
+    },
+    {
+      "path": "crates/sampler-core/tests/paged_render.rs",
+      "git_blob": "11b053589238a2e98d8c559f051814cda957fe86",
+      "sha256": "d8efb13840d32d1f1954d5cd9d621c712d24e627a88df07573ec543f0d5612cf"
+    },
+    {
+      "path": "crates/sampler-core/tests/selection_record.rs",
+      "git_blob": "368d7c6ffb7d9e7dc0c35bb74feb570010aead24",
+      "sha256": "4360c956b35dff3c3f2c26acb7e2a7fe1c3850a907cf23dcf804dbe2a6993d4d"
+    },
+    {
+      "path": "crates/sampler-core/tests/voice_mod.rs",
+      "git_blob": "d38c89b449f860c36666001d8b1f418cfdf55632",
+      "sha256": "c175a4c50ba2c9545ba41b575ce2077f08092c7d69c60696136d2ed1fae48774"
+    },
+    {
+      "path": "crates/sampler-ir/src/lib.rs",
+      "git_blob": "9c7069625ffd017dbd1425e736dee8daf0ffd925",
+      "sha256": "95dba31fdc0d707eb2855149705c65777edced90646b7ad79ea9cf1347c1c0b0"
+    },
+    {
+      "path": "crates/sampler-ir/src/validate.rs",
+      "git_blob": "c9e912054260b3d087940b93b21042bbb47ce5f8",
+      "sha256": "b39fd0c7f83ceddc5cfe961060182c6b353f432bdbcd430f301a930ab0fa632e"
+    },
+    {
+      "path": "crates/sampler-kontakt/src/library.rs",
+      "git_blob": "32c6cccb8036b62596539da0c2c64673889b7dc0",
+      "sha256": "e83ea1ff178cede0f38c10c82446e181e48e4d4765ce7edbeae94173553e183b"
+    },
+    {
+      "path": "crates/sampler-kontakt/tests/production_modulation.rs",
+      "git_blob": "e95c8481033fa48248fdad1ffe0e25d074f7fd4a",
+      "sha256": "9ab9eb6f2b382861a4e6d27c8003859892f0c13b6a354cbc4f17d38dfbfc4330"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/mod_values.rs",
+      "git_blob": "91c4fe161458ffea2cdb3657f6bd68d985dcb081",
+      "sha256": "f3d2b47ba0e18ec08847200e4c6a2f3eaae2423acfeda8edb4a1cd02d40d5df7"
+    }
+  ],
+  "spans": [
+    {
+      "path": "crates/sampler-kontakt/src/library.rs",
+      "symbol": "fn group(",
+      "start_line": 1111,
+      "end_line": 1636,
+      "sha256": "03a7c608d474e799b16d1cea0b42aa5846b903edb77852b6ef7871cd88921d04"
+    },
+    {
+      "path": "crates/sampler-kontakt/src/library.rs",
+      "symbol": "fn internal_route_controls(",
+      "start_line": 1762,
+      "end_line": 1831,
+      "sha256": "16d36ac3a019bead3e11848264f9fab5698fe5d14c03473c1a4a021d4bc6777b"
+    },
+    {
+      "path": "crates/sampler-ir/src/lib.rs",
+      "symbol": "pub struct SourceIndices",
+      "start_line": 206,
+      "end_line": 221,
+      "sha256": "fa1f866b37c13830629390378d8f80b00f2d0e886607acb523be4baaa5cf38ab"
+    },
+    {
+      "path": "crates/sampler-ir/src/validate.rs",
+      "symbol": "pub fn validate(",
+      "start_line": 303,
+      "end_line": 597,
+      "sha256": "78cc965cbd8ca91849ed59c5eb661caa529d92332641ee8b69fc62edf431f24b"
+    },
+    {
+      "path": "crates/sampler-core/src/lower.rs",
+      "symbol": "pub fn lower_with(",
+      "start_line": 334,
+      "end_line": 724,
+      "sha256": "7179417ad5fe4a84a6ed1b3e55b5145fa83a156c62a412a32441b6a2ff038df3"
+    },
+    {
+      "path": "crates/sampler-core/src/lower.rs",
+      "symbol": "fn program(",
+      "start_line": 1190,
+      "end_line": 1470,
+      "sha256": "83ca6c2070bfe3612712a9deec652b4758bf46b94f6f3679b5da50b7ba24ad5f"
+    },
+    {
+      "path": "crates/sampler-core/src/prepare.rs",
+      "symbol": "pub fn with_voice_modulation(",
+      "start_line": 774,
+      "end_line": 902,
+      "sha256": "0025eaa2a0ebdde51eb39d1d19765f6eada3695a270a5be4f03842bed1aa438e"
+    },
+    {
+      "path": "crates/sampler-core/src/voice_mod.rs",
+      "symbol": "pub struct ModProgram",
+      "start_line": 301,
+      "end_line": 309,
+      "sha256": "2c4d471f3c432a3046b516cc18d2719dace025d62a1e4280664af00dbcc37e31"
+    },
+    {
+      "path": "crates/sampler-core/src/voice_mod.rs",
+      "symbol": "pub(crate) struct ModShape",
+      "start_line": 362,
+      "end_line": 368,
+      "sha256": "07871e9cbaf960663b7cc1bbb9deb831f7616bf9f9cd563e36ad3859cb259920"
+    },
+    {
+      "path": "crates/sampler-core/src/voice_mod.rs",
+      "symbol": "pub(crate) struct Inputs",
+      "start_line": 793,
+      "end_line": 805,
+      "sha256": "ba22bbf1fb3ac7275356329eb3fc57f8b0d0e4456ec8ec90f2bf571bbf83fe5f"
+    },
+    {
+      "path": "crates/sampler-core/src/voice_mod.rs",
+      "symbol": "pub(crate) struct VoiceModState",
+      "start_line": 853,
+      "end_line": 878,
+      "sha256": "e280c2ed553c00f46a20a771f21cb63dda2e3b4c4a8ec524a52fa6833e600cf7"
+    },
+    {
+      "path": "crates/sampler-core/src/voice_mod.rs",
+      "symbol": "pub fn bytes_per_voice",
+      "start_line": 385,
+      "end_line": 399,
+      "sha256": "752b8720d142c6d99693778ca7d9846315f36c9dd16267d18e302d302630255d"
+    },
+    {
+      "path": "crates/sampler-core/src/voice_mod.rs",
+      "symbol": "pub(crate) fn new_resolved(",
+      "start_line": 415,
+      "end_line": 611,
+      "sha256": "27fb51401b696dbc325ce8c8bc76136a46ecd2201a64d1b4198291f84a21e34a"
+    },
+    {
+      "path": "crates/sampler-core/src/engine_parameters.rs",
+      "symbol": "pub enum EngineParameterLaw",
+      "start_line": 70,
+      "end_line": 100,
+      "sha256": "f0554c6fe0bf987a00fe5ef754200ea30840721300f8480dae2538b53f7f5541"
+    },
+    {
+      "path": "crates/sampler-core/src/engine_parameters.rs",
+      "symbol": "pub fn decode(",
+      "start_line": 176,
+      "end_line": 203,
+      "sha256": "fb95c23407ec74adaa13f75f037abfe0f2196c2b52f0ec13b3bfe2561df4a3ca"
+    },
+    {
+      "path": "crates/sampler-core/src/engine_parameters.rs",
+      "symbol": "pub fn encode(",
+      "start_line": 206,
+      "end_line": 250,
+      "sha256": "c44bc986badb711bd7891170d2924761fb655b8c133c7d9859745517b43f30cd"
+    },
+    {
+      "path": "crates/sampler-core/src/engine_parameters.rs",
+      "symbol": "pub(crate) fn set_engine_parameter_in(",
+      "start_line": 603,
+      "end_line": 677,
+      "sha256": "077b7236e892b2f3fb2365be61fe5da1be3fc64d689c234bd1669fc6283bb451"
+    },
+    {
+      "path": "crates/sampler-core/src/voice_mod.rs",
+      "symbol": "VoiceModState::evaluate",
+      "start_line": 1231,
+      "end_line": 1364,
+      "sha256": "22f8ae2a910ef546fee966c48d12a37aeac6b68f9949302d8dc7000af1d3904b"
+    }
+  ],
+  "authored_tests": [
+    {
+      "package": "sampler-kontakt",
+      "test_target": "production_modulation",
+      "name": "serialized_lfo_live_intensity_bypass_reaches_pcm_without_compacting_slots",
+      "line": 309,
+      "status": "NOT_RUN"
+    },
+    {
+      "package": "sampler-kontakt",
+      "test_target": "production_modulation",
+      "name": "serialized_saved_bypass_stays_neutral_until_live_enable",
+      "line": 344,
+      "status": "NOT_RUN"
+    },
+    {
+      "package": "sampler-kontakt",
+      "test_target": "production_modulation",
+      "name": "serialized_retriggered_ahdsr_routes_have_live_amplitude_and_pan_consumers",
+      "line": 355,
+      "status": "NOT_RUN"
+    },
+    {
+      "package": "sampler-kontakt",
+      "test_target": "production_modulation",
+      "name": "serialized_retrigger_off_ahdsr_live_controls_remain_unbound",
+      "line": 372,
+      "status": "NOT_RUN"
+    },
+    {
+      "package": "sampler-kontakt",
+      "test_target": "production_modulation",
+      "name": "serialized_invert_is_not_replaced_by_positive_or_mp_intensity",
+      "line": 385,
+      "status": "NOT_RUN"
+    },
+    {
+      "package": "sampler-kontakt",
+      "test_target": "production_modulation",
+      "name": "serialized_overlap_release_keeps_other_voice_and_live_control_ownership",
+      "line": 401,
+      "status": "NOT_RUN"
+    },
+    {
+      "package": "sampler-kontakt",
+      "test_target": "production_modulation",
+      "name": "serialized_filtered_routes_cannot_publish_getter_only_live_bindings",
+      "line": 427,
+      "status": "NOT_RUN"
+    },
+    {
+      "package": "sampler-kontakt",
+      "test_target": "production_modulation",
+      "name": "serialized_live_writes_are_independent_of_host_render_partition",
+      "line": 452,
+      "status": "NOT_RUN"
+    },
+    {
+      "package": "sampler-kontakt",
+      "test_target": "production_modulation",
+      "name": "serialized_bypass_masks_routes_without_restarting_the_source_clock",
+      "line": 480,
+      "status": "NOT_RUN"
+    },
+    {
+      "package": "sampler-kontakt",
+      "test_target": "production_modulation",
+      "name": "serialized_pitch_intensity_changes_pcm_cursor_step_not_pan_or_voice_identity",
+      "line": 504,
+      "status": "NOT_RUN"
+    }
+  ],
+  "composition_risk": "engine_parameters.rs::decode is also being changed by UVIround6: preserve its exact Exponential/ShiftedExponential endpoint branches and this lane's Switch arms. normalized_value stays strict/unchanged.",
+  "native_requirement_archives": [
+    {
+      "path": "official-docs/kontakt-modulation.html",
+      "sha256": "ca330e3207a333061ebca4ee28b0545b5e93c223624ff69ca608c7a85d897c9d",
+      "section": "AHDSR Retrigger",
+      "authority": "public authoritative requirement, not runtime receipt"
+    },
+    {
+      "path": "official-docs/ksp-engine.html",
+      "sha256": "4a15e3b10a9da8993c90ddc7681fee9fd62a7eafc5f3685f47b0c5ab37d1d16d",
+      "section": "Modulation",
+      "authority": "public authoritative requirement, not runtime receipt"
+    },
+    {
+      "path": "official-docs/ksp-engine-commands.html",
+      "sha256": "df2fe7192f32df7c4a738c713663bafdfec3630c2821fd9afe1887c7d5ed006d",
+      "section": "get_mod_idx/get_target_idx/set_engine_par/get_engine_par",
+      "authority": "public authoritative requirement, not runtime receipt"
+    }
+  ],
+  "per_voice_limitation": "Declarations unchanged at pinned source, but newly admitted saved-bypass sources can increase existing source/route maxima and thus per-voice allocation sizes. No measured layout/RAM/CPU result."
+}
