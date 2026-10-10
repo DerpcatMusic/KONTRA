@@ -82,6 +82,11 @@ W2 delivered authored input-axis READY `ec53b382` with fixture `7aaa2d98`:
 also passes: all six fields retain seven characters, equal the saved string,
 and fit a 44px frame/viewport with 44px advance and zero insets.
 Receipt: `w2-footer-current.log`. No new font workaround is required.
+W2 also establishes the four legacy aliases as skin proxies: the Native package
+has zero Alias tokens and all four original controls exist. The Edit-selector
+witness observes 22 graph reads from published KSP slot 2. Receipts:
+`w2-alias-native-394/READY.json` and `w2-authored-axis-394/READY.json`.
+These RAM-only checks do not establish host pointer, sound or corpus acceptance.
 
 The [NI control-parameter reference](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-parameters)
 defines the selected menu index as a getter. The
@@ -91,6 +96,25 @@ item displayed until deselected. W5 confirms pending `f2c59e2c` covers the gette
 and hidden-entry lookup. W3 owns the caption fix: v1 `perf_view::caption_of`
 selects from all authored entries. The prepared pixel regression has not run;
 this source finding is not a measured library failure.
+
+## Pacific and Vista resource handoff
+
+The corrected current probe and fresh frozen-v1 pair use the same Pacific
+10 Cellos Trills and Vista 3 Violins FFF Overlay NKIs. Both request
+`Resources/pictures/pic.png` on a visible switch and
+`Resources/pictures/admin_bg.png` on a hidden label. Searches across the entire
+Kontakt folder find zero exact, basename, stem or double-stem matches in 20
+indexed containers and loose assets. One Vista NICNT is rejected at parse time;
+its resource completeness remains unresolved.
+
+V2 finds and decodes all other requested visible pictures (Pacific 4/4, Vista
+3/3). Frozen v1 reports two missing picture references per NKI; it counts the
+hidden label as well. V1 JSON does not export the failed names, so this establishes
+same-NKI missing-image parity rather than an independent v1 filename trace.
+The lookup evidence and exact requests were handed to W12; no renderer workaround
+is added. Receipt: `w3-authored-control-kind-394/MISSING-IMAGE-CAUSE.json`.
+The metadata witness passes 1/1 and root UI area no-run passes. Product resolution
+and native Kontakt comparison remain open.
 
 ## Authored control type follow-up
 
