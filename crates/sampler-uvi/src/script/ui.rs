@@ -195,6 +195,7 @@ impl ScriptHost {
         let Ok(root) = self.lua.globals().raw_get::<Table>("__ui") else {
             return out;
         };
+        out.performance = flag(&root, "performance", false);
         let widgets = widgets(self);
         let mut assets = BTreeMap::<String, usize>::new();
         let mut asset = |path: &str, kind: ui::AssetKind, out: &mut ui::Interface| {
