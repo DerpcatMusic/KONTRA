@@ -14,7 +14,7 @@ import tempfile
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / 'kontra-gate'))
-from live_host import V1, observe, private_settings, sha, v1_state
+from live_host import V1, artifact_receipt, observe, private_settings, sha, v1_state
 
 SCENARIOS = {
     'piano': ('Una Corda Library', 'Instruments/Una Corda Pure.nki'),
@@ -38,6 +38,16 @@ def audit_events(scenario):
         result += [(0, 0x90, key, 100), (48000, 0x80, key, 0)]
     result.append((144000, 0xb0, 64, 0))
     return sorted(result, key=lambda event: event[0])
+
+
+def cold_receipt(path):
+    row = json.loads(path.read_text())
+    assert isinstance(row, dict), 'cold-source receipt required'
+    assert all(type(row.get(key)) is int and row[key] >= 0
+               for key in ('files', 'pages_total', 'pages_before', 'pages_after')), 'invalid cold-source counters'
+    assert row['files'] > 0 and row['pages_total'] > 0, 'empty cold-source observation'
+    assert row['pages_before'] <= row['pages_total'] and row['pages_after'] == 0, 'source pages still resident; cold cell not admitted'
+    return row
 
 
 def check():
@@ -66,6 +76,7 @@ def main():
     parser.add_argument('--version', choices=['v1', 'v2'], default='v1')
     parser.add_argument('--plugin', type=Path)
     parser.add_argument('--cli', type=Path)
+    parser.add_argument('--source-sha', help='required v2 full selected candidate SHA; must match adjacent BUILD.json')
     parser.add_argument('--cold', action='store_true')
     parser.add_argument('--profile', action='store_true', help='audio-TID-only leaf-IP perf recording; score unprofiled repeats')
     parser.add_argument('--quiet-owner', required=True, help='exact owner in request and grant')
@@ -81,13 +92,21 @@ def main():
     plugin = V1 / 'plugin/KONTRA.clap' if args.version == 'v1' else args.plugin
     cli = V1 / 'bin/kontakto-v1' if args.version == 'v1' else args.cli
     assert plugin and cli, 'v2 requires its matching --plugin and --cli'
-    assert args.version != 'v1' or not (args.plugin or args.cli), 'v1 always uses the verified frozen artifacts'
+    assert args.version != 'v1' or not (args.plugin or args.cli or args.source_sha), 'v1 always uses the verified frozen artifacts'
+    build = None
+    if args.version == 'v2':
+        assert args.source_sha, 'v2 requires --source-sha for the selected candidate'
+        build = artifact_receipt(plugin, cli, args.host)
+        assert build['source_sha'] == args.source_sha, 'artifact belongs to a different candidate'
+        host_source = Path(__file__).resolve().parents[1] / 'vendor/moose-clap/tests/live_performance.cpp'
+        assert build.get('host_source_sha256') == sha(host_source), 'built host source receipt missing or mismatched'
     library, instrument = SCENARIOS[args.scenario]
     library = Path('/mnt/MAIN_STORAGE/Libraries/Kontakt') / library
     path = library / instrument
     assert path.is_file(), 'original audit instrument absent'
     assert not (args.out / 'metrics.json').exists(), 'use a fresh output directory for each repeat'
     args.out.mkdir(parents=True, exist_ok=True)
+    cache = None
     with tempfile.TemporaryDirectory(prefix='kontra-cpu-state-', dir='/dev/shm') as tmp:
         tmp = Path(tmp)
         private_settings(tmp / 'config')
@@ -102,14 +121,16 @@ def main():
         state = native.read_bytes()
         if args.version == 'v1': state = v1_state(state, str(path), 0)
         if args.cold:
-            with (args.out / 'cache.json').open('w') as cache:
+            with (args.out / 'cache.json').open('w') as cache_file:
                 subprocess.run([sys.executable, str(Path(__file__).with_name('cpu-audit-cold.py')), str(library)],
-                               stdout=cache, check=True)
+                               stdout=cache_file, check=True)
+            cache = cold_receipt(args.out / 'cache.json')
         live = observe(args.host.resolve(), plugin.resolve(), state, audit_events(args.scenario),
                        args.block, 4, args.out, args.version, cpu_audit=True, profile=args.profile)
     live.update(scope='loaded-native-clap-callback-plus-main-output-peak-scan', scenario=args.scenario,
                 cache_condition='cold-source-files' if args.cold else 'unforced-source-cache', profiled=args.profile,
-                cli_sha256=sha(cli), host_source_sha256=sha(Path(__file__).resolve().parents[1] / 'vendor/moose-clap/tests/live_performance.cpp'),
+                cli_sha256=sha(cli), host_source_sha256=build.get('host_source_sha256') if build else None,
+                source_sha=build['source_sha'] if build else None, artifact_receipt=build, cache=cache,
                 driver_sha256=sha(__file__), render_heap_calls=None, event_heap_calls=None,
                 voices_scope='plugin diagnostics; no per-voice normalization')
     (args.out / 'metrics.json').write_text(json.dumps(live, indent=2) + '\n')
