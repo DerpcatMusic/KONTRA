@@ -1,0 +1,144 @@
+{
+  "state": "SOURCE_READY_FOR_FRESH_REVIEW",
+  "source_ready_for_independent_review": true,
+  "source_ready_for_integration": false,
+  "green": false,
+  "branch": "pi/ksp-rpn-lifecycle-fix",
+  "checkout": "/home/derpcat/.t3/worktrees/KONTAKTO/ksp-rpn-lifecycle-fix",
+  "parent_sha": "b557602b540ab2e2b45875d4ec1fec1e38e8e587",
+  "parent_tree": "0cf69d1d3fb1a56047ed99e9567a2b42ac393890",
+  "source_commit": "e6710e4e04c2404123a730d5b7977afa6a68c679",
+  "source_tree": "0a8599bd90e56f71202bbc1ae5319d012ac9a474",
+  "original_review_subject": "3cc0f94ea625715028897d4611c0d477ccfed724",
+  "original_review_finding": "F1/P2 parameter table survives changed same-length schema",
+  "finding_response": "Source correction authored under root-accepted exact-schema reject/clear-replace-rebind and ordinary/peer-owner policy. Independent closure pending NEW review, not claimed.",
+  "source_immutable": true,
+  "source_work_stopped": true,
+  "changed_files": 5,
+  "diff": {
+    "added": 458,
+    "removed": 18
+  },
+  "compile": "NOT_COMPILED_NOT_TYPECHECKED",
+  "tests": "NOT_RUN",
+  "authored_test_count": 20,
+  "required_future_package_targets": [
+    {
+      "package": "sampler-ksp",
+      "target": "rpn",
+      "exact_harness_filters": [
+        "compiled_raw_endpoints_and_distinct_symbolic_callbacks_without_heap",
+        "nested_named_callback_constants_reach_pcm_through_public_compiler",
+        "payloads_survive_waits_and_other_messages_not_global_host_slots",
+        "same_kind_overlapping_waits_keep_independent_raw_payloads",
+        "later_stage_order_no_self_echo_and_monotonic_rebroadcast",
+        "invalid_address_or_value_faults_sender_without_any_delivery",
+        "insufficient_fanout_capacity_is_explicit_and_atomic",
+        "repeated_messages_fill_waiting_arena_then_fault_without_unbounded_queue",
+        "initialization_remains_warn_noop_without_runtime_replay",
+        "ordinary_controller_and_numeric_pgs_keep_their_existing_routes",
+        "sender_and_receiver_waits_stay_in_retained_generation_and_part",
+        "receiver_generated_note_retains_physical_origin_and_performance",
+        "midi_and_nka_job_ids_wait_completion_and_instances_remain_independent",
+        "parameter_binding_rejects_invalid_stage_and_duplicate_kind_and_resets_with_programs",
+        "compiled_three_module_rotation_requires_clear_and_exact_receiver_rebind",
+        "receiver_only_stage_setters_preserve_identical_schema_or_require_explicit_rebind",
+        "parameter_binding_rejects_unrelated_ordinary_and_mixed_receiver_owners",
+        "preempted_sender_defers_receivers_fifo_and_preserves_numeric_pgs_controller_order",
+        "deferred_fanout_pressure_faults_atomically_without_heap_or_partial_second_message",
+        "sparse_physical_slots_nonzero_sender_and_separate_notes_keep_private_payloads"
+      ]
+    }
+  ],
+  "source_policy": {
+    "schema": "Reject changed exact Stage arrays with parameter table; identical schema preserves.",
+    "mutators": "Release delegates to with_stages; controller existing delegate preserved; with_programs reset clears table.",
+    "binding": "Receiver instance must match all ordinary callbacks and same-stage parameter peers. Empty ordinary stage is explicitly caller-selected route, not inferred native identity.",
+    "initialization": "Original unsupported warn/no-op gate; no replay/init parity.",
+    "native": "No command-specific timing/slot/echo/init/channel laws or callback ABI5/6 claimed."
+  },
+  "native": "UNKNOWN",
+  "native_check": {
+    "operation": "REA current_document",
+    "result": "target_unavailable",
+    "receipt": "rea-current-document.json",
+    "opened_target": false
+  },
+  "performance": "CPU AND RAM below BOTH v1/Kontakt UNACHIEVED; CPU/RAM unmeasured.",
+  "static_evidence": {
+    "state": "STATIC_CUSTODY_AND_SCALAR_ONLY",
+    "source_sha": "e6710e4e04c2404123a730d5b7977afa6a68c679",
+    "changed_paths": [
+      "crates/sampler-core/src/controller_event.rs",
+      "crates/sampler-core/src/plan_programs.rs",
+      "crates/sampler-core/src/prepare.rs",
+      "crates/sampler-core/src/stages.rs",
+      "crates/sampler-ksp/tests/rpn.rs"
+    ],
+    "source_files": 20,
+    "git_blobs_copied": 40,
+    "symbol_records": 27,
+    "versioned_spans": 54,
+    "tests_not_run": 20,
+    "retained_test_names": 14,
+    "unchanged_full_test_bodies": 13,
+    "strengthened_original_tests": 1,
+    "new_tests": 6,
+    "archives": 4,
+    "primary_sections_reextracted": 7,
+    "scalar_checks": [
+      "three-module changed schema",
+      "wrong in-range owner",
+      "empty route explicit assignment",
+      "mixed peer owner rejection",
+      "capacity3 first refusal",
+      "capacity5 second refusal",
+      "FIFO sketch12345"
+    ],
+    "scalar_limit": "Independent arithmetic/order sketch only. Actual deferred=true/public binder/runtime/heap/PCM witnesses NOT_RUN.",
+    "rustfmt": "PARSE_FORMAT_ONLY",
+    "git_whitespace": "STATIC_ONLY",
+    "native": "UNKNOWN",
+    "performance": "CPU AND RAM below BOTH v1/Kontakt UNACHIEVED"
+  },
+  "snapshot": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-lifecycle-fix-snapshot",
+  "remaining_gates": [
+    "NEW independent source review of exacte671 including lifecycle policy and deferred=true/public fixtures",
+    "Explicit new combined following-batch Cargo authorization",
+    "All20 compile/runtime/heap/PCM witnesses NOT_RUN",
+    "Native UNKNOWN and comparative CPU/RAM UNACHIEVED"
+  ],
+  "constraints": {
+    "no_build_runtime_or_native_execution": true,
+    "no_nested_agents": true,
+    "no_runtime_queue_fuel_policy_pgs_ui_plugin_frozen_paths_deps_or_options_changed": true,
+    "no_target_or_wrapper_override": true,
+    "no_install_server_timer_push_publication_merge": true
+  },
+  "future_validation": {
+    "authorization": false,
+    "owner": "Root central validation ONLY following batch after frozen RED batch; fresh review then new authorization.",
+    "policy": "One combined offline/release -j1 cycle using shared target and existing sccache. No standalone matrix.",
+    "neighbors": "Existing frozen/neighbor package selections remain root-owned; not replaced by this lane."
+  },
+  "ordered_layers_from_original_2a": [
+    "3cc0f94ea625715028897d4611c0d477ccfed724",
+    "b557602b540ab2e2b45875d4ec1fec1e38e8e587",
+    "e6710e4e04c2404123a730d5b7977afa6a68c679",
+    "Separate docs/evidence commit: final custody in durable handoff after commit"
+  ],
+  "artifacts": [
+    "README.md",
+    "summary.json",
+    "owners-and-callers.json",
+    "source-trace.json",
+    "tests.json",
+    "primary-authority.json",
+    "input-custody.json",
+    "rea-current-document.json",
+    "static-checks.json",
+    "verification.json",
+    "build-evidence.py",
+    "verify-evidence.py"
+  ]
+}
