@@ -2149,7 +2149,7 @@ mod tests {
     fn native_state_replacement_and_removed_subtrees_do_not_reuse_stale_memos() {
         let (package, _session) = primitive_fixture(r#"
             local ui=require('native_ui')
-            return function() return @ui.Group {
+            return function() return @ui.ZStack {
                 not absent and @ui.Text {text=caption or 'Hi'}
             }.font_size(18).frame(width=48,height=32)
                 .on_tap_gesture({complete=function() end}) end
@@ -2265,7 +2265,7 @@ mod tests {
     fn native_authored_font_file_family_and_inherited_identity_match_eager() {
         let source = r#"
             local ui=require('native_ui')
-            return function() return @ui.Group { @ui.Text {text='Hi'} }
+            return function() return @ui.ZStack { @ui.Text {text='Hi'} }
                 .font(font_name or 'fixture.ttf').font_size(18).frame(width=48,height=32)
                 .on_tap_gesture({complete=function() end}) end
         "#;
