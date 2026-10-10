@@ -39,6 +39,7 @@ fn specimen() -> Arc<SamplerParams> {
     v.scanned = p.shared.libraries.wanted();
     for part in v.parts.iter_mut().take(3) {
         part.active = inst.name.clone();
+        part.mapping_index = Some(Arc::new(super::MappingIndex::new(&inst)));
         part.instrument = Some(Arc::new(inst.clone()));
         let mut report = crate::sound::report::LoadReport::default();
         report.decoded.format = "Kontakt synthetic IR: an extended format description".into();
