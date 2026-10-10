@@ -1710,6 +1710,13 @@ mod tests {
         ui.frame(
             block(80., 24.).id("nui-0-root").tracks_pointer(),
             None,
+            Input::default(),
+            1. / 60.,
+        )
+        .unwrap();
+        ui.frame(
+            block(80., 24.).id("nui-0-root").tracks_pointer(),
+            None,
             Input {
                 pointer: PointerInput {
                     pos: Some(Point::new(5., 5.)),
