@@ -73,6 +73,10 @@ def run(host, plugin):
         assert all(row['nonfinite'] == 0 and abs(row['peak'] - 0.75) < 1e-9 for row in points), 'constant-mask audio checkpoint mismatch'
         check_released()
         evidence.append({'test': 'real-OS-pointer-CLAP-owner-audio-fresh-state', 'passed': True, 'factory_instances': 2, 'rgb_frames': rgb, 'stdout_sha256': hashlib.sha256(stdout).hexdigest(), 'stderr_sha256': hashlib.sha256(stderr).hexdigest()})
+        bad_env = dict(os.environ, WIDGET_FIXTURE_BAD_SIZE='1')
+        result = subprocess.run([str(host), str(plugin), str(template), '--gestures'], input=b'', stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=bad_env, timeout=20)
+        assert result.returncode == 1 and b'GUI size' in result.stderr, 'partial GUI was not destroyed before plugin'
+        evidence.append({'test': 'partial-GUI-cleanup-before-plugin-destruction', 'passed': True})
         key_plan = b'0 move 10 10\n1 wait 20\n2 key 32 1\n3 wait 50\n4 key 32 0\n5 wait 50\n6 checkpoint\n7 quit\n'
         result = subprocess.run([str(host), str(plugin), str(template), '--gestures'], input=key_plan, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
         assert result.returncode == 0

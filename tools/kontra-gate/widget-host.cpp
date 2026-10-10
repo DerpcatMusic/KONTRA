@@ -143,10 +143,12 @@ struct Perf {
     uint64_t busy, span, voices, audible, dropouts, memory, freed, disk, underruns, loaded, blocks;
 };
 static Window open_editor(const clap_plugin_t *p, const clap_plugin_gui_t *gui, Display *display,
-                          uint32_t &width, uint32_t &height, bool rss) {
+                          uint32_t &width, uint32_t &height, bool rss, bool &created,
+                          Window &allocated) {
     require(gui && gui->is_api_supported(p, CLAP_WINDOW_API_X11, false) &&
                 gui->create(p, CLAP_WINDOW_API_X11, false),
             "GUI create");
+    created = true;
     require(gui->get_size(p, &width, &height), "GUI size");
     require(width > 0 && height > 0 && width <= 4096 && height <= 2160, "GUI bounds");
     if (rss) {
@@ -159,6 +161,7 @@ static Window open_editor(const clap_plugin_t *p, const clap_plugin_gui_t *gui, 
     }
     const auto window =
         XCreateSimpleWindow(display, DefaultRootWindow(display), 20, 20, width, height, 0, 0, 0);
+    allocated = window;
     const unsigned long pid = getpid();
     XChangeProperty(display, window, XInternAtom(display, "_NET_WM_PID", False), XA_CARDINAL, 32,
                     PropModeReplace, reinterpret_cast<const unsigned char *>(&pid), 1);
@@ -237,7 +240,7 @@ struct GestureSession {
     const clap_plugin_state_t *state = nullptr;
     const clap_plugin_gui_t *gui = nullptr;
     const clap_plugin_params_t *params = nullptr;
-    bool active = false, saved_valid = false;
+    bool active = false, saved_valid = false, gui_created = false;
     Window window = 0;
     uint32_t width = 0, height = 0, generation = 0;
     SavedState saved;
@@ -260,11 +263,12 @@ struct GestureSession {
         // Error/EOF cleanup releases OS input and joins processing before destruction.
         release_inputs();
         stop_audio();
-        if (window && plugin && gui) {
+        if (gui_created && plugin && gui) {
             gui->hide(plugin);
             gui->destroy(plugin);
-            XDestroyWindow(display, window);
         }
+        if (window)
+            XDestroyWindow(display, window);
         if (plugin) {
             if (active)
                 plugin->deactivate(plugin);
@@ -421,7 +425,7 @@ struct GestureSession {
             audio.join();
     }
     void destroy_plugin() {
-        require(!audio.joinable() && !window, "plugin destruction barrier");
+        require(!audio.joinable() && !window && !gui_created, "plugin destruction barrier");
         if (active) {
             plugin->deactivate(plugin);
             active = false;
@@ -482,7 +486,7 @@ struct GestureSession {
         return surface;
     }
     void open_editor() {
-        window = ::open_editor(plugin, gui, display, width, height, false);
+        window = ::open_editor(plugin, gui, display, width, height, false, gui_created, window);
         const auto end = Clock::now() + std::chrono::seconds(10);
         while (true) {
             Window root = 0, parent = 0, *children = nullptr;
@@ -507,6 +511,7 @@ struct GestureSession {
         require(!audio.joinable(), "editor destruction barrier");
         require(gui->hide(plugin), "GUI hide");
         gui->destroy(plugin);
+        gui_created = false;
         XDestroyWindow(display, window);
         XSync(display, False);
         window = 0;
