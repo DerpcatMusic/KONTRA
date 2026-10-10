@@ -1,0 +1,107 @@
+{
+  "retrieved_date": "2026-10-10",
+  "scope": "Kontakt DFD preload head storage; documentary/static reference only",
+  "documentation": {
+    "url": "https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/classic-view#dfd-tab",
+    "full_html_sha256": "846a09243ad7d17d8daa92bf5105418501ebb25cd358ba8d09108ffb5d4ae7c4",
+    "full_html_bytes": 564636,
+    "retained_excerpts": [
+      "In the DFD Tab you can access the options for Direct From Disk streaming. This allows Kontakt to read samples directly from the Hard Drive, and only load a small section of the sample in RAM, reducing the overall RAM usage of the Instrument.",
+      "DFD Preload Buffer Size: With this slider, you can adjust the size of each Sample portion that will be buffered in memory for instant playback. This value applies only to Samples that belong to Groups whose Source Module is operating in DFD mode. If any Group in DFD mode causes drop-outs which disappear when you put the respective Source Module into Sampler mode, you might want to try increasing this parameter.",
+      "Background loading: The Background loading option Allow instant playback for samples which are not loaded yet is available here. Enable this option to have Kontakt play every triggered note during Background Loading. Under certain special circumstances, playing notes while loading samples in the background may cause ’flam’-like glitches or other unexpected audio artifacts as Kontakt attempts to play a sample it has not yet loaded. Disable this option to avoid such artifacts."
+    ],
+    "scope_limit": "Documentation describes NI DFD settings; it does not expose native internal reload locking/budget algorithms or performance."
+  },
+  "immutable_native_receipt": {
+    "path": "/home/derpcat/.t3/worktrees/KONTAKTO/t3code-80fe786b/artifacts/ni-file-records-2026-10-08/check-results.json",
+    "sha256": "f56987ad0ee1cf1783c0774ea91d503e93852341ebf0d0d23855491f7ac598e2",
+    "sources_path": "/home/derpcat/.t3/worktrees/KONTAKTO/t3code-80fe786b/artifacts/ni-file-records-2026-10-08/sources.json",
+    "sources_sha256": "4cfbf652b7aca9e475ac9b2bb8386635dcd52cb1930ab76fdfb487fdf7f419cd",
+    "kontakt_standalone": {
+      "sha256": "0fe6356e0879d058b6e5b73507c54c5e345cea451b35287c974e438291d4dae8",
+      "image_base": "0x140000000"
+    },
+    "kontakt_payload": {
+      "sha256": "8ed90c4b9dd2bb2c5cc45b64dea144f6cca245c706457de4aa72c643a8acc09d",
+      "image_base": "0x180000000"
+    },
+    "public_reader_va": "0x140d0d4b0",
+    "dfd_preload_serializable_receiver_offset": "0x21b60",
+    "reference_document": "docs/re/NI_FILE_BINARY_RECORDS.md:113",
+    "public_prefix_helper_calls": [
+      "0x140cfbaf0",
+      "0x142a78160",
+      "0x142a780c0",
+      "0x142a780f0",
+      "0x142a780f0",
+      "0x142a780f0",
+      "0x142a780c0",
+      "0x142a780c0",
+      "0x142a780c0",
+      "0x142a780c0",
+      "0x142a78220",
+      "0x142a78270",
+      "0x142a78270",
+      "0x142a78270",
+      "0x142a78270",
+      "0x140d0ee85",
+      "0x142a780c0",
+      "0x142a78270",
+      "0x140cfbaf0",
+      "0x140cfbaf0",
+      "0x140cfbaf0",
+      "0x142a78220",
+      "0x142a78220",
+      "0x142a78220"
+    ],
+    "receipt_passed": true,
+    "proprietary_code_executed": false,
+    "native_full_dsp_or_audio_parity_proven": false
+  },
+  "implementation": {
+    "source_commit": "618c7fdcf9d224fa6d62e8774d52b12a91912ee0",
+    "path": "crates/sampler-kontakt/src/stream.rs",
+    "symbols": {
+      "Streamer::head_mutation": [
+        500,
+        501
+      ],
+      "Streamer::start (shared reloader guard)": [
+        657,
+        693
+      ],
+      "Streamer::trim": [
+        708,
+        732
+      ],
+      "Streamer::reload": [
+        737,
+        746
+      ],
+      "reload (snapshot and packed deltas)": [
+        748,
+        807
+      ],
+      "tests": [
+        966,
+        1142
+      ]
+    }
+  },
+  "validation": {
+    "rust_compiled": false,
+    "new_rust_tests_executed": false,
+    "new_rust_tests_authored": 4,
+    "rustfmt_parse_and_check": "PASS",
+    "git_diff_check": "PASS",
+    "independent_arithmetic_model_steps": 638976,
+    "independent_model_status": "PASS; model only, not Rust execution",
+    "existing_python_editor_cycle_tests": "5/5 PASS"
+  },
+  "admission": {
+    "native_reload_concurrency_parity": "UNKNOWN",
+    "quiet_cpu_rss_vs_v1_and_kontakt": "UNKNOWN",
+    "target_achieved": false,
+    "integration_required": "Preserve a8c pinned wavetable changes; add pinned_wavetables: HashSet::new() to new test-only Streamer literal."
+  }
+}
