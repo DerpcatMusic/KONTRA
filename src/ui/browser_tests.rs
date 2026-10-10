@@ -747,7 +747,7 @@ fn w10_uvi_catalogued_protected_programs_keep_rows_and_show_bank_reason() {
         view.files = Arc::new(files);
         view.scanned = p.shared.libraries.wanted();
     }
-    for (width, height) in [(900., 600.), (1180., 760.)] {
+    for (width, height) in [(900., 640.), (1180., 780.)] {
         let mut h = Harness::new(&p, width, height);
         h.press("bank-uvi");
         h.press("library-0");
@@ -768,12 +768,27 @@ fn w10_uvi_catalogued_protected_programs_keep_rows_and_show_bank_reason() {
                 .surface("library-0-status")
                 .unwrap()
                 .frame;
-        let viewport =
-            h.ui.scene()
-                .unwrap()
-                .surface("browser-sources-true")
-                .unwrap()
-                .frame;
+        let scene = h.ui.scene().unwrap();
+        let name = scene.surface("library-0-name").unwrap().frame;
+        let art = scene.surface("library-0-art").unwrap().frame;
+        let card = scene.surface("library-0").unwrap().frame;
+        assert!(
+            name.y + name.size.height <= badge.y + 0.5,
+            "library title and status must occupy separate rows: {name:?} {badge:?}"
+        );
+        assert!(
+            art.y + art.size.height <= badge.y + 0.5,
+            "status must not cover the library banner: {art:?} {badge:?}"
+        );
+        assert!(
+            (art.size.height - art.size.width / super::browser::BANNER_RATIO).abs() <= 0.5,
+            "the status row must not shrink the authored banner: {art:?}"
+        );
+        assert!(
+            badge.y + badge.size.height <= card.y + card.size.height + 0.5,
+            "the card must include its caption in the scroll extent: {badge:?} {card:?}"
+        );
+        let viewport = scene.surface("browser-sources-true").unwrap().frame;
         assert!(
             badge.y + badge.size.height <= viewport.y + viewport.size.height + 0.5,
             "library status must stay visible: {badge:?} {viewport:?}"
