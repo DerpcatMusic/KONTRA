@@ -14,6 +14,10 @@ pub struct NIFileContainer {
 pub struct FileContainerItem {
     pub index: u64,
     pub filename: String,
+    /// Exact opaque TOC bytes following the stored index. No UUID/type mapping is known.
+    pub opaque_metadata: [u8; 16],
+    /// Exact word preceding the cumulative member end; semantics are unestablished.
+    pub unknown_word: u64,
     pub file_start_offset: u64,
     pub file_size: u64,
 }
@@ -79,12 +83,13 @@ impl NIFileContainer {
         let mut items = Vec::new();
         for _ in 0..file_count {
             let index = reader.read_u64_le()?;
-            let _ = reader.read_bytes(16)?;
+            let mut opaque_metadata = [0; 16];
+            reader.read_exact(&mut opaque_metadata)?;
 
             let buf = reader.read_bytes(600)?;
             let filename = StringReader::read_nullterminated_utf16(&mut std::io::Cursor::new(buf))?;
 
-            let _ = reader.read_u64_le()?;
+            let unknown_word = reader.read_u64_le()?;
 
             let file_start_offset = offset;
             let file_end_offset = reader.read_u64_le()?;
@@ -97,6 +102,8 @@ impl NIFileContainer {
             items.push(FileContainerItem {
                 index,
                 filename,
+                opaque_metadata,
+                unknown_word,
                 file_start_offset,
                 file_size,
             });
@@ -148,7 +155,7 @@ mod tests {
         bytes.extend([0; 600]);
         for (index, name, end) in [(42u64, "OurPatch.nki", 3u64), (900, "OurSample.wav", 7)] {
             bytes.extend(index.to_le_bytes());
-            bytes.extend([0; 16]);
+            bytes.extend([0x80; 16]);
             let mut filename = name
                 .encode_utf16()
                 .chain([0])
@@ -156,7 +163,7 @@ mod tests {
                 .collect::<Vec<_>>();
             filename.resize(600, 0);
             bytes.extend(filename);
-            bytes.extend(0u64.to_le_bytes());
+            bytes.extend(u64::MAX.to_le_bytes());
             bytes.extend(end.to_le_bytes());
         }
         bytes.extend(FC_TOC_MARKER_END.to_le_bytes());
@@ -166,6 +173,8 @@ mod tests {
         bytes.extend(b"nkiwave");
         let container = NIFileContainer::read(Cursor::new(&bytes)).unwrap();
         assert_eq!(container.items[0].filename, "OurPatch.nki");
+        assert_eq!(container.items[0].opaque_metadata, [0x80; 16]);
+        assert_eq!(container.items[0].unknown_word, u64::MAX);
         assert_eq!(
             container.read_member(Cursor::new(&bytes), 42, 3).unwrap(),
             b"nki"

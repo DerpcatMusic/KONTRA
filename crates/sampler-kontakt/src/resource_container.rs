@@ -82,8 +82,7 @@ impl ResourceContainer {
     /// `None` means the name is absent; malformed/protected resources are errors.
     /// Names are case insensitive; NICNT's `|` separators also accept `/`.
     pub fn read(&mut self, name: &str) -> Result<Option<Vec<u8>>, LoadError> {
-        use std::io::{Read, Seek, SeekFrom};
-        let (offset, size) = match &mut self.index {
+        match &mut self.index {
             Index::Archive(archive) => {
                 let Some(entry) = archive
                     .member(&mut self.file, name)
@@ -112,10 +111,10 @@ impl ResourceContainer {
                     })?);
                 }
                 archive.entries.insert(entry.name.to_lowercase(), entry);
-                return archive
+                archive
                     .read_entry_with_key(&mut self.file, name, self.key.as_deref())
                     .map(Some)
-                    .map_err(|e| LoadError::decode(&self.path, "resource bytes", e));
+                    .map_err(|e| LoadError::decode(&self.path, "resource bytes", e))
             }
             Index::Files(files) => {
                 let normalized = name.replace(['|', '\\'], "/");
@@ -133,26 +132,20 @@ impl ResourceContainer {
                         reason: "Ambiguous resource name".into(),
                     });
                 }
-                (
-                    files.file_section_offset + item.file_start_offset,
-                    item.file_size,
-                )
+                if item.file_size > 32 << 20 {
+                    return Err(LoadError::Invalid {
+                        path: self.path.clone(),
+                        reason: "Resource exceeds 32 MiB".into(),
+                    });
+                }
+                // Use the stored ID, not a guessed ordinal. The shared reader
+                // rejects duplicate IDs, overflow, and reads above the budget.
+                files
+                    .read_member(&mut self.file, item.index, 32 << 20)
+                    .map(Some)
+                    .map_err(|e| LoadError::decode(&self.path, "resource member", e))
             }
-        };
-        if size > 32 << 20 {
-            return Err(LoadError::Invalid {
-                path: self.path.clone(),
-                reason: "Resource exceeds 32 MiB".into(),
-            });
         }
-        self.file
-            .seek(SeekFrom::Start(offset))
-            .map_err(|e| LoadError::io(&self.path, e))?;
-        let mut bytes = vec![0; size as usize];
-        self.file
-            .read_exact(&mut bytes)
-            .map_err(|e| LoadError::io(&self.path, e))?;
-        Ok(Some(bytes))
     }
 }
 
