@@ -1205,17 +1205,41 @@ impl<'a> Sema<'a, '_> {
         if matches!(b, Builtin::Search | Builtin::Sort) && args.len() == 3 {
             return fault(span, format!("{} requires both range endpoints", b.name()));
         }
-        if b == Builtin::Search
-            && let Arg::Var(v, _) = out[0]
-            && self.hir.vars[v.0 as usize].ty == Ty::Real
-        {
-            return fault(span, "search does not accept real arrays");
+        if b == Builtin::ArrayEqual {
+            for arg in &out {
+                let Arg::Var(v, _) = arg else {
+                    return fault(span, "array_equal requires declared integer arrays");
+                };
+                match self.hir.vars[v.0 as usize].ty {
+                    Ty::Real => return fault(span, "array_equal does not accept real arrays"),
+                    Ty::Int => {}
+                    _ => return fault(span, "array_equal requires declared integer arrays"),
+                }
+            }
+            if let (Arg::Var(a, _), Arg::Var(b, _)) = (&out[0], &out[1])
+                && self.hir.vars[a.0 as usize].len != self.hir.vars[b.0 as usize].len
+            {
+                return fault(span, "array_equal requires arrays of the same size");
+            }
         }
-        if b == Builtin::Search
-            && let Arg::Var(v, _) = out[0]
-            && num.is_some_and(|n| n != self.hir.vars[v.0 as usize].ty)
-        {
-            return fault(span, "search value type differs from the array");
+        if b == Builtin::Search {
+            let ty = match out[0] {
+                Arg::Var(v, _) => self.hir.vars[v.0 as usize].ty,
+                Arg::SysArray(
+                    SysArray::Cc
+                    | SysArray::KeyDown
+                    | SysArray::CcTouched
+                    | SysArray::EventPar
+                    | SysArray::GroupsAffected,
+                ) => Ty::Int,
+                _ => return fault(span, "search of this array is not available"),
+            };
+            if ty == Ty::Real {
+                return fault(span, "search does not accept real arrays");
+            }
+            if num.is_some_and(|n| n != ty) {
+                return fault(span, "search value type differs from the array");
+            }
         }
         let ty = match sig.ret {
             Ret::Void => Ty::Int,
