@@ -10,7 +10,9 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 Source composition since 0.3.429: add typed explicit-path NKA array I/O, bounded RPN/NRPN callback delivery, owned waveform state with validated attachment/readback and bounded UI projection, explicit JSON `loadData` completion, sample-clock fade curves, live modulation depth/bypass controls with schema remapping, dynamic menu getters, and parameter readback guarded by setter-queue admission. Preserve the published website, 0.3.429 release history and release-fix ledger, plus the newer macOS packaging/notarization fixes.
 
-Fresh validation of this merged release source is pending. No new build, test, native-host, whole-instrument parity or performance PASS is claimed by this composition; historical results below apply only to their named checkpoints.
+The ff60de20 release source passed a release build and 101 selected regression runs (593 pass invocations, zero failures, 48 ignored); all 293 required tests passed. The exact Linux CLAP, VST3 and standalone artifacts were locally installed with backups. This does not establish native-host or whole-instrument parity.
+
+Conflux now has an opt-in connected UI phase profiler. Removing temporary Lua intrinsic-layout wrappers reduced authored layout work by about 19% and frame construction by about 6% in paired headless measurements, with byte-identical Original captures. Total software rendering did not consistently improve. The larger retained-UI architecture remains separate pending work.
 
 ## 0.3.429
 
