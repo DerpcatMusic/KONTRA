@@ -731,7 +731,8 @@ fn dynamic_event_parameter_reads_match_static_fields_and_pending_projection() {
     support::without_heap(|| {
         note(&mut rt);
     });
-    let expected = [123, 0, 0, 0, 1000, 0, 0, 64, 99, 0, 0, -1, 0, 0, 0, 0, 0];
+    // Selector 10 is ZoneId: the callback has not forwarded any voices yet.
+    let expected = [123, 0, 0, 0, 1000, 0, 0, 64, 99, 0, -1, -1, 0, 0, 0, 0, 0];
     for (parameter, expected) in expected.into_iter().enumerate() {
         assert_eq!(
             cell(&rt, 0, 1 + parameter as u32),
