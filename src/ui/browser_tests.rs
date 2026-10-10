@@ -880,7 +880,7 @@ fn w10_uvi_search_and_favorites_keep_the_bank_member_identity() {
         );
     }
     assert!(h.ui.scene().unwrap().surface("instrument-1").is_some());
-    h.ui.focus("search");
+    h.ui.focus("preset-search");
     h.tick(Input {
         text: "UVI preset".into(),
         ..Default::default()
@@ -1126,7 +1126,7 @@ fn smart_browser_has_one_header_search_and_funnel() {
             assert_eq!(
                 h.ui.focus_key(),
                 Some("search"),
-                "Ctrl+F always addresses the single query"
+                "Ctrl+F always addresses the library query"
             );
         }
         h.tick(Input {
@@ -1159,13 +1159,12 @@ fn smart_browser_has_one_header_search_and_funnel() {
 }
 
 #[test]
-fn smart_browser_query_matches_library_vendor_preset_folder_and_nksn() {
+fn smart_browser_searches_libraries_and_presets_separately() {
     for (width, height) in [(900., 600.), (1180., 900.)] {
-        for (query, expected, path) in [
-            ("Areia Strings 02", "library-1", "Strings 02.nki"),
-            ("Audio Imperia 01", "library-1", "Strings 01.nki"),
-            ("Afflatus Brass 01", "library-0", "Brass 01.nki"),
-            ("Warm preset", "library-0", "Warm preset.nksn"),
+        for (query, expected, other) in [
+            ("Areia", "library-1", "library-0"),
+            ("Audio Imperia", "library-1", "library-0"),
+            ("Afflatus", "library-0", "library-1"),
         ] {
             let p = redesign_catalog(false);
             let mut h = Harness::new(&p, width, height);
@@ -1181,23 +1180,102 @@ fn smart_browser_query_matches_library_vendor_preset_folder_and_nksn() {
                 scene.surface(expected).is_some(),
                 "matching library stays visible for {query}"
             );
-            let other = if expected == "library-0" {
-                "library-1"
-            } else {
-                "library-0"
-            };
             assert!(
                 scene.surface(other).is_none(),
                 "unrelated library is filtered by {query}"
             );
+            assert!(scene.surface("instrument-0").is_none());
+        }
+        for (library, query, path) in [
+            ("library-1", "Strings 02", "Strings 02.nki"),
+            ("library-1", "Strings 01", "Strings 01.nki"),
+            ("library-0", "Brass 01", "Brass 01.nki"),
+            ("library-0", "Warm preset", "Warm preset.nksn"),
+        ] {
+            let p = redesign_catalog(false);
+            let mut h = Harness::new(&p, width, height);
+            h.press(library);
+            h.ui.focus("preset-search");
+            h.tick(Input {
+                text: query.into(),
+                ..Default::default()
+            });
+            h.idle(3);
+            let scene = h.ui.scene().unwrap();
             let item = scene.surface("instrument-0").expect("matching preset");
             assert!(
+                scene.surface("instrument-1").is_none(),
+                "preset search stays within the selected library for {query}"
+            );
+            assert!(
                 item.tip.as_deref().is_some_and(|tip| tip.contains(path)),
-                "smart search preserves source identity for {query}: {:?}",
+                "preset search preserves source identity for {query}: {:?}",
                 item.tip
             );
         }
     }
+}
+
+#[test]
+fn library_search_ignores_preset_names_and_keeps_selected_library_folders() {
+    let files = [
+        "/virtual/Damage/Instruments/Effects/Impact.nki",
+        "/virtual/Damage/Instruments/Effects/Thunder.nki",
+        "/virtual/Other/Instruments/Effects/Damage.nki",
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .collect::<Vec<_>>();
+    let p = Arc::new(SamplerParams::new());
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        view.shelf = Arc::new(crate::library::Shelf::under("/virtual", &files));
+        view.files = Arc::new(files);
+    }
+    let mut h = Harness::new(&p, 1180., 760.);
+    h.ui.focus("search");
+    h.tick(Input {
+        text: "Damage".into(),
+        ..Default::default()
+    });
+    h.idle(3);
+    assert!(h.ui.scene().unwrap().surface("library-0").is_some());
+    assert!(
+        h.ui.scene().unwrap().surface("library-1").is_none(),
+        "a preset named Damage does not match the Other library"
+    );
+
+    h.press("library-0");
+    assert!(
+        h.ui.scene().unwrap().surface("folder-0").is_some(),
+        "the upper query keeps the selected library's hierarchy"
+    );
+    h.ui.focus("preset-search");
+    h.tick(Input {
+        text: "impact".into(),
+        ..Default::default()
+    });
+    h.idle(3);
+    let scene = h.ui.scene().unwrap();
+    let item = scene.surface("instrument-0").expect("matching preset");
+    assert!(
+        item.tip.as_deref().is_some_and(|tip| tip.ends_with("Impact.nki")),
+        "the lower query independently filters the selected library"
+    );
+    assert!(scene.surface("instrument-1").is_none());
+    assert!(scene.surface("library-1").is_none());
+
+    h.tick(Input {
+        keys: vec![KeyPress {
+            key: Key::Escape,
+            mods: Mods::default(),
+        }],
+        ..Default::default()
+    });
+    h.idle(3);
+    let scene = h.ui.scene().unwrap();
+    assert!(scene.surface("folder-0").is_some());
+    assert!(scene.surface("library-1").is_none());
 }
 
 #[test]
@@ -1322,7 +1400,7 @@ fn browser_redesign_shots() {
         save("libraries", &mut h);
         h.ui.focus("search");
         h.tick(Input {
-            text: "Areia Strings 02".into(),
+            text: "Areia".into(),
             ..Default::default()
         });
         h.idle(3);
@@ -1356,7 +1434,7 @@ fn catalog_ordering_is_reused_across_queries_and_invalidated_by_new_files() {
     let p = redesign_catalog(false);
     let mut h = Harness::new(&p, 1180., 760.);
     let query = |h: &mut Harness, text: &str| {
-        h.ui.focus("search");
+        h.ui.focus("preset-search");
         h.tick(Input {
             keys: vec![KeyPress {
                 key: Key::Char('a'),
@@ -1374,7 +1452,7 @@ fn catalog_ordering_is_reused_across_queries_and_invalidated_by_new_files() {
         h.idle(3);
     };
     browser::WORK.with(|n| n.set([0; 6]));
-    for text in ["brass", "warm preset", "strings", "audio imperia"] {
+    for text in ["brass", "warm preset", "strings", "02"] {
         query(&mut h, text);
     }
     let work = browser::WORK.with(|n| n.get());

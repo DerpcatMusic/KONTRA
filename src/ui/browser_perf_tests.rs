@@ -259,7 +259,7 @@ fn installed_browser_work() {
                 });
             }
             h.idle(3);
-            h.ui.focus("search");
+            h.ui.focus("preset-search");
             h.tick(Input {
                 text: "a".into(),
                 ..Default::default()
