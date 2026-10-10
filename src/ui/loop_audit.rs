@@ -91,6 +91,110 @@ fn loop_audit_publication_resets_original() {
     );
 }
 
+/// Benchmark-only admission: require a live value, nonzero range and the actual
+/// pointer-hit winner in the resolved scene. Never infer a callback from a name.
+fn loop_drag_target(
+    ui: &Ui,
+    face: &ir::Interface,
+    values: &ir_view::Values,
+    ids: &std::collections::HashSet<u128>,
+) -> (Option<(ir::WidgetRef, ir::ControlId, Point)>, std::collections::BTreeMap<&'static str, usize>) {
+    let mut skipped = std::collections::BTreeMap::new();
+    let mut selected = None;
+    let Some(scene) = ui.scene() else {
+        skipped.insert("no_resolved_scene", 1);
+        return (None, skipped);
+    };
+    let mut hit = moose::mui::mui::input::Hit::default();
+    for surface in scene.surfaces().filter(|s| (Id::is_named(&s.key) || s.pointer_states) && !s.disabled) {
+        let placed = if surface.hits.is_empty() {
+            hit.push_placed(surface.key.clone(), None, &surface.path, surface.offset,
+                surface.clip, surface.clip_paths())
+        } else {
+            for (tag, path) in &surface.hits {
+                if hit.push_placed(surface.key.clone(), Some(tag.clone()), path,
+                    surface.offset, surface.clip, surface.clip_paths()).is_err() {
+                    skipped.insert("invalid_hit_geometry", 1);
+                    return (None, skipped);
+                }
+            }
+            continue;
+        };
+        if placed.is_err() {
+            skipped.insert("invalid_hit_geometry", 1);
+            return (None, skipped);
+        }
+    }
+    for n in face.draw_order(ir::PageRef(0)) {
+        let w = &face.widgets[n.0];
+        let range = match &w.kind {
+            ir::Kind::Knob { range, .. } | ir::Kind::Slider { range, .. } => range,
+            _ => continue,
+        };
+        let reason = if !face.visible(n) {
+            Some("not_visible")
+        } else if !w.enabled || !w.intercepts_mouse {
+            Some("not_interactive")
+        } else if !range.min.is_finite() || !range.max.is_finite() || range.min >= range.max {
+            Some("unavailable_range")
+        } else if let ir::Binding::Control(id) = w.binding {
+            if !ids.contains(&id.0) {
+                Some("not_runtime_bound")
+            } else if !values.get(&id).is_some_and(|v| v.is_finite()) {
+                Some("no_live_value")
+            } else if let Some(surface) = scene.surface(&format!("ir-{}", n.0)) {
+                let r = surface.frame;
+                let center = Point::new(r.x + r.size.width / 2., r.y + r.size.height / 2.);
+                if surface.disabled || r.size.width <= 0. || r.size.height <= 0. {
+                    Some("no_interactive_geometry")
+                } else if hit.at(center).is_none_or(|key| format!("ir-{}", n.0) != key) {
+                    Some("clipped_or_occluded")
+                } else {
+                    if selected.is_none() {
+                        selected = Some((n, id, center));
+                    }
+                    None
+                }
+            } else {
+                Some("not_rendered")
+            }
+        } else {
+            Some("not_control_bound")
+        };
+        if let Some(reason) = reason {
+            *skipped.entry(reason).or_default() += 1;
+        }
+    }
+    (selected, skipped)
+}
+
+#[test]
+fn loop_drag_target_skips_unavailable_controls_and_uses_runtime_values() {
+    let script = sampler_ksp::compile(
+        "on init make_perfview declare ui_knob $k(0,100,1) end on",
+        48000, sampler_ksp::Limits::LIBRARY, &[],
+    ).unwrap();
+    let face = ir_view::resolved(&script.ui(&|_| None).unwrap());
+    let ir::Binding::Control(id) = face.widgets[0].binding else { panic!("owned knob binding") };
+    let ids = std::collections::HashSet::from([id.0]);
+    let mut values = ir_view::Values::from([(id, 37.)]);
+    let mut ui = theme::ui();
+    let el = ir_view::view(&mut ui, &face, ir::PageRef(0), &Default::default(),
+        ir::Presentation::Vector, 1., &mut values);
+    ui.frame(col![el].w(1000.).h(600.), Some(Size::new(1000., 600.)), Input::default(), 1. / 60.).unwrap();
+    assert_eq!(loop_drag_target(&ui, &face, &values, &ids).0.unwrap().1, id);
+    assert_eq!(values[&id], 37., "building does not initialize/replace caller values");
+    let (target, skipped) = loop_drag_target(&ui, &face, &Default::default(), &ids);
+    assert!(target.is_none());
+    assert_eq!(skipped.get("no_live_value"), Some(&1));
+    let (target, skipped) = loop_drag_target(&ui, &face, &values, &Default::default());
+    assert!(target.is_none());
+    assert_eq!(skipped.get("not_runtime_bound"), Some(&1));
+    let mut disabled = face.clone();
+    disabled.widgets[0].enabled = false;
+    assert!(loop_drag_target(&ui, &disabled, &values, &ids).0.is_none());
+}
+
 #[test]
 #[ignore = "local Conflux witness; KONTRA_LOOP_PATCH and KONTRA_LOOP_CACHE required"]
 fn loop_audit_conflux() {
@@ -123,6 +227,20 @@ fn loop_audit_conflux() {
     }
     let controls = loaded.plan.controls().len();
     let ids: std::collections::HashSet<_> = loaded.plan.controls().iter().map(|c| c.id.0).collect();
+    let limits = sampler_core::Limits::for_plan(&loaded.plan, 32, 0);
+    let mut rt = sampler_core::Runtime::new(loaded.plan, limits).unwrap();
+    rt.set_behavior_block_fuel(sampler_core::Limits::DEFAULT_BEHAVIOR_FUEL);
+    // Production receives core readback before rendering; view() itself does not
+    // populate untouched controls. Preserve exact runtime values, no invented defaults.
+    let initial_values: ir_view::Values = ids.iter().filter_map(|&id| {
+        let value = rt.control_value(rt.active_plan(), sampler_core::ControlId(id)).ok()?;
+        let value = match value {
+            sampler_core::ControlValue::Integer(v) => v as f64,
+            sampler_core::ControlValue::Real(v) => v,
+            sampler_core::ControlValue::Toggle(v) => f64::from(u8::from(v)),
+        };
+        Some((ir::ControlId(id), value))
+    }).collect();
     let mut sampled = std::collections::BTreeSet::new();
     let mut results = Vec::new();
     for (index, face) in loaded
@@ -145,7 +263,7 @@ fn loop_audit_conflux() {
                 .filter(|(n, need)| **need && assets.get(ir::AssetRef(*n)).is_none())
                 .count();
             let mut ui = theme::ui();
-            let mut values = ir_view::Values::default();
+            let mut values = initial_values.clone();
             let size = Size::new(1000., 600.);
             let mut build_ms = Vec::new();
             let mut paint_ms = Vec::new();
@@ -184,28 +302,10 @@ fn loop_audit_conflux() {
                     );
                 }
             }
-            let knob = face.draw_order(ir::PageRef(0)).into_iter().find(|&n| {
-                face.visible(n)
-                    && matches!(
-                        face.widgets[n.0].kind,
-                        ir::Kind::Knob { .. } | ir::Kind::Slider { .. }
-                    )
-                    && matches!(face.widgets[n.0].binding, ir::Binding::Control(_))
-            });
+            let (knob, skipped) = loop_drag_target(&ui, &face, &values, &ids);
             let mut drag_changes = 0;
-            if let Some(n) = knob {
-                let ir::Binding::Control(id) = face.widgets[n.0].binding else {
-                    unreachable!()
-                };
-                sampled.insert(id.0);
+            if let Some((_n, id, center)) = knob {
                 let was = values[&id];
-                let r = ui
-                    .scene()
-                    .unwrap()
-                    .surface(&format!("ir-{}", n.0))
-                    .unwrap()
-                    .frame;
-                let center = Point::new(r.x + r.size.width / 2., r.y + r.size.height / 2.);
                 for (offset, down) in [
                     (0., true),
                     (-64., true),
@@ -242,16 +342,29 @@ fn loop_audit_conflux() {
                     );
                     ui.frame(col![el].w(1000.).h(600.), Some(size), input, 1. / 60.)
                         .unwrap();
-                    drag_changes |= usize::from(values[&id] != was);
+                    drag_changes |= usize::from(values.get(&id).is_some_and(|v| *v != was));
+                }
+                if drag_changes != 0 {
+                    sampled.insert(id.0);
                 }
             }
             let zero_ranges = face.widgets.iter().filter(|w| matches!(w.kind,ir::Kind::Knob{range,..}|ir::Kind::Slider{range,..} if range.min==range.max)).count();
-            results.push(serde_json::json!({"index":index,"source":format!("{:?}",face.source),"mode":format!("{presentation:?}"),"widgets":face.widgets.len(),"visible":face.draw_order(ir::PageRef(0)).iter().filter(|n|face.visible(**n)).count(),"assets":face.assets.len(),"missing":missing,"decoded_bytes":assets.bytes(),"decode_ms":decode_ms,"build_ms":build_ms,"paint_ms":paint_ms,"bound":face.widgets.iter().filter(|w| matches!(w.binding,ir::Binding::Control(id) if ids.contains(&id.0))).count(),"tested_drags":usize::from(knob.is_some()),"changed_drags":drag_changes,"zero_range_knobs_sliders":zero_ranges,"page_size":[face.pages[0].size.width,face.pages[0].size.height],"background_present":face.pages[0].background.image.is_some()}));
+            results.push(serde_json::json!({"index":index,"source":format!("{:?}",face.source),"mode":format!("{presentation:?}"),"widgets":face.widgets.len(),"visible":face.draw_order(ir::PageRef(0)).iter().filter(|n|face.visible(**n)).count(),"assets":face.assets.len(),"missing":missing,"decoded_bytes":assets.bytes(),"decode_ms":decode_ms,"build_ms":build_ms,"paint_ms":paint_ms,"bound":face.widgets.iter().filter(|w| matches!(w.binding,ir::Binding::Control(id) if ids.contains(&id.0))).count(),"tested_drags":usize::from(knob.is_some()),"changed_drags":drag_changes,"skipped_unavailable_drag_controls":skipped,"selected_control":knob.map(|(_,id,_)|format!("{:032x}",id.0)),"zero_range_knobs_sliders":zero_ranges,"page_size":[face.pages[0].size.width,face.pages[0].size.height],"background_present":face.pages[0].background.image.is_some()}));
         }
     }
-    let limits = sampler_core::Limits::for_plan(&loaded.plan, 32, 0);
-    let mut rt = sampler_core::Runtime::new(loaded.plan, limits).unwrap();
-    rt.set_behavior_block_fuel(sampler_core::Limits::DEFAULT_BEHAVIOR_FUEL);
+    // Checkpoint once per stage, not per frame. Callback assertions stay strict;
+    // their failure must not discard completed layout/software-paint measurements.
+    let mut record = serde_json::json!({
+        "stage": "render_complete_callbacks_pending",
+        "scope": "owned_ir_headless_layout_and_software_paint_not_native_ui_or_gpu_present",
+        "load_ms": load_ms, "controls": controls, "interfaces": loaded.interfaces.len(),
+        "publication_ms": publication, "renders": results,
+        "unavailable_control_readback": controls.saturating_sub(initial_values.len()),
+    });
+    let checkpoint = |record: &serde_json::Value| {
+        std::fs::write(cache.join("conflux.json"), serde_json::to_vec_pretty(record).unwrap()).unwrap();
+    };
+    checkpoint(&record);
     let mut callbacks = Vec::new();
     let mut label_effect = None;
     for id in sampled {
@@ -311,8 +424,12 @@ fn loop_audit_conflux() {
             .and_then(|(_, b)| *b)
             .and_then(|b| rt.behavior_outcome(b).ok().flatten())
             .map(|o| format!("{o:?}"));
-        callbacks.push(serde_json::json!({"admitted":admitted.is_ok(),"admit_us":admit_us,"callback":admitted.as_ref().ok().is_some_and(|(_,b)|b.is_some()),"outcome_after_512_frames":outcome,"fault":rt.take_fault().map(|(_,e)|format!("{e:?}")),"effects":effects,"applied":applied,"ignored":ignored,"dropped_effects":rt.dropped_effects()}));
+        callbacks.push(serde_json::json!({"control":format!("{:032x}",id.0),"admitted":admitted.is_ok(),"admit_us":admit_us,"callback":admitted.as_ref().ok().is_some_and(|(_,b)|b.is_some()),"outcome_after_512_frames":outcome,"fault":rt.take_fault().map(|(_,e)|format!("{e:?}")),"effects":effects,"applied":applied,"ignored":ignored,"dropped_effects":rt.dropped_effects()}));
     }
+    record["stage"] = serde_json::json!("callbacks_complete_assertions_pending");
+    record["callbacks"] = serde_json::json!(callbacks);
+    record["sampled_changed_bound_controls"] = serde_json::json!(callbacks.len());
+    checkpoint(&record);
     let (instance, mut effect) = label_effect.expect("Conflux callback emits its knob label");
     assert!(
         callbacks
@@ -338,12 +455,10 @@ fn loop_audit_conflux() {
         noop_publication.push(t.elapsed().as_secs_f64() * 1000.);
     }
     assert!(Arc::ptr_eq(&base, &published.interfaces));
-    let record = serde_json::json!({"load_ms":load_ms,"controls":controls,"interfaces":loaded.interfaces.len(),"publication_ms":publication,"changed_publication_ms":changed_publication,"noop_publication_ms":noop_publication,"renders":results,"callbacks":callbacks});
-    std::fs::write(
-        cache.join("conflux.json"),
-        serde_json::to_vec_pretty(&record).unwrap(),
-    )
-    .unwrap();
+    record["stage"] = serde_json::json!("complete");
+    record["changed_publication_ms"] = serde_json::json!(changed_publication);
+    record["noop_publication_ms"] = serde_json::json!(noop_publication);
+    checkpoint(&record);
     println!(
         "LOOP_CONFLUX {}",
         serde_json::json!({"load_ms":load_ms,"controls":controls,"interfaces":loaded.interfaces.len(),"publication_ms":publication,"changed_publication_ms":changed_publication,"noop_publication_ms":noop_publication})
