@@ -1,0 +1,299 @@
+{
+  "schema": "nckp-round6-test-correction-v1",
+  "base_sha": "bac3c616824cf26e2a888c09cb21433b727d9079",
+  "base_tree": "6a275cfca85d081b135449a46e11238f6b5aae6d",
+  "source_sha": "4a22450db8b18c6cc8b2f15d67e8327c6c902ccb",
+  "source_tree": "5a08ae434cd3138deb297bfdf11c48567c248398",
+  "changed_source": [
+    "crates/sampler-kontakt/tests/nckp_resources.rs"
+  ],
+  "production_diff": "NONE",
+  "root_cause": "Invalid test expectation for generic properties; actual scalar VALUE lives in control variable, host default and typed Widget.value.",
+  "native_requirements": [
+    {
+      "section": "load_performance_view()",
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#load_performance_view--",
+      "archive_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/ksp-ui.html",
+      "document_sha256": "ad269b9e26a32e9f1a8aea9b00d8e199af43551adb3b47cf71b93a7234e09d5e",
+      "extraction": "stdlib HTMLParser handle_data, whitespace normalized; exact section-boundary strings",
+      "start_string": "load_performance_view() load_performance_view(",
+      "end_string": "make_perfview make_perfview",
+      "normalized_text_offset": 24266,
+      "excerpt": "load_performance_view() load_performance_view(<filename>) Loads a performance view file (.nckp) that was created in the Creator Tools GUI Designer. <filename> The filename of the .nckp file without extension, entered as a string. Remarks Only one .nkcp performance view file can be loaded per script slot. This command is only available in the on init callback. This command cannot be used alongside make_perfview . The performance view file (.nkcp) should be in the performance_view subfolder of the resource container. All contained controls are accessible as if they were declared and set up in KSP; variable names can be identified in Creator Tools. More information in the Creator Tools manual . Examples on init load_performance_view(“performanceView”) end on on ui_control ($testButton) if ($testButton = 0) set_control_par(get_ui_id($testSlider), $CONTROL_PAR_HIDE, $HIDE_PART_WHOLE_CONTROL) else set_control_par(get_ui_id($testSlider), $CONTROL_PAR_HIDE, $HIDE_PART_NOTHING) end if end on Loads a performance view file and then defines some basic behavior involving two of the contained controls. See Also Resource Container",
+      "excerpt_sha256": "a312c561512c45a2d40ece7aa0dbd799894e313fe361eae16832bc1e2985a41e",
+      "status": "OFFICIAL_ARCHIVED_SPEC_REQUIREMENTS_ONLY_NOT_NATIVE_EXECUTION"
+    },
+    {
+      "section": "get_ui_id()",
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#get_ui_id--",
+      "archive_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/ksp-ui.html",
+      "document_sha256": "ad269b9e26a32e9f1a8aea9b00d8e199af43551adb3b47cf71b93a7234e09d5e",
+      "extraction": "stdlib HTMLParser handle_data, whitespace normalized; exact section-boundary strings",
+      "start_string": "get_ui_id() get_ui_id(",
+      "end_string": "get_ui_wf_property() get_ui_wf_property(",
+      "normalized_text_offset": 21289,
+      "excerpt": "get_ui_id() get_ui_id(<variable>) Retrieves the UI ID number of a UI widget. Remarks UI IDs are assigned sequentially from the very first variable or constant declared in the script, which starts at 32768 . Even regular variables and constants (those that are not UI widgets) get a UI ID assigned, however this ID cannot be used with various get_control_par() / set_control_par() commands! Examples on init declare const $NUM_KNOBS := 4 declare ui_knob $Knob_1 (0, 100, 1) declare ui_knob $Knob_2 (0, 100, 1) declare ui_knob $Knob_3 (0, 100, 1) declare ui_knob $Knob_4 (0, 100, 1) declare ui_value_edit $Set (0, 100, 1) declare $i declare %ID[$NUM_KNOBS] while ($i < $NUM_KNOBS) %ID[$i] := get_ui_id($Knob_1) + $i inc($i) end while end on on ui_control ($Set) $i := 0 while ($i < $NUM_KNOBS) set_control_par(%ID[$i], $CONTROL_PAR_VALUE, $Set) inc($i) end while end on Store IDs in an array and use those IDs to set multiple knobs to the same value. See Also set_control_par() get_control_par()",
+      "excerpt_sha256": "58598325584afdf23b48c68a8c2e3f78379ba76c53acec2c0c462ead2057311d",
+      "status": "OFFICIAL_ARCHIVED_SPEC_REQUIREMENTS_ONLY_NOT_NATIVE_EXECUTION"
+    },
+    {
+      "section": "set_control_par()",
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#set_control_par--",
+      "archive_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/ksp-ui.html",
+      "document_sha256": "ad269b9e26a32e9f1a8aea9b00d8e199af43551adb3b47cf71b93a7234e09d5e",
+      "extraction": "stdlib HTMLParser handle_data, whitespace normalized; exact section-boundary strings",
+      "start_string": "set_control_par() set_control_par(",
+      "end_string": "set_control_par_arr() set_control_par_arr(",
+      "normalized_text_offset": 28858,
+      "excerpt": "set_control_par() set_control_par(<ui-id>, <control-parameter>, <value>) Change various parameters of the specified UI widget. <ui-id> The ID number of the UI widget. You can retrieve it with get_ui_id() . <control-parameter> Parameter of the UI control we wish to set, i.e. $CONTROL_PAR_WIDTH . <value> The value of the control parameter we wish to set. Remarks set_control_par_str() is an additional flavor of the command for use with strings (i.e. setting the text of a ui_label , or automation name of a ui_slider ). Examples on init declare ui_value_edit $test (0, 100, $VALUE_EDIT_MODE_NOTE_NAMES) set_text($test,\"\") set_control_par(get_ui_id($test), $CONTROL_PAR_WIDTH, 45) move_control_px($test, 100, 10) end on Changing the width of a value edit to 45 pixels. Note that you also have to specify its position in pixels once you use pixel-based control parameters. on init declare ui_label $test (1, 1) set_control_par_str(get_ui_id($test), $CONTROL_PAR_TEXT, \"This is Text\") set_control_par(get_ui_id($test), $CONTROL_PAR_TEXT_ALIGNMENT, 1) end on Set and center text in labels. See Also get_control_par() set_control_par_arr() get_ui_id()",
+      "excerpt_sha256": "35f5a62dfddfed91a50a735929ce73e9cb3b6833b4fa3e1d8c4b03c904fac8e5",
+      "status": "OFFICIAL_ARCHIVED_SPEC_REQUIREMENTS_ONLY_NOT_NATIVE_EXECUTION"
+    }
+  ],
+  "source": [
+    {
+      "sha": "4a22450db8b18c6cc8b2f15d67e8327c6c902ccb",
+      "path": "crates/sampler-kontakt/src/load.rs",
+      "start_line": 726,
+      "end_line": 798,
+      "symbol": "initialize_scripts: resource discovery/read/parse/environment/init",
+      "file_sha256": "881defcef92840a65e1a0b76c157ca293fbc41ddc202cc7ffe56c9432e6b8c94",
+      "span_sha256": "8a9756ab295ee150391095da8fe0f077e092144656ce3c27a03c25349bb82cf8",
+      "status": "UNCHANGED_PRODUCTION_SOURCE_NO_NEW_RUNTIME_WITNESS"
+    },
+    {
+      "sha": "4a22450db8b18c6cc8b2f15d67e8327c6c902ccb",
+      "path": "crates/sampler-kontakt/src/load.rs",
+      "start_line": 806,
+      "end_line": 847,
+      "symbol": "compile_ui/compile_ui_initialized: shared production init consumer",
+      "file_sha256": "881defcef92840a65e1a0b76c157ca293fbc41ddc202cc7ffe56c9432e6b8c94",
+      "span_sha256": "f16e93d2f7e7fd8655e5587c1ae51e51e6025dd898ad55f07096f262e53ed608",
+      "status": "UNCHANGED_PRODUCTION_SOURCE_NO_NEW_RUNTIME_WITNESS"
+    },
+    {
+      "sha": "4a22450db8b18c6cc8b2f15d67e8327c6c902ccb",
+      "path": "crates/sampler-kontakt/src/load.rs",
+      "start_line": 873,
+      "end_line": 905,
+      "symbol": "compile_ui_initialized: warnings and same UI projection",
+      "file_sha256": "881defcef92840a65e1a0b76c157ca293fbc41ddc202cc7ffe56c9432e6b8c94",
+      "span_sha256": "7f841b8a82ea0ee9012875d5e29db62552ccec1f354aeafb8f8bf47d4b6ba9f2",
+      "status": "UNCHANGED_PRODUCTION_SOURCE_NO_NEW_RUNTIME_WITNESS"
+    },
+    {
+      "sha": "4a22450db8b18c6cc8b2f15d67e8327c6c902ccb",
+      "path": "crates/sampler-ksp/src/nckp.rs",
+      "start_line": 17,
+      "end_line": 79,
+      "symbol": "view_name/view_in: unchanged literal-only discovery",
+      "file_sha256": "4ae831756a3fb76cf6481dd285cdf210d3ac569589842c94735c7083af26bf06",
+      "span_sha256": "ed962500bb35ecb12408332371a3cae2eb02733fd609faf12bfb08121e787adf",
+      "status": "UNCHANGED_PRODUCTION_SOURCE_NO_NEW_RUNTIME_WITNESS"
+    },
+    {
+      "sha": "4a22450db8b18c6cc8b2f15d67e8327c6c902ccb",
+      "path": "crates/sampler-ksp/src/nckp.rs",
+      "start_line": 105,
+      "end_line": 156,
+      "symbol": "walk/kind: fixture index7 maps to named Slider",
+      "file_sha256": "4ae831756a3fb76cf6481dd285cdf210d3ac569589842c94735c7083af26bf06",
+      "span_sha256": "c2dc09ee22026ed353a7e045c59e939fcc53975f0b119890665b3651f2da94cc",
+      "status": "UNCHANGED_PRODUCTION_SOURCE_NO_NEW_RUNTIME_WITNESS"
+    },
+    {
+      "sha": "4a22450db8b18c6cc8b2f15d67e8327c6c902ccb",
+      "path": "crates/sampler-ksp/src/nckp.rs",
+      "start_line": 262,
+      "end_line": 283,
+      "symbol": "control: authored min/max/default decoded",
+      "file_sha256": "4ae831756a3fb76cf6481dd285cdf210d3ac569589842c94735c7083af26bf06",
+      "span_sha256": "cb33445ea741251686bcca6a12c5fc343f755a59c3ecdf5a6ffb4582ac5545a3",
+      "status": "UNCHANGED_PRODUCTION_SOURCE_NO_NEW_RUNTIME_WITNESS"
+    },
+    {
+      "sha": "4a22450db8b18c6cc8b2f15d67e8327c6c902ccb",
+      "path": "crates/sampler-ksp/src/sema.rs",
+      "start_line": 438,
+      "end_line": 506,
+      "symbol": "load_performance_view/performance_widget: resource controls have Home::Control",
+      "file_sha256": "ebe71cd32cec320df7adffaaa41e06d644c3373705c00b6a4fcd3daa83b9f755",
+      "span_sha256": "85e596f42161ba16ae9c905183f13f7f1da3f19271888d1a2412d88067b04813",
+      "status": "UNCHANGED_PRODUCTION_SOURCE_NO_NEW_RUNTIME_WITNESS"
+    },
+    {
+      "sha": "4a22450db8b18c6cc8b2f15d67e8327c6c902ccb",
+      "path": "crates/sampler-ksp/src/sema.rs",
+      "start_line": 518,
+      "end_line": 538,
+      "symbol": "resolve_or_declare: missing aliases remain warned unbound handles",
+      "file_sha256": "ebe71cd32cec320df7adffaaa41e06d644c3373705c00b6a4fcd3daa83b9f755",
+      "span_sha256": "2bd21c2938969c48b37890be6f921ea5000a94e2359ca84812fa965fa9c845d5",
+      "status": "UNCHANGED_PRODUCTION_SOURCE_NO_NEW_RUNTIME_WITNESS"
+    },
+    {
+      "sha": "4a22450db8b18c6cc8b2f15d67e8327c6c902ccb",
+      "path": "crates/sampler-ksp/src/lib.rs",
+      "start_line": 984,
+      "end_line": 1044,
+      "symbol": "initialize/initialize_inner: real frontend+eval, no test stand-in",
+      "file_sha256": "0d4d82b377797656c2ac7d80026dc484854c83eca3adf2f04868dab354c68758",
+      "span_sha256": "ccadf78bba8d8afc8b078d4220d91ff48da969d5bdb29e44d08909ed5b785340",
+      "status": "UNCHANGED_PRODUCTION_SOURCE_NO_NEW_RUNTIME_WITNESS"
+    },
+    {
+      "sha": "4a22450db8b18c6cc8b2f15d67e8327c6c902ccb",
+      "path": "crates/sampler-ksp/src/eval.rs",
+      "start_line": 563,
+      "end_line": 585,
+      "symbol": "write_var: actual control values",
+      "file_sha256": "d6b633d6d8daab686a7b1206c68bacb59fccc285d1a8565dc679f0fb844800d7",
+      "span_sha256": "aa312400b9bb6ab89ce0fbe59dce76fc92813a12f3838d724509e34b28980f50",
+      "status": "UNCHANGED_PRODUCTION_SOURCE_NO_NEW_RUNTIME_WITNESS"
+    },
+    {
+      "sha": "4a22450db8b18c6cc8b2f15d67e8327c6c902ccb",
+      "path": "crates/sampler-ksp/src/eval.rs",
+      "start_line": 752,
+      "end_line": 773,
+      "symbol": "set_property: VALUE writes var and returns before generic map",
+      "file_sha256": "d6b633d6d8daab686a7b1206c68bacb59fccc285d1a8565dc679f0fb844800d7",
+      "span_sha256": "86745e91298ae89dad023e684efae2408e71722758930bddf5310338145368a4",
+      "status": "UNCHANGED_PRODUCTION_SOURCE_NO_NEW_RUNTIME_WITNESS"
+    },
+    {
+      "sha": "4a22450db8b18c6cc8b2f15d67e8327c6c902ccb",
+      "path": "crates/sampler-ksp/src/lib.rs",
+      "start_line": 807,
+      "end_line": 813,
+      "symbol": "derived_control_id: stable host identity",
+      "file_sha256": "0d4d82b377797656c2ac7d80026dc484854c83eca3adf2f04868dab354c68758",
+      "span_sha256": "eb0011cbb3b2feb30cdedc21938f1f3d3daa197705b0f10146efe205f8a5b797",
+      "status": "UNCHANGED_PRODUCTION_SOURCE_NO_NEW_RUNTIME_WITNESS"
+    },
+    {
+      "sha": "4a22450db8b18c6cc8b2f15d67e8327c6c902ccb",
+      "path": "crates/sampler-ksp/src/lib.rs",
+      "start_line": 1118,
+      "end_line": 1158,
+      "symbol": "compile_initialized_inner: host ID/default from init.controls",
+      "file_sha256": "0d4d82b377797656c2ac7d80026dc484854c83eca3adf2f04868dab354c68758",
+      "span_sha256": "c5e81170273bb0769328b1d4bcff741436b8c9f8d50bfc493bca500e9d679473",
+      "status": "UNCHANGED_PRODUCTION_SOURCE_NO_NEW_RUNTIME_WITNESS"
+    },
+    {
+      "sha": "4a22450db8b18c6cc8b2f15d67e8327c6c902ccb",
+      "path": "crates/sampler-ksp/src/model.rs",
+      "start_line": 283,
+      "end_line": 353,
+      "symbol": "assemble: WidgetValue::Int and separate generic properties",
+      "file_sha256": "d506dff5384385515bbff65e7e2a23105e3428619553cb9a21d805b8e9fd78c1",
+      "span_sha256": "316370c2d0e154032d1412de4d3a0b87e392e60216dcfedcb7f312e10d39637a",
+      "status": "UNCHANGED_PRODUCTION_SOURCE_NO_NEW_RUNTIME_WITNESS"
+    },
+    {
+      "sha": "4a22450db8b18c6cc8b2f15d67e8327c6c902ccb",
+      "path": "crates/sampler-ksp/src/ui.rs",
+      "start_line": 341,
+      "end_line": 351,
+      "symbol": "interface: excludes unresolved aliases",
+      "file_sha256": "96e5c4eccf3ef5ef3be8dae423329bad690066c0755cbcf00e63602fb693eba2",
+      "span_sha256": "98fdd00c779d256377c19089b7569dec2a3814a7edda7b2390d1112847311bb4",
+      "status": "UNCHANGED_PRODUCTION_SOURCE_NO_NEW_RUNTIME_WITNESS"
+    },
+    {
+      "sha": "4a22450db8b18c6cc8b2f15d67e8327c6c902ccb",
+      "path": "crates/sampler-ksp/src/ui.rs",
+      "start_line": 478,
+      "end_line": 488,
+      "symbol": "interface: typed rendered Widget.value",
+      "file_sha256": "96e5c4eccf3ef5ef3be8dae423329bad690066c0755cbcf00e63602fb693eba2",
+      "span_sha256": "3b9df72bdfd743066cf7914a4f6a5a3f16c972d54fd2579ea060dea026b17af6",
+      "status": "UNCHANGED_PRODUCTION_SOURCE_NO_NEW_RUNTIME_WITNESS"
+    },
+    {
+      "sha": "4a22450db8b18c6cc8b2f15d67e8327c6c902ccb",
+      "path": "crates/sampler-ksp/src/ui.rs",
+      "start_line": 549,
+      "end_line": 557,
+      "symbol": "interface: rendered control binding",
+      "file_sha256": "96e5c4eccf3ef5ef3be8dae423329bad690066c0755cbcf00e63602fb693eba2",
+      "span_sha256": "602d925c02690f279dfdee4f25271e550363a8e3b20a373a93923f7a4eee94a0",
+      "status": "UNCHANGED_PRODUCTION_SOURCE_NO_NEW_RUNTIME_WITNESS"
+    },
+    {
+      "sha": "4a22450db8b18c6cc8b2f15d67e8327c6c902ccb",
+      "path": "crates/sampler-kontakt/tests/nckp_resources.rs",
+      "start_line": 66,
+      "end_line": 114,
+      "symbol": "exact selection/identity/value/default/rendered value regression",
+      "file_sha256": "599393ff938ece7eca27f5690d1a4fc2cf282c23cdb9867a66e7b144e3f9eab2",
+      "span_sha256": "3d6528480b935e8efb065ad63150eece04565af1a90c7fbd8550d0f9103d6ea6",
+      "status": "TEST_SOURCE_NOT_RUN"
+    },
+    {
+      "sha": "4a22450db8b18c6cc8b2f15d67e8327c6c902ccb",
+      "path": "crates/sampler-kontakt/tests/nckp_resources.rs",
+      "start_line": 117,
+      "end_line": 153,
+      "symbol": "sparse-description missing alias diagnostic/non-rendering regression",
+      "file_sha256": "599393ff938ece7eca27f5690d1a4fc2cf282c23cdb9867a66e7b144e3f9eab2",
+      "span_sha256": "2437b218383b5eaf30430a345a184c79308442719536c3813f941ea0087ffb52",
+      "status": "TEST_SOURCE_NOT_RUN"
+    },
+    {
+      "sha": "4a22450db8b18c6cc8b2f15d67e8327c6c902ccb",
+      "path": "crates/sampler-kontakt/tests/nckp_resources.rs",
+      "start_line": 156,
+      "end_line": 184,
+      "symbol": "unchanged dynamic/concat discovery negative",
+      "file_sha256": "599393ff938ece7eca27f5690d1a4fc2cf282c23cdb9867a66e7b144e3f9eab2",
+      "span_sha256": "86ff33a2e0e50182707d222d05ebc2aba393f94823d999cf4a7afe54c6588aef",
+      "status": "TEST_SOURCE_NOT_RUN"
+    },
+    {
+      "sha": "4a22450db8b18c6cc8b2f15d67e8327c6c902ccb",
+      "path": "crates/sampler-kontakt/tests/nckp_resources.rs",
+      "start_line": 187,
+      "end_line": 212,
+      "symbol": "unchanged corrupt/missing/traversal/extension diagnostics",
+      "file_sha256": "599393ff938ece7eca27f5690d1a4fc2cf282c23cdb9867a66e7b144e3f9eab2",
+      "span_sha256": "34e3fde2a6a967b3520e5740c0eb362923de83c19c54c1c251199f7e96c95938",
+      "status": "TEST_SOURCE_NOT_RUN"
+    }
+  ],
+  "original_receipts": [
+    {
+      "path": "/mnt/Windows11/DEV_WORKSPACE/kontra-runs/pi-integration-round5/nckp-resources.log",
+      "sha256": "2e4cc31f2b81ad8f578a8f20d1345b5dc87bca960551fb080fa494e6c0c3e90f",
+      "status": "ORIGINAL_IMMUTABLE_RECEIPT_NOT_RERUN"
+    },
+    {
+      "path": "/mnt/Windows11/DEV_WORKSPACE/kontra-runs/pi-integration-round5/nckp-resources.json",
+      "sha256": "c82771c7019aafee926bb977ee51048763152fac5bc55382c17dc2f1161383fb",
+      "status": "ORIGINAL_IMMUTABLE_RECEIPT_NOT_RERUN"
+    },
+    {
+      "path": "/mnt/Windows11/DEV_WORKSPACE/kontra-runs/pi-integration-round5/nckp-helper.log",
+      "sha256": "b6738cb3c41680cedf9bb58f814e71d02268a0e6c2590adbe5b962169e3b67e2",
+      "status": "ORIGINAL_IMMUTABLE_RECEIPT_NOT_RERUN"
+    },
+    {
+      "path": "/mnt/Windows11/DEV_WORKSPACE/kontra-runs/pi-integration-round5/nckp-helper.json",
+      "sha256": "7c764cdc569c3393dfe426446d72ff250044da2321b40afd2a3f727b947c020f",
+      "status": "ORIGINAL_IMMUTABLE_RECEIPT_NOT_RERUN"
+    }
+  ],
+  "original_resource_result": "2PASS/1FAIL; failure at properties lookup None versus Some(Int17); correct resource width/name/control checks had already passed",
+  "original_helper_result": "2PASS; 33 authored cases",
+  "checks": [
+    "direct rustfmt --edition2024 --check PASS formatting/syntax only",
+    "git diff --check PASS whitespace only",
+    "official cache hashes reverified",
+    "original RED log and artifact hashes reverified"
+  ],
+  "new_test_status": "NOT_RUN; no Cargo/rustc/clippy/build/runtime/native host",
+  "native_parity": "UNKNOWN",
+  "comparative_cpu_ram_acceptance": "UNACHIEVED",
+  "next": "Coordinator cherry-picks test+audit commits; integration sole owner validates next combined serialized batch."
+}
