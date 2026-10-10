@@ -43,6 +43,8 @@ pub struct ControlId(pub u128);
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Interface {
     pub source: Source,
+    /// The source explicitly declares an authored performance view.
+    pub performance: bool,
     pub pages: Vec<Page>,
     /// Declaration order; ties in [`Widget::z`] draw in this order.
     pub widgets: Vec<Widget>,
