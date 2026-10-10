@@ -793,7 +793,22 @@ mod tests {
                     "MIDI key {key} must not become an interactive face"
                 );
             }
-            h.press("key-127");
+            let at = super::super::tests::center(&h.ui, "key-127");
+            for buttons in [
+                Buttons::PRIMARY,
+                Buttons::PRIMARY,
+                Buttons::default(),
+                Buttons::default(),
+            ] {
+                h.tick(Input {
+                    pointer: PointerInput {
+                        pos: Some(at),
+                        buttons,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                });
+            }
             assert!(
                 matches!(p.shared.keyboard.pop(), Some((crate::plugin::EVERY_PART, crate::plugin::Play::Note(127, velocity))) if velocity > 0)
             );
