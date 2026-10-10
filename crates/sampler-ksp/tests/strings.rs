@@ -664,3 +664,39 @@ fn appended_menu_item_read_modify_write_emits_the_same_value_it_stores() {
     });
     assert_eq!(effects, 1);
 }
+#[test]
+fn hidden_selected_menu_entry_keeps_its_original_index_and_logical_value() {
+    let rt = run(
+        "on init declare ui_menu $m add_menu_item($m,\"first\",17) add_menu_item($m,\"second\",93)
+        $m := 93 declare $index declare $selected declare $raw declare $visible declare $count end on
+        on note set_menu_item_visibility(get_ui_id($m),1,0)
+        $index := get_control_par(get_ui_id($m),$CONTROL_PAR_VALUE)
+        $selected := get_control_par(get_ui_id($m),$CONTROL_PAR_SELECTED_ITEM_IDX)
+        $raw := $m $visible := get_menu_item_visibility(get_ui_id($m),1)
+        $count := get_control_par(get_ui_id($m),$CONTROL_PAR_NUM_ITEMS) end on",
+        &[],
+    );
+    assert_eq!(
+        (
+            cell(&rt, 0),
+            cell(&rt, 1),
+            cell(&rt, 2),
+            cell(&rt, 3),
+            cell(&rt, 4)
+        ),
+        (1, 1, 93, 0, 2)
+    );
+}
+
+#[test]
+fn duplicate_menu_values_select_the_first_authored_match_including_hidden_entries() {
+    let rt = run(
+        "on init declare ui_menu $m add_menu_item($m,\"first\",17) add_menu_item($m,\"second\",17)
+        $m := 17 set_menu_item_visibility(get_ui_id($m),0,0)
+        declare $init_index := get_control_par(get_ui_id($m),$CONTROL_PAR_SELECTED_ITEM_IDX)
+        declare $index declare $raw end on
+        on note $index := get_control_par(get_ui_id($m),$CONTROL_PAR_VALUE) $raw := $m end on",
+        &[],
+    );
+    assert_eq!((cell(&rt, 0), cell(&rt, 1), cell(&rt, 2)), (0, 0, 17));
+}
