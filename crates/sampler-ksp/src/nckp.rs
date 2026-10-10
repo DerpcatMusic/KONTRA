@@ -9,14 +9,73 @@
 use crate::model::{MenuItem, PerformanceControl, PerformanceView, Value, WidgetKind};
 use serde_json::Value as Json;
 
-/// The view a script loads, so a host can read
+/// The single literal view requested in `on init`, so a host can read
 /// `Resources/performance_view/<name>.nckp` before compiling.
+/// Returns `None` for absent, malformed, nonliteral or multiple requests,
+/// requests outside init, or scripts mixing the request with `make_perfview`.
+/// Strings and source conditions use the compiler's lexer and preprocessor.
 pub fn view_name(source: &str) -> Option<&str> {
-    let at = source.find("load_performance_view")?;
-    let rest = &source[at..];
-    let open = rest.find('"')? + 1;
-    let len = rest[open..].find('"')?;
-    Some(&rest[open..open + len])
+    use crate::ast::Item;
+    if !source.contains("load_performance_view") {
+        return None;
+    }
+    let mut syms = crate::lexer::Interner::default();
+    let mut tokens = crate::lexer::lex(source, &mut syms).ok()?;
+    crate::lexer::preprocess(&mut tokens, &syms, &Default::default()).ok()?;
+    let ast = crate::parser::parse(&tokens, &syms).ok()?;
+    let mut name = None;
+    for item in &ast.items {
+        let (body, in_init) = match item {
+            Item::Callback(c) => (&c.body, syms.name(c.name) == "init"),
+            Item::Function(f) => (&f.body, false),
+        };
+        view_in(body, &syms, in_init, &mut name)?;
+    }
+    name
+}
+
+fn view_in<'s>(
+    body: &[crate::ast::Stmt],
+    syms: &crate::lexer::Interner<'s>,
+    in_init: bool,
+    name: &mut Option<&'s str>,
+) -> Option<()> {
+    use crate::ast::{Expr, ExprKind, StmtKind};
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::Command(command, args) if syms.name(*command) == "load_performance_view" => {
+                if !in_init || name.is_some() {
+                    return None;
+                }
+                // shortcut: literal only; reuse HIR folding when discovery no longer precedes control resolution.
+                let [
+                    Expr {
+                        kind: ExprKind::Str(s),
+                        ..
+                    },
+                ] = args.as_slice()
+                else {
+                    return None;
+                };
+                *name = Some(syms.name(*s));
+            }
+            StmtKind::Command(command, _) if syms.name(*command) == "make_perfview" => {
+                return None;
+            }
+            StmtKind::If(_, yes, no) => {
+                view_in(yes, syms, in_init, name)?;
+                view_in(no, syms, in_init, name)?;
+            }
+            StmtKind::While(_, body) => view_in(body, syms, in_init, name)?,
+            StmtKind::Select(_, cases) => {
+                for case in cases {
+                    view_in(&case.body, syms, in_init, name)?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Some(())
 }
 
 /// Parse a `.nckp`. Unknown control types are skipped and reported.
