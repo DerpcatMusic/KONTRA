@@ -4832,6 +4832,14 @@ fn mapping_workbench_54k_caches_idle_paint_and_reopens_without_reindexing() {
     for n in 0..54_216 {
         let mut zone = sir::Zone::new(sir::AssetRef(0));
         zone.group = Some(sir::GroupRef(n % 189));
+        zone.keys = sir::KeyRange {
+            low: (n % 128) as u8,
+            high: (n % 128) as u8,
+        };
+        zone.velocities = sir::VelocityRange {
+            low: ((n / 128) % 128) as u8,
+            high: 127,
+        };
         inst.zones.push(zone);
     }
     let source = Arc::new(inst);
@@ -4875,6 +4883,11 @@ fn mapping_workbench_54k_caches_idle_paint_and_reopens_without_reindexing() {
                 < 48,
             "offscreen group rows are never constructed"
         );
+        let status = scene.surface("map-wave-status-0").unwrap().frame;
+        assert!(
+            status.y + status.size.height <= rack.y + rack.size.height,
+            "whole inspector stays visible"
+        );
         let path = scene
             .paint
             .iter()
@@ -4897,7 +4910,54 @@ fn mapping_workbench_54k_caches_idle_paint_and_reopens_without_reindexing() {
             Arc::ptr_eq(&path, &idle),
             "idle redraw reuses the immutable map paint"
         );
-        ui.press("map-zone-0-1");
+        ui.press("map-group-0-0");
+        ui.tick(Input {
+            keys: vec![KeyPress {
+                key: Key::Down,
+                mods: Default::default(),
+            }],
+            ..Default::default()
+        });
+        ui.tick(Input {
+            keys: vec![KeyPress {
+                key: Key::Enter,
+                mods: Default::default(),
+            }],
+            ..Default::default()
+        });
+        ui.idle(3);
+        assert!(
+            ui.ui
+                .scene()
+                .unwrap()
+                .surface("map-group-0-1")
+                .unwrap()
+                .semantics
+                .as_ref()
+                .is_some_and(|a| matches!(a.role, A11y::Toggle { on: true })),
+            "Down from legacy group focus reaches the next list row"
+        );
+        ui.tick(Input {
+            keys: vec![KeyPress {
+                key: Key::End,
+                mods: Default::default(),
+            }],
+            ..Default::default()
+        });
+        ui.tick(Input {
+            keys: vec![KeyPress {
+                key: Key::Enter,
+                mods: Default::default(),
+            }],
+            ..Default::default()
+        });
+        ui.idle(3);
+        assert!(
+            ui.ui.scene().unwrap().surface("map-group-0-188").is_some(),
+            "End reveals the last group"
+        );
+        ui.press("map-all-0");
+        ui.press("map-zone-0-128");
         ui.press("view-0-Sound");
         assert!(
             ui.ui
@@ -4911,7 +4971,7 @@ fn mapping_workbench_54k_caches_idle_paint_and_reopens_without_reindexing() {
             ui.ui
                 .scene()
                 .unwrap()
-                .surface("map-inspector-0-1")
+                .surface("map-inspector-0-128")
                 .is_some()
         );
         assert!(Arc::ptr_eq(
