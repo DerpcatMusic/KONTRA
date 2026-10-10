@@ -27,7 +27,10 @@ pub enum ParameterKind {
     Nrpn,
 }
 
-/// A receiving callback on an exact source-module stage.
+/// A receiving callback on a caller-selected route in the current stage array.
+/// Its instance must agree with every ordinary callback and parameter receiver
+/// on that stage. An empty ordinary stage may be explicitly assigned a receiver;
+/// neither instance numbers nor physical source-slot IDs identify route positions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ParameterProgram {
     pub kind: ParameterKind,
@@ -81,7 +84,12 @@ impl Prepared {
     /// Bind RPN/NRPN receivers in ascending stage order. There is at most one
     /// callback of each kind per stage. Runtime delivery uses only later stages
     /// of the sender's retained plan and excludes the sender's script instance.
-    /// This is KONTRA routing policy, not a Kontakt timing/echo parity claim.
+    /// The receiving instance must match every ordinary callback on its stage
+    /// and every other receiver bound there. Empty ordinary stages accept an
+    /// explicitly chosen receiver instance, not an inferred native module identity.
+    /// To change routing, clear this table, replace stages, then rebind it. The
+    /// complete program reset also clears it. This is KONTRA routing policy, not
+    /// a Kontakt timing/echo parity claim.
     pub fn with_parameter_programs(
         mut self,
         mut programs: Vec<ParameterProgram>,
@@ -95,9 +103,17 @@ impl Prepared {
         }
         programs.sort_by_key(|p| p.stage);
         for (i, p) in programs.iter().enumerate() {
-            if programs[..i]
-                .iter()
-                .any(|other| other.stage == p.stage && other.kind == p.kind)
+            let instance = self.programs[p.program].script_instance;
+            let stage = self.stages[p.stage];
+            if [stage.note, stage.release, stage.controller]
+                .into_iter()
+                .flatten()
+                .any(|program| self.programs[program].script_instance != instance)
+                || programs[..i].iter().any(|other| {
+                    other.stage == p.stage
+                        && (other.kind == p.kind
+                            || self.programs[other.program].script_instance != instance)
+                })
             {
                 return Err(Error::InvalidInput);
             }
