@@ -7,6 +7,94 @@ use std::{
     sync::{Arc, Weak},
 };
 
+/// Built on the load worker; no source-zone traversal belongs in a UI frame.
+pub(crate) struct Index {
+    counts: Vec<usize>,
+    links: Vec<Vec<usize>>,
+    source_ids: Vec<u32>,
+    rectangles: Arc<[(usize, u8, u8, u8, u8)]>,
+    bounds: Vec<(u8, u8)>,
+    first: Vec<Option<usize>>,
+    keys: Vec<Vec<usize>>,
+}
+
+impl Index {
+    pub(crate) fn new(inst: &ir::Instrument) -> Self {
+        let mut counts = vec![0; inst.groups.len() + 1];
+        let mut bounds = vec![(127, 0); counts.len() + 1];
+        let mut first = vec![None; counts.len() + 1];
+        let mut keys = vec![Vec::new(); 256];
+        for (n, z) in inst.zones.iter().enumerate() {
+            let g = group(z, inst);
+            counts[g] += 1;
+            for b in [g, counts.len()] {
+                bounds[b].0 = bounds[b].0.min(z.keys.low);
+                bounds[b].1 = bounds[b].1.max(z.keys.high);
+                first[b].get_or_insert(n);
+            }
+            // Canonical key intervals store each identity at most seven times.
+            let (mut low, mut high) = (
+                usize::from(z.keys.low) + 128,
+                usize::from(z.keys.high) + 129,
+            );
+            while low < high {
+                if low % 2 == 1 {
+                    keys[low].push(n);
+                    low += 1;
+                }
+                if high % 2 == 1 {
+                    high -= 1;
+                    keys[high].push(n);
+                }
+                low /= 2;
+                high /= 2;
+            }
+        }
+        for b in &mut bounds {
+            *b = if b.0 > b.1 {
+                (0, 127)
+            } else {
+                (
+                    b.0 / 12 * 12,
+                    (u16::from(b.1) / 12 * 12 + 11).min(127) as u8,
+                )
+            };
+        }
+        Self {
+            counts,
+            bounds,
+            first,
+            keys,
+            links: links(inst),
+            source_ids: crate::sound::waveform::source_ids(inst),
+            rectangles: rectangles(inst),
+        }
+    }
+
+    fn fit(&self, picked: Option<usize>) -> (u8, u8) {
+        self.bounds[picked.unwrap_or(self.counts.len())]
+    }
+
+    fn first(&self, picked: Option<usize>) -> Option<usize> {
+        self.first[picked.unwrap_or(self.counts.len())]
+    }
+
+    fn stack(&self, inst: &ir::Instrument, picked: Option<usize>, key: u8, vel: u8) -> Vec<usize> {
+        let mut hits = Vec::new();
+        let mut node = usize::from(key) + 128;
+        while node > 0 {
+            hits.extend(self.keys[node].iter().copied().filter(|&n| {
+                let z = &inst.zones[n];
+                picked.is_none_or(|g| group(z, inst) == g)
+                    && (z.velocities.low..=z.velocities.high).contains(&vel)
+            }));
+            node /= 2;
+        }
+        hits.sort_unstable();
+        hits
+    }
+}
+
 #[derive(Default)]
 pub(super) struct State {
     source: Option<Arc<ir::Instrument>>,
@@ -1082,6 +1170,39 @@ fn inspector(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument, compa
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mapping_worker_index_54k_keeps_identity_and_bounded_key_membership() {
+        let mut inst = ir::Instrument::default();
+        inst.groups.resize_with(189, ir::Group::default);
+        for n in 0..54_216 {
+            let mut z = ir::Zone::new(ir::AssetRef(0));
+            z.group = Some(ir::GroupRef(n % 189));
+            let low = (n % 128) as u8;
+            z.keys = ir::KeyRange {
+                low,
+                high: low.saturating_add((n % 13) as u8).min(127),
+            };
+            z.velocities = ir::VelocityRange {
+                low: (n % 64) as u8,
+                high: 127,
+            };
+            inst.zones.push(z);
+        }
+        let before = inst.clone();
+        let index = Index::new(&inst);
+        assert_eq!(index.counts.iter().sum::<usize>(), 54_216);
+        assert!(index.keys.iter().map(Vec::len).sum::<usize>() <= inst.zones.len() * 7);
+        for key in 0..128 {
+            for picked in [None, Some(0), Some(188)] {
+                assert_eq!(
+                    index.stack(&inst, picked, key, 64),
+                    stack(&inst, picked, key, 64)
+                );
+                assert_eq!(index.fit(picked), fit(&inst, picked));
+            }
+        }
+        assert_eq!(inst, before);
+    }
     #[test]
     fn mapping_sample_markers_match_source_loop_and_reverse_boundaries() {
         let range = ir::LoopRange {
