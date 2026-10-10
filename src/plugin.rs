@@ -2356,13 +2356,20 @@ fn load_part(
                     }
                 }
             }
-            Ok(loaded)
+            let mapping_index = loaded
+                .instrument
+                .as_deref()
+                .map(|instrument| Arc::new(crate::ui::MappingIndex::new(instrument)));
+            if canceled() {
+                return Err(CoreError::Canceled);
+            }
+            Ok((loaded, mapping_index))
         });
     let mut view = shared.view.lock_unpoisoned();
     let v = &mut view.parts[slot];
     v.loading = false;
     match result {
-        Ok(mut loaded) => {
+        Ok((mut loaded, mapping_index)) => {
             if loaded.scripts.uvi.is_some() {
                 loaded.scripts.uvi_source = Some(source.clone());
             }
@@ -2426,6 +2433,7 @@ fn load_part(
                 .map(|&(id, value)| ControlCell::new(id, value))
                 .collect();
             v.instrument = loaded.instrument;
+            v.mapping_index = mapping_index;
             v.keys = loaded.scripts.keys();
             *atoms.scripts.lock_unpoisoned() = loaded.scripts;
             let held = loaded.stream.as_ref().map(|s| s.resident_bytes());
