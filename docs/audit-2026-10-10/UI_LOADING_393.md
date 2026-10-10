@@ -134,6 +134,21 @@ heuristic is intentionally not ported under the current authored-call directive.
 This change leaves page bounds, hit geometry and input axis/sensitivity to their
 owners. It selects the visual control type supplied by the script.
 
+## Fresh paired representative paint
+
+All eleven representative NKIs loaded in both frozen v1 and v2. V1 reports
+seven Original OK and four missing-images; frozen v2 at `9d08a583` reports nine
+Original OK and two missing-images. Afflatus and Conflux improve to Original OK;
+no v1 Original OK representative regresses. Pacific and Vista remain the resource
+lookup handoff above. This is one NKI per library, not the full 835-item census.
+
+Pixel receipts retain every painted view. V1 captures the full editor, whereas
+v2 captures the authored page, so their whole-image hashes are not equality
+scores. The shared decoder's exact v1 byte oracle supplies the reduction check.
+Receipt: `w3-authored-control-kind-394/PAIRED-GALLERY-RECEIPT.json`.
+Font metrics, filmstrip selection in real libraries, callbacks, host pointers,
+authored default-page acceptance and timing/RSS still require their own gates.
+
 ## Acceptance limits
 
 The decoder's exact pixel fixture establishes reduction parity, not full-library
