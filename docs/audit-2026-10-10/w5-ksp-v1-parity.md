@@ -28,4 +28,14 @@ Additional callback differences: `note_controller` is absent, `_pgs_changed` ali
 
 The shared-target attempts in this run are excluded. Coordinator BUILD CORRECTION requires reruns through the corrected per-worktree wrapper. No wrapper/environment override is set by this lane.
 
-NEXT: validate menu/UI property readback first, then global UI callback dispatch and remaining typed/indexed getters.
+## First validated slice, f2c59e2c
+
+The corrected per-worktree receipts in `/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w5-ksp-parity-394` retain the failing contracts. On the same61 cases, valid baseline tests had45 passes/16 failures; the slice passes all61. The expanded targeted checks pass104 total, the sampler-core/KSP/Kontakt/plugin area compiles with `--no-run`, and the production Conflux command report gives unknown0. Shared-target compiler failures and invalid test-fixture attempts are excluded; no new full scanner or timing delta is claimed.
+
+Implemented boundaries: menu count/value/text/visibility and live edits; init/callback menu VALUE and SELECTED_ITEM_IDX derived from authored item values; scalar/indexed real VALUE reads; named UI property readback; dynamic declared TYPE/range metadata; physical zone group/key getters; marked-event CUSTOM/MOD_VALUE_ID writes; ignore_controller context warning; host-tempo wait_ticks and beat listeners; native7-bit MSB/LSB and signed-zero signbit; numeric/invalid font-name init semantics. These are tested edges, not blanket command parity. Runtime named-font lookup, string arrays, knob unit representation, read-only setter enforcement, dynamic menu property selectors and invalid-selection snapping remain open.
+
+Menu index scans retain hidden entries and return the first authored match for duplicate values, matching v1 `ControlState::selected_menu`. W5 owns runtime/logical value and index semantics; W3 owns caption rendering and popup visibility. Distinct native selection among duplicate-valued entries is unverified and cannot be represented by logical value alone; no new selection state is introduced without that evidence.
+
+READY is held: source review found read-modify-write setter arguments being re-evaluated after callback state changed, so host transport can differ from script readback. Seven retained contracts on853a1a34 cover named text, menu numeric/text/append, numeric/text properties and XY values. A source-only fix is prepared to share evaluated arguments between both consumers. The RED job is queued through the wrapper behind the active quiet window.
+
+NEXT: menu RMW RED→GREEN→READY, then global ui_controls/ui_update dispatch. W8 owns per-host-block callback budgets; W6 owns optional native ModScale intensity laws.
