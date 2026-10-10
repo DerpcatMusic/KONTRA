@@ -1186,6 +1186,7 @@ impl VoiceModState {
                 to: self.outputs[voice],
                 begin,
                 end,
+                script_fade: None,
             };
         }
         let [begin, end] = self.times[voice];
@@ -1194,6 +1195,7 @@ impl VoiceModState {
             to: self.outputs[voice],
             begin,
             end,
+            script_fade: None,
         }
     }
 
@@ -1337,6 +1339,7 @@ impl VoiceModState {
             to,
             begin,
             end,
+            script_fade,
         } = ramp;
         let tone = (from.tone + to.tone) * 0.5;
         if tone < 0.0 {
@@ -1371,10 +1374,19 @@ impl VoiceModState {
             (to.gains[1] - from.gains[1]) / len,
         ];
         let offset = at.saturating_sub(begin) as f32;
-        for (i, (out, frame)) in output.iter_mut().zip(chunk.iter()).enumerate() {
-            let at = offset + (i + 1) as f32;
-            out[0] += frame[0] * (from.gains[0] + step[0] * at);
-            out[1] += frame[1] * (from.gains[1] + step[1] * at);
+        if let Some(fade) = script_fade {
+            for (i, (out, frame)) in output.iter_mut().zip(chunk.iter()).enumerate() {
+                let position = offset + (i + 1) as f32;
+                let gain = fade.at(at + i as u64 + 1) as f32;
+                out[0] += frame[0] * (from.gains[0] + step[0] * position) * gain;
+                out[1] += frame[1] * (from.gains[1] + step[1] * position) * gain;
+            }
+        } else {
+            for (i, (out, frame)) in output.iter_mut().zip(chunk.iter()).enumerate() {
+                let at = offset + (i + 1) as f32;
+                out[0] += frame[0] * (from.gains[0] + step[0] * at);
+                out[1] += frame[1] * (from.gains[1] + step[1] * at);
+            }
         }
     }
 }
@@ -1390,20 +1402,30 @@ pub(crate) struct Ramp {
     pub to: Outputs,
     pub begin: u64,
     pub end: u64,
+    /// Active nonlinear fade, applied at the physical amplifier sample clock.
+    pub script_fade: Option<crate::script_params::Fade>,
 }
 
 impl Ramp {
     pub(crate) fn gains_at(self, at: u64) -> [f32; 2] {
         let len = self.end.saturating_sub(self.begin).max(1) as f32;
         let offset = at.saturating_sub(self.begin) as f32;
-        std::array::from_fn(|c| {
+        let gains = std::array::from_fn(|c| {
             self.from.gains[c] + (self.to.gains[c] - self.from.gains[c]) / len * offset
-        })
+        });
+        match self.script_fade {
+            Some(fade) => {
+                let factor = fade.at(at) as f32;
+                gains.map(|gain| gain * factor)
+            }
+            None => gains,
+        }
     }
 
     pub(crate) fn without_gains(mut self) -> Self {
         self.from.gains = [1.0; 2];
         self.to.gains = [1.0; 2];
+        self.script_fade = None;
         self
     }
 }
