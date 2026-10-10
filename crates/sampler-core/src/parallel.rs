@@ -728,6 +728,13 @@ mod tests {
         ] {
             let mut one = runtime(1);
             let expected = play(&mut one, curve);
+            assert!(expected.iter().flatten().all(|sample| sample.is_finite()));
+            assert!(
+                expected[..64].iter().zip(&linear[..64]).any(|(faded, control)| {
+                    faded.iter().any(|sample| *sample != 0.) && faded != control
+                }),
+                "{curve:?}: no nonzero changed audio during the active fade"
+            );
             assert_ne!(expected, linear, "{curve:?}: no nonlinear fade reached audio");
             for threads in [2, 4] {
                 let mut rt = runtime(threads);
