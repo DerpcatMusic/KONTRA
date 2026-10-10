@@ -963,7 +963,7 @@ impl Ui {
         self.wheel_capture = self.wheel_capture_for(&scene);
         animating |= self.settle(&scene, wheel);
         self.wheel_claims.clear();
-        self.heat(&scene, &before, self.pointer.buttons != was_buttons);
+        animating |= self.heat(&scene, &before, self.pointer.buttons != was_buttons);
         Ok(self.commit(scene, hovered.as_deref(), tip, previous_blink, animating))
     }
 
