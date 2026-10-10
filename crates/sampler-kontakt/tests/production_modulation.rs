@@ -31,12 +31,13 @@ fn internal(
     sibling: bool,
     invert: bool,
     rate: f32,
+    outgoing: &str,
 ) -> Vec<u8> {
-    // Physical target 0 stays volume, target 1 stays pan. No target compaction.
+    // Physical target 0 stays volume, target 1 stays the named destination.
     let mut private = 2u32.to_le_bytes().to_vec();
     for (param, depth) in [
         ("volume", if envelope { 0.5 } else { 0.0 }),
-        ("pan", if sibling { 0.25 } else { 0.5 }),
+        (outgoing, if sibling { 0.25 } else { 0.5 }),
     ] {
         name(&mut private, param);
         private.extend((depth as f32).to_le_bytes());
@@ -98,6 +99,16 @@ fn fixture_inverted(envelope: bool, bypass: bool, retrigger: bool, invert: bool)
     fixture_rate(envelope, bypass, retrigger, invert, 0.01)
 }
 fn fixture_rate(envelope: bool, bypass: bool, retrigger: bool, invert: bool, rate: f32) -> Fixture {
+    fixture_target(envelope, bypass, retrigger, invert, rate, "pan")
+}
+fn fixture_target(
+    envelope: bool,
+    bypass: bool,
+    retrigger: bool,
+    invert: bool,
+    rate: f32,
+    outgoing: &str,
+) -> Fixture {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let root = std::env::temp_dir().join(format!(
         "kontra-production-mod-{}-{}",
@@ -134,10 +145,12 @@ fn fixture_rate(envelope: bool, bypass: bool, retrigger: bool, invert: bool, rat
     for slot in 0..16 {
         slots.push(u8::from(slot == 7 || slot == 12));
         if slot == 7 {
-            slots.extend(internal(envelope, bypass, retrigger, false, invert, rate));
+            slots.extend(internal(
+                envelope, bypass, retrigger, false, invert, rate, outgoing,
+            ));
         }
         if slot == 12 {
-            slots.extend(internal(false, false, true, true, false, 0.01));
+            slots.extend(internal(false, false, true, true, false, 0.01, "pan"));
         }
     }
     let mut children = chunk(0x38, &0u32.to_le_bytes());
@@ -485,4 +498,32 @@ fn serialized_bypass_masks_routes_without_restarting_the_source_clock() {
     let expected = render(&mut reference, 128, 64);
     let actual = render(&mut masked, 128, 23);
     assert_eq!(&actual[64..], &expected[64..]);
+}
+
+#[test]
+fn serialized_pitch_intensity_changes_pcm_cursor_step_not_pan_or_voice_identity() {
+    let f = fixture_target(false, false, true, false, 0.01, "pitch");
+    // An owned linear ramp makes the source-frame step observable in PCM.
+    let path = f.0.join("owned.wav");
+    let mut wav = std::fs::read(&path).unwrap();
+    for (i, bytes) in wav[44..].chunks_exact_mut(2).enumerate() {
+        bytes.copy_from_slice(&(i as i16 * 4).to_le_bytes());
+    }
+    std::fs::write(path, wav).unwrap();
+    let mut rt = runtime(&f);
+    rt.trigger(input(1), 60, 1.).unwrap();
+    let first = render(&mut rt, 128, 17);
+    let step = (first[127][1] - first[126][1]) * 8192.;
+    assert!(
+        (step - 2f32.sqrt()).abs() < 0.002,
+        "saved six-semitone step: {step}"
+    );
+    rt.set_engine_parameter(address("ENGINE_PAR_MOD_TARGET_INTENSITY", 7, 1), 0)
+        .unwrap();
+    let next = render(&mut rt, 256, 19);
+    let step = (next[255][1] - next[254][1]) * 8192.;
+    assert!((step - 1.).abs() < 0.002, "live neutral step: {step}");
+    assert!((next[255][0] - next[255][1] * 0.75).abs() < 2e-6);
+    assert!(next[255][1] > first[127][1]); // No cursor/voice restart.
+    assert_eq!(rt.voice_count(), 1);
 }
