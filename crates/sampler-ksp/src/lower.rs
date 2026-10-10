@@ -1406,6 +1406,20 @@ impl Gen<'_, '_> {
     }
 
     fn emit_effect(&mut self, builtin: Builtin, args: &[Arg], dst: u16) -> Result<()> {
+        let (count, text) = self.effect_args(builtin, args, dst)?;
+        self.emit_prepared_effect(builtin, dst, count, text)?;
+        if text.is_some() {
+            self.tdepth -= 1;
+        }
+        Ok(())
+    }
+
+    fn effect_args(
+        &mut self,
+        builtin: Builtin,
+        args: &[Arg],
+        dst: u16,
+    ) -> Result<(u8, Option<TextRef>)> {
         let mut count = 0u16;
         let mut text = None;
         for (i, a) in args.iter().enumerate() {
@@ -1455,17 +1469,23 @@ impl Gen<'_, '_> {
             }
             count += 1;
         }
+        Ok((count as u8, text))
+    }
+
+    fn emit_prepared_effect(
+        &mut self,
+        builtin: Builtin,
+        args: u16,
+        count: u8,
+        text: Option<TextRef>,
+    ) -> Result<()> {
         let service = self.u.service(builtin);
         self.emit(I::Op(Op::Emit {
             service,
-            args: dst,
-            count: count as u8,
+            args,
+            count,
             text,
-        }))?;
-        if text.is_some() {
-            self.tdepth -= 1;
-        }
-        Ok(())
+        }))
     }
 
     /// Keyed store access: key registers dst+1..=dst+4, value in dst.
@@ -2443,24 +2463,28 @@ impl Gen<'_, '_> {
                 return Ok(());
             }
             SetControlParStr | SetControlParStrArr => {
-                self.property_key(
-                    args,
-                    dst,
-                    if builtin == SetControlParStrArr {
-                        Some(3)
-                    } else {
-                        None
-                    },
-                )?;
-                if let Some(text) = self.text_arg(args, 2, dst + 4)? {
+                let (count, text) = self.effect_args(builtin, args, dst)?;
+                self.copy_i32(dst, dst + 4)?;
+                self.copy_i32(dst + 1, dst + 5)?;
+                if builtin == SetControlParStrArr {
+                    self.copy_i32(dst + 2, dst + 6)?;
+                } else {
+                    self.set(dst + 6, i64::from(PROPERTY_TAG))?;
+                }
+                self.set(dst + 7, i64::from(PROPERTY_TAG))?;
+                if let Some(text) = text {
                     self.emit(I::Op(Op::TextProperty {
-                        key: dst,
+                        key: dst + 4,
                         text,
                         write: true,
                     }))?;
+                }
+                self.emit_prepared_effect(builtin, dst, count, text)?;
+                if text.is_some() {
                     self.tdepth -= 1;
                 }
-                return self.effect(builtin, args, dst);
+                self.cover(builtin, host_service(builtin));
+                return Ok(());
             }
             SetControlPar | SetControlParReal | SetControlParArr | SetControlParRealArr => {
                 return self.set_control_par(builtin, args, dst);
@@ -2510,93 +2534,101 @@ impl Gen<'_, '_> {
                 true
             }
             AddMenuItem => {
-                self.menu_key(args, dst + 1, MENU_COUNT)?;
-                let missing = self.menu_missing(dst + 1, MENU_COUNT, MENU_COUNT)?;
-                self.set(dst, 0)?;
+                let (count, text) = self.effect_args(builtin, args, dst)?;
+                self.copy_i32(dst, dst + 2)?;
+                self.set(dst + 3, i64::from(MENU_COUNT))?;
+                self.set(dst + 4, -1)?;
+                self.set(dst + 5, i64::from(MENU_TAG))?;
+                let missing = self.menu_missing(dst + 2, MENU_COUNT, MENU_COUNT)?;
+                self.set(dst + 6, 0)?;
                 self.emit(I::Op(Op::Store {
-                    key: dst + 1,
-                    local: dst,
+                    key: dst + 2,
+                    local: dst + 6,
                     write: false,
                 }))?;
-                self.set(dst + 3, 0)?;
-                self.emit(I::Binary32 {
-                    lhs: dst + 3,
-                    rhs: dst,
-                    operation: IB::Add,
-                })?;
-                self.set(dst + 2, i64::from(MENU_TEXT))?;
-                if let Some(text) = self.text_arg(args, 1, dst + 7)? {
+                self.copy_i32(dst + 6, dst + 4)?;
+                self.set(dst + 3, i64::from(MENU_TEXT))?;
+                if let Some(text) = text {
                     self.emit(I::Op(Op::TextProperty {
-                        key: dst + 1,
+                        key: dst + 2,
                         text,
                         write: true,
                     }))?;
-                    self.tdepth -= 1;
                 }
-                for (field, value) in [(MENU_VALUE, None), (MENU_VISIBLE, Some(1))] {
-                    self.set(dst + 2, i64::from(field))?;
-                    if let Some(value) = value {
-                        self.set(dst, value)?;
-                    } else {
-                        self.arg(args, 2, dst)?;
-                    }
-                    self.emit(I::Op(Op::Store {
-                        key: dst + 1,
-                        local: dst,
-                        write: true,
-                    }))?;
-                }
-                self.set(dst, 1)?;
+                self.set(dst + 3, i64::from(MENU_VALUE))?;
+                self.emit(I::Op(Op::Store {
+                    key: dst + 2,
+                    local: dst + 1,
+                    write: true,
+                }))?;
+                self.set(dst + 3, i64::from(MENU_VISIBLE))?;
+                self.set(dst + 7, 1)?;
+                self.emit(I::Op(Op::Store {
+                    key: dst + 2,
+                    local: dst + 7,
+                    write: true,
+                }))?;
                 self.emit(I::Binary32 {
-                    lhs: dst,
-                    rhs: dst + 3,
+                    lhs: dst + 6,
+                    rhs: dst + 7,
                     operation: IB::Add,
                 })?;
-                self.set(dst + 2, i64::from(MENU_COUNT))?;
-                self.set(dst + 3, -1)?;
+                self.set(dst + 3, i64::from(MENU_COUNT))?;
+                self.set(dst + 4, -1)?;
                 self.emit(I::Op(Op::Store {
-                    key: dst + 1,
-                    local: dst,
+                    key: dst + 2,
+                    local: dst + 6,
                     write: true,
                 }))?;
                 self.land(missing);
-                return self.effect(builtin, args, dst);
+                self.emit_prepared_effect(builtin, dst, count, text)?;
+                if text.is_some() {
+                    self.tdepth -= 1;
+                }
+                self.cover(builtin, host_service(builtin));
+                return Ok(());
             }
             SetMenuItemStr | SetMenuItemValue | SetMenuItemVisibility => {
+                let (count, text) = self.effect_args(builtin, args, dst)?;
                 let field = match builtin {
                     SetMenuItemStr => MENU_TEXT,
                     SetMenuItemValue => MENU_VALUE,
                     _ => MENU_VISIBLE,
                 };
-                self.menu_key(args, dst + 1, field)?;
-                let missing = self.menu_missing(dst + 1, field, MENU_VALUE)?;
-                if builtin == SetMenuItemStr {
-                    if let Some(text) = self.text_arg(args, 2, dst + 7)? {
-                        self.emit(I::Op(Op::TextProperty {
-                            key: dst + 1,
-                            text,
-                            write: true,
-                        }))?;
-                        self.tdepth -= 1;
-                    }
+                self.copy_i32(dst, dst + 3)?;
+                self.set(dst + 4, i64::from(field))?;
+                self.copy_i32(dst + 1, dst + 5)?;
+                self.set(dst + 6, i64::from(MENU_TAG))?;
+                let missing = self.menu_missing(dst + 3, field, MENU_VALUE)?;
+                if let Some(text) = text {
+                    self.emit(I::Op(Op::TextProperty {
+                        key: dst + 3,
+                        text,
+                        write: true,
+                    }))?;
                 } else {
-                    self.arg(args, 2, dst)?;
+                    self.copy_i32(dst + 2, dst + 7)?;
                     if builtin == SetMenuItemVisibility {
-                        self.set(dst + 7, 0)?;
+                        self.set(dst + 8, 0)?;
                         self.emit(I::CompareLocal {
-                            lhs: dst,
-                            rhs: dst + 7,
+                            lhs: dst + 7,
+                            rhs: dst + 8,
                             comparison: Cmp::NotEqual,
                         })?;
                     }
                     self.emit(I::Op(Op::Store {
-                        key: dst + 1,
-                        local: dst,
+                        key: dst + 3,
+                        local: dst + 7,
                         write: true,
                     }))?;
                 }
                 self.land(missing);
-                return self.effect(builtin, args, dst);
+                self.emit_prepared_effect(builtin, dst, count, text)?;
+                if text.is_some() {
+                    self.tdepth -= 1;
+                }
+                self.cover(builtin, host_service(builtin));
+                return Ok(());
             }
             PgsSetKeyVal => {
                 // Shared by every script slot; on pgs_changed runs in each.
@@ -3532,7 +3564,32 @@ impl Gen<'_, '_> {
         }
         Ok(())
     }
+    fn copy_i32(&mut self, from: u16, to: u16) -> Result<()> {
+        self.set(to, 0)?;
+        self.emit(I::Binary32 {
+            lhs: to,
+            rhs: from,
+            operation: IB::Add,
+        })
+    }
+
     fn indexed_value(&mut self, args: &[Arg], dst: u16, write: bool) -> Result<()> {
+        self.arg(args, 0, dst + 1)?;
+        self.arg(args, if write { 3 } else { 2 }, dst + 2)?;
+        if write {
+            self.arg(args, 2, dst)?;
+        }
+        self.indexed_value_at(dst + 1, dst + 2, dst, dst + 3, write)
+    }
+
+    fn indexed_value_at(
+        &mut self,
+        id: u16,
+        index: u16,
+        value: u16,
+        scratch: u16,
+        write: bool,
+    ) -> Result<()> {
         let widgets: Vec<_> = self
             .u
             .hir
@@ -3545,81 +3602,82 @@ impl Gen<'_, '_> {
             })
             .collect();
         for (ui, array) in widgets {
-            self.arg(args, 0, dst + 1)?;
-            self.set(dst + 2, i64::from(b::FIRST_UI_ID + ui as i32))?;
+            self.copy_i32(id, scratch)?;
+            self.set(scratch + 1, i64::from(b::FIRST_UI_ID + ui as i32))?;
             self.emit(I::CompareLocal {
-                lhs: dst + 1,
-                rhs: dst + 2,
+                lhs: scratch,
+                rhs: scratch + 1,
                 comparison: Cmp::Equal,
             })?;
-            let skip = self.jump_if_zero(dst + 1)?;
-            self.arg(args, if write { 3 } else { 2 }, dst + 1)?;
-            if write {
-                self.arg(args, 2, dst)?;
-                self.emit(I::WriteScriptArray {
+            let skip = self.jump_if_zero(scratch)?;
+            self.emit(if write {
+                I::WriteScriptArray {
                     array,
-                    index: dst + 1,
-                    local: dst,
-                })?;
+                    index,
+                    local: value,
+                }
             } else {
-                self.emit(I::ReadScriptArray {
+                I::ReadScriptArray {
                     array,
-                    index: dst + 1,
-                    local: dst,
-                })?;
-            }
+                    index,
+                    local: value,
+                }
+            })?;
             self.land(skip);
         }
         Ok(())
     }
+
     fn set_control_par(&mut self, builtin: Builtin, args: &[Arg], dst: u16) -> Result<()> {
         let par = self.const_int(args, 1);
-        if matches!(
+        // State and host transport consume the same evaluated arguments.
+        let (count, text) = self.effect_args(builtin, args, dst)?;
+        let array = matches!(
             builtin,
             Builtin::SetControlParArr | Builtin::SetControlParRealArr
-        ) {
-            if par == Some(b::CONTROL_PAR_VALUE) {
-                self.indexed_value(args, dst, true)?;
-            }
-            self.property_key(args, dst + 1, Some(3))?;
-            self.arg(args, 2, dst)?;
-            self.emit(I::Op(Op::Store {
-                key: dst + 1,
-                local: dst,
-                write: true,
-            }))?;
-            return self.effect(builtin, args, dst);
-        }
-        if par == Some(b::CONTROL_PAR_VALUE) && builtin != Builtin::SetControlParArr {
-            if let Some(ui) = self.ui_index(args, 0) {
-                let var = self.u.hir.uis[ui as usize].var;
-                if self.var(var).len.is_none() && self.var(var).ty != Ty::Str {
-                    self.arg(args, 2, dst)?;
-                    self.write_var(var, dst, true)?;
-                    self.cover(builtin, Coverage::Native);
-                    return Ok(());
+        );
+        if par == Some(b::CONTROL_PAR_VALUE) {
+            if array {
+                self.indexed_value_at(dst, dst + 3, dst + 2, dst + 8, true)?;
+            } else {
+                if let Some(ui) = self.ui_index(args, 0) {
+                    let var = self.u.hir.uis[ui as usize].var;
+                    if self.var(var).len.is_none() && self.var(var).ty != Ty::Str {
+                        self.write_var(var, dst + 2, true)?;
+                        self.cover(builtin, Coverage::Native);
+                        return Ok(());
+                    }
                 }
+                self.copy_i32(dst, dst + 8)?;
+                self.set(dst + 9, i64::from(b::FIRST_UI_ID))?;
+                self.emit(I::Binary32 {
+                    lhs: dst + 8,
+                    rhs: dst + 9,
+                    operation: IB::Subtract,
+                })?;
+                self.emit(I::Op(Op::ControlAt {
+                    index: dst + 8,
+                    local: dst + 2,
+                    write: true,
+                }))?;
             }
-            // Dynamic id: write the control if the id names one, and the mirror.
-            let (index, value) = (reg(dst, 5)?, reg(dst, 6)?);
-            self.arg(args, 0, index)?;
-            self.set(value, i64::from(b::FIRST_UI_ID))?;
-            self.emit(I::Binary32 {
-                lhs: index,
-                rhs: value,
-                operation: IB::Subtract,
-            })?;
-            self.arg(args, 2, value)?;
-            self.emit(I::Op(Op::ControlAt {
-                index,
-                local: value,
-                write: true,
-            }))?;
         }
-        // Property mirror (read back by get_control_par), then the host request.
-        self.arg(args, 2, dst)?;
-        self.store(args, PROPERTY_KEY, dst, true)?;
-        self.effect(builtin, args, dst)
+        self.copy_i32(dst, dst + 4)?;
+        self.copy_i32(dst + 1, dst + 5)?;
+        if array {
+            self.copy_i32(dst + 3, dst + 6)?;
+        } else {
+            self.set(dst + 6, i64::from(PROPERTY_TAG))?;
+        }
+        self.set(dst + 7, i64::from(PROPERTY_TAG))?;
+        self.emit(I::Op(Op::Store {
+            key: dst + 4,
+            local: dst + 2,
+            write: true,
+        }))?;
+        self.emit_prepared_effect(builtin, dst, count, text)?;
+        self.cover(builtin, host_service(builtin));
+        Ok(())
     }
 
     fn get_control_par(&mut self, builtin: Builtin, args: &[Arg], dst: u16) -> Result<()> {
