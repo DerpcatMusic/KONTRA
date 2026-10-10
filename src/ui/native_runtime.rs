@@ -799,17 +799,28 @@ impl Session {
             if source != face.source {
                 continue;
             }
-            if let Some(w) = face.widgets.get(index)
-                && &bridge.controls[at] != w
+            if let Some(authored) = face.widgets.get(index)
+                && &bridge.controls[at] != authored
             {
-                bridge.controls[at].clone_from(w);
+                let w = &mut bridge.controls[at];
+                // A live readback alone must not recopy all authored metadata.
+                // shortcut: divergent authored heap values still clone here; revisit if profiling warrants it.
+                let previous = std::mem::replace(&mut w.value, authored.value.clone());
+                if &*w != authored {
+                    w.clone_from(authored);
+                }
+                if previous.is_some() && previous.as_ref() == typed.get(&ir::WidgetRef(index)) {
+                    w.value = previous;
+                }
             }
             if let Some(level) = meters.get(&ir::WidgetRef(index)) {
                 bridge.meters.insert(at, *level);
             }
             let w = &mut bridge.controls[at];
             if let Some(value) = typed.get(&ir::WidgetRef(index)) {
-                w.value = Some(value.clone());
+                if w.value.as_ref() != Some(value) {
+                    w.value = Some(value.clone());
+                }
             } else if matches!(
                 w.value,
                 None | Some(ir::Value::Integer(_) | ir::Value::Real(_))
