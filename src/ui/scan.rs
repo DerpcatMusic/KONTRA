@@ -224,13 +224,13 @@ fn render(
         }
         let r = face.page_rect(ir::WidgetRef(n));
         let page = &face.pages[w.page.0];
-        if r.width == 0 || r.height == 0 {
+        if r.width == 0. || r.height == 0. {
             add(&mut geometry, "zero sized visible widget");
         }
-        if r.x < 0
-            || r.y < 0
-            || i64::from(r.x) + i64::from(r.width) > i64::from(page.size.width)
-            || i64::from(r.y) + i64::from(r.height) > i64::from(page.size.height)
+        if r.x < 0.
+            || r.y < 0.
+            || r.x + r.width > page.size.width
+            || r.y + r.height > page.size.height
         {
             add(&mut geometry, "outside authored page candidate");
         }
