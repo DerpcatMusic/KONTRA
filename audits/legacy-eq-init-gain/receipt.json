@@ -1,0 +1,11 @@
+{
+  "check": "Python source anchors and independent byte model ONLY",
+  "cases": 79,
+  "effects_sha256": "f61c1e1bf8fc9306bf1935f98b16948f4894439ea31c47fd5dde07080e0ed999",
+  "Rust": "NOT_RUN/NOT_COMPILED",
+  "native": "UNKNOWN",
+  "CPU_AND_RAM_vs_both_references": "UNACHIEVED",
+  "baseline_source_anchor_failure_exit": 1,
+  "rustfmt_syntax_only_exit": 0,
+  "source_baseline": "13c044d6f9f80576507521a2dc6521e9aad7d9c5"
+}
