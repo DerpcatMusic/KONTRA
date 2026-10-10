@@ -623,3 +623,44 @@ fn xy_value_read_modify_write_emits_the_same_value_it_stores() {
     });
     assert_eq!(effects, 1);
 }
+
+#[test]
+fn menu_text_read_modify_write_emits_the_same_value_it_stores() {
+    let mut rt = run(
+        "on init declare ui_menu $m add_menu_item($m,\"first\",17) declare @value end on
+        on note set_menu_item_str(get_ui_id($m),0,get_menu_item_str(get_ui_id($m),0) & \"!\")
+            @value := get_menu_item_str(get_ui_id($m),0) end on",
+        &[],
+    );
+    assert_eq!(
+        rt.script_text(rt.active_plan(), ScriptInstanceId(0), 0)
+            .unwrap()
+            .as_str(),
+        "first!"
+    );
+    let mut effects = 0;
+    rt.drain_effects(|effect| {
+        assert_eq!(effect.text.as_ref().unwrap().as_str(), "first!");
+        effects += 1;
+        true
+    });
+    assert_eq!(effects, 1);
+}
+
+#[test]
+fn appended_menu_item_read_modify_write_emits_the_same_value_it_stores() {
+    let mut rt = run(
+        "on init declare ui_menu $m add_menu_item($m,\"first\",17) declare $value end on
+        on note add_menu_item($m,\"second\",get_num_menu_items(get_ui_id($m)))
+            $value := get_menu_item_value(get_ui_id($m),1) end on",
+        &[],
+    );
+    assert_eq!(cell(&rt, 0), 1);
+    let mut effects = 0;
+    rt.drain_effects(|effect| {
+        assert_eq!(effect.args()[1], 1);
+        effects += 1;
+        true
+    });
+    assert_eq!(effects, 1);
+}
