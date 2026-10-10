@@ -255,3 +255,160 @@ fn malformed_original_modulation_never_manufactures_a_descriptor() {
     assert!(out.source_modulators(0, &group).is_err());
     assert!(out.ir.source_indices.modulators.is_empty());
 }
+
+fn opaque_modulation_group(bypass: bool) -> Group {
+    let mut private = descriptor_targets();
+    private.extend([1, u8::from(bypass), 0, 0xa5]);
+    private.extend(42u32.to_le_bytes());
+    descriptor_name(&mut private, "future-source");
+    private.extend(1u32.to_le_bytes());
+    // An unsupported LFO version is already decoded as Other; these bytes
+    // have no declared source law. Keep all of them, including nested framing.
+    let source = descriptor_object(
+        0x08,
+        0x74,
+        &[0xff, 0x80],
+        &[0x34, 0x12, 0xc0, 0x7f, 0, 0, 0, 0x80],
+        &[ni_file::kontakt::Chunk {
+            id: 0xbeef,
+            data: vec![3, 2, 1],
+        }],
+    );
+    let assignment = descriptor_object(0x0d, 0x81, &private, &[0xa5], &[source]);
+    let mut group = descriptor_group();
+    group.0.children[0] = descriptor_slots(INTERNAL_MODS, 16, &[(12, assignment)]);
+    // Minimal v0x95 public group settings; the empty private source is reported
+    // independently by the existing importer, not admitted by this fixture.
+    let mut public = 0u32.to_le_bytes().to_vec();
+    for value in [1f32, 0.0, 1.0] {
+        public.extend(value.to_le_bytes());
+    }
+    public.extend([1, 0, 0, 0]);
+    public.extend(0i32.to_le_bytes());
+    public.extend((-1i16).to_le_bytes());
+    public.extend([0; 10]);
+    public.extend(0i32.to_le_bytes());
+    group.0.public_data = public;
+    group.0.children.push(ni_file::kontakt::Chunk {
+        id: 0x38,
+        data: vec![0],
+    });
+    group
+}
+
+#[test]
+fn original_modulation_wire_survives_sparse_slots_and_unsupported_nested_sources() {
+    use ir::SourceParameterValue as Value;
+    let group = opaque_modulation_group(true);
+    let mut out = translation();
+    out.source_modulators(9, &group).unwrap();
+    assert_eq!(out.ir.source_parameters.len(), 2);
+    for (record, original, kind) in [
+        (
+            &out.ir.source_parameters[0],
+            &group.0.children[0],
+            "internal",
+        ),
+        (
+            &out.ir.source_parameters[1],
+            &group.0.children[1],
+            "external",
+        ),
+    ] {
+        assert_eq!(
+            record.location,
+            format!("group 9 original {kind} modulation array")
+        );
+        assert_eq!((record.object_id, record.version), (original.id, 0x10));
+        assert_eq!(record.fields.len(), 1);
+        assert_eq!(record.fields[0].name, "chunk_body");
+        let Value::Opaque(data) = &record.fields[0].value else {
+            panic!("raw body")
+        };
+        assert_eq!(data, &original.data);
+        let retained = ni_file::kontakt::Chunk {
+            id: record.object_id,
+            data: data.clone(),
+        };
+        let mut before = Vec::new();
+        let mut after = Vec::new();
+        original.write(&mut before).unwrap();
+        retained.write(&mut after).unwrap();
+        assert_eq!(before, after);
+        // Consume retained wire through the same vendored decoder, rather than
+        // infer physical addresses from the dense IR source vector.
+        let array = ni_file::kontakt::StructuredObject::try_from(&retained).unwrap();
+        let slots = ni_file::kontakt::objects::read_param_slots(
+            &array,
+            if kind == "external" { 32 } else { 16 },
+        )
+        .unwrap();
+        let expected: Vec<_> = out.ir.source_indices.modulators.iter()
+            .filter(|m| m.external == (kind == "external"))
+            .map(|m| m.slot)
+            .collect();
+        assert_eq!(
+            slots.iter().map(|(slot, _)| *slot).collect::<Vec<_>>(),
+            expected
+        );
+    }
+    let row = &out.ir.source_indices.modulators[0];
+    assert_eq!((row.group, row.slot, row.external), (9, 12, false));
+    assert!(row.runtime.is_none());
+    let ir::kontakt::ModulationSource::Internal {
+        flags,
+        unknown_id,
+        source: ir::kontakt::InternalSource::Other { chunk_id },
+    } = &row.settings.as_ref().unwrap().source
+    else {
+        panic!("opaque source")
+    };
+    assert_eq!((*flags, *unknown_id, *chunk_id), ([1, 1, 0, 0xa5], 42, 8));
+    assert!(out.ir.modulators.is_empty() && out.ir.routes.is_empty());
+}
+
+#[test]
+fn retained_unsupported_source_is_not_admitted_when_group_import_runs() {
+    let group = opaque_modulation_group(false);
+    let mut out = translation();
+    out.source_modulators(4, &group).unwrap();
+    let original_wire = out.ir.source_parameters[..2].to_vec();
+    assert!(out.group(4, &group).unwrap().is_some());
+    assert_eq!(&out.ir.source_parameters[..2], original_wire.as_slice());
+    let row = out
+        .ir
+        .source_indices
+        .modulators
+        .iter()
+        .find(|m| m.group == 4 && m.slot == 12 && !m.external)
+        .unwrap();
+    assert!(row.runtime.is_none());
+    assert!(out.ir.unsupported.iter().any(|n| {
+        n.location == "group 4 \"\" modulator slot 12"
+            && n.feature == "internal modulator chunk"
+            && n.value == "0x8 \"future-source\""
+            && n.reason == ir::Reason::Unknown
+    }));
+    assert!(!out.ir.modulators.iter().any(|m|
+        matches!(&m.source, ir::ModulationSource::Lfo(_))
+    ));
+}
+
+#[test]
+fn malformed_modulation_does_not_publish_original_wire() {
+    let mut group = opaque_modulation_group(false);
+    // The array framing is complete, but the assignment's category is unknown.
+    let array = ni_file::kontakt::StructuredObject::try_from(&group.0.children[0]).unwrap();
+    let mut slots = ni_file::kontakt::objects::read_param_slots(&array, 16).unwrap();
+    let assignment = ni_file::kontakt::StructuredObject::try_from(&slots[0].1).unwrap();
+    let mut private = assignment.private_data;
+    let end = private.len();
+    private[end - 4..].copy_from_slice(&3u32.to_le_bytes());
+    slots[0].1 = descriptor_object(0x0d, 0x81, &private, &[], &assignment.children);
+    group.0.children[0] = descriptor_slots(INTERNAL_MODS, 16, &slots);
+    let mut out = translation();
+    let error = out.source_modulators(0, &group).unwrap_err();
+    assert!(error.to_string().contains("Unexpected internal modulator category 3"));
+    assert!(out.ir.source_parameters.is_empty());
+    assert!(out.ir.source_indices.modulators.is_empty());
+}
