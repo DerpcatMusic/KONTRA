@@ -250,15 +250,15 @@ fn render(
     for p in 0..face.pages.len() {
         let start = Instant::now();
         // A 1200x900 viewport, fitted in both axes. Geometry flags use the uncropped source bounds.
-        let scale = (1200. / f64::from(face.pages[p].size.width.max(1)))
-            .min(900. / f64::from(ir_view::height(&face, ir::PageRef(p)).max(1)))
+        let scale = (1200. / f64::from(face.pages[p].size.width.max(1.)))
+            .min(900. / f64::from(ir_view::height(&face, ir::PageRef(p)).max(1.)))
             .min(1.);
         let authored = native.as_ref().map(|n| n.authored());
-        let w = (authored.map_or(f64::from(face.pages[p].size.width.max(1)), |s| s.width) * scale)
+        let w = (authored.map_or(f64::from(face.pages[p].size.width.max(1.)), |s| s.width) * scale)
             .ceil()
             .clamp(1., 1200.) as u16;
         let h = (authored.map_or(
-            f64::from(ir_view::height(&face, ir::PageRef(p)).max(1)),
+            f64::from(ir_view::height(&face, ir::PageRef(p)).max(1.)),
             |s| s.height,
         ) * scale)
             .ceil()

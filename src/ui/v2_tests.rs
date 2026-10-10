@@ -334,8 +334,8 @@ fn both_modes(
     let face = ir_view::resolved(face);
     let page = &face.pages[0];
     let (w, h) = (
-        page.size.width.clamp(1, 1200) as u16,
-        ir_view::height(&face, ir::PageRef(0)).clamp(1, 900) as u16,
+        page.size.width.clamp(1., 1200.) as u16,
+        ir_view::height(&face, ir::PageRef(0)).clamp(1., 900.) as u16,
     );
     let mut values = ir_view::Values::default();
     let mut assets = ir_view::Assets::default();
