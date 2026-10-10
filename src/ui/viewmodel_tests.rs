@@ -76,7 +76,17 @@ fn audit_ui_real_frames() {
     };
     let patch = PathBuf::from(std::env::var_os("KONTRA_AUDIT_UI_PATCH").expect("patch"));
     let start = Instant::now();
-    let mut source = sampler_kontakt::read(&patch).unwrap().instrument;
+    // An empty snapshot takes the existing uncached parser path without overriding saved state.
+    let mut source = if std::env::var_os("KONTRA_AUDIT_UI_FRESH_IMPORT").is_some() {
+        sampler_kontakt::read_with_snapshot(&patch, &sampler_kontakt::SnapshotState {
+            instrument: String::new(),
+            persistent: Vec::new(),
+            effects: Vec::new(),
+            groups: Vec::new(),
+        })
+    } else {
+        sampler_kontakt::read(&patch)
+    }.unwrap().instrument;
     let read_ms = start.elapsed().as_secs_f64() * 1000.;
     let original = Arc::new(source.clone());
     // No samples are needed for UI initialization; keep group names and saved scripts.
