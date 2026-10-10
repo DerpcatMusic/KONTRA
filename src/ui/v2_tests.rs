@@ -2370,6 +2370,15 @@ fn w10_fractional_uvi_child_order_paints_callback_result_at_device_scale() {
             &expected,
             "{name}: authored overlap order"
         );
+        let pixel = |x: usize, y: usize| &data[(y * 642 + x) * 4..(y * 642 + x + 1) * 4];
+        let background = pixel(0, 0);
+        for (x, y) in [(42, 77), (108, 77), (75, 44), (75, 111)] {
+            assert_eq!(pixel(x, y), background, "{name}: outside authored fractional bounds");
+        }
+        for (x, y) in [(43, 77), (107, 77), (75, 45), (75, 110)] {
+            assert_ne!(pixel(x, y), background, "{name}: fractional edge must paint");
+            assert_ne!(pixel(x, y), &expected, "{name}: fractional edge retains partial coverage");
+        }
         #[cfg(feature = "shots")]
         if let Some(out) =
             std::env::var_os("KONTRA_UVI_FIXTURE_SHOTS").map(std::path::PathBuf::from)
