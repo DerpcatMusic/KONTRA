@@ -27,7 +27,7 @@ impl NIFileContainer {
     /// `reader` must refer to the same container; its cursor ends after the member.
     pub fn read_member<R: ReadBytesExt>(
         &self,
-        mut reader: R,
+        reader: R,
         index: u64,
         limit: u64,
     ) -> Result<Vec<u8>, Error> {
@@ -38,6 +38,18 @@ impl NIFileContainer {
         if matching.next().is_some() {
             return Err(Error::Static("Ambiguous NI FileContainer member index"));
         }
+        self.read_item(reader, item, limit)
+    }
+
+    /// Read a selected item's byte range, bounded by the caller's allocation limit.
+    /// `item` must come from this container and `reader` must refer to its file.
+    /// No stored-index lookup is performed; the cursor ends after the item.
+    pub fn read_item<R: ReadBytesExt>(
+        &self,
+        mut reader: R,
+        item: &FileContainerItem,
+        limit: u64,
+    ) -> Result<Vec<u8>, Error> {
         if item.file_size > limit {
             return Err(Error::Static("NI FileContainer member exceeds read limit"));
         }
@@ -45,8 +57,15 @@ impl NIFileContainer {
             .file_section_offset
             .checked_add(item.file_start_offset)
             .ok_or(Error::Static("NI FileContainer member offset overflow"))?;
+        let end = offset
+            .checked_add(item.file_size)
+            .ok_or(Error::Static("NI FileContainer member end overflow"))?;
         let size = usize::try_from(item.file_size)
             .map_err(|_| Error::Static("NI FileContainer member exceeds address space"))?;
+        let length = reader.seek(std::io::SeekFrom::End(0))?;
+        if end > length {
+            return Err(Error::Static("NI FileContainer member range exceeds file"));
+        }
         reader.seek(std::io::SeekFrom::Start(offset))?;
         Ok(reader.read_bytes(size)?)
     }
@@ -144,9 +163,7 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn authored_monolith_members_are_indexed_bounded_and_exact() {
-        use std::io::Cursor;
+    fn authored_monolith_bytes() -> Vec<u8> {
         let mut bytes = FC_MTD_MARKER_START.to_vec();
         bytes.extend([0; 256]);
         bytes.extend(2u64.to_le_bytes());
@@ -171,6 +188,13 @@ mod tests {
         bytes.extend(b"/\\ NI FC TOC  /\\");
         bytes.extend([0; 592]);
         bytes.extend(b"nkiwave");
+        bytes
+    }
+
+    #[test]
+    fn authored_monolith_members_are_indexed_bounded_and_exact() {
+        use std::io::Cursor;
+        let bytes = authored_monolith_bytes();
         let container = NIFileContainer::read(Cursor::new(&bytes)).unwrap();
         assert_eq!(container.items[0].filename, "OurPatch.nki");
         assert_eq!(container.items[0].opaque_metadata, [0x80; 16]);
@@ -205,6 +229,85 @@ mod tests {
         let mut overflow = NIFileContainer::read(Cursor::new(&bytes)).unwrap();
         overflow.file_section_offset = u64::MAX;
         assert!(overflow.read_member(Cursor::new(&bytes), 900, 7).is_err());
+    }
+
+    #[test]
+    fn selected_items_with_duplicate_ids_read_exact_ranges() {
+        use std::io::{Cursor, Seek};
+        let mut bytes = authored_monolith_bytes();
+        // The second stored index starts after the header and first TOC record.
+        bytes[904 + 640..904 + 648].copy_from_slice(&42u64.to_le_bytes());
+        let container = NIFileContainer::read(Cursor::new(&bytes)).unwrap();
+        for (item, expected) in container
+            .items
+            .iter()
+            .zip([b"nki".as_slice(), b"wave".as_slice()])
+        {
+            let mut reader = Cursor::new(&bytes);
+            assert_eq!(container.read_item(&mut reader, item, 4).unwrap(), expected);
+            assert_eq!(
+                reader.stream_position().unwrap(),
+                container.file_section_offset + item.file_start_offset + item.file_size
+            );
+        }
+        assert!(matches!(
+            container.read_member(Cursor::new(&bytes), 42, 4),
+            Err(Error::Static("Ambiguous NI FileContainer member index"))
+        ));
+    }
+
+    #[test]
+    fn selected_item_reads_check_budget_and_file_range_boundaries() {
+        use std::io::Cursor;
+        let bytes = authored_monolith_bytes();
+        let mut container = NIFileContainer::read(Cursor::new(&bytes)).unwrap();
+        let item = &container.items[1];
+        assert!(matches!(
+            container.read_item(Cursor::new(&bytes), item, 3),
+            Err(Error::Static("NI FileContainer member exceeds read limit"))
+        ));
+        for limit in [4, 5] {
+            assert_eq!(
+                container.read_item(Cursor::new(&bytes), item, limit).unwrap(),
+                b"wave"
+            );
+        }
+        assert!(container
+            .read_item(Cursor::new(&bytes[..bytes.len() - 1]), item, 4)
+            .is_err());
+        // A zero-length member at EOF is valid, but beyond EOF is not.
+        container.items[1].file_start_offset = 7;
+        container.items[1].file_size = 0;
+        assert!(container
+            .read_item(Cursor::new(&bytes), &container.items[1], 0)
+            .unwrap()
+            .is_empty());
+        container.items[1].file_start_offset = 8;
+        assert!(matches!(
+            container.read_item(Cursor::new(&bytes), &container.items[1], 0),
+            Err(Error::Static("NI FileContainer member range exceeds file"))
+        ));
+    }
+
+    #[test]
+    fn selected_item_reads_reject_offset_and_end_overflow() {
+        use std::io::Cursor;
+        let bytes = authored_monolith_bytes();
+        let mut container = NIFileContainer::read(Cursor::new(&bytes)).unwrap();
+        container.file_section_offset = u64::MAX;
+        assert!(matches!(
+            container.read_item(Cursor::new(&bytes), &container.items[1], 4),
+            Err(Error::Static("NI FileContainer member offset overflow"))
+        ));
+        // Item zero has relative start zero: only adding its size overflows.
+        assert!(matches!(
+            container.read_item(Cursor::new(&bytes), &container.items[0], 3),
+            Err(Error::Static("NI FileContainer member end overflow"))
+        ));
+        assert!(matches!(
+            container.read_member(Cursor::new(&bytes), 42, 3),
+            Err(Error::Static("NI FileContainer member end overflow"))
+        ));
     }
 
     #[test]
