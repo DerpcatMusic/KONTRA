@@ -241,6 +241,14 @@ pub enum Op {
         text: TextRef,
         local: u16,
     },
+    /// Validated waveform read/write/reset, plus an admitted UI mirror effect.
+    /// `services` are [attach_zone, set_ui_wf_property]. No generic Store change.
+    Waveform {
+        action: crate::waveform::Action,
+        args: u16,
+        local: u16,
+        services: [u16; 2],
+    },
     /// Keyed integer state of the script instance; the key is `STORE_KEY`
     /// registers starting at `key`, each a signed-32 value. A read of a missing
     /// key leaves `local` unchanged; a write beyond capacity is counted and dropped.
@@ -371,6 +379,8 @@ impl Op {
             } => (usize::from(*args) + action.arguments())
                 .max(usize::from(*local) + 1)
                 .max(text.as_ref().map_or(0, reg)),
+            Self::Waveform { args, local, .. } =>
+                (usize::from(*args) + 4).max(usize::from(*local) + 1),
             Self::MidiFilename { text } => reg(text),
             Self::Real { lhs, rhs, .. }
             | Self::CompareReal { lhs, rhs, .. }
@@ -608,7 +618,16 @@ impl Store {
             .ok()
             .map(|i| self.entries[i].1)
     }
-    fn set(&mut self, key: [i32; STORE_KEY], value: i64) {
+    pub(crate) fn can_set(&self, key: [i32; STORE_KEY]) -> bool {
+        self.get(key).is_some() || self.entries.len() < self.capacity
+    }
+    pub(crate) fn clear_waveform_table(&mut self, ui: i32) {
+        self.entries.retain(|(key, _)| {
+            !(key[0] == ui && key[1] == crate::waveform::Property::Table as i32
+                && key[3] == crate::waveform::STATE_TAG)
+        });
+    }
+    pub(crate) fn set(&mut self, key: [i32; STORE_KEY], value: i64) {
         match self.entries.binary_search_by_key(&key, |e| e.0) {
             Ok(i) => self.entries[i].1 = value,
             // ponytail: O(n) insertion shift; a fixed hash table if stores grow large.
@@ -1734,6 +1753,42 @@ impl Runtime {
                 )?;
             }
             Op::ResetTimer => self.ops.timer_origin = std::time::Instant::now(),
+            Op::Waveform { action, args, local, services } => {
+                use crate::waveform::Action;
+                let count = if action == Action::Set { 4 } else { 3 };
+                let mut values = [0; 4];
+                for (i, value) in values.iter_mut().take(count).enumerate() {
+                    *value = i32_of(self.reg(id, args + i as u16)?)?;
+                }
+                let admitted = crate::waveform::admit(&self.behavior_bank(id)?.store, action, values)?;
+                let c = *self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
+                let plan = self.behavior_plan(c.owner)?;
+                let instance = self.plans.get(plan.0).unwrap().prepared.programs[c.program].script_instance;
+                let service = services[usize::from(action == Action::Set)];
+                // Only the immediate tail setter may coalesce. Attachments and
+                // every intervening command are ordering boundaries.
+                let coalesce = action == Action::Set && self.ops.effects.back().is_some_and(|e| {
+                    e.plan == plan && e.instance == instance && e.service == service
+                        && e.count == 4 && (0..3).all(|i| e.args[i] == i64::from(admitted.args[i]))
+                });
+                if action != Action::Get && !coalesce && self.ops.effects.len() == EFFECT_CAPACITY {
+                    return Err(Error::Capacity);
+                }
+                let result = crate::waveform::commit(&mut self.behavior_bank_mut(id)?.store, &admitted);
+                self.set_reg(id, local, result)?;
+                if action != Action::Get {
+                    let mut values = [0; EFFECT_ARGS];
+                    for (value, arg) in values.iter_mut().zip(admitted.args).take(count) {
+                        *value = i64::from(arg);
+                    }
+                    let effect = Effect { plan, instance, service, args: values, count: count as u8, text: None };
+                    if coalesce {
+                        if let Some(tail) = self.ops.effects.back_mut() { *tail = effect; }
+                    } else {
+                        self.ops.effects.push_back(effect);
+                    }
+                }
+            }
             Op::Emit {
                 service,
                 args,
