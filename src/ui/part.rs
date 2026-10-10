@@ -472,6 +472,32 @@ mod tests {
     }
 
     #[test]
+    fn authored_order_publication_reaches_live_and_reopened_faces() {
+        let script = sampler_ksp::compile("on init make_perfview declare ui_knob $k(0,100,1) declare ui_label $l(1,1) end on", 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+        let mut authored = script.ui(&|_| None).unwrap();
+        authored.pages.push(authored.pages[0].clone());
+        let from: Arc<[ir::Interface]> = vec![authored.clone()].into();
+        let path = std::path::Path::new("/missing/synthetic.nki");
+        let mut face = Face::new(path, 7, from.clone(), 0, Presentation::Vector);
+        face.page = ir::PageRef(1);
+        face.input.values.insert(ir::WidgetRef(0), ir::Value::Text("Retained draft".into()));
+        let mut current = authored.clone();
+        current.paint_order = Some(vec![ir::WidgetRef(1), ir::WidgetRef(0)]);
+        let patch = ir::InterfacePatch::between(&authored, &current);
+        face.update(patch.clone());
+        assert_eq!(face.face.paint_order, current.paint_order);
+        assert_eq!((face.shown, face.page, face.presentation), (0, ir::PageRef(1), Presentation::Vector));
+        assert!(Arc::ptr_eq(&face.from, &from));
+        assert_eq!(face.input.values[&ir::WidgetRef(0)], ir::Value::Text("Retained draft".into()));
+        let mut reopened = Face::new(path, 7, from, 0, face.presentation);
+        reopened.update(patch);
+        assert_eq!(reopened.face.paint_order, current.paint_order);
+        assert_eq!(reopened.presentation, Presentation::Vector);
+        face.update(Default::default());
+        assert_eq!(face.face.paint_order, authored.paint_order);
+    }
+
+    #[test]
     fn saved_override_wins_and_factory_default_is_original() {
         use crate::library::{Settings, ViewMode};
         let mut settings = Settings::default();
