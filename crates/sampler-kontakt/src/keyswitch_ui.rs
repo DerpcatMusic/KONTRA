@@ -47,7 +47,7 @@ pub(crate) fn normalize(instrument: &mut ir::Instrument, interfaces: &[Interface
         let mut runs: Vec<Vec<&Widget>> = Vec::new();
         for w in choices {
             let (x, y, width, height) = position(w);
-            if width < height * 3. {
+            if height == 0. || width < height * 3. {
                 continue;
             }
             // Hidden overlays at a visible row's position are alternate faces, not extra rows.
