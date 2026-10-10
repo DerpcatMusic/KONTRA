@@ -1,0 +1,205 @@
+{
+  "schema": 1,
+  "scope": "Read-only incorporation of integration verdict; no test binary rerun",
+  "source_sha": "429e7dff3ecb0f53aef32c43201ab796ccc8c28c",
+  "tree": "94ad5caaa5e5ec70e1595d34166c25110d294c67",
+  "manifest_sha256": "69a158bfb771a8853c89ddd2a00fa5f39e326a147bb1deedb120c18cb338a29c",
+  "root": "/mnt/Windows11/DEV_WORKSPACE/kontra-runs/pi-integration-round2/",
+  "verdict": "PASS_TARGETED_COMBINED_REGRESSIONS_NOT_PRODUCT_ACCEPTANCE",
+  "final_verdict_sha256": "f4f69ade8fb6d2963fa520d78e40adcf91824bf55947e32ba71f5db82d605e15",
+  "files": {
+    "compiled-artifacts.json": "a47f7877f84520ab11adb9069d98f03e5db52cda9dbcc44798d47c9799413ac8",
+    "test-results.json": "3cbe70e59d9334b3cb1b7c529252f121c3b9d6f446f04cdb3981f9afc9005c4a",
+    "FROZEN-SOURCE-429e7dff.json": "69a158bfb771a8853c89ddd2a00fa5f39e326a147bb1deedb120c18cb338a29c",
+    "COORDINATOR-AUTHORIZATION.json": "70b86a62097d794a174de87f3271ed25d777cd41a2fedd4cb3277d64b31aec29",
+    "synthetic-product-smoke-metrics.json": "78319d3400e7296599f980cdc8b4a1adab768d1ac165a2ec18d1a551810b9a00"
+  },
+  "counts": {
+    "runs": 14,
+    "passed_invocations": 118,
+    "unique_passed": 117,
+    "failed": 0,
+    "ignored_invocations": 43
+  },
+  "perf_runs": [
+    {
+      "owner": "perf",
+      "name": "stream-neighbors",
+      "source_sha": "429e7dff3ecb0f53aef32c43201ab796ccc8c28c",
+      "artifact_sha256": "fff70ad38ce315239a973acb81573281a6f1b276ad05934f63018c73d75e39c4",
+      "artifact": "/mnt/Windows11/DEV_WORKSPACE/Toolchains/User/cargo-target/debug/deps/sampler_kontakt-b1423e900cc436d3",
+      "expected_tests": [
+        "stream::tests::authored_polyphony_sizes_new_stream_pools_without_shrinking_the_policy_floor",
+        "stream::tests::concurrent_reloads_share_the_same_admission_budget",
+        "stream::tests::headers_open_in_bounded_parallel_workers_and_keep_asset_order",
+        "stream::tests::lazy_heads_are_not_read_until_requested_and_respect_the_budget",
+        "stream::tests::random_access_reads_match_a_full_decode",
+        "stream::tests::reload_accounts_for_packed_replacements_throughout_one_batch",
+        "stream::tests::reload_rescans_the_budget_after_trim_and_a_transient_read_failure",
+        "stream::tests::reload_serializes_publication_with_control_side_trim",
+        "stream::tests::trimming_purges_idle_heads_until_within_budget",
+        "stream::tests::v1_ram_mode_fills_small_samples_first_and_streams_over_budget",
+        "stream::tests::wavetable_pin_reads_lazy_cycles_and_survives_purge_with_explicit_budget_failure",
+        "stream::tests::wavetable_start_ranges_keep_every_cycle_under_a_tiny_head_budget"
+      ],
+      "passed": 11,
+      "failed": 0,
+      "ignored": 1,
+      "exit_code": 0,
+      "receipt": "/mnt/Windows11/DEV_WORKSPACE/kontra-runs/pi-integration-round2/stream-neighbors.json",
+      "log_sha256": "d6a0cc0c6a5858c603df2695055f6f88825f7be0e4659da3e2bf707aeeac0c0c"
+    },
+    {
+      "owner": "perf",
+      "name": "host-probe",
+      "source_sha": "429e7dff3ecb0f53aef32c43201ab796ccc8c28c",
+      "artifact_sha256": "54b9f1bea9eb3c9f800a6141bf544f9c7f9abff560136ac130f5a5b784122abc",
+      "artifact": "/mnt/Windows11/DEV_WORKSPACE/Toolchains/User/cargo-target/debug/deps/kontakto-1e754ffa7b795869",
+      "expected_tests": [
+        "plugin::host_probe::tests::live_host_readback_uses_performance_header_counters",
+        "plugin::host_probe::tests::native_host_state_export_rejects_v1_and_preserves_existing_files",
+        "plugin::host_probe::tests::ui_activity_export_copies_current_instance_counters_in_schema_order",
+        "plugin::host_probe::tests::ui_activity_export_preserves_output_for_disabled_or_mismatched_contracts",
+        "plugin::host_probe::tests::ui_activity_export_rejects_null_plugin_without_writing_output"
+      ],
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0,
+      "exit_code": 0,
+      "receipt": "/mnt/Windows11/DEV_WORKSPACE/kontra-runs/pi-integration-round2/host-probe.json",
+      "log_sha256": "ce95d4ec06a7e8a51516fecf91dc2ba505d869881f3fb1576cdfb3acb26cfa2b"
+    },
+    {
+      "owner": "perf",
+      "name": "ui20-activity",
+      "source_sha": "429e7dff3ecb0f53aef32c43201ab796ccc8c28c",
+      "artifact_sha256": "54b9f1bea9eb3c9f800a6141bf544f9c7f9abff560136ac130f5a5b784122abc",
+      "artifact": "/mnt/Windows11/DEV_WORKSPACE/Toolchains/User/cargo-target/debug/deps/kontakto-1e754ffa7b795869",
+      "expected_tests": [
+        "plugin::ui_activity::tests::disabled_activity_is_absent_and_enabled_counts_are_cumulative",
+        "plugin::ui_activity::tests::readback_distinguishes_changed_unchanged_and_busy_without_extra_revisions"
+      ],
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "exit_code": 0,
+      "receipt": "/mnt/Windows11/DEV_WORKSPACE/kontra-runs/pi-integration-round2/ui20-activity.json",
+      "log_sha256": "bbb8f39c440fc5803d19466b29a24d64472b4fbf6d1e905bdee3272e1465d6c1"
+    },
+    {
+      "owner": "perf",
+      "name": "ui20-idle",
+      "source_sha": "429e7dff3ecb0f53aef32c43201ab796ccc8c28c",
+      "artifact_sha256": "54b9f1bea9eb3c9f800a6141bf544f9c7f9abff560136ac130f5a5b784122abc",
+      "artifact": "/mnt/Windows11/DEV_WORKSPACE/Toolchains/User/cargo-target/debug/deps/kontakto-1e754ffa7b795869",
+      "expected_tests": [
+        "ui::loop_audit::loop_audit_scalar_changes_do_not_wake_idle_editor"
+      ],
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "exit_code": 0,
+      "receipt": "/mnt/Windows11/DEV_WORKSPACE/kontra-runs/pi-integration-round2/ui20-idle.json",
+      "log_sha256": "6bd28d7a4852d1ce5878da6eee18ad87ab58c9ace561bcc0f516b27dc011a604"
+    }
+  ],
+  "pinned_receipts": [
+    {
+      "name": "combined-no-run",
+      "receipt_sha256": "6faab4a7fa08cb32cc827d3811ac579cc6d744ceafbc6fccb051cf4d956a791b",
+      "log_sha256": "31842e7a20e7f8647c6a741f65fbbd6ae3606700e0d3473ac48fc781af79a50e",
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-j1",
+        "--features",
+        "shots",
+        "-p",
+        "kontakto",
+        "-p",
+        "sampler-core",
+        "-p",
+        "sampler-ksp",
+        "-p",
+        "sampler-kontakt",
+        "-p",
+        "sampler-uvi",
+        "-p",
+        "sampler-ui-ir",
+        "--no-run",
+        "--message-format=json-render-diagnostics"
+      ]
+    },
+    {
+      "name": "stream-neighbors",
+      "receipt_sha256": "4ea1888a8a92a19737248ab2e9e076c04ad5e5760116b34239ee002c73f4843f",
+      "log_sha256": "d6a0cc0c6a5858c603df2695055f6f88825f7be0e4659da3e2bf707aeeac0c0c",
+      "command": [
+        "/mnt/Windows11/DEV_WORKSPACE/Toolchains/User/cargo-target/debug/deps/sampler_kontakt-b1423e900cc436d3",
+        "stream::tests",
+        "--test-threads=1"
+      ]
+    },
+    {
+      "name": "host-probe",
+      "receipt_sha256": "7d7929cb9867fc046334a7c1024935461942c01e27263dea1180fc7ff04fb2ba",
+      "log_sha256": "ce95d4ec06a7e8a51516fecf91dc2ba505d869881f3fb1576cdfb3acb26cfa2b",
+      "command": [
+        "/mnt/Windows11/DEV_WORKSPACE/Toolchains/User/cargo-target/debug/deps/kontakto-1e754ffa7b795869",
+        "plugin::host_probe::tests",
+        "--test-threads=1"
+      ]
+    },
+    {
+      "name": "ui20-activity",
+      "receipt_sha256": "92bdaa31cfbc97c392588821cb617a3874dd3f07f91b3e77b9cc670bd8648ffa",
+      "log_sha256": "bbb8f39c440fc5803d19466b29a24d64472b4fbf6d1e905bdee3272e1465d6c1",
+      "command": [
+        "/mnt/Windows11/DEV_WORKSPACE/Toolchains/User/cargo-target/debug/deps/kontakto-1e754ffa7b795869",
+        "plugin::ui_activity::tests",
+        "--test-threads=1"
+      ]
+    },
+    {
+      "name": "ui20-idle",
+      "receipt_sha256": "90b6c9d88631cbde570ac27bed68eb460b7ba710c8e249d51d8691213d28339f",
+      "log_sha256": "6bd28d7a4852d1ce5878da6eee18ad87ab58c9ace561bcc0f516b27dc011a604",
+      "command": [
+        "/mnt/Windows11/DEV_WORKSPACE/Toolchains/User/cargo-target/debug/deps/kontakto-1e754ffa7b795869",
+        "loop_audit_scalar_changes_do_not_wake_idle_editor",
+        "--test-threads=1"
+      ]
+    }
+  ],
+  "artifact_profiles": {
+    "entries": 168,
+    "opt_level": "0",
+    "debug_assertions": true,
+    "overflow_checks": true,
+    "release_clap_in_manifest": false
+  },
+  "product_smoke": {
+    "verdict": "PASS_OWN_CODE_SYNTHETIC_OFFLINE_LOAD_MIDI_RENDER_ONLY",
+    "receipt": "synthetic-product-smoke-metrics.json",
+    "artifact_sha256": "48b340e60628565a3f3f6f5731bbdde5ba812fad38312f93717ae4358a3d5859",
+    "input_sha256": "c2395db2b77c776ba9ee19e7d9b39fde2e8744e6284062aa732bece799af3b8a",
+    "samples": 384000,
+    "nonzero": true,
+    "nonfinite": 0,
+    "all_runtime_problem_fields_zero": true,
+    "pcm_hash": "2c5655c957417eeaa74a84258b6103b46f2cc4456b86b17e6ef495a1c6ef2374",
+    "limits": "No library data/audio dumps; numeric output only. Functional witness, NOT cold onset/timing or callback-order parity (known example begins block after MIDI)."
+  },
+  "admission": "BLOCKED: no exact current release CLAP/profile pair admitted; frozen-v1 CLAP profile requires original attestation",
+  "acceptance": {
+    "cpu_vs_v1": "UNKNOWN",
+    "ram_vs_v1": "UNKNOWN",
+    "cpu_vs_kontakt": "UNKNOWN",
+    "ram_vs_kontakt": "UNKNOWN",
+    "cold_onset": "UNKNOWN",
+    "io_held_trim_delay": "UNKNOWN",
+    "target_achieved": false
+  }
+}
