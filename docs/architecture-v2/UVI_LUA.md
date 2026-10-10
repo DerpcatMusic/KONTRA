@@ -33,6 +33,12 @@ Unit and Mapper expose v1 numeric IDs; existing named v2 metadata remains
 accepted by the adapter. UVI readouts use v1 formatting without changing raw
 values, ranges, sprites or edit payloads. Authored displayText retains precedence.
 
+Programmatic widget values preserve display-range independence and truncate
+integer writes toward zero. Native scalar/Table values and defaults use finite
+float32 conversion; overflow is atomic. OnOffButton script writes require booleans,
+with numeric renderer edits converted at the UI bridge. Momentary Button exposes
+no value methods. Parameter widgets reuse the existing catalog default.
+
 `class` and instances are native userdata copied from v1. Inheritance copies
 existing members except `__init`, and a constructor requires its own initializer.
 Names and bases are validated. The Luau adapter preserves Lua 5.1 self-identity
