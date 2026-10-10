@@ -1292,6 +1292,7 @@ impl ScriptHost {
             })?,
         )?;
         self.install_api()?;
+        modules::install_class(lua, &globals)?;
         lua.load(PRELUDE).set_name("prelude").exec()
     }
 
