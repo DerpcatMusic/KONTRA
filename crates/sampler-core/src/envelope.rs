@@ -52,7 +52,7 @@ impl Curve {
     }
 
     fn new(curve: EnvelopeCurve, duration: u32) -> Self {
-        if curve.0.is_infinite() && duration != 0 {
+        if curve.0.is_infinite() {
             return Self {
                 step: true,
                 ..Self::default()
@@ -188,7 +188,16 @@ impl Envelope {
     /// the stage's curvature. Script engine parameters; see `script_params`.
     pub(crate) fn with_stage(mut self, stage: crate::EnvelopeStage, value: u32) -> Self {
         use crate::EnvelopeStage as S;
-        let recurve = |curve: Curve, frames| Curve::new(EnvelopeCurve(curve.curvature), frames);
+        let recurve = |curve: Curve, frames| {
+            Curve::new(
+                if curve.step {
+                    EnvelopeCurve::step()
+                } else {
+                    EnvelopeCurve(curve.curvature)
+                },
+                frames,
+            )
+        };
         match stage {
             S::Attack => {
                 self.attack = value;
@@ -506,6 +515,22 @@ thread_local! { static LEVEL_READS: std::cell::Cell<usize> = const { std::cell::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn step_curves_survive_zero_duration_stage_edits() {
+        let step = EnvelopeCurve::step();
+        let mut shape = Envelope::new(2, 0, 2, 0.25, 2)
+            .unwrap()
+            .with_curves(step, step, step);
+        for stage in [
+            crate::EnvelopeStage::Attack,
+            crate::EnvelopeStage::Decay,
+            crate::EnvelopeStage::Release,
+        ] {
+            shape = shape.with_stage(stage, 0).with_stage(stage, 4);
+        }
+        assert!(shape.curves.iter().all(|curve| curve.step));
+    }
 
     #[test]
     fn skipped_curves_do_not_compute_discarded_frame_levels() {
