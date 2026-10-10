@@ -1028,7 +1028,7 @@ fn draw_live(
     slot: usize, s: f64, authored: Size, drafts: &mut HashMap<String, String>,
 ) -> anyhow::Result<El> {
     draw_impl(ui, node, package, session, slot, s, Style::default(), drafts,
-        None, None, PrimitivePlacement::Root(authored), true)
+        None, None, PrimitivePlacement::Root(authored), false)
 }
 #[cfg(test)]
 fn draw_retained(
