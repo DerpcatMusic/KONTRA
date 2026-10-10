@@ -360,7 +360,7 @@ mod tests {
         let meta = r.picture("Resources/pictures/Knob.png").unwrap();
         assert_eq!(
             (meta.frames, meta.size.map(|s| (s.width, s.height))),
-            (31, Some((40, 10)))
+            (31, Some((40.0, 10.0)))
         );
         assert!(r.picture("Resources/pictures/missing.png").is_none());
         std::fs::remove_dir_all(dir).unwrap();
