@@ -1,0 +1,335 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-10T01:05:22Z",
+  "title": "Design System: KONTRA Public Website",
+  "extensions": {
+    "colorMeta": {
+      "muted-pink-accent": {
+        "role": "primary",
+        "displayName": "Muted Pink Accent",
+        "canonical": "#e6b6c7",
+        "tonalRamp": [
+          "oklch(15% 0.059 355.3)",
+          "oklch(25% 0.059 355.3)",
+          "oklch(35% 0.059 355.3)",
+          "oklch(45% 0.059 355.3)",
+          "oklch(55% 0.059 355.3)",
+          "oklch(65% 0.059 355.3)",
+          "oklch(80% 0.059 355.3)",
+          "oklch(95% 0.059 355.3)"
+        ]
+      },
+      "graphite-background": {
+        "role": "neutral",
+        "displayName": "Graphite Background",
+        "canonical": "#1b1b1b",
+        "tonalRamp": [
+          "oklch(15% 0.000 89.9)",
+          "oklch(25% 0.000 89.9)",
+          "oklch(35% 0.000 89.9)",
+          "oklch(45% 0.000 89.9)",
+          "oklch(55% 0.000 89.9)",
+          "oklch(65% 0.000 89.9)",
+          "oklch(80% 0.000 89.9)",
+          "oklch(95% 0.000 89.9)"
+        ]
+      },
+      "graphite-surface": {
+        "role": "neutral",
+        "displayName": "Graphite Surface",
+        "canonical": "#252525",
+        "tonalRamp": [
+          "oklch(15% 0.000 89.9)",
+          "oklch(25% 0.000 89.9)",
+          "oklch(35% 0.000 89.9)",
+          "oklch(45% 0.000 89.9)",
+          "oklch(55% 0.000 89.9)",
+          "oklch(65% 0.000 89.9)",
+          "oklch(80% 0.000 89.9)",
+          "oklch(95% 0.000 89.9)"
+        ]
+      },
+      "graphite-field": {
+        "role": "neutral",
+        "displayName": "Graphite Field",
+        "canonical": "#101010",
+        "tonalRamp": [
+          "oklch(15% 0.000 89.9)",
+          "oklch(25% 0.000 89.9)",
+          "oklch(35% 0.000 89.9)",
+          "oklch(45% 0.000 89.9)",
+          "oklch(55% 0.000 89.9)",
+          "oklch(65% 0.000 89.9)",
+          "oklch(80% 0.000 89.9)",
+          "oklch(95% 0.000 89.9)"
+        ]
+      },
+      "graphite-hover": {
+        "role": "neutral",
+        "displayName": "Graphite Hover",
+        "canonical": "#303030",
+        "tonalRamp": [
+          "oklch(15% 0.000 89.9)",
+          "oklch(25% 0.000 89.9)",
+          "oklch(35% 0.000 89.9)",
+          "oklch(45% 0.000 89.9)",
+          "oklch(55% 0.000 89.9)",
+          "oklch(65% 0.000 89.9)",
+          "oklch(80% 0.000 89.9)",
+          "oklch(95% 0.000 89.9)"
+        ]
+      },
+      "text-primary": {
+        "role": "neutral",
+        "displayName": "Primary Text",
+        "canonical": "#e8e8e8",
+        "tonalRamp": [
+          "oklch(15% 0.000 89.9)",
+          "oklch(25% 0.000 89.9)",
+          "oklch(35% 0.000 89.9)",
+          "oklch(45% 0.000 89.9)",
+          "oklch(55% 0.000 89.9)",
+          "oklch(65% 0.000 89.9)",
+          "oklch(80% 0.000 89.9)",
+          "oklch(95% 0.000 89.9)"
+        ]
+      },
+      "text-muted": {
+        "role": "neutral",
+        "displayName": "Muted Text",
+        "canonical": "#b1b1b1",
+        "tonalRamp": [
+          "oklch(15% 0.000 89.9)",
+          "oklch(25% 0.000 89.9)",
+          "oklch(35% 0.000 89.9)",
+          "oklch(45% 0.000 89.9)",
+          "oklch(55% 0.000 89.9)",
+          "oklch(65% 0.000 89.9)",
+          "oklch(80% 0.000 89.9)",
+          "oklch(95% 0.000 89.9)"
+        ]
+      },
+      "reading-copy": {
+        "role": "neutral",
+        "displayName": "Reading Copy",
+        "canonical": "#c7c7c7",
+        "tonalRamp": [
+          "oklch(15% 0.000 89.9)",
+          "oklch(25% 0.000 89.9)",
+          "oklch(35% 0.000 89.9)",
+          "oklch(45% 0.000 89.9)",
+          "oklch(55% 0.000 89.9)",
+          "oklch(65% 0.000 89.9)",
+          "oklch(80% 0.000 89.9)",
+          "oklch(95% 0.000 89.9)"
+        ]
+      },
+      "hairline": {
+        "role": "neutral",
+        "displayName": "Hairline",
+        "canonical": "#414141",
+        "tonalRamp": [
+          "oklch(15% 0.000 89.9)",
+          "oklch(25% 0.000 89.9)",
+          "oklch(35% 0.000 89.9)",
+          "oklch(45% 0.000 89.9)",
+          "oklch(55% 0.000 89.9)",
+          "oklch(65% 0.000 89.9)",
+          "oklch(80% 0.000 89.9)",
+          "oklch(95% 0.000 89.9)"
+        ]
+      },
+      "status-implemented": {
+        "role": "neutral",
+        "displayName": "Implemented Status",
+        "canonical": "#c7d8c7",
+        "tonalRamp": [
+          "oklch(15% 0.029 145.3)",
+          "oklch(25% 0.029 145.3)",
+          "oklch(35% 0.029 145.3)",
+          "oklch(45% 0.029 145.3)",
+          "oklch(55% 0.029 145.3)",
+          "oklch(65% 0.029 145.3)",
+          "oklch(80% 0.029 145.3)",
+          "oklch(95% 0.029 145.3)"
+        ]
+      },
+      "scrollbar-thumb": {
+        "role": "neutral",
+        "displayName": "Scrollbar Thumb",
+        "canonical": "#686868",
+        "tonalRamp": [
+          "oklch(15% 0.000 89.9)",
+          "oklch(25% 0.000 89.9)",
+          "oklch(35% 0.000 89.9)",
+          "oklch(45% 0.000 89.9)",
+          "oklch(55% 0.000 89.9)",
+          "oklch(65% 0.000 89.9)",
+          "oklch(80% 0.000 89.9)",
+          "oklch(95% 0.000 89.9)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Overview Display",
+        "purpose": "Primary headline on the overview page."
+      },
+      "page-title": {
+        "displayName": "Page Title",
+        "purpose": "Titles on documentation, support, and roadmap pages."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Normal website copy and navigation context."
+      },
+      "reading": {
+        "displayName": "Reading Copy",
+        "purpose": "Long-form documentation and support-table details."
+      }
+    },
+    "motion": [
+      {
+        "name": "screenshot-settle",
+        "value": "0.7s cubic-bezier(.16, 1, .3, 1)",
+        "purpose": "One short entrance on the overview screenshot; removed when prefers-reduced-motion is set."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "tablet",
+        "value": "900px"
+      },
+      {
+        "name": "mobile",
+        "value": "640px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Header and Navigation",
+      "kind": "nav",
+      "refersTo": "current-navigation",
+      "description": "Shared wordmark and four-page navigation, with a thin accent underline on the current page.",
+      "html": "<header class=\"ds-header\"><a class=\"ds-brand\" href=\"index.html\"><svg viewBox=\"0 0 26 26\" fill=\"none\" aria-hidden=\"true\"><path d=\"M3 4h20v18H3zM13 4v18\" stroke=\"currentColor\" stroke-width=\"2\"/></svg>KONTRA</a><nav class=\"ds-nav\" aria-label=\"Main navigation\"><a href=\"#overview\" aria-current=\"page\">Overview</a><a href=\"#docs\">Documentation</a><a href=\"#support\">Support</a><a href=\"#roadmap\">Roadmap</a></nav></header>",
+      "css": ".ds-header{min-height:94px;display:flex;align-items:center;justify-content:space-between;gap:25px;border-bottom:1px solid var(--line)}.ds-brand{display:flex;gap:13px;align-items:center;text-decoration:none;color:var(--text);font:700 23px/1.2 'Noto Sans',sans-serif;letter-spacing:.035em}.ds-brand svg{width:25px;height:25px}.ds-nav{display:flex;gap:30px;align-items:center}.ds-nav a{color:var(--muted);font:14px/1.4 'Noto Sans',sans-serif;text-decoration:none;padding:10px 0}.ds-nav a[aria-current=page]{color:var(--text);border-bottom:1px solid var(--accent)}.ds-header a:focus-visible{outline:2px solid var(--accent);outline-offset:6px}@media(max-width:640px){.ds-header{min-height:110px;flex-wrap:wrap;gap:0;padding:20px 0 12px}.ds-brand{font-size:21px}.ds-nav{width:100%;flex-wrap:wrap;justify-content:flex-start;gap:8px 22px}.ds-nav a{font-size:12px}}"
+    },
+    {
+      "name": "Platform Download",
+      "kind": "card",
+      "refersTo": "platform-download",
+      "description": "Text-led platform link with an optional desktop-detection outline and label.",
+      "html": "<a class=\"ds-download\" href=\"#release\" data-detected=\"true\"><span>Download for Linux</span><small>x64</small><span class=\"ds-detected\">Your platform</span></a>",
+      "css": ".ds-download{min-height:89px;display:flex;flex-direction:column;align-items:flex-start;padding:16px 20px;background:var(--surface);color:var(--text);font:15px/1.65 'Noto Sans',sans-serif;text-decoration:none}.ds-download:hover{background:#303030}.ds-download[data-detected=true]{outline:1px solid var(--accent)}.ds-download small{margin-top:4px;color:var(--muted);font-size:12px}.ds-detected{display:none;margin-top:5px;color:var(--accent);font-size:12px}.ds-download[data-detected=true] .ds-detected{display:block}.ds-download:focus-visible{outline:2px solid var(--accent);outline-offset:6px}@media(max-width:640px){.ds-download{min-height:72px}}"
+    },
+    {
+      "name": "Product Screenshot",
+      "kind": "custom",
+      "description": "Wide, uncropped proof image followed by a quiet caption.",
+      "html": "<figure class=\"ds-shot\"><img src=\"assets/kontra-ui.webp\" width=\"1967\" height=\"1248\" alt=\"KONTRA library browser and rack with the Conflux interface and on-screen keyboard\"><figcaption>KONTRA, with an instrument loaded. Library artwork belongs to its respective owners.</figcaption></figure>",
+      "css": ".ds-shot{margin:0;animation:ds-settle .7s cubic-bezier(.16,1,.3,1)}.ds-shot img{display:block;width:100%;height:auto;background:var(--field)}.ds-shot figcaption{display:flex;justify-content:space-between;gap:20px;padding:16px 0;color:var(--muted);font:12px/1.5 'Noto Sans',sans-serif}@keyframes ds-settle{from{transform:translateY(8px)}to{transform:translateY(0)}}@media(prefers-reduced-motion:reduce){.ds-shot{animation:none}}@media(max-width:640px){.ds-shot figcaption{display:block}.ds-shot figcaption span+span{display:block;margin-top:7px}}"
+    },
+    {
+      "name": "Documentation Notice",
+      "kind": "custom",
+      "description": "Compact graphite callout for the nightly-alpha compatibility and backup warning.",
+      "html": "<div class=\"ds-notice\"><p><strong>Nightly alpha.</strong> Features and saved-state formats can change between builds. Preserve backups and check the exact release notes.</p></div>",
+      "css": ".ds-notice{margin-bottom:35px;padding:22px;background:var(--surface);color:var(--text);font:14px/1.65 'Noto Sans',sans-serif}.ds-notice p{margin:0}.ds-notice strong{font-weight:700;color:var(--text)}"
+    },
+    {
+      "name": "Installation Disclosure",
+      "kind": "custom",
+      "refersTo": "support-disclosure",
+      "description": "Native details disclosure keeps platform installation steps available in the reading flow.",
+      "html": "<details class=\"ds-disclosure\"><summary>Windows x64</summary><p>Download and extract the Windows ZIP. Use the standalone executable or install the plugin bundle in your host's configured directory.</p></details>",
+      "css": ".ds-disclosure{padding:18px 0;border-bottom:1px solid var(--line)}.ds-disclosure summary{cursor:pointer;color:var(--text);font:17px/1.4 'Noto Sans',sans-serif}.ds-disclosure p{margin:18px 0 12px;color:#c7c7c7;font:15px/1.65 'Noto Sans',sans-serif}.ds-disclosure summary:focus-visible{outline:2px solid var(--accent);outline-offset:6px}"
+    },
+    {
+      "name": "Support Table Group",
+      "kind": "custom",
+      "description": "Expandable evidence group with feature, status, and scope; mobile rows keep scope below the first line.",
+      "html": "<details class=\"ds-support\"><summary>Kontakt · formats</summary><div class=\"ds-table-scroll\"><table><thead><tr><th scope=\"col\">Feature</th><th scope=\"col\">Support</th><th scope=\"col\">Scope and gaps</th></tr></thead><tbody><tr><td>Sample playback</td><td class=\"ds-partial\">Partial</td><td>Bounded playback path; verify instrument behavior against the linked evidence.</td></tr></tbody></table></div></details>",
+      "css": ".ds-support{margin:0;padding:0;border-bottom:1px solid var(--line)}.ds-support summary{padding:22px 0;color:var(--text);cursor:pointer;font:23px/1.35 'Noto Sans',sans-serif}.ds-table-scroll{overflow-x:auto;margin-bottom:25px}.ds-support table{width:100%;min-width:660px;border-collapse:collapse;margin:0 0 25px;font:13px/1.6 'Noto Sans',sans-serif}.ds-support th,.ds-support td{text-align:left;vertical-align:top;padding:14px 16px 14px 0;border-bottom:1px solid var(--line)}.ds-support th{color:var(--muted);font-size:13px;font-weight:400}.ds-support td:nth-child(2){white-space:nowrap}.ds-support td:nth-child(2).ds-partial{color:var(--accent)}.ds-support td:last-child{color:#c7c7c7}.ds-support summary:focus-visible{outline:2px solid var(--accent);outline-offset:6px}@media(max-width:640px){.ds-support summary{font-size:21px}.ds-support table{display:block;min-width:0}.ds-support thead{position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}.ds-support tbody{display:block}.ds-support tr{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:0 15px;border-bottom:1px solid var(--line);padding:15px 0}.ds-support td{display:block;border:0;padding:0;font-size:14px}.ds-support td:nth-child(2){padding-top:2px;font-size:12px}.ds-support td:last-child{grid-column:1/-1;margin-top:9px;color:var(--muted)}.ds-table-scroll{overflow:visible}}"
+    }
+  ],
+  "narrative": {
+    "northStar": "A Native Instrument's Public Home",
+    "overview": [
+      "This website extends the native graphite and Noto Sans system recorded in the root DESIGN.md. The native editor remains the authority for the application; this document records the web reading and download surface. Graphite fills and square edges carry through, while the website uses a muted pink accent for links, focus, active navigation, and platform detection.",
+      "The overview keeps the message short, puts the current release identity and three platform downloads before an uncropped image of the actual player, and then points to installation, support evidence, and the roadmap. The documentation pages use the same wordmark, navigation, and footer so technical detail stays part of one site."
+    ],
+    "keyCharacteristics": [
+      "Dark graphite surfaces with thin dividers and quiet neutral text.",
+      "A restrained pink accent that marks interaction and partial support.",
+      "A bundled Noto Sans face and square page controls.",
+      "The real player screenshot as the main product proof, followed by practical reference pages."
+    ],
+    "rules": [
+      {
+        "name": "The Native System Extension Rule",
+        "body": "Preserve the native editor's graphite, Noto Sans, square-edge identity; apply website-specific type scale and responsive reading layout only to this web surface.",
+        "section": "overview"
+      },
+      {
+        "name": "The Pink Signal Rule",
+        "body": "Use the website's pink accent for interaction, active state, focus, and partial support; do not turn it into a decorative wash.",
+        "section": "colors"
+      },
+      {
+        "name": "The Graphite Continuity Rule",
+        "body": "Keep the shared graphite palette as the page foundation and let the actual application image supply its own color.",
+        "section": "colors"
+      },
+      {
+        "name": "The One Face Rule",
+        "body": "Keep the bundled Noto Sans for the site's normal text and avoid adding a second display face.",
+        "section": "typography"
+      },
+      {
+        "name": "The Download First Rule",
+        "body": "Keep the release identity and all three platform choices ahead of the large player image.",
+        "section": "layout"
+      },
+      {
+        "name": "The Visible Scope Rule",
+        "body": "Preserve the support table's feature, status, and full scope text in its mobile layout.",
+        "section": "layout"
+      },
+      {
+        "name": "The Flat Plane Rule",
+        "body": "Use tonal fills, spacing, and hairlines for hierarchy; keep cards on the same plane as the page.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Square Edge Rule",
+        "body": "Keep controls and containers rectangular; reserve the accent outline for an actual selected or focused state.",
+        "section": "shapes"
+      },
+      {
+        "name": "The Real Player Rule",
+        "body": "Let the actual application screenshot carry the product's visual detail; keep the surrounding web chrome quiet.",
+        "section": "components"
+      },
+      {
+        "name": "The Evidence Stays Open Rule",
+        "body": "Keep support status and its scope visible in each row, including at mobile widths.",
+        "section": "components"
+      }
+    ],
+    "dos": [
+      "Do keep the website an extension of the native graphite and Noto Sans system.",
+      "Do lead the overview with the current release and all three platform downloads.",
+      "Do use the real, uncropped player screenshot as product proof.",
+      "Do keep installation guidance, support detail, and roadmap sections available through the shared page shell.",
+      "Do retain the visible scope and gaps beside support statuses on every screen size."
+    ],
+    "donts": [
+      "Don't create a separate palette, rounded-card system, or shadow-heavy layer.",
+      "Don't replace the player screenshot with stock artwork or a fabricated interface.",
+      "Don't use the pink accent as a large background or as a compatibility success color.",
+      "Don't hide support gaps behind hover, tooltips, or mobile-only horizontal scrolling.",
+      "Don't describe roadmap sections as collapsible; the shipped page presents them as headings and prose."
+    ]
+  }
+}
