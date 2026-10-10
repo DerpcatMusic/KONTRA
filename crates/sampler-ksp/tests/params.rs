@@ -265,22 +265,31 @@ fn timer_listener_plays_notes_on_its_period() {
 
 #[test]
 fn pgs_writes_reach_every_slot_and_run_pgs_changed() {
+    assert_pgs_writes_reach_reader("pgs_changed");
+}
+
+#[test]
+fn pgs_writes_reach_every_slot_and_run_underscored_pgs_changed() {
+    assert_pgs_writes_reach_reader("_pgs_changed");
+}
+
+fn assert_pgs_writes_reach_reader(callback: &str) {
     let writer = compile(
         "on note
            ignore_event($EVENT_ID)
            pgs_set_key_val(SHARED, 0, 5)
          end on",
     );
-    let reader = compile(
+    let reader = compile(&format!(
         "on init
            pgs_create_key(SHARED, 1)
          end on
-         on pgs_changed
+         on {callback}
            if (pgs_key_exists(SHARED) and pgs_get_key_val(SHARED, 0) = 5)
              play_note(61, 127, 0, 100000)
            end if
-         end on",
-    );
+         end on"
+    ));
     let mut rt = modules(vec![writer, reader], GroupParams::default());
     rt.trigger(input(60), 60, 1.).unwrap();
     // Only the reader's note 61 sounds.
