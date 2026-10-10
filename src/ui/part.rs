@@ -497,14 +497,28 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
                     ir::Source::Ksp { slot } => slot,
                     _ => 0,
                 };
-                cx.p.shared.set_widget_at(
+                let admitted = cx.p.shared.set_widget_at(
                     slot,
                     generation,
                     source_slot,
                     widget,
                     edit.index,
                     edit.value.clone(),
-                )
+                );
+                #[cfg(all(test, feature = "shots"))]
+                if admitted && slot == 0 {
+                    let len = match &edit.value {
+                        ir::Value::Integers(v) => v.len(),
+                        ir::Value::Reals(v) => v.len(),
+                        _ => 1,
+                    };
+                    let start = edit.index.unwrap_or(0);
+                    let indices = (start..start + len)
+                        .map(|index| index as u32)
+                        .collect::<Vec<_>>();
+                    super::widget_gate::submitted_widget(widget, &indices);
+                }
+                admitted
             });
             if !admitted {
                 cx.state.notice = "This authored widget edit could not be applied.".into();
@@ -559,14 +573,21 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
             ir::Source::Ksp { slot } => slot,
             _ => 0,
         };
-        if !cx.p.shared.set_widget_batch_at(
+        #[cfg(all(test, feature = "shots"))]
+        let indices = edits.keys().copied().collect::<Vec<_>>();
+        let admitted = cx.p.shared.set_widget_batch_at(
             slot,
             generation,
             source_slot,
             widget,
             edits.into_iter().collect(),
             interaction,
-        ) {
+        );
+        #[cfg(all(test, feature = "shots"))]
+        if admitted && slot == 0 {
+            super::widget_gate::submitted_widget(widget, &indices);
+        }
+        if !admitted {
             face.input.values.remove(&n);
         }
     }
@@ -575,7 +596,11 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
             && now != was
             && !edited_controls.contains(&id)
         {
-            cx.p.shared.set_control_at(slot, generation, id, now);
+            let _admitted = cx.p.shared.set_control_at(slot, generation, id, now);
+            #[cfg(all(test, feature = "shots"))]
+            if _admitted && slot == 0 {
+                super::widget_gate::submitted_control(id);
+            }
         }
     }
     Some(
