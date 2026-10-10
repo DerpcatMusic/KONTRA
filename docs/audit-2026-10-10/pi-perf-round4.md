@@ -55,4 +55,21 @@ The authoritative [Kontakt manual DFD Tab](https://docs.native-instruments.com/n
 
 **Lower CPU AND RAM than BOTH frozen v1 and Kontakt: UNACHIEVED.** Kontakt runtime measurement remains unavailable under current safety constraints: UNKNOWN, not PASS. Cold-onset, IO-overlap/trim timing, symmetric total process CPU/RAM and real native readiness/presentation also remain UNKNOWN.
 
-**NEXT:** integration selects/attests the exact already-built release pair or puts its missing artifacts in the next combined batch; perf supplies only the smallest proven driver admission correction and no-host regression fixtures. No changes to the completed `429e7dff` freeze.
+## Smallest proven next source correction
+
+Source commit **`d2881195d2d432420a89e7019dc40f0e0b37295c`**, on top of receipt/plan commit `ff64b10024aeef6f0b6c755ff56d6e2ec7af575e`. Callers searched before editing: main driver, its two check scripts and existing `artifact_receipt` callers. No `graft/` or repository `AGENTS.md` exists in this checkout; parent `/home/derpcat/AGENTS.md` is empty. No shared/native/engine source was changed.
+
+At `tools/cpu-audit-native.py:100`, v2 now requires `profile=release` immediately after the existing binary/path/source build receipt check and before state export/audition. The generic `live_host.artifact_receipt` still permits optimized CI for its other callers; it is unchanged. This scoped admission policy applies to profiled attribution cells too, so the compared artifact does not silently change when `--profile` is selected. It does not pretend to certify v1 build flags or identical workload/host behavior: those remain integration admission prerequisites above.
+
+`tools/check-cpu-audit-receipts.py:80–86` adds release-policy regression coverage for `ci`, `debug` and missing profile, both with and without `--profile`. Each attempt gets its own output directory, preventing an earlier receipt from accidentally satisfying a later rejection test. Existing successful cold-source fixture now uses release and still proves build/cache receipt preservation. All host, plugin, CLI and subprocess interactions are mocked.
+
+Observed RED before the one-line driver correction: the new test failed for both CI subcases (`AssertionError not raised`), reaching a mocked `MEASURED` observation. After correction:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 tools/check-cpu-audit-receipts.py`: **7/7 PASS**, including original six identity/cold-source tests.
+- `PYTHONDONTWRITEBYTECODE=1 python3 tools/cpu-audit-native.py --check`: **PASS**, original note/CC/pedal/schedule/block-start dispatch.
+- `PYTHONDONTWRITEBYTECODE=1 python3 tools/kontra-gate/check-live-host.py`: **PASS**, existing provenance/admission/state/load/no-host contracts.
+- `git diff --check`: **PASS**.
+
+No Rust, cargo/rustc/clippy, CPU host, native host, timed run, library loading, install/publication or frozen-reference mutation occurred. No new collector or profile attestation format was introduced. Python checks require normal execution, not `python -O`; build attestations must come from integration, not fabricated fixtures used as real receipts. Actual-host source/cold/page/profile admission remains **UNRUN**.
+
+**NEXT:** integration carries previous `21bcdde3` + `38322e95` package and this one-line source correction into a NEW paired batch, then selects/attests the exact already-built release pair or puts its missing release/profile artifacts in that combined batch. Reuse the three no-host commands above; no standalone compile cycle requested. No changes to completed `429e7dff`. Both-reference CPU AND RAM goal remains **UNACHIEVED**.
