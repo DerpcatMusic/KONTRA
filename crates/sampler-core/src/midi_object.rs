@@ -623,6 +623,11 @@ pub(crate) struct MidiJob {
     pub text: Option<Text>,
 }
 impl MidiObject {
+    /// Shared MIDI/NKA ID domain. Exhaustion rejects rather than reusing an ID.
+    pub fn allocate_async_id(&mut self) -> Result<i32, Error> {
+        self.next_job = self.next_job.checked_add(1).ok_or(Error::Capacity)?;
+        Ok(self.next_job)
+    }
     pub fn queue_initial(
         &mut self,
         slot: u8,
@@ -1112,36 +1117,7 @@ impl crate::Runtime {
             .position(|j| !j.initial && j.id == output.job && j.instance == output.instance)
             .ok_or(Error::StaleHandle)?;
         let job = generation.midi_object.jobs[index];
-        let callback = generation
-            .prepared
-            .signal_programs
-            .iter()
-            .find(|p| {
-                p.signal == MIDI_ASYNC_SIGNAL
-                    && generation.prepared.programs[p.program].script_instance == Some(job.instance)
-            })
-            .copied();
-        let context = callback.map(|p| {
-            if self.performance_state.current.is_empty() {
-                crate::behavior::PlanContext::Bare
-            } else {
-                crate::behavior::PlanContext::Control(crate::control::ControlEvent {
-                    performance: 0,
-                    origin: crate::ChannelAddress {
-                        protocol: crate::Protocol::Native,
-                        port: 0,
-                        group: 0,
-                        channel: 0,
-                    },
-                    channels: 1,
-                    stage: p.stage,
-                    interaction: crate::WidgetInteraction::default(),
-                })
-            }
-        });
-        if let Some(p) = callback {
-            self.validate_plan_context(plan, p.program, context.unwrap())?;
-        }
+        let callback = self.preflight_async_callback(plan, job.instance)?;
         let generation = self.plans.get_mut(plan.0).unwrap();
         if let Some(success) = job.completed {
             output.success = success;
@@ -1162,10 +1138,56 @@ impl crate::Runtime {
         }
         generation.midi_object.jobs.remove(index);
         generation.callbacks -= 1;
-        if let Some(p) = callback {
-            let id = self.admit_plan_context(plan, p.program, context.unwrap())?;
-            self.behaviors.get_mut(id.0).unwrap().async_result =
-                Some((output.job, i32::from(output.success)));
+        self.finish_async_callback(plan, output.job, output.success, callback)
+    }
+
+    pub(super) fn preflight_async_callback(
+        &mut self,
+        plan: crate::PlanId,
+        instance: crate::ScriptInstanceId,
+    ) -> Result<Option<(crate::SignalProgram, crate::behavior::PlanContext)>, Error> {
+        let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
+        let callback = generation
+            .prepared
+            .signal_programs
+            .iter()
+            .find(|p| {
+                p.signal == MIDI_ASYNC_SIGNAL
+                    && generation.prepared.programs[p.program].script_instance == Some(instance)
+            })
+            .copied();
+        let Some(p) = callback else {
+            return Ok(None);
+        };
+        let context = if self.performance_state.current.is_empty() {
+            crate::behavior::PlanContext::Bare
+        } else {
+            crate::behavior::PlanContext::Control(crate::control::ControlEvent {
+                performance: 0,
+                origin: crate::ChannelAddress {
+                    protocol: crate::Protocol::Native,
+                    port: 0,
+                    group: 0,
+                    channel: 0,
+                },
+                channels: 1,
+                stage: p.stage,
+                interaction: crate::WidgetInteraction::default(),
+            })
+        };
+        self.validate_plan_context(plan, p.program, context)?;
+        Ok(Some((p, context)))
+    }
+    pub(super) fn finish_async_callback(
+        &mut self,
+        plan: crate::PlanId,
+        job: i32,
+        success: bool,
+        callback: Option<(crate::SignalProgram, crate::behavior::PlanContext)>,
+    ) -> Result<(), Error> {
+        if let Some((p, context)) = callback {
+            let id = self.admit_plan_context(plan, p.program, context)?;
+            self.behaviors.get_mut(id.0).unwrap().async_result = Some((job, i32::from(success)));
             self.resume_behavior(id);
         }
         for index in 0..self.behaviors.slots.len() {
@@ -1173,7 +1195,7 @@ impl crate::Runtime {
                 continue;
             };
             if c.outcome.is_none()
-                && c.async_wait == Some(output.job)
+                && c.async_wait == Some(job)
                 && self.behavior_plan(c.owner) == Ok(plan)
             {
                 let id = crate::BehaviorId(self.behaviors.id(index));
