@@ -2513,6 +2513,102 @@ mod gesture_policy_tests {
         }
     }
     #[test]
+    fn default_mui_drag_keeps_shift_fine_and_authored_semantic_bounds() {
+        let mut ui = super::super::theme::ui();
+        let tree = || {
+            block(100., 100.).id("default-drag").a11y(A11y::Slider {
+                value: 0.4,
+                min: 0.,
+                max: 1.,
+            })
+        };
+        for (mods, expected) in [
+            (Mods::default(), 1.),
+            (
+                Mods {
+                    shift: true,
+                    ..Default::default()
+                },
+                FINE_DRAG,
+            ),
+        ] {
+            for (x, down) in [(10., false), (10., true), (90., true)] {
+                ui.frame(
+                    tree(),
+                    None,
+                    PointerInput {
+                        mods,
+                        pos: Some(Point::new(x, 10.)),
+                        buttons: if down {
+                            Buttons::PRIMARY
+                        } else {
+                            Buttons::default()
+                        },
+                        ..Default::default()
+                    },
+                    0.016,
+                )
+                .unwrap();
+            }
+            let mut value = 0.;
+            assert!(ui.drag("default-drag", &mut value, 0. ..=1., 80., false));
+            assert!((value - expected).abs() < 1e-9);
+            ui.frame(tree(), None, Input::default(), 0.016).unwrap();
+        }
+        assert!(ui.request_action(SemanticAction::set_value("default-drag", 5.)));
+        let mut value = 0.4;
+        assert!(ui.drag("default-drag", &mut value, 0. ..=1., 80., false));
+        assert_eq!(value, 1.);
+    }
+    #[test]
+    fn idle_numeric_controls_do_not_repeat_edits_or_grow_value_storage() {
+        for source in [ir::Source::Ksp { slot: 0 }, ir::Source::FalconLua] {
+            let range = ir::Range {
+                min: 0.,
+                max: 1.,
+                default: 0.2,
+                step: Some(0.01),
+            };
+            for kind in [
+                Kind::Knob {
+                    range,
+                    display: ir::Display::default(),
+                },
+                Kind::Slider {
+                    range,
+                    orientation: ir::Orientation::Horizontal,
+                },
+                Kind::ValueEdit {
+                    range,
+                    display: ir::Display::default(),
+                    arrows: true,
+                },
+            ] {
+                let mut f = Fixture::new(source, kind, 0.4, Some("Quadratic"));
+                for edited in [false, true] {
+                    if edited {
+                        f.open_entry("ir-0");
+                        f.replace_text("0.75");
+                        f.finish_entry(Key::Enter);
+                        assert_eq!(f.value(), 0.75);
+                        assert_eq!(f.input.edits.len(), 1);
+                        f.input.edits.clear();
+                    }
+                    let values = f.values.clone();
+                    let capacity = f.values.capacity();
+                    for _ in 0..120 {
+                        f.tick(Input::default());
+                        assert!(f.input.edits.is_empty(), "idle callback for {source:?}");
+                        assert!(f.input.typing.is_none());
+                        assert_eq!(f.values, values);
+                        assert_eq!(f.values.capacity(), capacity);
+                        assert!(!pointer_hidden(&f.ui));
+                    }
+                }
+            }
+        }
+    }
+    #[test]
     fn numeric_entry_escape_and_invalid_values_never_submit() {
         for source in [ir::Source::Ksp { slot: 0 }, ir::Source::FalconLua] {
             for (typed, key) in [
