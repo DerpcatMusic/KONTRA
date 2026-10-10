@@ -1656,7 +1656,8 @@ mod tests {
         std::fs::write(
             dir.path().join("Resources/native_ui/main.nui"),
             b"return function() return nil end",
-        ).unwrap();
+        )
+        .unwrap();
         let package = Arc::new(Package::load(&dir.path().join("fixture.nki")).unwrap());
         let session = Session::new(package, "main", vec![]).unwrap();
         let graph: Table = session.lua().load(r#"
@@ -1669,15 +1670,60 @@ mod tests {
         let mut ui = super::super::theme::ui();
         let mut hovered = HashSet::new();
         events(&mut ui, &graph, &session, 0, 1., &mut hovered).unwrap();
-        session.lua().gc_collect().unwrap();
-        session.lua().gc_stop();
-        let before = session.lua().used_memory();
+        let before = session.event_payload_count();
         for _ in 0..32 {
             events(&mut ui, &graph, &session, 0, 1., &mut hovered).unwrap();
         }
-        let growth = session.lua().used_memory().saturating_sub(before);
-        assert!(growth < 16384, "inactive graph retained {growth} bytes of event garbage with collection stopped");
-        session.lua().gc_restart();
+        assert_eq!(session.event_payload_count(), before);
+    }
+
+    #[test]
+    fn triggered_native_handlers_share_one_payload_and_keep_callback_order() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("Resources/native_ui")).unwrap();
+        std::fs::write(
+            dir.path().join("Resources/native_ui/main.nui"),
+            b"return function() return nil end",
+        )
+        .unwrap();
+        let package = Arc::new(Package::load(&dir.path().join("fixture.nki")).unwrap());
+        let session = Session::new(package, "main", vec![]).unwrap();
+        let graph: Table = session
+            .lua()
+            .load(
+                r#"
+            calls=0
+            return {kind='Rectangle',path='root',props={},children={},modifiers={
+                {name='on_hover_gesture',value={
+                    enter=function(e) e.marker=42; calls=calls+1 end,
+                    update=function(e) assert(e.marker==42); calls=calls+1 end
+                }},
+                {name='on_hover_gesture',value={
+                    update=function(e) assert(e.marker==42); calls=calls+1 end
+                }}
+            }}
+        "#,
+            )
+            .eval()
+            .unwrap();
+        let mut ui = super::super::theme::ui();
+        ui.frame(
+            block(80., 24.).id("nui-0-root").tracks_pointer(),
+            None,
+            Input {
+                pointer: PointerInput {
+                    pos: Some(Point::new(5., 5.)),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            1. / 60.,
+        )
+        .unwrap();
+        assert!(ui.get("nui-0-root").hovered);
+        events(&mut ui, &graph, &session, 0, 1., &mut HashSet::new()).unwrap();
+        assert_eq!(session.event_payload_count(), 1);
+        assert_eq!(session.lua().globals().get::<i32>("calls").unwrap(), 3);
     }
 
     #[test]
