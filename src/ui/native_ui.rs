@@ -599,8 +599,33 @@ fn flexibility(node: &Table) -> (bool, bool) {
         return (flags & 1 != 0, flags & 2 != 0);
     }
     let kind = string(node, "kind");
+    let mut flex = intrinsic_flexibility(node, &kind);
+    for m in tables(node, "modifiers").unwrap_or_default() {
+        if string(&m, "name") == "frame" {
+            if let Ok(t) = m.get::<Table>("value") {
+                if number(&t, "width").is_some() {
+                    flex.0 = false;
+                } else if number(&t, "max_width").is_some_and(f64::is_finite) {
+                    flex.0 = false;
+                } else if number(&t, "max_width").is_some_and(|n| n.is_infinite()) {
+                    flex.0 = true;
+                }
+                if number(&t, "height").is_some() {
+                    flex.1 = false;
+                } else if number(&t, "max_height").is_some_and(f64::is_finite) {
+                    flex.1 = false;
+                } else if number(&t, "max_height").is_some_and(|n| n.is_infinite()) {
+                    flex.1 = true;
+                }
+            }
+        }
+    }
+    let _ = node.set("__host_flex", u8::from(flex.0) | (u8::from(flex.1) << 1));
+    flex
+}
+fn intrinsic_flexibility(node: &Table, kind: &str) -> (bool, bool) {
     let children = tables(node, "children").unwrap_or_default();
-    let mut flex = match kind.as_str() {
+    match kind {
         "ZStack" | "Group" | "HStack" | "VStack" => {
             let mut f = (false, false);
             for child in children {
@@ -633,29 +658,7 @@ fn flexibility(node: &Table) -> (bool, bool) {
             f
         }
         _ => (false, false),
-    };
-    for m in tables(node, "modifiers").unwrap_or_default() {
-        if string(&m, "name") == "frame" {
-            if let Ok(t) = m.get::<Table>("value") {
-                if number(&t, "width").is_some() {
-                    flex.0 = false;
-                } else if number(&t, "max_width").is_some_and(f64::is_finite) {
-                    flex.0 = false;
-                } else if number(&t, "max_width").is_some_and(|n| n.is_infinite()) {
-                    flex.0 = true;
-                }
-                if number(&t, "height").is_some() {
-                    flex.1 = false;
-                } else if number(&t, "max_height").is_some_and(f64::is_finite) {
-                    flex.1 = false;
-                } else if number(&t, "max_height").is_some_and(|n| n.is_infinite()) {
-                    flex.1 = true;
-                }
-            }
-        }
     }
-    let _ = node.set("__host_flex", u8::from(flex.0) | (u8::from(flex.1) << 1));
-    flex
 }
 fn expand(mut el: El, flex: (bool, bool)) -> El {
     if flex.0 {
@@ -1033,12 +1036,7 @@ fn draw_base(
         other => anyhow::bail!("Unsupported NativeUI primitive {other:?}"),
     }
     .shrink(0);
-    let base = session.lua().create_table()?;
-    base.set("kind", kind.clone())?;
-    base.set("props", props.clone())?;
-    base.set("children", node.get::<Table>("children")?)?;
-    base.set("modifiers", session.lua().create_table()?)?;
-    let mut flex = flexibility(&base);
+    let mut flex = intrinsic_flexibility(node, &kind);
     if matches!(kind.as_str(), "Canvas" | "Rectangle")
         || (kind == "Image" && boolean(&val(&props, "resizable")))
     {
@@ -1597,6 +1595,29 @@ mod tests {
             "the seed retains authored scalars; only the local Session overlays telemetry"
         );
     }
+    #[test]
+    fn intrinsic_flexibility_retains_child_frames_without_allocating_a_wrapper() {
+        let lua = mlua::Lua::new();
+        let make: Function = lua.load(r#"
+            return function(kind, axis)
+                local child_frame = {[axis]=5}
+                local child = {kind='Spacer',props={},children={},modifiers={{name='frame',value=child_frame}}}
+                return {kind=kind,props={},children={child},modifiers={{name='frame',value={width=30,height=10}}}}
+            end
+        "#).eval().unwrap();
+        for (kind, axis, expected) in [
+            ("HStack", "height", (true, false)),
+            ("VStack", "width", (false, true)),
+        ] {
+            let node: Table = make.call((kind, axis)).unwrap();
+            assert_eq!(intrinsic_flexibility(&node, kind), expected);
+            assert_eq!(flexibility(&node), (false, false));
+            assert_eq!(intrinsic_flexibility(&node, kind), expected,
+                "cached outer-frame flags must not alter the primitive's intrinsic layout");
+            assert_eq!(tables(&node, "modifiers").unwrap().len(), 1);
+        }
+    }
+
     #[test]
     fn editor_memory_repeated_layout_queries_do_not_rewalk_the_subtree() {
         let lua = mlua::Lua::new();
