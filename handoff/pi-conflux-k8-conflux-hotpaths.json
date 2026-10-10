@@ -1,0 +1,117 @@
+{
+  "schema_version": 1,
+  "slug": "conflux-hotpaths",
+  "base_commit": "fe86caf4256121d0b5a0ef3eff5964d2aa61aa07",
+  "branch": "pi/conflux-k8-conflux-hotpaths-fe86caf4",
+  "inspection_worktree": "/home/derpcat/.t3/worktrees/KONTAKTO/pi-conflux-k8-conflux-hotpaths",
+  "thread_binding_changed": false,
+  "scope": "read-only production/test source; report-only commit",
+  "validation": "NOT_RUN",
+  "profiling": "NOT_RUN",
+  "cause_established": false,
+  "new_compatibility_claims": false,
+  "instructions_read": [
+    "/mnt/Windows11/DEV_PROJECTS/Repos/KONTAKTO/AGENTS.md",
+    "/home/derpcat/ponytail/skills/ponytail/SKILL.md"
+  ],
+  "graft_in_checkout": false,
+  "source_files_changed": [],
+  "test_files_changed": [],
+  "report_files": [
+    "handoff/pi-conflux-k8-conflux-hotpaths.md",
+    "handoff/pi-conflux-k8-conflux-hotpaths.json"
+  ],
+  "lua_scope": {
+    "uvi_only": false,
+    "kontakt_behavior": "KSP",
+    "kontakt_native_frontend": "editor-owned mlua/Luau session for legacy .nui requested through KSP load_native_ui",
+    "dispatch_condition": "Original with native_ui entry, not Vector IR",
+    "source_consumers": [
+      "crates/sampler-ksp/src/ui.rs:272-284",
+      "src/ui/part.rs:38-53,465-500",
+      "src/ui/native_runtime.rs:121-176,640-655,860-873",
+      "src/ui/pictures.rs:47-91",
+      "src/ui/v2_tests.rs:3790-3859"
+    ],
+    "runtime_confirmation_this_review": "NOT_RUN"
+  },
+  "ranked_measurement_candidates": [
+    {
+      "rank": 1,
+      "candidate": "Original NativeUI graph rebuild and repeated cross-source projection",
+      "source": ["src/ui/part.rs:467-498", "src/ui/native_ui.rs:403-435", "src/ui/native_runtime.rs:814-873"],
+      "existing_counters": ["native_materializations", "native_widgets", "typed_calls", "meter_calls", "face_updates", "face_noops"],
+      "existing_native_metrics": ["advance_ns", "new_scenes"],
+      "additional_tap_locations_for_root_only": ["State::view events/render/authored_size/draw boundaries", "Session::graph_work", "Session::update_view controls visited and bridge lock wait/hold"],
+      "falsifiable_prediction": "Equal-geometry Original build cost tracks graph work and patched-source materializations despite flat publication_changes; low native advance would deprioritize it"
+    },
+    {
+      "rank": 2,
+      "candidate": "Full typed-cell capture, presentation clones and product Shared lock contention",
+      "source": ["src/sound/v2.rs:246-270,781-803,907-916,977-1012", "crates/sampler-core/src/widget.rs:241-296", "src/plugin.rs:620-714,1393-1400,2969-2997,3207-3215", "src/ui/part.rs:435-456,483-493"],
+      "existing_counters": ["readback_calls", "readback_busy", "readback_cells", "readback_changes", "typed_calls", "meter_calls", "worker_ticks"],
+      "additional_tap_locations_for_root_only": ["capture batch length/bytes and submit-reply timestamps", "ControlIngress::values cloned bytes", "ingress/controls/meters/scripts/view lock wait and hold", "whole typed sweep duration"],
+      "falsifiable_prediction": "Costs scale with actual non-scalar cell count and snapshot multiplicity, or lock tails align with worker work; small counts and negligible waits deprioritize it",
+      "caveat": "native shared_lock_wait_ns is mui host Shared, not the product's individual locks; scalar mirrors try_lock and are poll/revision-driven"
+    },
+    {
+      "rank": 3,
+      "candidate": "Whole KSP interface regeneration before sparse publication and linear Request/widget searches",
+      "source": ["src/sound/mod.rs:298-316", "src/plugin.rs:1022-1046,1715-1801", "crates/sampler-ksp/src/ui.rs:272-297,682-730", "crates/sampler-ksp/src/lib.rs:300-388", "crates/sampler-ksp/src/waveform.rs:18-36", "crates/sampler-core/src/control/transfer.rs:87-122,152-235"],
+      "existing_counters": ["publication_calls", "publication_changes"],
+      "existing_fixture_fields": ["publication_ms", "changed_publication_ms", "noop_publication_ms"],
+      "additional_tap_locations_for_root_only": ["ScriptUi::interface separately from PartView::publish_interface", "Request/widget counts per script", "effect services/counts", "control queue submit-apply-reply latency and rejections"],
+      "falsifiable_prediction": "Metadata callback-heavy lag tracks regeneration; low publication cost/rate rules it out for otherwise static dragging",
+      "caveat": "Load tasks, pointer samples, final-state model requests and acknowledged control FIFO have distinct coalescing semantics; do not blindly deduplicate callbacks"
+    },
+    {
+      "rank": 4,
+      "candidate": "Watch/worker cadence, queued event builds and native present scheduling",
+      "source": ["src/ui/mod.rs:253-399", "vendor/mui/src/host.rs:511-529,553-710", "vendor/mui-baseview/src/lib.rs:617-795,855-863"],
+      "existing_native_metrics": ["callback_interval_ns", "callback_total_ns", "shared_lock_wait_ns", "advance_ns", "scene_clone_ns", "resize_ns", "present_call_ns"],
+      "existing_driver_profiler_not_automatically_enabled": ["ViewBuild", "Resolve", "input dispatch/coalescing", "idle/throttle", "layout work/cache counters"],
+      "additional_tap_locations_for_root_only": ["authoritative callback to publication to Watch observation timestamps"],
+      "falsifiable_prediction": "High callback interval or present tails with low advance indicates scheduling/presentation rather than UI build CPU",
+      "caveat": "100 ms revision sampling is not a universal local knob delay; present submission is not GPU completion or input-to-photon"
+    }
+  ],
+  "minimal_existing_harness": {
+    "status": "NOT_RUN by reviewer; root reported values[&id] failure before metrics; profiler owner correcting fixture",
+    "current_blocker": "src/ui/loop_audit.rs:201 indexes the selected control in Values without proving the rendered map contains it; mismatch cause not reproduced here",
+    "repeat_precondition": "root validates profiler-owner repair and records repair commit/artifact; do not overlap fixture edit",
+    "binary": "$ROOT_VALIDATED_KONTAKTO_TEST_BIN (validated shots-enabled libtest; record exact artifact/source identity)",
+    "environment": {
+      "KONTRA_LOOP_PATCH": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Instruments/Conflux.nki",
+      "KONTRA_LOOP_CACHE": "$OUT (root-selected private new run directory)"
+    },
+    "argv": ["$ROOT_VALIDATED_KONTAKTO_TEST_BIN", "--exact", "ui::loop_audit::loop_audit_conflux", "--ignored", "--nocapture", "--test-threads=1"],
+    "source": "src/ui/loop_audit.rs:94-352",
+    "output": "$OUT/conflux.json plus per-face PNGs and captured stdout",
+    "repeat": "three serial runs in separate directories with identical artifact/fixture/geometry/cache policy; retain outliers",
+    "measures": ["key-0 load", "full/changed/no-op publication", "IR Bitmap/Vector 1000x600 build and fresh-resource CPU paint", "direct runtime callbacks/effects/outcomes"],
+    "does_not_measure": ["native Original .nui frontend", "production asset-worker cost", "ControlIngress capture and Shared contention", "worker/Watch latency", "GPU", "native host scheduling/presentation"]
+  },
+  "full_editor_measurement_blocker": {
+    "fixture": "ui::viewmodel_tests::audit_ui_real_frames",
+    "source": "src/ui/viewmodel_tests.rs:69-237",
+    "status": "existing fixture; not a certified repeatable NativeUI baseline at this base",
+    "blockers": ["zones.clear bypasses retain_zones source-map invariant", "unconditional IR canvas surface unwrap is not guaranteed for NativeUI Original", "fixed warmup without native readiness assertion"],
+    "root_only_minimal_repairs": ["preserve source-map invariants", "identify actual native/IR canvas", "bounded resource/session readiness and reject loading/fallback/errors"],
+    "not_edited_here": true
+  },
+  "existing_real_window_taps": {
+    "enable_before_construction": "KONTRA_NATIVE_UI_TIMING=1",
+    "native_capture": "up to 4096 samples, ten-second primary-drag window, off-thread summary",
+    "activity_export": "__kontra_clap_ui_activity(live_plugin, 1, out, 20) on host main thread before destruction",
+    "source": ["src/diagnostics.rs:410-473", "src/plugin/host_probe.rs:72-114", "src/plugin/ui_activity.rs:6-76", "vendor/mui-baseview/src/timing.rs:7-85"],
+    "limits": "timing is native callback wall time, not compositor/display cadence or GPU completion; product lock subdivisions and Driver profiler phases need a separate root-owned hookup"
+  },
+  "unresolved_limits": [
+    "No new performance samples or established lag cause",
+    "Actual Conflux arrays/lengths, Request counts, selected native entry and geometry not measured",
+    "Full-editor native measurement fixture needs root-owned repair before performance acceptance",
+    "Historical W1 receipts are not current experimental0.3.430 receipts",
+    "No serialized law, codec, ordinal, coefficient or unsupported-data admission change",
+    "Release fix spans b21a424a, 5d9ea1e and eff5198d untouched"
+  ]
+}
