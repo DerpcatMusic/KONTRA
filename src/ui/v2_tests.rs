@@ -2209,9 +2209,9 @@ fn w10_scripted_uvi_strips_positions_and_callback_paint_authored_pixels() {
       require('uvi.ChordRec')
       setSize(320,200); setHeight(160)
       local p=Panel{'Root',bounds={10,20,300,120}}
-      local h=p:Knob{'Horizontal',0,0,1,bounds={20,0,32,32},showLabel=false,showValue=false}
+      local h=Knob{'Horizontal',0,0,1,parent=p,x=1,y=2,width=3,height=4,size={10,11},position={3,4},pos={5,6},bounds={20,0,32,32},showLabel=false,showValue=false}
       h:setStripImage('h.png',4,true)
-      local v=p:Slider{'Vertical',0,0,1,false,true,bounds={80,0,32,32},showLabel=false,showValue=false}
+      local v=Slider{'Vertical',0,0,1,false,true,parent=p,x=1,y=2,width=3,height=4,size={10,11},position={3,4},pos={5,6},bounds={80,0,32,32},showLabel=false,showValue=false}
       v:setStripImage('v.png',4,false)
       local label=p:Label{'State',bounds={130,0,150,32},text='Ready'}
       local button=p:Button{'Fire',bounds={20,80,90,25}}
