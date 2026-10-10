@@ -137,3 +137,30 @@ fn authored_tree_above_4096_nodes_keeps_every_widget() {
     assert_eq!(face.draw_order(PageRef(0)).len(), 6481);
     assert!(host.findings().is_empty(), "{:?}", host.findings());
 }
+
+#[test]
+fn invalid_geometry_is_rejected_before_snapshot_publication() {
+    for mutation in [
+        "a.x=0/0",
+        "a.y=math.huge",
+        "a.width=-1",
+        "a.height=math.huge",
+        "setSize(0/0,100)",
+        "setSize(100,-1)",
+        "a.x=1e308;b.x=1e308",
+    ] {
+        let xml=format!("<UVI4><Program><EventProcessors><ScriptProcessor><script><![CDATA[a=Panel{{'a'}};b=a:Panel{{'b'}};{mutation}]]></script></ScriptProcessor></EventProcessors></Program></UVI4>");
+        let host = ScriptHost::new(&xml, (), Config::default()).unwrap();
+        let face = host.interface();
+        assert!(
+            face.widgets.is_empty(),
+            "invalid geometry published: {mutation}"
+        );
+        assert!(
+            host.findings()
+                .iter()
+                .any(|f| f.feature == "lua UI snapshot"),
+            "missing diagnostic: {mutation}"
+        );
+    }
+}
