@@ -399,7 +399,7 @@ fn numeric_parameter_ids_name_lookup_and_real_connections_share_identity() {
       assert(e:getParameter(d.id) == d.default)
       assert(#e:getParameterConnections(d.id) == 1)
       assert(e:getParameterConnections(d.id)[1]:getParameter('Ratio') == 0.3)
-      assert(#e:getParameterConnections('Bypass') == 0)
+      assert(e:getParameterConnections('Bypass') == nil)
     </script></ScriptProcessor></EventProcessors></Program></UVI4>"#;
     let h = ScriptHost::new(xml, (), Config::default()).unwrap();
     assert!(
@@ -407,6 +407,48 @@ fn numeric_parameter_ids_name_lookup_and_real_connections_share_identity() {
         "{:?}",
         h.findings()
     );
+}
+
+#[test]
+fn imported_connection_queries_return_nil_for_unconnected_and_unknown_parameters() {
+    let mut scripts = sampler_uvi::script::Scripts::default();
+    scripts.insert(
+        "Scripts/connections.lua",
+        r#"return function(e)
+          local connected=e:getParameterConnections('Freq')
+          assert(#connected==2 and connected[1]==e.connections[1] and connected[2]==e.connections[3])
+          assert(e:getParameterConnections('Bypass')==nil)
+          assert(e:getParameterConnections('Missing')==nil)
+          for _,id in ipairs({0,-1,0.5,1000000,math.huge}) do
+            assert(e:getParameterConnections(id)==nil)
+          end
+          if rawget(e,'parameterDefinitions') then
+            local defs=e.parameterDefinitions
+            assert(e:getParameterConnections(defs.Bypass.id)==nil)
+            local byId=e:getParameterConnections(defs.Freq.id)
+            assert(#byId==2 and byId[1]==connected[1] and byId[2]==connected[2])
+          end
+        end"#
+            .into(),
+    );
+    let xml = r#"<UVI4><Program><Inserts><OnePole><Connections>
+      <SignalConnection Destination='Freq' Ratio='0.3'/>
+      <SignalConnection Destination='Missing' Ratio='0.4'/>
+      <SignalConnection Destination='Freq' Ratio='0.5'/>
+    </Connections></OnePole></Inserts><EventProcessors><ScriptProcessor><script>
+      local check=require('connections')
+      local e=Program.inserts[1]
+      check(e); assert(rawget(e,'parameterDefinitions')==nil)
+      local defs=e.parameterDefinitions
+      check(e)
+      function onController(event) check(e); completed=true end
+    </script></ScriptProcessor></EventProcessors></Program></UVI4>"#;
+    let mut host = ScriptHost::new(xml, scripts, Config::default()).unwrap();
+    host.controller(1, 64, 0);
+    assert_eq!(host.global_text("completed"), "true");
+    assert!(host.findings().is_empty(), "{:?}", host.findings());
+    assert!(host.take_commands().is_empty());
+    assert!(host.insert_overrides().is_empty());
 }
 
 #[test]
