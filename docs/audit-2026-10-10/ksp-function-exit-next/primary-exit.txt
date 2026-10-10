@@ -1,0 +1,7 @@
+exit exit Immediately stops a callback or exits a function. Remarks exit is a very strong command. Be careful when using it, especially when dealing with larger scripts. If used within a function, exit only exits the function, but not the entire callback. Examples on note
+    if (not in_range($EVENT_NOTE, 60, 71))
+        exit
+    end if
+
+    { from here on, only notes between C3 to B3 will be processed }
+end on Useful for quickly setting up key ranges to be affected by the script. See Also wait() stop_wait()
