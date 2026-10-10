@@ -56,6 +56,7 @@ fn runtime(threads: usize, modulated: bool) -> Runtime {
     let plan = if modulated {
         // Envelope-driven level and cutoff, and an LFO on pitch, per voice.
         let program = ModProgram {
+            controls: vec![],
             sources: vec![
                 ModSource::Envelope(Envelope::new(300, 0, 200, 0.6, 400).unwrap()),
                 ModSource::Lfo(Lfo {
