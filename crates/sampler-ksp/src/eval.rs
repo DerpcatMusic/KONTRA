@@ -439,9 +439,8 @@ impl Eval<'_> {
                 self.depth += 1;
                 let flow = self.block(&self.hir.functions[f.0 as usize].body);
                 self.depth -= 1;
-                if let Flow::Exit = flow? {
-                    return Ok(Flow::Exit);
-                }
+                // Function exit resumes its caller; errors still propagate after depth restoration.
+                flow?;
             }
             StmtKind::Builtin(Builtin::Exit, _) => return Ok(Flow::Exit),
             StmtKind::Builtin(Builtin::Continue, _) => return Ok(Flow::Continue),
