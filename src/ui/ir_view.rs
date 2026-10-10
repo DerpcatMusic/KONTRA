@@ -2188,8 +2188,8 @@ mod gesture_policy_tests {
         }
         fn pointer(&mut self, at: Point, down: bool, mods: Mods) {
             self.tick(Input {
-                mods,
                 pointer: PointerInput {
+                    mods,
                     pos: Some(at),
                     buttons: if down {
                         Buttons::PRIMARY
