@@ -1029,6 +1029,7 @@ mod tests {
             .map(|_| Pcm::streamed(48000, 64).unwrap())
             .collect();
         let streamer = Streamer {
+            pinned_wavetables: HashSet::new(),
             sources: Arc::new(
                 assets
                     .iter()
