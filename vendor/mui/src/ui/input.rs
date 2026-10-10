@@ -603,14 +603,36 @@ impl Ui {
         vertical: bool,
     ) -> bool {
         let id: Id = id.into();
+        let fine = self.get(id.as_str()).mods.shift;
+        self.drag_with_fine(id, value, range, px, vertical, fine)
+    }
+
+    /// A validated semantic value in the surface's advertised units.
+    pub fn requested_value(&self, id: impl Into<Id>) -> Option<f64> {
+        let id: Id = id.into();
+        self.actions.iter().rev().find_map(|a| match a {
+            SemanticAction::SetValue { id: target, value } if target == id.as_str() => Some(*value),
+            _ => None,
+        })
+    }
+
+    /// The same drag engine with a caller-selected fine modifier.
+    #[allow(clippy::too_many_arguments)]
+    pub fn drag_with_fine(
+        &self,
+        id: impl Into<Id>,
+        value: &mut f64,
+        range: std::ops::RangeInclusive<f64>,
+        px: f64,
+        vertical: bool,
+        fine: bool,
+    ) -> bool {
+        let id: Id = id.into();
         let id = id.as_str();
         if !(range.start().is_finite() && range.end().is_finite()) {
             return false;
         }
-        if let Some(value_from_action) = self.actions.iter().rev().find_map(|a| match a {
-            SemanticAction::SetValue { id: target, value } if target == id => Some(*value),
-            _ => None,
-        }) {
+        if let Some(value_from_action) = self.requested_value(Id::runtime(id)) {
             let next = value_from_action.clamp(
                 range.start().min(*range.end()),
                 range.start().max(*range.end()),
@@ -623,8 +645,8 @@ impl Ui {
         if !r.dragged || !px.is_finite() || px <= 0.0 || !value.is_finite() {
             return false;
         }
-        let delta = r.drag_fine(FINE_DRAG);
-        let d = if vertical { -delta.y } else { delta.x };
+        let delta = r.drag_delta;
+        let d = if vertical { -delta.y } else { delta.x } * if fine { FINE_DRAG } else { 1. };
         if !d.is_finite() {
             return false;
         }
