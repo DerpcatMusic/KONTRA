@@ -819,16 +819,6 @@ pub(super) fn widget_state(
             false,
         )
     };
-    let number = |x: f64, d: &ir::Display| {
-        let x = x / if d.ratio == 0. { 1. } else { d.ratio };
-        let x = if x.fract() == 0. {
-            format!("{x}")
-        } else {
-            format!("{x:.2}")
-        };
-        format!("{x} {}", d.unit).trim().to_owned()
-    };
-
     let face_el: El = match &wd.kind {
         Kind::Knob { range, .. } | Kind::Slider { range, .. } => {
             let (vertical, travel) = gesture(wd, scale);
@@ -861,22 +851,46 @@ pub(super) fn widget_state(
             let lift = ui.state(id.as_str()).hover.max(if held { 1. } else { 0. }) as f32;
             let unit = |x: f64| mapped(range, wd.mapper.as_deref(), x, true);
             match strip {
-                Some(p) => art(
-                    face,
-                    wd.image(Use::Strip).unwrap(),
-                    p,
-                    fixed.unwrap_or_else(|| frame(unit(v), 0., 1., p.len())),
-                    w,
-                    h,
-                    scale,
-                ),
+                Some(p) => {
+                    let picture = art(
+                        face,
+                        wd.image(Use::Strip).unwrap(),
+                        p,
+                        fixed.unwrap_or_else(|| frame(unit(v), 0., 1., p.len())),
+                        w,
+                        h,
+                        scale,
+                    );
+                    if face.source == ir::Source::FalconLua
+                        && let Kind::Knob { display, .. } = &wd.kind
+                    {
+                        // v1 captions overlay the full authored skin frame.
+                        let mut captions = vec![spacer()];
+                        if !wd.hide.title && !wd.text.is_empty() {
+                            captions.push(words(wd.text.clone()));
+                        }
+                        if !wd.hide.value {
+                            captions.push(words(wd.value_text.clone().unwrap_or_else(|| {
+                                display.format_value(v, range.step == Some(1.), face.source)
+                            })));
+                        }
+                        stack![
+                            picture.size(w, h),
+                            col(captions).gap(0).align(Align::Center).size(w, h)
+                        ]
+                    } else {
+                        picture
+                    }
+                }
                 // A slider about as tall as wide was drawn as a knob by its strip.
                 // Kontakt's stock knob: its name over the dial, the value under it.
                 None if matches!(wd.kind, Kind::Knob { .. }) => {
                     let value = match (&wd.kind, &wd.value_text) {
                         // The script's own label, even an empty one, replaces the number.
                         (_, Some(t)) => t.clone(),
-                        (Kind::Knob { display, .. }, _) => number(v, display),
+                        (Kind::Knob { display, .. }, _) => {
+                            display.format_value(v, range.step == Some(1.), face.source)
+                        }
                         _ => String::new(),
                     };
                     let mut parts = Vec::new();
@@ -1101,7 +1115,11 @@ pub(super) fn widget_state(
                         wd.value_text
                             .as_deref()
                             .filter(|t| !t.is_empty())
-                            .unwrap_or(&number(v, display)),
+                            .unwrap_or(&display.format_value(
+                                v,
+                                range.step == Some(1.),
+                                face.source,
+                            )),
                         style,
                         assets,
                         bitmap,
