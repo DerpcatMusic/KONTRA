@@ -57,6 +57,42 @@ fn pixels_state(face: &Interface, input: &mut InputState) -> Vec<u8> {
 }
 
 #[test]
+fn uvi_authored_fractional_bounds_reach_the_rendered_surface() {
+    let xml = "<UVI4><Program><EventProcessors><ScriptProcessor><script><![CDATA[
+        setSize(160.5,120.5)
+        local b=Button('B')
+        b.bounds={10.25,20.5,60.75,30.125}
+    ]]></script></ScriptProcessor></EventProcessors></Program></UVI4>";
+    let host = sampler_uvi::script::ScriptHost::new(xml, (), Default::default()).unwrap();
+    let face = resolved(&host.interface());
+    let mut ui = super::super::theme::ui();
+    let mut values = Values::default();
+    let assets = Assets::default();
+    for _ in 0..3 {
+        let root = view(
+            &mut ui,
+            &face,
+            PageRef(0),
+            &assets,
+            Presentation::Bitmap,
+            1.,
+            &mut values,
+        );
+        ui.frame(
+            root,
+            Some(Size::new(200., 180.)),
+            Input::default(),
+            1. / 60.,
+        )
+        .unwrap();
+    }
+    let frame = ui.scene().unwrap().surface("ir-0").unwrap().frame;
+    let actual = [frame.x, frame.y, frame.size.width, frame.size.height];
+    println!("UVI_FRACTIONAL_FRAME {actual:?}");
+    assert_eq!(actual, [10.25, 20.5, 60.75, 30.125]);
+}
+
+#[test]
 fn menu_keeps_authored_selected_caption_when_item_is_hidden() {
     let paint = |visible: i32, value: i32| {
         let source = format!(
