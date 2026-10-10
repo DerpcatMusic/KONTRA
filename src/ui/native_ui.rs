@@ -26,7 +26,6 @@ struct Local {
     graph: Option<Table>,
     hovered: HashSet<String>,
     drafts: HashMap<String, String>,
-    retention: PrimitiveRetention,
 }
 thread_local! {static LOCAL:std::cell::RefCell<HashMap<u64,Local>>=std::cell::RefCell::new(HashMap::new());}
 #[cfg(all(test, feature = "shots"))]
@@ -403,7 +402,6 @@ impl State {
                         graph: None,
                         hovered: HashSet::new(),
                         drafts: HashMap::new(),
-                        retention: PrimitiveRetention::default(),
                     },
                 );
             }
@@ -431,7 +429,7 @@ impl State {
             let _submission = self.activity.as_ref().map(|a| a.span(Phase::UiAuthoredLayoutSubmission));
             let authored = authored_size(&graph);
             self.size = authored;
-            let el = draw_retained(
+            let el = draw_live(
                 ui,
                 &graph,
                 package,
@@ -440,7 +438,6 @@ impl State {
                 scale,
                 authored,
                 &mut local.drafts,
-                &mut local.retention,
             )?;
             local.graph = Some(graph);
             #[cfg(all(test, feature = "shots"))]
@@ -1024,6 +1021,16 @@ impl PrimitiveRetention {
         self.next
     }
 }
+// The proof prepass costs 13.7 ms/frame on Conflux and saves no lowering work.
+// Keep fresh graph lowering until primitive retention demonstrates a net gain.
+fn draw_live(
+    ui: &mut Ui, node: &Table, package: &Arc<Package>, session: &Session,
+    slot: usize, s: f64, authored: Size, drafts: &mut HashMap<String, String>,
+) -> anyhow::Result<El> {
+    draw_impl(ui, node, package, session, slot, s, Style::default(), drafts,
+        None, None, PrimitivePlacement::Root(authored), true)
+}
+#[cfg(test)]
 fn draw_retained(
     ui: &mut Ui, node: &Table, package: &Arc<Package>, session: &Session,
     slot: usize, s: f64, authored: Size,
@@ -1971,6 +1978,24 @@ mod tests {
         primitive_tick(&mut ui, &graph, &package, &session, 1., Some(&mut retention), 1);
     }
 
+    #[test]
+    fn live_native_graph_skips_the_costly_proof_prepass_and_preserves_pixels() {
+        let (package, mut session) = primitive_fixture("local ui=require('native_ui'); return function() return @ui.Text{text='live'} end");
+        let activity = Arc::new(Activity::new(true));
+        session.set_activity(Some(activity.clone()));
+        let graph = session.render().unwrap();
+        let (mut live, mut eager) = primitive_uis();
+        for shell in 0..2 {
+            let authored = authored_size(&graph);
+            let el = draw_live(&mut live, &graph, &package, &session, 11, 1., authored, &mut HashMap::new()).unwrap();
+            let tree = stack([el, text(shell.to_string()).at(48., 48.)]).w(64.).h(64.);
+            primitive_frame(&mut live, tree).unwrap();
+            primitive_tick(&mut eager, &graph, &package, &session, 1., None, shell);
+            primitive_oracle(&live, &eager);
+        }
+        assert_eq!(activity.phase_snapshot().unwrap()[Phase::UiNativeRetentionAnalysis as usize * 3], 0);
+    }
+
     fn primitive_fixture(source: &str) -> (Arc<Package>, Session) {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("Resources/native_ui")).unwrap();
@@ -2118,7 +2143,6 @@ mod tests {
                 assert_eq!(sequence(&globals), sequence(&expected));
                 assert_eq!(number(&globals.get::<Table>("sibling_ink").unwrap(), "r"),
                     number(&expected.get::<Table>("sibling_ink").unwrap(), "r"));
-                assert!(local.retention.keys.is_empty(), "metatable graph stays eager");
             });
         }
         let id = state.id;
@@ -2180,8 +2204,6 @@ mod tests {
                 let local = &locals[&state.id];
                 let globals = local.session.lua().globals();
                 let expected = eager_session.lua().globals();
-                if step <= 2 { assert_eq!(local.retention.lowered, 1, "unfocused sibling warms once"); }
-                else { assert!(local.retention.keys.is_empty(), "active edit must invalidate sibling proof"); }
                 for key in ["change_count", "accept_count", "change_capture", "accept_capture"] {
                     assert_eq!(globals.get::<usize>(key).unwrap_or(0), expected.get::<usize>(key).unwrap_or(0), "{key}, step={step}");
                 }
@@ -2201,7 +2223,7 @@ mod tests {
     }
 
     #[test]
-    fn native_state_replacement_and_removed_subtrees_do_not_reuse_stale_memos() {
+    fn native_state_replacement_and_removed_subtrees_keep_fresh_projection() {
         let (package, _session) = primitive_fixture(r#"
             local ui=require('native_ui')
             return function() return @ui.ZStack {
@@ -2218,7 +2240,7 @@ mod tests {
             ui.frame(el, Some(Size::new(64., 64.)), Input::default(), 1. / 60.).unwrap();
         };
         tick(&mut state, &mut ui);
-        for (caption, absent, scopes, lowered) in [("Old", false, 1, 2), ("Old", true, 0, 2), ("Old", false, 1, 3)] {
+        for (caption, absent) in [("Old", false), ("Old", true), ("Old", false)] {
             LOCAL.with(|locals| {
                 let locals = locals.borrow();
                 let globals = locals[&state.id].session.lua().globals();
@@ -2228,8 +2250,8 @@ mod tests {
             tick(&mut state, &mut ui);
             LOCAL.with(|locals| {
                 let locals = locals.borrow();
-                assert_eq!(locals[&state.id].retention.keys.len(), scopes);
-                assert_eq!(locals[&state.id].retention.lowered, lowered);
+                let graph = locals[&state.id].graph.as_ref().unwrap();
+                assert_eq!(tables(graph, "children").unwrap().len(), usize::from(!absent));
             });
         }
         let old_pixels = super::super::tests::pixels(&ui, 64, 64);
@@ -2242,7 +2264,7 @@ mod tests {
         LOCAL.with(|locals| {
             let locals = locals.borrow();
             assert!(!locals.contains_key(&old_id));
-            assert_eq!(locals[&replacement.id].retention.lowered, 1, "same Ui must lower a new session namespace");
+            assert!(locals[&replacement.id].graph.is_some(), "same Ui lowers the fresh session graph");
         });
     }
 
