@@ -88,6 +88,17 @@ fn validate(programs: &[Program], instances: &[ScriptInitial]) -> Result<(), Err
         if program.texts.len() < program.text_constants {
             return Err(Error::InvalidInput);
         }
+        for instruction in &*program.code {
+            if let crate::Instruction::Op(crate::Op::ArrayFile { array, .. }) = instruction {
+                let bank = program
+                    .script_instance
+                    .and_then(|id| instances.get(id.0 as usize))
+                    .ok_or(Error::InvalidInput)?;
+                if !bank.array_files.iter().any(|a| a.key == *array) {
+                    return Err(Error::InvalidInput);
+                }
+            }
+        }
         match program.script_instance {
             Some(id)
                 if instances.get(usize::from(id.0)).is_some_and(|v| {

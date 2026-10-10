@@ -157,6 +157,13 @@ pub enum TextPart {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Op {
+    /// Explicit-path typed array service, keyed in the current script instance.
+    ArrayFile {
+        array: u32,
+        path: TextRef,
+        write: bool,
+        local: u16,
+    },
     Midi {
         action: crate::MidiAction,
         args: u16,
@@ -355,6 +362,7 @@ impl Op {
             TextRef::Element { index, .. } => usize::from(index) + 1,
         };
         match self {
+            Self::ArrayFile { path, local, .. } => reg(path).max(usize::from(*local) + 1),
             Self::Midi {
                 action,
                 args,
@@ -448,6 +456,7 @@ impl Op {
             TextRef::Element { array, .. } => array.end(),
         };
         Ok(match self {
+            Self::ArrayFile { path, .. } => (cell(path)?, 0),
             Self::Midi {
                 text: Some(text), ..
             }
@@ -483,12 +492,14 @@ impl Op {
 #[derive(Clone, Copy)]
 pub struct Text {
     len: u16,
+    truncated: bool,
     bytes: [u8; TEXT_CAPACITY],
 }
 impl Default for Text {
     fn default() -> Self {
         Self {
             len: 0,
+            truncated: false,
             bytes: [0; TEXT_CAPACITY],
         }
     }
@@ -511,8 +522,12 @@ impl Text {
         // Only whole characters are ever appended.
         std::str::from_utf8(&self.bytes[..usize::from(self.len)]).unwrap_or_default()
     }
+    pub fn is_truncated(&self) -> bool {
+        self.truncated
+    }
     pub fn clear(&mut self) {
         self.len = 0;
+        self.truncated = false;
     }
     /// Append whole characters while they fit.
     pub fn push(&mut self, text: &str) {
@@ -521,6 +536,7 @@ impl Text {
         while !text.is_char_boundary(end) {
             end -= 1;
         }
+        self.truncated |= end < text.len();
         self.bytes[start..start + end].copy_from_slice(&text.as_bytes()[..end]);
         self.len += end as u16;
     }
@@ -613,6 +629,7 @@ pub(crate) struct ScriptBank {
     pub controls: Box<[Option<ControlId>]>,
     pub text_properties: Vec<([i32; STORE_KEY], Text)>,
     pub persistence_callback: Option<(BehaviorId, Option<crate::Outcome>)>,
+    pub array_files: crate::array_file::ArrayFileState,
 }
 
 #[inline]
@@ -652,6 +669,7 @@ impl ScriptBank {
 /// needs fixed-capacity mutable text buffers for allocation-free script writes.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ScriptInitial {
+    pub array_files: Box<[crate::ArrayFileArray]>,
     pub cells: Box<[i64]>,
     pub texts: Box<[std::sync::Arc<str>]>,
     pub store: Store,
@@ -676,6 +694,7 @@ impl ScriptInitial {
             controls: self.controls.clone(),
             text_properties,
             persistence_callback: None,
+            array_files: crate::array_file::ArrayFileState::prepared(&self.array_files),
         }
     }
 }
@@ -683,6 +702,7 @@ impl ScriptInitial {
 /// Initial non-integer resources of one script instance.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ScriptResources {
+    pub array_files: Vec<crate::ArrayFileArray>,
     pub texts: Vec<String>,
     pub text_properties: Vec<([i32; STORE_KEY], String)>,
     pub store: Vec<([i32; STORE_KEY], i64)>,
@@ -693,6 +713,21 @@ pub struct ScriptResources {
 }
 impl ScriptResources {
     pub(crate) fn apply(self, bank: &mut ScriptInitial) -> Result<(), Error> {
+        crate::array_file::ArrayFileState::dimensions(&self.array_files)?;
+        for (index, array) in self.array_files.iter().enumerate() {
+            let end = (array.offset + array.len) as usize;
+            if end
+                > if array.kind == crate::ArrayFileKind::Text {
+                    self.texts.len()
+                } else {
+                    bank.cells.len()
+                }
+                || self.array_files[..index].iter().any(|a| a.key == array.key)
+            {
+                return Err(Error::InvalidInput);
+            }
+        }
+        bank.array_files = self.array_files.into_boxed_slice();
         bank.texts = self
             .texts
             .into_iter()
@@ -980,6 +1015,25 @@ impl Runtime {
         op: Op,
     ) -> Result<bool, Error> {
         match op {
+            Op::ArrayFile {
+                array,
+                path,
+                write,
+                local,
+            } => {
+                let cell = self.text_cell(id, path)?;
+                let path = *self
+                    .behavior_bank(id)?
+                    .texts
+                    .get(cell)
+                    .ok_or(Error::InvalidInput)?;
+                let plan = self.behavior_plan(owner)?;
+                // Queue saturation is an explicit rejection, not a fabricated completion.
+                let value = self
+                    .request_array_file(id, plan, array, path, write)
+                    .unwrap_or(-1);
+                self.set_reg(id, local, i64::from(value))?;
+            }
             Op::Midi {
                 action,
                 args,
@@ -1026,6 +1080,18 @@ impl Runtime {
                     .jobs
                     .iter()
                     .any(|j| j.id == job)
+                    || self
+                        .plans
+                        .get(plan.0)
+                        .ok_or(Error::StaleHandle)?
+                        .scripts
+                        .iter()
+                        .any(|bank| {
+                            bank.array_files
+                                .jobs
+                                .iter()
+                                .any(|j| j.id == job && j.id != 0)
+                        })
                 {
                     let c = self.behaviors.get_mut(id.0).ok_or(Error::StaleHandle)?;
                     if !c.disable_wait {
@@ -1191,6 +1257,7 @@ impl Runtime {
                     .ok_or(Error::InvalidInput)?;
                 let before = target.len;
                 target.push(piece.as_str());
+                target.truncated |= piece.truncated;
                 if usize::from(target.len - before) < piece.as_str().len() {
                     self.ops.truncated_texts += 1;
                 }

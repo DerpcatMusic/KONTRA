@@ -334,6 +334,13 @@ pub fn restore_initialized(
         builtin: None,
         message: message.into(),
     };
+    // Old cached init cannot suppress an explicitly requested external read/write.
+    // Conservative lexical rejection also covers calls through init functions.
+    if source.contains("load_array_str") || source.contains("save_array_str") {
+        return Err(error(
+            "explicit-path array scripts require fresh initialization",
+        ));
+    }
     if source.len() > limits.source_bytes {
         return Err(error("source byte budget exceeded"));
     }
