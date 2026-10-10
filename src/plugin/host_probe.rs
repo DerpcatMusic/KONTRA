@@ -114,6 +114,50 @@ pub unsafe extern "C" fn __kontra_clap_ui_activity(
     .unwrap_or(false)
 }
 
+fn ui_phase_snapshot(activity: &ui_activity::Activity, version: u64, out: &mut [u64]) -> bool {
+    if version != ui_activity::PHASE_VERSION || out.len() != ui_activity::PHASE_FIELDS {
+        return false;
+    }
+    let Some(phases) = activity.phase_snapshot() else {
+        return false;
+    };
+    out.copy_from_slice(&phases);
+    true
+}
+
+/// Independent phase ABI: PHASES order, triples (count, total_ns, max_ns).
+/// Elapsed CPU-work spans, not GPU present. v1 activity and Perf remain unchanged.
+///
+/// # Safety
+/// Same live-instance/main-thread/aligned-output contract as __kontra_clap_ui_activity.
+/// On disabled, bad version/length, null input or panic, output is unchanged.
+#[cfg(feature = "clap")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __kontra_clap_ui_cpu_phases(
+    plugin: *const clap_sys::plugin::clap_plugin,
+    version: u64,
+    out: *mut u64,
+    count: usize,
+) -> bool {
+    if plugin.is_null()
+        || out.is_null()
+        || version != ui_activity::PHASE_VERSION
+        || count != ui_activity::PHASE_FIELDS
+    {
+        return false;
+    }
+    std::panic::catch_unwind(|| unsafe {
+        moose_clap::with_plugin_params::<Plugin, _>(plugin, |p| {
+            ui_phase_snapshot(
+                &p.shared.ui_activity,
+                version,
+                std::slice::from_raw_parts_mut(out, count),
+            )
+        })
+    })
+    .unwrap_or(false)
+}
+
 /// Port from v1 0cb7a8a0:src/project_migration.rs, using only v2 rack state.
 pub fn export_multi_state(multi: &Path, destination: &Path) -> anyhow::Result<()> {
     use moose::core::{export::PluginExport, state};
@@ -208,6 +252,29 @@ mod tests {
             )
         });
         assert_eq!(out, [73; ui_activity::FIELDS.len()]);
+    }
+
+    #[test]
+    fn ui_phase_export_preserves_output_on_rejection_and_copies_schema_order() {
+        let enabled = ui_activity::Activity::new(true);
+        let disabled = ui_activity::Activity::new(false);
+        for (activity, version, size) in [
+            (&enabled, ui_activity::PHASE_VERSION + 1, ui_activity::PHASE_FIELDS),
+            (&enabled, ui_activity::PHASE_VERSION, ui_activity::PHASE_FIELDS - 1),
+            (&enabled, ui_activity::PHASE_VERSION, ui_activity::PHASE_FIELDS + 1),
+            (&disabled, ui_activity::PHASE_VERSION, ui_activity::PHASE_FIELDS),
+        ] {
+            let mut out = vec![73; size];
+            assert!(!ui_phase_snapshot(activity, version, &mut out));
+            assert!(out.iter().all(|&v| v == 73));
+        }
+        {
+            let _span = enabled.span(ui_activity::Phase::UiControlReadback);
+        }
+        let mut out = [73; ui_activity::PHASE_FIELDS];
+        assert!(ui_phase_snapshot(&enabled, ui_activity::PHASE_VERSION, &mut out));
+        assert_eq!(out, enabled.phase_snapshot().unwrap());
+        assert_eq!(out[ui_activity::Phase::UiControlReadback as usize * 3], 1);
     }
 
     #[test]
