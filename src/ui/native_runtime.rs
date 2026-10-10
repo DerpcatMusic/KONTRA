@@ -973,6 +973,116 @@ mod tests {
         .unwrap();
     }
     #[test]
+    fn native_readback_reuses_unchanged_widget_storage_and_keeps_source_semantics() {
+        let (request, _jobs) = std::sync::mpsc::sync_channel(1);
+        let package = Arc::new(Package {
+            members: BTreeMap::from([(
+                "main.nui".into(),
+                Arc::from(b"return function() return {} end".as_slice()),
+            )]),
+            fonts: BTreeMap::new(),
+            font_names: Vec::new(),
+            images: Images {
+                request,
+                cache: Arc::new(Mutex::new(ImageCache {
+                    loaded: HashMap::new(),
+                    pending: BTreeSet::new(),
+                    touch: HashMap::new(),
+                    tick: 0,
+                    bytes: 0,
+                    #[cfg(feature = "shots")]
+                    scan: Default::default(),
+                })),
+            },
+        });
+        let mut widget = ir::Widget::new(
+            "$readback",
+            ir::PageRef(0),
+            Default::default(),
+            ir::Kind::Label,
+        );
+        widget.binding = ir::Binding::Control(ir::ControlId(42));
+        widget.value = Some(ir::Value::Integer(20));
+        widget.text = "Authored caption".into();
+        widget.tooltip = "Authored help".into();
+        let mut face = ir::Interface {
+            source: ir::Source::Ksp { slot: 2 },
+            widgets: vec![widget.clone()],
+            ..Default::default()
+        };
+        let session = Session::new(
+            package,
+            "main",
+            vec![
+                (face.source, 0, widget.clone()),
+                (ir::Source::Ksp { slot: 4 }, 0, widget),
+            ],
+        )
+        .unwrap();
+        let values = HashMap::from([(ir::ControlId(42), 75.25)]);
+        let meters = HashMap::from([(ir::WidgetRef(0), 0.625)]);
+        for value in [
+            ir::Value::Text("Callback readback".into()),
+            ir::Value::Integers(vec![1, 2, 3]),
+            ir::Value::Reals(vec![0.25, 0.5]),
+            ir::Value::Integer(75),
+            ir::Value::Real(75.25),
+        ] {
+            let typed = HashMap::from([(ir::WidgetRef(0), value.clone())]);
+            session.update_view(&face, &values, &typed, &meters);
+            let heap_calls = crate::plugin::tests::allocations(|| {
+                for _ in 0..64 {
+                    session.update_view(&face, &values, &typed, &meters);
+                }
+            });
+            assert_eq!(
+                heap_calls, 0,
+                "unchanged Native readback recopied {value:?}"
+            );
+            let bridge = session.bridge.lock_unpoisoned();
+            assert_eq!(bridge.controls[0].value.as_ref(), Some(&value));
+            assert_eq!(bridge.controls[1].value, Some(ir::Value::Integer(20)));
+            assert_eq!(bridge.meters.get(&0), Some(&0.625));
+        }
+        let typed = HashMap::from([(
+            ir::WidgetRef(0),
+            ir::Value::Text("Callback readback".into()),
+        )]);
+        session.update_view(&face, &values, &typed, &meters);
+        face.widgets[0].text = "Changed caption".into();
+        face.widgets[0].hidden = true;
+        face.widgets[0].value = Some(ir::Value::Real(2.));
+        session.update_view(&face, &values, &typed, &meters);
+        {
+            let bridge = session.bridge.lock_unpoisoned();
+            assert_eq!(bridge.controls[0].text, "Changed caption");
+            assert!(bridge.controls[0].hidden);
+            assert_eq!(
+                bridge.controls[0].value.as_ref(),
+                typed.get(&ir::WidgetRef(0))
+            );
+        }
+        session.update_view(&face, &values, &Default::default(), &meters);
+        assert_eq!(
+            session.bridge.lock_unpoisoned().controls[0].value,
+            Some(ir::Value::Real(75.25)),
+            "typed removal uses the current authored numeric type"
+        );
+        for value in [
+            ir::Value::Text("Authored text".into()),
+            ir::Value::Integers(vec![9, 8]),
+            ir::Value::Reals(vec![0.75, 0.25]),
+        ] {
+            face.widgets[0].value = Some(value.clone());
+            session.update_view(&face, &values, &Default::default(), &meters);
+            assert_eq!(
+                session.bridge.lock_unpoisoned().controls[0].value.as_ref(),
+                Some(&value),
+                "scalar telemetry cannot replace an authored typed value"
+            );
+        }
+    }
+    #[test]
     fn legacy_component_reads_the_published_ir_and_produces_a_typed_edit() {
         assert_eq!(
             Package::load_cancel(Path::new("/unopened/synthetic.nki"), || true)
