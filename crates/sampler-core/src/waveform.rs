@@ -102,7 +102,8 @@ pub(crate) fn admit(store: &Store, action: Action, mut args: [i32; 4]) -> Result
         }
         None
     } else {
-        if zone < 0 || store.get(source_key(zone as i32)) != Some(1) { return Err(Error::InvalidInput); }
+        let zone = i32::try_from(zone).map_err(|_| Error::InvalidInput)?;
+        if zone <= 0 || store.get(source_key(zone)) != Some(1) { return Err(Error::InvalidInput); }
         let p = store.get(symbol_key(args[1])).and_then(Property::from_address)
             .ok_or(Error::InvalidInput)?;
         p.validate_index(args[2])?;
