@@ -1135,12 +1135,12 @@ fn modulation_inputs_follow_identity_after_reorder_append_and_real_default_repla
         let owner = rt.active_plan();
         support::without_heap(|| {
             rt.edit_controls(owner, None, &[write(MOD_DEPTH, ControlValue::Real(0.5))])
-                .unwrap()
+                .unwrap();
         });
         assert_modulation_frame(modulation_frame(&mut rt), [0.25, 0.5]);
         support::without_heap(|| {
             rt.edit_controls(owner, None, &[write(MOD_BYPASS, ControlValue::Real(1.))])
-                .unwrap()
+                .unwrap();
         });
         assert_modulation_frame(modulation_frame(&mut rt), [0.5, 0.5]);
         assert_eq!(rt.voice_count(), 1);
@@ -1296,7 +1296,7 @@ fn schema_replacement_preserves_native_envelope_and_dsp_identity_consumers() {
     );
     support::without_heap(|| {
         rt.edit_controls(owner, None, &[write(MOD_DEPTH, ControlValue::Real(0.25))])
-            .unwrap()
+            .unwrap();
     });
     assert_modulation_frame(modulation_frame(&mut rt), [0.09375, 0.125]); // Both DSP parameter and modulation input retain the same ID.
 }
