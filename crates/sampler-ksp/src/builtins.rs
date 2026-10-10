@@ -490,6 +490,9 @@ pub mod cb {
     pub const RELEASE: i32 = 2;
     pub const CONTROLLER: i32 = 3;
     pub const POLY_AT: i32 = 4;
+    // Internal callback discriminants; NI documents names, not numeric ABI values.
+    pub const RPN: i32 = 5;
+    pub const NRPN: i32 = 6;
     pub const UI_CONTROL: i32 = 7;
     pub const UI_UPDATE: i32 = 8;
     pub const UI_CONTROLS: i32 = 13;
@@ -620,6 +623,8 @@ const VALUED: &[(&str, i32)] = &[
     ("$NI_CB_TYPE_RELEASE", cb::RELEASE),
     ("$NI_CB_TYPE_CONTROLLER", cb::CONTROLLER),
     ("$NI_CB_TYPE_POLY_AT", cb::POLY_AT),
+    ("$NI_CB_TYPE_RPN", cb::RPN),
+    ("$NI_CB_TYPE_NRPN", cb::NRPN),
     ("$NI_CB_TYPE_UI_CONTROL", cb::UI_CONTROL),
     ("$NI_CB_TYPE_UI_UPDATE", cb::UI_UPDATE),
     ("$NI_CB_TYPE_UI_CONTROLS", cb::UI_CONTROLS),

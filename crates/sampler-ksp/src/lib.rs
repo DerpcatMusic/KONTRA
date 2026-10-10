@@ -622,6 +622,7 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
     let mut stages = Vec::new();
     let mut starts = Vec::new();
     let mut signals = Vec::new();
+    let mut parameters = Vec::new();
     let mut shared = Vec::new();
     let mut midi_object = sampler_core::MidiObject::default();
     let mut midi_instances = Vec::new();
@@ -754,6 +755,18 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
                     stage: index,
                 }),
         );
+        parameters.extend(script.entries.iter().filter_map(|e| {
+            let kind = match e.kind {
+                EntryKind::Rpn => sampler_core::ParameterKind::Rpn,
+                EntryKind::Nrpn => sampler_core::ParameterKind::Nrpn,
+                _ => return None,
+            };
+            Some(sampler_core::ParameterProgram {
+                kind,
+                program: base + e.program,
+                stage: index,
+            })
+        }));
         // Keys created by several scripts keep the first script's values.
         shared.extend(script.shared.iter().copied());
         starts.extend(script.starts.iter().map(|&p| sampler_core::PlanProgram {
@@ -787,6 +800,7 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
         .with_control_programs(callbacks)?
         .with_plan_programs(starts)?
         .with_signal_programs(signals)?
+        .with_parameter_programs(parameters)?
         .with_widgets(widgets)?
         .with_midi_object(midi_object)
         // ponytail: fixed headroom for keys created at runtime, like the script stores.
