@@ -1,17 +1,17 @@
 //! Display envelopes computed off audio from the already admitted sample source.
 use crate::support::MutexExt;
-use sampler_core::{Pcm, PlanId};
+use sampler_core::{AssetId, Pcm, PlanId};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
-        mpsc::{SyncSender, sync_channel},
+        mpsc::{SyncSender, TrySendError, sync_channel},
     },
 };
 
 type Peaks = Arc<[(f32, f32)]>;
-type Request = (u32, usize, Option<(u64, u64)>);
+type Request = (AssetId, usize, Option<(u64, u64)>);
 #[derive(Clone)]
 pub(crate) struct Source {
     pub pcm: Pcm,
@@ -24,6 +24,22 @@ pub(crate) struct Envelope {
     pub frames: u64,
     pub sample_rate: u32,
     pub range: (u64, u64),
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Stage {
+    Source,
+    Range,
+    Open,
+    Header,
+    Decode,
+    Generation,
+    Worker,
+}
+#[derive(Clone)]
+pub(crate) enum State {
+    Loading,
+    Ready(Envelope),
+    Unavailable(Stage),
 }
 /// Waveform request IDs: physical source IDs where present, else IR ordinals.
 pub(crate) fn source_ids(inst: &sampler_ir::Instrument) -> Vec<u32> {
@@ -39,13 +55,14 @@ pub(crate) fn source_ids(inst: &sampler_ir::Instrument) -> Vec<u32> {
 }
 #[derive(Default)]
 struct Cache {
-    values: HashMap<Request, Option<Envelope>>,
+    values: HashMap<Request, Result<Envelope, Stage>>,
     pending: HashSet<Request>,
     order: VecDeque<Request>,
 }
 
 pub(crate) struct Provider {
     pub plan: PlanId,
+    source_ids: HashMap<u32, AssetId>,
     requests: SyncSender<Request>,
     cache: Arc<Mutex<Cache>>,
     stop: Arc<AtomicBool>,
@@ -56,6 +73,14 @@ impl Provider {
         sources: HashMap<u32, Source>,
         wake: impl Fn() + Send + 'static,
     ) -> std::io::Result<Self> {
+        let source_ids = sources
+            .iter()
+            .map(|(&zone, source)| (zone, source.pcm.asset_id()))
+            .collect();
+        let sources: HashMap<_, _> = sources
+            .into_values()
+            .map(|source| (source.pcm.asset_id(), source))
+            .collect();
         let (requests, incoming) = sync_channel::<Request>(8);
         let cache = Arc::new(Mutex::new(Cache::default()));
         let stop = Arc::new(AtomicBool::new(false));
@@ -71,13 +96,14 @@ impl Provider {
                         }
                         let value = sources
                             .get(&key.0)
+                            .ok_or(Stage::Source)
                             .and_then(|source| envelope(source, key.1, key.2, &stop));
                         if stop.load(Ordering::Acquire) {
                             break;
                         }
                         let mut cache = cache.lock_unpoisoned();
                         cache.pending.remove(&key);
-                        // ponytail: at most 64 envelopes (2 MiB); a byte LRU if this grows.
+                        // At most 64 envelopes (2 MiB); aliases share immutable asset identity.
                         while cache.values.len() >= 64 {
                             if let Some(old) = cache.order.pop_front() {
                                 cache.values.remove(&old);
@@ -92,6 +118,7 @@ impl Provider {
             })?;
         Ok(Self {
             plan,
+            source_ids,
             requests,
             cache,
             stop,
@@ -106,20 +133,45 @@ impl Provider {
         bins: usize,
         range: Option<(u64, u64)>,
     ) -> Option<Envelope> {
-        if zone == 0 || range.is_some_and(|(a, b)| a >= b) {
-            return None;
+        match self.state(zone, bins, range) {
+            State::Ready(envelope) => Some(envelope),
+            _ => None,
         }
-        let key = (zone, bins.clamp(1, 4096), range);
+    }
+    pub fn state(&self, zone: u32, bins: usize, range: Option<(u64, u64)>) -> State {
+        if self.stop.load(Ordering::Acquire) {
+            return State::Unavailable(Stage::Worker);
+        }
+        if zone == 0 || range.is_some_and(|(a, b)| a >= b) {
+            return State::Unavailable(if zone == 0 {
+                Stage::Source
+            } else {
+                Stage::Range
+            });
+        }
+        let Some(&asset) = self.source_ids.get(&zone) else {
+            return State::Unavailable(Stage::Source);
+        };
+        let key = (asset, bins.clamp(1, 4096), range);
         let mut cache = self.cache.lock_unpoisoned();
         if let Some(value) = cache.values.get(&key).cloned() {
             cache.order.retain(|old| *old != key);
             cache.order.push_back(key);
-            return value;
+            return match value {
+                Ok(envelope) => State::Ready(envelope),
+                Err(stage) => State::Unavailable(stage),
+            };
         }
-        if !cache.pending.contains(&key) && self.requests.try_send(key).is_ok() {
-            cache.pending.insert(key);
+        if !cache.pending.contains(&key) {
+            match self.requests.try_send(key) {
+                Ok(()) => {
+                    cache.pending.insert(key);
+                }
+                Err(TrySendError::Disconnected(_)) => return State::Unavailable(Stage::Worker),
+                Err(TrySendError::Full(_)) => {}
+            }
         }
-        None
+        State::Loading
     }
 }
 impl Drop for Provider {
@@ -132,24 +184,31 @@ fn envelope(
     bins: usize,
     range: Option<(u64, u64)>,
     stop: &AtomicBool,
-) -> Option<Envelope> {
+) -> Result<Envelope, Stage> {
     if stop.load(Ordering::Acquire) {
-        return None;
+        return Err(Stage::Worker);
     }
     let count = source.pcm.frame_count();
     let rate = source.pcm.sample_rate();
     if count == 0 || rate == 0 {
-        return None;
+        return Err(Stage::Header);
     }
     let (first, last) = range.unwrap_or((0, count as u64));
     if first >= last || last > count as u64 {
-        return None;
+        return Err(Stage::Range);
     }
-    let first = usize::try_from(first).ok()?;
-    let length = usize::try_from(last).ok()? - first;
+    let first = usize::try_from(first).map_err(|_| Stage::Range)?;
+    let length = usize::try_from(last).map_err(|_| Stage::Range)? - first;
     let resident = source.pcm.resident_frames();
     let mut reader = if resident.is_none() {
-        Some(source.stream.as_ref()?.open().ok()?)
+        Some(
+            source
+                .stream
+                .as_ref()
+                .ok_or(Stage::Open)?
+                .open()
+                .map_err(|_| Stage::Open)?,
+        )
     } else {
         None
     };
@@ -157,11 +216,12 @@ fn envelope(
         .as_ref()
         .is_some_and(|r| r.frames() != count || r.rate() != rate)
     {
-        return None;
+        return Err(Stage::Header);
     }
     let bins = bins.clamp(1, 4096);
     let mut peaks = Vec::with_capacity(bins);
     let mut scratch = vec![[0.; 2]; 4096];
+    let (mut loaded_start, mut loaded_end) = (first, first);
     for bin in 0..bins {
         let start = first + (bin as u128 * length as u128 / bins as u128) as usize;
         let end = (first + ((bin + 1) as u128 * length as u128 / bins as u128) as usize)
@@ -171,14 +231,23 @@ fn envelope(
         let mut at = start;
         while at < end {
             if stop.load(Ordering::Acquire) {
-                return None;
+                return Err(Stage::Worker);
             }
-            let len = (end - at).min(scratch.len());
             let frames = if let Some(frames) = resident {
-                &frames[at..at + len]
+                &frames[at..end.min(at + scratch.len())]
             } else {
-                reader.as_mut()?.read(at, &mut scratch[..len]).ok()?;
-                &scratch[..len]
+                // v1 wave::read batches the sample, rather than decoding an NCW block per column.
+                if at >= loaded_end {
+                    let len = (first + length - at).min(scratch.len());
+                    reader
+                        .as_mut()
+                        .ok_or(Stage::Open)?
+                        .read(at, &mut scratch[..len])
+                        .map_err(|_| Stage::Decode)?;
+                    loaded_start = at;
+                    loaded_end = at + len;
+                }
+                &scratch[at - loaded_start..end.min(loaded_end) - loaded_start]
             };
             for sample in frames.iter().flatten() {
                 let sample = if sample.is_finite() {
@@ -189,11 +258,11 @@ fn envelope(
                 low = low.min(sample);
                 high = high.max(sample);
             }
-            at += len;
+            at += frames.len();
         }
         peaks.push((low, high));
     }
-    Some(Envelope {
+    Ok(Envelope {
         peaks: peaks.into(),
         range: (first as u64, last),
         frames: count as u64,
@@ -311,7 +380,7 @@ mod tests {
                 None,
                 &stop
             )
-            .is_none(),
+            .is_err(),
             "a stream without its reader is unavailable, not a fake full envelope"
         );
         let a = envelope(&resident, 2, Some((1, 3)), &stop).unwrap();
@@ -320,9 +389,9 @@ mod tests {
         assert_eq!(&*a.peaks, &*b.peaks);
         assert_eq!(a.range, (1, 3));
         assert_eq!(a.frames, 4);
-        assert!(envelope(&resident, 2, Some((2, 2)), &stop).is_none());
-        assert!(envelope(&resident, 2, Some((0, 5)), &stop).is_none());
+        assert!(envelope(&resident, 2, Some((2, 2)), &stop).is_err());
+        assert!(envelope(&resident, 2, Some((0, 5)), &stop).is_err());
         stop.store(true, Ordering::Release);
-        assert!(envelope(&resident, 2, None, &stop).is_none());
+        assert!(envelope(&resident, 2, None, &stop).is_err());
     }
 }
