@@ -200,9 +200,6 @@ fn numbers<'a, T: FromStr>(
             .parse::<T>()
             .map_err(|_| raw.error(ErrorKind::InvalidSavedValue))?;
     }
-    if count == 0 {
-        return Err(raw.error(ErrorKind::InvalidSavedValue));
-    }
     Ok(SavedNumbers {
         text,
         count,
