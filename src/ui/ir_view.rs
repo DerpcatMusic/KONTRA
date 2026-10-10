@@ -458,7 +458,7 @@ pub fn resolved(face: &Interface) -> Interface {
 pub fn resolve_changed(face: &mut Interface, indices: impl IntoIterator<Item = usize>) {
     for p in &mut face.pages {
         if let Some(rows) = p.height_rows.take() {
-            p.size.height = f64::from(rows * GRID_ROW_HEIGHT);
+            p.size.height = f64::from(rows) * f64::from(GRID_ROW_HEIGHT);
         }
     }
     for n in indices {
