@@ -456,7 +456,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     }
     // Which folder each row shows, for a picture dropped on one.
     *super::lock(&cx.state.picker.rows) = arranged.iter().map(|l| Some(l.dir.clone())).collect();
-    // Typing a new query searches the entire selected provider. A card can narrow it afterwards.
+    // A library query filters sources; clearing it keeps the selected source in view.
     if cx.state.search != cx.state.browse.filtered {
         cx.state.browse.filtered = cx.state.search.clone();
         if !library_words.is_empty() {
@@ -464,7 +464,11 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         }
         cx.state.cursor = None;
         cx.state.browse.sources_y = 0.;
-        cx.state.browse.reveal_source = 0;
+        cx.state.browse.reveal_source = if library_words.is_empty() && cx.state.source.is_some() {
+            2
+        } else {
+            0
+        };
     }
     if cx
         .state
