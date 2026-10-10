@@ -206,6 +206,67 @@ fn envelope(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn aliased_zones_reuse_one_asset_envelope() {
+        let pcm = Pcm::new(8, vec![[-0.8, 0.6]; 8].into_boxed_slice()).unwrap();
+        let source = Source { pcm, stream: None };
+        let prepared = sampler_core::Prepared::new(48000, vec![], vec![], 1).unwrap();
+        let limits = sampler_core::Limits::for_plan(&prepared, 1, 1);
+        let runtime = sampler_core::Runtime::new(prepared, limits).unwrap();
+        let (wake, ready) = std::sync::mpsc::channel();
+        let provider = Provider::start(
+            runtime.active_plan(),
+            [(3, source.clone()), (9, source)].into(),
+            move || {
+                wake.send(()).ok();
+            },
+        )
+        .unwrap();
+        assert!(provider.get(3, 4).is_none());
+        ready
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        let a = provider.get(3, 4).unwrap();
+        let b = provider.get(9, 4);
+        assert!(
+            b.is_some(),
+            "another zone sharing the same admitted asset must not queue another decode"
+        );
+        assert!(Arc::ptr_eq(&a.peaks, &b.unwrap().peaks));
+    }
+
+    #[test]
+    fn streamed_peak_reads_are_chunked_not_per_bin() {
+        use std::sync::atomic::AtomicUsize;
+        struct Counted(Arc<AtomicUsize>);
+        impl sampler_kontakt::AssetSource for Counted {
+            fn open(&self) -> std::io::Result<sampler_kontakt::SampleReader> {
+                let reads = self.0.clone();
+                Ok(sampler_kontakt::SampleReader::custom(
+                    48000,
+                    73200,
+                    move |_, out| {
+                        reads.fetch_add(1, Ordering::Relaxed);
+                        out.fill([-0.5, 0.25]);
+                        Ok(())
+                    },
+                ))
+            }
+        }
+        let reads = Arc::new(AtomicUsize::new(0));
+        let source = Source {
+            pcm: Pcm::streamed(48000, 73200).unwrap(),
+            stream: Some(Arc::new(Counted(reads.clone()))),
+        };
+        let e = envelope(&source, 512, None, &AtomicBool::new(false)).unwrap();
+        assert!(e.peaks.iter().all(|p| *p == (-0.5, 0.25)));
+        assert_eq!(
+            reads.load(Ordering::Relaxed),
+            73200usize.div_ceil(4096),
+            "a peak column must not reopen/decode the same NCW block"
+        );
+    }
     #[test]
     fn mapping_window_cache_retains_source_identity_and_reuses_peaks() {
         let sources = [
