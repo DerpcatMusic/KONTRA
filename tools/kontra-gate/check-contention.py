@@ -19,7 +19,7 @@ assert contention.status(busy) == 'CONTENDED'
 assert contention.status(dict(quiet, units=[{'name': 'kontakto-gate.service', 'owned': True}])) == 'QUIET'
 assert contention.status(dict(quiet, errors=['systemctl'])) == 'UNKNOWN'
 assert contention.status(dict(quiet, units=[{'name': 'kontakto-wait.service', 'owned': False,
-                                           'waiting': True, 'cpu_io_active': True}])) == 'CONTENDED'
+                                           'waiting': True, 'cpu_io_active': True}])) == 'QUIET'
 assert gate.verdict(['PASS', 'CONTENDED']) == 'UNKNOWN'
 assert gate.verdict(['CONTENDED']) == 'UNKNOWN'
 assert gate.timed_compare(1, 2, ['QUIET', 'CONTENDED']) == 'CONTENDED'
@@ -82,10 +82,14 @@ with tempfile.TemporaryDirectory() as tmp:
         contention.UNIT_COUNTERS.clear()
         assert contention.status(contention.snapshot()) == 'QUIET'
         cgroup.joinpath('cpu.stat').write_text('usage_usec 101\n')
-        assert contention.status(contention.snapshot()) == 'CONTENDED'
+        polling = contention.snapshot()
+        assert polling['units'][0]['cpu_io_active'], 'retain measured waiter activity'
+        assert contention.status(polling) == 'QUIET'
         assert contention.status(contention.snapshot()) == 'QUIET'
         cgroup.joinpath('io.stat').write_text('8:0 rbytes=512 wbytes=0 rios=1 wios=0\n')
-        assert contention.status(contention.snapshot()) == 'CONTENDED'
+        polling = contention.snapshot()
+        assert polling['units'][0]['cpu_io_active']
+        assert contention.status(polling) == 'QUIET'
         child.joinpath('cmdline').write_bytes(b'fixture-renderer\0')
         assert contention.status(contention.snapshot()) == 'CONTENDED'
         child.joinpath('cmdline').write_bytes(b'sleep\0' + b'5')
