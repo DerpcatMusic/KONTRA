@@ -1108,7 +1108,24 @@ pub(crate) fn chain_with(
                 Some(m) => combined = product(product(gain, m), combined),
                 None => modelled = false,
             },
-            None => modelled = false,
+            None => {
+                modelled = false;
+                // Preserve framing failures instead of reporting them only as missing DSP.
+                // Filter subtypes have a separate versioned reader and admission path.
+                if fx.module != 0x18
+                    && let Err(error) = ni_file::kontakt::objects::EffectParameters::read(
+                        fx.module,
+                        fx.version,
+                        &fx.public,
+                    )
+                {
+                    notes.push((
+                        "parameter framing".into(),
+                        error.to_string(),
+                        sampler_ir::Reason::InvalidValue,
+                    ));
+                }
+            }
         }
         if let Some((group, generic)) = mix {
             flush(&mut combined, &mut filters, &mut out);
@@ -2080,6 +2097,125 @@ mod tests {
             dry_level: 1.0,
             output_set: true,
             public,
+        }
+    }
+
+    // Owned wire fixture: the wrapper's internal enum deliberately differs from the child ID.
+    fn effect_fixture(module: u16, version: u16, public: &[u8]) -> BParamArrayBParFX8 {
+        mod wire {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/support/chunks.rs"
+            ));
+        }
+        let mut state = 20u32.to_le_bytes().to_vec();
+        state.extend([0; 6]);
+        state.extend(1f32.to_le_bytes());
+        state.extend(0f32.to_le_bytes());
+        state.extend((-1i32).to_le_bytes());
+        let child = wire::chunk(module, &wire::object(version, &[], public, &[]));
+        let wrapper = wire::object(0x50, &state, &[], &child);
+        let mut array = vec![0];
+        array.extend(0x13u16.to_le_bytes());
+        array.extend(8u32.to_le_bytes());
+        for index in 0..8 {
+            array.push(u8::from(index == 5));
+            if index == 5 {
+                array.extend(wire::chunk(0x25, &wrapper));
+            }
+        }
+        BParamArrayBParFX8::try_from(&Chunk {
+            id: RACK,
+            data: array,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn malformed_effect_payloads_keep_raw_bytes_and_report_physical_framing_errors() {
+        use sampler_ir::{Reason, SourceParameterValue};
+        let cases = [
+            (0x13, 0x50, vec![0; 3], "Static error: Truncated FX parameter"),
+            (0x13, 0x50, vec![0; 5], "Static error: Trailing FX parameter bytes"),
+            (0x42, 0x10, vec![0; 12], "Static error: Truncated FX parameter"),
+            (0x17, 0x51, vec![0xff; 4], "Static error: Truncated FX parameter list"),
+        ];
+        for (module, version, bytes, expected) in cases {
+            let array = effect_fixture(module, version, &bytes);
+            let slots = rack(&array, |_, error| panic!("{error}"));
+            assert_eq!(slots.len(), 1);
+            assert_eq!(
+                (slots[0].slot, slots[0].module, slots[0].version),
+                (5, module, version)
+            );
+            assert_eq!(slots[0].public, bytes);
+            let records = crate::source_parameters::rack("owned rack", &array).unwrap();
+            let saved = records.iter().find(|r| r.object_id == module).unwrap();
+            assert_eq!(saved.version, version);
+            assert_eq!(saved.location, "owned rack/slot 5/module");
+            assert!(saved.fields.iter().any(|f| {
+                f.name == "undecoded_public"
+                    && f.value == SourceParameterValue::Opaque(bytes.clone())
+            }));
+            for scope in [Scope::Voice, Scope::Bus] {
+                let out = chain_with(&slots, scope, None, Some((7, -1)), (7, -1), &[]);
+                assert!(
+                    out.processors.is_empty(),
+                    "a rejected slot must not become a Mix identity"
+                );
+                assert!(out.send_taps.is_empty());
+                assert!(out.notes.iter().any(|(slot, field, value, reason)| {
+                    *slot == 5
+                        && field.ends_with(": parameter framing")
+                        && value == expected
+                        && *reason == Reason::InvalidValue
+                }));
+                assert!(out.notes.iter().any(|(slot, field, _, reason)| {
+                    *slot == 5 && field == "effect" && *reason == Reason::NotModeled
+                }));
+            }
+        }
+    }
+
+    #[test]
+    fn valid_unimplemented_and_unknown_effects_stay_unadmitted_without_framing_errors() {
+        use sampler_ir::{Reason, SourceParameterValue};
+        let mut tape: Vec<u8> = [0.5f32, 0.25, 0.75]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        tape.push(0xa5); // Raw byte, not a guessed Boolean or quality ordinal.
+        for (module, bytes) in [(0x42, tape), (0x65, vec![0xde, 0xad, 0xbe, 0xef])] {
+            let array = effect_fixture(module, 0x10, &bytes);
+            let slots = rack(&array, |_, error| panic!("{error}"));
+            assert_eq!(slots[0].public, bytes);
+            let records = crate::source_parameters::rack("owned rack", &array).unwrap();
+            let saved = records.iter().find(|r| r.object_id == module).unwrap();
+            assert_eq!(
+                (saved.version, saved.location.as_str()),
+                (0x10, "owned rack/slot 5/module")
+            );
+            if module == 0x42 {
+                assert!(matches!(slots[0].params(), Some(Params::Fields(_))));
+                assert!(saved.fields.iter().any(|f| {
+                    f.name == "quality" && f.value == SourceParameterValue::Integer(0xa5)
+                }));
+            } else {
+                assert!(slots[0].params().is_none());
+                assert!(saved.fields.iter().any(|f| {
+                    f.name == "undecoded_public"
+                        && f.value == SourceParameterValue::Opaque(bytes.clone())
+                }));
+            }
+            for scope in [Scope::Voice, Scope::Bus] {
+                let out = chain_with(&slots, scope, None, Some((7, -1)), (7, -1), &[]);
+                assert!(out.processors.is_empty());
+                assert_eq!(out.notes.len(), 1);
+                assert_eq!(
+                    (out.notes[0].0, out.notes[0].1.as_str(), out.notes[0].3),
+                    (5, "effect", Reason::NotModeled)
+                );
+            }
         }
     }
 
