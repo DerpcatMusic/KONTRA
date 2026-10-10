@@ -1,0 +1,27 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 488  of event 'cycles:u'
+# Event count (approx.): 315142508
+#
+# Overhead  Command          Shared Object     Symbol
+# ........  ...............  ................  ....................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+    28.64%  cpu-audit-v1     cpu-audit-v1      [.] kontakto::ksp::vm::exec
+    17.85%  cpu-audit-v1     cpu-audit-v1      [.] <kontakto::fx::processor::FxProcessor>::process
+    17.81%  cpu-audit-v1     [vdso]            [.] __vdso_clock_gettime
+    17.12%  kontakto-stream  cpu-audit-v1      [.] std::sys::backtrace::__rust_begin_short_backtrace::<kontakto::engine::stream::pool::{closure#2}, ()>
+     2.45%  kontakto-stream  cpu-audit-v1      [.] <kontakto::audio::SampleReader>::read
+     1.50%  kontakto-stream  cpu-audit-v1      [.] std::thread::functions::park_timeout
+     1.29%  kontakto-stream  cpu-audit-v1      [.] <kontakto::access::Keystream as ni_file::nis::properties::subtree_item::LibraryKey>::apply_at
+     1.29%  cpu-audit-v1     cpu-audit-v1      [.] kontakto::engine::voice::mix_avx512
+     1.25%  kontakto-stream  cpu-audit-v1      [.] <std::sync::mpmc::Receiver<kontakto::engine::stream::Job>>::try_recv
+     1.18%  kontakto-stream  cpu-audit-v1      [.] <kontakto::engine::stream::Decoded>::read
+     1.06%  cpu-audit-v1     libm.so.6         [.] log10f
+
+
+#
+# (Tip: Add -I to perf record to sample register values, which will be visible in perf report sample context.)
+#

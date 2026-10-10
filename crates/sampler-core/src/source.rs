@@ -88,7 +88,8 @@ pub struct LoopSlot {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct LoopSlots {
+pub(super) struct LoopSlots {
+    wavetable: Option<crate::Wavetable>,
     slots: [Option<LoopSlot>; 8],
     exits: [Option<u64>; 8],
 }
@@ -96,6 +97,8 @@ struct LoopSlots {
 /// Immutable source view. Transposition combines with the asset/output rate ratio.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Playback {
+    /// A complete-cycle oscillator; its fundamental uses note pitch, not asset rate/root.
+    pub wavetable: Option<crate::Wavetable>,
     pub start: usize,
     pub end: Option<usize>,
     pub direction: Direction,
@@ -105,8 +108,15 @@ pub struct Playback {
 }
 
 impl Playback {
+    pub(super) fn rate_ratio(self, source_rate: u32, output_rate: u32) -> f64 {
+        if self.wavetable.is_some() {
+            440. * crate::wavetable::CYCLE as f64 / f64::from(output_rate)
+        } else {
+            f64::from(source_rate) / f64::from(output_rate)
+        }
+    }
     pub(super) fn step(self, source_rate: u32, output_rate: u32) -> f64 {
-        f64::from(source_rate) / f64::from(output_rate) * (self.transpose_semitones / 12.0).exp2()
+        self.rate_ratio(source_rate, output_rate) * (self.transpose_semitones / 12.0).exp2()
     }
 
     pub(super) fn cursor(
@@ -122,7 +132,12 @@ impl Playback {
             || source_rate == 0
             || output_rate == 0
             || !self.transpose_semitones.is_finite()
-            || !(MIN_STEP..=MAX_STEP).contains(&step)
+            || if self.wavetable.is_some() { !step.is_finite() || step <= 0. } else { !(MIN_STEP..=MAX_STEP).contains(&step) }
+            || self.wavetable.is_some_and(|w| {
+                !w.valid() || crate::wavetable::Table::new(self.start, end).is_none()
+                    || self.direction != Direction::Forward || self.loop_range.is_some()
+                    || self.loop_slots.iter().any(Option::is_some)
+            })
             || self.loop_range.is_some_and(|r| {
                 r.start < self.start
                     || r.start >= r.end
@@ -139,19 +154,25 @@ impl Playback {
             return Err(Error::InvalidInput);
         }
         let mut cursor = Cursor {
+            wavetable: self.wavetable,
             start: self.start,
             end,
             direction: self.direction,
             loop_range: self.loop_range,
             loops: None,
-            position: 0,
-            fraction: 0.0,
+            position: self
+                .wavetable
+                .map_or(0, |w| (f64::from(w.phase).rem_euclid(1.) * 2048.) as u64),
+            fraction: self
+                .wavetable
+                .map_or(0., |w| (f64::from(w.phase).rem_euclid(1.) * 2048.).fract()),
             step,
             exit: None,
             last: [0.; 2],
             starvation: None,
             fade_in: 0,
             fade_frames: output_rate.div_ceil(1000),
+            cold_hold: false,
         };
         if let Some(range) = self.loop_range
             && let Some(passes) = range.passes
@@ -210,15 +231,83 @@ impl Playback {
                 cursor.loop_range = Some(slots[0].unwrap().range);
                 cursor.exit = exits[0];
             } else {
-                cursor.loops = Some(LoopSlots { slots, exits });
+                cursor.loops = Some(LoopSlots {
+                    slots,
+                    exits,
+                    wavetable: None,
+                });
             }
         }
         Ok(cursor)
     }
 }
 
+// port from v1 0cb7a8a0:src/engine/map.rs compact PlayMap geometry;
+// v2 multi-slot state is stored only for the regions that need it.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct CursorTemplate {
+    start: usize,
+    end: usize,
+    direction: Direction,
+    loop_range: Option<Loop>,
+    loops: Option<usize>,
+    step: f64,
+    exit: Option<u64>,
+    fade_frames: u32,
+}
+
+impl CursorTemplate {
+    pub(super) fn new(cursor: Cursor, loops: &mut Vec<LoopSlots>) -> Self {
+        let extra = cursor.loops.or_else(|| {
+            cursor.wavetable.map(|wavetable| LoopSlots {
+                slots: [None; 8],
+                exits: [None; 8],
+                wavetable: Some(wavetable),
+            })
+        });
+        let index = extra.map(|slots| {
+            let index = loops.len();
+            loops.push(slots);
+            index
+        });
+        Self {
+            start: cursor.start,
+            end: cursor.end,
+            direction: cursor.direction,
+            loop_range: cursor.loop_range,
+            loops: index,
+            step: cursor.step,
+            exit: cursor.exit,
+            fade_frames: cursor.fade_frames,
+        }
+    }
+
+    pub(super) fn cursor(self, loops: &[LoopSlots]) -> Cursor {
+        let extra = self.loops.map(|i| loops[i]);
+        let wavetable = extra.and_then(|extra| extra.wavetable);
+        Cursor {
+            wavetable,
+            start: self.start,
+            end: self.end,
+            direction: self.direction,
+            loop_range: self.loop_range,
+            loops: extra.filter(|extra| extra.wavetable.is_none()),
+            position: wavetable.map_or(0, |w| (f64::from(w.phase).rem_euclid(1.) * 2048.) as u64),
+            fraction: wavetable.map_or(0., |w| (f64::from(w.phase).rem_euclid(1.) * 2048.).fract()),
+            step: self.step,
+            exit: self.exit,
+            last: [0.; 2],
+            starvation: None,
+            fade_in: 0,
+            fade_frames: self.fade_frames,
+            cold_hold: false,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Cursor {
+    wavetable: Option<crate::Wavetable>,
     start: usize,
     end: usize,
     direction: Direction,
@@ -237,6 +326,8 @@ pub(super) struct Cursor {
     // Remaining fade-in frames after a recovered miss.
     fade_in: u32,
     fade_frames: u32,
+    /// Initial storage hold; lifecycle events still end an unsounded voice.
+    cold_hold: bool,
 }
 
 struct ReadAddress {
@@ -246,10 +337,16 @@ struct ReadAddress {
 }
 
 impl Cursor {
+    pub(super) fn wavetable(&self) -> Option<crate::Wavetable> {
+        self.wavetable
+    }
     /// Start within the original view, measured in source time, never pitch time.
     /// Offsets at/past the view end are silent. Starting past a loop's outward
     /// edge bypasses it; starting inside retains its original boundaries/count.
     pub(super) fn with_offset(mut self, micros: u32, source_rate: u32) -> Self {
+        if self.wavetable.is_some() {
+            return self;
+        }
         let ticks = u64::from(micros) * u64::from(source_rate);
         self.position = ticks / 1_000_000;
         self.fraction = (ticks % 1_000_000) as f64 / 1_000_000.;
@@ -280,6 +377,9 @@ impl Cursor {
 
     /// Skip `frames` further source frames from the current start position.
     pub(super) fn skip(mut self, frames: u32) -> Self {
+        if self.wavetable.is_some() {
+            return self;
+        }
         self.position += u64::from(frames);
         if self.position >= (self.end - self.start) as u64
             || self
@@ -307,6 +407,9 @@ impl Cursor {
     }
 
     pub(super) fn unbounded_loop(&self) -> bool {
+        if self.wavetable.is_some() {
+            return true;
+        }
         self.loops.is_some_and(|loops| {
             loops
                 .slots
@@ -314,6 +417,42 @@ impl Cursor {
                 .enumerate()
                 .any(|(i, slot)| slot.is_some() && loops.exits[i].is_none())
         }) || self.loop_range.is_some() && self.exit.is_none()
+    }
+
+    pub(super) fn trace_direction(&self) -> Direction {
+        self.direction
+    }
+
+    pub(super) fn trace_loops(&self) -> [Option<crate::SelectedLoop>; 8] {
+        let convert = |range: Loop, tuning: f64| crate::SelectedLoop {
+            start: range.start,
+            end: range.end,
+            until_release: range.mode == LoopMode::UntilRelease,
+            alternating: range.shape == LoopShape::PingPong,
+            crossfade: match range.shape {
+                LoopShape::Crossfade { frames } | LoopShape::EqualPowerCrossfade { frames } => {
+                    frames
+                }
+                _ => 0,
+            },
+            count: range.passes.map_or(0, |n| n.get()),
+            tuning_bits: tuning.to_bits(),
+        };
+        if let Some(loops) = self.loops {
+            loops.slots.map(|s| s.map(|s| convert(s.range, s.tuning)))
+        } else {
+            let mut slots = [None; 8];
+            slots[0] = self.loop_range.map(|r| convert(r, 1.0));
+            slots
+        }
+    }
+
+    pub(super) fn trace_start(&self) -> u64 {
+        self.start as u64
+    }
+    pub(super) fn trace_position(&self) -> u64 {
+        self.index(self.position as i128)
+            .map_or(self.start as u64, |i| i as u64)
     }
 
     pub(super) fn step(&self) -> f64 {
@@ -364,7 +503,10 @@ impl Cursor {
 
     // Prepared candidates and validated expression changes supply this rate.
     pub(super) fn with_step(mut self, step: f64) -> Self {
-        debug_assert!((MIN_STEP..=MAX_STEP).contains(&step));
+        debug_assert!(
+            self.wavetable.is_some() && step.is_finite() && step > 0.
+                || (MIN_STEP..=MAX_STEP).contains(&step)
+        );
         self.step = step;
         self
     }
@@ -426,6 +568,9 @@ impl Cursor {
     }
 
     fn limit(&self) -> Option<u64> {
+        if self.wavetable.is_some() {
+            return None;
+        }
         let length = (self.end - self.start) as u64;
         if let Some(loops) = self.loops {
             let mut limit = length;
@@ -459,12 +604,17 @@ impl Cursor {
     /// Start silent, waiting for its stream window (a cold start).
     pub(super) fn cold(mut self) -> Self {
         self.starvation = Some(0);
+        self.cold_hold = true;
         self
     }
 
     /// Faded out and silently waiting for its stream window.
     pub(super) fn waiting(&self) -> bool {
         self.starvation == Some(0)
+    }
+
+    pub(super) fn holding_onset(&self) -> bool {
+        self.cold_hold
     }
 
     /// One millisecond of native fade from the last complete resampled frame.
@@ -505,6 +655,15 @@ impl Cursor {
         gains: [f32; 2],
         kernel: &Kernel,
     ) -> usize {
+        if self.cold_hold {
+            if self.sample(pcm, kernel).is_some() {
+                self.cold_hold = false;
+            } else {
+                // An unpreloaded onset must keep its requested offset, even
+                // when storage takes longer than the old 50 ms deadline.
+                return output.len();
+            }
+        }
         let count = if self.starvation != Some(0) {
             self.render_starvation(output, envelope, gain, gains)
         } else if self.done() || self.sample(pcm, kernel).is_none() {
@@ -636,6 +795,13 @@ impl Cursor {
     }
 
     fn advance(&mut self) {
+        if self.wavetable.is_some() {
+            let phase = (self.position as f64 + self.fraction + self.step.rem_euclid(2048.))
+                .rem_euclid(2048.);
+            self.position = phase as u64;
+            self.fraction = phase.fract();
+            return;
+        }
         let phase = self.fraction + self.step();
         // Truncation is floor here (phase >= 0) and, unlike f64::floor on the
         // SSE2 baseline, needs no libm call.
@@ -703,6 +869,36 @@ impl Cursor {
             self.last = [0.; 2];
             return self.advance_silent(output.len(), envelope);
         }
+        if self.wavetable.is_some() {
+            let mut rendered = 0;
+            while rendered < output.len() && !envelope.done() {
+                let Some(mut sample) = self.sample(pcm, kernel) else {
+                    self.starvation = Some(self.fade_frames);
+                    return rendered
+                        + self.render_starved(
+                            pcm,
+                            &mut output[rendered..],
+                            envelope,
+                            gain,
+                            gains,
+                            kernel,
+                        );
+                };
+                if self.fade_in > 0 {
+                    self.fade_in -= 1;
+                    let ramp = 1. - self.fade_in as f32 / self.fade_frames as f32;
+                    sample = sample.map(|value| value * ramp);
+                }
+                self.last = sample;
+                let amplitude = envelope.next() * gain;
+                for c in 0..2 {
+                    output[rendered][c] += sample[c] * amplitude * gains[c];
+                }
+                self.advance();
+                rendered += 1;
+            }
+            return rendered;
+        }
         if self.step() == 1.0 && self.fraction == 0.0 && self.fade_in == 0 && !self.crossfaded() {
             let mut offset = 0;
             while offset < output.len() && !self.done() && !envelope.done() {
@@ -745,7 +941,11 @@ impl Cursor {
     }
 
     fn advance_silent(&mut self, frames: usize, envelope: &mut EnvelopeState) -> usize {
-        if self.loops.is_none() && self.fraction == 0.0 && self.step().fract() == 0.0 {
+        if self.wavetable.is_none()
+            && self.loops.is_none()
+            && self.fraction == 0.0
+            && self.step().fract() == 0.0
+        {
             let step = self.step() as u64;
             let remaining = self
                 .limit()
@@ -819,6 +1019,11 @@ impl Cursor {
 
     /// One complete output frame at the cursor, or None if any tap is missing.
     fn sample(&self, pcm: &(impl ReadFrames + ?Sized), kernel: &Kernel) -> Option<Frame> {
+        if let Some(source) = self.wavetable {
+            return crate::wavetable::Table::new(self.start, self.end)
+                .unwrap()
+                .sample(pcm, &source, self.position as f64 + self.fraction);
+        }
         let position = i128::from(self.position);
         if self.step() == 1.0 && self.fraction == 0.0 {
             self.read(pcm, position)
@@ -946,6 +1151,13 @@ impl Cursor {
             None => return 0,
         };
         let output = &mut output[..count];
+        if kernel.uses_cubic(self.step()) && output.len() >= 4 {
+            sampler_simd::dispatch(
+                #[inline(always)]
+                || self.run_cubic(span, width, output, envelope, gain, gains, kernel),
+            );
+            return count;
+        }
         match bank {
             Some(bank) => sampler_simd::dispatch_fused(
                 (self, output, envelope),
@@ -984,6 +1196,59 @@ impl Cursor {
             }
         }
         count
+    }
+
+    /// v1 voice.rs::mix_avx2 gathers several output frames before its polynomial.
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn run_cubic(
+        &mut self,
+        span: &[Frame],
+        width: usize,
+        output: &mut [Frame],
+        envelope: &mut EnvelopeState,
+        gain: f32,
+        gains: [f32; 2],
+        kernel: &Kernel,
+    ) {
+        let (mut fraction, step, mut offset, mut last) = (self.fraction, self.step(), 0, self.last);
+        let (chunks, tail) = output.as_chunks_mut::<4>();
+        for chunk in chunks {
+            let mut phases = [0.; 4];
+            let windows = std::array::from_fn(|i| {
+                phases[i] = fraction;
+                let window = &span[offset..offset + width];
+                let phase = fraction + step;
+                let whole = phase as i64;
+                fraction = phase - whole as f64;
+                offset += whole as usize;
+                window
+            });
+            let sources = crate::resample::cubic_four(windows, phases);
+            for (frame, source) in chunk.iter_mut().zip(sources) {
+                last = if source.iter().all(|value| value.is_finite()) {
+                    source
+                } else {
+                    [0.; 2]
+                };
+                let level = envelope.constant_level().unwrap_or_else(|| envelope.next());
+                for channel in 0..2 {
+                    frame[channel] += source[channel] * gain * gains[channel] * level;
+                }
+            }
+        }
+        self.fraction = fraction;
+        self.position += offset as u64;
+        self.last = last;
+        self.run(
+            &span[offset..],
+            width,
+            tail,
+            envelope,
+            gain,
+            gains,
+            |f, w| kernel.sample_window(f, step, w),
+        );
     }
 
     /// The [`Self::render_run`] frame loop over one contiguous span, with the
@@ -1110,7 +1375,138 @@ fn mix<'a>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cubic_columns_preserve_scalar_output_cursor_and_envelope() {
+        use super::*;
+        use crate::{Envelope, EnvelopeCurve};
+        let kernel = Kernel::new(crate::ResampleQuality::Realtime);
+        let span: Vec<Frame> = (0..128)
+            .map(|i| {
+                let x = (i as f32 * 0.731).sin();
+                [x, -x * 0.321]
+            })
+            .collect();
+        for step in [MIN_STEP, 0.25, 0.8, 44100.0 / 48000.0, 1.0] {
+            for fraction in [0.0, 0.123456789, 0.999999999] {
+                for len in 0..=65 {
+                    for shape in [
+                        Envelope::default(),
+                        Envelope::new(5, 2, 17, 0.1, 13).unwrap().with_curves(
+                            EnvelopeCurve::exponential(2.0).unwrap(),
+                            EnvelopeCurve::exponential(-3.0).unwrap(),
+                            EnvelopeCurve::default(),
+                        ),
+                    ] {
+                        let mut old = Playback::default().cursor(128, 48000, 48000).unwrap();
+                        old.step = step;
+                        old.fraction = fraction;
+                        let mut new = old;
+                        let mut old_env = EnvelopeState::new(shape);
+                        let mut new_env = old_env;
+                        let mut expected = vec![[0.123, -0.567]; len];
+                        let mut actual = expected.clone();
+                        old.run(
+                            &span,
+                            5,
+                            &mut expected,
+                            &mut old_env,
+                            0.731,
+                            [0.7, -0.2],
+                            |f, w| kernel.sample_window(f, step, w),
+                        );
+                        sampler_simd::dispatch(
+                            #[inline(always)]
+                            || {
+                                new.run_cubic(
+                                    &span,
+                                    5,
+                                    &mut actual,
+                                    &mut new_env,
+                                    0.731,
+                                    [0.7, -0.2],
+                                    &kernel,
+                                )
+                            },
+                        );
+                        for (a, b) in actual.iter().zip(&expected) {
+                            assert_eq!(a.map(f32::to_bits), b.map(f32::to_bits));
+                        }
+                        assert_eq!(new.position, old.position);
+                        assert_eq!(new.fraction.to_bits(), old.fraction.to_bits());
+                        assert_eq!(new.last.map(f32::to_bits), old.last.map(f32::to_bits));
+                        assert_eq!(new_env.remaining(), old_env.remaining());
+                        for _ in 0..64 {
+                            assert_eq!(new_env.next().to_bits(), old_env.next().to_bits());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     use super::*;
+
+    #[test]
+    fn compact_templates_preserve_cursor_paths_and_independent_loop_release() {
+        assert!(size_of::<CursorTemplate>() * 3 < size_of::<Cursor>());
+        eprintln!(
+            "cursor_bytes={} template_bytes={} multi_loop_bytes={}",
+            size_of::<Cursor>(),
+            size_of::<CursorTemplate>(),
+            size_of::<LoopSlots>()
+        );
+        for direction in [Direction::Forward, Direction::Reverse] {
+            for passes in [None, std::num::NonZeroU32::new(3)] {
+                for count in 0..=8 {
+                    let slots = std::array::from_fn(|i| {
+                        (i < count).then(|| LoopSlot {
+                            range: Loop {
+                                start: 2 + i * 4,
+                                end: 4 + i * 4,
+                                mode: LoopMode::UntilRelease,
+                                shape: if i % 2 == 0 {
+                                    LoopShape::Wrap
+                                } else {
+                                    LoopShape::PingPong
+                                },
+                                passes,
+                            },
+                            tuning: if i % 2 == 0 { 1.0 } else { 1.25 },
+                        })
+                    });
+                    let original = Playback {
+                        direction,
+                        loop_slots: slots,
+                        ..Default::default()
+                    }
+                    .cursor(40, 44100, 48000)
+                    .unwrap();
+                    let mut loops = Vec::new();
+                    let template = CursorTemplate::new(original, &mut loops);
+                    assert_eq!(loops.len(), usize::from(original.loops.is_some()));
+                    let mut left = original.with_offset(125, 44100);
+                    let mut right = template.cursor(&loops).with_offset(125, 44100);
+                    for frame in 0..160 {
+                        assert_eq!(format!("{left:?}"), format!("{right:?}"));
+                        assert_eq!(
+                            left.index(i128::from(left.position)),
+                            right.index(i128::from(right.position))
+                        );
+                        if frame == 23 {
+                            left.release();
+                            right.release();
+                        }
+                        left.advance();
+                        right.advance();
+                    }
+                    assert_eq!(
+                        format!("{original:?}"),
+                        format!("{:?}", template.cursor(&loops))
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn offsets_preserve_source_time_and_bounds_without_advancing_loop_passes() {

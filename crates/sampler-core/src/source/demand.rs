@@ -71,7 +71,11 @@ impl Runtime {
         }
         let expression = self.expressions.get(note.expression.0).unwrap();
         Ok(Some(VoiceDemand {
-            cursor: v.cursor.with_step(v.base_step * expression.rendered.ratio),
+            cursor: if self.offline && v.started {
+                v.cursor
+            } else {
+                v.cursor.with_step(v.base_step * expression.rendered.ratio)
+            },
             envelope: v.envelope,
             at,
             frames: ((end - at) as u32).min(v.tail_remaining.unwrap_or(u32::MAX)),
@@ -98,10 +102,14 @@ impl Cursor {
     /// traversal direction, and the virtual offset of the cursor's window
     /// start, to recover first-use deadlines.
     pub(crate) fn linear_reach(&self, frames: u32) -> Option<(Range<usize>, Direction, f64)> {
-        if self.loops.is_some() {
+        if self.wavetable.is_some() || self.loops.is_some() {
             return None;
         }
-        let radius = crate::resample::Kernel::radius(self.step()) as f64;
+        let radius = if self.step() == 1. && self.fraction == 0. {
+            0.
+        } else {
+            crate::resample::Kernel::radius(self.step()) as f64
+        };
         let length = (self.end - self.start) as f64;
         let low = self.position as f64 - radius;
         let high =
@@ -134,7 +142,7 @@ impl Cursor {
     /// superset of `visit_demand`'s ranges, ignoring envelope ends; `None` for
     /// ping-pong loops and a loop exit within reach.
     pub(crate) fn loop_reach(&self, frames: u32) -> Option<LoopReach> {
-        if self.loops.is_some() {
+        if self.wavetable.is_some() || self.loops.is_some() {
             return None;
         }
         let r = self.loop_range?;
@@ -144,7 +152,11 @@ impl Cursor {
             crate::LoopShape::Crossfade { frames }
             | crate::LoopShape::EqualPowerCrossfade { frames } => frames as u64,
         };
-        let radius = crate::resample::Kernel::radius(self.step()) as f64;
+        let radius = if self.step() == 1. && self.fraction == 0. {
+            0.
+        } else {
+            crate::resample::Kernel::radius(self.step()) as f64
+        };
         let lead = self.position as f64 + self.fraction + radius;
         let low = (self.position as f64 - radius).max(0.) as u64;
         let high = (lead + f64::from(frames) * self.step() + 1.).ceil() as u64;
@@ -184,6 +196,88 @@ impl Cursor {
         }))
     }
 
+    /// Admission uses at most four geometric spans, never a per-frame walk.
+    /// Reflections/finite exits use a conservative bounded footprint; no heap.
+    pub(crate) fn reservation_pages(&self, frames: u32) -> usize {
+        use crate::PAGE_FRAMES;
+        if frames == 0 {
+            return 0;
+        }
+        // Reach helpers include the window at their endpoint; the final read
+        // of N output frames is at N-1, without a phantom next-frame guard.
+        let frames = frames - 1;
+        let pages = |r: Range<usize>| {
+            if r.is_empty() {
+                0
+            } else {
+                (r.end - 1) / PAGE_FRAMES - r.start / PAGE_FRAMES + 1
+            }
+        };
+        if let Some((range, _, _)) = self.linear_reach(frames) {
+            return pages(range);
+        }
+        if let Some(reach) = self.loop_reach(frames) {
+            let mut ranges = [(usize::MAX, usize::MAX); 4];
+            for (i, (range, _)) in reach.into_iter().flatten().enumerate() {
+                ranges[i] = (range.start / PAGE_FRAMES, (range.end - 1) / PAGE_FRAMES + 1);
+            }
+            // Four-element insertion sort is fixed work, with no sorting scratch.
+            for i in 1..4 {
+                let mut j = i;
+                while j > 0 && ranges[j] < ranges[j - 1] {
+                    ranges.swap(j, j - 1);
+                    j -= 1;
+                }
+            }
+            let (mut count, mut end) = (0usize, 0usize);
+            for (start, next) in ranges {
+                if start == usize::MAX {
+                    break;
+                }
+                count += next.saturating_sub(start.max(end));
+                end = end.max(next);
+            }
+            return count;
+        }
+        let mut view = self.start..self.end;
+        if self.exit.is_none()
+            && let Some(looped) = self.loop_range
+        {
+            match self.direction {
+                Direction::Forward => view.end = looped.end,
+                Direction::Reverse => view.start = looped.start,
+            }
+        }
+        // Native slots can change rate on repeated passes and split the
+        // physical footprint. Eight slots bound both calculations on admission.
+        let (step, legs) = if let Some(loops) = self.loops {
+            let tuning = loops
+                .slots
+                .iter()
+                .flatten()
+                .fold(1.0f64, |max, slot| max.max(slot.tuning));
+            (
+                self.step * tuning,
+                2 * loops.slots.iter().flatten().count() + 1,
+            )
+        } else {
+            (
+                self.step,
+                if self
+                    .loop_range
+                    .is_some_and(|r| r.shape != crate::LoopShape::PingPong)
+                {
+                    2
+                } else {
+                    1
+                },
+            )
+        };
+        let span = ((f64::from(frames) * step).ceil() as usize)
+            .saturating_add(2 * crate::resample::Kernel::radius(step) as usize + 1);
+        pages(view).min(legs * (span.div_ceil(PAGE_FRAMES) + 1))
+    }
+
     /// Output frames until a linear stretch (see `linear_reach`) first reads
     /// physical frame `index`; `lead` is the reach's third value.
     pub(crate) fn first_use(&self, index: usize, direction: Direction, lead: f64) -> u32 {
@@ -201,6 +295,12 @@ impl Cursor {
         mut envelope: EnvelopeState,
         mut accept: impl FnMut(u32, Range<usize>) -> bool,
     ) -> bool {
+        if self.wavetable.is_some() {
+            return frames == 0
+                || self.done()
+                || envelope.done()
+                || accept(0, self.start..self.end);
+        }
         let mut covered_end: Option<i128> = None;
         let mut previous_step = self.step();
         for offset in 0..frames {
@@ -278,6 +378,201 @@ fn extend(
 mod tests {
     use super::*;
     use crate::{Direction, Envelope, Loop, LoopMode, LoopShape, Playback};
+
+    #[test]
+    fn a_plain_native_loop_slot_keeps_geometric_demand() {
+        let looped = Loop {
+            start: 4096,
+            end: 8192,
+            mode: LoopMode::Continuous,
+            shape: LoopShape::Wrap,
+            passes: None,
+        };
+        let cursor = Playback {
+            loop_slots: [
+                Some(crate::LoopSlot {
+                    range: looped,
+                    tuning: 1.,
+                }),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ],
+            ..Default::default()
+        }
+        .cursor(32768, 48000, 48000)
+        .unwrap();
+        assert!(
+            cursor.linear_reach(64).is_some(),
+            "one untuned slot must retain constant-work demand"
+        );
+    }
+
+    #[test]
+    fn native_slot_admission_covers_tuned_repeated_traversals() {
+        let looped = Loop {
+            start: 4096,
+            end: 65536,
+            mode: LoopMode::Continuous,
+            shape: LoopShape::Wrap,
+            passes: None,
+        };
+        let mut cursor = Playback {
+            loop_slots: [
+                Some(crate::LoopSlot {
+                    range: looped,
+                    tuning: 16.,
+                }),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ],
+            ..Default::default()
+        }
+        .cursor(131072, 48000, 48000)
+        .unwrap();
+        for _ in 0..65537 {
+            cursor.advance();
+        }
+        let mut pages = [false; 32];
+        cursor.visit_demand(4096, EnvelopeState::new(Envelope::default()), |_, range| {
+            for page in range.start / crate::PAGE_FRAMES..=(range.end - 1) / crate::PAGE_FRAMES {
+                pages[page] = true;
+            }
+            true
+        });
+        let actual = pages.into_iter().filter(|&p| p).count();
+        assert!(
+            cursor.reservation_pages(4096) >= actual,
+            "native tuning exceeds reserved pages: {} < {actual}",
+            cursor.reservation_pages(4096)
+        );
+    }
+
+    #[test]
+    fn native_slot_admission_covers_serial_shapes_rates_and_exits() {
+        for direction in [Direction::Forward, Direction::Reverse] {
+            for shape in [
+                LoopShape::Wrap,
+                LoopShape::Crossfade { frames: 64 },
+                LoopShape::PingPong,
+            ] {
+                for tuning in [0.5, 4., 16.] {
+                    for released in [false, true] {
+                        let slots = std::array::from_fn(|i| {
+                            Some(crate::LoopSlot {
+                                range: Loop {
+                                    start: 1024 * (2 + 3 * i),
+                                    end: 1024 * (3 + 3 * i),
+                                    mode: LoopMode::UntilRelease,
+                                    shape,
+                                    passes: std::num::NonZeroU32::new(2),
+                                },
+                                tuning,
+                            })
+                        });
+                        let mut cursor = Playback {
+                            direction,
+                            loop_slots: slots,
+                            ..Default::default()
+                        }
+                        .cursor(32768, 48000, 48000)
+                        .unwrap();
+                        for _ in 0..7000 {
+                            cursor.advance();
+                        }
+                        if released {
+                            cursor.release();
+                        }
+                        for frames in [1, 64, 256, 4096] {
+                            let mut pages = [false; 8];
+                            cursor.visit_demand(
+                                frames,
+                                EnvelopeState::new(Envelope::default()),
+                                |_, range| {
+                                    for page in range.start / crate::PAGE_FRAMES
+                                        ..=(range.end - 1) / crate::PAGE_FRAMES
+                                    {
+                                        pages[page] = true;
+                                    }
+                                    true
+                                },
+                            );
+                            let actual = pages.into_iter().filter(|&p| p).count();
+                            assert!(
+                                cursor.reservation_pages(frames) >= actual,
+                                "{direction:?} {shape:?} {tuning} {released} {frames}: {} < {actual}",
+                                cursor.reservation_pages(frames)
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn admission_footprints_cover_every_read_without_walking_the_horizon() {
+        use crate::{Loop, LoopMode, LoopShape, PAGE_FRAMES, Playback};
+        for direction in [Direction::Forward, Direction::Reverse] {
+            for shape in [
+                LoopShape::Wrap,
+                LoopShape::PingPong,
+                LoopShape::Crossfade { frames: 64 },
+                LoopShape::EqualPowerCrossfade { frames: 64 },
+            ] {
+                for step in [0.0625, 0.73, 1., 1.37, 2., 16.] {
+                    for passes in [None, std::num::NonZeroU32::new(2)] {
+                        let cursor = Playback {
+                            start: 3,
+                            end: Some(PAGE_FRAMES * 8 - 3),
+                            direction,
+                            loop_range: Some(Loop {
+                                start: PAGE_FRAMES - 20,
+                                end: PAGE_FRAMES * 2 + 20,
+                                shape,
+                                mode: LoopMode::Continuous,
+                                passes,
+                            }),
+                            ..Default::default()
+                        }
+                        .cursor(PAGE_FRAMES * 8, 48000, 48000)
+                        .unwrap()
+                        .with_step(step);
+                        for frames in [1, 64, 256, 4096] {
+                            let mut seen = [false; 8];
+                            cursor.visit_demand(
+                                frames,
+                                EnvelopeState::new(crate::Envelope::default()),
+                                |_, range| {
+                                    for page in
+                                        range.start / PAGE_FRAMES..=(range.end - 1) / PAGE_FRAMES
+                                    {
+                                        seen[page] = true;
+                                    }
+                                    true
+                                },
+                            );
+                            let actual = seen.iter().filter(|&&v| v).count();
+                            assert!(
+                                cursor.reservation_pages(frames) >= actual,
+                                "{direction:?} {shape:?} {step} {passes:?} {frames}: {} < {actual}",
+                                cursor.reservation_pages(frames)
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn a_linear_reach_covers_every_read_no_later_than_its_first_use() {

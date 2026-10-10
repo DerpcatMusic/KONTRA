@@ -29,12 +29,19 @@ impl std::convert::TryFrom<&ItemData> for AppSpecificProperties {
             });
         }
 
-        let subtree_item = SubtreeItem::read(&mut Cursor::new(&item.child().ok_or(NIFileError::Static("AppSpecific subtree is missing"))?.data))?;
+        let subtree_item = SubtreeItem::read(&mut Cursor::new(
+            &item
+                .child()
+                .ok_or(NIFileError::Static("AppSpecific subtree is missing"))?
+                .data,
+        ))?;
 
         let mut reader = Cursor::new(&item.data);
 
         let prop_version = reader.read_u32_le()?;
-        if prop_version != 1 {return Err(NIFileError::Static("Unsupported AppSpecific version"));}
+        if prop_version != 1 {
+            return Err(NIFileError::Static("Unsupported AppSpecific version"));
+        }
 
         let authoring_app: AuthoringApplication = reader.read_u32_le()?.into();
         let version = reader.read_widestring_utf16()?;

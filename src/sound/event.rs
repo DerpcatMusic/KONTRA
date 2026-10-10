@@ -54,7 +54,11 @@ pub enum NoteExpression {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Event {
     /// An exact host note: velocity 0..=1, initial tuning in semitones.
-    NoteOn { note: HostNote, velocity: f64, tune: f64 },
+    NoteOn {
+        note: HostNote,
+        velocity: f64,
+        tune: f64,
+    },
     NoteOff(HostPattern),
     Choke(HostPattern),
     Expression(HostPattern, NoteExpression),
@@ -66,14 +70,22 @@ pub enum Event {
 impl Event {
     /// A MIDI 1.0 channel voice message as a packet.
     pub fn midi1(status: u8, data1: u8, data2: u8) -> Self {
-        Self::Ump([0x2000_0000 | u32::from(status) << 16 | u32::from(data1 & 127) << 8 | u32::from(data2 & 127), 0])
+        Self::Ump([
+            0x2000_0000
+                | u32::from(status) << 16
+                | u32::from(data1 & 127) << 8
+                | u32::from(data2 & 127),
+            0,
+        ])
     }
 
     /// The MIDI channel this event is addressed to; None for host-wide patterns.
     pub fn channel(&self) -> Option<u8> {
         match self {
             Self::NoteOn { note, .. } => Some(note.channel),
-            Self::NoteOff(p) | Self::Choke(p) | Self::Expression(p, _) => u8::try_from(p.channel).ok(),
+            Self::NoteOff(p) | Self::Choke(p) | Self::Expression(p, _) => {
+                u8::try_from(p.channel).ok()
+            }
             Self::Ump([word, _]) => Some((word >> 16) as u8 & 15),
         }
     }

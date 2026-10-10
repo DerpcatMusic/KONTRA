@@ -1,6 +1,6 @@
 [package]
 name = "kontakto"
-version = "0.3.208"
+version = "0.3.403"
 edition = "2024"
 rust-version = "1.92"
 license = "Apache-2.0"
@@ -12,9 +12,9 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 
 [features]
 default = ["plugin", "clap", "vst3", "library-access"]
-# Opens encrypted library content with the library's own .nicnt access data.
+# Opens protected Kontakt and UVI library content through native readers.
 library-access = ["sampler-kontakt/library-access", "sampler-uvi/library-access"]
-plugin = ["sampler-kontakt/native-ui", "dep:moose", "dep:png", "dep:rfd", "dep:mui-native-dialog", "dep:mui-text", "dep:zune-jpeg", "dep:mlua", "dep:image-webp", "dep:resvg"]
+plugin = ["sampler-kontakt/native-ui", "dep:moose", "dep:mui", "dep:png", "dep:rfd", "dep:mui-native-dialog", "dep:mui-text", "dep:zune-jpeg", "dep:mlua", "dep:image-webp", "dep:resvg"]
 clap = ["plugin", "dep:moose-clap", "dep:clap-sys"]
 vst3 = ["plugin", "dep:moose-vst3"]
 standalone = ["plugin", "dep:moose-standalone"]
@@ -59,7 +59,7 @@ moose-clap = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b
 moose-vst3 = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b82119d38566ce7e932dc5c463d497", optional = true }
 moose-standalone = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b82119d38566ce7e932dc5c463d497", features = ["gui", "playback"], optional = true }
 clap-sys = { version = "0.5", optional = true }
-mui = { git = "https://github.com/Matari-Audio/MUI", features = ["cpu"], optional = true }
+mui = { git = "https://github.com/Matari-Audio/MUI", features = ["cpu", "reporting"], optional = true }
 # Library covers: the name typeset from the bundled font, and JPEG artwork the player picks.
 mui-text = { git = "https://github.com/Matari-Audio/MUI", optional = true }
 zune-jpeg = { version = "0.5", default-features = false, features = ["std"], optional = true }
@@ -76,6 +76,10 @@ libc = "0.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Wdk_System_SystemServices", "Win32_Foundation", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_System_LibraryLoader"] }
+
+[[bin]]
+name = "kontakto"
+path = "src/create_library.rs"
 
 [[bin]]
 name = "kontakto-standalone"
@@ -150,8 +154,10 @@ moose-vst3 = { path = "vendor/moose-vst3" }
 
 # MUI's vello with a fix for images vanishing after a partial redraw; see vendor/vello/PATCHES.md.
 [patch."https://github.com/Matari-Audio/MUI"]
+mui = { path = "vendor/mui" }
 moose-baseview = { path = "vendor/moose-baseview" }
 vello = { path = "vendor/vello" }
+mui-vello = { path = "vendor/mui-vello" }
 # moose-mui uses the distinct local kontra-native-host package. Keep upstream
 # mui-baseview available for its shared native accessibility and IME bridges.
 
@@ -159,8 +165,8 @@ vello = { path = "vendor/vello" }
 symphonia-format-riff = { path = "vendor/symphonia-format-riff" }
 
 [workspace]
-members = [".", "crates/sampler-core", "crates/sampler-native", "crates/sampler-perf", "crates/sampler-midi", "crates/sampler-ksp", "crates/sampler-kontakt", "crates/sampler-ui-ir", "crates/sampler-ir", "crates/sampler-simd", "crates/sampler-pool", "crates/sampler-uvi", "tools/corpus-health", "vendor/moose-mui", "vendor/moose-params", "vendor/moose-derive", "vendor/moose-clap", "vendor/moose-vst3", "vendor/mui-baseview"]
-exclude = ["vendor/ni-file", "vendor/ncw", "vendor/vello", "vendor/moose-baseview", "vendor/xim-rs", "vendor/symphonia-format-riff", "vendor/derpcat-flight-recorder", "vendor/buffr-durable-file"]
+members = ["vendor/mui-vello", ".", "crates/sampler-core", "crates/sampler-native", "crates/sampler-perf", "crates/sampler-midi", "crates/sampler-ksp", "crates/sampler-kontakt", "crates/sampler-ui-ir", "crates/sampler-ir", "crates/sampler-simd", "crates/sampler-pool", "crates/sampler-uvi", "tools/corpus-health", "vendor/moose-mui", "vendor/moose-params", "vendor/moose-derive", "vendor/moose-clap", "vendor/moose-vst3", "vendor/mui-baseview"]
+exclude = ["vendor/mui", "vendor/ni-file", "vendor/ncw", "vendor/vello", "vendor/moose-baseview", "vendor/xim-rs", "vendor/symphonia-format-riff", "vendor/derpcat-flight-recorder", "vendor/buffr-durable-file"]
 resolver = "3"
 
 # Optimized CI keeps release semantics while avoiding cross-crate ThinLTO.
@@ -170,4 +176,12 @@ lto = false
 
 [[example]]
 name = "uvi_ui_health"
+required-features = ["shots"]
+
+[[example]]
+name = "uvi_audit_pcm"
+required-features = ["shots"]
+
+[[example]]
+name = "ui_health"
 required-features = ["shots"]

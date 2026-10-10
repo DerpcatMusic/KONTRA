@@ -12,8 +12,9 @@
 //! reaches behaviors unchanged. No allocation or heap work occurs in `intercept`.
 use crate::{Applied, ApplyError, Message, Packet, Value, Version};
 use sampler_core::{
-    Driver, Error, Expression, Input, NotePitch, PerformanceId, Protocol, Runtime, RuntimeId,
-    Switch, SwitchKeys,
+    ChannelAddress, ControlContext, ControlDomain, ControlId, ControlValue, ControlWrite, Driver,
+    Error, Expression, Input, NotePitch, PerformanceId, Protocol, Runtime, RuntimeId, Switch,
+    SwitchKeys,
 };
 
 /// What to do with the packet after interception.
@@ -38,9 +39,9 @@ pub struct Articulator {
     selected: Option<u8>,
     /// Keys whose switch note-on was swallowed / forwarded, so a remap while
     /// held cannot strand the release or leave a note on.
-    // ponytail: per key, not per channel; two channels on one switch key share a bit.
-    swallowed: u128,
-    played: u128,
+    swallowed: [u128; 16],
+    played: [u128; 16],
+    selected_articulation: Option<u32>,
 }
 
 impl Articulator {
@@ -52,8 +53,9 @@ impl Articulator {
             port,
             tapped: None,
             selected: None,
-            swallowed: 0,
-            played: 0,
+            swallowed: [0; 16],
+            played: [0; 16],
+            selected_articulation: None,
         })
     }
 
@@ -62,6 +64,10 @@ impl Articulator {
     /// a script-owned instrument was asked for.
     pub fn selected(&self) -> Option<u8> {
         self.selected
+    }
+
+    pub fn selected_articulation(&self) -> Option<u32> {
+        self.selected_articulation
     }
 
     /// Apply the driver part of `packet` at `Runtime::now()`.
@@ -76,28 +82,49 @@ impl Articulator {
         let Some(voice) = packet.channel_voice() else {
             return Ok(Intercept::Forward);
         };
+        let channel = usize::from(voice.channel);
         let switching = runtime.switching();
         let driver = switching.driver();
         // A switch key's release follows its press, whatever the driver is now.
         match voice.message {
             Message::NoteOff { key, .. } if key < 128 => {
                 let bit = 1u128 << key;
-                if self.swallowed & bit != 0 {
-                    self.swallowed &= !bit;
+                if self.swallowed[channel] & bit != 0 {
+                    self.swallowed[channel] &= !bit;
                     return Ok(Intercept::Consumed(Applied::Ignored));
                 }
-                if self.played & bit != 0 {
-                    self.played &= !bit;
+                if self.played[channel] & bit != 0 {
+                    self.played[channel] &= !bit;
                     return Ok(Intercept::Forward);
                 }
             }
+            Message::NoteOn { key, velocity, .. }
+                if key < 128 && (switching.key_input(key).is_some() || switching.blocked(key)) =>
+            {
+                let switch = switching.key_input(key);
+                self.swallowed[channel] |= 1u128 << key;
+                if let Some(switch) = switch {
+                    // A physical press always reaches the authored action, even after another switch.
+                    self.tapped = None;
+                    self.switch(
+                        runtime,
+                        switch,
+                        voice.version,
+                        voice.group,
+                        voice.channel,
+                        velocity.normalized(),
+                    )?;
+                }
+                return Ok(Intercept::Consumed(Applied::Configuration));
+            }
             Message::NoteOn { key, .. } if switching.is_switch_key(key) => {
                 self.selected = Some(key);
+                self.selected_articulation = None;
                 let bit = 1u128 << key;
                 if driver != Driver::Keys && switching.keys() == SwitchKeys::Swallow {
-                    self.swallowed |= bit;
+                    self.swallowed[channel] |= bit;
                 } else {
-                    self.played |= bit;
+                    self.played[channel] |= bit;
                 }
             }
             _ => {}
@@ -148,6 +175,12 @@ impl Articulator {
         })
     }
 
+    /// Explicit UI selection uses source actions, independently of input mappings.
+    pub fn select(&mut self, runtime: &mut Runtime, switch: Switch) -> Result<(), Error> {
+        self.tapped = None;
+        self.switch(runtime, switch, Version::Midi1, 0, 0, 1.0)
+    }
+
     fn switch(
         &mut self,
         runtime: &mut Runtime,
@@ -158,6 +191,29 @@ impl Articulator {
         velocity: f64,
     ) -> Result<(), Error> {
         match switch {
+            Switch::Control { id, articulation } => {
+                let context = ControlContext {
+                    performance: self.performance,
+                    origin: ChannelAddress {
+                        protocol: Protocol::Midi1,
+                        port: self.port,
+                        group,
+                        channel,
+                    },
+                    channels: 1 << channel,
+                };
+                let plan = runtime.active_plan();
+                let id = ControlId(id);
+                let value = match runtime.control_definition(plan, id)?.domain {
+                    ControlDomain::Toggle => ControlValue::Toggle(true),
+                    ControlDomain::Integer { min, max } => {
+                        ControlValue::Integer(1i64.clamp(min, max))
+                    }
+                    ControlDomain::Real { min, max } => ControlValue::Real(1f64.clamp(min, max)),
+                };
+                runtime.invoke_control(context, plan, None, ControlWrite { id, value })?;
+                self.selected_articulation = Some(articulation);
+            }
             Switch::Articulation(id) => {
                 if runtime.articulation(self.performance)? != id {
                     runtime.set_articulation(self.performance, id)?;
@@ -183,6 +239,7 @@ impl Articulator {
                     Expression::default(),
                 )?;
                 runtime.note_off_in(self.performance, input, None)?;
+                self.selected_articulation = None;
                 self.tapped = Some(key);
                 self.selected = Some(key);
             }

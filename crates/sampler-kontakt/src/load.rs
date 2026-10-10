@@ -2,7 +2,7 @@
 //! the samples it needs, compile its scripts and lower it. What could not be
 //! carried over is returned with the plan, never dropped silently.
 
-use crate::{Kontakt, LoadError, Resources, read};
+use crate::{Kontakt, LoadError, Resources};
 use sampler_core::{Pcm, Prepared, lower::LowerError};
 use sampler_ir as ir;
 use sampler_ksp::model::Value;
@@ -159,10 +159,15 @@ pub fn load_cancelable(
         library: options.library.clone().or_else(|| Some(path.into())),
         ..options.clone()
     };
-    load_read(read(path)?, &options, progress, canceled)
+    load_read(
+        crate::read_with_controls(path, &options.control_values)?,
+        &options,
+        progress,
+        canceled,
+    )
 }
 
-/// [`load_cancelable`] for an instrument already [`read`], so a caller can
+/// [`load_cancelable`] for an instrument already [`crate::read`], so a caller can
 /// reshape its IR (say, give each group a bus) before samples are decoded.
 pub fn load_read(
     kontakt: Kontakt,
@@ -174,6 +179,7 @@ pub fn load_read(
         mut instrument,
         locations,
         mut samples,
+        initialized,
     } = kontakt;
     let (low, high) = (*options.keys.start(), *options.keys.end());
     let kept = instrument.retain_zones(|z| z.keys.low <= high && z.keys.high >= low);
@@ -212,7 +218,7 @@ pub fn load_read(
         .iter()
         .map(|&a| locations[a].display().to_string())
         .collect();
-    finish(instrument, pcm, labels, options)
+    finish_kept(instrument, pcm, labels, options, initialized).map(|(loaded, _)| loaded)
 }
 
 /// Load the Kontakt instrument at `path` streamed: only the frames where
@@ -228,21 +234,38 @@ pub fn load_streamed(
         library: options.library.clone().or_else(|| Some(path.into())),
         ..options.clone()
     };
-    load_read_streamed(read(path)?, &options, policy, progress)
+    load_read_streamed(
+        crate::read_with_controls(path, &options.control_values)?,
+        &options,
+        policy,
+        progress,
+    )
 }
 
-/// [`load_streamed`] for an instrument already [`read`]; pictures and
+/// [`load_streamed`] for an instrument already [`crate::read`]; pictures and
 /// resources come from [`Options::library`].
 pub fn load_read_streamed(
     kontakt: Kontakt,
     options: &Options,
     policy: &crate::StreamPolicy,
+    progress: impl FnMut(Progress),
+) -> Result<crate::Streamed, LoadError> {
+    load_read_streamed_cancelable(kontakt, options, policy, progress, &|| false)
+}
+
+/// Streamed load with cancellation polled during source/header startup.
+pub fn load_read_streamed_cancelable(
+    kontakt: Kontakt,
+    options: &Options,
+    policy: &crate::StreamPolicy,
     mut progress: impl FnMut(Progress),
+    canceled: &(dyn Fn() -> bool + Sync),
 ) -> Result<crate::Streamed, LoadError> {
     let Kontakt {
         mut instrument,
         locations,
         mut samples,
+        initialized,
     } = kontakt;
     let (low, high) = (*options.keys.start(), *options.keys.end());
     let kept = instrument.retain_zones(|z| z.keys.low <= high && z.keys.high >= low);
@@ -250,26 +273,54 @@ pub fn load_read_streamed(
         zones: instrument.zones.len(),
         assets: kept.len(),
     });
-    let mut sources = Vec::with_capacity(kept.len());
-    for &asset in &kept {
-        let location = &locations[asset];
-        sources.push((
-            std::sync::Arc::new(
-                samples
-                    .source(location)
-                    .map_err(|e| e.at(crate::Stage::SampleResolve))?,
-            ) as std::sync::Arc<dyn crate::AssetSource>,
-            location.as_path(),
-        ));
+    let span = crate::audit::Span::new("sample_source_resolve");
+    let listed: Vec<_> = kept
+        .iter()
+        .map(|&asset| locations[asset].as_path())
+        .collect();
+    let cached = options
+        .library
+        .as_deref()
+        .and_then(|preset| crate::header_cache::load(preset, &listed, &mut samples));
+    let hit = cached.is_some();
+    let resolved = match cached {
+        Some(sources) => sources,
+        None => samples
+            .sources(&listed, canceled)
+            .map_err(|e| e.at(crate::Stage::SampleResolve))?,
+    };
+    let sources: Vec<_> = resolved.into_iter().map(std::sync::Arc::new).collect();
+    let registry = sources
+        .iter()
+        .cloned()
+        .zip(listed.iter().copied())
+        .map(|(source, path)| (source as std::sync::Arc<dyn crate::AssetSource>, path))
+        .collect();
+    drop(samples);
+    if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
+        eprintln!(
+            "AUDIT {{\"stage\":\"sample_header_cache\",\"hit\":{}}}",
+            hit
+        );
     }
-    let opened = crate::stream::Streamer::open(sources, options.rate, policy, 32)?;
+    drop(span);
+    let opened = crate::stream::Streamer::open(registry, options.rate, policy, 32, canceled)?;
+    if !hit && !canceled() {
+        if let Some(preset) = options.library.as_deref() {
+            crate::header_cache::store(preset, &listed, &sources, &opened.assets);
+        }
+    }
+    drop(sources);
+    if canceled() {
+        return Err(LoadError::Canceled);
+    }
     let pcm = opened.assets.clone();
     progress(Progress::Lowering);
     let labels = kept
         .iter()
         .map(|&a| locations[a].display().to_string())
         .collect();
-    let (loaded, kept) = finish_kept(instrument, pcm, labels, options)?;
+    let (loaded, kept) = finish_kept(instrument, pcm, labels, options, initialized)?;
     crate::Streamed::new(loaded, opened, kept)
 }
 
@@ -289,10 +340,10 @@ pub fn stream_instrument(
         .iter()
         .map(|&asset| (sources[asset].clone(), Path::new(labels[asset].as_str())))
         .collect();
-    let opened = crate::stream::Streamer::open(listed, options.rate, policy, 32)?;
+    let opened = crate::stream::Streamer::open(listed, options.rate, policy, 32, &|| false)?;
     let pcm = opened.assets.clone();
     let labels = kept.iter().map(|&a| labels[a].clone()).collect();
-    let (loaded, kept) = finish_kept(instrument, pcm, labels, options)?;
+    let (loaded, kept) = finish_kept(instrument, pcm, labels, options, None)?;
     crate::Streamed::new(loaded, opened, kept)
 }
 
@@ -305,7 +356,7 @@ pub fn finish(
     labels: Vec<String>,
     options: &Options,
 ) -> Result<Loaded, LoadError> {
-    finish_kept(instrument, pcm, labels, options).map(|(loaded, _)| loaded)
+    finish_kept(instrument, pcm, labels, options, None).map(|(loaded, _)| loaded)
 }
 
 /// [`finish`], also returning the assets the plan kept, in its order.
@@ -314,6 +365,7 @@ fn finish_kept(
     pcm: Vec<Pcm>,
     labels: Vec<String>,
     options: &Options,
+    initialized: Option<ScriptInit>,
 ) -> Result<(Loaded, Vec<Pcm>), LoadError> {
     let mut playable = vec![true; instrument.zones.len()];
     for (index, zone) in instrument.zones.iter_mut().enumerate() {
@@ -323,8 +375,24 @@ fn finish_kept(
             .group
             .map_or(0.0, |g| instrument.groups[g.0].tune.semitones());
         let ratio = f64::from(audio.sample_rate()) / f64::from(options.rate);
+        let wavetable = zone
+            .group
+            .is_some_and(|g| instrument.groups[g.0].wavetable.is_some());
         playable[index] = fit(&mut zone.playback, audio.frame_count() as u64, &mut report)
-            && fit_keys(zone, group_tune, ratio, &mut report);
+            && (wavetable || fit_keys(zone, group_tune, ratio, &mut report));
+        if playable[index]
+            && wavetable
+            && (zone.playback.start % 2048 != 0
+                || (zone.playback.end.unwrap_or(audio.frame_count() as u64) - zone.playback.start)
+                    % 2048
+                    != 0)
+        {
+            report.push((
+                "wavetable requires complete 2048-frame cycles, zone dropped",
+                "invalid cycle geometry".into(),
+            ));
+            playable[index] = false;
+        }
         let location = format!("zone {index} ({})", labels[zone.asset.0]);
         instrument
             .unsupported
@@ -347,7 +415,11 @@ fn finish_kept(
         .map(|(_, p)| p)
         .collect::<Vec<_>>();
     let kept = pcm.clone();
-    Ok((prepare(instrument, pcm, options)?, kept))
+    Ok((
+        prepare_inner(instrument, pcm, options, initialized)
+            .map_err(|e| e.at(crate::Stage::Prepare))?,
+        kept,
+    ))
 }
 
 /// The instrument volume as a host parameter: zones lose the saved volume and
@@ -544,7 +616,7 @@ pub fn prepare(
     pcm: Vec<Pcm>,
     options: &Options,
 ) -> Result<Loaded, LoadError> {
-    prepare_inner(instrument, pcm, options).map_err(|e| e.at(crate::Stage::Prepare))
+    prepare_inner(instrument, pcm, options, None).map_err(|e| e.at(crate::Stage::Prepare))
 }
 
 /// What a script may query while its `on init` runs.
@@ -558,7 +630,21 @@ pub(crate) fn script_environment(
     sampler_ksp::Environment {
         evaluation_budget: None,
         groups,
-        engine_values: Default::default(),
+        engine_values: source
+            .engine_values
+            .iter()
+            .map(|value| {
+                (
+                    [
+                        i32::from(value.parameter),
+                        value.group,
+                        value.slot,
+                        value.generic,
+                    ],
+                    value.value,
+                )
+            })
+            .collect(),
         engine_lookups: sampler_core::lower::source_engine_lookups(source),
         slot: behavior.slot.unwrap_or(index.min(u8::MAX.into()) as u8),
         control_values: Default::default(),
@@ -589,6 +675,108 @@ pub(crate) fn script_environment(
             })
             .collect(),
         performance_view,
+        midi_object: Default::default(),
+    }
+}
+
+#[cfg(test)]
+thread_local! { static SCRIPT_INIT_RUNS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+#[cfg(all(feature = "scan", not(test)))]
+static SCRIPT_INIT_RUNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Actual initializer count across loader workers in one isolated scanner process.
+#[cfg(any(test, feature = "scan"))]
+pub fn take_script_init_runs() -> usize {
+    #[cfg(test)]
+    {
+        SCRIPT_INIT_RUNS.replace(0)
+    }
+    #[cfg(not(test))]
+    {
+        SCRIPT_INIT_RUNS.swap(0, std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+pub(crate) struct ScriptInit {
+    pub control_values: Vec<(sampler_core::ControlId, i32)>,
+    pub states: Vec<Option<Result<sampler_ksp::Initialized, String>>>,
+    pub resources: Option<Resources>,
+}
+
+pub(crate) fn initialize_scripts(
+    instrument: &mut ir::Instrument,
+    library: Option<&Path>,
+    groups: Vec<String>,
+    control_values: &[(sampler_core::ControlId, i32)],
+) -> ScriptInit {
+    let resources = library.map(Resources::of).map(std::cell::RefCell::new);
+    let mut views = Vec::new();
+    let mut midi_object = sampler_core::MidiObject::default();
+    let states = instrument
+        .behaviors
+        .iter()
+        .enumerate()
+        .map(|(index, behavior)| {
+            let mut performance_view = Default::default();
+            if let Some(name) = sampler_ksp::nckp::view_name(&behavior.source) {
+                let path = format!("Resources/performance_view/{name}.nckp");
+                let parsed = match resources.as_ref().and_then(|r| r.borrow_mut().read(&path)) {
+                    Some(bytes) => sampler_ksp::nckp::parse(&bytes),
+                    None => Err("not found in the library".into()),
+                };
+                match parsed {
+                    Ok((view, skipped)) => {
+                        performance_view = view;
+                        views.extend(skipped.into_iter().map(|value| ir::Unsupported {
+                            location: path.clone(),
+                            feature: "performance view control".into(),
+                            value,
+                            reason: ir::Reason::NotModeled,
+                        }));
+                    }
+                    Err(value) => views.push(ir::Unsupported {
+                        location: behavior.name.clone(),
+                        feature: "performance view".into(),
+                        value: format!("{path}: {value}"),
+                        reason: ir::Reason::InvalidValue,
+                    }),
+                }
+            }
+            let mut environment = script_environment(
+                behavior,
+                index,
+                groups.clone(),
+                &instrument.source_indices,
+                performance_view,
+            );
+            environment.midi_object = midi_object.clone();
+            environment.control_values.extend(
+                control_values
+                    .iter()
+                    .map(|&(id, value)| (id, Value::Int(value))),
+            );
+            (behavior.language == ir::Language::Ksp).then(|| {
+                #[cfg(feature = "scan")]
+                sampler_ksp::scan::attempt("runtime-preparation");
+                #[cfg(test)]
+                SCRIPT_INIT_RUNS.set(SCRIPT_INIT_RUNS.get() + 1);
+                #[cfg(all(feature = "scan", not(test)))]
+                SCRIPT_INIT_RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                sampler_ksp::initialize(
+                    &behavior.source,
+                    sampler_ksp::Limits::LIBRARY,
+                    &environment,
+                )
+                .inspect(|initialized| midi_object = initialized.midi_object().clone())
+                .map_err(|e| e.to_string())
+            })
+        })
+        .collect();
+    instrument.unsupported.append(&mut views);
+    ScriptInit {
+        control_values: control_values.to_vec(),
+        states,
+        resources: resources.map(std::cell::RefCell::into_inner),
     }
 }
 
@@ -602,60 +790,59 @@ pub fn compile_ui(
     Vec<sampler_ui_ir::Interface>,
     Option<Resources>,
 ) {
+    compile_ui_initialized(instrument, options, None)
+}
+
+fn compile_ui_initialized(
+    instrument: &mut ir::Instrument,
+    options: &Options,
+    initialized: Option<ScriptInit>,
+) -> (
+    Vec<sampler_ksp::Script>,
+    Vec<sampler_ui_ir::Interface>,
+    Option<Resources>,
+) {
     let (rate, scripts) = (options.rate, options.scripts);
-    let resources = options.library.as_deref().map(Resources::of);
+    // Reuse translated init only for the same host state; late callers may supply different overrides.
+    let initialized = initialized.filter(|init| init.control_values == options.control_values);
+    let ScriptInit {
+        mut states,
+        resources,
+        ..
+    } = initialized.unwrap_or_else(|| {
+        let groups = instrument.groups.iter().map(|g| g.name.clone()).collect();
+        initialize_scripts(
+            instrument,
+            options.library.as_deref(),
+            groups,
+            &options.control_values,
+        )
+    });
     let limits = sampler_ksp::Limits::LIBRARY;
     let mut compiled = Vec::new();
     let mut names = Vec::new();
     let resources = resources.map(std::cell::RefCell::new);
-    let groups: Vec<String> = instrument.groups.iter().map(|g| g.name.clone()).collect();
-    let mut views = Vec::new();
     for (index, behavior) in instrument.behaviors.iter().enumerate() {
-        let mut performance_view = Default::default();
-        if let Some(name) = sampler_ksp::nckp::view_name(&behavior.source) {
-            let path = format!("Resources/performance_view/{name}.nckp");
-            let parsed = match resources.as_ref().and_then(|r| r.borrow_mut().read(&path)) {
-                Some(bytes) => sampler_ksp::nckp::parse(&bytes),
-                None => Err("not found in the library".into()),
-            };
-            match parsed {
-                Ok((view, skipped)) => {
-                    performance_view = view;
-                    views.extend(skipped.into_iter().map(|value| ir::Unsupported {
-                        location: path.clone(),
-                        feature: "performance view control".into(),
-                        value,
-                        reason: ir::Reason::NotModeled,
-                    }));
-                }
-                Err(value) => views.push(ir::Unsupported {
-                    location: behavior.name.clone(),
-                    feature: "performance view".into(),
-                    value: format!("{path}: {value}"),
-                    reason: ir::Reason::InvalidValue,
-                }),
-            }
-        }
-        let mut environment = script_environment(behavior, index, groups.clone(), &instrument.source_indices, performance_view);
-        environment.control_values.extend(
-            options
-                .control_values
-                .iter()
-                .map(|&(id, value)| (id, Value::Int(value))),
-        );
         let result = match behavior.language {
             _ if !scripts => Err("scripts disabled".to_string()),
-            ir::Language::Ksp => {
-                #[cfg(feature="scan")]
-                sampler_ksp::scan::attempt("runtime-preparation");
-                sampler_ksp::compile_with(&behavior.source, rate, limits, &[], &environment)
-                    .map_err(|e| e.to_string())
-            }
+            ir::Language::Ksp => states[index]
+                .take()
+                .expect("KSP initialized")
+                .and_then(|init| {
+                    sampler_ksp::compile_initialized(&behavior.source, rate, limits, &[], init)
+                        .map_err(|e| e.to_string())
+                }),
             ref other => Err(format!("{other:?} has no frontend")),
         };
         match result {
             Ok(script) => {
-                if !cfg!(feature="native-ui") && script.model().requests.iter().any(|r| r.command == "load_native_ui") {
+                if !cfg!(feature = "native-ui")
+                    && script
+                        .model()
+                        .requests
+                        .iter()
+                        .any(|r| r.command == "load_native_ui")
+                {
                     instrument.unsupported.push(ir::Unsupported {
                         location: behavior.name.clone(), feature: "native interface".into(),
                         value: "The requested native performance view is unavailable; showing the script controls.".into(),
@@ -684,7 +871,6 @@ pub fn compile_ui(
             }),
         }
     }
-    instrument.unsupported.append(&mut views);
     let picture = |path: &str| resources.as_ref()?.borrow_mut().picture(path);
     let mut interfaces = Vec::new();
     for (script, name) in compiled.iter().zip(&names) {
@@ -698,6 +884,7 @@ pub fn compile_ui(
             }),
         }
     }
+    super::keyswitch_ui::normalize(instrument, &interfaces, &compiled);
     (
         compiled,
         interfaces,
@@ -709,11 +896,15 @@ fn prepare_inner(
     mut instrument: ir::Instrument,
     pcm: Vec<Pcm>,
     options: &Options,
+    initialized: Option<ScriptInit>,
 ) -> Result<Loaded, LoadError> {
     let rate = options.rate;
     host_volume(&mut instrument);
     let lower_options = sampler_core::lower::Options { mpe: options.mpe };
-    let (compiled, interfaces, resources) = compile_ui(&mut instrument, options);
+    let ui_span = crate::audit::Span::new("script_ui_prepare");
+    let (compiled, interfaces, resources) =
+        compile_ui_initialized(&mut instrument, options, initialized);
+    drop(ui_span);
     // ponytail: lowering hands the closure every behavior but binding uses
     // only the compiled ones; failed scripts simply have no module.
     if compiled.is_empty() && !instrument.behaviors.is_empty() {
@@ -750,32 +941,55 @@ fn prepare_inner(
     }
     let mut automation = Vec::new();
     for binding in &instrument.script_automation {
-        let target = compiled.iter().find(|script| script.view().slot() == binding.source_slot)
-            .and_then(|script| script.model().interface.widgets.iter()
-                .filter(|w| w.kind == sampler_ksp::model::WidgetKind::Slider)
-                .nth(binding.slider as usize));
+        let target = compiled
+            .iter()
+            .find(|script| script.view().slot() == binding.source_slot)
+            .and_then(|script| {
+                script
+                    .model()
+                    .interface
+                    .widgets
+                    .iter()
+                    .filter(|w| w.kind == sampler_ksp::model::WidgetKind::Slider)
+                    .nth(binding.slider as usize)
+            });
         if let Some(widget) = target {
             automation.push(sampler_core::AutomationBinding {
                 source: match binding.source {
-                    ir::ScriptAutomationSource::Controller(cc) => sampler_core::AutomationSource::Controller(cc),
-                    ir::ScriptAutomationSource::HostParameter(address) => sampler_core::AutomationSource::HostParameter(address),
+                    ir::ScriptAutomationSource::Controller(cc) => {
+                        sampler_core::AutomationSource::Controller(cc)
+                    }
+                    ir::ScriptAutomationSource::HostParameter(address) => {
+                        sampler_core::AutomationSource::HostParameter(address)
+                    }
                 },
-                source_slot: binding.source_slot, ui_id: widget.ui_id,
-                low: binding.low, high: binding.high, soft_takeover: binding.soft_takeover,
+                source_slot: binding.source_slot,
+                ui_id: widget.ui_id,
+                low: binding.low,
+                high: binding.high,
+                soft_takeover: binding.soft_takeover,
             });
         } else {
-            instrument.unsupported.push(ir::Unsupported { location: format!("script slot {}",binding.source_slot),
-                feature: "saved automation slider".into(), value: binding.slider.to_string(), reason: ir::Reason::InvalidValue });
+            instrument.unsupported.push(ir::Unsupported {
+                location: format!("script slot {}", binding.source_slot),
+                feature: "saved automation slider".into(),
+                value: binding.slider.to_string(),
+                reason: ir::Reason::InvalidValue,
+            });
         }
     }
     let scripts = compiled.iter().map(sampler_ksp::Script::view).collect();
+    let lower_span = crate::audit::Span::new("core_lower_bindings");
     let lowered =
         sampler_core::lower::lower_with(&instrument, rate, pcm, &lower_options, |_, plan| {
-            sampler_ksp::bind_modules(compiled, plan).and_then(|plan| plan.with_automation_bindings(automation)).map_err(|e| LowerError::Behavior {
-                module: "KSP".into(),
-                message: e.to_string(),
-            })
+            sampler_ksp::bind_modules(compiled, plan)
+                .and_then(|plan| plan.with_automation_bindings(automation))
+                .map_err(|e| LowerError::Behavior {
+                    module: "KSP".into(),
+                    message: e.to_string(),
+                })
         });
+    drop(lower_span);
     let dynamics = power_on(&instrument, options.dynamics_start);
     Ok(Loaded {
         plan: powered(lowered.map_err(LoadError::Lower)?, &instrument, &dynamics),
@@ -931,18 +1145,38 @@ mod automation_tests {
             source: "on init declare ui_label $label(1,1) declare ui_slider $unused(0,127) declare ui_knob $knob(0,100,1) declare ui_slider $target(20,100) declare $observed end on on ui_control($target) $observed := $target end on".into(),
         });
         instrument.script_automation.push(ir::ScriptAutomation {
-            source: ir::ScriptAutomationSource::Controller(21), source_slot: 3, slider: 1,
-            low: 0., high: 1., soft_takeover: false,
+            source: ir::ScriptAutomationSource::Controller(21),
+            source_slot: 3,
+            slider: 1,
+            low: 0.,
+            high: 1.,
+            soft_takeover: false,
         });
         let loaded = prepare(instrument, vec![], &Options::default()).unwrap();
         let limits = sampler_core::Limits::for_plan(&loaded.plan, 4, 8);
         let mut rt = sampler_core::Runtime::new(loaded.plan, limits).unwrap();
-        rt.dispatch_controller(rt.performance(0).unwrap(), sampler_core::ChannelAddress {
-            protocol: sampler_core::Protocol::Native, port: 0, group: 0, channel: 0,
-        }, 1, 21, (u64::from(u32::MAX)*64/127) as u32).unwrap();
+        rt.dispatch_controller(
+            rt.performance(0).unwrap(),
+            sampler_core::ChannelAddress {
+                protocol: sampler_core::Protocol::Native,
+                port: 0,
+                group: 0,
+                channel: 0,
+            },
+            1,
+            21,
+            (u64::from(u32::MAX) * 64 / 127) as u32,
+        )
+        .unwrap();
         let id = rt.widget_id(rt.active_plan(), 3, 32771).unwrap();
-        assert_eq!(rt.widget_value(rt.active_plan(),id,0),Ok(sampler_core::WidgetValue::Integer(60)));
-        assert_eq!(rt.script_cell(rt.active_plan(),sampler_core::ScriptInstanceId(0),1),Ok(60));
+        assert_eq!(
+            rt.widget_value(rt.active_plan(), id, 0),
+            Ok(sampler_core::WidgetValue::Integer(60))
+        );
+        assert_eq!(
+            rt.script_cell(rt.active_plan(), sampler_core::ScriptInstanceId(0), 1),
+            Ok(60)
+        );
     }
 }
 
@@ -950,23 +1184,135 @@ mod automation_tests {
 mod native_lookup_tests {
     use super::*;
     #[test]
+    fn init_envelope_write_reaches_pcm_through_production_prepare() {
+        let mut instrument = ir::Instrument::default();
+        instrument.assets.push(ir::Asset {
+            location: ir::AssetLocation::Path("synthetic.wav".into()),
+            encoding: ir::Encoding::Wav,
+            root_key: None,
+            loops: vec![],
+        });
+        instrument.groups.push(ir::Group::default());
+        instrument.modulators.push(ir::Modulator {
+            scope: ir::Scope::Voice,
+            source: ir::ModulationSource::Envelope(ir::Envelope::default()),
+        });
+        let mut zone = ir::Zone::new(ir::AssetRef(0));
+        zone.keys = ir::KeyRange { low: 60, high: 60 };
+        zone.group = Some(ir::GroupRef(0));
+        zone.amplitude = Some(ir::ModulatorRef(0));
+        instrument.zones.push(zone);
+        instrument
+            .source_indices
+            .modulators
+            .push(ir::SourceModulator {
+                group: 0,
+                slot: 9,
+                external: false,
+                name: "ENV_AHDSR".into(),
+                runtime: Some(ir::ModulatorRef(0)),
+            });
+        instrument
+            .source_indices
+            .engine_lookups
+            .push(ir::SourceEngineLookup {
+                group: 0,
+                owner: -1,
+                target: false,
+                name: "ENV_AHDSR".into(),
+                index: 9,
+            });
+        instrument.behaviors.push(ir::Behavior {name:"synthetic envelope init".into(),language:ir::Language::Ksp,slot:Some(0),state:vec![],requires:vec![],source:"on init set_engine_par($ENGINE_PAR_ATTACK,200809,0,find_mod(0,\"ENV_AHDSR\"),-1) end on".into()});
+        let loaded = prepare(
+            instrument,
+            vec![Pcm::new(48000, vec![[0.5; 2]; 4096].into_boxed_slice()).unwrap()],
+            &Options {
+                mpe: None,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(loaded.plan.engine_parameter_bindings().len(), 6);
+        let limits = sampler_core::Limits::for_plan(&loaded.plan, 4, 4);
+        let mut runtime = sampler_core::Runtime::new(loaded.plan, limits).unwrap();
+        runtime
+            .trigger(
+                sampler_core::Input {
+                    protocol: sampler_core::Protocol::Native,
+                    port: 0,
+                    group: 0,
+                    channel: 0,
+                    key: 60,
+                    external_id: None,
+                },
+                60,
+                1.,
+            )
+            .unwrap();
+        let mut out = [[0.; 2]; 257];
+        runtime.render(&mut out).unwrap();
+        assert!(
+            (out[256][0] - 0.5 * 256. / 480.).abs() < 0.01,
+            "init engine write must change rendered attack"
+        );
+        assert!(
+            runtime
+                .take_engine_parameter_outcome()
+                .is_some_and(|outcome| outcome.result.is_ok())
+        );
+    }
+    #[test]
     fn physical_mod_and_target_names_resolve_during_init_and_note() {
         let mut instrument = ir::Instrument::default();
-        instrument.groups = ["muted", "hole", "live"].into_iter().map(|name| ir::Group { name:name.into(), ..Default::default() }).collect();
+        instrument.groups = ["muted", "hole", "live"]
+            .into_iter()
+            .map(|name| ir::Group {
+                name: name.into(),
+                ..Default::default()
+            })
+            .collect();
         instrument.source_indices.engine_lookups = vec![
-            ir::SourceEngineLookup {group:2,owner:-1,target:false,name:"Source".into(),index:12},
-            ir::SourceEngineLookup {group:2,owner:12,target:true,name:"Cutoff".into(),index:3},
+            ir::SourceEngineLookup {
+                group: 2,
+                owner: -1,
+                target: false,
+                name: "Source".into(),
+                index: 12,
+            },
+            ir::SourceEngineLookup {
+                group: 2,
+                owner: 12,
+                target: true,
+                name: "Cutoff".into(),
+                index: 3,
+            },
         ];
         instrument.behaviors.push(ir::Behavior { name:"lookup".into(),language:ir::Language::Ksp,slot:Some(3),state:vec![],requires:vec![],
             source:"on init declare $mod := get_mod_idx(2,\"source\") declare $target := get_target_idx(2,$mod,\"cutoff\") declare $group := find_group(\"live\") declare $note_mod declare $note_target end on on note $note_mod := get_mod_idx(2,\"SOURCE\") $note_target := get_target_idx(2,$note_mod,\"CUTOFF\") end on".into() });
-        let lookups = sampler_core::lower::source_engine_lookups(&instrument.source_indices);
-        let loaded = prepare(instrument,vec![],&Options::default()).unwrap();
-        let plan=loaded.plan.with_engine_parameters(vec![],lookups).unwrap();
-        let limits=sampler_core::Limits::for_plan(&plan,4,8);
-        let mut rt=sampler_core::Runtime::new(plan,limits).unwrap();
-        let cell=|rt:&sampler_core::Runtime,index| rt.script_cell(rt.active_plan(),sampler_core::ScriptInstanceId(0),index);
-        assert_eq!(cell(&rt,0),Ok(12)); assert_eq!(cell(&rt,1),Ok(3)); assert_eq!(cell(&rt,2),Ok(2));
-        rt.trigger(sampler_core::Input { protocol:sampler_core::Protocol::Native,port:0,group:0,channel:0,key:60,external_id:None },60,1.).unwrap();
-        assert_eq!(cell(&rt,3),Ok(12)); assert_eq!(cell(&rt,4),Ok(3));
+        let loaded = prepare(instrument, vec![], &Options::default()).unwrap();
+        let plan = loaded.plan;
+        let limits = sampler_core::Limits::for_plan(&plan, 4, 8);
+        let mut rt = sampler_core::Runtime::new(plan, limits).unwrap();
+        let cell = |rt: &sampler_core::Runtime, index| {
+            rt.script_cell(rt.active_plan(), sampler_core::ScriptInstanceId(0), index)
+        };
+        assert_eq!(cell(&rt, 0), Ok(12));
+        assert_eq!(cell(&rt, 1), Ok(3));
+        assert_eq!(cell(&rt, 2), Ok(2));
+        rt.trigger(
+            sampler_core::Input {
+                protocol: sampler_core::Protocol::Native,
+                port: 0,
+                group: 0,
+                channel: 0,
+                key: 60,
+                external_id: None,
+            },
+            60,
+            1.,
+        )
+        .unwrap();
+        assert_eq!(cell(&rt, 3), Ok(12));
+        assert_eq!(cell(&rt, 4), Ok(3));
     }
 }

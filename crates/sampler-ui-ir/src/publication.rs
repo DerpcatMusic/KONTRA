@@ -36,7 +36,7 @@ impl InterfacePatch {
             styles: (base.styles != current.styles).then(|| current.styles.clone()),
             icon: ((base.icon, base.icon_hidden) != (current.icon, current.icon_hidden))
                 .then_some((current.icon, current.icon_hidden)),
-            native_ui: (base.native_ui != current.native_ui).then(||current.native_ui.clone()),
+            native_ui: (base.native_ui != current.native_ui).then(|| current.native_ui.clone()),
             unsupported: (base.unsupported != current.unsupported)
                 .then(|| current.unsupported.clone()),
         }
@@ -67,7 +67,8 @@ impl InterfacePatch {
                 .clone_from(self.styles.as_ref().unwrap_or(&base.styles));
         }
         if self.native_ui != previous.native_ui {
-            view.native_ui.clone_from(self.native_ui.as_ref().unwrap_or(&base.native_ui));
+            view.native_ui
+                .clone_from(self.native_ui.as_ref().unwrap_or(&base.native_ui));
         }
         if self.unsupported != previous.unsupported {
             view.unsupported

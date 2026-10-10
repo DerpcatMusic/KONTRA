@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Runnable check for shard timeout, per-item reuse, TSV escaping and changed-input invalidation."""
 import importlib.util
+import os
 import json
 from pathlib import Path
 import subprocess
@@ -18,8 +19,15 @@ with tempfile.TemporaryDirectory() as tmp:
     manifest = root / 'items.tsv'
     manifest.write_text(f'kontakt\t{good}\nkontakt\t{hung}\n')
     engine = root / 'engine'
-    engine.write_text('#!/usr/bin/env python3\nimport sys,json,time\n'
-                      'if "hung" in sys.argv[2]: time.sleep(60)\n'
+    engine.write_text('#!/usr/bin/env python3\nimport sys,json,time,os\n'
+                      'from pathlib import Path\n'
+                      'if "hung" in sys.argv[2] or "partial" in sys.argv[2]:\n'
+                      '  progress={"stage":"sample-preload","completed_bytes":123}\n'
+                      '  if "partial" in sys.argv[2]: progress.update(loads="yes",plays_note="yes")\n'
+                      '  Path(sys.argv[3],"progress.json").write_text(json.dumps(progress))\n'
+                      '  if "partial" in sys.argv[2]: print(json.dumps(progress),flush=True)\n'
+                      '  time.sleep(60)\n'
+                      'assert os.environ.get("KONTRA_UVI_STATIC_PCM_CACHE")=="0"\n'
                       'print(json.dumps({"loads":"yes","ui":"original-ok","plays_note":"silent","reason":"x\\ty\\nz"}))\n')
     engine.chmod(0o755)
     args = [sys.executable, str(driver), '--engine', str(engine), '--list', str(manifest),
@@ -28,7 +36,13 @@ with tempfile.TemporaryDirectory() as tmp:
     records = [json.loads(p.read_text()) for p in (root / 'out/cache').glob('*.json')]
     assert len(records) == 2
     assert any(r['loads'] == 'yes' for r in records)
-    assert any(r['timed_out'] and r['loads'] == 'no' for r in records)
+    incomplete = next(r for r in records if r['timed_out'])
+    assert incomplete['loads'] == 'incomplete' and incomplete['ui'] == 'incomplete'
+    assert incomplete['incomplete'] and incomplete['stage'] == 'sample-preload'
+    assert incomplete['completed_bytes'] == 123
+    partial = scanner.probe(engine, str(root / 'partial.nki'), root / 'partial', 0.3, False)
+    assert partial['incomplete'] and partial['loads'] == 'yes' and partial['plays_note'] == 'yes'
+    assert partial['ui'] == 'incomplete' and partial['stage'] == 'sample-preload'
     assert len((root / 'out/results.tsv').read_text().splitlines()) == 3
     result = subprocess.run(args, check=True, capture_output=True, text=True)
     assert 'new=0 reused=2' in result.stdout
@@ -39,16 +53,28 @@ with tempfile.TemporaryDirectory() as tmp:
     assert len((root/'out/results.tsv').read_text().splitlines())==3 # stale signature never duplicates a row
     assert scanner.items(str(manifest)) == [str(good), str(hung)]
 assert scanner.extra_columns({'loads':'yes','plays_note':'silent','ui':'no-ui','programs':[{'pick':None}]})['plays_note']=='no'
+# An incomplete watchdog observation is neither paint failure nor paint success.
+incomplete=scanner.extra_columns({'loads':'yes','ui':'original-ok','programs':[{'views':[{
+ 'source_presentation':'native-package','font_declared':None,
+ 'image_preparation':{'completed':2,'completed_bytes':1024},
+ 'renders':[{'ok':False,'incomplete':True,'stage':'asset-preparation','pending':3}]}]}]})
+assert incomplete['ui']=='incomplete' and incomplete['paint_ok']=='unknown' and incomplete['paint_error']==''
+assert incomplete['programs'][0]['views'][0]['image_preparation']['completed']==2
+mixed=scanner.extra_columns({'ui':'error','programs':[{'views':[{'renders':[
+ {'ok':False,'incomplete':True,'stage':'asset-preparation'},
+ {'ok':False,'reason':'paint failed'}]}]}]})
+assert mixed['ui']=='error' and mixed['paint_ok']=='no' and mixed['paint_error']=='paint failed'
 # Phase failures, MUI budgets, slot partitions and fixed dictionaries share one exporter.
 r=scanner.extra_columns({'ui':'error','programs':[{'source':'kontakt','program':0,'pick':[62,64],
  'ksp':{'compile_ok':'yes','init_ok':'yes','slots':[{'compile_ok':True,'compile_clean':False,'disabled_block_errors':2,'init':{'completion':'completed'},'persistence_changed':{'completion':'failed','fault':{'category':'fuel-budget'}}}]},
  'views':[{'renders':[{'ok':False,'budget_hit':True,'reason':'MUI tree budget'}],'kinds':{'ui_knob':2}}]}],
- 'metadata':{'slots':[{'raw_category':'bypassed','compile_disposition':'bypassed','saved_sigils':{'!':1}}]}})
+ 'metadata':{'slots':[{'raw_category':'bypassed','compile_disposition':'bypassed','saved_sigils':{'!':1},'saved_histogram_complete':True}]}})
 assert r['ui']=='budget-hit' and r['paint_ok']=='no'
 assert r['clean_compiled_slots']==0 and r['init_callbacks_completed']==1 and r['persistence_changed_completed']==0
 assert r['slots_bypassed']==1 and r['slots_seen']==1
 assert json.loads(r['note_picked'])['0']==[62,64]
 assert json.loads(r['saved_entry_sigils'])=={'!':1}
+assert scanner.extra_columns({'metadata':{'slots':[{'raw_category':'inline_nonempty','saved_sigils':{},'saved_histogram_complete':False}]}})['saved_entry_sigils']=='unknown'
 fallback=scanner.extra_columns({'loads':'yes','ui':'original-ok','audition_status':'matched-note-plan','programs':[{'source':'kontakt','pick':[60,64],'pick_source':'fallback'}]})
 assert fallback['fallback_note']==1 and fallback['audition_status']=='fallback-note'
 with tempfile.TemporaryDirectory() as tmp:
@@ -63,6 +89,105 @@ with tempfile.TemporaryDirectory() as tmp:
     row=scanner.extra_columns({'path':item,'ui':'no-ui','programs':[{'source':'uvi','program':0,'pick':[62,64],'pick_source':'shared-note-plan'}]})
     assert json.loads(row['pick_source'])=={'0':'native_declared'}
     assert row['programs'][0]['adapter_pick_source']=='shared-note-plan'
+    scanner.atomic(cache/(scanner.signature(item,'v2')+'.json'),{'programs':[{'program':0,'pick':[62,64],'held_key':63,'pick_source':'native_declared'}]})
+    different_input=scanner.extra_columns({'path':item,'ui':'no-ui','programs':[{'source':'uvi','program':0,'pick':[62,64],'pick_source':'shared-note-plan'}]})
+    assert json.loads(different_input['pick_source'])=={'0':'unknown'}
+
     row=scanner.extra_columns({'path':item,'ui':'no-ui','programs':[{'source':'uvi','program':0,'pick':[40,64],'pick_source':'shared-note-plan'}]})
     assert json.loads(row['pick_source'])=={'0':'unknown'} # unequal notes never inherit native-valid provenance
+timing=scanner.extra_columns({'loads':'yes','ui':'original-ok','first_audio_ms':12.5,'cache_state':'cold','programs':[{'source':'kontakt','views':[{'renders':[{'ok':True,'ui_first_frame_ms':20.},{'ok':True,'ui_first_frame_ms':18.}]}]}]})
+assert timing['first_audio_ms']==12.5 and timing['ui_first_frame_ms']==18. and timing['cache_state']=='cold'
+assert fallback['first_audio_ms']=='unknown' and fallback['ui_first_frame_ms']=='unknown'
+missing=scanner.extra_columns({'loads':'yes','ui':'missing-images','reason':'loaded','programs':[{'views':[{'missing_images':2,'asset_failure_reasons':{'lookup-not-found':2},'renders':[{'ok':True}]}]}]})
+assert 'lookup-not-found=2' in missing['reason']
+assert scanner.extra_columns(missing)['reason']==missing['reason']
+pending=scanner.extra_columns({'loads':'yes','ui':'original-ok','ui_first_frame_ms':None,'programs':[{'views':[{'source_presentation':'native-package','font_declared':None,'renders':[{'ok':True,'ui_first_frame_ms':3.0}]}]}]})
+assert pending['ui']=='error' and pending['paint_ok']=='no' and pending['ui_first_frame_ms']=='unknown'
+native=scanner.extra_columns({'ui':'original-ok','programs':[{'views':[{'source_presentation':'native-package','font_declared':0,'native_diagnostic':'Native runtime; time-budget#safe','renders':[{'ok':True}]}]}]})
+assert native['ui']=='budget-hit' and 'time-budget#safe' not in native['reason']
+partial=scanner.extra_columns({'loads':'no','ui':'missing-images','reason':'audio audible','programs':[{'stage':'import','error_hash':'opaque'},{'loaded':True}]})
+assert 'admission: 1/2 embedded programs failed import/plan construction' in partial['reason']
+before=partial['reason'];scanner.extra_columns(partial);assert partial['reason']==before
+assert 'opaque' not in partial['reason']
+
+# Actual requested font failures are separate from unrequested style inventory.
+for status in ['original-ok','missing-images']:
+    font_only=scanner.extra_columns({'ui':status,'programs':[{'views':[{'font_declared':3,'font_success':2,'missing_fonts':1,'missing_images':0,'asset_failure_reasons':{'font-service-unavailable':1},'renders':[{'ok':True}]}]}]})
+    assert font_only['ui']=='missing_font'
+    assert 'font-service-unavailable=1' in font_only['reason']
+for status in ['error','blank','budget-hit','missing-images']:
+    unchanged=scanner.extra_columns({'ui':status,'programs':[{'views':[{'font_declared':2,'font_success':2,'renders':[{'ok':True}]}]}]})
+    assert unchanged['ui']==status
+failed_paint=scanner.extra_columns({'ui':'error','programs':[{'views':[{'font_declared':3,'font_success':2,'renders':[{'ok':False}]}]}]})
+assert failed_paint['ui']=='error'
+
+unrequested=scanner.extra_columns({'ui':'original-ok','programs':[{'views':[{'font_declared':3,'font_success':2,'missing_fonts':0,'renders':[{'ok':True}]}]}]})
+assert unrequested['ui']=='original-ok'
+
 print('shared scanner checks passed')
+# A complete zero-slot inventory is zero, absent/partial evidence is unknown.
+assert scanner.extra_columns({'programs':[{'dsp_slots':{'complete':True,'counts':{'fx_slots_dropped':{'enabled':2,'bypassed':3},'filter_slots_dropped':{'enabled':0,'bypassed':1},'mod_slots_dropped':{'enabled':4,'bypassed':0}}}}]})['fx_slots_dropped']=='{"enabled":2,"bypassed":3}'
+assert scanner.extra_columns({'programs':[{'dsp_slots':{'complete':False}}]})['mod_slots_dropped']=='unknown'
+assert scanner.extra_columns({'programs':[]})['filter_slots_dropped']=='unknown'
+
+assert scanner.extra_columns({"programs":[]})["family_match"]=="UNKNOWN"
+scripted={"programs":[{"family_native":{"basis":"native-reader","script_driven":["allow_group"]},"family_takes":[]}]}
+scanner.extra_columns(scripted)
+assert scripted["family_match"]=="UNKNOWN" and scripted["family_script_driven_count"]==1
+# Repeated family evidence cannot reuse a timing-only cached worker.
+old_repeats=os.environ.get('KONTRA_SCAN_FAMILY_REPEATS')
+os.environ['KONTRA_SCAN_FAMILY_REPEATS']='0'
+timing_signature=scanner.signature('absent-instrument','r')
+os.environ['KONTRA_SCAN_FAMILY_REPEATS']='32'
+assert scanner.signature('absent-instrument','r')!=timing_signature
+if old_repeats is None:os.environ.pop('KONTRA_SCAN_FAMILY_REPEATS')
+else:os.environ['KONTRA_SCAN_FAMILY_REPEATS']=old_repeats
+
+# Audit seed participates in metrics-cache identity, including explicit seed zero.
+import os
+old_seed=os.environ.get('KONTRA_UVI_AUDIT_SEED')
+try:
+    os.environ.pop('KONTRA_UVI_AUDIT_SEED',None)
+    plain=scanner.signature('/absent/audit-item','revision')
+    os.environ['KONTRA_UVI_AUDIT_SEED']='0'
+    zero=scanner.signature('/absent/audit-item','revision')
+    os.environ['KONTRA_UVI_AUDIT_SEED']='42'
+    assert len({plain,zero,scanner.signature('/absent/audit-item','revision')})==3
+finally:
+    if old_seed is None: os.environ.pop('KONTRA_UVI_AUDIT_SEED',None)
+    else: os.environ['KONTRA_UVI_AUDIT_SEED']=old_seed
+
+# A worker that ignores a required held input cannot certify the frozen plan.
+with tempfile.TemporaryDirectory() as tmp:
+    root=Path(tmp); previous_root=scanner.NOTE_ROOT; scanner.NOTE_ROOT=root/'notes'; scanner.NOTE_ROOT.mkdir()
+    item=str(root/'performance.nki'); Path(item).touch()
+    scanner.atomic(scanner.note_path(item),{'programs':{'0':{'key':60,'velocity':64,'held_key':61}},'policy':'native-held-interval'})
+    engine=root/'engine'
+    try:
+        for actual in [None,62,61]:
+            result={'loads':'yes','programs':[{'program':0,'pick':[60,64],'held_key':actual}]}
+            engine.write_text('#!/usr/bin/env python3\nimport json\nprint('+repr(json.dumps(result))+')\n')
+            engine.chmod(0o755)
+            observed=scanner.probe(engine,item,root/('work-'+str(actual)),2,False)
+            assert observed['audition_status']==('matched-note-plan' if actual==61 else 'audition-mismatch')
+            assert json.loads(scanner.note_path(item).read_text())['programs']['0']['held_key']==61
+    finally:
+        scanner.NOTE_ROOT=previous_root
+print('PASS: required held input is part of plan identity')
+
+# Rejected held-note plans must be retried instead of reusing invalid receipts.
+from unittest.mock import patch
+with tempfile.TemporaryDirectory() as tmp:
+    root=Path(tmp); item=str(root/'performance.nki'); Path(item).touch()
+    engine=root/'engine'; engine.write_text('synthetic worker identity')
+    manifest=root/'items.tsv'; manifest.write_text('kontakt\t'+item+'\n')
+    out=root/'out'; (out/'cache').mkdir(parents=True)
+    revision=scanner.hashlib.sha256(engine.read_bytes()).hexdigest()
+    cached=out/'cache'/(scanner.signature(item,revision)+'.json')
+    argv=[str(driver),'--engine',str(engine),'--list',str(manifest),'--count','1','--out',str(out)]
+    for status, calls in [('invalid-note-plan',1),('audition-mismatch',1),('matched-note-plan',0)]:
+        scanner.atomic(cached,{'audition_status':status})
+        with patch.object(sys,'argv',argv), patch.object(scanner,'probe',return_value={'loads':'yes','ui':'original-ok','programs':[]}) as probe, patch.object(scanner,'export',return_value=1):
+            assert scanner.main()==0
+            assert probe.call_count==calls, status
+print('PASS: invalid held-note plans are retried')

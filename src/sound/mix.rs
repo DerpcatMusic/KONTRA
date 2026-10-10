@@ -6,7 +6,6 @@ use super::{BUSES, RACK_SLOTS};
 /// [`PartControls::aux`] when the part sends nowhere.
 pub const NO_AUX: u8 = u8::MAX;
 
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PartControls {
     /// Host MIDI/note input port.
@@ -63,7 +62,10 @@ impl BusControls {
 /// Everything the mixer sets, handed to the audio thread in one piece.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Mix {
+    pub timing: std::sync::Arc<crate::timing::Plan>,
     pub parts: Vec<PartControls>,
+    pub editor_offsets: Vec<std::sync::Arc<[sampler_core::EngineParameterOffset]>>,
+    pub articulation_routes: Vec<Option<std::sync::Arc<super::articulation::Routing>>>,
     pub buses: [BusControls; BUSES],
     /// Per part, its tree's nodes after the root ([`super::tree`]).
     pub nodes: Vec<Vec<NodeMix>>,
@@ -72,7 +74,10 @@ pub struct Mix {
 impl Default for Mix {
     fn default() -> Self {
         Self {
+            timing: std::sync::Arc::default(),
             parts: vec![PartControls::default(); RACK_SLOTS],
+            articulation_routes: Vec::new(),
+            editor_offsets: Vec::new(),
             buses: std::array::from_fn(|n| BusControls::on(n as u8)),
             nodes: vec![Vec::new(); RACK_SLOTS],
         }
@@ -89,7 +94,10 @@ pub struct Peaks {
 
 impl Default for Peaks {
     fn default() -> Self {
-        Self { parts: vec![[0.0; 2]; RACK_SLOTS], buses: [[0.0; 2]; BUSES] }
+        Self {
+            parts: vec![[0.0; 2]; RACK_SLOTS],
+            buses: [[0.0; 2]; BUSES],
+        }
     }
 }
 
@@ -113,7 +121,6 @@ impl Default for PartControls {
     }
 }
 
-
 /// Left/right gains of a linear `gain` at balance `pan` (−1..=1); silence
 /// for non-finite input.
 pub fn balance(gain: f32, pan: f32) -> [f32; 2] {
@@ -126,5 +133,9 @@ pub fn balance(gain: f32, pan: f32) -> [f32; 2] {
 
 /// Linear gain of a fader at `db`, within −60..=+6 dB; unity if not finite.
 pub fn db_gain(db: f32) -> f32 {
-    if db.is_finite() { 10f32.powf(db.clamp(-60.0, 6.0) / 20.0) } else { 1.0 }
+    if db.is_finite() {
+        10f32.powf(db.clamp(-60.0, 6.0) / 20.0)
+    } else {
+        1.0
+    }
 }

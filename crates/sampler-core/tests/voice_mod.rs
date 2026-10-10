@@ -73,6 +73,129 @@ fn render(rt: &mut Runtime, frames: usize, block: usize) -> Vec<Frame> {
 }
 
 #[test]
+fn zero_multi_keeps_bipolar_volume_shape_and_voice_reuse_without_heap() {
+    for block in [1, 7, 64, 137] {
+        let source = ModSource::Lfo(Lfo {
+            shape: LfoShape::Zero,
+            rate: LfoRate::Hertz(4.),
+            phase: 0.75,
+            delay: 100,
+            fade: 100,
+            retrigger: true,
+            shared: false,
+        });
+        let p = modulated(
+            plan(1024, Envelope::default()),
+            program(
+                vec![source],
+                vec![ModRoute::new(0, ModTarget::Attenuate, 1.)],
+            ),
+            0,
+        );
+        let mut rt = Runtime::new(p, limits()).unwrap();
+        for id in [1, 2] {
+            support::without_heap(|| {
+                rt.trigger(input(id), 60, 1.).unwrap();
+            });
+            let audio = render(&mut rt, 512, block);
+            for (i, frame) in audio.iter().enumerate() {
+                assert_eq!(*frame, [i as f32 / 1000. * 0.5, 0.25]);
+            }
+            support::without_heap(|| {
+                rt.note_off(input(id), None).unwrap();
+                rt.render(&mut [[0.; 2]; 128]).unwrap();
+            });
+            assert_eq!(rt.voice_count(), 0);
+        }
+    }
+}
+
+#[test]
+fn addressed_filters_do_not_leak_into_other_voices_without_heap() {
+    let filtered = |hz| {
+        VoiceChain::new(
+            vec![],
+            vec![Processor::StateVariable(StateVariableFilter {
+                mode: SvfMode::LowPass,
+                cutoff_hz: Parameter::Constant(hz),
+                q: Parameter::Constant(0.7),
+            })],
+            0,
+        )
+        .unwrap()
+    };
+    let prepare = |addressed| {
+        let region = |key| Region {
+            sample: 0,
+            key_low: key,
+            key_high: key,
+            root_key: None,
+            velocity_low: 0.,
+            velocity_high: 1.,
+            gain: 1.,
+            envelope: Envelope::default(),
+            playback: Playback::default(),
+        };
+        let base = Prepared::new(
+            48000,
+            vec![
+                Pcm::new(
+                    48000,
+                    (0..512).map(|i| [(i as f32 * 0.17).sin(); 2]).collect(),
+                )
+                .unwrap(),
+            ],
+            vec![region(60), region(61)],
+            2,
+        )
+        .unwrap()
+        .with_velocity_curves(vec![VelocityCurve::Constant; 2])
+        .unwrap();
+        if addressed {
+            base.with_voice_chains(vec![filtered(1000.)], vec![Some(0); 2])
+                .unwrap()
+                .with_voice_modulation(
+                    vec![program(
+                        vec![ModSource::Velocity],
+                        vec![ModRoute::new(0, ModTarget::ProcessorCutoff(0), 12.)],
+                    )],
+                    vec![Some(0), None],
+                    vec![0; 2],
+                )
+                .unwrap()
+        } else {
+            base.with_voice_chains(
+                vec![filtered(2000.), filtered(1000.)],
+                vec![Some(0), Some(1)],
+            )
+            .unwrap()
+        }
+    };
+    for block in [1, 17, 64, 128] {
+        let mut actual = Runtime::new(prepare(true), limits()).unwrap();
+        let mut reference = Runtime::new(prepare(false), limits()).unwrap();
+        let first = actual.trigger(input(1), 60, 1.).unwrap();
+        let first_reference = reference.trigger(input(1), 60, 1.).unwrap();
+        actual.trigger(input(2), 61, 1.).unwrap();
+        reference.trigger(input(2), 61, 1.).unwrap();
+        for after_release in [false, true] {
+            if after_release {
+                actual.release(first).unwrap();
+                reference.release(first_reference).unwrap();
+            }
+            let actual = render(&mut actual, 128, block);
+            let reference = render(&mut reference, 128, block);
+            for (a, b) in actual.iter().zip(reference) {
+                assert!(
+                    (a[0] - b[0]).abs() < 1e-6,
+                    "block {block}, release {after_release}: {a:?} != {b:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn envelope_attenuation_ramps_exactly_under_any_partition_without_heap() {
     // A 64-frame linear attack read through Kontakt's attenuate law at depth 1.
     let attack = Envelope::new(64, 0, 0, 1., 0).unwrap();
@@ -158,6 +281,59 @@ fn pitch_and_pan_routes_reach_the_voice() {
         "{audio:?}"
     );
     assert_eq!(rt.voice_count(), 0);
+}
+
+#[test]
+fn changing_and_held_controller_pitch_matches_expression_without_heap() {
+    let build = |source, depth| {
+        Runtime::new(
+            modulated(
+                plan(1024, Envelope::default()),
+                program(
+                    vec![source],
+                    vec![ModRoute::new(0, ModTarget::Pitch, depth)],
+                ),
+                0,
+            ),
+            limits(),
+        )
+        .unwrap()
+    };
+    let mut actual = build(ModSource::Controller(1), 12.0);
+    let mut reference = build(ModSource::Constant, 0.0);
+    actual.trigger(input(1), 60, 1.0).unwrap();
+    let note = reference.trigger(input(1), 60, 1.0).unwrap();
+    let expression = reference.expression_id(note).unwrap();
+    let performance = actual.performance(0).unwrap();
+    // The first cell after a CC change holds the old/new pitch midpoint.
+    for (cc, pitch) in [
+        (0, 0.0),
+        (u32::MAX, 6.0),
+        (u32::MAX, 12.0),
+        (0, 6.0),
+        (0, 0.0),
+    ] {
+        let mut got = [[0.0; 2]; 64];
+        let mut expected = got;
+        support::without_heap(|| {
+            actual.set_controller(performance, 1, cc).unwrap();
+            reference
+                .set_expression(
+                    expression,
+                    Expression {
+                        pitch_semitones: pitch,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            actual.render(&mut got).unwrap();
+            reference.render(&mut expected).unwrap();
+        });
+        assert_eq!(
+            got.map(|f| f.map(f32::to_bits)),
+            expected.map(|f| f.map(f32::to_bits))
+        );
+    }
 }
 
 #[test]
@@ -575,4 +751,189 @@ fn release_counter_reset_retargets_live_modulation_and_pedals_preserve_release_a
     rt.sustain(channel, false).unwrap();
     assert_eq!(rt.release_context(note).unwrap().gate.unwrap().at, 320);
     assert_eq!(rt.release_context(note).unwrap().key.unwrap().at, 192);
+}
+
+#[test]
+fn native_lanes_with_script_and_gain_pitch_ramps_match_forced_scalar_without_heap() {
+    // 97 covers an eight-voice remainder and the three-thread dispatch threshold.
+    const N: usize = 97;
+    let prepared = |scalar, streamed| {
+        let chain = || {
+            VoiceChain::new(
+                vec![
+                    Processor::Gainer {
+                        dry: 0.125,
+                        gain: Parameter::Constant(0.8),
+                    },
+                    Processor::StereoModeller(StereoSettings {
+                        width: Parameter::Constant(0.7),
+                        pan: Parameter::Constant(-0.2),
+                        pseudo: false,
+                    }),
+                ],
+                vec![Processor::StateVariable(StateVariableFilter {
+                    mode: SvfMode::LowPass,
+                    cutoff_hz: Parameter::Constant(6000.),
+                    q: Parameter::Constant(0.7),
+                })],
+                128,
+            )
+            .unwrap()
+        };
+        let regions = (0..N)
+            .map(|i| Region {
+                sample: 0,
+                key_low: 16 + i as u8,
+                key_high: 16 + i as u8,
+                root_key: None,
+                velocity_low: 0.,
+                velocity_high: 1.,
+                gain: 0.01,
+                envelope: Envelope::new(4, 2, 12, 0.6, 17).unwrap(),
+                playback: Playback {
+                    start: PAGE_FRAMES - 128,
+                    ..Playback::default()
+                },
+            })
+            .collect();
+        let pcm: Box<[Frame]> = (0..PAGE_FRAMES * 2)
+            .map(|i| [(i as f32 * 0.17).sin(), (i as f32 * 0.11).cos()])
+            .collect();
+        let asset = if streamed {
+            Pcm::streamed(48000, pcm.len()).unwrap()
+        } else {
+            Pcm::new(48000, pcm.clone()).unwrap()
+        };
+        let storage = streamed.then(|| {
+            let (mut cache, mut worker) = StreamCache::new(N * 2).unwrap();
+            for page in 0..2 {
+                assert_eq!(cache.request(&asset, page, 0), Ok(PageStatus::Pending));
+                let mut job = worker.next_job().unwrap();
+                let range = job.range();
+                job.frames_mut().copy_from_slice(&pcm[range]);
+                worker.complete(job, Ok(())).unwrap();
+                assert!(matches!(cache.poll(), Some(PageUpdate::Loaded(_))));
+            }
+            (cache, worker)
+        });
+        let plan = Prepared::new(48000, vec![asset], regions, N)
+            .unwrap()
+            .with_voice_chains(
+                vec![chain(), chain()],
+                (0..N)
+                    .map(|i| Some(if scalar { i % 2 } else { 0 }))
+                    .collect(),
+            )
+            .unwrap()
+            .with_voice_modulation(
+                vec![program(
+                    vec![
+                        ModSource::Velocity,
+                        ModSource::Controller(1),
+                        ModSource::Lfo(Lfo {
+                            shape: LfoShape::Sine,
+                            rate: LfoRate::Hertz(5.),
+                            phase: 0.,
+                            delay: 0,
+                            fade: 0,
+                            retrigger: true,
+                            shared: false,
+                        }),
+                    ],
+                    vec![
+                        ModRoute::new(0, ModTarget::Decibels, -6.),
+                        ModRoute::new(1, ModTarget::Pan, 0.5),
+                        ModRoute::new(2, ModTarget::Pitch, 3.),
+                        ModRoute::new(2, ModTarget::Decibels, 2.),
+                    ],
+                )],
+                vec![Some(0); N],
+                vec![0; N],
+            )
+            .unwrap();
+        (plan, storage)
+    };
+    let capacity = Limits {
+        notes: N,
+        voices: N,
+        families: N,
+        expressions: N,
+        commands: 16,
+        ..limits()
+    };
+    for streamed in [false, true] {
+        for threads in [1, 3] {
+            for block in [1, 17, 64, 128] {
+                let runtime = |scalar| {
+                    let (plan, storage) = prepared(scalar, streamed);
+                    let mut rt = Runtime::new(plan, capacity)
+                        .unwrap()
+                        .with_threads(Threads::Fixed(threads));
+                    let worker = if let Some((cache, worker)) = storage {
+                        rt = rt.with_stream_cache(cache);
+                        Some(worker)
+                    } else {
+                        None
+                    };
+                    (rt, worker)
+                };
+                let (mut actual, _actual_worker) = runtime(false);
+                let (mut reference, _reference_worker) = runtime(true);
+                let mut notes = [Vec::with_capacity(N), Vec::with_capacity(N)];
+                for (side, rt) in [&mut actual, &mut reference].into_iter().enumerate() {
+                    support::without_heap(|| {
+                        for i in 0..N {
+                            let key = 16 + i as u8;
+                            let note = rt
+                                .trigger(
+                                    Input {
+                                        key,
+                                        ..input(i as i32)
+                                    },
+                                    key,
+                                    0.3 + (i % 7) as f64 * 0.1,
+                                )
+                                .unwrap();
+                            rt.set_note_param(note, ModTarget::Decibels, -((i % 8) as f64), false)
+                                .unwrap();
+                            notes[side].push(note);
+                        }
+                    });
+                }
+                for (phase, frames) in [96, 128, 128, 192].into_iter().enumerate() {
+                    for (side, rt) in [&mut actual, &mut reference].into_iter().enumerate() {
+                        support::without_heap(|| match phase {
+                            1 => {
+                                let performance = rt.performance(0).unwrap();
+                                rt.set_controller(performance, 1, u32::MAX).unwrap();
+                                rt.set_note_param(notes[side][5], ModTarget::Pitch, 12., false)
+                                    .unwrap();
+                                rt.set_note_param(notes[side][9], ModTarget::Pan, -0.4, false)
+                                    .unwrap();
+                            }
+                            2 => rt.fade_note(notes[side][0], None, 0., 64, true).unwrap(),
+                            3 => {
+                                for &note in &notes[side][1..] {
+                                    rt.release(note).unwrap();
+                                }
+                            }
+                            _ => {}
+                        });
+                    }
+                    let a = render(&mut actual, frames, block);
+                    let b = render(&mut reference, frames, block);
+                    assert_eq!(
+                        a, b,
+                        "streamed {streamed}, threads {threads}, block {block}, phase {phase}"
+                    );
+                    assert_eq!(actual.voice_count(), reference.voice_count());
+                    assert_eq!(actual.stream_underruns(), 0);
+                    assert_eq!(reference.stream_underruns(), 0);
+                }
+                if threads > 1 {
+                    assert!(actual.parallel_blocks() > 0);
+                }
+            }
+        }
+    }
 }

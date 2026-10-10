@@ -121,10 +121,7 @@ pub fn ui() -> Ui {
         },
         ..Theme::DEFAULT
     })
-    .font(
-        Font::new(NOTO_SANS)
-            .expect("bundled Noto Sans"),
-    )
+    .font(Font::new(NOTO_SANS).expect("bundled Noto Sans"))
 }
 
 /// State changes land in about a tenth of a second: felt, not watched.
@@ -204,9 +201,14 @@ pub fn lift(steps: i32) -> Fill {
 /// hover, a deeper one while pressed, a 1 px accent ring for keyboard focus.
 pub fn interactive(el: El, selected: bool) -> El {
     el.cursor(Cursor::Hand)
-        .on(State::Hover, move |s| if selected { s } else { s.fill(lift(1)) })
+        .on(
+            State::Hover,
+            move |s| if selected { s } else { s.fill(lift(1)) },
+        )
         .on(State::Press, |s| s.fill(lift(2)))
-        .on(State::FocusVisible, |s| s.stroke(Role::Primary.alpha(0.9)).stroke_width(1))
+        .on(State::FocusVisible, |s| {
+            s.stroke(Role::Primary.alpha(0.9)).stroke_width(1)
+        })
         .animate_with(quick())
 }
 
@@ -217,7 +219,11 @@ pub fn action(ui: &mut Ui, id: impl Into<Id>, label: &str, selected: bool) -> (b
     let el = row![
         body(label.to_owned())
             .text_size(TEXT)
-            .fill(if selected { Fill::from(Role::Ink) } else { secondary() })
+            .fill(if selected {
+                Fill::from(Role::Ink)
+            } else {
+                secondary()
+            })
             .lines(1)
             .min_w(0)
     ]
@@ -243,7 +249,11 @@ pub fn latch(ui: &mut Ui, id: impl Into<Id>, label: &str, name: &str, on: bool) 
         body(label.to_owned())
             .text_size(SMALL)
             .text_weight(Weight::SEMIBOLD)
-            .fill(if on { Fill::from(Role::Ink) } else { secondary() })
+            .fill(if on {
+                Fill::from(Role::Ink)
+            } else {
+                secondary()
+            })
             .lines(1)
             .min_w(0),
         spacer(),
@@ -269,7 +279,11 @@ pub fn latch(ui: &mut Ui, id: impl Into<Id>, label: &str, name: &str, on: bool) 
 
 /// Switches that read as one control: a segmented row with hairline seams.
 pub fn segmented(items: Vec<El>) -> El {
-    row(items).gap(1).align(Align::Stretch).fill(hairline()).shrink(0)
+    row(items)
+        .gap(1)
+        .align(Align::Stretch)
+        .fill(hairline())
+        .shrink(0)
 }
 
 /// Line icons drawn on a 16-unit square, crisp at any size, no icon font.
@@ -285,6 +299,7 @@ pub enum Icon {
     Sidebar,
     Picture,
     Search,
+    Filter,
     #[allow(dead_code, reason = "the mixer's audition")]
     Play,
     Menu,
@@ -344,11 +359,23 @@ pub fn glyph(icon: Icon, size: f64, ink: Fill) -> El {
                 line(&[(11.5, 4.5), (4.5, 11.5)]),
             ],
             Icon::Sidebar => vec![
-                line(&[(2.5, 3.5), (13.5, 3.5), (13.5, 12.5), (2.5, 12.5), (2.5, 3.5)]),
+                line(&[
+                    (2.5, 3.5),
+                    (13.5, 3.5),
+                    (13.5, 12.5),
+                    (2.5, 12.5),
+                    (2.5, 3.5),
+                ]),
                 line(&[(6.5, 3.5), (6.5, 12.5)]),
             ],
             Icon::Picture => vec![
-                line(&[(2.5, 3.5), (13.5, 3.5), (13.5, 12.5), (2.5, 12.5), (2.5, 3.5)]),
+                line(&[
+                    (2.5, 3.5),
+                    (13.5, 3.5),
+                    (13.5, 12.5),
+                    (2.5, 12.5),
+                    (2.5, 3.5),
+                ]),
                 line(&[(3., 11.5), (6.5, 7.5), (9., 10.), (11., 8.), (13., 11.5)]),
                 dot(10.5, 5.5),
             ],
@@ -360,6 +387,15 @@ pub fn glyph(icon: Icon, size: f64, ink: Fill) -> El {
                 ),
                 line(&[(10., 10.), (13.5, 13.5)]),
             ],
+            Icon::Filter => vec![line(&[
+                (2.5, 3.5),
+                (13.5, 3.5),
+                (9.5, 8.),
+                (9.5, 12.),
+                (6.5, 13.),
+                (6.5, 8.),
+                (2.5, 3.5),
+            ])],
             Icon::Play => vec![Draw::fill(
                 DrawPath::polyline([p(5., 3.5), p(12.5, 8.), p(5., 12.5)], true),
                 ink.clone(),
@@ -370,9 +406,17 @@ pub fn glyph(icon: Icon, size: f64, ink: Fill) -> El {
                 line(&[(3., 11.5), (13., 11.5)]),
             ],
             Icon::Keys => {
-                let black = |x: f64| Draw::fill(rect(ox + x * u, oy + 3.5 * u, 2.4 * u, 5. * u), ink.clone());
+                let black = |x: f64| {
+                    Draw::fill(rect(ox + x * u, oy + 3.5 * u, 2.4 * u, 5. * u), ink.clone())
+                };
                 vec![
-                    line(&[(2.5, 3.5), (13.5, 3.5), (13.5, 12.5), (2.5, 12.5), (2.5, 3.5)]),
+                    line(&[
+                        (2.5, 3.5),
+                        (13.5, 3.5),
+                        (13.5, 12.5),
+                        (2.5, 12.5),
+                        (2.5, 3.5),
+                    ]),
                     line(&[(6.2, 8.5), (6.2, 12.5)]),
                     line(&[(9.8, 8.5), (9.8, 12.5)]),
                     black(5.),
@@ -381,18 +425,33 @@ pub fn glyph(icon: Icon, size: f64, ink: Fill) -> El {
             }
             Icon::MidiIn | Icon::MidiOut | Icon::AudioIn | Icon::AudioOut => {
                 let pin = |x: f64, y: f64| {
-                    Draw::fill(rect(ox + (x - 0.8) * u, oy + (y - 0.8) * u, 1.6 * u, 1.6 * u), ink.clone())
+                    Draw::fill(
+                        rect(ox + (x - 0.8) * u, oy + (y - 0.8) * u, 1.6 * u, 1.6 * u),
+                        ink.clone(),
+                    )
                 };
                 let mut draw = if matches!(icon, Icon::MidiIn | Icon::MidiOut) {
                     vec![
-                        Draw::stroke(arc(ox + 6. * u, oy + 8. * u, 4.8 * u, 0., 2. * PI), ink.clone(), weight),
+                        Draw::stroke(
+                            arc(ox + 6. * u, oy + 8. * u, 4.8 * u, 0., 2. * PI),
+                            ink.clone(),
+                            weight,
+                        ),
                         pin(3.7, 8.3),
                         pin(6., 5.8),
                         pin(8.3, 8.3),
                         line(&[(6., 12.8), (6., 11.)]),
                     ]
                 } else {
-                    vec![line(&[(1., 8.), (2.6, 4.), (4.2, 12.), (5.8, 3.), (7.4, 13.), (9., 6.), (10.2, 8.)])]
+                    vec![line(&[
+                        (1., 8.),
+                        (2.6, 4.),
+                        (4.2, 12.),
+                        (5.8, 3.),
+                        (7.4, 13.),
+                        (9., 6.),
+                        (10.2, 8.),
+                    ])]
                 };
                 // In points at the socket; out points away from it.
                 draw.push(if matches!(icon, Icon::MidiIn | Icon::AudioIn) {
@@ -403,12 +462,24 @@ pub fn glyph(icon: Icon, size: f64, ink: Fill) -> El {
                 draw
             }
             Icon::Fork => vec![
-                line(&[(5., 1.5), (5., 7.8), (5.7, 9.7), (8., 10.8), (10.3, 9.7), (11., 7.8), (11., 1.5)]),
+                line(&[
+                    (5., 1.5),
+                    (5., 7.8),
+                    (5.7, 9.7),
+                    (8., 10.8),
+                    (10.3, 9.7),
+                    (11., 7.8),
+                    (11., 1.5),
+                ]),
                 line(&[(8., 10.8), (8., 14.8)]),
             ],
             Icon::Check => vec![line(&[(3.5, 8.5), (6.5, 11.5), (12.5, 4.5)])],
             Icon::Recent => vec![
-                Draw::stroke(arc(ox + 8. * u, oy + 8. * u, 5.5 * u, 0., 2. * PI), ink.clone(), weight),
+                Draw::stroke(
+                    arc(ox + 8. * u, oy + 8. * u, 5.5 * u, 0., 2. * PI),
+                    ink.clone(),
+                    weight,
+                ),
                 line(&[(8., 5.), (8., 8.), (10.5, 9.5)]),
             ],
             Icon::Star | Icon::StarFilled => {
@@ -436,7 +507,11 @@ pub fn icon_button(ui: &mut Ui, id: impl Into<Id>, icon: Icon, name: &str, on: b
     let id: Id = id.into();
     let hit = ui.get(id.clone()).activated();
     let hover = ui.state(id.clone()).hover as f32;
-    let ink = if on || hover > 0.5 { Fill::from(Role::Ink) } else { secondary() };
+    let ink = if on || hover > 0.5 {
+        Fill::from(Role::Ink)
+    } else {
+        secondary()
+    };
     let el = stack![glyph(icon, TEXT + TIGHT, ink).centered()]
         .square(CONTROL)
         .when(on, |e| e.fill(Role::Raised))
@@ -470,7 +545,11 @@ pub fn tab(ui: &mut Ui, id: impl Into<Id>, label: &str, current: bool) -> (bool,
         spacer(),
         body(label.to_owned())
             .text_size(TEXT)
-            .fill(if current { Fill::from(Role::Ink) } else { secondary() })
+            .fill(if current {
+                Fill::from(Role::Ink)
+            } else {
+                secondary()
+            })
             .lines(1),
         spacer(),
         block(Len::Pct(100.), 1).fill(underline)
@@ -550,7 +629,6 @@ impl Fader {
             ..self
         }
     }
-
 }
 
 thread_local! {
@@ -563,7 +641,10 @@ thread_local! {
 /// tall over `content_h` scrolled to `y`.
 fn thumb(track: f64, y: f64, view_h: f64, content_h: f64) -> (f64, f64) {
     let len = (track * view_h / content_h).max(CONTROL).min(track);
-    (((track - len) * (y / (content_h - view_h)).clamp(0., 1.)).round(), len)
+    (
+        ((track - len) * (y / (content_h - view_h)).clamp(0., 1.)).round(),
+        len,
+    )
 }
 
 /// A self-scrolled pane's bar under the hand: the thumb follows the
@@ -571,14 +652,26 @@ fn thumb(track: f64, y: f64, view_h: f64, content_h: f64) -> (f64, f64) {
 /// jumps the thumb's middle there, with no drag threshold to cross.
 pub fn bar_drag(ui: &mut Ui, id: &str, y: &mut f64, view_h: f64, content_h: f64) {
     let r = ui.get(id);
-    let (Some(at), true) = (ui.local(id), r.held && content_h > view_h && view_h > 0.) else { return };
-    let track = ui.scene().and_then(|s| s.surface(id)).map_or(view_h, |s| s.frame.size.height);
+    let (Some(at), true) = (ui.local(id), r.held && content_h > view_h && view_h > 0.) else {
+        return;
+    };
+    let track = ui
+        .scene()
+        .and_then(|s| s.surface(id))
+        .map_or(view_h, |s| s.frame.size.height);
     let (top, len) = thumb(track, *y, view_h, content_h);
     if r.pressed {
-        BAR_GRAB.with(|g| g.set(if (top..top + len).contains(&at.y) { at.y - top } else { len / 2. }));
+        BAR_GRAB.with(|g| {
+            g.set(if (top..top + len).contains(&at.y) {
+                at.y - top
+            } else {
+                len / 2.
+            })
+        });
     }
     let span = (track - len).max(1.);
-    *y = ((at.y - BAR_GRAB.with(std::cell::Cell::get)) / span * (content_h - view_h)).clamp(0., content_h - view_h);
+    *y = ((at.y - BAR_GRAB.with(std::cell::Cell::get)) / span * (content_h - view_h))
+        .clamp(0., content_h - view_h);
 }
 
 /// Where a self-scrolled pane draws, gliding to `y`: on whole points, so
@@ -586,7 +679,11 @@ pub fn bar_drag(ui: &mut Ui, id: &str, y: &mut f64, view_h: f64, content_h: f64)
 /// bar, or across a jump too far to glide through; the glide unread for a
 /// frame starts over from there.
 pub fn glide(ui: &mut Ui, id: &str, y: f64, snap: bool) -> f64 {
-    if snap { y.round() } else { ui.tween_with(format!("{id}-glide"), y, quick()).round() }
+    if snap {
+        y.round()
+    } else {
+        ui.tween_with(format!("{id}-glide"), y, quick()).round()
+    }
 }
 
 /// A jump from `from` to `to` too far to glide through: another list, Home, End.
@@ -601,12 +698,19 @@ pub fn scrollbar(ui: &mut Ui, id: &str, name: &str, y: f64, view_h: f64, content
     canvas(move |s| {
         let (at, len) = thumb(s.height, y, view_h, content_h);
         let w = 3. + 2. * f64::from(lift);
-        vec![Draw::fill(rect(s.width - w - 1., at + 2., w, len - 4.), Role::Ink.alpha(0.18 + 0.3 * lift))]
+        vec![Draw::fill(
+            rect(s.width - w - 1., at + 2., w, len - 4.),
+            Role::Ink.alpha(0.18 + 0.3 * lift),
+        )]
     })
     .w(8)
     .h(Len::Pct(100.))
     .shrink(0)
-    .a11y(A11y::Slider { value: y, min: 0., max: content_h - view_h })
+    .a11y(A11y::Slider {
+        value: y,
+        min: 0.,
+        max: content_h - view_h,
+    })
     .named(name.to_owned())
     .id(id.to_owned())
 }
@@ -681,7 +785,14 @@ pub fn pointer_hidden(ui: &Ui) -> bool {
 /// MUI starts a drag after its click threshold, but its first delta excludes
 /// earlier movement. Recover that movement once so returning to the press
 /// position also returns to the starting value.
-fn drag(ui: &Ui, id: &str, value: &mut f64, range: &RangeInclusive<f64>, travel: f64, vertical: bool) {
+fn drag(
+    ui: &Ui,
+    id: &str,
+    value: &mut f64,
+    range: &RangeInclusive<f64>,
+    travel: f64,
+    vertical: bool,
+) {
     let r = ui.get(id);
     if r.pressed {
         GRIPPED.with(|g| {
@@ -703,8 +814,10 @@ fn drag(ui: &Ui, id: &str, value: &mut f64, range: &RangeInclusive<f64>, travel:
                 let d = if vertical { -missed.y } else { missed.x };
                 let fine = if r.mods.shift { FINE_DRAG } else { 1. };
                 if d.is_finite() {
-                    raw = (raw + d * fine / travel * (range.end() - range.start()))
-                        .clamp(range.start().min(*range.end()), range.start().max(*range.end()));
+                    raw = (raw + d * fine / travel * (range.end() - range.start())).clamp(
+                        range.start().min(*range.end()),
+                        range.start().max(*range.end()),
+                    );
                 }
             }
             ui.drag(id, &mut raw, range.clone(), travel, vertical);
@@ -728,20 +841,30 @@ pub fn drive(
     vertical: bool,
     reset: f64,
 ) -> bool {
-    drive_widget(ui,id,value,range,travel,vertical,reset,None,true)
+    drive_widget(ui, id, value, range, travel, vertical, reset, None, true)
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn drive_widget(ui:&mut Ui,id:&str,value:&mut f64,range:&RangeInclusive<f64>,travel:f64,vertical:bool,reset:f64,step:Option<f64>,double_reset:bool)->bool {
+pub fn drive_widget(
+    ui: &mut Ui,
+    id: &str,
+    value: &mut f64,
+    range: &RangeInclusive<f64>,
+    travel: f64,
+    vertical: bool,
+    reset: f64,
+    step: Option<f64>,
+    double_reset: bool,
+) -> bool {
     let (lo, hi) = (*range.start(), *range.end());
-    let bound = |v:f64| v.clamp(lo.min(hi),lo.max(hi));
-    let step = step.filter(|s|s.is_finite() && *s>0.);
+    let bound = |v: f64| v.clamp(lo.min(hi), lo.max(hi));
+    let step = step.filter(|s| s.is_finite() && *s > 0.);
     let r = ui.get(id);
     drag(ui, id, value, range, travel, vertical);
     if let Some(wheel) = ui.wheel(id) {
         WHEELED.with(|w| w.set(true));
-        let notch = (hi-lo).abs()/if r.mods.shift {500.} else {50.};
-        let step = step.map_or(notch,|quantum| (notch/quantum).round().max(1.)*quantum);
+        let notch = (hi - lo).abs() / if r.mods.shift { 500. } else { 50. };
+        let step = step.map_or(notch, |quantum| (notch / quantum).round().max(1.) * quantum);
         let dir = if wheel.y.abs() >= wheel.x.abs() {
             -wheel.y
         } else {
@@ -752,22 +875,34 @@ pub fn drive_widget(ui:&mut Ui,id:&str,value:&mut f64,range:&RangeInclusive<f64>
     if let Some(step) = step {
         for key in ui.keys(id) {
             *value = bound(match key.key {
-                Key::Up|Key::Right => *value+step,
-                Key::Down|Key::Left => *value-step,
-                Key::PageUp => *value+step*10., Key::PageDown => *value-step*10.,
-                Key::Home => lo, Key::End => hi, _=>continue,
+                Key::Up | Key::Right => *value + step,
+                Key::Down | Key::Left => *value - step,
+                Key::PageUp => *value + step * 10.,
+                Key::PageDown => *value - step * 10.,
+                Key::Home => lo,
+                Key::End => hi,
+                _ => continue,
             });
         }
-    } else { stepped(ui, id, value, range); }
+    } else {
+        stepped(ui, id, value, range);
+    }
     if double_reset && r.double_clicked || r.pressed && (r.mods.ctrl || r.mods.cmd) {
         *value = bound(reset);
-        GRIPPED.with(|g|g.borrow_mut().1.clear());
+        GRIPPED.with(|g| g.borrow_mut().1.clear());
     }
     r.held
 }
 
 /// The shared KONTRA control face, fitted by its caller.
-pub fn fader_face(at: f64, from: f64, detent: Option<f64>, vertical: bool, lift: f32, focused: bool) -> El {
+pub fn fader_face(
+    at: f64,
+    from: f64,
+    detent: Option<f64>,
+    vertical: bool,
+    lift: f32,
+    focused: bool,
+) -> El {
     canvas(move |s| {
         // Drawn along x; a vertical fader swaps the axes and runs bottom-up.
         let (len, across) = if vertical {
@@ -849,33 +984,49 @@ pub fn fader(
             }
         })
         .max(CONTROL);
-    let held = drive(ui, id, value, &range, track - FADER_THUMB, vertical, kind.reset);
+    let held = drive(
+        ui,
+        id,
+        value,
+        &range,
+        track - FADER_THUMB,
+        vertical,
+        kind.reset,
+    );
     let lift = ui.state(id).hover.max(if held { 1. } else { 0. }) as f32;
     let unit = |v: f64| ((v - lo) / (hi - lo)).clamp(0., 1.);
     let (at, from) = (unit(*value), unit(kind.origin));
     let detent = kind.detent.map(unit);
     let focused = ui.focus_visible(id);
     let track_el = fader_face(at, from, detent, vertical, lift, focused)
-    .cursor(if vertical {
-        Cursor::ResizeV
-    } else {
-        Cursor::ResizeH
-    })
-    .focusable()
-    .a11y(A11y::Slider {
-        value: *value,
-        min: lo,
-        max: hi,
-    })
-    .named(name.to_owned())
-    .tip(format!("{name}: drag, Shift for fine, double-click to reset"))
-    .id(id.to_owned());
+        .cursor(if vertical {
+            Cursor::ResizeV
+        } else {
+            Cursor::ResizeH
+        })
+        .focusable()
+        .a11y(A11y::Slider {
+            value: *value,
+            min: lo,
+            max: hi,
+        })
+        .named(name.to_owned())
+        .tip(format!(
+            "{name}: drag, Shift for fine, double-click to reset"
+        ))
+        .id(id.to_owned());
     let text = caption(readout(*value))
         .text_size(SMALL)
         .reserve(kind.widest);
     let el = if vertical {
-        let track_el = track_el.w(CONTROL).h(length.unwrap_or(TRAVEL / 2.)).shrink(0);
-        col![text, track_el].gap(TIGHT).align(Align::Center).shrink(0)
+        let track_el = track_el
+            .w(CONTROL)
+            .h(length.unwrap_or(TRAVEL / 2.))
+            .shrink(0);
+        col![text, track_el]
+            .gap(TIGHT)
+            .align(Align::Center)
+            .shrink(0)
     } else {
         let track_el = match length {
             // A preferred length that gives way in a crowded row.
@@ -918,16 +1069,28 @@ pub fn check(ui: &mut Ui, id: impl Into<Id>, name: &str, on: bool) -> (bool, El)
     let id: Id = id.into();
     let hit = ui.get(id.clone()).activated();
     let size = TEXT + 2.;
-    let el = stack![glyph(Icon::Check, size, if on { Fill::from(Color::oklch(0.18, 0., 0.)) } else { Role::Ink.alpha(0.) })]
-        .square(size)
-        .fill(if on { Fill::from(accent()) } else { Role::Field.into() })
-        .when(!on, |e| e.stroke(Role::Ink.alpha(0.3)).stroke_width(1))
-        .focusable()
-        .a11y(A11y::Toggle { on })
-        .named(name.to_owned())
-        .tip(name.to_owned())
-        .id(id)
-        .shrink(0);
+    let el = stack![glyph(
+        Icon::Check,
+        size,
+        if on {
+            Fill::from(Color::oklch(0.18, 0., 0.))
+        } else {
+            Role::Ink.alpha(0.)
+        }
+    )]
+    .square(size)
+    .fill(if on {
+        Fill::from(accent())
+    } else {
+        Role::Field.into()
+    })
+    .when(!on, |e| e.stroke(Role::Ink.alpha(0.3)).stroke_width(1))
+    .focusable()
+    .a11y(A11y::Toggle { on })
+    .named(name.to_owned())
+    .tip(name.to_owned())
+    .id(id)
+    .shrink(0);
     (hit, interactive(el, on))
 }
 
@@ -937,7 +1100,14 @@ pub fn pan_short(pan: f64) -> String {
 }
 
 /// Common wiring of a strip control: focus, cursor, a slider's name and value.
-fn slider_el(el: El, id: &str, name: &str, value: f64, range: &RangeInclusive<f64>, tip: String) -> El {
+fn slider_el(
+    el: El,
+    id: &str,
+    name: &str,
+    value: f64,
+    range: &RangeInclusive<f64>,
+    tip: String,
+) -> El {
     el.cursor(Cursor::ResizeV)
         .focusable()
         .a11y(A11y::Slider {
@@ -967,21 +1137,36 @@ pub fn pan_wedge(ui: &mut Ui, id: &str, pan: &mut f64) -> El {
         let half = |x: f64| 0.5 + (mid - 0.5) * ((x - c).abs() / c).min(1.);
         let shape = |a: f64, b: f64| {
             DrawPath::polyline(
-                [(a, mid - half(a)), (b, mid - half(b)), (b, mid + half(b)), (a, mid + half(a))]
-                    .map(|(x, y)| Point::new(x, y)),
+                [
+                    (a, mid - half(a)),
+                    (b, mid - half(b)),
+                    (b, mid + half(b)),
+                    (a, mid + half(a)),
+                ]
+                .map(|(x, y)| Point::new(x, y)),
                 true,
             )
         };
         let track = Role::Ink.alpha(0.16 + 0.08 * lift);
         let x = c + at * c;
-        let mut draw = vec![Draw::fill(shape(0., c), track.clone()), Draw::fill(shape(c, w), track)];
+        let mut draw = vec![
+            Draw::fill(shape(0., c), track.clone()),
+            Draw::fill(shape(c, w), track),
+        ];
         if (x - c).abs() > 0.5 {
             draw.push(Draw::fill(shape(c.min(x), c.max(x)), value_ink(0.)));
         }
         let tick = (x - 0.75).clamp(0., w - 1.5);
-        draw.push(Draw::fill(rect(tick, 0., 1.5, h), Color::oklch(0.98, 0., 0.)));
+        draw.push(Draw::fill(
+            rect(tick, 0., 1.5, h),
+            Color::oklch(0.98, 0., 0.),
+        ));
         if focused {
-            draw.push(Draw::stroke(rect(0.5, 0.5, w - 1., h - 1.), Role::Primary.alpha(0.9), 1.));
+            draw.push(Draw::stroke(
+                rect(0.5, 0.5, w - 1., h - 1.),
+                Role::Primary.alpha(0.9),
+                1.,
+            ));
         }
         draw
     })
@@ -989,14 +1174,24 @@ pub fn pan_wedge(ui: &mut Ui, id: &str, pan: &mut f64) -> El {
     .h(TIGHT * 2.)
     .shrink(0);
     let el = col![
-        caption(pan_short(at)).text_size(SMALL - 1.).fill(secondary()).reserve("R100"),
+        caption(pan_short(at))
+            .text_size(SMALL - 1.)
+            .fill(secondary())
+            .reserve("R100"),
         wedge
     ]
     .gap(2)
     .align(Align::Center)
     .justify(Justify::Center)
     .h(STRIP);
-    slider_el(el, id, "Pan", at, &range, "Pan: drag, Shift for fine, double-click to center".into())
+    slider_el(
+        el,
+        id,
+        "Pan",
+        at,
+        &range,
+        "Pan: drag, Shift for fine, double-click to center".into(),
+    )
 }
 
 /// A small gain knob: a 270° track, an accent arc from 0 dB to the value,
@@ -1016,11 +1211,19 @@ pub fn gain_knob(ui: &mut Ui, id: &str, db: &mut f64) -> El {
         let (start, sweep) = (0.75 * PI, 1.5 * PI);
         let mut draw = vec![
             Draw::fill(circle(cx, cy, r - weight - 0.5), Role::Raised.alpha(1.)),
-            Draw::stroke(arc(cx, cy, r, start, sweep), Role::Ink.alpha(0.24 + 0.08 * lift), weight),
+            Draw::stroke(
+                arc(cx, cy, r, start, sweep),
+                Role::Ink.alpha(0.24 + 0.08 * lift),
+                weight,
+            ),
         ];
         let (a, b) = if at < from { (at, from) } else { (from, at) };
         if b - a > 0.004 {
-            draw.push(Draw::stroke(arc(cx, cy, r, start + sweep * a, sweep * (b - a)), accent(), weight));
+            draw.push(Draw::stroke(
+                arc(cx, cy, r, start + sweep * a, sweep * (b - a)),
+                accent(),
+                weight,
+            ));
         }
         let angle = start + sweep * at;
         let (inner, outer) = (r * 0.15, r - weight - 0.5);
@@ -1036,17 +1239,32 @@ pub fn gain_knob(ui: &mut Ui, id: &str, db: &mut f64) -> El {
             1.5,
         ));
         if focused {
-            draw.push(Draw::stroke(circle(cx, cy, r + 1.5), Role::Primary.alpha(0.9), 1.));
+            draw.push(Draw::stroke(
+                circle(cx, cy, r + 1.5),
+                Role::Primary.alpha(0.9),
+                1.,
+            ));
         }
         draw
     })
     .square(STRIP)
     .shrink(0);
-    let text = if *db <= -59.95 { "-inf".to_owned() } else { format!("{:.1}", *db + 0.) };
+    let text = if *db <= -59.95 {
+        "-inf".to_owned()
+    } else {
+        format!("{:.1}", *db + 0.)
+    };
     let el = row![knob, caption(text).text_size(SMALL).reserve("-60.0")]
         .gap(TIGHT)
         .align(Align::Center);
-    slider_el(el, id, "Volume", *db, &range, "Volume: drag up or down, Shift for fine, double-click for 0 dB".into())
+    slider_el(
+        el,
+        id,
+        "Volume",
+        *db,
+        &range,
+        "Volume: drag up or down, Shift for fine, double-click for 0 dB".into(),
+    )
 }
 
 /// A tuning fork and the tune in semitones ("0.00", "-1.25"): drag up or
@@ -1056,17 +1274,38 @@ pub fn tune_field(ui: &mut Ui, id: &str, semitones: &mut f64, range: RangeInclus
     let held = drive(ui, id, semitones, &range, TRAVEL * 2., true, 0.);
     *semitones = (*semitones * 100.).round() / 100.;
     let lift = ui.state(id).hover.max(if held { 1. } else { 0. }) as f32;
-    let text = if semitones.abs() < 0.005 { "0.00".to_owned() } else { format!("{:+.2}", *semitones) };
+    let text = if semitones.abs() < 0.005 {
+        "0.00".to_owned()
+    } else {
+        format!("{:+.2}", *semitones)
+    };
     let el = row![
-        glyph(Icon::Fork, TEXT, if lift > 0.5 { Fill::from(Role::Ink) } else { secondary() }),
+        glyph(
+            Icon::Fork,
+            TEXT,
+            if lift > 0.5 {
+                Fill::from(Role::Ink)
+            } else {
+                secondary()
+            }
+        ),
         caption(text).text_size(SMALL).reserve("+36.00")
     ]
     .gap(2)
     .align(Align::Center)
     .h(STRIP)
     .pad((2, 0))
-    .when(ui.focus_visible(id), |e| e.stroke(Role::Primary.alpha(0.9)).stroke_width(1));
-    slider_el(el, id, "Tune", *semitones, &range, "Tune in semitones: drag, Shift for fine, double-click for 0".into())
+    .when(ui.focus_visible(id), |e| {
+        e.stroke(Role::Primary.alpha(0.9)).stroke_width(1)
+    });
+    slider_el(
+        el,
+        id,
+        "Tune",
+        *semitones,
+        &range,
+        "Tune in semitones: drag, Shift for fine, double-click for 0".into(),
+    )
 }
 
 /// Where a meter's level sits on its scale: -60 dB at the foot, +6 at the top.
@@ -1093,7 +1332,11 @@ pub fn meter_v(level: impl Fn() -> [f32; 2] + 'static) -> El {
         for (n, level) in level().into_iter().enumerate() {
             let top = meter_unit(level);
             let x = n as f64 * (bar + 1.);
-            for (from, to, color) in [(0., hot_at, signal()), (hot_at, clip_at, hot()), (clip_at, 1., clip())] {
+            for (from, to, color) in [
+                (0., hot_at, signal()),
+                (hot_at, clip_at, hot()),
+                (clip_at, 1., clip()),
+            ] {
                 if top > from {
                     let to = top.min(to);
                     draw.push(Draw::fill(rect(x, y(to), bar, y(from) - y(to)), color));
@@ -1112,8 +1355,15 @@ pub fn meter_v(level: impl Fn() -> [f32; 2] + 'static) -> El {
 /// layout like [`meter_v`].
 pub fn activity_dot(lit: impl Fn() -> bool + 'static) -> El {
     canvas(move |s| {
-        let fill = if lit() { Fill::from(signal()) } else { Role::Ink.alpha(0.16) };
-        vec![Draw::fill(circle(s.width / 2., s.height / 2., s.width.min(s.height) / 2.), fill)]
+        let fill = if lit() {
+            Fill::from(signal())
+        } else {
+            Role::Ink.alpha(0.16)
+        };
+        vec![Draw::fill(
+            circle(s.width / 2., s.height / 2., s.width.min(s.height) / 2.),
+            fill,
+        )]
     })
     .square(TIGHT * 1.75)
     .shrink(0)
@@ -1131,12 +1381,20 @@ pub fn solo_mute(ui: &mut Ui, key: &str, solo: &mut bool, mute: &mut bool) -> El
             caption(letter.to_owned())
                 .text_size(SMALL)
                 .text_weight(Weight::SEMIBOLD)
-                .fill(if *on { Fill::from(Color::oklch(0.18, 0., 0.)) } else { secondary() })
+                .fill(if *on {
+                    Fill::from(Color::oklch(0.18, 0., 0.))
+                } else {
+                    secondary()
+                })
         ]
         .align(Align::Center)
         .justify(Justify::Center)
         .square(STRIP)
-        .fill(if *on { Fill::from(lit) } else { Role::Field.into() })
+        .fill(if *on {
+            Fill::from(lit)
+        } else {
+            Role::Field.into()
+        })
         .focusable()
         .a11y(A11y::Toggle { on: *on })
         .named(name.to_owned())
@@ -1146,18 +1404,35 @@ pub fn solo_mute(ui: &mut Ui, key: &str, solo: &mut bool, mute: &mut bool) -> El
         interactive(el, *on)
     };
     let s = one(ui, format!("solo-{key}"), "S", "Solo", solo, accent());
-    let m = one(ui, format!("mute-{key}"), "M", "Mute", mute, Color::oklch(0.72, 0.12, 240.));
+    let m = one(
+        ui,
+        format!("mute-{key}"),
+        "M",
+        "Mute",
+        mute,
+        Color::oklch(0.72, 0.12, 240.),
+    );
     row![s, m].gap(1).align(Align::Center).shrink(0)
 }
 
 /// A compact routing menu: an icon (MIDI or audio, in or out), the current
 /// choice kept `widest` wide, and a caret. Returns whether it was clicked.
-pub fn route(ui: &mut Ui, id: impl Into<Id>, icon: Icon, text: &str, widest: &str, name: &str) -> (bool, El) {
+pub fn route(
+    ui: &mut Ui,
+    id: impl Into<Id>,
+    icon: Icon,
+    text: &str,
+    widest: &str,
+    name: &str,
+) -> (bool, El) {
     let id: Id = id.into();
     let hit = ui.get(id.clone()).activated();
     let el = row![
         glyph(icon, TEXT + 2., secondary()),
-        caption(text.to_owned()).text_size(SMALL).lines(1).reserve(widest.to_owned()),
+        caption(text.to_owned())
+            .text_size(SMALL)
+            .lines(1)
+            .reserve(widest.to_owned()),
         glyph(Icon::Down, TIGHT * 2.5, secondary())
     ]
     .gap(3)
@@ -1272,24 +1547,39 @@ pub fn dial_face(at: f64, from: f64, lift: f32, focused: bool) -> El {
         let (start, sweep) = (0.75 * PI, 1.5 * PI);
         let mut draw = vec![
             Draw::fill(circle(cx, cy, r - weight * 1.5), Role::Raised.alpha(1.)),
-            Draw::stroke(arc(cx, cy, r, start, sweep), Role::Ink.alpha(0.14 + 0.06 * lift), weight),
+            Draw::stroke(
+                arc(cx, cy, r, start, sweep),
+                Role::Ink.alpha(0.14 + 0.06 * lift),
+                weight,
+            ),
         ];
         let (a, b) = if at < from { (at, from) } else { (from, at) };
         if b - a > 0.002 {
-            draw.push(Draw::stroke(arc(cx, cy, r, start + sweep * a, sweep * (b - a)), value_ink(0.), weight));
+            draw.push(Draw::stroke(
+                arc(cx, cy, r, start + sweep * a, sweep * (b - a)),
+                value_ink(0.),
+                weight,
+            ));
         }
         let angle = start + sweep * at;
         let (inner, outer) = (r * 0.2, r - weight * 2.);
         draw.push(Draw::stroke(
             DrawPath::polyline(
-                [Point::new(cx + angle.cos() * inner, cy + angle.sin() * inner), Point::new(cx + angle.cos() * outer, cy + angle.sin() * outer)],
+                [
+                    Point::new(cx + angle.cos() * inner, cy + angle.sin() * inner),
+                    Point::new(cx + angle.cos() * outer, cy + angle.sin() * outer),
+                ],
                 false,
             ),
             value_ink(lift),
             weight,
         ));
         if focused {
-            draw.push(Draw::stroke(circle(cx, cy, r + weight), Role::Primary.alpha(0.9), 1.));
+            draw.push(Draw::stroke(
+                circle(cx, cy, r + weight),
+                Role::Primary.alpha(0.9),
+                1.,
+            ));
         }
         draw
     })
@@ -1301,9 +1591,15 @@ mod tests {
 
     #[test]
     fn names_leave_their_library_out() {
-        assert_eq!(without_library("Vista - Harp", "Performance Samples Vista"), "Harp");
+        assert_eq!(
+            without_library("Vista - Harp", "Performance Samples Vista"),
+            "Harp"
+        );
         assert_eq!(without_library("Solo_Violin", "Solo"), "Violin");
-        assert_eq!(without_library("Una Corda Pure", "Una Corda Library"), "Una Corda Pure");
+        assert_eq!(
+            without_library("Una Corda Pure", "Una Corda Library"),
+            "Una Corda Pure"
+        );
         assert_eq!(without_library("Vistas", "Vista"), "Vistas");
         assert_eq!(without_library("Vista - ", "Vista"), "Vista - ");
         assert_eq!(without_library("Harp", ""), "Harp");
@@ -1333,3 +1629,43 @@ mod tests {
     }
 }
 
+/// Kontakt's authored KEY_COLOR indices. Source colours are preserved, including warm hues.
+pub fn ksp_key_color(index: u8) -> Option<Color> {
+    const COLORS: [[u8; 3]; 21] = [
+        [220, 55, 64],
+        [240, 116, 37],
+        [255, 168, 85],
+        [245, 195, 65],
+        [242, 224, 72],
+        [177, 213, 66],
+        [71, 178, 85],
+        [89, 208, 160],
+        [74, 198, 225],
+        [43, 164, 180],
+        [76, 121, 219],
+        [134, 97, 165],
+        [138, 99, 220],
+        [174, 79, 204],
+        [209, 75, 171],
+        [231, 80, 125],
+        [180, 180, 180],
+        [90, 90, 90],
+        [180, 180, 180],
+        [235, 235, 235],
+        [35, 35, 35],
+    ];
+    if matches!(index, 16 | 18) {
+        return None;
+    }
+    let [r, g, b] = *COLORS.get(index as usize)?;
+    Some(Color::srgb(
+        f32::from(r) / 255.,
+        f32::from(g) / 255.,
+        f32::from(b) / 255.,
+    ))
+}
+
+// Port from v1 0cb7a8a0:src/ui/theme.rs.
+pub fn megabytes(bytes: usize) -> String {
+    format!("{:.0} MB", bytes as f64 / 1_048_576.)
+}

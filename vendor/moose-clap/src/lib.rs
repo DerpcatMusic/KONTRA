@@ -57,8 +57,9 @@ use clap_sys::ext::audio_ports_config::{
 };
 use clap_sys::ext::latency::{CLAP_EXT_LATENCY, clap_host_latency, clap_plugin_latency};
 use clap_sys::ext::note_ports::{
-    CLAP_EXT_NOTE_PORTS, CLAP_NOTE_DIALECT_CLAP, CLAP_NOTE_DIALECT_MIDI, CLAP_NOTE_DIALECT_MIDI2,
-    CLAP_NOTE_DIALECT_MIDI_MPE, clap_note_port_info, clap_plugin_note_ports,
+    CLAP_EXT_NOTE_PORTS, CLAP_NOTE_DIALECT_CLAP, CLAP_NOTE_DIALECT_MIDI,
+    CLAP_NOTE_DIALECT_MIDI_MPE, CLAP_NOTE_DIALECT_MIDI2, clap_note_port_info,
+    clap_plugin_note_ports,
 };
 use clap_sys::ext::params::{
     CLAP_EXT_PARAMS, CLAP_PARAM_IS_AUTOMATABLE, CLAP_PARAM_IS_BYPASS, CLAP_PARAM_IS_ENUM,
@@ -169,12 +170,10 @@ enum GuiParamChange {
 const GUI_QUEUE_CAPACITY: usize = 1024;
 type GuiChangeQueue = crossbeam_queue::ArrayQueue<GuiParamChange>;
 
-/// Bounded handoff slot for state loads. Capacity 1: presets don't
-/// arrive faster than the audio thread completes a block, and on
-/// overflow we want most-recent-wins (`force_push`) so a rapid
-/// double-recall doesn't get the audio thread to apply a stale state
-/// after the host already moved on.
-type StateLoadQueue = crossbeam_queue::ArrayQueue<state::DeserializedState>;
+/// Single latest-wins restore slot, with bounded off-audio blob retirement.
+#[path = "../../moose-state-queue.rs"]
+mod state_queue;
+use state_queue::StateLoadQueue;
 
 // ---------------------------------------------------------------------------
 // Internal wrapper struct held as plugin_data
@@ -665,6 +664,18 @@ unsafe fn data_from_plugin<P: PluginExport>(
     unsafe { &*(*plugin).plugin_data.cast::<ClapPluginData<P>>() }
 }
 
+/// Read an instance's shared params on the host main thread without borrowing
+/// the audio-owned plugin. Used by numeric diagnostic probes.
+///
+/// # Safety
+/// `plugin` must be a live instance exported by this library for exactly `P`.
+pub unsafe fn with_plugin_params<P: PluginExport, T>(
+    plugin: *const clap_plugin,
+    read: impl FnOnce(&P::Params) -> T,
+) -> T {
+    read(&unsafe { data_from_plugin::<P>(plugin) }.params_arc)
+}
+
 // ---------------------------------------------------------------------------
 // Plugin callbacks
 //
@@ -874,6 +885,7 @@ unsafe extern "C" fn clap_plugin_deactivate<P: PluginExport>(plugin: *const clap
             state::apply_state(&mut *instance, &deserialized);
             instance.republish_snapshot();
         }
+        clap_plugin_reset::<P>(plugin);
         if refresh_parameter_list(data)
             && !data.host_params.is_null()
             && !data.host.is_null()
@@ -917,6 +929,7 @@ unsafe extern "C" fn clap_plugin_reset<P: PluginExport>(plugin: *const clap_plug
 unsafe extern "C" fn clap_plugin_on_main_thread<P: PluginExport>(plugin: *const clap_plugin) {
     unsafe {
         let data = data_from_plugin::<P>(plugin);
+        data.pending_state.collect_retired();
         // Runtime presentation metadata is re-read on RESCAN_INFO. A change
         // to the exposed list requests a restart and is published inactive.
         let revision = data.params_arc.parameter_presentation_revision();
@@ -2626,6 +2639,9 @@ unsafe extern "C" fn clap_plugin_process<P: PluginExport>(
             return CLAP_PROCESS_CONTINUE;
         }
 
+        // Cover the entire valid callback, including deferred state application.
+        let _rt = RtSection::enter();
+
         // Take ownership of the plugin for the whole block: an
         // uncontended `Acquire`, never a wait, since the host contract
         // keeps `process` from overlapping a lifecycle callback and host
@@ -2641,17 +2657,15 @@ unsafe extern "C" fn clap_plugin_process<P: PluginExport>(
         // single-slot queue means a rapid double-recall lands the
         // newest blob and the older one is dropped - preferred to
         // the audio thread chasing stale state across blocks.
-        let state_loaded = data.pending_state.pop().is_some_and(|state| {
-            state::apply_state(&mut *instance, &state);
-            true
+        let state_loaded = data.pending_state.apply_audio(|state| {
+            state::apply_state(&mut *instance, state);
         });
-
-        // Paranoid allocation check (the `rt-paranoid` feature): guard the
-        // wrapper's per-block glue - event conversion, transport, process,
-        // output encode, snapshot publish - as well as the plugin. Placed
-        // after the state-load apply above, since `load_state` legitimately
-        // allocates. No-op and zero-sized when the feature is off.
-        let _rt = RtSection::enter();
+        if state_loaded
+            && !data.host.is_null()
+            && let Some(request) = (*data.host).request_callback
+        {
+            request(data.host);
+        }
 
         // The audio scratch lives behind an ownership cell reached through the
         // shared `&data`, so a concurrent host-thread `&data` (param reads,
@@ -3310,6 +3324,71 @@ unsafe fn zero_clap_output_buffers(process: *const clap_process) {
                 }
             }
         }
+    }
+}
+
+/// Test helper exercising hard resets through the exported CLAP lifecycle vtable.
+#[doc(hidden)]
+pub fn lifecycle_reset_smoke<P: PluginExport>(
+    seed: impl Fn(&P::Params),
+    cleared: impl Fn(&P::Params) -> bool,
+) -> [bool; 2] {
+    unsafe extern "C" fn no_extension(
+        _host: *const clap_host,
+        _id: *const c_char,
+    ) -> *const c_void {
+        ptr::null()
+    }
+    let descriptor = Box::leak(Box::new(clap_plugin_descriptor {
+        clap_version: CLAP_VERSION,
+        id: ptr::null(),
+        name: ptr::null(),
+        vendor: ptr::null(),
+        url: ptr::null(),
+        manual_url: ptr::null(),
+        support_url: ptr::null(),
+        version: ptr::null(),
+        description: ptr::null(),
+        features: ptr::null(),
+    }));
+    let host = Box::leak(Box::new(clap_host {
+        clap_version: CLAP_VERSION,
+        host_data: ptr::null_mut(),
+        name: ptr::null(),
+        vendor: ptr::null(),
+        url: ptr::null(),
+        version: ptr::null(),
+        get_extension: Some(no_extension),
+        request_restart: None,
+        request_process: None,
+        request_callback: None,
+    }));
+    // Same exported lifecycle vtable and ownership as the audio smoke below.
+    unsafe {
+        let plugin = create_plugin_instance::<P>(descriptor, host);
+        let api = &*plugin;
+        (api.init.unwrap())(plugin);
+        (api.activate.unwrap())(plugin, 48000., 1, 64);
+        {
+            let instance = enter_plugin(&data_from_plugin::<P>(plugin).plugin);
+            seed(instance.params());
+        }
+        (api.reset.unwrap())(plugin);
+        let reset = {
+            let instance = enter_plugin(&data_from_plugin::<P>(plugin).plugin);
+            cleared(instance.params())
+        };
+        {
+            let instance = enter_plugin(&data_from_plugin::<P>(plugin).plugin);
+            seed(instance.params());
+        }
+        (api.deactivate.unwrap())(plugin);
+        let deactivate = {
+            let instance = enter_plugin(&data_from_plugin::<P>(plugin).plugin);
+            cleared(instance.params())
+        };
+        (api.destroy.unwrap())(plugin);
+        [reset, deactivate]
     }
 }
 
@@ -4255,7 +4334,9 @@ unsafe extern "C" fn audio_ports_get<P: PluginExport>(
         let named = if is_input {
             None
         } else {
-            data_from_plugin::<P>(plugin).params_arc.output_port_name(index)
+            data_from_plugin::<P>(plugin)
+                .params_arc
+                .output_port_name(index)
         };
         copy_str_to_buf(&mut out.name, named.as_deref().unwrap_or(bus.name));
         out.channel_count = bus.channels.channel_count();
@@ -6123,3 +6204,7 @@ mod bus_kind_tests {
         assert_eq!(audio_port_main_flag(1, BusKind::Sidechain), 0);
     }
 }
+
+#[cfg(test)]
+#[path = "../../moose-state-queue-tests.rs"]
+mod state_retirement_tests;

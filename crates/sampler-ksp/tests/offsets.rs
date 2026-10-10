@@ -90,6 +90,7 @@ fn source_offsets_match_elapsed_source_audio_without_shifting_the_event_clock() 
                     for transpose in [0., 12.] {
                         for offset in [0u32, 125, 1500, 2500, 5000] {
                             let playback = Playback {
+                                wavetable: None,
                                 start: 4,
                                 end: Some(164),
                                 direction,
@@ -101,6 +102,7 @@ fn source_offsets_match_elapsed_source_audio_without_shifting_the_event_clock() 
                                     passes: NonZeroU32::new(2),
                                 }),
                                 transpose_semitones: transpose,
+                                loop_slots: [None; 8],
                             };
                             let source = format!(
                                 "on init declare $offset := {offset} end on

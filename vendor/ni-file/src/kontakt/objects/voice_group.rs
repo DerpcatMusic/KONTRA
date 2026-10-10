@@ -9,7 +9,7 @@ use crate::{
 const CHUNK_ID: u16 = 0x2b;
 
 /// An inline v0x60 voice-limit override, or the body of a 0x2b chunk.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct VoiceGroup {
     pub voice_limit: super::VoiceLimit,
 }

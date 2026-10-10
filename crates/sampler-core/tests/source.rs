@@ -530,10 +530,12 @@ fn all_eight_loop_slots_keep_counts_and_source_order() {
                 loop_slots: slots,
                 ..Default::default()
             });
-            rt.trigger(input(1), 60, 1.0).unwrap();
+            support::without_heap(|| {
+                rt.trigger(input(1), 60, 1.0).unwrap();
+            });
             let mut audio = [[0.; 2]; 16];
             for block in audio.chunks_mut(partition) {
-                rt.render(block).unwrap();
+                support::without_heap(|| rt.render(block).unwrap());
             }
             let got = audio.map(|f| f[0]);
             let expected = match direction {
@@ -569,10 +571,12 @@ fn every_physical_loop_slot_is_consumed_once_with_its_own_count() {
             loop_slots: slots,
             ..Default::default()
         });
-        rt.trigger(input(1), 60, 1.).unwrap();
+        support::without_heap(|| {
+            rt.trigger(input(1), 60, 1.).unwrap();
+        });
         let mut audio = [[0.; 2]; 16];
         for block in audio.chunks_mut(partition) {
-            rt.render(block).unwrap();
+            support::without_heap(|| rt.render(block).unwrap());
         }
         assert_eq!(
             audio.map(|f| f[0]),

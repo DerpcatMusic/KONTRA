@@ -1,0 +1,44 @@
+{
+  "cells": [
+    [
+      "base",
+      "strings"
+    ],
+    [
+      "v1",
+      "strings"
+    ],
+    [
+      "candidate",
+      "strings"
+    ],
+    [
+      "v1",
+      "fast-repeat"
+    ],
+    [
+      "candidate",
+      "fast-repeat"
+    ],
+    [
+      "v1",
+      "legato"
+    ],
+    [
+      "candidate",
+      "legato"
+    ],
+    [
+      "v1",
+      "cold-jump"
+    ],
+    [
+      "candidate",
+      "cold-jump"
+    ]
+  ],
+  "block": 32,
+  "temperature": "OS cold",
+  "quiet_max_seconds": 2700,
+  "rss_comparator": "matched v1"
+}

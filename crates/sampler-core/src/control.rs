@@ -1,5 +1,10 @@
 //! Presentation-independent control state. Metadata is prepared off audio; values
 //! have one audio-side writer and are captured into caller-owned storage.
+mod script_state;
+pub use script_state::{
+    ScriptStateAddress, ScriptStateBuffer, ScriptStateCallback, ScriptStateEntry, ScriptStateValue,
+};
+
 use super::{Error, Instruction, PlanId, Prepared, Runtime};
 mod transfer;
 pub(super) use transfer::ControlQueues;
@@ -10,9 +15,30 @@ pub use transfer::{
 
 /// Persistent semantic identity assigned by the source frontend/composition root.
 /// Never derive this from a widget position, dense index or randomized hash.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "cache", serde(try_from = "String", into = "String"))]
 pub struct ControlId(pub u128);
+#[cfg(feature = "cache")]
+impl From<ControlId> for String {
+    fn from(id: ControlId) -> Self {
+        format!("{:032x}", id.0)
+    }
+}
+#[cfg(feature = "cache")]
+impl TryFrom<String> for ControlId {
+    type Error = Error;
+    fn try_from(value: String) -> Result<Self, Error> {
+        if value.len() != 32 {
+            return Err(Error::InvalidInput);
+        }
+        u128::from_str_radix(&value, 16)
+            .map(Self)
+            .map_err(|_| Error::InvalidInput)
+    }
+}
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ControlValue {
     Integer(i64),
@@ -96,7 +122,11 @@ impl ControlEvent {
 }
 
 pub(super) struct ControlState {
-    values: Box<[ControlValue]>,
+    pub(super) values: Box<[ControlValue]>,
+    // Port v1 Bank::base/settings: scripts own base, player offsets affect DSP.
+    pub(super) base: Box<[ControlValue]>,
+    pub(super) offsets: Box<[f32]>,
+    pub(super) engine_index: Box<[usize]>,
     pub(super) automation: Box<[crate::automation::AutomationState]>,
     pub(super) revision: u64,
     /// Future writes reserve both this generation and one revision increment each.
@@ -104,12 +134,42 @@ pub(super) struct ControlState {
 }
 impl ControlState {
     pub(super) fn new(plan: &Prepared) -> Self {
+        let mut engine_index = vec![usize::MAX; plan.controls.len()];
+        for (binding, b) in plan.engine_parameters.iter().enumerate() {
+            engine_index[plan.control_index(b.control).unwrap()] = binding;
+        }
         Self {
             values: plan.controls.iter().map(|c| c.default).collect(),
-            automation: vec![crate::automation::AutomationState::default(); plan.automation.len()].into_boxed_slice(),
+            base: plan.controls.iter().map(|c| c.default).collect(),
+            offsets: vec![0.; plan.controls.len()].into_boxed_slice(),
+            engine_index: engine_index.into_boxed_slice(),
+            automation: vec![crate::automation::AutomationState::default(); plan.automation.len()]
+                .into_boxed_slice(),
             revision: 0,
             pending: 0,
         }
+    }
+}
+
+impl ControlState {
+    pub(super) fn playing(&self, prepared: &Prepared, index: usize) -> ControlValue {
+        let base = self.base[index];
+        let offset = self.offsets[index];
+        if offset == 0. {
+            return base;
+        }
+        let ControlValue::Real(base) = base else {
+            return base;
+        };
+        let binding = &prepared.engine_parameters[self.engine_index[index]];
+        let norm = binding.law.encode(base);
+        // The admitted law owns its normalized bounds, including bipolar gains.
+        let to = (f64::from(norm) + f64::from(offset) * 1e6).round() as i32;
+        let mut value = binding.law.decode(to);
+        if let ControlDomain::Real { min, max } = prepared.controls[index].domain {
+            value = value.clamp(min, max);
+        }
+        ControlValue::Real(value)
     }
 }
 
@@ -128,6 +188,12 @@ impl Prepared {
         self.validate_dsp_controls()?;
         for binding in &self.control_programs {
             self.control_index(binding.control)?;
+        }
+        for binding in &self.engine_parameters {
+            self.control_index(binding.control)?;
+        }
+        for control in self.envelope_controls.iter().flatten().flatten() {
+            self.control_index(*control)?;
         }
         Ok(self)
     }
@@ -189,6 +255,79 @@ impl Prepared {
 }
 
 impl Runtime {
+    /// One cross-format host Tone, independent of authored voice/filter controls.
+    pub fn set_part_tone_cutoff(&mut self, cutoff: f64) -> Result<(), Error> {
+        if !(20.0..=20_000.).contains(&cutoff) {
+            return Err(Error::InvalidInput);
+        }
+        self.part_tone_cutoff = cutoff;
+        Ok(())
+    }
+
+    /// A mixed marked/unmarked generation set uses the adapter's single output fallback.
+    pub fn has_input_tone(&self) -> bool {
+        self.plans
+            .slots
+            .iter()
+            .filter_map(|s| s.value.as_ref())
+            .all(|g| g.prepared.buses.input.is_some())
+    }
+
+    /// v1 engine defaults: captured by new fallback voices, never authored envelopes.
+    pub fn set_fallback_envelope(&mut self, attack: f64, release: f64) -> Result<(), Error> {
+        if !(0.0001..=5.).contains(&attack) || !(0.001..=10.).contains(&release) {
+            return Err(Error::InvalidInput);
+        }
+        self.fallback_envelope = Some([
+            (attack * f64::from(self.rate)).round() as u32,
+            (release * f64::from(self.rate)).round() as u32,
+        ]);
+        Ok(())
+    }
+
+    pub(crate) fn region_envelope(
+        &self,
+        envelope: crate::Envelope,
+        fallback: bool,
+    ) -> crate::Envelope {
+        if fallback && let Some([attack, release]) = self.fallback_envelope {
+            envelope
+                .with_stage(crate::EnvelopeStage::Attack, attack)
+                .with_stage(crate::EnvelopeStage::Release, release)
+        } else {
+            envelope
+        }
+    }
+
+    pub(crate) fn controlled_envelope(
+        &self,
+        plan: PlanId,
+        group: Option<u32>,
+        envelope: crate::Envelope,
+    ) -> crate::Envelope {
+        let generation = self.plans.get(plan.0).unwrap();
+        let mut envelope = generation.script.envelope(group, envelope);
+        if let Some(controls) =
+            group.and_then(|g| generation.prepared.envelope_controls.get(g as usize))
+        {
+            for (stage, id) in crate::engine_parameters::ENVELOPE_STAGES
+                .into_iter()
+                .zip(controls)
+            {
+                if let Some(id) = id {
+                    let index = generation.prepared.control_index(*id).unwrap();
+                    let value = generation.controls.values[index];
+                    if value != generation.prepared.controls[index].default {
+                        if let ControlValue::Real(value) = value {
+                            envelope = envelope.with_control(stage, value);
+                        }
+                    }
+                }
+            }
+        }
+        envelope
+    }
+
     /// Apply an interaction and start its prepared handler as one admission. Full
     /// callback capacity rejects before changing the value. Handler faults are
     /// retained outcomes; a committed edit is not rolled back after execution.
@@ -236,10 +375,22 @@ impl Runtime {
         Ok(generation.controls.values[generation.prepared.control_index(id)?])
     }
 
+    /// The authored/script value before the player's editor offsets. Use this
+    /// for host persistence so recalling an offset cannot apply it twice.
+    pub fn control_base_value(&self, plan: PlanId, id: ControlId) -> Result<ControlValue, Error> {
+        let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
+        Ok(generation.controls.base[generation.prepared.control_index(id)?])
+    }
+
     /// The control's id, domain and default in `plan`.
     /// The immutable schema of an addressed generation, for an off-audio producer.
     pub fn control_definitions(&self, plan: PlanId) -> Result<&[ControlDefinition], Error> {
-        Ok(&self.plans.get(plan.0).ok_or(Error::StaleHandle)?.prepared.controls)
+        Ok(&self
+            .plans
+            .get(plan.0)
+            .ok_or(Error::StaleHandle)?
+            .prepared
+            .controls)
     }
 
     pub fn control_definition(
@@ -369,10 +520,12 @@ impl Runtime {
         for write in writes {
             // All lookups/values validated above; one writer, no reentrancy.
             let index = definitions.control_index(write.id).unwrap();
-            generation.controls.values[index] = write.value;
+            generation.controls.base[index] = write.value;
+            let playing = generation.controls.playing(definitions, index);
+            generation.controls.values[index] = playing;
             generation
                 .dsp
-                .edit_control(definitions, index, write.value, self.now);
+                .edit_control(definitions, index, playing, self.now);
         }
         generation.controls.revision = revision;
         Ok(revision)
