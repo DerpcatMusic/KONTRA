@@ -3216,7 +3216,6 @@ mod tests {
                     graph: Some(graph),
                     hovered: Default::default(),
                     drafts: Default::default(),
-                    retention: PrimitiveRetention::default(),
                 },
             );
         });
