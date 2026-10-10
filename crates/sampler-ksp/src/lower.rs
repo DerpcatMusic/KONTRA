@@ -188,6 +188,7 @@ impl<'h> Unit<'h> {
         let mut g = Gen {
             u: self,
             ctx: context,
+            in_function: false,
             callback_type: cb,
             ui_id,
             code: module.code,
@@ -219,7 +220,9 @@ impl<'h> Unit<'h> {
             g.starts[f.0 as usize] = g.code.len() as u32;
             let function = &g.u.hir.functions[f.0 as usize];
             g.span = function.span;
+            g.in_function = true;
             g.block(&function.body)?;
+            g.in_function = false;
             g.emit(I::Op(Op::Return))?;
             g.ends[f.0 as usize] = g.code.len() as u32;
         }
@@ -379,6 +382,7 @@ impl<'h> Unit<'h> {
         let mut g = Gen {
             u: self,
             ctx: Context::Plan,
+            in_function: false,
             callback_type: b::cb::LISTENER,
             ui_id: None,
             code: Vec::new(),
@@ -477,6 +481,8 @@ fn callback_type(kind: CallbackKind) -> i32 {
 struct Gen<'u, 'h> {
     u: &'u mut Unit<'h>,
     ctx: Context,
+    /// Function bodies share callback context, but exit only returns to their caller.
+    in_function: bool,
     callback_type: i32,
     ui_id: Option<i32>,
     code: Vec<I>,
@@ -1544,8 +1550,12 @@ impl Gen<'_, '_> {
         let is_real = |i: usize| matches!(args.get(i), Some(Arg::Expr(e)) if e.ty == Ty::Real);
         let native = match builtin {
             Exit => {
-                self.forward()?;
-                self.emit(I::End)?;
+                if self.in_function {
+                    self.emit(I::Op(Op::Return))?;
+                } else {
+                    self.forward()?;
+                    self.emit(I::End)?;
+                }
                 true
             }
             Continue => {
