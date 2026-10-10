@@ -634,11 +634,9 @@ fn articulations_switch_by_their_keys() {
     shoot(&h.ui, 1180, 780, "app/synthetic-mapping.png");
 }
 
-/// The part's performance line: the playing articulation with its keys, the
-/// instrument volume, the dynamics controller it waits for (one click picks
-/// where it starts, saved on the part for the next load) and MPE.
+/// Performance chrome must not change saved controller defaults.
 #[test]
-fn the_performance_line_shows_articulation_volume_dynamics_and_mpe() {
+fn the_performance_line_keeps_articulation_and_hides_controller_setup() {
     use sampler_ir as sir;
     let mut inst = sir::Instrument {
         name: "Strings".into(),
@@ -700,9 +698,8 @@ fn the_performance_line_shows_articulation_volume_dynamics_and_mpe() {
         -1,
         "Kontakt's own start until picked"
     );
-    h.press("dyn-0-64");
     h.idle(2);
-    assert_eq!(p.selection.read().unwrap().parts[0].dynamics, 64);
+    assert_eq!(p.selection.read().unwrap().parts[0].dynamics, -1);
     use super::part::badge_text;
     assert_eq!(badge_text("CC1", -1, 0, true), "Needs CC1");
     assert_eq!(
@@ -4996,7 +4993,7 @@ fn mapping_waveform_worker_reads_falcon_without_original_waveform_widget() {
     for (w, h) in [(1180, 780), (900, 640)] {
         let mut ui = Harness::new(&p, w as f64, h as f64);
         ui.press("view-0-Sound");
-        ui.press("sound-tab-0-Mapping");
+        ui.press("view-0-Mapping");
         ui.press("map-group-0-0");
         ui.press("map-zone-0-0");
         for _ in 0..15 {
@@ -5265,7 +5262,7 @@ fn mapping_kontakt_worker_probe_skips_when_library_is_missing() {
     let before = (*inst).clone();
     let mut ui = Harness::new(&p, 1180., 780.);
     ui.press("view-0-Sound");
-    ui.press("sound-tab-0-Mapping");
+    ui.press("view-0-Mapping");
     assert!(ui.ui.scene().unwrap().surface("map-0").is_some());
     assert_eq!(*inst, before);
 }
@@ -5656,7 +5653,7 @@ fn mapping_analog_waveform_worker_probe_skips_only_when_library_is_missing() {
     for (w, h) in [(1180, 780), (900, 640)] {
         let mut ui = Harness::new(&p, w as f64, h as f64);
         ui.press("view-0-Sound");
-        ui.press("sound-tab-0-Mapping");
+        ui.press("view-0-Mapping");
         for _ in 0..100 {
             ui.idle(1);
             if ui
@@ -5788,7 +5785,7 @@ fn mapping_group_search_keeps_selection_and_offers_empty_recovery() {
     for (w, h) in [(1180, 780), (900, 640)] {
         let mut ui = Harness::new(&p, w as f64, h as f64);
         ui.press("view-0-Sound");
-        ui.press("sound-tab-0-Mapping");
+        ui.press("view-0-Mapping");
         assert!(
             ui.ui.scene().unwrap().surface("map-search-0").is_some(),
             "Mapping needs its own group/articulation search"
