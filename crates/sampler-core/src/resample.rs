@@ -435,20 +435,25 @@ mod tests {
             .collect();
         let fold = sampler_simd::StereoFold::new();
         let measure = |legacy: bool| {
-            let t = Instant::now();
-            let mut result = [0.; 2];
-            for i in 0..1048576 {
-                let input = data[i & 255];
-                let out = if legacy {
-                    legacy_fold(input)
-                } else {
-                    fold.fold(input)
-                };
-                result[0] += out[0];
-                result[1] += out[1];
-            }
-            black_box(result);
-            t.elapsed().as_nanos()
+            sampler_simd::dispatch(
+                #[inline(always)]
+                || {
+                    let t = Instant::now();
+                    let mut result = [0.; 2];
+                    for i in 0..1048576 {
+                        let input = data[i & 255];
+                        let out = if legacy {
+                            legacy_fold(input)
+                        } else {
+                            fold.fold(input)
+                        };
+                        result[0] += out[0];
+                        result[1] += out[1];
+                    }
+                    black_box(result);
+                    t.elapsed().as_nanos()
+                },
+            )
         };
         let (mut before, mut after) = (Vec::new(), Vec::new());
         for i in 0..15 {
