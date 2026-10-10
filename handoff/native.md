@@ -198,3 +198,52 @@ The alias itself does not require the global UI dispatcher.
 - W5 dynamic selectors, GET-only enforcement, runtime fonts, and unit text remain open.
 - Shared64/native32 timing remains uncertified.
 - Main-checkout uncommitted work remains preserved and outside this takeover.
+
+## Round 2 continuation (source only; combined-batch policy)
+
+Current exclusive branch remains takeover/native-ksp-20261010.
+Alias source stack is preserved. Parent reports alias RED receipts from the
+integration test-only candidate; no local Rust command ran here.
+
+Additional commits:
+
+1. a39b07f5fc9d37a9a06719a7ab6238a1e7e9429c — dynamic integer menu
+   NUM_ITEMS/SELECTED_ITEM_IDX callback dispatch and two authored regressions.
+   This is independent of the fade runtime dependency and was sent for the
+   current combined batch.
+2. 9fe764e4dcb3e876f82a1d19e2656cf8fe02ffe6 — typed FadeCurve enum,
+   optional Instruction operand, builtin names/arity, lowering, direct test
+   caller adaptation, and authored compiler/runtime regressions.
+   MUST pair with DSP-owned script_params.rs signature/runtime change before
+   any compilation. Event ALL_EVENTS/by_marks admission is unchanged.
+3. 27dfb4272544a72aee9442daf057a38c961e14d3 — precise native/script
+   evidence report, corrected Luau-vs-Lua5.1.4 manifest comment, and three
+   inline Lua compatibility probes. No VM/dependency/runtime replacement.
+4. 9da42c031f86e610734db7386e32ad79c4552ed8 — within-cell exponential
+   fade witness (frame16 of384; blocks1/17/128; exact/time-mirror tolerance1e-7).
+   Pair after the fade seam and DSP runtime. Quarter-grid tests alone cannot
+   certify nonlinear behavior within the engine's32-frame gain cells.
+
+No-build checks: git diff --check and rustfmt passed; Python source invariants,
+immutable official-document digests, independently evaluated fade fixture values,
+and the within-cell endpoint-interpolation discriminant passed.
+These checks do not execute Rust. All new Rust regressions remain UNRUN.
+
+Traceable source/docs/native limits:
+docs/audit-2026-10-10/native-script-round2.md.
+Authoritative Kontakt/UVI documentation was checked at exact hashes.
+REA opened Kontakt executable SHAfe12b6a7b652cfd026b5bec62ae6c096b2dfddcc0e17249ba518cb3ef0f0c8e0;
+one focused string search timed out330s, was not retried, and close_binary
+completed. Supplied fade-name file offsets establish names only.
+Documented semantics are checked; native rendered/numerical parity is UNKNOWN.
+Unknown fade-selector rejection is our safety policy, not proven native reaction.
+
+All exact SHA/dependency/filter/reference reports were sent to parent, integration,
+DSP, and roadmap scout. No archived worker, schedule, or nested task was started.
+No compiler, reference process, reader, server, install, publication, or frozen-v1
+change occurred. No proprietary script/sample/key dump was created.
+
+NEXT: receive combined-batch menu/alias receipts; pair fade9fe + DSP runtime +
+within-cell9da before the next frozen batch; run Lua probes in an integration
+batch. Compare actual failures before changing VM semantics. The end-goal of
+lower CPU AND RAM than both frozenv1 and Kontakt remains UNACHIEVED/UNMEASURED.
