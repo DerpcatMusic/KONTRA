@@ -1,3 +1,71 @@
+#[test]
+fn w1_performance_intent_selects_authored_source_and_retains_explicit_choices() {
+    let emit = |source| sampler_ksp::compile(source, 48000, sampler_ksp::Limits::LIBRARY, &[])
+        .unwrap().ui(&|_| None).unwrap();
+    let auxiliary = emit("on init declare ui_label $a(1,1) declare ui_label $b(1,1) end on");
+    let mut performance = emit("on init make_perfview declare ui_knob $k(0,100,1) end on");
+    performance.source = sampler_ui_ir::Source::Ksp { slot: 1 };
+    let p = Arc::new(SamplerParams::new());
+    p.selection.write().unwrap().parts.push(crate::plugin::Part {
+        path: "/audit/performance-intent.nki".into(), view: 3, ..Default::default()
+    });
+    p.shared.view.lock().unwrap().parts[0].interfaces = vec![auxiliary.clone(), performance.clone()].into();
+    let mut h = Harness::new(&p, 1180., 900.);
+    let selected = |h: &Harness, id: &str| matches!(
+        h.ui.scene().unwrap().surface(id).unwrap().semantics.as_ref().unwrap().role,
+        A11y::Toggle { on: true }
+    );
+    assert!(selected(&h, "face-0-1"), "make_perfview must beat auxiliary widget count");
+    assert!(selected(&h, "face-vector-0"), "saved mode takes precedence");
+    h.press("face-0-0");
+    performance.widgets[0].name = "Changed".into();
+    p.shared.view.lock().unwrap().parts[0].publish_interface(&performance);
+    h.idle(3);
+    assert!(selected(&h, "face-0-0"), "publication retains the selected source tab");
+    assert!(selected(&h, "face-vector-0"));
+    h.press("face-0-1");
+    let promoted = sampler_ui_ir::Interface { performance: true, ..auxiliary };
+    performance.performance = false;
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        assert!(view.parts[0].publish_interface(&promoted));
+        assert!(view.parts[0].publish_interface(&performance));
+    }
+    h.idle(3);
+    assert!(selected(&h, "face-0-1"), "changed default intent retains an explicit source tab");
+    let reopened = Harness::new(&p, 1180., 900.);
+    assert!(selected(&reopened, "face-0-0"), "reopen uses the current published intent");
+    assert!(selected(&reopened, "face-vector-0"));
+}
+
+#[test]
+fn w1_background_performance_intent_retains_the_selected_tab() {
+    let emit = |source| sampler_ksp::compile(source, 48000, sampler_ksp::Limits::LIBRARY, &[])
+        .unwrap().ui(&|_| None).unwrap();
+    let auxiliary = emit("on init declare ui_label $a(1,1) end on");
+    let mut performance = emit("on init make_perfview set_ui_color(0123456H) end on");
+    performance.source = sampler_ui_ir::Source::Ksp { slot: 1 };
+    let p = Arc::new(SamplerParams::new());
+    p.selection.write().unwrap().parts.push(crate::plugin::Part {
+        path: "/audit/background-performance-intent.nki".into(), view: 1, ..Default::default()
+    });
+    p.shared.view.lock().unwrap().parts[0].interfaces = vec![auxiliary, performance.clone()].into();
+    let mut h = Harness::new(&p, 1180., 900.);
+    let selected = |h: &Harness, id: &str| matches!(
+        h.ui.scene().unwrap().surface(id).unwrap().semantics.as_ref().unwrap().role,
+        A11y::Toggle { on: true }
+    );
+    assert!(selected(&h, "face-0-1"));
+    performance.performance = false;
+    assert!(p.shared.view.lock().unwrap().parts[0].publish_interface(&performance));
+    h.idle(3);
+    assert!(selected(&h, "face-0-1"), "intent alone must not discard an empty selected tab");
+    assert!(selected(&h, "face-original-0"));
+    let reopened = Harness::new(&p, 1180., 900.);
+    assert!(reopened.ui.scene().unwrap().surface("part-0-epoch-0-script-0-ir-view").is_some(),
+        "a sole eligible source renders without a source tab bar");
+}
+
 /// Audit-only probe: real frontend and full editor, without decoding audio PCM.
 #[test]
 #[ignore = "set KONTRA_AUDIT_UI_PATCH to a locally owned NKI"]
