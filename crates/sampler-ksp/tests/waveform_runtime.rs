@@ -335,6 +335,34 @@ fn waveform_init_alias_imported_placeholder_and_multiple_widgets_use_hir_identit
     let model = view.ui(&|_| None).unwrap();
     assert_eq!(model.widgets.iter().find(|w| w.name == "%read").unwrap().value,
         Some(sampler_ui_ir::Value::Integers(vec![99,77,0,0])));
+    let plan = prepared(vec![script]); let limits = limits(&plan);
+    let mut rt = Runtime::new(plan, limits).unwrap(); let plan = rt.active_plan();
+    assert_eq!(stored(&rt, plan, 0, ui(&view, "$Imported"), Property::Table, 3), Some(99));
+    assert_eq!(stored(&rt, plan, 0, ui(&view, "$w"), Property::Table, 3), Some(77));
+    assert!(rt.take_fault().is_none());
+}
+
+#[test]
+fn waveform_property_family_after_performance_view_is_not_imported_controls() {
+    let source = "on init load_performance_view(\"owned\")
+        declare ui_waveform $w(1,1) attach_zone($w,27,3)
+        set_ui_wf_property($w,$UI_WF_PROP_PLAY_CURSOR,0,12000)
+        set_ui_wf_property($w,$UI_WF_PROP_FLAGS,0,11)
+        set_ui_wf_property($w,$UI_WF_PROP_MIDI_DRAG_START_NOTE,0,65)
+        set_ui_wf_property($w,$UI_WF_PROP_TABLE_IDX_HIGHLIGHT,3,1)
+        set_ui_wf_property($w,$UI_WF_PROP_TABLE_VAL,3,77)
+        set_ui_wf_property($w,$UI_WF_PROP_UNKNOWN,0,99)
+        move_control_px($Missing,0,0) end on";
+    let script = script(source, 0); let view = script.view();
+    // Reserved selectors must not allocate HIR UI identities. Ordinary missing
+    // performance-view handles still remain unresolved, not promoted controls.
+    let widgets = &view.model().interface.widgets;
+    assert_eq!(widgets.iter().map(|w| w.name.as_str()).collect::<Vec<_>>(), ["$w", "$Missing"]);
+    assert!(widgets[1].unresolved);
+    assert_eq!(wave(&view, "$w"), sampler_ui_ir::Waveform {
+        zone: 27, flags: 11, cursor_us: 12000, table: vec![0,0,0,77],
+        highlighted: Some(3), midi_start_note: 65,
+    });
 }
 
 #[cfg(feature = "cache")]
