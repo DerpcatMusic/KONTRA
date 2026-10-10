@@ -758,18 +758,21 @@ impl Prepared {
 
     /// Bind a physical-key release callback to triggered external inputs. It has
     /// an independently reserved continuation and may wait beyond gate closure.
-    /// Replacing the complete program table clears this binding.
-    pub fn with_release_program(mut self, program: usize) -> Result<Self, Error> {
+    /// Replacing the complete program table clears this binding. A changed
+    /// release binding is rejected while parameter receivers are installed;
+    /// clear and explicitly rebind those receivers when changing routing.
+    pub fn with_release_program(self, program: usize) -> Result<Self, Error> {
         if !self.programs.get(program).is_some_and(|p| {
             !p.requires_controller && p.wait_lifetime == super::WaitLifetime::Callback
         }) {
             return Err(Error::InvalidInput);
         }
-        if self.stages.is_empty() {
-            self.stages = Box::new([super::Stage::default()]);
+        let mut stages = self.stages.to_vec();
+        if stages.is_empty() {
+            stages.push(super::Stage::default());
         }
-        self.stages[0].release = Some(program);
-        Ok(self)
+        stages[0].release = Some(program);
+        self.with_stages(stages)
     }
 
     /// Bind per-voice modulation programs: one optional program per authored
