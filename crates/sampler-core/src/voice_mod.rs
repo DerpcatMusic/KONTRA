@@ -156,18 +156,51 @@ pub struct ModRoute {
     pub shape: Option<usize>,
     /// One-pole lag frames to reach 99% of a step (Kontakt's lag law).
     pub lag: u32,
-    /// Depth multiplier from a second source (a source × source product).
+    /// Depth modifier from a second source, using its selected combination law.
     pub scale: Option<ModScale>,
 }
 
-/// Multiplies a route's depth by `shape(x)` of another source, `x` its unipolar
-/// view; without a shape the multiplier is `x`. Evaluated with the route.
+/// Changes an outgoing route's depth using another source. The default law
+/// multiplies by its unipolar view (or shaped value). Evaluated with the route.
 #[derive(Clone, Copy, Debug)]
 pub struct ModScale {
     /// Index into [`ModProgram::sources`].
     pub source: usize,
     /// Index into [`ModProgram::shapes`]; its output is used unmapped.
     pub shape: Option<usize>,
+    /// Generic product or checked native per-target intensity combination.
+    pub law: ModScaleLaw,
+}
+
+/// How a second source changes one outgoing target's saved depth.
+#[derive(Clone, Copy, Debug, Default)]
+pub enum ModScaleLaw {
+    #[default]
+    Multiply,
+    /// Kontakt ID25; `depth` belongs to the intensity assignment, not the
+    /// outgoing target. Only flag 0x04 selects the combination expression.
+    /// `unit` is outgoing depth units per normalized target intensity; the
+    /// evaluator converts to normalized intensity before applying this law.
+    /// Preparation admits saved flags 0x10/0x14, unshaped/unlagged non-live
+    /// sources only. Native initialization and live writes stay unsupported.
+    KontaktIntensity { depth: f64, flags: u8, unit: f64 },
+}
+
+impl ModScaleLaw {
+    /// `source` is already conditionally inverted; `source_bipolar` selects
+    /// its unipolar view independently of the target flags. `base` is normalized
+    /// intensity; unit conversion belongs to the caller. No clamping. This is
+    /// the derived expression law, not native fcinv_* or callback execution.
+    pub fn apply(self, base: f64, source: f64, source_bipolar: bool) -> f64 {
+        let source = unipolar(source, source_bipolar);
+        match self {
+            Self::Multiply => base * source,
+            Self::KontaktIntensity { depth, flags, .. } if flags & 4 == 0 =>
+                base * (1. - (1. - source) * depth),
+            Self::KontaktIntensity { depth, .. } =>
+                1. - (1. - base) * (1. - source * depth),
+        }
+    }
 }
 
 impl ModRoute {
@@ -396,6 +429,17 @@ impl VoiceModulation {
                     || route.shape.is_some_and(|s| s >= shapes.len())
                     || route.scale.is_some_and(|s| {
                         s.source >= sources.len() || s.shape.is_some_and(|s| s >= shapes.len())
+                            // Native lag/init/inversion/live paths have no numeric proof.
+                            || matches!(s.law, ModScaleLaw::KontaktIntensity { depth, flags, unit }
+                                if !depth.is_finite() || !(0. ..=1.).contains(&depth)
+                                || !unit.is_finite() || unit == 0.
+                                || !(0. ..=1.).contains(&(route.depth / unit))
+                                || !matches!(flags, 0x10 | 0x14)
+                                || s.shape.is_some() || route.lag != 0
+                                || route.target == ModTarget::SampleStart
+                                || matches!(sources.get(s.source), Some(Prepared::Controller(_)
+                                    | Prepared::Pressure | Prepared::Timbre
+                                    | Prepared::PitchBend | Prepared::Script(_))))
                     })
                 {
                     return Err(Error::InvalidInput);
@@ -478,10 +522,9 @@ impl VoiceModulation {
             };
             let bipolar = program.bipolar[route.source];
             let v = program.transform(route, at_start(route.source), bipolar);
-            let scale = route
-                .scale
-                .map_or(1.0, |s| program.scale(s, at_start(s.source)));
-            fraction += route.depth * scale * unipolar(v, bipolar);
+            let depth = route.scale.map_or(route.depth,
+                |s| program.depth(route.depth, s, at_start(s.source)));
+            fraction += depth * unipolar(v, bipolar);
         }
         (fraction.clamp(0.0, 1.0) * f64::from(self.start_ranges[region])) as u32
     }
@@ -512,11 +555,19 @@ impl Prepared {
 const FULL_SCALE: f64 = 1.0 / u32::MAX as f64;
 
 impl Program {
-    fn scale(&self, scale: ModScale, raw: f64) -> f64 {
-        let x = unipolar(raw, self.bipolar[scale.source]);
-        scale.shape.map_or(x, |shape| {
-            f64::from(evaluate(&self.shapes[shape], x as f32))
-        })
+    fn depth(&self, base: f64, scale: ModScale, raw: f64) -> f64 {
+        let (source, bipolar) = match scale.shape {
+            Some(shape) => {
+                let x = unipolar(raw, self.bipolar[scale.source]);
+                (f64::from(evaluate(&self.shapes[shape], x as f32)), false)
+            }
+            None => (raw, self.bipolar[scale.source]),
+        };
+        match scale.law {
+            ModScaleLaw::Multiply => base * unipolar(source, bipolar),
+            ModScaleLaw::KontaktIntensity { unit, .. } =>
+                scale.law.apply(base / unit, source, bipolar) * unit,
+        }
     }
 
     fn transform(&self, route: &ModRoute, raw: f64, bipolar: bool) -> f64 {
@@ -1093,7 +1144,7 @@ impl VoiceModState {
             *lagged = v;
             let d = route
                 .scale
-                .map_or(route.depth, |s| route.depth * p.scale(s, values[s.source]));
+                .map_or(route.depth, |s| p.depth(route.depth, s, values[s.source]));
             processor_values[i] = d * v;
             if onset {
                 previous_processor_values[i] = processor_values[i];
