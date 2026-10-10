@@ -11,8 +11,8 @@ use std::ops::RangeInclusive;
 use std::sync::atomic::Ordering;
 
 const OCTAVES: i16 = 7;
-/// Highest first octave that keeps the last key at or below MIDI 127.
-const MAX_OCTAVE: i16 = (128 / 12) - OCTAVES;
+/// Highest first octave: the final octave ends at MIDI 127.
+const MAX_OCTAVE: i16 = (128 + 11) / 12 - OCTAVES;
 
 /// The keyboard dock: a title bar with the shown range, octave stepping and
 /// the collapse switch, then a range strip over the keys.
@@ -74,7 +74,7 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
     let shown_range = format!(
         "{} – {}",
         note_name(first as u8),
-        note_name((first + OCTAVES * 12 - 1) as u8)
+        note_name((first + OCTAVES * 12 - 1).min(127) as u8)
     );
     let plays = match playable(&looks) {
         _ if cx.state.chosen().is_none() => {
@@ -114,7 +114,7 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
     .pad(edges(TIGHT, INSET, TIGHT, INSET))
     .shrink(0);
     let first_note = (cx.state.octave * 12) as u8;
-    let shown = first_note..first_note + (OCTAVES * 12) as u8;
+    let shown = first_note..(first + OCTAVES * 12).min(128) as u8;
     // Hidden, the keys hold no pointer: a glissando still lets go.
     play(ui, cx, shown);
     if !open {
@@ -126,6 +126,9 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
     for octave in cx.state.octave..cx.state.octave + OCTAVES {
         let mut make = |n: i16, black: bool| {
             let note = (octave * 12 + n) as u8;
+            if note >= 128 {
+                return spacer();
+            }
             if ui
                 .get(format!("key-{note}"))
                 .clicked_with(Button::Secondary)
@@ -805,6 +808,9 @@ mod tests {
 
     #[test]
     fn the_keyboard_fits_midi() {
-        const { assert!(MAX_OCTAVE * 12 + OCTAVES * 12 <= 128) };
+        const {
+            let last_octave = MAX_OCTAVE + OCTAVES - 1;
+            assert!(last_octave * 12 <= 127 && (last_octave + 1) * 12 > 127);
+        };
     }
 }
