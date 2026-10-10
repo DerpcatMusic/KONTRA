@@ -1,0 +1,434 @@
+{
+  "status": "DESIGN_AND_DETACHED_CHARACTERIZATION_SOURCE_ONLY",
+  "source_commit": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+  "source_tree": "4af7c9babd93c49cdb0a026a63d25e6c433498b0",
+  "product_files_unchanged": true,
+  "source_spans": [
+    {
+      "commit": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+      "path": "crates/sampler-uvi/src/engine_parameters.rs",
+      "symbol": "field/binding/bindings/register/initialize",
+      "lines": [
+        10,
+        154
+      ],
+      "git_blob": "d03bec9409145a50c6b936e3d351827efcb3c4bb",
+      "span_sha256": "bca55f5e7f233a35e90602b1d553680abefe2a4a6f07b8990a5b0de6c5880e03"
+    },
+    {
+      "commit": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+      "path": "crates/sampler-uvi/src/inserts.rs",
+      "symbol": "insert identity, bypass and Gain",
+      "lines": [
+        13,
+        97
+      ],
+      "git_blob": "bc230858121f277170ebf3d62470e53912c0b03c",
+      "span_sha256": "007f15401a2047f209d0bbc090e7d4663d198e2218e8e64933a7b403aeed2e31"
+    },
+    {
+      "commit": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+      "path": "crates/sampler-uvi/src/inserts.rs",
+      "symbol": "OnePole static key-tracked approximation",
+      "lines": [
+        207,
+        230
+      ],
+      "git_blob": "bc230858121f277170ebf3d62470e53912c0b03c",
+      "span_sha256": "3af03f139eef9beea2f3f39f29fd35cbd3058835760a1d97d5c0e350f2f8d18f"
+    },
+    {
+      "commit": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+      "path": "crates/sampler-uvi/src/inserts.rs",
+      "symbol": "placed count",
+      "lines": [
+        300,
+        309
+      ],
+      "git_blob": "bc230858121f277170ebf3d62470e53912c0b03c",
+      "span_sha256": "b38b8ba4f27925757485ce15f32077461f4671f427bdccbd1237503f7ecb6205"
+    },
+    {
+      "commit": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+      "path": "crates/sampler-uvi/src/lib.rs",
+      "symbol": "translate_full register and validation",
+      "lines": [
+        301,
+        312
+      ],
+      "git_blob": "fd33884fa1ac273ade4e527f5d0b4f12776fe698",
+      "span_sha256": "a54c552f3c68fbb77965e05753bab900d415a56a69b974493a82c26a7526d3c2"
+    },
+    {
+      "commit": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+      "path": "crates/sampler-uvi/src/lib.rs",
+      "symbol": "attach_script initial defaults and Driver",
+      "lines": [
+        1086,
+        1131
+      ],
+      "git_blob": "fd33884fa1ac273ade4e527f5d0b4f12776fe698",
+      "span_sha256": "1e597b793d40fbcd52dce9155d0663e060d021f74c9905de15b1755063ce102e"
+    },
+    {
+      "commit": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+      "path": "crates/sampler-uvi/src/lib.rs",
+      "symbol": "streamed final bindings",
+      "lines": [
+        1402,
+        1447
+      ],
+      "git_blob": "fd33884fa1ac273ade4e527f5d0b4f12776fe698",
+      "span_sha256": "b7d3523eafde94302948c13a69084fe894e7b0115fdaff49f1fdf9e9d59ef9d1"
+    },
+    {
+      "commit": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+      "path": "crates/sampler-uvi/src/lib.rs",
+      "symbol": "resident script init overrides before lower",
+      "lines": [
+        1509,
+        1542
+      ],
+      "git_blob": "fd33884fa1ac273ade4e527f5d0b4f12776fe698",
+      "span_sha256": "88e9fe2ada662c163f3fa9de99c85294be60c5709d0c95a7b31a5ca7a3d7fb25"
+    },
+    {
+      "commit": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+      "path": "crates/sampler-uvi/src/lib.rs",
+      "symbol": "streamed script init overrides before lower",
+      "lines": [
+        1603,
+        1620
+      ],
+      "git_blob": "fd33884fa1ac273ade4e527f5d0b4f12776fe698",
+      "span_sha256": "c4bac3eef92ff32a615bbd65ec38cb98000a322924447acb1e5cf8a4f2dd2dff"
+    },
+    {
+      "commit": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+      "path": "crates/sampler-uvi/src/lib.rs",
+      "symbol": "resident final bindings",
+      "lines": [
+        1680,
+        1712
+      ],
+      "git_blob": "fd33884fa1ac273ade4e527f5d0b4f12776fe698",
+      "span_sha256": "4907e9320940af9bf62ac5d81f777a3adebe15ecfa25f0b6712e6f4fc472c172"
+    },
+    {
+      "commit": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+      "path": "crates/sampler-uvi/src/script.rs",
+      "symbol": "bounded local command admission",
+      "lines": [
+        656,
+        666
+      ],
+      "git_blob": "4bea7cbe5c69613888db036b599172814362b4a4",
+      "span_sha256": "1172a9b8bb8e7bd93c5c0e2f8b380f233949fe422f9c8306a57a1a99f7be7908"
+    },
+    {
+      "commit": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+      "path": "crates/sampler-uvi/src/script.rs",
+      "symbol": "initial install/build/load ordering",
+      "lines": [
+        1002,
+        1007
+      ],
+      "git_blob": "4bea7cbe5c69613888db036b599172814362b4a4",
+      "span_sha256": "9feb91e42d86061c21fc66a870914bbeac8389aa0608cb3d76ee1587c403216a"
+    },
+    {
+      "commit": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+      "path": "crates/sampler-uvi/src/script.rs",
+      "symbol": "type-only binding to queue",
+      "lines": [
+        1395,
+        1478
+      ],
+      "git_blob": "4bea7cbe5c69613888db036b599172814362b4a4",
+      "span_sha256": "068c5ba909b7271263a817e61d0c6887b8325e32d8b31cadd7e484d6f623913f"
+    },
+    {
+      "commit": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+      "path": "crates/sampler-uvi/src/script.rs",
+      "symbol": "initial overlay exports",
+      "lines": [
+        2354,
+        2381
+      ],
+      "git_blob": "4bea7cbe5c69613888db036b599172814362b4a4",
+      "span_sha256": "1f04c1d7575a643ffe35f1ef6117c54f02cfcf7d07d768b5d257677493344661"
+    },
+    {
+      "commit": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+      "path": "crates/sampler-uvi/src/script_prelude.lua",
+      "symbol": "overlay read/write",
+      "lines": [
+        345,
+        403
+      ],
+      "git_blob": "1c74a4e3caa985b014c7d2e8faed5d65cfd40863",
+      "span_sha256": "f46d94561d19820aed1eae0fb970b60c9456ea5a9227a76c80a22ba66fb1f4e9"
+    },
+    {
+      "commit": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+      "path": "crates/sampler-uvi/src/scripted.rs",
+      "symbol": "driver direct setter without ACK",
+      "lines": [
+        349,
+        382
+      ],
+      "git_blob": "ff0db957233aee9342ac09104214605d9747486b",
+      "span_sha256": "240fbcd4efef5d1d36f52b6362d03cba6200530ef09dfe0d4d9c5274f01872fd"
+    },
+    {
+      "commit": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+      "path": "crates/sampler-uvi/src/scripted/thread.rs",
+      "symbol": "ready report and command forwarding",
+      "lines": [
+        188,
+        280
+      ],
+      "git_blob": "a28b53718ab27cdf454ad0325e0be46f40ff823f",
+      "span_sha256": "9780b0aa75254d0f83d7459b9f4c95f1d0d042e69d2133a88a6fe10c8d926bd5"
+    },
+    {
+      "commit": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+      "path": "crates/sampler-uvi/src/scripted/thread.rs",
+      "symbol": "audio command drain and clock tick",
+      "lines": [
+        439,
+        453
+      ],
+      "git_blob": "a28b53718ab27cdf454ad0325e0be46f40ff823f",
+      "span_sha256": "bdf4c12cf450f2ca266b9fe81e4f9a161f2b5a9b37a78d02097a72c6e06216f4"
+    },
+    {
+      "commit": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+      "path": "crates/sampler-kontakt/src/load.rs",
+      "symbol": "both preparation lower callers",
+      "lines": [
+        915,
+        1018
+      ],
+      "git_blob": "cefa61bc0f138d27e437722c5de21f588929195c",
+      "span_sha256": "11ad424b4c8b4e15c92a05b44e143475eebc2ced9790a84b87967439d732a425"
+    },
+    {
+      "commit": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+      "path": "crates/sampler-core/src/lower.rs",
+      "symbol": "zone-consumed chains and all-controls schema",
+      "lines": [
+        371,
+        439
+      ],
+      "git_blob": "1e89bc35d5aae301846bd2fee45f3422b3ba81a4",
+      "span_sha256": "5ac5c6f2c306ed2b24457b363d134eb9d9fd9c75a0d073f7c04be69d68af6765"
+    },
+    {
+      "commit": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+      "path": "crates/sampler-core/src/lower.rs",
+      "symbol": "descriptor inventory from IR",
+      "lines": [
+        1077,
+        1151
+      ],
+      "git_blob": "1e89bc35d5aae301846bd2fee45f3422b3ba81a4",
+      "span_sha256": "f60358e2fb908d35eb25fe954c99b45734ba84477372b9a05b989a630a3b38be"
+    },
+    {
+      "commit": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+      "path": "crates/sampler-core/src/lower.rs",
+      "symbol": "bind_processor actual fields",
+      "lines": [
+        1588,
+        1635
+      ],
+      "git_blob": "1e89bc35d5aae301846bd2fee45f3422b3ba81a4",
+      "span_sha256": "261dba5c6b2018f5138c47059947cb133d58bf156b48f8f616c6b1413c412cf4"
+    },
+    {
+      "commit": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+      "path": "crates/sampler-core/src/lower.rs",
+      "symbol": "lower_list requires consumed binding",
+      "lines": [
+        1685,
+        1755
+      ],
+      "git_blob": "1e89bc35d5aae301846bd2fee45f3422b3ba81a4",
+      "span_sha256": "b172f3ec9490b9779d90693e384ba741dfd85f405016384b6e71443a423756a5"
+    },
+    {
+      "commit": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+      "path": "crates/sampler-core/src/prepare.rs",
+      "symbol": "actual voice consumer construction",
+      "lines": [
+        1489,
+        1522
+      ],
+      "git_blob": "eadf42c65fa8dce9956de09caf495e9b111301c7",
+      "span_sha256": "c28a4df769abd0c3f74c5a4dbca4ed0eeb3ae204bdea24a15565f3d0f6a22edb"
+    },
+    {
+      "commit": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+      "path": "crates/sampler-core/src/lower.rs",
+      "symbol": "install consumed voice chains",
+      "lines": [
+        548,
+        556
+      ],
+      "git_blob": "1e89bc35d5aae301846bd2fee45f3422b3ba81a4",
+      "span_sha256": "7122682eac371eb5b253e0b7eb2cfd3c71971ad8f84e131a3a8c8cebc196a5af"
+    },
+    {
+      "commit": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+      "path": "src/sound/v2.rs",
+      "symbol": "product attach, nest, streamed assembly and returned driver",
+      "lines": [
+        3123,
+        3184
+      ],
+      "git_blob": "aa1a021dab8c89aaeb74844bcba6f5b81ccf298a",
+      "span_sha256": "234cdc321fe150418c4e103b8c09ac937e192e4a2c83d077e43a26a430fadae0"
+    },
+    {
+      "commit": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+      "path": "src/sound/v2.rs",
+      "symbol": "product render drives actual script wake",
+      "lines": [
+        1753,
+        1754
+      ],
+      "git_blob": "aa1a021dab8c89aaeb74844bcba6f5b81ccf298a",
+      "span_sha256": "db99cfe69f84c311187ba307e1e1ecf80295d2d727feacf23548f1d7398ac4ce"
+    },
+    {
+      "commit": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+      "path": "crates/sampler-core/src/bus.rs",
+      "symbol": "prepared bus consumer schema",
+      "lines": [
+        61,
+        77
+      ],
+      "git_blob": "b5dca240d9af8e43edaceb3154ccad1e6c64b204",
+      "span_sha256": "3aaa4cac9e63d32bcf6ea3163caea5493f6f7194ca2a4e98cc160ec5a0002285"
+    },
+    {
+      "commit": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+      "path": "crates/sampler-core/src/engine_parameters.rs",
+      "symbol": "binding validation not consumer validation",
+      "lines": [
+        392,
+        410
+      ],
+      "git_blob": "bd48614da4b9b437871ebd894016f42861d12bd2",
+      "span_sha256": "64da3e8f55d0e28bb97fa1ff7b2b825af902f468217a23b1a78c2a9f003332df"
+    },
+    {
+      "commit": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+      "path": "crates/sampler-core/src/engine_parameters.rs",
+      "symbol": "runtime setter and readback",
+      "lines": [
+        676,
+        803
+      ],
+      "git_blob": "bd48614da4b9b437871ebd894016f42861d12bd2",
+      "span_sha256": "76527caaf8f03ae0b51eb4af9bf552a4d600229df6a4cc0490ac15f4aaf099d6"
+    },
+    {
+      "commit": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+      "path": "crates/sampler-core/src/control.rs",
+      "symbol": "immediate accepted control write",
+      "lines": [
+        546,
+        567
+      ],
+      "git_blob": "309747510bd69d140ab96e45a4ea248a36ee6051",
+      "span_sha256": "6dfa2b851e4e55ea6d40e0b058f20da1eb19c2e1a94620f645ef719b9a0e7b7b"
+    },
+    {
+      "commit": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+      "path": "crates/sampler-core/src/dsp/control.rs",
+      "symbol": "only consumed voice/bus ranges are edited",
+      "lines": [
+        251,
+        292
+      ],
+      "git_blob": "145b832f94728a09792b2c5c58b274cdac277ff7",
+      "span_sha256": "54cf23be334a07d4d5b56384266b0617094525b406e59d0273df885e5117ec0e"
+    },
+    {
+      "commit": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+      "path": "crates/sampler-core/src/ops.rs",
+      "symbol": "behavior outcome queue can drop and has no UVI token",
+      "lines": [
+        853,
+        886
+      ],
+      "git_blob": "5fd265bc6d4992014a070c42d66a119cf3419870",
+      "span_sha256": "2a53177f3c284aeae1ec954a8644d32ad1b582e3a4daa38830453267c72fec0e"
+    },
+    {
+      "commit": "13c044d6f9f80576507521a2dc6521e9aad7d9c5",
+      "path": "crates/sampler-ir/src/lib.rs",
+      "symbol": "retain_zones does not remove controls/chains",
+      "lines": [
+        708,
+        751
+      ],
+      "git_blob": "9c7069625ffd017dbd1425e736dee8daf0ffd925",
+      "span_sha256": "f418909a59b1a400cf7dc3c14d837a8ebafb47a740aa0f85c547d42e9b96d41c"
+    }
+  ],
+  "primary_spec_authority": "Archived UVI primary specifications only; no native timing/ACK or numeric parity claim",
+  "primary_excerpts": [
+    {
+      "url": "https://lua.uvi.net/class_element.html#a876941566822f111c98750e3c954a94c",
+      "document_sha256": "b4516f54b9fd2061c5ba134afc30930b4c7922a4ed78b3badd022a395e5b5200",
+      "section_sha256": "0caf15299d756f53e1e18ee4fb5ed6a0d9aa7a2f840972a1662bde4503d5a555",
+      "excerpt": "\u25c6 setParameter() void Element::setParameter ( string parameter , Value value ) Sets an Element parameter. Parameters parameter parameterName or parameterId value parameterValue (number|bool|string) according to definition Warning An unknown parameter name or id, or a value whose Lua type does not match the parameter type, is silently ignored: no error is raised. Check with Element::hasParameter when the name comes from user input or may differ between element types. See also Elements & parameters Member Data Documentation"
+    },
+    {
+      "url": "https://lua.uvi.net/class_element.html#a249fb1fa90b51d0631486cb422b05841",
+      "document_sha256": "b4516f54b9fd2061c5ba134afc30930b4c7922a4ed78b3badd022a395e5b5200",
+      "section_sha256": "ac01f02cbf47c419b4471527fe71499dcfd439cf1c71e38c7ff09e95a30f34b0",
+      "excerpt": "\u25c6 getParameter() Value Element::getParameter ( string parameter ) Gets an Element parameter. Parameters parameter parameterName or parameterId Returns parameterValue (number|bool|string) according to definition See also Elements & parameters"
+    },
+    {
+      "url": "https://lua.uvi.net/_elements.html#OnePole",
+      "document_sha256": "ddca396e24ff7a05dbd3be9b2b073cb5a4a7adfb67fbd00d75e597f6c0a08d0f",
+      "section_sha256": "08173366e46ad9e3f47ab954d2ac1ca5b065eaf41e23d5562e8ffe0a427655b9",
+      "excerpt": "Freq Freq float 20.000 20000.000 1000.000 Hz yes Filter cutoff frequency"
+    },
+    {
+      "url": "https://lua.uvi.net/_elements.html#Gain",
+      "document_sha256": "ddca396e24ff7a05dbd3be9b2b073cb5a4a7adfb67fbd00d75e597f6c0a08d0f",
+      "section_sha256": "65ff0ae10383c75a231fb3bf47692e9970f2a8e7b8ae96bad1b7413ed784171b",
+      "excerpt": "Volume Volume float 0.000 3.981 1.000 linear gain (1 is 0 dB) yes Boosts or cuts the level of the signal passing through"
+    }
+  ],
+  "python_semantic_check": "PASS_INDEPENDENT_PYTHON_MODEL_ONLY",
+  "rust_tests": {
+    "status": "NOT_RUN/NOT_COMPILED",
+    "names": [
+      "queue_admitted_readback_precedes_missing_registered_lane",
+      "driver_reports_missing_lane_without_setter_acknowledgement",
+      "supported_inserts_keep_exact_bindings_but_late_native_aliases_are_absent",
+      "dropped_voice_chain_keeps_descriptor_and_accepts_an_unused_control"
+    ],
+    "target_included": false
+  },
+  "native": "UNKNOWN",
+  "comparative_cpu_and_ram_both_references": "UNACHIEVED",
+  "authored_files": {
+    "README.md": "69666cdf11397755655f0f19cf3ffaee75ed8ec463248396c2c40f123c44cf97",
+    "characterization.rs": "48b9cc0fccb80b8010a8de98d2e69f9d4ed4bc761b6812b780f9eb3ae3248f3f",
+    "check-source.py": "837626e1fd1051dce77eb278d5df2a85c216ae3a2f3be708da6e877e0e6ef662"
+  },
+  "limits": [
+    "No product fix",
+    "Initialization reconciliation unresolved",
+    "Independent Python model is not Rust execution",
+    "rustfmt is syntax only",
+    "No native/PCM/performance evidence"
+  ]
+}
