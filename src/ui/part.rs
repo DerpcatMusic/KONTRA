@@ -218,6 +218,8 @@ pub(super) fn interaction(edit: &ir_view::Edit) -> sampler_core::WidgetInteracti
 
 /// `slot`'s library interface, when its scripts declare one.
 fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<El> {
+    use crate::plugin::ui_activity::Count;
+    let activity = cx.p.shared.ui_activity.clone();
     let from = cx.view.parts.get(slot)?.interfaces.clone();
     let main = main_face(&from, &cx.view.parts[slot].updates)?;
     let path = std::path::PathBuf::from(&cx.selection.parts[slot].path);
@@ -235,6 +237,7 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
         .get(&slot)
         .is_none_or(|f| f.path != path || f.generation != generation);
     if stale {
+        activity.add(Count::FaceNew, 1);
         cx.state.faces.insert(
             slot,
             Face::new(&path, generation, from.clone(), main, presentation),
@@ -249,6 +252,8 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
             face.patch = Default::default();
             face.from = from.clone();
         }
+        activity.add(Count::FaceUpdates, 1);
+        activity.add(Count::FaceNoops, u64::from(activity.enabled && patch == face.patch));
         face.update(patch);
         face.revision = published.ui_revision;
     }
@@ -347,7 +352,10 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
         face.page = ir::PageRef(0);
         face.face = ir_view::resolved(&from[n]);
         face.patch = Default::default();
-        face.update(published.updates.get(n).cloned().unwrap_or_default());
+        let patch = published.updates.get(n).cloned().unwrap_or_default();
+        activity.add(Count::FaceUpdates, 1);
+        activity.add(Count::FaceNoops, u64::from(activity.enabled && patch == face.patch));
+        face.update(patch);
         face.presentation = presentation;
         face.sync();
     }
@@ -464,6 +472,8 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
                 .get(index)
                 .filter(|patch| **patch != Default::default())
                 .map(|patch| {
+                    activity.add(Count::NativeMaterializations, 1);
+                    activity.add(Count::NativeWidgets, source.widgets.len() as u64);
                     let mut current = source.clone();
                     patch.apply(source, &Default::default(), &mut current);
                     current
