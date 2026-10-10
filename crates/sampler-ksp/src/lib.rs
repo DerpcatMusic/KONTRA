@@ -92,6 +92,8 @@ pub enum EntryKind {
     PolyAt,
     /// `on ui_control` of the widget at this index in `model().interface.widgets`.
     UiControl(usize),
+    UiControls,
+    UiUpdate,
     Listener,
     PgsChanged,
     PersistenceChanged,
@@ -248,6 +250,8 @@ impl ScriptView {
                 EntryKind::Controller => "on controller",
                 EntryKind::PolyAt => "on poly_at",
                 EntryKind::UiControl(_) => "on ui_control",
+                EntryKind::UiControls => "on ui_controls",
+                EntryKind::UiUpdate => "on ui_update",
                 EntryKind::Listener => "on listener",
                 EntryKind::PgsChanged => "on pgs_changed",
                 EntryKind::PersistenceChanged => "on persistence_changed",
@@ -1188,6 +1192,8 @@ fn compile_initialized_inner(
                 EntryKind::UiControl(hir.vars[var.0 as usize].ui.unwrap_or(0) as usize),
                 lower::Context::Plan,
             ),
+            K::UiControls => (EntryKind::UiControls, lower::Context::Plan),
+            K::UiUpdate => (EntryKind::UiUpdate, lower::Context::Plan),
             K::Listener => (EntryKind::Listener, lower::Context::Plan),
             K::PgsChanged => (EntryKind::PgsChanged, lower::Context::Plan),
             K::PersistenceChanged => (EntryKind::PersistenceChanged, lower::Context::Plan),
@@ -1252,6 +1258,71 @@ fn compile_initialized_inner(
         }
     }
     unit.finish(&mut programs).map_err(|f| f.locate(source))?;
+    let global_ui = entries
+        .iter()
+        .find(|e| e.kind == EntryKind::UiControls)
+        .map(|e| e.program);
+    let ui_update = entries
+        .iter()
+        .find(|e| e.kind == EntryKind::UiUpdate)
+        .map(|e| e.program);
+    if global_ui.is_some() || ui_update.is_some() {
+        for (ui, _) in hir.uis.iter().enumerate() {
+            let local = entries
+                .iter()
+                .find(|e| e.kind == EntryKind::UiControl(ui))
+                .map(|e| e.program);
+            let mut targets = Vec::new();
+            if let Some(global) = global_ui {
+                let clone = programs.len();
+                programs.push(
+                    programs[global]
+                        .clone()
+                        .with_callback_ui_id(builtins::FIRST_UI_ID + ui as i32),
+                );
+                entries.push(Entry {
+                    kind: EntryKind::UiControls,
+                    program: clone,
+                });
+                targets.push(clone);
+            }
+            targets.extend(local);
+            targets.extend(ui_update);
+            let mut code = Vec::with_capacity(targets.len() + 1);
+            for target in targets {
+                let program =
+                    u32::try_from(target).map_err(|_| error("too many UI callback programs"))?;
+                code.push(sampler_core::Instruction::StartProgram { program });
+            }
+            code.push(sampler_core::Instruction::End);
+            if unit.budget < code.len() {
+                return Err(error("UI dispatcher instruction budget exceeded"));
+            }
+            unit.budget -= code.len();
+            let dispatcher = programs.len();
+            programs.push(
+                Program::new(code)
+                    .map_err(|_| error("invalid UI callback dispatcher"))?
+                    .with_wait_lifetime(sampler_core::WaitLifetime::Callback)
+                    .with_source_slot(environment.slot),
+            );
+            if let Some(entry) = entries
+                .iter_mut()
+                .find(|e| e.kind == EntryKind::UiControl(ui))
+            {
+                entry.program = dispatcher;
+                entries.push(Entry {
+                    kind: EntryKind::UiControl(ui),
+                    program: local.unwrap(),
+                });
+            } else {
+                entries.push(Entry {
+                    kind: EntryKind::UiControl(ui),
+                    program: dispatcher,
+                });
+            }
+        }
+    }
     // Replay init through the same addressed service as every callback.
     let mut start: Vec<_> = init
         .engine
