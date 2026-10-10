@@ -645,6 +645,9 @@ impl Ui {
     /// `was` is the hovered, held and tagged keys before this frame.
     /// Returns whether a memo needs another frame to settle glyph hinting.
     pub(super) fn heat(&mut self, scene: &ResolvedScene, was: &[Option<Id>; 3], buttons: bool) -> bool {
+        // Only a successful resolve consumes recovery. After an error, equal
+        // committed coordinates cannot prove a false hint is deliberate.
+        let recovery = std::mem::take(&mut self.glyph_recovery);
         self.hot.clear();
         let me = self.me;
         let ids = &mut self.memo_ids;
@@ -676,7 +679,7 @@ impl Ui {
             for p in &scene.paint {
                 if let Some(t) = &p.text
                     && !t.hint
-                    && previous.get(p.key.as_str()).is_none_or(|coords| *coords != &t.font_coords)
+                    && (recovery || previous.get(p.key.as_str()).is_none_or(|coords| *coords != &t.font_coords))
                 {
                     for (id, _) in scene.memos_at(p.key.as_str()) {
                         self.hot.insert(id);
