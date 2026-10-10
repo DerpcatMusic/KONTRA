@@ -1368,6 +1368,7 @@ impl Runtime {
             self.behavior_ready[index] = Ready::Resume { id, fuel: fuel - 1 };
             self.block_fuel_left = self.block_fuel_left.saturating_sub(1);
             self.behaviors.get_mut(id.0).unwrap().pc += 1;
+            // shortcut: one costly instruction can exceed the soft deadline; split it if profiling shows an overrun.
             let stepped = self.behavior_step(id, c.owner, op);
             if !matches!(stepped, Ok(false) | Err(Error::ClosedNote)) {
                 // The callback waited, ended or faulted: notes it played start now.
