@@ -1,7 +1,8 @@
 /* GitHub releases are authoritative; downloads still work if its API is unavailable. */
 (function () {
   const platform = navigator.userAgentData?.platform || navigator.platform || navigator.userAgent;
-  const detected = /win/i.test(platform) ? 'windows' : /mac/i.test(platform) ? 'macos' : /linux/i.test(platform) && !/android/i.test(navigator.userAgent) ? 'linux' : null;
+  const mobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || (/mac/i.test(platform) && navigator.maxTouchPoints > 1);
+  const detected = mobile ? null : /win/i.test(platform) ? 'windows' : /mac/i.test(platform) ? 'macos' : /linux/i.test(platform) && !/android/i.test(navigator.userAgent) ? 'linux' : null;
   if (detected) {
     const download = document.querySelector(`[data-platform="${detected}"]`);
     download.dataset.detected = 'true';
