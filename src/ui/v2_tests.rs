@@ -323,6 +323,44 @@ const NO_LIMITS: sampler_ksp::Limits = sampler_ksp::Limits {
     array_cells: usize::MAX,
 };
 
+#[test]
+fn authored_uvi_value_units_match_v1_readouts_without_changing_raw_values() {
+    // v1 4bffbb18:src/ui/uvi_instrument.rs::documented_used_units_format_without_rescaling_values_or_edits.
+    for (unit, raw, expected) in [
+        ("Percent", 25., "25 %"),
+        ("PercentNormalized", 0.375, "37.5 %"),
+        ("Seconds", 0.25, "250 ms"),
+        ("Seconds", 1., "1 s"),
+        ("MilliSeconds", 1000., "1000 ms"),
+        ("MilliSeconds", 1250., "1.25 s"),
+        ("Hertz", 1000., "1000 Hz"),
+        ("Hertz", 1250., "1.25 kHz"),
+        ("Decibels", -60., "-60 dB"),
+        ("LinearGain", 0., "-inf dB"),
+        ("LinearGain", 1., "0 dB"),
+        ("LinearGain", 0.5, "-6.021 dB"),
+        ("Pan", 0., "Center"),
+        ("SemiTones", -3., "-3 st"),
+    ] {
+        for kind in ["Knob", "NumBox"] {
+            let source = format!("<UVI4><Program Name='P'><EventProcessors><ScriptProcessor><script><![CDATA[setSize(160,120); {kind}{{'Readout',{raw},-10000,10000,unit=Unit.{unit},bounds={{10,10,140,90}},showLabel=false}}]]></script></ScriptProcessor></EventProcessors></Program></UVI4>");
+            let host = sampler_uvi::script::ScriptHost::new(&source, (), Default::default()).unwrap();
+            let face = host.interface();
+            let mut oracle = face.clone();
+            oracle.widgets[0].value_text = Some(expected.into());
+            let render = |f: &ir::Interface| {
+                let mut values = ir_view::Values::default();
+                let assets = ir_view::Assets::default();
+                let ui = settle(160., 120., |ui| ir_view::view(ui, f, ir::PageRef(0), &assets, ir::Presentation::Bitmap, 1., &mut values));
+                assert_eq!(values.values().copied().collect::<Vec<_>>(), vec![raw]);
+                pixels(&ui, 160, 120)
+            };
+            assert!(render(&face) == render(&oracle), "{kind} {unit} readout must match v1");
+            assert_eq!(host.control_values()[0].1, raw);
+        }
+    }
+}
+
 /// Renders `face` in both presentations, shooting each as `{stem}-{mode}.png`
 /// under `dir`; returns the decoded bytes each keeps.
 fn both_modes(
