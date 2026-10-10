@@ -425,11 +425,11 @@ fn waveform_provider_keeps_sparse_source_identity_plan_epoch_and_shared_display_
     }
     assert!(atoms.widget_waveforms(&face, 0, 0.5).is_empty());
     let _ = atoms.widget_waveforms(&face, 1, 0.5);
-    for _ in 0..2 {
-        ready
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap();
-    }
+    ready.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    assert!(matches!(
+        atoms.zone_waveform_state(9, 1, 2, None),
+        crate::sound::waveform::State::Unavailable(crate::sound::waveform::Stage::Source)
+    ));
     let values = atoms.widget_waveforms(&face, 1, 0.5);
     assert_eq!(
         values.len(),
@@ -441,6 +441,10 @@ fn waveform_provider_keeps_sparse_source_identity_plan_epoch_and_shared_display_
     assert_eq!(values[0].1.duration_us, 1_000_000);
     assert!(Arc::ptr_eq(&values[0].1.peaks, &values[1].1.peaks));
     atoms.generation.store(2, Ordering::Release);
+    assert!(matches!(
+        atoms.zone_waveform_state(3, 1, 2, None),
+        crate::sound::waveform::State::Unavailable(crate::sound::waveform::Stage::Generation)
+    ));
     let _ = atoms.widget_waveforms(&face, 1, 0.5);
     atoms.loop_audit_install_ingress(None);
     assert!(
