@@ -151,19 +151,110 @@ fn versioned_resource_names_and_opaque_bytes_reach_typed_nckp_picture_consumer()
 }
 
 #[test]
-fn nicnt_resource_importer_rejects_ambiguous_stored_id_instead_of_using_an_ordinal() {
+fn nicnt_distinct_names_with_duplicate_ids_read_selected_payloads() {
+    use std::io::{Seek, SeekFrom};
+
+    let fixture = Fixture::new();
+    let members: &[(u64, &str, &[u8])] = &[
+        (42, "Resources|opaque|first.bin", b"first"),
+        (42, "Resources|opaque|second.bin", b"second"),
+    ];
+    let path = fixture.container(members);
+    let mut container = ResourceContainer::open(&path).unwrap();
+    for (name, data) in [
+        ("resources/opaque/FIRST.BIN", b"first".as_slice()),
+        ("Resources\\opaque\\second.bin", b"second".as_slice()),
+        ("Resources|opaque|first.bin", b"first".as_slice()),
+    ] {
+        assert_eq!(container.read(name).unwrap().as_deref(), Some(data));
+    }
+    assert!(container
+        .read("Resources/opaque/missing.bin")
+        .unwrap()
+        .is_none());
+    let mut resources = Resources::of(&fixture.0.join("Instruments/Authored.nki"));
+    for &(_, name, data) in members {
+        assert_eq!(resources.read_result(name).unwrap().as_deref(), Some(data));
+    }
+
+    // The embedded container starts after the authored 16 + 300 byte prefix.
+    // Duplicate IDs remain ambiguous only for the ID-addressed public API.
+    let mut file = std::fs::File::open(&path).unwrap();
+    file.seek(SeekFrom::Start(316)).unwrap();
+    let parsed = ni_file::file_container::NIFileContainer::read(&mut file).unwrap();
+    let error = parsed.read_member(&mut file, 42, 32 << 20).unwrap_err();
+    assert!(matches!(
+        error,
+        ni_file::Error::Static("Ambiguous NI FileContainer member index")
+    ));
+}
+
+#[test]
+fn nicnt_duplicate_normalized_names_remain_ambiguous_with_distinct_ids() {
+    let fixture = Fixture::new();
+    let path = fixture.container(&[
+        (42, "Resources|opaque|same.bin", b"first"),
+        (900, "resources\\opaque\\SAME.BIN", b"second"),
+    ]);
+    let mut container = ResourceContainer::open(&path).unwrap();
+    let error = container.read("Resources/opaque/same.bin").unwrap_err();
+    assert!(error.to_string().contains("Ambiguous resource name"));
+}
+
+#[test]
+fn nicnt_selected_item_read_rejects_truncation_after_open() {
     let fixture = Fixture::new();
     let path = fixture.container(&[
         (42, "Resources|opaque|first.bin", b"first"),
         (42, "Resources|opaque|second.bin", b"second"),
     ]);
     let mut container = ResourceContainer::open(&path).unwrap();
-    for name in ["Resources/opaque/first.bin", "Resources/opaque/second.bin"] {
-        let error = container.read(name).unwrap_err().to_string();
-        assert!(
-            error.contains("Ambiguous NI FileContainer member index"),
-            "{error}"
-        );
+    let length = std::fs::metadata(&path).unwrap().len();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_len(length - 1)
+        .unwrap();
+    assert_eq!(
+        container.read("Resources/opaque/first.bin").unwrap().as_deref(),
+        Some(b"first".as_slice())
+    );
+    assert!(container.read("Resources/opaque/second.bin").is_err());
+}
+
+#[test]
+fn nicnt_selected_item_read_preserves_exact_32_mib_budget() {
+    use std::io::{Seek, SeekFrom, Write};
+
+    // Extend a one-byte authored member as a sparse file, without a large
+    // fixture buffer. These are framing offsets, not stored-ID ordinals.
+    for size in [(32u64 << 20) - 1, 32 << 20, (32 << 20) + 1] {
+        let fixture = Fixture::new();
+        let path = fixture.container(&[(42, "Resources|opaque|large.bin", &[0])]);
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap();
+        for offset in [316 + 280, 316 + 904 + 632] {
+            file.seek(SeekFrom::Start(offset)).unwrap();
+            file.write_all(&size.to_le_bytes()).unwrap();
+        }
+        let length = file.metadata().unwrap().len();
+        file.set_len(length - 1 + size).unwrap();
+        drop(file);
+        let mut container = ResourceContainer::open(&path).unwrap();
+        let result = container.read("Resources/opaque/large.bin");
+        if size <= 32 << 20 {
+            let bytes = result.unwrap().unwrap();
+            assert_eq!(bytes.len() as u64, size);
+            assert!(bytes.iter().all(|&byte| byte == 0));
+        } else {
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("Resource exceeds 32 MiB"));
+        }
     }
 }
 
