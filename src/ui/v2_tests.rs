@@ -1643,6 +1643,91 @@ fn v1_mixer_view_controls_are_reachable() {
     }
 }
 
+fn v1_menu_fixture() -> (Arc<crate::plugin::SamplerParams>, Harness) {
+    let p = editor_fixture();
+    let instrument = p.shared.view.lock().unwrap().parts[0].instrument.clone();
+    p.shared.view.lock().unwrap().parts[1].instrument = instrument;
+    {
+        let mut selection = p.selection.write().unwrap();
+        selection.parts = (0..2)
+            .map(|n| crate::plugin::Part {
+                path: format!("/synthetic/Part{n}.nki"),
+                collapsed: true,
+                ..Default::default()
+            })
+            .collect();
+        selection.order = vec![0, 1];
+    }
+    let h = Harness::new(&p, 1180., 780.);
+    (p, h)
+}
+
+fn v1_strip_menu(h: &mut Harness, id: u64) {
+    h.press("tab-mixer");
+    h.idle(3);
+    let at = super::tests::center(&h.ui, &format!("mt-name-{id}"));
+    for buttons in [
+        Buttons::default().set(Button::Secondary, true),
+        Buttons::default(),
+    ] {
+        h.tick(Input {
+            pointer: PointerInput {
+                pos: Some(at),
+                buttons,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+    }
+    h.idle(2);
+}
+
+#[test]
+fn v1_menu_rack_edit_sound_selects_the_requested_part() {
+    let (p, mut h) = v1_menu_fixture();
+    h.press("more-1");
+    h.press("menu-item-0");
+    assert_eq!(
+        p.shared.editor_watch.load(Ordering::Relaxed),
+        1,
+        "Edit sound opens the Sound tab for this part"
+    );
+    assert_eq!(p.shared.selected.load(Ordering::Relaxed), 1);
+    assert!(!p.selection.read().unwrap().parts[1].collapsed);
+}
+
+#[test]
+fn v1_menu_mixer_edit_sound_selects_the_requested_part() {
+    let (p, mut h) = v1_menu_fixture();
+    h.press("collapse-1");
+    h.press("view-1-Sound");
+    h.press("sound-tab-1-Effects");
+    h.press("collapse-1");
+    v1_strip_menu(&mut h, 131072);
+    h.press("menu-item-5");
+    assert_eq!(p.shared.editor_watch.load(Ordering::Relaxed), 1);
+    assert_eq!(p.shared.selected.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn v1_menu_route_part_and_host_bus_use_existing_output_picker() {
+    for (id, host_bus) in [(65536, false), (1, true)] {
+        let (p, mut h) = v1_menu_fixture();
+        v1_strip_menu(&mut h, id);
+        h.press("menu-item-3");
+        h.press(&format!("mt-pick-{id}-4"));
+        let selection = p.selection.read().unwrap();
+        if host_bus {
+            assert_eq!(selection.bus(0).port, 4, "bus route maps to host 9/10");
+        } else {
+            assert_eq!(
+                (selection.parts[0].output, selection.parts[0].output_manual),
+                (4, true)
+            );
+        }
+    }
+}
+
 #[test]
 fn v1_ram_and_disk_readouts_are_reachable() {
     let p = Arc::new(crate::plugin::SamplerParams::new());
