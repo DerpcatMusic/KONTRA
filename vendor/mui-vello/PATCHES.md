@@ -2,14 +2,8 @@
 
 Vendored from MUI `dcf0796082feec053af1418e3a38a302ee61da0a`,
 `crates/mui-vello`, with its MIT license. Cargo workspace dependencies are
-made explicit; sibling Git packages follow the application Cargo.lock.
+made explicit; the application Cargo.lock retains the same MUI revision.
 The sibling vello dependency uses KONTRA's existing patched renderer.
-
-The Git siblings are now pinned to MUI `65ab5baa58143c2b78a734a380b5aad0b0bc34ef`.
-This crate retains the renderer source above; the dependency refresh does not
-port upstream's background GPU initialization. Its Windows MSVC dependency
-keeps upstream's exact `mach-dxcompiler-rs =0.1.4` pin to avoid the newer
-mutable-release build failure.
 
 ## Partial vector repaint
 
