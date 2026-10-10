@@ -158,40 +158,16 @@ fn articulation_distill_shots() {
 }
 
 #[test]
-fn performance_dynamics_fit_the_minimum_rack() {
-    let p = specimen();
-    let h = Harness::new(&p, 900., 600.);
-    let scene = h.ui.scene().unwrap();
-    let strip = scene.surface("perf-0").unwrap().frame;
-    let last = scene.surface("dyn-0-127").unwrap().frame;
-    assert!(
-        last.x + last.size.width <= strip.x + strip.size.width - TIGHT + 0.5,
-        "last dynamics control must fit: {last:?} in {strip:?}"
-    );
-}
-
-#[test]
-fn performance_keeps_numeric_volume_readable() {
-    for (width, height) in [(900., 600.), (1180., 900.)] {
+fn performance_chrome_hides_advanced_controllers_at_both_sizes() {
+    for (width, height) in [(900., 640.), (1180., 780.)] {
         let p = specimen();
         let h = Harness::new(&p, width, height);
-        let volume = h.ui.scene().unwrap().surface("perf-vol-0").unwrap().frame;
-        assert!(
-            volume.size.width >= TEXT * 9.,
-            "Volume and CC7 -6.0 dB must fit: {volume:?}"
-        );
+        let scene = h.ui.scene().unwrap();
+        for id in ["perf-vol-0", "perf-needs-0", "dyn-0--1", "dyn-0-64", "dyn-0-127"] {
+            assert!(scene.surface(id).is_none(), "{id} stays out of performance chrome");
+        }
+        assert_eq!(p.selection.read().unwrap().parts[0].dynamics, -1);
     }
-}
-
-#[test]
-fn performance_warning_stays_on_one_line() {
-    let p = specimen();
-    let h = Harness::new(&p, 1180., 900.);
-    let warning = h.ui.scene().unwrap().surface("perf-needs-0").unwrap().frame;
-    assert!(
-        warning.size.height <= CONTROL,
-        "controller warning shares the control baseline: {warning:?}"
-    );
 }
 
 #[test]
