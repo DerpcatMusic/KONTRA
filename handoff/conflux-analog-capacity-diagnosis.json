@@ -1,0 +1,104 @@
+{
+  "schema": "conflux-analog-capacity-diagnosis/v1",
+  "status": "BLOCKED_SOURCE_ONLY",
+  "terminal": true,
+  "fix_authored": false,
+  "regression_authored": false,
+  "source_base": "2799df958eac916cba41edecddac2c79cd9c807f",
+  "installed_failing_baseline": "ff60de20eeae95fdd736f3b064325d1ef9f6a84c",
+  "main_head_observed": "58c4c715639077bba633bcfe24a421c1f169f3d0",
+  "repository": "/mnt/Windows11/DEV_PROJECTS/Repos/KONTAKTO",
+  "worktree": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/analog-capacity-worktree",
+  "branch": "pi/conflux-analog-capacity-diagnosis-20261010",
+  "changed_files": ["handoff/conflux-analog-capacity-diagnosis.md", "handoff/conflux-analog-capacity-diagnosis.json"],
+  "production_and_test_source_changed": false,
+  "nka_introduction": {
+    "commit": "8eedf4c6ebb76e25da6ae0243e5c7f71233abdeb",
+    "parent": "9075da681fbca5019640619822a4540bfd2a57a1",
+    "ancestor_of_installed_baseline": true,
+    "executable_bisect_performed": false
+  },
+  "evidence_directory": "/mnt/Windows11/DEV_WORKSPACE/kontra-runs/conflux-retained-layer-20261010T155337Z",
+  "evidence": [
+    {"file": "UI-REGRESSIONS.json", "sha256": "5fa40a1b52fd762d82d982fa13a41805414473bce698fcaabc773057629eddc8", "source": "2799df958eac916cba41edecddac2c79cd9c807f"},
+    {"file": "ui-neighbors.log", "sha256": "fd53ddaa709685b1e661d82e43c0fe7cc10645b5691974ae0fed990e5879e7ea", "passed": 284, "failed": 3, "ignored": 25},
+    {"file": "installed-baseline-keyswitch_real_analog_strings_does_not_invent_preset_browser_articulations.log", "sha256": "029f9e46a9a6171ef0e6fa5719df2028ba562e8ef9c673cf03e73a2c19640b79", "passed": 0, "failed": 1},
+    {"file": "installed-baseline-mapping_analog_waveform_worker_probe_skips_only_when_library_is_missing.log", "sha256": "ea77262f1dd79d6435d6982400d93005fecfc112d3f63f93c065553075539f44", "passed": 0, "failed": 1}
+  ],
+  "requested_log_path_correction": "UI-REGRESSIONS.log is absent; UI-REGRESSIONS.json points to ui-neighbors.log",
+  "retained_error": "[Prepare at crates/sampler-kontakt/src/load.rs:420] lowering: behavior KSP: a prepared capacity is exhausted",
+  "narrowed_error_scope": "bind_modules; saved automation preparation returns InvalidInput rather than Capacity",
+  "ranked_hypotheses": [
+    {"rank": 1, "name": "NKA eight-job aggregate snapshot reservation", "span": "crates/sampler-core/src/array_file.rs:113-127", "status": "STRUCTURALLY_REPRODUCIBLE_FOR_4000_TEXT_CELLS_NOT_RUNTIME_ATTRIBUTED"},
+    {"rank": 2, "name": "keyed store allocation failure", "span": "crates/sampler-core/src/ops.rs:600-608", "status": "NOT_EXCLUDED_BY_GENERIC_RECEIPT"},
+    {"rank": 3, "name": "script/widget packing or polyphonic bank arithmetic overflow", "spans": ["crates/sampler-ksp/src/lib.rs:675-719", "crates/sampler-core/src/script.rs:37-42", "crates/sampler-core/src/prepare.rs:739-741"], "status": "WEAKER_NO_FRESH_SHAPE_OBSERVATION"}
+  ],
+  "blocker": {
+    "id": "ANALOG-CAPACITY-BIND-ATTRIBUTION-2799DF95",
+    "missing": ["actual failing binder step", "registered array source slot/kind/length", "actual numeric/text payload maxima", "actual Rust Text size and reservation bytes"],
+    "why_no_safe_complete_fix": "Generic binder error does not prove which check failed. Fixed eight worst-case snapshots conflict with plausible installed NKA shape; changing their ownership/admission safely needs root confirmation and bounded snapshot regressions, not a ceiling/tolerance bump or script omission.",
+    "root_next_action": "One serialized root-owned instrument preparation with a targeted diagnostic build recording only binder step and array/capacity metadata; no commercial script bodies or key material. Revise hypothesis if failure is not resource dimensions."
+  },
+  "capacity_contract_unchanged": {
+    "library_source_bytes": 83886080,
+    "library_instructions": 40000000,
+    "library_variables": 65536,
+    "library_array_cells": 16777216,
+    "nka_max_cells_per_array": 16384,
+    "nka_max_file_bytes": 2097152,
+    "nka_jobs_per_script": 8,
+    "nka_snapshot_bytes_per_script": 8388608,
+    "runtime_text_payload_bytes_per_cell": 320,
+    "aggregate_formula": "8 * (max_numeric_array_len * size_of::<i64>() + max_text_array_len * size_of::<Text>())",
+    "init_path_aggregate_check": false,
+    "binder_resources_aggregate_check": true
+  },
+  "library_shape_evidence": {
+    "inspection": "Already-plaintext NKA metadata shape only; no commercial content copied, no new source extraction",
+    "nki_path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/ANALOG STRINGS/Instruments/ANALOG STRINGS.nki",
+    "nki_sha256": "95801984d5b16286fbd28f97ad0acb736fcbb613eb7d4ad26c465a37253bc553",
+    "text_metadata": {"relative_path": "Library Data/AS Meta Data/name.nka", "rows_after_header": 4000, "file_bytes": 17013, "sha256": "3bab32b6f89514eb95a8608188b74ff5a0d709e6d04e06e6dfee5abe341d3017"},
+    "numeric_metadata": {"relative_path": "Library Data/AS Meta Data/rhythm_presets.user_data.nka", "rows_after_header": 16000, "file_bytes": 48288, "sha256": "204bebfdd4892a46b42f0ce24c1e28eb869154829a9865e7312c0ebc4470c721"},
+    "text_only_eight_job_lower_bound_bytes": 10240000,
+    "mixed_eight_job_lower_bound_bytes": 11264000,
+    "bounds_basis": "Structural arithmetic using only Text's embedded 320-byte array; no measured Rust layout",
+    "proves_actual_registration": false,
+    "matching_analog_product_cache_found": false,
+    "new_loader_execution": false
+  },
+  "source_files": [
+    {"path": "crates/sampler-core/src/array_file.rs", "git_blob": "c64f1771bb9d0b437fd2e315db1bcd05781aa4ae", "sha256": "9723a7580f55958a000b6755c35326481d8ec1491f7a4187bf9373361e95260e"},
+    {"path": "crates/sampler-core/src/ops.rs", "git_blob": "5fd265bc6d4992014a070c42d66a119cf3419870", "sha256": "f78db293b056889f8942264894ee7929b26dd0649cdaa0c05e9d00bca5b27b29"},
+    {"path": "crates/sampler-core/src/script.rs", "git_blob": "b01249e4b1754880f7f2129be152b36c5e0cd325", "sha256": "52ff97654b9b2aee5b69f19f20de058966424c61f16ef99571dd2d5ac6a56dfd"},
+    {"path": "crates/sampler-core/src/prepare.rs", "git_blob": "eadf42c65fa8dce9956de09caf495e9b111301c7", "sha256": "3d8f15ec91044086b7cf63602ff2e376bcb8fc6c5687d63a279e6da423802b60"},
+    {"path": "crates/sampler-ksp/src/eval.rs", "git_blob": "aa2cdfde48f3a5c064deabae70a130bad601c719", "sha256": "7c68524bfd5bca0635bf0483fd52f3c81745b25caf9e3bf7865c41cadc7d1425"},
+    {"path": "crates/sampler-ksp/src/lower.rs", "git_blob": "799d9dcf722c405fe9f6763f4c3e4b16107512e3", "sha256": "0847275786f1a6f72dc95f09bbfd4dfd65fab3f123a459fd7c3fe53f08d7da1e"},
+    {"path": "crates/sampler-ksp/src/lib.rs", "git_blob": "a5e57862e820c58880212998c22f6b6eee8f79dd", "sha256": "d24d91ae107e400acb92fea9c437026ff0fbd6c297a0140ba765b046862b29be"},
+    {"path": "crates/sampler-ksp/src/array_file.rs", "git_blob": "4160787a7affddf84b21289dd816df12d4a2c55e", "sha256": "2a9402752f7a396de8c572208cf7d38ca6141e3f49bc3e8ac948401a8a5dc430"},
+    {"path": "crates/sampler-ksp/tests/array_file.rs", "git_blob": "c5ca5eb0e114ba8f4b2927a19586745339c32907", "sha256": "71b240b9ce10acd010f9c5cd44de3b84d6406ca0d90b2a009a16a2ece97a7666"},
+    {"path": "crates/sampler-kontakt/src/load.rs", "git_blob": "cefa61bc0f138d27e437722c5de21f588929195c", "sha256": "881defcef92840a65e1a0b76c157ca293fbc41ddc202cc7ffe56c9432e6b8c94"},
+    {"path": "src/ui/v2_tests.rs", "git_blob": "a94b3c22f812e093d8a607123fde1159df5a6381", "sha256": "30ac326e2f1f136f9a3dc116d68af76f3f2d3c86fe2852416255ea772abca245"}
+  ],
+  "same_as_installed_baseline_inspected_paths": ["crates/sampler-core/src/array_file.rs", "crates/sampler-core/src/ops.rs", "crates/sampler-ksp/src/eval.rs", "crates/sampler-ksp/src/lower.rs", "crates/sampler-ksp/src/lib.rs", "crates/sampler-kontakt/src/load.rs"],
+  "protected_ui_blobs_unchanged": {
+    "src/ui/native_ui.rs": "f1bfe10bea390213ee368332b04755b67263dab0",
+    "src/ui/native_runtime.rs": "0060dfae80f548b272446c97ef9fdff1296193ad",
+    "src/ui/ir_view.rs": "1074b5d28557404fdf762e3e17675eacf7745712",
+    "src/ui/generated.rs": "4e1f720fd362ce4d04df95dc39e08b3f22b502a3",
+    "src/ui/part.rs": "d805e159056fb3cb5fa72902939fd93bdc695d7d"
+  },
+  "root_only_existing_tests": {
+    "root_lib": ["ui::v2_tests::keyswitch_real_analog_strings_does_not_invent_preset_browser_articulations", "ui::v2_tests::mapping_analog_waveform_worker_probe_skips_only_when_library_is_missing"],
+    "sampler_ksp_array_file_integration": ["nka_unreachable_invalid_typed_ranges_and_snapshot_memory_limit_are_rejected_at_preparation", "nka_job_queue_is_bounded_and_midi_ids_remain_distinct_and_complete_independently", "nka_async_save_snapshot_is_request_time_not_delayed_host_capture_time", "nka_real_and_string_runtime_arrays_keep_typed_ownership", "nka_wrong_instance_and_cancelled_job_cannot_install_or_complete_a_new_owner", "nka_completion_is_plan_scoped_across_adoption_and_never_edits_the_replacement", "nka_runtime_load_preserves_non_ui_identity_and_resumes_wait_after_one_completion_without_heap", "nka_sync_init_reads_integer_real_and_string_arrays_before_following_statements", "nka_external_init_is_not_cached_or_replayed_from_an_old_cache"],
+    "full_ui_suite_after_focused_gates": true,
+    "run_in_this_pass": false
+  },
+  "required_new_regression_not_authored": {
+    "shape": "Original synthetic script: 4000 text cells plus 16000 numeric cells used by approved runtime callbacks, through Script::bind and actual resource admission",
+    "requirements": ["baseline rejection versus candidate admission under explicitly bounded bytes/jobs", "cap boundary and over-cap rejection", "occupied-job saturation", "mixed payload reuse", "request-time text save snapshot", "cancellation and job reuse", "instance/generation isolation", "zero audio allocations and frees"]
+  },
+  "unmeasured_gates": ["actual failing binder step", "Rust Text layout", "candidate build/typecheck", "regression red/green", "installed waveform and keyswitch", "snapshot memory and callback heap safety", "cold/warm init/cache", "protected UI retention", "audio output", "host/native parity", "performance"],
+  "prohibited_actions_executed": {"cargo": false, "rustc": false, "build": false, "tests": false, "formatter": false, "host_native": false, "official_reader": false, "new_proprietary_extraction": false, "install": false, "hooks": false, "polling_loop": false},
+  "delegation_protocol_deviation": {"attempts": 3, "provider": "pi", "model": "openai/gpt-5.4", "result": "all failed at startup: model unsupported for configured account", "cancelled": true, "child_source_work_used": false, "further_delegation": false},
+  "notes": ["load.rs:420 is propagation, not the exhaustion branch", "do not bump caps or tolerances, remove negative regression, omit scripts, or claim scriptless success is parity", "handoff documentation only; no fixed/passing claim", "no watchers, schedules, continuation or nested work remain"]
+}
