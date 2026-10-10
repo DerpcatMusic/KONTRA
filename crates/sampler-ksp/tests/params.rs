@@ -196,6 +196,36 @@ fn fade_curve_array_selectors_reach_audio_and_use_time_mirrored_fade_out() {
 }
 
 #[test]
+fn fade_curve_inside_mix_cell_matches_exponential_not_endpoint_interpolation() {
+    // Frame16 is inside the engine's32-frame gain cell, not at its endpoints.
+    for out in [false, true] {
+        for block in [1, 17, 128] {
+            let call = if out {
+                "fade_out($EVENT_ID,8000,0,$NI_FADE_EXPONENTIAL)"
+            } else {
+                "fade_in($EVENT_ID,8000,$NI_FADE_EXPONENTIAL)"
+            };
+            let mut rt = runtime(&format!("on note {call} end on"));
+            rt.trigger(input(60), 60, 1.).unwrap();
+            let mut audio = [[0.; 2]; 129];
+            for chunk in audio.chunks_mut(block) {
+                rt.render(chunk).unwrap();
+            }
+            let t = 16.0_f32 / 384.0; // Exactly8000us at48kHz.
+            let expected = 0.5 * if out { (1.0 - t).powi(2) } else { t.powi(2) };
+            assert!(
+                audio[16]
+                    .iter()
+                    .all(|value| (value - expected).abs() < 1e-7),
+                "out {out}, block {block}, frame16: {:?}, expected {expected}",
+                audio[16]
+            );
+            assert!(rt.take_fault().is_none());
+        }
+    }
+}
+
+#[test]
 fn fade_curve_unknown_selector_faults_without_a_silent_linear_substitution() {
     let mut rt = runtime(
         "on init declare $curve := 99 end on
