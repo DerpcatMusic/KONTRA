@@ -131,7 +131,7 @@ pub struct State {
     /// Folded nodes, by [`Node::id`].
     pub folded: HashSet<u64>,
     /// The node whose output list is open.
-    picking: Option<u64>,
+    pub(super) picking: Option<u64>,
     pub renaming: Option<(u64, String)>,
 }
 
