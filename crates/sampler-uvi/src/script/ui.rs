@@ -19,6 +19,58 @@ fn text(t: &Table, key: &str) -> Option<String> {
         _ => None,
     }
 }
+fn mapper(t: &Table) -> Option<String> {
+    text(t, "mapper").or_else(|| {
+        let id = num(t, "mapper")?;
+        if id.fract() != 0. || !(0. ..=9.).contains(&id) { return None; }
+        ["Linear", "Exponential", "QuinticRoot", "QuarticRoot", "CubeRoot", "SquareRoot", "Quadratic", "Cubic", "Quartic", "Quintic"]
+            .get(id as usize).map(|name| (*name).to_owned())
+    })
+}
+fn unit(t: &Table) -> Option<f64> {
+    num(t,"unit").or_else(|| Some(match text(t,"unit")?.as_str() {
+        "Generic"=>0., "Percent"=>1., "PercentNormalized"=>2., "Seconds"=>3.,
+        "MilliSeconds"=>5., "Hertz"=>7., "Decibels"=>9., "UviFilter"=>10.,
+        "LinearGain"=>11., "Pan"=>12., "Megabyte"=>13., "SemiTones"=>14.,
+        "Cents"=>15., "MidiKey"=>16., _=>return None,
+    }))
+}
+
+fn number_text(value: f64, integer: bool) -> String {
+    if integer {
+        format!("{value:.0}")
+    } else {
+        format!("{value:.3}")
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_owned()
+    }
+}
+
+// Native enum IDs are installed by the host shim. Unit changes only the
+// readout, never the engine value, range, sprite position, or edit payload.
+fn unit_text(value: f64, integer: bool, unit: Option<f64>) -> String {
+    let (value, suffix) = match unit {
+        Some(1.) => (value, "%"),
+        Some(2.) => (value * 100., "%"),
+        Some(3.) if value.abs() < 1. => (value * 1000., "ms"),
+        Some(3.) => (value, "s"),
+        Some(5.) if value.abs() > 1000. => (value / 1000., "s"),
+        Some(5.) => (value, "ms"),
+        Some(7.) if value.abs() > 1000. => (value / 1000., "kHz"),
+        Some(7.) => (value, "Hz"),
+        Some(9.) => (value, "dB"),
+        Some(11.) if value <= 0. => return "-inf dB".into(),
+        Some(11.) => (20. * value.log10(), "dB"),
+        Some(12.) if value == 0. => return "Center".into(),
+        Some(14.) => (value, "st"),
+        // Nonzero Pan rounding and UVI filter formatting need calibration.
+        _ => return number_text(value, integer),
+    };
+    format!("{} {suffix}", number_text(value + 0., false))
+}
+
+
 fn num(t: &Table, key: &str) -> Option<f64> {
     match t.get::<Value>(key).ok()? {
         Value::Number(n) => Some(n),
@@ -282,7 +334,10 @@ impl ScriptHost {
                 .map(|id| ui::WidgetRef(id as usize - 1));
             wd.automation.allowed = flag(w, "exported", false);
             wd.automation.id = num(w, "paramId").map(|n| n as u32);
-            wd.mapper = text(w, "mapper");
+            wd.mapper = mapper(w);
+            if wd.value_text.is_none() && matches!(wd.kind, ui::Kind::Knob { .. } | ui::Kind::Slider { .. } | ui::Kind::ValueEdit { .. }) {
+                wd.value_text = unit(w).map(|u| unit_text(value, flag(w,"integer",false), Some(u)));
+            }
             wd.menu_cycle = kind == "MultiStateButton";
             wd.colors.background = text(w, "backgroundColour").and_then(|c| color(&c));
             wd.colors.on = text(w, "backgroundColourOn").and_then(|c| color(&c));
