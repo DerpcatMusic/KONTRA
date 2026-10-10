@@ -1288,9 +1288,10 @@ impl Gen<'_, '_> {
                 builtin @ (Builtin::GetEngineParDisp | Builtin::GetEngineParDispExt),
                 args,
             ) => {
-                self.engine_address(args, free, false)?;
+                // Ext shares set_engine_par's address layout; arg 1 is its supplied value.
+                self.engine_address(args, free, *builtin == Builtin::GetEngineParDispExt)?;
                 let value = if *builtin == Builtin::GetEngineParDispExt {
-                    self.arg(args, 4, free + 4)?;
+                    self.arg(args, 1, free + 4)?;
                     Some(free + 4)
                 } else {
                     None
@@ -4009,3 +4010,7 @@ fn host_service(builtin: Builtin) -> Coverage {
         _ => Coverage::Effect,
     }
 }
+
+#[cfg(test)]
+#[path = "lower_display_ext_tests.rs"]
+mod display_ext_tests;
