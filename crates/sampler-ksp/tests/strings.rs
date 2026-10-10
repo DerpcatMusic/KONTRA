@@ -268,8 +268,8 @@ fn user_event_parameters_reach_the_release_callback() {
     assert_eq!((cell(&rt, 0), cell(&rt, 1)), (1234567, -5));
 }
 
-/// `get_event_par` reports a sounding event's zone as nonzero and an ignored
-/// one as 0, and the event's MIDI channel (Solo clears finished events by it).
+/// Historical narrow witness: a sounding zone is nonzero, an unknown alias
+/// reads 0, and MIDI channel reads back. No live-no-zone or highest-zone proof.
 #[test]
 fn event_zone_id_is_nonzero_only_while_the_event_sounds() {
     let rt = run(

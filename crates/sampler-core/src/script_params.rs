@@ -800,7 +800,8 @@ impl Runtime {
     }
 
     /// What `get_event_par` reports for a built-in parameter other than note
-    /// and velocity. An event that ended or never sounded reads 0.
+    /// and velocity. Unknown or retired aliases read 0; a live event with no
+    /// eligible voices reports ZoneId = -1.
     pub(crate) fn read_event_info(
         &mut self,
         plan: crate::PlanId,
@@ -827,6 +828,7 @@ impl Runtime {
                 i64::from(self.notes.get(note.0).unwrap().address.channel)
             }
             crate::EventInfo::ZoneId => {
+                let mut highest = -1;
                 let mut family = self.notes.get(note.0).unwrap().first_family;
                 while let Some(index) = family {
                     let f = self.families.slots[index.get()].value.unwrap();
@@ -836,11 +838,11 @@ impl Runtime {
                         let state = self.voices.slots[v.get()].value.unwrap();
                         voice = state.siblings.next;
                         if !state.stolen {
-                            return Ok(i64::from(state.source_zone));
+                            highest = highest.max(i64::from(state.source_zone));
                         }
                     }
                 }
-                0
+                highest
             }
         })
     }
