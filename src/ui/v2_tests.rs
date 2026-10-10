@@ -140,8 +140,14 @@ fn ir_view_vector_mode_releases_control_bitmaps() {
         source: ir::Source::Ksp { slot: 0 },
         pages: vec![ir::Page {
             name: "Main".into(),
-            size: ir::Size { width: 633, height: 300 },
-            background: ir::Background { image: Some(ir::AssetRef(0)), ..Default::default() },
+            size: ir::Size {
+                width: 633.0,
+                height: 300.0,
+            },
+            background: ir::Background {
+                image: Some(ir::AssetRef(0)),
+                ..Default::default()
+            },
             ..Default::default()
         }],
         widgets: vec![panel, knob, switch],
@@ -733,9 +739,18 @@ fn uvi_momentary_buttons_callback_once_per_click_or_keyboard_activation() {
 }
 #[test]
 fn uvi_scene_culls_offscreen_controls_without_dropping_the_model() {
-    use sampler_ui_ir::{self as ir, Interface, Widget, Rect, Page, PageRef, Kind};
-    let mut face = Interface { source: ir::Source::FalconLua, ..Default::default() };
-    face.pages.push(Page {size: ir::Size {width:200,height:100}, ..Default::default()});
+    use sampler_ui_ir::{self as ir, Interface, Kind, Page, PageRef, Rect, Widget};
+    let mut face = Interface {
+        source: ir::Source::FalconLua,
+        ..Default::default()
+    };
+    face.pages.push(Page {
+        size: ir::Size {
+            width: 200.0,
+            height: 100.0,
+        },
+        ..Default::default()
+    });
     for i in 0..7000 {
         face.widgets.push(Widget::new(format!("w{i}"), PageRef(0), Rect::new(0,if i==0 {0} else {10000},20,20), Kind::Label));
     }

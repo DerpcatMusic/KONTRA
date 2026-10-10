@@ -3,9 +3,14 @@
 use sampler_ir as ir;
 use sampler_ui_ir::{Binding, Interface, Kind, Placement, Widget};
 
-fn position(w: &Widget) -> (i32, i32, u32, u32) {
+fn position(w: &Widget) -> (f64, f64, f64, f64) {
     match w.placement {
-        Placement::Grid { column, row } => (column as i32 * 92, row as i32 * 22, w.rect.width.max(92), w.rect.height.max(22)),
+        Placement::Grid { column, row } => (
+            f64::from(column) * 92.,
+            f64::from(row) * 22.,
+            w.rect.width.max(92.),
+            w.rect.height.max(22.),
+        ),
         Placement::Pixels => (w.rect.x, w.rect.y, w.rect.width, w.rect.height),
     }
 }
@@ -23,31 +28,82 @@ pub(crate) fn normalize(instrument: &mut ir::Instrument, interfaces: &[Interface
     }
     let mut found = Vec::new();
     for ui in interfaces {
-        let mut choices: Vec<_> = ui.widgets.iter().filter(|w| matches!(w.kind, Kind::Button { .. } | Kind::Switch) && matches!(w.binding, Binding::Control(_))).collect();
-        choices.sort_by_key(|w| { let (x, y, width, _) = position(w); (w.page.0, w.parent.map(|p| p.0), x, width, y) });
+        let mut choices: Vec<_> = ui
+            .widgets
+            .iter()
+            .filter(|w| {
+                matches!(w.kind, Kind::Button { .. } | Kind::Switch)
+                    && matches!(w.binding, Binding::Control(_))
+            })
+            .collect();
+        choices.sort_by(|a, b| {
+            let (ax, ay, aw, _) = position(a);
+            let (bx, by, bw, _) = position(b);
+            (a.page.0, a.parent).cmp(&(b.page.0, b.parent))
+                .then_with(|| ax.total_cmp(&bx))
+                .then_with(|| aw.total_cmp(&bw))
+                .then_with(|| ay.total_cmp(&by))
+        });
         let mut runs: Vec<Vec<&Widget>> = Vec::new();
         for w in choices {
             let (x, y, width, height) = position(w);
-            if width < height * 3 { continue; }
+            if width < height * 3. {
+                continue;
+            }
             // Hidden overlays at a visible row's position are alternate faces, not extra rows.
             if w.hidden && ui.widgets.iter().any(|o| !o.hidden && o.page == w.page && o.parent == w.parent && position(o) == position(w)) { continue; }
             let joins = runs.last().and_then(|r| r.last()).is_some_and(|last| {
                 let (lx, ly, lw, lh) = position(last);
-                last.page == w.page && last.parent == w.parent && lx == x && lw == width && y >= ly + lh as i32 && y - ly - lh as i32 <= 12
+                last.page == w.page
+                    && last.parent == w.parent
+                    && lx == x
+                    && lw == width
+                    && y >= ly + lh
+                    && y - ly - lh <= 12.
             });
             if joins { runs.last_mut().unwrap().push(w); } else { runs.push(vec![w]); }
         }
         for run in runs.into_iter().filter(|r| r.len() >= 3 && r.iter().filter(|w| !w.hidden).count() >= 2) {
             for w in run {
                 let (x, y, width, height) = position(w);
-                let labels: Vec<_> = ui.widgets.iter().filter(|l| matches!(l.kind, Kind::Label | Kind::TextEdit) && l.page == w.page && l.parent == w.parent && l.hidden == w.hidden && !l.text.trim().is_empty()).filter(|l| {
-                    let (lx, ly, _, lh) = position(l);
-                    (ly + lh as i32 / 2 >= y && ly + lh as i32 / 2 <= y + height as i32) && lx < x + width as i32 + 160 && lx >= x - 16
-                }).collect();
-                let name = labels.iter().find(|l| ir::parse_note(&l.text).is_none() && l.text.chars().filter(|c| c.is_alphanumeric()).count() > 1).map_or(w.text.trim(), |l| l.text.trim());
-                if name.is_empty() { continue; }
-                let key = labels.iter().find_map(|l| ir::parse_note(&l.text)).or_else(|| keys.iter().position(|k| k.name.as_deref().is_some_and(|s| s.trim() == name)).map(|k| k as u8));
-                let Binding::Control(control) = w.binding else { continue };
+                let labels: Vec<_> = ui
+                    .widgets
+                    .iter()
+                    .filter(|l| {
+                        matches!(l.kind, Kind::Label | Kind::TextEdit)
+                            && l.page == w.page
+                            && l.parent == w.parent
+                            && l.hidden == w.hidden
+                            && !l.text.trim().is_empty()
+                    })
+                    .filter(|l| {
+                        let (lx, ly, _, lh) = position(l);
+                        (ly + lh / 2. >= y && ly + lh / 2. <= y + height)
+                            && lx < x + width + 160.
+                            && lx >= x - 16.
+                    })
+                    .collect();
+                let name = labels
+                    .iter()
+                    .find(|l| {
+                        ir::parse_note(&l.text).is_none()
+                            && l.text.chars().filter(|c| c.is_alphanumeric()).count() > 1
+                    })
+                    .map_or(w.text.trim(), |l| l.text.trim());
+                if name.is_empty() {
+                    continue;
+                }
+                let key = labels
+                    .iter()
+                    .find_map(|l| ir::parse_note(&l.text))
+                    .or_else(|| {
+                        keys.iter()
+                            .position(|k| k.name.as_deref().is_some_and(|s| s.trim() == name))
+                            .map(|k| k as u8)
+                    });
+                let Binding::Control(control) = w.binding else {
+                    continue;
+                };
                 let source = format!("ksp-control:{:032x}", control.0);
                 found.push(ir::Articulation { source, control: Some(control.0), name: name.into(), switch_keys: key.into_iter().collect(), ..Default::default() });
             }

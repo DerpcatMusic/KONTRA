@@ -244,8 +244,8 @@ fn w1_original_default_survives_identical_publication() {
     f.pages.push(ir::Page {
         name: "Main".into(),
         size: ir::Size {
-            width: 633,
-            height: 500,
+            width: 633.0,
+            height: 500.0,
         },
         ..Default::default()
     });
@@ -433,7 +433,7 @@ fn w1_os_file_drop_uses_epoch_admission_and_preserves_native_enter_leave() {
     let script=sampler_ksp::compile("on init make_perfview declare ui_mouse_area $area set_control_par(get_ui_id($area),$CONTROL_PAR_DND_ACCEPT_AUDIO,$NI_DND_ACCEPT_MULTIPLE) set_control_par(get_ui_id($area),$CONTROL_PAR_RECEIVE_DRAG_EVENTS,1) declare ui_knob $calls(0,1000,1) declare ui_knob $inside(0,1,1) end on on ui_control($area) inc($calls) $inside := $NI_MOUSE_OVER_CONTROL end on",48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
     let mut face=script.ui(&|_|None).unwrap();
     face.widgets[0].rect=sampler_ui_ir::Rect::new(0,0,100,100);
-    for widget in face.widgets.iter_mut().skip(1) {widget.rect.x=150;}
+    for widget in face.widgets.iter_mut().skip(1) {widget.rect.x=150.0;}
     let id=|name:&str|sampler_ui_ir::ControlId(script.controls().iter().find(|c|c.variable.ends_with(name)).unwrap().definition.id.0);
     let (calls,inside)=(id("$calls"),id("$inside"));
     let prepared=script.bind(sampler_core::Prepared::new(48000,vec![],vec![],1).unwrap()).unwrap();
