@@ -403,13 +403,14 @@ function element.setParameter(self, name, value)
 end
 function element.getParameterConnections(self, name)
   if type(name) == 'number' then
-    name = parameter_name(self,name); if not name then error('invalid parameter id') end
+    name = parameter_name(self,name); if not name then return nil end
   end
+  if not self:hasParameter(name) then return nil end
   local result = {}
   for _, c in ipairs(self.connections or {}) do
     if c:getParameter('Destination') == name then result[#result+1] = c end
   end
-  return result
+  return #result > 0 and result or nil
 end
 function element.sendScriptModulation(self, ...) report("sendScriptModulation", "") end
 element.__element = true
