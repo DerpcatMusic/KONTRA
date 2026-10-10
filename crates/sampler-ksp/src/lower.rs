@@ -3754,6 +3754,33 @@ impl Gen<'_, '_> {
                 _ => {}
             }
         }
+        let mut menu_exits = Vec::new();
+        if builtin == Builtin::GetControlPar && par.is_none() {
+            for selector in [
+                Some(b::CONTROL_PAR_NUM_ITEMS),
+                b::control_par("$CONTROL_PAR_SELECTED_ITEM_IDX"),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                self.arg(args, 1, dst + 1)?;
+                self.set(dst + 2, i64::from(selector))?;
+                self.emit(I::CompareLocal {
+                    lhs: dst + 1,
+                    rhs: dst + 2,
+                    comparison: Cmp::Equal,
+                })?;
+                let skip = self.jump_if_zero(dst + 1)?;
+                if selector == b::CONTROL_PAR_NUM_ITEMS {
+                    self.builtin(Builtin::GetNumMenuItems, args, dst, self.span)?;
+                } else {
+                    self.set(dst, -1)?;
+                    self.menu_selected_index(args, dst)?;
+                }
+                menu_exits.push(self.jump()?);
+                self.land(skip);
+            }
+        }
         self.set(dst, 0)?;
         self.store(args, PROPERTY_KEY, dst, false)?;
         if par == Some(b::CONTROL_PAR_VALUE) || par.is_none() {
@@ -3793,6 +3820,9 @@ impl Gen<'_, '_> {
         }
         if par == Some(b::CONTROL_PAR_VALUE) && builtin == Builtin::GetControlPar {
             self.menu_selected_index(args, dst)?;
+        }
+        for exit in menu_exits {
+            self.land(exit);
         }
         Ok(())
     }
