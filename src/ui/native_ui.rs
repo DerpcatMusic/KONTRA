@@ -1961,10 +1961,10 @@ mod tests {
         let session = Session::new(package.clone(), "main", vec![]).unwrap();
         (package, session)
     }
-    fn primitive_tick(
+    fn primitive_tree(
         ui: &mut Ui, graph: &Table, package: &Arc<Package>, session: &Session,
         scale: f64, retention: Option<&mut PrimitiveRetention>, shell: usize,
-    ) {
+    ) -> El {
         let authored = authored_size(graph);
         let el = if let Some(retention) = retention {
             draw_retained(ui, graph, package, session, 11, scale, authored, &mut HashMap::new(), retention).unwrap()
@@ -1973,13 +1973,47 @@ mod tests {
                 .w(authored.width * scale).h(authored.height * scale)
                 .clip().named("NativeUI performance view")
         };
-        ui.frame(stack([el, text(shell.to_string()).at(48., 48.)]).w(64.).h(64.),
-            Some(Size::new(64., 64.)), Input::default(), 1. / 60.).unwrap();
+        stack([el, text(shell.to_string()).at(48., 48.)]).w(64.).h(64.)
+    }
+    fn primitive_frame(ui: &mut Ui, tree: El) -> Result<bool, moose::mui::mui::scene::SceneError> {
+        ui.frame(tree, Some(Size::new(64., 64.)), Input::default(), 1. / 60.)
+            .map(|frame| frame.animating)
+    }
+    fn primitive_tick(
+        ui: &mut Ui, graph: &Table, package: &Arc<Package>, session: &Session,
+        scale: f64, retention: Option<&mut PrimitiveRetention>, shell: usize,
+    ) {
+        let retained = retention.is_some();
+        let tree = primitive_tree(ui, graph, package, session, scale, retention, shell);
+        primitive_frame(ui, tree).unwrap_or_else(|error| {
+            panic!("primitive frame: retained={retained}, scale={scale}, shell={shell}: {error:?}")
+        });
     }
     fn primitive_oracle(retained: &Ui, eager: &Ui) {
-        assert_eq!(super::super::tests::pixels(retained, 64, 64), super::super::tests::pixels(eager, 64, 64));
+        primitive_oracle_at(retained, eager, "primitive oracle");
+    }
+    fn primitive_oracle_at(retained: &Ui, eager: &Ui, context: &str) {
+        let left = super::super::tests::pixels(retained, 64, 64);
+        let right = super::super::tests::pixels(eager, 64, 64);
+        if left != right {
+            let hash = |bytes: &[u8]| bytes.iter().fold(0xcbf29ce484222325u64,
+                |h, byte| (h ^ u64::from(*byte)).wrapping_mul(0x100000001b3));
+            let first = left.iter().zip(&right).position(|(a, b)| a != b);
+            let pixel = first.map(|i| i / 4);
+            let glyphs = |ui: &Ui| ui.scene().unwrap().paint.iter().filter_map(|p| {
+                p.text.as_ref().map(|t| (p.key.to_string(), t.size, t.origin, t.hint,
+                    t.fonts.iter().map(Font::id).collect::<Vec<_>>(), t.font_coords.clone(),
+                    t.glyphs.len(), t.glyphs.iter().take(8).copied().collect::<Vec<_>>()))
+            }).take(8).collect::<Vec<_>>();
+            let frames = |ui: &Ui| ui.scene().unwrap().surfaces()
+                .take(16).map(|s| (s.key.to_string(), s.frame)).collect::<Vec<_>>();
+            panic!("{context}: exact pixels differ; len={}/{}, fnv1a64={:016x}/{:016x}, first_byte={first:?}, xy={:?}, rgba={:?}/{:?}; glyphs={:?}/{:?}; frames={:?}/{:?}",
+                left.len(), right.len(), hash(&left), hash(&right), pixel.map(|i| (i % 64, i / 64)),
+                pixel.and_then(|i| left.get(i * 4..i * 4 + 4)), pixel.and_then(|i| right.get(i * 4..i * 4 + 4)),
+                glyphs(retained), glyphs(eager), frames(retained), frames(eager));
+        }
         let frames = |ui: &Ui| ui.scene().unwrap().surfaces().map(|surface| surface.frame).collect::<Vec<_>>();
-        assert_eq!(frames(retained), frames(eager));
+        assert_eq!(frames(retained), frames(eager), "{context}: exact surface frames");
     }
     // Preloaded package: no resource worker is needed to exercise State::view.
     fn primitive_state(package: Arc<Package>) -> State {
@@ -2207,7 +2241,21 @@ mod tests {
             end
         "#);
         let globals = session.lua().globals();
-        for count in [8, NATIVE_MEMO_SCOPE_LIMIT, NATIVE_MEMO_SCOPE_LIMIT + 1, 256, 2048] {
+        // 2045 framed siblings plus Canvas fill the default 4096-node frame.
+        // 2048 exceed it even eagerly; keep that as explicit selection/rejection
+        // stress, not a claim of cold/warm scene parity for an inadmissible tree.
+        use moose::mui::mui::{layout, scene::SceneError};
+        let limits = layout::Limits::default();
+        let node_count = |tree: &El| {
+            let mut count = 0;
+            let mut todo = vec![tree];
+            while let Some(node) = todo.pop() {
+                count += 1;
+                todo.extend(node.children());
+            }
+            count
+        };
+        for count in [8, NATIVE_MEMO_SCOPE_LIMIT, NATIVE_MEMO_SCOPE_LIMIT + 1, 256, 2045, 2048] {
             for live in [true, false] {
                 globals.set("count", count).unwrap();
                 globals.set("live", live).unwrap();
@@ -2217,17 +2265,34 @@ mod tests {
                 for shell in 0..2 {
                     let graph = session.render().unwrap();
                     let calls = || globals.get::<usize>("canvas_calls").unwrap_or(0);
+                    let context = format!("count={count}, live={live}, shell/attempt={shell}, limit={}", limits.nodes);
                     let before = calls();
-                    primitive_tick(&mut eager, &graph, &package, &session, 1., None, shell);
+                    let tree = primitive_tree(&mut eager, &graph, &package, &session, 1., None, shell);
+                    let nodes = node_count(&tree);
+                    assert_eq!(nodes, 2 * count + 4 + 2 * usize::from(live), "{context}: eager lowered nodes");
+                    let eager_frame = primitive_frame(&mut eager, tree);
                     let eager_delta = calls() - before;
                     let before = calls();
-                    primitive_tick(&mut retained, &graph, &package, &session, 1., Some(&mut cache), shell);
-                    assert_eq!(calls() - before, eager_delta, "count={count}, live={live}, shell={shell}");
-                    if live { assert!(eager_delta > 0, "visible Canvas must paint on cold and warm frames"); }
-                    primitive_oracle(&retained, &eager);
-                    assert_eq!(cache.live.len(), scopes);
-                    assert_eq!(cache.keys.len(), scopes);
-                    assert_eq!(cache.lowered, scopes, "warm scopes reuse; excess siblings remain eager");
+                    let tree = primitive_tree(&mut retained, &graph, &package, &session, 1., Some(&mut cache), shell);
+                    let retained_frame = primitive_frame(&mut retained, tree);
+                    assert_eq!(calls() - before, eager_delta, "{context}: Canvas callback delta");
+                    assert_eq!(cache.live.len(), scopes, "{context}: selected scopes");
+                    assert_eq!(cache.keys.len(), scopes, "{context}: retained keys");
+                    if nodes <= limits.nodes {
+                        eager_frame.unwrap_or_else(|error| panic!("{context}: eager nodes={nodes}: {error:?}"));
+                        retained_frame.unwrap_or_else(|error| panic!("{context}: retained expanded nodes={nodes}: {error:?}"));
+                        if live { assert!(eager_delta > 0, "{context}: visible Canvas must paint on cold and warm frames"); }
+                        primitive_oracle_at(&retained, &eager, &context);
+                        assert_eq!(cache.lowered, scopes, "{context}: warm scopes reuse; excess siblings remain eager");
+                    } else {
+                        assert!(matches!(eager_frame, Err(SceneError::Layout(layout::Error::BudgetExceeded))),
+                            "{context}: eager must reject nodes={nodes}, got {eager_frame:?}");
+                        assert!(matches!(retained_frame, Err(SceneError::Layout(layout::Error::BudgetExceeded))),
+                            "{context}: retained must reject expanded nodes={nodes}, got {retained_frame:?}");
+                        assert_eq!(eager_delta, 0, "{context}: budget preflight must not paint Canvas");
+                        assert!(eager.scene().is_none() && retained.scene().is_none(), "{context}: no admitted scene");
+                        assert_eq!(cache.lowered, scopes * (shell + 1), "{context}: rejected trees are not captured for warm reuse");
+                    }
                 }
             }
         }
@@ -2246,19 +2311,92 @@ mod tests {
             let mut baseline = Vec::new();
             for (index, update) in ["caption=nil;ink=nil;font_bold=false", change].into_iter().enumerate() {
                 session.lua().load(update).exec().unwrap();
-                for shell in 0..2 {
+                for shell in 0..3 {
+                    let context = format!("isolated {change}, update={update}, index={index}, warm={shell}");
                     let graph = session.render().unwrap();
                     primitive_tick(&mut eager, &graph, &package, &session, 1., None, 0);
                     primitive_tick(&mut retained, &graph, &package, &session, 1., Some(&mut cache), 0);
-                    primitive_oracle(&retained, &eager);
+                    primitive_oracle_at(&retained, &eager, &context);
                     assert!(retained.scene().unwrap().paint.iter().any(|paint| paint.text.as_ref()
                         .is_some_and(|run| run.size == 18. && !run.glyphs.is_empty())), "authored glyphs must paint");
                     let pixels = super::super::tests::pixels(&retained, 64, 64);
                     if index == 0 { baseline = pixels; }
                     else { assert_ne!(pixels, baseline, "isolated {change}, warm={shell}"); }
-                    assert_eq!(cache.lowered, index + 1);
+                    let settling = change == "font_bold=true" && index == 1;
+                    let run = retained.scene().unwrap().paint.iter().filter_map(|p| p.text.as_ref())
+                        .find(|t| t.size == 18.).unwrap();
+                    assert_eq!(run.hint, !(settling && shell == 0), "{context}: axis change hints again next frame");
+                    assert_eq!(cache.lowered, index + 1 + usize::from(settling && shell > 0),
+                        "{context}: only the transient bold frame needs an extra build, then retains again");
                 }
             }
+        }
+    }
+    #[test]
+    fn native_text_axis_settling_wakes_only_its_scope_and_retains_again() {
+        let (package, session) = primitive_fixture(r#"
+            local ui=require('native_ui')
+            return function() return @ui.ZStack {
+                @ui.Text {text='Hi'}.font_size(font_size or 18).bold(font_bold or false).frame(width=48,height=32),
+                @ui.Rectangle {color=ui.Color.red}.frame(width=4,height=4).offset(x=22,y=22)
+            }.frame(width=48,height=48).on_tap_gesture({complete=function() end}) end
+        "#);
+        let (mut retained, mut eager) = primitive_uis();
+        let mut cache = PrimitiveRetention::default();
+        let mut previous_coords = None;
+        let mut rectangle_revision = None;
+        for (step, update) in ["", "font_bold=true", "font_bold=false", "font_size=22", "font_size=18"]
+            .into_iter().enumerate()
+        {
+            session.lua().load(update).exec().unwrap();
+            let mut transition = false;
+            let before = cache.lowered;
+            for warm in 0..3 {
+                let context = format!("axis settling: step={step}, update={update}, warm={warm}");
+                let graph = session.render().unwrap();
+                let rectangle = string(&tables(&graph, "children").unwrap()[1], "path");
+                let tree = primitive_tree(&mut eager, &graph, &package, &session, 1., None, 0);
+                primitive_frame(&mut eager, tree).unwrap();
+                let tree = primitive_tree(&mut retained, &graph, &package, &session, 1., Some(&mut cache), 0);
+                let animating = primitive_frame(&mut retained, tree).unwrap();
+                primitive_oracle_at(&retained, &eager, &context);
+                let run = retained.scene().unwrap().paint.iter().filter_map(|p| p.text.as_ref())
+                    .find(|t| t.size == if step == 3 { 22. } else { 18. }).unwrap();
+                if warm == 0 {
+                    transition = previous_coords.as_ref().is_some_and(|coords| coords != &run.font_coords);
+                }
+                assert_eq!(run.hint, !(transition && warm == 0), "{context}: transient hinting");
+                assert_eq!(animating, transition && warm == 0, "{context}: one settling frame, no permanent wake");
+                previous_coords = Some(run.font_coords.clone());
+                let revision = cache.keys[&rectangle].1;
+                assert_eq!(*rectangle_revision.get_or_insert(revision), revision, "{context}: unrelated rectangle stays retained");
+                assert_eq!(cache.keys.len(), 2, "{context}: only the two pure children retain");
+                assert_eq!(cache.lowered, before + (if step == 0 { 2 } else { 1 })
+                    + usize::from(transition && warm > 0), "{context}: only glyph settling rebuilds the unchanged scope");
+            }
+        }
+    }
+    #[test]
+    fn native_stably_unhinted_text_does_not_keep_requesting_frames() {
+        let (package, session) = primitive_fixture(r#"
+            local ui=require('native_ui')
+            return function() return @ui.Text {text=''}.font_size(18).frame(width=48,height=32) end
+        "#);
+        let (mut retained, mut eager) = primitive_uis();
+        let mut cache = PrimitiveRetention::default();
+        for warm in 0..4 {
+            let graph = session.render().unwrap();
+            let tree = primitive_tree(&mut eager, &graph, &package, &session, 1., None, 0);
+            primitive_frame(&mut eager, tree).unwrap();
+            let tree = primitive_tree(&mut retained, &graph, &package, &session, 1., Some(&mut cache), 0);
+            let animating = primitive_frame(&mut retained, tree).unwrap();
+            primitive_oracle_at(&retained, &eager, &format!("stable PUA glyph, warm={warm}"));
+            assert!(retained.scene().unwrap().paint.iter().filter_map(|p| p.text.as_ref())
+                .any(|t| t.size == 18. && !t.hint), "PUA text must exercise the deliberately unhinted path");
+            // Without a previous scene, conservatively settle once. The scene
+            // API exposes hint/coordinates, not the reason hinting is off.
+            assert_eq!(animating, warm == 0, "stable unhinted text must not keep the window awake");
+            assert_eq!(cache.lowered, if warm == 0 { 1 } else { 2 }, "unhinted text retains again after one conservative settle");
         }
     }
     #[test]

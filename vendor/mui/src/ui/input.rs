@@ -643,7 +643,8 @@ impl Ui {
     /// Which memos the next build must run again: the ones holding a key
     /// whose state moved this frame, or all of them after discrete input.
     /// `was` is the hovered, held and tagged keys before this frame.
-    pub(super) fn heat(&mut self, scene: &ResolvedScene, was: &[Option<Id>; 3], buttons: bool) {
+    /// Returns whether a memo needs another frame to settle glyph hinting.
+    pub(super) fn heat(&mut self, scene: &ResolvedScene, was: &[Option<Id>; 3], buttons: bool) -> bool {
         self.hot.clear();
         let me = self.me;
         let ids = &mut self.memo_ids;
@@ -661,8 +662,31 @@ impl Ui {
             || self.pasted.is_some()
             || self.preedit.is_some()
             || !self.delivered.is_empty();
-        if self.kept.is_empty() || self.hot_all {
-            return;
+        if self.kept.is_empty() {
+            return false;
+        }
+        // A changed axis paints one unhinted frame. Copying that scene span
+        // would keep it unhinted: wake only its memo ancestors to settle it.
+        // Stable unhinted runs (e.g. icons) must not request frames forever.
+        let mut settling = false;
+        if scene.paint.iter().any(|p| p.text.as_ref().is_some_and(|t| !t.hint)) {
+            let previous: HashMap<_, _> = self.scene.iter().flat_map(|s| &s.paint)
+                .filter_map(|p| p.text.as_ref().map(|t| (p.key.as_str(), &t.font_coords)))
+                .collect();
+            for p in &scene.paint {
+                if let Some(t) = &p.text
+                    && !t.hint
+                    && previous.get(p.key.as_str()).is_none_or(|coords| *coords != &t.font_coords)
+                {
+                    for (id, _) in scene.memos_at(p.key.as_str()) {
+                        self.hot.insert(id);
+                        settling = true;
+                    }
+                }
+            }
+        }
+        if self.hot_all {
+            return settling;
         }
         let now = [
             self.interaction.hovered(),
@@ -701,6 +725,7 @@ impl Ui {
             self.hot.extend(scene.memos_at(k).map(|(id, _)| id));
         }
         self.hot.extend(scene.memos_floating());
+        settling
     }
 
     /// Focus follows a press on a focusable surface, and a press on anything
