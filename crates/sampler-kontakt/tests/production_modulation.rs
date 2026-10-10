@@ -451,6 +451,30 @@ fn serialized_saved_bypass_stays_neutral_until_live_enable() {
 }
 
 #[test]
+fn serialized_legacy_ahdsr_retains_opaque_metadata_without_timing_records() {
+    use sampler_ir::SourceParameterValue;
+    let f = fixture(true, false, true);
+    let loaded = loaded(&f);
+    let source = loaded
+        .instrument
+        .source_parameters
+        .iter()
+        .find(|r| r.location == "group 0 internal slot 7/source")
+        .unwrap();
+    assert_eq!((source.object_id, source.version), (0x3f, 0x10));
+    assert_eq!(
+        source
+            .fields
+            .iter()
+            .find(|f| f.name == "unknown_tail")
+            .unwrap()
+            .value,
+        SourceParameterValue::Opaque(vec![0; 16])
+    );
+    assert!(source.fields.iter().all(|f| f.name != "timing_records"));
+}
+
+#[test]
 fn serialized_retriggered_ahdsr_routes_have_live_amplitude_and_pan_consumers() {
     let f = fixture(true, false, true);
     let mut rt = runtime(&f);
