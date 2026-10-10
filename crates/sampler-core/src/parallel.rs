@@ -694,8 +694,15 @@ mod tests {
                 .write(ModTarget::Decibels, -250 * (id as i64 % 5), false)
                 .unwrap();
             if id % 3 == 0 {
-                rt.fade_event(plan, id as i64, 700 + 40 * id as u32, true, id % 2 == 0)
-                    .unwrap();
+                rt.fade_event(
+                    plan,
+                    id as i64,
+                    700 + 40 * id as u32,
+                    true,
+                    id % 2 == 0,
+                    crate::FadeCurve::Linear,
+                )
+                .unwrap();
             }
         }
         let mut out = Vec::new();
