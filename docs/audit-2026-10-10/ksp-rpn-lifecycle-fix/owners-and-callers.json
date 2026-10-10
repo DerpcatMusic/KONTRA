@@ -1,0 +1,52 @@
+{
+  "state": "SOURCE_INSPECTION_ONLY_FRESH_REVIEW_REQUIRED",
+  "source_sha": "e6710e4e04c2404123a730d5b7977afa6a68c679",
+  "parent_sha": "b557602b540ab2e2b45875d4ec1fec1e38e8e587",
+  "source_spans": "source-trace.json",
+  "root_reservations": "Five-file scope reported before edits; root accepted exact schema reject and explicit clear/replace/rebind. No broader seam expansion.",
+  "changed_paths": [
+    "crates/sampler-core/src/stages.rs",
+    "crates/sampler-core/src/plan_programs.rs",
+    "crates/sampler-core/src/prepare.rs",
+    "crates/sampler-core/src/controller_event.rs",
+    "crates/sampler-ksp/tests/rpn.rs"
+  ],
+  "callers": [
+    {
+      "symbol": "Prepared::with_stages",
+      "callers": ["sampler_ksp::bind_modules", "Prepared::with_controller_programs", "Prepared::with_release_program", "sampler-core note/controller/control source fixtures", "sampler-ksp rpn source fixtures"],
+      "ownership": "Prepared control-thread builder; reject any changed exact Stage array with installed parameter receivers. Identical schema preserves receiver table. No new runtime fields or allocations."
+    },
+    {
+      "symbol": "Prepared::with_parameter_programs / ParameterProgram",
+      "callers": ["sampler_ksp::bind_modules", "sampler-ksp rpn public binding fixtures"],
+      "ownership": "Per Prepared off-audio table. Validate all ordinary note/release/controller program owners on selected stage and same-stage parameter peers. Empty ordinary stage is caller-selected routing, not inferred native script identity. Dense instance index/source-slot number never determines routing position. Empty input explicitly clears table."
+    },
+    {
+      "symbol": "Prepared::with_release_program / with_controller_program[s]",
+      "callers": ["core stage unit tests", "core behavior/release_selection/event_ids/controller_stages fixtures", "new KSP rpn setter fixtures"],
+      "ownership": "Release now delegates proposed stage array to with_stages instead of directly writing stages[0]. Controller already delegates, unchanged implementation. Same schema accepted; changed schema with parameter table rejected. Release uses control-thread temporary Vec only, not audio-thread heap."
+    },
+    {
+      "symbol": "Prepared::with_programs",
+      "callers": ["bind_modules complete rebinding", "existing native and frontend Prepared builders"],
+      "ownership": "Unchanged full replacement clears parameter table and other callback tables before resetting stages. No old parameter receiver index survives complete program replacement."
+    },
+    {
+      "symbol": "sampler_ksp::bind_modules",
+      "callers": ["Script::bind", "bind_controller_chain", "sampler-kontakt production initialized loader lower hook"],
+      "ownership": "Public source compiler emits distinct callbacks. Initial binder explicitly installs route stages and coherent table after programs/control/listener/signal callbacks; physical source_slot stays independent of instance and route. Original production route is unchanged."
+    },
+    {
+      "symbol": "Runtime::send_parameter / queue_behavior / resume_yielded",
+      "callers": ["actual production behavior_step note/controller/control/listener contexts"],
+      "ownership": "Unchanged runtime path resolves sender retained PlanId, actual stage, source instance and captured physical performance. Receiver payload lives in its own Continuation. Existing bounded callback arena/ready stack/deferred FIFO/waits remain. New tests author direct public Runtime/compiled binder assertions, not UI-only effects."
+    }
+  ],
+  "exports_added": [],
+  "exports_contract_clarified": ["ParameterProgram", "Prepared::with_stages", "Prepared::with_parameter_programs", "Prepared::with_release_program", "Prepared::with_controller_programs"],
+  "runtime_control_ownership": "No cross-part global payload/storage or host/UI roundtrip. Retained plan and arena generation fences are original source invariants, not executed verification.",
+  "test_inventory": "tests.json: all14 original harness filters plus6 new, all20 NOT_RUN; existing without_heap allocator guard reused.",
+  "preserved": ["numeric PGS", "MIDI/NKA service IDs and completion waits", "slot/epoch/instance/part retained generation fences", "internal callback names/discriminants", "init warn/noop", "incoming external MIDI RPN sensitivity", "UI/plugin", "string PGS future lane", "frozen fade/mod/remap/UVI endpoints", "production queue/fuel defaults", "dependencies/options/per-voice metadata"],
+  "graft": {"operation": "ask --source --no-refresh --json --in crates/sampler-core", "result": "empty, no matching nodes", "fallback": "bounded rg in named core/KSP/loader/runtime source and stage tests", "index_changed": false}
+}
