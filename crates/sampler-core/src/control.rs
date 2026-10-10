@@ -183,18 +183,53 @@ impl Prepared {
         {
             return Err(Error::InvalidInput);
         }
-        self.controls = controls.into_boxed_slice();
+        let previous = std::mem::replace(&mut self.controls, controls.into_boxed_slice());
         self.validate_program_controls(&self.programs)?;
         self.validate_dsp_controls()?;
         for binding in &self.control_programs {
             self.control_index(binding.control)?;
         }
-        for binding in &self.engine_parameters {
-            self.control_index(binding.control)?;
+        for control in self
+            .engine_parameters
+            .iter()
+            .map(|b| b.control)
+            .chain(self.envelope_controls.iter().flatten().flatten().copied())
+        {
+            let index = self.control_index(control)?;
+            if !matches!(self.controls[index].domain, ControlDomain::Real { .. }) {
+                return Err(Error::InvalidInput);
+            }
         }
-        for control in self.envelope_controls.iter().flatten().flatten() {
-            self.control_index(*control)?;
+        for control in self
+            .script_initial
+            .iter()
+            .flat_map(|b| b.controls.iter().flatten())
+        {
+            let index = self.control_index(*control)?;
+            if !matches!(self.controls[index].domain, ControlDomain::Integer { .. }) {
+                return Err(Error::InvalidInput);
+            }
         }
+        for descriptor in self.parameter_registry.descriptors() {
+            self.control_index(descriptor.control)?;
+        }
+        for widget in &self.widgets {
+            if let crate::WidgetStorage::Control(id) = widget.storage {
+                self.control_index(id)?;
+            }
+        }
+        let controls = &self.controls;
+        self.voice_modulation.remap_controls(|index| {
+            // The previous schema is the identity of every compiled input cell.
+            let id = previous.get(index).ok_or(Error::InvalidInput)?.id;
+            let index = controls
+                .binary_search_by_key(&id, |c| c.id)
+                .map_err(|_| Error::InvalidInput)?;
+            if !matches!(controls[index].domain, ControlDomain::Real { .. }) {
+                return Err(Error::InvalidInput);
+            }
+            Ok(index)
+        })?;
         Ok(self)
     }
 
@@ -535,6 +570,48 @@ impl Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn schema_replacement_rejects_invalid_compiled_input_index() {
+        let definitions: Vec<_> = [ControlId(1), ControlId(2)]
+            .into_iter()
+            .map(|id| ControlDefinition {
+                id,
+                domain: ControlDomain::Real { min: 0., max: 1. },
+                default: ControlValue::Real(0.),
+            })
+            .collect();
+        let mut plan = Prepared::new(48000, vec![], vec![], 0)
+            .unwrap()
+            .with_controls(definitions.clone())
+            .unwrap();
+        // Corrupt preparation data is not reachable through the public resolver.
+        plan.voice_modulation = crate::voice_mod::VoiceModulation::new_resolved(
+            vec![crate::ModProgram {
+                controls: vec![(0, [ControlId(1), ControlId(2)])],
+                sources: vec![crate::ModSource::Constant],
+                routes: vec![crate::ModRoute {
+                    source: 0,
+                    target: crate::ModTarget::Pan,
+                    depth: 0.5,
+                    invert: false,
+                    shape: None,
+                    lag: 0,
+                    scale: None,
+                }],
+                ..Default::default()
+            }],
+            vec![],
+            vec![],
+            |_| None,
+            |id| Ok(if id == ControlId(1) { 0 } else { 9 }),
+        )
+        .unwrap();
+        assert!(matches!(
+            plan.with_controls(definitions),
+            Err(Error::InvalidInput)
+        ));
+    }
+
     #[test]
     fn queued_writes_reserve_revision_space_until_execution_or_cancellation() {
         let id = ControlId(1);
