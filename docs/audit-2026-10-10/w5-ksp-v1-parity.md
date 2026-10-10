@@ -42,4 +42,12 @@ Seven retained read-modify-write contracts reproduce1 pass/6 failures on the fir
 
 The final corrected per-worktree run passes112 targeted checks with no failures, four-package area `--no-run`, and the production Conflux report (unknown0 in the five probed command classes). Exact commands, per-log hashes and exclusions are in `/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w5-ksp-parity-394/VALIDATION-FINAL.json`. No full scanner or timing verdict is claimed. The remaining edges above are still open.
 
-NEXT: global ui_controls/ui_update dispatch RED→GREEN in a separate slice. W8 owns per-host-block callback budgets; W6 owns optional native ModScale intensity laws.
+## Global UI callback dispatch, source `2ea4dc1c`
+
+The retained baseline `d293ade0` fails all five `ui_callbacks` contracts with unsupported-callback errors. Source `2ea4dc1c` ports v1 `0cb7a8a0:src/ksp/runtime.rs:2132–2180` and `src/ksp/compile.rs:384–423`: each authored scalar or typed widget starts `ui_controls`, its local `ui_control` when present, and `ui_update` in that order. Existing `StartProgram` dispatch gives each callback its own continuation; a global wait does not delay the local or update handler. Global bytecode is shared, edited-widget entries retain the physical UI ID, and update reports ID 0. Callback types are 13/7/8. Script-instance program offsets use the existing binding path.
+
+The corrected per-worktree run passes 65 selected UI/function/menu tests, including all five new contracts; the init-cache environment contract also passes. The core/KSP/Kontakt/plugin area compiles with `--no-run`. The five new contracts cover ordering/type/identity, controls without local handlers, wait independence, typed XY interaction and two-slot state/program-offset isolation. Exact commands, exits and log hashes are recorded in `/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w5-ksp-ui-callbacks-394/VALIDATION-FINAL.json`.
+
+The dispatcher consumes one bounded behavior slot while starting each child. Existing `StartProgram` capacity handling and instruction limits remain; no scheduler, capacity or per-host-block budget expansion is included. Native timed/corpus acceptance, every typed interaction field and exhaustion beyond the existing shared policy remain unverified. W8 owns per-host-block callback budgets; W6 owns optional native ModScale intensity laws.
+
+NEXT: `_pgs_changed` callback alias RED→GREEN; review W6 DigitalSine lowerer when READY lands.
