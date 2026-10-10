@@ -46,7 +46,6 @@ unchanged = [
     "crates/sampler-core/src/note_event.rs", "crates/sampler-core/src/groups.rs",
     "crates/sampler-core/src/prepare/selection.rs", "crates/sampler-core/src/ownership.rs",
     "crates/sampler-core/src/steal.rs", "crates/sampler-core/src/render.rs",
-    "crates/sampler-core/tests/event_ids.rs",
 ]
 for path in unchanged:
     assert read(path) == pinned(path), path
@@ -67,6 +66,26 @@ expected = replace_once(pinned(path),
     "/// Historical narrow witness: a sounding zone is nonzero, an unknown alias\n"
     "/// reads 0, and MIDI channel reads back. No live-no-zone or highest-zone proof.")
 assert read(path) == expected, "Historical executable assertions must stay unchanged"
+
+# The core integration target keeps every existing test byte-identical and appends
+# one witness for i64 operands that cannot be represented as signed32 event IDs.
+path = "crates/sampler-core/tests/event_ids.rs"
+core_before = pinned(path)
+core_after = read(path)
+assert core_after.startswith(core_before), "Existing core event-ID tests changed"
+core_addition = core_after[len(core_before):]
+assert re.findall(r"#\[test\]\s*fn (\w+)", core_addition) == [
+    "event_zone_instructions_reject_out_of_range_i64_aliases_and_read_live_alias"
+]
+assert "i64::from(i32::MAX) + 1" in core_addition
+assert "i64::from(i32::MIN) - 1" in core_addition
+assert core_addition.count("Instruction::ReadEventInfo") == 3
+assert core_addition.count("Instruction::ReadEventParameter") == 3
+
+path = "crates/sampler-ksp/tests/event_zone.rs"
+ksp_source = read(path)
+assert "fn wrapped_negative_literal_is_an_invalid_alias_and_selectors_keep_zero_fallback()" in ksp_source
+assert "$wrapped_negative := get_event_par(2147483648,$parameter)" in ksp_source
 
 # Independent bounded model: nested family traversal, excluding stolen voices.
 def query(families, valid=True):
@@ -108,6 +127,7 @@ for path, methods in {
 print(json.dumps({
     "base": BASE, "checks": "PASS: exact narrow diff, producer/alias/lifecycle pins, 13 model cases, witness inventory",
     "model_cases": cases, "authored_witnesses": witnesses,
+    "core_boundary_witness": "event_zone_instructions_reject_out_of_range_i64_aliases_and_read_live_alias",
     "rust": "NOT_RUN/NOT_COMPILED", "native": "UNKNOWN",
     "cpu_and_ram_vs_both_references": "UNACHIEVED",
     "core_sha256": hashlib.sha256(read(CORE).encode()).hexdigest(),
