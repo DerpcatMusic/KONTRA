@@ -1858,3 +1858,21 @@ fn exhausted_host_callback_time_does_not_refill_between_events_or_renders() {
         assert_eq!(rt.behavior_outcome(second), Ok(Some(Outcome::Finished)));
     });
 }
+
+#[test]
+fn positive_callback_time_preempts_a_long_straight_run_without_losing_work() {
+    let count = 100_000;
+    let mut rt = runtime(vec![Instruction::AddLocal { local: 0, value: 1 }; count],
+        Limits { behavior_fuel: count * 2, ..limits() });
+    support::without_heap(|| {
+        rt.begin_behavior_block(count * 2, Some(std::time::Duration::from_micros(1)));
+        let note = rt.note_on(input(), 60, 1.).unwrap();
+        let callback = rt.start_behavior(note, 0).unwrap();
+        assert_eq!(rt.behavior_outcome(callback), Ok(None), "time must bound a long straight run");
+        assert!(rt.behavior_local(callback, 0).unwrap() < count as i64);
+        rt.begin_behavior_block(count * 2, None);
+        rt.render(&mut []).unwrap();
+        assert_eq!(rt.behavior_outcome(callback), Ok(Some(Outcome::Finished)));
+        assert_eq!(rt.behavior_local(callback, 0), Ok(count as i64));
+    });
+}
