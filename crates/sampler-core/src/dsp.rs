@@ -228,7 +228,9 @@ mod compressor;
 pub(super) mod control;
 mod convolution;
 mod daft;
-// Numerical checkpoints only; AR playback remains disconnected.
+// Numerical/runtime candidates only; AR playback remains disconnected.
+#[cfg(test)]
+mod ar;
 #[cfg(test)]
 mod ar_kernel;
 mod eq;

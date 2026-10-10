@@ -10,6 +10,24 @@ Native executable SHA-256:
 `0fe6356e0879d058b6e5b73507c54c5e345cea451b35287c974e438291d4dae8`.
 Original instructions are read without launching the executable or changing its prefix.
 
+## Authoritative feature documentation
+
+The current unversioned Kontakt Manual documents all nine adaptive-resonance
+filters at <https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/filter-reference>:
+`#ar-lp2`, `#ar-lp4`, `#ar-lp2-4`, `#ar-hp2`, `#ar-hp4`, `#ar-hp2-4`,
+`#ar-bp2`, `#ar-bp4`, `#ar-bp2-4`. Resonance decreases with high input amplitude
+and increases at lower levels; two/four-pole slopes are 12/24 dB per octave,
+and combined modes mix the two- and four-pole responses.
+
+The KSP Manual at
+<https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameters#filters-and-eqs>
+defines `$ENGINE_PAR_CUTOFF` and `$ENGINE_PAR_RESONANCE` for all filters, and
+`$ENGINE_PAR_EFFECT_BYPASS` for all filters/EQs. The coordinator/scout retrieved
+and archived these exact sections on 2026-10-10. The manuals establish feature
+and control intent, not coefficient law. The KSP sidebar identifies additions
+through Kontakt 8.12; applicability to the 8.13.1 reference binary is bounded,
+not independently version-pinned by the unversioned manual.
+
 ## Identity
 
 `BParFXFilter::read` (`0x140d00db0`) calls the serialized-kind converter
@@ -136,3 +154,29 @@ This is numerical replay evidence, not native host or library playback evidence.
 The combined integration batch must run the Rust checkpoint test before
 runtime/address admission. No build or numerical replay was run by the takeover
 DSP worker. No AR processor or importer admission has been added.
+
+## Test-only runtime preparation: pending-request priority
+
+The immutable WIP runtime proposal was recovered from `0e9a85c2` into
+`dsp/ar.rs`, enabled only under `cfg(test)`. It reserves 22 stereo f64 cells
+(352 bytes) per instance; the exponential table is initialized during prepare,
+not during processing. Rendering copies fixed state and performs O(frames)
+work without heap ownership. This is source design, not allocator or CPU proof.
+
+Native clock `0x140b03360..0x140b033a5` handles a pending request before the
+old countdown completion branch at `0x140b03424`. The preserved proposal did
+these in the opposite order, potentially snapping to the old target before
+re-requesting. `Ramp::advance` now selects request OR completion; an unchanged
+pending target still restarts the full duration. The tiny-step branch also
+clears remaining time, as `0x140b0340f` does. Tests explicitly exercise
+request-priority, repeated targets, tiny steps and instance-state partitioning.
+These Rust tests await the combined integration batch; they are not native
+runtime evidence on their own.
+
+`tools/ar-runtime-native.py` prepares a natural-dispatcher wrapper receipt:
+all nine modes, five rates, four cutoff/resonance enabled-lane masks, four
+32-frame quanta with an unchanged repeated target. It compares original wrapper
+processing partitions `[32]` vs `[1,7,24]`, and retains synthetic PCM checkpoints
+and ramp-state snapshots. It never forces DSP active flags. Outer rack mixing
+helpers remain replaced. Native replay and the Rust comparison are still
+pending; importer/service-address/voice/bus/heap gates remain closed.
