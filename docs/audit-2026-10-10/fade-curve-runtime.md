@@ -48,11 +48,11 @@ sample work. The no-fade/legacy Linear gain loops retain their old arithmetic.
 The existing amplifier clock evaluates `at + sample_index + 1`, both in
 `dsp.rs` and unchained `VoiceModState::mix`. Direct fade setup at now=0 therefore
 uses elapsed16 at audio index15. The prepared runtime witness follows that
-existing clock. The native lane's unrun KSP test `9da42c03` instead expects
-elapsed16 at audio index16; synchronous trigger/callback source indicates a
-possible one-frame fixture error. The next combined batch must reconcile this
-by checking actual callback timestamps, not by changing the legacy amplifier
-clock or claiming an unmeasured native phase.
+existing clock. Round3 `70005b680de9fffa2e218a9d6edc4e448b1925e8` corrects the
+native lane's KSP fixture to index15, and its quarter-time fixture to index1199.
+A new synchronous-callback/sample-end/default-Linear control checks origins0/128.
+The direct runtime helper now reserves one voice rather than zero. These are
+test-only corrections, not a changed amplifier clock or measured native phase.
 
 No heap ownership is added during render. Persistent Fade stays 40 bytes (test
 assertion); only the temporary returned Ramp carries the optional fade. The
@@ -69,9 +69,9 @@ be measured by the performance owner before CPU/RAM acceptance.
 - Legacy Linear f64 bits and persistent Fade size.
 - Synthetic runtime frame 16/128 witness for all five shapes, both directions,
   exact block 1/17/128 PCM equality, chained vs unchained no-double-amplitude,
-  and post-endpoint constant output. Allocation behavior still needs an external
-  integration-test allocator guard; the core library forbids unsafe code and
-  cannot include the integration tests' GlobalAlloc wrapper.
+  and post-endpoint constant output. Round3 adds an UNRUN external allocator
+  regression in `tests/fade_curves.rs` using existing `tests/support/mod.rs`.
+  The core library forbids unsafe code; no allocator wrapper was included there.
 - Native lane prepares KSP variable/array selector, dynamic stop, invalid value,
   optional-default and operand-register tests.
 
