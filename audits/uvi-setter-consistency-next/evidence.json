@@ -1,0 +1,296 @@
+{
+  "source_commit": "0df29cdc63d66ea7ba6e98da64c81fae3e0201e0",
+  "source_tree": "4a5edb584954a5703ae0e0bcc8c2c2126169d808",
+  "base_commit": "366515c96b583747d1bd77c881b1f6909e86cf0d",
+  "code_status": "SOURCE_READY_NOT_COMPILED",
+  "rust_execution": "ALL_CHANGED_AND_NEW_TESTS_UNRUN",
+  "native_parity": "UNKNOWN",
+  "performance_acceptance": "UNACHIEVED",
+  "source_spans": [
+    {
+      "commit": "0df29cdc63d66ea7ba6e98da64c81fae3e0201e0",
+      "path": "crates/sampler-uvi/src/script_prelude.lua",
+      "symbol": "Element getParameter/hasParameter/setParameter",
+      "lines": [
+        345,
+        405
+      ],
+      "git_blob": "1c74a4e3caa985b014c7d2e8faed5d65cfd40863",
+      "span_sha256": "8b05f0c1961efdba3b7e80c3d5c4b6cf61b4b14056366a489cf117c4315f4d9d"
+    },
+    {
+      "commit": "0df29cdc63d66ea7ba6e98da64c81fae3e0201e0",
+      "path": "crates/sampler-uvi/src/script.rs",
+      "symbol": "Shared::command",
+      "lines": [
+        656,
+        666
+      ],
+      "git_blob": "4bea7cbe5c69613888db036b599172814362b4a4",
+      "span_sha256": "1172a9b8bb8e7bd93c5c0e2f8b380f233949fe422f9c8306a57a1a99f7be7908"
+    },
+    {
+      "commit": "0df29cdc63d66ea7ba6e98da64c81fae3e0201e0",
+      "path": "crates/sampler-uvi/src/script.rs",
+      "symbol": "parameter identity/type helpers",
+      "lines": [
+        1182,
+        1273
+      ],
+      "git_blob": "4bea7cbe5c69613888db036b599172814362b4a4",
+      "span_sha256": "cc38c3f61478025846033d85216acfe35290e5683e06d7cc18b933b45f49727a"
+    },
+    {
+      "commit": "0df29cdc63d66ea7ba6e98da64c81fae3e0201e0",
+      "path": "crates/sampler-uvi/src/script.rs",
+      "symbol": "native.setParam",
+      "lines": [
+        1395,
+        1478
+      ],
+      "git_blob": "4bea7cbe5c69613888db036b599172814362b4a4",
+      "span_sha256": "068c5ba909b7271263a817e61d0c6887b8325e32d8b31cadd7e484d6f623913f"
+    },
+    {
+      "commit": "0df29cdc63d66ea7ba6e98da64c81fae3e0201e0",
+      "path": "crates/sampler-uvi/src/script.rs",
+      "symbol": "ScriptHost::insert_overrides",
+      "lines": [
+        2351,
+        2376
+      ],
+      "git_blob": "4bea7cbe5c69613888db036b599172814362b4a4",
+      "span_sha256": "6ac363eab5476e9fbafb6b4fa2e7230aa415d16ac03b1f4132f22457b32f4dad"
+    },
+    {
+      "commit": "0df29cdc63d66ea7ba6e98da64c81fae3e0201e0",
+      "path": "crates/sampler-uvi/src/script.rs",
+      "symbol": "unchanged async_data installation",
+      "lines": [
+        1111,
+        1124
+      ],
+      "git_blob": "4bea7cbe5c69613888db036b599172814362b4a4",
+      "span_sha256": "de4094f696191faae21200a357d8a649cc57cfbe7a559166743139de95d8c047"
+    },
+    {
+      "commit": "0df29cdc63d66ea7ba6e98da64c81fae3e0201e0",
+      "path": "crates/sampler-uvi/src/engine_parameters.rs",
+      "symbol": "field/binding type eligibility",
+      "lines": [
+        10,
+        49
+      ],
+      "git_blob": "d03bec9409145a50c6b936e3d351827efcb3c4bb",
+      "span_sha256": "40004c64e16b303911df6fcac10b27f519ac31e9ca65a0e1a1f057663039582d"
+    },
+    {
+      "commit": "0df29cdc63d66ea7ba6e98da64c81fae3e0201e0",
+      "path": "crates/sampler-uvi/src/engine_parameters.rs",
+      "symbol": "bindings from translated IR control keys",
+      "lines": [
+        51,
+        68
+      ],
+      "git_blob": "d03bec9409145a50c6b936e3d351827efcb3c4bb",
+      "span_sha256": "2d1fcd2d61212eb5d116de959524e36bbef5025bf4ec882d565c5da387884414"
+    },
+    {
+      "commit": "0df29cdc63d66ea7ba6e98da64c81fae3e0201e0",
+      "path": "crates/sampler-uvi/src/engine_parameters.rs",
+      "symbol": "register admission and initialize",
+      "lines": [
+        69,
+        144
+      ],
+      "git_blob": "d03bec9409145a50c6b936e3d351827efcb3c4bb",
+      "span_sha256": "54fa8edd6013c8abfd3eaf3445ff69201370ea0b119bd91b127ba143131b6887"
+    },
+    {
+      "commit": "0df29cdc63d66ea7ba6e98da64c81fae3e0201e0",
+      "path": "crates/sampler-uvi/src/lib.rs",
+      "symbol": "translate_full register ordering",
+      "lines": [
+        297,
+        306
+      ],
+      "git_blob": "fd33884fa1ac273ade4e527f5d0b4f12776fe698",
+      "span_sha256": "223ffb60ecb96a985fe79fe8c1d69f914fba0192187dfc1bdc408814ea051d5b"
+    },
+    {
+      "commit": "0df29cdc63d66ea7ba6e98da64c81fae3e0201e0",
+      "path": "crates/sampler-uvi/src/lib.rs",
+      "symbol": "attach_script_with_ui_state ordering",
+      "lines": [
+        1087,
+        1129
+      ],
+      "git_blob": "fd33884fa1ac273ade4e527f5d0b4f12776fe698",
+      "span_sha256": "e8cdc3a862f18075ac2ea3b75ed625b88fa8a6d6f804006cafe3f9f29f7f7649"
+    },
+    {
+      "commit": "0df29cdc63d66ea7ba6e98da64c81fae3e0201e0",
+      "path": "crates/sampler-uvi/src/lib.rs",
+      "symbol": "streamed binding installation",
+      "lines": [
+        1439,
+        1446
+      ],
+      "git_blob": "fd33884fa1ac273ade4e527f5d0b4f12776fe698",
+      "span_sha256": "a5d8be9992e7c0f4effb3bc1398ca295afc233afbfb1c677d43d7203747e95f4"
+    },
+    {
+      "commit": "0df29cdc63d66ea7ba6e98da64c81fae3e0201e0",
+      "path": "crates/sampler-uvi/src/lib.rs",
+      "symbol": "legacy scripted loader init before translation",
+      "lines": [
+        1510,
+        1525
+      ],
+      "git_blob": "fd33884fa1ac273ade4e527f5d0b4f12776fe698",
+      "span_sha256": "06a6e4c073ec455ce9dd2bbe5d62edf75a280481318654f3b92d11c4bb207767"
+    },
+    {
+      "commit": "0df29cdc63d66ea7ba6e98da64c81fae3e0201e0",
+      "path": "crates/sampler-uvi/src/lib.rs",
+      "symbol": "legacy streamed scripted loader init before translation",
+      "lines": [
+        1607,
+        1622
+      ],
+      "git_blob": "fd33884fa1ac273ade4e527f5d0b4f12776fe698",
+      "span_sha256": "4eadaa698cedd21b06fbddc226ce3aeddf2eaa5450cd407986c22c04103f3244"
+    },
+    {
+      "commit": "0df29cdc63d66ea7ba6e98da64c81fae3e0201e0",
+      "path": "crates/sampler-uvi/src/lib.rs",
+      "symbol": "assemble binding installation",
+      "lines": [
+        1708,
+        1711
+      ],
+      "git_blob": "fd33884fa1ac273ade4e527f5d0b4f12776fe698",
+      "span_sha256": "45f220d8bb78724f870ad480a36371ab856cd743581a9e417d395a7810a1eb20"
+    },
+    {
+      "commit": "0df29cdc63d66ea7ba6e98da64c81fae3e0201e0",
+      "path": "crates/sampler-uvi/src/scripted/thread.rs",
+      "symbol": "spawn/init before Loaded publication",
+      "lines": [
+        164,
+        210
+      ],
+      "git_blob": "a28b53718ab27cdf454ad0325e0be46f40ff823f",
+      "span_sha256": "af41aec7827ce41b2d571a1a8c06f27765e2f8a2af39d9e0affbc6d912d85ee6"
+    },
+    {
+      "commit": "0df29cdc63d66ea7ba6e98da64c81fae3e0201e0",
+      "path": "crates/sampler-uvi/src/scripted.rs",
+      "symbol": "Driver apply EngineParameter without acknowledgement",
+      "lines": [
+        370,
+        381
+      ],
+      "git_blob": "ff0db957233aee9342ac09104214605d9747486b",
+      "span_sha256": "1d510619ed863579e69458dca52c7427106ddabd1c0784033f9c87eaf8e31aaf"
+    },
+    {
+      "commit": "0df29cdc63d66ea7ba6e98da64c81fae3e0201e0",
+      "path": "crates/sampler-uvi/src/scripted.rs",
+      "symbol": "Driver Parameter actual gain/pan/pitch/polyphony consumers",
+      "lines": [
+        453,
+        547
+      ],
+      "git_blob": "ff0db957233aee9342ac09104214605d9747486b",
+      "span_sha256": "e5d79d62cbf946b69775321748760f4c9fa2b2dbd5d2605cae0eb6dd5b48e836"
+    },
+    {
+      "commit": "0df29cdc63d66ea7ba6e98da64c81fae3e0201e0",
+      "path": "crates/sampler-core/src/engine_parameters.rs",
+      "symbol": "Prepared::with_engine_parameters validates bindings",
+      "lines": [
+        379,
+        397
+      ],
+      "git_blob": "3f5eb2a8f5bc92411e343b41d5447d2858102d28",
+      "span_sha256": "64da3e8f55d0e28bb97fa1ff7b2b825af902f468217a23b1a78c2a9f003332df"
+    },
+    {
+      "commit": "0df29cdc63d66ea7ba6e98da64c81fae3e0201e0",
+      "path": "crates/sampler-core/src/engine_parameters.rs",
+      "symbol": "Runtime set_engine_parameter entry",
+      "lines": [
+        589,
+        605
+      ],
+      "git_blob": "3f5eb2a8f5bc92411e343b41d5447d2858102d28",
+      "span_sha256": "07e903487cbc31da366576c96772fc8068a19be2e8626361a9a77b13d092a14d"
+    },
+    {
+      "commit": "0df29cdc63d66ea7ba6e98da64c81fae3e0201e0",
+      "path": "crates/sampler-uvi/tests/host_parameters.rs",
+      "symbol": "four new production ScriptHost regressions",
+      "lines": [
+        32,
+        268
+      ],
+      "git_blob": "f381d45fc89386821f8352ab89e3e741b484a8c1",
+      "span_sha256": "f48c23ea1b850d94c0e2ee4069e23bc367b63f5187d35c498f7faee5e48bd8a9"
+    },
+    {
+      "commit": "0df29cdc63d66ea7ba6e98da64c81fae3e0201e0",
+      "path": "crates/sampler-uvi/tests/host_parameters.rs",
+      "symbol": "retained XML Destination regression",
+      "lines": [
+        436,
+        476
+      ],
+      "git_blob": "f381d45fc89386821f8352ab89e3e741b484a8c1",
+      "span_sha256": "85899dbcc17ca180289c678fe65146fe6af0c2282eb802f9242553f553ec2778"
+    },
+    {
+      "commit": "0df29cdc63d66ea7ba6e98da64c81fae3e0201e0",
+      "path": "crates/sampler-uvi/tests/fixture.rs",
+      "symbol": "cutoff callback/readback/queue/control/PCM witness",
+      "lines": [
+        661,
+        784
+      ],
+      "git_blob": "1e03afdfde066476f39e52aa0b5b28767dbb34d5",
+      "span_sha256": "558c3471ec3640d8ca1399ab0adb233ed9dfc7f38885e90c3f929b948ee854a1"
+    },
+    {
+      "commit": "0df29cdc63d66ea7ba6e98da64c81fae3e0201e0",
+      "path": "crates/sampler-uvi/tests/fixture.rs",
+      "symbol": "gain rejected callback MIDI fence and unchanged PCM; accepted gain PCM witness",
+      "lines": [
+        786,
+        928
+      ],
+      "git_blob": "1e03afdfde066476f39e52aa0b5b28767dbb34d5",
+      "span_sha256": "cad6f4e9ff38c5aac6bbdf39034e8315da240c40e5e75b1de962ef240460c1fe"
+    }
+  ],
+  "following_combined_batch_only": {
+    "host_parameters": [
+      "unknown_parameter_names_and_ids_are_silently_ignored_on_cold_and_cached_elements",
+      "unsupported_catalog_writes_leave_authored_readback_and_production_queue_unchanged",
+      "accepted_parameters_and_rejected_types_share_the_production_queue_seam",
+      "a_full_production_queue_does_not_accept_parameter_readback_or_insert_overrides",
+      "retained_connection_and_string_parameters_have_typed_descriptor_identities",
+      "named_parameter_checks_and_writes_do_not_build_full_catalogs",
+      "mismatched_parameter_scalar_types_are_ignored_without_aborting_lua"
+    ],
+    "fixture": [
+      "initialized_controller_and_widget_cutoff_writes_change_production_pcm",
+      "streamed_bus_gain_has_live_catalog_defaults_and_controller_readback",
+      "set_parameter_reaches_the_runtime"
+    ],
+    "lib": [
+      "script::tests::set_parameter_on_program_and_layers_becomes_commands"
+    ]
+  },
+  "capacity_policy": "Own fixed 65536-command queue, not vendor capacity evidence",
+  "remaining_blocker": "Queue admission is not actual lowered DSP-lane acknowledgement. register can omit lanes that binding recognizes by type. Runtime rejects downstream with a finding and no readback acknowledgement."
+}
