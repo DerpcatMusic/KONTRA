@@ -429,7 +429,7 @@ fn nka_runtime_concatenated_path_truncation_is_not_used_as_a_different_path() {
 }
 
 #[test]
-fn nka_unreachable_invalid_typed_ranges_and_snapshot_memory_limit_are_rejected_at_preparation() {
+fn nka_unreachable_invalid_typed_ranges_are_rejected_at_preparation() {
     let program = Program::new(vec![
         Instruction::End,
         Instruction::Op(Op::ArrayFile {
@@ -469,22 +469,349 @@ fn nka_unreachable_invalid_typed_ranges_and_snapshot_memory_limit_are_rejected_a
         }]),
         Err(Error::Capacity)
     ));
+    for (descriptor, error) in [
+        (array(ArrayFileKind::Integer, "%a", 0), Error::Capacity),
+        (
+            array(ArrayFileKind::Integer, "%a", ARRAY_FILE_MAX_CELLS as u32 + 1),
+            Error::Capacity,
+        ),
+        (array(ArrayFileKind::Integer, "!a", 1), Error::InvalidInput),
+        (array(ArrayFileKind::Text, "%a", 1), Error::InvalidInput),
+        (array(ArrayFileKind::Integer, "%a", 2), Error::InvalidInput),
+        (array(ArrayFileKind::Text, "!a", 1), Error::InvalidInput),
+    ] {
+        let prepared = Prepared::new(48000, vec![], vec![], 0)
+            .unwrap()
+            .with_script_instances(vec![vec![0]])
+            .unwrap();
+        assert!(matches!(
+            prepared.with_script_resources(vec![ScriptResources {
+                array_files: vec![descriptor],
+                ..Default::default()
+            }]),
+            Err(actual) if actual == error
+        ));
+    }
     let prepared = Prepared::new(48000, vec![], vec![], 0)
         .unwrap()
-        .with_script_instances(vec![vec![]])
+        .with_script_instances(vec![vec![0]])
         .unwrap();
     assert!(matches!(
         prepared.with_script_resources(vec![ScriptResources {
-            array_files: vec![array(
-                ArrayFileKind::Text,
-                "!a",
-                ARRAY_FILE_MAX_CELLS as u32
-            )],
-            texts: vec![String::new(); ARRAY_FILE_MAX_CELLS],
+            array_files: vec![array(ArrayFileKind::Integer, "%a", 1); 2],
             ..Default::default()
         }]),
-        Err(Error::Capacity)
+        Err(Error::InvalidInput)
     ));
+}
+
+fn snapshot_jobs(numbers: usize, texts: usize) -> usize {
+    let bytes = numbers * std::mem::size_of::<i64>() + texts * std::mem::size_of::<Text>();
+    ARRAY_FILE_JOBS.min(8 * 1024 * 1024 / bytes)
+}
+
+#[test]
+fn nka_maximum_text_array_admits_bounded_jobs_and_reuses_after_saturation() {
+    // The old negative exceeded the budget only when reserving eight copies.
+    let prepared = Prepared::new(48000, vec![], vec![], 0)
+        .unwrap()
+        .with_script_instances(vec![vec![]])
+        .unwrap()
+        .with_script_resources(vec![ScriptResources {
+            array_files: vec![array(ArrayFileKind::Text, "!a", ARRAY_FILE_MAX_CELLS as u32)],
+            texts: vec![String::new(); ARRAY_FILE_MAX_CELLS],
+            ..Default::default()
+        }])
+        .unwrap();
+    drop(prepared);
+    let fixture = Fixture::new();
+    let path = fixture.path("maximum.nka");
+    let source = format!(
+        r#"on init declare !a[{ARRAY_FILE_MAX_CELLS}] declare $job declare $count end on
+        on pgs_changed $job := save_array_str(!a,"{path}") end on
+        on async_complete inc($count) end on"#
+    );
+    let (mut rt, entry) = runtime(&source);
+    let slots = snapshot_jobs(0, ARRAY_FILE_MAX_CELLS);
+    assert!((1..ARRAY_FILE_JOBS).contains(&slots));
+    let mut pending = Vec::with_capacity(slots);
+    for _ in 0..slots {
+        run(&mut rt, entry);
+        assert!(cell(&rt, 0) > 0);
+        pending.push(effects(&mut rt).pop().unwrap());
+    }
+    run(&mut rt, entry);
+    assert_eq!(cell(&rt, 0), -1);
+    assert!(effects(&mut rt).is_empty());
+    let effect = pending.pop().unwrap();
+    let mut output = capture(&rt, &effect);
+    assert!(output.numbers().is_empty());
+    assert_eq!(output.texts().len(), ARRAY_FILE_MAX_CELLS);
+    output.perform().unwrap();
+    complete(&mut rt, effect.plan, &mut output);
+    run(&mut rt, entry);
+    let reused = effects(&mut rt).pop().unwrap();
+    assert_eq!(reused.args[0], effect.args[0] + 1, "rejection consumes no ID");
+    pending.push(reused);
+    for effect in pending.into_iter().rev() {
+        let mut output = capture(&rt, &effect);
+        output.perform().unwrap();
+        complete(&mut rt, effect.plan, &mut output);
+    }
+    assert_eq!(cell(&rt, 1), slots as i64 + 1);
+}
+
+#[test]
+fn nka_large_mixed_arrays_bound_jobs_keep_request_snapshots_and_clear_reused_payloads() {
+    let fixture = Fixture::new();
+    let text = fixture.path("large-text.nka");
+    let numeric = fixture.path("large-numeric.nka");
+    let source = format!(
+        r#"on init declare %data[16000] declare !names[4000]
+        declare $job declare $request declare $count declare $seen declare $status end on
+        on pgs_changed
+            %data[0] := 100 + $request %data[15999] := 200 + $request
+            !names[0] := "snapshot-" & $request !names[3999] := !names[0]
+            if (($request mod 2) = 0) $job := save_array_str(!names,"{text}")
+            else $job := save_array_str(%data,"{numeric}") end if
+            %data[0] := -99 %data[15999] := -99
+            !names[0] := "mutated" !names[3999] := "mutated"
+            if ($job # -1) inc($request) end if
+        end on
+        on async_complete inc($count) $seen := $NI_ASYNC_ID $status := $NI_ASYNC_EXIT_STATUS end on"#
+    );
+    let (mut rt, entry) = runtime(&source);
+    let slots = snapshot_jobs(16000, 4000);
+    assert!((2..ARRAY_FILE_JOBS).contains(&slots));
+    let mut pending = Vec::with_capacity(slots);
+    for _ in 0..slots {
+        run(&mut rt, entry);
+        assert!(cell(&rt, 16000) > 0);
+        pending.push(effects(&mut rt).pop().unwrap());
+    }
+    assert_eq!(cell(&rt, 16001), slots as i64);
+    run(&mut rt, entry);
+    assert_eq!(cell(&rt, 16000), -1);
+    assert_eq!(cell(&rt, 16001), slots as i64);
+    assert_eq!(cell(&rt, 16002), 0, "rejection publishes no completion");
+    assert!(effects(&mut rt).is_empty());
+    assert_eq!(cell(&rt, 0), -99);
+    assert_eq!(
+        rt.script_text(rt.active_plan(), ScriptInstanceId(0), 0)
+            .unwrap()
+            .as_str(),
+        "mutated"
+    );
+
+    // Finish the newest job first; all other slots remain occupied. The next
+    // two requests reuse this sole free slot in both type directions.
+    let last = pending.pop().unwrap();
+    let mut previous = last.args[0];
+    for request in slots - 1..slots + 2 {
+        let effect = if request == slots - 1 {
+            last
+        } else {
+            run(&mut rt, entry);
+            let effect = effects(&mut rt).pop().unwrap();
+            assert_eq!(effect.args[0], previous + 1, "rejection consumes no ID");
+            effect
+        };
+        let mut output = capture(&rt, &effect);
+        if request % 2 == 0 {
+            assert!(output.numbers().is_empty());
+            assert_eq!(output.texts().len(), 4000);
+            let expected = format!("snapshot-{request}");
+            assert_eq!(output.texts()[0].as_str(), expected);
+            assert_eq!(output.texts()[3999].as_str(), expected);
+        } else {
+            assert!(output.texts().is_empty());
+            assert_eq!(output.numbers().len(), 16000);
+            assert_eq!(output.numbers()[0], 100 + request as i64);
+            assert_eq!(output.numbers()[15999], 200 + request as i64);
+        }
+        output.perform().unwrap();
+        complete(&mut rt, effect.plan, &mut output);
+        assert_eq!(cell(&rt, 16003), effect.args[0]);
+        assert_eq!(cell(&rt, 16004), 1);
+        support::without_heap(|| {
+            assert_eq!(
+                rt.complete_array_file(effect.plan, &mut output),
+                Err(Error::StaleHandle)
+            );
+        });
+        previous = effect.args[0];
+    }
+    for (request, effect) in pending.into_iter().enumerate().rev() {
+        let mut output = capture(&rt, &effect);
+        if request % 2 == 0 {
+            assert!(output.numbers().is_empty());
+            assert_eq!(output.texts().len(), 4000);
+            let expected = format!("snapshot-{request}");
+            assert_eq!(output.texts()[0].as_str(), expected);
+            assert_eq!(output.texts()[3999].as_str(), expected);
+        } else {
+            assert!(output.texts().is_empty());
+            assert_eq!(output.numbers().len(), 16000);
+            assert_eq!(output.numbers()[0], 100 + request as i64);
+            assert_eq!(output.numbers()[15999], 200 + request as i64);
+        }
+        output.perform().unwrap();
+        complete(&mut rt, effect.plan, &mut output);
+    }
+    assert_eq!(cell(&rt, 16002), slots as i64 + 2);
+}
+
+#[test]
+fn nka_large_mixed_load_wait_cancel_reuse_and_replacement_keep_owner_fences() {
+    let fixture = Fixture::new();
+    let numeric = fixture.write(
+        "load-large-numeric.nka",
+        &format!("%data\n37\n{}99\n", "0\n".repeat(15998)),
+    );
+    let text = fixture.write(
+        "load-large-text.nka",
+        &format!("!names\nloaded\n{}tail\n", "\n".repeat(3998)),
+    );
+    let source = format!(
+        r#"on init declare %data[16000] declare !names[4000]
+        declare $job declare $mode declare $seen declare $status declare $count declare $after end on
+        on pgs_changed
+            if ($mode = 0) $job := load_array_str(%data,"{numeric}")
+            else $job := load_array_str(!names,"{text}") end if
+            wait_async($job) $after := %data[0] $mode := 1
+        end on
+        on async_complete $seen := $NI_ASYNC_ID $status := $NI_ASYNC_EXIT_STATUS inc($count) end on"#
+    );
+    let compiled = script(&source);
+    let entry = compiled
+        .entries()
+        .iter()
+        .find(|e| e.kind == sampler_ksp::EntryKind::PgsChanged)
+        .unwrap()
+        .program;
+    let prepared = compiled
+        .bind(Prepared::new(48000, vec![], vec![], 0).unwrap())
+        .unwrap();
+    let limits = Limits::for_plan(&prepared, 8, 0);
+    let (mut rt, mut owner) = Runtime::with_plan_updates(prepared, limits, 2, 1).unwrap();
+    let old_plan = rt.active_plan();
+    let behavior = run(&mut rt, entry);
+    assert_eq!(rt.behavior_outcome(behavior), Ok(None));
+    let effect = effects(&mut rt).pop().unwrap();
+    let mut output = capture(&rt, &effect);
+    assert!(output.numbers().is_empty());
+    assert!(output.texts().is_empty());
+    output.perform().unwrap();
+    output.instance = ScriptInstanceId(1);
+    support::without_heap(|| {
+        assert_eq!(
+            rt.complete_array_file(old_plan, &mut output),
+            Err(Error::InvalidInput)
+        );
+    });
+    assert_eq!(cell(&rt, 0), 0);
+    assert_eq!(cell(&rt, 16004), 0);
+    output.instance = ScriptInstanceId(0);
+    complete(&mut rt, old_plan, &mut output);
+    assert_eq!(rt.behavior_outcome(behavior), Ok(Some(Outcome::Finished)));
+    assert_eq!(
+        (
+            cell(&rt, 0),
+            cell(&rt, 15999),
+            cell(&rt, 16002),
+            cell(&rt, 16003),
+            cell(&rt, 16004),
+            cell(&rt, 16005),
+        ),
+        (37, 99, effect.args[0], 1, 1, 37)
+    );
+    support::without_heap(|| {
+        assert_eq!(
+            rt.complete_array_file(old_plan, &mut output),
+            Err(Error::StaleHandle)
+        );
+    });
+    assert_eq!(cell(&rt, 16004), 1);
+
+    run(&mut rt, entry);
+    let cancelled = effects(&mut rt).pop().unwrap();
+    let mut stale = capture(&rt, &cancelled);
+    stale.perform().unwrap();
+    support::without_heap(|| rt.panic());
+    let waiting = run(&mut rt, entry);
+    let reused = effects(&mut rt).pop().unwrap();
+    assert_eq!(reused.args[0], cancelled.args[0] + 1);
+    support::without_heap(|| {
+        assert_eq!(
+            rt.complete_array_file(old_plan, &mut stale),
+            Err(Error::StaleHandle)
+        );
+        assert_eq!(
+            rt.capture_array_file(old_plan, &mut stale),
+            Err(Error::StaleHandle)
+        );
+    });
+    assert_eq!(cell(&rt, 16004), 1);
+    assert_eq!(rt.behavior_outcome(waiting), Ok(None));
+    assert_eq!(
+        rt.script_text(old_plan, ScriptInstanceId(0), 0)
+            .unwrap()
+            .as_str(),
+        ""
+    );
+    let mut output = capture(&rt, &reused);
+    output.perform().unwrap();
+    complete(&mut rt, old_plan, &mut output);
+    assert_eq!(rt.behavior_outcome(waiting), Ok(Some(Outcome::Finished)));
+    assert_eq!(
+        (cell(&rt, 16002), cell(&rt, 16003), cell(&rt, 16004)),
+        (reused.args[0], 1, 2)
+    );
+    assert_eq!(
+        rt.script_text(old_plan, ScriptInstanceId(0), 0)
+            .unwrap()
+            .as_str(),
+        "loaded"
+    );
+    assert_eq!(
+        rt.script_text(old_plan, ScriptInstanceId(0), 3999)
+            .unwrap()
+            .as_str(),
+        "tail"
+    );
+
+    let waiting = run(&mut rt, entry);
+    let effect = effects(&mut rt).pop().unwrap();
+    let mut output = capture(&rt, &effect);
+    output.perform().unwrap();
+    let new = script(&source)
+        .bind(Prepared::new(48000, vec![], vec![], 0).unwrap())
+        .unwrap();
+    let request = owner.submit(Box::new(new)).unwrap();
+    support::without_heap(|| assert_eq!(rt.poll_plan_update(), Ok(Some(request))));
+    let new_plan = rt.active_plan();
+    assert_ne!(old_plan, new_plan);
+    support::without_heap(|| {
+        assert_eq!(
+            rt.complete_array_file(new_plan, &mut output),
+            Err(Error::StaleHandle)
+        );
+        assert_eq!(
+            rt.capture_array_file(new_plan, &mut output),
+            Err(Error::StaleHandle)
+        );
+    });
+    complete(&mut rt, old_plan, &mut output);
+    assert_eq!(rt.behavior_outcome(waiting), Ok(Some(Outcome::Finished)));
+    assert_eq!(rt.script_cell(old_plan, ScriptInstanceId(0), 16004), Ok(3));
+    assert_eq!(rt.script_cell(new_plan, ScriptInstanceId(0), 0), Ok(0));
+    assert_eq!(rt.script_cell(new_plan, ScriptInstanceId(0), 16004), Ok(0));
+    assert_eq!(
+        rt.script_text(new_plan, ScriptInstanceId(0), 0)
+            .unwrap()
+            .as_str(),
+        ""
+    );
 }
 
 #[test]
