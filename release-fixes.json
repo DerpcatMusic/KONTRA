@@ -1781,9 +1781,10 @@
       "id": "ksp-search-range-safe",
       "summary": "KSP search evaluates its range safely",
       "source_commits": [
-        "7bd8ea4cb5fdf1a98785e9fb9c3bb880a6e58de6"
+        "7bd8ea4cb5fdf1a98785e9fb9c3bb880a6e58de6",
+        "956bccbc509a4c0e47812628e9ba8da6dd94f668"
       ],
-      "validation": "Commit 7bd8ea4c changes crates/sampler-ksp/tests/params.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "validation": "Commit 7bd8ea4c changes crates/sampler-ksp/tests/params.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures. Current range-safe lowering at 956bccbc509a4c0e47812628e9ba8da6dd94f668 also passed the 7971dcc4 combined array contract/neighbor gate; existing logical ID is retained without counting it again.",
       "accepted": true
     },
     {
@@ -4364,6 +4365,93 @@
       ],
       "validation": "Independent source review resolved the stale-index defect. Exact ff60de20eeae95fdd736f3b064325d1ef9f6a84c release build passed; all 101 selected runs passed with 593 pass invocations, zero failures, 48 ignored, all 293 mandatory tests passed, including remap schema and scripts-enabled production modulation witnesses. Native behavior and comparative performance remain unverified.",
       "accepted": true
+    },
+    {
+      "id": "ksp-array-equality-admission",
+      "summary": "Reject unsupported and unequal-length array equality before initialization or runtime lowering",
+      "source_commits": [
+        "956bccbc509a4c0e47812628e9ba8da6dd94f668"
+      ],
+      "accepted": true,
+      "validation": "Independent source review plus exact 7971dcc468bf44ef3b5d800128732176ef88ace5 combined release build and all 116 selected direct runs passed: 1077 pass invocations, zero failures, 79 ignored; all 359 required entries passed (358 unique identities). REGRESSION-VERDICT SHA256 e3f0cdad49dc0fbb3a46aa206c3c47c6a4e1457daa6350718c9fd7569561e8cc. Native parity and comparative performance remain unverified."
+    },
+    {
+      "id": "ksp-listener-signal-context-ranges",
+      "summary": "Validate listener registration context, supported signals and timer ranges without losing the previous period",
+      "source_commits": [
+        "2b69772c90c611a511bae8d1c9678836ffcb0a28"
+      ],
+      "accepted": true,
+      "validation": "Independent source review plus exact 7971dcc468bf44ef3b5d800128732176ef88ace5 combined release build and all 116 selected direct runs passed: 1077 pass invocations, zero failures, 79 ignored; all 359 required entries passed (358 unique identities). REGRESSION-VERDICT SHA256 e3f0cdad49dc0fbb3a46aa206c3c47c6a4e1457daa6350718c9fd7569561e8cc. Native parity and comparative performance remain unverified."
+    },
+    {
+      "id": "ksp-event-zone-highest-physical-id",
+      "summary": "Return the highest eligible physical source zone or minus one for a live event without a zone",
+      "source_commits": [
+        "570135a4c227dcc234e742d308abc5d1cf9e1ae5",
+        "4b3d0265e5ad4dfa5a318b516c45611ce4c18ed0",
+        "5dfdfa9327199820b84c34ddf68e2fda2673c366"
+      ],
+      "accepted": true,
+      "validation": "Independent source review plus exact 7971dcc468bf44ef3b5d800128732176ef88ace5 combined release build and all 116 selected direct runs passed: 1077 pass invocations, zero failures, 79 ignored; all 359 required entries passed (358 unique identities). REGRESSION-VERDICT SHA256 e3f0cdad49dc0fbb3a46aa206c3c47c6a4e1457daa6350718c9fd7569561e8cc. Native parity and comparative performance remain unverified."
+    },
+    {
+      "id": "ksp-real-sgn-single-evaluation",
+      "summary": "Evaluate real sgn operands once without narrowing or consuming extra random draws",
+      "source_commits": [
+        "fb607b3fed506782db83d5f374d4122ef9a45d1f"
+      ],
+      "accepted": true,
+      "validation": "Independent source review plus exact 7971dcc468bf44ef3b5d800128732176ef88ace5 combined release build and all 116 selected direct runs passed: 1077 pass invocations, zero failures, 79 ignored; all 359 required entries passed (358 unique identities). REGRESSION-VERDICT SHA256 e3f0cdad49dc0fbb3a46aa206c3c47c6a4e1457daa6350718c9fd7569561e8cc. Native parity and comparative performance remain unverified."
+    },
+    {
+      "id": "ksp-function-local-exit",
+      "summary": "Return from function-scoped exit while preserving callback completion and forwarding",
+      "source_commits": [
+        "ded9fddeeb1f1ddc29ddcddedd7e51b94c9765f7",
+        "f4bedf3b0ff77c267d8f6ebd30950f7f7d036889",
+        "34bd1580e35ceb34af0d52e92044874be62a8d3f"
+      ],
+      "accepted": true,
+      "validation": "Independent source review plus exact 7971dcc468bf44ef3b5d800128732176ef88ace5 combined release build and all 116 selected direct runs passed: 1077 pass invocations, zero failures, 79 ignored; all 359 required entries passed (358 unique identities). REGRESSION-VERDICT SHA256 e3f0cdad49dc0fbb3a46aa206c3c47c6a4e1457daa6350718c9fd7569561e8cc. Native parity and comparative performance remain unverified."
+    },
+    {
+      "id": "ksp-extended-display-supplied-value",
+      "summary": "Format the supplied extended-display value without aliasing its address operands",
+      "source_commits": [
+        "192bba39ad0661e0c942701ac92ff1b2aaa89b09",
+        "4b1ec82752c493f38ab7e3fc5e350439137cac00"
+      ],
+      "accepted": true,
+      "validation": "Independent source review plus exact 7971dcc468bf44ef3b5d800128732176ef88ace5 combined release build and all 116 selected direct runs passed: 1077 pass invocations, zero failures, 79 ignored; all 359 required entries passed (358 unique identities). REGRESSION-VERDICT SHA256 e3f0cdad49dc0fbb3a46aa206c3c47c6a4e1457daa6350718c9fd7569561e8cc. Native parity and comparative performance remain unverified."
+    },
+    {
+      "id": "kontakt-init-group-eq-band-gain",
+      "summary": "Apply initialization-only group EQ band gain writes to their validated physical bands",
+      "source_commits": [
+        "43fa5d26cadc1b08aa1892dcf7f7b8ca7867028d"
+      ],
+      "accepted": true,
+      "validation": "Independent source review plus exact 7971dcc468bf44ef3b5d800128732176ef88ace5 combined release build and all 116 selected direct runs passed: 1077 pass invocations, zero failures, 79 ignored; all 359 required entries passed (358 unique identities). REGRESSION-VERDICT SHA256 e3f0cdad49dc0fbb3a46aa206c3c47c6a4e1457daa6350718c9fd7569561e8cc. Native parity and comparative performance remain unverified."
+    },
+    {
+      "id": "nka-snapshot-payload-capacity",
+      "summary": "Reserve NKA snapshot jobs according to per-job payload so legal large arrays fit the bounded pool",
+      "source_commits": [
+        "42ebc8da805629294aa7882ea7c39349777c15bb"
+      ],
+      "accepted": true,
+      "validation": "Independent source review plus exact 7971dcc468bf44ef3b5d800128732176ef88ace5 combined release build and all 116 selected direct runs passed: 1077 pass invocations, zero failures, 79 ignored; all 359 required entries passed (358 unique identities). REGRESSION-VERDICT SHA256 e3f0cdad49dc0fbb3a46aa206c3c47c6a4e1457daa6350718c9fd7569561e8cc. Native parity and comparative performance remain unverified."
+    },
+    {
+      "id": "browser-independent-library-preset-search",
+      "summary": "Filter libraries independently of preset names and preserve selected-library folder browsing",
+      "source_commits": [
+        "d7f7abc8d81384601f2cffd8c17b42fe4b4949c0",
+        "514f9fcf87020ad2d88feae4a4121bb82d435003"
+      ],
+      "accepted": true,
+      "validation": "Independent source review plus exact 7971dcc468bf44ef3b5d800128732176ef88ace5 combined release build and all 116 selected direct runs passed: 1077 pass invocations, zero failures, 79 ignored; all 359 required entries passed (358 unique identities). REGRESSION-VERDICT SHA256 e3f0cdad49dc0fbb3a46aa206c3c47c6a4e1457daa6350718c9fd7569561e8cc. Native parity and comparative performance remain unverified."
     }
   ]
 }
