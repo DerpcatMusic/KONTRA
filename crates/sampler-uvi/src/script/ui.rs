@@ -260,7 +260,7 @@ impl ScriptHost {
             let mut wd = ui::Widget::new(
                 name.clone(),
                 ui::PageRef(0),
-                ui::Rect::new(x as i32, y as i32, wd as u32, ht as u32),
+                ui::Rect { x, y, width: wd, height: ht },
                 kind_ir,
             );
             wd.source_id = Some(index as i32 + 1);
@@ -516,25 +516,25 @@ impl ScriptHost {
             .iter()
             .enumerate()
             .map(|(i, _)| out.page_rect(ui::WidgetRef(i)))
-            .map(|r| r.x.saturating_add(r.width as i32).max(0) as u32)
-            .max()
-            .unwrap_or(720);
+            .map(|r| (r.x + r.width).max(0.))
+            .reduce(f64::max)
+            .unwrap_or(720.);
         let height = out
             .widgets
             .iter()
             .enumerate()
             .map(|(i, _)| out.page_rect(ui::WidgetRef(i)))
-            .map(|r| r.y.saturating_add(r.height as i32).max(0) as u32)
-            .max()
-            .unwrap_or(100);
+            .map(|r| (r.y + r.height).max(0.))
+            .reduce(f64::max)
+            .unwrap_or(100.);
         let background = text(&root, "background")
             .filter(|s| !s.is_empty())
             .map(|s| asset(&s, ui::AssetKind::Image(Default::default()), &mut out));
         out.pages.push(ui::Page {
             name: "main".into(),
             size: ui::Size {
-                width: num(&root, "width").unwrap_or(width as f64).max(1.) as u32,
-                height: num(&root, "height").unwrap_or(height as f64).max(1.) as u32,
+                width: num(&root, "width").unwrap_or(width).max(1.),
+                height: num(&root, "height").unwrap_or(height).max(1.),
             },
             background: ui::Background {
                 image: background,
