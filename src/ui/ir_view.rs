@@ -603,6 +603,12 @@ pub fn view_state(
         f64::from(height(face, page)) * scale,
     );
     let mut layers = Vec::new();
+    // Scene paint-copy guards do not cover the full palette. Keep the role
+    // in the tree, but invalidate when its effective fill changes.
+    let field_color = p.background.color.is_none().then(|| {
+        let c = ui.theme().palette.field();
+        [c.lightness(), c.chroma(), c.hue(), c.alpha()].map(f32::to_bits)
+    });
     layers.push(ui.memo(
         format!("{namespace}-ir-ground"),
         (
@@ -610,6 +616,7 @@ pub fn view_state(
             h.to_bits(),
             scale.to_bits(),
             p.background.color,
+            field_color,
             presentation == Presentation::Bitmap,
         ),
         |_| {
@@ -2255,6 +2262,52 @@ mod page_layout_tests {
         el.payload_mut().extras_mut().memo = None;
         for child in el.children_mut() {
             eager(child);
+        }
+    }
+
+    #[test]
+    fn ground_palette_step_only_change_matches_eager_pixels() {
+        for color in [None, Some(ir::Rgba::rgb(0x404040))] {
+            let mut face = face(ir::Source::Ksp { slot: 0 });
+            face.widgets.clear();
+            face.pages[0].background.color = color;
+            let assets = Assets::default();
+            let mut ui = super::super::theme::ui();
+            let mut input = InputState::default();
+            let mut values = Values::default();
+            let initial = ui.theme().clone();
+            let mut before = None;
+            for (tick, step) in [0.035, 0.035, 0.07, 0.07, 0.035].into_iter().enumerate() {
+                // Keep background, geometry, input and namespace fixed: only Field changes.
+                let mut theme = initial.clone();
+                theme.palette.step = step;
+                assert_eq!(theme.palette.background(), initial.palette.background());
+                if step != initial.palette.step {
+                    assert_ne!(theme.palette.field(), initial.palette.field());
+                }
+                ui.set_theme(theme.clone());
+                let root = view_state(&mut ui, "ground", &face, PageRef(0), &assets, Presentation::Vector, 1., &mut values, &mut input);
+                let changed = tick == 0 || color.is_none() && (tick == 2 || tick == 4);
+                assert_eq!(memo_misses(&root), usize::from(changed));
+
+                // Fresh Ui plus stripped memo markers: no retained construction or paint.
+                let mut plain = super::super::theme::ui();
+                plain.set_theme(theme);
+                let mut baseline = view_state(&mut plain, "ground", &face, PageRef(0), &assets, Presentation::Vector, 1., &mut Values::default(), &mut InputState::default());
+                eager(&mut baseline);
+                for (ui, root) in [(&mut ui, root), (&mut plain, baseline)] {
+                    ui.frame(root, Some(Size::new(100., 60.)), Input::default(), 1. / 60.).unwrap();
+                }
+                let pixels = super::super::tests::pixels(&ui, 100, 60);
+                assert_eq!(pixels, super::super::tests::pixels(&plain, 100, 60));
+                if tick == 0 {
+                    before = Some(pixels);
+                } else if (tick == 2 || tick == 3) && color.is_none() {
+                    assert_ne!(pixels, *before.as_ref().unwrap());
+                } else {
+                    assert_eq!(pixels, *before.as_ref().unwrap());
+                }
+            }
         }
     }
 
