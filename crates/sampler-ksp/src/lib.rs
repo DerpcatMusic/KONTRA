@@ -29,6 +29,7 @@ mod parser;
 pub mod scan;
 mod sema;
 pub mod ui;
+mod waveform;
 
 pub use diag::{Error, Kind};
 pub use eval::Environment;
@@ -284,6 +285,17 @@ impl ScriptView {
     pub fn apply_ui_effect(&mut self, effect: &sampler_core::Effect) -> bool {
         apply_ui_effect(&mut self.model, &self.services, &self.symbols, effect)
     }
+    /// Reject wrong plan/instance before projection. The caller must supply the
+    /// live plan admitted by its part/epoch fence; this is not an epoch oracle.
+    pub fn apply_ui_effect_for(
+        &mut self,
+        plan: sampler_core::PlanId,
+        instance: ScriptInstanceId,
+        effect: &sampler_core::Effect,
+    ) -> bool {
+        if effect.plan != plan || effect.instance != Some(instance) { return false; }
+        self.apply_ui_effect(effect)
+    }
     /// [`Script::ui`].
     pub fn ui(
         &self,
@@ -307,6 +319,29 @@ fn apply_ui_effect(
     };
     let arg = |i: usize| args.get(i).and_then(|&v| i32::try_from(v).ok());
     let text = || effect.text.as_ref().map(|t| t.as_str().to_string());
+    if matches!(service, "attach_zone" | "set_ui_wf_property") {
+        use sampler_core::waveform::Property;
+        let Some(id) = arg(0) else { return false; };
+        let Some(widget) = model.interface.widgets.iter().find(|w| {
+            w.ui_id == id && w.kind == model::WidgetKind::Waveform && !w.unresolved
+        }) else { return false; };
+        let name = widget.name.clone();
+        if effect.text.is_some() { return false; }
+        let request = if service == "attach_zone" {
+            if args.len() != 3 { return false; }
+            let (Some(zone), Some(flags)) = (arg(1).filter(|z| *z > 0), arg(2)) else { return false; };
+            model::Request { command: "attach_zone", args: vec![Value::Int(id), Value::Int(zone), Value::Int(flags)] }
+        } else {
+            if args.len() != 4 { return false; }
+            let (Some(property), Some(index), Some(value)) =
+                (arg(1).and_then(|p| eval::symbol_in(symbols, p)), arg(2), arg(3)) else { return false; };
+            let Some(p) = Property::from_name(&property) else { return false; };
+            if p.validate_index(index).is_err() || ui::waveform_requests(model, id, &name).is_none() { return false; }
+            model::Request { command: "set_ui_wf_property", args: vec![Value::Int(id), Value::Text(property),
+                Value::Int(index), Value::Int(p.value(index, value))] }
+        };
+        return waveform::project(model, &name, id, request);
+    }
     if let Some(rest) = service.strip_prefix("set_key_") {
         let Some(key) = arg(0).and_then(|k| model.interface.keys.get_mut(usize::try_from(k).ok()?))
         else {
@@ -1383,6 +1418,8 @@ fn compile_initialized_inner(
     let mut texts = init.texts.clone();
     texts.resize(texts.len() + unit.scratch as usize, String::new());
     let mut store = Vec::new();
+    waveform::seed(&hir, &init, &environment, &mut store)
+        .map_err(|_| error("waveform initial attachment has no admitted physical source"))?;
     let mut text_properties: Vec<_> = init
         .text_properties
         .iter()
