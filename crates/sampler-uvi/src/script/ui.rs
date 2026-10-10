@@ -700,6 +700,16 @@ impl ScriptHost {
             },
             ..Default::default()
         });
+        if let Err(error) = out.validate() {
+            let error = error.to_string();
+            self.shared.find("lua UI snapshot", &error);
+            return ui::Interface {
+                source: out.source,
+                paint_order: Some(Vec::new()),
+                unsupported: vec![ui::Unsupported { widget: None, feature: "lua UI snapshot".into(), value: error }],
+                ..Default::default()
+            };
+        }
         out
     }
 }
