@@ -82,7 +82,7 @@ use theme::*;
 pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
     let mut config = mui::diagnostics::Config::new("kontra", env!("CARGO_PKG_VERSION"));
     config.build = option_env!("APP_GIT_REVISION").unwrap_or("unknown").into();
-    config.mui_revision = "65ab5baa58143c2b78a734a380b5aad0b0bc34ef".into();
+    config.mui_revision = "dcf0796082feec053af1418e3a38a302ee61da0a".into();
     let reporter = mui::diagnostics::Reporter::start(config)
         .inspect_err(|error| eprintln!("KONTRA MUI reporting: {error}"))
         .ok();

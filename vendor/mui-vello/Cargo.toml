@@ -63,10 +63,6 @@ tokio = { version = "1", default-features = false, features = ["rt", "net", "tim
 # The joined resolver uses ureq's explicitly unversioned low-level API.
 ureq = { version = "=3.4.2", default-features = false, features = ["rustls"], optional = true }
 
-[target.'cfg(all(windows, not(target_arch = "aarch64"), target_env = "msvc"))'.dependencies]
-# Keep MUI's static DXC pin: newer mutable releases fail their build script.
-mach-dxcompiler-rs = { version = "=0.1.4", default-features = false }
-
 [[example]]
 name = "gpu_contract"
 required-features = ["gpu-effects"]
