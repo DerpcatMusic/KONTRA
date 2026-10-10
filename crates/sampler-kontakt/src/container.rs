@@ -6,7 +6,10 @@ use ni_file::{
     kontakt::KontaktChunks,
     nis::schema::{NISObject, PresetChunkItem, Repository},
 };
-use std::{io::Cursor, path::Path};
+use std::{
+    io::{Cursor, Read, Seek},
+    path::Path,
+};
 
 /// Programs and sample names in a Kontakt multi. Slot order is retained;
 /// translation and MIDI-channel routing belong to the IR frontend.
@@ -68,6 +71,9 @@ pub fn read_multi(path: &Path) -> Result<Multi, LoadError> {
             {
                 continue;
             }
+            if !zone.has_sample().map_err(error)? {
+                continue;
+            }
             let id = zone.filename_id().map_err(error)? as u32;
             let name = table.get(&id).ok_or_else(|| {
                 error(ni_file::Error::Static(
@@ -89,25 +95,94 @@ pub fn read_multi(path: &Path) -> Result<Multi, LoadError> {
 pub fn read_chunks(path: &Path) -> Result<KontaktChunks, LoadError> {
     let decode = |what, error| LoadError::decode(path, what, error);
     let mut file = std::fs::File::open(path).map_err(|e| LoadError::io(path, e))?;
-    if file.metadata().map_err(|e| LoadError::io(path, e))?.len() > 128 << 20 {
+    let mut magic = [0; 16];
+    file.read_exact(&mut magic)
+        .map_err(|e| LoadError::io(path, e))?;
+    file.rewind().map_err(|e| LoadError::io(path, e))?;
+    // The preset is bounded, not the sample section of a monolith.
+    if &magic != b"/\\ NI FC MTD  /\\"
+        && file.metadata().map_err(|e| LoadError::io(path, e))?.len() > 128 << 20
+    {
         return Err(LoadError::Invalid {
             path: path.into(),
             reason: "instrument exceeds 128 MiB".into(),
         });
     }
-    let bytes = match NIFile::read(&mut file).map_err(|e| decode("container", e))? {
-        NIFile::NKSContainer(nks) => nks
-            .decompressed_preset()
-            .map_err(|e| decode("NKS preset", e))?,
-        NIFile::NISoundContainer(nis) => nis_payload(nis, path, 0)?,
-        _ => {
-            return Err(LoadError::Invalid {
-                path: path.into(),
-                reason: "not an instrument container".into(),
-            });
-        }
-    };
+    let bytes = payload(&mut file, path, 0)?;
+    let _span = crate::audit::Span::new("ni_chunk_parse");
     KontaktChunks::read(Cursor::new(bytes)).map_err(|e| decode("Kontakt chunks", e))
+}
+
+fn payload<R: Read + Seek>(
+    reader: &mut R,
+    path: &Path,
+    depth: usize,
+) -> Result<Vec<u8>, LoadError> {
+    let decode = |what, error| LoadError::decode(path, what, error);
+    if depth > 3 {
+        return Err(decode(
+            "monolith preset",
+            ni_file::Error::Static("Too many nested FileContainers"),
+        ));
+    }
+    let span = crate::audit::Span::new("file_read_ni_container");
+    let container = NIFile::read(&mut *reader).map_err(|e| decode("container", e))?;
+    drop(span);
+    let _span = crate::audit::Span::new("decrypt_expand");
+    match container {
+        NIFile::NKSContainer(nks) => match &nks.header {
+            ni_file::kontakt::objects::BPatchHeader::BPatchHeaderV42(h) => {
+                // Reuse the checked FastLZ decoder used by borrowed NKS views.
+                crate::nks::expand(
+                    crate::Bytes {
+                        data: &nks.compressed_data,
+                        offset: 0,
+                    },
+                    h.decompressed_length as usize,
+                    128 << 20,
+                )
+                .map_err(|e| decode("NKS preset", ni_file::Error::Generic(e.to_string())))
+            }
+            _ => {
+                nks.decompressed_preset()
+                    .map_err(|e| decode("NKS XML", e))?;
+                Err(LoadError::Invalid {
+                    path: path.into(),
+                    reason: "legacy Kontakt XML requires an XML-to-IR translator".into(),
+                })
+            }
+        },
+        NIFile::NISoundContainer(nis) => nis_payload(nis, path, 0),
+        NIFile::Monolith(container) => {
+            let mut presets = container.items.iter().filter(|item| {
+                Path::new(&item.filename).extension().is_some_and(|e| {
+                    ["nki", "nkm", "nkb"]
+                        .iter()
+                        .any(|ext| e.eq_ignore_ascii_case(ext))
+                })
+            });
+            let preset = presets.next().ok_or_else(|| {
+                decode(
+                    "monolith preset",
+                    ni_file::Error::Static("FileContainer has no preset member"),
+                )
+            })?;
+            if presets.next().is_some() {
+                return Err(decode(
+                    "monolith preset",
+                    ni_file::Error::Static("FileContainer has multiple preset members"),
+                ));
+            }
+            let bytes = container
+                .read_member(reader, preset.index, 128 << 20)
+                .map_err(|e| decode("monolith preset member", e))?;
+            payload(&mut Cursor::new(bytes), path, depth + 1)
+        }
+        _ => Err(LoadError::Invalid {
+            path: path.into(),
+            reason: "not an instrument container".into(),
+        }),
+    }
 }
 
 fn nis_payload(

@@ -323,13 +323,24 @@ impl Runtime {
         if release_route {
             self.reserve_release_callbacks(note, release_entry);
         }
-        if routed {
-            self.begin_note_stages(note, entry);
-        } else if let Some(id) = defer {
+        if let Some(id) = defer {
             // Pending until the callback waits or ends, so it can still edit
             // the note's groups; `release` is recomputed then.
             let _ = release;
+            let n = self.notes.get_mut(note.0).unwrap();
+            n.work = n.work.checked_add(1).expect("bounded deferred attack pin");
+            assert!(self.deferred.len() < self.deferred.capacity());
             self.deferred.push((id, note, entry));
+            if routed {
+                let count = self.plans.get(plan.0).unwrap().prepared.stages[entry..]
+                    .iter()
+                    .filter(|stage| stage.note.is_some())
+                    .count();
+                self.behaviors.reserve(count);
+                self.note_events[note.0.index].pending_callbacks = count;
+            }
+        } else if routed {
+            self.begin_note_stages(note, entry);
         } else {
             self.commit_attack(note, release, snapshot, entry);
             let end = self.plans.get(plan.0).unwrap().prepared.stages.len();
@@ -414,6 +425,8 @@ impl Runtime {
         });
         if let Some(log) = &mut self.selection_log {
             log.push(crate::SelectionRecord {
+                event: n.order,
+                parent_event: None,
                 at: self.now,
                 key,
                 velocity: 0.,
@@ -602,13 +615,24 @@ impl Runtime {
             while let Some(c) = candidate {
                 if prepared.regions[c.region].take == choice.map(|c| c.take) {
                     let r = prepared.regions[c.region];
-                    let step = pitch.apply(prepared.step(c, note_pitch))?;
+                    let step = pitch.apply_source(
+                        prepared.step(c, note_pitch),
+                        r.cursor
+                            .cursor(&prepared.cursor_loops)
+                            .wavetable()
+                            .is_some(),
+                    )?;
                     let asset = &prepared.pcm[r.sample];
                     let cursor = r
                         .cursor
+                        .cursor(&prepared.cursor_loops)
                         .with_offset(offset_micros, asset.sample_rate())
                         .with_step(step);
-                    self.check_source_ready(asset, cursor, r.envelope)?;
+                    self.check_source_ready(
+                        asset,
+                        cursor,
+                        self.region_envelope(r.envelope, r.fallback_envelope),
+                    )?;
                     count += 1;
                 }
                 candidate = matching.next_in_groups(prepared, state, velocity, groups);
@@ -808,10 +832,15 @@ impl Runtime {
                     region: c.region,
                     group,
                     rejected: verdict,
+                    started: None,
                 }
             })
             .collect();
         crate::SelectionRecord {
+            event: n.order,
+            parent_event: n
+                .parent
+                .and_then(|id| self.notes.get(id.0).map(|n| n.order)),
             at: self.now,
             key,
             velocity,
@@ -908,13 +937,14 @@ impl Runtime {
                 let start = prepared
                     .voice_modulation
                     .start_offset(candidate.region, &inputs, seed);
+                let cursor = r.cursor.cursor(&prepared.cursor_loops);
                 let cursor = if trigger == Trigger::Attack {
-                    r.cursor.with_offset(
+                    cursor.with_offset(
                         self.note_events[note.0.index].source_offset_micros,
                         prepared.pcm[r.sample].sample_rate(),
                     )
                 } else {
-                    r.cursor
+                    cursor
                 };
                 let cursor = if start != 0 {
                     cursor.skip(start)
@@ -928,12 +958,11 @@ impl Runtime {
                     self.families.get_mut(family.0).unwrap().decision = decision;
                     family
                 });
-                let envelope = self
-                    .plans
-                    .get(plan.0)
-                    .unwrap()
-                    .script
-                    .envelope(group, r.envelope);
+                let envelope = self.controlled_envelope(
+                    plan,
+                    group,
+                    self.region_envelope(r.envelope, r.fallback_envelope),
+                );
                 let admitted = self.admit_voice(
                     family,
                     r.sample,
@@ -966,6 +995,21 @@ impl Runtime {
                     .get(candidate.region)
                     .copied()
                     .unwrap_or(candidate.region as u32 + 1);
+                if let Some(record) = self.selection_log.as_mut().and_then(|log| log.last_mut()) {
+                    if let Some(candidate) = record
+                        .candidates
+                        .iter_mut()
+                        .find(|c| c.region == candidate.region)
+                    {
+                        candidate.started = Some(crate::SelectedSource {
+                            zone: state.source_zone,
+                            sample: r.sample,
+                            frame: state.cursor.trace_position(),
+                            direction: state.cursor.trace_direction(),
+                            loops: state.cursor.trace_loops(),
+                        });
+                    }
+                }
                 if r.chain.is_some() {
                     self.plans.get_mut(plan.0).unwrap().dsp.reset(voice.0.index);
                 }

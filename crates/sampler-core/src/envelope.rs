@@ -21,7 +21,7 @@ impl EnvelopeCurve {
     }
 
     /// Normalized position at stage fraction `t` (0..=1).
-    pub(crate) fn value(self, t: f64) -> f64 {
+    pub fn value(self, t: f64) -> f64 {
         if self.0 == 0.0 {
             t
         } else if self.0.is_infinite() {
@@ -109,6 +109,20 @@ impl Default for Envelope {
 }
 
 impl Envelope {
+    pub(crate) fn trace_parameters(&self) -> [(&'static str, f64); 10] {
+        [
+            ("delay_frames", self.delay as f64),
+            ("attack_frames", self.attack as f64),
+            ("hold_frames", self.hold as f64),
+            ("decay_frames", self.decay as f64),
+            ("sustain", self.sustain as f64),
+            ("release_frames", self.release as f64),
+            ("one_shot", f64::from(self.one_shot)),
+            ("attack_curvature", self.curves[0].curvature),
+            ("decay_curvature", self.curves[1].curvature),
+            ("release_curvature", self.curves[2].curvature),
+        ]
+    }
     pub fn new(
         attack: u32,
         hold: u32,
@@ -146,6 +160,28 @@ impl Envelope {
     /// Ends by itself, whatever the gate and the source do.
     pub(super) fn finite(&self) -> bool {
         self.one_shot && self.hold != u32::MAX
+    }
+
+    pub(crate) fn control_value(self, stage: crate::EnvelopeStage) -> f64 {
+        use crate::EnvelopeStage as S;
+        match stage {
+            S::Attack => self.attack as f64,
+            S::Hold => self.hold as f64,
+            S::Decay => self.decay as f64,
+            S::Release => self.release as f64,
+            S::Sustain => self.sustain as f64,
+            S::AttackCurve => self.curves[0].curvature,
+        }
+    }
+    pub(crate) fn with_control(mut self, stage: crate::EnvelopeStage, value: f64) -> Self {
+        match stage {
+            crate::EnvelopeStage::Sustain => self.sustain = value.clamp(0., 1.) as f32,
+            crate::EnvelopeStage::AttackCurve => {
+                self.curves[0] = Curve::new(EnvelopeCurve(value), self.attack)
+            }
+            _ => self = self.with_stage(stage, value.round().clamp(0., u32::MAX as f64) as u32),
+        }
+        self
     }
 
     /// Replace one stage's frames (or Sustain's 0..=1000 level), keeping
@@ -229,6 +265,9 @@ pub(super) struct EnvelopeState {
 }
 
 impl EnvelopeState {
+    pub(crate) fn trace_parameters(&self) -> [f64; 10] {
+        self.shape.trace_parameters().map(|(_, v)| v)
+    }
     pub(super) fn new(shape: Envelope) -> Self {
         let mut state = Self {
             shape,
@@ -284,6 +323,8 @@ impl EnvelopeState {
     }
 
     fn level(&self) -> f32 {
+        #[cfg(test)]
+        LEVEL_READS.set(LEVEL_READS.get() + 1);
         let e = self.shape;
         let curved = self.curve().curvature != 0.0 || self.curve().step;
         let position = self.progress.clamp(0.0, 1.0);
@@ -317,6 +358,15 @@ impl EnvelopeState {
         }
     }
 
+    /// A note released before its storage onset enters release from sustain;
+    /// its source and release clock still wait for the first complete window.
+    pub(super) fn release_onset(&mut self) {
+        if !self.shape.one_shot && !matches!(self.phase, Phase::Release | Phase::Done) {
+            self.release_level = self.shape.sustain;
+            self.enter(Phase::Release);
+        }
+    }
+
     /// Capture any curved stage's next level, then apply a non-extending linear fade.
     pub(super) fn choke(&mut self, frames: u32) {
         if (self.shape.one_shot || matches!(self.phase, Phase::Release | Phase::Done))
@@ -334,6 +384,17 @@ impl EnvelopeState {
         matches!(self.phase, Phase::Release | Phase::Done)
     }
 
+    pub(super) fn editor_phase(&self) -> u8 {
+        match self.phase {
+            Phase::Attack => 0,
+            Phase::Hold => 1,
+            Phase::Decay => 2,
+            Phase::Sustain => 3,
+            Phase::Release => 4,
+            Phase::Delay => 5,
+            Phase::Done => 6,
+        }
+    }
     /// The level the next frame starts from.
     pub(super) fn current(&self) -> f32 {
         self.level()
@@ -377,22 +438,32 @@ impl EnvelopeState {
         None
     }
 
-    /// Level after `frames` more frames, as if `next` ran that many times.
-    /// Linear stages jump; curved stages still step per frame.
-    // ponytail: curved stages step per frame; jump with Curve::at if modulation envelopes get hot.
+    /// Port v1 voice.rs::Envelope::run(None): advance without discarded levels.
+    /// Keep v2's recurrence bits; a 64-frame anchor overwrites earlier steps.
     pub(super) fn advance(&mut self, mut frames: u32) -> f32 {
         while frames > 0 && !matches!(self.phase, Phase::Sustain | Phase::Done) {
-            if self.curve().curvature != 0.0 {
-                self.next();
-                frames -= 1;
-                continue;
-            }
             let step = frames.min(self.duration() - self.age);
-            self.age += step;
-            frames -= step;
-            if self.age == self.duration() {
-                self.enter(self.following());
+            let curve = self.curve();
+            if curve.curvature != 0.0 {
+                let target = self.age + step;
+                let anchor = target.min(self.duration() - 1) / 64 * 64;
+                if anchor > self.age {
+                    self.age = anchor;
+                    self.progress = curve.at(self.age, self.duration());
+                    self.delta = curve.delta
+                        * (curve.curvature * (f64::from(self.age) / f64::from(self.duration())))
+                            .exp();
+                }
+                for _ in self.age..target {
+                    self.step();
+                }
+            } else {
+                self.age += step;
+                if self.age == self.duration() {
+                    self.enter(self.following());
+                }
             }
+            frames -= step;
         }
         self.level()
     }
@@ -402,6 +473,11 @@ impl EnvelopeState {
         if matches!(self.phase, Phase::Sustain | Phase::Done) {
             return value;
         }
+        self.step();
+        value
+    }
+
+    fn step(&mut self) {
         self.age += 1; // Strictly below the u32 duration.
         if self.age == self.duration() {
             self.enter(self.following());
@@ -421,13 +497,73 @@ impl EnvelopeState {
                 }
             }
         }
-        value
     }
 }
 
 #[cfg(test)]
+thread_local! { static LEVEL_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skipped_curves_do_not_compute_discarded_frame_levels() {
+        let c = EnvelopeCurve::exponential(-4.).unwrap();
+        let shape = Envelope::new(48000, 0, 48000, 0.3, 48000)
+            .unwrap()
+            .with_curves(c, c, c);
+        let mut state = EnvelopeState::new(shape);
+        LEVEL_READS.set(0);
+        std::hint::black_box(state.advance(32));
+        assert_eq!(
+            LEVEL_READS.get(),
+            1,
+            "only the requested endpoint needs a level"
+        );
+    }
+
+    #[test]
+    fn skipped_envelopes_keep_scalar_output_and_state_bits() {
+        for curvature in [-32., -4., -1e-320, 0., 1e-320, 4., 32., f64::INFINITY] {
+            let c = if curvature.is_infinite() {
+                EnvelopeCurve::step()
+            } else {
+                EnvelopeCurve::exponential(curvature).unwrap()
+            };
+            for frames in [0, 1, 7, 31, 32, 63, 64, 65, 127, 256, 513] {
+                for off in [0, 17, 140, 260, 800] {
+                    for one_shot in [false, true] {
+                        let mut shape = Envelope::new(137, 5, 149, 0.25, 173)
+                            .unwrap()
+                            .with_delay(3)
+                            .with_curves(c, c, c);
+                        shape.one_shot = one_shot;
+                        let mut scalar = EnvelopeState::new(shape);
+                        let mut skip = scalar;
+                        for at in (0..1200).step_by(frames.max(1) as usize) {
+                            if at >= off {
+                                scalar.release();
+                                skip.release();
+                            }
+                            for _ in 0..frames {
+                                scalar.next();
+                            }
+                            assert_eq!(skip.advance(frames).to_bits(), scalar.current().to_bits());
+                            assert_eq!(skip.phase, scalar.phase);
+                            assert_eq!(skip.age, scalar.age);
+                            assert_eq!(skip.progress.to_bits(), scalar.progress.to_bits());
+                            assert_eq!(skip.delta.to_bits(), scalar.delta.to_bits());
+                            assert_eq!(
+                                skip.release_level.to_bits(),
+                                scalar.release_level.to_bits()
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn long_curves_keep_finite_monotone_endpoints_without_counter_overflow() {

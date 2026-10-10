@@ -156,6 +156,46 @@ builtins! {
     ResetKspTimer "reset_ksp_timer" [] 0 Void;
     SetListener "set_listener" [I I] 0 Void;
     ChangeListenerPar "change_listener_par" [I I] 0 Void;
+    // Instrument-wide MIDI-file object navigation.
+    MfGetFirst "mf_get_first" [I] 0 Void;
+    MfGetLast "mf_get_last" [I] 0 Void;
+    MfGetNext "mf_get_next" [I] 0 Void;
+    MfGetPrev "mf_get_prev" [I] 0 Void;
+    MfGetNextAt "mf_get_next_at" [I I] 0 Void;
+    MfGetPrevAt "mf_get_prev_at" [I I] 0 Void;
+    MfGetId "mf_get_id" [] 0 Int;
+    MfGetCommand "mf_get_command" [] 0 Int;
+    MfSetCommand "mf_set_command" [I] 0 Void;
+    MfGetByteOne "mf_get_byte_one" [] 0 Int;
+    MfSetByteOne "mf_set_byte_one" [I] 0 Void;
+    MfGetByteTwo "mf_get_byte_two" [] 0 Int;
+    MfSetByteTwo "mf_set_byte_two" [I] 0 Void;
+    MfGetChannel "mf_get_channel" [] 0 Int;
+    MfSetChannel "mf_set_channel" [I] 0 Void;
+    MfGetPos "mf_get_pos" [] 0 Int;
+    MfSetPos "mf_set_pos" [I] 0 Void;
+    MfGetLength "mf_get_length" [] 0 Int;
+    MfSetLength "mf_set_length" [I] 0 Void;
+    MfGetTrackIdx "mf_get_track_idx" [] 0 Int;
+    MfSetTrackIdx "mf_set_track_idx" [I] 0 Void;
+    MfGetEventPar "mf_get_event_par" [I I] 0 Int;
+    MfSetEventPar "mf_set_event_par" [I I I] 0 Void;
+    MfGetNumTracks "mf_get_num_tracks" [] 0 Int;
+    MfGetBufferSize "mf_get_buffer_size" [] 0 Int;
+    MfSetBufferSize "mf_set_buffer_size" [I] 0 Int;
+    MfInsertEvent "mf_insert_event" [I I I I I] 0 Int;
+    MfRemoveEvent "mf_remove_event" [I] 0 Void;
+    MfGetMark "mf_get_mark" [I I] 0 Int;
+    MfSetMark "mf_set_mark" [I I I] 0 Void;
+    MfSetExportArea "mf_set_export_area" [S I I I I] 0 Int;
+    MfSetNumExportAreas "mf_set_num_export_areas" [I] 0 Void;
+    MfCopyExportArea "mf_copy_export_area" [I] 0 Void;
+    MfReset "mf_reset" [] 0 Int;
+    MfInsertFile "mf_insert_file" [S I I I] 0 Int;
+    SaveMidiFile "save_midi_file" [S] 0 Int;
+    LoadMidiFile "load_midi_file" [S] 0 Int;
+    MfGetLastFilename "mf_get_last_filename" [] 0 Str;
+    ByTrack "by_track" [I] 0 Int;
     // Groups, zones, modules and engine parameters.
     FindGroup "find_group" [S] 0 Int;
     GetGroupIdx "get_group_idx" [S] 0 Int;
@@ -591,6 +631,26 @@ const VALUED: &[(&str, i32)] = &[
 
 /// Constants whose numeric value carries meaning.
 pub fn constant(name: &str) -> Option<i32> {
+    if let Some(value) = match name {
+        "$CURRENT_EVENT" => Some(sampler_core::MIDI_CURRENT_EVENT),
+        "$EVENT_PAR_MIDI_COMMAND" => Some(sampler_core::midi_par::COMMAND),
+        "$EVENT_PAR_MIDI_BYTE_1" => Some(sampler_core::midi_par::BYTE_ONE),
+        "$EVENT_PAR_MIDI_BYTE_2" => Some(sampler_core::midi_par::BYTE_TWO),
+        "$EVENT_PAR_POS" => Some(sampler_core::midi_par::POSITION),
+        "$EVENT_PAR_NOTE_LENGTH" => Some(sampler_core::midi_par::LENGTH),
+        "$EVENT_PAR_ID" => Some(sampler_core::midi_par::ID),
+        "$EVENT_PAR_TRACK_NR" => Some(sampler_core::midi_par::TRACK),
+        "$MIDI_COMMAND_NOTE_ON" => Some(144),
+        "$MIDI_COMMAND_NOTE_OFF" => Some(128),
+        "$MIDI_COMMAND_POLY_AT" => Some(160),
+        "$MIDI_COMMAND_CC" => Some(176),
+        "$MIDI_COMMAND_PROGRAM_CHANGE" => Some(192),
+        "$MIDI_COMMAND_MONO_AT" => Some(208),
+        "$MIDI_COMMAND_PITCH_BEND" => Some(224),
+        _ => None,
+    } {
+        return Some(value);
+    }
     if let Some(event) = sampler_core::WidgetEventType::ksp_constant(name) {
         return Some(event as i32);
     }
@@ -717,3 +777,48 @@ pub const CONTROL_PAR_NUM_ITEMS: i32 = SYMBOL_BASE + 15;
 pub const CONTROL_PAR_TYPE: i32 = SYMBOL_BASE + 21;
 pub const CONTROL_PAR_PICTURE: i32 = SYMBOL_BASE + 12;
 pub const CONTROL_PAR_PARENT_PANEL: i32 = SYMBOL_BASE + 28;
+
+impl Builtin {
+    pub(crate) fn midi(self) -> Option<sampler_core::MidiAction> {
+        use sampler_core::{MidiAction::*, midi_par};
+        Some(match self {
+            Self::MfGetFirst => First,
+            Self::MfGetLast => Last,
+            Self::MfGetNext => Next,
+            Self::MfGetPrev => Previous,
+            Self::MfGetNextAt => NextAt,
+            Self::MfGetPrevAt => PreviousAt,
+            Self::MfGetId => Id,
+            Self::MfGetCommand => Get(midi_par::COMMAND),
+            Self::MfSetCommand => Set(midi_par::COMMAND),
+            Self::MfGetByteOne => Get(midi_par::BYTE_ONE),
+            Self::MfSetByteOne => Set(midi_par::BYTE_ONE),
+            Self::MfGetByteTwo => Get(midi_par::BYTE_TWO),
+            Self::MfSetByteTwo => Set(midi_par::BYTE_TWO),
+            Self::MfGetChannel => Get(midi_par::CHANNEL),
+            Self::MfSetChannel => Set(midi_par::CHANNEL),
+            Self::MfGetPos => Get(midi_par::POSITION),
+            Self::MfSetPos => Set(midi_par::POSITION),
+            Self::MfGetLength => Get(midi_par::LENGTH),
+            Self::MfSetLength => Set(midi_par::LENGTH),
+            Self::MfGetTrackIdx => Get(midi_par::TRACK),
+            Self::MfSetTrackIdx => Set(midi_par::TRACK),
+            Self::MfGetEventPar => GetParameter,
+            Self::MfSetEventPar => SetParameter,
+            Self::MfGetNumTracks => Tracks,
+            Self::MfGetBufferSize => BufferSize,
+            Self::MfSetBufferSize => SetBufferSize,
+            Self::MfInsertEvent => Insert,
+            Self::MfRemoveEvent => Remove,
+            Self::MfGetMark => GetMark,
+            Self::MfSetMark => SetMark,
+            Self::MfSetExportArea => ExportArea,
+            Self::MfSetNumExportAreas => ExportCount,
+            Self::MfCopyExportArea => CopyExportArea,
+            Self::MfReset => Reset,
+            Self::MfInsertFile | Self::LoadMidiFile => InsertFile,
+            Self::SaveMidiFile => SaveFile,
+            _ => return None,
+        })
+    }
+}

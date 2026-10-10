@@ -142,9 +142,11 @@ host128 → slider153/ui33136, layer2 saved396933; host173 → slider185/ui33198
 global saved560434. Compressor switch tags occur at host117/123/168/174. These
 bindings run only when host automation arrives; saved MIDI learn does not explain
 an init/CC compressor change here. The normal script init/persistence engine writes
-are a separate W5 path; this inventory does not assign the observed+9dB difference
-a cause or propose a gain correction. Existing Areia40/48 and five **pending native
-vectors** gates remain unchanged; no new native audio parity measurement is claimed.
+are a separate W5 path. The subsequent reported static compressor probe supports
+compressor on/off as the approximately 9 dB difference; native full-grid switch
+state remains unknown. No gain correction is proposed. Existing Areia40/48 and
+five **pending native vectors** gates remain unchanged; no new native audio parity
+measurement is claimed.
 
 Follow-up validation: KSP lib5, selection/event26, automation4 and typed widgets7;
 core lib62, lower17, controllers11, note stages8, release4, release selection18,
@@ -164,3 +166,109 @@ these exact addresses against typed service admission and saved rack state.
 `Frame=[f32;2]`, for bounded peaks in memory. `frame_count`, `sample_rate` and
 `asset_id` supply length/rate/identity. Streamed assets can returnNone; the asset
 worker must service them separately, never invent an ordinal or silent waveform.
+
+## Analog reported static compressor diagnostic
+
+The reported metadata probe used the shared production Mix lowering with
+the saved static gfx compressor and existing output trim. The exact compressor
+address is group=-1, slot=1, generic=1, OUTPUT_GAIN=560434, bypass=0. At C4
+(key60), velocity64, CC1=100 and CC11=127, reported RMS was0.0932991;
+forced bypass produced0.0331272: about8.994 dB from the stated RMS values
+(the supplied receipt reported approximately8.9945 dB).
+`analog-static-compressor.tsv` retains these reported metrics; W7 did not perform
+this render. No synthetic init CC or importer state change was made.
+
+Verdict: this supports compressor on/off as the approximately9 dB fresh/cached
+level difference. It does not establish the native full-grid compressor switch
+state, which remains **unknown**, or complete native DSP parity. The saved
+controller-automation inventory contains no MIDI-CC bindings, so this evidence
+does not support a CC-binding explanation. No gain/default/bypass patch is justified
+from this single static diagnostic.
+
+## Lifecycle audit follow-up on W5 f040122b
+
+Merged W5 `f040122b`, including the production physical-envelope service fix,
+into `v2/fix-selection`. No service implementation was forked. Failing-first
+log `~/.cache/kontakto-w7/lifecycle-red.log` reproduced marked-note release,
+all-event release, and virtual pitch-bend admission failures (26 green, 3 red).
+
+Ported the selector rules from `0cb7a8a0:src/ksp/runtime.rs::targets`: a plain
+source ID, a union of marks, or `$ALL_EVENTS`. `KeyUpEvent` scans only notes in
+its owning plan and retains the existing delay, fixed-duration, release-stage,
+and pedal semantics. The bounded scan does not allocate; nested release
+callbacks remain queued until the instruction ends. Other builtins' multi-event
+selectors are outside this follow-up and retain their existing diagnostics.
+
+The existing controller event path now admits script virtual controllers128
+(pitch bend) and129 (mono pressure), including raw input, projected slot banks,
+consumption, generated next-slot writes, and immutable note snapshots. Copied
+v1's signed pitch units (-8192..8191) for `%CC[128]`, `$PITCH_BEND`, and
+`set_controller(128, value)`; pressure remains0..127. Full-resolution native
+values retain min/center/max. These script values are separate from native
+`PREVIOUS_KEY`/axis selectors128/129; a PCM regression proves neither aliases.
+Controller130 is rejected. Existing invalid-input fixtures now use130.
+
+Validation: core lib62; controller stages5, controllers12, lower21, native
+start2, note service2, release4, release selection18, source10. KSP lib5,
+automation4, controllers10, selection32, typed widgets9. Allocation-free
+contracts cover mark unions/zero masks, unmatched notes, original source IDs,
+virtual signed extrema, consumed input, next-slot generated writes, and
+snapshot retention. The original audit improves from37/43 to39/43: both W7
+cases pass; the remaining async IR, global UI callback, PGS init ordering,
+and MIDI-file buffer cases remain with W5. Logs are in
+`~/.cache/kontakto-w7/lifecycle-{core,core-integration,ksp,audit}.log`.
+Root `cargo test --no-run` passed; the compile receipt is
+`lifecycle-root-no-run.log`.
+
+The MIDI ingress/MPE pitch and pressure adapters currently update expressions
+directly; routing those inputs through script callbacks and enforcing consumed
+expression updates remains a W1 transport follow-up. W1 has the128/129 seam;
+this receipt establishes the Runtime dispatch path, not adapter parity.
+
+No Areia rerender was performed for this lifecycle change: the last measured
+family agreement remains40/48 in `areia-automation-family.tsv`, with the
+remaining key60 VFMp/VFM split deferred. All five native criteria/loop playback
+gates remain **pending native vectors**, as stated by RE branch
+[`re/w7-vectors-20261008@d773d214`](https://github.com/DerpcatMusic/KONTRA/tree/d773d214/docs/research/w7-native-20261008).
+The Analog static compressor witness and unknown native full-grid switch
+state caveat above are unchanged.
+
+## Vista deferred-attack lifetime follow-up
+
+W6's diagnostic-only [`fab0d5cf`](https://github.com/DerpcatMusic/KONTRA/blob/fab0d5cf/docs/audit-2026-10-08/W6_VISTA_649.md)
+isolates retirement on product `64919587`: normal64-frame output peaks at
+0.002848012838512659 with no key59 replay; holding only note-end retirement
+restores replay at576frames and peak0.10827232152223587. All36 callbacks finish
+in both cases. Authored envelope restoration leaves the failing output unchanged.
+These are W6's reported diagnostic measurements, not a new W7 render.
+
+The shared ownership defect is an uncommitted generated attack in
+`Runtime::deferred`. `select` queued it without work ownership, and
+`Duration::UntilSilent` allowed `flush_ended` to retire it before the preempted
+callback reached a wait or its end. `flush_deferred` then silently lost the stale
+note instead of committing its source selection. In-memory Vista source inspection
+finds14 note-callback `play_note` calls with literal duration0, which lowers to
+UntilSilent; no ENGINE_UPTIME/KSP_TIMER references were found. No authored script
+or library payload was exported. The earlier idle-clock hypothesis is unsupported
+for this source.
+
+v1 `0cb7a8a0:src/ksp/runtime.rs::Events::alloc` only reclaims sample-length
+events after `at_engine` is true. Its protection of queued unmapped attacks is
+adapted to v2's existing work counters: a deferred attack owns one work pin until
+commit, and the existing abort cleanup returns that pin when discarding an
+uncommitted attack. The normal host NOTE_END drain stays enabled. No new queue,
+global retention policy, block-fuel change, KEY_DOWN change or DSP change is added.
+
+Failing-first receipt: `~/.cache/kontakto-w7/vista-deferred-before.log` loses the
+source alias at host retirement. The fixed regression retains the exact child,
+renders synthetic PCM0.25 in both channels on resume, and reclaims it after EOF.
+Cancel/panic tests reuse a three-note pool four times without sounding discarded
+attacks; a fault regression preserves the existing commit-before-fault behavior.
+All execute under the existing allocation/deallocation guard. `event_ids` passes
+12/12 (`vista-deferred-event-ids.log`). Area no-run receipt is
+`vista-deferred-core-no-run.log`.
+
+Vista production witness rerun and the unchanged original CPU matrix remain
+pending; CPU acceptance stays **HOLD**. The fix is a shared lifecycle repair,
+not a claim of native audio parity or CPU improvement. Do not merge W6's
+diagnostic branch as the production fix.

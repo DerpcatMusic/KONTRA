@@ -9,6 +9,9 @@ use std::path::{Path, PathBuf};
 #[path = "../../sampler-native/tests/support/reference.rs"]
 mod reference;
 
+#[path = "../../sampler-core/tests/support/mod.rs"]
+mod heap;
+
 fn roots() -> Vec<PathBuf> {
     if let Some(paths) = std::env::var_os("KONTRA_KONTAKT_LIBRARIES") {
         return std::env::split_paths(&paths).collect();
@@ -105,6 +108,7 @@ fn render(
 }
 
 #[test]
+#[cfg(feature = "library-access")]
 fn una_corda_pure_renders_from_its_encrypted_monolith() {
     let Some((ir, peak)) = render("Una Corda Library/Instruments/Una Corda Pure.nki", 60..=60)
     else {
@@ -131,6 +135,24 @@ fn una_corda_pure_renders_from_its_encrypted_monolith() {
     used.sort();
     assert_eq!(used, [0, 1]);
     assert_eq!(ir.voice_limit.map(|l| l.voices), Some(240));
+    let authored = ir.kontakt_objects.as_ref().unwrap();
+    let voices = authored.voice_groups.as_ref().unwrap();
+    assert_eq!(voices.program.max_num_voices, 240);
+    assert_eq!(voices.groups.len(), 128);
+    assert_eq!(voices.groups.iter().flatten().count(), 2);
+    for slot in 0..2 {
+        let limit = voices.groups[slot].as_ref().unwrap();
+        assert_eq!((limit.max_num_voices, limit.ms_fade_time), (20, 50));
+    }
+    assert!(authored.groups.iter().any(|g| g.voice_group_index == 1));
+    assert!(authored.groups.iter().any(|g| g.voice_group_index == 2));
+    assert!(authored.zones.len() >= ir.zones.len());
+    println!(
+        "Una Corda: authored_groups={} authored_zones={} active_zones={} peak={peak}",
+        authored.groups.len(),
+        authored.zones.len(),
+        ir.zones.len()
+    );
     assert!(peak > 0.01, "audible: peak {peak}");
 }
 
@@ -156,8 +178,10 @@ fn actual_una_corda_alternating_slots_match_independently_unrolled_pcm() {
                     return None;
                 };
                 let active: Vec<_> = slots.iter().flatten().copied().collect();
-                (active.len() == 1 && active[0].range.alternating
-                    && active[0].range.start == 33761 && active[0].range.end == 462673)
+                (active.len() == 1
+                    && active[0].range.alternating
+                    && active[0].range.start == 33761
+                    && active[0].range.end == 462673)
                     .then(|| (i, z.clone(), active[0]))
             })
             .unwrap();
@@ -251,6 +275,7 @@ fn actual_una_corda_alternating_slots_match_independently_unrolled_pcm() {
 }
 
 #[test]
+#[cfg(feature = "library-access")]
 fn conflux_renders_its_tracked_zones_within_the_runtime_pitch_range() {
     let Some((ir, peak)) = render(
         "Conflux 1.1.0 [Native Instruments]/Instruments/Conflux.nki",
@@ -261,7 +286,11 @@ fn conflux_renders_its_tracked_zones_within_the_runtime_pitch_range() {
     assert!(
         ir.unsupported
             .iter()
-            .any(|u| u.feature == "wavetable source")
+            .all(|u| u.feature != "wavetable source")
+    );
+    assert_eq!(
+        ir.groups.iter().filter(|g| g.wavetable.is_some()).count(),
+        1
     );
     assert!(peak > 0.01, "audible: peak {peak}");
 }
@@ -285,7 +314,7 @@ fn conflux_admits_all_257_saved_values_including_13_string_arrays() {
         .collect();
     assert_eq!(raw.len(), 257);
     assert_eq!(raw.iter().filter(|s| s.starts_with('!')).count(), 13);
-    let translated = sampler_kontakt::read(&path).unwrap();
+    let mut translated = sampler_kontakt::read(&path).unwrap();
     let saved: Vec<_> = translated
         .instrument
         .behaviors
@@ -307,6 +336,237 @@ fn conflux_admits_all_257_saved_values_including_13_string_arrays() {
             "saved value was not admitted"
         );
     }
+    // Use the production compiler and capture the actual native text banks.
+    #[cfg(feature = "scan")]
+    sampler_ksp::scan::begin();
+    let (scripts, _, _) = sampler_kontakt::compile_ui(
+        &mut translated.instrument,
+        &sampler_kontakt::Options {
+            library: Some(path),
+            mpe: None,
+            ..Default::default()
+        },
+    );
+    println!(
+        "CONFLUX_NATIVE scripts={} persistent={} text_arrays={}",
+        scripts.len(),
+        scripts
+            .iter()
+            .map(|s| s.model().persistent.len())
+            .sum::<usize>(),
+        scripts
+            .iter()
+            .map(|s| s
+                .model()
+                .persistent
+                .iter()
+                .filter(|p| p.name.starts_with('!'))
+                .count())
+            .sum::<usize>()
+    );
+    #[cfg(feature = "scan")]
+    for observation in sampler_ksp::scan::take() {
+        println!("CONFLUX_SCRIPT_PHASE {observation:?}");
+    }
+    let views: Vec<_> = scripts.iter().map(|s| s.view()).collect();
+    let mut capture = sampler_ksp::persistent_state_buffer(&views).unwrap();
+    let plan = sampler_ksp::bind_modules(
+        scripts,
+        sampler_core::Prepared::new(48000, vec![], vec![], 0).unwrap(),
+    )
+    .unwrap();
+    let limits = Limits::for_plan(&plan, 4, 4);
+    let runtime = Runtime::new(plan, limits).unwrap();
+    runtime
+        .capture_script_state(runtime.active_plan(), &mut capture)
+        .unwrap();
+    let mut restored = 0;
+    for (instance, view) in views.iter().enumerate() {
+        let behavior = translated
+            .instrument
+            .behaviors
+            .iter()
+            .find(|b| b.slot.unwrap_or(0) == view.slot())
+            .unwrap();
+        for persistent in view
+            .model()
+            .persistent
+            .iter()
+            .filter(|p| p.name.starts_with('!'))
+        {
+            let sampler_ksp::model::Location::Texts { offset, len } = persistent.location else {
+                panic!("text array needs native text storage")
+            };
+            let Some(sampler_ir::Saved::Texts(expected)) = behavior
+                .state
+                .iter()
+                .find(|(name, _)| name == &persistent.name)
+                .map(|(_, v)| v)
+            else {
+                panic!("saved text array missing")
+            };
+            for (index, text) in expected.iter().take(len as usize).enumerate() {
+                let address = sampler_core::ScriptStateAddress::Text {
+                    instance: sampler_core::ScriptInstanceId(instance as u16),
+                    index: offset + index as u32,
+                };
+                let value = capture
+                    .values
+                    .iter()
+                    .find(|v| v.address == address)
+                    .unwrap()
+                    .value;
+                assert!(
+                    value
+                        == sampler_core::ScriptStateValue::Text(
+                            sampler_core::Text::try_new(text).unwrap()
+                        ),
+                    "authored text array must reach native storage"
+                );
+            }
+            restored += 1;
+        }
+    }
+    assert_eq!(
+        restored, 13,
+        "all saved string arrays restored into native banks"
+    );
+}
+
+#[test]
+fn dolce_init_getter_feedback_preserves_authored_envelope_lanes() {
+    let Some(path) = find(
+        "Audio Imperia Dolce/Instruments/01 7 1st Violins/Dolce - 03 7 1st Violins - Sustained Con Sordino.nki",
+    ) else {
+        return;
+    };
+    let streamed = sampler_kontakt::load_streamed(
+        &path,
+        &sampler_kontakt::Options {
+            keys: 60..=60,
+            mpe: None,
+            ..Default::default()
+        },
+        &Default::default(),
+        |_| {},
+    )
+    .unwrap_or_else(|_| panic!("production load failed; authored diagnostics omitted"));
+    let plan = streamed.loaded.plan;
+    let addresses: Vec<_> = plan
+        .engine_parameter_bindings()
+        .iter()
+        .filter(|binding| {
+            binding.address.slot == 1
+                && [
+                    "$ENGINE_PAR_ATTACK",
+                    "$ENGINE_PAR_RELEASE",
+                    "$ENGINE_PAR_SUSTAIN",
+                ]
+                .contains(&sampler_core::engine_parameter_name(binding.address.parameter).unwrap())
+        })
+        .map(|binding| {
+            (
+                binding.address,
+                binding.law.encode(
+                    match plan
+                        .controls()
+                        .iter()
+                        .find(|control| control.id == binding.control)
+                        .unwrap()
+                        .default
+                    {
+                        sampler_core::ControlValue::Real(value) => value,
+                        _ => panic!("envelope lane requires a native real value"),
+                    },
+                ),
+            )
+        })
+        .collect();
+    assert!(
+        !addresses.is_empty(),
+        "physical envelope bindings must be installed"
+    );
+    let limits = Limits::for_plan(&plan, 128, 16);
+    let mut runtime = Runtime::new(plan, limits).unwrap();
+    for (address, authored) in &addresses {
+        assert!(*authored > 0);
+        assert!(
+            (runtime.engine_parameter(*address).unwrap() - authored).abs() <= 1,
+            "init getter feedback must retain authored envelope at physical group {} slot {} parameter {}",
+            address.group,
+            address.slot,
+            address.parameter
+        );
+    }
+    println!("DOLCE_AUTHORED_ENVELOPE retained_lanes={}", addresses.len());
+}
+
+#[test]
+fn streamed_real_instrument_installs_physical_engine_bindings_and_lookups() {
+    let Some(path) = find("Una Corda Library/Instruments/Una Corda Pure.nki") else {
+        return;
+    };
+    let streamed = sampler_kontakt::load_streamed(
+        &path,
+        &sampler_kontakt::Options {
+            keys: 60..=60,
+            mpe: None,
+            ..Default::default()
+        },
+        &Default::default(),
+        |_| {},
+    )
+    .unwrap();
+    let loaded = streamed.loaded;
+    let bindings = loaded.plan.engine_parameter_bindings();
+    assert!(
+        !bindings.is_empty(),
+        "production preparation needs authored native lanes"
+    );
+    assert!(
+        !loaded.plan.engine_lookups().is_empty(),
+        "production needs physical names"
+    );
+    for binding in bindings {
+        assert!(
+            loaded
+                .instrument
+                .source_indices
+                .modulators
+                .iter()
+                .any(|source| source.group as i32 == binding.address.group
+                    && source.slot as i32 == binding.address.slot
+                    && source.runtime.is_some()
+                    && !source.external)
+        );
+        assert!(
+            loaded
+                .plan
+                .controls()
+                .iter()
+                .any(|control| control.id == binding.control)
+        );
+    }
+    let attack = bindings
+        .iter()
+        .find(|b| {
+            sampler_core::engine_parameter_name(b.address.parameter) == Some("$ENGINE_PAR_ATTACK")
+        })
+        .unwrap()
+        .address;
+    let plan = loaded.plan;
+    let limits = Limits::for_plan(&plan, 16, 16);
+    let mut runtime = Runtime::new(plan, limits).unwrap();
+    runtime.set_engine_parameter(attack, 200809).unwrap();
+    assert!((runtime.engine_parameter(attack).unwrap() - 200809).abs() <= 1);
+    println!(
+        "PRODUCTION_ENGINE_BINDINGS controls={} lookups={}",
+        runtime
+            .control_definitions(runtime.active_plan())
+            .unwrap()
+            .len(),
+        loaded.instrument.source_indices.engine_lookups.len()
+    );
 }
 
 #[test]
@@ -330,6 +590,7 @@ fn vista_cellos_render_from_loose_ncw_samples() {
     // -38.6 dBFS (KONTAKT_REFERENCE.md s.13; the older -45.0 is a (L+R)/2
     // mono mix). KONTRA measures +0.9 dB; the open residual is under 1 dB.
     let db = reference::levels(&out, 0.3, 3.0).max_peak();
+    println!("Vista: max_channel_peak_dbfs={db:.3} native_reference_dbfs=-38.6");
     assert!(
         (db + 38.6).abs() < 1.0,
         "{db:.1} dBFS max-channel peak against Kontakt's -38.6"
@@ -583,6 +844,967 @@ fn afflatus_remaps_to_every_driver() {
                 "{driver:?} {}",
                 a.name
             );
+        }
+    }
+}
+
+/// W8's embedded-NKM witness: script init must preserve audible program 1.
+#[test]
+fn big_screen_embedded_program_one_remains_audible_after_script_init() {
+    let Some(path) = find("Conflux 1.1.0 [Native Instruments]/Multis/Big Screen.nkm") else {
+        return;
+    };
+    let translated = sampler_kontakt::read_program(&path, 1).unwrap();
+    let options = sampler_kontakt::Options {
+        keys: 60..=64,
+        library: Some(path),
+        mpe: None,
+        ..Default::default()
+    };
+    let loaded = sampler_kontakt::load_read(translated, &options, |_| {}, || false).unwrap();
+    assert!(!loaded.scripts.is_empty(), "embedded scripts must bind");
+    assert!(!loaded.plan.engine_parameter_bindings().is_empty());
+    assert!(!loaded.plan.engine_lookups().is_empty());
+    let mut limits = Limits::for_plan(&loaded.plan, 32, 256);
+    limits.behaviors = limits.behaviors.max(256);
+    limits.behavior_cells = limits.behaviors * loaded.plan.behavior_local_count();
+    let mut runtime = Runtime::new(loaded.plan, limits).unwrap();
+    let performance = runtime.performance(0).unwrap();
+    let origin = sampler_core::ChannelAddress {
+        protocol: Protocol::Native,
+        port: 0,
+        group: 0,
+        channel: 0,
+    };
+    for (cc, value) in [(1u8, 100u8), (11, 127)] {
+        runtime
+            .dispatch_controller(
+                performance,
+                origin,
+                1,
+                cc,
+                ((u64::from(value) * u64::from(u32::MAX)) / 127) as u32,
+            )
+            .unwrap();
+    }
+    for key in [60, 64] {
+        runtime.trigger(input(key), key, 100.0 / 127.0).unwrap();
+    }
+    let mut peak = 0.0f32;
+    let mut output = [[0.0; 2]; 128];
+    for _ in 0..188 {
+        runtime.render(&mut output).unwrap();
+        peak = output.iter().flatten().fold(peak, |p, x| p.max(x.abs()));
+        runtime.flush_behaviors(|_, _, _| true);
+    }
+    println!("BIG_SCREEN_PROGRAM_1 peak={peak:.8}");
+    assert!(
+        peak.is_finite() && peak > 1e-5,
+        "authored init must preserve audible output"
+    );
+}
+
+#[test]
+#[ignore = "requires installed Morphology; run through kontakto-heavy"]
+fn w15_authored_pan_offline_ab_changes_channel_balance() {
+    use sampler_ir as ir;
+    let Some(path) = find("Morphology Evolved [Zero-G] rutracker.org/Morphology Evolved.nki")
+    else {
+        return;
+    };
+    let render = |enabled| {
+        let library = sampler_kontakt::read(&path).unwrap();
+        let (zone, route) = library
+            .instrument
+            .zones
+            .iter()
+            .find_map(|z| {
+                z.routes.iter().find_map(|r| {
+                    let route = library.instrument.routes[r.0];
+                    (route.target == ir::Target::Pan
+                        && matches!(route.depth, ir::Depth::Normalized(d) if d.abs() > 0.01)
+                        && matches!(
+                            library.instrument.modulators[route.source.0].source,
+                            ir::ModulationSource::Envelope(_)
+                        ))
+                    .then(|| (z.clone(), *r))
+                })
+            })
+            .expect("gate item must retain its authored AHDSR -> Pan route");
+        let mut isolated = zone;
+        isolated.routes = if enabled { vec![route] } else { vec![] };
+        isolated.chain = None;
+        reference::levels(&w15_render_one_authored_zone(library, isolated), 0.1, 0.45)
+    };
+    let dry = render(false);
+    let wet = render(true);
+    let balance_delta = (wet.rms[1] - wet.rms[0]) - (dry.rms[1] - dry.rms[0]);
+    println!(
+        "W15 pan dry_rms={:?} wet_rms={:?} balance_delta_db={balance_delta}",
+        dry.rms, wet.rms
+    );
+    assert!(dry.max_peak() > -80. && wet.max_peak() > -80.);
+    assert!(
+        balance_delta.abs() > 0.05,
+        "the retained route must reach actual audio"
+    );
+}
+
+fn w15_render_one_authored_zone(
+    mut library: sampler_kontakt::Kontakt,
+    mut zone: sampler_ir::Zone,
+) -> Vec<[f32; 2]> {
+    use sampler_ir as ir;
+    let native_filter = zone.chain.is_some_and(|c| {
+        library.instrument.chains[c.0]
+            .pre_amplitude
+            .iter()
+            .chain(&library.instrument.chains[c.0].post_amplitude)
+            .any(|p| matches!(p, ir::Processor::LadderLP4(_) | ir::Processor::Daft(_)))
+    });
+    let key = 60u8.clamp(zone.keys.low, zone.keys.high);
+    zone.selection = None;
+    zone.articulation = None;
+    zone.axes.clear();
+    zone.conditions.clear();
+    zone.trigger = ir::Trigger::Attack;
+    zone.velocities = ir::VelocityRange { low: 0, high: 127 };
+    let original = &library.instrument;
+    let mut modulators = Vec::new();
+    let mut routes = Vec::new();
+    for route in &mut zone.routes {
+        let mut r = original.routes[route.0];
+        if let ir::Target::Processor { chain, .. } = &mut r.target {
+            *chain = ir::ChainRef(0);
+        }
+        modulators.push(original.modulators[r.source.0].clone());
+        r.source = ir::ModulatorRef(modulators.len() - 1);
+        if let Some(scale) = &mut r.scale {
+            modulators.push(original.modulators[scale.source.0].clone());
+            scale.source = ir::ModulatorRef(modulators.len() - 1);
+        }
+        *route = ir::RouteRef(routes.len());
+        routes.push(r);
+    }
+    if let Some(amplitude) = &mut zone.amplitude {
+        modulators.push(original.modulators[amplitude.0].clone());
+        *amplitude = ir::ModulatorRef(modulators.len() - 1);
+    }
+    let chains = zone
+        .chain
+        .map(|chain| {
+            zone.chain = Some(ir::ChainRef(0));
+            original.chains[chain.0].clone()
+        })
+        .into_iter()
+        .collect();
+    let groups = zone
+        .group
+        .map(|group| {
+            let mut g = original.groups[group.0].clone();
+            zone.group = Some(ir::GroupRef(0));
+            g.chain = None;
+            g.start.clear();
+            g.tap = None;
+            g.output = ir::Output::Master;
+            g.sends.clear();
+            g.voice_limit = None;
+            g
+        })
+        .into_iter()
+        .collect();
+    library.instrument = ir::Instrument {
+        name: original.name.clone(),
+        assets: original.assets.clone(),
+        shapes: original.shapes.clone(),
+        zones: vec![zone],
+        groups,
+        chains,
+        routes,
+        modulators,
+        ..Default::default()
+    };
+    let loaded = sampler_kontakt::load_read(
+        library,
+        &sampler_kontakt::Options {
+            keys: key..=key,
+            scripts: false,
+            mpe: None,
+            ..Default::default()
+        },
+        |_| {},
+        || false,
+    )
+    .unwrap();
+    assert!(
+        loaded.plan.region_count() > 0,
+        "authored gate zone was dropped before rendering: {:?}",
+        loaded.instrument.unsupported
+    );
+    let fitted = loaded.instrument.zones[0].keys;
+    let key = key.clamp(fitted.low, fitted.high);
+    let plan = if native_filter {
+        loaded.plan.with_signal_trace(8192).unwrap()
+    } else {
+        loaded.plan
+    };
+    let mut rt = Runtime::new(plan, limits()).unwrap();
+    rt.trigger(input(key), key, 1.).unwrap();
+    if native_filter {
+        assert!(
+            rt.voice_count() > 0,
+            "native witness not admitted: {:?}, fitted_keys={fitted:?} key={key}",
+            rt.take_silent_note()
+        );
+    }
+    let mut out = vec![[0.; 2]; 24_000];
+    heap::without_heap(|| rt.render(&mut out).unwrap());
+    if native_filter && out.iter().flatten().all(|v| *v == 0.) {
+        let reader = rt.signal_trace_reader().unwrap();
+        let rows = reader.drain();
+        println!(
+            "W15 silent witness graph_nodes={} rows={} voices={}",
+            reader.graph.nodes.len(),
+            rows.len(),
+            rt.voice_count()
+        );
+        let mut seen = std::collections::BTreeSet::new();
+        for row in rows.into_iter().filter(|r| seen.insert(r.node)) {
+            let node = &reader.graph.nodes[row.node];
+            println!(
+                "W15 silent witness node={} processor={} input_rms={:?} output_rms={:?} gain={:?} region_gain={} envelope={}",
+                node.kind,
+                node.processor,
+                row.input.rms,
+                row.output.rms,
+                row.gain,
+                row.identity.region_gain,
+                row.identity.envelope_level
+            );
+        }
+    }
+    out
+}
+
+#[test]
+#[ignore = "requires installed Vista Harp; run through kontakto-heavy"]
+fn vista_legacy_lowpass_filters_the_authored_damping_release() {
+    use sampler_ir as ir;
+    let path = find("Performance Samples Vista/Instruments/Bonus/Vista - Harp.nki")
+        .expect("installed Vista Harp is required for this witness");
+    let render = |enabled, modulated| {
+        let mut library = sampler_kontakt::read(&path).unwrap();
+        assert!(
+            !library.instrument.unsupported.iter().any(|u| matches!(
+                u.feature.as_str(),
+                "Filter: filter type" | "effect" | "modulation of a module parameter"
+            )),
+            "Vista's four filter/effect/route omissions must all be closed"
+        );
+        for group in [8, 9, 18, 19] {
+            let zone = library
+                .instrument
+                .zones
+                .iter()
+                .find(|z| z.group == Some(ir::GroupRef(group)))
+                .unwrap();
+            let chain = &library.instrument.chains[zone.chain.expect("legacy slot must survive").0];
+            assert!(
+                chain
+                    .pre_amplitude
+                    .iter()
+                    .chain(&chain.post_amplitude)
+                    .any(|p| matches!(
+                        p,
+                        ir::Processor::Filter(ir::Filter {
+                            kind: ir::FilterKind::LowPass { poles: 2 },
+                            ..
+                        })
+                    ))
+            );
+            assert!(zone.routes.iter().map(|r| library.instrument.routes[r.0]).any(|r|
+                matches!(r.target, ir::Target::Processor { parameter: ir::ProcessorParameter::Cutoff, .. })
+                    && matches!(r.depth, ir::Depth::Pitch(p) if (p.semitones() - 12. * 8.96).abs() < 1e-6)),
+                "the full-depth release envelope must use v1's cutoff knob span");
+        }
+        let mut zone = library
+            .instrument
+            .zones
+            .iter()
+            .find(|z| z.group == Some(ir::GroupRef(8)) && z.keys.low <= 60 && z.keys.high >= 60)
+            .expect("middle-C damping release")
+            .clone();
+        let chain = &library.instrument.chains[zone.chain.unwrap().0];
+        let filters = chain
+            .pre_amplitude
+            .iter()
+            .chain(&chain.post_amplitude)
+            .filter(|p| {
+                matches!(
+                    p,
+                    ir::Processor::Filter(ir::Filter {
+                        kind: ir::FilterKind::LowPass { poles: 2 },
+                        ..
+                    })
+                )
+            })
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(filters.len(), 1);
+        // Isolate this authored release sample and its saved slot, with no script/selection variation.
+        zone.routes.retain(|r| {
+            modulated
+                && matches!(
+                    library.instrument.routes[r.0].target,
+                    ir::Target::Processor {
+                        parameter: ir::ProcessorParameter::Cutoff,
+                        ..
+                    }
+                )
+        });
+        let new_chain = ir::ChainRef(library.instrument.chains.len());
+        for route in &zone.routes {
+            library.instrument.routes[route.0].target = ir::Target::Processor {
+                chain: new_chain,
+                index: 0,
+                parameter: ir::ProcessorParameter::Cutoff,
+            };
+        }
+        zone.chain = Some(new_chain);
+        library.instrument.chains.push(ir::Chain {
+            scope: ir::Scope::Voice,
+            pre_amplitude: if enabled { filters } else { vec![] },
+            post_amplitude: vec![],
+        });
+        w15_render_one_authored_zone(library, zone)
+    };
+    let dry = render(false, false);
+    let wet = render(true, false);
+    let modulated = render(true, true);
+    let energy = |frames: &[[f32; 2]]| {
+        frames
+            .iter()
+            .flatten()
+            .map(|v| f64::from(*v).powi(2))
+            .sum::<f64>()
+    };
+    let derivative = |frames: &[[f32; 2]]| {
+        frames
+            .windows(2)
+            .flat_map(|w| (0..2).map(move |c| f64::from(w[1][c] - w[0][c]).powi(2)))
+            .sum::<f64>()
+    };
+    let residual = dry
+        .iter()
+        .zip(&wet)
+        .flat_map(|(a, b)| (0..2).map(move |c| f64::from(a[c] - b[c]).powi(2)))
+        .sum::<f64>();
+    let hf_db =
+        10. * ((derivative(&wet) / energy(&wet)) / (derivative(&dry) / energy(&dry))).log10();
+    let residual_db = 10. * (residual / energy(&dry)).log10();
+    let modulation_residual = wet
+        .iter()
+        .zip(&modulated)
+        .flat_map(|(a, b)| (0..2).map(move |c| f64::from(a[c] - b[c]).powi(2)))
+        .sum::<f64>();
+    let modulation_db = 10. * (modulation_residual / energy(&wet)).log10();
+    println!(
+        "VISTA_LEGACY_LP dry_rms={:?} wet_rms={:?} normalized_hf_db={hf_db} residual_db={residual_db} modulation_residual_db={modulation_db}",
+        reference::levels(&dry, 0., 0.5).rms,
+        reference::levels(&wet, 0., 0.5).rms
+    );
+    assert!(energy(&dry) > 1e-8 && energy(&wet) > 1e-8);
+    assert!(wet.iter().flatten().all(|v| v.is_finite()));
+    assert!(
+        hf_db < 0.,
+        "the saved lowpass must darken the damping-release sample"
+    );
+    assert!(residual_db > -40., "the authored slot must reach audio");
+    assert!(
+        modulation_db > -40.,
+        "the authored cutoff envelope must reach audio"
+    );
+}
+
+#[test]
+#[ignore = "requires installed Vista violin overlay; run through kontakto-heavy"]
+fn vista_legacy_highpass_filters_the_authored_legato_transition() {
+    use sampler_ir as ir;
+    let path =
+        find("Performance Samples Vista/Instruments/Bonus/Vista - 3 Violins FFF Overlay.nki")
+            .expect("installed Vista violin overlay is required for this witness");
+    let render = |enabled, modulated| {
+        let mut library = sampler_kontakt::read(&path).unwrap();
+        assert!(
+            !library
+                .instrument
+                .unsupported
+                .iter()
+                .any(|u| matches!(u.feature.as_str(), "Filter: filter type" | "effect")),
+            "Vista's eight legacy highpass slots must survive translation"
+        );
+        let hp_chains = library
+            .instrument
+            .chains
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| {
+                c.pre_amplitude
+                    .iter()
+                    .chain(&c.post_amplitude)
+                    .any(|p| {
+                        matches!(
+                            p,
+                            ir::Processor::Filter(ir::Filter {
+                                kind: ir::FilterKind::HighPass { poles: 2 },
+                                ..
+                            })
+                        )
+                    })
+                    .then_some(ir::ChainRef(i))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            hp_chains.len(),
+            8,
+            "all eight saved HP slots must survive, including empty groups"
+        );
+        for chain in &hp_chains {
+            assert!(library.instrument.routes.iter().any(|r|
+                matches!(r.target, ir::Target::Processor { chain: c, parameter: ir::ProcessorParameter::Cutoff, .. } if c == *chain)
+                    && matches!(r.depth, ir::Depth::Pitch(p) if (p.semitones() - 12. * 8.96).abs() < 1e-6)),
+                "legacy HP cutoff envelopes must retain v1's knob span");
+        }
+        let mut zone = library
+            .instrument
+            .zones
+            .iter()
+            .find(|z| {
+                z.chain.is_some_and(|c| hp_chains.contains(&c))
+                    && z.keys.low <= 60
+                    && z.keys.high >= 60
+            })
+            .expect("populated middle-C legato transition")
+            .clone();
+        println!(
+            "VISTA_LEGACY_HP witness_group={} hp_chains={}",
+            zone.group.unwrap().0,
+            hp_chains.len()
+        );
+        let chain = &library.instrument.chains[zone.chain.unwrap().0];
+        let filters = chain
+            .pre_amplitude
+            .iter()
+            .chain(&chain.post_amplitude)
+            .filter(|p| {
+                matches!(
+                    p,
+                    ir::Processor::Filter(ir::Filter {
+                        kind: ir::FilterKind::HighPass { poles: 2 },
+                        ..
+                    })
+                )
+            })
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(filters.len(), 1);
+        zone.routes.retain(|r| {
+            modulated
+                && matches!(
+                    library.instrument.routes[r.0].target,
+                    ir::Target::Processor {
+                        parameter: ir::ProcessorParameter::Cutoff,
+                        ..
+                    }
+                )
+        });
+        let new_chain = ir::ChainRef(library.instrument.chains.len());
+        for route in &zone.routes {
+            library.instrument.routes[route.0].target = ir::Target::Processor {
+                chain: new_chain,
+                index: 0,
+                parameter: ir::ProcessorParameter::Cutoff,
+            };
+        }
+        zone.chain = Some(new_chain);
+        library.instrument.chains.push(ir::Chain {
+            scope: ir::Scope::Voice,
+            pre_amplitude: if enabled { filters } else { vec![] },
+            post_amplitude: vec![],
+        });
+        w15_render_one_authored_zone(library, zone)
+    };
+    let dry = render(false, false);
+    let wet = render(true, false);
+    let modulated = render(true, true);
+    let energy = |frames: &[[f32; 2]]| {
+        frames
+            .iter()
+            .flatten()
+            .map(|v| f64::from(*v).powi(2))
+            .sum::<f64>()
+    };
+    let derivative = |frames: &[[f32; 2]]| {
+        frames
+            .windows(2)
+            .flat_map(|w| (0..2).map(move |c| f64::from(w[1][c] - w[0][c]).powi(2)))
+            .sum::<f64>()
+    };
+    let residual = |a: &[[f32; 2]], b: &[[f32; 2]]| {
+        a.iter()
+            .zip(b)
+            .flat_map(|(a, b)| (0..2).map(move |c| f64::from(a[c] - b[c]).powi(2)))
+            .sum::<f64>()
+    };
+    let hf_db =
+        10. * ((derivative(&wet) / energy(&wet)) / (derivative(&dry) / energy(&dry))).log10();
+    let residual_db = 10. * (residual(&dry, &wet) / energy(&dry)).log10();
+    let modulation_db = 10. * (residual(&wet, &modulated) / energy(&wet)).log10();
+    println!(
+        "VISTA_LEGACY_HP dry_rms={:?} wet_rms={:?} normalized_hf_db={hf_db} residual_db={residual_db} modulation_residual_db={modulation_db}",
+        reference::levels(&dry, 0., 0.5).rms,
+        reference::levels(&wet, 0., 0.5).rms
+    );
+    assert!(energy(&dry) > 1e-8 && energy(&wet) > 1e-8 && energy(&modulated) > 1e-8);
+    assert!(
+        wet.iter()
+            .chain(&modulated)
+            .flatten()
+            .all(|v| v.is_finite())
+    );
+    assert!(
+        hf_db > 0.,
+        "the saved highpass must remove low-frequency energy"
+    );
+    assert!(residual_db > -40., "the authored HP slot must reach audio");
+    assert!(
+        modulation_db > -40.,
+        "the authored cutoff envelope must reach audio"
+    );
+}
+
+#[test]
+#[ignore = "requires installed Analog Strings; run through kontakto-heavy"]
+fn w15_authored_formant_offline_ab_changes_the_gate_spectrum() {
+    use sampler_ir as ir;
+    let Some(path) = find("ANALOG STRINGS/Instruments/ANALOG STRINGS.nki") else {
+        return;
+    };
+    let render = |enabled| {
+        let mut library = sampler_kontakt::read(&path).unwrap();
+        let (mut zone, filters) = library
+            .instrument
+            .zones
+            .iter()
+            .find_map(|z| {
+                let chain = &library.instrument.chains[z.chain?.0];
+                let filters: Vec<_> = chain
+                    .pre_amplitude
+                    .iter()
+                    .chain(&chain.post_amplitude)
+                    .filter(|p| {
+                        matches!(
+                            p,
+                            ir::Processor::Filter(ir::Filter {
+                                kind: ir::FilterKind::Peak {
+                                    gain: ir::Gain::Decibels(15.)
+                                },
+                                ..
+                            })
+                        )
+                    })
+                    .cloned()
+                    .collect();
+                (filters.len() == 3).then(|| (z.clone(), filters))
+            })
+            .expect("gate item must execute its three-band Formant I model");
+        zone.routes.clear();
+        zone.chain = Some(ir::ChainRef(library.instrument.chains.len()));
+        library.instrument.chains.push(ir::Chain {
+            scope: ir::Scope::Voice,
+            pre_amplitude: if enabled {
+                filters
+                    .into_iter()
+                    .chain([ir::Processor::Gain(ir::Gain::Linear(0.25))])
+                    .collect()
+            } else {
+                vec![]
+            },
+            post_amplitude: vec![],
+        });
+        w15_render_one_authored_zone(library, zone)
+    };
+    let dry = render(false);
+    let wet = render(true);
+    let energy = |frames: &[[f32; 2]]| {
+        frames
+            .iter()
+            .flatten()
+            .map(|v| f64::from(*v).powi(2))
+            .sum::<f64>()
+    };
+    let derivative = |frames: &[[f32; 2]]| {
+        frames
+            .windows(2)
+            .map(|w| {
+                (0..2)
+                    .map(|c| f64::from(w[1][c] - w[0][c]).powi(2))
+                    .sum::<f64>()
+            })
+            .sum::<f64>()
+    };
+    let dry_shape = derivative(&dry) / energy(&dry).max(1e-30);
+    let wet_shape = derivative(&wet) / energy(&wet).max(1e-30);
+    let shape_delta_db = 10. * (wet_shape / dry_shape).log10();
+    println!(
+        "W15 formant dry_rms={:?} wet_rms={:?} normalized_hf_delta_db={shape_delta_db}",
+        reference::levels(&dry, 0.1, 0.45).rms,
+        reference::levels(&wet, 0.1, 0.45).rms
+    );
+    assert!(energy(&dry) > 1e-8 && energy(&wet) > 1e-8);
+    assert!(
+        shape_delta_db.is_finite() && shape_delta_db.abs() > 0.05,
+        "Formant must change spectral shape, independent of level"
+    );
+}
+
+#[test]
+#[ignore = "requires installed Analog Strings; run through kontakto-heavy"]
+fn w15_authored_lofi_offline_ab_measures_reduction_on_the_gate_sample() {
+    use sampler_ir as ir;
+    let Some(path) = find("ANALOG STRINGS/Instruments/ANALOG STRINGS.nki") else {
+        return;
+    };
+    let render = |enabled| {
+        let mut library = sampler_kontakt::read(&path).unwrap();
+        let (mut zone, mut effect) = library
+            .instrument
+            .zones
+            .iter()
+            .find_map(|z| {
+                let chain = &library.instrument.chains[z.chain?.0];
+                chain
+                    .pre_amplitude
+                    .iter()
+                    .chain(&chain.post_amplitude)
+                    .find(|p| matches!(p, ir::Processor::LoFi { .. }))
+                    .map(|p| (z.clone(), p.clone()))
+            })
+            .expect("gate item must retain its authored Lo-Fi slot");
+        // Saved defaults are pristine; exercise the same authored slot's Bits control.
+        let ir::Processor::LoFi {
+            ref mut bits,
+            ref mut frequency,
+            ..
+        } = effect
+        else {
+            unreachable!()
+        };
+        *bits = 0.1;
+        *frequency = 1.;
+        zone.routes.clear();
+        zone.chain = Some(ir::ChainRef(library.instrument.chains.len()));
+        library.instrument.chains.push(ir::Chain {
+            scope: ir::Scope::Voice,
+            pre_amplitude: if enabled { vec![effect] } else { vec![] },
+            post_amplitude: vec![],
+        });
+        w15_render_one_authored_zone(library, zone)
+    };
+    let dry = render(false);
+    let wet = render(true);
+    let dry_levels = reference::levels(&dry, 0.1, 0.45);
+    let wet_levels = reference::levels(&wet, 0.1, 0.45);
+    let energy = |frames: &[[f32; 2]]| {
+        frames
+            .iter()
+            .flatten()
+            .map(|v| f64::from(*v).powi(2))
+            .sum::<f64>()
+    };
+    let residual = dry
+        .iter()
+        .zip(&wet)
+        .map(|(a, b)| (0..2).map(|c| f64::from(a[c] - b[c]).powi(2)).sum::<f64>())
+        .sum::<f64>();
+    let residual_db = 10. * (residual / energy(&dry).max(1e-30)).log10();
+    println!(
+        "W15 lofi dry_rms={:?} wet_rms={:?} residual_relative_db={residual_db}",
+        dry_levels.rms, wet_levels.rms
+    );
+    assert!(dry_levels.max_peak() > -80.);
+    assert!(
+        residual_db.is_finite() && residual_db > -40.,
+        "Bits must change the authored gate sample"
+    );
+    assert!(wet.iter().flatten().all(|v| v.is_finite()));
+}
+
+#[test]
+#[ignore = "requires installed Conflux and Analog Strings; run through kontakto-heavy"]
+fn w15_authored_native_cutoff_offline_ab_reaches_ladder_and_daft() {
+    use sampler_ir as ir;
+    for ladder in [true, false] {
+        let path = find(if ladder {
+            "Conflux 1.1.0 [Native Instruments]/Instruments/Conflux.nki"
+        } else {
+            "ANALOG STRINGS/Instruments/ANALOG STRINGS.nki"
+        })
+        .expect("installed gate item");
+        let render = |enabled| {
+            let mut library = sampler_kontakt::read(&path).unwrap();
+            let (mut zone, route, processor) = library
+                .instrument
+                .zones
+                .iter()
+                .find_map(|z| {
+                    z.routes.iter().find_map(|r| {
+                        let route = library.instrument.routes[r.0];
+                        let ir::Target::Processor {
+                            chain,
+                            index,
+                            parameter: ir::ProcessorParameter::Cutoff,
+                        } = route.target
+                        else {
+                            return None;
+                        };
+                        let c = &library.instrument.chains[chain.0];
+                        let p = *c.pre_amplitude.iter().chain(&c.post_amplitude).nth(index)?;
+                        let native = if ladder {
+                            matches!(p, ir::Processor::LadderLP4(_))
+                        } else {
+                            matches!(p, ir::Processor::Daft(_))
+                        };
+                        let source = &library.instrument.modulators[route.source.0].source;
+                        let executable = if ladder {
+                            matches!(source, ir::ModulationSource::Envelope(_))
+                        } else {
+                            matches!(source, ir::ModulationSource::Constant)
+                        };
+                        (native && executable && matches!(route.depth, ir::Depth::Normalized(_)))
+                            .then(|| (z.clone(), *r, p))
+                    })
+                })
+                .expect("gate must retain an authored native cutoff route");
+            let saved = match processor {
+                ir::Processor::LadderLP4(p) => p.cutoff,
+                ir::Processor::Daft(p) => p.cutoff,
+                _ => unreachable!(),
+            };
+            let r = &mut library.instrument.routes[route.0];
+            r.target = ir::Target::Processor {
+                chain: ir::ChainRef(0),
+                index: 0,
+                parameter: ir::ProcessorParameter::Cutoff,
+            };
+            // Exercise the authored route's amount; zero saved amounts remain enabled.
+            r.depth = ir::Depth::Normalized(if enabled {
+                if saved > 0.6 { -0.25 } else { 0.25 }
+            } else {
+                0.
+            });
+            zone.routes = vec![route];
+            zone.chain = Some(ir::ChainRef(library.instrument.chains.len()));
+            library.instrument.chains.push(ir::Chain {
+                scope: ir::Scope::Voice,
+                pre_amplitude: vec![processor],
+                post_amplitude: vec![],
+            });
+            w15_render_one_authored_zone(library, zone)
+        };
+        let dry = render(false);
+        let wet = render(true);
+        let energy = |x: &[[f32; 2]]| {
+            x.iter()
+                .flatten()
+                .map(|v| f64::from(*v).powi(2))
+                .sum::<f64>()
+        };
+        let derivative = |x: &[[f32; 2]]| {
+            x.windows(2)
+                .flat_map(|w| (0..2).map(move |c| f64::from(w[1][c] - w[0][c]).powi(2)))
+                .sum::<f64>()
+        };
+        let residual = dry
+            .iter()
+            .zip(&wet)
+            .flat_map(|(a, b)| (0..2).map(move |c| f64::from(a[c] - b[c]).powi(2)))
+            .sum::<f64>();
+        let residual_db = 10. * (residual / energy(&dry).max(1e-30)).log10();
+        let hf_delta_db =
+            10. * ((derivative(&wet) / energy(&wet)) / (derivative(&dry) / energy(&dry))).log10();
+        println!(
+            "W15 native_cutoff ladder={ladder} dry_rms={:?} wet_rms={:?} residual_db={residual_db} hf_delta_db={hf_delta_db}",
+            reference::levels(&dry, 0.1, 0.45).rms,
+            reference::levels(&wet, 0.1, 0.45).rms
+        );
+        assert!(energy(&dry) > 1e-8 && energy(&wet) > 1e-8);
+        assert!(wet.iter().flatten().all(|v| v.is_finite()));
+        assert!(
+            residual_db > -40.,
+            "authored normalized cutoff route must change audio"
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires installed Morphology; run through kontakto-heavy"]
+fn w15_zero_multi_offline_ab_reaches_the_bipolar_volume_consumer() {
+    use sampler_ir as ir;
+    let Some(path) = find("Morphology Evolved [Zero-G] rutracker.org/Morphology Evolved.nki")
+    else {
+        return;
+    };
+    let render = |enabled| {
+        let mut library = sampler_kontakt::read(&path).unwrap();
+        let (mut zone, mut route) = library
+            .instrument
+            .zones
+            .iter()
+            .find_map(|z| {
+                z.routes.iter().find_map(|r| {
+                    let route = library.instrument.routes[r.0];
+                    matches!(library.instrument.modulators[route.source.0].source,
+                    ir::ModulationSource::Lfo(lfo) if lfo.shape == ir::LfoShape::Zero)
+                    .then(|| (z.clone(), route))
+                })
+            })
+            .expect("the authored zero-wave LFO must have a retained runtime source");
+        // Exercise this saved source through the native bipolar volume law.
+        route.target = ir::Target::Amplitude;
+        route.depth = ir::Depth::Normalized(1.);
+        route.invert = false;
+        route.shape = None;
+        route.scale = None;
+        route.smoothing = ir::Time::ZERO;
+        zone.routes = if enabled {
+            vec![ir::RouteRef(library.instrument.routes.len())]
+        } else {
+            vec![]
+        };
+        library.instrument.routes.push(route);
+        zone.chain = None;
+        w15_render_one_authored_zone(library, zone)
+    };
+    let dry = render(false);
+    let wet = render(true);
+    let energy = |v: &[[f32; 2]]| {
+        v.iter()
+            .flatten()
+            .map(|v| f64::from(*v).powi(2))
+            .sum::<f64>()
+    };
+    let delta_db = 10. * (energy(&wet) / energy(&dry)).log10();
+    println!("W15 zero_multi volume_delta_db={delta_db}");
+    assert!(energy(&dry) > 1e-8);
+    assert!((delta_db - 20. * 0.5f64.log10()).abs() < 1e-5);
+    assert!(
+        dry.iter()
+            .zip(&wet)
+            .all(|(d, w)| (0..2).all(|c| w[c] == d[c] * 0.5))
+    );
+}
+
+#[test]
+#[ignore = "requires installed gate libraries; run through kontakto-heavy"]
+fn w15_authored_native_q_gain_offline_ab_reaches_ladder_and_daft() {
+    use sampler_ir as ir;
+    for ladder in [true, false] {
+        for parameter in [
+            ir::ProcessorParameter::Resonance,
+            ir::ProcessorParameter::Gain,
+        ] {
+            let path = find(if ladder {
+                "Conflux 1.1.0 [Native Instruments]/Instruments/Conflux.nki"
+            } else {
+                "ANALOG STRINGS/Instruments/ANALOG STRINGS.nki"
+            })
+            .expect("installed gate item");
+            let render = |enabled| {
+                let mut library = sampler_kontakt::read(&path).unwrap();
+                let (mut zone, route, processor) = [parameter, ir::ProcessorParameter::Cutoff]
+                    .into_iter()
+                    .find_map(|wanted| {
+                        library.instrument.zones.iter().find_map(|z| {
+                            z.routes.iter().find_map(|r| {
+                                let route = library.instrument.routes[r.0];
+                                let ir::Target::Processor {
+                                    chain,
+                                    index,
+                                    parameter: target,
+                                } = route.target
+                                else {
+                                    return None;
+                                };
+                                if target != wanted {
+                                    return None;
+                                }
+                                let c = &library.instrument.chains[chain.0];
+                                let p =
+                                    *c.pre_amplitude.iter().chain(&c.post_amplitude).nth(index)?;
+                                let native = if ladder {
+                                    matches!(p, ir::Processor::LadderLP4(_))
+                                } else {
+                                    matches!(p, ir::Processor::Daft(_))
+                                };
+                                (native && matches!(route.depth, ir::Depth::Normalized(_)))
+                                    .then(|| (z.clone(), *r, p))
+                            })
+                        })
+                    })
+                    .expect("gate must retain an authored native route for this filter");
+                let saved = match (processor, parameter) {
+                    (ir::Processor::LadderLP4(p), ir::ProcessorParameter::Gain) => p.gain,
+                    (ir::Processor::LadderLP4(p), _) => p.resonance,
+                    (ir::Processor::Daft(p), ir::ProcessorParameter::Gain) => p.gain,
+                    (ir::Processor::Daft(p), _) => p.resonance,
+                    _ => unreachable!(),
+                };
+                let r = &mut library.instrument.routes[route.0];
+                println!(
+                    "W15 native_q_gain ladder={ladder} exercised={parameter:?} saved_target={:?}",
+                    r.target
+                );
+                r.target = ir::Target::Processor {
+                    chain: ir::ChainRef(0),
+                    index: 0,
+                    parameter,
+                };
+                r.depth = ir::Depth::Normalized(if enabled {
+                    if saved > 0.6 { -0.4 } else { 0.4 }
+                } else {
+                    0.
+                });
+                zone.routes = vec![route];
+                zone.chain = Some(ir::ChainRef(library.instrument.chains.len()));
+                library.instrument.chains.push(ir::Chain {
+                    scope: ir::Scope::Voice,
+                    pre_amplitude: vec![processor],
+                    post_amplitude: vec![],
+                });
+                w15_render_one_authored_zone(library, zone)
+            };
+            let dry = render(false);
+            let wet = render(true);
+            let energy = |x: &[[f32; 2]]| {
+                x.iter()
+                    .flatten()
+                    .map(|v| f64::from(*v).powi(2))
+                    .sum::<f64>()
+            };
+            let residual = dry
+                .iter()
+                .zip(&wet)
+                .flat_map(|(a, b)| (0..2).map(move |c| f64::from(a[c] - b[c]).powi(2)))
+                .sum::<f64>();
+            let level_delta_db = 10. * (energy(&wet) / energy(&dry)).log10();
+            let residual_db = 10. * (residual / energy(&dry).max(1e-30)).log10();
+            println!(
+                "W15 native_q_gain ladder={ladder} parameter={parameter:?} level_delta_db={level_delta_db} residual_db={residual_db}"
+            );
+            assert!(energy(&dry) > 1e-8 && energy(&wet) > 1e-8);
+            assert!(wet.iter().flatten().all(|v| v.is_finite()));
+            assert!(residual_db > -40., "native Q/Gain route must affect audio");
         }
     }
 }
