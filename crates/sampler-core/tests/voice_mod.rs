@@ -590,6 +590,7 @@ fn a_second_source_scales_route_depth() {
             scale: Some(ModScale {
                 source: 1,
                 shape: Some(0),
+                law: ModScaleLaw::Multiply,
             }),
             ..ModRoute::new(0, ModTarget::Decibels, 6.)
         }],
@@ -607,6 +608,121 @@ fn a_second_source_scales_route_depth() {
         audio.iter().all(|f| (f[1] - expected).abs() < 1e-5),
         "{audio:?}"
     );
+}
+
+#[test]
+fn id25_intensity_changes_each_outgoing_depth_in_render_without_heap() {
+    for flags in [0x10, 0x14] {
+        for base in [0., 0.4, 0.9] {
+            for velocity in [0.25, 0.75] {
+                for bipolar in [false, true] {
+                    let second = if bipolar {
+                        ModSource::Lfo(Lfo { shape: LfoShape::Zero,
+                            rate: LfoRate::Hertz(1.), phase: 0., delay: 0, fade: 0,
+                            retrigger: true, shared: false })
+                    } else { ModSource::Velocity };
+                    let p = program(vec![ModSource::Constant, second], vec![ModRoute {
+                        invert: true,
+                        scale: Some(ModScale { source: 1, shape: None,
+                            law: ModScaleLaw::KontaktIntensity { depth: 0.5, flags, unit: 1. } }),
+                        ..ModRoute::new(0, ModTarget::Attenuate, base)
+                    }]);
+                    let mut rt = Runtime::new(modulated(plan(64, Envelope::default()), p, 0),
+                        limits()).unwrap();
+                    support::without_heap(|| { rt.trigger(input(1), 60, velocity).unwrap(); });
+                    let audio = render(&mut rt, 8, 8);
+                    let source = if bipolar { 0.5 } else { velocity };
+                    let depth = if flags & 4 == 0 {
+                        base * (1. - (1. - source) * 0.5)
+                    } else { 1. - (1. - base) * (1. - source * 0.5) };
+                    let expected = (0.5 * (1. - depth)) as f32;
+                    assert!(audio.iter().all(|f| (f[1] - expected).abs() < 1e-7),
+                        "flags={flags} base={base} bipolar={bipolar} {audio:?}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn id25_unverified_lag_init_shape_and_live_paths_are_rejected() {
+    let scale = ModScale { source: 1, shape: None,
+        law: ModScaleLaw::KontaktIntensity { depth: 0.5, flags: 0x10, unit: 1. } };
+    let route = ModRoute { scale: Some(scale),
+        ..ModRoute::new(0, ModTarget::Attenuate, 0.4) };
+    let rejected = |source, route| {
+        plan(64, Envelope::default()).with_voice_modulation(
+            vec![program(vec![ModSource::Constant, source], vec![route])],
+            vec![Some(0)], vec![0]).is_err()
+    };
+    assert!(rejected(ModSource::Velocity, ModRoute { lag: 1, ..route }));
+    assert!(rejected(ModSource::Velocity, ModRoute { target: ModTarget::SampleStart, ..route }));
+    for flags in [0, 4, 0x12, 0x18, 0xff] {
+        assert!(rejected(ModSource::Velocity, ModRoute {
+            scale: Some(ModScale { law: ModScaleLaw::KontaktIntensity { depth: 0.5, flags, unit: 1. },
+                ..scale }), ..route }));
+    }
+    for depth in [f64::NAN, f64::INFINITY, -0.25, 1.25] {
+        assert!(rejected(ModSource::Velocity, ModRoute {
+            scale: Some(ModScale { law: ModScaleLaw::KontaktIntensity { depth, flags: 0x10, unit: 1. },
+                ..scale }), ..route }));
+    }
+    for unit in [0., f64::NAN, f64::INFINITY, 1e-310] {
+        assert!(rejected(ModSource::Velocity, ModRoute {
+            scale: Some(ModScale { law: ModScaleLaw::KontaktIntensity {
+                depth: 0.5, flags: 0x10, unit }, ..scale }), ..route }));
+    }
+    for source in [ModSource::Controller(1), ModSource::Pressure, ModSource::Timbre,
+        ModSource::PitchBend, ModSource::Script(0)] {
+        assert!(rejected(source, route));
+    }
+    let mut p = program(vec![ModSource::Constant, ModSource::Velocity], vec![ModRoute {
+        scale: Some(ModScale { shape: Some(0), ..scale }), ..route }]);
+    p.shapes.push(vec![(0., 0.), (1., 1.)]);
+    assert!(plan(64, Envelope::default()).with_voice_modulation(
+        vec![p], vec![Some(0)], vec![0]).is_err());
+}
+
+#[test]
+fn id25_additive_depth_converts_normalized_intensity_to_outgoing_units() {
+    for flags in [0x10, 0x14] {
+        for unit in [12., -12., 20., -20.] {
+            for base in [0., 0.4, 1.] {
+                let p = program(vec![ModSource::Constant, ModSource::Velocity], vec![ModRoute {
+                    scale: Some(ModScale { source: 1, shape: None,
+                        law: ModScaleLaw::KontaktIntensity { depth: 0.5, flags, unit } }),
+                    ..ModRoute::new(0, ModTarget::Decibels, base * unit)
+                }]);
+                let mut rt = Runtime::new(modulated(plan(64, Envelope::default()), p, 0),
+                    limits()).unwrap();
+                support::without_heap(|| { rt.trigger(input(1), 60, 0.25).unwrap(); });
+                let audio = render(&mut rt, 8, 8);
+                let adjusted = if flags & 4 == 0 { base * 0.625 }
+                    else { 1. - (1. - base) * 0.875 };
+                let expected = (0.5 * 10f64.powf(adjusted * unit / 20.)) as f32;
+                assert!(audio.iter().all(|f| (f[1] - expected).abs() < 2e-6),
+                    "flags={flags} base={base} unit={unit} {audio:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn id25_preserves_independent_bases_for_two_outgoing_targets() {
+    let routes = [(0., 20.), (0.4, 12.)].map(|(base, unit)| ModRoute {
+        scale: Some(ModScale { source: 1, shape: None,
+            law: ModScaleLaw::KontaktIntensity { depth: 0.5, flags: 0x14, unit } }),
+        ..ModRoute::new(0, ModTarget::Decibels, base * unit)
+    });
+    let p = program(vec![ModSource::Constant, ModSource::Velocity], routes.into());
+    let mut rt = Runtime::new(modulated(plan(64, Envelope::default()), p, 0),
+        limits()).unwrap();
+    support::without_heap(|| { rt.trigger(input(1), 60, 0.25).unwrap(); });
+    let audio = render(&mut rt, 8, 8);
+    // At src=.25/depth=.5, each saved target gets its own additive result:
+    // 0 -> .125 (20 units), .4 -> .475 (12 units); neither shares a gain stage.
+    let expected = (0.5 * 10f64.powf((0.125 * 20. + 0.475 * 12.) / 20.)) as f32;
+    assert!(audio.iter().all(|f| (f[1] - expected).abs() < 2e-6), "{audio:?}");
 }
 
 #[test]
