@@ -27,8 +27,9 @@ fn specimen(multi: bool) -> Arc<SamplerParams> {
         report.decoded.keys = crate::sound::report::range_bits(low, high);
         part.report = Some(Arc::new(report));
         let mut keys = vec![crate::sound::KeyLook::default(); 128];
-        for key in &mut keys {
-            key.color = Some(10);
+        // WHITE/BLACK retain piano faces; absent colours leave unmapped keys grey.
+        for key in &mut keys[usize::from(low)..=usize::from(high)] {
+            key.color = Some(19);
         }
         for key in &mut keys[64..=72] {
             key.color = Some(6);
