@@ -2,6 +2,8 @@
 
 **One free, open-source sampler for the libraries you paid for.**
 
+[Website & documentation](https://derpcatmusic.github.io/KONTRA/) · [Support](https://derpcatmusic.github.io/KONTRA/features.html) · [Roadmap](ROADMAP.md)
+
 ## Downloads
 
 [![Download for Windows x64](https://img.shields.io/badge/Download-Windows%20x64-0078D4?style=for-the-badge)](https://github.com/DerpcatMusic/KONTRA/releases/latest/download/KONTRA-nightly-windows-x86_64.zip)
