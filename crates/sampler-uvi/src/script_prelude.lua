@@ -2,7 +2,6 @@
 -- stateful user-interface widgets and stand-ins for unmodeled engine parts, the
 -- element tree helpers, and the threading helpers built on coroutines.
 -- Anything inert is reported once through __report, never silently.
-local ENV = _G -- the main environment; a coroutine's own is a proxy
 local report, native = __report, __native
 __report, __native = nil, nil
 
@@ -482,24 +481,6 @@ function require(name)
   if result == nil then result = true end
   loaded[name] = result
   return result
-end
-
--- class 'Name' / class 'Name'(Base), as the shipped scripts use it.
-local function instantiate(cls, ...)
-  local o = setmetatable({}, { __index = cls })
-  if cls.__init then cls.__init(o, ...) end
-  return o
-end
-function class(name)
-  local cls = { __name = name }
-  setmetatable(cls, { __call = instantiate })
-  ENV[name] = cls
-  return function(base)
-    if type(base) == "table" then
-      setmetatable(cls, { __index = base, __call = instantiate })
-    end
-    return cls
-  end
 end
 
 -- Program lookups the scripts expect; a layer is addressed by its ordinal.

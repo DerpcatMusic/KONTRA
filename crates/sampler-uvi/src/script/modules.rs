@@ -1,5 +1,7 @@
 //! Port v1 4bffbb18:src/uvi/host.rs native modules into the Luau owner.
-use mlua::{AnyUserData, Function, MetaMethod, Table, UserData, UserDataMethods, Value};
+use mlua::{
+    AnyUserData, Function, Lua, MetaMethod, MultiValue, Table, UserData, UserDataMethods, Value,
+};
 
 pub(super) const CHORD_REC: &str = r#"
 local kinds={
@@ -94,4 +96,125 @@ impl UserData for AsyncUpdater {
             },
         );
     }
+}
+
+struct ScriptClass;
+struct ScriptInstance;
+
+impl UserData for ScriptClass {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        for operator in [MetaMethod::Eq, MetaMethod::ToString] {
+            methods.add_meta_function(
+                operator,
+                move |_, args: MultiValue| -> mlua::Result<Value> {
+                    // Lua 5.1 checks identity before __eq; Luau invokes __eq first.
+                    if operator == MetaMethod::Eq
+                        && let (Some(Value::UserData(a)), Some(Value::UserData(b))) =
+                            (args.front(), args.get(1))
+                        && a == b
+                    {
+                        return Ok(Value::Boolean(true));
+                    }
+                    Err(mlua::Error::runtime("Unsupported UVI class operator"))
+                },
+            );
+        }
+        methods.add_meta_function(
+            MetaMethod::Index,
+            |_, (class, key): (AnyUserData, String)| class.user_value::<Table>()?.get::<Value>(key),
+        );
+        methods.add_meta_function(
+            MetaMethod::NewIndex,
+            |_, (class, key, value): (AnyUserData, String, Value)| {
+                class.user_value::<Table>()?.set(key, value)
+            },
+        );
+        methods.add_meta_function(MetaMethod::Call, |lua, mut args: MultiValue| {
+            let Some(Value::UserData(class)) = args.pop_front() else {
+                return Err(mlua::Error::runtime("Invalid UVI class constructor"));
+            };
+            let members = class.user_value::<Table>()?;
+            let init = members.get::<Function>("__init")?;
+            let instance = lua.create_userdata(ScriptInstance)?;
+            let state = lua.create_table()?;
+            state.set("members", members)?;
+            state.set("fields", lua.create_table()?)?;
+            instance.set_user_value(state)?;
+            args.push_front(Value::UserData(instance.clone()));
+            init.call::<()>(args)?;
+            Ok(instance)
+        });
+    }
+}
+
+impl UserData for ScriptInstance {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        for operator in [MetaMethod::Eq, MetaMethod::ToString] {
+            methods.add_meta_function(
+                operator,
+                move |_, args: MultiValue| -> mlua::Result<Value> {
+                    // Lua 5.1 checks identity before __eq; Luau invokes __eq first.
+                    if operator == MetaMethod::Eq
+                        && let (Some(Value::UserData(a)), Some(Value::UserData(b))) =
+                            (args.front(), args.get(1))
+                        && a == b
+                    {
+                        return Ok(Value::Boolean(true));
+                    }
+                    Err(mlua::Error::runtime("Unsupported UVI class operator"))
+                },
+            );
+        }
+        methods.add_meta_function(
+            MetaMethod::Index,
+            |_, (instance, key): (AnyUserData, String)| {
+                let state = instance.user_value::<Table>()?;
+                let value = state.get::<Table>("fields")?.get::<Value>(key.as_str())?;
+                if matches!(value, Value::Nil) {
+                    state.get::<Table>("members")?.get::<Value>(key)
+                } else {
+                    Ok(value)
+                }
+            },
+        );
+        methods.add_meta_function(
+            MetaMethod::NewIndex,
+            |_, (instance, key, value): (AnyUserData, String, Value)| {
+                instance
+                    .user_value::<Table>()?
+                    .get::<Table>("fields")?
+                    .set(key, value)
+            },
+        );
+    }
+}
+
+// Native class() publishes userdata immediately and returns an optional-base
+// builder. Inheritance copies existing members but requires its own __init.
+pub(super) fn install_class(lua: &Lua, environment: &Table) -> mlua::Result<()> {
+    let scope = environment.clone();
+    environment.set(
+        "class",
+        lua.create_function(move |lua, name: String| {
+            if name.is_empty() || name.len() > 256 || name.contains('\0') {
+                return Err(mlua::Error::runtime("Invalid UVI class name"));
+            }
+            let class = lua.create_userdata(ScriptClass)?;
+            class.set_user_value(lua.create_table()?)?;
+            scope.set(name, class.clone())?;
+            lua.create_function(move |_, base: AnyUserData| {
+                if !base.is::<ScriptClass>() {
+                    return Err(mlua::Error::runtime("Invalid UVI base class"));
+                }
+                let members = class.user_value::<Table>()?;
+                for pair in base.user_value::<Table>()?.pairs::<String, Value>() {
+                    let (key, value) = pair?;
+                    if key != "__init" {
+                        members.set(key, value)?;
+                    }
+                }
+                Ok(())
+            })
+        })?,
+    )
 }
