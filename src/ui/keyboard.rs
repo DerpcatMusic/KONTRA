@@ -795,11 +795,11 @@ mod tests {
             }
             h.press("key-127");
             assert!(
-                matches!(p.shared.keyboard.pop(), Some((0, crate::plugin::Play::Note(127, velocity))) if velocity > 0)
+                matches!(p.shared.keyboard.pop(), Some((crate::plugin::EVERY_PART, crate::plugin::Play::Note(127, velocity))) if velocity > 0)
             );
             assert!(matches!(
                 p.shared.keyboard.pop(),
-                Some((0, crate::plugin::Play::Note(127, 0)))
+                Some((crate::plugin::EVERY_PART, crate::plugin::Play::Note(127, 0)))
             ));
             assert!(p.shared.keyboard.pop().is_none());
             assert_eq!(p.shared.played[127].load(Ordering::Relaxed), 0);
