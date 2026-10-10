@@ -106,8 +106,11 @@ adaptation rate is rounded as `f32(rate_inverse * 2092.300048828125)` at
 at [ref]. The recovered model/kernel instead evaluated
 `f32(f32(delta * rate_inverse) * 2092.300048828125)`. These expressions are
 not interchangeable in f32. Both independent implementations now preserve
-the native grouping. The detector release still uses its observed separate
-products; no generic smoothing helper or fused operation replaces either law.
+the native grouping. Static [ref] and ramp [ref] also show
+the two-pole detector adding an already doubled band into the stereo sum;
+the recovered implementations instead added each band twice. Both now use
+the observed two-pole sum, retaining the separate four-pole branch.
+The detector release still uses its observed separate products; no generic smoothing helper or fused operation replaces either law.
 
 The same static ramp path updates normalized resonance before applying its
 scale ([ref]..[ref]), disproving the earlier scaled-domain-ramp
