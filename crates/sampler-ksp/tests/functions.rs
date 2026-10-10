@@ -343,6 +343,7 @@ fn function_exit_plan(sources: &[&str]) -> Prepared {
     sampler_ksp::bind_modules(
         sources.iter().map(|source| compile(source, 4096).unwrap()).collect(),
         Prepared::new(48000, samples.into(), regions, 256).unwrap()
+            .with_groups(2, vec![Some(0), Some(1)]).unwrap()
             .with_releases(
                 vec![Trigger::Attack, Trigger::GateRelease],
                 ReleaseOptions::default(),
@@ -447,9 +448,16 @@ fn function_exit_after_wait_preserves_wait_time_stage_delivery_without_duplicate
 #[test]
 fn function_exit_returns_are_not_deferred_note_flush_barriers() {
     let plan = function_exit_plan(&[
-        "on init declare $child declare $dead end on
+        "on init declare $child declare $after declare $dead end on
          function leaf $child := play_note(64,127,0,100000) exit inc($dead) end function
-         on note ignore_event($EVENT_ID) call leaf change_note($child,60) end on",
+         on note
+            ignore_event($EVENT_ID)
+            disallow_group($ALL_GROUPS)
+            call leaf
+            inc($after)
+            change_note($child,60)
+            set_event_par_arr($child,$EVENT_PAR_ALLOW_GROUP,1,0)
+         end on",
         "on init declare $seen declare $calls end on
          on note $seen := $EVENT_NOTE inc($calls) end on",
     ]);
@@ -458,9 +466,16 @@ fn function_exit_returns_are_not_deferred_note_flush_barriers() {
     support::without_heap(|| {
         rt.trigger(input(60), 60, 1.).unwrap();
         let generation = rt.active_plan();
-        assert_eq!(rt.script_cell(generation, ScriptInstanceId(0), 1), Ok(0));
-        assert_eq!(rt.script_cell(generation, ScriptInstanceId(1), 0), Ok(60));
+        assert_eq!(rt.script_cell(generation, ScriptInstanceId(0), 1), Ok(1));
+        assert_eq!(rt.script_cell(generation, ScriptInstanceId(0), 2), Ok(0));
+        assert_eq!(rt.script_cell(generation, ScriptInstanceId(1), 0), Ok(64));
         assert_eq!(rt.script_cell(generation, ScriptInstanceId(1), 1), Ok(1));
+        let alias = rt.script_cell(generation, ScriptInstanceId(0), 0).unwrap() as i32;
+        let child = rt.resolve_source_event(generation, alias).unwrap().unwrap();
+        assert_eq!(rt.note_event_at(child, 0).unwrap().unwrap().pitch, NotePitch::Key(60));
+        assert_eq!(rt.note_event_at(child, 1).unwrap().unwrap().pitch, NotePitch::Key(64));
+        assert!(rt.note_group_allowed_at(child, 1, 0).unwrap());
+        assert!(!rt.note_group_allowed_at(child, 1, 1).unwrap());
         let mut audio = [[0.; 2]; 1];
         rt.render(&mut audio).unwrap();
         assert_eq!(audio, [[0.25; 2]; 1]);
