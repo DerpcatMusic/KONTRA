@@ -3,6 +3,7 @@ use super::{
     native_runtime::{Edit, Package, Session},
     theme::*,
 };
+use crate::plugin::ui_activity::{Activity, Phase};
 use mlua::{Function, Table, Value};
 use moose::mui::mui::{geometry::Path as DrawPath, prelude::*, scene::Fit};
 use sampler_ui_ir as ir;
@@ -135,6 +136,7 @@ pub(super) fn audit_assets() -> (usize, usize, usize) {
 }
 pub(super) struct State {
     id: u64,
+    activity: Option<Arc<Activity>>,
     loading: std::sync::mpsc::Receiver<anyhow::Result<Arc<Package>>>,
     canceled: Arc<AtomicBool>,
     package: Option<Arc<Package>>,
@@ -243,6 +245,7 @@ impl State {
             });
         Self {
             id: NEXT.fetch_add(1, Ordering::Relaxed),
+            activity: None,
             loading,
             canceled,
             package: None,
@@ -339,6 +342,9 @@ impl State {
             )
         })
     }
+    pub fn set_activity(&mut self, activity: &Arc<Activity>) {
+        self.activity = activity.enabled.then(|| activity.clone());
+    }
     pub fn entry(&self) -> &str {
         &self.entry
     }
@@ -383,6 +389,7 @@ impl State {
                     .is_some_and(|live| !live.load(Ordering::Acquire))
             });
             if !local.contains_key(&self.id) {
+                let _init = self.activity.as_ref().map(|a| a.span(Phase::UiNativeScript));
                 let session =
                     Session::new(package.clone(), &self.entry, std::mem::take(&mut self.seed))?;
                 local.insert(
@@ -400,8 +407,12 @@ impl State {
             }
             self.started = true;
             let local = local.get_mut(&self.id).unwrap();
+            local.session.set_activity(self.activity.clone());
             let session = &local.session;
-            session.update_view(face, values, &input.values, &input.meters);
+            {
+                let _sync = self.activity.as_ref().map(|a| a.span(Phase::UiProjectionSync));
+                session.update_view(face, values, &input.values, &input.meters);
+            }
             if let Some(graph) = &local.graph {
                 events(ui, graph, session, slot, scale, &mut local.hovered)?;
             }
@@ -415,6 +426,7 @@ impl State {
             {
                 self.graph_depth = Some(self.graph_depth.unwrap_or(0).max(graph_depth(&graph)?));
             }
+            let _submission = self.activity.as_ref().map(|a| a.span(Phase::UiAuthoredLayoutSubmission));
             let authored = authored_size(&graph);
             self.size = authored;
             let el = draw(
@@ -1006,7 +1018,9 @@ fn draw_base(
         "Canvas" => {
             let paint = session.paint_callback(props.get("paint")?)?;
             let vm = session.lua().clone();
+            let activity = session.activity();
             canvas(move |size| {
+                let _submission = activity.as_ref().map(|a| a.span(Phase::UiNativeCanvasSubmission));
                 match canvas_draw(&vm, &paint, Size::new(size.width / s, size.height / s), s) {
                     Ok(draw) => draw,
                     Err(e) => {
@@ -1534,6 +1548,7 @@ mod tests {
         // Exercise publication before a local VM exists, without a resource worker.
         let mut state = State {
             id: NEXT.fetch_add(1, Ordering::Relaxed),
+            activity: None,
             loading,
             canceled: Arc::new(AtomicBool::new(false)),
             package: None,
