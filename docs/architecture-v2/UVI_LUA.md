@@ -24,6 +24,11 @@ and remove the loading marker on error. Exact members win; relative slash/dot
 aliases must contain identical source, rather than selecting a shortest path.
 The module's source member remains its resource-resolution base.
 
+`class` and instances are native userdata copied from v1. Inheritance copies
+existing members except `__init`, and a constructor requires its own initializer.
+Names and bases are validated. The Luau adapter preserves Lua 5.1 self-identity
+before equality dispatch; distinct-object equality and tostring retain v1 errors.
+
 The [per-bank fidelity checklist](../audit-2026-10-10/W10_UVI_BANK_CHECKLIST.csv)
 covers 26 banks / 660 presets from the retained catalog manifest. Each bank needs executed Lua/XML, image/font/filmstrip,
 position, ordering/page/visibility, callback/value/persistence and renderer
