@@ -2542,7 +2542,7 @@ mod tests {
                     if (2..=4).contains(&step) { grid_changed_origin |= run.origin != origin; }
                     let spans = retained.scene().unwrap().memos_at(paint.key.as_str()).collect::<Vec<_>>();
                     assert_eq!(spans.len(), 2, "{context}: outer and native inner ancestors");
-                    assert!(spans.iter().all(|(_, reused)| *reused == (warm > 0)), "{context}: environment blocks nested paint copying once, then restores it");
+                    assert!(spans.iter().all(|(_, reused)| *reused == (step > 0 || warm > 0)), "{context}: memo trees stay retained across environment changes");
                 } else {
                     assert!(run.is_none(), "{context}: removing the default font removes old glyph paint");
                 }
