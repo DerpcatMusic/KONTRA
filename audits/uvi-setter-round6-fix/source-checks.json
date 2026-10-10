@@ -1,0 +1,116 @@
+{
+  "base_commit": "bac3c616824cf26e2a888c09cb21433b727d9079",
+  "source_commit": "10c29088a85776f50f395d5d58ec4ba87d3eb465",
+  "classification": "SOURCE_AND_INDEPENDENT_ARITHMETIC_ONLY",
+  "rust_tests": "NOT_RUN",
+  "native_execution": "UNKNOWN",
+  "performance_acceptance": "UNACHIEVED",
+  "checks": [
+    {
+      "check": "all_other_laws_and_strict_admission_unchanged",
+      "status": "PASS_SOURCE_ONLY"
+    },
+    {
+      "check": "passing_host_neighbors_pcm_fixture_and_uvi_production_sources_unchanged",
+      "status": "PASS_SOURCE_ONLY"
+    },
+    {
+      "check": "old_physical_max_vs_decoded_bound",
+      "declared_max": 20000.0,
+      "decoded_max": 19999.99999999998,
+      "strict_admission_rejects_declared_max": true,
+      "classification": "INDEPENDENT_PYTHON_ARITHMETIC_NOT_RUST_EXECUTION"
+    },
+    {
+      "check": "intended_exact_endpoints_exterior_neighbors_and_unchanged_interior_arithmetic",
+      "status": "PASS_INDEPENDENT_MODEL_ONLY_NOT_RUST_TEST"
+    },
+    {
+      "check": "immutable_official_spec_rehash",
+      "id": "uvi-element",
+      "requested_url": "https://lua.uvi.net/class_element.html",
+      "retrieved_utc": "2026-10-10T03:32:15.500746+00:00",
+      "status": 200,
+      "final_url": "https://lua.uvi.net/class_element.html",
+      "content_type": "text/html",
+      "etag": "\"6ac775e3-b11e\"",
+      "last_modified": "Thu, 08 Oct 2026 10:52:19 GMT",
+      "sha256": "b4516f54b9fd2061c5ba134afc30930b4c7922a4ed78b3badd022a395e5b5200",
+      "bytes": 45342,
+      "file": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/uvi-element.html"
+    },
+    {
+      "check": "immutable_official_spec_rehash",
+      "file": "/tmp/uvi-setter-next-elements.html",
+      "sha256": "ddca396e24ff7a05dbd3be9b2b073cb5a4a7adfb67fbd00d75e597f6c0a08d0f"
+    },
+    {
+      "check": "exact_official_OnePole_Freq_row",
+      "row": [
+        "Freq",
+        "Freq",
+        "float",
+        "20.000",
+        "20000.000",
+        "1000.000",
+        "Hz",
+        "yes",
+        "Filter cutoff frequency"
+      ],
+      "authority": "REQUIREMENTS_EQUIVALENT_ONLY_NATIVE_EXECUTION_UNKNOWN"
+    },
+    {
+      "check": "prior_receipt_rehash_not_new_execution",
+      "run": "uvi-host-parameters",
+      "exit_code": 101,
+      "log_sha256": "6b7b632bc059313f269de00d5af17b1e1aff8a244913b25b1e481cf47961ce63"
+    },
+    {
+      "check": "prior_receipt_rehash_not_new_execution",
+      "run": "uvi-script-unit-neighbors",
+      "exit_code": 0,
+      "log_sha256": "2abe4ba69b8d29dc7d9f0631775f09c4d722d488539b60abede3efc6fc734916"
+    },
+    {
+      "check": "prior_receipt_rehash_not_new_execution",
+      "run": "uvi-fixture-initialized_controller_and_widget_cutoff_writes_change_production_pcm",
+      "exit_code": 0,
+      "log_sha256": "9852296036908ed8ef929d5fe1507488e430b813adf74011fc958efe9837d3a7"
+    },
+    {
+      "check": "prior_receipt_rehash_not_new_execution",
+      "run": "uvi-fixture-streamed_bus_gain_has_live_catalog_defaults_and_controller_readback",
+      "exit_code": 0,
+      "log_sha256": "8ba8455525e4a5cd669c52a0cbf7b070de0eb5aeb6797898757f7d15fb0649ce"
+    },
+    {
+      "check": "prior_receipt_rehash_not_new_execution",
+      "run": "uvi-fixture-set_parameter_reaches_the_runtime",
+      "exit_code": 0,
+      "log_sha256": "b4f6b3e6c2d0be4bb685cc99d78a068339162ccddd63719e03fbf96c42523fb2"
+    },
+    {
+      "check": "source_format_or_whitespace_only",
+      "command": [
+        "git",
+        "diff",
+        "--check",
+        "bac3c616824cf26e2a888c09cb21433b727d9079",
+        "10c29088a85776f50f395d5d58ec4ba87d3eb465"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "source_format_or_whitespace_only",
+      "command": [
+        "rustfmt",
+        "--edition",
+        "2024",
+        "--check",
+        "crates/sampler-core/src/engine_parameters.rs",
+        "crates/sampler-uvi/tests/host_parameters.rs"
+      ],
+      "exit_code": 0
+    }
+  ]
+}
