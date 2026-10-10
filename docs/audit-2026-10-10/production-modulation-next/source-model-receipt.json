@@ -1,0 +1,21 @@
+{
+  "status": "PASS_SOURCE_MODEL_ONLY",
+  "source_sha": "c4fd26fd0a2f1dab3780d3c8b711c302f2713f53",
+  "source_files_rehashed": 16,
+  "public_requirements_archives_rehashed": {
+    "kontakt-modulation.html": "ca330e3207a333061ebca4ee28b0545b5e93c223624ff69ca608c7a85d897c9d",
+    "ksp-engine.html": "4a15e3b10a9da8993c90ddc7681fee9fd62a7eafc5f3685f47b0c5ab37d1d16d",
+    "ksp-engine-commands.html": "df2fe7192f32df7c4a738c713663bafdfec3630c2821fd9afe1887c7d5ed006d"
+  },
+  "unchanged_per_voice_source_declarations": [
+    "pub(crate) struct ModShape",
+    "pub(crate) struct VoiceModState",
+    "pub fn bytes_per_voice"
+  ],
+  "analytic_pcm_requirements_checked": 5,
+  "authored_rust_tests": 10,
+  "rust_compile_and_runtime": "NOT_RUN",
+  "native_ownership_and_live_mutation": "UNKNOWN",
+  "cpu_ram_acceptance": "UNACHIEVED",
+  "memory_limitation": "Source declarations only; no compiler layout, allocator, RSS or performance measurement."
+}
