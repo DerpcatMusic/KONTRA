@@ -12,7 +12,7 @@
 //! aarch64 always has NEON in its baseline, so it needs no dispatch.
 
 mod stereo_fold;
-pub use stereo_fold::fold_stereo;
+pub use stereo_fold::StereoFold;
 
 mod v1_section;
 pub use v1_section::process as filter_section_v1;
