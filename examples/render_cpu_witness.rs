@@ -66,16 +66,16 @@ fn main() {
     let mut samples = Vec::with_capacity(192000 * 2);
     let mut next = 0;
     for begin in (0..192000).step_by(block) {
-        while next < events.len() && events[next].0 < begin + block {
-            let (_, status, a, b) = events[next];
-            core.event(0, Event::midi1(status, a, b));
-            next += 1;
-        }
         core.begin_block(&BlockInfo {
             frames: block,
             offline: true,
             ..Default::default()
         });
+        while next < events.len() && events[next].0 < begin + block {
+            let (_, status, a, b) = events[next];
+            core.event(0, Event::midi1(status, a, b));
+            next += 1;
+        }
         for offset in (0..block).step_by(128) {
             let len = (block - offset).min(128);
             let rendered = core.render(len);

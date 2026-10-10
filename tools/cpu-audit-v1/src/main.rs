@@ -37,8 +37,10 @@ impl Player {
             _ => panic!("event"),
         }
     }
-    fn render(&mut self, frames: usize) -> f32 {
+    fn begin(&mut self, frames: usize) {
         self.0.begin_audio_block(frames, 1, false);
+    }
+    fn render(&mut self, frames: usize) -> f32 {
         let mut peak = 0.0f32;
         for n in (0..frames).step_by(128) {
             let len = (frames - n).min(128);

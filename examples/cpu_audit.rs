@@ -82,11 +82,10 @@ impl Player {
     fn event(&mut self, s: u8, a: u8, b: u8) {
         self.0.event(0, Event::midi1(s, a, b));
     }
+    fn begin(&mut self, frames: usize) {
+        self.0.begin_block(&BlockInfo { frames, ..Default::default() });
+    }
     fn render(&mut self, frames: usize) -> f32 {
-        self.0.begin_block(&BlockInfo {
-            frames,
-            ..Default::default()
-        });
         let mut peak = 0.0f32;
         for n in (0..frames).step_by(128) {
             let len = (frames - n).min(128);
