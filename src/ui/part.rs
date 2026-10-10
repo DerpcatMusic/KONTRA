@@ -387,14 +387,6 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
         face.sync();
     }
 
-    let held = face.bytes() as f64 / (1024. * 1024.);
-    bar.insert(
-        bar.len() - 1,
-        caption(format!("{held:.1} MB pictures"))
-            .fill(secondary())
-            .lines(1)
-            .tip("Decoded artwork this view keeps in memory"),
-    );
     let mode = if a {
         crate::library::ViewMode::Original
     } else if b {
@@ -722,17 +714,14 @@ pub fn badge_text(controllers: &str, picked: i16, loaded: u8, needs: bool) -> St
     }
 }
 
-/// What the part plays and listens to, in one line under its header: the
-/// articulation (with its effective trigger), the instrument volume, the dynamics
-/// controller it waits for (one click sets where it starts) and MPE.
-pub fn performance(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
+/// The articulation playing and its effective trigger; controller setup lives in Settings.
+pub fn performance(_ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
     let v = cx.view.parts.get(slot)?;
     let (inst, report) = (v.instrument.clone(), v.report.clone());
     if inst.is_none() && report.is_none() {
         return None;
     }
     let mut rows = Vec::new();
-    let mut items = Vec::new();
     if let Some(inst) = inst.as_deref() {
         if let Some(n) = inside::active(cx, slot).filter(|&n| n < inst.articulations.len()) {
             let a = &inst.articulations[n];
@@ -755,83 +744,9 @@ pub fn performance(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
                 .id(format!("perf-art-{slot}")),
             );
         }
-        if let Some(text) = volume_text(inst) {
-            items.push(
-                row![caption("Volume").fill(secondary()), body(text).lines(1)]
-                    .gap(SPACE)
-                    .align(Align::Center)
-                    .shrink(0)
-                    .tip("The instrument's saved volume until CC7 arrives; then CC7 cubed")
-                    .id(format!("perf-vol-{slot}")),
-            );
-        }
     }
-    let dynamics = report
-        .as_ref()
-        .map(|r| r.decoded.dynamics.clone())
-        .unwrap_or_default();
-    let moving: Vec<_> = dynamics
-        .iter()
-        .filter(|&&(cc, _)| cc != 11)
-        .map(|&(cc, _)| format!("CC{cc}"))
-        .collect();
-    if !moving.is_empty() {
-        let now = cx.selection.parts[slot].dynamics;
-        let mut picked = now;
-        let tabs = [(-1, "Kontakt"), (64, "64"), (127, "127")]
-            .into_iter()
-            .map(|(value, label)| {
-                let (hit, el) = latch(
-                    ui,
-                    format!("dyn-{slot}-{value}"),
-                    label,
-                    &format!("Start {} at {label}", moving.join("/")),
-                    now == value,
-                );
-                if hit {
-                    picked = value;
-                }
-                el
-            })
-            .collect();
-        cx.selection.parts[slot].dynamics = picked;
-        // The picked start is what the next load uses; the report shows the last load's.
-        let loaded = dynamics
-            .iter()
-            .find(|&&(cc, _)| cc != 11)
-            .map_or(0, |d| d.1);
-        let needs = report.as_ref().is_some_and(|r| r.decoded.needs_controller);
-        let words = badge_text(&moving.join("/"), picked, loaded, needs);
-        let badge = if words.starts_with("Needs") {
-            caption(words.clone()).fill(Role::Warning).tip(format!(
-                "{words}\nNear-silent until the controller moves; set where it starts"
-            ))
-        } else {
-            caption(words.clone()).fill(secondary()).tip(words)
-        };
-        items.push(
-            row![
-                badge
-                    .lines(1)
-                    .flex(1)
-                    .min_w(0)
-                    .id(format!("perf-needs-{slot}")),
-                segmented(tabs).shrink(0)
-            ]
-            .gap(SPACE)
-            .align(Align::Center)
-            .flex(1)
-            .min_w(CONTROL * 9.),
-        );
-    }
-    if !items.is_empty() {
-        rows.push(
-            row(items)
-                .wrap()
-                .gap(SPACE * 2.)
-                .line_gap(TIGHT)
-                .align(Align::Center),
-        );
+    if rows.is_empty() {
+        return None;
     }
     Some(
         col(rows)
