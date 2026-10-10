@@ -1,0 +1,27 @@
+{
+  "state": "STATIC_CUSTODY_VERIFIED_NOT_PRODUCT_VALIDATION",
+  "source_sha": "3cc0f94ea625715028897d4611c0d477ccfed724",
+  "parent_sha": "2a243bcfa2262abb789265aa0951fd2a85854023",
+  "source_files": 20,
+  "symbol_span_records": 39,
+  "versioned_spans": 67,
+  "historical_retraces": 13,
+  "tests_not_run": 14,
+  "immutable_archives": 4,
+  "sections_reextracted": 7,
+  "corruption_cases_rejected": [
+    "source_commit",
+    "source_tree",
+    "file_digest",
+    "git_blob",
+    "source_span_digest",
+    "test_name",
+    "test_credit",
+    "fixture_swap",
+    "archive_digest",
+    "excerpt_corruption"
+  ],
+  "native": "UNKNOWN",
+  "cpu_and_ram_below_both": "UNACHIEVED",
+  "limit": "Hash/metadata/source/scalar checks only; not Rust compilation, execution, native behavior, or performance evidence."
+}
