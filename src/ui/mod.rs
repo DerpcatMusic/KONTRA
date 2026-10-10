@@ -1202,7 +1202,10 @@ fn build(
         scope: 0,
         corner: None,
     };
+    let activity = params.shared.ui_activity.clone();
     move |ui, bridge| {
+        use crate::plugin::ui_activity::Phase;
+        let _frame = activity.span(Phase::UiBuildFrame);
         // The loader also runs from the audio thread; poll here so a stopped host still loads.
         if state.last_poll.elapsed() > Duration::from_millis(100) {
             if let Some(tasks) = bridge.context().and_then(|c| c.tasks::<Load>()) {
@@ -1212,6 +1215,7 @@ fn build(
         }
         let p = bridge.params().clone();
         p.shared.editor_watch.store(usize::MAX, Ordering::Relaxed);
+        let snapshot = activity.span(Phase::UiSnapshotReadback);
         let mut selection = read(&p.selection).clone();
         p.shared.ensure_parts(selection.parts.len());
         let mut view = shown(&p.shared.view);
@@ -1220,6 +1224,7 @@ fn build(
             PartView::default,
         );
         let before = selection.clone();
+        drop(snapshot);
         sanitize(&mut selection);
         let focus = p.shared.focus_request.swap(u64::MAX, Ordering::Relaxed);
         if focus < selection.parts.len() as u64 {
