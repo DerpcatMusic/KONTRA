@@ -394,7 +394,21 @@ fn sender_and_receiver_waits_stay_in_retained_generation_and_part() {
         assert_eq!(cell(&other_part, 1, 0), -1);
         assert_eq!(rt.take_fault(), None);
         rt.panic();
-        rt.flush_behaviors(|_, _, _| true);
+        rt.flush_behaviors(|_, _, outcome| {
+            assert_eq!(outcome, Outcome::Finished);
+            true
+        });
+        // A rejected external NOTE_END still owns the old generation.
+        rt.flush_ended(|_| false);
+        assert_eq!(rt.note_count(), 1);
+        assert_eq!(rt.collect_retired_plans(), 0);
+        let mut ended = 0;
+        rt.flush_ended(|origin| {
+            assert_eq!(origin, input(60));
+            ended += 1;
+            true
+        });
+        assert_eq!((ended, rt.note_count()), (1, 0));
         assert_eq!(rt.collect_retired_plans(), 1);
         assert_eq!(
             rt.script_cell(old_id, ScriptInstanceId(1), 0),
@@ -456,6 +470,11 @@ fn midi_and_nka_job_ids_wait_completion_and_instances_remain_independent() {
         note(&mut rt, 60);
         assert_eq!(cell(&rt, 1, 0), 16383);
         assert_eq!(cell(&rt, 1, 1), -1);
+        assert!(cell(&rt, 0, 1) > 0, "MIDI job must be admitted");
+        assert_eq!(
+            (cell(&rt, 0, 2), cell(&rt, 0, 3), cell(&rt, 0, 4)),
+            (0, 0, 0)
+        );
         rt.drain_effects(|effect| {
             assert!(midi_effect.is_none());
             midi_effect = Some(*effect);
@@ -473,6 +492,7 @@ fn midi_and_nka_job_ids_wait_completion_and_instances_remain_independent() {
         midi.instance = ScriptInstanceId(0);
         rt.complete_midi(plan, &mut midi).unwrap();
         assert_eq!(cell(&rt, 1, 1), 0);
+        assert_eq!((cell(&rt, 0, 3), cell(&rt, 0, 4)), (0, 1));
         rt.drain_effects(|effect| {
             assert!(nka_effect.is_none());
             nka_effect = Some(*effect);
@@ -482,6 +502,12 @@ fn midi_and_nka_job_ids_wait_completion_and_instances_remain_independent() {
     let nka_effect = nka_effect.unwrap();
     assert_eq!(nka_effect.service, ARRAY_FILE_SERVICE);
     assert_eq!(nka_effect.instance, Some(ScriptInstanceId(0)));
+    assert_eq!(nka_effect.plan, plan);
+    assert!(
+        nka_effect.args[0] > midi_effect.args[1],
+        "shared job IDs must advance"
+    );
+    assert_eq!(cell(&rt, 0, 2), nka_effect.args[0]);
     let mut nka = ArrayFileCompletion::from_effect(&nka_effect).unwrap();
     support::without_heap(|| {
         rt.capture_array_file(plan, &mut nka).unwrap();
