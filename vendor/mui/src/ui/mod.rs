@@ -137,6 +137,10 @@ pub struct Ui {
     actions: Vec<SemanticAction>,
     hit: Hit,
     scene: Option<Arc<ResolvedScene>>,
+    /// A failed walk can change the glyph coordinate cache without a commit.
+    glyph_recovery: bool,
+    /// Scene-copy admission owes a fresh walk after a font-chain/grid change.
+    scene_environment_changed: bool,
     /// Everything kept under a node key between frames: see [`NodeState`].
     nodes: Nodes,
     /// Nodes that left the tree, still fading out where they stood.
@@ -289,6 +293,8 @@ impl Ui {
             actions: Vec::new(),
             hit: Hit::default(),
             scene: None,
+            glyph_recovery: false,
+            scene_environment_changed: false,
             nodes: Nodes::default(),
             ghosts: Vec::new(),
             identities: HashMap::new(),
@@ -346,6 +352,7 @@ impl Ui {
     /// Swap the primary font after construction; `None` measures with the
     /// 0.6em guess. [`Ui::font`] is the builder form.
     pub fn set_font(&mut self, font: Option<Font>) {
+        self.scene_environment_changed |= self.font != font;
         self.font = font;
     }
     /// The window's device pixels per logical unit, if the host set one.
@@ -362,6 +369,7 @@ impl Ui {
     /// assert_eq!(ui.scale(), Some(2.0));
     /// ```
     pub fn set_scale(&mut self, scale: Option<f64>) {
+        self.scene_environment_changed |= self.scale != scale;
         self.scale = scale;
     }
     /// Seconds between two presses on one target that still make a double
@@ -378,13 +386,14 @@ impl Ui {
     }
     /// Set the font.
     pub fn font(mut self, font: Font) -> Self {
-        self.font = Some(font);
+        self.set_font(Some(font));
         self
     }
     /// Add a font used when the primary face has no glyph for a grapheme.
     /// The selected face is retained in the scene text payload, so CPU and
     /// GPU renderers use the same fallback choice.
     pub fn fallback_font(mut self, font: Font) -> Self {
+        self.scene_environment_changed = true;
         self.fallback_fonts.push(font);
         self.runs.set_fallbacks(self.fallback_fonts.clone());
         self
@@ -732,6 +741,8 @@ impl Ui {
         self.kept.clear();
         self.memo_ids.clear();
         self.scene = None;
+        self.glyph_recovery = false;
+        self.scene_environment_changed = false;
         self.ghosts.clear();
         self.resolver = Resolver::default();
         std::mem::take(&mut self.edits)
@@ -956,7 +967,15 @@ impl Ui {
         let heats = self.bar_heats();
         let (moving, shaped) = self.sweep(&mut root, dt);
         animating |= moving;
-        let (mut scene, glided, root) = self.resolve(root, offered, dt, heats)?;
+        let (mut scene, glided, root) = match self.resolve(root, offered, dt, heats, &memos) {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                // Keep the committed scene, but it no longer proves what
+                // the resolver's last_coords saw before this walk failed.
+                self.glyph_recovery = true;
+                return Err(error);
+            }
+        };
         self.capture(root, &memos);
         animating |= glided;
         animating |= self.after_motion(&mut scene, shaped, dt);
@@ -1162,6 +1181,7 @@ impl Ui {
         offered: Option<Size>,
         dt: f64,
         heats: rustc_hash::FxHashMap<Id, f64>,
+        memos: &[(Vec<usize>, u64)],
     ) -> Result<(ResolvedScene, bool, El), SceneError> {
         let mut spec = SceneSpec::new(root).theme(self.theme.clone());
         spec.limits.extent = Self::virtual_scroll_extent(&mut spec.root, spec.limits, self.scale)?;
@@ -1197,8 +1217,30 @@ impl Ui {
                     size: Size::new(s[2].value, s[3].value),
                 }
             },
-            self.scene.as_deref(),
-        )?;
+            // ponytail: one environment change rewalks scene paint, including
+            // nested spans and text that previously had no font/glyph paint.
+            // Memo trees/closures still reuse. Selective paint admission would
+            // require dependency stamps in the locked scene-copy API.
+            self.scene.as_deref().filter(|_| !self.scene_environment_changed),
+        );
+        let scene = match scene {
+            Ok(scene) => scene,
+            Err(error) => {
+                // Splice took these trees out of TREES. Return them even
+                // without a scene commit, so unrelated memos can still reuse.
+                // Fresh trees have no matching committed paint yet: retry
+                // their closures rather than labelling that paint reusable.
+                for (path, id) in memos {
+                    if memo::node_at(&mut spec.root, path).payload().extras().memo
+                        .is_some_and(|m| !m.reused)
+                    {
+                        self.hot.insert(*id);
+                    }
+                }
+                self.capture(spec.root, memos);
+                return Err(error);
+            }
+        };
         if self
             .scene
             .as_ref()
@@ -1239,6 +1281,7 @@ impl Ui {
         // the gesture map is reused. Register only this frame's list keys.
         self.hit
             .prepare_clips(scene.surfaces().filter_map(|s| s.clip_paths()))?;
+        self.scene_environment_changed = false;
         Ok((scene, glided, spec.root))
     }
 
