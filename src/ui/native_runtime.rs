@@ -35,6 +35,33 @@ pub(super) struct Images {
     request: std::sync::mpsc::SyncSender<String>,
 }
 impl Images {
+    #[cfg(test)]
+    pub(super) fn presentation_fixture() -> Self {
+        // No worker: tests publish completion at a deterministic frame edge.
+        let (request, _jobs) = std::sync::mpsc::sync_channel(1);
+        Self {
+            request,
+            cache: Arc::new(Mutex::new(ImageCache {
+                loaded: HashMap::new(),
+                pending: BTreeSet::new(),
+                touch: HashMap::new(),
+                tick: 0,
+                bytes: 0,
+                #[cfg(feature = "shots")]
+                scan: Default::default(),
+            })),
+        }
+    }
+    #[cfg(test)]
+    pub(super) fn presentation_complete(&self, name: &str, image: Arc<Image>) {
+        let mut cache = self.cache.lock_unpoisoned();
+        cache.bytes += image.rgba.len();
+        if let Some(Some(old)) = cache.loaded.insert(name.into(), Some(image)) {
+            cache.bytes -= old.rgba.len();
+        }
+        drop(cache);
+        super::picture_worker::completed();
+    }
     pub fn get(&self, name: &str) -> Option<Arc<Image>> {
         if name.len() > 4096 {
             return None;
