@@ -36,40 +36,27 @@ fn unit(t: &Table) -> Option<f64> {
     }))
 }
 
-fn number_text(value: f64, integer: bool) -> String {
-    if integer {
-        format!("{value:.0}")
-    } else {
-        format!("{value:.3}")
-            .trim_end_matches('0')
-            .trim_end_matches('.')
-            .to_owned()
-    }
-}
-
-// Native enum IDs are installed by the host shim. Unit changes only the
-// readout, never the engine value, range, sprite position, or edit payload.
+// Numeric host IDs select the same readout formatter used by the renderer.
 fn unit_text(value: f64, integer: bool, unit: Option<f64>) -> String {
-    let (value, suffix) = match unit {
-        Some(1.) => (value, "%"),
-        Some(2.) => (value * 100., "%"),
-        Some(3.) if value.abs() < 1. => (value * 1000., "ms"),
-        Some(3.) => (value, "s"),
-        Some(5.) if value.abs() > 1000. => (value / 1000., "s"),
-        Some(5.) => (value, "ms"),
-        Some(7.) if value.abs() > 1000. => (value / 1000., "kHz"),
-        Some(7.) => (value, "Hz"),
-        Some(9.) => (value, "dB"),
-        Some(11.) if value <= 0. => return "-inf dB".into(),
-        Some(11.) => (20. * value.log10(), "dB"),
-        Some(12.) if value == 0. => return "Center".into(),
-        Some(14.) => (value, "st"),
-        // Nonzero Pan rounding and UVI filter formatting need calibration.
-        _ => return number_text(value, integer),
+    let name = match unit {
+        Some(1.) => "Percent",
+        Some(2.) => "PercentNormalized",
+        Some(3.) => "Seconds",
+        Some(5.) => "MilliSeconds",
+        Some(7.) => "Hertz",
+        Some(9.) => "Decibels",
+        Some(10.) => "UviFilter",
+        Some(11.) => "LinearGain",
+        Some(12.) => "Pan",
+        Some(13.) => "Megabyte",
+        Some(14.) => "SemiTones",
+        Some(15.) => "Cents",
+        Some(16.) => "MidiKey",
+        _ => "",
     };
-    format!("{} {suffix}", number_text(value + 0., false))
+    ui::Display { unit: name.into(), ..Default::default() }
+        .format_value(value, integer, ui::Source::FalconLua)
 }
-
 
 fn num(t: &Table, key: &str) -> Option<f64> {
     match t.get::<Value>(key).ok()? {

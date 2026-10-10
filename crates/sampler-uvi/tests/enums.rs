@@ -52,3 +52,26 @@ fn real_unit_and_mapper_enum_ids_preserve_authored_values_and_normalized_edits()
     assert_eq!(face.widgets[1].mapper.as_deref(), Some("Exponential"));
     assert_eq!(face.widgets[2].mapper.as_deref(), Some("QuinticRoot"));
 }
+
+#[test]
+fn numeric_units_and_shared_renderer_formatters_agree_without_rescaling() {
+    for (id, name, value) in [
+        (0, "Generic", 0.125), (1, "Percent", 12.5),
+        (2, "PercentNormalized", 0.25), (3, "Seconds", 0.5),
+        (5, "MilliSeconds", 1500.), (7, "Hertz", 1500.),
+        (9, "Decibels", -12.), (10, "UviFilter", 0.5),
+        (11, "LinearGain", 0.25), (12, "Pan", 0.),
+        (13, "Megabyte", 1.25), (14, "SemiTones", 12.),
+        (15, "Cents", 25.), (16, "MidiKey", 60.),
+    ] {
+        let xml = format!("<UVI4><Program><EventProcessors><ScriptProcessor><script><![CDATA[Knob{{'K',{value},-10000,10000,unit={id}}}]]></script></ScriptProcessor></EventProcessors></Program></UVI4>");
+        let host = ScriptHost::new(&xml, (), Config::default()).unwrap();
+        assert!(host.findings().is_empty(), "{:?}", host.findings());
+        let face = host.interface();
+        let widget = &face.widgets[0];
+        let expected = sampler_ui_ir::Display { unit: name.into(), ..Default::default() }
+            .format_value(value, false, sampler_ui_ir::Source::FalconLua);
+        assert_eq!(widget.initial_value, value);
+        assert_eq!(widget.value_text.as_deref(), Some(expected.as_str()), "{id}: {name}");
+    }
+}
