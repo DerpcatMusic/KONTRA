@@ -1514,6 +1514,74 @@ mod tests {
     use super::*;
 
     #[test]
+    fn native_seed_reuses_unchanged_readback_and_keeps_authored_scalar_policy() {
+        let (_done, loading) = std::sync::mpsc::sync_channel(1);
+        let mut widget = ir::Widget::new(
+            "$readback",
+            ir::PageRef(0),
+            Default::default(),
+            ir::Kind::Label,
+        );
+        widget.binding = ir::Binding::Control(ir::ControlId(42));
+        widget.value = Some(ir::Value::Integer(20));
+        widget.text = "Authored caption".into();
+        let mut face = ir::Interface {
+            source: ir::Source::Ksp { slot: 2 },
+            widgets: vec![widget.clone()],
+            ..Default::default()
+        };
+        // Exercise publication before a local VM exists, without a resource worker.
+        let mut state = State {
+            id: NEXT.fetch_add(1, Ordering::Relaxed),
+            loading,
+            canceled: Arc::new(AtomicBool::new(false)),
+            package: None,
+            failed: false,
+            failure: None,
+            started: false,
+            entry: "main".into(),
+            seed: vec![
+                (face.source, 0, widget.clone()),
+                (ir::Source::Ksp { slot: 4 }, 0, widget),
+            ],
+            size: Size::new(970., 600.),
+            #[cfg(feature = "shots")]
+            graph_depth: None,
+            #[cfg(feature = "shots")]
+            graph_work: None,
+        };
+        let values = HashMap::from([(ir::ControlId(42), 75.25)]);
+        let meters = HashMap::new();
+        for value in [
+            ir::Value::Text("Callback readback".into()),
+            ir::Value::Integers(vec![1, 2, 3]),
+            ir::Value::Reals(vec![0.25, 0.5]),
+            ir::Value::Integer(75),
+            ir::Value::Real(75.25),
+        ] {
+            let typed = HashMap::from([(ir::WidgetRef(0), value.clone())]);
+            state.update_view(&face, &values, &typed, &meters);
+            let heap_calls = crate::plugin::tests::allocations(|| {
+                for _ in 0..64 {
+                    state.update_view(&face, &values, &typed, &meters);
+                }
+            });
+            assert_eq!(heap_calls, 0, "unchanged Native seed recopied {value:?}");
+            assert_eq!(state.seed[0].2.value.as_ref(), Some(&value));
+            assert_eq!(state.seed[1].2.value, Some(ir::Value::Integer(20)));
+        }
+        face.widgets[0].text = "Changed caption".into();
+        face.widgets[0].hidden = true;
+        state.update_view(&face, &values, &Default::default(), &meters);
+        assert_eq!(state.seed[0].2.text, "Changed caption");
+        assert!(state.seed[0].2.hidden);
+        assert_eq!(
+            state.seed[0].2.value,
+            Some(ir::Value::Integer(20)),
+            "the seed retains authored scalars; only the local Session overlays telemetry"
+        );
+    }
+    #[test]
     fn editor_memory_repeated_layout_queries_do_not_rewalk_the_subtree() {
         let lua = mlua::Lua::new();
         lua.set_memory_limit(128 << 20).unwrap();
