@@ -1,0 +1,239 @@
+{
+  "schema": 1,
+  "source_sha": "21bcdde3b545c20571ed3475b5285e6575119fce",
+  "base_sha": "51e0b9e78d543acfed1392c623119a312ae8e5cb",
+  "integration_head_observed": "429e7dff3ecb0f53aef32c43201ab796ccc8c28c",
+  "scope": "following-batch Python admission only; no engine source changed",
+  "files": {
+    "tools/cpu-audit-native.py": "64e51b4c6ca886c4e4401500475d935cc2250f0fc1fc69fbb0d51f10544beea9",
+    "tools/check-cpu-audit-receipts.py": "53cfddc750fab29cae5bee9c967a29a9a3ad262f7a02edeacde8b342a5f90772",
+    "tools/kontra-gate/live_host.py": "6b25305beb08b102fe83f744c6a61967c3a54b0c8dd376126838763e7b8816c9",
+    "vendor/moose-clap/tests/live_performance.cpp": "76c617e404794084ee08ca7a8497c58f1810a684718efd5f2595ce5cf0d16a85",
+    "tools/cpu-audit-schedules.rs": "274abc5ccfceb57e9422d59d7b01bc2cd8e757538fe0826d9f76dfdb9c621dbf"
+  },
+  "frozen_v1": {
+    "source_sha": "0cb7a8a0b4d43086596a64c77320caa1b26d6d98",
+    "manifest": "/home/derpcat/.cache/kontra-v1/SHA256SUMS",
+    "manifest_sha256": "ccc7b9f464ae99a217550efba0d4b29fb0f2fd767d35368bb1b08ccde32f4fbc",
+    "integrity": "all 7 entries PASS read-only in this round",
+    "cpu_adapter_sha256": "b9998ca2ce2f2ed4f9f88bbfb11c5e884fa162a87cdf89f26ece6f1248fdc6ab",
+    "profile_adapter_sha256": "5537c8fbfa29bb2b23860bf789d5122b313e78c614419bf870fbd3146907569f"
+  },
+  "prepared_input_manifests": {
+    "kontakt11.tsv": {
+      "path": "/home/derpcat/.cache/kontra-runs/w8-load-all14-prepared-20261009/kontakt11.tsv",
+      "sha256": "55c4aa306b4737f6e108a2b91299b30918593e01c3d3dfef1f8b930a009f48b7",
+      "allowed": "Kontakt only"
+    },
+    "uvi3.tsv": {
+      "path": "/home/derpcat/.cache/kontra-runs/w8-load-all14-prepared-20261009/uvi3.tsv",
+      "sha256": "35f240da1a8122cbe67886aee95654b627f88c133add9ddeaa0aa903d92c98bd",
+      "allowed": "DO NOT EXECUTE under current reader constraint"
+    },
+    "all14.tsv": {
+      "path": "/home/derpcat/.cache/kontra-runs/w8-load-all14-prepared-20261009/all14.tsv",
+      "sha256": "21d907ce0caf10d4640922b3856067800ee2ef0cd7f83300b0257bc2aeba222a",
+      "allowed": "DO NOT EXECUTE under current reader constraint"
+    }
+  },
+  "native_reference": {
+    "package": "/home/derpcat/.t3/worktrees/KONTAKTO/fix-w13-clap-editor-rss/docs/audit-2026-10-10/pi-head-reload-reference.json",
+    "package_sha256": "ee85cad917a4f69afde8a112ad5a33cad0b2dad0dee608b18517bed7d07bd384",
+    "documentation": {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/classic-view#dfd-tab",
+      "full_html_sha256": "846a09243ad7d17d8daa92bf5105418501ebb25cd358ba8d09108ffb5d4ae7c4",
+      "full_html_bytes": 564636,
+      "retained_excerpts": [
+        "In the DFD Tab you can access the options for Direct From Disk streaming. This allows Kontakt to read samples directly from the Hard Drive, and only load a small section of the sample in RAM, reducing the overall RAM usage of the Instrument.",
+        "DFD Preload Buffer Size: With this slider, you can adjust the size of each Sample portion that will be buffered in memory for instant playback. This value applies only to Samples that belong to Groups whose Source Module is operating in DFD mode. If any Group in DFD mode causes drop-outs which disappear when you put the respective Source Module into Sampler mode, you might want to try increasing this parameter.",
+        "Background loading: The Background loading option Allow instant playback for samples which are not loaded yet is available here. Enable this option to have Kontakt play every triggered note during Background Loading. Under certain special circumstances, playing notes while loading samples in the background may cause \u2019flam\u2019-like glitches or other unexpected audio artifacts as Kontakt attempts to play a sample it has not yet loaded. Disable this option to avoid such artifacts."
+      ],
+      "scope_limit": "Documentation describes NI DFD settings; it does not expose native internal reload locking/budget algorithms or performance."
+    },
+    "immutable_native_receipt": {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/t3code-80fe786b/artifacts/ni-file-records-2026-10-08/check-results.json",
+      "sha256": "f56987ad0ee1cf1783c0774ea91d503e93852341ebf0d0d23855491f7ac598e2",
+      "sources_path": "/home/derpcat/.t3/worktrees/KONTAKTO/t3code-80fe786b/artifacts/ni-file-records-2026-10-08/sources.json",
+      "sources_sha256": "4cfbf652b7aca9e475ac9b2bb8386635dcd52cb1930ab76fdfb487fdf7f419cd",
+      "kontakt_standalone": {
+        "sha256": "0fe6356e0879d058b6e5b73507c54c5e345cea451b35287c974e438291d4dae8",
+        "image_base": "0x140000000"
+      },
+      "kontakt_payload": {
+        "sha256": "8ed90c4b9dd2bb2c5cc45b64dea144f6cca245c706457de4aa72c643a8acc09d",
+        "image_base": "0x180000000"
+      },
+      "public_reader_va": "0x140d0d4b0",
+      "dfd_preload_serializable_receiver_offset": "0x21b60",
+      "reference_document": "docs/re/NI_FILE_BINARY_RECORDS.md:113",
+      "public_prefix_helper_calls": [
+        "0x140cfbaf0",
+        "0x142a78160",
+        "0x142a780c0",
+        "0x142a780f0",
+        "0x142a780f0",
+        "0x142a780f0",
+        "0x142a780c0",
+        "0x142a780c0",
+        "0x142a780c0",
+        "0x142a780c0",
+        "0x142a78220",
+        "0x142a78270",
+        "0x142a78270",
+        "0x142a78270",
+        "0x142a78270",
+        "0x140d0ee85",
+        "0x142a780c0",
+        "0x142a78270",
+        "0x140cfbaf0",
+        "0x140cfbaf0",
+        "0x140cfbaf0",
+        "0x142a78220",
+        "0x142a78220",
+        "0x142a78220"
+      ],
+      "receipt_passed": true,
+      "proprietary_code_executed": false,
+      "native_full_dsp_or_audio_parity_proven": false
+    },
+    "equivalent_evidence": "existing authoritative documentary/static receipt re-read and both native JSON hashes reverified; no new REA session/official execution",
+    "performance": "UNKNOWN",
+    "reload_lock_parity": "UNKNOWN"
+  },
+  "preparation_activity": {
+    "status": "CONTENDED",
+    "wall_ns": 1791599370625009727,
+    "units": [],
+    "processes": [
+      {
+        "pid": 3911912,
+        "kind": "cargo",
+        "owned": false
+      }
+    ],
+    "errors": [],
+    "timed_admission": "UNKNOWN: preparation-only snapshot"
+  },
+  "historical_w9": {
+    "receipt": "/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w9-horns-frame-diff-20261010/comparison-quiet-retry1.json",
+    "sha256": "1b18bc5a8b231dcb6c64cb8a9b9cc622f89b41b1e95648ea68373a73df5fac3a",
+    "source_before": "d8f1c6237eb774934b3a1914ee0bf0a698571c4c",
+    "source_after": "5340a42570af7303f5d974b848b0f8ee78676453",
+    "quiet_rows": [
+      {
+        "side": "v1",
+        "temperature": "cold",
+        "block": 256,
+        "steady": {
+          "blocks": 141,
+          "max_us": 321.516,
+          "p50_us": 167.863,
+          "p99_us": 295.746
+        },
+        "voices_peak": 192,
+        "rss_kb_loaded": 450044,
+        "rss_kb_final": 472764,
+        "binary_sha256": "5537c8fbfa29bb2b23860bf789d5122b313e78c614419bf870fbd3146907569f"
+      },
+      {
+        "side": "before",
+        "temperature": "cold",
+        "block": 256,
+        "steady": {
+          "blocks": 141,
+          "max_us": 3384.024,
+          "p50_us": 2140.921,
+          "p99_us": 3306.043
+        },
+        "voices_peak": 192,
+        "rss_kb_loaded": 135488,
+        "rss_kb_final": 137128,
+        "binary_sha256": "80c02320b50d5abf25fd6163ed76e4c7397a4f5dda841a2c47d6f7554102968a"
+      },
+      {
+        "side": "after",
+        "temperature": "cold",
+        "block": 256,
+        "steady": {
+          "blocks": 141,
+          "max_us": 3693.67,
+          "p50_us": 2146.29,
+          "p99_us": 2534.998
+        },
+        "voices_peak": 192,
+        "rss_kb_loaded": 135496,
+        "rss_kb_final": 137096,
+        "binary_sha256": "700d7ffcf5bbdfe396116324b9ddb3385fded4b6eed01caf2ca4467c5c14b946"
+      },
+      {
+        "side": "after",
+        "temperature": "warm",
+        "block": 256,
+        "steady": {
+          "blocks": 141,
+          "max_us": 3895.234,
+          "p50_us": 2194.291,
+          "p99_us": 2540.469
+        },
+        "voices_peak": 192,
+        "rss_kb_loaded": 135416,
+        "rss_kb_final": 137124,
+        "binary_sha256": "700d7ffcf5bbdfe396116324b9ddb3385fded4b6eed01caf2ca4467c5c14b946"
+      },
+      {
+        "side": "before",
+        "temperature": "warm",
+        "block": 256,
+        "steady": {
+          "blocks": 141,
+          "max_us": 3633.078,
+          "p50_us": 2072.749,
+          "p99_us": 2459.517
+        },
+        "voices_peak": 192,
+        "rss_kb_loaded": 135380,
+        "rss_kb_final": 137060,
+        "binary_sha256": "80c02320b50d5abf25fd6163ed76e4c7397a4f5dda841a2c47d6f7554102968a"
+      },
+      {
+        "side": "v1",
+        "temperature": "warm",
+        "block": 256,
+        "steady": {
+          "blocks": 141,
+          "max_us": 332.567,
+          "p50_us": 175.333,
+          "p99_us": 326.816
+        },
+        "voices_peak": 192,
+        "rss_kb_loaded": 449944,
+        "rss_kb_final": 474488,
+        "binary_sha256": "5537c8fbfa29bb2b23860bf789d5122b313e78c614419bf870fbd3146907569f"
+      }
+    ],
+    "scope": "historical rejected SSE experiment only; not current candidate CPU/RAM proof"
+  },
+  "checks": {
+    "no_host_fixture_tests": 6,
+    "no_host_fixture_status": "PASS",
+    "schedule_self_check": "PASS",
+    "live_host_fixtures": "PASS",
+    "contention_fixtures": "PASS",
+    "editor_cycle_tests": "5/5 PASS",
+    "audit_load_self_check": "PASS",
+    "diff_check": "PASS",
+    "red_missing_selected_source": "exit1: AssertionError not raised by pre-fix main; mocked observation reached MEASURED",
+    "rust_build_or_test": "NOT RUN",
+    "live_host": "NOT RUN"
+  },
+  "current618_combined_receipt": "PENDING from parent; this evidence does not infer its result",
+  "acceptance": {
+    "cpu_vs_v1": "UNKNOWN",
+    "ram_vs_v1": "UNKNOWN",
+    "cpu_vs_kontakt": "UNKNOWN",
+    "ram_vs_kontakt": "UNKNOWN",
+    "cold_warm_onset_underruns": "UNKNOWN",
+    "io_held_guard_lifecycle_latency": "UNKNOWN",
+    "target_achieved": false
+  }
+}
