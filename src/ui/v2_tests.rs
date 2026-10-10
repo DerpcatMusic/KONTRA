@@ -684,7 +684,13 @@ fn the_performance_line_keeps_articulation_and_hides_controller_setup() {
     h.idle(4);
     let there = |h: &Harness, id: &str| h.ui.scene().unwrap().surface(id).is_some();
     assert!(there(&h, "perf-art-0"));
-    for id in ["perf-vol-0", "perf-needs-0", "dyn-0--1", "dyn-0-64", "dyn-0-127"] {
+    for id in [
+        "perf-vol-0",
+        "perf-needs-0",
+        "dyn-0--1",
+        "dyn-0-64",
+        "dyn-0-127",
+    ] {
         assert!(!there(&h, id), "advanced controller setup is absent: {id}");
     }
     assert_eq!(
@@ -4610,6 +4616,310 @@ fn native_voice_group_filter_graphs_deduplicate_and_keep_control_owners() {
 }
 
 /// Sound's Mapping is the same read-only IR view as the chrome shortcut.
+/// Counts waveform ink away from the baseline; full-height trim/loop markers cancel
+/// against the same column's background. This inspects the rendered pixels.
+fn mapping_waveform_off_center_pixels(ui: &Harness, w: u16, h: u16) -> usize {
+    let frame = ui.ui.scene().unwrap().surface("map-wave-0").unwrap().frame;
+    let image = pixels(&ui.ui, w, h);
+    let rgb = |x: usize, y: usize| {
+        let at = (y * usize::from(w) + x) * 4;
+        image[at..at + 3].iter().map(|&c| i32::from(c)).sum::<i32>()
+    };
+    let top = (frame.y + 3.).max(0.) as usize;
+    let center = (frame.y + frame.size.height / 2.).max(0.) as usize;
+    let left = (frame.x + frame.size.width * 0.1).max(0.) as usize;
+    let right = (frame.x + frame.size.width * 0.9).min(f64::from(w)) as usize;
+    assert!(
+        center + 4 < usize::from(h),
+        "waveform is visible above the keyboard"
+    );
+    (left..right)
+        .filter(|&x| {
+            [-4isize, -3, 3, 4]
+                .into_iter()
+                .any(|dy| rgb(x, center.checked_add_signed(dy).unwrap()) > rgb(x, top) + 72)
+        })
+        .count()
+}
+
+#[test]
+#[ignore = "real library RAM/paint witness; run only in the coordinator's queued acceptance turn"]
+fn mapping_selected_source_ready_peaks_have_off_center_pixels() {
+    use crate::sound::waveform::State as WaveState;
+    use moose::prelude::BackgroundTask;
+    let Some(path) = std::env::var_os("KONTAKTO_MAPPING_PAINT_PRESET") else {
+        eprintln!("SKIP mapping paint witness: preset not selected");
+        return;
+    };
+    let path = std::path::PathBuf::from(path);
+    if !path.exists() {
+        eprintln!("SKIP mapping paint witness: fixture library absent");
+        return;
+    }
+    let sample = std::env::var("KONTAKTO_MAPPING_PAINT_SAMPLE")
+        .expect("selected screenshot sample basename");
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    p.selection
+        .write()
+        .unwrap()
+        .parts
+        .push(crate::plugin::Part {
+            path: path.display().to_string(),
+            ..Default::default()
+        });
+    for _ in 0..600 {
+        crate::plugin::Load.run(&p);
+        if p.shared.view.lock().unwrap().parts[0].instrument.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let (inst, index, epoch) = {
+        let view = p.shared.view.lock().unwrap();
+        let v = &view.parts[0];
+        (
+            v.instrument.clone().expect("fixture loaded"),
+            v.mapping_index.clone().expect("worker mapping index"),
+            v.generation,
+        )
+    };
+    let wanted = inst.zones.iter().position(|z| matches!(inst.assets.get(z.asset.0).map(|a| &a.location),
+        Some(sampler_ir::AssetLocation::Path(p)) if p.rsplit(['/', '\\']).next() == Some(sample.as_str())))
+        .expect("screenshot sample exists in translated source IR");
+    let zone = &inst.zones[wanted];
+    let group = zone.group.map(|g| g.0);
+    let bounds = index.fit(group);
+    let key = ((u16::from(zone.keys.low) + u16::from(zone.keys.high)) / 2) as u8;
+    let vel = ((u16::from(zone.velocities.low) + u16::from(zone.velocities.high)) / 2).max(1) as u8;
+    let hits = index.stack(&inst, group, key, vel);
+    let position = hits.iter().position(|&n| n == wanted).unwrap();
+    let source_id = crate::sound::waveform::source_ids(&inst)[wanted];
+    let part = p.shared.part(0).unwrap();
+    for (w, h) in [(1180, 780), (900, 640)] {
+        let mut ui = Harness::new(&p, w as f64, h as f64);
+        ui.press("view-0-Mapping");
+        if let Some(g) = group {
+            ui.ui.focus("map-search-0");
+            ui.tick(Input {
+                text: inst.groups[g].name.clone(),
+                ..Default::default()
+            });
+            ui.idle(3);
+            ui.press(&format!("map-group-0-{g}"));
+        }
+        let frame = ui.ui.scene().unwrap().surface("map-0").unwrap().frame;
+        let at = Point::new(
+            frame.x
+                + (f64::from(key - bounds.0) + 0.5) / f64::from(bounds.1 - bounds.0 + 1)
+                    * frame.size.width,
+            frame.y + (1. - (f64::from(vel) + 0.5) / 128.) * frame.size.height,
+        );
+        for buttons in [Buttons::PRIMARY, Buttons::PRIMARY, Buttons::default()] {
+            ui.tick(Input {
+                pointer: PointerInput {
+                    pos: Some(at),
+                    buttons,
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+        }
+        for _ in 0..position / 32 {
+            ui.press("map-stack-next-0");
+        }
+        ui.ui
+            .set_scroll("map-stack-0", [0., (position % 32) as f64 * 22.]);
+        ui.idle(90);
+        ui.press(&format!("map-zone-0-{wanted}"));
+        let mut ready = None;
+        for _ in 0..400 {
+            ui.idle(1);
+            let frame = ui.ui.scene().unwrap().surface("map-wave-0").unwrap().frame;
+            if let WaveState::Ready(e) = part.zone_waveform_state(
+                source_id,
+                epoch,
+                frame.size.width.ceil().clamp(1., 4096.) as usize,
+                None,
+            ) {
+                ready = Some(e);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let e = ready.expect("selected PartShared source reaches Ready");
+        ui.idle(3);
+        assert!(
+            ui.ui
+                .scene()
+                .unwrap()
+                .surface(&format!("map-inspector-0-{wanted}"))
+                .is_some()
+        );
+        let max = e
+            .peaks
+            .iter()
+            .map(|&(lo, hi)| lo.abs().max(hi.abs()))
+            .fold(0f32, f32::max);
+        let nonzero = e
+            .peaks
+            .iter()
+            .filter(|&&(lo, hi)| lo != 0. || hi != 0.)
+            .count();
+        let ink = mapping_waveform_off_center_pixels(&ui, w, h);
+        eprintln!(
+            "selected_wave_paint size={w}x{h} ir_zone={wanted} source_id={source_id} frames={} rate={} nonzero={nonzero} max={max} off_center_columns={ink}",
+            e.frames, e.sample_rate
+        );
+        let height = ui
+            .ui
+            .scene()
+            .unwrap()
+            .surface("map-wave-0")
+            .unwrap()
+            .frame
+            .size
+            .height;
+        let sufficient = e
+            .peaks
+            .iter()
+            .skip(e.peaks.len() / 10)
+            .take(e.peaks.len() * 8 / 10)
+            .any(|&(lo, hi)| f64::from(lo.abs().max(hi.abs())) * height / 2. >= 5.);
+        if sufficient {
+            assert!(
+                ink > 0,
+                "measured raw extrema produce off-center waveform ink"
+            );
+        }
+        if let Some(dir) = std::env::var_os("KONTAKTO_MAPPING_SHOTS") {
+            let path =
+                std::path::PathBuf::from(dir).join(format!("mapping-selected-source-{w}x{h}.png"));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            moose::core::screenshot::save_png(&path, &pixels(&ui.ui, w, h), w as u32, h as u32);
+        }
+    }
+}
+
+#[test]
+fn mapping_workbench_54k_caches_idle_paint_and_reopens_without_reindexing() {
+    use sampler_ir as sir;
+    let mut inst = sir::Instrument::default();
+    inst.assets.push(sir::Asset {
+        location: sir::AssetLocation::Path("Samples/Selected_sample.wav".into()),
+        encoding: sir::Encoding::Wav,
+        root_key: Some(60),
+        loops: vec![],
+    });
+    for n in 0..189 {
+        inst.groups.push(sir::Group {
+            name: format!("Group {n}"),
+            ..Default::default()
+        });
+    }
+    for n in 0..54_216 {
+        let mut zone = sir::Zone::new(sir::AssetRef(0));
+        zone.group = Some(sir::GroupRef(n % 189));
+        inst.zones.push(zone);
+    }
+    let source = Arc::new(inst);
+    let before = (*source).clone();
+    let index = Arc::new(super::MappingIndex::new(&source));
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    p.selection
+        .write()
+        .unwrap()
+        .parts
+        .push(crate::plugin::Part {
+            path: "/x/54k workbench.nki".into(),
+            ..Default::default()
+        });
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        view.parts.resize_with(1, Default::default);
+        view.parts[0].instrument = Some(source.clone());
+        view.parts[0].mapping_index = Some(index.clone());
+    }
+    for (w, h) in [(1180, 780), (900, 640)] {
+        let mut ui = Harness::new(&p, w as f64, h as f64);
+        ui.press("view-0-Mapping");
+        ui.idle(30);
+        let scene = ui.ui.scene().unwrap();
+        let map = scene.surface("map-0").unwrap().frame;
+        let wave = scene.surface("map-wave-0").unwrap().frame;
+        let table = scene.surface("map-stack-0").unwrap().frame;
+        let rack = scene.surface("rack-view").unwrap().frame;
+        assert!(map.size.height >= 96., "large map at {w}×{h}: {map:?}");
+        assert!(wave.size.height >= 64. && table.size.height >= 44.);
+        assert!(
+            wave.y + wave.size.height <= rack.y + rack.size.height,
+            "wave stays visible"
+        );
+        assert!(
+            scene
+                .surfaces()
+                .filter(|s| s.key.starts_with("map-group-0-"))
+                .count()
+                < 48,
+            "offscreen group rows are never constructed"
+        );
+        let path = scene
+            .paint
+            .iter()
+            .find(|p| &*p.key == "map-0" && p.layer == moose::mui::mui::scene::Layer::Draw(0))
+            .unwrap()
+            .path
+            .clone();
+        ui.idle(100);
+        let idle = ui
+            .ui
+            .scene()
+            .unwrap()
+            .paint
+            .iter()
+            .find(|p| &*p.key == "map-0" && p.layer == moose::mui::mui::scene::Layer::Draw(0))
+            .unwrap()
+            .path
+            .clone();
+        assert!(
+            Arc::ptr_eq(&path, &idle),
+            "idle redraw reuses the immutable map paint"
+        );
+        ui.press("map-zone-0-1");
+        ui.press("view-0-Sound");
+        assert!(
+            ui.ui
+                .scene()
+                .unwrap()
+                .surface("sound-tab-0-Mapping")
+                .is_none()
+        );
+        ui.press("view-0-Mapping");
+        assert!(
+            ui.ui
+                .scene()
+                .unwrap()
+                .surface("map-inspector-0-1")
+                .is_some()
+        );
+        assert!(Arc::ptr_eq(
+            &index,
+            p.shared.view.lock().unwrap().parts[0]
+                .mapping_index
+                .as_ref()
+                .unwrap()
+        ));
+        if let Some(dir) = std::env::var_os("KONTAKTO_MAPPING_SHOTS") {
+            let path = std::path::PathBuf::from(dir).join(format!("mapping-54k-{w}x{h}.png"));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            moose::core::screenshot::save_png(&path, &pixels(&ui.ui, w, h), w as u32, h as u32);
+        }
+    }
+    assert_eq!(
+        *source, before,
+        "workbench leaves source identities and data intact"
+    );
+}
+
 #[test]
 fn mapping_sound_tabs_preserve_zone_identity_and_ir() {
     use sampler_ir as sir;
@@ -4662,6 +4972,7 @@ fn mapping_sound_tabs_preserve_zone_identity_and_ir() {
         let mut v = p.shared.view.lock().unwrap();
         v.parts.resize_with(1, Default::default);
         v.parts[0].active = "Layered strings (synthetic RR fixture)".into();
+        v.parts[0].mapping_index = Some(Arc::new(super::MappingIndex::new(&source)));
         v.parts[0].instrument = Some(source.clone());
     }
     for (w, h) in [(1180, 780), (900, 640)] {
@@ -4671,7 +4982,13 @@ fn mapping_sound_tabs_preserve_zone_identity_and_ir() {
             ui.ui.scene().unwrap().surface("sound-tabs-0").is_some(),
             "Sound exposes its shared tab strip"
         );
-        assert!(ui.ui.scene().unwrap().surface("sound-tab-0-Mapping").is_none());
+        assert!(
+            ui.ui
+                .scene()
+                .unwrap()
+                .surface("sound-tab-0-Mapping")
+                .is_none()
+        );
         ui.press("view-0-Mapping");
         assert!(ui.ui.scene().unwrap().surface("map-0").is_some());
         ui.press("map-group-0-0");
@@ -4829,6 +5146,10 @@ fn mapping_waveform_worker_reads_falcon_without_original_waveform_widget() {
                 .surface("map-wave-zoom-in-0")
                 .is_some(),
             "the selected sample has source-frame zoom and pan controls"
+        );
+        assert!(
+            mapping_waveform_off_center_pixels(&ui, w, h) > 0,
+            "nonzero synthetic Ready sample paints raw off-center waveform ink"
         );
         ui.press("map-wave-zoom-in-0");
         ui.press("map-wave-pan-right-0");
@@ -5288,6 +5609,7 @@ fn mapping_navigation_reaches_late_takes_and_restores_fitted_keys() {
         let mut v = p.shared.view.lock().unwrap();
         v.parts.resize_with(1, Default::default);
         v.parts[0].active = "Synthetic 96-take mapping".into();
+        v.parts[0].mapping_index = Some(Arc::new(super::MappingIndex::new(&source)));
         v.parts[0].instrument = Some(source.clone());
     }
     for (w, h) in [(1180, 780), (900, 640)] {
@@ -5587,6 +5909,7 @@ fn mapping_linked_fixture() -> (
     p.selection.write().unwrap().parts.push(part);
     {
         let mut v = p.shared.view.lock().unwrap();
+        v.parts[0].mapping_index = Some(Arc::new(super::MappingIndex::new(&source)));
         v.parts[0].instrument = Some(source.clone());
         v.parts[0].active = source.name.clone();
     }
