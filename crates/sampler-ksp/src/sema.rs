@@ -112,7 +112,7 @@ pub fn analyze<'a, 's>(
             ("ui_controls", None) => CallbackKind::UiControls,
             ("ui_update", None) => CallbackKind::UiUpdate,
             ("listener", None) => CallbackKind::Listener,
-            ("pgs_changed", None) => CallbackKind::PgsChanged,
+            ("pgs_changed" | "_pgs_changed", None) => CallbackKind::PgsChanged,
             ("persistence_changed", None) => CallbackKind::PersistenceChanged,
             ("async_complete", None) => CallbackKind::AsyncComplete,
             ("rpn", None) => CallbackKind::Rpn,
