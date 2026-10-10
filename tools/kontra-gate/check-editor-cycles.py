@@ -2,7 +2,7 @@
 import copy
 import unittest
 
-from editor_rss import CYCLE_PHASES, summarize_cycles
+from editor_rss import CYCLE_PHASES, UI_ACTIVITY_FIELDS, UI_ACTIVITY_VERSION, summarize_cycles
 
 
 class Cycles(unittest.TestCase):
@@ -20,6 +20,8 @@ class Cycles(unittest.TestCase):
                      audio_blocks=(index*10+i)*375,
                      audio_busy_ns=(index*10+i)*1000000,
                      audio_callback_overruns=0,
+                     ui_activity=dict(version=UI_ACTIVITY_VERSION,
+                                      counts=[index*10+i]*len(UI_ACTIVITY_FIELDS)),
                      plugin_perf=dict(busy_ns=1, span_ns=10, voices=0, audible=0,
                                       dropouts=0, memory=0, freed=0, disk=0,
                                       underruns=0, loaded=1, blocks=(index*10+i)*375))
@@ -57,6 +59,34 @@ class Cycles(unittest.TestCase):
             summarize_cycles(bad, (1180, 780))
         with self.assertRaises(AssertionError):
             summarize_cycles(rows[:-1], (1180, 780))
+
+    def test_ui_activity_rejects_missing_disabled_wrong_schema_and_counter_reset(self):
+        rows = self.rows()
+        for activity in [None, {}, {'version': True, 'counts': [0]*20},
+                         {'version': 2, 'counts': [0]*20},
+                         {'version': 1, 'counts': [0]*19},
+                         {'version': 1, 'counts': [0]*21},
+                         {'version': 1, 'counts': [True]*20},
+                         {'version': 1, 'counts': [-1]*20},
+                         {'version': 1, 'counts': [2**64]*20}]:
+            bad = copy.deepcopy(rows)
+            bad[31]['ui_activity'] = activity
+            with self.assertRaises(AssertionError, msg=str(activity)):
+                summarize_cycles(bad, (1180, 780))
+        bad = copy.deepcopy(rows)
+        bad[31]['ui_activity']['counts'][0] = 0
+        with self.assertRaises(AssertionError):
+            summarize_cycles(bad, (1180, 780))
+        bad = copy.deepcopy(rows)
+        del bad[31]['ui_activity']
+        with self.assertRaises(AssertionError):
+            summarize_cycles(bad, (1180, 780))
+
+    def test_ui_activity_reports_per_phase_deltas_without_readiness_claims(self):
+        result = summarize_cycles(self.rows(), (1180, 780))
+        self.assertEqual(result['phases']['open_1']['ui_activity_delta'],
+                         dict.fromkeys(UI_ACTIVITY_FIELDS, 9))
+        self.assertNotIn('ready', result)
 
     def test_growth_remains_observed_not_a_leak_claim(self):
         rows = self.rows()
