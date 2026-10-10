@@ -2132,3 +2132,188 @@ mod page_layout_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod gesture_policy_tests {
+    use super::*;
+
+    struct Fixture {
+        ui: Ui,
+        face: Interface,
+        values: Values,
+        input: InputState,
+    }
+    impl Fixture {
+        fn new(source: ir::Source, kind: Kind, initial: f64, mapper: Option<&str>) -> Self {
+            let mut widget =
+                ir::Widget::new("fixture", PageRef(0), ir::Rect::new(10, 10, 100, 100), kind);
+            widget.binding = Binding::Control(ControlId(77));
+            widget.value = Some(ir::Value::Real(initial));
+            widget.mapper = mapper.map(str::to_owned);
+            let mut fixture = Self {
+                ui: super::super::theme::ui(),
+                face: Interface {
+                    source,
+                    pages: vec![ir::Page {
+                        size: ir::Size {
+                            width: 160,
+                            height: 160,
+                        },
+                        ..Default::default()
+                    }],
+                    widgets: vec![widget],
+                    ..Default::default()
+                },
+                values: Values::from([(ControlId(77), initial)]),
+                input: InputState::default(),
+            };
+            fixture.tick(Input::default());
+            fixture
+        }
+        fn tick(&mut self, input: Input) {
+            let root = view_state(
+                &mut self.ui,
+                "",
+                &self.face,
+                PageRef(0),
+                &Assets::default(),
+                Presentation::Vector,
+                1.,
+                &mut self.values,
+                &mut self.input,
+            );
+            self.ui
+                .frame(root, Some(Size::new(160., 160.)), input, 1. / 60.)
+                .unwrap();
+        }
+        fn pointer(&mut self, at: Point, down: bool, mods: Mods) {
+            self.tick(Input {
+                mods,
+                pointer: PointerInput {
+                    pos: Some(at),
+                    buttons: if down {
+                        Buttons::PRIMARY
+                    } else {
+                        Buttons::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+        }
+        fn value(&self) -> f64 {
+            self.values[&ControlId(77)]
+        }
+        fn center(&self) -> Point {
+            let frame = self.ui.scene().unwrap().surface("ir-0").unwrap().frame;
+            Point::new(
+                frame.x + frame.size.width / 2.,
+                frame.y + frame.size.height / 2.,
+            )
+        }
+    }
+    fn knob(source: ir::Source) -> Fixture {
+        Fixture::new(
+            source,
+            Kind::Knob {
+                range: ir::Range {
+                    min: 0.,
+                    max: 1.,
+                    default: 0.2,
+                    step: Some(0.01),
+                },
+                display: ir::Display::default(),
+            },
+            0.4,
+            None,
+        )
+    }
+    fn drag_value(source: ir::Source, mods: Mods) -> f64 {
+        let mut f = knob(source);
+        let at = f.center();
+        f.pointer(at, false, mods);
+        f.pointer(at, true, mods);
+        for dy in [10., 20., 40.] {
+            f.pointer(Point::new(at.x, at.y - dy), true, mods);
+        }
+        f.pointer(Point::new(at.x, at.y - 40.), false, mods);
+        f.value()
+    }
+    #[test]
+    fn falcon_ctrl_and_cmd_fine_drag_do_not_reset() {
+        for mods in [
+            Mods {
+                ctrl: true,
+                ..Default::default()
+            },
+            Mods {
+                cmd: true,
+                ..Default::default()
+            },
+        ] {
+            assert!((drag_value(ir::Source::FalconLua, mods) - 0.42).abs() < 1e-9);
+        }
+    }
+    #[test]
+    fn fine_modifier_belongs_to_the_source_format() {
+        let shift = Mods {
+            shift: true,
+            ..Default::default()
+        };
+        assert!((drag_value(ir::Source::Ksp { slot: 0 }, shift) - 0.42).abs() < 1e-9);
+        assert!((drag_value(ir::Source::FalconLua, shift) - 0.6).abs() < 1e-9);
+    }
+    #[test]
+    fn falcon_alt_click_resets_and_kontakt_alt_does_not() {
+        for (source, expected) in [
+            (ir::Source::FalconLua, 0.2),
+            (ir::Source::Ksp { slot: 0 }, 0.4),
+        ] {
+            let mut f = knob(source);
+            let at = f.center();
+            let mods = Mods {
+                alt: true,
+                ..Default::default()
+            };
+            f.pointer(at, false, mods);
+            f.pointer(at, true, mods);
+            f.pointer(at, false, mods);
+            assert_eq!(f.value(), expected);
+        }
+    }
+    #[test]
+    fn mapped_accessibility_set_value_uses_authored_units() {
+        let mut f = Fixture::new(
+            ir::Source::FalconLua,
+            Kind::Knob {
+                range: ir::Range {
+                    min: 20.,
+                    max: 20000.,
+                    default: 1000.,
+                    step: Some(1.),
+                },
+                display: ir::Display::default(),
+            },
+            1000.,
+            Some("Exponential"),
+        );
+        assert!(f.ui.request_action(SemanticAction::set_value("ir-0", 1500.)));
+        f.tick(Input::default());
+        assert!((f.value() - 1500.).abs() < 1e-9);
+    }
+    #[test]
+    fn authored_knob_double_click_opens_numeric_entry_for_both_sources() {
+        for source in [ir::Source::Ksp { slot: 0 }, ir::Source::FalconLua] {
+            let mut f = knob(source);
+            let at = f.center();
+            f.pointer(at, false, Mods::default());
+            for _ in 0..2 {
+                f.pointer(at, true, Mods::default());
+                f.pointer(at, false, Mods::default());
+            }
+            f.tick(Input::default());
+            assert!(f.ui.scene().unwrap().surface("ir-0-type").is_some());
+            assert_eq!(f.value(), 0.4, "opening entry must not reset or submit");
+        }
+    }
+}
