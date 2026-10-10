@@ -778,6 +778,13 @@ impl Prepared {
         start_ranges: Vec<u32>,
     ) -> Result<Self, Error> {
         if regions.len() != self.regions.len()
+            || programs.iter().any(|p| {
+                p.controls.iter().any(|&(index, _)| {
+                    p.routes.get(index).is_none_or(|r| {
+                        r.target.compiled().is_none() || r.target == super::ModTarget::SampleStart
+                    })
+                })
+            })
             || programs
                 .iter()
                 .flat_map(|p| &p.routes)
@@ -833,8 +840,12 @@ impl Prepared {
         let mut programs = programs;
         for program in &mut programs {
             let mut routes = Vec::new();
-            for route in &program.routes {
+            let mut controls = Vec::new();
+            for (index, route) in program.routes.iter().enumerate() {
                 if route.target.compiled().is_some() {
+                    for &(_, ids) in program.controls.iter().filter(|b| b.0 == index) {
+                        controls.push((routes.len(), ids));
+                    }
                     routes.push(*route);
                     continue;
                 }
@@ -869,12 +880,23 @@ impl Prepared {
                 }
             }
             program.routes = routes;
+            program.controls = controls;
         }
         self.voice_modulation = super::voice_mod::VoiceModulation::new_resolved(
             programs,
             regions,
             start_ranges,
             |address| (address.parameter == u32::MAX - 13).then_some(address.node as usize),
+            |id| {
+                let index = self.control_index(id)?;
+                if !matches!(
+                    self.controls[index].domain,
+                    super::ControlDomain::Real { .. }
+                ) {
+                    return Err(Error::InvalidInput);
+                }
+                Ok(index)
+            },
         )?;
         Ok(self)
     }
