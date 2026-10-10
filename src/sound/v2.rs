@@ -48,6 +48,8 @@ use super::{
 
 mod array_file;
 mod effect_controls;
+#[cfg(test)]
+mod host_transport_tests;
 mod persistence;
 #[cfg(test)]
 mod pressed_tests;
