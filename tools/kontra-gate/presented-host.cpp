@@ -85,6 +85,10 @@ struct Host {
         [](const clap_host_t* h) { static_cast<Host*>(h->host_data)->callback = true; }};
 };
 struct Perf { uint64_t busy, span, voices, audible, dropouts, memory, freed, disk, underruns, loaded, blocks; };
+// Independent cumulative UI counters, not an authored renderer readiness receipt.
+using UiActivity = bool (*)(const clap_plugin_t*, uint64_t, uint64_t*, size_t);
+constexpr uint64_t UI_ACTIVITY_VERSION=1;
+constexpr size_t UI_ACTIVITY_COUNT=20;
 static Window open_editor(const clap_plugin_t* p, const clap_plugin_gui_t* gui, Display* display,
                           uint32_t& width, uint32_t& height, bool rss,
                           uint32_t fixed_width=1180, uint32_t fixed_height=760) {
@@ -211,7 +215,7 @@ static std::array<uint64_t,4> memory() {
 }
 static void rss_lifecycle(const clap_plugin_t* p, const clap_plugin_gui_t* gui, const clap_plugin_state_t* state,
                           Host& host, Display* display, const char* prefix,
-                          bool (*perf)(const clap_plugin_t*,Perf*)) {
+                          bool (*perf)(const clap_plugin_t*,Perf*), UiActivity ui_activity) {
     Window window=0; uint32_t width=0,height=0;
     std::vector<std::string> phases={"loaded","open","closed","reopened"};
     if (host.cycles) {
@@ -295,6 +299,13 @@ static void rss_lifecycle(const clap_plugin_t* p, const clap_plugin_gui_t* gui, 
                         (unsigned long long)current.freed,(unsigned long long)current.disk,(unsigned long long)current.underruns,
                         (unsigned long long)current.loaded,(unsigned long long)current.blocks);
                 else std::printf(",\"plugin_perf\":null");
+                std::array<uint64_t,UI_ACTIVITY_COUNT> activity{};
+                if (ui_activity && ui_activity(p,UI_ACTIVITY_VERSION,activity.data(),activity.size())) {
+                    std::printf(",\"ui_activity\":{\"version\":%llu,\"counts\":[",(unsigned long long)UI_ACTIVITY_VERSION);
+                    for (size_t i=0;i<activity.size();++i)
+                        std::printf("%s%llu",i?",":"",(unsigned long long)activity[i]);
+                    std::printf("]}");
+                } else std::printf(",\"ui_activity\":null");
             }
             std::printf("}\n"); std::fflush(stdout);
             std::this_thread::sleep_for(std::chrono::milliseconds(host.cycles?500:100));
@@ -363,7 +374,13 @@ int main(int argc, char** argv) {
         p->stop_processing(p);
     });
     auto perf = reinterpret_cast<bool (*)(const clap_plugin_t*, Perf*)>(dlsym(module, "__kontra_clap_perf"));
+    auto ui_activity = reinterpret_cast<UiActivity>(dlsym(module, "__kontra_clap_ui_activity"));
     require(rss || perf, "readiness export");
+    if (host.cycles) {
+        std::array<uint64_t,UI_ACTIVITY_COUNT> activity{};
+        require(perf && ui_activity && ui_activity(p,UI_ACTIVITY_VERSION,activity.data(),activity.size()),
+                "cycle UI activity export (enable KONTRA_NATIVE_UI_TIMING=1)");
+    }
     const auto deadline = Clock::now()+std::chrono::seconds(120);
     Perf metrics{};
     while (!started || (rss ? access(argv[4],F_OK)!=0 : !perf(p,&metrics) || metrics.loaded!=1)) {
@@ -374,7 +391,7 @@ int main(int argc, char** argv) {
     auto* gui = static_cast<const clap_plugin_gui_t*>(p->get_extension(p, CLAP_EXT_GUI));
     if (rss) {
         if (host.cycles) require(pthread_getcpuclockid(audio.native_handle(),&host.audio_clock)==0,"audio thread CPU clock ID");
-        rss_lifecycle(p,gui,save,host,display,argv[5],perf);
+        rss_lifecycle(p,gui,save,host,display,argv[5],perf,ui_activity);
         run=false; audio.join(); p->deactivate(p); p->destroy(p); entry->deinit(); dlclose(module); XCloseDisplay(display);
         return 0;
     }
