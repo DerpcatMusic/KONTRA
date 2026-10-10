@@ -32,6 +32,7 @@ print('PASS: event plan, native v1-only envelope, unavailable diagnostics')
 
 complete = {'returncode':0, 'events_dispatched':12, 'events_planned':12, 'peak':.5, 'nonfinite':0, 'contention':'QUIET', 'native_state_verified':True}
 assert measured_status(complete) == 'MEASURED'
+assert measured_status(dict(complete, scheduling_diagnostic=True)) == 'UNKNOWN', 'instrumented scheduler diagnostics must not claim CPU acceptance'
 for change in [{'contention':'CONTENDED'}, {'contention':'UNKNOWN'}, {'peak':0}, {'nonfinite':1}, {'returncode':1}, {'events_dispatched':11}, {'native_state_verified':False}, {'native_state_verified':None}]:
     assert measured_status(dict(complete, **change)) == 'UNKNOWN'
 print('PASS: silent, incomplete and contended runs cannot certify live playback')
@@ -79,7 +80,8 @@ from live_host import private_settings
 with tempfile.TemporaryDirectory(dir='/dev/shm') as temp:
     config = Path(temp) / 'config'
     private_settings(config)
-    assert json.loads((config / 'kontra/settings.json').read_text()) == {'version': 2, 'imported': True, 'roots': []}
+    assert json.loads((config / 'kontra/settings.json').read_text())['uvi_imported'] is True, 'no first-run UVI import/opener'
+    assert json.loads((config / 'kontra/settings.json').read_text()) == {'version': 2, 'imported': True, 'uvi_imported': True, 'roots': []}
 
 # 0.3.152 native Selection omits root; keyed fields avoid positional shifts.
 persist = native[36:]; at = 4 + 4 + len(b'selection')

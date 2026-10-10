@@ -5983,3 +5983,287 @@ fn w10_authored_uvi_fixture_paints_its_declared_ui() {
         );
     }
 }
+
+/// Opt-in, one-preset shard: records authored metadata and production readback,
+/// without exporting samples or script source.
+#[test]
+fn keyswitch_audit_installed_preset() {
+    use crate::sound::{
+        Core, CoreLoader, LoadRequest,
+        event::Event,
+        v2::{V2Core, V2Loader},
+    };
+    use std::sync::atomic::Ordering;
+    let Ok(path) = std::env::var("KONTRA_KEYSWITCH_AUDIT_PATH") else {
+        return;
+    };
+    let output = std::env::var("KONTRA_KEYSWITCH_AUDIT_OUT").expect("audit output directory");
+    let mut loaded = V2Loader
+        .prepare(
+            &LoadRequest {
+                path: path.clone().into(),
+                sample_rate: 48000.,
+                ..Default::default()
+            },
+            &mut |_| {},
+            &|| false,
+        )
+        .unwrap();
+    let inst = loaded.instrument.clone().expect("instrument metadata");
+    let keys = loaded.scripts.keys();
+    let authored_keys: Vec<_> = keys
+        .iter()
+        .enumerate()
+        .filter(|(_, k)| k.name.is_some() || k.control)
+        .map(
+            |(n, k)| serde_json::json!({"key":n,"name":k.name,"control":k.control,"color":k.color}),
+        )
+        .collect();
+    let authored_choices: Vec<_> = loaded.interfaces.iter().flat_map(|ui| &ui.widgets).filter(|w| matches!(w.kind, ir::Kind::Button {..} | ir::Kind::Switch | ir::Kind::Label | ir::Kind::Menu {..}) && !w.text.is_empty()).map(|w| serde_json::json!({"name":w.name,"text":w.text,"binding":format!("{:?}",w.binding),"hidden":w.hidden,"rect":[w.rect.x,w.rect.y,w.rect.width,w.rect.height]})).collect();
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    p.selection
+        .write()
+        .unwrap()
+        .parts
+        .push(crate::plugin::Part {
+            path: path.clone(),
+            ..Default::default()
+        });
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        view.parts[0].active = inst.name.clone();
+        view.parts[0].instrument = Some(inst.clone());
+        view.parts[0].keys = keys;
+    }
+    let mut core = V2Core::with_parts(1, 48000.);
+    core.install(0, loaded.part.take());
+    let ids = crate::sound::articulation::identities(&inst.articulations);
+    let out = Path::new(&output);
+    std::fs::create_dir_all(out).unwrap();
+    let mut report = serde_json::json!({"path":path,"name":inst.name,"owner":format!("{:?}",inst.switching.owner),"articulations":inst.articulations.iter().map(|a|serde_json::json!({"name":a.name,"source":a.source,"keys":a.switch_keys,"switches":[]})).collect::<Vec<_>>(),"authored_keys":authored_keys,"authored_choices":authored_choices,"feedback_complete":ids.is_empty()});
+    std::fs::write(
+        out.join("audit.json"),
+        serde_json::to_vec_pretty(&report).unwrap(),
+    )
+    .unwrap();
+    if ids.is_empty() {
+        return;
+    }
+    let mut ui = Harness::new(&p, 1180., 780.);
+    if !ids.is_empty() {
+        ui.press("view-0-Articulations");
+    }
+    let mut rows = Vec::new();
+    for (n, a) in inst.articulations.iter().enumerate() {
+        let mut switches = Vec::new();
+        for &key in &a.switch_keys {
+            core.event(0, Event::midi1(0x90, key, 100));
+            core.render(16);
+            core.event(0, Event::midi1(0x80, key, 0));
+            core.render(16);
+            core.take_effects(0, &mut |instance, effect| {
+                loaded.scripts.apply(instance, effect);
+                true
+            });
+            let active = core.articulation(0);
+            if let Some(active) = active {
+                p.shared
+                    .part(0)
+                    .unwrap()
+                    .articulation
+                    .store(active as u32, Ordering::Relaxed);
+            }
+            ui.idle(3);
+            let highlighted = ui
+                .ui
+                .scene()
+                .unwrap()
+                .surface(&format!("{}-name", super::inside::row_id(0, &ids[n])))
+                .and_then(|s| s.semantics.as_ref())
+                .map(|s| matches!(s.role, A11y::Toggle { on: true }));
+            switches.push(serde_json::json!({"key":key,"active":active,"highlighted":highlighted,"control_value":a.control.and_then(|c| core.control_value(0,ir::ControlId(c)))}));
+        }
+        rows.push(serde_json::json!({"name":a.name,"source":a.source,"keys":a.switch_keys,"default":a.default,"control":a.control.map(|c|format!("{c:032x}")),"switches":switches}));
+    }
+    report["articulations"] = serde_json::json!(rows);
+    report["feedback_complete"] = true.into();
+    std::fs::write(
+        out.join("audit.json"),
+        serde_json::to_vec_pretty(&report).unwrap(),
+    )
+    .unwrap();
+    if !ids.is_empty() {
+        moose::core::screenshot::save_png(
+            &out.join("panel-1180.png"),
+            &pixels(&ui.ui, 1180, 780),
+            1180,
+            780,
+        );
+        ui.resize(Size::new(900., 640.));
+        ui.idle(3);
+        moose::core::screenshot::save_png(
+            &out.join("panel-900.png"),
+            &pixels(&ui.ui, 900, 640),
+            900,
+            640,
+        );
+    }
+}
+
+#[test]
+fn keyswitch_real_areia_rows_match_authored_names_and_live_selection() {
+    use crate::sound::{
+        Core, CoreLoader, LoadRequest,
+        event::Event,
+        v2::{V2Core, V2Loader},
+    };
+    use std::sync::atomic::Ordering;
+    let path = Path::new(
+        "/mnt/MAIN_STORAGE/Libraries/Kontakt/Areia 1.2.0 [Audio Imperia]/Instruments/01 Core Technique Patches/07 Areia - Full Ens - Core Techniques.nki",
+    );
+    if !path.is_file() {
+        eprintln!("SKIP: Areia audit preset missing");
+        return;
+    }
+    let loaded = V2Loader
+        .prepare(
+            &LoadRequest {
+                path: path.into(),
+                sample_rate: 48000.,
+                ..Default::default()
+            },
+            &mut |_| {},
+            &|| false,
+        )
+        .unwrap();
+    let inst = loaded.instrument.unwrap();
+    let keys = loaded.scripts.keys();
+    assert_eq!(inst.articulations.len(), 16);
+    for a in &inst.articulations {
+        let [key] = a.switch_keys.as_slice() else {
+            panic!("expected authored single-key technique")
+        };
+        assert_eq!(
+            Some(a.name.as_str()),
+            keys[*key as usize].name.as_deref(),
+            "row at key {key} must use the instrument's own technique name"
+        );
+    }
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    p.selection
+        .write()
+        .unwrap()
+        .parts
+        .push(crate::plugin::Part {
+            path: path.to_string_lossy().into_owned(),
+            ..Default::default()
+        });
+    {
+        let mut v = p.shared.view.lock().unwrap();
+        v.parts[0].instrument = Some(inst.clone());
+        v.parts[0].active = inst.name.clone();
+        v.parts[0].keys = keys;
+    }
+    let mut core = V2Core::with_parts(1, 48000.);
+    core.install(0, loaded.part);
+    let ids = crate::sound::articulation::identities(&inst.articulations);
+    let mut h = Harness::new(&p, 1180., 780.);
+    h.press("view-0-Articulations");
+    for (n, a) in inst.articulations.iter().enumerate() {
+        let key = a.switch_keys[0];
+        core.event(0, Event::midi1(0x90, key, 100));
+        core.render(16);
+        core.event(0, Event::midi1(0x80, key, 0));
+        core.render(16);
+        assert_eq!(
+            core.articulation(0),
+            Some(n),
+            "authored key {key} switches the actual runtime"
+        );
+        p.shared
+            .part(0)
+            .unwrap()
+            .articulation
+            .store(n as u32, Ordering::Relaxed);
+        h.idle(3);
+        assert!(matches!(
+            h.ui.scene()
+                .unwrap()
+                .surface(&format!("{}-name", super::inside::row_id(0, &ids[n])))
+                .unwrap()
+                .semantics
+                .as_ref()
+                .unwrap()
+                .role,
+            A11y::Toggle { on: true }
+        ));
+        if n > 0 {
+            assert!(
+                matches!(
+                    h.ui.scene()
+                        .unwrap()
+                        .surface(&format!("{}-name", super::inside::row_id(0, &ids[n - 1])))
+                        .unwrap()
+                        .semantics
+                        .as_ref()
+                        .unwrap()
+                        .role,
+                    A11y::Toggle { on: false }
+                ),
+                "the previous row loses its highlight when the next key switches"
+            );
+        }
+    }
+    if let Some(output) = std::env::var_os("KONTRA_KEYSWITCH_SHOTS") {
+        let key = inst.articulations[0].switch_keys[0];
+        core.event(0, Event::midi1(0x90, key, 100));
+        core.render(16);
+        core.event(0, Event::midi1(0x80, key, 0));
+        core.render(16);
+        p.shared
+            .part(0)
+            .unwrap()
+            .articulation
+            .store(core.articulation(0).unwrap() as u32, Ordering::Relaxed);
+        h.idle(3);
+        let out = Path::new(&output);
+        std::fs::create_dir_all(out).unwrap();
+        for (w, height) in [(1180, 780), (900, 640)] {
+            h.resize(Size::new(w as f64, height as f64));
+            h.idle(3);
+            moose::core::screenshot::save_png(
+                &out.join(format!("areia-selected-{w}.png")),
+                &pixels(&h.ui, w, height),
+                w as u32,
+                height as u32,
+            );
+        }
+    }
+}
+
+#[test]
+fn keyswitch_real_analog_strings_does_not_invent_preset_browser_articulations() {
+    use crate::sound::{CoreLoader, LoadRequest, v2::V2Loader};
+    let path = Path::new(
+        "/mnt/MAIN_STORAGE/Libraries/Kontakt/ANALOG STRINGS/Instruments/ANALOG STRINGS.nki",
+    );
+    if !path.is_file() {
+        eprintln!("SKIP: Analog Strings audit preset missing");
+        return;
+    }
+    let loaded = V2Loader
+        .prepare(
+            &LoadRequest {
+                path: path.into(),
+                sample_rate: 48000.,
+                ..Default::default()
+            },
+            &mut |_| {},
+            &|| false,
+        )
+        .unwrap();
+    assert!(
+        loaded.instrument.unwrap().articulations.is_empty(),
+        "preset browser entries and zero-sized auxiliary controls must not become articulation rows"
+    );
+}

@@ -9,6 +9,9 @@ use std::path::{Path, PathBuf};
 #[path = "../../sampler-native/tests/support/reference.rs"]
 mod reference;
 
+#[path = "../../sampler-core/tests/support/mod.rs"]
+mod heap;
+
 fn roots() -> Vec<PathBuf> {
     if let Some(paths) = std::env::var_os("KONTRA_KONTAKT_LIBRARIES") {
         return std::env::split_paths(&paths).collect();
@@ -283,7 +286,11 @@ fn conflux_renders_its_tracked_zones_within_the_runtime_pitch_range() {
     assert!(
         ir.unsupported
             .iter()
-            .any(|u| u.feature == "wavetable source")
+            .all(|u| u.feature != "wavetable source")
+    );
+    assert_eq!(
+        ir.groups.iter().filter(|g| g.wavetable.is_some()).count(),
+        1
     );
     assert!(peak > 0.01, "audible: peak {peak}");
 }
@@ -967,6 +974,9 @@ fn w15_render_one_authored_zone(
     let mut routes = Vec::new();
     for route in &mut zone.routes {
         let mut r = original.routes[route.0];
+        if let ir::Target::Processor { chain, .. } = &mut r.target {
+            *chain = ir::ChainRef(0);
+        }
         modulators.push(original.modulators[r.source.0].clone());
         r.source = ir::ModulatorRef(modulators.len() - 1);
         if let Some(scale) = &mut r.scale {
@@ -1048,7 +1058,7 @@ fn w15_render_one_authored_zone(
         );
     }
     let mut out = vec![[0.; 2]; 24_000];
-    rt.render(&mut out).unwrap();
+    heap::without_heap(|| rt.render(&mut out).unwrap());
     if native_filter && out.iter().flatten().all(|v| *v == 0.) {
         let reader = rt.signal_trace_reader().unwrap();
         let rows = reader.drain();
@@ -1074,6 +1084,303 @@ fn w15_render_one_authored_zone(
         }
     }
     out
+}
+
+#[test]
+#[ignore = "requires installed Vista Harp; run through kontakto-heavy"]
+fn vista_legacy_lowpass_filters_the_authored_damping_release() {
+    use sampler_ir as ir;
+    let path = find("Performance Samples Vista/Instruments/Bonus/Vista - Harp.nki")
+        .expect("installed Vista Harp is required for this witness");
+    let render = |enabled, modulated| {
+        let mut library = sampler_kontakt::read(&path).unwrap();
+        assert!(
+            !library.instrument.unsupported.iter().any(|u| matches!(
+                u.feature.as_str(),
+                "Filter: filter type" | "effect" | "modulation of a module parameter"
+            )),
+            "Vista's four filter/effect/route omissions must all be closed"
+        );
+        for group in [8, 9, 18, 19] {
+            let zone = library
+                .instrument
+                .zones
+                .iter()
+                .find(|z| z.group == Some(ir::GroupRef(group)))
+                .unwrap();
+            let chain = &library.instrument.chains[zone.chain.expect("legacy slot must survive").0];
+            assert!(
+                chain
+                    .pre_amplitude
+                    .iter()
+                    .chain(&chain.post_amplitude)
+                    .any(|p| matches!(
+                        p,
+                        ir::Processor::Filter(ir::Filter {
+                            kind: ir::FilterKind::LowPass { poles: 2 },
+                            ..
+                        })
+                    ))
+            );
+            assert!(zone.routes.iter().map(|r| library.instrument.routes[r.0]).any(|r|
+                matches!(r.target, ir::Target::Processor { parameter: ir::ProcessorParameter::Cutoff, .. })
+                    && matches!(r.depth, ir::Depth::Pitch(p) if (p.semitones() - 12. * 8.96).abs() < 1e-6)),
+                "the full-depth release envelope must use v1's cutoff knob span");
+        }
+        let mut zone = library
+            .instrument
+            .zones
+            .iter()
+            .find(|z| z.group == Some(ir::GroupRef(8)) && z.keys.low <= 60 && z.keys.high >= 60)
+            .expect("middle-C damping release")
+            .clone();
+        let chain = &library.instrument.chains[zone.chain.unwrap().0];
+        let filters = chain
+            .pre_amplitude
+            .iter()
+            .chain(&chain.post_amplitude)
+            .filter(|p| {
+                matches!(
+                    p,
+                    ir::Processor::Filter(ir::Filter {
+                        kind: ir::FilterKind::LowPass { poles: 2 },
+                        ..
+                    })
+                )
+            })
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(filters.len(), 1);
+        // Isolate this authored release sample and its saved slot, with no script/selection variation.
+        zone.routes.retain(|r| {
+            modulated
+                && matches!(
+                    library.instrument.routes[r.0].target,
+                    ir::Target::Processor {
+                        parameter: ir::ProcessorParameter::Cutoff,
+                        ..
+                    }
+                )
+        });
+        let new_chain = ir::ChainRef(library.instrument.chains.len());
+        for route in &zone.routes {
+            library.instrument.routes[route.0].target = ir::Target::Processor {
+                chain: new_chain,
+                index: 0,
+                parameter: ir::ProcessorParameter::Cutoff,
+            };
+        }
+        zone.chain = Some(new_chain);
+        library.instrument.chains.push(ir::Chain {
+            scope: ir::Scope::Voice,
+            pre_amplitude: if enabled { filters } else { vec![] },
+            post_amplitude: vec![],
+        });
+        w15_render_one_authored_zone(library, zone)
+    };
+    let dry = render(false, false);
+    let wet = render(true, false);
+    let modulated = render(true, true);
+    let energy = |frames: &[[f32; 2]]| {
+        frames
+            .iter()
+            .flatten()
+            .map(|v| f64::from(*v).powi(2))
+            .sum::<f64>()
+    };
+    let derivative = |frames: &[[f32; 2]]| {
+        frames
+            .windows(2)
+            .flat_map(|w| (0..2).map(move |c| f64::from(w[1][c] - w[0][c]).powi(2)))
+            .sum::<f64>()
+    };
+    let residual = dry
+        .iter()
+        .zip(&wet)
+        .flat_map(|(a, b)| (0..2).map(move |c| f64::from(a[c] - b[c]).powi(2)))
+        .sum::<f64>();
+    let hf_db =
+        10. * ((derivative(&wet) / energy(&wet)) / (derivative(&dry) / energy(&dry))).log10();
+    let residual_db = 10. * (residual / energy(&dry)).log10();
+    let modulation_residual = wet
+        .iter()
+        .zip(&modulated)
+        .flat_map(|(a, b)| (0..2).map(move |c| f64::from(a[c] - b[c]).powi(2)))
+        .sum::<f64>();
+    let modulation_db = 10. * (modulation_residual / energy(&wet)).log10();
+    println!(
+        "VISTA_LEGACY_LP dry_rms={:?} wet_rms={:?} normalized_hf_db={hf_db} residual_db={residual_db} modulation_residual_db={modulation_db}",
+        reference::levels(&dry, 0., 0.5).rms,
+        reference::levels(&wet, 0., 0.5).rms
+    );
+    assert!(energy(&dry) > 1e-8 && energy(&wet) > 1e-8);
+    assert!(wet.iter().flatten().all(|v| v.is_finite()));
+    assert!(
+        hf_db < 0.,
+        "the saved lowpass must darken the damping-release sample"
+    );
+    assert!(residual_db > -40., "the authored slot must reach audio");
+    assert!(
+        modulation_db > -40.,
+        "the authored cutoff envelope must reach audio"
+    );
+}
+
+#[test]
+#[ignore = "requires installed Vista violin overlay; run through kontakto-heavy"]
+fn vista_legacy_highpass_filters_the_authored_legato_transition() {
+    use sampler_ir as ir;
+    let path =
+        find("Performance Samples Vista/Instruments/Bonus/Vista - 3 Violins FFF Overlay.nki")
+            .expect("installed Vista violin overlay is required for this witness");
+    let render = |enabled, modulated| {
+        let mut library = sampler_kontakt::read(&path).unwrap();
+        assert!(
+            !library
+                .instrument
+                .unsupported
+                .iter()
+                .any(|u| matches!(u.feature.as_str(), "Filter: filter type" | "effect")),
+            "Vista's eight legacy highpass slots must survive translation"
+        );
+        let hp_chains = library
+            .instrument
+            .chains
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| {
+                c.pre_amplitude
+                    .iter()
+                    .chain(&c.post_amplitude)
+                    .any(|p| {
+                        matches!(
+                            p,
+                            ir::Processor::Filter(ir::Filter {
+                                kind: ir::FilterKind::HighPass { poles: 2 },
+                                ..
+                            })
+                        )
+                    })
+                    .then_some(ir::ChainRef(i))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            hp_chains.len(),
+            8,
+            "all eight saved HP slots must survive, including empty groups"
+        );
+        for chain in &hp_chains {
+            assert!(library.instrument.routes.iter().any(|r|
+                matches!(r.target, ir::Target::Processor { chain: c, parameter: ir::ProcessorParameter::Cutoff, .. } if c == *chain)
+                    && matches!(r.depth, ir::Depth::Pitch(p) if (p.semitones() - 12. * 8.96).abs() < 1e-6)),
+                "legacy HP cutoff envelopes must retain v1's knob span");
+        }
+        let mut zone = library
+            .instrument
+            .zones
+            .iter()
+            .find(|z| {
+                z.chain.is_some_and(|c| hp_chains.contains(&c))
+                    && z.keys.low <= 60
+                    && z.keys.high >= 60
+            })
+            .expect("populated middle-C legato transition")
+            .clone();
+        println!(
+            "VISTA_LEGACY_HP witness_group={} hp_chains={}",
+            zone.group.unwrap().0,
+            hp_chains.len()
+        );
+        let chain = &library.instrument.chains[zone.chain.unwrap().0];
+        let filters = chain
+            .pre_amplitude
+            .iter()
+            .chain(&chain.post_amplitude)
+            .filter(|p| {
+                matches!(
+                    p,
+                    ir::Processor::Filter(ir::Filter {
+                        kind: ir::FilterKind::HighPass { poles: 2 },
+                        ..
+                    })
+                )
+            })
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(filters.len(), 1);
+        zone.routes.retain(|r| {
+            modulated
+                && matches!(
+                    library.instrument.routes[r.0].target,
+                    ir::Target::Processor {
+                        parameter: ir::ProcessorParameter::Cutoff,
+                        ..
+                    }
+                )
+        });
+        let new_chain = ir::ChainRef(library.instrument.chains.len());
+        for route in &zone.routes {
+            library.instrument.routes[route.0].target = ir::Target::Processor {
+                chain: new_chain,
+                index: 0,
+                parameter: ir::ProcessorParameter::Cutoff,
+            };
+        }
+        zone.chain = Some(new_chain);
+        library.instrument.chains.push(ir::Chain {
+            scope: ir::Scope::Voice,
+            pre_amplitude: if enabled { filters } else { vec![] },
+            post_amplitude: vec![],
+        });
+        w15_render_one_authored_zone(library, zone)
+    };
+    let dry = render(false, false);
+    let wet = render(true, false);
+    let modulated = render(true, true);
+    let energy = |frames: &[[f32; 2]]| {
+        frames
+            .iter()
+            .flatten()
+            .map(|v| f64::from(*v).powi(2))
+            .sum::<f64>()
+    };
+    let derivative = |frames: &[[f32; 2]]| {
+        frames
+            .windows(2)
+            .flat_map(|w| (0..2).map(move |c| f64::from(w[1][c] - w[0][c]).powi(2)))
+            .sum::<f64>()
+    };
+    let residual = |a: &[[f32; 2]], b: &[[f32; 2]]| {
+        a.iter()
+            .zip(b)
+            .flat_map(|(a, b)| (0..2).map(move |c| f64::from(a[c] - b[c]).powi(2)))
+            .sum::<f64>()
+    };
+    let hf_db =
+        10. * ((derivative(&wet) / energy(&wet)) / (derivative(&dry) / energy(&dry))).log10();
+    let residual_db = 10. * (residual(&dry, &wet) / energy(&dry)).log10();
+    let modulation_db = 10. * (residual(&wet, &modulated) / energy(&wet)).log10();
+    println!(
+        "VISTA_LEGACY_HP dry_rms={:?} wet_rms={:?} normalized_hf_db={hf_db} residual_db={residual_db} modulation_residual_db={modulation_db}",
+        reference::levels(&dry, 0., 0.5).rms,
+        reference::levels(&wet, 0., 0.5).rms
+    );
+    assert!(energy(&dry) > 1e-8 && energy(&wet) > 1e-8 && energy(&modulated) > 1e-8);
+    assert!(
+        wet.iter()
+            .chain(&modulated)
+            .flatten()
+            .all(|v| v.is_finite())
+    );
+    assert!(
+        hf_db > 0.,
+        "the saved highpass must remove low-frequency energy"
+    );
+    assert!(residual_db > -40., "the authored HP slot must reach audio");
+    assert!(
+        modulation_db > -40.,
+        "the authored cutoff envelope must reach audio"
+    );
 }
 
 #[test]
