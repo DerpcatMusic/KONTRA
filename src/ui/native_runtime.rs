@@ -349,6 +349,28 @@ pub(super) struct Edit {
     pub index: Option<usize>,
     pub value: ir::Value,
 }
+#[derive(Clone, Copy)]
+pub(super) enum UpdatePass {
+    Publication,
+    Paint,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct UpdateAudit {
+    pub calls: u64,
+    pub widget_comparisons: u64,
+    pub widget_clones: u64,
+    pub cloned_value_changes: u64,
+    pub typed_copies: u64,
+    pub typed_changes: u64,
+    pub scalar_copies: u64,
+    pub scalar_changes: u64,
+    pub last_source: ir::Source,
+    pub last_matched: usize,
+    /// Scalar, typed/input and meter map lengths on the last call.
+    pub last_maps: [usize; 3],
+}
+
 #[derive(Default)]
 struct Bridge {
     controls: Vec<ir::Widget>,
@@ -357,6 +379,7 @@ struct Bridge {
     touches: BTreeSet<(usize, usize)>,
     unavailable: BTreeSet<String>,
     meters: HashMap<usize, f64>,
+    audit: Option<[UpdateAudit; 2]>,
 }
 #[derive(Clone)]
 struct Parameter {
@@ -687,6 +710,8 @@ impl Session {
             controls: controls.into_iter().map(|(_, _, w)| w).collect(),
             locations,
             edits: Vec::with_capacity(256),
+            audit: (std::env::var("KONTRA_NATIVE_UI_TIMING").ok().as_deref() == Some("1"))
+                .then_some([UpdateAudit::default(); 2]),
             ..Default::default()
         }));
         // KSP expose_controls: duplicate identifiers use the first script slot,
@@ -792,23 +817,43 @@ impl Session {
         values: &super::ir_view::Values,
         typed: &HashMap<ir::WidgetRef, ir::Value>,
         meters: &HashMap<ir::WidgetRef, f64>,
+        pass: UpdatePass,
     ) {
         let mut bridge = self.bridge.lock_unpoisoned();
+        let mut audit = bridge.audit.map(|a| a[pass as usize]);
+        if let Some(a) = &mut audit {
+            a.calls += 1;
+            a.last_source = face.source;
+            a.last_maps = [values.len(), typed.len(), meters.len()];
+            a.last_matched = 0;
+        }
         for at in 0..bridge.controls.len() {
             let (source, index) = bridge.locations[at];
             if source != face.source {
                 continue;
             }
-            if let Some(w) = face.widgets.get(index)
-                && &bridge.controls[at] != w
-            {
-                bridge.controls[at].clone_from(w);
+            if let Some(w) = face.widgets.get(index) {
+                if let Some(a) = &mut audit {
+                    a.widget_comparisons += 1;
+                    a.last_matched += 1;
+                }
+                if &bridge.controls[at] != w {
+                    if let Some(a) = &mut audit {
+                        a.widget_clones += 1;
+                        a.cloned_value_changes += u64::from(bridge.controls[at].value != w.value);
+                    }
+                    bridge.controls[at].clone_from(w);
+                }
             }
             if let Some(level) = meters.get(&ir::WidgetRef(index)) {
                 bridge.meters.insert(at, *level);
             }
             let w = &mut bridge.controls[at];
             if let Some(value) = typed.get(&ir::WidgetRef(index)) {
+                if let Some(a) = &mut audit {
+                    a.typed_copies += 1;
+                    a.typed_changes += u64::from(w.value.as_ref() != Some(value));
+                }
                 w.value = Some(value.clone());
             } else if matches!(
                 w.value,
@@ -816,13 +861,24 @@ impl Session {
             ) && let ir::Binding::Control(c) = w.binding
                 && let Some(&n) = values.get(&c)
             {
-                w.value = Some(if matches!(w.value, Some(ir::Value::Real(_))) {
+                let value = if matches!(w.value, Some(ir::Value::Real(_))) {
                     ir::Value::Real(n)
                 } else {
                     ir::Value::Integer(n.round() as i32)
-                });
+                };
+                if let Some(a) = &mut audit {
+                    a.scalar_copies += 1;
+                    a.scalar_changes += u64::from(w.value.as_ref() != Some(&value));
+                }
+                w.value = Some(value);
             }
         }
+        if let Some(audit) = audit {
+            bridge.audit.as_mut().unwrap()[pass as usize] = audit;
+        }
+    }
+    pub fn audit_updates(&self) -> Option<[UpdateAudit; 2]> {
+        self.bridge.lock_unpoisoned().audit
     }
     pub fn update_meters(&self, mut meter: impl FnMut(&ir::Widget) -> f64) {
         let mut bridge = self.bridge.lock_unpoisoned();
@@ -1045,6 +1101,7 @@ mod tests {
             widgets: vec![session.bridge.lock_unpoisoned().controls[1].clone()],
             ..Default::default()
         };
+        session.bridge.lock_unpoisoned().audit = Some([UpdateAudit::default(); 2]);
         session.update_view(
             &source,
             &HashMap::from([(ir::ControlId(42), 75.)]),
@@ -1053,6 +1110,7 @@ mod tests {
                 ir::Value::Text("callback readback".into()),
             )]),
             &Default::default(),
+            UpdatePass::Publication,
         );
         assert_eq!(
             session.bridge.lock_unpoisoned().controls[1].value,
@@ -1063,6 +1121,22 @@ mod tests {
             Some(ir::Value::Integer(20)),
             "another source is not overwritten by this source's scalar fallback"
         );
+        for _ in 0..2 {
+            session.update_view(
+                &source,
+                &HashMap::from([(ir::ControlId(42), 75.)]),
+                &Default::default(),
+                &Default::default(),
+                UpdatePass::Paint,
+            );
+        }
+        let [published, paint] = session.audit_updates().unwrap();
+        assert_eq!((published.calls, published.typed_copies, published.typed_changes), (1, 1, 1));
+        assert_eq!(published.last_maps, [1, 1, 0]);
+        assert_eq!((paint.calls, paint.widget_comparisons, paint.widget_clones), (2, 2, 2));
+        assert_eq!((paint.cloned_value_changes, paint.scalar_copies, paint.scalar_changes), (2, 2, 2));
+        assert_eq!(paint.last_maps, [1, 0, 0]);
+        assert_eq!((paint.last_source, paint.last_matched), (source.source, 1));
         let mut typed_source = source.clone();
         for saved in [
             ir::Value::Text("published text".into()),
@@ -1075,6 +1149,7 @@ mod tests {
                 &HashMap::from([(ir::ControlId(42), 75.)]),
                 &Default::default(),
                 &Default::default(),
+                UpdatePass::Publication,
             );
             assert_eq!(
                 session.bridge.lock_unpoisoned().controls[1].value,
@@ -1087,6 +1162,7 @@ mod tests {
             &Default::default(),
             &HashMap::from([(ir::WidgetRef(0), ir::Value::Integer(20))]),
             &HashMap::from([(ir::WidgetRef(0), 0.625)]),
+            UpdatePass::Publication,
         );
         let graph = session.render().unwrap();
         assert_eq!(graph.get::<String>("kind").unwrap(), "ZStack");
