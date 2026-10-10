@@ -816,3 +816,69 @@ fn display_ext_supplied_constant_and_dynamic_values_use_existing_pan_volume_tune
         }
     }
 }
+
+#[test]
+fn string_array_sort_matches_init_and_callback_ordering() {
+    for (direction, expected) in [
+        (0, ["", "A", "aa", "aa", "z", "é"]),
+        (1, ["é", "z", "aa", "aa", "A", ""]),
+        (-1, ["é", "z", "aa", "aa", "A", ""]),
+    ] {
+        for callback in [false, true] {
+            let sort = format!("sort(!names, {direction})");
+            let source = format!(
+                "on init
+                    declare !names[6]
+                    !names[0] := \"z\" !names[1] := \"aa\"
+                    !names[2] := \"\" !names[3] := \"é\"
+                    !names[4] := \"A\" !names[5] := \"aa\"
+                    {}
+                 end on
+                 on note {} end on",
+                if callback { "" } else { &sort },
+                if callback { &sort } else { "" },
+            );
+            let rt = run(&source, &[]);
+            for (index, expected) in expected.into_iter().enumerate() {
+                assert_eq!(
+                    rt.script_text(rt.active_plan(), ScriptInstanceId(0), index as u32)
+                        .unwrap()
+                        .as_str(),
+                    expected,
+                    "direction {direction}, callback {callback}, index {index}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn string_array_sort_changes_only_the_inclusive_range() {
+    let rt = run(
+        "on init
+            declare !names[6]
+            !names[0] := \"outside-left\" !names[1] := \"c\"
+            !names[2] := \"a\" !names[3] := \"b\"
+            !names[4] := \"outside-right\" !names[5] := \"tail\"
+            declare @after
+         end on
+         on note
+            sort(!names, 0, 1, 3)
+            sort(!names, 1, 2, 2)
+            sort(!names, 1, 3, 1)
+            @after := !names[1] & !names[2] & !names[3]
+         end on",
+        &[],
+    );
+    for (index, expected) in ["outside-left", "a", "b", "c", "outside-right", "tail", "abc"]
+        .into_iter()
+        .enumerate()
+    {
+        assert_eq!(
+            rt.script_text(rt.active_plan(), ScriptInstanceId(0), index as u32)
+                .unwrap()
+                .as_str(),
+            expected
+        );
+    }
+}
