@@ -129,6 +129,31 @@ fn publication_is_sparse_and_identical_updates_are_noops() {
 }
 
 #[test]
+fn authored_order_publication_is_sparse_and_identical_updates_are_noops() {
+    let script = sampler_ksp::compile("on init declare ui_knob $k(0,100,1) end on", 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+    let face = script.ui(&|_| None).unwrap();
+    let mut part = PartView { interfaces: vec![face.clone()].into(), ..Default::default() };
+    let base = part.interfaces.clone();
+    let mut previous = Default::default();
+    let mut view = face.clone();
+    for (revision, order) in [Some(vec![sampler_ui_ir::WidgetRef(0)]), Some(vec![]), None].into_iter().enumerate() {
+        let mut current = face.clone();
+        current.paint_order = order;
+        assert!(part.publish_interface(&current), "order-only changes must wake the view");
+        assert_eq!(part.ui_revision, revision as u64 + 1);
+        assert!(part.updates[0].widgets.is_empty());
+        part.updates[0].apply(&face, &previous, &mut view);
+        assert_eq!(view, current);
+        previous = part.updates[0].clone();
+        let updates = part.updates.clone();
+        assert!(!part.publish_interface(&current));
+        assert!(Arc::ptr_eq(&updates, &part.updates));
+        assert!(Arc::ptr_eq(&base, &part.interfaces));
+    }
+    assert_eq!(part.updates[0], Default::default());
+}
+
+#[test]
 fn stale_epoch_effect_replay_cannot_mutate_the_new_source() {
     let script = sampler_ksp::compile("on init declare ui_knob $k(0,100,1) end on on ui_control($k) set_knob_label($k,\"changed\") end on", 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
     let view = script.view();
