@@ -792,7 +792,11 @@ fn preempted_sender_defers_receivers_fifo_and_preserves_numeric_pgs_controller_o
             for _ in 0..256 {
                 rt.render(&mut [[0.; 2]; 4]).unwrap();
             }
-            assert_eq!(cell(&rt, 0, 2), if send { 12345 } else { 345 });
+            // RPN1's LOG write queues new PGS callbacks. The same-plan
+            // requeued tail puts RPN2 behind them: GO is already 1, so PGS
+            // logs 3/4 before RPN2 logs 2. This is notification interleaving,
+            // not pure receiver FIFO (covered separately below).
+            assert_eq!(cell(&rt, 0, 2), if send { 13425 } else { 345 });
             assert_eq!((cell(&rt, 1, 0), cell(&rt, 2, 0)), (1, 1));
             if send {
                 assert_eq!((cell(&rt, 1, 1), cell(&rt, 2, 1)), (1, 1));
@@ -810,6 +814,65 @@ fn preempted_sender_defers_receivers_fifo_and_preserves_numeric_pgs_controller_o
             rt.panic();
         });
     }
+}
+
+#[test]
+fn preempted_sender_defers_receivers_fifo_without_notification_interleaving() {
+    use sampler_ksp::EntryKind as K;
+    let sources = [
+        "on init pgs_create_key(LOG,1) declare $i declare $sent end on
+            on note ignore_event($EVENT_ID) if ($EVENT_NOTE=60)
+                while ($i<32) inc($i) end while set_rpn(60,16383)
+                $sent:=1 end if end on",
+        "on init declare $calls declare $a := -1 declare $v := -1 end on
+            on rpn inc($calls) $a:=$RPN_ADDRESS $v:=$RPN_VALUE
+                pgs_set_key_val(LOG,0,pgs_get_key_val(LOG,0)*10+1) wait(100000) end on",
+        "on init declare $calls declare $a := -1 declare $v := -1 declare $log end on
+            on rpn inc($calls) $a:=$RPN_ADDRESS $v:=$RPN_VALUE
+                pgs_set_key_val(LOG,0,pgs_get_key_val(LOG,0)*10+2)
+                $log:=pgs_get_key_val(LOG,0) wait(100000) end on",
+    ];
+    // No on pgs_changed bindings: LOG writes cannot insert notification
+    // callbacks between these receivers. This isolates deferred receiver FIFO.
+    let receivers = [entry(&sources, 1, K::Rpn), entry(&sources, 2, K::Rpn)];
+    let plan = prepared(&sources);
+    let budget = limits(&plan, 16);
+    let mut rt = Runtime::new(plan, budget).unwrap();
+    support::without_heap(|| {
+        rt.set_behavior_block_fuel(1);
+        note(&mut rt, 60);
+        assert!(rt.preemptions() > 0);
+        note(&mut rt, 61); // live same-plan yielded work forces deferred=true
+        rt.set_behavior_block_fuel(8192);
+        let mut emitted = false;
+        for _ in 0..128 {
+            rt.render(&mut [[0.; 2]; 4]).unwrap();
+            if cell(&rt, 0, 1) == 1 {
+                emitted = true;
+                break;
+            }
+        }
+        assert!(emitted, "bounded fixture must reach its send checkpoint");
+        let mut queued = 0;
+        rt.visit_behavior_progress(|p| {
+            if receivers.contains(&p.program) {
+                assert_eq!((p.pc, p.waiting, p.outcome), (0, false, None));
+                queued += 1;
+            }
+        });
+        assert_eq!(queued, 2);
+        assert_eq!((cell(&rt, 1, 0), cell(&rt, 2, 0)), (0, 0));
+        for _ in 0..256 {
+            rt.render(&mut [[0.; 2]; 4]).unwrap();
+        }
+        assert_eq!(cell(&rt, 2, 3), 12, "ascending deferred receiver order");
+        assert_eq!((cell(&rt, 1, 0), cell(&rt, 2, 0)), (1, 1));
+        for instance in [1, 2] {
+            assert_eq!((cell(&rt, instance, 1), cell(&rt, instance, 2)), (60, 16383));
+        }
+        assert_eq!(rt.take_fault(), None);
+        rt.panic();
+    });
 }
 
 #[test]
