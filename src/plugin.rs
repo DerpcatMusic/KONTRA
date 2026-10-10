@@ -734,6 +734,19 @@ impl PartShared {
         bins: usize,
         range: Option<(u64, u64)>,
     ) -> Option<crate::sound::waveform::Envelope> {
+        match self.zone_waveform_state(zone, epoch, bins, range) {
+            crate::sound::waveform::State::Ready(envelope) => Some(envelope),
+            _ => None,
+        }
+    }
+    pub(crate) fn zone_waveform_state(
+        &self,
+        zone: u32,
+        epoch: u64,
+        bins: usize,
+        range: Option<(u64, u64)>,
+    ) -> crate::sound::waveform::State {
+        use crate::sound::waveform::{Stage, State};
         let plan = self
             .ingress
             .lock_unpoisoned()
@@ -741,12 +754,15 @@ impl PartShared {
             .map(|ingress| ingress.plan());
         let provider = self.waveforms.lock_unpoisoned();
         if self.generation.load(Ordering::Acquire) != epoch {
-            return None;
+            return State::Unavailable(Stage::Generation);
         }
-        provider
-            .as_ref()
-            .filter(|provider| Some(provider.plan) == plan)?
-            .get_window(zone, bins, range)
+        let Some(provider) = provider.as_ref() else {
+            return State::Unavailable(Stage::Worker);
+        };
+        if Some(provider.plan) != plan {
+            return State::Unavailable(Stage::Generation);
+        }
+        provider.state(zone, bins, range)
     }
 
     pub(crate) fn widget_waveforms(
