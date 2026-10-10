@@ -217,6 +217,9 @@ pub(crate) fn apply_writes(
                 fx.output_set = true;
             }
             "ENGINE_PAR_SEND_EFFECT_DRY_LEVEL" => fx.dry_level = engine_gain(w.value),
+            "ENGINE_PAR_GAIN1" if group >= 0 && generic == -1 => fx.apply_eq_gain(0, w.value),
+            "ENGINE_PAR_GAIN2" if group >= 0 && generic == -1 => fx.apply_eq_gain(1, w.value),
+            "ENGINE_PAR_GAIN3" if group >= 0 && generic == -1 => fx.apply_eq_gain(2, w.value),
             _ => {}
         }
     }
@@ -303,6 +306,24 @@ pub(crate) struct Convolution {
 }
 
 impl Slot {
+    fn apply_eq_gain(&mut self, band: usize, value: i32) {
+        let Some(Params::Eq { bands }) = self.params() else {
+            return;
+        };
+        if band >= bands.len() {
+            return;
+        }
+        // Init-only writes have no live control owner. Edit the validated legacy
+        // Hz/octaves/dB record before static translation; native gain law is unverified.
+        let db = sampler_core::EngineParameterLaw::Linear {
+            low: -18.,
+            high: 18.,
+        }
+        .decode(value) as f32;
+        let at = 8 + band * 12 + 8;
+        self.public[at..at + 4].copy_from_slice(&db.to_le_bytes());
+    }
+
     pub(crate) fn params(&self) -> Option<Params> {
         let mut r = Reader(&self.public);
         let params = match self.module {
@@ -1692,6 +1713,162 @@ fn eq_band(
 #[cfg(test)]
 mod tests {
     use ni_file::kontakt::Chunk;
+
+    fn legacy_eq_slot(kind: i32) -> super::Slot {
+        let mut public = [kind.to_le_bytes(); 2].concat();
+        for values in [[300f32, 1., 0.], [1000., 1.5, 0.], [6000., 2., 0.]]
+            .into_iter()
+            .take((kind - 21) as usize)
+        {
+            for value in values {
+                public.extend(value.to_le_bytes());
+            }
+        }
+        let mut fx = slot(0x18, public, 1.);
+        fx.slot = 5;
+        fx
+    }
+
+    #[test]
+    fn init_only_group_eq_gain_writes_reach_static_bands() {
+        let initialized = sampler_ksp::initialize(
+            "on init\nset_engine_par($ENGINE_PAR_GAIN1, 0, 7, 5, -1)\nset_engine_par($ENGINE_PAR_GAIN1, 250000, 7, 5, -1)\nset_engine_par($ENGINE_PAR_GAIN2, 1000000, 7, 5, -1)\nset_engine_par($ENGINE_PAR_GAIN3, 750000, 7, 5, -1)\nend on",
+            sampler_ksp::Limits::LIBRARY,
+            &Default::default(),
+        ).unwrap();
+        assert!(!initialized.writes_effect_slots());
+        let writes = initialized.engine_pars();
+        for kind in 22..=24 {
+            let mut fx = legacy_eq_slot(kind);
+            let saved = fx.public.clone();
+            apply_writes(std::slice::from_mut(&mut fx), &writes, 7, -1);
+            let Some(Params::Eq { bands }) = fx.params() else {
+                panic!("legacy EQ record must still decode")
+            };
+            for (band, values) in bands.iter().enumerate() {
+                assert_eq!(values[2], [-9., 18., 9.][band]);
+                let at = 8 + band * 12;
+                assert_eq!(&fx.public[at..at + 8], &saved[at..at + 8]);
+            }
+            let built = chain(std::slice::from_ref(&fx), Scope::Voice);
+            let filters: Vec<_> = built
+                .processors
+                .iter()
+                .filter_map(|p| match p {
+                    sampler_ir::Processor::Filter(f) => Some(f),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(filters.len(), bands.len());
+            for (filter, values) in filters.iter().zip(&bands) {
+                assert_eq!(
+                    filter.cutoff,
+                    sampler_ir::Frequency::Hertz(f64::from(values[0]))
+                );
+                assert_eq!(
+                    filter.kind,
+                    sampler_ir::FilterKind::Peak {
+                        gain: sampler_ir::Gain::Decibels(f64::from(values[2])),
+                    }
+                );
+            }
+            assert!(
+                built
+                    .notes
+                    .iter()
+                    .all(|n| n.3 == sampler_ir::Reason::UnknownLaw)
+            );
+        }
+    }
+
+    #[test]
+    fn init_eq_gain_writes_reject_wrong_owners_and_clamp_own_law() {
+        let mut write = sampler_ksp::EnginePar {
+            parameter: "$ENGINE_PAR_GAIN1".into(),
+            value: 1_000_000,
+            group: 7,
+            slot: 5,
+            generic: -1,
+        };
+        for (group, physical_slot, generic) in [(8, 5, -1), (7, 4, -1), (7, 5, 1), (-1, 5, 1)] {
+            let mut fx = legacy_eq_slot(22);
+            let saved = fx.public.clone();
+            (write.group, write.slot, write.generic) = (group, physical_slot, generic);
+            apply_writes(
+                std::slice::from_mut(&mut fx),
+                std::slice::from_ref(&write),
+                7,
+                -1,
+            );
+            assert_eq!(fx.public, saved);
+            // Even an exact instrument rack address must remain outside this route.
+            if group == -1 {
+                apply_writes(
+                    std::slice::from_mut(&mut fx),
+                    std::slice::from_ref(&write),
+                    group,
+                    generic,
+                );
+                assert_eq!(fx.public, saved);
+            }
+        }
+        (write.group, write.slot, write.generic) = (7, 5, -1);
+        for name in [
+            "ENGINE_PAR_GAIN2",
+            "ENGINE_PAR_GAIN3",
+            "ENGINE_PAR_GAIN4",
+            "ENGINE_PAR_GAIN01",
+        ] {
+            let mut fx = legacy_eq_slot(22);
+            let saved = fx.public.clone();
+            write.parameter = name.into();
+            apply_writes(
+                std::slice::from_mut(&mut fx),
+                std::slice::from_ref(&write),
+                7,
+                -1,
+            );
+            assert_eq!(fx.public, saved);
+        }
+        write.parameter = "ENGINE_PAR_GAIN1".into();
+        for value in [i32::MIN, i32::MAX] {
+            let mut fx = legacy_eq_slot(22);
+            write.value = value;
+            apply_writes(
+                std::slice::from_mut(&mut fx),
+                std::slice::from_ref(&write),
+                7,
+                -1,
+            );
+            assert_eq!(
+                fx.params(),
+                Some(Params::Eq {
+                    bands: vec![[300., 1., if value < 0 { -18. } else { 18. }]],
+                })
+            );
+        }
+        for variant in 0..5 {
+            let mut fx = legacy_eq_slot(22);
+            match variant {
+                0 => fx.module = 0x44,
+                1 => {
+                    fx.public.pop();
+                }
+                2 => fx.public.push(0),
+                3 => fx.public[4..8].copy_from_slice(&23i32.to_le_bytes()),
+                _ => fx.public[8..12].copy_from_slice(&f32::NAN.to_le_bytes()),
+            }
+            let saved = fx.public.clone();
+            apply_writes(
+                std::slice::from_mut(&mut fx),
+                std::slice::from_ref(&write),
+                7,
+                -1,
+            );
+            assert_eq!(fx.public, saved);
+        }
+    }
+
     #[test]
     fn live_eq_retains_flat_bands_and_their_physical_indices() {
         let mut public = Vec::new();
