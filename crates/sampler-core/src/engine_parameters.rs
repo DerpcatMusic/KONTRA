@@ -179,9 +179,18 @@ impl EngineParameterLaw {
         match self {
             Self::SignedNormalized => unreachable!(),
             Self::Linear { low, high } => low + (high - low) * v / 1e6,
-            Self::Exponential { low, high } => (low.ln() + (high.ln() - low.ln()) * v / 1e6).exp(),
+            Self::Exponential { low, high } => {
+                // Declared endpoints must not shrink or widen through log/exp roundoff.
+                if v == 0. {
+                    low
+                } else if v == 1e6 {
+                    high
+                } else {
+                    (low.ln() + (high.ln() - low.ln()) * v / 1e6).exp()
+                }
+            }
             Self::ShiftedExponential { low, high, offset } => {
-                (low.ln() + (high.ln() - low.ln()) * v / 1e6).exp().max(low) - offset
+                Self::Exponential { low, high }.decode(value).max(low) - offset
             }
             Self::AhdsrCurve => {
                 let c = v / 500000. - 1.;
