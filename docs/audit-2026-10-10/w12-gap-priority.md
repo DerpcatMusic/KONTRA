@@ -53,4 +53,36 @@ cached-c49-eq-summary.json}`, `w12-family-22ed/SOURCE_LEAD_DISPOSITION.json`,
 `w12-format-revisions/legacy-header-census.json`, and
 `w12-vista-pacific-resources/RESOURCE_CENSUS.json` under the run ledger.
 
-NEXT: authored NKR impulse lookup RED, v1 resolver port, affected-item recount.
+The authored NKR resolver port is now measured on six native NKIs (176869
+unchanged zones). Conflux recovers one impulse entry and Una Corda Cotton,
+Felt and Pure recover three each. Those four items have zero translated
+resource failures. Across the six items, failures fall from 20 to 10 and
+admitted impulse entries rise from 0 to 10. The two Areia legacy octave
+legatos retain five failures each; they are not credited as fixed.
+
+The repaired hierarchical NKR fixture decodes independently before asserting
+the fallback. The original resolver then produces RED (`None` versus the
+authored member); the port passes all six sample tests and the Kontakt area
+no-run after the build cutoff. Earlier shared-target and malformed-fixture
+attempts are excluded. Ordinary lookup retains precedence, moved authored
+containers and case differences work, and traversal and ambiguous containers
+remain typed errors. Modern and legacy instrument/multi tables retain authored
+NKR references. Legacy multi native playback is not measured.
+
+Product metadata already includes the importer source hash in its stamp;
+the changed resolver invalidates old translations. Recipes retain virtual NKR
+member paths and the existing decoder reconstructs PCM in memory. No new
+sample or decrypted payload is persisted. This measures resource admission,
+not convolution DSP laws, slot activation, audio parity, or load timing.
+The native paired receipt and cutoff verification are under
+`w12-impulse-nkr-20261010/{PAIRED,BASELINE_VERIFIED,READY}.json`.
+
+Pacific Trills and Vista FFF Overlay image lookup is a separate open item.
+Their shared failed request identity and successful decode counts narrow the
+cause to lookup, but exact request names and the frozen-v1 pair are pending.
+The prior `b7d9a114` slice changed diagnostic taxonomy only and contains no
+image resolver fix. A root FileContainer marker eligibility lead is not linked
+to those native failures and earns no improvement claim.
+
+NEXT: exact Pacific/Vista picture request and frozen-v1 pair, then general
+lookup regression; retain Areia and native family/DSP evidence as open gaps.
