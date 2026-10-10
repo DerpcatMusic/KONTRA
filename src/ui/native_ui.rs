@@ -1029,9 +1029,15 @@ fn draw_retained(
     slot: usize, s: f64, authored: Size,
     drafts: &mut HashMap<String, String>, retention: &mut PrimitiveRetention,
 ) -> anyhow::Result<El> {
-    let plan = PrimitivePlan::analyze_for(node, |path| {
-        ui.focused(format!("nui-{slot}-{path}-text"))
-    })?;
+    let activity = session.activity();
+    let plan = {
+        let _span = activity.as_ref().map(|activity| {
+            activity.span(crate::plugin::ui_activity::Phase::UiNativeRetentionAnalysis)
+        });
+        PrimitivePlan::analyze_for(node, |path| {
+            ui.focused(format!("nui-{slot}-{path}-text"))
+        })?
+    };
     retention.live.clear();
     // Reuse the caller\'s size: authored frame lookups can execute __index.
     let result = draw_impl(ui, node, package, session, slot, s, Style::default(), drafts,
@@ -1949,6 +1955,21 @@ pub(super) fn stack_peak((start, end, top): (usize, usize, usize)) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_retention_analysis_uses_the_opt_in_phase_sink() {
+        use crate::plugin::ui_activity::{Activity, Phase};
+        let (package, mut session) = primitive_fixture("return function() return Text('phase') end");
+        let activity = Arc::new(Activity::new(true));
+        session.set_activity(Some(activity.clone()));
+        let graph = session.render().unwrap();
+        let mut ui = Ui::default();
+        let mut retention = PrimitiveRetention::default();
+        primitive_tree(&mut ui, &graph, &package, &session, 1., Some(&mut retention), 0);
+        assert_eq!(activity.phase_snapshot().unwrap()[Phase::UiNativeRetentionAnalysis as usize * 3], 1);
+        session.set_activity(Some(Arc::new(Activity::new(false))));
+        primitive_tree(&mut ui, &graph, &package, &session, 1., Some(&mut retention), 1);
+    }
 
     fn primitive_fixture(source: &str) -> (Arc<Package>, Session) {
         let dir = tempfile::tempdir().unwrap();
