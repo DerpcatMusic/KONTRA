@@ -1865,9 +1865,9 @@ impl Gen<'_, '_> {
                 self.set(dst, i64::from(len))?;
                 true
             }
-            Search => return self.search(args, dst),
+            Search => return self.search(args, dst, span),
             Sort => return self.sort(args, dst),
-            ArrayEqual => return self.array_equal(args, dst),
+            ArrayEqual => return self.array_equal(args, dst, span),
             ByMarks => {
                 self.arg(args, 0, dst)?;
                 self.set(t, i64::from(b::MARKS_FLAG))?;
@@ -3175,22 +3175,20 @@ impl Gen<'_, '_> {
         })
     }
 
-    fn search(&mut self, args: &[Arg], dst: u16) -> Result<()> {
+    fn search(&mut self, args: &[Arg], dst: u16, span: Span) -> Result<()> {
         let (array, len) = match args.first() {
             Some(Arg::Var(v, _)) => {
                 let Home::Cells { offset, len } = self.var(*v).home else {
-                    self.ignore(Builtin::Search, "of a text array is not available; -1");
-                    return self.set(dst, -1);
+                    return fault(span, "search requires an integer array");
                 };
                 (Ok(ScriptArray { offset, len }), len)
             }
             Some(Arg::SysArray(sys)) if self.sys_readable(*sys) => (Err(*sys), sys.len()),
             _ => {
-                self.ignore(
-                    Builtin::Search,
-                    "of this runtime-maintained array is not available; -1",
+                return fault(
+                    span,
+                    "search of this array is not available in this callback",
                 );
-                return self.set(dst, -1);
             }
         };
         let (value, end, t) = (reg(dst, 1)?, reg(dst, 2)?, reg(dst, 3)?);
@@ -3202,19 +3200,32 @@ impl Gen<'_, '_> {
         } else {
             self.set(dst, 0)?;
             self.arg(args, 1, value)?;
-            if matches!(array, Err(SysArray::GroupsAffected)) {
-                self.emit(I::ReadAffectedGroup {
-                    index: None,
-                    local: end,
-                })?;
-                self.emit(I::AddLocal {
-                    local: end,
-                    value: -1,
-                })?;
-            } else {
-                self.set(end, i64::from(len) - 1)?;
-            }
+            self.set(end, i32::MAX.into())?;
         }
+        // Intersect the inclusive range with actual storage; empty stays empty.
+        self.set(t, 0)?;
+        self.emit(I::Op(Op::Integer {
+            lhs: dst,
+            rhs: t,
+            operation: IntegerExtra::Max,
+        }))?;
+        if matches!(array, Err(SysArray::GroupsAffected)) {
+            self.emit(I::ReadAffectedGroup {
+                index: None,
+                local: t,
+            })?;
+            self.emit(I::AddLocal {
+                local: t,
+                value: -1,
+            })?;
+        } else {
+            self.set(t, i64::from(len) - 1)?;
+        }
+        self.emit(I::Op(Op::Integer {
+            lhs: end,
+            rhs: t,
+            operation: IntegerExtra::Min,
+        }))?;
         let start = self.here();
         self.set(t, 0)?;
         self.emit(I::Binary32 {
@@ -3427,16 +3438,15 @@ impl Gen<'_, '_> {
         Ok(())
     }
 
-    /// `array_equal(a, b)`: same length and cells.
-    fn array_equal(&mut self, args: &[Arg], dst: u16) -> Result<()> {
+    /// `array_equal(a, b)`: sema admits same-sized declared integer arrays.
+    fn array_equal(&mut self, args: &[Arg], dst: u16, span: Span) -> Result<()> {
         let (Some(a), Some(b)) = (self.cells(args, 0), self.cells(args, 1)) else {
-            self.ignore(Builtin::ArrayEqual, "of text arrays is not available; 0");
-            return self.set(dst, 0);
+            return fault(span, "array_equal requires declared integer arrays");
         };
-        self.cover(Builtin::ArrayEqual, Coverage::Native);
         if a.len != b.len {
-            return self.set(dst, 0);
+            return fault(span, "array_equal requires arrays of the same size");
         }
+        self.cover(Builtin::ArrayEqual, Coverage::Native);
         let [i, x, y] = [1, 2, 3].map(|n| dst + n);
         reg(dst, 3)?;
         self.set(i, i64::from(a.len))?;
