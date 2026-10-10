@@ -1259,7 +1259,9 @@ fn library_search_ignores_preset_names_and_keeps_selected_library_folders() {
     let scene = h.ui.scene().unwrap();
     let item = scene.surface("instrument-0").expect("matching preset");
     assert!(
-        item.tip.as_deref().is_some_and(|tip| tip.ends_with("Impact.nki")),
+        item.tip.as_deref().is_some_and(|tip| {
+            tip.starts_with("/virtual/Damage/Instruments/Effects/Impact.nki\n")
+        }),
         "the lower query independently filters the selected library"
     );
     assert!(scene.surface("instrument-1").is_none());
