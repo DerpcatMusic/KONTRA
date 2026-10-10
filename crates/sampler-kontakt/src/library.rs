@@ -891,6 +891,11 @@ impl Translation {
                     }
                     names
                 };
+                // Preserve original array framing and nested source bytes before
+                // snapshot/init writes or DSP admission. Descriptors are not a codec.
+                self.ir
+                    .source_parameters
+                    .push(crate::modulation_objects::wire(index, external, chunk)?);
                 for (slot, name, targets, settings) in names {
                     for target in &targets {
                         if eq_knob(&target.param).is_some()
