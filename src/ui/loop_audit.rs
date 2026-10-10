@@ -4,7 +4,9 @@ use sampler_ui_ir as ir;
 
 #[test]
 fn loop_audit_scalar_changes_do_not_wake_idle_editor() {
-    let p = SamplerParams::new();
+    use crate::plugin::ui_activity::{Activity, Count};
+    let mut p = SamplerParams::new();
+    p.shared.ui_activity = Arc::new(Activity::new(true));
     p.shared.ensure_parts(1);
     let atoms = p.shared.part(0).unwrap();
     let id = ir::ControlId(9);
@@ -22,6 +24,14 @@ fn loop_audit_scalar_changes_do_not_wake_idle_editor() {
         watch.changed(&p, &meters, &computer),
         "scalar revision participates in Watch"
     );
+    atoms.refresh_controls(|_| Some(42.));
+    watch.cpu_at = None;
+    assert!(!watch.changed(&p, &meters, &computer), "unchanged readback stays idle");
+    let counts = p.shared.ui_activity.snapshot().unwrap();
+    assert_eq!(counts[Count::WatchCalls as usize], 4);
+    assert_eq!(counts[Count::ReadoutPolls as usize], 3);
+    assert_eq!(counts[Count::ReadoutChanges as usize], 2);
+    assert_eq!(counts[Count::WatchWakes as usize], 2);
 }
 
 #[test]
