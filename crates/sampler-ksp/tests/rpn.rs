@@ -27,6 +27,10 @@ fn prepared_slots(sources: &[&str], slots: &[u8]) -> Prepared {
             .unwrap()
         })
         .collect();
+    // Two one-key regions need two expanded-key candidates, not callback slots.
+    sampler_ksp::bind_modules(scripts, sample_plan(2).unwrap()).unwrap()
+}
+fn sample_plan(max_candidates: usize) -> Result<Prepared, Error> {
     let pcm = [0.5, 0.25].map(|value| Pcm::new(48000, Box::from([[value; 2]; 48000])).unwrap());
     let regions = (0..2)
         .map(|sample| Region {
@@ -41,12 +45,18 @@ fn prepared_slots(sources: &[&str], slots: &[u8]) -> Prepared {
             playback: Playback::default(),
         })
         .collect();
-    sampler_ksp::bind_modules(
-        scripts,
-        Prepared::new(48000, pcm.into(), regions, 0).unwrap(),
-    )
-    .unwrap()
+    Prepared::new(48000, pcm.into(), regions, max_candidates)
 }
+
+#[test]
+fn shared_fixture_requires_exactly_two_expanded_key_candidates() {
+    for budget in [0, 1] {
+        assert!(matches!(sample_plan(budget), Err(Error::Capacity)));
+    }
+    assert_eq!(sample_plan(2).unwrap().candidate_count(), 2);
+    assert_eq!(prepared(&["on rpn end on"]).candidate_count(), 2);
+}
+
 // Resolve a test's binding from public compiler entries, not dense instance/slot
 // identity. Includes non-entry programs in each preceding module's base.
 fn entry(sources: &[&str], instance: usize, kind: sampler_ksp::EntryKind) -> usize {
