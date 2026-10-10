@@ -152,6 +152,175 @@ fn queued_note_ends_retain_silent_generated_notes_and_cancel_without_leaking_pin
         });
     }
 }
+
+fn deferred_sample_plan(after_play: Vec<Instruction>) -> Prepared {
+    let mut code = vec![
+        Instruction::SetLocal {
+            local: 0,
+            value: 60,
+        },
+        Instruction::SetLocal {
+            local: 1,
+            value: 127,
+        },
+        Instruction::PlayMidi {
+            offset_micros: None,
+            key: 0,
+            velocity: 1,
+            inheritance: Inheritance::Independent,
+            duration: DurationValue::Fixed(Duration::UntilSilent),
+            result: Some(2),
+        },
+    ];
+    code.extend(after_play);
+    Prepared::new(
+        48000,
+        vec![Pcm::new(48000, Box::from([[0.25; 2]; 16])).unwrap()],
+        vec![Region {
+            sample: 0,
+            key_low: 60,
+            key_high: 60,
+            root_key: None,
+            velocity_low: 0.,
+            velocity_high: 1.,
+            gain: 1.,
+            envelope: Envelope::default(),
+            playback: Playback::default(),
+        }],
+        1,
+    )
+    .unwrap()
+    .with_programs(vec![Program::new(code).unwrap()], None)
+    .unwrap()
+}
+
+#[test]
+fn deferred_sample_note_survives_host_retirement_while_its_callback_is_preempted() {
+    let prepared = deferred_sample_plan(vec![Instruction::SetLocal { local: 0, value: 0 }]);
+    let mut rt = Runtime::new(
+        prepared,
+        Limits {
+            behavior_fuel: 3,
+            ..limits(3)
+        },
+    )
+    .unwrap();
+    support::without_heap(|| {
+        let parent = rt.note_on(input(), 60, 1.).unwrap();
+        let callback = rt.start_behavior(parent, 0).unwrap();
+        let alias = rt.behavior_local(callback, 2).unwrap() as i32;
+        let child = rt
+            .resolve_source_event(rt.active_plan(), alias)
+            .unwrap()
+            .unwrap();
+        assert_eq!(rt.behavior_outcome(callback), Ok(None));
+        assert_eq!(rt.voice_count(), 0);
+        rt.flush_ended(|_| panic!("physical input is still down"));
+        assert_eq!(
+            rt.resolve_source_event(rt.active_plan(), alias),
+            Ok(Some(child))
+        );
+        let mut output = [[0.; 2]; 1];
+        rt.render(&mut output).unwrap();
+        assert_eq!(rt.behavior_outcome(callback), Ok(Some(Outcome::Finished)));
+        assert_eq!(output, [[0.25; 2]; 1]);
+        rt.flush_behaviors(|_, _, outcome| {
+            assert_eq!(outcome, Outcome::Finished);
+            true
+        });
+        rt.render(&mut [[0.; 2]; 16]).unwrap();
+        rt.flush_ended(|_| true);
+        assert_eq!(rt.resolve_source_event(rt.active_plan(), alias), Ok(None));
+        assert_eq!(rt.note_count(), 1);
+        rt.note_off(input(), None).unwrap();
+        rt.flush_ended(|_| true);
+        assert_eq!(rt.note_count(), 0);
+    });
+}
+
+#[test]
+fn cancelled_deferred_attacks_return_work_without_playing_or_leaking_note_slots() {
+    for panic in [false, true] {
+        let prepared = deferred_sample_plan(vec![Instruction::End]);
+        let mut rt = Runtime::new(
+            prepared,
+            Limits {
+                behavior_fuel: 3,
+                ..limits(3)
+            },
+        )
+        .unwrap();
+        support::without_heap(|| {
+            for _ in 0..4 {
+                let parent = rt.note_on(input(), 60, 1.).unwrap();
+                let callback = rt.start_behavior(parent, 0).unwrap();
+                let alias = rt.behavior_local(callback, 2).unwrap() as i32;
+                assert_eq!(rt.behavior_outcome(callback), Ok(None));
+                if panic {
+                    rt.panic();
+                } else {
+                    rt.cancel_behavior(callback).unwrap();
+                }
+                rt.flush_behaviors(|_, _, outcome| {
+                    assert_eq!(outcome, Outcome::Cancelled);
+                    true
+                });
+                rt.flush_ended(|_| true);
+                assert_eq!(rt.resolve_source_event(rt.active_plan(), alias), Ok(None));
+                assert_eq!(rt.note_count(), usize::from(!panic));
+                if !panic {
+                    rt.note_off(input(), None).unwrap();
+                }
+                rt.flush_ended(|_| true);
+                assert_eq!(rt.note_count(), 0);
+                let mut output = [[0.; 2]; 1];
+                rt.render(&mut output).unwrap();
+                assert_eq!(output, [[0.; 2]; 1]);
+                assert_eq!(rt.pending_commands(), 0);
+            }
+        });
+    }
+}
+
+#[test]
+fn fault_after_preemption_commits_played_notes_and_returns_deferred_work() {
+    let prepared = deferred_sample_plan(vec![
+        Instruction::SetLocal {
+            local: 0,
+            value: i64::MAX,
+        },
+        Instruction::AddLocal { local: 0, value: 1 },
+    ]);
+    let mut rt = Runtime::new(
+        prepared,
+        Limits {
+            behavior_fuel: 3,
+            ..limits(3)
+        },
+    )
+    .unwrap();
+    support::without_heap(|| {
+        let parent = rt.note_on(input(), 60, 1.).unwrap();
+        let callback = rt.start_behavior(parent, 0).unwrap();
+        rt.flush_ended(|_| true);
+        let mut output = [[0.; 2]; 1];
+        rt.render(&mut output).unwrap();
+        assert_eq!(
+            rt.behavior_outcome(callback),
+            Ok(Some(Outcome::Fault(Error::ArithmeticOverflow)))
+        );
+        assert_eq!(output, [[0.25; 2]; 1]);
+        rt.flush_behaviors(|_, _, _| true);
+        rt.render(&mut [[0.; 2]; 16]).unwrap();
+        rt.note_off(input(), None).unwrap();
+        rt.flush_ended(|_| true);
+        assert_eq!(
+            (rt.note_count(), rt.voice_count(), rt.pending_commands()),
+            (0, 0, 0)
+        );
+    });
+}
+
 #[test]
 fn source_ids_are_not_host_ids_and_never_alias_reused_note_slots_or_panic() {
     let mut rt = Runtime::new(plan(), limits(1)).unwrap();

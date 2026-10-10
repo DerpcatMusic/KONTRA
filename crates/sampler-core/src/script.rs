@@ -1,9 +1,10 @@
 //! Script-instance integer state. Storage travels with its prepared generation.
-use crate::ops::{ScriptBank, ScriptResources};
+use crate::ops::{ScriptInitial, ScriptResources};
 use crate::{BehaviorId, Error, PlanId, Prepared, Program, Runtime};
 
 /// Dense instance identity scoped to a prepared plan, not a callback or note.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ScriptInstanceId(pub u16);
 
 /// Bounded integer-array view in the program's own script-instance bank.
@@ -42,7 +43,7 @@ impl Prepared {
         }
         let instances: Box<[_]> = instances
             .into_iter()
-            .map(|cells| ScriptBank {
+            .map(|cells| ScriptInitial {
                 cells: cells.into_boxed_slice(),
                 ..Default::default()
             })
@@ -82,7 +83,7 @@ impl Prepared {
     }
 }
 
-fn validate(programs: &[Program], instances: &[ScriptBank]) -> Result<(), Error> {
+fn validate(programs: &[Program], instances: &[ScriptInitial]) -> Result<(), Error> {
     for program in programs {
         if program.texts.len() < program.text_constants {
             return Err(Error::InvalidInput);
@@ -119,11 +120,27 @@ impl Runtime {
             .ok_or(Error::InvalidInput)
     }
 
-    pub(super) fn behavior_script_cell_mut(
+    pub(super) fn behavior_script_cell(&self, id: BehaviorId, cell: u32) -> Result<&i64, Error> {
+        let cell = usize::try_from(cell).map_err(|_| Error::InvalidInput)?;
+        let continuation = self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
+        let plan = self.behavior_plan(continuation.owner)?;
+        let program = continuation.program;
+        let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
+        let instance = generation.prepared.programs[program]
+            .script_instance
+            .ok_or(Error::InvalidInput)?;
+        generation
+            .scripts
+            .get(usize::from(instance.0))
+            .and_then(|bank| bank.cells.get(cell))
+            .ok_or(Error::InvalidInput)
+    }
+    pub(super) fn behavior_write_script_cell(
         &mut self,
         id: BehaviorId,
         cell: u32,
-    ) -> Result<&mut i64, Error> {
+        value: i64,
+    ) -> Result<(), Error> {
         let cell = usize::try_from(cell).map_err(|_| Error::InvalidInput)?;
         let continuation = self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
         let plan = self.behavior_plan(continuation.owner)?;
@@ -132,10 +149,17 @@ impl Runtime {
         let instance = generation.prepared.programs[program]
             .script_instance
             .ok_or(Error::InvalidInput)?;
-        generation
+        let bank = generation
             .scripts
             .get_mut(usize::from(instance.0))
-            .and_then(|bank| bank.cells.get_mut(cell))
-            .ok_or(Error::InvalidInput)
+            .ok_or(Error::InvalidInput)?;
+        let target = bank.cells.get_mut(cell).ok_or(Error::InvalidInput)?;
+        // Port v1 refresh_range's changed-value test into the shared writer.
+        let changed = *target != value;
+        *target = value;
+        if bank.mark_captured_cell(cell, changed) {
+            generation.script_revision = generation.script_revision.wrapping_add(1);
+        }
+        Ok(())
     }
 }

@@ -68,6 +68,12 @@ impl Parameter {
     }
 }
 
+#[cfg(test)]
+std::thread_local! {
+    pub(super) static PARAMETER_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(super) static RAMP_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum PreparedParameter {
     Constant(f64),
@@ -79,6 +85,19 @@ pub(crate) enum PreparedParameter {
     },
 }
 impl PreparedParameter {
+    pub(super) fn held(self, parameters: &[ControlRamp], at: u64, len: usize) -> Option<f64> {
+        #[cfg(test)]
+        PARAMETER_READS.with(|n| n.set(n.get() + 1));
+        match self {
+            Self::Constant(value) => Some(value),
+            Self::Control(lane) => parameters[lane].held(at, len),
+            Self::Expression { .. } => None,
+        }
+    }
+
+    pub(super) fn projected(self, parameters: &[ControlRamp]) -> bool {
+        matches!(self, Self::Control(lane) if parameters[lane].modulation.is_some())
+    }
     pub fn requires_expression(self) -> bool {
         matches!(self, Self::Expression { .. })
     }
@@ -88,6 +107,8 @@ impl PreparedParameter {
         at: u64,
         expression: Option<&crate::Expression>,
     ) -> f64 {
+        #[cfg(test)]
+        PARAMETER_READS.with(|n| n.set(n.get() + 1));
         match self {
             Self::Constant(value) => value,
             Self::Control(lane) => parameters[lane].value(at),
@@ -140,22 +161,55 @@ fn normalized(domain: ControlDomain, value: ControlValue) -> f64 {
 
 /// One trajectory per prepared binding, shared by all voices in that generation.
 /// Evaluation is a function of absolute sample time, never voice/render call count.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub(crate) struct ControlRamp {
     from: f64,
     target: f64,
     start: u64,
     frames: u32,
+    modulation: Option<(f64, [f64; 2])>,
 }
 impl ControlRamp {
-    pub(super) fn value(self, at: u64) -> f64 {
+    pub(super) fn held(self, at: u64, len: usize) -> Option<f64> {
+        let first = self.value(at);
+        if at.saturating_sub(self.start) >= u64::from(self.frames) || self.from == self.target {
+            return Some(first);
+        }
+        // A linear ramp plus a held modulation offset and clamp is monotone.
+        (first == self.value(at + len.saturating_sub(1) as u64)).then_some(first)
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_ramp(from: f64, target: f64, start: u64, frames: u32) -> Self {
+        Self {
+            from,
+            target,
+            start,
+            frames,
+            modulation: None,
+        }
+    }
+    pub(crate) fn value(self, at: u64) -> f64 {
+        #[cfg(test)]
+        RAMP_READS.with(|n| n.set(n.get() + 1));
         let elapsed = at.saturating_sub(self.start);
-        if elapsed >= u64::from(self.frames) {
+        let value = if elapsed >= u64::from(self.frames) {
             self.target
         } else {
             (self.from + (self.target - self.from) * (elapsed as f64 / f64::from(self.frames)))
                 .clamp(self.from.min(self.target), self.from.max(self.target))
+        };
+        match self.modulation {
+            None => value,
+            Some((delta, [low, high])) => (value + delta).clamp(low, high),
         }
+    }
+    pub(crate) fn add_modulation(&mut self, delta: f64, binding: ControlRange) {
+        let sum = self.modulation.map_or(0., |(delta, _)| delta) + delta;
+        self.modulation = Some((
+            sum,
+            [binding.low.min(binding.high), binding.low.max(binding.high)],
+        ));
     }
     fn set(&mut self, at: u64, target: f64, frames: u32) {
         if target != self.target {
@@ -187,6 +241,7 @@ pub(crate) fn initial_parameters(plan: &Prepared, bindings: &[ControlRange]) -> 
                 target,
                 start: 0,
                 frames: 0,
+                modulation: None,
             }
         })
         .collect()
@@ -234,5 +289,59 @@ fn edit_parameters(
     for &(_, lane) in &controls[from..until] {
         let binding = bindings[lane];
         parameters[lane].set(at, binding.target(value), binding.ramp_frames);
+    }
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::*;
+
+    #[test]
+    fn held_controls_keep_ramp_edges_and_clamped_plateaus() {
+        let ramp = ControlRamp::test_ramp(0., 2., 10, 100);
+        assert_eq!(ramp.held(0, 10), Some(0.));
+        assert_eq!(ramp.held(10, 32), None);
+        assert_eq!(ramp.held(100, 32), None);
+        assert_eq!(ramp.held(110, 32), Some(2.));
+        let projected = ControlRamp {
+            modulation: Some((-1., [0., 2.])),
+            ..ramp
+        };
+        assert_eq!(projected.held(10, 32), Some(0.));
+        assert_eq!(projected.held(40, 32), None);
+        assert_eq!(projected.held(110, 32), Some(1.));
+    }
+
+    #[test]
+    fn projection_clamps_after_the_base_ramp_and_ordered_route_sum() {
+        let base = ControlRamp {
+            from: 0.,
+            target: 2.,
+            start: 0,
+            frames: 100,
+            modulation: None,
+        };
+        let binding = ControlRange {
+            control: ControlId(1),
+            low: 0.,
+            high: 2.,
+            ramp_frames: 0,
+        };
+        let mut projected = base;
+        projected.add_modulation(-1., binding);
+        assert_eq!(projected.value(25), 0.);
+        assert_eq!(projected.value(75), 0.5);
+        assert_eq!(base.value(75), 1.5);
+        projected.add_modulation(1., binding);
+        assert_eq!(projected.value(25), base.value(25));
+        let mut projected = base;
+        for delta in [1., 2f64.powi(-54), -1.] {
+            projected.add_modulation(delta, binding);
+        }
+        assert_eq!(
+            projected.value(0),
+            0.,
+            "saved route order cannot be reassociated"
+        );
     }
 }

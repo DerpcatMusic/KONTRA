@@ -89,3 +89,86 @@ stored, no audio effect), `setSampleOffset`, `waitBeat`, `onTransport`,
 2. Parameter model: `setParameter`/`getParameter` and `sendScriptModulation`
    onto the IR where a law exists.
 3. UI widgets into `sampler-ui-ir::Interface`, as the KSP frontend does.
+
+### Deterministic evaluation bounds (2026-10-09)
+
+UVI admission and callbacks consume Luau call/backedge checkpoints and deferred
+coroutine resumes. Initialization shares 33,554,432 units across graph/script
+phases; live callbacks receive 1,048,576. Graph construction permits 262,144
+engine elements and depth 192, separately from the Original UI widget budget.
+The existing 1.5 GiB Lua memory limit remains. Config's elapsed load/callback
+thresholds are observations only: scheduler contention cannot reject finite
+work. Work exhaustion keeps the existing fault category and unsupported-init
+classification; infinite Lua loops and repeated deferred spawning still stop.
+
+The five former load-deadline leaves complete with 86,868 elements/depth 6 and
+12,877,619–13,366,624 VM checkpoints. The work-bound candidate produces the same
+checkpoint counts; receipts are in the W10 `w10-uvi-deadlines-20261009` run.
+Finite initialization with an already-expired elapsed threshold fails before
+and passes after this change. No quiet CPU or whole-census acceptance follows
+from these diagnostic timings.
+
+
+### Seeded audit protocol (2026-10-09)
+
+Only scan/shot builds expose `Config.audit_seed` and
+`KONTRA_UVI_AUDIT_SEED`/scanner `--audit-seed`. An explicit seed initializes Luau
+math and runtime random/native-cycle state per load. The threaded audit driver
+acknowledges after prior events and due coroutines at the virtual clock have
+completed and their commands have drained. It closes the event/request queue
+race and handles queue backpressure. Unseeded rendering keeps asynchronous
+processing and normal math seeding; no user setting or persistence field exists.
+Take-sequence seeds and modulation hashes already start deterministically from
+the loaded plan and virtual note/frame sequence.
+
+Four-second production-loader renders at block 64, key 60/velocity 64 and seed 42
+repeat bit-for-bit on two loads: Clarinet `97ad41a1…`, Flute `e8e09e24…`.
+Both remain varied with the seed unset on the same binary. All eight renders are
+nonzero with zero problem counters. Numeric-only receipts live in
+`~/.cache/kontakto-w10/audit-seed/`; no authored PCM is retained. This is A/A
+repeatability, not acceptance of W8's chain-sharing A/B or a CPU/RSS comparison.
+
+### Audit publication boundary (2026-10-09)
+
+The seeded barrier must acknowledge the owner only after publishing control
+values, the authored interface, runtime findings and scanner faults. Before this
+correction, the command reply preceded those publications: a synthetic note
+callback returned its Play command while the bridge still showed velocity 0
+instead of 64. The regression retains all 4,097 synthetic widgets and checks
+their text, scalar readback and one callback fault at the same completed barrier.
+It uses a clear inline preset and no library reader. This affects only the scan
+barrier; ordinary asynchronous playback keeps its existing publication path.
+
+Readback has its own load-sized work allowance after initialization. Metatable
+reads needed to project a large UI previously spent the remaining live callback
+work: after fixing reply ordering alone, the same synthetic panel exposed empty
+Panel placeholders starting at source widget 1,411. The inspection guard restores
+the exact previous work remainder, exhaustion flag and elapsed observation on
+exit. Initialization still shares one allowance and cannot refill it through
+inspection. A separate regression checks both near-empty and exhausted live
+allowances, and an inspection that exceeds its own bound reports a budget fault.
+
+The historical 11/21 timeouts remain incomplete observations. This UI-publication
+race does not establish their cause or a PCM difference. W8's frozen matching
+0be9 witnesses remain valid for their reported PCM comparisons; counter snapshots
+from those witnesses do not imply a fully published owner boundary.
+
+### Optional owner progress
+
+Scan callers may set both `Config.audit_seed` and `Config.audit_progress` to
+observe the owner through `UiBridge::scan_progress()` (or the inline host's
+getter). Ordinary hosts and seeded scans with progress disabled allocate no
+progress observer. `ScanProgress::snapshot()` reads atomics only: phase,
+requested/completed barrier counts and target clocks, actual Lua clock,
+remaining work, exhaustion, VM checkpoints and coroutine resumes. It never
+asks the busy Lua owner to service a readback. Fields are independent live
+observations; they are not a transactional snapshot. A completed barrier is
+recorded after UI, fault and scan publication, immediately before its reply.
+
+The clear synthetic `owner_progress_remains_readable_while_callback_is_blocked`
+witness holds a `require` provider during an event, reads progress before
+releasing it, then completes barriers at 5 and 7 ms with the note emitted at
+7 ms. `owner_progress_reports_exhaustion_without_refilling_work` also observes
+zero work/exhaustion after a bounded runaway and confirms that UI inspection
+preserves both. These fixtures use no reader, Wine, bank, sample or installed
+application and do not establish attribution for the earlier library timeouts.

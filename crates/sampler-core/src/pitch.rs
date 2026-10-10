@@ -73,7 +73,17 @@ impl PitchRange {
         }
     }
 
-    pub(super) fn apply(self, base_step: f64) -> Result<f64, Error> {
+    pub(super) fn apply_source(self, base_step: f64, wavetable: bool) -> Result<f64, Error> {
+        if wavetable {
+            let valid = [self.current, self.minimum, self.maximum]
+                .iter()
+                .all(|ratio| (base_step * ratio).is_finite() && base_step * ratio > 0.);
+            return if valid {
+                Ok(base_step * self.current)
+            } else {
+                Err(Error::InvalidInput)
+            };
+        }
         if !(MIN_STEP..=MAX_STEP).contains(&(base_step * self.minimum))
             || !(MIN_STEP..=MAX_STEP).contains(&(base_step * self.maximum))
         {
@@ -132,7 +142,8 @@ impl Runtime {
                 let family = self.families.get(voice.family.0).unwrap();
                 let owner = self.notes.get(family.note.0).unwrap().expression;
                 if let Some(ratio) = proposed(owner) {
-                    PitchRange::constant(ratio).apply(voice.base_step)?;
+                    PitchRange::constant(ratio)
+                        .apply_source(voice.base_step, voice.cursor.wavetable().is_some())?;
                 }
             }
         }

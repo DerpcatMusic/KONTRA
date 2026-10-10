@@ -6,12 +6,14 @@
 //! attack is forwarded: the same ownership path the other frontends use, with
 //! no parallel voice mechanism. The script host only runs when a note event or
 //! a `wait` is due, so an idle program costs nothing per block.
+#[cfg(test)]
+mod lifecycle_tests;
 mod thread;
-use crate::script::{Change, Command, MidiOut, Param, Play, Scope, ScriptHost};
 use crate::OscGroup;
+use crate::script::{Change, Command, MidiOut, Param, Play, Scope, ScriptHost};
 use sampler_core::{
-    Error, Expression, Frame, Inheritance, Input, Limits, ModTarget, NoteId, Prepared, Protocol, Runtime,
-    Stealing,
+    Error, Expression, Frame, Inheritance, Input, Limits, ModTarget, NoteId, Prepared, Protocol,
+    Runtime, Stealing,
 };
 use std::collections::HashMap;
 pub use thread::{Loaded, ScriptThread, UiBridge};
@@ -36,12 +38,29 @@ pub trait Script {
 /// What the host tells a script besides notes (channels are 0-based).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum HostInput {
-    Controller { cc: u8, value: u8, channel: u8 },
+    Controller {
+        cc: u8,
+        value: u8,
+        channel: u8,
+    },
     /// -1..=1.
-    Bend { value: f64, channel: u8 },
-    Touch { value: u8, channel: u8 },
-    PolyTouch { key: u8, value: u8, channel: u8 },
-    Program { value: u8, channel: u8 },
+    Bend {
+        value: f64,
+        channel: u8,
+    },
+    Touch {
+        value: u8,
+        channel: u8,
+    },
+    PolyTouch {
+        key: u8,
+        value: u8,
+        channel: u8,
+    },
+    Program {
+        value: u8,
+        channel: u8,
+    },
     Transport(bool),
     Tempo(f64),
 }
@@ -73,7 +92,11 @@ impl Script for ScriptHost {
             HostInput::Controller { cc, value, channel } => self.controller(cc, value, channel),
             HostInput::Bend { value, channel } => self.pitch_bend(value, channel),
             HostInput::Touch { value, channel } => self.after_touch(value, channel),
-            HostInput::PolyTouch { key, value, channel } => self.poly_after_touch(key, value, channel),
+            HostInput::PolyTouch {
+                key,
+                value,
+                channel,
+            } => self.poly_after_touch(key, value, channel),
             HostInput::Program { value, channel } => self.program_change(value, channel),
             HostInput::Transport(playing) => self.transport(playing),
             HostInput::Tempo(bpm) => self.set_tempo(bpm),
@@ -135,7 +158,10 @@ impl MidiFeed {
     pub fn pump<S: Script>(&mut self, driver: &mut Driver<S>, rt: &mut Runtime) {
         let ingress = &mut self.0;
         driver.drain_midi(|out| {
-            let word = [0x2000_0000 | u32::from(out.status) << 16 | u32::from(out.a & 127) << 8 | u32::from(out.b & 127)];
+            let word = [0x2000_0000
+                | u32::from(out.status) << 16
+                | u32::from(out.a & 127) << 8
+                | u32::from(out.b & 127)];
             if let Some(Ok(packet)) = sampler_midi::Packets::new(&word).next() {
                 let _ = ingress.apply(rt, packet);
             }
@@ -150,7 +176,7 @@ pub struct Driver<S: Script> {
     /// Script event / voice id -> core note.
     notes: HashMap<u64, NoteId>,
     /// Sounding physical notes by key (script event id).
-    held: HashMap<u8, u64>,
+    held: HashMap<u8, std::collections::VecDeque<u64>>,
     next: u64,
     /// Plays that asked for something the runtime does not model.
     unmodeled: Vec<&'static str>,
@@ -161,8 +187,8 @@ pub struct Driver<S: Script> {
     glides: Vec<Glide>,
     /// Frame of the next glide step.
     glide_at: u64,
-    /// Commands being applied, and ids of notes found ended: kept so the
-    /// audio thread allocates nothing once warm.
+    /// Commands being applied, and ids of notes found ended: kept off the heap
+    /// during audio callbacks.
     inbox: Vec<Command>,
     ended: Vec<u64>,
     /// MIDI the scripts generated, for the host to play into the part.
@@ -174,7 +200,9 @@ const TRACKED: usize = 1024;
 
 #[cfg(feature = "scan")]
 impl Driver<ScriptThread> {
-    pub fn scan_faults(&self) -> crate::script::ScanFaults { self.host.scan_faults() }
+    pub fn scan_faults(&self) -> crate::script::ScanFaults {
+        self.host.scan_faults()
+    }
 }
 
 impl<S: Script> Driver<S> {
@@ -185,7 +213,10 @@ impl<S: Script> Driver<S> {
             groups,
             rate: f64::from(rate),
             notes: HashMap::with_capacity(TRACKED),
-            held: HashMap::with_capacity(128),
+            // Any key can hold the entire tracked-note budget; prepare every queue.
+            held: (0..128)
+                .map(|key| (key, std::collections::VecDeque::with_capacity(TRACKED)))
+                .collect(),
             next: 1,
             unmodeled: Vec::with_capacity(32),
             global: HashMap::with_capacity(32),
@@ -236,10 +267,18 @@ impl<S: Script> Driver<S> {
         key: u8,
         velocity: f64,
     ) -> Result<(), Error> {
+        if self.notes.len() >= TRACKED {
+            self.prune(rt);
+        }
+        let held = self.held.get_mut(&key).ok_or(Error::InvalidInput)?;
+        if self.notes.len() >= TRACKED || held.len() >= TRACKED {
+            rt.release(note)?;
+            return Err(Error::Capacity);
+        }
         let id = self.next;
         self.next += 1;
         self.notes.insert(id, note);
-        self.held.insert(key, id);
+        held.push_back(id);
         self.host.set_time(self.now_ms(rt));
         self.host.note_on(id, key, (velocity * 127.0).round() as u8);
         if !self.host.handles_notes() {
@@ -250,9 +289,25 @@ impl<S: Script> Driver<S> {
     }
 
     pub fn note_off(&mut self, rt: &mut Runtime, key: u8) -> Result<(), Error> {
-        let Some(id) = self.held.remove(&key) else {
+        let Some(id) = self.held.get_mut(&key).and_then(|ids| ids.pop_front()) else {
             return Ok(());
         };
+        self.release_id(rt, id, key)
+    }
+
+    /// Release the physical note paired by the MIDI adapter, across overlapping channels.
+    pub fn note_off_note(&mut self, rt: &mut Runtime, note: NoteId, key: u8) -> Result<(), Error> {
+        let Some(ids) = self.held.get_mut(&key) else {
+            return Ok(());
+        };
+        let Some(at) = ids.iter().position(|id| self.notes.get(id) == Some(&note)) else {
+            return Ok(());
+        };
+        let id = ids.remove(at).unwrap();
+        self.release_id(rt, id, key)
+    }
+
+    fn release_id(&mut self, rt: &mut Runtime, id: u64, key: u8) -> Result<(), Error> {
         self.host.set_time(self.now_ms(rt));
         self.host.note_off(id, key);
         // Plays made by onRelease must not be linked to the closing gate.
@@ -313,6 +368,16 @@ impl<S: Script> Driver<S> {
         }
         for command in inbox.drain(..) {
             match command {
+                Command::EngineParameter { address, value } => {
+                    if rt.set_engine_parameter(address, value).is_err() {
+                        let category = "insert parameter without a DSP lane";
+                        if !self.unmodeled.contains(&category)
+                            && self.unmodeled.len() < self.unmodeled.capacity()
+                        {
+                            self.unmodeled.push(category);
+                        }
+                    }
+                }
                 Command::Play(play) => self.play(rt, &play, closing)?,
                 Command::Release { id, at_ms } => {
                     if let Some(note) = self.notes.get(&id).copied() {
@@ -326,14 +391,23 @@ impl<S: Script> Driver<S> {
                     voice,
                     at_ms,
                 } => self.modulate(rt, id, value, glide_ms, voice, at_ms)?,
-                Command::Change { id, what, value, relative, .. } => {
+                Command::Change {
+                    id,
+                    what,
+                    value,
+                    relative,
+                    immediate,
+                    ..
+                } => {
                     if let Some(note) = self.notes.get(&id).copied() {
                         let target = match what {
                             Change::Decibels => ModTarget::Decibels,
                             Change::Pan => ModTarget::Pan,
                             Change::Tune => ModTarget::Pitch,
                         };
-                        match rt.set_note_param(note, target, value, relative) {
+                        match rt
+                            .set_note_param_with_immediate(note, target, value, relative, immediate)
+                        {
                             Err(Error::StaleHandle) => {
                                 self.notes.remove(&id);
                             }
@@ -341,10 +415,35 @@ impl<S: Script> Driver<S> {
                         }
                     }
                 }
-                Command::Fade { id, from, to, ms, kill, .. } => {
+                Command::Fade {
+                    id,
+                    from,
+                    to,
+                    ms,
+                    kill,
+                    layer,
+                    ..
+                } => {
                     if let Some(note) = self.notes.get(&id).copied() {
                         let frames = self.frames(ms);
-                        match rt.fade_note(note, from, to, frames, kill && to <= 0.0) {
+                        let result = if layer == 0 {
+                            rt.fade_note(note, from, to, frames, kill && to <= 0.0)
+                        } else {
+                            self.groups
+                                .iter()
+                                .filter(|g| g.layer == layer)
+                                .try_for_each(|g| {
+                                    rt.fade_note_group(
+                                        note,
+                                        g.group,
+                                        from,
+                                        to,
+                                        frames,
+                                        kill && to <= 0.0,
+                                    )
+                                })
+                        };
+                        match result {
                             Err(Error::StaleHandle) => {
                                 self.notes.remove(&id);
                             }
@@ -352,7 +451,12 @@ impl<S: Script> Driver<S> {
                         }
                     }
                 }
-                Command::Parameter { scope, param, value, authored } => {
+                Command::Parameter {
+                    scope,
+                    param,
+                    value,
+                    authored,
+                } => {
                     self.parameter(rt, scope, param, value, authored)?;
                 }
                 Command::Midi(out) => {
@@ -376,24 +480,52 @@ impl<S: Script> Driver<S> {
         value: f64,
         authored: f64,
     ) -> Result<(), Error> {
-        let group = match scope {
-            Scope::Program => -1,
-            Scope::Layer(layer) => match self.groups.iter().find(|g| g.layer == layer && g.osc == 1) {
-                Some(g) => i64::from(g.group),
-                None => {
-                    if !self.unmodeled.contains(&"setParameter on a layer without a group") {
-                        self.unmodeled.push("setParameter on a layer without a group");
-                    }
-                    return Ok(());
+        if scope != Scope::Program {
+            for i in 0..self.groups.len() {
+                let g = self.groups[i];
+                if match scope {
+                    Scope::Layer(layer) => g.layer == layer,
+                    Scope::Keygroup(id) => g.keygroup == id,
+                    Scope::Oscillator(id) => g.oscillator == id,
+                    Scope::Program => false,
+                } {
+                    self.group_parameter(rt, i64::from(g.group), param, value, authored)?;
                 }
-            },
-        };
+            }
+            return Ok(());
+        }
+        self.group_parameter(rt, -1, param, value, authored)
+    }
+
+    fn group_parameter(
+        &mut self,
+        rt: &mut Runtime,
+        group: i64,
+        param: Param,
+        value: f64,
+        authored: f64,
+    ) -> Result<(), Error> {
         match param {
             Param::Gain => {
                 let db = 20.0 * (value.max(1e-6) / authored.max(1e-6)).log10();
-                rt.set_group_param(group, ModTarget::Decibels, db, false)
+                rt.set_group_param(group, ModTarget::Decibels, db, true)
             }
-            Param::Pan => rt.set_group_param(group, ModTarget::Pan, value - authored, false),
+            Param::Pan => rt.set_group_param(group, ModTarget::Pan, value - authored, true),
+            Param::Pitch => {
+                let address = sampler_core::EngineParameterAddress {
+                    parameter: sampler_core::engine_parameter_id("ENGINE_PAR_TUNE")
+                        .ok_or(Error::InvalidInput)?,
+                    group: group as i32,
+                    slot: -1,
+                    generic: -1,
+                };
+                let previous = rt.engine_parameter(address)?;
+                let semitones = 12. * (value.max(1e-9) / authored.max(1e-9)).log2();
+                rt.set_engine_parameter(
+                    address,
+                    previous + (semitones * 100_000. / 7.2).round() as i32,
+                )
+            }
             Param::Polyphony => {
                 let slots = rt.voice_slots();
                 let wanted = (value.round().max(1.0) as usize).min(slots);
@@ -508,6 +640,13 @@ impl<S: Script> Driver<S> {
     }
 
     fn play(&mut self, rt: &mut Runtime, play: &Play, closing: bool) -> Result<(), Error> {
+        // Forwarding a physical event keeps its identity and reuses its gate.
+        if play.parent == Some(play.id) {
+            if let Some(note) = self.notes.get(&play.id).copied() {
+                self.select(rt, note, play)?;
+                return stale_ok(rt.forward_attack(note).map(|_| ()));
+            }
+        }
         if self.notes.len() >= TRACKED {
             return Ok(());
         }
@@ -517,15 +656,13 @@ impl<S: Script> Driver<S> {
         let note = match parent {
             Some(parent) => rt.child(parent, play.key, velocity, open, Inheritance::Expression),
             None => {
-                let input = Input {
+                let address = sampler_core::ChannelAddress {
                     protocol: Protocol::Native,
                     port: 0,
                     group: 0,
                     channel: 0,
-                    key: play.key,
-                    external_id: None,
                 };
-                rt.note_on(input, play.key, velocity)
+                rt.generated_note(address, play.key, velocity)
             }
         };
         let note = match note {
@@ -559,6 +696,9 @@ impl<S: Script> Driver<S> {
             Some(_) => {}
             None if parent.is_none() || closing => self.release(rt, note, now + DETACHED_MS)?,
             None => {}
+        }
+        if play.duration_ms == Some(0.0) {
+            rt.retire_when_silent(note)?;
         }
         Ok(())
     }
@@ -666,11 +806,16 @@ impl Player {
             self.rt.render(&mut out[done..done + step])?;
             done += step;
         }
+        self.rt.flush_ended(|_| true);
         Ok(())
     }
 }
 
 impl Driver<ScriptThread> {
-    pub fn ui(&self) -> &std::sync::Arc<UiBridge> { self.host.ui() }
-    pub fn set_control(&mut self, id: sampler_ui_ir::ControlId, value: f64) -> bool { self.host.set_control(id, value) }
+    pub fn ui(&self) -> &std::sync::Arc<UiBridge> {
+        self.host.ui()
+    }
+    pub fn set_control(&mut self, id: sampler_ui_ir::ControlId, value: f64) -> bool {
+        self.host.set_control(id, value)
+    }
 }

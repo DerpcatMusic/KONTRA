@@ -15,14 +15,18 @@ mod builtins;
 mod diag;
 mod eval;
 mod hir;
+#[cfg(feature = "cache")]
+mod init_cache;
+#[cfg(feature = "cache")]
+pub use init_cache::{CachedInit, restore_initialized};
 mod lexer;
 mod lower;
 pub mod model;
 pub mod nckp;
 mod parser;
-mod sema;
 #[cfg(feature = "scan")]
 pub mod scan;
+mod sema;
 pub mod ui;
 
 pub use diag::{Error, Kind};
@@ -104,6 +108,7 @@ pub struct Entry {
 }
 /// A compiled script: programs, initial state after `on init`, and its model.
 pub struct Script {
+    midi_object: sampler_core::MidiObject,
     programs: Vec<Program>,
     entries: Vec<Entry>,
     /// Programs started when the plan becomes active (listener timers).
@@ -143,6 +148,10 @@ impl Script {
         picture: &dyn Fn(&str) -> Option<sampler_ui_ir::ImageMeta>,
     ) -> Result<sampler_ui_ir::Interface, sampler_ui_ir::Error> {
         ui::interface(&self.model, self.slot, picture)
+    }
+    /// Source slot retained independently of the bound script-instance index.
+    pub fn slot(&self) -> u8 {
+        self.slot
     }
     pub fn has_performance_view(&self) -> bool {
         self.model.interface.performance_view
@@ -288,11 +297,16 @@ fn apply_ui_effect(
     let Some(&service) = services.get(usize::from(effect.service)) else {
         return false;
     };
-    let Some(args) = effect.args.get(..usize::from(effect.count)) else { return false };
+    let Some(args) = effect.args.get(..usize::from(effect.count)) else {
+        return false;
+    };
     let arg = |i: usize| args.get(i).and_then(|&v| i32::try_from(v).ok());
     let text = || effect.text.as_ref().map(|t| t.as_str().to_string());
     if let Some(rest) = service.strip_prefix("set_key_") {
-        let Some(key) = arg(0).and_then(|k| model.interface.keys.get_mut(usize::try_from(k).ok()?)) else { return false };
+        let Some(key) = arg(0).and_then(|k| model.interface.keys.get_mut(usize::try_from(k).ok()?))
+        else {
+            return false;
+        };
         let before = key.clone();
         match rest {
             "color" => key.color = arg(1),
@@ -311,69 +325,173 @@ fn apply_ui_effect(
     }
     if service == "set_ui_color" {
         let Some(value) = arg(0) else { return false };
-        if let Some(request) = model.requests.iter_mut().rev().find(|r| r.command == "set_ui_color") {
-            if request.args == [Value::Int(value)] { return false; }
+        if let Some(request) = model
+            .requests
+            .iter_mut()
+            .rev()
+            .find(|r| r.command == "set_ui_color")
+        {
+            if request.args == [Value::Int(value)] {
+                return false;
+            }
             request.args = vec![Value::Int(value)];
-        } else { model.requests.push(model::Request { command: "set_ui_color", args: vec![Value::Int(value)] }); }
+        } else {
+            model.requests.push(model::Request {
+                command: "set_ui_color",
+                args: vec![Value::Int(value)],
+            });
+        }
         return true;
     }
     let Some(id) = arg(0) else { return false };
     let widget = model.interface.widgets.iter_mut().find(|w| w.ui_id == id);
-    if matches!(service, "move_control" | "move_control_px" | "add_menu_item" | "set_menu_item_str" | "set_menu_item_visibility" | "set_menu_item_value") {
+    if matches!(
+        service,
+        "move_control"
+            | "move_control_px"
+            | "add_menu_item"
+            | "set_menu_item_str"
+            | "set_menu_item_visibility"
+            | "set_menu_item_value"
+    ) {
         let Some(w) = widget else { return false };
         let before = w.clone();
         match service {
             "move_control" | "move_control_px" => {
-                let (Some(x), Some(y)) = (arg(1), arg(2)) else { return false };
-                let (px, py) = if service == "move_control" { ("grid_x", "grid_y") } else {
-                    w.properties.remove("grid_x"); w.properties.remove("grid_y");
+                let (Some(x), Some(y)) = (arg(1), arg(2)) else {
+                    return false;
+                };
+                let (px, py) = if service == "move_control" {
+                    ("grid_x", "grid_y")
+                } else {
+                    w.properties.remove("grid_x");
+                    w.properties.remove("grid_y");
                     ("$CONTROL_PAR_POS_X", "$CONTROL_PAR_POS_Y")
                 };
                 w.properties.insert(px.into(), Value::Int(x));
                 w.properties.insert(py.into(), Value::Int(y));
             }
             "add_menu_item" => {
-                let (Some(text), Some(value)) = (text(), arg(1)) else { return false };
-                w.menu.push(model::MenuItem { text, value, visible: true });
+                let (Some(text), Some(value)) = (text(), arg(1)) else {
+                    return false;
+                };
+                w.menu.push(model::MenuItem {
+                    text,
+                    value,
+                    visible: true,
+                });
             }
             _ => {
-                let Some(item) = arg(1).and_then(|i| w.menu.get_mut(usize::try_from(i).ok()?)) else { return false };
+                let Some(item) = arg(1).and_then(|i| w.menu.get_mut(usize::try_from(i).ok()?))
+                else {
+                    return false;
+                };
                 match service {
-                    "set_menu_item_str" => { let Some(value) = text() else { return false }; item.text = value; }
-                    "set_menu_item_value" => { let Some(value) = arg(2) else { return false }; item.value = value; }
-                    _ => { let Some(value) = arg(2) else { return false }; item.visible = value != 0; }
+                    "set_menu_item_str" => {
+                        let Some(value) = text() else { return false };
+                        item.text = value;
+                    }
+                    "set_menu_item_value" => {
+                        let Some(value) = arg(2) else { return false };
+                        item.value = value;
+                    }
+                    _ => {
+                        let Some(value) = arg(2) else { return false };
+                        item.visible = value != 0;
+                    }
                 }
             }
         }
         return *w != before;
     }
     let (name, value, index) = match service {
-        "set_text" | "add_text_line" => (Some("$CONTROL_PAR_TEXT".into()), text().map(Value::Text), None),
-        "set_knob_label" => (Some("$CONTROL_PAR_LABEL".into()), text().map(Value::Text), None),
-        "set_control_help" => (Some("$CONTROL_PAR_HELP".into()), text().map(Value::Text), None),
-        "set_knob_unit" => (Some("$CONTROL_PAR_UNIT".into()), arg(1).map(Value::Int), None),
-        "set_knob_defval" => (Some("$CONTROL_PAR_DEFAULT_VALUE".into()), arg(1).map(Value::Int), None),
-        "hide_part" => (Some("$CONTROL_PAR_HIDE".into()), arg(1).map(Value::Int), None),
-        "set_table_steps_shown" => (Some("table_steps_shown".into()), arg(1).map(Value::Int), None),
-        "set_control_par" => (arg(1).and_then(|p| eval::symbol_in(symbols, p)), arg(2).map(Value::Int), None),
-        "set_control_par_real" | "set_control_par_real_arr" => (arg(1).and_then(|p| eval::symbol_in(symbols, p)), args.get(2).map(|&b| Value::Real(f64::from_bits(b as u64))), if service.ends_with("_arr") { arg(3) } else { None }),
-        "set_control_par_str" => (arg(1).and_then(|p| eval::symbol_in(symbols, p)), text().map(Value::Text), None),
-        "set_control_par_arr" => (arg(1).and_then(|p| eval::symbol_in(symbols, p)), arg(2).map(Value::Int), arg(3)),
-        "set_control_par_str_arr" => (arg(1).and_then(|p| eval::symbol_in(symbols, p)), text().map(Value::Text), arg(2)),
+        "set_text" | "add_text_line" => (
+            Some("$CONTROL_PAR_TEXT".into()),
+            text().map(Value::Text),
+            None,
+        ),
+        "set_knob_label" => (
+            Some("$CONTROL_PAR_LABEL".into()),
+            text().map(Value::Text),
+            None,
+        ),
+        "set_control_help" => (
+            Some("$CONTROL_PAR_HELP".into()),
+            text().map(Value::Text),
+            None,
+        ),
+        "set_knob_unit" => (
+            Some("$CONTROL_PAR_UNIT".into()),
+            arg(1).map(Value::Int),
+            None,
+        ),
+        "set_knob_defval" => (
+            Some("$CONTROL_PAR_DEFAULT_VALUE".into()),
+            arg(1).map(Value::Int),
+            None,
+        ),
+        "hide_part" => (
+            Some("$CONTROL_PAR_HIDE".into()),
+            arg(1).map(Value::Int),
+            None,
+        ),
+        "set_table_steps_shown" => (
+            Some("table_steps_shown".into()),
+            arg(1).map(Value::Int),
+            None,
+        ),
+        "set_control_par" => (
+            arg(1).and_then(|p| eval::symbol_in(symbols, p)),
+            arg(2).map(Value::Int),
+            None,
+        ),
+        "set_control_par_real" | "set_control_par_real_arr" => (
+            arg(1).and_then(|p| eval::symbol_in(symbols, p)),
+            args.get(2).map(|&b| Value::Real(f64::from_bits(b as u64))),
+            if service.ends_with("_arr") {
+                arg(3)
+            } else {
+                None
+            },
+        ),
+        "set_control_par_str" => (
+            arg(1).and_then(|p| eval::symbol_in(symbols, p)),
+            text().map(Value::Text),
+            None,
+        ),
+        "set_control_par_arr" => (
+            arg(1).and_then(|p| eval::symbol_in(symbols, p)),
+            arg(2).map(Value::Int),
+            arg(3),
+        ),
+        "set_control_par_str_arr" => (
+            arg(1).and_then(|p| eval::symbol_in(symbols, p)),
+            text().map(Value::Text),
+            arg(2),
+        ),
         _ => return false,
     };
-    let (Some(name), Some(mut value)) = (name, value) else { return false };
+    let (Some(name), Some(mut value)) = (name, value) else {
+        return false;
+    };
     if let Some(w) = widget {
-        if service == "add_text_line" && let Value::Text(new) = &mut value
-            && let Some(Value::Text(old)) = w.properties.get(&name) && !old.is_empty() {
+        if service == "add_text_line"
+            && let Value::Text(new) = &mut value
+            && let Some(Value::Text(old)) = w.properties.get(&name)
+            && !old.is_empty()
+        {
             *new = format!("{old}\n{new}");
         }
         if let Some(i) = index {
             let properties = w.indexed_properties.entry(name).or_default();
-            if properties.get(&i) == Some(&value) { return false; }
+            if properties.get(&i) == Some(&value) {
+                return false;
+            }
             properties.insert(i, value);
         } else {
-            if w.properties.get(&name) == Some(&value) { return false; }
+            if w.properties.get(&name) == Some(&value) {
+                return false;
+            }
             if name == "$CONTROL_PAR_VALUE" {
                 match (&value, &mut w.value) {
                     (Value::Int(v), model::WidgetValue::Int(old)) => *old = *v,
@@ -384,9 +502,13 @@ fn apply_ui_effect(
         }
     } else if (builtins::INST_ICON_ID..=builtins::INST_ICON_ID + 5).contains(&id) {
         let properties = model.interface.instrument.entry(id).or_default();
-        if properties.get(&name) == Some(&value) { return false; }
+        if properties.get(&name) == Some(&value) {
+            return false;
+        }
         properties.insert(name, value);
-    } else { return false; }
+    } else {
+        return false;
+    }
     true
 }
 
@@ -418,6 +540,69 @@ pub fn callback_of(views: &[ScriptView], program: usize) -> String {
     format!("program {program}")
 }
 
+/// Prepare a live host-state capture off audio. Persistent locations are the
+/// actual bound banks; variable names and sigils stay in `ScriptView::model`.
+/// Instrument persistence includes both persistence kinds. Snapshot callers
+/// may filter instrument-only locations using that authored metadata.
+pub fn persistent_state_buffer(
+    views: &[ScriptView],
+) -> Result<sampler_core::ScriptStateBuffer, sampler_core::Error> {
+    use sampler_core::{ScriptStateAddress as A, ScriptStateValue as V};
+    let mut state = sampler_core::ScriptStateBuffer::default();
+    let mut base = 0;
+    for (i, view) in views.iter().enumerate() {
+        let instance =
+            ScriptInstanceId(u16::try_from(i).map_err(|_| sampler_core::Error::Capacity)?);
+        for persistent in &view.model.persistent {
+            match persistent.location {
+                model::Location::Control(id) => state.values.push(sampler_core::ScriptStateEntry {
+                    address: A::Control(id),
+                    value: V::Control(sampler_core::ControlValue::Integer(0)),
+                }),
+                model::Location::Cells { offset, len } => {
+                    for index in offset
+                        ..offset
+                            .checked_add(len)
+                            .ok_or(sampler_core::Error::Capacity)?
+                    {
+                        state.values.push(sampler_core::ScriptStateEntry {
+                            address: A::Cell { instance, index },
+                            value: V::Cell(0),
+                        });
+                    }
+                }
+                model::Location::Texts { offset, len } => {
+                    for index in offset
+                        ..offset
+                            .checked_add(len)
+                            .ok_or(sampler_core::Error::Capacity)?
+                    {
+                        state.values.push(sampler_core::ScriptStateEntry {
+                            address: A::Text { instance, index },
+                            value: V::Text(sampler_core::Text::new("")),
+                        });
+                    }
+                }
+            }
+        }
+        if let Some(entry) = view
+            .entries
+            .iter()
+            .find(|e| e.kind == EntryKind::PersistenceChanged)
+        {
+            state.callbacks.push(sampler_core::ScriptStateCallback {
+                program: base + entry.program,
+                behavior: None,
+                outcome: None,
+            });
+        }
+        base += view.programs;
+    }
+    state.values.sort_by_key(|entry| entry.address);
+    state.values.dedup_by_key(|entry| entry.address);
+    Ok(state)
+}
+
 /// Bind source modules in order through the shared native routing table.
 /// Note, release and controller callbacks share native module positions and
 /// retain separate instance state and reached-event projections.
@@ -433,6 +618,8 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
     let mut starts = Vec::new();
     let mut signals = Vec::new();
     let mut shared = Vec::new();
+    let mut midi_object = sampler_core::MidiObject::default();
+    let mut midi_instances = Vec::new();
     let initial_controllers: Vec<(u8, u8)> = scripts
         .iter()
         .flat_map(|s| s.model().controllers.iter().copied())
@@ -551,9 +738,13 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
             script
                 .entries
                 .iter()
-                .filter(|e| e.kind == EntryKind::PgsChanged)
+                .filter(|e| matches!(e.kind, EntryKind::PgsChanged | EntryKind::AsyncComplete))
                 .map(|e| sampler_core::SignalProgram {
-                    signal: lower::PGS_SIGNAL,
+                    signal: if e.kind == EntryKind::AsyncComplete {
+                        sampler_core::MIDI_ASYNC_SIGNAL
+                    } else {
+                        lower::PGS_SIGNAL
+                    },
                     program: base + e.program,
                     stage: index,
                 }),
@@ -564,6 +755,8 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
             program: base + p,
             stage: index,
         }));
+        midi_instances.push((script.slot, instance));
+        midi_object = script.midi_object;
         programs.extend(
             script
                 .programs
@@ -574,6 +767,7 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
         resources.push(script.resources);
     }
     let capacity = shared.len() + 4096;
+    midi_object.bind_initial_instances(&midi_instances)?;
     plan.with_initial_controllers(&initial_controllers)
         .with_script_sustain(owns_sustain)
         .with_script_release_triggers(owns_release_triggers)
@@ -589,6 +783,7 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
         .with_plan_programs(starts)?
         .with_signal_programs(signals)?
         .with_widgets(widgets)?
+        .with_midi_object(midi_object)
         // ponytail: fixed headroom for keys created at runtime, like the script stores.
         .with_shared_store(shared, capacity)
 }
@@ -639,56 +834,7 @@ pub fn init_engine_pars(
     limits: Limits,
     environment: &Environment,
 ) -> Result<Vec<EnginePar>, Error> {
-    #[cfg(feature="scan")]
-    scan::reset_script();
-    let result=init_engine_pars_inner(source,limits,environment);
-    #[cfg(feature="scan")]
-    scan::record(&result,source,environment.slot);
-    result
-}
-fn init_engine_pars_inner(source: &str,limits: Limits,environment: &Environment)->Result<Vec<EnginePar>,Error>{
-    let mut syms = lexer::Interner::default();
-    (|| {
-        #[cfg(feature="scan")]
-        scan::stage("lex");
-        let mut toks = lexer::lex(source, &mut syms)?;
-        #[cfg(feature="scan")]
-        scan::stage("preprocess");
-        lexer::preprocess(&mut toks, &syms, &Default::default())?;
-        #[cfg(feature="scan")]
-        scan::stage("parse");
-        let ast = parser::parse(&toks, &syms)?;
-        let budget = sema::Budget {
-            variables: limits.variables,
-            array_cells: limits.array_cells,
-        };
-        #[cfg(feature="scan")]
-        scan::stage("sema");
-        let hir = sema::analyze(ast, &syms, budget, &environment.performance_view.controls)?;
-        let init = eval::run(&hir, environment)?;
-        let mut writes: Vec<_> = init
-            .engine
-            .iter()
-            .map(|(&[parameter, group, slot, generic], &value)| EnginePar {
-                parameter: eval::symbol_name(&hir, parameter)
-                    .unwrap_or_else(|| parameter.to_string()),
-                value,
-                group,
-                slot,
-                generic,
-            })
-            .collect();
-        writes.sort_by(|a, b| {
-            (&a.parameter, a.group, a.slot, a.generic).cmp(&(
-                &b.parameter,
-                b.group,
-                b.slot,
-                b.generic,
-            ))
-        });
-        Ok(writes)
-    })()
-    .map_err(|f: diag::Fault| f.locate(source))
+    initialize(source, limits, environment).map(|initialized| initialized.engine_pars())
 }
 
 /// Compile a script. `on init` runs here on the control thread against
@@ -701,12 +847,7 @@ pub fn compile_with(
     controls: &[(&str, ControlId)],
     environment: &Environment,
 ) -> Result<Script, Error> {
-    #[cfg(feature = "scan")]
-    scan::reset_script();
-    let result = compile_inner(source, rate, limits, controls, environment);
-    #[cfg(feature = "scan")]
-    scan::record(&result, source, environment.slot);
-    result
+    compile_inner(source, rate, limits, controls, environment)
 }
 
 fn compile_inner(
@@ -737,6 +878,220 @@ fn compile_inner(
     if controls.len() > limits.variables {
         return Err(error("control binding budget exceeded"));
     }
+    let initialized = initialize(source, limits, environment)?;
+    compile_initialized(source, rate, limits, controls, initialized)
+}
+
+/// Rate-independent frontend state after one resource-aware `on init`.
+/// Consumed by `compile_initialized`; it is never shared between instances.
+pub struct Initialized {
+    hir: hir::Hir,
+    init: eval::Initial,
+    conditions: BTreeSet<String>,
+    environment: Environment,
+    #[cfg(feature = "scan")]
+    observation: scan::Checkpoint,
+}
+
+impl Initialized {
+    pub fn midi_object(&self) -> &sampler_core::MidiObject {
+        &self.init.midi_object
+    }
+    pub fn engine_pars(&self) -> Vec<EnginePar> {
+        let mut writes: Vec<_> = self
+            .init
+            .engine
+            .iter()
+            .map(|(&[parameter, group, slot, generic], &value)| EnginePar {
+                parameter: eval::symbol_name(&self.hir, parameter)
+                    .unwrap_or_else(|| parameter.to_string()),
+                value,
+                group,
+                slot,
+                generic,
+            })
+            .collect();
+        writes.sort_by(|a, b| {
+            (&a.parameter, a.group, a.slot, a.generic).cmp(&(
+                &b.parameter,
+                b.group,
+                b.slot,
+                b.generic,
+            ))
+        });
+        writes
+    }
+
+    /// Conservatively retain addressable effect slots when runtime code writes
+    /// engine parameters. No initializer or callback lowering is run to query it.
+    pub fn writes_effect_slots(&self) -> bool {
+        fn arg(a: &hir::Arg) -> bool {
+            match a {
+                hir::Arg::Expr(e) => expr(e),
+                hir::Arg::Place(hir::Place::Elem(_, e)) => expr(e),
+                _ => false,
+            }
+        }
+        fn expr(e: &hir::Expr) -> bool {
+            use hir::ExprKind as E;
+            match &e.kind {
+                E::Builtin(builtin, args) => {
+                    *builtin == builtins::Builtin::SetEnginePar || args.iter().any(arg)
+                }
+                E::Neg(e)
+                | E::BitNot(e)
+                | E::Not(e)
+                | E::Cast(e)
+                | E::LoadElem(_, e)
+                | E::SysElem(_, e) => expr(e),
+                E::Arith(_, a, b) | E::Compare(_, a, b) | E::Logic(_, a, b) => expr(a) || expr(b),
+                E::Concat(es) => es.iter().any(expr),
+                _ => false,
+            }
+        }
+        fn writes(body: &[hir::Stmt]) -> bool {
+            body.iter().any(|s| match &s.kind {
+                hir::StmtKind::Builtin(builtin, args) => {
+                    *builtin == builtins::Builtin::SetEnginePar || args.iter().any(arg)
+                }
+                hir::StmtKind::Assign(place, value) => {
+                    expr(value) || matches!(place, hir::Place::Elem(_, e) if expr(e))
+                }
+                hir::StmtKind::Fill(_, values) => values.iter().any(expr),
+                hir::StmtKind::If(e, yes, no) => expr(e) || writes(yes) || writes(no),
+                hir::StmtKind::While(e, body) => expr(e) || writes(body),
+                hir::StmtKind::Select(e, cases) => expr(e) || cases.iter().any(|c| writes(&c.body)),
+                _ => false,
+            })
+        }
+        // ponytail: conservatively retain slots; precise function reachability if RAM matters.
+        // Functions can be called by runtime callbacks. Conservative admission
+        // avoids dropping a slot reached indirectly or through a variable.
+        self.hir
+            .callbacks
+            .iter()
+            .filter(|c| c.kind != hir::CallbackKind::Init)
+            .any(|c| writes(&c.body))
+            || self.hir.functions.iter().any(|f| writes(&f.body))
+    }
+}
+
+pub fn initialize(
+    source: &str,
+    limits: Limits,
+    environment: &Environment,
+) -> Result<Initialized, Error> {
+    #[cfg(feature = "scan")]
+    scan::reset_script();
+    let result = initialize_inner(source, limits, environment);
+    #[cfg(feature = "scan")]
+    if result.is_err() {
+        scan::record(&result, source, environment.slot);
+    }
+    result
+}
+fn initialize_inner(
+    source: &str,
+    limits: Limits,
+    environment: &Environment,
+) -> Result<Initialized, Error> {
+    let audit_begin = std::time::Instant::now();
+    if source.len() > limits.source_bytes {
+        return Err(Error {
+            offset: 0,
+            line: 1,
+            column: 1,
+            kind: diag::Kind::Error,
+            builtin: None,
+            message: "source byte budget exceeded".into(),
+        });
+    }
+    let mut syms = lexer::Interner::default();
+    let (hir, init, conditions) = (|| {
+        let mut toks = lexer::lex(source, &mut syms)?;
+        #[cfg(feature = "scan")]
+        scan::stage("preprocess");
+        let conditions = lexer::preprocess(&mut toks, &syms, &Default::default())?;
+        #[cfg(feature = "scan")]
+        scan::stage("parse");
+        let ast = parser::parse(&toks, &syms)?;
+        let budget = sema::Budget {
+            variables: limits.variables,
+            array_cells: limits.array_cells,
+        };
+        #[cfg(feature = "scan")]
+        scan::stage("sema");
+        let hir = sema::analyze(ast, &syms, budget, &environment.performance_view.controls)?;
+        if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
+            eprintln!(
+                "AUDIT {{\"stage\":\"ksp_frontend\",\"ms\":{}}}",
+                audit_begin.elapsed().as_secs_f64() * 1000.
+            );
+        }
+        let init_begin = std::time::Instant::now();
+        let init = eval::run(&hir, environment);
+        #[cfg(feature = "scan")]
+        scan::initialized(init.is_ok());
+        let init = init?;
+        if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
+            eprintln!(
+                "AUDIT {{\"stage\":\"ksp_on_init\",\"ms\":{}}}",
+                init_begin.elapsed().as_secs_f64() * 1000.
+            );
+        }
+        Ok((hir, init, conditions))
+    })()
+    .map_err(|f: diag::Fault| f.locate(source))?;
+    Ok(Initialized {
+        hir,
+        init,
+        conditions,
+        environment: environment.clone(),
+        #[cfg(feature = "scan")]
+        observation: scan::checkpoint(),
+    })
+}
+
+/// Lower callbacks at the actual host rate, consuming the initialized state.
+pub fn compile_initialized(
+    source: &str,
+    rate: u32,
+    limits: Limits,
+    controls: &[(&str, ControlId)],
+    initialized: Initialized,
+) -> Result<Script, Error> {
+    #[cfg(feature = "scan")]
+    let slot = initialized.environment.slot;
+    #[cfg(feature = "scan")]
+    scan::restore(initialized.observation.clone());
+    #[cfg(feature = "scan")]
+    scan::stage("lower");
+    let result = compile_initialized_inner(source, rate, limits, controls, initialized);
+    #[cfg(feature = "scan")]
+    scan::record(&result, source, slot);
+    result
+}
+fn compile_initialized_inner(
+    source: &str,
+    rate: u32,
+    limits: Limits,
+    controls: &[(&str, ControlId)],
+    initialized: Initialized,
+) -> Result<Script, Error> {
+    let error = |message: &str| Error {
+        offset: 0,
+        line: 1,
+        column: 1,
+        kind: diag::Kind::Error,
+        builtin: None,
+        message: message.into(),
+    };
+    if rate == 0 {
+        return Err(error("sample rate must be positive"));
+    }
+    if controls.len() > limits.variables {
+        return Err(error("control binding budget exceeded"));
+    }
     let mut bindings = BTreeMap::new();
     let mut identities = BTreeSet::new();
     for &(name, id) in controls {
@@ -744,31 +1099,16 @@ fn compile_inner(
             return Err(error("duplicate control name or persistent identity"));
         }
     }
-    let mut syms = lexer::Interner::default();
-    let (hir, init, conditions) = (|| {
-        let mut toks = lexer::lex(source, &mut syms)?;
-        #[cfg(feature="scan")]
-        scan::stage("preprocess");
-        let conditions = lexer::preprocess(&mut toks, &syms, &Default::default())?;
-        #[cfg(feature="scan")]
-        scan::stage("parse");
-        let ast = parser::parse(&toks, &syms)?;
-        let budget = sema::Budget {
-            variables: limits.variables,
-            array_cells: limits.array_cells,
-        };
-        #[cfg(feature="scan")]
-        scan::stage("sema");
-        let hir = sema::analyze(ast, &syms, budget, &environment.performance_view.controls)?;
-        let init = eval::run(&hir, environment);
+    let Initialized {
+        hir,
+        init,
+        conditions,
+        environment,
         #[cfg(feature = "scan")]
-        scan::initialized(init.is_ok());
-        let init = init?;
-        Ok((hir, init, conditions))
-    })()
-    .map_err(|f: diag::Fault| f.locate(source))?;
+            observation: _,
+    } = initialized;
 
-    #[cfg(feature="scan")]
+    #[cfg(feature = "scan")]
     scan::stage("lower");
     // Control identities and definitions.
     let mut ids = vec![None; hir.uis.len()];
@@ -818,6 +1158,7 @@ fn compile_inner(
     }
 
     // Lowering.
+    let lower_begin = std::time::Instant::now();
     let mut unit = lower::Unit {
         hir: &hir,
         controls: &ids,
@@ -829,10 +1170,12 @@ fn compile_inner(
         coverage: BTreeMap::new(),
         warnings: Vec::new(),
         scratch: 0,
+        modules: Vec::new(),
     };
     let mut programs = Vec::new();
     let mut entries = Vec::new();
     let mut starts = Vec::new();
+    let profile_lower = std::env::var_os("KONTRA_AUDIT_LOWER").is_some();
     for callback in &hir.callbacks {
         use hir::CallbackKind as K;
         let (kind, context) = match callback.kind {
@@ -869,8 +1212,11 @@ fn compile_inner(
             .map(|s| Some(*s))
             .chain(timers.is_empty().then_some(None))
         {
+            let started = profile_lower.then(std::time::Instant::now);
+            let remaining = unit.budget;
             let program = unit
                 .program(
+                    programs.len(),
                     &callback.body,
                     callback.span,
                     context,
@@ -878,11 +1224,23 @@ fn compile_inner(
                     signal,
                 )
                 .map_err(|f| f.locate(source))?;
+            if let Some(started) = started {
+                eprintln!(
+                    "AUDIT {{\"stage\":\"ksp_callback_program\",\"context\":\"{context:?}\",\"ms\":{},\"instructions\":{}}}",
+                    started.elapsed().as_secs_f64() * 1000.,
+                    remaining - unit.budget,
+                );
+            }
             entries.push(Entry {
                 kind,
                 program: programs.len(),
             });
             programs.push(program);
+            if kind == EntryKind::PersistenceChanged
+                && init.model.persistence_completion == model::PersistenceCompletion::Scheduled
+            {
+                starts.push(programs.len() - 1);
+            }
             if let Some(signal) = signal {
                 let body = programs.len() - 1;
                 let driver = unit
@@ -893,6 +1251,7 @@ fn compile_inner(
             }
         }
     }
+    unit.finish(&mut programs).map_err(|f| f.locate(source))?;
     // Replay init through the same addressed service as every callback.
     let mut start: Vec<_> = init
         .engine
@@ -911,7 +1270,8 @@ fn compile_inner(
         })
         .collect();
     if !start.is_empty() || !purges.is_empty() {
-        starts.push(programs.len());
+        // Authored init writes must precede live persistence and listener callbacks.
+        starts.insert(0, programs.len());
         programs.push(
             unit.engine_start(&start, &purges)
                 .map_err(|f| f.locate(source))?,
@@ -924,6 +1284,13 @@ fn compile_inner(
             .map(|e| e.program);
     }
 
+    if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
+        eprintln!(
+            "AUDIT {{\"stage\":\"ksp_callback_lower\",\"ms\":{}}}",
+            lower_begin.elapsed().as_secs_f64() * 1000.
+        );
+    }
+    let state_begin = std::time::Instant::now();
     // Initial instance state: texts plus lowering scratch, the property /
     // engine / PGS mirror, and the dense control table.
     let mut texts = init.texts.clone();
@@ -974,17 +1341,44 @@ fn compile_inner(
         controls: ids.clone(),
     };
 
-    let mut warnings: Vec<Error> = hir
+    if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
+        eprintln!(
+            "AUDIT {{\"stage\":\"ksp_state_mirror\",\"ms\":{}}}",
+            state_begin.elapsed().as_secs_f64() * 1000.
+        );
+    }
+    let warnings_begin = std::time::Instant::now();
+    let mut findings: Vec<_> = hir
         .warnings
         .iter()
         .chain(&init.warnings)
         .map(|f| (f, diag::Kind::Warning))
         .chain(unit.warnings.iter().map(|(f, k)| (f, *k)))
-        .map(|(f, kind)| f.clone().locate_as(source, kind))
         .collect();
     // Builtin findings first so the cap never hides an unsupported builtin.
-    warnings.sort_by_key(|w| (w.kind == Kind::Warning, w.offset));
-    warnings.truncate(1000);
+    // Cap before positioning; one source scan serves all retained findings.
+    findings.sort_by_key(|(f, kind)| (*kind == Kind::Warning, f.span.start));
+    findings.truncate(1000);
+    let line_starts: Vec<_> = std::iter::once(0)
+        .chain(
+            source
+                .bytes()
+                .enumerate()
+                .filter_map(|(i, b)| (b == b'\n').then_some(i + 1)),
+        )
+        .collect();
+    let warnings: Vec<Error> = findings
+        .into_iter()
+        .map(|(f, kind)| f.clone().locate_indexed(source, kind, &line_starts))
+        .collect();
+    if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
+        eprintln!(
+            "AUDIT {{\"stage\":\"ksp_diagnostics\",\"ms\":{},\"warnings\":{}}}",
+            warnings_begin.elapsed().as_secs_f64() * 1000.,
+            warnings.len()
+        );
+    }
+    let model_begin = std::time::Instant::now();
     let services = unit.services.iter().map(|b| b.name()).collect();
     let coverage = unit
         .coverage
@@ -992,7 +1386,16 @@ fn compile_inner(
         .map(|(&(name, c), &n)| (name, c, n))
         .collect();
     let model = model::assemble(&hir, &init, &ids, &entries);
+    if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
+        eprintln!(
+            "AUDIT {{\"stage\":\"ksp_model_assemble\",\"ms\":{},\"widgets\":{},\"instructions\":{}}}",
+            model_begin.elapsed().as_secs_f64() * 1000.,
+            model.interface.widgets.len(),
+            limits.instructions - unit.budget
+        );
+    }
     Ok(Script {
+        midi_object: init.midi_object,
         programs: programs
             .into_iter()
             .map(|p| {

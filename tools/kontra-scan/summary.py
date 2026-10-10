@@ -23,14 +23,14 @@ for version in ['v1', 'v2']:
 
 text = ['# Shared scanner results', '', 'Coverage is partial until every manifest ID has a row from the installed binary revision. Original authored view only. `loads=yes` means importer and initial playable bank/plan construction returned successfully; UI and sound are separate outcomes.', '',
         'Timeouts are bounded probe failures, not proof of an intrinsically unsupported library. `silent` means an actual selected note was not audible during the 0.5-second probe with CC1=100 and CC11=127. No-safe-key rows are not auditioned; fallback-note rows are excluded from parity comparisons.', '',
-        '| Build | Rows | Loads yes | Loads no | Original OK | Missing images | Blank | No UI | UI error | Budget hit | Audible | Silent |',
-        '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |']
+        '| Build | Rows | Loads yes | Loads no | Original OK | Missing images | Missing fonts | Blank | No UI | UI error | Budget hit | Audible | Silent |',
+        '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |']
 taxonomy = {}
 for version, rows in versions.items():
     statuses = Counter(r['ui'] for r in rows)
     loads = Counter(r['loads'] for r in rows)
     sound = Counter(r['plays_note'] for r in rows)
-    text.append(f'| {version} | {len(rows)} | {loads["yes"]} | {loads["no"]} | {statuses["original-ok"]} | {statuses["missing-images"]} | {statuses["blank"]} | {statuses["no-ui"]} | {statuses["error"]} | {statuses["budget-hit"]} | {sound["yes"]} | {sound["silent"]} |')
+    text.append(f'| {version} | {len(rows)} | {loads["yes"]} | {loads["no"]} | {statuses["original-ok"]} | {statuses["missing-images"]} | {statuses["missing_font"]} | {statuses["blank"]} | {statuses["no-ui"]} | {statuses["error"]} | {statuses["budget-hit"]} | {sound["yes"]} | {sound["silent"]} |')
     paths = {r['path'] for r in rows}
     records = [json.loads(p.read_text()) for p in (root / 'results' / version / 'cache').glob('*.json') if p.stem==scanner.signature(json.loads(p.read_text())['path'],json.loads(p.read_text())['revision'])]
     # Cached records belonging to a previous binary revision do not enter published counts.
@@ -44,7 +44,7 @@ for version, rows in versions.items():
         path = r['path']
         if r.get('timed_out'):
             mechanisms['worker timeout: ' + r.get('stage', 'unknown')].add(path)
-        if r['ui'] in {'error', 'blank', 'missing-images','budget-hit'}:
+        if r['ui'] in {'error', 'blank', 'missing-images','missing_font','budget-hit'}:
             mechanisms['category: ' + r['ui']].add(path)
         for slot in r.get('metadata',{}).get('slots',[]):
             for symbol,count in slot.get('symbols',{}).items():

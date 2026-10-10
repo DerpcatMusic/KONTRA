@@ -39,10 +39,20 @@ impl StartCriteriaParams {
         for value in [self.mode, self.next_criteria] {
             writer.write_all(&value.to_le_bytes())?;
         }
-        for value in [self.key_min, self.key_max, self.controller, self.cc_min, self.cc_max] {
+        for value in [
+            self.key_min,
+            self.key_max,
+            self.controller,
+            self.cc_min,
+            self.cc_max,
+        ] {
             writer.write_all(&value.to_le_bytes())?;
         }
-        for value in [self.cycle_class, self.slice_zone_idx, self.slice_zone_slice_idx] {
+        for value in [
+            self.cycle_class,
+            self.slice_zone_idx,
+            self.slice_zone_slice_idx,
+        ] {
             writer.write_all(&value.to_le_bytes())?;
         }
         writer.write_all(&[u8::from(self.sequencer_only)])?;

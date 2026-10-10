@@ -1,0 +1,23 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 112  of event 'cycles:u'
+# Event count (approx.): 505659349
+#
+# Overhead  Command    Shared Object     Symbol
+# ........  .........  ................  ..................................................................................................................................................................................................................................................................................................................................................................................
+#
+    46.40%  cpu_audit  cpu_audit         [.] <kontakto::sound::v2::V2Core as kontakto::sound::Core>::end_block
+    18.42%  cpu_audit  cpu_audit         [.] sampler_core::dsp::process
+    14.59%  cpu_audit  cpu_audit         [.] <kontakto::sound::v2::V2Core as kontakto::sound::Core>::render
+    10.80%  cpu_audit  libc.so.6         [.] 0x00000000001b7d1e
+     3.96%  cpu_audit  cpu_audit         [.] <sampler_core::resample::Kernel>::sample_window
+     3.47%  cpu_audit  cpu_audit         [.] <sampler_core::bus::BusState>::render
+     1.19%  cpu_audit  cpu_audit         [.] sampler_core::render::render_source::<sampler_core::source::PagedFrames>
+
+
+#
+# (Tip: For tracepoint events, try: perf report -s trace_fields)
+#

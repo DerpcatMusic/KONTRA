@@ -89,10 +89,12 @@ impl ScriptHost {
     }
     /// Scalar, table-cell and XY-axis state, without integer conversion.
     pub fn control_values(&self) -> Vec<(ui::ControlId, f64)> {
-        let face = self.interface();
+        Self::control_values_from(&self.interface())
+    }
+    pub(crate) fn control_values_from(face: &ui::Interface) -> Vec<(ui::ControlId, f64)> {
         let mut out = Vec::new();
-        for (i, w) in widgets(self).iter().enumerate() {
-            match &face.widgets[i].kind {
+        for (i, w) in face.widgets.iter().enumerate() {
+            match &w.kind {
                 ui::Kind::Table { cells, .. } => out.extend(
                     cells
                         .iter()
@@ -100,8 +102,8 @@ impl ScriptHost {
                         .map(|(c, v)| (control_id(i + 1, c + 1), *v)),
                 ),
                 ui::Kind::Xy { .. } => {} // Axes share their original knobs' controls.
-                _ if matches!(face.widgets[i].binding, ui::Binding::Control(_)) => {
-                    out.push((control_id(i + 1, 0), num(w, "value").unwrap_or(0.0)));
+                _ if matches!(w.binding, ui::Binding::Control(_)) => {
+                    out.push((control_id(i + 1, 0), w.initial_value));
                 }
                 _ => {}
             }
@@ -115,7 +117,10 @@ impl ScriptHost {
             return Err("non-finite UI value".into());
         }
         let (widget, component) = identity(id).ok_or("not a UVI control")?;
-        self.shared.arm(self.shared.config.callback);
+        self.shared.arm(
+            self.shared.config.callback,
+            self.shared.config.callback_work,
+        );
         let f = self
             .lua
             .globals()
@@ -132,6 +137,8 @@ impl ScriptHost {
     }
     /// Current declaration, with script-driven geometry, visibility and text.
     pub fn interface(&self) -> ui::Interface {
+        let _budget = self.shared.inspection_budget();
+        let _span = sampler_kontakt::audit::Span::new("uvi_lua_ui_snapshot");
         let mut out = ui::Interface {
             source: ui::Source::FalconLua,
             ..Default::default()
@@ -556,6 +563,54 @@ pub struct UiState {
     pub widgets: Vec<(usize, String, SavedValue)>,
     pub custom: Option<SavedValue>,
 }
+pub(super) fn json_state(source: &str) -> Result<SavedValue, String> {
+    if source.len() > 2 << 20 {
+        return Err("UVI state exceeds 2 MiB".into());
+    }
+    fn convert(
+        v: serde_json::Value,
+        depth: usize,
+        remaining: &mut usize,
+    ) -> Result<SavedValue, String> {
+        *remaining = remaining
+            .checked_sub(1)
+            .ok_or("UVI state exceeds 65536 values")?;
+        if depth > 64 {
+            return Err("UVI state exceeds depth limit".into());
+        }
+        Ok(match v {
+            serde_json::Value::Null => SavedValue::Nil,
+            serde_json::Value::Bool(b) => SavedValue::Boolean(b),
+            serde_json::Value::Number(n) => SavedValue::Number(
+                n.as_f64()
+                    .filter(|n| n.is_finite())
+                    .ok_or("invalid state number")?,
+            ),
+            serde_json::Value::String(s) => SavedValue::String(s),
+            serde_json::Value::Array(v) => SavedValue::Table(
+                v.into_iter()
+                    .enumerate()
+                    .map(|(i, v)| {
+                        Ok((
+                            SavedValue::Number((i + 1) as f64),
+                            convert(v, depth + 1, remaining)?,
+                        ))
+                    })
+                    .collect::<Result<_, String>>()?,
+            ),
+            serde_json::Value::Object(v) => SavedValue::Table(
+                v.into_iter()
+                    .map(|(k, v)| Ok((SavedValue::String(k), convert(v, depth + 1, remaining)?)))
+                    .collect::<Result<_, String>>()?,
+            ),
+        })
+    }
+    let value: serde_json::Value = serde_json::from_str(source).map_err(|e| e.to_string())?;
+    if !value.is_object() && !value.is_array() && !value.is_null() {
+        return Err("UVI custom state must be a table or nil".into());
+    }
+    convert(value, 0, &mut 65536)
+}
 fn save_value(
     v: Value,
     stack: &mut Vec<usize>,
@@ -634,10 +689,21 @@ fn load_value(
     })
 }
 impl ScriptHost {
+    /// Explicit state restoration: widget callbacks, custom onLoad, no onInit.
+    pub fn restore_ui_state(&self, state: &UiState) -> Result<(), String> {
+        self.restore_ui_values(state)?;
+        self.restore_ui_custom(state)
+    }
     pub fn save_ui_state(&self) -> Result<UiState, String> {
-        self.shared.arm(self.shared.config.load);
+        let _span = sampler_kontakt::audit::Span::new("uvi_lua_ui_save");
+        self.shared
+            .arm(self.shared.config.load, self.shared.config.load_work);
         let mut out = UiState::default();
         let mut remaining = 65536;
+        if let Ok(Value::Function(f)) = self.lua.globals().raw_get::<Value>("onSave") {
+            let value = f.call::<Value>(()).map_err(super::lua_error)?;
+            out.custom = Some(save_value(value, &mut Vec::new(), &mut remaining)?);
+        }
         for (i, w) in widgets(self).iter().enumerate() {
             if !flag(w, "persistent", true) || text(w, "kind").as_deref() == Some("Button") {
                 continue;
@@ -656,17 +722,14 @@ impl ScriptHost {
                 ));
             }
         }
-        if let Ok(Value::Function(f)) = self.lua.globals().raw_get::<Value>("onSave") {
-            let value = f.call::<Value>(()).map_err(super::lua_error)?;
-            out.custom = Some(save_value(value, &mut Vec::new(), &mut remaining)?);
-        }
         if serde_json::to_vec(&out).map_err(|e| e.to_string())?.len() > 8 << 20 {
             return Err("UVI state exceeds 8 MiB".into());
         }
         Ok(out)
     }
     pub(super) fn restore_ui_values(&self, state: &UiState) -> Result<(), String> {
-        self.shared.arm(self.shared.config.load);
+        self.shared
+            .arm(self.shared.config.load, self.shared.config.load_work);
         let list = widgets(self);
         let mut remaining = 65536;
         for (i, name, v) in &state.widgets {
@@ -701,7 +764,8 @@ impl ScriptHost {
         if let Some(value) = &state.custom
             && let Ok(Value::Function(f)) = self.lua.globals().raw_get::<Value>("onLoad")
         {
-            self.shared.arm(self.shared.config.load);
+            self.shared
+                .arm(self.shared.config.load, self.shared.config.load_work);
             f.call::<()>(load_value(&self.lua, value, 0, &mut 65536)?)
                 .map_err(super::lua_error)?;
             self.cycle();

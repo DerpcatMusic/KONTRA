@@ -1,0 +1,13 @@
+# W0 native batch 0.3.381 — 2026-10-09
+
+The reviewed fix ledger derives 0.3.381 from published 0.3.355 plus 26 logical fixes. Source code was closed and tested at `46c899a9fadd036f6e4562ac01ad0db19a0721af`. A later message-only normalization preserves every tree; this report and validation text change no runtime behavior.
+
+Combined local evidence: workspace/standalone compile checks pass; workspace 1,956 passed, zero failed, 219 ignored; scan-feature callback suites 48 passed; ni-file compatibility/tester/revision suites 45 passed, one native translator fixture ignored. First-frame GPU tests pass at both opacities and resize; 24 partial/full comparisons have zero differing pixels. Editor package setup simulations cover success, transient install failure, permanent failure and timeout; workflow syntax and ten safety tests pass.
+
+The frozen native scanner loads and auditions all 15 cells. Twelve Original views pass; two clear UVI fixtures have no authored UI. Vista retains one unavailable image reference, with 21/21 controls bound and audible output, matching prior scanner receipts. Eleven rows match the older UI receipt; its Horns audibility no→yes change is historical and is not attributed to this batch.
+
+The 72-cell quick playback step was drained before it started for the W6→W9→W8 quiet chain. Publication requires its completion and artifact/hosted gates. Its frozen current-source binary is retained, so resumption repeats neither scanner nor build. Final measured receipts belong under `/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w0-stable-381-46c899a9` (cache alias `~/.cache/kontakto-w0/batch-after355/stable-381`).
+
+The selected source includes the required Kontakt reader revisions and compact/privacy fixes, persistence dirty-publication and live scheduling, W6 shared DSP kernels, W4 waveform/Mapping feedback, W14 filter/rack/copy fixes, W3 poison/art recovery, W11 typed effect owners and prior schema, full W13 standalone crash stack, W15 computed getters and legacy release tags, metadata-only UVI census and W8 resolver/observer fixes. The rejected heap trim is excluded.
+
+Limits: Vista resource resolution remains open. Installed UVI directories/catalogues are metadata evidence; 660 protected payloads remain unavailable. Loose quick UVI playback does not prove Lua execution. Complete authored behavior, gestures, native fidelity and quiet CPU/load/RSS parity remain unverified. Standalone native fault runtime evidence is Linux x86_64 only; optimized frame chains may stop at the fault instruction. No plugin installation is part of this batch. Newly READY W10 browser status, W13 Report/Settings and W8 archive path cache lead the following batch.

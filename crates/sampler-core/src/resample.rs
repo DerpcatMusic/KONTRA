@@ -1,5 +1,7 @@
 //! Control-prepared, table-interpolated low-pass kernel for resident rate conversion.
 use std::{f64::consts::PI, sync::OnceLock};
+mod cubic_block;
+pub(super) use cubic_block::cubic_four;
 
 pub(super) const MIN_STEP: f64 = 1.0 / 256.0;
 pub(super) const MAX_STEP: f64 = 16.0;
@@ -293,6 +295,9 @@ pub(super) struct Kernel {
 }
 
 impl Kernel {
+    pub(super) fn uses_cubic(&self, step: f64) -> bool {
+        self.quality == ResampleQuality::Realtime && step <= 1.0
+    }
     pub(super) fn new(quality: ResampleQuality) -> Self {
         static LONG: OnceLock<Table> = OnceLock::new();
         static SHORT: OnceLock<Table> = OnceLock::new();

@@ -1,9 +1,9 @@
 use std::io::{Cursor, Read};
 
 use crate::{
-    Error,
     kontakt::{chunk::Chunk, error::KontaktError, structured_object::StructuredObject},
     read_bytes::ReadBytesExt,
+    Error,
 };
 
 use super::zone_list::ZoneList;
@@ -17,7 +17,7 @@ const CHUNK_ID: u16 = 0x28;
 #[derive(Debug)]
 pub struct Program(pub StructuredObject);
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct ProgramPublicParams {
     pub name: String,
     pub num_bytes_samples_total: f64,
@@ -44,6 +44,8 @@ pub struct ProgramPublicParams {
     pub instrument_cat3: i16,
     pub resource_container_filename: Option<i32>,
     pub wallpaper_filename: Option<i32>,
+    /// Opaque public suffix, populated only by the bounded `Program::params` view.
+    pub unknown_tail: Vec<u8>,
 }
 
 impl ProgramPublicParams {
@@ -74,6 +76,7 @@ impl ProgramPublicParams {
             instrument_cat3: reader.read_i16_le()?,
             resource_container_filename: { None },
             wallpaper_filename: { None },
+            unknown_tail: Vec::new(),
         })
     }
 }
@@ -377,20 +380,13 @@ impl Program {
         self.0.version
     }
 
-    /// Legacy prefix-only view: ignores the version and leaves the public suffix unread.
+    /// Common prefix plus the bounded opaque suffix. Use `public_record` for
+    /// the verified versioned suffix layout; no filename aliases are inferred.
     pub fn params(&self) -> Result<ProgramPublicParams, Error> {
-        let reader = Cursor::new(&self.0.public_data);
-
-        ProgramPublicParams::read(reader, self.0.version)
-
-        // match self.0.version {
-        //     0x80 | 0x82 | 0x90 => Ok(ProgramDataV80::read(reader)?),
-        //     0xa6 => todo!(),
-        //     0xa7 => todo!(),
-        //     0xa8 | 0xa9 | 0xaa | 0xab | 0xac | 0xad | 0xae => todo!(),
-        //     0xaf => todo!(),
-        //     _ => todo!(),
-        // }
+        let mut reader = Cursor::new(&self.0.public_data);
+        let mut params = ProgramPublicParams::read(&mut reader, self.0.version)?;
+        params.unknown_tail = reader.read_all()?;
+        Ok(params)
     }
 
     /// Decode the entire supported public section without modifying its raw bytes.
@@ -819,11 +815,9 @@ mod tests {
                 continue;
             }
             let error = ProgramPublicRecord::read(&[], version).unwrap_err();
-            assert!(
-                error
-                    .to_string()
-                    .contains("Unsupported Program public version")
-            );
+            assert!(error
+                .to_string()
+                .contains("Unsupported Program public version"));
         }
         let mut bad_records = Vec::new();
         for at in &fixture.versions {
@@ -898,11 +892,9 @@ mod tests {
             ] {
                 let mut reader = Cursor::new(&data);
                 let error = ProgramDataPrivateParams::read(&mut reader, version).unwrap_err();
-                assert!(
-                    error
-                        .to_string()
-                        .contains(&format!("version 0x{version:04x}"))
-                );
+                assert!(error
+                    .to_string()
+                    .contains(&format!("version 0x{version:04x}")));
                 assert!(error.to_string().contains("unsupported"));
                 assert_eq!(
                     reader.position(),
@@ -928,10 +920,11 @@ mod tests {
         body.extend(&children);
         let program = Program::read(Cursor::new(body)).unwrap();
         assert_eq!(program.version(), 0x80);
-        assert!(
-            ProgramDataPrivateParams::read(Cursor::new(&program.0.private_data), program.version())
-                .is_err()
-        );
+        assert!(ProgramDataPrivateParams::read(
+            Cursor::new(&program.0.private_data),
+            program.version()
+        )
+        .is_err());
         assert_eq!(program.0.private_data, private);
         let raw = &program.children()[0];
         assert!(raw.into_object().is_err());
