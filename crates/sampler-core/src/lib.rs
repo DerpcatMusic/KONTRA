@@ -146,6 +146,11 @@ pub use prepare::{
 mod integer;
 pub mod lower;
 pub use integer::{IntegerBinary, IntegerUnary};
+mod array_file;
+pub use array_file::{
+    ARRAY_FILE_JOBS, ARRAY_FILE_MAX_BYTES, ARRAY_FILE_MAX_CELLS, ARRAY_FILE_SERVICE,
+    ArrayFileArray, ArrayFileCompletion, ArrayFileKind,
+};
 mod midi_object;
 mod ops;
 pub use midi_object::{
@@ -1875,6 +1880,11 @@ impl Runtime {
                     .count(),
             );
             generation.midi_object.jobs.clear();
+            for bank in &mut generation.scripts {
+                generation.callbacks = generation
+                    .callbacks
+                    .saturating_sub(bank.array_files.cancel());
+            }
             generation.dsp.buses.reset();
         }
         self.cleanup_closed_notes();
