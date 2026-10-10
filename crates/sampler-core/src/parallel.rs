@@ -677,7 +677,7 @@ mod tests {
 
     /// Script volume and fades (some stopping their voices) on every note, as
     /// a script's `change_vol` and `fade_out` would write them.
-    fn play(rt: &mut Runtime) -> Vec<Frame> {
+    fn play(rt: &mut Runtime, curve: crate::FadeCurve) -> Vec<Frame> {
         let plan = rt.active_plan();
         for id in 0..NOTES {
             let input = Input {
@@ -694,13 +694,16 @@ mod tests {
                 .write(ModTarget::Decibels, -250 * (id as i64 % 5), false)
                 .unwrap();
             if id % 3 == 0 {
+                // Host IDs are not script aliases; export and witness the actual note target.
+                let event = rt.source_event_id(note).unwrap();
+                assert_eq!(rt.resolve_source_event(plan, event), Ok(Some(note)));
                 rt.fade_event(
                     plan,
-                    id as i64,
+                    i64::from(event),
                     700 + 40 * id as u32,
                     true,
                     id % 2 == 0,
-                    crate::FadeCurve::Linear,
+                    curve,
                 )
                 .unwrap();
             }
@@ -715,13 +718,35 @@ mod tests {
     }
 
     #[test]
+    fn fade_curve_parallel_plain_mix_matches_serial_and_differs_from_linear() {
+        let linear = play(&mut runtime(1), crate::FadeCurve::Linear);
+        for curve in [
+            crate::FadeCurve::EqualPower,
+            crate::FadeCurve::SCurve,
+            crate::FadeCurve::Exponential,
+            crate::FadeCurve::Logarithmic,
+        ] {
+            let mut one = runtime(1);
+            let expected = play(&mut one, curve);
+            assert_ne!(expected, linear, "{curve:?}: no nonlinear fade reached audio");
+            for threads in [2, 4] {
+                let mut rt = runtime(threads);
+                let actual = play(&mut rt, curve);
+                assert!(rt.parallel_blocks() > 10, "{curve:?}, threads {threads}");
+                assert_eq!(rt.voice_count(), one.voice_count());
+                assert_eq!(actual, expected, "{curve:?}, threads {threads}");
+            }
+        }
+    }
+
+    #[test]
     fn script_layered_voices_render_the_single_threaded_output_exactly() {
         let mut one = runtime(1);
-        let expected = play(&mut one);
+        let expected = play(&mut one, crate::FadeCurve::Linear);
         assert!(expected.iter().any(|f| f[0] != 0.));
         for threads in [2, 4] {
             let mut rt = runtime(threads);
-            let actual = play(&mut rt);
+            let actual = play(&mut rt, crate::FadeCurve::Linear);
             assert!(
                 rt.parallel_blocks() > 10,
                 "{threads}: {} parallel blocks",
