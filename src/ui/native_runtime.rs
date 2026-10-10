@@ -645,6 +645,8 @@ pub struct Session {
     activity: Option<Arc<Activity>>,
     bridge: Arc<Mutex<Bridge>>,
     fuel: Arc<AtomicUsize>,
+    #[cfg(test)]
+    event_payloads: std::cell::Cell<usize>,
 }
 impl Session {
     pub fn new(
@@ -812,6 +814,8 @@ impl Session {
             activity: None,
             bridge,
             fuel,
+            #[cfg(test)]
+            event_payloads: std::cell::Cell::new(0),
         })
     }
     pub(super) fn set_activity(&mut self, activity: Option<Arc<Activity>>) {
@@ -923,6 +927,8 @@ impl Session {
         alt: bool,
         command: bool,
     ) -> mlua::Result<Table> {
+        #[cfg(test)]
+        self.event_payloads.set(self.event_payloads.get() + 1);
         let event = self.lua.create_table()?;
         for (name, a, b) in [("position", x, y), ("delta", dx, dy), ("frame", w, h)] {
             let t = self.lua.create_table()?;
@@ -937,6 +943,10 @@ impl Session {
         modifiers.set("command", command)?;
         event.set("modifiers", modifiers)?;
         Ok(event)
+    }
+    #[cfg(test)]
+    pub(super) fn event_payload_count(&self) -> usize {
+        self.event_payloads.get()
     }
     pub fn take_edits(&self) -> Vec<Edit> {
         self.bridge.lock_unpoisoned().edits.drain(..).collect()
