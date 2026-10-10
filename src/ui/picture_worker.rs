@@ -344,10 +344,10 @@ impl Preparation {
         }
         self.wanted = wanted;
         while let Ok(mut result) = self.results.try_recv() {
-            self.pending.remove(&result.key);
             if result.epoch != epoch {
                 continue;
             }
+            self.pending.remove(&result.key);
             #[cfg(feature = "shots")]
             {
                 result.scan.preparation_completed = self.scan.preparation_completed + 1;
@@ -461,6 +461,82 @@ impl Preparation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn stale_completion_preserves_same_key_pending_in_new_epoch() {
+        let (jobs, requests) = mpsc::sync_channel(1);
+        let (done, results) = mpsc::channel();
+        let mut worker = Preparation {
+            path: "synthetic.nki".into(),
+            jobs,
+            results,
+            epoch: Arc::new(AtomicU64::new(0)),
+            cache: HashMap::new(),
+            pending: HashSet::new(),
+            wanted: Vec::new(),
+            assets: Vec::new(),
+            presentation: Default::default(),
+            tick: 0,
+            bytes: 0,
+            #[cfg(feature = "shots")]
+            scan: Default::default(),
+            #[cfg(feature = "shots")]
+            decoded_bytes: HashMap::new(),
+        };
+        let asset = ir::Asset {
+            path: "synthetic.png".into(),
+            kind: ir::AssetKind::Image(ir::ImageMeta {
+                size: Some(ir::Size { width: 1, height: 1 }),
+                ..Default::default()
+            }),
+        };
+        let mut face = ir::Interface {
+            assets: vec![asset.clone()],
+            pages: vec![ir::Page {
+                size: ir::Size { width: 1, height: 1 },
+                background: ir::Background {
+                    image: Some(ir::AssetRef(0)),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let values = Values::default();
+        worker.prepare(&face, ir::PageRef(0), ir::Presentation::Bitmap, 1., &values);
+        let stale = requests.try_recv().unwrap().pop().unwrap();
+        // An unrelated asset publication starts a new epoch with the same wanted key.
+        face.assets.push(ir::Asset { path: "unused.png".into(), ..asset });
+        worker.prepare(&face, ir::PageRef(0), ir::Presentation::Bitmap, 1., &values);
+        let current = requests.try_recv().unwrap().pop().unwrap();
+        assert_eq!(stale.key, current.key);
+        assert_ne!(stale.epoch, current.epoch);
+        let picture = Arc::new(Picture::new(vec![Arc::new(
+            moose::mui::mui::scene::Image::rgba(1, 1, vec![1, 2, 3, 255]).unwrap(),
+        )]));
+        let complete = |request: Request| {
+            done.send(Result {
+                key: request.key,
+                epoch: request.epoch,
+                picture: Some(picture.clone()),
+                font: None,
+                bytes: 4,
+                #[cfg(feature = "shots")]
+                scan: Default::default(),
+            }).unwrap();
+        };
+        complete(stale);
+        assert!(worker.prepare(&face, ir::PageRef(0), ir::Presentation::Bitmap, 1., &values).is_empty());
+        assert_eq!(worker.pending(), 1, "old completion cannot cancel the current request");
+        assert_eq!(worker.bytes(), 0, "old pixels are never admitted");
+        assert!(requests.try_recv().is_err(), "current request must not decode twice");
+        complete(current);
+        let prepared = worker.prepare(&face, ir::PageRef(0), ir::Presentation::Bitmap, 1., &values);
+        assert!(Arc::ptr_eq(prepared[0].1.as_ref().unwrap(), &picture));
+        assert_eq!(worker.pending(), 0);
+        assert_eq!(worker.bytes(), 4);
+        assert!(requests.try_recv().is_err());
+    }
+
     #[test]
     fn poisoned_decode_permit_does_not_strand_later_original_art() {
         const CHILD: &str = "KONTRA_DECODE_POISON_CHILD";
