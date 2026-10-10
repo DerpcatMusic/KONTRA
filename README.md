@@ -2,6 +2,16 @@
 
 **One free, open-source sampler for the libraries you paid for.**
 
+<!-- derpcat-support -->
+<p align="center">
+  <a href="https://www.patreon.com/derpcatmusic">
+    <img src=".github/support-derpcat.svg" alt="Donate to Derpcat on Patreon — support my open-source work and help me keep building and maintaining free tools." width="800">
+  </a>
+  <br>
+  <a href="https://www.patreon.com/derpcatmusic"><strong>❤️ Support me on Patreon</strong></a>
+</p>
+<!-- /derpcat-support -->
+
 [Website & documentation](https://derpcatmusic.github.io/KONTRA/) · [Support](https://derpcatmusic.github.io/KONTRA/features.html) · [Roadmap](ROADMAP.md)
 
 ## Downloads
