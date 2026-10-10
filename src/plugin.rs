@@ -994,6 +994,7 @@ pub(crate) struct PartView {
     pub(crate) interfaces: Arc<[sampler_ui_ir::Interface]>,
     /// The translated instrument: articulations, mapping, sound.
     pub(crate) instrument: Option<Arc<sampler_ir::Instrument>>,
+    pub(crate) mapping_index: Option<Arc<crate::ui::MappingIndex>>,
     /// The keys as the scripts colour and name them (128, or none).
     pub(crate) keys: Arc<[crate::sound::KeyLook]>,
     /// The load's log record ([`crate::diagnostics::LoadTrace`]).
@@ -3619,7 +3620,19 @@ pub(crate) mod tests {
             "{}",
             v.status
         );
+        let index = v.mapping_index.clone().expect("mapping index is prepared by the load worker");
+        let instrument = v.instrument.clone().unwrap();
+        let generation = v.generation;
         drop(view);
+
+        assert!(!load_part(&params, 0, None), "unchanged source must not rebuild its mapping index");
+        {
+            let view = params.shared.view.lock_unpoisoned();
+            let v = &view.parts[0];
+            assert!(Arc::ptr_eq(&index, v.mapping_index.as_ref().unwrap()));
+            assert!(Arc::ptr_eq(&instrument, v.instrument.as_ref().unwrap()));
+            assert_eq!(v.generation, generation);
+        }
 
         let mut dsp = Dsp::default();
         let (slot, generation, part) = params.shared.ready.pop().expect("a part was handed over");
@@ -3662,6 +3675,7 @@ pub(crate) mod tests {
             .last()
             .unwrap();
         assert!(part.is_none());
+        assert!(params.shared.view.lock_unpoisoned().parts[0].mapping_index.is_none());
     }
 
     #[test]
