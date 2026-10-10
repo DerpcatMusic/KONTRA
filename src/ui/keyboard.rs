@@ -751,6 +751,59 @@ mod tests {
     }
 
     #[test]
+    fn keyswitch_keyboard_reaches_midi_127_and_never_emits_invalid_notes() {
+        let p = std::sync::Arc::new(crate::plugin::SamplerParams::new());
+        p.selection
+            .write()
+            .unwrap()
+            .parts
+            .push(crate::plugin::Part {
+                path: "/synthetic/high-midi-control.nki".into(),
+                ..Default::default()
+            });
+        let mut keys = vec![crate::sound::KeyLook::default(); 128];
+        keys[127].color = Some(0);
+        p.shared.view.lock().unwrap().parts[0].keys = keys.into();
+        for (width, height) in [(1180, 780), (900, 640)] {
+            let mut h = super::super::tests::Harness::new(&p, f64::from(width), f64::from(height));
+            let pixels = super::super::tests::pixels(&h.ui, width, height);
+            let path =
+                std::path::PathBuf::from(format!("artifacts/v2-ui/keyswitch-midi-top-{width}.png"));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            moose::core::screenshot::save_png(&path, &pixels, u32::from(width), u32::from(height));
+            for key in 120..128 {
+                assert!(
+                    h.ui.scene()
+                        .unwrap()
+                        .surface(&format!("key-{key}"))
+                        .is_some(),
+                    "valid authored MIDI key {key} must be reachable"
+                );
+            }
+            h.press("octave-up");
+            for key in 128..132 {
+                assert!(
+                    h.ui.scene()
+                        .unwrap()
+                        .surface(&format!("key-{key}"))
+                        .is_none(),
+                    "MIDI key {key} must not become an interactive face"
+                );
+            }
+            h.press("key-127");
+            assert!(
+                matches!(p.shared.keyboard.pop(), Some((0, crate::plugin::Play::Note(127, velocity))) if velocity > 0)
+            );
+            assert!(matches!(
+                p.shared.keyboard.pop(),
+                Some((0, crate::plugin::Play::Note(127, 0)))
+            ));
+            assert!(p.shared.keyboard.pop().is_none());
+            assert_eq!(p.shared.played[127].load(Ordering::Relaxed), 0);
+        }
+    }
+
+    #[test]
     fn the_keyboard_fits_midi() {
         const { assert!(MAX_OCTAVE * 12 + OCTAVES * 12 <= 128) };
     }
