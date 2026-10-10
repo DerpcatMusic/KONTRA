@@ -5,7 +5,7 @@ use sampler_core::{EngineParameterAddress, Error, Frame, Input, Limits, Protocol
 use sampler_kontakt::{Options, load};
 #[path = "support/chunks.rs"]
 mod wire;
-use wire::{chunk, object};
+use wire::{chunk, object, sized};
 #[path = "../../sampler-core/tests/support/mod.rs"]
 mod support;
 
@@ -109,6 +109,17 @@ fn fixture_target(
     rate: f32,
     outgoing: &str,
 ) -> Fixture {
+    fixture_target_script(envelope, bypass, retrigger, invert, rate, outgoing, None)
+}
+fn fixture_target_script(
+    envelope: bool,
+    bypass: bool,
+    retrigger: bool,
+    invert: bool,
+    rate: f32,
+    outgoing: &str,
+    script: Option<&str>,
+) -> Fixture {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let root = std::env::temp_dir().join(format!(
         "kontra-production-mod-{}-{}",
@@ -196,6 +207,15 @@ fn fixture_target(
     public.extend([0; 6]);
     let mut children = chunk(0x33, &groups);
     children.extend(chunk(0x34, &zones));
+    if let Some(source) = script {
+        let mut public = sized(source.as_bytes());
+        public.extend([0, 0, 0]);
+        public.extend(sized(&[])); // No password.
+        public.extend(sized(&[])); // Empty description.
+        public.extend(u32::MAX.to_le_bytes()); // No linked script.
+        public.extend(0u32.to_le_bytes()); // No saved variables.
+        children.extend(chunk(6, &object(0x60, &[], &public, &[])));
+    }
     let mut payload = chunk(0x28, &object(0xae, &[], &public, &children));
     let mut table = vec![0; 4];
     table.extend(1u32.to_le_bytes());
@@ -264,6 +284,85 @@ fn runtime(fixture: &Fixture) -> Runtime {
         },
     )
     .unwrap()
+}
+fn runtime_plan(plan: sampler_core::Prepared) -> Runtime {
+    let limits = Limits::for_plan(&plan, 4, 4);
+    Runtime::new(plan, limits).unwrap()
+}
+/// Choose an owned script identity between old cells, not a lucky append-only ID.
+fn scripted_plan(
+    envelope: bool,
+    outgoing: &str,
+) -> (Fixture, sampler_core::Prepared, sampler_core::ControlId) {
+    let plain = fixture_target(envelope, false, true, false, 0.01, outgoing);
+    let original = loaded(&plain);
+    let depth = original
+        .plan
+        .engine_parameter_bindings()
+        .iter()
+        .find(|b| b.address == address("ENGINE_PAR_MOD_TARGET_INTENSITY", 12, 1))
+        .unwrap()
+        .control;
+    let before = original.plan.controls();
+    let old_index = before.binary_search_by_key(&depth, |c| c.id).unwrap();
+    let variable = "$Real"; // Preserve the independent 66eaf reviewer's exact trigger.
+    let ui = sampler_ksp::derived_control_id(0, variable);
+    assert_eq!(
+        ui,
+        sampler_core::ControlId(0x6eee5e4ce8303263a90ab0ecbf6aea3d)
+    );
+    assert!(
+        before
+            .windows(2)
+            .any(|pair| pair[0].id < ui && ui < pair[1].id && pair[1].id <= depth)
+    );
+    if !envelope {
+        assert_eq!(old_index, 5, "reviewer's slot12 target1 input cell");
+    }
+    let source = format!(
+        "on init\nmake_perfview\ndeclare ui_slider {variable} (0,100)\n{variable} := 17\nend on"
+    );
+    let f = fixture_target_script(envelope, false, true, false, 0.01, outgoing, Some(&source));
+    let bound = load(
+        &f.0.join("owned.nki"),
+        &Options {
+            scripts: true,
+            mpe: None,
+            ..Options::default()
+        },
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(bound.scripts.len(), 1, "{:?}", bound.instrument.unsupported);
+    assert_eq!(bound.interfaces.len(), 1);
+    assert_eq!(bound.plan.controls().len(), before.len() + 1);
+    for definition in before {
+        assert_eq!(
+            bound.plan.controls().iter().find(|c| c.id == definition.id),
+            Some(definition)
+        );
+    }
+    let new_index = bound
+        .plan
+        .controls()
+        .binary_search_by_key(&depth, |c| c.id)
+        .unwrap();
+    assert_eq!(
+        new_index,
+        old_index + 1,
+        "real KSP binder changed the sorted input position"
+    );
+    assert!(ui < depth);
+    assert!(
+        bound
+            .plan
+            .widget_definitions()
+            .iter()
+            .any(|w| w.id == ui && w.storage == sampler_core::WidgetStorage::Control(ui))
+    );
+    let definition = bound.plan.controls().iter().find(|c| c.id == ui).unwrap();
+    assert_eq!(definition.default, sampler_core::ControlValue::Integer(17));
+    (f, bound.plan, ui)
 }
 fn input(id: i32) -> Input {
     Input {
@@ -525,5 +624,168 @@ fn serialized_pitch_intensity_changes_pcm_cursor_step_not_pan_or_voice_identity(
     assert!((step - 1.).abs() < 0.002, "live neutral step: {step}");
     assert!((next[255][0] - next[255][1] * 0.75).abs() < 2e-6);
     assert!(next[255][1] > first[127][1]); // No cursor/voice restart.
+    assert_eq!(rt.voice_count(), 1);
+}
+
+#[test]
+fn serialized_scripts_enabled_schema_shift_preserves_depth_bypass_pcm_and_voice_owners() {
+    let (_fixture, plan, ui) = scripted_plan(true, "pan");
+    let mut rt = runtime_plan(plan);
+    let a = rt.trigger(input(1), 60, 1.).unwrap();
+    close(last(&mut rt), [0.1875, 0.375]);
+    assert_eq!(rt.voice_count(), 1);
+    let owner = rt.active_plan();
+    support::without_heap(|| {
+        rt.edit_controls(
+            owner,
+            None,
+            &[sampler_core::ControlWrite {
+                id: ui,
+                value: sampler_core::ControlValue::Integer(73),
+            }],
+        )
+        .unwrap()
+    });
+    close(last(&mut rt), [0.1875, 0.375]); // UI cell must not become route depth/bypass.
+    let amplitude = address("ENGINE_PAR_MOD_TARGET_INTENSITY", 7, 0);
+    let pan = address("ENGINE_PAR_MOD_TARGET_INTENSITY", 7, 1);
+    let bypass = address("ENGINE_PAR_INTMOD_BYPASS", 7, -1);
+    support::without_heap(|| rt.set_engine_parameter(amplitude, 0).unwrap());
+    close(last(&mut rt), [0.25, 0.5]); // Audible gain change, pan target stays owned.
+    support::without_heap(|| rt.set_engine_parameter(pan, 0).unwrap());
+    close(last(&mut rt), [0.375, 0.5]); // Sibling source still supplies pan=.25.
+    support::without_heap(|| rt.set_engine_parameter(amplitude, 500000).unwrap());
+    close(last(&mut rt), [0.28125, 0.375]);
+    support::without_heap(|| rt.set_engine_parameter(bypass, 1).unwrap());
+    close(last(&mut rt), [0.375, 0.5]);
+    support::without_heap(|| rt.set_engine_parameter(bypass, 0).unwrap());
+    close(last(&mut rt), [0.28125, 0.375]);
+    assert_eq!(rt.engine_parameter(pan).unwrap(), 0);
+    assert_eq!(
+        rt.engine_parameter(address("ENGINE_PAR_MOD_TARGET_INTENSITY", 12, 1))
+            .unwrap(),
+        250000
+    );
+    assert_eq!(
+        rt.control_value(owner, ui).unwrap(),
+        sampler_core::ControlValue::Integer(73)
+    );
+    let b = rt.trigger(input(2), 60, 1.).unwrap();
+    close(last(&mut rt), [0.5625, 0.75]);
+    assert_eq!(rt.voice_count(), 2);
+    support::without_heap(|| rt.release(a).unwrap());
+    render(&mut rt, 1024, 31);
+    close(last(&mut rt), [0.28125, 0.375]);
+    assert_eq!(rt.voice_count(), 1);
+    assert_eq!(rt.active_plan(), owner);
+    support::without_heap(|| rt.release(b).unwrap());
+    render(&mut rt, 1024, 13);
+    assert_eq!(rt.voice_count(), 0);
+    close(last(&mut rt), [0., 0.]);
+}
+
+#[test]
+fn serialized_scripts_enabled_live_writes_match_unbound_pcm_across_partitions() {
+    let (f, plan, ui) = scripted_plan(false, "pan");
+    let mut reference = runtime(&f); // Same serialized NKS, scripts disabled.
+    let mut scripted = runtime_plan(plan);
+    for rt in [&mut reference, &mut scripted] {
+        rt.trigger(input(1), 60, 1.).unwrap();
+    }
+    let expected = render(&mut reference, 128, 64);
+    let actual = render(&mut scripted, 128, 7);
+    assert_eq!(actual, expected);
+    close(actual[127], [0.125, 0.5]); // Positive, audibly modulated PCM, not getter-only.
+    let owner = scripted.active_plan();
+    support::without_heap(|| {
+        scripted
+            .edit_controls(
+                owner,
+                None,
+                &[sampler_core::ControlWrite {
+                    id: ui,
+                    value: sampler_core::ControlValue::Integer(91),
+                }],
+            )
+            .unwrap()
+    });
+    for (a, value, settled) in [
+        (
+            address("ENGINE_PAR_MOD_TARGET_INTENSITY", 7, 1),
+            250000,
+            [0.25, 0.5],
+        ),
+        (address("ENGINE_PAR_INTMOD_BYPASS", 7, -1), 1, [0.375, 0.5]),
+        (address("ENGINE_PAR_INTMOD_BYPASS", 7, -1), 0, [0.25, 0.5]),
+    ] {
+        for rt in [&mut reference, &mut scripted] {
+            support::without_heap(|| rt.set_engine_parameter(a, value).unwrap());
+            rt.render(&mut []).unwrap();
+        }
+        let expected = render(&mut reference, 128, 64);
+        let actual = render(&mut scripted, 128, 11);
+        assert_eq!(actual, expected);
+        close(actual[127], settled);
+        assert_eq!(scripted.voice_count(), 1);
+    }
+    assert_eq!(
+        scripted.control_value(owner, ui).unwrap(),
+        sampler_core::ControlValue::Integer(91)
+    );
+}
+
+#[test]
+fn serialized_scripts_enabled_schema_shift_keeps_pitch_step_and_sibling_pan() {
+    let (f, plan, _) = scripted_plan(false, "pitch");
+    // Re-load the same script-enabled NKS after replacing only our synthetic PCM.
+    drop(plan);
+    let path = f.0.join("owned.wav");
+    let mut wav = std::fs::read(&path).unwrap();
+    for (i, bytes) in wav[44..].chunks_exact_mut(2).enumerate() {
+        bytes.copy_from_slice(&(i as i16 * 4).to_le_bytes());
+    }
+    std::fs::write(path, wav).unwrap();
+    let loaded = load(
+        &f.0.join("owned.nki"),
+        &Options {
+            scripts: true,
+            mpe: None,
+            ..Options::default()
+        },
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(loaded.scripts.len(), 1);
+    let mut rt = runtime_plan(loaded.plan);
+    rt.trigger(input(1), 60, 1.).unwrap();
+    let first = render(&mut rt, 128, 17);
+    let step = (first[127][1] - first[126][1]) * 8192.;
+    assert!(
+        (step - 2f32.sqrt()).abs() < 0.002,
+        "modulated pitch step: {step}"
+    );
+    assert!(first[127][1] > 0.);
+    support::without_heap(|| {
+        rt.set_engine_parameter(address("ENGINE_PAR_INTMOD_BYPASS", 7, -1), 1)
+            .unwrap()
+    });
+    let next = render(&mut rt, 256, 19);
+    let step = (next[255][1] - next[254][1]) * 8192.;
+    assert!((step - 1.).abs() < 0.002, "bypassed pitch step: {step}");
+    assert!((next[255][0] - next[255][1] * 0.75).abs() < 2e-6);
+    assert!(next[255][1] > first[127][1]);
+    assert_eq!(rt.voice_count(), 1);
+    support::without_heap(|| {
+        rt.set_engine_parameter(address("ENGINE_PAR_MOD_TARGET_INTENSITY", 7, 1), 0)
+            .unwrap();
+        rt.set_engine_parameter(address("ENGINE_PAR_INTMOD_BYPASS", 7, -1), 0)
+            .unwrap();
+    });
+    let neutral = render(&mut rt, 256, 23);
+    let step = (neutral[255][1] - neutral[254][1]) * 8192.;
+    assert!(
+        (step - 1.).abs() < 0.002,
+        "typed zero depth pitch step: {step}"
+    );
     assert_eq!(rt.voice_count(), 1);
 }
