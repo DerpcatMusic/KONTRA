@@ -247,8 +247,8 @@ class Model:
                         _, b3, _ = self.section(ch, 2, q(band + band), p, d, inverse)
                         detected = q(b3 + b3)
                         value = self.mix(h2, b3, l2)
-                # Native adds the two band terms separately in non-combined paths.
-                if family == 2:
+                # Two-pole and combined kernels double the band before the stereo sum.
+                if family in (0, 2):
                     detector = q(detector + detected)
                 else:
                     detector = q(q(detector + q(detected * .5)) + q(detected * .5))
