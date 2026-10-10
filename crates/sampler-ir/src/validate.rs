@@ -443,6 +443,9 @@ impl Instrument {
                     }
                 }
                 ModulationSource::Lfo(lfo) => {
+                    if let crate::LfoShape::SineScaled(level) = lfo.shape {
+                        check.within(level, -1.0..=1.0, "sine level")?;
+                    }
                     let rate = match lfo.rate {
                         crate::Frequency::Hertz(hz) => hz,
                         crate::Frequency::Beats(beats) => beats,

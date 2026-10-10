@@ -6,6 +6,67 @@ with a short user-facing known-issues list and collapsed source/checksum details
 Each published release manifest also retains its versioned changelog. Frozen entries
 below record reviewed source checkpoints; they are not claims about pending work.
 
+## 0.3.403
+
+This experimental update improves saved script state, UVI MIDI handling, supported Kontakt sound sources, library browsing and articulation labels.
+
+### Loading & files
+
+- Request the first sample page in the same block when a resumed script callback starts a note.
+- Keep supported oscillator tables resident so they remain available during playback and sample purging.
+
+### Sound/engine (v1 ports)
+
+- Use KONTRA v1's oscillator playback for the admitted saved Conflux wavetable state, including its source clock and supported form mapping.
+- Restore Vista's saved legacy low-pass and high-pass filter slots and their cutoff-envelope routes using the v1 proxy.
+- Retain 124 of Conflux's 182 saved Digital Multi sine sources, including their signed, subunit depth; the remaining 58 fade cases remain diagnosed.
+
+### KSP scripts
+
+- Temporary script writes no longer force a saved-state snapshot when they do not affect captured values.
+- Refresh changed saved array cells while keeping each published snapshot coherent.
+
+### UVI
+
+- Send MIDI note-ons through the authored Lua onNote callback and preserve the input identity used by note-offs.
+- Match favourites by bank UUID and program member so they survive library moves; missing and ambiguous matches remain explicit.
+
+### Saved projects
+
+- Capture script values directly into compact snapshot slots, removing the retained wide intermediate buffer.
+- Preserve the previous complete snapshot if a new capture cannot finish.
+
+### Editor/UI
+
+- Combine browser search and library banners, keep format-specific navigation, and reuse catalog order across queries.
+- Use authored Areia technique names for generated note labels when every key in the range agrees.
+- Stop treating Analog Strings preset-browser and zero-height controls as articulation choices.
+- Release retained toolkit render owners on window close and rebuild the canvas on reopen.
+
+### Memory & CPU
+
+- Reduce copying and storage for saved script snapshots, with sparse updates for changed cells.
+- In the owner's two-preset CPU-editor measurements, installed-to-first-sound fell from 517.556 to 11.648 ms for Areia and from 357.407 to 6.574 ms for Dolce. These are scoped results from the source fixes; v1 still reached first sound sooner.
+- Optional scheduler diagnostics help attribute deadline misses; instrumented runs are excluded from performance acceptance.
+
+### Fixes
+
+- Keep favourite identity independent of a bank's old file path.
+- Keep articulation source IDs, trigger ranges and existing authored labels intact while improving generated captions.
+
+### Known limits
+
+- This is not complete Kontakt/Falcon replacement or certified authored-UI, script or sound parity. Unsupported source modes, live wavetable controls and Digital Multi fades remain open.
+- The legacy filter port restores v1's proxy; native filter topology and control timing are unverified.
+- Full widget operation remains incomplete, including the reported Conflux/Analog/Dolce gesture failures and some key-label associations.
+- The editor close fix does not establish a production RSS reduction. Quiet CPU/load/RSS acceptance, protected installed UVI playback and real Windows/macOS DAW operation remain unverified for this batch.
+
+### Evidence
+
+- Corrected per-worktree product gate at `4725f39a`: 2,135 workspace tests passed, zero failed; 48 scheduler tests, 45 reader tests (one ignored), and three articulation normalization tests passed. Compilation, offline publication checks and GPU regressions passed.
+- Installed Conflux and Vista source/filter checks passed; ten browser captures were produced and the library/preset states at both sizes were reviewed. Native scanner: 15/15 loaded and audible, retaining 12 Original views. Native quick corpus: 72/72 loaded, 68 audible, finite audio, zero audio-thread allocations, and no matched stage/audibility changes from 0.3.393.
+- These native-only regressions use no third-party reader or Wine. They retain known covered-note silence and long releases; timings are not performance acceptance. Immutable source/log/binary hashes are in the W0 batch383 audit and release receipts.
+
 ## 0.3.393
 
 KONTRA 0.3.393 brings together a broad set of loading, sound, scripting and editor improvements. This is an experimental release; the remaining limits are listed below.

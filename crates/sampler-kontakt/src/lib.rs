@@ -35,6 +35,7 @@ mod script;
 mod snapshot;
 mod source_parameters;
 mod stream;
+mod wavetable;
 #[cfg(feature = "library-access")]
 pub use access::library_key;
 pub use container::{Multi, read_chunks, read_multi};
