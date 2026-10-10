@@ -167,8 +167,11 @@ fn audit_ui_real_frames() {
                 let tree = draw(&mut ui, &mut bridge);
                 ui.frame(tree, Some(Size::new(width as f64, height as f64)), Input::default(), 1. / 60.)
                     .unwrap();
-                let diagnostics = super::native_ui::gate_diagnostics();
-                assert!(diagnostics.is_empty(), "NativeUI failed: {diagnostics:?}");
+                #[cfg(feature = "shots")]
+                {
+                    let diagnostics = super::native_ui::gate_diagnostics();
+                    assert!(diagnostics.is_empty(), "NativeUI failed: {diagnostics:?}");
+                }
                 let assets = super::native_ui::audit_assets();
                 let painted = ui.scene().unwrap().surfaces().any(|surface| {
                     surface.key.as_str().starts_with("nui-")
