@@ -97,6 +97,7 @@ def main():
     if args.version == 'v2':
         assert args.source_sha, 'v2 requires --source-sha for the selected candidate'
         build = artifact_receipt(plugin, cli, args.host)
+        assert build['profile'] == 'release', 'CPU comparison requires release; ci changes ThinLTO policy'
         assert build['source_sha'] == args.source_sha, 'artifact belongs to a different candidate'
         host_source = Path(__file__).resolve().parents[1] / 'vendor/moose-clap/tests/live_performance.cpp'
         assert build.get('host_source_sha256') == sha(host_source), 'built host source receipt missing or mismatched'
