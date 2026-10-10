@@ -1,0 +1,57 @@
+{
+  "state": "STATIC_ONLY_NOT_COMPILED_NOT_EXECUTED",
+  "base": "2a243bcfa2262abb789265aa0951fd2a85854023",
+  "archive_sections": [
+    {
+      "section": "set_rpn()/set_nrpn()",
+      "archive_sha256": "9d71af86f192abff29804487e0c00d7b7b84b9fa191d04d4477f38b893cff0a2",
+      "excerpt_sha256": "4a06ff62784abdd1191c3b0a0e5ef59eda6e7619c8afa002b7d3458e95a3d818",
+      "status": "STATIC_ARCHIVE_MATCH"
+    },
+    {
+      "section": "on rpn/nrpn",
+      "archive_sha256": "f91a2a1411c18e84e15f4e89e74499c3ae74dec75f230bb8c99df65e316267ba",
+      "excerpt_sha256": "b66a4b5ed58e05c550c0e58e7f3759de620870a7da0b20a0add34d31e035fda3",
+      "status": "STATIC_ARCHIVE_MATCH"
+    },
+    {
+      "section": "Events and MIDI",
+      "archive_sha256": "9a5ab14188022767684a1dea13a0ca0e060e0838a788073b7a26b50b0030247e",
+      "excerpt_sha256": "ac32835f066694494c6481952980781dbe7c0346f1e40072e89934b78387ee51",
+      "status": "STATIC_ARCHIVE_MATCH"
+    },
+    {
+      "section": "Callbacks and UI",
+      "archive_sha256": "9a5ab14188022767684a1dea13a0ca0e060e0838a788073b7a26b50b0030247e",
+      "excerpt_sha256": "1aa244297052eb57e823211720516881eb8b2b16efc0951b57ebeb93caea03ab",
+      "status": "STATIC_ARCHIVE_MATCH"
+    },
+    {
+      "section": "set_controller()",
+      "archive_sha256": "9d71af86f192abff29804487e0c00d7b7b84b9fa191d04d4477f38b893cff0a2",
+      "excerpt_sha256": "f8ec1a90ad886d9c97bde8c7cac8cf06e44d34bbd0edfc772a073b2ebbbe211c",
+      "status": "STATIC_ARCHIVE_MATCH"
+    },
+    {
+      "section": "on init",
+      "archive_sha256": "f91a2a1411c18e84e15f4e89e74499c3ae74dec75f230bb8c99df65e316267ba",
+      "excerpt_sha256": "9a326286054dc7bdbc6d72bde55c2de01808f55d9d1ed90d98029656cbcdb188",
+      "status": "STATIC_ARCHIVE_MATCH"
+    },
+    {
+      "section": "Script Editor",
+      "archive_sha256": "846a09243ad7d17d8daa92bf5105418501ebb25cd358ba8d09108ffb5d4ae7c4",
+      "excerpt_sha256": "f4d896e81e7e38675d39eb89b83a7ced727489d264c32eaa6ea68d8e04888720",
+      "status": "STATIC_ARCHIVE_MATCH"
+    }
+  ],
+  "scalar_model": "exhaustive domain -1..16384, boundary invalid i32 extrema; not Rust behavior",
+  "source_checks": "lower/read/bind/atomic-capacity/context constructors/DAG presence assertions; not type checking",
+  "test_count": 14,
+  "tests_status": "NOT_RUN",
+  "native": "UNKNOWN",
+  "comparative_acceptance": "UNACHIEVED",
+  "attempts": [
+    "First archive verifier failed on a manifest row without sha256; verifier filtering corrected. No product execution or successful assertion claim from that failed attempt."
+  ]
+}
