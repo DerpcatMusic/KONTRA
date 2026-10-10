@@ -33,7 +33,9 @@ impl Prepared {
     }
 
     /// Ordered controller stages. Generated writes enter the following stage;
-    /// only the final projection changes downstream musical state.
+    /// only the final projection changes downstream musical state. Like
+    /// `with_stages`, changed routing requires parameter receivers to be cleared
+    /// and explicitly rebound; reinstalling identical stages is accepted.
     pub fn with_controller_programs(self, programs: Vec<usize>) -> Result<Self, Error> {
         let mut stages = self.stages.to_vec();
         stages.resize(stages.len().max(programs.len()), crate::Stage::default());
