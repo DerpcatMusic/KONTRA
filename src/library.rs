@@ -611,12 +611,17 @@ impl Progress {
         }
     }
 
+    #[cfg(test)]
     fn bank_issue(&self, path: &Path, error: sampler_uvi::AccessError) {
         let unsupported = matches!(error, sampler_uvi::AccessError::Disabled);
+        self.bank_issue_reason(path, unsupported, error.to_string());
+    }
+
+    fn bank_issue_reason(&self, path: &Path, unsupported: bool, reason: String) {
         let message = if unsupported {
             "protected library: not supported".into()
         } else {
-            error.to_string()
+            reason
         };
         lock(&self.bank_issues)
             .entry((unsupported, message))
@@ -1000,20 +1005,24 @@ fn cached_presets(
             .extension()
             .is_some_and(|s| s.eq_ignore_ascii_case("nksn"))
         {
-            if let Some(cache::Metadata::Snapshot(name)) =
-                cache.memo(path, || match crate::sound::v2::snapshot_instrument(path) {
-                    Ok(name) => Some(cache::Metadata::Snapshot(name)),
-                    Err(error) => {
-                        trace.issue(
-                            "catalog",
-                            "snapshot_metadata_failed",
-                            format!("{}: {error:#}", path.display()),
-                        );
-                        None
-                    }
+            match cache.memo(path, || {
+                Some(match crate::sound::v2::snapshot_instrument(path) {
+                    Ok(name) => cache::Metadata::Snapshot(name),
+                    Err(error) => cache::Metadata::Failed {
+                        reason: format!("{error:#}"),
+                        unsupported: false,
+                    },
                 })
-            {
-                snapshots.entry(name).or_default().push(e.into_path());
+            }) {
+                Some(cache::Metadata::Snapshot(name)) => {
+                    snapshots.entry(name).or_default().push(e.into_path())
+                }
+                Some(cache::Metadata::Failed { reason, .. }) => trace.issue(
+                    "catalog",
+                    "snapshot_metadata_failed",
+                    format!("{}: {reason}", path.display()),
+                ),
+                _ => {}
             }
         } else if is_preset(path) {
             cache.observe(path);
@@ -1022,22 +1031,27 @@ fn cached_presets(
             .extension()
             .is_some_and(|x| x.eq_ignore_ascii_case("ufs"))
         {
-            if let Some(cache::Metadata::Bank(members, status, uuid)) =
-                cache.memo(path, || match sampler_uvi::Bank::catalog_status(path) {
-                    Ok((members, status, uuid)) => {
-                        Some(cache::Metadata::Bank(members, status, uuid))
-                    }
-                    Err(e) => {
-                        progress.bank_issue(path, e);
-                        None
-                    }
+            match cache.memo(path, || {
+                Some(match sampler_uvi::Bank::catalog_status(path) {
+                    Ok((members, status, uuid)) => cache::Metadata::Bank(members, status, uuid),
+                    Err(error) => cache::Metadata::Failed {
+                        unsupported: matches!(error, sampler_uvi::AccessError::Disabled),
+                        reason: error.to_string(),
+                    },
                 })
-            {
-                lock(&progress.bank_ids).insert(path.into(), uuid);
-                if let Some(status) = status {
-                    lock(&progress.bank_status).insert(path.into(), status);
+            }) {
+                Some(cache::Metadata::Bank(members, status, uuid)) => {
+                    lock(&progress.bank_ids).insert(path.into(), uuid);
+                    if let Some(status) = status {
+                        lock(&progress.bank_status).insert(path.into(), status);
+                    }
+                    out.extend(members.into_iter().map(|member| path.join(member)));
                 }
-                out.extend(members.into_iter().map(|member| path.join(member)));
+                Some(cache::Metadata::Failed {
+                    reason,
+                    unsupported,
+                }) => progress.bank_issue_reason(path, unsupported, reason),
+                _ => {}
             }
         }
     }
@@ -1059,20 +1073,24 @@ fn cached_presets(
             if progress.canceled() {
                 break;
             }
-            if let Some(cache::Metadata::Instrument(name)) =
-                cache.memo(base, || match crate::sound::v2::snapshot_base_name(base) {
-                    Ok(name) => Some(cache::Metadata::Instrument(name)),
-                    Err(error) => {
-                        trace.issue(
-                            "catalog",
-                            "snapshot_base_metadata_failed",
-                            format!("{}: {error:#}", base.display()),
-                        );
-                        None
-                    }
+            match cache.memo(base, || {
+                Some(match crate::sound::v2::snapshot_base_name(base) {
+                    Ok(name) => cache::Metadata::Instrument(name),
+                    Err(error) => cache::Metadata::Failed {
+                        reason: format!("{error:#}"),
+                        unsupported: false,
+                    },
                 })
-            {
-                bases.entry(name).or_default().push(base.clone());
+            }) {
+                Some(cache::Metadata::Instrument(name)) => {
+                    bases.entry(name).or_default().push(base.clone())
+                }
+                Some(cache::Metadata::Failed { reason, .. }) => trace.issue(
+                    "catalog",
+                    "snapshot_base_metadata_failed",
+                    format!("{}: {reason}", base.display()),
+                ),
+                _ => {}
             }
         }
         for (name, bases) in bases {
@@ -2104,6 +2122,96 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert_eq!(changed, [root.join("Instruments/Organ.nki")]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[cfg(feature = "library-access")]
+    fn unchanged_failed_bank_reuses_metadata_and_reason_then_recovers_after_a_stat_change() {
+        let root = tree("failed-cache", &[("Broken.ufs", "broken")]);
+        let path = root.join("Broken.ufs");
+        let index = root.join("index.json");
+        let roots = [Root {
+            path: root.to_string_lossy().into_owned(),
+            single: true,
+        }];
+        let mut cache = cache::Cache::default();
+        let (cold, files) = cached_scan(&roots, &Progress::default(), &mut cache).unwrap();
+        assert!(files.is_empty());
+        let reason = cold
+            .root_problem(&root)
+            .expect("unreadable bank retains a reason");
+        assert_eq!(cache.stats.reads, 1);
+        cache.save(Some(&index)).unwrap();
+        let mut cache = cache::Cache::load(Some(&index));
+        let (warm, files) = cached_scan(&roots, &Progress::default(), &mut cache).unwrap();
+        assert!(files.is_empty());
+        assert_eq!(warm.root_problem(&root).as_deref(), Some(reason.as_str()));
+        assert_eq!(
+            (cache.stats.changed, cache.stats.reads),
+            (0, 0),
+            "an unchanged failed bank must not reopen"
+        );
+        let changed = std::fs::metadata(&path).unwrap().modified().unwrap()
+            + std::time::Duration::from_secs(1);
+        File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(changed))
+            .unwrap();
+        let (_, files) = cached_scan(&roots, &Progress::default(), &mut cache).unwrap();
+        assert!(files.is_empty());
+        assert_eq!(
+            (cache.stats.changed, cache.stats.reads),
+            (1, 1),
+            "mtime alone retries failed metadata"
+        );
+        cache.save(Some(&index)).unwrap();
+        clear_bank(&path);
+        let mut cache = cache::Cache::load(Some(&index));
+        let (recovered, files) = cached_scan(&roots, &Progress::default(), &mut cache).unwrap();
+        assert_eq!(files.len(), 1);
+        assert!(
+            recovered.root_problem(&root).is_none(),
+            "a changed accessible bank clears its old reason"
+        );
+        assert_eq!((cache.stats.changed, cache.stats.reads), (1, 1));
+        cache.save(Some(&index)).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let mut cache = cache::Cache::load(Some(&index));
+        let (removed, files) = cached_scan(&roots, &Progress::default(), &mut cache).unwrap();
+        assert!(files.is_empty() && removed.root_problem(&root).is_none());
+        cache.save(Some(&index)).unwrap();
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&std::fs::read(&index).unwrap()).unwrap()["entries"].as_object().unwrap().len(), 0);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn unchanged_failed_snapshot_metadata_is_not_read_again() {
+        let root = tree(
+            "failed-preset-cache",
+            &[
+                ("Instruments/Broken.nki", "broken"),
+                ("Snapshots/Broken.nksn", "broken"),
+            ],
+        );
+        let roots = [Root {
+            path: root.to_string_lossy().into_owned(),
+            single: true,
+        }];
+        let index = root.join("index.json");
+        let mut cache = cache::Cache::default();
+        cached_scan(&roots, &Progress::default(), &mut cache).unwrap();
+        assert_eq!(cache.stats.reads, 1);
+        cache.save(Some(&index)).unwrap();
+        let mut cache = cache::Cache::load(Some(&index));
+        cached_scan(&roots, &Progress::default(), &mut cache).unwrap();
+        assert_eq!(
+            (cache.stats.changed, cache.stats.reads),
+            (0, 0),
+            "unchanged failed preset metadata stays cached"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

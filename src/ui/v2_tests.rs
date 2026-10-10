@@ -323,6 +323,95 @@ const NO_LIMITS: sampler_ksp::Limits = sampler_ksp::Limits {
     array_cells: usize::MAX,
 };
 
+#[test]
+fn authored_uvi_value_units_match_v1_readouts_without_changing_raw_values() {
+    // v1 4bffbb18:src/ui/uvi_instrument.rs::documented_used_units_format_without_rescaling_values_or_edits.
+    for (unit, raw, expected) in [
+        ("Percent", 25., "25 %"),
+        ("PercentNormalized", 0.375, "37.5 %"),
+        ("Seconds", 0.25, "250 ms"),
+        ("Seconds", 1., "1 s"),
+        ("MilliSeconds", 1000., "1000 ms"),
+        ("MilliSeconds", 1250., "1.25 s"),
+        ("Hertz", 1000., "1000 Hz"),
+        ("Hertz", 1250., "1.25 kHz"),
+        ("Decibels", -60., "-60 dB"),
+        ("LinearGain", 0., "-inf dB"),
+        ("LinearGain", 1., "0 dB"),
+        ("LinearGain", 0.5, "-6.021 dB"),
+        ("Pan", 0., "Center"),
+        ("SemiTones", -3., "-3 st"),
+    ] {
+        for kind in ["Knob", "NumBox"] {
+            let source = format!(
+                "<UVI4><Program Name='P'><EventProcessors><ScriptProcessor><script><![CDATA[setSize(160,120); {kind}{{'Readout',{raw},-10000,10000,unit=Unit.{unit},bounds={{10,10,140,90}},showLabel=false}}]]></script></ScriptProcessor></EventProcessors></Program></UVI4>"
+            );
+            let host =
+                sampler_uvi::script::ScriptHost::new(&source, (), Default::default()).unwrap();
+            let face = host.interface();
+            let mut oracle = face.clone();
+            oracle.widgets[0].value_text = Some(expected.into());
+            let render = |f: &ir::Interface| {
+                let mut values = ir_view::Values::default();
+                let assets = ir_view::Assets::default();
+                let ui = settle(160., 120., |ui| {
+                    ir_view::view(
+                        ui,
+                        f,
+                        ir::PageRef(0),
+                        &assets,
+                        ir::Presentation::Bitmap,
+                        1.,
+                        &mut values,
+                    )
+                });
+                assert_eq!(values.values().copied().collect::<Vec<_>>(), vec![raw]);
+                pixels(&ui, 160, 120)
+            };
+            assert!(
+                render(&face) == render(&oracle),
+                "{kind} {unit} readout must match v1"
+            );
+            assert_eq!(host.control_values()[0].1, raw);
+        }
+    }
+}
+
+#[test]
+fn authored_uvi_value_captions_overlay_skin_without_changing_geometry() {
+    let host = sampler_uvi::script::ScriptHost::new("<UVI4><Program Name='P'><EventProcessors><ScriptProcessor><script><![CDATA[setSize(160,120); local k=Knob{'Readout',0.375,0,1,bounds={10,10,140,90},showLabel=false,displayText='Authored caption'}; k:setStripImage('synthetic.png',1)]]></script></ScriptProcessor></EventProcessors></Program></UVI4>", (), Default::default()).unwrap();
+    let face = host.interface();
+    assert_eq!(face.widgets[0].rect, ir::Rect::new(10, 10, 140, 90));
+    let mut hidden = face.clone();
+    hidden.widgets[0].hide.value = true;
+    let render = |f: &ir::Interface| {
+        let mut values = ir_view::Values::default();
+        let mut assets = ir_view::Assets::default();
+        assets.sync(f, ir::Presentation::Bitmap, |_| {
+            Some(picture(vec![solid(32, 32, [40, 50, 60, 255])]))
+        });
+        let ui = settle(160., 120., |ui| {
+            ir_view::view(
+                ui,
+                f,
+                ir::PageRef(0),
+                &assets,
+                ir::Presentation::Bitmap,
+                1.,
+                &mut values,
+            )
+        });
+        let frame = ui.scene().unwrap().surface("ir-0").unwrap().frame;
+        assert_eq!(frame.size, Size::new(140., 90.));
+        pixels(&ui, 160, 120)
+    };
+    assert!(
+        render(&face) != render(&hidden),
+        "authored showValue must paint its caption over the strip"
+    );
+    assert_eq!(host.control_values()[0].1, 0.375);
+}
+
 /// Renders `face` in both presentations, shooting each as `{stem}-{mode}.png`
 /// under `dir`; returns the decoded bytes each keeps.
 fn both_modes(
@@ -1247,6 +1336,144 @@ fn keyswitch_learn_escape_wins_over_a_note_received_in_the_same_frame() {
 }
 
 #[test]
+fn keyswitch_learn_port_change_retires_a_pending_note() {
+    let (p, source) = keyswitch_learn_fixture();
+    let mut h = Harness::new(&p, 1180., 780.);
+    keyswitch_begin_learn(&mut h, 0);
+    p.shared.record_learn(0, 0, 62);
+    p.selection.write().unwrap().parts[0].port = 1;
+    h.idle(3);
+    assert!(
+        p.selection.read().unwrap().parts[0]
+            .articulation_overlay
+            .inputs
+            .is_empty(),
+        "a pending note belongs to the retired MIDI port"
+    );
+    assert_eq!(p.shared.learn_target.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        *p.shared.view.lock().unwrap().parts[0]
+            .instrument
+            .clone()
+            .unwrap(),
+        *source
+    );
+}
+
+#[test]
+fn keyswitch_learn_channel_change_retires_a_pending_note() {
+    let (p, _) = keyswitch_learn_fixture();
+    p.selection.write().unwrap().parts[0].channel = 5;
+    let mut h = Harness::new(&p, 1180., 780.);
+    keyswitch_begin_learn(&mut h, 0);
+    p.shared.record_learn(0, 5, 62);
+    p.selection.write().unwrap().parts[0].channel = 6;
+    h.idle(3);
+    assert!(
+        p.selection.read().unwrap().parts[0]
+            .articulation_overlay
+            .inputs
+            .is_empty(),
+        "a pending note belongs to the retired MIDI channel"
+    );
+    assert_eq!(p.shared.learn_target.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn keyswitch_learn_filters_port_channel_and_invalid_notes() {
+    let (p, _) = keyswitch_learn_fixture();
+    {
+        let mut selection = p.selection.write().unwrap();
+        selection.parts[0].port = 2;
+        selection.parts[0].channel = 5;
+    }
+    let mut h = Harness::new(&p, 1180., 780.);
+    keyswitch_begin_learn(&mut h, 0);
+    let learned = p.shared.learned_note.load(Ordering::Relaxed);
+    for (port, channel, key) in [(1, 5, 62), (2, 4, 62), (2, 16, 62), (2, 5, 128)] {
+        p.shared.record_learn(port, channel, key);
+    }
+    h.idle(3);
+    assert_eq!(p.shared.learned_note.load(Ordering::Relaxed), learned);
+    assert!(
+        p.selection.read().unwrap().parts[0]
+            .articulation_overlay
+            .inputs
+            .is_empty()
+    );
+    assert_ne!(p.shared.learn_target.load(Ordering::Relaxed), 0);
+    p.shared.record_learn(2, 5, 62);
+    h.idle(3);
+    assert_eq!(
+        p.selection.read().unwrap().parts[0]
+            .articulation_overlay
+            .inputs["axis:main:Sustain#0"]
+            .keys,
+        Some(vec![62])
+    );
+    assert_eq!(p.shared.learn_target.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn keyswitch_learn_omni_accepts_any_valid_channel() {
+    let (p, _) = keyswitch_learn_fixture();
+    let mut h = Harness::new(&p, 1180., 780.);
+    keyswitch_begin_learn(&mut h, 0);
+    p.shared.record_learn(0, 15, 62);
+    h.idle(3);
+    assert_eq!(
+        p.selection.read().unwrap().parts[0]
+            .articulation_overlay
+            .inputs["axis:main:Sustain#0"]
+            .keys,
+        Some(vec![62])
+    );
+    assert_eq!(p.shared.learn_target.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn keyswitch_learn_conflict_cancel_keeps_both_assignments() {
+    let (p, source) = keyswitch_learn_fixture();
+    let mut instrument = (*source).clone();
+    instrument.articulations.push(sampler_ir::Articulation {
+        source: "axis:main:Legato".into(),
+        name: "Legato".into(),
+        switch_keys: vec![25],
+        ..Default::default()
+    });
+    let source = Arc::new(instrument);
+    p.shared.view.lock().unwrap().parts[0].instrument = Some(source.clone());
+    let mut h = Harness::new(&p, 1180., 780.);
+    keyswitch_begin_learn(&mut h, 0);
+    p.shared.record_learn(0, 0, 25);
+    h.idle(3);
+    assert!(h.ui.scene().unwrap().surface("art-swap-0").is_some());
+    assert!(
+        p.selection.read().unwrap().parts[0]
+            .articulation_overlay
+            .inputs
+            .is_empty()
+    );
+    h.press("art-cancel-0");
+    assert_eq!(p.shared.learn_target.load(Ordering::Relaxed), 0);
+    p.shared.record_learn(0, 0, 62);
+    h.idle(3);
+    assert!(
+        p.selection.read().unwrap().parts[0]
+            .articulation_overlay
+            .inputs
+            .is_empty()
+    );
+    assert_eq!(
+        *p.shared.view.lock().unwrap().parts[0]
+            .instrument
+            .clone()
+            .unwrap(),
+        *source
+    );
+}
+
+#[test]
 fn keyswitch_learn_has_one_owner_across_parts() {
     let (p, _) = keyswitch_learn_fixture();
     let mut h = Harness::new(&p, 1180., 780.);
@@ -1413,6 +1640,91 @@ fn v1_mixer_view_controls_are_reachable() {
             h.ui.scene().unwrap().surface(id).is_some(),
             "v1 control missing: {id}"
         );
+    }
+}
+
+fn v1_menu_fixture() -> (Arc<crate::plugin::SamplerParams>, Harness) {
+    let p = editor_fixture();
+    let instrument = p.shared.view.lock().unwrap().parts[0].instrument.clone();
+    p.shared.view.lock().unwrap().parts[1].instrument = instrument;
+    {
+        let mut selection = p.selection.write().unwrap();
+        selection.parts = (0..2)
+            .map(|n| crate::plugin::Part {
+                path: format!("/synthetic/Part{n}.nki"),
+                collapsed: true,
+                ..Default::default()
+            })
+            .collect();
+        selection.order = vec![0, 1];
+    }
+    let h = Harness::new(&p, 1180., 780.);
+    (p, h)
+}
+
+fn v1_strip_menu(h: &mut Harness, id: u64) {
+    h.press("tab-mixer");
+    h.idle(3);
+    let at = super::tests::center(&h.ui, &format!("mt-name-{id}"));
+    for buttons in [
+        Buttons::default().set(Button::Secondary, true),
+        Buttons::default(),
+    ] {
+        h.tick(Input {
+            pointer: PointerInput {
+                pos: Some(at),
+                buttons,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+    }
+    h.idle(2);
+}
+
+#[test]
+fn v1_menu_rack_edit_sound_selects_the_requested_part() {
+    let (p, mut h) = v1_menu_fixture();
+    h.press("more-1");
+    h.press("menu-item-0");
+    assert_eq!(
+        p.shared.editor_watch.load(Ordering::Relaxed),
+        1,
+        "Edit sound opens the Sound tab for this part"
+    );
+    assert_eq!(p.shared.selected.load(Ordering::Relaxed), 1);
+    assert!(!p.selection.read().unwrap().parts[1].collapsed);
+}
+
+#[test]
+fn v1_menu_mixer_edit_sound_selects_the_requested_part() {
+    let (p, mut h) = v1_menu_fixture();
+    h.press("collapse-1");
+    h.press("view-1-Sound");
+    h.press("sound-tab-1-Effects");
+    h.press("collapse-1");
+    v1_strip_menu(&mut h, 131072);
+    h.press("menu-item-5");
+    assert_eq!(p.shared.editor_watch.load(Ordering::Relaxed), 1);
+    assert_eq!(p.shared.selected.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn v1_menu_route_part_and_host_bus_use_existing_output_picker() {
+    for (id, host_bus) in [(65536, false), (1, true)] {
+        let (p, mut h) = v1_menu_fixture();
+        v1_strip_menu(&mut h, id);
+        h.press("menu-item-3");
+        h.press(&format!("mt-pick-{id}-4"));
+        let selection = p.selection.read().unwrap();
+        if host_bus {
+            assert_eq!(selection.bus(0).port, 4, "bus route maps to host 9/10");
+        } else {
+            assert_eq!(
+                (selection.parts[0].output, selection.parts[0].output_manual),
+                (4, true)
+            );
+        }
     }
 }
 
@@ -6238,4 +6550,65 @@ fn keyswitch_real_analog_strings_does_not_invent_preset_browser_articulations() 
         loaded.instrument.unwrap().articulations.is_empty(),
         "preset browser entries and zero-sized auxiliary controls must not become articulation rows"
     );
+}
+
+#[test]
+fn w10_scripted_uvi_strips_positions_and_callback_paint_authored_pixels() {
+    let dir = tempfile::tempdir().unwrap();
+    let colours = [[255,0,0,255],[0,255,0,255],[0,0,255,255],[255,255,0,255]];
+    for (name,width,height,horizontal) in [("h.png",32,8,true),("v.png",8,32,false)] {
+        let data: Vec<u8> = (0..height).flat_map(|y| (0..width).flat_map(move |x| colours[if horizontal {x/8} else {y/8}])).collect();
+        moose::core::screenshot::save_png(&dir.path().join(name),&data,width as u32,height as u32);
+    }
+    let xml = r#"<UVI4><Program><EventProcessors><ScriptProcessor><script><![CDATA[
+      require('uvi.ChordRec')
+      setSize(320,200); setHeight(160)
+      local p=Panel{'Root',bounds={10,20,300,120}}
+      local h=Knob{'Horizontal',0,0,1,parent=p,x=1,y=2,width=3,height=4,size={10,11},position={3,4},pos={5,6},bounds={20,0,32,32},showLabel=false,showValue=false}
+      h:setStripImage('h.png',4,true)
+      local v=Slider{'Vertical',0,0,1,false,true,parent=p,x=1,y=2,width=3,height=4,size={10,11},position={3,4},pos={5,6},bounds={80,0,32,32},showLabel=false,showValue=false}
+      v:setStripImage('v.png',4,false)
+      local label=p:Label{'State',bounds={130,0,150,32},text='Ready'}
+      local button=p:Button{'Fire',bounds={20,80,90,25}}
+      local unitBox=p:NumBox{'Percent',0.25,0,1,bounds={130,80,110,25},unit=Unit.PercentNormalized,showLabel=false}
+      button.changed=function()
+        local root,kind=ChordRec.chordKind({60,64,67})
+        label.text=kind; h:setValue(1,false); v:setValue(1,false); unitBox:setValue(0.5,false); setHeight(160)
+      end
+    ]]></script></ScriptProcessor></EventProcessors></Program></UVI4>"#;
+    let patch = dir.path().join("preset.uvip");
+    std::fs::write(&patch,xml).unwrap();
+    let mut host = sampler_uvi::script::ScriptHost::new(xml,(),Default::default()).unwrap();
+    assert!(host.findings().is_empty(),"{:?}",host.findings());
+    let mut assets = ir_view::Assets::default();
+    let mut values = ir_view::Values::default();
+    for (after,name,expected) in [(false,"uvi-scripted-before.png",colours[0]),(true,"uvi-scripted-after.png",colours[3])] {
+        if after { host.set_control(sampler_uvi::script::control_id(5,0),1.).unwrap(); }
+        let face=host.interface();
+        assert_eq!(face.page_rect(ir::WidgetRef(1)),ir::Rect::new(30,20,32,32));
+        assert_eq!(face.page_rect(ir::WidgetRef(2)),ir::Rect::new(90,20,32,32));
+        assert_eq!((face.pages[0].size.width,face.pages[0].size.height),(320,160));
+        assert_eq!(face.widgets[5].initial_value,if after {0.5} else {0.25});
+        assert_eq!(face.widgets[5].value_text.as_deref(),Some(if after {"50 %"} else {"25 %"}));
+        for (control,value) in host.control_values() { values.insert(control,value); }
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+        loop {
+            assets.prepare(&patch,&face,ir::PageRef(0),ir::Presentation::Bitmap,1.,&values);
+            if assets.pending()==0 { break; }
+            assert!(std::time::Instant::now()<deadline,"authored asset preparation must finish");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let ui=settle(320.,160.,|ui| ir_view::view(ui,&face,ir::PageRef(0),&assets,ir::Presentation::Bitmap,1.,&mut values));
+        let data=pixels(&ui,320,160);
+        for x in [46,106] {
+            let at=(36*320+x)*4;
+            assert_eq!(&data[at..at+4],&expected,"{name}: authored strip frame at x={x}");
+        }
+        if after { assert_eq!(face.widgets[3].text,"M"); }
+        #[cfg(feature="shots")]
+        if let Some(out)=std::env::var_os("KONTRA_UVI_FIXTURE_SHOTS").map(std::path::PathBuf::from) {
+            std::fs::create_dir_all(&out).unwrap();
+            moose::core::screenshot::save_png(&out.join(name),&data,320,160);
+        }
+    }
 }

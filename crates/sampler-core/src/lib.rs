@@ -110,7 +110,7 @@ pub use plan_programs::{PlanProgram, SignalProgram};
 pub use script_params::{EnvelopeStage, GroupParams, ParamScope};
 pub use steal::{Kill, Stealing, VoiceLimit};
 pub use voice_mod::{
-    Breakpoint, Breakpoints, Lfo, LfoRate, LfoShape, ModProgram, ModRoute, ModScale, ModSource,
+    Breakpoint, Breakpoints, Lfo, LfoRate, LfoShape, ModProgram, ModRoute, ModScale, ModScaleLaw, ModSource,
     ModTarget,
 };
 mod ownership;
@@ -205,6 +205,13 @@ pub enum EventInfo {
     MidiChannel,
     /// Physical creator script slot, or -1 for a host event.
     Source,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ZoneParameter {
+    Group,
+    LowKey,
+    HighKey,
 }
 
 /// First mod-value id of a note's four user event parameters (`$EVENT_PAR_0..3`).

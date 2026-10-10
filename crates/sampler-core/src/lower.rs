@@ -461,6 +461,20 @@ pub fn lower_with(
             .collect();
         plan = plan
             .with_groups(count, members)
+            .and_then(|p| {
+                p.with_source_groups(
+                    (0..count)
+                        .map(|group| {
+                            instrument
+                                .source_indices
+                                .groups
+                                .iter()
+                                .position(|entry| *entry == Some(ir::GroupRef(group as usize)))
+                                .map_or(group, |index| index as u32)
+                        })
+                        .collect(),
+                )
+            })
             .and_then(|p| p.with_group_params(params))
             .map_err(core(Stage::Regions, "groups"))?;
     }
@@ -1340,6 +1354,7 @@ impl Lowering<'_> {
                 Some(scale) => Some(ModScale {
                     source: source_of(scale.source, &mut program)?,
                     shape: None,
+                    law: Default::default(),
                 }),
             };
             let mut shape_of = |shape: ir::ShapeRef, program: &mut ModProgram| {

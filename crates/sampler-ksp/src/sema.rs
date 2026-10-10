@@ -109,6 +109,8 @@ pub fn analyze<'a, 's>(
             ("release", None) => CallbackKind::Release,
             ("controller", None) => CallbackKind::Controller,
             ("poly_at", None) => CallbackKind::PolyAt,
+            ("ui_controls", None) => CallbackKind::UiControls,
+            ("ui_update", None) => CallbackKind::UiUpdate,
             ("listener", None) => CallbackKind::Listener,
             ("pgs_changed", None) => CallbackKind::PgsChanged,
             ("persistence_changed", None) => CallbackKind::PersistenceChanged,

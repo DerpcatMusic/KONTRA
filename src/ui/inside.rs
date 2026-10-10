@@ -232,6 +232,8 @@ pub enum ArtAction {
 struct Edit {
     source: String,
     path: String,
+    port: u8,
+    channel: i16,
     generation: u64,
     text: String,
     learned: u64,
@@ -281,6 +283,8 @@ fn begin(ui: &mut Ui, cx: &mut Cx, slot: usize, source: &str, text: String, lear
     cx.state.inside.entry(slot).or_default().edit = Some(Edit {
         source: source.into(),
         path: part.path.clone(),
+        port: part.port,
+        channel: part.channel,
         generation: cx.view.parts[slot].generation,
         text,
         learned,
@@ -303,7 +307,12 @@ pub(super) fn release_learn(cx: &mut Cx) {
                     .selection
                     .parts
                     .get(slot)
-                    .is_some_and(|p| p.path == edit.path && !p.collapsed)
+                    .is_some_and(|p| {
+                        p.path == edit.path
+                            && p.port == edit.port
+                            && p.channel == edit.channel
+                            && !p.collapsed
+                    })
                 || !cx
                     .p
                     .shared

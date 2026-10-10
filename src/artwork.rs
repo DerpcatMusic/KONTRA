@@ -228,19 +228,36 @@ fn cached_header(path: &Path, decode: impl FnOnce() -> Option<Image>) -> Option<
         .insert(key, image.clone());
     Some(image)
 }
-// Library-file identity plus native access revision invalidates protected-bank results.
-fn display_path(key: &impl std::hash::Hash) -> Option<PathBuf> {
+// Library-file identity plus actual reader state invalidates access-dependent artwork.
+fn display_hash(key: &impl std::hash::Hash, readers: [(u32, bool); 2]) -> u64 {
     use std::hash::{Hash, Hasher};
+    let mut hash = std::hash::DefaultHasher::new();
+    key.hash(&mut hash);
+    readers.hash(&mut hash);
+    hash.finish()
+}
+
+fn display_path(key: &impl std::hash::Hash) -> Option<PathBuf> {
     if cfg!(test) || std::env::var_os("KONTRA_SCAN_ACTIVE").is_some() {
         return None;
     }
-    let mut hash = std::hash::DefaultHasher::new();
-    key.hash(&mut hash);
-    sampler_uvi::LIBRARY_ACCESS_REVISION.hash(&mut hash);
+    let hash = display_hash(
+        key,
+        [
+            (
+                sampler_kontakt::LIBRARY_ACCESS_REVISION,
+                sampler_kontakt::LIBRARY_ACCESS_ENABLED,
+            ),
+            (
+                sampler_uvi::LIBRARY_ACCESS_REVISION,
+                sampler_uvi::LIBRARY_ACCESS_ENABLED,
+            ),
+        ],
+    );
     Some(
         dirs::cache_dir()?
             .join("kontra/library-art")
-            .join(format!("{:016x}.png", hash.finish())),
+            .join(format!("{hash:016x}.png")),
     )
 }
 
@@ -1186,4 +1203,42 @@ fn display_cache_reuses_pixels_and_remembers_absence() {
         .is_none()
     );
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(test)]
+#[test]
+fn protected_artwork_access_changes_retry_cached_absence() {
+    let dir = tempfile::tempdir().unwrap();
+    let stamp = ("unchanged-library.nkr", 512_u64, std::time::UNIX_EPOCH);
+    let disabled = [(1, false), (1, false)];
+    let path = |readers| {
+        dir.path()
+            .join(format!("{:016x}.png", display_hash(&stamp, readers)))
+    };
+    let disabled_path = path(disabled);
+    assert!(disk_header(Some(&disabled_path), || None).is_none());
+    assert!(
+        disk_header(Some(&disabled_path), || panic!(
+            "unchanged inaccessible artwork must reuse its absence"
+        ))
+        .is_none()
+    );
+    for readers in [
+        [(1, true), (1, false)],
+        [(1, false), (1, true)],
+        [(2, false), (1, false)],
+        [(1, false), (2, false)],
+    ] {
+        let recovered_path = path(readers);
+        let image = disk_header(Some(&recovered_path), || {
+            Image::rgba(256, 64, [20, 40, 60, 255].repeat(256 * 64))
+        })
+        .expect("reader feature/revision changes must retry unchanged library artwork");
+        let warm = disk_header(Some(&recovered_path), || {
+            panic!("unchanged available artwork must reuse pixels")
+        })
+        .unwrap();
+        assert_eq!(image.rgba, warm.rgba);
+        assert_eq!((image.width, image.height), (256, 64));
+    }
 }

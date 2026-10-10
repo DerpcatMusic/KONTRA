@@ -527,6 +527,12 @@ impl Program {
         Ok(self)
     }
 
+    /// Retain the real edited widget ID on a shared global UI callback entry.
+    pub fn with_callback_ui_id(mut self, ui_id: i32) -> Self {
+        self.ui_id = ui_id;
+        self
+    }
+
     fn requirements<'a>(
         instructions: impl Iterator<Item = &'a Instruction> + Clone,
     ) -> Result<(bool, bool, bool), Error> {

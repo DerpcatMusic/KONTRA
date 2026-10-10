@@ -2,6 +2,51 @@
 
 Status: design and first milestone, 2026-10-06. Owner: UVI translator.
 
+## Authored UI contract (2026-10-10)
+
+The milestone descriptions below are historical. The current UI path executes
+the bank's Lua/XML and projects its widget state into the shared UI IR. There is
+no host-generated grid: an unset widget position remains `(0, 0)`, as in v1
+`4bffbb18:src/uvi/host.rs`. Explicit child positions remain relative to their
+script-authored parents.
+
+The v1 port restores `setHeight` without changing width and momentary
+`Button.push(callbackFlag, modifiers)`. Renderer button edits invoke that same
+method. Strip images retain the script's frame count and horizontal/vertical
+argument. Root size/background/performance changes and controls created inside
+callbacks advance the UI revision so the owner publishes the resulting tree.
+
+`require` executes embedded modules before native modules. The real v1
+`uvi.ChordRec` algorithm and `uvi.AsyncUpdater` userdata run on the Lua owner;
+unknown UVI modules fail instead of returning an inert module. A nil module
+result caches true; false is loaded again. Recursive loads fail at the cycle
+and remove the loading marker on error. Exact members win; relative slash/dot
+aliases must contain identical source, rather than selecting a shortest path.
+The module's source member remains its resource-resolution base.
+
+Named widget geometry follows v1 precedence: scalar fields, then `size`,
+`position`, `pos`, and `bounds`. Constructors preserve named parents and expose
+container children; parent IDs project into the shared hierarchy. Fractional
+geometry and authored child paint order remain open shared projection work.
+
+Unit and Mapper expose v1 numeric IDs; existing named v2 metadata remains
+accepted by the adapter. UVI readouts use v1 formatting without changing raw
+values, ranges, sprites or edit payloads. Authored displayText retains precedence.
+
+`class` and instances are native userdata copied from v1. Inheritance copies
+existing members except `__init`, and a constructor requires its own initializer.
+Names and bases are validated. The Luau adapter preserves Lua 5.1 self-identity
+before equality dispatch; distinct-object equality and tostring retain v1 errors.
+
+The [per-bank fidelity checklist](../audit-2026-10-10/W10_UVI_BANK_CHECKLIST.csv)
+covers 26 banks / 660 presets from the retained catalog manifest. Each bank needs executed Lua/XML, image/font/filmstrip,
+position, ordering/page/visibility, callback/value/persistence and renderer
+interaction evidence. Those installed-bank cells remain UNKNOWN/PARKED under
+the protected-payload rule. Only authored clear fixtures are admitted now.
+Screenshots inspect what the real script rendered; they do not authorize a
+substitute layout or establish native Falcon parity. V1 cells needing the
+official reader remain UNAVAILABLE-NO-THIRD-PARTY.
+
 ## Why
 
 A UVI program may carry a `ScriptProcessor` whose Lua decides which oscillators

@@ -11,6 +11,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         i.assets.len(),
         i.unsupported.len()
     );
+    println!("IMPULSES\t{}", i.impulses.len());
     let mut features = BTreeMap::new();
     for issue in &i.unsupported {
         *features.entry(issue.feature.as_str()).or_insert(0usize) += 1;

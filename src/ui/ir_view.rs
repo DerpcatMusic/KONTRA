@@ -578,16 +578,19 @@ pub fn view_state(
             continue;
         }
         let r = face.page_rect(n);
+        let intersects = |clip: ir::Rect| {
+            i64::from(r.x) < i64::from(clip.x) + i64::from(clip.width)
+                && i64::from(r.y) < i64::from(clip.y) + i64::from(clip.height)
+                && i64::from(r.x) + i64::from(r.width) > i64::from(clip.x)
+                && i64::from(r.y) + i64::from(r.height) > i64::from(clip.y)
+        };
+        if r.width == 0
+            || r.height == 0
+            || !intersects(ir::Rect::new(0, 0, p.size.width, p.size.height))
+        {
+            continue;
+        }
         if face.source == ir::Source::FalconLua {
-            let intersects = |clip: ir::Rect| {
-                i64::from(r.x) < i64::from(clip.x) + i64::from(clip.width)
-                    && i64::from(r.y) < i64::from(clip.y) + i64::from(clip.height)
-                    && i64::from(r.x) + i64::from(r.width) > i64::from(clip.x)
-                    && i64::from(r.y) + i64::from(r.height) > i64::from(clip.y)
-            };
-            if !intersects(ir::Rect::new(0, 0, p.size.width, p.size.height)) {
-                continue;
-            }
             let mut parent = face.widgets[n.0].parent;
             let mut clipped = false;
             for _ in 0..face.widgets.len() {
@@ -657,17 +660,9 @@ pub fn view_state(
         })
 }
 
-/// The page's height, reaching down to its lowest visible control: a control
-/// the source placed past the page edge is drawn whole, not cut.
+/// The height declared by the script, after grid rows are resolved.
 pub fn height(face: &Interface, page: PageRef) -> u32 {
-    let bottom = face
-        .draw_order(page)
-        .into_iter()
-        .filter(|&n| face.visible(n))
-        .map(|n| face.page_rect(n))
-        .map(|r| (r.y + r.height as i32).max(0) as u32)
-        .max();
-    face.pages[page.0].size.height.max(bottom.unwrap_or(0))
+    face.pages[page.0].size.height
 }
 
 /// Axis and full-range travel in drawn pixels, independent of bitmap fallback.
@@ -819,16 +814,6 @@ pub(super) fn widget_state(
             false,
         )
     };
-    let number = |x: f64, d: &ir::Display| {
-        let x = x / if d.ratio == 0. { 1. } else { d.ratio };
-        let x = if x.fract() == 0. {
-            format!("{x}")
-        } else {
-            format!("{x:.2}")
-        };
-        format!("{x} {}", d.unit).trim().to_owned()
-    };
-
     let face_el: El = match &wd.kind {
         Kind::Knob { range, .. } | Kind::Slider { range, .. } => {
             let (vertical, travel) = gesture(wd, scale);
@@ -861,22 +846,45 @@ pub(super) fn widget_state(
             let lift = ui.state(id.as_str()).hover.max(if held { 1. } else { 0. }) as f32;
             let unit = |x: f64| mapped(range, wd.mapper.as_deref(), x, true);
             match strip {
-                Some(p) => art(
-                    face,
-                    wd.image(Use::Strip).unwrap(),
-                    p,
-                    fixed.unwrap_or_else(|| frame(unit(v), 0., 1., p.len())),
-                    w,
-                    h,
-                    scale,
-                ),
-                // A slider about as tall as wide was drawn as a knob by its strip.
+                Some(p) => {
+                    let picture = art(
+                        face,
+                        wd.image(Use::Strip).unwrap(),
+                        p,
+                        fixed.unwrap_or_else(|| frame(unit(v), 0., 1., p.len())),
+                        w,
+                        h,
+                        scale,
+                    );
+                    if face.source == ir::Source::FalconLua
+                        && let Kind::Knob { display, .. } = &wd.kind
+                    {
+                        // v1 captions overlay the full authored skin frame.
+                        let mut captions = vec![spacer()];
+                        if !wd.hide.title && !wd.text.is_empty() {
+                            captions.push(words(wd.text.clone()));
+                        }
+                        if !wd.hide.value {
+                            captions.push(words(wd.value_text.clone().unwrap_or_else(|| {
+                                display.format_value(v, range.step == Some(1.), face.source)
+                            })));
+                        }
+                        stack![
+                            picture.size(w, h),
+                            col(captions).gap(0).align(Align::Center).size(w, h)
+                        ]
+                    } else {
+                        picture
+                    }
+                }
                 // Kontakt's stock knob: its name over the dial, the value under it.
                 None if matches!(wd.kind, Kind::Knob { .. }) => {
                     let value = match (&wd.kind, &wd.value_text) {
                         // The script's own label, even an empty one, replaces the number.
                         (_, Some(t)) => t.clone(),
-                        (Kind::Knob { display, .. }, _) => number(v, display),
+                        (Kind::Knob { display, .. }, _) => {
+                            display.format_value(v, range.step == Some(1.), face.source)
+                        }
                         _ => String::new(),
                     };
                     let mut parts = Vec::new();
@@ -899,12 +907,6 @@ pub(super) fn widget_state(
                     }
                     col(parts).gap(0).align(Align::Center)
                 }
-                None if (0.75..=1.33).contains(&(w / h.max(1.))) => dial_face(
-                    unit(v),
-                    unit(range.min.max(0.).min(range.max)),
-                    lift,
-                    ui.focus_visible(&id),
-                ),
                 None => fader_face(unit(v), 0., None, vertical, lift, ui.focus_visible(&id)),
             }
             .cursor(if vertical {
@@ -992,7 +994,11 @@ pub(super) fn widget_state(
                     input.menu = if input.menu == Some(n) { None } else { Some(n) };
                 }
             }
-            let label = at.map(|a| shown[a].text.clone()).unwrap_or_default();
+            let label = items
+                .iter()
+                .find(|i| f64::from(i.value) == v)
+                .map(|i| i.text.clone())
+                .unwrap_or_default();
             match strip {
                 Some(p) => stack![
                     block(w, h)
@@ -1101,7 +1107,11 @@ pub(super) fn widget_state(
                         wd.value_text
                             .as_deref()
                             .filter(|t| !t.is_empty())
-                            .unwrap_or(&number(v, display)),
+                            .unwrap_or(&display.format_value(
+                                v,
+                                range.step == Some(1.),
+                                face.source,
+                            )),
                         style,
                         assets,
                         bitmap,
@@ -2060,6 +2070,87 @@ mod mapper_tests {
                 (mapped(&range, Some(mapper), value, true) - 0.25).abs() < 1e-9,
                 "{mapper}"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod page_layout_tests {
+    use super::*;
+
+    fn face(source: ir::Source) -> Interface {
+        let rects = [
+            (10, 10, 20, 20),
+            (10, 500, 20, 20),
+            (500, 10, 20, 20),
+            (-40, 10, 20, 20),
+            (-10, 10, 20, 20),
+            (10, 10, 0, 20),
+            (10, -40, 20, 20),
+            (10, 50, 20, 20),
+        ];
+        Interface {
+            source,
+            pages: vec![ir::Page {
+                size: ir::Size {
+                    width: 100,
+                    height: 60,
+                },
+                ..Default::default()
+            }],
+            widgets: rects
+                .into_iter()
+                .map(|(x, y, w, h)| {
+                    ir::Widget::new(
+                        "fixture",
+                        PageRef(0),
+                        ir::Rect::new(x, y, w, h),
+                        Kind::Button { momentary: false },
+                    )
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn authored_page_height_does_not_follow_off_page_controls() {
+        let mut face = face(ir::Source::Ksp { slot: 0 });
+        assert_eq!(height(&face, PageRef(0)), 60);
+        face.pages[0].size.height = 80;
+        face.widgets[1].hidden = true;
+        assert_eq!(height(&face, PageRef(0)), 80);
+    }
+
+    #[test]
+    fn authored_page_layout_retains_intersections_in_script_order() {
+        for source in [ir::Source::Ksp { slot: 0 }, ir::Source::FalconLua] {
+            let face = face(source);
+            let mut ui = super::super::theme::ui();
+            let root = view(
+                &mut ui,
+                &face,
+                PageRef(0),
+                &Assets::default(),
+                Presentation::Vector,
+                1.,
+                &mut Values::default(),
+            );
+            ui.frame(root, Some(Size::new(100., 60.)), Input::default(), 1. / 60.)
+                .unwrap();
+            let scene = ui.scene().unwrap();
+            for n in [0, 4, 7] {
+                assert!(
+                    scene.surface(&format!("ir-{n}")).is_some(),
+                    "missing {source:?} {n}"
+                );
+            }
+            for n in [1, 2, 3, 5, 6] {
+                assert!(
+                    scene.surface(&format!("ir-{n}")).is_none(),
+                    "off-page {source:?} {n}"
+                );
+            }
         }
     }
 }

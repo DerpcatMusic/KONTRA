@@ -117,7 +117,10 @@ resources, parameter values and serialized host state are never exported. Native
 menus use real popup item clicks. Passive meters/panels/images and disabled controls
 have no edit obligation. Navigation-only targets remain explicit failures until their
 view-state obligation has its own witness. These are headless production editor
-receipts; they do not certify OS/DAW capture, IME or native Kontakt calibration.
+receipts; they do not certify OS/DAW capture, IME or native Kontakt calibration. The full
+[widget acceptance checklist](WIDGET_CHECKLIST.md) also requires drag calibration,
+fine modifiers, reset/wheel, automation, MIDI learn, causal sound and fresh-plugin
+reopen witnesses; the existing first-gesture receipt does not certify them.
 
 `live_host.py GATE V2_CLAP V2_CLI LIVE_HOST OUTPUT` measures loaded libraries through `vendor/moose-clap/tests/live_performance.cpp`. Build that native host outside the quiet window, then run the driver through `kontakto-heavy` as the quiet owner after other builds finish. Frozen v1 is run without rebuilding. The supplied plugin's adjacent `BUILD.json` must identify its full source SHA, `ci` or `release` profile, path, and plugin/CLI/host hashes; alpha release artifacts are now authorized through W0.
 

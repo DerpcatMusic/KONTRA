@@ -1,0 +1,181 @@
+builtin	status	v1_args_optional_ret	v2_args_optional_ret	historical_unsupported_sites	historical_items	evidence
+add_menu_item	routed-unverified	V S I 0 Void	V S I 0 Void	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+add_text_line	different/partial	V S 0 Void	V S 0 Void	0	0	Host display effect exists but same-callback script getter retains old property state.
+attach_level_meter	unconsumed-effect	I I I I I 0 Void	I I I I I 0 Void	0	0	Emitted to host outbox; apply_ui_effect/plugin consumers do not execute this command. Check init resource boundary separately.
+attach_zone	unconsumed-effect	V I I 0 Void	V I I 0 Void	0	0	Emitted to host outbox; apply_ui_effect/plugin consumers do not execute this command. Check init resource boundary separately.
+fs_get_filename	routed-unverified	I I 0 Str	I I 0 Str	6	3	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+fs_navigate	unconsumed-effect	I I 0 Void	I I 0 Void	0	0	Emitted to host outbox; apply_ui_effect/plugin consumers do not execute this command. Check init resource boundary separately.
+get_control_par	different/partial	I I 0 Int	I I 0 Int	0	0	v2 menu VALUE returns item value instead of selected index; NUM_ITEMS/SELECTED_ITEM_IDX do not read live menus. Dynamic TYPE lacks authored schema seeding.
+get_control_par_arr	routed-unverified	I I I 0 Int	I I I 0 Int	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+get_control_par_real	callback-default	I I 0 Real	I I 0 Real	0	0	Callback lowering has no executable route; numeric zero or empty text. Init support does not establish callback support.
+get_control_par_real_arr	callback-default	I I I 0 Real	I I I 0 Real	0	0	Callback lowering has no executable route; numeric zero or empty text. Init support does not establish callback support.
+get_control_par_str	routed-unverified	I I 0 Str	I I 0 Str	60	30	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+get_control_par_str_arr	callback-default	I I I 0 Str	I I I 0 Str	0	0	Callback lowering has no executable route; numeric zero or empty text. Init support does not establish callback support.
+get_folder	init-gap	I 0 Str	I 0 Str	0	0	v1 returns library/patch folders during init; v2 always empty. Both return empty in callbacks.
+get_font_id	different/partial	S 0 Int	S 0 Int	0	0	v1 preserves numeric IDs and rejects empty/path names; v2 init registers every string. Both limit new named-font registration to init.
+get_menu_item_str	callback-default	I I 0 Str	I I 0 Str	642	33	Callback lowering has no executable route; numeric zero or empty text. Init support does not establish callback support.
+get_menu_item_value	callback-default	I I 0 Int	I I 0 Int	930	30	Callback lowering has no executable route; numeric zero or empty text. Init support does not establish callback support.
+get_menu_item_visibility	callback-default	I I 0 Int	I I 0 Int	0	0	Callback lowering has no executable route; numeric zero or empty text. Init support does not establish callback support.
+get_num_menu_items	callback-default	I 0 Int	I 0 Int	0	0	Callback lowering has no executable route; numeric zero or empty text. Init support does not establish callback support.
+get_ui_wf_property	callback-default	V I I 0 Int	V I I 0 Int	0	0	Callback lowering has no executable route; numeric zero or empty text. Init support does not establish callback support.
+hide_part	different/partial	V I 0 Void	V I 0 Void	0	0	Host display effect exists but same-callback script getter retains old property state.
+make_perfview	init-only	 0 Void	 0 Void	0	0	v2 runs in static init; callback use defaults/ignores. v1 has a shared executable builtin route; context validity must be tested.
+move_control	different/partial	V I I 0 Void	V I I 0 Void	0	0	Host display effect exists but same-callback script getter retains old property state.
+move_control_px	different/partial	V I I 0 Void	V I I 0 Void	0	0	Host display effect exists but same-callback script getter retains old property state.
+set_control_help	different/partial	V S 0 Void	V S 0 Void	0	0	Host display effect exists but same-callback script getter retains old property state.
+set_control_par	routed-unverified	I I I 0 Void	I I I 0 Void	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+set_control_par_arr	routed-unverified	I I I I 0 Void	I I I I 0 Void	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+set_control_par_real	routed-unverified	I I R 0 Void	I I R 0 Void	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+set_control_par_real_arr	routed-unverified	I I R I 0 Void	I I R I 0 Void	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+set_control_par_str	routed-unverified	I I S 0 Void	I I S 0 Void	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+set_control_par_str_arr	routed-unverified	I I S I 0 Void	I I S I 0 Void	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+set_knob_defval	different/partial	V I 0 Void	V I 0 Void	0	0	Host display effect exists but same-callback script getter retains old property state.
+set_knob_label	different/partial	V S 0 Void	V S 0 Void	0	0	Host display effect exists but same-callback script getter retains old property state.
+set_knob_unit	different/partial	V I 0 Void	V I 0 Void	0	0	Host display effect exists but same-callback script getter retains old property state.
+set_menu_item_str	routed-unverified	I I S 0 Void	I I S 0 Void	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+set_menu_item_value	routed-unverified	I I I 0 Void	I I I 0 Void	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+set_menu_item_visibility	routed-unverified	I I I 0 Void	I I I 0 Void	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+set_script_title	init-only	S 0 Void	S 0 Void	0	0	v2 runs in static init; callback use defaults/ignores. v1 has a shared executable builtin route; context validity must be tested.
+set_skin_offset	routed-unverified	I 0 Void	I 0 Void	102	5	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+set_table_steps_shown	different/partial	V I 0 Void	V I 0 Void	0	0	Host display effect exists but same-callback script getter retains old property state.
+set_text	different/partial	V S 0 Void	V S 0 Void	0	0	Host display effect exists but same-callback script getter retains old property state.
+set_ui_color	routed-unverified	I 0 Void	I 0 Void	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+set_ui_height	init-only	I 0 Void	I 0 Void	0	0	v2 runs in static init; callback use defaults/ignores. v1 has a shared executable builtin route; context validity must be tested.
+set_ui_height_px	init-only	I 0 Void	I 0 Void	0	0	v2 runs in static init; callback use defaults/ignores. v1 has a shared executable builtin route; context validity must be tested.
+set_ui_wf_property	unconsumed-effect	V I I I 0 Void	V I I I 0 Void	0	0	Emitted to host outbox; apply_ui_effect/plugin consumers do not execute this command. Check init resource boundary separately.
+set_ui_width_px	init-only	I 0 Void	I 0 Void	0	0	v2 runs in static init; callback use defaults/ignores. v1 has a shared executable builtin route; context validity must be tested.
+RESET_CONDITION	preprocessed	K 0 Void	absent	0	0	v2 lexer executes condition preprocessing; absence from runtime enum is intentional.
+SET_CONDITION	preprocessed	K 0 Void	absent	0	0	v2 lexer executes condition preprocessing; absence from runtime enum is intentional.
+abs	routed-unverified	N 0 Num	N 0 Num	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+acos	routed-unverified	R 0 Real	R 0 Real	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+allow_group	routed-unverified	I 0 Void	I 0 Void	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+array_equal	different/partial	A A 0 Int	A A 0 Bool	0	0	Text arrays return false at runtime; v1 compares text. Signature differs: A A 0 Int -> A A 0 Bool (Bool preserves 0/1).
+asin	routed-unverified	R 0 Real	R 0 Real	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+atan	routed-unverified	R 0 Real	R 0 Real	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+by_marks	routed-unverified	I 0 Int	I 0 Int	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+cbrt	routed-unverified	R 0 Real	R 0 Real	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+ceil	routed-unverified	R 0 Real	R 0 Real	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+change_listener_par	different/partial	I I 0 Void	I I 0 Void	0	0	Beat driver hardcodes 500000 us quarter; v1 uses host tempo.
+change_note	different/partial	I I 0 Void	I I 0 Void	0	0	Marked/ALL_EVENTS rejected; v1 scans targets.
+change_pan	different/partial	I I I 1 Void	I I I 1 Void	0	0	Marked/ALL_EVENTS emit unconsumed effects; v1 scans targets.
+change_tune	different/partial	I I I 1 Void	I I I 1 Void	0	0	Marked/ALL_EVENTS emit unconsumed effects; v1 scans targets.
+change_velo	different/partial	I I 0 Void	I I 0 Void	0	0	Marked/ALL_EVENTS rejected; v1 scans targets.
+change_vol	different/partial	I I I 1 Void	I I I 1 Void	0	0	Marked/ALL_EVENTS emit unconsumed effects; v1 scans targets.
+cos	routed-unverified	R 0 Real	R 0 Real	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+delete_event_mark	different/partial	I I 0 Void	I I 0 Void	0	0	Marked selectors rejected; v1 also only mutates a single event (not a proven v1 gap).
+disable_logging	v1-limited/noop	I 0 Void	I 0 Void	0	0	v1 also limits/ignores the service; no completed v1 feature inferred from the signature.
+disallow_group	routed-unverified	I 0 Void	I 0 Void	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+event_status	routed-unverified	I 0 Int	I 0 Int	293	35	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+exit	routed-unverified	 0 Void	 0 Void	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+exp	routed-unverified	R 0 Real	R 0 Real	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+exp2	routed-unverified	R 0 Real	R 0 Real	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+fade_in	different/partial	I I I 1 Void	I I I 1 Void	0	0	Marked/ALL_EVENTS emit unconsumed effects; v1 scans targets.
+fade_out	different/partial	I I I I 2 Void	I I I 1 Void	8	1	Fourth optional argument rejected; marked/ALL_EVENTS effects not consumed. Signature differs: I I I I 2 Void -> I I I 1 Void (Bool preserves 0/1).
+find_group	different/partial	S 0 Int	S 0 Int	0	0	v2 runtime is case-insensitive; v1 compares exact group names.
+find_mod	different/partial	I S 0 Int	I S 0 Int	0	0	v1 exact name, with find_* miss 0 and get_* miss -1; v2 case-insensitive, all misses -1. Real physical lookup tables exist.
+find_target	different/partial	I I S 0 Int	I I S 0 Int	0	0	v1 exact name, with find_* miss 0 and get_* miss -1; v2 case-insensitive, all misses -1. Real physical lookup tables exist.
+floor	routed-unverified	R 0 Real	R 0 Real	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+get_engine_par	different/partial	I I I I 0 Int	I I I I 0 Int	0	0	v2 live then authored fallback; v1 native engine read. Coverage is DSP/address-dependent.
+get_engine_par_disp	different/partial	I I I I 0 Str	I I I I 0 Str	15182	70	Runtime addressed display exists; init evaluator returns empty.
+get_engine_par_disp_ext	different/partial	I I I I I 0 Str	I I I I I 0 Str	14160	30	Runtime addressed display exists; init evaluator returns empty.
+get_event_ids	routed-unverified	A 0 Void	A 0 Void	60	30	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+get_event_mark	different/partial	I I 0 Int	I I 0 Int	0	0	Marked selectors rejected; v1 also only reads a single event (not a proven v1 gap).
+get_event_par	different/partial	I I 0 Int	I I 0 Int	305	55	Constant selectors outside supported subset and multi-selectors warn/default; v1 selector switch wider.
+get_event_par_arr	different/partial	I I I 0 Int	I I I 0 Int	0	0	Only ALLOW_GROUP/CUSTOM/MOD_VALUE_ID constant selectors; dynamic selector not dispatched.
+get_group_idx	different/partial	S 0 Int	S 0 Int	0	0	v2 runtime is case-insensitive; v1 compares exact group names.
+get_key_color	callback-default	I 0 Int	I 0 Int	0	0	Callback lowering has no executable route; numeric zero or empty text. Init support does not establish callback support.
+get_key_name	callback-default	I 0 Str	I 0 Str	0	0	Callback lowering has no executable route; numeric zero or empty text. Init support does not establish callback support.
+get_key_triggerstate	callback-default	I 0 Int	I 0 Int	0	0	Callback lowering has no executable route; numeric zero or empty text. Init support does not establish callback support.
+get_key_type	callback-default	I 0 Int	I 0 Int	0	0	Callback lowering has no executable route; numeric zero or empty text. Init support does not establish callback support.
+get_keyrange_max_note	absent	I 0 Int	absent	0	0	v1 key-range lookup is executable; v2 rejects the name.
+get_keyrange_min_note	absent	I 0 Int	absent	0	0	v1 key-range lookup is executable; v2 rejects the name.
+get_keyrange_name	absent	I 0 Str	absent	0	0	v1 key-range lookup is executable; v2 rejects the name.
+get_mod_idx	different/partial	I S 0 Int	I S 0 Int	0	0	v1 exact name, with find_* miss 0 and get_* miss -1; v2 case-insensitive, all misses -1. Real physical lookup tables exist.
+get_num_zones	callback-default	 0 Int	 0 Int	0	0	Callback lowering has no executable route; numeric zero or empty text. Init support does not establish callback support.
+get_purge_state	v2-additional	I 0 Int	I 0 Int	0	0	v1 always returns 1 and purge is a completion-only no-op; v2 runtime reads real mute state. Init still returns 0.
+get_target_idx	different/partial	I I S 0 Int	I I S 0 Int	0	0	v1 exact name, with find_* miss 0 and get_* miss -1; v2 case-insensitive, all misses -1. Real physical lookup tables exist.
+get_voice_limit	v1-limited/noop	I 0 Int	I 0 Int	0	0	v1 also limits/ignores the service; no completed v1 feature inferred from the signature.
+get_zone_id	callback-default	I 0 Int	I 0 Int	0	0	Callback lowering has no executable route; numeric zero or empty text. Init support does not establish callback support.
+get_zone_par	callback-default	I I 0 Int	I I 0 Int	120	30	Callback lowering has no executable route; numeric zero or empty text. Init support does not establish callback support.
+group_name	routed-unverified	I 0 Str	I 0 Str	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+ignore_controller	different/partial	 0 Void	 0 Void	30	30	Runtime context warning currently classified unsupported outside controller; v1 ignores flag elsewhere.
+ignore_event	different/partial	I 1 Void	I 0 Void	0	0	Missing event argument rejected; v1 defaults to current context event. Signature differs: I 1 Void -> I 0 Void (Bool preserves 0/1).
+in_range	routed-unverified	N N N 0 Int	N N N 0 Bool	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified. Signature differs: N N N 0 Int -> N N N 0 Bool (Bool preserves 0/1).
+int	routed-unverified	R 0 Int	R 0 Int	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+int_to_real	routed-unverified	I 0 Real	I 0 Real	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+load_array	unconsumed-effect	A I 0 Int	A I 0 Int	0	0	Emitted to host outbox; apply_ui_effect/plugin consumers do not execute this command. Check init resource boundary separately.
+load_array_str	unconsumed-effect	A S 0 Int	A S 0 Int	0	0	Emitted to host outbox; apply_ui_effect/plugin consumers do not execute this command. Check init resource boundary separately.
+load_ir_sample	unconsumed-effect	S I I 0 Int	S I I 0 Int	0	0	Emitted to host outbox; apply_ui_effect/plugin consumers do not execute this command. Check init resource boundary separately.
+log	routed-unverified	R 0 Real	R 0 Real	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+log10	routed-unverified	R 0 Real	R 0 Real	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+log2	routed-unverified	R 0 Real	R 0 Real	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+lsb	callback-default	I 0 Int	I 0 Int	0	0	Callback lowering has no executable route; numeric zero or empty text. Init support does not establish callback support.
+make_instr_persistent	init-only	V 0 Void	V 0 Void	0	0	v2 runs in static init; callback use defaults/ignores. v1 has a shared executable builtin route; context validity must be tested.
+make_persistent	init-only	V 0 Void	V 0 Void	0	0	v2 runs in static init; callback use defaults/ignores. v1 has a shared executable builtin route; context validity must be tested.
+max	routed-unverified	N N 0 Num	N N 0 Num	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+message	routed-unverified	S 0 Void	S 0 Void	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+min	routed-unverified	N N 0 Num	N N 0 Num	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+ms_to_ticks	routed-unverified	I 0 Int	I 0 Int	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+msb	callback-default	I 0 Int	I 0 Int	0	0	Callback lowering has no executable route; numeric zero or empty text. Init support does not establish callback support.
+note_off	routed-unverified	I I 1 Void	I I 1 Void	4	1	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+num_elements	routed-unverified	A 0 Int	A 0 Int	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+output_channel_name	callback-default	I 0 Str	I 0 Str	12	3	Callback lowering has no executable route; numeric zero or empty text. Init support does not establish callback support.
+pgs_create_key	unconsumed-effect	K I 0 Void	K I 0 Void	0	0	Emitted to host outbox; apply_ui_effect/plugin consumers do not execute this command. Check init resource boundary separately.
+pgs_create_str_key	unconsumed-effect	K 0 Void	K 0 Void	0	0	Emitted to host outbox; apply_ui_effect/plugin consumers do not execute this command. Check init resource boundary separately.
+pgs_get_key_val	routed-unverified	K I 0 Int	K I 0 Int	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+pgs_get_str_key_val	callback-default	K 0 Str	K 0 Str	0	0	Callback lowering has no executable route; numeric zero or empty text. Init support does not establish callback support.
+pgs_key_exists	routed-unverified	K 0 Int	K 0 Bool	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified. Signature differs: K 0 Int -> K 0 Bool (Bool preserves 0/1).
+pgs_set_key_val	routed-unverified	K I I 0 Void	K I I 0 Void	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+pgs_set_str_key_val	unconsumed-effect	K S 0 Void	K S 0 Void	0	0	Emitted to host outbox; apply_ui_effect/plugin consumers do not execute this command. Check init resource boundary separately.
+pgs_str_key_exists	callback-default	K 0 Int	K 0 Bool	0	0	Callback lowering has no executable route; numeric zero or empty text. Init support does not establish callback support. Signature differs: K 0 Int -> K 0 Bool (Bool preserves 0/1).
+play_note	routed-unverified	I I I I 0 Int	I I I I 0 Int	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+pow	routed-unverified	R R 0 Real	R R 0 Real	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+purge_group	routed-unverified	I I 0 Int	I I 0 Int	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+random	routed-unverified	I I 0 Int	I I 0 Int	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+read_persistent_var	init-only	V 0 Void	V 0 Void	0	0	v2 runs in static init; callback use defaults/ignores. v1 has a shared executable builtin route; context validity must be tested.
+real	routed-unverified	I 0 Real	I 0 Real	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+real_to_int	routed-unverified	R 0 Int	R 0 Int	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+redirect_output	v1-limited/noop	I I 0 Void	I I 0 Void	0	0	v1 also limits/ignores the service; no completed v1 feature inferred from the signature.
+remove_keyrange	unconsumed-effect	I 0 Void	I 0 Void	0	0	Emitted to host outbox; apply_ui_effect/plugin consumers do not execute this command. Check init resource boundary separately.
+reset_ksp_timer	routed-unverified	 0 Void	 0 Void	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+reset_rls_trig_counter	routed-unverified	I 0 Void	I 0 Void	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+round	routed-unverified	R 0 Real	R 0 Real	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+save_array	unconsumed-effect	A I 0 Int	A I 0 Int	0	0	Emitted to host outbox; apply_ui_effect/plugin consumers do not execute this command. Check init resource boundary separately.
+save_array_str	unconsumed-effect	A S 0 Int	A S 0 Int	0	0	Emitted to host outbox; apply_ui_effect/plugin consumers do not execute this command. Check init resource boundary separately.
+search	different/partial	A N I I 2 Int	A N I I 2 Int	0	0	Text arrays return -1 at runtime; v1 searches text.
+set_controller	routed-unverified	I I 0 Void	I I 0 Void	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+set_engine_par	different/partial	I I I I I 0 Int	I I I I I 0 Int	0	0	v2 typed consumers reject unbound writes; v1 applies via native engine surface. Coverage is DSP/address-dependent.
+set_event_mark	different/partial	I I 0 Void	I I 0 Void	0	0	Marked selectors rejected; v1 also only mutates a single event (not a proven v1 gap).
+set_event_par	different/partial	I I I 0 Void	I I I 0 Void	0	0	Constant selectors outside supported subset go to unconsumed effects; v1 selector switch wider.
+set_event_par_arr	different/partial	I I I I 0 Void	I I I I 0 Void	30	30	Marked/ALL_EVENTS CUSTOM/MOD_VALUE_ID writes rejected by lowering.
+set_key_color	routed-unverified	I I 0 Void	I I 0 Void	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+set_key_name	routed-unverified	I S 0 Void	I S 0 Void	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+set_key_pressed	routed-unverified	I I 0 Void	I I 0 Void	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+set_key_pressed_support	unconsumed-effect	I 0 Void	I 0 Void	0	0	Emitted to host outbox; apply_ui_effect/plugin consumers do not execute this command. Check init resource boundary separately.
+set_key_type	routed-unverified	I I 0 Void	I I 0 Void	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+set_keyrange	unconsumed-effect	I I S 0 Void	I I S 0 Void	0	0	Emitted to host outbox; apply_ui_effect/plugin consumers do not execute this command. Check init resource boundary separately.
+set_listener	different/partial	I I 0 Void	I I 0 Void	0	0	Beat driver hardcodes 500000 us quarter; v1 uses host tempo.
+set_map_editor_event_color	absent	I 0 Void	absent	0	0	No v2 builtin signature. v1 set_map_editor_event_color is a deliberate no-op.
+set_note_controller	unconsumed-effect	I I I 0 Void	I I I 0 Void	0	0	Emitted to host outbox; apply_ui_effect/plugin consumers do not execute this command. Check init resource boundary separately.
+set_nrpn	unconsumed-effect	I I 0 Void	I I 0 Void	0	0	Emitted to host outbox; apply_ui_effect/plugin consumers do not execute this command. Check init resource boundary separately.
+set_rpn	unconsumed-effect	I I 0 Void	I I 0 Void	0	0	Emitted to host outbox; apply_ui_effect/plugin consumers do not execute this command. Check init resource boundary separately.
+set_snapshot_type	init-only	I 0 Void	I 0 Void	0	0	v2 runs in static init; callback use defaults/ignores. v1 has a shared executable builtin route; context validity must be tested.
+set_voice_limit	v1-limited/noop	I I 0 Int	I I 0 Int	0	0	v1 also limits/ignores the service; no completed v1 feature inferred from the signature.
+set_zone_par	unconsumed-effect	I I I 0 Int	I I I 0 Int	0	0	Emitted to host outbox; apply_ui_effect/plugin consumers do not execute this command. Check init resource boundary separately.
+sgn	routed-unverified	N 0 Int	N 0 Int	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+sh_left	different/partial	I I 0 Int	I I 0 Int	0	0	v1 rejects shift counts outside 0..31; v2 wraps the count.
+sh_right	different/partial	I I 0 Int	I I 0 Int	0	0	v1 rejects shift counts outside 0..31; v2 wraps the count.
+show_library_tab	init-only	 0 Void	 0 Void	0	0	v2 runs in static init; callback use defaults/ignores. v1 has a shared executable builtin route; context validity must be tested.
+signbit	different/partial	N 0 Int	N 0 Int	0	0	v1 real signbit checks IEEE sign; v2 callback real < 0 misses negative zero. Init evaluator is correct.
+sin	routed-unverified	R 0 Real	R 0 Real	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+sort	different/partial	A I I I 2 Void	A I I I 2 Void	0	0	Text arrays/runtime array sources unsupported; v1 sorts prepared arrays.
+sqrt	routed-unverified	R 0 Real	R 0 Real	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+stop_wait	routed-unverified	I I 0 Void	I I 0 Void	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+tan	routed-unverified	R 0 Real	R 0 Real	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+ticks_to_ms	routed-unverified	I 0 Int	I 0 Int	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+wait	routed-unverified	I 0 Void	I 0 Void	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+wait_async	routed-unverified	I 0 Void	I 0 Void	0	0	Executable v2 lowering/UI route exists; edge-by-edge equivalence remains unverified.
+wait_ticks	different/partial	I 0 Void	I 0 Void	0	0	Runtime multiplies by 520 us, ignoring host tempo.
+watch_array_idx	v1-limited/noop	A I 0 Void	A I 0 Void	0	0	v1 also limits/ignores the service; no completed v1 feature inferred from the signature.
+watch_var	v1-limited/noop	V 0 Void	V 0 Void	0	0	v1 also limits/ignores the service; no completed v1 feature inferred from the signature.
+will_never_terminate	v1-limited/noop	I 0 Void	I 0 Void	0	0	v1 also limits/ignores the service; no completed v1 feature inferred from the signature.

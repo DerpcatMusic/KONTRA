@@ -387,6 +387,14 @@ mod tests {
                         continue;
                     }
                     failures += 1;
+                    // Opt in only when the resource request names are needed for lookup triage.
+                    if std::env::var_os("KONTRA_RESOURCE_PROBE_NAMES").is_some() {
+                        println!(
+                            "RESOURCE_REQUEST item={item} face={face_index} asset={asset_index} path={:?} identity_hash={}",
+                            asset.path,
+                            blake3::hash(format!("{}:{:?}", asset.path, asset.kind).as_bytes())
+                        );
+                    }
                     let basename = asset
                         .path
                         .rsplit(['/', '\\'])
