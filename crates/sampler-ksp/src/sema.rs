@@ -1194,6 +1194,19 @@ impl<'a> Sema<'a, '_> {
                 },
             });
         }
+        if matches!(b, Builtin::SetListener | Builtin::ChangeListenerPar)
+            && let Arg::Expr(signal) = &out[0]
+            && let Some(Const::Int(signal)) = fold(&self.hir, signal)
+        {
+            let (lo, hi) = listener_range(b, signal, span)?;
+            if let Arg::Expr(value) = &out[1]
+                && let Some(Const::Int(value)) = fold(&self.hir, value)
+                && !(b == Builtin::ChangeListenerPar && value == 0)
+                && !(lo..=hi).contains(&value)
+            {
+                return fault(span, format!("{} parameter must be {lo}..={hi}", b.name()));
+            }
+        }
         if b == Builtin::GetUiId {
             let Arg::Var(v, s) = out[0] else {
                 unreachable!()
@@ -1226,6 +1239,18 @@ impl<'a> Sema<'a, '_> {
             Ret::Num => num.unwrap_or(Ty::Int),
         };
         Ok((out, ty))
+    }
+}
+
+/// Documented listener signals and nonzero parameter bounds. Zero disables only
+/// `change_listener_par`; transport registration does not implement dispatch.
+pub(crate) fn listener_range(b: Builtin, signal: i32, span: Span) -> Result<(i32, i32)> {
+    use builtins::signal::*;
+    match signal {
+        TIMER_MS => Ok((1000, i32::MAX)),
+        TIMER_BEAT => Ok((1, 24)),
+        TRANSP_START | TRANSP_STOP if b == Builtin::SetListener => Ok((1, 1)),
+        _ => fault(span, format!("{} does not support this signal", b.name())),
     }
 }
 
