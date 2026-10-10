@@ -57,6 +57,35 @@ fn pixels_state(face: &Interface, input: &mut InputState) -> Vec<u8> {
 }
 
 #[test]
+fn menu_keeps_authored_selected_caption_when_item_is_hidden() {
+    let paint = |visible: i32, value: i32| {
+        let source = format!(
+            "on init\nmake_perfview\nset_ui_width_px(160)\nset_ui_height_px(120)\ndeclare ui_menu $m\nadd_menu_item($m,\"Selected\",20)\nadd_menu_item($m,\"Other\",10)\n$m := {value}\nmove_control_px($m,10,10)\nset_control_par(get_ui_id($m),$CONTROL_PAR_WIDTH,100)\nset_control_par(get_ui_id($m),$CONTROL_PAR_HEIGHT,30)\nset_menu_item_visibility(get_ui_id($m),0,{visible})\nend on"
+        );
+        let script =
+            sampler_ksp::compile(&source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+        pixels(&resolved(&script.ui(&|_| None).unwrap()))
+    };
+    let selected = paint(1, 20);
+    let hidden_selected = paint(0, 20);
+    let other = paint(0, 10);
+    println!(
+        "MENU_CAPTION_PIXELS selected={} hidden_selected={} other={}",
+        blake3::hash(&selected),
+        blake3::hash(&hidden_selected),
+        blake3::hash(&other)
+    );
+    assert!(
+        selected == hidden_selected,
+        "hiding an item retains its selected caption"
+    );
+    assert!(
+        hidden_selected != other,
+        "deselection changes the authored caption"
+    );
+}
+
+#[test]
 fn authored_square_slider_axis_and_knob_type_change_pixels() {
     let paint = |declaration: &str, behavior: i32| {
         let source = format!(
