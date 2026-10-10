@@ -110,7 +110,7 @@ pub use plan_programs::{PlanProgram, SignalProgram};
 pub use script_params::{EnvelopeStage, GroupParams, ParamScope};
 pub use steal::{Kill, Stealing, VoiceLimit};
 pub use voice_mod::{
-    Breakpoint, Breakpoints, Lfo, LfoRate, LfoShape, ModProgram, ModRoute, ModScale, ModSource,
+    Breakpoint, Breakpoints, Lfo, LfoRate, LfoShape, ModProgram, ModRoute, ModScale, ModScaleLaw, ModSource,
     ModTarget,
 };
 mod ownership;

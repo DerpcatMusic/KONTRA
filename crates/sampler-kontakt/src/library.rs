@@ -1033,21 +1033,13 @@ impl Translation {
     }
 
     fn source_modulator(
-<<<<<<< HEAD
         &mut self,
         group: usize,
         slot: usize,
         external: bool,
         name: String,
         targets: &[ni_file::kontakt::objects::ModTarget],
-||||||| parent of c1d8f2ca (Retain original Kontakt control descriptors for whole-voice admission)
-        &mut self, group: usize, slot: usize, external: bool,
-        name: String, targets: &[ni_file::kontakt::objects::ModTarget],
-=======
-        &mut self, group: usize, slot: usize, external: bool,
-        name: String, targets: &[ni_file::kontakt::objects::ModTarget],
         settings: Option<ir::kontakt::Modulation>,
->>>>>>> c1d8f2ca (Retain original Kontakt control descriptors for whole-voice admission)
     ) {
         self.ir
             .source_indices
@@ -1072,17 +1064,12 @@ impl Translation {
                 });
         }
         self.ir.source_indices.modulators.push(ir::SourceModulator {
-<<<<<<< HEAD
             group,
             slot,
             external,
             name,
             runtime: None,
-||||||| parent of c1d8f2ca (Retain original Kontakt control descriptors for whole-voice admission)
-            group, slot, external, name, runtime: None,
-=======
-            group, slot, external, name, runtime: None, settings,
->>>>>>> c1d8f2ca (Retain original Kontakt control descriptors for whole-voice admission)
+            settings,
         });
     }
 
@@ -3070,9 +3057,8 @@ mod modulation {
 
     #[test]
     fn authored_init_intensity_uses_the_same_physical_modulator_slot() {
-<<<<<<< HEAD
         let mut out = translation();
-        out.source_modulator(7, 31, true, "Controller".into(), &[]);
+        out.source_modulator(7, 31, true, "Controller".into(), &[], None);
         out.engine.push(sampler_ksp::EnginePar {
             parameter: "$ENGINE_PAR_MOD_TARGET_INTENSITY".into(),
             group: 7,
@@ -3081,17 +3067,6 @@ mod modulation {
             value: 500000,
         });
         assert_eq!(out.script_intensity(7, "controller"), Some(0.5));
-||||||| parent of c1d8f2ca (Retain original Kontakt control descriptors for whole-voice admission)
-        let mut out=translation();
-        out.source_modulator(7,31,true,"Controller".into(),&[]);
-        out.engine.push(sampler_ksp::EnginePar { parameter:"$ENGINE_PAR_MOD_TARGET_INTENSITY".into(), group:7, slot:31, generic:-1, value:500000 });
-        assert_eq!(out.script_intensity(7,"controller"),Some(0.5));
-=======
-        let mut out=translation();
-        out.source_modulator(7,31,true,"Controller".into(),&[],None);
-        out.engine.push(sampler_ksp::EnginePar { parameter:"$ENGINE_PAR_MOD_TARGET_INTENSITY".into(), group:7, slot:31, generic:-1, value:500000 });
-        assert_eq!(out.script_intensity(7,"controller"),Some(0.5));
->>>>>>> c1d8f2ca (Retain original Kontakt control descriptors for whole-voice admission)
     }
 
     #[test]
