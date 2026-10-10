@@ -1,5 +1,6 @@
 // Real embedded CLAP GUI. Stdout is RAM-only RGB frames, never a log/file.
 // HOST PLUGIN NATIVE_STATE FRAMES [READY_FILE STATE_PREFIX] for RSS lifecycle.
+// Add WIDTH HEIGHT for warmup + four cycles; driver acknowledges PREFIX.gate-N.
 // HOST PLUGIN --template STATE_FILE saves this exact plugin's empty native state.
 // Compile with official CLAP headers, -lX11 -lXtst -ldl -pthread.
 #include <clap/clap.h>
@@ -19,6 +20,10 @@
 #include <thread>
 #include <vector>
 #include <unistd.h>
+#include <time.h>
+#include <pthread.h>
+#include <set>
+#include "host-input-plan.hpp"
 
 using Clock = std::chrono::steady_clock;
 static thread_local bool audio_thread = false;
@@ -53,11 +58,15 @@ struct Host {
     std::atomic<bool> callback{false};
     std::atomic<uint64_t> resize{0};
     bool fixed_rss = false;
+    bool cycles = false;
+    uint32_t fixed_width = 1180, fixed_height = 760;
+    clockid_t audio_clock{};
+    std::atomic<uint64_t> audio_blocks{0}, audio_busy_ns{0}, audio_callback_overruns{0};
     clap_host_gui_t gui{[](const clap_host_t*) {},
         [](const clap_host_t* h, uint32_t w, uint32_t height) {
             if (!w || !height || w > 4096 || height > 2160) return false;
             auto& host=*static_cast<Host*>(h->host_data);
-            const bool accepted=!host.fixed_rss || (w==1180 && height==760);
+            const bool accepted=!host.fixed_rss || (w==host.fixed_width && height==host.fixed_height);
             if (host.fixed_rss) {
                 std::printf("{\"kind\":\"resize_request\",\"width\":%u,\"height\":%u,\"accepted\":%s}\n",w,height,accepted?"true":"false"); std::fflush(stdout);
             }
@@ -77,15 +86,16 @@ struct Host {
 };
 struct Perf { uint64_t busy, span, voices, audible, dropouts, memory, freed, disk, underruns, loaded, blocks; };
 static Window open_editor(const clap_plugin_t* p, const clap_plugin_gui_t* gui, Display* display,
-                          uint32_t& width, uint32_t& height, bool rss) {
+                          uint32_t& width, uint32_t& height, bool rss,
+                          uint32_t fixed_width=1180, uint32_t fixed_height=760) {
     require(gui && gui->is_api_supported(p, CLAP_WINDOW_API_X11, false) && gui->create(p, CLAP_WINDOW_API_X11, false), "GUI create");
     require(gui->get_size(p, &width, &height), "GUI size");
     require(width > 0 && height > 0 && width <= 4096 && height <= 2160, "GUI bounds");
     if (rss) {
         require(gui->set_scale(p, 1.0), "GUI scale 1");
-        width=1180; height=760;
+        width=fixed_width; height=fixed_height;
         require(gui->adjust_size(p, &width, &height) && gui->set_size(p, width, height), "GUI fixed size");
-        require(width == 1180 && height == 760, "matched GUI size");
+        require(width == fixed_width && height == fixed_height, "matched GUI size");
     }
     const auto window = XCreateSimpleWindow(display, DefaultRootWindow(display), 20, 20, width, height, 0, 0, 0);
     const unsigned long pid = getpid();
@@ -128,27 +138,118 @@ static void pump(const clap_plugin_t* p, const clap_plugin_gui_t* gui, Host& hos
     if (const auto size=host.resize.exchange(0); window && size)
         XResizeWindow(display, window, size>>32, size&0xffffffff);
 }
-static std::array<uint64_t,3> memory() {
-    std::ifstream file("/proc/self/status"); std::string line; std::array<uint64_t,3> result{};
+// W11 130ca844 transport: mapped child coordinates and input release on every exit.
+static void input_plan(const clap_plugin_t* p, const clap_plugin_gui_t* gui, Host& host,
+                       Display* display, Window window, const std::string& path, size_t phase) {
+    std::set<unsigned> keys,buttons;
+    auto release=[&] {
+        for (auto key:keys) XTestFakeKeyEvent(display,key,False,CurrentTime);
+        for (auto button:buttons) XTestFakeButtonEvent(display,button,False,CurrentTime);
+        XSync(display,False);
+    };
+    try {
+        auto check=[](bool ok) { if (!ok) throw std::runtime_error("input plan validation"); };
+        std::ifstream file(path); check(bool(file));
+        char line[258]{}; uint32_t previous=0; bool first=true; size_t count=0;
+        const auto deadline=Clock::now()+std::chrono::seconds(20);
+        while (file.getline(line,sizeof(line))) {
+            check(Clock::now()<deadline && ++count<=4096);
+            const auto length=file.gcount()-(file.eof()?0:1);
+            const auto command=widget_host::parse(std::string(line,size_t(length)));
+            check(first || command.sequence>previous); first=false; previous=command.sequence;
+            Window root=0,parent=0,*children=nullptr; unsigned child_count=0;
+            check(window && XQueryTree(display,window,&root,&parent,&children,&child_count));
+            const Window surface=child_count==1?children[0]:0;
+            if (children) XFree(children);
+            XWindowAttributes attr{}; int x=0,y=0; Window ignored=0;
+            check(surface && XGetWindowAttributes(display,surface,&attr) && attr.map_state==IsViewable
+                  && attr.width>0 && attr.width<=4096 && attr.height>0 && attr.height<=2160);
+            check(XTranslateCoordinates(display,surface,DefaultRootWindow(display),0,0,&x,&y,&ignored));
+            using widget_host::Op; const auto& a=command.args;
+            if (command.op==Op::Move) {
+                const auto at=widget_host::root_point(command,attr.width,attr.height,x,y);
+                check(XTestFakeMotionEvent(display,-1,at[0],at[1],CurrentTime));
+            } else if (command.op==Op::Button || command.op==Op::Key) {
+                XSetInputFocus(display,surface,RevertToParent,CurrentTime);
+                if (command.op==Op::Button) {
+                    Window pointer_root=0,child=0; int rx=0,ry=0,wx=0,wy=0; unsigned mask=0;
+                    check(XQueryPointer(display,surface,&pointer_root,&child,&rx,&ry,&wx,&wy,&mask)
+                          && wx>=0 && wy>=0 && wx<attr.width && wy<attr.height);
+                    const unsigned button=a[0];
+                    if (a[1]) buttons.insert(button);
+                    check(XTestFakeButtonEvent(display,button,a[1],CurrentTime));
+                    if (!a[1]) buttons.erase(button);
+                } else {
+                    const auto key=XKeysymToKeycode(display,KeySym(a[0])); check(key);
+                    if (a[1]) keys.insert(key);
+                    check(XTestFakeKeyEvent(display,key,a[1],CurrentTime));
+                    if (!a[1]) keys.erase(key);
+                }
+            } else if (command.op==Op::Wait) {
+                const auto end=Clock::now()+std::chrono::milliseconds(a[0]);
+                while (Clock::now()<end) {
+                    check(Clock::now()<deadline); pump(p,gui,host,display,window);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                }
+            } else check(command.op==Op::Checkpoint);
+            XSync(display,False); pump(p,gui,host,display,window);
+        }
+        check(count>0 && file.eof()); release();
+        std::printf("{\"kind\":\"input_done\",\"ordinal\":%zu,\"commands\":%zu}\n",phase,count);
+        std::fflush(stdout);
+    } catch (...) { release(); require(false,"bounded input plan"); }
+}
+static std::array<uint64_t,4> memory() {
+    std::ifstream file("/proc/self/status"); std::string line; std::array<uint64_t,4> result{};
     while (std::getline(file,line)) {
-        for (size_t i=0;i<3;++i) {
-            const char* keys[]={"VmRSS:","VmHWM:","VmSwap:"};
+        for (size_t i=0;i<4;++i) {
+            const char* keys[]={"VmRSS:","VmHWM:","VmSwap:","Threads:"};
             if (line.rfind(keys[i],0)==0) result[i]=std::stoull(line.substr(std::strlen(keys[i])));
         }
     }
     require(result[0]>0 && result[1]>=result[0], "RSS counters"); return result;
 }
 static void rss_lifecycle(const clap_plugin_t* p, const clap_plugin_gui_t* gui, const clap_plugin_state_t* state,
-                          Host& host, Display* display, const char* prefix) {
+                          Host& host, Display* display, const char* prefix,
+                          bool (*perf)(const clap_plugin_t*,Perf*)) {
     Window window=0; uint32_t width=0,height=0;
-    const char* phases[]={"loaded","open","closed","reopened"};
-    for (int phase=0;phase<4;++phase) {
-        if (phase==1 || phase==3) window=open_editor(p,gui,display,width,height,true);
-        if (phase==2) {
+    std::vector<std::string> phases={"loaded","open","closed","reopened"};
+    if (host.cycles) {
+        phases={"loaded","warmup_open","warmup_closed"};
+        for (int cycle=1;cycle<=4;++cycle) {
+            phases.push_back("open_"+std::to_string(cycle));
+            phases.push_back("closed_"+std::to_string(cycle));
+        }
+    }
+    for (size_t phase=0;phase<phases.size();++phase) {
+        const char* label=phases[phase].c_str();
+        if (phase%2==1) window=open_editor(p,gui,display,width,height,true,host.fixed_width,host.fixed_height);
+        if (phase>0 && phase%2==0) {
             require(gui->hide(p), "GUI hide"); gui->destroy(p);
             XDestroyWindow(display,window); XSync(display,False); window=0;
         }
-        save_state(p,state,std::string(prefix)+"."+phases[phase]);
+        save_state(p,state,std::string(prefix)+"."+label);
+        if (host.cycles) {
+            const auto gate=std::string(prefix)+".gate-"+std::to_string(phase);
+            require(access(gate.c_str(),F_OK)!=0,"stale lifecycle gate");
+            std::printf("{\"kind\":\"phase_begin\",\"phase\":\"%s\",\"ordinal\":%zu}\n",label,phase);
+            std::fflush(stdout);
+            const auto plan=std::string(prefix)+".plan-"+std::to_string(phase);
+            bool input_done=false;
+            const auto deadline=Clock::now()+std::chrono::seconds(30);
+            while (true) {
+                require(Clock::now()<deadline,"lifecycle readiness deadline");
+                if (!input_done && access(plan.c_str(),F_OK)==0) {
+                    require(window!=0,"input requires open editor");
+                    input_plan(p,gui,host,display,window,plan,phase); input_done=true;
+                }
+                if (access(gate.c_str(),F_OK)==0) {
+                    require(unlink(gate.c_str())==0,"consume lifecycle gate"); break;
+                }
+                pump(p,gui,host,display,window);
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+        }
         const auto start=Clock::now();
         while (Clock::now()-start<std::chrono::seconds(4)) {
             pump(p,gui,host,display,window); std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -164,26 +265,48 @@ static void rss_lifecycle(const clap_plugin_t* p, const clap_plugin_gui_t* gui, 
             XWindowAttributes frame{}; require(XGetWindowAttributes(display,window,&frame),"RSS parent geometry");
             parent_w=frame.width; parent_h=frame.height;
             require(gui->get_size(p,&clap_w,&clap_h),"RSS CLAP geometry");
-            std::printf("{\"kind\":\"geometry\",\"phase\":\"%s\",\"child\":[%u,%u],\"child_origin\":[%d,%d],\"parent\":[%u,%u],\"clap\":[%u,%u],\"parent_border\":%d,\"parent_override_redirect\":%s}\n",phases[phase],width,height,attr.x,attr.y,parent_w,parent_h,clap_w,clap_h,frame.border_width,frame.override_redirect?"true":"false");
+            std::printf("{\"kind\":\"geometry\",\"phase\":\"%s\",\"child\":[%u,%u],\"child_origin\":[%d,%d],\"parent\":[%u,%u],\"clap\":[%u,%u],\"parent_border\":%d,\"parent_override_redirect\":%s}\n",label,width,height,attr.x,attr.y,parent_w,parent_h,clap_w,clap_h,frame.border_width,frame.override_redirect?"true":"false");
             std::fflush(stdout);
             // Xwayland adds one pixel even to a plugin-less override-redirect parent.
-            require(parent_w>=1179 && parent_w<=1181 && parent_h>=759 && parent_h<=761
+            require(std::abs(int(parent_w)-int(host.fixed_width))<=1 && std::abs(int(parent_h)-int(host.fixed_height))<=1
                     && attr.x==0 && attr.y==0 && width==parent_w && height==parent_h
                     && clap_w==parent_w && clap_h==parent_h,"RSS viewport agreement");
         }
         // No pixel readback allocations, explicit collection or heap trimming during RSS.
         for (int sample=0;sample<10;++sample) {
             pump(p,gui,host,display,window); const auto rss=memory();
-            std::printf("{\"phase\":\"%s\",\"sample\":%d,\"rss_kib\":%llu,\"hwm_kib\":%llu,\"swap_kib\":%llu,\"editor_children\":%u,\"width\":%u,\"height\":%u,\"parent_width\":%u,\"parent_height\":%u,\"clap_width\":%u,\"clap_height\":%u}\n",
-                phases[phase],sample,(unsigned long long)rss[0],(unsigned long long)rss[1],(unsigned long long)rss[2],child_count,window?width:0,window?height:0,parent_w,parent_h,clap_w,clap_h);
-            std::fflush(stdout); std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            std::printf("{\"phase\":\"%s\",\"sample\":%d,\"rss_kib\":%llu,\"hwm_kib\":%llu,\"swap_kib\":%llu,\"editor_children\":%u,\"width\":%u,\"height\":%u,\"parent_width\":%u,\"parent_height\":%u,\"clap_width\":%u,\"clap_height\":%u",
+                label,sample,(unsigned long long)rss[0],(unsigned long long)rss[1],(unsigned long long)rss[2],child_count,window?width:0,window?height:0,parent_w,parent_h,clap_w,clap_h);
+            if (host.cycles) {
+                timespec cpu{},audio_cpu{};
+                require(clock_gettime(CLOCK_PROCESS_CPUTIME_ID,&cpu)==0,"process CPU clock");
+                require(clock_gettime(host.audio_clock,&audio_cpu)==0,"audio thread CPU clock");
+                const uint64_t wall=std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count();
+                std::printf(",\"wall_ns\":%llu,\"cpu_ns\":%llu,\"audio_thread_cpu_ns\":%llu,\"threads\":%llu,\"audio_blocks\":%llu,\"audio_busy_ns\":%llu,\"audio_callback_overruns\":%llu",
+                    (unsigned long long)wall,(unsigned long long)(uint64_t(cpu.tv_sec)*1000000000+cpu.tv_nsec),
+                    (unsigned long long)(uint64_t(audio_cpu.tv_sec)*1000000000+audio_cpu.tv_nsec),(unsigned long long)rss[3],
+                    (unsigned long long)host.audio_blocks.load(),(unsigned long long)host.audio_busy_ns.load(),
+                    (unsigned long long)host.audio_callback_overruns.load());
+                Perf current{};
+                if (perf && perf(p,&current))
+                    std::printf(",\"plugin_perf\":{\"busy_ns\":%llu,\"span_ns\":%llu,\"voices\":%llu,\"audible\":%llu,\"dropouts\":%llu,\"memory\":%llu,\"freed\":%llu,\"disk\":%llu,\"underruns\":%llu,\"loaded\":%llu,\"blocks\":%llu}",
+                        (unsigned long long)current.busy,(unsigned long long)current.span,(unsigned long long)current.voices,
+                        (unsigned long long)current.audible,(unsigned long long)current.dropouts,(unsigned long long)current.memory,
+                        (unsigned long long)current.freed,(unsigned long long)current.disk,(unsigned long long)current.underruns,
+                        (unsigned long long)current.loaded,(unsigned long long)current.blocks);
+                else std::printf(",\"plugin_perf\":null");
+            }
+            std::printf("}\n"); std::fflush(stdout);
+            std::this_thread::sleep_for(std::chrono::milliseconds(host.cycles?500:100));
         }
     }
-    require(gui->hide(p), "final GUI hide"); gui->destroy(p); XDestroyWindow(display,window); XSync(display,False);
+    if (window) {
+        require(gui->hide(p), "final GUI hide"); gui->destroy(p); XDestroyWindow(display,window); XSync(display,False);
+    }
 }
 int main(int argc, char** argv) {
-    require(argc == 4 || argc == 6, "PLUGIN STATE FRAMES [READY_FILE STATE_PREFIX]");
-    const bool bootstrap=std::strcmp(argv[2],"--template")==0, rss=argc==6;
+    require(argc == 4 || argc == 6 || argc == 8, "PLUGIN STATE FRAMES [READY_FILE STATE_PREFIX [WIDTH HEIGHT]]");
+    const bool bootstrap=std::strcmp(argv[2],"--template")==0, rss=argc>=6;
     const int count=bootstrap?5:std::atoi(argv[3]); require(count>=5 && count<=120,"frame bound");
     require(XInitThreads(), "X11 threads");
     auto* display = XOpenDisplay(nullptr); require(display, "X11 display");
@@ -192,7 +315,13 @@ int main(int argc, char** argv) {
     require(entry && entry->init(argv[1]), "entry");
     auto* factory = static_cast<const clap_plugin_factory_t*>(entry->get_factory(CLAP_PLUGIN_FACTORY_ID));
     require(factory, "factory"); auto* descriptor = factory->get_plugin_descriptor(factory, 0); require(descriptor, "descriptor");
-    Host host; host.fixed_rss=rss; auto* p = factory->create_plugin(factory, &host.api, descriptor->id); require(p && p->init(p), "init");
+    Host host; host.fixed_rss=rss; host.cycles=argc==8;
+    if (host.cycles) {
+        const std::string w=argv[6],h=argv[7];
+        require((w=="1180" && h=="780") || (w=="900" && h=="640"),"audit viewport");
+        host.fixed_width=std::stoul(w); host.fixed_height=std::stoul(h);
+    }
+    auto* p = factory->create_plugin(factory, &host.api, descriptor->id); require(p && p->init(p), "init");
     if (bootstrap) {
         auto* state=static_cast<const clap_plugin_state_t*>(p->get_extension(p,CLAP_EXT_STATE));
         save_state(p,state,argv[3]); std::printf("{\"plugin_version\":\"%s\"}\n",descriptor->version);
@@ -222,7 +351,13 @@ int main(int argc, char** argv) {
         process.audio_outputs_count=buses; process.in_events=&in; process.out_events=&out;
         auto next = Clock::now();
         while (run) {
+            const auto before=host.cycles?Clock::now():Clock::time_point{};
             require(p->process(p, &process) != CLAP_PROCESS_ERROR, "process"); process.steady_time += 64;
+            if (host.cycles) {
+                const auto elapsed=std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now()-before).count();
+                host.audio_busy_ns.fetch_add(elapsed); host.audio_blocks.fetch_add(1);
+                if (elapsed>1333333) host.audio_callback_overruns.fetch_add(1);
+            }
             next += std::chrono::nanoseconds(1333333); std::this_thread::sleep_until(next);
         }
         p->stop_processing(p);
@@ -238,7 +373,8 @@ int main(int argc, char** argv) {
     }
     auto* gui = static_cast<const clap_plugin_gui_t*>(p->get_extension(p, CLAP_EXT_GUI));
     if (rss) {
-        rss_lifecycle(p,gui,save,host,display,argv[5]);
+        if (host.cycles) require(pthread_getcpuclockid(audio.native_handle(),&host.audio_clock)==0,"audio thread CPU clock ID");
+        rss_lifecycle(p,gui,save,host,display,argv[5],perf);
         run=false; audio.join(); p->deactivate(p); p->destroy(p); entry->deinit(); dlclose(module); XCloseDisplay(display);
         return 0;
     }
