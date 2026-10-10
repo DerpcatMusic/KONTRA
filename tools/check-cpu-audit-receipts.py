@@ -19,10 +19,11 @@ class Admission(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        self.attempt = 0
         self.plugin, self.cli, self.host = [self.root / name for name in ('KONTRA.clap', 'cli', 'host')]
         for path in (self.plugin, self.cli, self.host):
             path.write_bytes(path.name.encode())
-        self.build = dict(source_sha='a' * 40, profile='ci', path=str(self.plugin),
+        self.build = dict(source_sha='a' * 40, profile='release', path=str(self.plugin),
                           sha256=audit.sha(self.plugin), cli_sha256=audit.sha(self.cli),
                           host_sha256=audit.sha(self.host),
                           host_source_sha256=audit.sha(Path(audit.__file__).resolve().parents[1] / 'vendor/moose-clap/tests/live_performance.cpp'))
@@ -36,7 +37,9 @@ class Admission(unittest.TestCase):
         (self.root / 'BUILD.json').write_text(json.dumps(row))
 
     def run_driver(self, extra=(), cold=None, rejected=True):
-        argv = ['cpu-audit-native', 'strings', '64', str(self.root / 'out'),
+        self.attempt += 1
+        out = self.root / f'out-{self.attempt}'
+        argv = ['cpu-audit-native', 'strings', '64', str(out),
                 '--host', str(self.host), '--version', 'v2', '--plugin', str(self.plugin),
                 '--cli', str(self.cli), '--quiet-owner', 'fixture', *extra]
         def run(command, **kwargs):
@@ -58,7 +61,7 @@ class Admission(unittest.TestCase):
             else:
                 self.assertEqual(audit.main(), 0)
                 observe.assert_called_once()
-                row = json.loads((self.root / 'out/metrics.json').read_text())
+                row = json.loads((out / 'metrics.json').read_text())
                 self.assertEqual(row['source_sha'], self.build['source_sha'])
                 self.assertEqual(row['artifact_receipt'], self.build)
                 self.assertEqual(row['cache'], cold)
@@ -73,6 +76,13 @@ class Admission(unittest.TestCase):
             path.write_bytes(b'changed')
             self.run_driver(['--source-sha', 'a' * 40])
             path.write_bytes(original)
+
+    def test_v2_rejects_nonrelease_profile_before_state_export(self):
+        for profile in ('ci', 'debug', None):
+            for extra in ([], ['--profile']):
+                with self.subTest(profile=profile, extra=extra):
+                    self.save_build(dict(self.build, profile=profile))
+                    self.run_driver(['--source-sha', 'a' * 40, *extra])
 
     def test_v2_rejects_unverified_host_source(self):
         for value in (None, 'b' * 64):
