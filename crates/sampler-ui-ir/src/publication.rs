@@ -4,6 +4,7 @@ use super::*;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct InterfacePatch {
     pub source: Option<Source>,
+    pub performance: Option<bool>,
     pub pages: Option<Vec<Page>>,
     pub widgets: Vec<(usize, Widget)>,
     pub paint_order: Option<Option<Vec<WidgetRef>>>,
@@ -19,6 +20,7 @@ impl InterfacePatch {
     pub fn between(base: &Interface, current: &Interface) -> Self {
         Self {
             source: (base.source != current.source).then_some(current.source),
+            performance: (base.performance != current.performance).then_some(current.performance),
             pages: (base.pages != current.pages).then(|| current.pages.clone()),
             paint_order: (base.paint_order != current.paint_order).then(|| current.paint_order.clone()),
             widgets: current
@@ -45,6 +47,9 @@ impl InterfacePatch {
     pub fn apply(&self, base: &Interface, previous: &Self, view: &mut Interface) {
         if self.source != previous.source {
             view.source = self.source.unwrap_or(base.source);
+        }
+        if self.performance != previous.performance {
+            view.performance = self.performance.unwrap_or(base.performance);
         }
         if self.pages != previous.pages {
             view.pages

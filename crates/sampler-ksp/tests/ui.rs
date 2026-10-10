@@ -1,6 +1,23 @@
 use sampler_ui_ir::{Binding, Kind, Rect, Role, Source};
 
 #[test]
+fn performance_intent_reaches_ir_without_being_inferred_from_native_ui() {
+    for (request, performance, native) in [
+        ("", false, false),
+        ("make_perfview", true, false),
+        ("load_performance_view(\"missing\")", true, false),
+        ("load_native_ui(\"entry\")", false, true),
+    ] {
+        let script = sampler_ksp::compile(&format!("on init {request} end on"), 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+        let face = script.ui(&|_| None).unwrap();
+        assert_eq!(face.performance, performance, "{request}");
+        assert_eq!(face.performance, script.has_performance_view());
+        assert_eq!(face.native_ui.is_some(), native, "{request}");
+        assert!(face.widgets.is_empty());
+    }
+}
+
+#[test]
 fn ksp_interface_maps_to_validated_ui_ir() {
     let source = r#"on init
         make_perfview
