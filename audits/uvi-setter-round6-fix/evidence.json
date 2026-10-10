@@ -1,0 +1,409 @@
+{
+  "base_commit": "bac3c616824cf26e2a888c09cb21433b727d9079",
+  "base_tree": "6a275cfca85d081b135449a46e11238f6b5aae6d",
+  "test_source_commit": "76d7682d5f17fc4aca2cb387939109b087a0489b",
+  "source_commit": "10c29088a85776f50f395d5d58ec4ba87d3eb465",
+  "source_tree": "12fbc7fd14341569a5744cffdde58ba51366cac9",
+  "status": "SOURCE_READY_NOT_COMPILED",
+  "new_and_changed_rust_tests": "NOT_RUN",
+  "native_parity": "UNKNOWN",
+  "performance_acceptance": "UNACHIEVED",
+  "source_spans": [
+    {
+      "commit": "10c29088a85776f50f395d5d58ec4ba87d3eb465",
+      "path": "crates/sampler-core/src/engine_parameters.rs",
+      "symbol": "EngineParameterLaw::normalized_value (unchanged strict validator)",
+      "lines": [
+        153,
+        170
+      ],
+      "git_blob": "8b64f8013898d1349e01d4bf1d9a2bd3457a54d4",
+      "span_sha256": "e8bc81d5b633e79624005729b88194ff96ac2d45079bfa195e07413d9d8f9bbd"
+    },
+    {
+      "commit": "10c29088a85776f50f395d5d58ec4ba87d3eb465",
+      "path": "crates/sampler-core/src/engine_parameters.rs",
+      "symbol": "EngineParameterLaw::decode (two exponential branches changed)",
+      "lines": [
+        174,
+        209
+      ],
+      "git_blob": "8b64f8013898d1349e01d4bf1d9a2bd3457a54d4",
+      "span_sha256": "b629cf2b46dd33e182df3dc9cc3f688c4e77a35641e32ce98331ff1b6c92daae"
+    },
+    {
+      "commit": "10c29088a85776f50f395d5d58ec4ba87d3eb465",
+      "path": "crates/sampler-core/src/engine_parameters.rs",
+      "symbol": "law_tests::exponential_parameter_endpoints_are_exact_and_reject_exterior_neighbors",
+      "lines": [
+        456,
+        530
+      ],
+      "git_blob": "8b64f8013898d1349e01d4bf1d9a2bd3457a54d4",
+      "span_sha256": "66dc81f10b1e0882157400d4bb7885a8ec8ee5004becb7d4d1b577b61e5a5b58"
+    },
+    {
+      "commit": "10c29088a85776f50f395d5d58ec4ba87d3eb465",
+      "path": "crates/sampler-core/src/engine_parameters.rs",
+      "symbol": "Runtime::set_engine_parameter_in actual bound control consumer",
+      "lines": [
+        682,
+        748
+      ],
+      "git_blob": "8b64f8013898d1349e01d4bf1d9a2bd3457a54d4",
+      "span_sha256": "bf08b6e92747d832a3bc64bd0cb2c84c738a2d29f09b007e3dc431e7fab0f942"
+    },
+    {
+      "commit": "10c29088a85776f50f395d5d58ec4ba87d3eb465",
+      "path": "crates/sampler-core/src/control.rs",
+      "symbol": "ControlState::playing normalized offsets use shared decode",
+      "lines": [
+        154,
+        174
+      ],
+      "git_blob": "6b2e060ff795541413aad04e5db10a79769a67f9",
+      "span_sha256": "a6b2ca73f762a179923f6a0833d4fd99affef91fff82214983dc0046b6ae1e4f"
+    },
+    {
+      "commit": "10c29088a85776f50f395d5d58ec4ba87d3eb465",
+      "path": "crates/sampler-uvi/src/script_prelude.lua",
+      "symbol": "element getParameter/hasParameter/setParameter (unchanged)",
+      "lines": [
+        345,
+        403
+      ],
+      "git_blob": "1c74a4e3caa985b014c7d2e8faed5d65cfd40863",
+      "span_sha256": "f46d94561d19820aed1eae0fb970b60c9456ea5a9227a76c80a22ba66fb1f4e9"
+    },
+    {
+      "commit": "10c29088a85776f50f395d5d58ec4ba87d3eb465",
+      "path": "crates/sampler-uvi/src/script.rs",
+      "symbol": "native.setParam strict law conversion before command admission",
+      "lines": [
+        1395,
+        1478
+      ],
+      "git_blob": "4bea7cbe5c69613888db036b599172814362b4a4",
+      "span_sha256": "068c5ba909b7271263a817e61d0c6887b8325e32d8b31cadd7e484d6f623913f"
+    },
+    {
+      "commit": "10c29088a85776f50f395d5d58ec4ba87d3eb465",
+      "path": "crates/sampler-uvi/src/script.rs",
+      "symbol": "element graph XML insert/node identity",
+      "lines": [
+        725,
+        779
+      ],
+      "git_blob": "4bea7cbe5c69613888db036b599172814362b4a4",
+      "span_sha256": "fa7285b3b958973b1ad15f75c09984ac1555756472ef11cfbc98c0f9db3d9e05"
+    },
+    {
+      "commit": "10c29088a85776f50f395d5d58ec4ba87d3eb465",
+      "path": "crates/sampler-uvi/src/script.rs",
+      "symbol": "ScriptHost::new/new_with_ui_state installs/binds/loads scripts",
+      "lines": [
+        918,
+        1035
+      ],
+      "git_blob": "4bea7cbe5c69613888db036b599172814362b4a4",
+      "span_sha256": "18566bafb4a96d3963b2f3671b6007810f9e0ef0ac0e992877f162a46bafaed4"
+    },
+    {
+      "commit": "10c29088a85776f50f395d5d58ec4ba87d3eb465",
+      "path": "crates/sampler-uvi/src/script.rs",
+      "symbol": "load_scripts executes actual script body and init",
+      "lines": [
+        1985,
+        2052
+      ],
+      "git_blob": "4bea7cbe5c69613888db036b599172814362b4a4",
+      "span_sha256": "11ac13cce1bf68c0ab4507f0c1269c476914a17c497e2f9a50c1873da297577a"
+    },
+    {
+      "commit": "10c29088a85776f50f395d5d58ec4ba87d3eb465",
+      "path": "crates/sampler-uvi/src/script.rs",
+      "symbol": "ScriptHost::findings and resume preserve diagnostic message",
+      "lines": [
+        2405,
+        2440
+      ],
+      "git_blob": "4bea7cbe5c69613888db036b599172814362b4a4",
+      "span_sha256": "ed3e7bc0fd57a5bba3725e4e59cd8a7d713bb8e7c2b184e4a6391759ef66aa4b"
+    },
+    {
+      "commit": "10c29088a85776f50f395d5d58ec4ba87d3eb465",
+      "path": "crates/sampler-uvi/src/parameters.tsv",
+      "symbol": "OnePole catalog matching exact official range",
+      "lines": [
+        694,
+        697
+      ],
+      "git_blob": "23e4755b37fb099aea89c70bdc3aa2986197aca6",
+      "span_sha256": "7a9948b09c867b2cd25a825cce9471c9f00ab39efdd728c5c7d1fda5082a8730"
+    },
+    {
+      "commit": "10c29088a85776f50f395d5d58ec4ba87d3eb465",
+      "path": "crates/sampler-uvi/src/engine_parameters.rs",
+      "symbol": "field and binding select exact OnePole Freq exponential control",
+      "lines": [
+        10,
+        49
+      ],
+      "git_blob": "d03bec9409145a50c6b936e3d351827efcb3c4bb",
+      "span_sha256": "40004c64e16b303911df6fcac10b27f519ac31e9ca65a0e1a1f057663039582d"
+    },
+    {
+      "commit": "10c29088a85776f50f395d5d58ec4ba87d3eb465",
+      "path": "crates/sampler-uvi/src/engine_parameters.rs",
+      "symbol": "register admits actual single-lane graph control (known limitations retained)",
+      "lines": [
+        69,
+        133
+      ],
+      "git_blob": "d03bec9409145a50c6b936e3d351827efcb3c4bb",
+      "span_sha256": "3f550a5d56379ed6bc11337fe4bb706033c5b7ce78ea9df0ca6b957ab5b9d9ca"
+    },
+    {
+      "commit": "10c29088a85776f50f395d5d58ec4ba87d3eb465",
+      "path": "crates/sampler-uvi/src/lib.rs",
+      "symbol": "attach_script_with_ui_state spawn and initialized authored overrides",
+      "lines": [
+        1087,
+        1129
+      ],
+      "git_blob": "fd33884fa1ac273ade4e527f5d0b4f12776fe698",
+      "span_sha256": "e8cdc3a862f18075ac2ea3b75ed625b88fa8a6d6f804006cafe3f9f29f7f7649"
+    },
+    {
+      "commit": "10c29088a85776f50f395d5d58ec4ba87d3eb465",
+      "path": "crates/sampler-uvi/src/scripted/thread.rs",
+      "symbol": "spawn_with_ui_state constructs real ScriptHost and publishes Loaded",
+      "lines": [
+        164,
+        210
+      ],
+      "git_blob": "a28b53718ab27cdf454ad0325e0be46f40ff823f",
+      "span_sha256": "af41aec7827ce41b2d571a1a8c06f27765e2f8a2af39d9e0affbc6d912d85ee6"
+    },
+    {
+      "commit": "10c29088a85776f50f395d5d58ec4ba87d3eb465",
+      "path": "crates/sampler-uvi/src/scripted.rs",
+      "symbol": "Driver consumes EngineParameter and reports unbound DSP lane (no ACK)",
+      "lines": [
+        370,
+        381
+      ],
+      "git_blob": "ff0db957233aee9342ac09104214605d9747486b",
+      "span_sha256": "1d510619ed863579e69458dca52c7427106ddabd1c0784033f9c87eaf8e31aaf"
+    },
+    {
+      "commit": "10c29088a85776f50f395d5d58ec4ba87d3eb465",
+      "path": "crates/sampler-uvi/tests/host_parameters.rs",
+      "symbol": "named_parameter_checks_and_writes_do_not_build_full_catalogs",
+      "lines": [
+        3,
+        71
+      ],
+      "git_blob": "0022c5f8631f7d74d58932eebf93b04ddedeb978",
+      "span_sha256": "80d7fafdfcf2ee4d5ecedea8431b72e822ef74c47d0ebc9c09ddcd41689e7cae"
+    },
+    {
+      "commit": "10c29088a85776f50f395d5d58ec4ba87d3eb465",
+      "path": "src/ui/effects.rs",
+      "symbol": "valid checks decoded endpoints through strict shared admission",
+      "lines": [
+        108,
+        135
+      ],
+      "git_blob": "e836746fb57d047321230c0ea59bd651e549c064",
+      "span_sha256": "e23cb1a4ada258c0b56c4fe6f592db339e1f3512735251763133bfe5e1a39124"
+    },
+    {
+      "commit": "10c29088a85776f50f395d5d58ec4ba87d3eb465",
+      "path": "src/ui/editor_model.rs",
+      "symbol": "frequency/gain_db use shared decode",
+      "lines": [
+        73,
+        90
+      ],
+      "git_blob": "1fb9023f123f4911efb0732fbe8cfd28401c62a4",
+      "span_sha256": "c14417be63f5414f10b251755f79f7d628665a64723e27d0094cad430b756656"
+    }
+  ],
+  "authoritative_spec_sections": [
+    {
+      "url": "https://lua.uvi.net/class_element.html#a876941566822f111c98750e3c954a94c",
+      "section": "\u25c6 setParameter()",
+      "document_sha256": "b4516f54b9fd2061c5ba134afc30930b4c7922a4ed78b3badd022a395e5b5200",
+      "retrieved_utc": "2026-10-10T03:32:15.500746+00:00",
+      "excerpt": "void Element::setParameter ( string parameter , Value value ) Sets an Element parameter. Parameters parameter parameterName or parameterId value parameterValue (number|bool|string) according to definition Warning An unknown parameter name or id, or a value whose Lua type does not match the parameter type, is silently ignored: no error is raised. Check with Element::hasParameter when the name comes from user input or may differ between element types. See also Elements & parameters",
+      "authority": "Primary vendor specification; requirements equivalent only, NOT native execution.",
+      "applicability": "Unversioned NI/UVI official document archived2026-10-10; installed Kontakt8.13.1/Falcon execution UNKNOWN. API warnings and asynchronous contracts are from the current archived page, not old own-test assumptions."
+    },
+    {
+      "url": "https://lua.uvi.net/class_element.html#a249fb1fa90b51d0631486cb422b05841",
+      "section": "\u25c6 getParameter()",
+      "document_sha256": "b4516f54b9fd2061c5ba134afc30930b4c7922a4ed78b3badd022a395e5b5200",
+      "retrieved_utc": "2026-10-10T03:32:15.500746+00:00",
+      "excerpt": "Value Element::getParameter ( string parameter ) Gets an Element parameter. Parameters parameter parameterName or parameterId Returns parameterValue (number|bool|string) according to definition See also Elements & parameters",
+      "authority": "Primary vendor specification; requirements equivalent only, NOT native execution.",
+      "applicability": "Unversioned NI/UVI official document archived2026-10-10; installed Kontakt8.13.1/Falcon execution UNKNOWN. API warnings and asynchronous contracts are from the current archived page, not old own-test assumptions."
+    },
+    {
+      "url": "https://lua.uvi.net/class_element.html#a51567c163828d317b94d2c6f02eae4a8",
+      "section": "hasParameter",
+      "document_sha256": "b4516f54b9fd2061c5ba134afc30930b4c7922a4ed78b3badd022a395e5b5200",
+      "excerpt": "parameterName or parameterId; Returns true or false",
+      "authority": "Primary vendor specification; requirements equivalent only, NOT native execution."
+    },
+    {
+      "url": "https://lua.uvi.net/_elements.html#OnePole",
+      "section": "OnePole parameter table",
+      "rows": [
+        [
+          "Bypass",
+          "Bypass",
+          "boolean",
+          "false",
+          "true",
+          "false",
+          "",
+          "yes",
+          "Takes the module out of the signal path while leaving it loaded"
+        ],
+        [
+          "Freq",
+          "Freq",
+          "float",
+          "20.000",
+          "20000.000",
+          "1000.000",
+          "Hz",
+          "yes",
+          "Filter cutoff frequency"
+        ],
+        [
+          "KeyTracking",
+          "Key Tracking",
+          "float",
+          "0.000",
+          "1.000",
+          "0.000",
+          "% normalized",
+          "yes",
+          "Filter key tracking relative to C3. if C4 is played with KeyTracking at 100%, the filter freq will be one octave higher than the parameters value. Tune the filter freq to C3 for the filter freq to follow the note's frequency"
+        ],
+        [
+          "Mode",
+          "Mode",
+          "integer",
+          "0",
+          "1",
+          "0",
+          "",
+          "yes",
+          "Chooses between a lowpass and a highpass response"
+        ]
+      ],
+      "document_sha256": "ddca396e24ff7a05dbd3be9b2b073cb5a4a7adfb67fbd00d75e597f6c0a08d0f"
+    }
+  ],
+  "archive_acquisition": [
+    {
+      "id": "uvi-element",
+      "requested_url": "https://lua.uvi.net/class_element.html",
+      "retrieved_utc": "2026-10-10T03:32:15.500746+00:00",
+      "status": 200,
+      "final_url": "https://lua.uvi.net/class_element.html",
+      "content_type": "text/html",
+      "etag": "\"6ac775e3-b11e\"",
+      "last_modified": "Thu, 08 Oct 2026 10:52:19 GMT",
+      "sha256": "b4516f54b9fd2061c5ba134afc30930b4c7922a4ed78b3badd022a395e5b5200",
+      "bytes": 45342,
+      "file": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/uvi-element.html"
+    },
+    {
+      "url": "https://lua.uvi.net/_elements.html",
+      "status": 200,
+      "sha256": "ddca396e24ff7a05dbd3be9b2b073cb5a4a7adfb67fbd00d75e597f6c0a08d0f",
+      "bytes": 753534,
+      "archive": "/tmp/uvi-setter-next-elements.html",
+      "retrieved_utc": "2026-10-10T04:02:34.177667+00:00",
+      "limitation": "Full HTML is environment-local temporary evidence; selected verbatim rows are retained here."
+    }
+  ],
+  "native_equivalent_justification": "Read-only immutable official UVI archives supply the exact OnePole physical range and Element typed/name-ID contracts. Native execution is prohibited; geometric service normalization and shared shifted-envelope numerical parity remain unqualified.",
+  "prior_receipts": [
+    {
+      "run": "uvi-host-parameters",
+      "receipt_file": "/mnt/Windows11/DEV_WORKSPACE/kontra-runs/pi-integration-round5/uvi-host-parameters.json",
+      "receipt_sha256": "db708a1955c2943cdb5751d2b0ba421955d456c2c47b19b4e4315d703ff4384a",
+      "log_sha256": "6b7b632bc059313f269de00d5af17b1e1aff8a244913b25b1e481cf47961ce63",
+      "source_sha": "bac3c616824cf26e2a888c09cb21433b727d9079",
+      "exit_code": 101,
+      "classification": "PRIOR_FROZEN_BASE_ONLY_NOT_NEW_SOURCE_VALIDATION"
+    },
+    {
+      "run": "uvi-script-unit-neighbors",
+      "receipt_file": "/mnt/Windows11/DEV_WORKSPACE/kontra-runs/pi-integration-round5/uvi-script-unit-neighbors.json",
+      "receipt_sha256": "2a975c53f1d7327ef223eb452c9c5be0bcdefc03e80ce520dc9b769839926ac5",
+      "log_sha256": "2abe4ba69b8d29dc7d9f0631775f09c4d722d488539b60abede3efc6fc734916",
+      "source_sha": "bac3c616824cf26e2a888c09cb21433b727d9079",
+      "exit_code": 0,
+      "classification": "PRIOR_FROZEN_BASE_ONLY_NOT_NEW_SOURCE_VALIDATION"
+    },
+    {
+      "run": "uvi-fixture-initialized_controller_and_widget_cutoff_writes_change_production_pcm",
+      "receipt_file": "/mnt/Windows11/DEV_WORKSPACE/kontra-runs/pi-integration-round5/uvi-fixture-initialized_controller_and_widget_cutoff_writes_change_production_pcm.json",
+      "receipt_sha256": "c365c0eecc520c394c2a62dc986e0f050c51068472096f20ba6ac5a932925a01",
+      "log_sha256": "9852296036908ed8ef929d5fe1507488e430b813adf74011fc958efe9837d3a7",
+      "source_sha": "bac3c616824cf26e2a888c09cb21433b727d9079",
+      "exit_code": 0,
+      "classification": "PRIOR_FROZEN_BASE_ONLY_NOT_NEW_SOURCE_VALIDATION"
+    },
+    {
+      "run": "uvi-fixture-streamed_bus_gain_has_live_catalog_defaults_and_controller_readback",
+      "receipt_file": "/mnt/Windows11/DEV_WORKSPACE/kontra-runs/pi-integration-round5/uvi-fixture-streamed_bus_gain_has_live_catalog_defaults_and_controller_readback.json",
+      "receipt_sha256": "fc89c82662fa1514eec3ca9690ad0c87aaa4eccb215e7b44774c2e2095657f7d",
+      "log_sha256": "8ba8455525e4a5cd669c52a0cbf7b070de0eb5aeb6797898757f7d15fb0649ce",
+      "source_sha": "bac3c616824cf26e2a888c09cb21433b727d9079",
+      "exit_code": 0,
+      "classification": "PRIOR_FROZEN_BASE_ONLY_NOT_NEW_SOURCE_VALIDATION"
+    },
+    {
+      "run": "uvi-fixture-set_parameter_reaches_the_runtime",
+      "receipt_file": "/mnt/Windows11/DEV_WORKSPACE/kontra-runs/pi-integration-round5/uvi-fixture-set_parameter_reaches_the_runtime.json",
+      "receipt_sha256": "e560e974ba6e1ef74e84e4648d8728a594f4b9b2f41ef0e70fb5df765a53f3e1",
+      "log_sha256": "b4f6b3e6c2d0be4bb685cc99d78a068339162ccddd63719e03fbf96c42523fb2",
+      "source_sha": "bac3c616824cf26e2a888c09cb21433b727d9079",
+      "exit_code": 0,
+      "classification": "PRIOR_FROZEN_BASE_ONLY_NOT_NEW_SOURCE_VALIDATION"
+    }
+  ],
+  "source_checks": {
+    "path": "/home/derpcat/.t3/worktrees/KONTAKTO/uvi-setter-round6-fix/audits/uvi-setter-round6-fix/source-checks.json",
+    "sha256": "1f6fac483d7230919aeb661e07156cf0bc9731b566197d694fbcc25a19cd824b",
+    "classification": "SOURCE_AND_INDEPENDENT_PYTHON_ARITHMETIC_ONLY"
+  },
+  "diagnosis_limits": "Prior fault log hides the Lua message; numeric/source analysis predicts the first endpoint assertion failure. No compiled rerun confirms it yet.",
+  "future_combined_validation": {
+    "owner": "INTEGRATION_ONLY_ONE_FUTURE_COMBINED_BATCH",
+    "core_lib_filter": "engine_parameters::law_tests::",
+    "core_required_new_test": "engine_parameters::law_tests::exponential_parameter_endpoints_are_exact_and_reject_exterior_neighbors",
+    "core_neighbors": "existing controls and shared user-override tests in parent manifest",
+    "uvi_host_parameters": "FULL_TARGET_ALL_18",
+    "uvi_lib_filter": "script::tests::",
+    "uvi_fixture_exact_filters": [
+      "initialized_controller_and_widget_cutoff_writes_change_production_pcm",
+      "streamed_bus_gain_has_live_catalog_defaults_and_controller_readback",
+      "set_parameter_reaches_the_runtime"
+    ],
+    "test_threads": 1,
+    "prohibited_fallback": "No entire UVI fixture target, proprietary library, native host or generic gate"
+  },
+  "remaining_limitations": [
+    "Type recognized insert binding may not correspond to a register-admitted DSP lane; no runtime ACK back to ScriptHost. Unchanged and not solved by this endpoint correction.",
+    "UVI out-of-range clamping and geometric normalization are own implementation policy, not native measured equivalence.",
+    "No CPU/RAM comparison was performed."
+  ]
+}
