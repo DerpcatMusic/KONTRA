@@ -92,15 +92,64 @@ fn precompile_discovery_loads_real_controls_not_comment_or_message_decoys() {
         assert_eq!(interface.widgets.len(), 1);
         let real = &interface.widgets[0];
         assert_eq!(real.name, "$Real");
-        assert!(
-            real.control.is_some(),
-            "the actual resource declared a control"
-        );
+        let id = sampler_ksp::derived_control_id(0, "$Real");
+        assert_eq!(real.control, Some(id));
+        // VALUE writes the control variable, not the generic property map.
+        assert_eq!(real.value, sampler_ksp::model::WidgetValue::Int(17));
+        let controls = scripts[0].controls();
+        assert_eq!(controls.len(), 1);
+        assert_eq!(controls[0].variable, "$Real");
+        assert_eq!(controls[0].definition.id, id);
         assert_eq!(
-            real.properties.get("$CONTROL_PAR_VALUE"),
-            Some(&sampler_ksp::model::Value::Int(17))
+            controls[0].definition.default,
+            sampler_core::ControlValue::Integer(17)
+        );
+        let rendered = scripts[0].ui(&|_| None).unwrap();
+        assert_eq!(rendered.widgets.len(), 1);
+        assert_eq!(
+            rendered.widgets[0].value,
+            Some(sampler_ui_ir::Value::Integer(17))
         );
     }
+}
+
+#[test]
+fn precompile_resource_keeps_a_missing_alias_unbound_and_reported() {
+    let fixture = Fixture::new();
+    fixture.view("real.nckp", "Real", 640);
+    let (instrument, scripts) = fixture.compile(
+        r#"on init load_performance_view("real")
+           set_control_par(get_ui_id($Real), $CONTROL_PAR_VALUE, 17)
+           $Missing := 99 end on"#,
+    );
+    assert_eq!(scripts.len(), 1, "{:?}", instrument.unsupported);
+    let widgets = &scripts[0].model().interface.widgets;
+    assert_eq!(widgets.len(), 2);
+    let real = &widgets[0];
+    assert_eq!(real.name, "$Real");
+    assert!(!real.unresolved);
+    assert_eq!(
+        real.control,
+        Some(sampler_ksp::derived_control_id(0, "$Real"))
+    );
+    assert_eq!(real.value, sampler_ksp::model::WidgetValue::Int(17));
+    let missing = &widgets[1];
+    assert_eq!(missing.name, "$Missing");
+    assert!(missing.unresolved);
+    assert_eq!(missing.control, None);
+    assert!(instrument.unsupported.iter().any(|u| {
+        u.reason == ir::Reason::NotModeled
+            && u.value.contains("$Missing")
+            && u.value.contains("unbound")
+    }));
+    assert_eq!(scripts[0].controls().len(), 1);
+    let rendered = scripts[0].ui(&|_| None).unwrap();
+    assert_eq!(rendered.widgets.len(), 1);
+    assert_eq!(rendered.widgets[0].name, "$Real");
+    assert_eq!(
+        rendered.widgets[0].value,
+        Some(sampler_ui_ir::Value::Integer(17))
+    );
 }
 
 #[test]
