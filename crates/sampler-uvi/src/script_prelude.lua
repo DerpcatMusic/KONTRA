@@ -177,8 +177,13 @@ widget_mt.__index = function(w, k)
   if d[k] ~= nil then return d[k] end
   for _, kind in ipairs(kinds) do
     if kind == k then return function(self, ...)
+      local parent = data(self)
+      if parent.kind ~= "Panel" and parent.kind ~= "Viewport" then error("Only UVI containers can create child widgets") end
       local child = widget(k, ...)
-      data(child).parent_id = rawget(self, "id")
+      if not child.parent then
+        child.parent = self
+        table.insert(parent.children, child)
+      end
       return child
     end end
   end
@@ -197,6 +202,7 @@ widget_mt.__newindex = function(w, k, v)
   elseif k == "bounds" then d.x,d.y,d.width,d.height = v[1],v[2],v[3],v[4]
   elseif k == "size" then d.width,d.height = v[1],v[2]
   elseif k == "position" or k == "pos" then d.x,d.y = v[1],v[2]
+  elseif k == "parent" then d.parent,d.parent_id = v,v and rawget(v,"id")
   else d[k] = v end
   ui.revision = ui.revision + 1
 end
@@ -211,7 +217,7 @@ widget = function(kind, ...)
   local size = sizes[basekind] or {100,100}
   local d = {kind=kind,name=name or named.name or kind,value=value or 0,min=lo or 0,max=hi or 1,
     default=value or 0,integer=integer==true,x=0,y=0,width=size[1],height=size[2],alpha=1,visible=true,enabled=true,
-    persistent=true,exported=false,text="",tooltip=name or "",displayName=name or "",showLabel=true,
+    persistent=true,exported=false,children={},text="",tooltip=name or "",displayName=name or "",showLabel=true,
     interceptsMouseClicks=true, mapper="Linear",unit="Generic"}
   local w = setmetatable({__data=d}, widget_mt)
   if kind == "Table" then
@@ -246,14 +252,19 @@ widget = function(kind, ...)
   end
   -- Named options use the same setters as later property writes.
   for k,v in pairs(named) do
-    if rawtype(k)=="string" and k~="changed" then
+    if rawtype(k)=="string" and k~="changed" and k~="size" and k~="position" and k~="pos" and k~="bounds" then
       if k=="value" then methods.setValue(w,v,false) else w[k]=v end
     end
+  end
+  -- Port v1 construction precedence; bounds win over size/position and scalar fields.
+  for _,key in ipairs{'size','position','pos','bounds'} do
+    if named[key]~=nil then w[key]=named[key] end
   end
   d.changed=named.changed
   if kind=="Slider" and args[6]~=nil then d.vertical=args[6] end
   registry[#registry+1] = w; rawset(w,"id",#registry)
   d.id = #registry
+  if d.parent then table.insert(d.parent.children,w) end
   ui.revision = ui.revision + 1
   return w
 end
