@@ -277,6 +277,54 @@ mod tests {
     use super::*;
 
     #[test]
+    fn provider_reopen_releases_worker_sources_and_cache() {
+        struct Unused;
+        impl sampler_kontakt::AssetSource for Unused {
+            fn open(&self) -> std::io::Result<sampler_kontakt::SampleReader> {
+                panic!("resident peaks must not open a sample reader");
+            }
+        }
+        let prepared = sampler_core::Prepared::new(48000, vec![], vec![], 1).unwrap();
+        let limits = sampler_core::Limits::for_plan(&prepared, 1, 1);
+        let runtime = sampler_core::Runtime::new(prepared, limits).unwrap();
+        for _ in 0..16 {
+            let stream = Arc::new(Unused);
+            let weak_source = Arc::downgrade(&stream);
+            let source = Source {
+                pcm: Pcm::new(8, vec![[-0.8, 0.6]; 8].into_boxed_slice()).unwrap(),
+                stream: Some(stream),
+            };
+            let (wake, ready) = std::sync::mpsc::channel();
+            let provider =
+                Provider::start(runtime.active_plan(), [(3, source)].into(), move || {
+                    wake.send(()).ok();
+                })
+                .unwrap();
+            let weak_cache = Arc::downgrade(&provider.cache);
+            assert!(matches!(provider.state(3, 4, None), State::Loading));
+            ready
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap();
+            for _ in 0..1000 {
+                assert!(matches!(provider.state(3, 4, None), State::Ready(_)));
+            }
+            assert!(
+                ready.try_recv().is_err(),
+                "idle peaks must not schedule work"
+            );
+            drop(provider);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while weak_source.upgrade().is_some() || weak_cache.upgrade().is_some() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "worker retained dropped provider"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        }
+    }
+
+    #[test]
     fn native_ncw_stream_bins_match_resident_decode() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("wave.ncw");
