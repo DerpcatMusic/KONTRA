@@ -799,6 +799,8 @@ pub struct Runtime {
     /// spreads over blocks instead of landing in one.
     block_fuel: usize,
     block_fuel_left: usize,
+    behavior_block_explicit: bool,
+    behavior_time_left: Option<std::time::Duration>,
     behavior_stride: usize,
     behavior_locals: Box<[i64]>,
     note_stride: usize,
@@ -978,6 +980,8 @@ impl Runtime {
             behavior_fuel: limits.behavior_fuel,
             block_fuel: usize::MAX,
             block_fuel_left: usize::MAX,
+            behavior_block_explicit: false,
+            behavior_time_left: None,
             behavior_stride,
             behavior_locals: vec![0; cells].into_boxed_slice(),
             executing_due: false,

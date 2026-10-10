@@ -352,6 +352,7 @@ pub struct V2Core {
     aligned_tap: Box<[f32;MAX_BLOCK]>,
     exact_work: Vec<HostNote>,
     rate: f64,
+    host_block: bool,
     mix: Mix,
     empty_editor_offsets: Arc<[sampler_core::EngineParameterOffset]>,
     held: Vec<Held>,
@@ -912,6 +913,7 @@ impl V2Core {
             aligned_tap: Box::new([0.;MAX_BLOCK]),
             exact_work: Vec::with_capacity(HELD),
             rate: sample_rate,
+            host_block: false,
             mix,
             empty_editor_offsets,
             held: Vec::with_capacity(HELD),
@@ -994,11 +996,13 @@ impl V2Core {
             for pair in pairs(part.direct) {
                 self.direct[pair][..n].fill([0.0; 2]);
             }
-            // About 128 instructions per frame, so a long block keeps its script
-            // throughput per second; never below the 64-frame measured 8192.
-            let fuel = (n * 128).max(8192);
-            if part.runtime.behavior_block_fuel() != fuel {
-                part.runtime.set_behavior_block_fuel(fuel);
+            // Render-driven callers retain their instruction cap. Hosts install
+            // a shared instruction/time allowance before MIDI in begin_block.
+            if !self.host_block {
+                let fuel = (n * 128).max(8192);
+                if part.runtime.behavior_block_fuel() != fuel {
+                    part.runtime.set_behavior_block_fuel(fuel);
+                }
             }
             #[cfg(test)]
             let audit_start = self.onset_audit.map(|_| std::time::Instant::now());
@@ -1263,7 +1267,16 @@ impl Core for V2Core {
         let holding=self.align.holding(block.transport.playing);
         if self.holding&&!holding {self.flush_aligned();}
         self.holding=holding;
-        for part in self.parts.iter_mut().flatten() { part.runtime.set_offline(block.offline); }
+        self.host_block = true;
+        let parts = self.parts.iter().flatten().count().max(1);
+        // Port v1 0cb7a8a0:src/ksp/runtime.rs begin_audio_block, before MIDI/UI callbacks.
+        let fuel = if block.offline { 512 * 4096 } else { block.frames.saturating_mul(2048) / parts };
+        let time = (!block.offline).then(|| std::time::Duration::from_secs_f64(
+            block.frames as f64 / self.rate * 0.4 / parts as f64));
+        for part in self.parts.iter_mut().flatten() {
+            part.runtime.set_offline(block.offline);
+            part.runtime.begin_behavior_block(fuel, time);
+        }
     }
 
     fn event(&mut self, port: u8, event: Event) {
@@ -2351,6 +2364,44 @@ mod tests {
         assert_eq!(core.voices().active, 1);
         assert!(worker.next_job().is_some(),
             "v1 advances callbacks before streaming; a resumed onset must not wait another block to request its first page");
+    }
+
+    #[test]
+    fn host_callback_allowance_uses_rack_and_host_frames_not_render_fragments() {
+        let mut core = V2Core::with_parts(2, 48000.);
+        for slot in 0..2 {
+            let plan = Prepared::new(48000, vec![], vec![], 1).unwrap();
+            let limits = Limits::for_plan(&plan, 8, 8);
+            let runtime = Runtime::new(plan, limits).unwrap();
+            core.install(slot, Some(Box::new(Part::new(runtime, MixTree::instrument("test")).unwrap())));
+        }
+        core.begin_block(&BlockInfo { frames: 64, ..Default::default() });
+        for frames in [1, 31, 32] {
+            core.render(frames);
+            for part in core.parts.iter().flatten() {
+                assert_eq!(part.runtime.behavior_block_fuel(), 64 * 2048 / 2);
+            }
+        }
+        core.begin_block(&BlockInfo { frames: 32, ..Default::default() });
+        assert_eq!(core.parts[0].as_ref().unwrap().runtime.behavior_block_fuel(), 32 * 2048 / 2);
+    }
+
+    #[test]
+    fn host_callback_allowance_is_ready_before_the_first_midi_event() {
+        let source = format!("on init\n declare $saved\n end on\n on note\n{}ignore_event($EVENT_ID)\n end on\n", "inc($saved)\n".repeat(10000));
+        let script = sampler_ksp::compile(&source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+        let plan = script.bind(Prepared::new(48000, vec![], vec![], 1).unwrap()).unwrap();
+        let limits = Limits::for_plan(&plan, 32, 8);
+        let mut runtime = Runtime::new(plan, limits).unwrap();
+        runtime.set_behavior_block_fuel(8192);
+        let mut core = V2Core::with_parts(1, 48000.);
+        core.install(0, Some(Box::new(Part::new(runtime, MixTree::instrument("test")).unwrap())));
+        core.begin_block(&BlockInfo { frames: 64, offline: true, ..Default::default() });
+        core.play(0, Event::midi1(0x90, 60, 100));
+        let runtime = &core.parts[0].as_ref().unwrap().runtime;
+        assert_eq!(runtime.script_cell(runtime.active_plan(), sampler_core::ScriptInstanceId(0), 0), Ok(10000),
+            "host callback allowance must be installed before MIDI, not after its first preemption");
+        assert_eq!(runtime.preemptions(), 0);
     }
 
     #[test]
