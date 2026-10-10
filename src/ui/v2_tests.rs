@@ -343,19 +343,35 @@ fn authored_uvi_value_units_match_v1_readouts_without_changing_raw_values() {
         ("SemiTones", -3., "-3 st"),
     ] {
         for kind in ["Knob", "NumBox"] {
-            let source = format!("<UVI4><Program Name='P'><EventProcessors><ScriptProcessor><script><![CDATA[setSize(160,120); {kind}{{'Readout',{raw},-10000,10000,unit=Unit.{unit},bounds={{10,10,140,90}},showLabel=false}}]]></script></ScriptProcessor></EventProcessors></Program></UVI4>");
-            let host = sampler_uvi::script::ScriptHost::new(&source, (), Default::default()).unwrap();
+            let source = format!(
+                "<UVI4><Program Name='P'><EventProcessors><ScriptProcessor><script><![CDATA[setSize(160,120); {kind}{{'Readout',{raw},-10000,10000,unit=Unit.{unit},bounds={{10,10,140,90}},showLabel=false}}]]></script></ScriptProcessor></EventProcessors></Program></UVI4>"
+            );
+            let host =
+                sampler_uvi::script::ScriptHost::new(&source, (), Default::default()).unwrap();
             let face = host.interface();
             let mut oracle = face.clone();
             oracle.widgets[0].value_text = Some(expected.into());
             let render = |f: &ir::Interface| {
                 let mut values = ir_view::Values::default();
                 let assets = ir_view::Assets::default();
-                let ui = settle(160., 120., |ui| ir_view::view(ui, f, ir::PageRef(0), &assets, ir::Presentation::Bitmap, 1., &mut values));
+                let ui = settle(160., 120., |ui| {
+                    ir_view::view(
+                        ui,
+                        f,
+                        ir::PageRef(0),
+                        &assets,
+                        ir::Presentation::Bitmap,
+                        1.,
+                        &mut values,
+                    )
+                });
                 assert_eq!(values.values().copied().collect::<Vec<_>>(), vec![raw]);
                 pixels(&ui, 160, 120)
             };
-            assert!(render(&face) == render(&oracle), "{kind} {unit} readout must match v1");
+            assert!(
+                render(&face) == render(&oracle),
+                "{kind} {unit} readout must match v1"
+            );
             assert_eq!(host.control_values()[0].1, raw);
         }
     }
@@ -371,13 +387,28 @@ fn authored_uvi_value_captions_overlay_skin_without_changing_geometry() {
     let render = |f: &ir::Interface| {
         let mut values = ir_view::Values::default();
         let mut assets = ir_view::Assets::default();
-        assets.sync(f, ir::Presentation::Bitmap, |_| Some(picture(vec![solid(32, 32, [40, 50, 60, 255])])));
-        let ui = settle(160., 120., |ui| ir_view::view(ui, f, ir::PageRef(0), &assets, ir::Presentation::Bitmap, 1., &mut values));
+        assets.sync(f, ir::Presentation::Bitmap, |_| {
+            Some(picture(vec![solid(32, 32, [40, 50, 60, 255])]))
+        });
+        let ui = settle(160., 120., |ui| {
+            ir_view::view(
+                ui,
+                f,
+                ir::PageRef(0),
+                &assets,
+                ir::Presentation::Bitmap,
+                1.,
+                &mut values,
+            )
+        });
         let frame = ui.scene().unwrap().surface("ir-0").unwrap().frame;
         assert_eq!(frame.size, Size::new(140., 90.));
         pixels(&ui, 160, 120)
     };
-    assert_ne!(render(&face), render(&hidden), "authored showValue must paint its caption over the strip");
+    assert!(
+        render(&face) != render(&hidden),
+        "authored showValue must paint its caption over the strip"
+    );
     assert_eq!(host.control_values()[0].1, 0.375);
 }
 
