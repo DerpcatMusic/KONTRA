@@ -368,11 +368,64 @@ display decoder/cache. Artwork scanning does not open UFS payloads or substitute
 instrument panels for a bank cover.
 
 
-### Open v1 UX parity gap: favourites after a bank moves (low priority)
+### UVI favourites follow bank UUID/member identity
 
-V1's UVI favourites retain bank UUID and member identity as well as a locator.
-Current v2 favourites retain the full virtual bank/member path, so changing the
-bank's library location leaves that favourite pointing at its former path.
-Same-name presets and current v2 state roundtrips are covered; UUID-based
-relocation is not. Track this after the authored CPU gate. Migration of saved
-v1 state is N/A by product policy; the remaining gap is current v2 UX.
+Ported v1 `4bffbb18:src/library.rs::UviSource` and
+`src/ui/mod.rs::toggle_uvi_favorite` into the v2 state codec. Stars retain the
+bank UUID, member and last bank locator. Catalog scans and their persistent
+metadata cache retain UUIDs without preparing or reading program/sample payloads;
+cache version 3 rebuilds earlier directory-only metadata once.
+
+After a move and native state reload, a star resolves the same member in the
+unique bank with its saved UUID. A different bank replacing the old locator
+cannot steal it. Missing members and ambiguous relocated UUID copies leave the
+saved identity intact and produce no substitute favourite row. A still-valid
+saved locator wins over duplicate copies. Row and context-menu stars use the
+same identity; removing a relocated star persists through another reload.
+
+Current v2 path-only stars acquire UUID identity when their original source is
+still catalogued. A path-only save whose bank already moved cannot recover an
+identity it never stored. Saved v1 state migration remains N/A by product policy.
+
+### Authored CPU receipt and MIDI/Lua coverage
+
+The 2026-10-09 before/after receipt used the same authored clear bank, piano
+schedule and `ci` profile (three repetitions at 32/64/256 frames). Playback
+produced peak 0.50925505 and 16 voices with zero callback heap calls and runtime
+faults. Timing is **CONTENDED/UNKNOWN**: the intruder ledger found foreign KURV
+builds during the requested window. These quantiles do not establish acceptance.
+V1 was not run: the frozen UVI CPU adapter requires the official reader even for
+a clear bank, and the current no-third-party rule forbids that opener. Saved v1
+state migration remains N/A by product policy.
+
+A separate three-cell 32-frame diagnostic had 13 continuous QUIET observer
+samples. Misses were 3/3/2: none at startup, one in the scored steady interval,
+and seven after note-off while sustain still held 16 voices. Their elapsed
+callback times were 714–1055 µs against a 667 µs deadline, with only 47–92 µs of
+audio-thread CPU. This demonstrates time off CPU in these outliers; it does not
+prove whether each delay was preemption or a wait. The host/scheduler issue
+remains open; no CPU-axis pass is claimed.
+
+The authored `cpu_audit` probe can collect per-miss thread context-switch deltas
+with `KONTRA_HOST_SCHED_DIAGNOSTIC=1`, adapting W13's `d0c89ffb` host diagnostic.
+Counters bracket events/render, excluding the pacing sleep. Voluntary switches
+can narrow the wait hypothesis; involuntary switches can narrow preemption.
+Neither counter alone identifies the delayed call or proves its cause. Failed
+counter reads produce null deltas, never zero-switch evidence. Diagnostic runs
+mark timing `DIAGNOSTIC-NOT-ACCEPTANCE`; normal runs skip these extra syscalls.
+The probe's `--check` and root example no-run pass after the build hold lifted.
+Fresh deadline attribution still requires a frozen binary/fixture and an
+ordered authored diagnostic window; those timing results remain unmeasured.
+Exported-host confirmation still belongs to W13; the plugin seam is not CLAP/VST3.
+
+Those CPU cells exposed another coverage gap: incoming MIDI notes reached the
+MPE adapter but bypassed UVI `onNote`, while exact host notes used the Lua driver.
+The authored fixture now changes its label to `Played` from `onNote`, and the
+product gate requires that change. Incoming scripted notes use the MIDI adapter's
+silent admission, retaining its channel expression and physical-note pairing;
+Lua then chooses the attack. Script-generated MIDI keeps the direct wire route.
+Host-note releases also use the exact core note ID, so a same-key MIDI gate
+cannot be closed by a host release or consume that host's Lua release callback.
+V1 `4bffbb18:src/plugin/uvi.rs::Slot::feed` likewise routes note arrivals through
+`HostedInput::On` and releases their stored typed root. V2 keeps its validated
+MPE adapter and core note identities rather than introducing a second ledger.

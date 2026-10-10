@@ -474,7 +474,7 @@ struct Held {
 
 pub struct V2Core {
     #[cfg(test)]
-    onset_audit: Option<[u64; 6]>,
+    onset_audit: Option<[u64; 7]>,
     parts: Vec<Option<Box<Part>>>,
     performance: Option<[f64; 3]>,
     align: crate::timing::Align,
@@ -1023,7 +1023,7 @@ impl V2Core {
             // Lua note-off services use the same host identities as ordinary release.
             for held in self.held.iter().filter(|h| h.part == index) {
                 if let Some(script) = part.script.as_mut() {
-                    let _ = script.note_off(&mut part.runtime, held.note.key);
+                    let _ = script.note_off_note(&mut part.runtime, held.id, held.note.key);
                 }
             }
             packet(part, index, &self.held, [0x20b0_4000, 0]); // MIDI 1 CC64 up
@@ -1363,6 +1363,49 @@ fn packet(part: &mut Part, index: usize, held: &[Held], words: [u32; 2]) {
         word as u8 & 127,
     );
     let channel = (word >> 16) as u8 & 15;
+    if part.script.is_some() && matches!(kind, 2 | 4) && matches!(status, 0x80 | 0x90) {
+        // Only incoming notes enter Lua; script-generated MIDI stays on the direct wire path.
+        let mut words = [word, data];
+        if !articulated(part, &words[..if kind == 4 { 2 } else { 1 }]) {
+            return;
+        }
+        words[0] &= if part.mpe_zone {
+            0xf0ff_ffff
+        } else {
+            0xf0f0_ffff
+        };
+        if let Some(Ok(packet)) = Packets::new(&words[..if kind == 4 { 2 } else { 1 }]).next() {
+            match part.mpe.apply_silent(&mut part.runtime, packet) {
+                Ok(sampler_midi::Applied::Started(note)) => {
+                    let velocity = if kind == 4 {
+                        (f64::from((data >> 16) as u16) / 65535.).max(1. / 65535.)
+                    } else {
+                        f64::from(b) / 127.
+                    };
+                    if let Err(sampler_core::Error::Capacity) = part
+                        .script
+                        .as_mut()
+                        .unwrap()
+                        .note_on(&mut part.runtime, note, a, velocity)
+                    {
+                        part.problems.capacity_drops += 1;
+                    }
+                }
+                Ok(sampler_midi::Applied::Released { note, .. }) => {
+                    let _ = part
+                        .script
+                        .as_mut()
+                        .unwrap()
+                        .note_off_note(&mut part.runtime, note, a);
+                }
+                Err(ApplyError::Core(sampler_core::Error::Capacity)) => {
+                    part.problems.capacity_drops += 1
+                }
+                _ => {}
+            }
+        }
+        return;
+    }
     // Per-note messages reach held host notes on the key at full precision.
     let per_note = |part: &mut Part, expression: NoteExpression| {
         for h in held
@@ -1490,7 +1533,7 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
                 .filter(|h| h.part == index && pattern.matches(h.note))
             {
                 if let Some(script) = part.script.as_mut() {
-                    let _ = script.note_off(&mut part.runtime, h.note.key);
+                    let _ = script.note_off_note(&mut part.runtime, h.id, h.note.key);
                 }
                 let _ = part.runtime.note_off(h.input, None);
             }
@@ -1587,7 +1630,7 @@ impl V2Core {
 
     #[cfg(test)]
     pub(crate) fn onset_audit(&mut self) -> serde_json::Value {
-        let timings = self.onset_audit.replace([0; 6]);
+        let timings = self.onset_audit.replace([0; 7]);
         let states: Vec<_> = self.parts.iter().flatten().map(|p| {
             let stats = p.runtime.stats();
             let mut callbacks = 0;
@@ -1599,7 +1642,8 @@ impl V2Core {
             serde_json::json!({"voices":stats.voices,"audible":p.runtime.audible_voice_count(),
                 "cold_starts":stats.cold_starts,"pending_commands":p.runtime.pending_commands(),
                 "callbacks":callbacks,"yielded":yielded,"clock":p.runtime.now(),
-                "runtime_render_ns":stats.render_nanos_last,"persistent_values":p.persistence.as_ref().map_or(0, |s| s.values_len())})
+                "runtime_render_ns":stats.render_nanos_last,"persistent_values":p.persistence.as_ref().map_or(0, |s| s.values_len()),
+                "persistent_buffer_bytes":p.persistence.as_ref().map_or(0, |s| s.values_bytes())})
         }).collect();
         serde_json::json!({"stage_ns":timings,"parts":states})
     }
@@ -1658,6 +1702,16 @@ impl V2Core {
             #[cfg(test)]
             if let (Some(t), Some(a)) = (audit_start, self.onset_audit.as_mut()) {
                 a[1] += t.elapsed().as_nanos() as u64;
+            }
+            #[cfg(test)]
+            let audit_start = self.onset_audit.map(|_| std::time::Instant::now());
+            if part.horizon.is_some() {
+                // v1 advances callbacks before pages are requested; empty renders keep clock/fuel.
+                let _ = part.runtime.render(&mut []);
+            }
+            #[cfg(test)]
+            if let (Some(t), Some(a)) = (audit_start, self.onset_audit.as_mut()) {
+                a[6] += t.elapsed().as_nanos() as u64;
             }
             #[cfg(test)]
             let audit_start = self.onset_audit.map(|_| std::time::Instant::now());
@@ -1834,7 +1888,7 @@ impl V2Core {
         let audit_start = self.onset_audit.map(|_| std::time::Instant::now());
         for part in self.parts.iter_mut().flatten() {
             if let Some(state) = part.persistence.as_mut() {
-                state.publish(&part.runtime);
+                state.publish(&mut part.runtime);
             }
         }
         #[cfg(test)]
@@ -3739,9 +3793,63 @@ mod tests {
             "embedded loops must sound beyond the sample end: {peak}/{late_peak}"
         );
         assert_eq!(core.problems(0).underruns, 0);
+        assert!(
+            ui.interfaces()[0]
+                .widgets
+                .iter()
+                .any(|w| w.text == "Played"),
+            "MIDI notes must invoke the authored Lua onNote handler"
+        );
         eprintln!(
             "AUTHORED_UVI_FEATURES peak={peak} late_peak={late_peak} voice_peak={voice_peak} heap_calls={heap_calls} underruns=0"
         );
+    }
+
+    #[test]
+    #[cfg(feature = "library-access")]
+    fn w10_scripted_host_release_preserves_same_key_midi_gate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wav = tmp.path().join("note.wav");
+        sine(&wav);
+        let bank = tmp.path().join("Authored.ufs");
+        // Test physical gates independently of asynchronous script-generated children.
+        let xml = include_str!("../../tests/fixtures/uvi-clear-features.uvip")
+            .replace("playNote(e.note,e.velocity,-1)", "");
+        crate::library::tests::clear_sample_bank_xml(
+            &bank,
+            &std::fs::read(&wav).unwrap(),
+            xml.as_bytes(),
+        );
+        let mut core = V2Core::with_parts(1, 48000.);
+        core.install(0, load(&bank.join("preset.uvip")));
+        core.event(0, Event::midi1(0x90, 60, 100));
+        let host = HostNote {
+            port: 0,
+            channel: 0,
+            key: 60,
+            id: 7,
+            clap: true,
+        };
+        core.event(0, on(host));
+        core.event(
+            0,
+            Event::NoteOff(HostPattern {
+                port: -1,
+                channel: -1,
+                key: -1,
+                id: 7,
+                clap: true,
+            }),
+        );
+        let mut keys = [0; 128];
+        core.pressed_keys(&mut keys);
+        assert_ne!(
+            keys[60], 0,
+            "host release must leave the MIDI physical note held"
+        );
+        core.event(0, Event::midi1(0x80, 60, 0));
+        core.pressed_keys(&mut keys);
+        assert_eq!(keys[60], 0);
     }
 
     fn sine(path: &Path) {
@@ -4003,6 +4111,88 @@ mod tests {
             "offline must wait, preserving source phase and envelope"
         );
         assert_eq!(bounced.problems(0).underruns, 0);
+    }
+
+    #[test]
+    fn resumed_note_requests_its_first_stream_page_in_the_same_block() {
+        use sampler_core::{Duration, Inheritance, Instruction, Program, Velocity};
+        let pcm = Pcm::streamed(48000, PAGE_FRAMES).unwrap();
+        let plan = Prepared::new(
+            48000,
+            vec![pcm],
+            vec![Region {
+                sample: 0,
+                key_low: 0,
+                key_high: 127,
+                root_key: None,
+                velocity_low: 0.,
+                velocity_high: 1.,
+                gain: 1.,
+                envelope: Envelope::default(),
+                playback: Playback::default(),
+            }],
+            128,
+        )
+        .unwrap()
+        .with_programs(
+            vec![
+                Program::new(vec![
+                    Instruction::SuppressAttack,
+                    Instruction::Play {
+                        transpose: 0,
+                        velocity: Velocity::Scale(1.),
+                        inheritance: Inheritance::Linked,
+                        duration: Duration::Gate,
+                    },
+                    Instruction::End,
+                ])
+                .unwrap(),
+            ],
+            Some(0),
+        )
+        .unwrap();
+        let limits = Limits::for_plan(&plan, 128, 8);
+        let (cache, mut worker) = StreamCache::new(2).unwrap();
+        let mut runtime = Runtime::new(plan, limits).unwrap().with_stream_cache(cache);
+        runtime.set_cold_starts(true);
+        let mut part = Part::new(runtime, MixTree::instrument("test")).unwrap();
+        part.horizon = Some(128);
+        let mut core = V2Core::with_parts(1, 48000.);
+        core.install(0, Some(Box::new(part)));
+        core.parts[0]
+            .as_mut()
+            .unwrap()
+            .runtime
+            .set_behavior_block_fuel(0);
+        core.event(
+            0,
+            on(HostNote {
+                port: 0,
+                channel: 0,
+                key: 60,
+                id: 1,
+                clap: true,
+            }),
+        );
+        assert_eq!(
+            core.voices().active,
+            0,
+            "callback is deferred to the next block"
+        );
+        #[cfg(feature = "plugin")]
+        assert_eq!(
+            crate::plugin::tests::allocations(|| {
+                core.render(64);
+            }),
+            0
+        );
+        #[cfg(not(feature = "plugin"))]
+        core.render(64);
+        assert_eq!(core.voices().active, 1);
+        assert!(
+            worker.next_job().is_some(),
+            "v1 advances callbacks before streaming; a resumed onset must not wait another block to request its first page"
+        );
     }
 
     #[test]

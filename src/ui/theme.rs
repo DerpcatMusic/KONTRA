@@ -299,6 +299,7 @@ pub enum Icon {
     Sidebar,
     Picture,
     Search,
+    Filter,
     #[allow(dead_code, reason = "the mixer's audition")]
     Play,
     Menu,
@@ -386,6 +387,15 @@ pub fn glyph(icon: Icon, size: f64, ink: Fill) -> El {
                 ),
                 line(&[(10., 10.), (13.5, 13.5)]),
             ],
+            Icon::Filter => vec![line(&[
+                (2.5, 3.5),
+                (13.5, 3.5),
+                (9.5, 8.),
+                (9.5, 12.),
+                (6.5, 13.),
+                (6.5, 8.),
+                (2.5, 3.5),
+            ])],
             Icon::Play => vec![Draw::fill(
                 DrawPath::polyline([p(5., 3.5), p(12.5, 8.), p(5., 12.5)], true),
                 ink.clone(),
