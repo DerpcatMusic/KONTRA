@@ -2334,7 +2334,7 @@ fn full_editor_native_frames_fit_a_plain_two_mib_thread() {
         p.shared.view.lock().unwrap().parts[0].interfaces=vec![ir::Interface {
             source:ir::Source::Ksp{slot:0},
             native_ui:Some(ir::NativeUi{entry:"main".into()}),
-            pages:vec![ir::Page{size:ir::Size{width:32,height:32},..Default::default()}],
+            pages:vec![ir::Page{size:ir::Size{width:32.0,height:32},..Default::default()}],
             widgets:vec![ir::Widget::new("fixture",ir::PageRef(0),ir::Rect::new(0,0,32,32),ir::Kind::Label)],
             ..Default::default()
         }].into();

@@ -233,14 +233,14 @@ impl Preparation {
             };
             let w = size.map_or(p.size.width, |s| s.width.min(p.size.width));
             let h = size.map_or(p.size.height, |s| {
-                s.height.saturating_sub(y).min(p.size.height)
+                (s.height - f64::from(y)).max(0.).min(p.size.height)
             });
-            if w > 0 && h > 0 {
+            if w > 0. && h > 0. {
                 add(
                     a,
                     p.background.frame as usize,
                     [w, h].map(|n| (n as f64 * scale.clamp(0.01, 1.)).ceil().max(1.) as u32),
-                    Some([0, y, w, h]),
+                    Some([0, y, w.ceil() as u32, h.ceil() as u32]),
                 );
             }
         }
@@ -290,7 +290,7 @@ impl Preparation {
                 // Keep authored corner pixels until the device-scale sliced painter lands.
                 let size = meta
                     .size
-                    .map_or([w.rect.width.max(1), w.rect.height.max(1)], |s| {
+                    .map_or([w.rect.width.max(1.), w.rect.height.max(1.)], |s| {
                         [s.width, s.height]
                     });
                 let factor = if scale.is_finite() {
@@ -430,11 +430,36 @@ mod tests {
             #[cfg(feature = "shots")]
             decoded_bytes: HashMap::new(),
         };
-        let mut face = ir::Interface {pages: vec![ir::Page {size: ir::Size {width: 1, height: 1}, ..Default::default()}], ..Default::default()};
+        let mut face = ir::Interface {
+            pages: vec![ir::Page {
+                size: ir::Size {
+                    width: 1.0,
+                    height: 1.0,
+                },
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
         for asset in 0..sizes.len() {
-            face.assets.push(ir::Asset {path: format!("synthetic-{asset}.png"), kind: ir::AssetKind::Image(ir::ImageMeta {size: Some(ir::Size {width: 1, height: 1}), ..Default::default()})});
-            let mut widget = ir::Widget::new(format!("synthetic-{asset}"), ir::PageRef(0), ir::Rect::new(0, 0, 1, 1), ir::Kind::Image);
-            widget.images.push(ir::ImageUse::new(ir::AssetRef(asset), ir::Role::Background));
+            face.assets.push(ir::Asset {
+                path: format!("synthetic-{asset}.png"),
+                kind: ir::AssetKind::Image(ir::ImageMeta {
+                    size: Some(ir::Size {
+                        width: 1.0,
+                        height: 1.0,
+                    }),
+                    ..Default::default()
+                }),
+            });
+            let mut widget = ir::Widget::new(
+                format!("synthetic-{asset}"),
+                ir::PageRef(0),
+                ir::Rect::new(0, 0, 1, 1),
+                ir::Kind::Image,
+            );
+            widget
+                .images
+                .push(ir::ImageUse::new(ir::AssetRef(asset), ir::Role::Background));
             face.widgets.push(widget);
         }
         face.validate().unwrap();
@@ -508,8 +533,8 @@ mod tests {
             kind: ir::AssetKind::Image(ir::ImageMeta {
                 frames: 4,
                 size: Some(ir::Size {
-                    width: 32,
-                    height: 32,
+                    width: 32.0,
+                    height: 32.0,
                 }),
                 ..Default::default()
             }),
@@ -534,8 +559,8 @@ mod tests {
         let face = ir::Interface {
             pages: vec![ir::Page {
                 size: ir::Size {
-                    width: 32,
-                    height: 32,
+                    width: 32.0,
+                    height: 32.0,
                 },
                 ..Default::default()
             }],
