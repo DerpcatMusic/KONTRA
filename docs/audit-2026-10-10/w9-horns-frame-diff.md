@@ -33,8 +33,21 @@ The three leading extra v2 frames are the `sampler_simd::dispatch::v3` fused pol
 
 Largest-frame change: keep the existing sinc/anti-aliasing contract and replace the accumulator memory boundary with v1 Section::process_avx paired-channel SSE lane reduction and low64 store (`0cb7a8a0:src/engine/filter.rs:1040–1048`). Exact add grouping stays `(sum0[k]+sum1[k])`, then stereo pairs. Coefficients, fused/ordinary dot products, cursor, envelopes, dispatch selection and resampling quality are unchanged. The old accumulator spill is visible in largest.annotate.txt; one reload instruction accounts for11.3% of local samples in that frame (sampling/skid is not an exact instruction timing).
 
-Validation pending: 65540 reduction-bit cases, sinc/cubic/resampling tests, ignored paired fold-cost witness with legacy memory fold as RED, core area no-run, frozen original-driver candidate and quiet cold/warm Horns256 A/B. No READY or full CPU parity claim yet.
+Corrected per-worktree validation GREEN: 65540 reduction-bit cases, four resampler unit tests, 18 resampling integration tests, SIMD dispatch test, core area no-run. Ignored cost witness RED101 (legacy ratio0.995919) → GREEN0 (legacy1118671ns/candidate650912ns per1048576 folds, ratio0.581862). Isolated witness is diagnostic; workload gate decides acceptance. Candidate source5340a425, binary SHA256700d7ffcf5bbdfe396116324b9ddb3385fded4b6eed01caf2ca4467c5c14b946.
+
+| Cache | Version | Median µs | p99 µs | Underruns | Event/render heap calls |
+|---|---|---:|---:|---:|---|
+| cold | v1 | 167.863 | 295.746 | 0 | 0/0 |
+| cold | before | 2140.921 | 3306.043 | 0 | 0/0 |
+| cold | after | 2146.290 | 2534.998 | 0 | 0/0 |
+| warm | after | 2194.291 | 2540.469 | 0 | 0/0 |
+| warm | before | 2072.749 | 2459.517 | 0 | 0/0 |
+| warm | v1 | 175.333 | 326.816 | 0 | 0/0 |
+
+All six admitted rows QUIET; 141 steady blocks each, peak192 voices. Each cold eviction verified pages_after0. First v1 attempt contended by KURV and a later before-v2 attempt contended by pitch-tracker are preserved and excluded. The admitted quiet v1 cold row was retained across the foreign-drain interruption; other rows completed after both owners ACKed source-only.
+
+**REJECTED / DO NOT APPLY**: SSE fold cold median+0.25%, p99−23.32%; warm median+5.86%, p99+3.29%. No whole CPU speedup or v1 parity claim. Disassembly confirms the fold narrowed the bank dot loop from AVX256 (six YMM arithmetic instructions) to SSE128 (zero YMM arithmetic instructions). The isolated fold witness missed this surrounding-loop regression. Next correction must preserve the eight-lane wide accumulator through the fold.
 
 Receipt: `/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w9-horns-frame-diff-20261010/`. W9 profiling unit drained exit0; DIRECT W10 sent before kernel verification.
 
-NEXT: kernel RED/GREEN → freeze → quiet Horns256 A/B.
+NEXT: AVX256 fold correction; W10 owns the handed-off timing window.
