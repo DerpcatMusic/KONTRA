@@ -262,11 +262,15 @@ impl Watch {
         meters: &Meters,
         computer: &computer::Computer,
     ) -> bool {
+        use crate::plugin::ui_activity::Count;
+        let activity = &p.shared.ui_activity;
+        activity.add(Count::WatchCalls, 1);
         let now = Instant::now();
         let due = |at: Option<Instant>, every: u64| {
             at.is_none_or(|t| now - t >= Duration::from_millis(every))
         };
         if due(self.cpu_at, READOUT_MS) {
+            activity.add(Count::ReadoutPolls, 1);
             let since = self.cpu_at.map_or(0., |t| (now - t).as_secs_f32());
             self.cpu_at = Some(now);
             // Mean load since the last look, as Kontakt shows it. The peak
@@ -318,7 +322,9 @@ impl Watch {
                     part.native_revision.load(Ordering::Acquire).hash(&mut h);
                 }
             });
-            self.readouts = h.finish();
+            let readouts = h.finish();
+            activity.add(Count::ReadoutChanges, u64::from(readouts != self.readouts));
+            self.readouts = readouts;
         }
         let mut h = DefaultHasher::new();
         self.readouts.hash(&mut h);
@@ -387,7 +393,11 @@ impl Watch {
             self.poll_at = Some(now);
         }
         // The loading line sweeps until the first samples arrive.
-        moved || poll || animate
+        let wake = moved || poll || animate;
+        activity.add(Count::WatchWakes, u64::from(wake));
+        activity.add(Count::AnimationWakes, u64::from(animate));
+        activity.add(Count::PendingWakes, u64::from(poll));
+        wake
     }
 }
 
