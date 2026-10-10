@@ -1,0 +1,70 @@
+{
+  "task": "RPN two-RED followup",
+  "status": "SOURCE_ONLY_NOT_RUN",
+  "base": "34869c0e4cc64d6c756a1954427da0271f5f379e",
+  "implementation_commit": "08b226a23399285f1b2b15cf22b9ce8d187c8aec",
+  "branch": "pi/conflux-rpn-two-red-followup-20261010",
+  "worktree": "/home/derpcat/.t3/worktrees/KONTAKTO/pi-conflux-rpn-two-red-followup-20261010",
+  "validation_owner": "ROOT",
+  "production_source_changed": false,
+  "graph_present_in_isolated_checkout": false,
+  "implementation_files": [
+    {
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "sha256": "744ce38357d0e56ce4673d5b243f30a994e75051eab3f03bd27ae94da5ac6dbc",
+      "exclusive_spans": [
+        "sender_and_receiver_waits_stay_in_retained_generation_and_part",
+        "midi_and_nka_job_ids_wait_completion_and_instances_remain_independent"
+      ]
+    },
+    {
+      "path": "crates/sampler-ksp/tests/fixtures/rpn-service-neighbors.ksp",
+      "sha256": "41ec3a04bc8377c1a679d8e7ddcf59b4462557734f3f3065573da2536a99163e",
+      "exclusive_spans": ["synthetic NKA callback routing"]
+    }
+  ],
+  "sealed_red": {
+    "directory": "/mnt/Windows11/DEV_WORKSPACE/kontra-runs/conflux-parity-fixes-20261010T142539Z",
+    "source": "34869c0e4cc64d6c756a1954427da0271f5f379e",
+    "results_sha256": "3c921f957068b84364b1e1879f4a5c9296988630f90908ff06f2d6d32fcd898a",
+    "test_rpn_log_sha256": "1ef3b2ab5d5bb61e03a75ea59e2fab0ea57edd66f2b93f2ef30065ad1f9864a3",
+    "passed": 20,
+    "failed": 2,
+    "exit_code": 101,
+    "modified": false,
+    "source_diagnostics": {
+      "line_398": "collect_retired_plans expected 1, actual 0; not a voice-count assertion",
+      "line_482": "nka_effect.unwrap() is None; not midi.take_reply()"
+    }
+  },
+  "findings": [
+    {
+      "test": "sender_and_receiver_waits_stay_in_retained_generation_and_part",
+      "cause": "Fixture did not accept external NOTE_END; generation notes remained nonzero after callback flush.",
+      "correction": "Assert refused terminal retains one note and blocks retirement, then accept exactly one original-input terminal before exact retirement/stale-handle checks."
+    },
+    {
+      "test": "midi_and_nka_job_ids_wait_completion_and_instances_remain_independent",
+      "cause": "save_array_str in on note is rejected by the compiler with -1 and no NKA effect.",
+      "correction": "Keep note RPN/MIDI/NRPN, signal approved on pgs_changed for NKA, preserve failed completion and wrong-instance/duplicate checks, add wait checkpoints and advancing job IDs."
+    }
+  ],
+  "static_validation": {
+    "git_diff_check": "PASS",
+    "original_rpn_test_count": 22,
+    "rust_execution": "NOT_RUN",
+    "hooks_disabled_for_commit": true
+  },
+  "root_test_requests": [
+    {"package": "sampler-ksp", "target": "rpn", "filter": "sender_and_receiver_waits_stay_in_retained_generation_and_part", "exact": true},
+    {"package": "sampler-ksp", "target": "rpn", "filter": "midi_and_nka_job_ids_wait_completion_and_instances_remain_independent", "exact": true},
+    {"package": "sampler-ksp", "target": "rpn", "filter": null, "expected_test_count": 22},
+    {"package": "sampler-ksp", "target": "array_file", "filter": "nka_unapproved_note_callback_is_rejected_without_file_effect", "exact": true},
+    {"package": "sampler-ksp", "target": "midi_object", "filter": "wait_async_waits_for_midi_jobs_and_invalid_ids_continue_in_init_and_runtime", "exact": true},
+    {"package": "sampler-core", "target": "plans", "filter": "old_callbacks_and_tails_keep_their_plan_across_sample_exact_adoption", "exact": true}
+  ],
+  "root_request_flags": ["--release", "--locked", "--test-threads=1", "--color=never"],
+  "root_receipt_requirement": "New receipt at exact combined candidate SHA; do not relabel historical RED or reuse its artifacts as post-change validation.",
+  "unknowns": ["Rust compile/runtime results", "no-heap guard results", "combined-candidate interactions", "native Kontakt timing/ABI/parity", "host/NKA filesystem integration", "CPU/RAM performance"],
+  "new_native_claims": false
+}
