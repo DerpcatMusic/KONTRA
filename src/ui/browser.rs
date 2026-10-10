@@ -517,6 +517,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         let needs_access = dir
             .as_deref()
             .is_some_and(|dir| catalog.bank_status.keys().any(|bank| bank.starts_with(dir)));
+        let status = needs_access.then_some("Catalogued · loading limited");
         let (label, count, thumb, height, card) = match source {
             Source::Favorites => (
                 "Favorites".to_owned(),
@@ -564,7 +565,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
                         .map_or_else(|| library_label(name), |l| settings.library_name(l)),
                     preset_count(&grouped, name),
                     art,
-                    height + 2. * TIGHT,
+                    height + 2. * TIGHT + status.map_or(0., |_| SOURCE_ROW),
                     true,
                 )
             }
@@ -584,7 +585,6 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             _ => None,
         };
         let edit = dir.as_deref().and_then(|dir| library_name(ui, cx, dir));
-        let status = needs_access.then_some("Catalogued · loading limited");
         let el = source_row(
             id, label, count, thumb, height, card, chosen, progress, about, edit, status,
         );
@@ -1352,18 +1352,7 @@ fn source_row(
     edit: Option<El>,
     status: Option<&str>,
 ) -> El {
-    let thumb = if let Some(status) = status {
-        stack![
-            thumb,
-            col![caption(status).text_size(SMALL).id(format!("{id}-status"))]
-                .pad((TIGHT, SPACE))
-                .fill(Role::Raised)
-                .anchor(Align::Start, Align::Start)
-        ]
-        .w(Len::Pct(100.))
-    } else {
-        thumb
-    };
+    let banner_height = height - 2. * TIGHT - status.map_or(0., |_| SOURCE_ROW);
     #[cfg(test)]
     work(5, 1);
     let editing = edit.is_some();
@@ -1396,7 +1385,7 @@ fn source_row(
         .id(format!("{id}-count"))
         .disabled()
         .shrink(0);
-    let mark = block(2, if card { height - 2. * TIGHT } else { THUMB.1 })
+    let mark = block(2, if card { banner_height } else { THUMB.1 })
         .fill(if chosen {
             Fill::from(accent())
         } else {
@@ -1429,14 +1418,30 @@ fn source_row(
                     .anchor(Align::Start, Align::End),
             );
         }
-        col![
+        let mut rows = vec![
             stack(layers)
                 .w(Len::Pct(100.))
-                .h(height - 2. * TIGHT)
+                .h(banner_height)
                 .clip()
-        ]
-        .pad((TIGHT, TIGHT))
-        .h(height)
+                .shrink(0),
+        ];
+        if let Some(status) = status {
+            rows.push(
+                caption(status)
+                    .text_size(SMALL)
+                    .fill(secondary())
+                    .lines(1)
+                    .h(SOURCE_ROW)
+                    .id(format!("{id}-status"))
+                    .disabled()
+                    .shrink(0),
+            );
+        }
+        col(rows)
+            .gap(0)
+            .align(Align::Stretch)
+            .pad((TIGHT, TIGHT))
+            .h(height)
     } else {
         row![mark, thumb, name, count]
             .gap(SPACE)
