@@ -368,6 +368,25 @@ pub(crate) struct ModShape {
 }
 
 impl VoiceModulation {
+    /// Re-resolve sparse input cells off audio after a complete schema replacement.
+    pub(crate) fn remap_controls(
+        &mut self,
+        resolve: impl Fn(usize) -> Result<usize, Error>,
+    ) -> Result<(), Error> {
+        for program in &self.programs {
+            for (_, indices) in &program.controls {
+                resolve(indices[0])?;
+                resolve(indices[1])?;
+            }
+        }
+        for program in &mut self.programs {
+            for (_, indices) in &mut program.controls {
+                *indices = [resolve(indices[0])?, resolve(indices[1])?];
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn has_control_targets(&self) -> bool {
         self.programs.iter().any(|p| p.control)
     }
