@@ -1338,23 +1338,7 @@ fn events(
     } else {
         hovered.remove(&path);
     }
-    let local = ui.local(id.as_str()).unwrap_or(Point::ZERO);
-    let frame = ui
-        .scene()
-        .and_then(|scene| scene.surface(&id))
-        .map_or(Size::ZERO, |surface| surface.frame.size);
-    let e = session.event(
-        local.x / s,
-        local.y / s,
-        r.drag_delta.x / s,
-        r.drag_delta.y / s,
-        frame.width / s,
-        frame.height / s,
-        r.mods.shift,
-        r.mods.ctrl,
-        r.mods.alt,
-        r.mods.cmd,
-    )?;
+    let mut event = None;
     for m in tables(node, "modifiers")? {
         let name = string(&m, "name");
         let Value::Table(t) = val(&m, "value") else {
@@ -1389,6 +1373,26 @@ fn events(
         };
         for trigger in triggers {
             if let Ok(f) = t.get::<Function>(trigger) {
+                if event.is_none() {
+                    let local = ui.local(id.as_str()).unwrap_or(Point::ZERO);
+                    let frame = ui
+                        .scene()
+                        .and_then(|scene| scene.surface(&id))
+                        .map_or(Size::ZERO, |surface| surface.frame.size);
+                    event = Some(session.event(
+                        local.x / s,
+                        local.y / s,
+                        r.drag_delta.x / s,
+                        r.drag_delta.y / s,
+                        frame.width / s,
+                        frame.height / s,
+                        r.mods.shift,
+                        r.mods.ctrl,
+                        r.mods.alt,
+                        r.mods.cmd,
+                    )?);
+                }
+                let e = event.as_ref().expect("prepared for the first triggered handler");
                 session.call(f, e.clone())?;
             }
         }
@@ -1643,6 +1647,37 @@ mod tests {
         );
         let fresh: Table = make.call(true).unwrap();
         assert_eq!(flexibility(&fresh), (false, false));
+    }
+
+    #[test]
+    fn inactive_native_graph_does_not_allocate_lua_event_payloads() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("Resources/native_ui")).unwrap();
+        std::fs::write(
+            dir.path().join("Resources/native_ui/main.nui"),
+            b"return function() return nil end",
+        ).unwrap();
+        let package = Arc::new(Package::load(&dir.path().join("fixture.nki")).unwrap());
+        let session = Session::new(package, "main", vec![]).unwrap();
+        let graph: Table = session.lua().load(r#"
+            local root={kind='Group',path='root',props={},children={},modifiers={}}
+            for i=1,512 do
+                root.children[i]={kind='Text',path='root/'..i,props={text='Static'},children={},modifiers={}}
+            end
+            return root
+        "#).eval().unwrap();
+        let mut ui = super::super::theme::ui();
+        let mut hovered = HashSet::new();
+        events(&mut ui, &graph, &session, 0, 1., &mut hovered).unwrap();
+        session.lua().gc_collect().unwrap();
+        session.lua().gc_stop();
+        let before = session.lua().used_memory();
+        for _ in 0..32 {
+            events(&mut ui, &graph, &session, 0, 1., &mut hovered).unwrap();
+        }
+        let growth = session.lua().used_memory().saturating_sub(before);
+        assert!(growth < 16384, "inactive graph retained {growth} bytes of event garbage with collection stopped");
+        session.lua().gc_restart();
     }
 
     #[test]
