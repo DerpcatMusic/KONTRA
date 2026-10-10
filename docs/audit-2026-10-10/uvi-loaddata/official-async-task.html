@@ -1,0 +1,279 @@
+<!-- HTML header for doxygen 1.16.0 with doxygen-awesome extensions -->
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "https://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en-US">
+<head>
+<meta http-equiv="Content-Type" content="text/xhtml;charset=UTF-8"/>
+<meta http-equiv="X-UA-Compatible" content="IE=11"/>
+<meta name="generator" content="Doxygen 1.12.0"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>uvi-script: AsyncTask Class Reference</title>
+<link href="tabs.css" rel="stylesheet" type="text/css"/>
+<script type="text/javascript" src="jquery.js"></script>
+<script type="text/javascript" src="dynsections.js"></script>
+<script type="text/javascript" src="clipboard.js"></script>
+<link href="navtree.css" rel="stylesheet" type="text/css"/>
+<script type="text/javascript" src="navtreedata.js"></script>
+<script type="text/javascript" src="navtree.js"></script>
+<script type="text/javascript" src="resize.js"></script>
+<script type="text/javascript" src="cookie.js"></script>
+<link href="doxygen.css" rel="stylesheet" type="text/css" />
+<link href="doxygen-awesome.css" rel="stylesheet" type="text/css"/>
+<link href="doxygen-awesome-sidebar-only.css" rel="stylesheet" type="text/css"/>
+<link href="doxygen-awesome-sidebar-only-darkmode-toggle.css" rel="stylesheet" type="text/css"/>
+<link href="bootstrap-compat.css" rel="stylesheet" type="text/css"/>
+<link href="custom-overrides.css" rel="stylesheet" type="text/css"/>
+<link href="search-pagefind.css" rel="stylesheet" type="text/css"/>
+<link href="print.css" rel="stylesheet" type="text/css"/>
+<!-- Doxygen Awesome extensions -->
+<script type="text/javascript" src="doxygen-awesome-darkmode-toggle.js"></script>
+<script type="text/javascript" src="doxygen-awesome-fragment-copy-button.js"></script>
+<script type="text/javascript" src="doxygen-awesome-paragraph-link.js"></script>
+<script type="text/javascript" src="doxygen-awesome-interactive-toc.js"></script>
+<script type="text/javascript" src="search-pagefind.js"></script>
+<script type="text/javascript">
+    DoxygenAwesomeDarkModeToggle.init()
+    DoxygenAwesomeFragmentCopyButton.init()
+    DoxygenAwesomeParagraphLink.init()
+    DoxygenAwesomeInteractiveToc.init()
+</script>
+<script type="text/javascript">
+/* Print in the light palette whatever the screen theme: dark backgrounds are
+   dropped by the browser while their light text is kept. */
+(function() {
+  var root = document.documentElement, saved = null;
+  window.addEventListener('beforeprint', function() {
+    saved = root.className;
+    root.classList.remove('dark-mode');
+    root.classList.add('light-mode');
+  });
+  window.addEventListener('afterprint', function() {
+    if (saved !== null) { root.className = saved; saved = null; }
+  });
+})();
+</script>
+<!-- highlight.js for Lua syntax highlighting -->
+<link rel="stylesheet" href="highlight-github.css">
+<script src="highlight.min.js"></script>
+<script src="highlight-lua.min.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  function decodeHtml(html) {
+    var txt = document.createElement('textarea');
+    txt.innerHTML = html;
+    return txt.value;
+  }
+  document.querySelectorAll('div.fragment div.line').forEach(function(line) {
+    var saved = [];
+    var html = line.innerHTML;
+    html = html.replace(/<a\s[^>]*>.*?<\/a>/g, function(match) {
+      saved.push(match);
+      return '___SAVED' + (saved.length - 1) + '___';
+    });
+    html = html.replace(/<span\s+class="[^"]*">[^<]*<\/span>/g, function(match) {
+      saved.push(match);
+      return '___SAVED' + (saved.length - 1) + '___';
+    });
+    var text = decodeHtml(html);
+    var result = hljs.highlight(text, {language: 'lua', ignoreIllegals: true});
+    var highlighted = result.value;
+    for (var i = 0; i < saved.length; i++) {
+      highlighted = highlighted.replace('___SAVED' + i + '___', saved[i]);
+    }
+    line.innerHTML = highlighted;
+  });
+});
+</script>
+</head>
+<body>
+<div id="top"><!-- do not remove this div, it is closed by doxygen! -->
+<div id="titlearea">
+<table cellspacing="0" cellpadding="0">
+ <tbody>
+ <tr id="projectrow">
+  <td id="projectlogo"><img alt="Logo" src="logo.png"/></td>
+  <td id="projectalign">
+   <div id="projectname">uvi-script
+   </div>
+   <div id="projectbrief">Musical event scripting with Lua</div>
+  </td>
+ </tr>
+ <!-- Full-text search (search-pagefind.js); Doxygen's own search is disabled -->
+ <tr><td colspan="2"><div id="pf-search-row">
+  <!-- doxygen-awesome-darkmode-toggle.js appends its button to the parent of
+       #MSearchBox, which only exists with Doxygen's search; keep an empty one -->
+  <span id="MSearchBox" style="display: none"></span>
+  <button type="button" id="pf-search-trigger" class="pf-search-trigger" aria-label="Search the documentation">
+   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg>
+   <span class="pf-search-label">Search&#8230;</span>
+   <kbd aria-hidden="true"><span class="pf-kbd-mod">Ctrl</span> K</kbd>
+  </button>
+ </div></td></tr>
+ </tbody>
+</table>
+</div>
+<!-- end header part -->
+<!-- Generated by Doxygen 1.12.0 -->
+<script type="text/javascript">
+/* @license magnet:?xt=urn:btih:d3d9a9a6595521f9666a5e94cc830dab83b65699&amp;dn=expat.txt MIT */
+$(function() { codefold.init(0); });
+/* @license-end */
+</script>
+<script type="text/javascript" src="menudata.js"></script>
+<script type="text/javascript" src="menu.js"></script>
+<script type="text/javascript">
+/* @license magnet:?xt=urn:btih:d3d9a9a6595521f9666a5e94cc830dab83b65699&amp;dn=expat.txt MIT */
+$(function() {
+  initMenu('',false,false,'search.php','Search',true);
+});
+/* @license-end */
+</script>
+<div id="main-nav"></div>
+</div><!-- top -->
+<div id="side-nav" class="ui-resizable side-nav-resizable">
+  <div id="nav-tree">
+    <div id="nav-tree-contents">
+      <div id="nav-sync" class="sync"></div>
+    </div>
+  </div>
+  <div id="splitbar" style="-moz-user-select:none;" 
+       class="ui-resizable-handle">
+  </div>
+</div>
+<script type="text/javascript">
+/* @license magnet:?xt=urn:btih:d3d9a9a6595521f9666a5e94cc830dab83b65699&amp;dn=expat.txt MIT */
+$(function(){initNavTree('class_async_task.html',''); initResizable(true); });
+/* @license-end */
+</script>
+<div id="doc-content">
+<div class="header">
+  <div class="summary">
+<a href="#pub-methods">Public Member Functions</a> &#124;
+<a href="#pub-attribs">Public Attributes</a> &#124;
+<a href="class_async_task-members.html">List of all members</a>  </div>
+  <div class="headertitle"><div class="title">AsyncTask Class Reference<div class="ingroups"><a class="el" href="group___async.html">Async</a></div></div></div>
+</div><!--header-->
+<div class="contents">
+
+<p>An Asynchronous task.  
+ <a href="#details">More...</a></p>
+<div class="dynheader">
+Inheritance diagram for AsyncTask:</div>
+<div class="dyncontent">
+ <div class="center">
+  <img src="class_async_task.png" usemap="#AsyncTask_map" alt=""/>
+  <map id="AsyncTask_map" name="AsyncTask_map">
+<area href="class_async_browse_for_file_task.html" title="An Asynchronous task that browses for a file on disk." alt="AsyncBrowseForFileTask" shape="rect" coords="0,56,157,80"/>
+<area href="class_async_data_load_task.html" title="An Asynchronous task that reads a file from disk." alt="AsyncDataLoadTask" shape="rect" coords="167,56,324,80"/>
+<area href="class_async_data_save_task.html" title="An Asynchronous task that writes a file to disk." alt="AsyncDataSaveTask" shape="rect" coords="334,56,491,80"/>
+<area href="class_async_midi_file_load_task.html" title="An Asynchronous task that loads a MIDI file." alt="AsyncMidiFileLoadTask" shape="rect" coords="501,56,658,80"/>
+  </map>
+</div></div>
+<table class="memberdecls">
+<tr class="heading"><td colspan="2"><h2 class="groupheader"><a id="pub-methods" name="pub-methods"></a>
+Public Member Functions</h2></td></tr>
+<tr class="memitem:a594358a29d9f8e40d0da8b3fa1b7c5a1" id="r_a594358a29d9f8e40d0da8b3fa1b7c5a1"><td class="memItemLeft" align="right" valign="top">void&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="#a594358a29d9f8e40d0da8b3fa1b7c5a1">cancel</a> ()</td></tr>
+<tr class="memdesc:a594358a29d9f8e40d0da8b3fa1b7c5a1"><td class="mdescLeft">&#160;</td><td class="mdescRight">notify the task that it should be cancelled.  <br /></td></tr>
+<tr class="separator:a594358a29d9f8e40d0da8b3fa1b7c5a1"><td class="memSeparator" colspan="2">&#160;</td></tr>
+</table><table class="memberdecls">
+<tr class="heading"><td colspan="2"><h2 class="groupheader"><a id="pub-attribs" name="pub-attribs"></a>
+Public Attributes</h2></td></tr>
+<tr class="memitem:ae2caa6ab321a4f91938d78e54b4583ed" id="r_ae2caa6ab321a4f91938d78e54b4583ed"><td class="memItemLeft" align="right" valign="top"><a id="ae2caa6ab321a4f91938d78e54b4583ed" name="ae2caa6ab321a4f91938d78e54b4583ed"></a>
+int&#160;</td><td class="memItemRight" valign="bottom"><b>id</b></td></tr>
+<tr class="memdesc:ae2caa6ab321a4f91938d78e54b4583ed"><td class="mdescLeft">&#160;</td><td class="mdescRight">unique identifier for this task <br /></td></tr>
+<tr class="separator:ae2caa6ab321a4f91938d78e54b4583ed"><td class="memSeparator" colspan="2">&#160;</td></tr>
+<tr class="memitem:a96a964436e5f89a578d15f5ed26e50ff" id="r_a96a964436e5f89a578d15f5ed26e50ff"><td class="memItemLeft" align="right" valign="top"><a id="a96a964436e5f89a578d15f5ed26e50ff" name="a96a964436e5f89a578d15f5ed26e50ff"></a>
+bool&#160;</td><td class="memItemRight" valign="bottom"><b>finished</b></td></tr>
+<tr class="memdesc:a96a964436e5f89a578d15f5ed26e50ff"><td class="mdescLeft">&#160;</td><td class="mdescRight">a flag to indicate whether the task has been completed. Also true after the task was cancelled: check success or state. <br /></td></tr>
+<tr class="separator:a96a964436e5f89a578d15f5ed26e50ff"><td class="memSeparator" colspan="2">&#160;</td></tr>
+<tr class="memitem:a3cd619adf8282afdf2deb9f702514938" id="r_a3cd619adf8282afdf2deb9f702514938"><td class="memItemLeft" align="right" valign="top"><a id="a3cd619adf8282afdf2deb9f702514938" name="a3cd619adf8282afdf2deb9f702514938"></a>
+float&#160;</td><td class="memItemRight" valign="bottom"><b>progress</b></td></tr>
+<tr class="memdesc:a3cd619adf8282afdf2deb9f702514938"><td class="mdescLeft">&#160;</td><td class="mdescRight">a value between 0 and 1 to be notified of the task's progress. <br /></td></tr>
+<tr class="separator:a3cd619adf8282afdf2deb9f702514938"><td class="memSeparator" colspan="2">&#160;</td></tr>
+<tr class="memitem:a99a3db717ec299bb642220ac7c4b7f2e" id="r_a99a3db717ec299bb642220ac7c4b7f2e"><td class="memItemLeft" align="right" valign="top"><a id="a99a3db717ec299bb642220ac7c4b7f2e" name="a99a3db717ec299bb642220ac7c4b7f2e"></a>
+bool&#160;</td><td class="memItemRight" valign="bottom"><b>success</b></td></tr>
+<tr class="memdesc:a99a3db717ec299bb642220ac7c4b7f2e"><td class="mdescLeft">&#160;</td><td class="mdescRight">a flag to indicate whether the task has been successful. <br /></td></tr>
+<tr class="separator:a99a3db717ec299bb642220ac7c4b7f2e"><td class="memSeparator" colspan="2">&#160;</td></tr>
+<tr class="memitem:a85bfc35504f740735890192f5ae04426" id="r_a85bfc35504f740735890192f5ae04426"><td class="memItemLeft" align="right" valign="top"><a id="a85bfc35504f740735890192f5ae04426" name="a85bfc35504f740735890192f5ae04426"></a>
+string&#160;</td><td class="memItemRight" valign="bottom"><b>state</b></td></tr>
+<tr class="memdesc:a85bfc35504f740735890192f5ae04426"><td class="mdescLeft">&#160;</td><td class="mdescRight">a string to indicate the current task state (pending | running | finished | cancelled) <br /></td></tr>
+<tr class="separator:a85bfc35504f740735890192f5ae04426"><td class="memSeparator" colspan="2">&#160;</td></tr>
+</table>
+<a name="details" id="details"></a><h2 class="groupheader">Detailed Description</h2>
+<div class="textblock"><p>An Asynchronous task. </p>
+<p>a task object that performs an operation asynchronously </p>
+</div><h2 class="groupheader">Member Function Documentation</h2>
+<a id="a594358a29d9f8e40d0da8b3fa1b7c5a1" name="a594358a29d9f8e40d0da8b3fa1b7c5a1"></a>
+<h2 class="memtitle"><span class="permalink"><a href="#a594358a29d9f8e40d0da8b3fa1b7c5a1">&#9670;&#160;</a></span>cancel()</h2>
+
+<div class="memitem">
+<div class="memproto">
+      <table class="memname">
+        <tr>
+          <td class="memname">void AsyncTask::cancel </td>
+          <td>(</td>
+          <td class="paramname"><span class="paramname"><em></em></span></td><td>)</td>
+          <td></td>
+        </tr>
+      </table>
+</div><div class="memdoc">
+
+<p>notify the task that it should be cancelled. </p>
+<p>N.B.: Cancelling is also asynchronous, the task will not be cancelled immediately. If the task is cancelled in the middle of an operation (i.e. purging 1000 keygroups), the Engine is left in an indeterminate state and this is the script's responsibility to restore a valid state. </p>
+
+</div>
+</div>
+</div><!-- contents -->
+</div><!-- doc-content -->
+<!-- HTML footer for doxygen with doxygen-awesome-css -->
+<!-- start footer part -->
+<div id="nav-path" class="navpath"><!-- id is needed for treeview function! -->
+  <ul>
+    <li class="navelem"><a class="el" href="class_async_task.html">AsyncTask</a></li>
+    <li class="footer"><a href="print.html">Print / Save as PDF</a></li>
+  </ul>
+</div>
+<script type="text/javascript">
+/* In the navigation tree a section only unfolds from its arrow, so clicking the
+   section itself takes you to the page while hiding what it contains. Relay the
+   click to the arrow as well. Expanding only: collapsing the section you are
+   navigating into would hide the page you just asked for. */
+$(function() {
+  var COLLAPSED = '►'; /* the arrow glyph the tree uses while folded */
+  /* A row is <div class="item"><a>arrow</a><span class="label"><a>text</a></span></div>;
+     rows without children carry no arrow link, and unfold() then does nothing. */
+  var unfold = function($item) {
+    var toggle = $item.children('a').first();
+    if (toggle.length && toggle.find('span.arrow').text().trim() === COLLAPSED) {
+      toggle[0].onclick();
+      return true;
+    }
+    return false;
+  };
+  /* Sections whose link is an anchor on the current page: no navigation happens,
+     so unfolding on click is enough. */
+  $(document).on('click', '#nav-tree div.item > span.label > a', function() {
+    unfold($(this).closest('div.item'));
+  });
+  /* Sections that point at another page reload the document, and the rebuilt tree
+     highlights the destination without opening it. Unfold it once it is marked,
+     which happens asynchronously after the tree has fetched its child data. */
+  var openSelected = function() {
+    var item = $('#nav-tree div.item.selected');
+    if (!item.length) { return false; }
+    unfold(item);
+    return true;
+  };
+  if (!openSelected()) {
+    var tree = document.getElementById('side-nav') || document.body;
+    var observer = new MutationObserver(function() {
+      if (openSelected()) { observer.disconnect(); }
+    });
+    observer.observe(tree, { childList: true, subtree: true, attributes: true,
+                             attributeFilter: ['class'] });
+    /* Give up rather than observe forever on pages with no matching entry. */
+    setTimeout(function() { observer.disconnect(); }, 10000);
+  }
+});
+</script>
+</body>
+</html>
