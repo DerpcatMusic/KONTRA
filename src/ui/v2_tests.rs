@@ -5837,7 +5837,7 @@ fn an_unsized_axis_does_not_discard_the_authored_other_axis() {
             resolved.widgets[0].rect.width,
             resolved.widgets[0].rect.height
         ),
-        (220, 18)
+        (220.0, 18.0)
     );
 }
 
