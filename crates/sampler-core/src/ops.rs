@@ -316,7 +316,9 @@ pub enum Op {
     ZoneParameter {
         zone: u16,
         parameter: u16,
-        selectors: [Option<i32>; 3],
+        selectors: [i32; 3],
+        // A presence mask keeps the shared Instruction within its 32-byte budget.
+        present: u8,
         local: u16,
     },
     EngineDisplay {
@@ -1288,12 +1290,16 @@ impl Runtime {
                 zone,
                 parameter,
                 selectors,
+                present,
                 local,
             } => {
                 let parameter = self.reg(id, parameter)?;
                 let parameter = selectors
                     .iter()
-                    .position(|selector| selector.map(i64::from) == Some(parameter))
+                    .enumerate()
+                    .position(|(index, selector)| {
+                        present & (1 << index) != 0 && i64::from(*selector) == parameter
+                    })
                     .map(|index| {
                         [
                             crate::ZoneParameter::Group,
