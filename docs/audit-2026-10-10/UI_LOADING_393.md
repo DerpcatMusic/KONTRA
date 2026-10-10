@@ -1,6 +1,7 @@
 # Authored UI loading and script-call coverage
 
-Runtime source: `f199980d` plus W3 picture reduction slice `4a05318d`.
+Runtime source: `f199980d` plus W3 picture reduction slice `4a05318d` and authored
+control renderer `9d08a583`.
 Receipt directory: `/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w3-ui-load-parity-393`.
 
 The target is the library's authored KSP or UVI UI. Full editor pixel equality is
@@ -35,6 +36,7 @@ shared-target build failures are transport failures and are excluded.
 | Visibility and z-order | IR visibility and ordered children → renderer | Preserve script order and hidden state; a source reference count is not an executed-call receipt. |
 | Text and font state | Text properties and state styles → renderer | Paths exist; no blanket typography acceptance claim. |
 | Plain `ui_slider` | Authored kind → renderer | Follow-up removes the dimension-based dial choice. Authored `MOUSE_BEHAVIOUR` axis changes slider pixels; `ui_knob` retains its dial pixels. W2 separately owns input semantics. |
+| Menu selected index and hidden selected item | KSP getter → menu IR → caption/popup | Source-review gaps routed to W5: the getter has no derived selected-index handling, and the caption filters hidden items before finding the selection. Runtime acceptance is pending. |
 
 The detailed `KSP-UI-CALL-CHECKLIST.json` includes all eleven Kontakt libraries
 and 835 observed instruments/multis from the complete historical census at
@@ -68,11 +70,27 @@ W10's current metadata-only checklist covers 26 UVI banks / 660 programs:
 `/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w10-uvi-scan-344/scripted-ui-bank-checklist.csv`
 and `scripted-ui-checklist-PROVENANCE.json`. Protected runtime cells are
 UNKNOWN/PARKED; frozen v1 cells needing the official reader are unavailable.
-Trusted source `b34c08e6` has three authored RED findings: missing `setHeight`,
-missing `Button.push`, and an invented constructor grid. W10 owns their v1
-`4bffbb18` port, module/resource semantics, publication and production pixel
-receipts. A prepared port or a recognized call does not establish runtime support;
-its GREEN/no-run/READY results are pending and must be cited separately.
+W10 delivered READY `bcf09ee2` after corrected behavioral RED3+9 and targeted
+GREEN22/22, area no-run, renderer build and a shared asset-worker pixel test.
+Its v1 `4bffbb18` port covers `setHeight`, `Button.push`, authored constructor
+positions, embedded module semantics, strip orientation and publication.
+Receipt: `w10-uvi-scan-344/ui-modules-READY.json`. These trusted fixtures do not
+certify the 26 installed banks or 660 protected programs.
+
+W2 delivered authored input-axis READY `ec53b382` with fixture `7aaa2d98`:
+24 widget tests and no-run pass. Its fresh shipping-source Native footer witness
+also passes: all six fields retain seven characters, equal the saved string,
+and fit a 44px frame/viewport with 44px advance and zero insets.
+Receipt: `w2-footer-current.log`. No new font workaround is required.
+
+The [NI control-parameter reference](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-parameters)
+defines the selected menu index as a getter. The
+[NI UI-command reference](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands)
+specifies menu `get_control_par(VALUE)` as an index and keeps a selected hidden
+item displayed until deselected. W5 confirms pending `f2c59e2c` covers the getter
+and hidden-entry lookup. W3 owns the caption fix: v1 `perf_view::caption_of`
+selects from all authored entries. The prepared pixel regression has not run;
+this source finding is not a measured library failure.
 
 ## Authored control type follow-up
 
