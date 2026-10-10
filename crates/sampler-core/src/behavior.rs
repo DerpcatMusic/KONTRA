@@ -36,6 +36,32 @@ pub enum WaitLifetime {
     Callback,
 }
 
+/// Script fade shapes. Discriminants are internal selectors, not vendor ABI values.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(i32)]
+pub enum FadeCurve {
+    #[default]
+    Linear = 0,
+    EqualPower = 1,
+    SCurve = 2,
+    Exponential = 3,
+    Logarithmic = 4,
+}
+
+impl FadeCurve {
+    /// Decode an internal script selector; unknown shapes must not silently change a fade.
+    pub fn from_index(value: i32) -> Option<Self> {
+        match value {
+            0 => Some(Self::Linear),
+            1 => Some(Self::EqualPower),
+            2 => Some(Self::SCurve),
+            3 => Some(Self::Exponential),
+            4 => Some(Self::Logarithmic),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum Instruction {
     /// Commit/suppress the owner's pending original attack, without another note ID.
@@ -361,6 +387,8 @@ pub enum Instruction {
         frames: u16,
         out: bool,
         stop: bool,
+        /// Internal shape selector register; omission retains a linear fade.
+        curve: Option<u16>,
     },
     /// Start plan-owned program `program` in this callback's plan and
     /// performance context; it runs before this callback continues. Full
@@ -793,8 +821,14 @@ impl Program {
             if let Instruction::WriteEnvelope { group, local, .. } = *op {
                 locals = locals.max(usize::from(group.max(local)) + 1);
             }
-            if let Instruction::FadeEvent { event, frames, .. } = *op {
-                locals = locals.max(usize::from(event.max(frames)) + 1);
+            if let Instruction::FadeEvent {
+                event,
+                frames,
+                curve,
+                ..
+            } = *op
+            {
+                locals = locals.max(usize::from(event.max(frames).max(curve.unwrap_or(0))) + 1);
             }
             if let Instruction::ReadNoteCell { cell, .. }
             | Instruction::WriteNoteCell { cell, .. } = *op
@@ -2436,12 +2470,21 @@ impl Runtime {
                 frames,
                 out,
                 stop,
+                curve,
             } => {
                 let plan = self.behavior_plan(owner)?;
                 let event = *self.local_cell_mut(id, event)?;
                 let frames = u32::try_from(*self.local_cell_mut(id, frames)?)
                     .map_err(|_| Error::InvalidInput)?;
-                self.fade_event(plan, event, frames, out, stop)?;
+                let curve = match curve {
+                    Some(local) => {
+                        let index = i32::try_from(*self.local_cell_mut(id, local)?)
+                            .map_err(|_| Error::InvalidInput)?;
+                        FadeCurve::from_index(index).ok_or(Error::InvalidInput)?
+                    }
+                    None => FadeCurve::Linear,
+                };
+                self.fade_event(plan, event, frames, out, stop, curve)?;
             }
             Instruction::WriteControl { control, local } => {
                 let plan = self.behavior_plan(owner)?;
@@ -2873,6 +2916,34 @@ impl Runtime {
 #[cfg(test)]
 mod shared_program_tests {
     use super::*;
+
+    #[test]
+    fn fade_curve_selectors_and_operand_cells_are_admitted_explicitly() {
+        for curve in [
+            FadeCurve::Linear,
+            FadeCurve::EqualPower,
+            FadeCurve::SCurve,
+            FadeCurve::Exponential,
+            FadeCurve::Logarithmic,
+        ] {
+            assert_eq!(FadeCurve::from_index(curve as i32), Some(curve));
+        }
+        for unknown in [-1, 5, i32::MIN, i32::MAX] {
+            assert_eq!(FadeCurve::from_index(unknown), None);
+        }
+        let program = Program::new(vec![
+            Instruction::FadeEvent {
+                event: 0,
+                frames: 1,
+                out: false,
+                stop: false,
+                curve: Some(9),
+            },
+            Instruction::End,
+        ])
+        .unwrap();
+        assert_eq!(program.locals, 10);
+    }
 
     #[test]
     fn entries_share_code_and_unpadded_text_but_keep_admission_requirements() {

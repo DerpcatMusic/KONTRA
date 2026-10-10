@@ -155,6 +155,61 @@ fn note_volume_pan_and_fades_shape_the_voice() {
 }
 
 #[test]
+fn fade_curve_array_selectors_reach_audio_and_use_time_mirrored_fade_out() {
+    // Independent quarter-time values from the documented five equations.
+    let gains = [
+        (0.25, 0.75),
+        (0.38268343, 0.92387953),
+        (0.14644661, 0.85355339),
+        (0.0625, 0.5625),
+        (0.4375, 0.9375),
+    ];
+    for (index, (fade_in, fade_out)) in gains.into_iter().enumerate() {
+        for out in [false, true] {
+            for block in [1, 17, 128] {
+                let call = if out {
+                    "fade_out($EVENT_ID,100000,$stop,%curves[$index])"
+                } else {
+                    "fade_in($EVENT_ID,100000,%curves[$index])"
+                };
+                let mut rt = runtime(&format!(
+                    "on init declare $index := {index} declare $stop := 0
+                     declare %curves[5] := ($NI_FADE_LINEAR,$NI_FADE_EQUAL_POWER,
+                     $NI_FADE_S_CURVE,$NI_FADE_EXPONENTIAL,$NI_FADE_LOGARITHMIC)
+                     end on on note {call} end on"
+                ));
+                rt.trigger(input(60), 60, 1.).unwrap();
+                let mut audio = [[0.; 2]; 1201];
+                for chunk in audio.chunks_mut(block) {
+                    rt.render(chunk).unwrap();
+                }
+                let gain = if out { fade_out } else { fade_in };
+                assert!(
+                    close(audio[1200], [0.5 * gain; 2]),
+                    "curve {index}, out {out}, block {block}: {:?}",
+                    audio[1200]
+                );
+                assert!(rt.take_fault().is_none());
+            }
+        }
+    }
+}
+
+#[test]
+fn fade_curve_unknown_selector_faults_without_a_silent_linear_substitution() {
+    let mut rt = runtime(
+        "on init declare $curve := 99 end on
+         on note fade_out($EVENT_ID,100000,1,$curve) end on",
+    );
+    rt.trigger(input(60), 60, 1.).unwrap();
+    assert!(matches!(
+        rt.take_fault(),
+        Some((_, sampler_core::Error::InvalidInput))
+    ));
+    assert!(close(level(&mut rt), [0.5; 2]));
+}
+
+#[test]
 fn engine_volume_and_purge_address_one_group() {
     let mut rt = runtime(
         "on init
