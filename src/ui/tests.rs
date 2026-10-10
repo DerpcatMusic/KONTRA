@@ -638,6 +638,14 @@ fn the_browser_finds_by_library_and_folder() {
     tap(&mut h, Key::Escape);
     // The list glides back to the chosen library: let it land first.
     h.idle(30);
+    let scene = h.ui.scene().unwrap();
+    let selected = scene.surface("library-42").unwrap().frame;
+    let sources = scene.surface("browser-sources-false").unwrap().frame;
+    assert!(
+        selected.y >= sources.y
+            && selected.y + selected.size.height <= sources.y + sources.size.height + 0.5,
+        "clearing library search keeps the selected card in view"
+    );
     h.drag("library-42", "library-41");
     let settings = p.shared.libraries.settings();
     assert_eq!(settings.sort, crate::library::Sort::Custom);
