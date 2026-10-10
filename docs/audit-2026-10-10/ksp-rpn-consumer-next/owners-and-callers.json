@@ -1,0 +1,42 @@
+{
+  "source_sha": "3cc0f94ea625715028897d4611c0d477ccfed724",
+  "status": "SOURCE_INSPECTION_ONLY_REVIEW_BLOCKED",
+  "span_manifest": "source-trace.json",
+  "callers": [
+    {
+      "entry": "sampler_ksp::bind_modules",
+      "callers": ["Script::bind", "bind_controller_chain", "sampler-kontakt/src/load.rs production lower hook", "existing sampler-ksp/sampler-core source tests"],
+      "ownership": "Each compiled module gets a dense ScriptInstanceId and ordered stage; Program retains physical source_slot. Prepared is instrument-owned. Ordinary compiler binding is coherent, but public setter/reorder stage identity is the unresolved review blocker."
+    },
+    {
+      "entry": "lower::Gen::builtin / sys",
+      "callers": ["compile_initialized_inner callback lowering", "nested named functions keyed by context, callback discriminator, signal"],
+      "ownership": "set_rpn/set_nrpn emit typed register operands. RPN_ADDRESS/RPN_VALUE emit private callback reads. Register sizing and performance admission were extended for the typed instruction; generic host services remain unchanged."
+    },
+    {
+      "entry": "Runtime::behavior_step -> send_parameter",
+      "callers": ["actual note callback dispatch", "actual controller callback dispatch", "routed control/listener callbacks with performance context"],
+      "ownership": "Sender Continuation owner resolves PlanId; source program resolves instance/slot; captured context supplies physical origin/performance/channels. Each admitted receiver owns raw address/value and source instance, receiving stage and retained PlanId. Existing arena/ready/deferred/wait ownership is reused. Bare plan emission is unsupported."
+    },
+    {
+      "entry": "Prepared parameter table / runtime generation lifecycle",
+      "callers": ["bind_modules", "Prepared::with_programs reset", "Prepared::with_stages bounds guard", "Runtime new and plan update installation/retirement"],
+      "ownership": "Table is off-audio, per Prepared. Callback payload is private, not a global host slot. Old callbacks intentionally retain old generation; exact arena generation prevents retired/foreign handles. IMPORTANT: bounds/reset handling is not full stage identity validation; same-length replacement/reorder and wrong in-range association remain unresolved."
+    }
+  ],
+  "new_exports": ["sampler_core::ParameterKind", "sampler_core::ParameterProgram", "Prepared::with_parameter_programs", "Instruction::SendParameter", "Instruction::ReadParameter"],
+  "reserved_and_changed_production_paths": [
+    "crates/sampler-ksp/src/lib.rs", "crates/sampler-ksp/src/lower.rs", "crates/sampler-ksp/src/builtins.rs",
+    "crates/sampler-core/src/behavior.rs", "crates/sampler-core/src/plan_programs.rs", "crates/sampler-core/src/prepare.rs", "crates/sampler-core/src/stages.rs", "crates/sampler-core/src/lib.rs"
+  ],
+  "preserved_neighbors": [
+    "Numeric PGS SharedStore + PGS_SIGNAL and current callback registration",
+    "MIDI_SERVICE/ARRAY_FILE_SERVICE IDs, instance/job completion, async payload and waits",
+    "Plugin part-slot/source-epoch/generation effect fences and v2 ingress",
+    "Raw external MIDI RPN bend sensitivity consumer; not repurposed as inter-script delivery",
+    "Frozen fade/mod/remap/UVI endpoint paths; no changes",
+    "Initialization evaluator warning/no-op; no replay"
+  ],
+  "tests": "sampler-ksp target rpn: 14 authored qualified tests plus one own .ksp fixture, all NOT_RUN. See tests.json. Range/shrink tests do not cover the preliminary stage-identity objection.",
+  "root_notification": "Reserved shared spans reported before implementation; root acknowledged isolation. Additional stages.rs orphan guard was reported. Root later relayed the unresolved independent review; source 3cc is preserved unchanged pending fresh followup."
+}
