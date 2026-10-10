@@ -1258,6 +1258,14 @@ impl Lowering<'_> {
             }
             ir::ModulationSource::Lfo(lfo) => ModSource::Lfo(Lfo {
                 shape: match lfo.shape {
+                    ir::LfoShape::DigitalSine { level, fade_ms } => LfoShape::DigitalSine {
+                        level,
+                        fade: crate::KontaktLfoFade::from_saved(
+                            fade_ms,
+                            self.rate as f32,
+                        )
+                        .map_err(core(Stage::Modulation, owner))?,
+                    },
                     ir::LfoShape::SineScaled(level) => LfoShape::SineScaled(level),
                     ir::LfoShape::Zero => LfoShape::Zero,
                     ir::LfoShape::Sine => LfoShape::Sine,
