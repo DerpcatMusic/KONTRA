@@ -138,10 +138,10 @@ impl ResourceContainer {
                         reason: "Resource exceeds 32 MiB".into(),
                     });
                 }
-                // Use the stored ID, not a guessed ordinal. The shared reader
-                // rejects duplicate IDs, overflow, and reads above the budget.
+                // The normalized name selected this exact item and range.
+                // Stored-ID ambiguity belongs only to the ID-addressed API.
                 files
-                    .read_member(&mut self.file, item.index, 32 << 20)
+                    .read_item(&mut self.file, item, 32 << 20)
                     .map(Some)
                     .map_err(|e| LoadError::decode(&self.path, "resource member", e))
             }
