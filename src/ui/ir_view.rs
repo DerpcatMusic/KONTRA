@@ -985,7 +985,11 @@ pub(super) fn widget_state(
                     input.menu = if input.menu == Some(n) { None } else { Some(n) };
                 }
             }
-            let label = at.map(|a| shown[a].text.clone()).unwrap_or_default();
+            let label = items
+                .iter()
+                .find(|i| f64::from(i.value) == v)
+                .map(|i| i.text.clone())
+                .unwrap_or_default();
             match strip {
                 Some(p) => stack![
                     block(w, h)
