@@ -125,6 +125,29 @@ fn authored_script_uses_new_native_ownership_after_input_release_without_heap() 
 }
 
 #[test]
+fn fade_curve_signatures_accept_documented_forms_and_reject_missing_stop_or_extra_args() {
+    for call in [
+        "fade_in($EVENT_ID,1000)",
+        "fade_in($EVENT_ID,1000,$NI_FADE_EQUAL_POWER)",
+        "fade_out($EVENT_ID,1000,0)",
+        "fade_out($EVENT_ID,1000,1,$NI_FADE_LOGARITHMIC)",
+    ] {
+        let source = format!("on note {call} end on");
+        let script = compile(&source, 48000, Limits::LIBRARY).unwrap();
+        assert!(script.warnings().is_empty(), "{call}");
+    }
+    for call in [
+        "fade_in($EVENT_ID)",
+        "fade_in($EVENT_ID,1000,$NI_FADE_LINEAR,1)",
+        "fade_out($EVENT_ID,1000)",
+        "fade_out($EVENT_ID,1000,1,$NI_FADE_LINEAR,1)",
+    ] {
+        let source = format!("on note {call} end on");
+        assert!(compile(&source, 48000, Limits::LIBRARY).is_err(), "{call}");
+    }
+}
+
+#[test]
 fn pgs_callback_alias_and_canonical_name_share_duplicate_detection() {
     for (first, second) in [
         ("pgs_changed", "_pgs_changed"),

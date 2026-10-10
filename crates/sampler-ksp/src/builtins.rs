@@ -127,7 +127,7 @@ builtins! {
     ChangeVelo "change_velo" [I I] 0 Void;
     ChangeNote "change_note" [I I] 0 Void;
     FadeIn "fade_in" [I I I] 1 Void;
-    FadeOut "fade_out" [I I I] 1 Void;
+    FadeOut "fade_out" [I I I I] 1 Void;
     SetEventPar "set_event_par" [I I I] 0 Void;
     GetEventPar "get_event_par" [I I] 0 Int;
     SetEventParArr "set_event_par_arr" [I I I I] 0 Void;
@@ -636,6 +636,11 @@ const VALUED: &[(&str, i32)] = &[
 /// Constants whose numeric value carries meaning.
 pub fn constant(name: &str) -> Option<i32> {
     if let Some(value) = match name {
+        "$NI_FADE_LINEAR" => Some(sampler_core::FadeCurve::Linear as i32),
+        "$NI_FADE_EQUAL_POWER" => Some(sampler_core::FadeCurve::EqualPower as i32),
+        "$NI_FADE_S_CURVE" => Some(sampler_core::FadeCurve::SCurve as i32),
+        "$NI_FADE_EXPONENTIAL" => Some(sampler_core::FadeCurve::Exponential as i32),
+        "$NI_FADE_LOGARITHMIC" => Some(sampler_core::FadeCurve::Logarithmic as i32),
         "$CURRENT_EVENT" => Some(sampler_core::MIDI_CURRENT_EVENT),
         "$EVENT_PAR_MIDI_COMMAND" => Some(sampler_core::midi_par::COMMAND),
         "$EVENT_PAR_MIDI_BYTE_1" => Some(sampler_core::midi_par::BYTE_ONE),
