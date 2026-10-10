@@ -343,19 +343,35 @@ fn authored_uvi_value_units_match_v1_readouts_without_changing_raw_values() {
         ("SemiTones", -3., "-3 st"),
     ] {
         for kind in ["Knob", "NumBox"] {
-            let source = format!("<UVI4><Program Name='P'><EventProcessors><ScriptProcessor><script><![CDATA[setSize(160,120); {kind}{{'Readout',{raw},-10000,10000,unit=Unit.{unit},bounds={{10,10,140,90}},showLabel=false}}]]></script></ScriptProcessor></EventProcessors></Program></UVI4>");
-            let host = sampler_uvi::script::ScriptHost::new(&source, (), Default::default()).unwrap();
+            let source = format!(
+                "<UVI4><Program Name='P'><EventProcessors><ScriptProcessor><script><![CDATA[setSize(160,120); {kind}{{'Readout',{raw},-10000,10000,unit=Unit.{unit},bounds={{10,10,140,90}},showLabel=false}}]]></script></ScriptProcessor></EventProcessors></Program></UVI4>"
+            );
+            let host =
+                sampler_uvi::script::ScriptHost::new(&source, (), Default::default()).unwrap();
             let face = host.interface();
             let mut oracle = face.clone();
             oracle.widgets[0].value_text = Some(expected.into());
             let render = |f: &ir::Interface| {
                 let mut values = ir_view::Values::default();
                 let assets = ir_view::Assets::default();
-                let ui = settle(160., 120., |ui| ir_view::view(ui, f, ir::PageRef(0), &assets, ir::Presentation::Bitmap, 1., &mut values));
+                let ui = settle(160., 120., |ui| {
+                    ir_view::view(
+                        ui,
+                        f,
+                        ir::PageRef(0),
+                        &assets,
+                        ir::Presentation::Bitmap,
+                        1.,
+                        &mut values,
+                    )
+                });
                 assert_eq!(values.values().copied().collect::<Vec<_>>(), vec![raw]);
                 pixels(&ui, 160, 120)
             };
-            assert!(render(&face) == render(&oracle), "{kind} {unit} readout must match v1");
+            assert!(
+                render(&face) == render(&oracle),
+                "{kind} {unit} readout must match v1"
+            );
             assert_eq!(host.control_values()[0].1, raw);
         }
     }
@@ -371,13 +387,28 @@ fn authored_uvi_value_captions_overlay_skin_without_changing_geometry() {
     let render = |f: &ir::Interface| {
         let mut values = ir_view::Values::default();
         let mut assets = ir_view::Assets::default();
-        assets.sync(f, ir::Presentation::Bitmap, |_| Some(picture(vec![solid(32, 32, [40, 50, 60, 255])])));
-        let ui = settle(160., 120., |ui| ir_view::view(ui, f, ir::PageRef(0), &assets, ir::Presentation::Bitmap, 1., &mut values));
+        assets.sync(f, ir::Presentation::Bitmap, |_| {
+            Some(picture(vec![solid(32, 32, [40, 50, 60, 255])]))
+        });
+        let ui = settle(160., 120., |ui| {
+            ir_view::view(
+                ui,
+                f,
+                ir::PageRef(0),
+                &assets,
+                ir::Presentation::Bitmap,
+                1.,
+                &mut values,
+            )
+        });
         let frame = ui.scene().unwrap().surface("ir-0").unwrap().frame;
         assert_eq!(frame.size, Size::new(140., 90.));
         pixels(&ui, 160, 120)
     };
-    assert_ne!(render(&face), render(&hidden), "authored showValue must paint its caption over the strip");
+    assert!(
+        render(&face) != render(&hidden),
+        "authored showValue must paint its caption over the strip"
+    );
     assert_eq!(host.control_values()[0].1, 0.375);
 }
 
@@ -1878,22 +1909,47 @@ fn widget_gesture_uses_authored_axis_and_sensitivity_without_shape_guesses() {
         ("ui_slider $s(0,1000000)", 200, 40, Some(-1000), true),
         ("ui_knob $s(0,1000000,1)", 200, 40, None, true),
     ] {
-        let mouse = behaviour.map(|value| format!("set_control_par(get_ui_id($s),$CONTROL_PAR_MOUSE_BEHAVIOUR,{value})")).unwrap_or_default();
-        let source = format!("on init\n set_ui_height_px(260)\n declare {kind}\n move_control_px($s,20,20)\n set_control_par(get_ui_id($s),$CONTROL_PAR_WIDTH,{width})\n set_control_par(get_ui_id($s),$CONTROL_PAR_HEIGHT,{height})\n {mouse}\nend on");
-        let script = sampler_ksp::compile(&source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+        let mouse = behaviour
+            .map(|value| {
+                format!("set_control_par(get_ui_id($s),$CONTROL_PAR_MOUSE_BEHAVIOUR,{value})")
+            })
+            .unwrap_or_default();
+        let source = format!(
+            "on init\n set_ui_height_px(260)\n declare {kind}\n move_control_px($s,20,20)\n set_control_par(get_ui_id($s),$CONTROL_PAR_WIDTH,{width})\n set_control_par(get_ui_id($s),$CONTROL_PAR_HEIGHT,{height})\n {mouse}\nend on"
+        );
+        let script =
+            sampler_ksp::compile(&source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
         let face = ir_view::resolved(&script.ui(&|_| None).unwrap());
         let (horizontal, captured_x) = audit_motion(&face, 0, 10., 0.);
         let (upward, captured_y) = audit_motion(&face, 0, 0., -10.);
         assert!(captured_x && captured_y);
-        let (active, inactive) = if vertical {(upward, horizontal)} else {(horizontal, upward)};
-        assert!(active > 0., "{kind} {width}x{height} behaviour={behaviour:?}");
-        assert_eq!(inactive, 0., "{kind} {width}x{height} behaviour={behaviour:?}");
+        let (active, inactive) = if vertical {
+            (upward, horizontal)
+        } else {
+            (horizontal, upward)
+        };
+        assert!(
+            active > 0.,
+            "{kind} {width}x{height} behaviour={behaviour:?}"
+        );
+        assert_eq!(
+            inactive, 0.,
+            "{kind} {width}x{height} behaviour={behaviour:?}"
+        );
         if behaviour.is_some() {
             let mut slower = face.clone();
             slower.widgets[0].drag.as_mut().unwrap().sensitivity = 500;
-            let (delta, captured) = audit_motion(&slower, 0, if vertical {0.} else {10.}, if vertical {-10.} else {0.});
+            let (delta, captured) = audit_motion(
+                &slower,
+                0,
+                if vertical { 0. } else { 10. },
+                if vertical { -10. } else { 0. },
+            );
             assert!(captured);
-            assert!((active - delta * 2.).abs() <= 1., "sensitivity: {active} vs {delta}");
+            assert!(
+                (active - delta * 2.).abs() <= 1.,
+                "sensitivity: {active} vs {delta}"
+            );
         }
     }
 }
