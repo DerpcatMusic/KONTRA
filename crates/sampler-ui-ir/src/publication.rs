@@ -4,6 +4,7 @@ use super::*;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct InterfacePatch {
     pub source: Option<Source>,
+    pub performance: Option<bool>,
     pub pages: Option<Vec<Page>>,
     pub widgets: Vec<(usize, Widget)>,
     pub widget_count: Option<usize>,
@@ -18,6 +19,7 @@ impl InterfacePatch {
     pub fn between(base: &Interface, current: &Interface) -> Self {
         Self {
             source: (base.source != current.source).then_some(current.source),
+            performance: (base.performance != current.performance).then_some(current.performance),
             pages: (base.pages != current.pages).then(|| current.pages.clone()),
             widgets: current
                 .widgets
@@ -43,6 +45,9 @@ impl InterfacePatch {
     pub fn apply(&self, base: &Interface, previous: &Self, view: &mut Interface) {
         if self.source != previous.source {
             view.source = self.source.unwrap_or(base.source);
+        }
+        if self.performance != previous.performance {
+            view.performance = self.performance.unwrap_or(base.performance);
         }
         if self.pages != previous.pages {
             view.pages
@@ -97,5 +102,24 @@ impl InterfacePatch {
                 old.clone_from(w);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn performance_intent_is_sparse_and_reverts_to_the_authored_value() {
+        let base = Interface::default();
+        let current = Interface { performance: true, ..base.clone() };
+        let patch = InterfacePatch::between(&base, &current);
+        assert_eq!(patch, InterfacePatch { performance: Some(true), ..Default::default() });
+        let mut view = base.clone();
+        patch.apply(&base, &InterfacePatch::default(), &mut view);
+        assert_eq!(view, current);
+        InterfacePatch::default().apply(&base, &patch, &mut view);
+        assert_eq!(view, base);
+        assert_eq!(InterfacePatch::between(&base, &base), InterfacePatch::default());
     }
 }
