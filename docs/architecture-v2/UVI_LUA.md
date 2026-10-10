@@ -26,8 +26,11 @@ The module's source member remains its resource-resolution base.
 
 Named widget geometry follows v1 precedence: scalar fields, then `size`,
 `position`, `pos`, and `bounds`. Constructors preserve named parents and expose
-container children; parent IDs project into the shared hierarchy. Fractional
-geometry and authored child paint order remain open shared projection work.
+container children. Raw object identity projects current parents and authored
+child traversal into stable shared references without reordering controls.
+Script positions, dimensions and pages remain f64. Parent cycles, malformed
+child lists and invalid geometry produce fixed snapshot findings before
+publication; the shared validator remains the geometry authority.
 
 Unit and Mapper expose v1 numeric IDs; existing named v2 metadata remains
 accepted by the adapter. UVI readouts use v1 formatting without changing raw
