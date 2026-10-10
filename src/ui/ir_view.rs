@@ -766,6 +766,8 @@ fn numeric_entry(
         || ui
             .keys(edit_id.as_str())
             .iter()
+            // MUI clears focus on Escape before this editor reads its keys.
+            .chain(ui.shortcuts())
             .any(|k| k.key == Key::Escape);
     if cancel {
         input.typing = None;
@@ -1451,8 +1453,7 @@ pub(super) fn widget_state(
             })
             .fill(Role::Ink.alpha(0.06))
             .w(w)
-            .h((h - 18.).max(1.))
-            .id(id.clone());
+            .h((h - 18.).max(1.));
             col![pad, row(axes).gap(2).h(16)].gap(2)
         }
         Kind::Xy {
@@ -2696,5 +2697,32 @@ mod gesture_policy_tests {
         f.pointer(Point::new(at.x, at.y - 50.), false, Mods::default());
         let expected = quantized(1500. * (range.max / range.min).powf(10. / 200.), &range);
         assert_eq!(f.value(), expected);
+    }
+
+    #[test]
+    fn component_xy_pad_keeps_one_parent_target_and_updates_both_axes() {
+        let mut f = Fixture::new(
+            ir::Source::FalconLua,
+            Kind::Xy {
+                cursors: 1,
+                sensitivity: [None; 2],
+                mouse_mode: None,
+            },
+            0.4,
+            None,
+        );
+        f.face.widgets[0].binding = Binding::None;
+        f.face.widgets[0].components = vec![ControlId(77), ControlId(78)];
+        f.tick(Input::default());
+        let frame = f.ui.scene().unwrap().surface("ir-0").unwrap().frame;
+        let at = Point::new(
+            frame.x + frame.size.width * 0.75,
+            frame.y + (frame.size.height - 18.) * 0.25,
+        );
+        f.pointer(at, false, Mods::default());
+        f.pointer(at, true, Mods::default());
+        f.pointer(at, false, Mods::default());
+        assert!((f.value() - 0.75).abs() < 1e-9);
+        assert!((f.values[&ControlId(78)] - 0.75).abs() < 1e-9);
     }
 }
