@@ -1,8 +1,8 @@
 {
   "status": "PASS_STATIC_AND_INDEPENDENT_MODEL_ONLY",
-  "source_sha": "63a05d3745ef0ab4b5f8a1ee51feeebbe4590d8f",
+  "source_sha": "ef9a21440b0dbbd501cc7678d62a7ac973c05a15",
   "base_sha": "9075da681fbca5019640619822a4540bfd2a57a1",
-  "source_tree": "2e045f2d8ad0a266bfa4f0aea12467953c013d18",
+  "source_tree": "b96549ccf5c46d1928fcbd0c1ee07a566d86bf51",
   "legacy_loop": "exact source preserved under else",
   "original_consumer_prediction": {
     "quarter_equal_power_in_actual_from_log": 0.5,
