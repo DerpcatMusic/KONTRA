@@ -126,8 +126,8 @@ pub fn png_size(png: &[u8]) -> Option<ir::Size> {
     }
     let be = |at: usize| u32::from_be_bytes(header[at..at + 4].try_into().unwrap());
     Some(ir::Size {
-        width: be(16),
-        height: be(20),
+        width: f64::from(be(16)),
+        height: f64::from(be(20)),
     })
 }
 
@@ -138,11 +138,11 @@ pub fn picture_meta_png(txt: Option<&str>, png: &[u8]) -> ir::ImageMeta {
     let mut meta = picture_meta(txt.unwrap_or_default());
     meta.size = png_size(png).map(|s| match meta.axis {
         ir::Orientation::Horizontal => ir::Size {
-            width: s.width / meta.frames,
+            width: (s.width / f64::from(meta.frames)).floor(),
             ..s
         },
         ir::Orientation::Vertical => ir::Size {
-            height: s.height / meta.frames,
+            height: (s.height / f64::from(meta.frames)).floor(),
             ..s
         },
     });
@@ -333,7 +333,7 @@ pub fn interface(
     let width = m.width_px.map_or(DEFAULT_WIDTH, |w| w.max(1) as u32);
     bld.ui.pages.push(ir::Page {
         name: m.title.clone().unwrap_or_default(),
-        size: ir::Size { width, height },
+        size: ir::Size { width: f64::from(width), height: f64::from(height) },
         background,
         height_rows,
     });

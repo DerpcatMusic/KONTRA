@@ -458,7 +458,7 @@ pub fn resolved(face: &Interface) -> Interface {
 pub fn resolve_changed(face: &mut Interface, indices: impl IntoIterator<Item = usize>) {
     for p in &mut face.pages {
         if let Some(rows) = p.height_rows.take() {
-            p.size.height = rows * GRID_ROW_HEIGHT;
+            p.size.height = f64::from(rows * GRID_ROW_HEIGHT);
         }
     }
     for n in indices {
@@ -466,8 +466,8 @@ pub fn resolve_changed(face: &mut Interface, indices: impl IntoIterator<Item = u
             continue;
         };
         if let ir::Placement::Grid { column, row } = w.placement {
-            w.rect.x = (column as i32 - 1) * GRID.0 + GRID.2;
-            w.rect.y = (row as i32 - 1) * GRID.1 + GRID.3;
+            w.rect.x = f64::from((column as i32 - 1) * GRID.0 + GRID.2);
+            w.rect.y = f64::from((row as i32 - 1) * GRID.1 + GRID.3);
             w.placement = ir::Placement::Pixels;
         }
         if w.auto_size {
@@ -478,10 +478,10 @@ pub fn resolve_changed(face: &mut Interface, indices: impl IntoIterator<Item = u
                 w.default_axes
             };
             if axes[0] {
-                w.rect.width = defaults.0;
+                w.rect.width = f64::from(defaults.0);
             }
             if axes[1] {
-                w.rect.height = defaults.1;
+                w.rect.height = f64::from(defaults.1);
             }
             w.auto_size = false;
             w.default_axes = [false; 2];
@@ -579,14 +579,14 @@ pub fn view_state(
         }
         let r = face.page_rect(n);
         let intersects = |clip: ir::Rect| {
-            i64::from(r.x) < i64::from(clip.x) + i64::from(clip.width)
-                && i64::from(r.y) < i64::from(clip.y) + i64::from(clip.height)
-                && i64::from(r.x) + i64::from(r.width) > i64::from(clip.x)
-                && i64::from(r.y) + i64::from(r.height) > i64::from(clip.y)
+            r.x < clip.x + clip.width
+                && r.y < clip.y + clip.height
+                && r.x + r.width > clip.x
+                && r.y + r.height > clip.y
         };
-        if r.width == 0
-            || r.height == 0
-            || !intersects(ir::Rect::new(0, 0, p.size.width, p.size.height))
+        if r.width == 0.
+            || r.height == 0.
+            || !intersects(ir::Rect { x: 0., y: 0., width: p.size.width, height: p.size.height })
         {
             continue;
         }
@@ -661,7 +661,7 @@ pub fn view_state(
 }
 
 /// The height declared by the script, after grid rows are resolved.
-pub fn height(face: &Interface, page: PageRef) -> u32 {
+pub fn height(face: &Interface, page: PageRef) -> f64 {
     face.pages[page.0].size.height
 }
 
@@ -1964,7 +1964,7 @@ pub fn uvi_ui_health(face: &Interface, path: &std::path::Path) -> serde_json::Va
         let Some(page) = face.pages.first() else {
             return Err("no UI page".into());
         };
-        let scale = (1100. / f64::from(page.size.width.max(1))).min(1.);
+        let scale = (1100. / page.size.width.max(1.)).min(1.);
         let (width, height) = (
             (f64::from(page.size.width) * scale).ceil().clamp(1., 1100.) as u16,
             (f64::from(page.size.height) * scale)
