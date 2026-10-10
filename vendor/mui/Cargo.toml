@@ -32,8 +32,6 @@ png = "0.18"
 ttf-inter = { version = "0.1", default-features = false, features = ["v"] }
 libc = "0.2"
 
-[workspace]
-
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 unused_must_use = "deny"
