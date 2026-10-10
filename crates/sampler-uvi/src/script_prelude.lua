@@ -79,17 +79,19 @@ local function notify(w, index)
   local f = data(w).changed
   if rawtype(f) == "function" then f(w, index) end
 end
-local function clamp(w, v)
+local value_kinds = {Table=true,Menu=true,MultiStateButton=true,Knob=true,Slider=true,NumBox=true,OnOffButton=true,
+  ParamKnob=true,ParamSlider=true,ParamNumBox=true,ParamMenu=true,ParamOnOffButton=true,ParameterValue=true}
+local function widget_value(w, v)
   local d = data(w)
+  if not value_kinds[d.kind] then error("This UVI widget has no value control") end
   if d.kind == "ParameterValue" then return v end
-  if d.kind == "OnOffButton" or d.kind == "Button" or d.kind == "ParamOnOffButton" then
-    return v == true or (rawtype(v) == "number" and v >= 0.5)
+  if d.kind == "OnOffButton" or d.kind == "ParamOnOffButton" then
+    if rawtype(v) ~= "boolean" then error("UVI button value must be boolean") end
+    return v
   end
   if rawtype(v) ~= "number" or v ~= v or math.abs(v) == math.huge then error("invalid widget value") end
-  if d.items then return math.max(1, math.min(math.max(1, #d.items), math.floor(v + 0.5))) end
-  v = math.max(d.min, math.min(d.max, v))
-  if d.integer then v = math.floor(v + 0.5) end
-  return v
+  if d.integer then v = v < 0 and math.ceil(v) or math.floor(v) end
+  return native.float(v)
 end
 function methods.setValue(w, v, arg, callChanged)
   local d = data(w)
@@ -101,13 +103,14 @@ function methods.setValue(w, v, arg, callChanged)
     if v < 1 or v > d.length then report('widget_index_out_of_range',''); return end
     if rawtype(arg) ~= 'number' or arg ~= arg or math.abs(arg) == math.huge then error('invalid table value') end
     if d.integer then arg = arg < 0 and math.ceil(arg) or math.floor(arg) end
+    arg = native.float(arg)
     local old = d.values[v]
     d.values[v] = arg
     if old ~= arg then ui.revision = ui.revision + 1 end
     if callChanged ~= false and old ~= arg then notify(w, v) end
     return
   end
-  if d.kind ~= "ParameterValue" then v = clamp(w, v) end
+  v = widget_value(w, v)
   local old = w.value
   if d.element then d.element:setParameter(d.parameter, v) else d.value = v end
   -- v1/Workstation-observed, Falcon unverified: identical writes/restoration
@@ -118,6 +121,7 @@ function methods.setValue(w, v, arg, callChanged)
   end
 end
 function methods.getValue(w, i)
+  if not value_kinds[w.kind] then error("This UVI widget has no value control") end
   if w.kind == "Table" then
     if rawtype(i) ~= 'number' or i ~= i or math.abs(i) == math.huge then error('invalid table index') end
     i = i < 0 and math.ceil(i) or math.floor(i)
@@ -167,8 +171,9 @@ function methods.getValueNormalized(w)
 end
 local widget
 widget_mt.__index = function(w, k)
-  if methods[k] then return methods[k] end
   local d = data(w)
+  if d.kind == "Button" and (k == "setValue" or k == "getValue" or k == "setRange") then return nil end
+  if methods[k] then return methods[k] end
   if k == "size" then return {d.width, d.height} end
   if k == "position" or k == "pos" then return {d.x, d.y} end
   if k == "bounds" then return {d.x, d.y, d.width, d.height} end
@@ -199,7 +204,7 @@ widget_mt.__newindex = function(w, k, v)
     v = native.resourcePath(v)
   end
   if k == "value" or k == "selected" then
-    if v ~= w.value then methods.setValue(w, v) end
+    methods.setValue(w, v)
     return
   elseif k == "bounds" then d.x,d.y,d.width,d.height = v[1],v[2],v[3],v[4]
   elseif k == "size" then d.width,d.height = v[1],v[2]
@@ -245,7 +250,7 @@ widget = function(kind, ...)
       for _, def in ipairs(name.parameterDefinitions) do
         if def.id == value or def.name == value then
           d.parameter = def.name
-          d.min,d.max,d.integer,d.unit,d.mapper = def.min or 0,def.max or 1,def.type=="int",def.unit or "Generic",def.mapper or "Linear"
+          d.min,d.max,d.default,d.integer,d.unit,d.mapper = def.min or 0,def.max or 1,def.default,def.type=="int",def.unit or "Generic",def.mapper or "Linear"
           break
         end
       end
@@ -262,6 +267,13 @@ widget = function(kind, ...)
   for _,key in ipairs{'size','position','pos','bounds'} do
     if named[key]~=nil then w[key]=named[key] end
   end
+  if kind=="Knob" or kind=="Slider" or kind=="NumBox" then
+    d.min,d.max,d.default,d.value = native.float(d.min),native.float(d.max),native.float(d.default),native.float(d.value)
+  elseif kind=="Table" then
+    d.min,d.max,d.default = native.float(d.min),native.float(d.max),native.float(d.default)
+    for i=1,d.length do d.values[i]=native.float(d.values[i]) end
+  end
+  if not value_kinds[kind] then d.value,d.default=nil,nil end
   d.changed=named.changed
   if kind=="Slider" and args[6]~=nil then d.vertical=args[6] end
   registry[#registry+1] = w; rawset(w,"id",#registry)
@@ -279,7 +291,7 @@ function __restore()
       if d.kind == "Table" then
         local i=0
         for number in string.gmatch(string.gsub(saved,",","."),"%S+") do
-          i=i+1; if i<=d.length then d.values[i] = clamp(w,tonumber(number) or 0) end
+          i=i+1; if i<=d.length then d.values[i] = widget_value(w,tonumber(number) or 0) end
         end
         for j=1,d.length do
           local ok,err=pcall(notify,w,j); if not ok then report("lua error",tostring(err)) end
@@ -309,6 +321,7 @@ function __ui_edit(id, component, value)
     if value >= 0.5 then w:push(true) end
   else
     if component ~= 0 then error('invalid UI component') end
+    if w.kind == "OnOffButton" or w.kind == "ParamOnOffButton" then value = value >= 0.5 end
     w:setValue(value)
   end
 end
