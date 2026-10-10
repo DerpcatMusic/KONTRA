@@ -1,0 +1,268 @@
+{
+  "source_sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+  "parent_sha": "273504189d92656e4444552e1c5d8ff548f4c2c2",
+  "files": [
+    {
+      "path": "crates/sampler-core/src/plan_programs.rs",
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "a6619bfe4fb31675347c9d514982743c406287b8",
+      "sha256": "33acce08c7c92edbdfef78db240f769789e99dc9b9bc7a82974643e7bc9b9a25",
+      "bytes": 12324,
+      "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/source/crates/sampler-core/src/plan_programs.rs"
+    },
+    {
+      "path": "crates/sampler-core/src/behavior.rs",
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "a1ff442ba50002d089859623cc2524ad818c48c5",
+      "sha256": "9dc3f5d936d56a0234168c4a75ff992c916497d48880f693593e1c715d9cd678",
+      "bytes": 118054,
+      "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/source/crates/sampler-core/src/behavior.rs"
+    },
+    {
+      "path": "crates/sampler-core/src/render.rs",
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "da54746475583fb88dcaec08893c8ed8ea97239b",
+      "sha256": "de0c4943ae2206811774f723b8f0bc6109aa78a30e1db03e76e38906c3bed68d",
+      "bytes": 39470,
+      "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/source/crates/sampler-core/src/render.rs"
+    },
+    {
+      "path": "crates/sampler-core/src/controller_event.rs",
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "7c6bf111868890deb19f3a7d14a042a1ff5033e1",
+      "sha256": "5aa0906acdd92b5708d92ef8d5d13ad4f85e56a6a2ff5805696ee38152c6a1b8",
+      "bytes": 15268,
+      "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/source/crates/sampler-core/src/controller_event.rs"
+    },
+    {
+      "path": "crates/sampler-ksp/src/lower.rs",
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "40f26cd990ab88a4dee19856ea9812fb9cff3f4e",
+      "sha256": "ac156263263e009675cd63cad2bce50e1abe36032579a9edcc38ada5cefa0713",
+      "bytes": 147413,
+      "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/source/crates/sampler-ksp/src/lower.rs"
+    },
+    {
+      "path": "crates/sampler-ksp/src/lib.rs",
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "2c25451e53b775942929beffbbc39c106caa042e",
+      "sha256": "1b4ab9d7f580443d0e628c8af16d48e69474c5459a67df74042d3cee691d2c8e",
+      "bytes": 58093,
+      "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/source/crates/sampler-ksp/src/lib.rs"
+    },
+    {
+      "path": "crates/sampler-core/tests/support/mod.rs",
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "556402ece1f85fba69f811b509431c51b9909b37",
+      "sha256": "d4b3a59fb7f2e9b046e1feef38e1dbb3b4261efc8ff40bf5a89eac7d03100d46",
+      "bytes": 1901,
+      "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/source/crates/sampler-core/tests/support/mod.rs"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+      "sha256": "1ad9c5b5d8488ee3d2054bd084e0b4e9f4e74769c37affbb15c71346245af3c7",
+      "bytes": 36971,
+      "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/source/crates/sampler-ksp/tests/rpn.rs"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/fixtures/rpn-service-neighbors.ksp",
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "12026b77e7acb9dc05f5486611ed6b55c9f3d819",
+      "sha256": "4de38f22c760774339b18d041b60034d1d42779fc7c191c5900ce69d2a6c3506",
+      "bytes": 441,
+      "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/source/crates/sampler-ksp/tests/fixtures/rpn-service-neighbors.ksp"
+    },
+    {
+      "path": "crates/sampler-ksp/Cargo.toml",
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "49ede8d2afbe27953c0b10a3df7731fcd96ce88a",
+      "sha256": "fa585189adb406695c2712f708e4550b0a4e1e205f4e62c40a97ab8acf6aa763",
+      "bytes": 521,
+      "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/source/crates/sampler-ksp/Cargo.toml"
+    }
+  ],
+  "spans": [
+    {
+      "path": "crates/sampler-core/src/plan_programs.rs",
+      "symbol": "send_parameter complete admission/deferred branch",
+      "start_line": 143,
+      "end_line": 241,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "a6619bfe4fb31675347c9d514982743c406287b8",
+      "file_sha256": "33acce08c7c92edbdfef78db240f769789e99dc9b9bc7a82974643e7bc9b9a25",
+      "span_sha256": "02749152099d9d7e41ce3bbe79a4327d514021ae60824ac9faaff4d4c6eea8cd"
+    },
+    {
+      "path": "crates/sampler-core/src/plan_programs.rs",
+      "symbol": "signal_programs complete scheduling",
+      "start_line": 245,
+      "end_line": 285,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "a6619bfe4fb31675347c9d514982743c406287b8",
+      "file_sha256": "33acce08c7c92edbdfef78db240f769789e99dc9b9bc7a82974643e7bc9b9a25",
+      "span_sha256": "afa67ef2a6b1b70c858d473bcb98d9ef4f8b17db4dde8fa77866011e2a46968c"
+    },
+    {
+      "path": "crates/sampler-core/src/behavior.rs",
+      "symbol": "start/admit plan context and private payload",
+      "start_line": 1126,
+      "end_line": 1173,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "a1ff442ba50002d089859623cc2524ad818c48c5",
+      "file_sha256": "9dc3f5d936d56a0234168c4a75ff992c916497d48880f693593e1c715d9cd678",
+      "span_sha256": "1510ae08a5e1d058b5737a014ae7189db75b394324751fed61662e78c2169dc0"
+    },
+    {
+      "path": "crates/sampler-core/src/behavior.rs",
+      "symbol": "queue_behavior and drain_behavior complete bodies",
+      "start_line": 1356,
+      "end_line": 1462,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "a1ff442ba50002d089859623cc2524ad818c48c5",
+      "file_sha256": "9dc3f5d936d56a0234168c4a75ff992c916497d48880f693593e1c715d9cd678",
+      "span_sha256": "6f6b360dc6cfc75806c63b221fa5e2ac22ac2e3723cc1f3eb5b11d4eedc1b2f4"
+    },
+    {
+      "path": "crates/sampler-core/src/behavior.rs",
+      "symbol": "yielded_plan/yield_behavior/resume_yielded",
+      "start_line": 1652,
+      "end_line": 1705,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "a1ff442ba50002d089859623cc2524ad818c48c5",
+      "file_sha256": "9dc3f5d936d56a0234168c4a75ff992c916497d48880f693593e1c715d9cd678",
+      "span_sha256": "b88b97607d5ff563ea5426c4e1cda3abeb518a0419f0b674eb1431c96d399f4c"
+    },
+    {
+      "path": "crates/sampler-core/src/behavior.rs",
+      "symbol": "SendParameter/ReadParameter/Signal VM dispatch",
+      "start_line": 2480,
+      "end_line": 2503,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "a1ff442ba50002d089859623cc2524ad818c48c5",
+      "file_sha256": "9dc3f5d936d56a0234168c4a75ff992c916497d48880f693593e1c715d9cd678",
+      "span_sha256": "a81e06978814c6db43999e596c778ce970fd3533c2fbe600c76085e1550e4eb2"
+    },
+    {
+      "path": "crates/sampler-core/src/render.rs",
+      "symbol": "public block fuel setter",
+      "start_line": 42,
+      "end_line": 45,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "da54746475583fb88dcaec08893c8ed8ea97239b",
+      "file_sha256": "de0c4943ae2206811774f723b8f0bc6109aa78a30e1db03e76e38906c3bed68d",
+      "span_sha256": "695a23ae121396a55b97325244da356de9e7a50a5a9b67667229e64cc165b0f8"
+    },
+    {
+      "path": "crates/sampler-core/src/render.rs",
+      "symbol": "render_inner yielded snapshot ownership",
+      "start_line": 171,
+      "end_line": 211,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "da54746475583fb88dcaec08893c8ed8ea97239b",
+      "file_sha256": "de0c4943ae2206811774f723b8f0bc6109aa78a30e1db03e76e38906c3bed68d",
+      "span_sha256": "137eecbc5e2b2c0053a7a0d21fb0484c5d037219eab388119cce3c00a3fa1470"
+    },
+    {
+      "path": "crates/sampler-core/src/controller_event.rs",
+      "symbol": "controller dispatch/admission",
+      "start_line": 51,
+      "end_line": 157,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "7c6bf111868890deb19f3a7d14a042a1ff5033e1",
+      "file_sha256": "5aa0906acdd92b5708d92ef8d5d13ad4f85e56a6a2ff5805696ee38152c6a1b8",
+      "span_sha256": "3121a29b2c594c91e542ba13b686a073c39d7f574a7f95eb347c69f8816f2c75"
+    },
+    {
+      "path": "crates/sampler-ksp/src/lower.rs",
+      "symbol": "callback-type grouping and entry start",
+      "start_line": 159,
+      "end_line": 245,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "40f26cd990ab88a4dee19856ea9812fb9cff3f4e",
+      "file_sha256": "ac156263263e009675cd63cad2bce50e1abe36032579a9edcc38ada5cefa0713",
+      "span_sha256": "b9b79ea6530d47ca7aac7070c89590c7b216e26783cdcf4acdb12f22ba66fbed"
+    },
+    {
+      "path": "crates/sampler-ksp/src/lower.rs",
+      "symbol": "PGS write/Signal suppression in PGS callback",
+      "start_line": 2695,
+      "end_line": 2706,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "40f26cd990ab88a4dee19856ea9812fb9cff3f4e",
+      "file_sha256": "ac156263263e009675cd63cad2bce50e1abe36032579a9edcc38ada5cefa0713",
+      "span_sha256": "b044445c5d544f176f56317a02c17684a8aa5b81742251286c404c0863f4ecf9"
+    },
+    {
+      "path": "crates/sampler-ksp/src/lib.rs",
+      "symbol": "public binder stage/instance owners",
+      "start_line": 614,
+      "end_line": 646,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "2c25451e53b775942929beffbbc39c106caa042e",
+      "file_sha256": "1b4ab9d7f580443d0e628c8af16d48e69474c5459a67df74042d3cee691d2c8e",
+      "span_sha256": "374499d520aac3af6abfd8bcbb1c414cd66eb286f0eb8a67e6b87300e1e75d51"
+    },
+    {
+      "path": "crates/sampler-ksp/src/lib.rs",
+      "symbol": "signal/parameter binding and final installation",
+      "start_line": 738,
+      "end_line": 808,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "2c25451e53b775942929beffbbc39c106caa042e",
+      "file_sha256": "1b4ab9d7f580443d0e628c8af16d48e69474c5459a67df74042d3cee691d2c8e",
+      "span_sha256": "16fa9812a0ef8fab3547ad81c7ca97b494871e26a9d534986107bdb75adb708d"
+    },
+    {
+      "path": "crates/sampler-core/tests/support/mod.rs",
+      "symbol": "without_heap allocation/deallocation guard",
+      "start_line": 1,
+      "end_line": 59,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "556402ece1f85fba69f811b509431c51b9909b37",
+      "file_sha256": "d4b3a59fb7f2e9b046e1feef38e1dbb3b4261efc8ff40bf5a89eac7d03100d46",
+      "span_sha256": "da6cecc58068f207949340937d64937a0444898c04b2e3dea0abe0095b96cd09"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "symbol": "public compiler/binder Runtime fixtures and cell helpers",
+      "start_line": 1,
+      "end_line": 98,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+      "file_sha256": "1ad9c5b5d8488ee3d2054bd084e0b4e9f4e74769c37affbb15c71346245af3c7",
+      "span_sha256": "c80d83363afc67c09ef7fe9e98b3f628c77cfb7197a512280e9958a4e87cc77b"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "symbol": "preserved F1 lifecycle witnesses",
+      "start_line": 534,
+      "end_line": 720,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+      "file_sha256": "1ad9c5b5d8488ee3d2054bd084e0b4e9f4e74769c37affbb15c71346245af3c7",
+      "span_sha256": "8f1337d069dc623ee39c077251b8523d0359b041598309f004eab77122b9e223"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/fixtures/rpn-service-neighbors.ksp",
+      "symbol": "unchanged synthetic service fixture",
+      "start_line": 1,
+      "end_line": 21,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "12026b77e7acb9dc05f5486611ed6b55c9f3d819",
+      "file_sha256": "4de38f22c760774339b18d041b60034d1d42779fc7c191c5900ce69d2a6c3506",
+      "span_sha256": "4de38f22c760774339b18d041b60034d1d42779fc7c191c5900ce69d2a6c3506"
+    },
+    {
+      "path": "crates/sampler-ksp/Cargo.toml",
+      "symbol": "actual sampler-ksp package/edition/dependencies",
+      "start_line": 1,
+      "end_line": 19,
+      "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+      "blob": "49ede8d2afbe27953c0b10a3df7731fcd96ce88a",
+      "file_sha256": "fa585189adb406695c2712f708e4550b0a4e1e205f4e62c40a97ab8acf6aa763",
+      "span_sha256": "919f4b813c13367f1c2f44a2fee992c294b6a0d1c6040dd5a4da59286f3dc190"
+    }
+  ]
+}

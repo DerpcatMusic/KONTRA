@@ -1,0 +1,677 @@
+[
+  {
+    "package": "sampler-ksp",
+    "target": "rpn",
+    "harness_name": "compiled_raw_endpoints_and_distinct_symbolic_callbacks_without_heap",
+    "inventory_label": "sampler-ksp::rpn::compiled_raw_endpoints_and_distinct_symbolic_callbacks_without_heap",
+    "status": "NOT_RUN_NOT_COMPILED",
+    "path": "crates/sampler-ksp/tests/rpn.rs",
+    "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+    "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+    "start_line": 100,
+    "end_line": 134,
+    "body_sha256": "b0416a9e8844f9267a135073d65e8765f041958b018505e59ee1c984ae1f748d",
+    "body_digest_rule": "UTF8 from #[test] through final closing brace, no trailing newline",
+    "fixture_strings": [
+      {
+        "sha256": "e6d06b38cda006467d7d1dde02321c67148c9b8d07e99659d3d182b87cd19305",
+        "bytes": 93,
+        "text": "on note ignore_event($EVENT_ID) set_rpn({address},{value}) set_nrpn({address},{value}) end on"
+      },
+      {
+        "sha256": "2d3d18470a435db0fbeef4f3f9d854341fe86f9e994833e5c4e3a186a4eab004",
+        "bytes": 425,
+        "text": "on init declare $r declare $n declare $a declare $v end on\n                on rpn if ($NI_CALLBACK_TYPE = $NI_CB_TYPE_RPN and $NI_CALLBACK_TYPE # $NI_CB_TYPE_NRPN)\n                    inc($r) $a := $RPN_ADDRESS $v := $RPN_VALUE end if end on\n                on nrpn if ($NI_CALLBACK_TYPE = $NI_CB_TYPE_NRPN and $NI_CALLBACK_TYPE # $NI_CB_TYPE_RPN)\n                    inc($n) $a := $RPN_ADDRESS $v := $RPN_VALUE end if end on"
+      }
+    ],
+    "heap_guard": true,
+    "pcm_assertions_present": false,
+    "byte_identical_to_parent": true,
+    "byte_identical_to_original": true
+  },
+  {
+    "package": "sampler-ksp",
+    "target": "rpn",
+    "harness_name": "nested_named_callback_constants_reach_pcm_through_public_compiler",
+    "inventory_label": "sampler-ksp::rpn::nested_named_callback_constants_reach_pcm_through_public_compiler",
+    "status": "NOT_RUN_NOT_COMPILED",
+    "path": "crates/sampler-ksp/tests/rpn.rs",
+    "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+    "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+    "start_line": 136,
+    "end_line": 154,
+    "body_sha256": "f975862f2fcf6b35ded2701c9b238b21dbe1b2088472d4aabb9889a5efd72479",
+    "body_digest_rule": "UTF8 from #[test] through final closing brace, no trailing newline",
+    "fixture_strings": [
+      {
+        "sha256": "045372065df1e1ed632150967f3ffdfe93e95c79367cbf10f1818ddbad31f29c",
+        "bytes": 55,
+        "text": "on note ignore_event($EVENT_ID) set_rpn(16383,0) end on"
+      },
+      {
+        "sha256": "6d0ef797d5f4737c9223076c67ab37b752de7e2484c6e953134787e567697ef9",
+        "bytes": 376,
+        "text": "on init declare const $r := $NI_CB_TYPE_RPN declare const $n := $NI_CB_TYPE_NRPN end on\n         function inner\n            if ($NI_CALLBACK_TYPE = $r and $NI_CALLBACK_TYPE # $n and $RPN_ADDRESS = 16383 and $RPN_VALUE = 0)\n                play_note(61,127,0,100000) end if\n         end function\n         function outer call inner end function\n         on rpn call outer end on"
+      }
+    ],
+    "heap_guard": true,
+    "pcm_assertions_present": true,
+    "byte_identical_to_parent": true,
+    "byte_identical_to_original": true
+  },
+  {
+    "package": "sampler-ksp",
+    "target": "rpn",
+    "harness_name": "payloads_survive_waits_and_other_messages_not_global_host_slots",
+    "inventory_label": "sampler-ksp::rpn::payloads_survive_waits_and_other_messages_not_global_host_slots",
+    "status": "NOT_RUN_NOT_COMPILED",
+    "path": "crates/sampler-ksp/tests/rpn.rs",
+    "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+    "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+    "start_line": 156,
+    "end_line": 184,
+    "body_sha256": "8382bc426a7bd17274418e8c9395e2a2be63a61cd6dbca9a009b20f8689fc7d7",
+    "body_digest_rule": "UTF8 from #[test] through final closing brace, no trailing newline",
+    "fixture_strings": [
+      {
+        "sha256": "f77e58b264cbd10903b638de1eec7fe45e2fec8c29628bdde81d4ba700bc6391",
+        "bytes": 73,
+        "text": "on note ignore_event($EVENT_ID) set_rpn(0,16383) set_nrpn(16383,0) end on"
+      },
+      {
+        "sha256": "8da819dffcf34add691dea9ac381774e7d406d282746549ce4cbf58b6c631487",
+        "bytes": 231,
+        "text": "on init declare $ra := -1 declare $rv := -1 declare $na := -1 declare $nv := -1 end on\n         on rpn wait(1000) $ra := $RPN_ADDRESS $rv := $RPN_VALUE end on\n         on nrpn wait(1000) $na := $RPN_ADDRESS $nv := $RPN_VALUE end on"
+      }
+    ],
+    "heap_guard": true,
+    "pcm_assertions_present": false,
+    "byte_identical_to_parent": true,
+    "byte_identical_to_original": true
+  },
+  {
+    "package": "sampler-ksp",
+    "target": "rpn",
+    "harness_name": "same_kind_overlapping_waits_keep_independent_raw_payloads",
+    "inventory_label": "sampler-ksp::rpn::same_kind_overlapping_waits_keep_independent_raw_payloads",
+    "status": "NOT_RUN_NOT_COMPILED",
+    "path": "crates/sampler-ksp/tests/rpn.rs",
+    "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+    "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+    "start_line": 186,
+    "end_line": 198,
+    "body_sha256": "7d3cc0b8caaf361fa200a33b76c4049254fa8f35e23435cb18414674548a9095",
+    "body_digest_rule": "UTF8 from #[test] through final closing brace, no trailing newline",
+    "fixture_strings": [
+      {
+        "sha256": "5d3b7ab7de1bef065537c7de8bb936fe74aad3b6e4450cd26d60879640a3f7f0",
+        "bytes": 72,
+        "text": "on note ignore_event($EVENT_ID) set_rpn(0,16383) set_rpn(16383,0) end on"
+      },
+      {
+        "sha256": "de70341acc37e71442572501c6ec786841d2b66d9707e138cb357b44ffa8b6e4",
+        "bytes": 158,
+        "text": "on init declare $first := -1 declare $last := -1 end on\n         on rpn wait(1000) if ($RPN_ADDRESS=0) $first:=$RPN_VALUE else $last:=$RPN_VALUE end if end on"
+      }
+    ],
+    "heap_guard": true,
+    "pcm_assertions_present": false,
+    "byte_identical_to_parent": true,
+    "byte_identical_to_original": true
+  },
+  {
+    "package": "sampler-ksp",
+    "target": "rpn",
+    "harness_name": "later_stage_order_no_self_echo_and_monotonic_rebroadcast",
+    "inventory_label": "sampler-ksp::rpn::later_stage_order_no_self_echo_and_monotonic_rebroadcast",
+    "status": "NOT_RUN_NOT_COMPILED",
+    "path": "crates/sampler-ksp/tests/rpn.rs",
+    "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+    "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+    "start_line": 200,
+    "end_line": 237,
+    "body_sha256": "45b70aee3a20e6ce0ea04ed39a07ec17c4033f80ce1dae9d54a17dd61965c706",
+    "body_digest_rule": "UTF8 from #[test] through final closing brace, no trailing newline",
+    "fixture_strings": [
+      {
+        "sha256": "e281701bc46da7eb98474d74117b4f03ea52211c14eee817618663169c759c5c",
+        "bytes": 178,
+        "text": "on init pgs_create_key(LOG,1) declare $calls end on\n        on note ignore_event($EVENT_ID) set_rpn(7,9) end on\n        on rpn inc($calls) set_rpn($RPN_ADDRESS,$RPN_VALUE) end on"
+      },
+      {
+        "sha256": "b208bd48af4247283c081500c10e5fc48bc60d9e68603d56965ce456798fe25f",
+        "bytes": 156,
+        "text": "on init declare $calls end on on rpn inc($calls)\n        pgs_set_key_val(LOG,0,pgs_get_key_val(LOG,0)*10+1)\n        set_nrpn($RPN_ADDRESS,$RPN_VALUE) end on"
+      },
+      {
+        "sha256": "ea03ac2446e447ed02e2ae278e357a7d2b6958fd6e8a13dd46755d56a4e1908c",
+        "bytes": 229,
+        "text": "on init declare $calls declare $log declare $echo end on\n        on rpn inc($calls) pgs_set_key_val(LOG,0,pgs_get_key_val(LOG,0)*10+2)\n            $log:=pgs_get_key_val(LOG,0) set_rpn(1,2) end on\n        on nrpn inc($echo) end on"
+      },
+      {
+        "sha256": "aec2916f4c251cbdb7149783fbb765e89d7826a71f3a1cdf5909ef60cecd0521",
+        "bytes": 55,
+        "text": "on init declare $calls end on on rpn inc($calls) end on"
+      },
+      {
+        "sha256": "26052d9aabf96d3f0df0353343828d9f8dcdaaac4f3e7cd2463801da5cacdf9e",
+        "bytes": 51,
+        "text": "on note ignore_event($EVENT_ID) set_rpn(0,0) end on"
+      }
+    ],
+    "heap_guard": true,
+    "pcm_assertions_present": false,
+    "byte_identical_to_parent": true,
+    "byte_identical_to_original": true
+  },
+  {
+    "package": "sampler-ksp",
+    "target": "rpn",
+    "harness_name": "invalid_address_or_value_faults_sender_without_any_delivery",
+    "inventory_label": "sampler-ksp::rpn::invalid_address_or_value_faults_sender_without_any_delivery",
+    "status": "NOT_RUN_NOT_COMPILED",
+    "path": "crates/sampler-ksp/tests/rpn.rs",
+    "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+    "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+    "start_line": 239,
+    "end_line": 268,
+    "body_sha256": "75fd99c4f587c51ea08fc998bafc9bba94dd8844a2e229b17bb576093f47895e",
+    "body_digest_rule": "UTF8 from #[test] through final closing brace, no trailing newline",
+    "fixture_strings": [
+      {
+        "sha256": "e7fa55ea04a96fa3711792bbf645a68bf0b744d1b439184774169baf3735fcf7",
+        "bytes": 60,
+        "text": "on note ignore_event($EVENT_ID) {command}({operands}) end on"
+      },
+      {
+        "sha256": "bc221e60a76f50889a425effea534ad34860b08e598cd27d2bfe19f3d131044c",
+        "bytes": 82,
+        "text": "on init declare $calls end on on rpn inc($calls) end on on nrpn inc($calls) end on"
+      }
+    ],
+    "heap_guard": true,
+    "pcm_assertions_present": false,
+    "byte_identical_to_parent": true,
+    "byte_identical_to_original": true
+  },
+  {
+    "package": "sampler-ksp",
+    "target": "rpn",
+    "harness_name": "insufficient_fanout_capacity_is_explicit_and_atomic",
+    "inventory_label": "sampler-ksp::rpn::insufficient_fanout_capacity_is_explicit_and_atomic",
+    "status": "NOT_RUN_NOT_COMPILED",
+    "path": "crates/sampler-ksp/tests/rpn.rs",
+    "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+    "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+    "start_line": 270,
+    "end_line": 289,
+    "body_sha256": "a3f08df0c6106d93176a0de646236491b1e7717877b00d8449d1737fd8ac8d65",
+    "body_digest_rule": "UTF8 from #[test] through final closing brace, no trailing newline",
+    "fixture_strings": [
+      {
+        "sha256": "aec2916f4c251cbdb7149783fbb765e89d7826a71f3a1cdf5909ef60cecd0521",
+        "bytes": 55,
+        "text": "on init declare $calls end on on rpn inc($calls) end on"
+      },
+      {
+        "sha256": "26052d9aabf96d3f0df0353343828d9f8dcdaaac4f3e7cd2463801da5cacdf9e",
+        "bytes": 51,
+        "text": "on note ignore_event($EVENT_ID) set_rpn(0,0) end on"
+      }
+    ],
+    "heap_guard": true,
+    "pcm_assertions_present": false,
+    "byte_identical_to_parent": true,
+    "byte_identical_to_original": true
+  },
+  {
+    "package": "sampler-ksp",
+    "target": "rpn",
+    "harness_name": "repeated_messages_fill_waiting_arena_then_fault_without_unbounded_queue",
+    "inventory_label": "sampler-ksp::rpn::repeated_messages_fill_waiting_arena_then_fault_without_unbounded_queue",
+    "status": "NOT_RUN_NOT_COMPILED",
+    "path": "crates/sampler-ksp/tests/rpn.rs",
+    "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+    "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+    "start_line": 291,
+    "end_line": 310,
+    "body_sha256": "a6b30504aedc1c10abbe1c0f1f5bab0cb57fac23d1cab3c5b18d6c649ff6d7b3",
+    "body_digest_rule": "UTF8 from #[test] through final closing brace, no trailing newline",
+    "fixture_strings": [
+      {
+        "sha256": "ef28cf077984627b4050ce38471b7fde263fc700a2a1d65a7e825e101fc77355",
+        "bytes": 123,
+        "text": "on init declare $i end on on note ignore_event($EVENT_ID)\n            while ($i<20) set_rpn($i,$i) inc($i) end while end on"
+      },
+      {
+        "sha256": "809b5a3826da2625afe701fb691f285612b69f8d397be00d47c533bf2b34348c",
+        "bytes": 68,
+        "text": "on init declare $calls end on on rpn inc($calls) wait(100000) end on"
+      }
+    ],
+    "heap_guard": true,
+    "pcm_assertions_present": false,
+    "byte_identical_to_parent": true,
+    "byte_identical_to_original": true
+  },
+  {
+    "package": "sampler-ksp",
+    "target": "rpn",
+    "harness_name": "initialization_remains_warn_noop_without_runtime_replay",
+    "inventory_label": "sampler-ksp::rpn::initialization_remains_warn_noop_without_runtime_replay",
+    "status": "NOT_RUN_NOT_COMPILED",
+    "path": "crates/sampler-ksp/tests/rpn.rs",
+    "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+    "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+    "start_line": 312,
+    "end_line": 331,
+    "body_sha256": "f1cbe371cd7fc7664f80ce894252478e48654f2487a77b0b4afeec3bf849c777",
+    "body_digest_rule": "UTF8 from #[test] through final closing brace, no trailing newline",
+    "fixture_strings": [
+      {
+        "sha256": "30ce1f31534335d3351e3654f94fe92ccec5c25912f5a64353313fb05d2c5c04",
+        "bytes": 49,
+        "text": "on init set_rpn(0,16383) set_nrpn(16383,0) end on"
+      },
+      {
+        "sha256": "30ce1f31534335d3351e3654f94fe92ccec5c25912f5a64353313fb05d2c5c04",
+        "bytes": 49,
+        "text": "on init set_rpn(0,16383) set_nrpn(16383,0) end on"
+      },
+      {
+        "sha256": "bc221e60a76f50889a425effea534ad34860b08e598cd27d2bfe19f3d131044c",
+        "bytes": 82,
+        "text": "on init declare $calls end on on rpn inc($calls) end on on nrpn inc($calls) end on"
+      }
+    ],
+    "heap_guard": false,
+    "pcm_assertions_present": false,
+    "byte_identical_to_parent": true,
+    "byte_identical_to_original": true
+  },
+  {
+    "package": "sampler-ksp",
+    "target": "rpn",
+    "harness_name": "ordinary_controller_and_numeric_pgs_keep_their_existing_routes",
+    "inventory_label": "sampler-ksp::rpn::ordinary_controller_and_numeric_pgs_keep_their_existing_routes",
+    "status": "NOT_RUN_NOT_COMPILED",
+    "path": "crates/sampler-ksp/tests/rpn.rs",
+    "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+    "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+    "start_line": 333,
+    "end_line": 363,
+    "body_sha256": "136572e89d2ceaaf2317bb14c13a2601733417d7571ed1e71ae32e7e1329852f",
+    "body_digest_rule": "UTF8 from #[test] through final closing brace, no trailing newline",
+    "fixture_strings": [
+      {
+        "sha256": "641d604f77facc3953b342f9cd517a2ede5221fcb5ab946abcb568f5ac1cfc36",
+        "bytes": 163,
+        "text": "on init pgs_create_key(SHARED,1) end on\n         on controller ignore_controller set_rpn(12,34) set_controller(7,37)\n            pgs_set_key_val(SHARED,0,5) end on"
+      },
+      {
+        "sha256": "1371dd8b115847ff87d533892651b274e20206d465665ea9541284769f4d67cc",
+        "bytes": 197,
+        "text": "on init declare $rpn declare $cc declare $pgs end on\n         on rpn $rpn:=$RPN_VALUE end on\n         on controller $cc:=%CC[7] end on\n         on pgs_changed $pgs:=pgs_get_key_val(SHARED,0) end on"
+      }
+    ],
+    "heap_guard": true,
+    "pcm_assertions_present": false,
+    "byte_identical_to_parent": true,
+    "byte_identical_to_original": true
+  },
+  {
+    "package": "sampler-ksp",
+    "target": "rpn",
+    "harness_name": "sender_and_receiver_waits_stay_in_retained_generation_and_part",
+    "inventory_label": "sampler-ksp::rpn::sender_and_receiver_waits_stay_in_retained_generation_and_part",
+    "status": "NOT_RUN_NOT_COMPILED",
+    "path": "crates/sampler-ksp/tests/rpn.rs",
+    "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+    "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+    "start_line": 365,
+    "end_line": 399,
+    "body_sha256": "c4ca1e52907b5e43149f32985830c0fb94006413512306d7c6f7e3e87e530b5b",
+    "body_digest_rule": "UTF8 from #[test] through final closing brace, no trailing newline",
+    "fixture_strings": [
+      {
+        "sha256": "7508b663987e00791245457fc134d6b1451c5d125db9edb02499dbd448ad9702",
+        "bytes": 66,
+        "text": "on note ignore_event($EVENT_ID) wait(1000) set_rpn(16383,0) end on"
+      },
+      {
+        "sha256": "dfb929130f47e959f647d449cd2b111119d40b5e677e4e73a3ef2a809dc5709b",
+        "bytes": 79,
+        "text": "on init declare $seen := -1 end on on rpn wait(1000) $seen:=$RPN_ADDRESS end on"
+      }
+    ],
+    "heap_guard": true,
+    "pcm_assertions_present": false,
+    "byte_identical_to_parent": true,
+    "byte_identical_to_original": true
+  },
+  {
+    "package": "sampler-ksp",
+    "target": "rpn",
+    "harness_name": "receiver_generated_note_retains_physical_origin_and_performance",
+    "inventory_label": "sampler-ksp::rpn::receiver_generated_note_retains_physical_origin_and_performance",
+    "status": "NOT_RUN_NOT_COMPILED",
+    "path": "crates/sampler-ksp/tests/rpn.rs",
+    "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+    "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+    "start_line": 401,
+    "end_line": 431,
+    "body_sha256": "e631dbeca976f7edfa1fb4ab7d2ee34556f7bcdc8770f1e3643e5bba69cda3df",
+    "body_digest_rule": "UTF8 from #[test] through final closing brace, no trailing newline",
+    "fixture_strings": [
+      {
+        "sha256": "87451893fa6a6d17e557ec60d91365a5d9e2276884a70572f989d978dabef403",
+        "bytes": 52,
+        "text": "on controller ignore_controller set_nrpn(1,2) end on"
+      },
+      {
+        "sha256": "060577aa3b96ee341aee4021427f255a221cc5d054e34a6f1819fdcac58eb840",
+        "bytes": 79,
+        "text": "on init declare $event end on on nrpn $event:=play_note(61,127,0,100000) end on"
+      }
+    ],
+    "heap_guard": true,
+    "pcm_assertions_present": false,
+    "byte_identical_to_parent": true,
+    "byte_identical_to_original": true
+  },
+  {
+    "package": "sampler-ksp",
+    "target": "rpn",
+    "harness_name": "midi_and_nka_job_ids_wait_completion_and_instances_remain_independent",
+    "inventory_label": "sampler-ksp::rpn::midi_and_nka_job_ids_wait_completion_and_instances_remain_independent",
+    "status": "NOT_RUN_NOT_COMPILED",
+    "path": "crates/sampler-ksp/tests/rpn.rs",
+    "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+    "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+    "start_line": 433,
+    "end_line": 493,
+    "body_sha256": "720e42a5d398b0e11319811c3b2baf5c8ff08f1d041c5be34c48fcc592912e67",
+    "body_digest_rule": "UTF8 from #[test] through final closing brace, no trailing newline",
+    "fixture_strings": [
+      {
+        "sha256": "d02e130ed7596939ba29d4892a18ac6d7928589d37e4c15679070b6f550be1d4",
+        "bytes": 116,
+        "text": "on init declare $r := -1 declare $n := -1 end on\n         on rpn $r:=$RPN_VALUE end on on nrpn $n:=$RPN_VALUE end on"
+      }
+    ],
+    "heap_guard": true,
+    "pcm_assertions_present": false,
+    "byte_identical_to_parent": true,
+    "byte_identical_to_original": true
+  },
+  {
+    "package": "sampler-ksp",
+    "target": "rpn",
+    "harness_name": "parameter_binding_rejects_invalid_stage_and_duplicate_kind_and_resets_with_programs",
+    "inventory_label": "sampler-ksp::rpn::parameter_binding_rejects_invalid_stage_and_duplicate_kind_and_resets_with_programs",
+    "status": "NOT_RUN_NOT_COMPILED",
+    "path": "crates/sampler-ksp/tests/rpn.rs",
+    "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+    "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+    "start_line": 495,
+    "end_line": 532,
+    "body_sha256": "d1bab49179b68dfc55f416889f1b3ae3c7e05cd3e723c294af78cddeb5389f8e",
+    "body_digest_rule": "UTF8 from #[test] through final closing brace, no trailing newline",
+    "fixture_strings": [
+      {
+        "sha256": "b954eaf4481f6168d0e1a1c4e1c547301a502a10a01e38ff23bc1d5296ef766b",
+        "bytes": 27,
+        "text": "on note set_rpn(0,0) end on"
+      },
+      {
+        "sha256": "ee24dee913de2af7bfa99507aeee7a447167adfcb4387e8a7731e1fa495213f6",
+        "bytes": 13,
+        "text": "on rpn end on"
+      }
+    ],
+    "heap_guard": false,
+    "pcm_assertions_present": false,
+    "byte_identical_to_parent": true,
+    "byte_identical_to_original": false
+  },
+  {
+    "package": "sampler-ksp",
+    "target": "rpn",
+    "harness_name": "compiled_three_module_rotation_requires_clear_and_exact_receiver_rebind",
+    "inventory_label": "sampler-ksp::rpn::compiled_three_module_rotation_requires_clear_and_exact_receiver_rebind",
+    "status": "NOT_RUN_NOT_COMPILED",
+    "path": "crates/sampler-ksp/tests/rpn.rs",
+    "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+    "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+    "start_line": 534,
+    "end_line": 601,
+    "body_sha256": "6a89693e2227ceb3c1f9b9886db3d05231025d2bdb9e6edd00560280500729f5",
+    "body_digest_rule": "UTF8 from #[test] through final closing brace, no trailing newline",
+    "fixture_strings": [
+      {
+        "sha256": "a79ddb754babc7d4e5584b41e43acfc1bb6c1d2de6c2aa1c8587992dcf5c86df",
+        "bytes": 56,
+        "text": "on controller ignore_controller set_rpn(13,16383) end on"
+      },
+      {
+        "sha256": "a979d86339bbb1df67df4a4571bde1dc5a9a88843180f2a44735300aacc027c0",
+        "bytes": 160,
+        "text": "on init declare $a := -1 declare $v := -1 end on\n         on controller end on\n         on rpn $a:=$RPN_ADDRESS $v:=$RPN_VALUE play_note(61,127,0,100000) end on"
+      },
+      {
+        "sha256": "47439b02be9b85b3119ea1987fdb391ffb0644f02d31523b012ae4e9be1ceaec",
+        "bytes": 20,
+        "text": "on controller end on"
+      }
+    ],
+    "heap_guard": true,
+    "pcm_assertions_present": true,
+    "byte_identical_to_parent": true,
+    "byte_identical_to_original": false
+  },
+  {
+    "package": "sampler-ksp",
+    "target": "rpn",
+    "harness_name": "receiver_only_stage_setters_preserve_identical_schema_or_require_explicit_rebind",
+    "inventory_label": "sampler-ksp::rpn::receiver_only_stage_setters_preserve_identical_schema_or_require_explicit_rebind",
+    "status": "NOT_RUN_NOT_COMPILED",
+    "path": "crates/sampler-ksp/tests/rpn.rs",
+    "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+    "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+    "start_line": 603,
+    "end_line": 678,
+    "body_sha256": "7d474634f6fdb7531a496ddebbffdc1dc602657ef1f64e5ae4ba9e0adb2729e0",
+    "body_digest_rule": "UTF8 from #[test] through final closing brace, no trailing newline",
+    "fixture_strings": [
+      {
+        "sha256": "ab28616eaa37ce9af62545bee429941ed9470016f53fbb4b5851ba91df7f8f24",
+        "bytes": 103,
+        "text": "on note ignore_event($EVENT_ID) set_rpn(16383,0) end on\n         on controller end on on release end on"
+      },
+      {
+        "sha256": "1653591fd29dfd9e8b31446de167a6231c1d22ebf024ae4af7dbef51a3234dd3",
+        "bytes": 118,
+        "text": "on init declare $a := -1 declare $v := -1 end on\n         on rpn $a:=$RPN_ADDRESS $v:=$RPN_VALUE end on on nrpn end on"
+      }
+    ],
+    "heap_guard": true,
+    "pcm_assertions_present": false,
+    "byte_identical_to_parent": true,
+    "byte_identical_to_original": false
+  },
+  {
+    "package": "sampler-ksp",
+    "target": "rpn",
+    "harness_name": "parameter_binding_rejects_unrelated_ordinary_and_mixed_receiver_owners",
+    "inventory_label": "sampler-ksp::rpn::parameter_binding_rejects_unrelated_ordinary_and_mixed_receiver_owners",
+    "status": "NOT_RUN_NOT_COMPILED",
+    "path": "crates/sampler-ksp/tests/rpn.rs",
+    "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+    "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+    "start_line": 680,
+    "end_line": 720,
+    "body_sha256": "4c18ef821b742cafcb92c54fefee0e677a6b85d6304542b0ed1a54620558cc89",
+    "body_digest_rule": "UTF8 from #[test] through final closing brace, no trailing newline",
+    "fixture_strings": [
+      {
+        "sha256": "b954eaf4481f6168d0e1a1c4e1c547301a502a10a01e38ff23bc1d5296ef766b",
+        "bytes": 27,
+        "text": "on note set_rpn(0,0) end on"
+      },
+      {
+        "sha256": "ee24dee913de2af7bfa99507aeee7a447167adfcb4387e8a7731e1fa495213f6",
+        "bytes": 13,
+        "text": "on rpn end on"
+      },
+      {
+        "sha256": "6b23c41ee9570767be3ab87bbc3f17f97199ba212c919a89ad7c658f987de246",
+        "bytes": 14,
+        "text": "on nrpn end on"
+      }
+    ],
+    "heap_guard": false,
+    "pcm_assertions_present": false,
+    "byte_identical_to_parent": true,
+    "byte_identical_to_original": false
+  },
+  {
+    "package": "sampler-ksp",
+    "target": "rpn",
+    "harness_name": "preempted_sender_defers_receivers_fifo_and_preserves_numeric_pgs_controller_order",
+    "inventory_label": "sampler-ksp::rpn::preempted_sender_defers_receivers_fifo_and_preserves_numeric_pgs_controller_order",
+    "status": "NOT_RUN_NOT_COMPILED",
+    "path": "crates/sampler-ksp/tests/rpn.rs",
+    "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+    "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+    "start_line": 722,
+    "end_line": 817,
+    "body_sha256": "d4cfec6996dcf8a5147e55023f320a52412ff74deca2a1346adb2f11a8ad4f34",
+    "body_digest_rule": "UTF8 from #[test] through final closing brace, no trailing newline",
+    "fixture_strings": [
+      {
+        "sha256": "40ab67e5eb51cbab98af94fc291e9825f5d9a82262e5664db571b8d4fc9f4ccc",
+        "bytes": 455,
+        "text": "on init pgs_create_key(LOG,1) pgs_create_key(GO,1)\n            declare $i declare $sent declare $log end on\n            on note ignore_event($EVENT_ID) if ($EVENT_NOTE=60)\n                while ($i<32) inc($i) end while {command}\n                pgs_set_key_val(GO,0,1) $sent:=1 end if end on\n            on controller ignore_controller\n                pgs_set_key_val(LOG,0,pgs_get_key_val(LOG,0)*10+5)\n                $log:=pgs_get_key_val(LOG,0) end on"
+      },
+      {
+        "sha256": "95db1c312c1a2de4603448364976f3d8a2fffaf7844be2e7749dd4871c56ca3f",
+        "bytes": 391,
+        "text": "on init declare $logged declare $calls declare $a := -1 declare $v := -1 end on\n            on rpn inc($calls) $a:=$RPN_ADDRESS $v:=$RPN_VALUE\n                pgs_set_key_val(LOG,0,pgs_get_key_val(LOG,0)*10+1) wait(100000) end on\n            on pgs_changed if ($logged=0 and pgs_get_key_val(GO,0)=1)\n                $logged:=1 pgs_set_key_val(LOG,0,pgs_get_key_val(LOG,0)*10+3) end if end on"
+      },
+      {
+        "sha256": "7155b7d0b9e72b02a57cb1dcefd610d60fa6db352cd3833a431f6c84c016dcf7",
+        "bytes": 391,
+        "text": "on init declare $logged declare $calls declare $a := -1 declare $v := -1 end on\n            on rpn inc($calls) $a:=$RPN_ADDRESS $v:=$RPN_VALUE\n                pgs_set_key_val(LOG,0,pgs_get_key_val(LOG,0)*10+2) wait(100000) end on\n            on pgs_changed if ($logged=0 and pgs_get_key_val(GO,0)=1)\n                $logged:=1 pgs_set_key_val(LOG,0,pgs_get_key_val(LOG,0)*10+4) end if end on"
+      }
+    ],
+    "heap_guard": true,
+    "pcm_assertions_present": false,
+    "byte_identical_to_parent": false,
+    "byte_identical_to_original": false
+  },
+  {
+    "package": "sampler-ksp",
+    "target": "rpn",
+    "harness_name": "preempted_sender_defers_receivers_fifo_without_notification_interleaving",
+    "inventory_label": "sampler-ksp::rpn::preempted_sender_defers_receivers_fifo_without_notification_interleaving",
+    "status": "NOT_RUN_NOT_COMPILED",
+    "path": "crates/sampler-ksp/tests/rpn.rs",
+    "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+    "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+    "start_line": 819,
+    "end_line": 876,
+    "body_sha256": "fb696ceef39209755a71bb654e2f74e45b944abee6ebe2add8a6a3479ec54cfa",
+    "body_digest_rule": "UTF8 from #[test] through final closing brace, no trailing newline",
+    "fixture_strings": [
+      {
+        "sha256": "b3d8a1134283c3f302285b4117cab2fb68a9fc041fa72b67406cc7a58770d85a",
+        "bytes": 230,
+        "text": "on init pgs_create_key(LOG,1) declare $i declare $sent end on\n            on note ignore_event($EVENT_ID) if ($EVENT_NOTE=60)\n                while ($i<32) inc($i) end while set_rpn(60,16383)\n                $sent:=1 end if end on"
+      },
+      {
+        "sha256": "36e5fb9a355e24a828b42d15887cf42ea88a3c66de1797889c95eeea6b28d34e",
+        "bytes": 213,
+        "text": "on init declare $calls declare $a := -1 declare $v := -1 end on\n            on rpn inc($calls) $a:=$RPN_ADDRESS $v:=$RPN_VALUE\n                pgs_set_key_val(LOG,0,pgs_get_key_val(LOG,0)*10+1) wait(100000) end on"
+      },
+      {
+        "sha256": "2aaa7ad4e7e5d8e749c9a133ec1f3903dff378fe4b812b0dac77e785a7c8ee6e",
+        "bytes": 271,
+        "text": "on init declare $calls declare $a := -1 declare $v := -1 declare $log end on\n            on rpn inc($calls) $a:=$RPN_ADDRESS $v:=$RPN_VALUE\n                pgs_set_key_val(LOG,0,pgs_get_key_val(LOG,0)*10+2)\n                $log:=pgs_get_key_val(LOG,0) wait(100000) end on"
+      }
+    ],
+    "heap_guard": true,
+    "pcm_assertions_present": false,
+    "byte_identical_to_parent": false,
+    "byte_identical_to_original": false
+  },
+  {
+    "package": "sampler-ksp",
+    "target": "rpn",
+    "harness_name": "deferred_fanout_pressure_faults_atomically_without_heap_or_partial_second_message",
+    "inventory_label": "sampler-ksp::rpn::deferred_fanout_pressure_faults_atomically_without_heap_or_partial_second_message",
+    "status": "NOT_RUN_NOT_COMPILED",
+    "path": "crates/sampler-ksp/tests/rpn.rs",
+    "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+    "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+    "start_line": 878,
+    "end_line": 932,
+    "body_sha256": "070df2729a1039cff69a4c97735e6b7fc771f7527a569d1bdf2379ef49f5b3b3",
+    "body_digest_rule": "UTF8 from #[test] through final closing brace, no trailing newline",
+    "fixture_strings": [
+      {
+        "sha256": "0f88ba7d35afa9136745fd1484dc5073baa64d565ab53f726f92d80bb79ffd3d",
+        "bytes": 185,
+        "text": "on init declare $i end on on note ignore_event($EVENT_ID)\n            if ($EVENT_NOTE=60) while ($i<32) inc($i) end while\n                set_rpn(0,16383) set_rpn(16383,0) end if end on"
+      },
+      {
+        "sha256": "59acce435e824eefd4bcaf9619e84ae91fadb9073dac03df4fc14c26bc0fbc2c",
+        "bytes": 146,
+        "text": "on init declare $calls declare $a := -1 declare $v := -1 end on\n            on rpn inc($calls) $a:=$RPN_ADDRESS $v:=$RPN_VALUE wait(100000) end on"
+      },
+      {
+        "sha256": "59acce435e824eefd4bcaf9619e84ae91fadb9073dac03df4fc14c26bc0fbc2c",
+        "bytes": 146,
+        "text": "on init declare $calls declare $a := -1 declare $v := -1 end on\n            on rpn inc($calls) $a:=$RPN_ADDRESS $v:=$RPN_VALUE wait(100000) end on"
+      }
+    ],
+    "heap_guard": true,
+    "pcm_assertions_present": false,
+    "byte_identical_to_parent": true,
+    "byte_identical_to_original": false
+  },
+  {
+    "package": "sampler-ksp",
+    "target": "rpn",
+    "harness_name": "sparse_physical_slots_nonzero_sender_and_separate_notes_keep_private_payloads",
+    "inventory_label": "sampler-ksp::rpn::sparse_physical_slots_nonzero_sender_and_separate_notes_keep_private_payloads",
+    "status": "NOT_RUN_NOT_COMPILED",
+    "path": "crates/sampler-ksp/tests/rpn.rs",
+    "sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+    "blob": "7e478c07b9768cfa2021b08e8e977a29011ddd83",
+    "start_line": 934,
+    "end_line": 983,
+    "body_sha256": "a52e13ff299d95f9e59af03be1f7f1d78ff7940d6b816013682a3ced0c8bcd18",
+    "body_digest_rule": "UTF8 from #[test] through final closing brace, no trailing newline",
+    "fixture_strings": [
+      {
+        "sha256": "aec2916f4c251cbdb7149783fbb765e89d7826a71f3a1cdf5909ef60cecd0521",
+        "bytes": 55,
+        "text": "on init declare $calls end on on rpn inc($calls) end on"
+      },
+      {
+        "sha256": "c59e1b62e8e1a3d573a2d1e734876b8fe68bc86d55121aaeaf982f54e986be41",
+        "bytes": 169,
+        "text": "on init declare $self end on on rpn inc($self) end on\n            on note ignore_event($EVENT_ID) wait(500)\n                set_rpn($EVENT_NOTE,16383-$EVENT_NOTE) end on"
+      },
+      {
+        "sha256": "ac2d627f67256d345309abc40bd9c4625b458983c262ebac1b2ff350c5f57709",
+        "bytes": 417,
+        "text": "on init declare $a := -1 declare $av := -1 declare $b := -1 declare $bv := -1\n            declare $child declare $source := -1 end on\n            on rpn wait(1000)\n                if ($RPN_ADDRESS=60) $a:=$RPN_ADDRESS $av:=$RPN_VALUE\n                else $b:=$RPN_ADDRESS $bv:=$RPN_VALUE end if\n                $child:=play_note(61,127,0,100000)\n                $source:=get_event_par($child,$EVENT_PAR_SOURCE) end on"
+      }
+    ],
+    "heap_guard": true,
+    "pcm_assertions_present": true,
+    "byte_identical_to_parent": true,
+    "byte_identical_to_original": false
+  }
+]

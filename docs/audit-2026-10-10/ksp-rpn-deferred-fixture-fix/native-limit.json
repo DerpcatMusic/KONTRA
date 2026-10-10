@@ -1,0 +1,10 @@
+{
+  "native": "UNKNOWN",
+  "new_native_operation": false,
+  "inherited_read_only_receipt": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-lifecycle-successor-review-snapshot/rea-current-document.json",
+  "receipt_sha256": "8d9fe43989a731113eb1c4d246cf48feb369dab812cf670d2f3cb2001eb5bcc7",
+  "result": "target_unavailable",
+  "target_opened": false,
+  "ordering_12345_or_13425": "Neither is a vendor claim",
+  "timing_echo_scheduler": "UNKNOWN"
+}

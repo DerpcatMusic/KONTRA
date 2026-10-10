@@ -1,0 +1,373 @@
+{
+  "authority": "PYTHON_SCALAR_SELECTED_SOURCE_RULES_ONLY",
+  "rust_execution": false,
+  "source_sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+  "test_status": "NOT_RUN_NOT_COMPILED",
+  "results": {
+    "no_send_baseline": {
+      "send": false,
+      "pgs_bindings": true,
+      "final_log": 345,
+      "receiver_execution_digits": [],
+      "second_receiver_log": null,
+      "sender_checkpoint_queue": [
+        "pgs1#1",
+        "pgs2#1",
+        "younger",
+        "controller"
+      ],
+      "executions": [
+        "sender",
+        "pgs1#1",
+        "pgs2#1",
+        "younger",
+        "controller",
+        "pgs1#2",
+        "pgs2#2"
+      ],
+      "passes": [
+        {
+          "block": 0,
+          "pending_snapshot": 3,
+          "events": [
+            {
+              "id": "sender",
+              "log_after": 0
+            },
+            {
+              "id": "younger",
+              "blocked_by_new_same_plan_tail": 2
+            },
+            {
+              "id": "controller",
+              "blocked_by_new_same_plan_tail": 3
+            }
+          ],
+          "queue_after": [
+            "pgs1#1",
+            "pgs2#1",
+            "younger",
+            "controller"
+          ],
+          "log": 0
+        },
+        {
+          "block": 1,
+          "pending_snapshot": 4,
+          "events": [
+            {
+              "id": "pgs1#1",
+              "log_after": 3
+            },
+            {
+              "id": "pgs2#1",
+              "log_after": 34
+            },
+            {
+              "id": "younger",
+              "log_after": 34
+            },
+            {
+              "id": "controller",
+              "log_after": 345
+            }
+          ],
+          "queue_after": [
+            "pgs1#2",
+            "pgs2#2"
+          ],
+          "log": 345
+        },
+        {
+          "block": 2,
+          "pending_snapshot": 2,
+          "events": [
+            {
+              "id": "pgs1#2",
+              "log_after": 345
+            },
+            {
+              "id": "pgs2#2",
+              "log_after": 345
+            }
+          ],
+          "queue_after": [],
+          "log": 345
+        }
+      ]
+    },
+    "pgs_controller_interleaving": {
+      "send": true,
+      "pgs_bindings": true,
+      "final_log": 13425,
+      "receiver_execution_digits": [
+        1,
+        2
+      ],
+      "second_receiver_log": null,
+      "sender_checkpoint_queue": [
+        "rpn1",
+        "rpn2",
+        "pgs1#1",
+        "pgs2#1",
+        "younger",
+        "controller"
+      ],
+      "executions": [
+        "sender",
+        "rpn1",
+        "pgs1#2",
+        "pgs2#2",
+        "rpn2",
+        "pgs1#3",
+        "pgs2#3",
+        "pgs1#1",
+        "pgs2#1",
+        "younger",
+        "controller",
+        "pgs1#4",
+        "pgs2#4"
+      ],
+      "passes": [
+        {
+          "block": 0,
+          "pending_snapshot": 3,
+          "events": [
+            {
+              "id": "sender",
+              "log_after": 0
+            },
+            {
+              "id": "younger",
+              "blocked_by_new_same_plan_tail": 4
+            },
+            {
+              "id": "controller",
+              "blocked_by_new_same_plan_tail": 5
+            }
+          ],
+          "queue_after": [
+            "rpn1",
+            "rpn2",
+            "pgs1#1",
+            "pgs2#1",
+            "younger",
+            "controller"
+          ],
+          "log": 0
+        },
+        {
+          "block": 1,
+          "pending_snapshot": 6,
+          "events": [
+            {
+              "id": "rpn1",
+              "log_after": 1
+            },
+            {
+              "id": "rpn2",
+              "blocked_by_new_same_plan_tail": 2
+            },
+            {
+              "id": "pgs1#1",
+              "blocked_by_new_same_plan_tail": 3
+            },
+            {
+              "id": "pgs2#1",
+              "blocked_by_new_same_plan_tail": 4
+            },
+            {
+              "id": "younger",
+              "blocked_by_new_same_plan_tail": 5
+            },
+            {
+              "id": "controller",
+              "blocked_by_new_same_plan_tail": 6
+            }
+          ],
+          "queue_after": [
+            "pgs1#2",
+            "pgs2#2",
+            "rpn2",
+            "pgs1#1",
+            "pgs2#1",
+            "younger",
+            "controller"
+          ],
+          "log": 1
+        },
+        {
+          "block": 2,
+          "pending_snapshot": 7,
+          "events": [
+            {
+              "id": "pgs1#2",
+              "log_after": 13
+            },
+            {
+              "id": "pgs2#2",
+              "log_after": 134
+            },
+            {
+              "id": "rpn2",
+              "log_after": 1342
+            },
+            {
+              "id": "pgs1#1",
+              "blocked_by_new_same_plan_tail": 2
+            },
+            {
+              "id": "pgs2#1",
+              "blocked_by_new_same_plan_tail": 3
+            },
+            {
+              "id": "younger",
+              "blocked_by_new_same_plan_tail": 4
+            },
+            {
+              "id": "controller",
+              "blocked_by_new_same_plan_tail": 5
+            }
+          ],
+          "queue_after": [
+            "pgs1#3",
+            "pgs2#3",
+            "pgs1#1",
+            "pgs2#1",
+            "younger",
+            "controller"
+          ],
+          "log": 1342
+        },
+        {
+          "block": 3,
+          "pending_snapshot": 6,
+          "events": [
+            {
+              "id": "pgs1#3",
+              "log_after": 1342
+            },
+            {
+              "id": "pgs2#3",
+              "log_after": 1342
+            },
+            {
+              "id": "pgs1#1",
+              "log_after": 1342
+            },
+            {
+              "id": "pgs2#1",
+              "log_after": 1342
+            },
+            {
+              "id": "younger",
+              "log_after": 1342
+            },
+            {
+              "id": "controller",
+              "log_after": 13425
+            }
+          ],
+          "queue_after": [
+            "pgs1#4",
+            "pgs2#4"
+          ],
+          "log": 13425
+        },
+        {
+          "block": 4,
+          "pending_snapshot": 2,
+          "events": [
+            {
+              "id": "pgs1#4",
+              "log_after": 13425
+            },
+            {
+              "id": "pgs2#4",
+              "log_after": 13425
+            }
+          ],
+          "queue_after": [],
+          "log": 13425
+        }
+      ]
+    },
+    "pure_receiver_fifo": {
+      "send": true,
+      "pgs_bindings": false,
+      "final_log": 12,
+      "receiver_execution_digits": [
+        1,
+        2
+      ],
+      "second_receiver_log": 12,
+      "sender_checkpoint_queue": [
+        "rpn1",
+        "rpn2",
+        "younger"
+      ],
+      "executions": [
+        "sender",
+        "rpn1",
+        "rpn2",
+        "younger"
+      ],
+      "passes": [
+        {
+          "block": 0,
+          "pending_snapshot": 2,
+          "events": [
+            {
+              "id": "sender",
+              "log_after": 0
+            },
+            {
+              "id": "younger",
+              "blocked_by_new_same_plan_tail": 2
+            }
+          ],
+          "queue_after": [
+            "rpn1",
+            "rpn2",
+            "younger"
+          ],
+          "log": 0
+        },
+        {
+          "block": 1,
+          "pending_snapshot": 3,
+          "events": [
+            {
+              "id": "rpn1",
+              "log_after": 1
+            },
+            {
+              "id": "rpn2",
+              "log_after": 12
+            },
+            {
+              "id": "younger",
+              "log_after": 12
+            }
+          ],
+          "queue_after": [],
+          "log": 12
+        }
+      ]
+    }
+  },
+  "negative_controls": {
+    "reversed_fifo_final_log": 21,
+    "reversed_fifo_second_receiver_log": 2,
+    "removed_tail_rule_yields": 51234,
+    "old_12345_rejected": true
+  },
+  "assumptions": [
+    "All modeled live callbacks share one retained PlanId",
+    "Fuel8192 lets each finite fixture handler finish/wait without extra preemption",
+    "The source-derived checkpoint follows deliberate public fuel1 exhaustion with live younger work",
+    "Long intentional waits do not expire within the fixtures1024-sample observation window",
+    "No additional plan starts/listeners/automation exist in these synthetic fixtures"
+  ],
+  "limitations": "No Rust compilation, KSP compilation, complete VM, allocation measurement, PCM observation or native behavior is modeled."
+}
