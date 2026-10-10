@@ -1,0 +1,141 @@
+{
+  "status": "PASS_STATIC_AND_INDEPENDENT_MODEL_ONLY",
+  "source_sha": "63a05d3745ef0ab4b5f8a1ee51feeebbe4590d8f",
+  "base_sha": "9075da681fbca5019640619822a4540bfd2a57a1",
+  "source_tree": "2e045f2d8ad0a266bfa4f0aea12467953c013d18",
+  "legacy_loop": "exact source preserved under else",
+  "original_consumer_prediction": {
+    "quarter_equal_power_in_actual_from_log": 0.5,
+    "inside_exponential_in_actual_from_log": 0.5,
+    "reason": "no script_fade read in frozen plain mixer"
+  },
+  "independent_discriminant": {
+    "frame16": 0.0008680555555555555,
+    "cell_endpoint_interpolation": 0.003472222222222222
+  },
+  "model_cases": [
+    {
+      "origin": 0,
+      "curve": "Linear",
+      "out": false,
+      "frame16": 0.020833333333333332
+    },
+    {
+      "origin": 0,
+      "curve": "Linear",
+      "out": true,
+      "frame16": 0.4791666666666667
+    },
+    {
+      "origin": 0,
+      "curve": "EqualPower",
+      "out": false,
+      "frame16": 0.03270156461507153
+    },
+    {
+      "origin": 0,
+      "curve": "EqualPower",
+      "out": true,
+      "frame16": 0.49892946161930174
+    },
+    {
+      "origin": 0,
+      "curve": "SCurve",
+      "out": false,
+      "frame16": 0.0021387846565474045
+    },
+    {
+      "origin": 0,
+      "curve": "SCurve",
+      "out": true,
+      "frame16": 0.4978612153434526
+    },
+    {
+      "origin": 0,
+      "curve": "Exponential",
+      "out": false,
+      "frame16": 0.0008680555555555555
+    },
+    {
+      "origin": 0,
+      "curve": "Exponential",
+      "out": true,
+      "frame16": 0.45920138888888895
+    },
+    {
+      "origin": 0,
+      "curve": "Logarithmic",
+      "out": false,
+      "frame16": 0.04079861111111105
+    },
+    {
+      "origin": 0,
+      "curve": "Logarithmic",
+      "out": true,
+      "frame16": 0.4991319444444444
+    },
+    {
+      "origin": 128,
+      "curve": "Linear",
+      "out": false,
+      "frame16": 0.020833333333333332
+    },
+    {
+      "origin": 128,
+      "curve": "Linear",
+      "out": true,
+      "frame16": 0.4791666666666667
+    },
+    {
+      "origin": 128,
+      "curve": "EqualPower",
+      "out": false,
+      "frame16": 0.03270156461507153
+    },
+    {
+      "origin": 128,
+      "curve": "EqualPower",
+      "out": true,
+      "frame16": 0.49892946161930174
+    },
+    {
+      "origin": 128,
+      "curve": "SCurve",
+      "out": false,
+      "frame16": 0.0021387846565474045
+    },
+    {
+      "origin": 128,
+      "curve": "SCurve",
+      "out": true,
+      "frame16": 0.4978612153434526
+    },
+    {
+      "origin": 128,
+      "curve": "Exponential",
+      "out": false,
+      "frame16": 0.0008680555555555555
+    },
+    {
+      "origin": 128,
+      "curve": "Exponential",
+      "out": true,
+      "frame16": 0.45920138888888895
+    },
+    {
+      "origin": 128,
+      "curve": "Logarithmic",
+      "out": false,
+      "frame16": 0.04079861111111105
+    },
+    {
+      "origin": 128,
+      "curve": "Logarithmic",
+      "out": true,
+      "frame16": 0.4991319444444444
+    }
+  ],
+  "rust": "UNRUN; integration sole validation owner",
+  "native_runtime": "UNKNOWN; immutable official specification equivalent check only",
+  "cpu_ram_acceptance": "UNACHIEVED"
+}
