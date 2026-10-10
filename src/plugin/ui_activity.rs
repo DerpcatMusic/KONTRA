@@ -20,11 +20,12 @@ pub(crate) enum Phase {
     UiNativeScript,
     UiNativeCanvasSubmission,
     WorkerScriptEffects,
+    UiNativeRetentionAnalysis,
 }
 
 // Independent from the v1 counter ABI. Triples: count, total_ns, max_ns.
-pub(crate) const PHASE_VERSION: u64 = 1;
-pub(crate) const PHASES: [(&str, &str); 9] = [
+pub(crate) const PHASE_VERSION: u64 = 2;
+pub(crate) const PHASES: [(&str, &str); 10] = [
     ("ui_build_frame", "editor_ui"),
     ("ui_snapshot_readback", "editor_ui"),
     ("ui_control_readback", "editor_ui"),
@@ -34,6 +35,7 @@ pub(crate) const PHASES: [(&str, &str); 9] = [
     ("ui_native_script", "editor_ui"),
     ("ui_native_canvas_submission", "editor_ui_deferred_canvas"),
     ("worker_script_effects", "serialized_load_worker"),
+    ("ui_native_retention_analysis", "editor_ui"),
 ];
 pub(crate) const PHASE_FIELDS: usize = PHASES.len() * 3;
 
@@ -209,7 +211,7 @@ mod tests {
         assert_eq!(activity.snapshot().unwrap(), [0; FIELDS.len()], "v1 is unchanged");
         assert_eq!(activity.phase_report()["phases"][worker / 3]["thread_role"],
             "serialized_load_worker");
-        assert_eq!(Phase::WorkerScriptEffects as usize + 1, PHASES.len());
+        assert_eq!(Phase::UiNativeRetentionAnalysis as usize + 1, PHASES.len());
     }
 
     #[test]
