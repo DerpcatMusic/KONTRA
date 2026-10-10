@@ -1,6 +1,7 @@
 # W15 AR filter identity and numerical admission
 
-Status: static association established; native numerical checks pending.
+Status: static association and bounded original-byte numerical checks GREEN;
+Rust checkpoint and playback/runtime/address admission checks pending.
 Takeover preserves the original 2e-6 admission tolerance.
 No AR subtype is admitted by this document alone.
 
@@ -119,7 +120,19 @@ one-frame-partition and per-channel state evidence without starting a host.
 
 The oracle and independent Rust equations were recovered from immutable WIP
 `0e9a85c26b8341a240c35ecbad752441e5c9d45a`, rather than modifying the old dirty
-checkout. The new coordinator's integration worker must run the bounded native
-matrix, generate the missing checkpoint fixture, and run Rust/kernel/runtime
-checks. No build or test was run by the takeover DSP worker. This source is
-still disconnected; no AR processor or importer admission has been added.
+checkout. The integration worker replayed exact source
+`2252a3a869d50a10f0b894f22bad2460357885ca`: all 243 static/ramp/retune cases
+passed with maximum error 0.0, plus the wrapper-clock checks. The tolerance
+remained 2e-6. Receipt:
+`/mnt/Windows11/DEV_WORKSPACE/kontra-runs/takeover-dsp-20261010/ar-native.json`
+(SHA-256 `98316c475bb02cf040eec91b44156a04de38363fad112646f843a751b0b7d5bf`).
+Run metadata is `ar-native-run.json`; its log SHA-256 is
+`91c6b335724ecf4441bdeae0fcd70e5afefa0add8c3ee3ab02a91be65381233b`.
+
+`dsp/ar_native_vectors.json` retains the binary identity, all 81 synthetic
+scenarios and their static/ramp/retune checkpoints, frame indices and oracle
+limitations from that receipt. Only the kernel's test-only module is enabled.
+This is numerical replay evidence, not native host or library playback evidence.
+The combined integration batch must run the Rust checkpoint test before
+runtime/address admission. No build or numerical replay was run by the takeover
+DSP worker. No AR processor or importer admission has been added.
