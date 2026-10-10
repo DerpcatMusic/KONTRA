@@ -1,0 +1,21 @@
+{ Synthetic own source, no library/bank/sample/native fixture. }
+on init
+    declare %data[1] := (7)
+    declare $m
+    declare $a
+    declare $done
+    declare $async
+end on
+on note
+    ignore_event($EVENT_ID)
+    set_rpn(0, 16383)
+    $m := mf_reset()
+    wait_async($m)
+    set_nrpn(16383, 0)
+    $a := save_array_str(%data, "rpn-synthetic-neighbor.nka")
+    wait_async($a)
+    $done := 42
+end on
+on async_complete
+    inc($async)
+end on
