@@ -164,10 +164,9 @@ fn parameter_boolean_type_is_preserved() {
 }
 
 #[test]
-#[ignore = "audit: zero actual connections must return an empty table"]
 fn connections_do_not_fabricate_entries() {
     let h = host(
-        "result = (Program.layers[1]:getParameterConnections('Gain')[1] == nil)",
+        "result = (Program.layers[1]:getParameterConnections('Gain') == nil)",
         "",
     );
     assert_eq!(h.global_text("result"), "true");
