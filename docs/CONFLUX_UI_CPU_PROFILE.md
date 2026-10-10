@@ -96,3 +96,43 @@ Source-only checks to run at root: `phase_spans_are_opt_in_bounded_and_aggregate
 `native_profiler_counts_connected_script_and_deferred_paint_calls`, and
 `loop_drag_target_skips_unavailable_controls_and_uses_runtime_values`.
 Child status for all checks: **NOT_RUN**.
+
+
+## Measured headless Conflux result, 2026-10-10
+
+The full-editor `ui::tests::audit_ui_real_frames` measurement loaded the owned
+Conflux1.1.0 instrument, admitted its Original NativeUI surface, warmed eight
+frames, and sampled24 frames at1180×900. It removes audio zones before preparation;
+there is no audio worker, DAW or GPU present. Test-only source-path instrumentation
+also adds overhead that installed production code does not have.
+
+The initial baseline at `a3aa5a93` measured56.8ms/frame construction in Original
+and4.1ms in Vector. Original spent22.8ms/frame in authored layout submission and
+19.9ms/frame in native script calls. These are overlapping elapsed-wall phases.
+Snapshot/control readback was below0.01ms/frame in this static fixture.
+
+`e31d0e8e` removes two temporary Lua tables per primitive while preserving child
+frames, outer modifiers, graph validation and existing flexibility caching.
+Two sequential baseline/change pairs with privately retained release test binaries
+produced the following means (48 frames per source):
+
+| Work | Baseline | Allocation change |
+|---|---:|---:|
+| Original frame construction |51.03ms|47.88ms|
+| Original authored layout phase |20.79ms|16.87ms|
+| Original total software rendering |80.49ms|82.09ms|
+| Vector frame construction |3.99ms|3.80ms|
+
+The local layout phase fell about19%; frame construction fell about6%.
+Total software rendering did not improve consistently. Original remains slow.
+The baseline/change Original PNGs were byte-identical. All eight selected native
+layout/geometry/budget tests and four profiler checks passed; four native-library
+unit tests stayed ignored. The full-editor fixture and four paired repeats passed.
+
+This identifies expensive Original frontend construction in this fixture; it does
+not prove live host input latency, GPU performance, callback contention or native
+Kontakt parity. Original and Vector also have different authored canvas sizes.
+
+Root receipts: `kontra-runs/conflux-ui-layout-20261010T145549Z/PROFILE-RESULT.json`
+and `PAIRED-LAYOUT-COMPARISON.json`; previous baseline:
+`kontra-runs/conflux-ui-phases-20261010T144404Z/PROFILE-RESULT.json`.
