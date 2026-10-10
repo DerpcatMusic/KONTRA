@@ -93,6 +93,31 @@ fn uvi_authored_fractional_bounds_reach_the_rendered_surface() {
 }
 
 #[test]
+fn authored_traversal_changes_pixels_without_moving_widget_identities() {
+    let mut face = face(Kind::Panel);
+    face.source = ir::Source::FalconLua;
+    face.widgets[0].text.clear();
+    face.widgets[0].binding = ir::Binding::Control(ir::ControlId(7));
+    face.widgets[0].colors.background = Some(ir::Rgba::rgb(0xff0000));
+    let mut second = face.widgets[0].clone();
+    second.binding = ir::Binding::Control(ir::ControlId(8));
+    second.colors.background = Some(ir::Rgba::rgb(0x0000ff));
+    face.widgets.push(second);
+    let declarations = face.widgets.clone();
+    let blue = pixels(&face);
+    face.paint_order = Some(vec![WidgetRef(1), WidgetRef(0)]);
+    face.validate().unwrap();
+    let red = pixels(&face);
+    let at = (40 * 160 + 40) * 4;
+    assert_eq!(&blue[at..at + 4], &[0, 0, 255, 255]);
+    assert_eq!(&red[at..at + 4], &[255, 0, 0, 255]);
+    assert_eq!(face.widgets, declarations);
+    face.paint_order = Some(vec![]);
+    assert_eq!(&pixels(&face)[at..at + 4], &[240, 239, 228, 255]);
+    println!("AUTHORED_ORDER_PIXELS blue={} red={}", blake3::hash(&blue), blake3::hash(&red));
+}
+
+#[test]
 fn menu_keeps_authored_selected_caption_when_item_is_hidden() {
     let paint = |visible: i32, value: i32| {
         let source = format!(
