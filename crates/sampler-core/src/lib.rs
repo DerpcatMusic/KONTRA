@@ -57,8 +57,8 @@ pub use switching::{Driver, Selector, Switch, SwitchKeys, Switching};
 mod behavior;
 use behavior::Continuation;
 pub use behavior::{
-    BehaviorId, BehaviorOwner, BehaviorProgress, Comparison, Duration, DurationValue, Instruction,
-    Outcome, Program, Velocity, WaitLifetime,
+    BehaviorId, BehaviorOwner, BehaviorProgress, Comparison, Duration, DurationValue, FadeCurve,
+    Instruction, Outcome, Program, Velocity, WaitLifetime,
 };
 mod stages;
 pub use stages::Stage;

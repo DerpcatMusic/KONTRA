@@ -2277,17 +2277,26 @@ impl Gen<'_, '_> {
                 self.arg(args, 0, dst)?;
                 self.arg(args, 1, t)?;
                 self.emit(I::MicrosToFrames { local: t })?;
+                let curve_arg = if builtin == FadeIn { 2 } else { 3 };
+                let curve = if args.get(curve_arg).is_some() {
+                    let local = reg(dst, 2)?;
+                    self.arg(args, curve_arg, local)?;
+                    Some(local)
+                } else {
+                    None
+                };
                 let fade = |stop| I::FadeEvent {
                     event: dst,
                     frames: t,
                     out: builtin == FadeOut,
                     stop,
+                    curve,
                 };
                 match (builtin, self.const_int(args, 2)) {
                     (FadeIn, _) => self.emit(fade(false))?,
                     (_, Some(stop)) => self.emit(fade(stop != 0))?,
                     _ => {
-                        let flag = reg(dst, 2)?;
+                        let flag = reg(dst, 3)?;
                         self.arg(args, 2, flag)?;
                         let keep = self.jump_if_zero(flag)?;
                         self.emit(fade(true))?;
