@@ -363,40 +363,43 @@ function element.hasParameter(self, name)
 end
 __touched = {}
 function element.setParameter(self, name, value)
-  if name == nil then report("setParameter", "nil name"); return end
+  if name == nil then return end
   if type(name) == "number" then
-    name = parameter_name(self,name); if not name then error("invalid parameter id") end
+    name = parameter_name(self,name); if not name then return end
   end
+  if type(name) ~= 'string' then return end
   local defs = rawget(self, 'parameterDefinitions')
   local expected, min, max
   if defs then
     local def = defs[name]
     if def then expected,min,max=def.type,def.min,def.max end
   else expected,min,max=native.definition(rawget(self,'__id'),name) end
-  if expected then
-    -- v1/Workstation-observed, Falcon unverified: mismatched scalar writes
-    -- are ignored. Only lossless int-to-float widening is accepted.
-    local actual = type(value)
-    if actual == 'boolean' then actual = 'bool'
-    elseif actual == 'number' then actual = value == math.floor(value) and 'int' or 'float' end
-    if actual ~= expected and not (expected == 'float' and actual == 'int') then
-      native.setterMismatch(expected,actual)
-      return
-    end
-    if actual == 'int' or actual == 'float' then
-      if value ~= value or math.abs(value) == math.huge then error('expected finite parameter') end
-      -- Keep reversed documented bounds intact; native semantics need a measurement.
-      if min ~= nil and max ~= nil and min <= max then value = math.max(min, math.min(max, value)) end
-    end
+  if not expected then return end
+  -- Vendor Element contract: unknown names/IDs and mismatched types are ignored.
+  -- Native execution remains unverified.
+  local actual = type(value)
+  if actual == 'boolean' then actual = 'bool'
+  elseif actual == 'number' then actual = value == math.floor(value) and 'int' or 'float' end
+  if actual ~= expected and not (expected == 'float' and actual == 'int') then
+    native.setterMismatch(expected,actual)
+    return
   end
-  local overlay = rawget(self, "__set")
-  if not overlay then
-    overlay = {}; rawset(self, "__set", overlay)
-    __touched[#__touched + 1] = self
+  if actual == 'int' or actual == 'float' then
+    if value ~= value or math.abs(value) == math.huge then error('expected finite parameter') end
+    -- Keep reversed documented bounds intact; native semantics need a measurement.
+    if min ~= nil and max ~= nil and min <= max then value = math.max(min, math.min(max, value)) end
   end
-  overlay[name] = value
-  if type(value) == "number" and native.setParam(rawget(self, "__id"), name, value) then return end
-  report("setParameter " .. rawget(self, "type") .. "." .. tostring(name), "")
+  -- true: queued control, false: retained XML model only, nil: rejected.
+  local accepted = native.setParam(rawget(self, "__id"), name, value)
+  if accepted ~= nil then
+    local overlay = rawget(self, "__set")
+    if not overlay then
+      overlay = {}; rawset(self, "__set", overlay)
+      __touched[#__touched + 1] = self
+    end
+    overlay[name] = value
+  end
+  if accepted ~= true then report("setParameter " .. rawget(self, "type") .. "." .. tostring(name), "") end
 end
 function element.getParameterConnections(self, name)
   if type(name) == 'number' then
