@@ -21,13 +21,31 @@ pub struct GroupList {
 
 impl GroupList {
     pub fn read<R: ReadBytesExt>(mut reader: R) -> Result<Self, Error> {
+        let count_at = reader.stream_position()?;
         let num_groups = reader.read_u32_le()?;
+        let position = reader.stream_position()?;
+        let end = reader.seek(std::io::SeekFrom::End(0))?;
+        reader.seek(std::io::SeekFrom::Start(position))?;
+        let available = end.saturating_sub(position);
+        // Every existing envelope needs at least its flag and u16 version.
+        // This is a framing lower bound, not a new group-version admission rule.
+        let minimum = u64::from(num_groups) * 3;
+        if minimum > available {
+            return Err(Error::Generic(format!(
+                "GroupList count {num_groups} at offset {count_at}: at least {minimum} bytes required, {available} available"
+            )));
+        }
         let mut groups = Vec::new();
 
-        for _ in 0..num_groups {
-            let group = Group(StructuredObject::read(&mut reader)?);
-            // group.params()?;
-            groups.push(group);
+        for index in 0..num_groups {
+            let at = reader.stream_position()?;
+            let group = StructuredObject::read(&mut reader).map_err(|e| {
+                Error::context(
+                    format!("GroupList group {index} of {num_groups} at offset {at}"),
+                    e,
+                )
+            })?;
+            groups.push(Group(group));
         }
 
         Ok(Self { groups })
@@ -46,7 +64,15 @@ impl std::convert::TryFrom<&Chunk> for GroupList {
             .into());
         }
         let mut reader = std::io::Cursor::new(&chunk.data);
-        Self::read(&mut reader)
+        let groups = Self::read(&mut reader)?;
+        let at = reader.position();
+        if at != chunk.data.len() as u64 {
+            return Err(Error::Generic(format!(
+                "Kontakt GroupList chunk 0x0033: {} trailing bytes at body offset {at}",
+                chunk.data.len() as u64 - at
+            )));
+        }
+        Ok(groups)
     }
 }
 
