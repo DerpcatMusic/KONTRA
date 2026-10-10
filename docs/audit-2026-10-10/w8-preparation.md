@@ -67,3 +67,20 @@ prepared but not started. The unchanged observer digest is
 
 NEXT: source-only warm runtime review while waiting W9 DIRECT; frozen pair,
 then fully drained DIRECT to W10 with exact observer identity and raw samples.
+
+## Frozen pair after W9 DIRECT
+
+Observer wrapper-waiter regression RED failed; GREEN passed. Verified wrapper
+families are excluded from contention while their measured CPU/I/O counters
+remain in raw samples. Unknown children and running scanners/builds stay
+CONTENDED. Historical verdicts were not relabeled. Observer digest: d82d5f7825cdbce3d9f485277b512b17bf6057f9c4f535c1edad2f8ed3a15c36.
+
+- Areia-FullEns: QUIET; install-to-sound 45.953 ms; CPU editor RSS 564.520 MiB.
+- Dolce-Vln1: QUIET; install-to-sound 18.401 ms; CPU editor RSS 468.922 MiB.
+
+Exact frozen binary identity is in FREEZE.json; raw onset and activity samples
+are in pair/. These are candidate measurements, not an all-14 or v1 parity
+claim. Areia/Dolce callback preemption remains six/three blocks; after voices
+start, cold stream pages add readiness waits.
+
+NEXT: bounded callback/order fix; drained quiet DIRECT to W6 per latest order.

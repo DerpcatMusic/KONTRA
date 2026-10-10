@@ -16,7 +16,8 @@ UNIT_COUNTERS = {}
 
 
 def status(sample):
-    if any(not row['owned'] and (row.get('cpu_io_active', False) or not row.get('waiting', False))
+    # A verified wrapper family only polls/sleeps; retain its counters as context.
+    if any(not row['owned'] and not row.get('waiting', False)
            for row in sample['units'] + sample['processes']):
         return 'CONTENDED'
     return 'UNKNOWN' if sample['errors'] else 'QUIET'
