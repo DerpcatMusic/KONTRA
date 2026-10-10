@@ -397,8 +397,8 @@ fn light_under(face: &Interface, assets: &Assets, n: WidgetRef) -> bool {
             sample(
                 &mut rgb,
                 img,
-                (x - r.x as f64) / r.width.max(1) as f64 * img.width as f64,
-                (y - r.y as f64) / r.height.max(1) as f64 * img.height as f64,
+                (x - r.x as f64) / r.width.max(1.) as f64 * img.width as f64,
+                (y - r.y as f64) / r.height.max(1.) as f64 * img.height as f64,
             );
         }
     }

@@ -1986,8 +1986,8 @@ fn widget_conflux_placement_and_capture() {
         .filter(|(n, w)| {
             face.visible(ir::WidgetRef(*n))
                 && matches!(w.kind, ir::Kind::Knob { .. } | ir::Kind::Slider { .. })
-                && face.page_rect(ir::WidgetRef(*n)).x == 0
-                && face.page_rect(ir::WidgetRef(*n)).y == 0
+                && face.page_rect(ir::WidgetRef(*n)).x == 0.
+                && face.page_rect(ir::WidgetRef(*n)).y == 0.
         })
         .count();
     println!(
