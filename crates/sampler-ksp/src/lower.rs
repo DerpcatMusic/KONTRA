@@ -469,8 +469,8 @@ fn callback_type(kind: CallbackKind) -> i32 {
         CallbackKind::PgsChanged => b::cb::PGS_CHANGED,
         CallbackKind::PersistenceChanged => b::cb::PERSISTENCE_CHANGED,
         CallbackKind::AsyncComplete => b::cb::ASYNC_COMPLETE,
-        CallbackKind::Rpn => 5,
-        CallbackKind::Nrpn => 6,
+        CallbackKind::Rpn => b::cb::RPN,
+        CallbackKind::Nrpn => b::cb::NRPN,
     }
 }
 
@@ -1044,6 +1044,14 @@ impl Gen<'_, '_> {
             SysVar::SignalType if self.signal.is_some() => I::SetLocal {
                 local: dst,
                 value: i64::from(self.signal.unwrap()),
+            },
+            SysVar::RpnAddress => I::ReadParameter {
+                local: dst,
+                value: false,
+            },
+            SysVar::RpnValue => I::ReadParameter {
+                local: dst,
+                value: true,
             },
             SysVar::CurrentScriptSlot => I::SetLocal {
                 local: dst,
@@ -2726,15 +2734,31 @@ impl Gen<'_, '_> {
                 // Effects complete immediately; logging switches have no runtime state.
                 true
             }
+            SetRpn | SetNrpn => {
+                self.arg(args, 0, dst)?;
+                let value = t;
+                self.arg(args, 1, value)?;
+                self.emit(I::SendParameter {
+                    kind: if builtin == SetRpn {
+                        sampler_core::ParameterKind::Rpn
+                    } else {
+                        sampler_core::ParameterKind::Nrpn
+                    },
+                    address: dst,
+                    value,
+                })?;
+                // Runtime-owned, but command-specific routing/timing is our policy.
+                false
+            }
             // Instrument, presentation and logging services the engine does not own.
             ChangeVol | ChangeTune | ChangePan | FadeIn | FadeOut | SetEventPar
-            | SetEventParArr | SetNoteController | SetRpn | SetNrpn | WillNeverTerminate
-            | RedirectOutput | SetZonePar | SetVoiceLimit | LoadIrSample | AttachLevelMeter
-            | AddTextLine | MoveControl | MoveControlPx | SetSkinOffset | SetUiColor
-            | AttachZone | SetUiWfProperty | FsNavigate | SetNksNavName | SetNksNavPar
-            | ResetNksNav | SetKeyColor | SetKeyName | SetKeyType | SetKeyPressed
-            | SetKeyPressedSupport | SetKeyrange | RemoveKeyrange | Message | LoadArray
-            | SaveArray | PgsSetStrKeyVal | PgsCreateKey | PgsCreateStrKey => {
+            | SetEventParArr | SetNoteController | WillNeverTerminate | RedirectOutput
+            | SetZonePar | SetVoiceLimit | LoadIrSample | AttachLevelMeter | AddTextLine
+            | MoveControl | MoveControlPx | SetSkinOffset | SetUiColor | AttachZone
+            | SetUiWfProperty | FsNavigate | SetNksNavName | SetNksNavPar | ResetNksNav
+            | SetKeyColor | SetKeyName | SetKeyType | SetKeyPressed | SetKeyPressedSupport
+            | SetKeyrange | RemoveKeyrange | Message | LoadArray | SaveArray | PgsSetStrKeyVal
+            | PgsCreateKey | PgsCreateStrKey => {
                 self.effect(builtin, args, dst)?;
                 if builtin.sig().ret != b::Ret::Void {
                     self.set(dst, 0)?;

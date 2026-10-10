@@ -400,6 +400,19 @@ pub enum Instruction {
     Signal {
         signal: u16,
     },
+    /// Send a raw 14-bit inter-script parameter to later stages in this plan.
+    /// Invalid operands or insufficient callback capacity fault the sender.
+    SendParameter {
+        kind: super::ParameterKind,
+        address: u16,
+        value: u16,
+    },
+    /// Read this callback's immutable parameter payload (address or value).
+    /// Outside a parameter callback the result is zero, never a global host slot.
+    ReadParameter {
+        local: u16,
+        value: bool,
+    },
     /// 1 when an input key equal to `local`'s value is held on a note of
     /// this callback's plan, else 0 (KSP `%KEY_DOWN`).
     ReadKeyHeld {
@@ -609,6 +622,7 @@ impl Program {
                 matches!(
                     op,
                     Instruction::ReadInputController { .. }
+                        | Instruction::SendParameter { .. }
                         | Instruction::WriteController { .. }
                         | Instruction::PlayMidi { .. }
                 )
@@ -685,6 +699,7 @@ impl Program {
             | Instruction::ReadKey { local }
             | Instruction::ReadKeyDown { local }
             | Instruction::ReadKeyHeld { local }
+            | Instruction::ReadParameter { local, .. }
             | Instruction::ReadNoteCell { local, .. }
             | Instruction::WriteNoteCell { local, .. }
             | Instruction::JumpIfZero { local, .. } = *op
@@ -710,6 +725,9 @@ impl Program {
                 if let DurationValue::Frames(frames) = duration {
                     locals = locals.max(usize::from(frames) + 1);
                 }
+            }
+            if let Instruction::SendParameter { address, value, .. } = *op {
+                locals = locals.max(usize::from(address.max(value)) + 1);
             }
             if let Instruction::CompareLocal { lhs, rhs, .. }
             | Instruction::Binary32 { lhs, rhs, .. } = *op
@@ -971,6 +989,8 @@ pub(super) struct Continuation {
     pub callback_id: i32,
     pub waiting: bool,
     pub disable_wait: bool,
+    /// Callback-owned raw payload; the plan owner and context retain generation/origin.
+    pub parameter: Option<super::plan_programs::ParameterMessage>,
     pub async_result: Option<(i32, i32)>,
     pub async_wait: Option<i32>,
 }
@@ -1030,6 +1050,7 @@ impl Runtime {
         let id = BehaviorId(self.behaviors.insert(Continuation {
             owner: BehaviorOwner::Note(note),
             context: PlanContext::Bare,
+            parameter: None,
             note_stage,
             program,
             pc: plan.programs[program].entry,
@@ -1125,6 +1146,7 @@ impl Runtime {
         let id = BehaviorId(self.behaviors.insert(Continuation {
             owner: BehaviorOwner::Plan(plan),
             context,
+            parameter: None,
             note_stage: None,
             program,
             pc: generation.prepared.programs[program].entry,
@@ -1627,7 +1649,7 @@ impl Runtime {
         steps
     }
 
-    fn yielded_plan(&self, id: BehaviorId) -> Option<super::PlanId> {
+    pub(super) fn yielded_plan(&self, id: BehaviorId) -> Option<super::PlanId> {
         let c = self.behaviors.get(id.0)?;
         if c.outcome.is_some() {
             return None;
@@ -2452,6 +2474,27 @@ impl Runtime {
                                 && n.input.is_some_and(|i| i64::from(i.key) == key)
                         });
                 *self.local_cell_mut(id, local)? = i64::from(held);
+            }
+            Instruction::SendParameter {
+                kind,
+                address,
+                value,
+            } => {
+                self.send_parameter(
+                    id,
+                    kind,
+                    self.behavior_local(id, address)?,
+                    self.behavior_local(id, value)?,
+                )?;
+            }
+            Instruction::ReadParameter { local, value } => {
+                let payload = self
+                    .behaviors
+                    .get(id.0)
+                    .ok_or(Error::StaleHandle)?
+                    .parameter;
+                let raw = payload.map_or(0, |p| if value { p.value } else { p.address });
+                *self.local_cell_mut(id, local)? = i64::from(raw);
             }
             Instruction::Signal { signal } => {
                 let plan = self.behavior_plan(owner)?;
