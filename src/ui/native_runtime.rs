@@ -612,6 +612,31 @@ impl UserData for Parameter {
     }
 }
 
+pub(super) fn update_widget(
+    widget: &mut ir::Widget,
+    authored: Option<&ir::Widget>,
+    typed: Option<&ir::Value>,
+) {
+    if let Some(authored) = authored
+        && &*widget != authored
+    {
+        // A live readback alone must not recopy all authored metadata.
+        // shortcut: divergent authored heap values still clone here; revisit if profiling warrants it.
+        let previous = std::mem::replace(&mut widget.value, authored.value.clone());
+        if &*widget != authored {
+            widget.clone_from(authored);
+        }
+        if previous.is_some() && previous.as_ref() == typed {
+            widget.value = previous;
+        }
+    }
+    if let Some(value) = typed
+        && widget.value.as_ref() != Some(value)
+    {
+        widget.value = Some(value.clone());
+    }
+}
+
 /// One editor-owned Lua VM. Audio receives only the bounded numeric edits.
 pub struct Session {
     lua: Lua,
@@ -799,32 +824,18 @@ impl Session {
             if source != face.source {
                 continue;
             }
-            if let Some(authored) = face.widgets.get(index)
-                && &bridge.controls[at] != authored
-            {
-                let w = &mut bridge.controls[at];
-                // A live readback alone must not recopy all authored metadata.
-                // shortcut: divergent authored heap values still clone here; revisit if profiling warrants it.
-                let previous = std::mem::replace(&mut w.value, authored.value.clone());
-                if &*w != authored {
-                    w.clone_from(authored);
-                }
-                if previous.is_some() && previous.as_ref() == typed.get(&ir::WidgetRef(index)) {
-                    w.value = previous;
-                }
-            }
+            let typed = typed.get(&ir::WidgetRef(index));
+            update_widget(&mut bridge.controls[at], face.widgets.get(index), typed);
             if let Some(level) = meters.get(&ir::WidgetRef(index)) {
                 bridge.meters.insert(at, *level);
             }
             let w = &mut bridge.controls[at];
-            if let Some(value) = typed.get(&ir::WidgetRef(index)) {
-                if w.value.as_ref() != Some(value) {
-                    w.value = Some(value.clone());
-                }
-            } else if matches!(
-                w.value,
-                None | Some(ir::Value::Integer(_) | ir::Value::Real(_))
-            ) && let ir::Binding::Control(c) = w.binding
+            if typed.is_none()
+                && matches!(
+                    w.value,
+                    None | Some(ir::Value::Integer(_) | ir::Value::Real(_))
+                )
+                && let ir::Binding::Control(c) = w.binding
                 && let Some(&n) = values.get(&c)
             {
                 w.value = Some(if matches!(w.value, Some(ir::Value::Real(_))) {
