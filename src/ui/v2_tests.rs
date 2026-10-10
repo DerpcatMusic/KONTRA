@@ -186,7 +186,10 @@ const NO_LIMITS: sampler_ksp::Limits =
 fn both_modes(face: &ir::Interface, load: &mut dyn FnMut(&ir::Asset) -> Option<Arc<Picture>>, dir: &str, stem: &str) -> [usize; 2] {
     let face = ir_view::resolved(face);
     let page = &face.pages[0];
-    let (w, h) = (page.size.width.clamp(1, 1200) as u16, ir_view::height(&face, ir::PageRef(0)).clamp(1, 900) as u16);
+    let (w, h) = (
+        page.size.width.clamp(1., 1200.) as u16,
+        ir_view::height(&face, ir::PageRef(0)).clamp(1., 900.) as u16,
+    );
     let mut values = ir_view::Values::default();
     let mut assets = ir_view::Assets::default();
     let mut bytes = [0; 2];
