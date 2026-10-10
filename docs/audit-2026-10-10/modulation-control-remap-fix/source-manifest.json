@@ -1,0 +1,1152 @@
+{
+  "status": "PASS_SOURCE_CUSTODY_AND_SCALAR_MODEL_ONLY",
+  "base": "66eaf072d12387012c3a17c13b4140310f59e985",
+  "code_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+  "code_tree": "5d356a11294ff601942fc1eca440532db502848a",
+  "files": [
+    {
+      "path": "crates/sampler-core/src/control.rs",
+      "git_blob": "309747510bd69d140ab96e45a4ea248a36ee6051",
+      "bytes": 26115,
+      "sha256": "848f14c4a42468928b73757c28bd50a1679c9b3b7735a2bdc26bfea0cc3576fd",
+      "rustfmt_parse_exit": 0
+    },
+    {
+      "path": "crates/sampler-core/src/voice_mod.rs",
+      "git_blob": "5610c56329695d15d6131937e2f9bcc5dbdb218a",
+      "bytes": 76611,
+      "sha256": "7db264be62e96e801ecad55c106db00019b17ea5ba97ab5ddcdadc937ac6aa77",
+      "rustfmt_parse_exit": 0
+    },
+    {
+      "path": "crates/sampler-core/tests/controls.rs",
+      "git_blob": "4d552edb365dccd4eb1d94a79925d9e044605838",
+      "bytes": 44785,
+      "sha256": "6ed64b6fad81a4c549d252007fb36cf48f147700aaf3904368f333de03d2a3ff",
+      "rustfmt_parse_exit": 0
+    },
+    {
+      "path": "crates/sampler-kontakt/tests/production_modulation.rs",
+      "git_blob": "2c0b48e834918c806b3b6e42b70bb825733d34a2",
+      "bytes": 27647,
+      "sha256": "7414abb4581080c978726e4bd6638e747ae59d9359d29be292c2ce79bda4179f",
+      "rustfmt_parse_exit": 0
+    }
+  ],
+  "spans": [
+    {
+      "path": "crates/sampler-core/src/control.rs",
+      "symbol": "with_controls",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "file_sha256": "848f14c4a42468928b73757c28bd50a1679c9b3b7735a2bdc26bfea0cc3576fd",
+      "git_blob": "309747510bd69d140ab96e45a4ea248a36ee6051",
+      "first": 179,
+      "last": 234,
+      "full_lines_sha256": "f114933b5493eef869a2b85d21ab9e481abd10bda72e6f02a130b7330b9004c4",
+      "source_body_sha256": "d1a65c2a437acc40e8b21b7aaf430371371e529d16a3f6dbdc7ecef2e59b64b8"
+    },
+    {
+      "path": "crates/sampler-core/src/control.rs",
+      "symbol": "schema_replacement_rejects_invalid_compiled_input_index",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "file_sha256": "848f14c4a42468928b73757c28bd50a1679c9b3b7735a2bdc26bfea0cc3576fd",
+      "git_blob": "309747510bd69d140ab96e45a4ea248a36ee6051",
+      "first": 574,
+      "last": 613,
+      "full_lines_sha256": "99f19f706997fa06f9a96f9b3a2127aaa2423adfc65cac8945ac5ee2d1cfb04a",
+      "source_body_sha256": "e114b26a3afddd97502e83cbc990df7017a729b0d371cdb6cf7c25d7c18b7368"
+    },
+    {
+      "path": "crates/sampler-core/src/voice_mod.rs",
+      "symbol": "remap_controls",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "file_sha256": "7db264be62e96e801ecad55c106db00019b17ea5ba97ab5ddcdadc937ac6aa77",
+      "git_blob": "5610c56329695d15d6131937e2f9bcc5dbdb218a",
+      "first": 372,
+      "last": 388,
+      "full_lines_sha256": "4f9e06f7328d1a66b38f453087e0883d9600bc2dddfffd12e0ab79122b3bf489",
+      "source_body_sha256": "59389fb6d2526ceff25904797082a3aae819da170981a014851e248ec9d8a35e"
+    },
+    {
+      "path": "crates/sampler-core/src/voice_mod.rs",
+      "symbol": "new_resolved",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "file_sha256": "7db264be62e96e801ecad55c106db00019b17ea5ba97ab5ddcdadc937ac6aa77",
+      "git_blob": "5610c56329695d15d6131937e2f9bcc5dbdb218a",
+      "first": 433,
+      "last": 630,
+      "full_lines_sha256": "bc41deb73f0507950ca5287c532d550634c205285b9fc894e739a03f1d88b0b8",
+      "source_body_sha256": "95a70319674235e5a492b2c29c039cf693264e64d0b3c8ead67894bc5730a0c0"
+    },
+    {
+      "path": "crates/sampler-core/src/voice_mod.rs",
+      "symbol": "evaluate",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "file_sha256": "7db264be62e96e801ecad55c106db00019b17ea5ba97ab5ddcdadc937ac6aa77",
+      "git_blob": "5610c56329695d15d6131937e2f9bcc5dbdb218a",
+      "first": 1250,
+      "last": 1383,
+      "full_lines_sha256": "2795afe7c1ab76161129e2f759bbe455c30347ac13806971ca50cb5635e19bd9",
+      "source_body_sha256": "22f8ae2a910ef546fee966c48d12a37aeac6b68f9949302d8dc7000af1d3904b"
+    },
+    {
+      "path": "crates/sampler-core/src/voice_mod.rs",
+      "symbol": "project_parameters",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "file_sha256": "7db264be62e96e801ecad55c106db00019b17ea5ba97ab5ddcdadc937ac6aa77",
+      "git_blob": "5610c56329695d15d6131937e2f9bcc5dbdb218a",
+      "first": 1123,
+      "last": 1153,
+      "full_lines_sha256": "6c0b65c43280e60c2ee1e3f4f33e37a24d29f5b75e81fe725c8511cffbca3be1",
+      "source_body_sha256": "54eb08e0818730246d54613e5df93a5cb958b1b3cc6db8df155c0f1f5bad4ba4"
+    },
+    {
+      "path": "crates/sampler-core/src/voice_mod.rs",
+      "symbol": "bytes_per_voice",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "file_sha256": "7db264be62e96e801ecad55c106db00019b17ea5ba97ab5ddcdadc937ac6aa77",
+      "git_blob": "5610c56329695d15d6131937e2f9bcc5dbdb218a",
+      "first": 404,
+      "last": 418,
+      "full_lines_sha256": "3e8f73d5343d53e1bb4a6e66613adc2f18529b85dd64b3d00d5cf1e35f0e617d",
+      "source_body_sha256": "752b8720d142c6d99693778ca7d9846315f36c9dd16267d18e302d302630255d"
+    },
+    {
+      "path": "crates/sampler-core/src/prepare.rs",
+      "symbol": "with_voice_modulation",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "file_sha256": "c70a1d28185a0c3cd084ad2341ca429856248dfabb94fef919f34707d1550547",
+      "git_blob": "0ec2b2d6d08eef080ed4ade0bcdc2ccc0c09c947",
+      "first": 774,
+      "last": 902,
+      "full_lines_sha256": "fc73b856229c067f8b517b9297f1002864a2f6a7090d27d3c87635a2f05d575e",
+      "source_body_sha256": "0025eaa2a0ebdde51eb39d1d19765f6eada3695a270a5be4f03842bed1aa438e"
+    },
+    {
+      "path": "crates/sampler-core/src/prepare.rs",
+      "symbol": "with_voice_chains",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "file_sha256": "c70a1d28185a0c3cd084ad2341ca429856248dfabb94fef919f34707d1550547",
+      "git_blob": "0ec2b2d6d08eef080ed4ade0bcdc2ccc0c09c947",
+      "first": 1483,
+      "last": 1516,
+      "full_lines_sha256": "c28a4df769abd0c3f74c5a4dbca4ed0eeb3ae204bdea24a15565f3d0f6a22edb",
+      "source_body_sha256": "50a6c524a4728adfb364acd8b87012cf46366fe7b8a0d771866c1e7cf34e1f07"
+    },
+    {
+      "path": "crates/sampler-core/src/engine_parameters.rs",
+      "symbol": "with_group_envelope_parameters_batch",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "file_sha256": "439c7945f687cc6b934316789ea65b32978337c0136252285389cb96e7bb99b4",
+      "git_blob": "bd48614da4b9b437871ebd894016f42861d12bd2",
+      "first": 325,
+      "last": 390,
+      "full_lines_sha256": "0396b9757fac1e80885040432300f335533decf642ebaba60e07528b743c8cb3",
+      "source_body_sha256": "ea3173416093cf35cc52238ccc4200b1e5cd2f1bc2f81bfb5883db2e49d28708"
+    },
+    {
+      "path": "crates/sampler-core/src/engine_parameters.rs",
+      "symbol": "set_engine_parameter",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "file_sha256": "439c7945f687cc6b934316789ea65b32978337c0136252285389cb96e7bb99b4",
+      "git_blob": "bd48614da4b9b437871ebd894016f42861d12bd2",
+      "first": 675,
+      "last": 682,
+      "full_lines_sha256": "629dd7e67cc68f844db3e04d9ee9e93b5a6f4828f809f22234a8fbd3652d5ac2",
+      "source_body_sha256": "73d911db61a79ef35198c6bdab0dac58580bbba500c664223ec3d6f5bef7466f"
+    },
+    {
+      "path": "crates/sampler-core/src/engine_parameters.rs",
+      "symbol": "engine_parameter",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "file_sha256": "439c7945f687cc6b934316789ea65b32978337c0136252285389cb96e7bb99b4",
+      "git_blob": "bd48614da4b9b437871ebd894016f42861d12bd2",
+      "first": 683,
+      "last": 685,
+      "full_lines_sha256": "ab2526ca49752482156d6a572519cc55ee6fdcfeb8330ba98a289638992ade6c",
+      "source_body_sha256": "86b2007e94497fbe8e36f237ad35a9391abcac6b424738480ef974cb86269157"
+    },
+    {
+      "path": "crates/sampler-core/src/engine_parameters.rs",
+      "symbol": "set_engine_parameter_in",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "file_sha256": "439c7945f687cc6b934316789ea65b32978337c0136252285389cb96e7bb99b4",
+      "git_blob": "bd48614da4b9b437871ebd894016f42861d12bd2",
+      "first": 686,
+      "last": 760,
+      "full_lines_sha256": "98b28624f9db6ff0f5f61e8a07467e896061151b1f544668bfc19f75b9a08745",
+      "source_body_sha256": "077b7236e892b2f3fb2365be61fe5da1be3fc64d689c234bd1669fc6283bb451"
+    },
+    {
+      "path": "crates/sampler-core/src/engine_parameters.rs",
+      "symbol": "engine_parameter_in",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "file_sha256": "439c7945f687cc6b934316789ea65b32978337c0136252285389cb96e7bb99b4",
+      "git_blob": "bd48614da4b9b437871ebd894016f42861d12bd2",
+      "first": 761,
+      "last": 813,
+      "full_lines_sha256": "1f7d9f784c677fa202bab156e4a39e03a5ad25f2ec2e2ab3b3ae6820fbd6fd7e",
+      "source_body_sha256": "ab07b2548a628a02fd7f9e99a5a0b0713e9b61829826d6c5ebe98c49bb98bef8"
+    },
+    {
+      "path": "crates/sampler-ksp/src/lib.rs",
+      "symbol": "bind_modules",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "file_sha256": "0d4d82b377797656c2ac7d80026dc484854c83eca3adf2f04868dab354c68758",
+      "git_blob": "e8a2a2e5475403aaaa9f317172204d8f574d3eaf",
+      "first": 614,
+      "last": 794,
+      "full_lines_sha256": "cca76d71a4b93f051ec10cfe360ef062769ae63116faeeb0c29d320a323f0f77",
+      "source_body_sha256": "ed0410fc3035f6062f31122486eb42e08897ff563c4697437ce3cb3dba32e5f9"
+    },
+    {
+      "path": "crates/sampler-ksp/src/lib.rs",
+      "symbol": "derived_control_id",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "file_sha256": "0d4d82b377797656c2ac7d80026dc484854c83eca3adf2f04868dab354c68758",
+      "git_blob": "e8a2a2e5475403aaaa9f317172204d8f574d3eaf",
+      "first": 807,
+      "last": 813,
+      "full_lines_sha256": "eb0011cbb3b2feb30cdedc21938f1f3d3daa197705b0f10146efe205f8a5b797",
+      "source_body_sha256": "5ca465c59e4294245f047b35d6cca0ef060a425b1db13219fb22ce4963b9f0ad"
+    },
+    {
+      "path": "crates/sampler-kontakt/src/load.rs",
+      "symbol": "prepare_inner",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "file_sha256": "881defcef92840a65e1a0b76c157ca293fbc41ddc202cc7ffe56c9432e6b8c94",
+      "git_blob": "cefa61bc0f138d27e437722c5de21f588929195c",
+      "first": 915,
+      "last": 1023,
+      "full_lines_sha256": "e7624fe03f731c9204e75b7faecb000600e9b5c8efaecfab3e170f924815e550",
+      "source_body_sha256": "bddd50a9777abb4518d910a4bed6b555689900825df586e037af8782d06f5f7a"
+    },
+    {
+      "path": "crates/sampler-core/src/dsp/control.rs",
+      "symbol": "validate_dsp_controls",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "file_sha256": "6e4da75bc12f9b2b0029794d3026179c3b5b9379d0957e3ec634bff04574eae5",
+      "git_blob": "145b832f94728a09792b2c5c58b274cdac277ff7",
+      "first": 225,
+      "last": 230,
+      "full_lines_sha256": "3f3859860020c5b148fbfe36821419275d9178ea62bc82cb08a7924a6ca8edef",
+      "source_body_sha256": "691315f92ee4344acbf00ae8dd421815ee671f29c4d0110a20e021b5fe1193c9"
+    },
+    {
+      "path": "crates/sampler-core/src/dsp/control.rs",
+      "symbol": "initial_parameters",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "file_sha256": "6e4da75bc12f9b2b0029794d3026179c3b5b9379d0957e3ec634bff04574eae5",
+      "git_blob": "145b832f94728a09792b2c5c58b274cdac277ff7",
+      "first": 232,
+      "last": 248,
+      "full_lines_sha256": "ec0058b02013e9b314982d5c0a594979651c4ff4c5742bae6f876c4a0596e88e",
+      "source_body_sha256": "2c45c1af25c11d7fa54f725834c1ea45dcc54b79ad92b480b5b0df7922c17ca0"
+    },
+    {
+      "path": "crates/sampler-core/src/dsp/control.rs",
+      "symbol": "edit_parameters",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "file_sha256": "6e4da75bc12f9b2b0029794d3026179c3b5b9379d0957e3ec634bff04574eae5",
+      "git_blob": "145b832f94728a09792b2c5c58b274cdac277ff7",
+      "first": 277,
+      "last": 293,
+      "full_lines_sha256": "3b8495fe1eebf341334a25254faee20c58e4ed987965b4e89de00c8b40d15284",
+      "source_body_sha256": "94553b0b985c9544be113a26dbed07098ccb65ce4a0a9b9ff80d81f02a0fac8b"
+    },
+    {
+      "path": "crates/sampler-core/src/script.rs",
+      "symbol": "with_script_resources",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "file_sha256": "52ff97654b9b2aee5b69f19f20de058966424c61f16ef99571dd2d5ac6a56dfd",
+      "git_blob": "b01249e4b1754880f7f2129be152b36c5e0cd325",
+      "first": 58,
+      "last": 79,
+      "full_lines_sha256": "ee793a5318077e0b6241c89cd71d8b0c1939bbc17c2a7ba3a36260a48976bdcd",
+      "source_body_sha256": "64d6dc3eef97279634dc7d18db33b46d5ebfdf2d3b6ad53d4da496bc8bdec69a"
+    },
+    {
+      "path": "crates/sampler-core/src/widget.rs",
+      "symbol": "with_widgets",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "file_sha256": "24d56d27cb920cc5c36b724b6361b1421ca1099f1bee321d6344a2b6b6bd6aa6",
+      "git_blob": "f80aae50d6e24be7bca12f4be35a90e8b28e0af7",
+      "first": 126,
+      "last": 200,
+      "full_lines_sha256": "1e92bf3dd5fec2f278815528dc1f201046d15b24d4666c1d9815ae3fd1f11570",
+      "source_body_sha256": "09297607b50f710aec1fd7495fc19505a97a0b4c3acbe2deefc9d779e48e70a8"
+    },
+    {
+      "path": "crates/sampler-core/src/parameter_registry.rs",
+      "symbol": "with_parameter_registry",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "file_sha256": "4a2e7983c6221f5f284f0f15b0d56cf77d63240c8e99c464a6e57e62fd095b81",
+      "git_blob": "ce5a12c63cd40a22f3d824389fb2dca64377fdbf",
+      "first": 183,
+      "last": 199,
+      "full_lines_sha256": "5e133791bbacef47d45f5956417d830ed90103c27c0cf56bda21682442410d55",
+      "source_body_sha256": "c5d1d150533b106274e8eb40a1470eb759e71e060049bfb0c5bda90c4658396e"
+    },
+    {
+      "path": "crates/sampler-kontakt/tests/production_modulation.rs",
+      "symbol": "fixture_target_script",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "file_sha256": "7414abb4581080c978726e4bd6638e747ae59d9359d29be292c2ce79bda4179f",
+      "git_blob": "2c0b48e834918c806b3b6e42b70bb825733d34a2",
+      "first": 114,
+      "last": 243,
+      "full_lines_sha256": "ede1b4a826dccb4d2c79d8204f7077e3e544a42ed0a4c2f07484d2ad10217e77",
+      "source_body_sha256": "9b59469de5aa25b33bd4d73cb2ee709b8c5619d027dec10f3fa85211aa2fd556"
+    },
+    {
+      "path": "crates/sampler-kontakt/tests/production_modulation.rs",
+      "symbol": "scripted_plan",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "file_sha256": "7414abb4581080c978726e4bd6638e747ae59d9359d29be292c2ce79bda4179f",
+      "git_blob": "2c0b48e834918c806b3b6e42b70bb825733d34a2",
+      "first": 293,
+      "last": 366,
+      "full_lines_sha256": "4249fd81c383868f0d9d5044e9f63d3c9beb6e7e9327a8c85196701d02caa555",
+      "source_body_sha256": "31f7c29257824c66fa36dc162f251bccdf779e6bdffa56646264d5961e0b0a56"
+    },
+    {
+      "path": "crates/sampler-core/src/lower.rs",
+      "symbol": "lower_with modulation then bind_behaviors",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "first": 715,
+      "last": 725,
+      "file_sha256": "436832f33a750790dacd151974662b608d5c6bca675500cc411add156e713f80",
+      "git_blob": "1e89bc35d5aae301846bd2fee45f3422b3ba81a4",
+      "full_lines_sha256": "d9690b0244e5027bee2c5f774cf2448a9e0faf710b4c713a99398b613e384c8d",
+      "source_body_sha256": "a0b62da8260596a78aa2ff75b2e07f50037b5745f7bbe1ddeef24263e803bc0f"
+    }
+  ],
+  "tests": [
+    {
+      "name": "schema_replacement_rejects_invalid_compiled_input_index",
+      "package": "sampler-core",
+      "target": "lib",
+      "witness": "Invalid old index rejects before publication",
+      "path": "crates/sampler-core/src/control.rs",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "status": "NOT_RUN",
+      "native": "UNKNOWN",
+      "first": 574,
+      "last": 613,
+      "full_lines_sha256": "99f19f706997fa06f9a96f9b3a2127aaa2423adfc65cac8945ac5ee2d1cfb04a",
+      "source_body_sha256": "e114b26a3afddd97502e83cbc990df7017a729b0d371cdb6cf7c25d7c18b7368"
+    },
+    {
+      "name": "modulation_inputs_follow_identity_after_reorder_append_and_real_default_replacement",
+      "package": "sampler-core",
+      "target": "controls",
+      "witness": "Repeated sorted replacement, inserted integer/toggle, actual typed depth/bypass PCM, unchanged sentinel/voice",
+      "path": "crates/sampler-core/tests/controls.rs",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "status": "NOT_RUN",
+      "native": "UNKNOWN",
+      "first": 1098,
+      "last": 1158,
+      "full_lines_sha256": "f6cc31d05ee6a6a91cc25091a6a0bc7a0a68a3941d81a4d9cefc147af9539a1d",
+      "source_body_sha256": "022d7c5b0623257e4c4b3eb8a0c694df97c7200ca37b084f7352794c44a9b365"
+    },
+    {
+      "name": "modulation_schema_rejects_removed_and_non_real_inputs_without_touching_active_plan",
+      "package": "sampler-core",
+      "target": "controls",
+      "witness": "Both sparse IDs removed/integer/toggle reject; existing audible active generation/revision survives",
+      "path": "crates/sampler-core/tests/controls.rs",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "status": "NOT_RUN",
+      "native": "UNKNOWN",
+      "first": 1161,
+      "last": 1207,
+      "full_lines_sha256": "2cef6b6a713b7557cd7f21566c86c8a96f406a8eb7e0bd655e0ce6c41309a04f",
+      "source_body_sha256": "0ef645b827c0c68af915ce6a5919a02b25411e7be30a6a7a0df733c890993caa"
+    },
+    {
+      "name": "schema_replacement_preserves_native_envelope_and_dsp_identity_consumers",
+      "package": "sampler-core",
+      "target": "controls",
+      "witness": "Real amplitude envelope lane reject/preserve, onset engine write and ControlGain plus pan consume stable IDs",
+      "path": "crates/sampler-core/tests/controls.rs",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "status": "NOT_RUN",
+      "native": "UNKNOWN",
+      "first": 1210,
+      "last": 1302,
+      "full_lines_sha256": "e66ecf5664533481a8673f6417e1f74a0f3f4bbcdd6429923175cdc969720785",
+      "source_body_sha256": "4be06f42544e9b7c1cae5f6d16c9f9c5bd758600b2aafad130e0550e2fbd7cc2"
+    },
+    {
+      "name": "serialized_scripts_enabled_schema_shift_preserves_depth_bypass_pcm_and_voice_owners",
+      "package": "sampler-kontakt",
+      "target": "production_modulation",
+      "witness": "Public own NKS/WAV, KSP init/UI bind and sorted shift; amplitude/pan depth+bypass PCM, sibling, sentinel, overlap release",
+      "path": "crates/sampler-kontakt/tests/production_modulation.rs",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "status": "NOT_RUN",
+      "native": "UNKNOWN",
+      "first": 631,
+      "last": 685,
+      "full_lines_sha256": "101f45a02e571683b08e3885ee682bf3a76f3d7e10e2c9dd3c1ceb0dc468b64e",
+      "source_body_sha256": "0192a5efff7e6ff9ed5d340f2b77baa4290c62841361b3b1eeeea4396092f7ce"
+    },
+    {
+      "name": "serialized_scripts_enabled_live_writes_match_unbound_pcm_across_partitions",
+      "package": "sampler-kontakt",
+      "target": "production_modulation",
+      "witness": "Exact reviewer $Real/slot12 index5->6 trigger; positive saved PCM and typed writes vs same NKS scripts disabled, irregular/empty partitions",
+      "path": "crates/sampler-kontakt/tests/production_modulation.rs",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "status": "NOT_RUN",
+      "native": "UNKNOWN",
+      "first": 688,
+      "last": 735,
+      "full_lines_sha256": "b04d3dc0e9133b60fb090caac16ef23823e4045eae7bbaf8fbd3ef1b1e2a1601",
+      "source_body_sha256": "970042c747314d21ecff4e96ffebd51ef40753f414e85bc7be4e51a5ac208c3d"
+    },
+    {
+      "name": "serialized_scripts_enabled_schema_shift_keeps_pitch_step_and_sibling_pan",
+      "package": "sampler-kontakt",
+      "target": "production_modulation",
+      "witness": "Same public script-enabled fixture with own ramp WAV; six-semitone vs neutral cursor step, bypass+zero depth, sibling pan and voice continuity",
+      "path": "crates/sampler-kontakt/tests/production_modulation.rs",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "status": "NOT_RUN",
+      "native": "UNKNOWN",
+      "first": 738,
+      "last": 791,
+      "full_lines_sha256": "44bdbe802280a89821d41359019c1a3347ddb595804ff8f95ddf6d1c7c8cc089",
+      "source_body_sha256": "166a8f81ce55b8b8f292171e26ec2ef99bdc19c6212ee0bcca93f9be18bc265e"
+    }
+  ],
+  "original_ten_tests": [
+    {
+      "name": "serialized_lfo_live_intensity_bypass_reaches_pcm_without_compacting_slots",
+      "unchanged_full_lines_sha256": "ec80f20e485f76e45ffbac103fc74ee32862b7ab1e908244e226a998de380b06",
+      "status": "NOT_RUN_ON_SUCCESSOR"
+    },
+    {
+      "name": "serialized_saved_bypass_stays_neutral_until_live_enable",
+      "unchanged_full_lines_sha256": "ae72a5c11c5fa852a019f7fa1dddec39734d7fce0dab4897f65f2bc0fc055713",
+      "status": "NOT_RUN_ON_SUCCESSOR"
+    },
+    {
+      "name": "serialized_retriggered_ahdsr_routes_have_live_amplitude_and_pan_consumers",
+      "unchanged_full_lines_sha256": "51be19f7aa4051d19112e9840ff3e6b8b625c823311b699402a78fd01d01bf60",
+      "status": "NOT_RUN_ON_SUCCESSOR"
+    },
+    {
+      "name": "serialized_retrigger_off_ahdsr_live_controls_remain_unbound",
+      "unchanged_full_lines_sha256": "7efe65fb45904cfb18f88b9fed704f6d63d2f751c8da8c6e23df958cd0e555b2",
+      "status": "NOT_RUN_ON_SUCCESSOR"
+    },
+    {
+      "name": "serialized_invert_is_not_replaced_by_positive_or_mp_intensity",
+      "unchanged_full_lines_sha256": "cf90358b0fb24c927f96d49dcf2b72c2bc1867bebc0a6c0da8a7cbf85890e148",
+      "status": "NOT_RUN_ON_SUCCESSOR"
+    },
+    {
+      "name": "serialized_overlap_release_keeps_other_voice_and_live_control_ownership",
+      "unchanged_full_lines_sha256": "465cdc632be72371ccc832cb04ff754a5b09a638e2715a588be11912a24ba558",
+      "status": "NOT_RUN_ON_SUCCESSOR"
+    },
+    {
+      "name": "serialized_filtered_routes_cannot_publish_getter_only_live_bindings",
+      "unchanged_full_lines_sha256": "dbdc5f75b0a997d41d9a25dc8436bb435bbf732224b01f90455d3b2f0bdcfb41",
+      "status": "NOT_RUN_ON_SUCCESSOR"
+    },
+    {
+      "name": "serialized_live_writes_are_independent_of_host_render_partition",
+      "unchanged_full_lines_sha256": "fb98ced68d78edbf5faf03b57f83c3acbd72cdae2f4ac271d30487222515f0fd",
+      "status": "NOT_RUN_ON_SUCCESSOR"
+    },
+    {
+      "name": "serialized_bypass_masks_routes_without_restarting_the_source_clock",
+      "unchanged_full_lines_sha256": "06bdf2245ae49ece373423e6aa171c37cbc492408f2251df2627ecde59a0ef9b",
+      "status": "NOT_RUN_ON_SUCCESSOR"
+    },
+    {
+      "name": "serialized_pitch_intensity_changes_pcm_cursor_step_not_pan_or_voice_identity",
+      "unchanged_full_lines_sha256": "3b91b61713345820bfc62277f841be738fcad84cdad89fee683c55f048e660a1",
+      "status": "NOT_RUN_ON_SUCCESSOR"
+    }
+  ],
+  "unchanged_layout_and_audio_bodies": [
+    {
+      "symbol": "Program",
+      "unchanged_full_lines_sha256": "b6b8bb6271a75d0a05089920364e8c35b228b95fcbcf595ee4dd3766fca284af"
+    },
+    {
+      "symbol": "VoiceModulation",
+      "unchanged_full_lines_sha256": "e8ed76b55cd79c1e43299211900fd294dbc2cb40822d1daed6d5dda7c339223a"
+    },
+    {
+      "symbol": "ModShape",
+      "unchanged_full_lines_sha256": "b4d081db35acd94797eab22434b9874f6c86c2720a79aaca689cb22c4cfc5c42"
+    },
+    {
+      "symbol": "VoiceModState",
+      "unchanged_full_lines_sha256": "3cd97c3a1ec7848c3f0bf7540bf5d9fd268931e3c05d245fed769822bdef2863"
+    },
+    {
+      "symbol": "evaluate",
+      "unchanged_full_lines_sha256": "2795afe7c1ab76161129e2f759bbe455c30347ac13806971ca50cb5635e19bd9"
+    },
+    {
+      "symbol": "bytes_per_voice",
+      "unchanged_full_lines_sha256": "3e8f73d5343d53e1bb4a6e66613adc2f18529b85dd64b3d00d5cf1e35f0e617d"
+    },
+    {
+      "symbol": "project_parameters",
+      "unchanged_full_lines_sha256": "6c0b65c43280e60c2ee1e3f4f33e37a24d29f5b75e81fe725c8511cffbca3be1"
+    }
+  ],
+  "callers": [
+    {
+      "path": "crates/sampler-core/examples/render_workloads.rs",
+      "line": 89,
+      "call": ".with_controls(vec![sampler_core::ControlDefinition {",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 81,
+      "last": 99,
+      "full_lines_sha256": "260a84ddb324dd48416b18ad9a98a5ed8de8b75315fa8b139bdd233e4d42190a",
+      "file_sha256": "69ccd3be8dbc646a9c91c8a574395da845ae449b184f166378ec00db236d5c69"
+    },
+    {
+      "path": "crates/sampler-core/src/control.rs",
+      "line": 585,
+      "call": ".with_controls(definitions.clone())",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 577,
+      "last": 595,
+      "full_lines_sha256": "0e9dac33edd96fe9f0fd0e04c3599b52526c12adb83ad972b9b4ad5e6235c96b",
+      "file_sha256": "848f14c4a42468928b73757c28bd50a1679c9b3b7735a2bdc26bfea0cc3576fd"
+    },
+    {
+      "path": "crates/sampler-core/src/control.rs",
+      "line": 610,
+      "call": "plan.with_controls(definitions),",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 602,
+      "last": 620,
+      "full_lines_sha256": "f34feacb916655be5359307fa9c390904944d497a298adc07f70a15b69f15c4a",
+      "file_sha256": "848f14c4a42468928b73757c28bd50a1679c9b3b7735a2bdc26bfea0cc3576fd"
+    },
+    {
+      "path": "crates/sampler-core/src/control.rs",
+      "line": 620,
+      "call": ".with_controls(vec![ControlDefinition {",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 612,
+      "last": 630,
+      "full_lines_sha256": "2745f7356cf53d85ecff30db43a04061889f89d6da130bf53f9a5290b433e291",
+      "file_sha256": "848f14c4a42468928b73757c28bd50a1679c9b3b7735a2bdc26bfea0cc3576fd"
+    },
+    {
+      "path": "crates/sampler-core/src/engine_parameters.rs",
+      "line": 387,
+      "call": "self = self.with_controls(controls)?;",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "production schema composition",
+      "first": 379,
+      "last": 397,
+      "full_lines_sha256": "8f41cac82fecd4193ada845aa4126d0464217263ec5a07d12eb05b94b0245899",
+      "file_sha256": "439c7945f687cc6b934316789ea65b32978337c0136252285389cb96e7bb99b4"
+    },
+    {
+      "path": "crates/sampler-core/src/lower.rs",
+      "line": 435,
+      "call": ".with_controls(slots)",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "production schema composition",
+      "first": 427,
+      "last": 445,
+      "full_lines_sha256": "813985542b5fe5d4c9e9edc43d6deff99830a2db79509c9e0b85f2879a16b1d1",
+      "file_sha256": "436832f33a750790dacd151974662b608d5c6bca675500cc411add156e713f80"
+    },
+    {
+      "path": "crates/sampler-core/tests/buses.rs",
+      "line": 185,
+      "call": ".with_controls(vec![ControlDefinition {",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 177,
+      "last": 195,
+      "full_lines_sha256": "853be85d13d0672c2ac62757549983cb61b1ba2153a736c24623c96ab1aadbf8",
+      "file_sha256": "8b5cbd38f497e616e73d9a56903d2a30d67c5b487a8a05fc83c0e0d0ae85d309"
+    },
+    {
+      "path": "crates/sampler-core/tests/buses.rs",
+      "line": 584,
+      "call": ".with_controls(vec![",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 576,
+      "last": 594,
+      "full_lines_sha256": "5cbfd7b2611c99f44cbe856d4b731589a49979c261b0a03ac87a8b4fdd7c4c5a",
+      "file_sha256": "8b5cbd38f497e616e73d9a56903d2a30d67c5b487a8a05fc83c0e0d0ae85d309"
+    },
+    {
+      "path": "crates/sampler-core/tests/buses.rs",
+      "line": 706,
+      "call": ".with_controls(vec![",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 698,
+      "last": 716,
+      "full_lines_sha256": "75ab5a63a999442e263c2edd1a62e86513cbe1c486be408726b72bc1ff8e41e5",
+      "file_sha256": "8b5cbd38f497e616e73d9a56903d2a30d67c5b487a8a05fc83c0e0d0ae85d309"
+    },
+    {
+      "path": "crates/sampler-core/tests/buses.rs",
+      "line": 805,
+      "call": ".with_controls(vec![",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 797,
+      "last": 815,
+      "full_lines_sha256": "424e792cf9c4c441a501ec2c816ead28a0bdc21044b5d639629cc162740d1d10",
+      "file_sha256": "8b5cbd38f497e616e73d9a56903d2a30d67c5b487a8a05fc83c0e0d0ae85d309"
+    },
+    {
+      "path": "crates/sampler-core/tests/buses.rs",
+      "line": 1006,
+      "call": ".with_controls(",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 998,
+      "last": 1016,
+      "full_lines_sha256": "9fef05682b0b7294a82fa3f28c8bbc9f96835892f496a200045f5145f2db3eb4",
+      "file_sha256": "8b5cbd38f497e616e73d9a56903d2a30d67c5b487a8a05fc83c0e0d0ae85d309"
+    },
+    {
+      "path": "crates/sampler-core/tests/cold_chain.rs",
+      "line": 31,
+      "call": ".with_controls(vec![ControlDefinition {",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 23,
+      "last": 41,
+      "full_lines_sha256": "91f6f14a59e2dd50bc6365d6b944ddf764516a64acf729d92cd2b8b7a4d010c0",
+      "file_sha256": "f003d9c4c83c2d90f22f5bd0708cedb5d1199fe5671e227aa8fd66aa891ac74e"
+    },
+    {
+      "path": "crates/sampler-core/tests/compressor.rs",
+      "line": 239,
+      "call": ".with_controls(definitions.clone())",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 231,
+      "last": 249,
+      "full_lines_sha256": "808e20b7139b9e25fe7af77dc8733f6982b047276d5a6cbfc5091a33fe1b42f1",
+      "file_sha256": "febba8dfbee7040e11f0e7c96552bea1c49cfbdaf6eba1cb744e7c3d08f20c67"
+    },
+    {
+      "path": "crates/sampler-core/tests/control_dsp.rs",
+      "line": 50,
+      "call": ".with_controls(vec![",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 42,
+      "last": 60,
+      "full_lines_sha256": "4917f07a8e1219094a312b2fffc6ce34ad827e1a696825113c43090674886871",
+      "file_sha256": "95819e96e8ced641dd6077b3e849666acb602542bbfeaa0e1747595a9984bf99"
+    },
+    {
+      "path": "crates/sampler-core/tests/control_dsp.rs",
+      "line": 280,
+      "call": ".with_controls(vec![])",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 272,
+      "last": 290,
+      "full_lines_sha256": "bf0d718dd4796bf2f6ad56cfdfbee3035cb16ffa0d98217c29e49388f667a044",
+      "file_sha256": "95819e96e8ced641dd6077b3e849666acb602542bbfeaa0e1747595a9984bf99"
+    },
+    {
+      "path": "crates/sampler-core/tests/control_dsp.rs",
+      "line": 330,
+      "call": ".with_controls(vec![",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 322,
+      "last": 340,
+      "full_lines_sha256": "1943c28816f80414ea48840cbc90f2c2100c20d8fb05481b313499fe084d8023",
+      "file_sha256": "95819e96e8ced641dd6077b3e849666acb602542bbfeaa0e1747595a9984bf99"
+    },
+    {
+      "path": "crates/sampler-core/tests/controls.rs",
+      "line": 37,
+      "call": ".with_controls(definitions)",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 29,
+      "last": 47,
+      "full_lines_sha256": "70c90a87042e1a2737d31d59fe42bf5cfd5019c705188453e9c5f5451ae0cf41",
+      "file_sha256": "6ed64b6fad81a4c549d252007fb36cf48f147700aaf3904368f333de03d2a3ff"
+    },
+    {
+      "path": "crates/sampler-core/tests/controls.rs",
+      "line": 152,
+      "call": ".with_controls(vec![definition])",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 144,
+      "last": 162,
+      "full_lines_sha256": "b80ad1b3b603edf8bc49fd0565ccd333b9109d8a7fc017588183252cef0c9df1",
+      "file_sha256": "6ed64b6fad81a4c549d252007fb36cf48f147700aaf3904368f333de03d2a3ff"
+    },
+    {
+      "path": "crates/sampler-core/tests/controls.rs",
+      "line": 159,
+      "call": ".with_controls(vec![definitions()[0]; 2])",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 151,
+      "last": 169,
+      "full_lines_sha256": "4cd432707d2f689f4ae398b7a00428f5c73c017beb1a7364f8e6c66610b4e88f",
+      "file_sha256": "6ed64b6fad81a4c549d252007fb36cf48f147700aaf3904368f333de03d2a3ff"
+    },
+    {
+      "path": "crates/sampler-core/tests/controls.rs",
+      "line": 1060,
+      "call": ".with_controls(modulation_schema())",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 1052,
+      "last": 1070,
+      "full_lines_sha256": "5354814b51eaac7c2a58b2bf9df51adebf020e0eaf3d5caddbf2e131baf3a109",
+      "file_sha256": "6ed64b6fad81a4c549d252007fb36cf48f147700aaf3904368f333de03d2a3ff"
+    },
+    {
+      "path": "crates/sampler-core/tests/controls.rs",
+      "line": 1115,
+      "call": "let plan = modulation_plan().with_controls(definitions).unwrap();",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 1107,
+      "last": 1125,
+      "full_lines_sha256": "2fa0249d708fa71d5d61b72811f91da1fda5d43bfd67b259a7941d0e330aff88",
+      "file_sha256": "6ed64b6fad81a4c549d252007fb36cf48f147700aaf3904368f333de03d2a3ff"
+    },
+    {
+      "path": "crates/sampler-core/tests/controls.rs",
+      "line": 1118,
+      "call": "let plan = plan.with_controls(reversed).unwrap();",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 1110,
+      "last": 1128,
+      "full_lines_sha256": "a7b2eacc37df98e2dda55f670f51a7b90b5617219fc01cf98aa6fe2572837d41",
+      "file_sha256": "6ed64b6fad81a4c549d252007fb36cf48f147700aaf3904368f333de03d2a3ff"
+    },
+    {
+      "path": "crates/sampler-core/tests/controls.rs",
+      "line": 1183,
+      "call": "modulation_plan().with_controls(removed),",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 1175,
+      "last": 1193,
+      "full_lines_sha256": "98c169f58ffc8f486e726466eea44e105b4e3495a0c512e7aaddc5266a9080e6",
+      "file_sha256": "6ed64b6fad81a4c549d252007fb36cf48f147700aaf3904368f333de03d2a3ff"
+    },
+    {
+      "path": "crates/sampler-core/tests/controls.rs",
+      "line": 1198,
+      "call": "modulation_plan().with_controls(definitions),",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 1190,
+      "last": 1208,
+      "full_lines_sha256": "6294394c4687c5aa42aadc356bd0aa35aa5b78026ba83686cdc149e283345cd5",
+      "file_sha256": "6ed64b6fad81a4c549d252007fb36cf48f147700aaf3904368f333de03d2a3ff"
+    },
+    {
+      "path": "crates/sampler-core/tests/controls.rs",
+      "line": 1256,
+      "call": "make_plan().with_controls(definitions),",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 1248,
+      "last": 1266,
+      "full_lines_sha256": "6c980dada70573fe4ef2c62a8f53751e7b8587d8d77728d6b7104d12480eeac3",
+      "file_sha256": "6ed64b6fad81a4c549d252007fb36cf48f147700aaf3904368f333de03d2a3ff"
+    },
+    {
+      "path": "crates/sampler-core/tests/controls.rs",
+      "line": 1267,
+      "call": "let plan = plan.with_controls(definitions).unwrap();",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 1259,
+      "last": 1277,
+      "full_lines_sha256": "2b02150b0a01489dce9deaa4648a2e289468061875454591701c9a61c42c954c",
+      "file_sha256": "6ed64b6fad81a4c549d252007fb36cf48f147700aaf3904368f333de03d2a3ff"
+    },
+    {
+      "path": "crates/sampler-core/tests/dsp.rs",
+      "line": 512,
+      "call": ".with_controls(",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 504,
+      "last": 522,
+      "full_lines_sha256": "f6e4ed94fd83b34c863624032c9bf1047df7d35756a6cdf310b34a4d8a69efc2",
+      "file_sha256": "a6b70b185afb2a55893625e5e434ef68ce018a4d39a045d56a55969ff7f4a006"
+    },
+    {
+      "path": "crates/sampler-core/tests/engine_user_overrides.rs",
+      "line": 16,
+      "call": ".with_controls(",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 8,
+      "last": 26,
+      "full_lines_sha256": "cc4e633edbd008a810b5b7df142416d22c3c50b95a33c5388d31c5181658302d",
+      "file_sha256": "ec2670f81b3199328310886f81a65ed57561083b352b681264d62b5e4724b48e"
+    },
+    {
+      "path": "crates/sampler-core/tests/engine_user_overrides.rs",
+      "line": 207,
+      "call": ".with_controls(vec![ControlDefinition {",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 199,
+      "last": 217,
+      "full_lines_sha256": "af672c39d8ae25751e0cdcf217c86e0640aac658863fa4f02aa65cccddf5ffe8",
+      "file_sha256": "ec2670f81b3199328310886f81a65ed57561083b352b681264d62b5e4724b48e"
+    },
+    {
+      "path": "crates/sampler-core/tests/gainer.rs",
+      "line": 46,
+      "call": ".with_controls(vec![ControlDefinition {",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 38,
+      "last": 56,
+      "full_lines_sha256": "b172e97daf403f3551bd17869723229ff224896e7bd9517a4befa510572874fe",
+      "file_sha256": "762e086e3367254468b1bab46a2c23b738a232b25578ad1d8506d7b25ec988ed"
+    },
+    {
+      "path": "crates/sampler-core/tests/ops.rs",
+      "line": 118,
+      "call": ".with_controls(vec![ControlDefinition {",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 110,
+      "last": 128,
+      "full_lines_sha256": "9e9c325f44a3ef6df6f960eae5bff3bdad4bfa281f53fe3f9c5e0b6a54391209",
+      "file_sha256": "bfdb2b579703035dcd8bce71e3b600217c6b80c091d89cf7f3f0dd01f3710cbb"
+    },
+    {
+      "path": "crates/sampler-core/tests/signal_trace.rs",
+      "line": 230,
+      "call": ".with_controls(definitions.to_vec())",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 222,
+      "last": 240,
+      "full_lines_sha256": "d9d29837ac9dedb49a4eaaac5d77caa1d30bd0c3885cea8b43a62e821df2a2a1",
+      "file_sha256": "6763af88cc4273ab44c486151313a27be181d5c8245497d77ca7e6ab1ab1412a"
+    },
+    {
+      "path": "crates/sampler-core/tests/svf.rs",
+      "line": 81,
+      "call": ".with_controls(vec![",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 73,
+      "last": 91,
+      "full_lines_sha256": "a122b3e3458a9f91cda411b7137554810a7cb0b95e8d8cf215fe12af42709c1e",
+      "file_sha256": "cc839934a07f21d8808992996a6d34a737ee0f9e039e5a5e4c408ad3d3688644"
+    },
+    {
+      "path": "crates/sampler-core/tests/svf.rs",
+      "line": 539,
+      "call": ".with_controls(vec![])",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 531,
+      "last": 549,
+      "full_lines_sha256": "ec6ead36faf9b61f40b4372acbf7284af7bac898295022e09776a83dc6432896",
+      "file_sha256": "cc839934a07f21d8808992996a6d34a737ee0f9e039e5a5e4c408ad3d3688644"
+    },
+    {
+      "path": "crates/sampler-ksp/src/lib.rs",
+      "line": 783,
+      "call": ".with_controls(controls)?",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "production schema composition",
+      "first": 775,
+      "last": 793,
+      "full_lines_sha256": "4b473449f78ca8ac4ebe8698a6ed52014e4883225879a12a8cad45f23434e302",
+      "file_sha256": "0d4d82b377797656c2ac7d80026dc484854c83eca3adf2f04868dab354c68758"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/params.rs",
+      "line": 630,
+      "call": "p.with_controls(controls)?.with_buses(",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 622,
+      "last": 640,
+      "full_lines_sha256": "e77e725ba0bb45742d0216d638a8df17e9c744b80777c56bcfcf0b715009e57a",
+      "file_sha256": "f820c8e61540ea0823d255742b52325b14b950366e762a0d5e0e855753aa7e6c"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/persistence_waits.rs",
+      "line": 194,
+      "call": ".with_controls(vec![ControlDefinition {",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 186,
+      "last": 204,
+      "full_lines_sha256": "2ff8110913155dae7e597542ca282ad7c81b6de70abc80c4bac841b6e720ccd9",
+      "file_sha256": "e18b10f116d56dec262c6a0ba10284b45d7981b850f48748fa1d64953fafe2bd"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/typed_widgets.rs",
+      "line": 222,
+      "call": ".with_controls(vec![ControlDefinition {",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 214,
+      "last": 232,
+      "full_lines_sha256": "9433e882b0421d7f79a6a7fcb004530c28315721da8d40091836bb0672a8c4a0",
+      "file_sha256": "b1bbf8b773b3f5510ea248719061913cda5e455b4e9f2af4d690aea1d418911d"
+    },
+    {
+      "path": "crates/sampler-midi/tests/mpe.rs",
+      "line": 886,
+      "call": ".with_controls(vec![sampler_core::ControlDefinition {",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 878,
+      "last": 896,
+      "full_lines_sha256": "5e9499a477a4ec19cc653320347b00d392a5a06d08b29ab593f1ecbf50c5acb4",
+      "file_sha256": "ba4508eab9bea06f97a7f9a6f44de3c635fd8520636f9bb8169ad898f2db9c94"
+    },
+    {
+      "path": "src/plugin/effect_controls.rs",
+      "line": 155,
+      "call": ".with_controls(",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 147,
+      "last": 165,
+      "full_lines_sha256": "c9ca6f01688ace6ff2a824430ebf498cf09e49692a8a5fcb96cd73701a34d86b",
+      "file_sha256": "177c2225d8dc2fd9b2b74154455ddbd34f0fffac3d761c5876fa1f76c5a90140"
+    },
+    {
+      "path": "src/sound/v2.rs",
+      "line": 6651,
+      "call": ".with_controls(vec![ControlDefinition {",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 6643,
+      "last": 6661,
+      "full_lines_sha256": "a980a9bed711288daded4d74e1a5c36ccd1f5d5035e49d19776f4337f90b07b0",
+      "file_sha256": "b266b42d10bfdb54a5fa46dd0b3f68361db5b7bcba97e1e567e16ae549311524"
+    },
+    {
+      "path": "src/sound/v2.rs",
+      "line": 6712,
+      "call": ".with_controls(vec![ControlDefinition {",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 6704,
+      "last": 6722,
+      "full_lines_sha256": "59abb3e480b2e92350b8531391e535a87d491f994c083ca3d1d265e4f7a15c58",
+      "file_sha256": "b266b42d10bfdb54a5fa46dd0b3f68361db5b7bcba97e1e567e16ae549311524"
+    },
+    {
+      "path": "src/sound/v2/persistence.rs",
+      "line": 555,
+      "call": ".with_controls(vec![ControlDefinition {",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 547,
+      "last": 565,
+      "full_lines_sha256": "26e63a0201b562909c382b656df887493b0b70b9dbc2d2e0a18d019e6d1568ee",
+      "file_sha256": "8e404b8cb22bbef467535a2d59c6c5dbfb606786abe15e95563914134831c72c"
+    },
+    {
+      "path": "src/sound/v2/persistence.rs",
+      "line": 913,
+      "call": ".with_controls(vec![ControlDefinition {",
+      "source_sha": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "category": "test/example fixture or this API regression",
+      "first": 905,
+      "last": 923,
+      "full_lines_sha256": "6d377475c66f263d2e8c0e1ae5679d1188ab10d295c70817a2480157c853b2c6",
+      "file_sha256": "8e404b8cb22bbef467535a2d59c6c5dbfb606786abe15e95563914134831c72c"
+    }
+  ],
+  "references": [
+    {
+      "id": "ksp-controls",
+      "requested_url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-controls",
+      "retrieved_utc": "2026-10-10T02:13:00.175529+00:00",
+      "status": 200,
+      "final_url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-controls",
+      "content_type": "text/html",
+      "etag": "\"2fb4b75d2d1a028491c7d6228d480954\"",
+      "last_modified": "Wed, 12 Jul 2023 14:01:21 GMT",
+      "sha256": "c736e2f0a27e8131a8cf8fa2669a8f1b2ad26a27dadcbc916c20ea00f4ed518d",
+      "bytes": 135509,
+      "file": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/ksp-controls.html",
+      "verified_archive": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/ksp-controls.html",
+      "authority": "requirements only, not native execution"
+    },
+    {
+      "id": "ksp-ui",
+      "requested_url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands",
+      "retrieved_utc": "2026-10-10T02:13:00.540072+00:00",
+      "status": 200,
+      "final_url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands",
+      "content_type": "text/html",
+      "etag": "\"75195e37688999ef960873711f7d01d1\"",
+      "last_modified": "Wed, 15 Jul 2026 12:40:32 GMT",
+      "sha256": "ad269b9e26a32e9f1a8aea9b00d8e199af43551adb3b47cf71b93a7234e09d5e",
+      "bytes": 229072,
+      "file": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/ksp-ui.html",
+      "verified_archive": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/ksp-ui.html",
+      "authority": "requirements only, not native execution"
+    },
+    {
+      "id": "kontakt-modulation",
+      "requested_url": "https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/modulation",
+      "retrieved_utc": "2026-10-10T02:13:00.812977+00:00",
+      "status": 200,
+      "final_url": "https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/modulation",
+      "content_type": "text/html",
+      "etag": "\"e31b9508f740423eb9728c68c51206e0\"",
+      "last_modified": "Wed, 29 Apr 2026 12:37:02 GMT",
+      "sha256": "ca330e3207a333061ebca4ee28b0545b5e93c223624ff69ca608c7a85d897c9d",
+      "bytes": 148921,
+      "file": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/kontakt-modulation.html",
+      "verified_archive": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/kontakt-modulation.html",
+      "authority": "requirements only, not native execution"
+    },
+    {
+      "id": "ksp-engine",
+      "requested_url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameters",
+      "final_url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameters",
+      "status": 200,
+      "retrieved_utc": "2026-10-10T02:14:29.845216+00:00",
+      "sha256": "4a15e3b10a9da8993c90ddc7681fee9fd62a7eafc5f3685f47b0c5ab37d1d16d",
+      "bytes": 219830,
+      "file": "handoff/official-docs/ksp-engine.html",
+      "verified_archive": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/ksp-engine.html",
+      "authority": "requirements only, not native execution"
+    },
+    {
+      "id": "ksp-engine-commands",
+      "requested_url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameter-commands",
+      "retrieved_utc": "2026-10-10T03:03:28.593743+00:00",
+      "status": 200,
+      "final_url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameter-commands",
+      "content_type": "text/html",
+      "etag": "\"2351ef654d7e7a75e7a50683f024fb6a\"",
+      "last_modified": "Wed, 15 Jul 2026 12:40:31 GMT",
+      "sha256": "df2fe7192f32df7c4a738c713663bafdfec3630c2821fd9afe1887c7d5ed006d",
+      "bytes": 141383,
+      "file": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/ksp-engine-commands.html",
+      "verified_archive": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/ksp-engine-commands.html",
+      "authority": "requirements only, not native execution"
+    }
+  ],
+  "requirement_sections": [
+    {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/modulation#ahdsr",
+      "section": "AHDSR",
+      "document_sha256": "ca330e3207a333061ebca4ee28b0545b5e93c223624ff69ca608c7a85d897c9d",
+      "retrieved_utc": "2026-10-10T02:13:00.812977+00:00",
+      "applicability": "Official unversioned Kontakt/KSP documentation retrieved 2026-10-10; NI KSP includes 8.12 additions. Native reference8.13.1 has NOT been executed for this item.",
+      "excerpt": "AHDSR The AHDSR (Attack, Hold, Decay, Sustain,Release) envelope contains the following controls: AHD Only : If this button is activated, the envelope will be reduced to its attack, hold, and decay phases (see below for a description of what these do). As this eliminates the sustain parameter, what you\u2019ll get is a simple one-shot envelope, which will always be completed no matter how long the key is being held. It is thus best suited for drum and percussion sounds. Retrigger : If this button is activated, the envelope will be restarted every time Kontakt receives a note, even if another note is still being held at the same time. If it\u2019s inactive, the envelope will keep its current position until the last note has been released, then be restarted on the next note. Curve : Adjusts the curve shape of the attack phase. A value of zero results in a linear attack curve, negative values make the shape more concave, and positive values make it more convex. Attack : The initial time it will take the envelope to reach its maximum level after it has been triggered. Hold : The (fixed) time the envelope will stay at its maximum level after it has completed the attack phase and before it enters the decay phase. Decay : The time it will take the envelope to fall from its maximum level to the level set by the Sustain control. Sustain : After it has completed its attack, hold, and decay phases, the envelope will stay at this level as long as the key is being held. Release : The time it will take the envelope to fall from its sustain level back to zero after the key has been released.",
+      "authority": "Vendor documentation, NOT native execution"
+    },
+    {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameter-commands#set_engine_par--",
+      "section": "set_engine_par()",
+      "document_sha256": "df2fe7192f32df7c4a738c713663bafdfec3630c2821fd9afe1887c7d5ed006d",
+      "retrieved_utc": "2026-10-10T03:03:28.593743+00:00",
+      "excerpt": "set_engine_par() set_engine_par(<parameter>, <value>, <group>, <slot>, <generic>) Controls various Kontakt engine parameters. <parameter> Specifies the parameter by using one of the built-in engine parameter constants . <value> The value to which the specified parameter is set. The range of values is always 0 to 1000000 , except for switches, in which case it is 0 or 1 , and certain engine parameters which are stepped instead of continuous. These will either have specific constants provided, or a generic integer span of values, which will be separately noted in the Engine Parameters section. <group> The index (zero-based) of the group in which the specified parameter resides. If the specified parameter resides on an Instrument level, enter -1 . Buses and Main FX also reside on Instrument level, so you must set <group> to -1 if you want to address a bus. <slot> The slot index (zero-based) of the specified parameter. It applies only to group/instrument effects, modulators and modulation intensities. For group/instrument effects, this parameter specifies the slot in which the effect resides (zero-based). For modulators and modulation intensities, this parameters specifies the index which you can retrieve by using get_mod_idx() . For all other applications, set this parameter to -1 . <generic> This parameter applies to instrument effects and to internal modulators. For instrument effects, this parameter distinguishes between: $NI_SEND_BUS : Send Effect $NI_INSERT_BUS : Insert Effect $NI_MAIN_BUS : Main Effect For buses, this parameter specifies the actual bus: $NI_BUS_OFFSET + [0 ... 15] One of the 16 buses For internal modulators, this parameter specifies the modulation slider which you can retrieve by using get_target_idx() . For Flex Envelope, this parameter specifies which envelope stage to target when using $ENGINE_PAR_FLEXENV_STAGE_TIME , $ENGINE_PAR_FLEXENV_STAGE_LEVEL and $ENGINE_PAR_FLEXENV_STAGE_SLOPE . For Step Modulator, this parameter specifies which step value to target when using $ENGINE_PAR_STEPSEQ_STEP_VALUE . For all other applications, set this parameter to -1 . Remarks Certain engine parameters are executed asynchronously (most prominently: setting effect type and subtype). When changing the effect slot contents from the on init callback, it is executed synchronously, which can greatly affect the initial loading time of the instrument, especially if this is done for a large amount of effect slots. It is advisable to move any such operations to on persistence_changed callback. Examples on init\n    declare ui_knob $Volume (0, 1000000, 1000000)\nend on\n\non ui_control ($Volume)\n    set_engine_par($ENGINE_PAR_VOLUME, $Volume, -1, -1, -1)\nend on A knob controls the instrument volume. on init\n    declare ui_knob $Freq (0, 1000000, 1000000)\n    declare ui_button $Bypass\nend on\n\non ui_control ($Freq)\n    set_engine_par($ENGINE_PAR_CUTOFF, $Freq, 0, 0, -1)\nend on\n\non ui_control ($Bypass)\n    set_engine_par($ENGINE_PAR_EFFECT_BYPASS, $Bypass, 0, 0, -1)\nend on Controlling the cutoff and bypass button of any filter module in the first slot of the first group. on init\n    declare ui_knob $Knob (-1000, 1000, 10)\n\n    declare $mod_idx\n    $mod_idx := get_mod_idx(0, \"FILTER_ENV\")\n\n    declare $target_idx\n    $target_idx := get_target_idx(0, $mod_idx, \"ENV_AHDSR_CUTOFF\")\nend on\n\non ui_control ($Knob)\n    set_engine_par($ENGINE_PAR_MOD_TARGET_MP_INTENSITY, $Knob * 1000, 0, $mod_idx, $target_idx)\nend on Controlling the filter envelope amount of an envelope to filter cutoff modulation in the first group. Note: the filter envelope has been manually renamed to \"FILTER_ENV\". on init\n    declare ui_knob $Vol (0, 1000000, 1000000)\nend on\n\non ui_control ($Vol)\n    set_engine_par($ENGINE_PAR_VOLUME, $Vol, -1, -1, $NI_BUS_OFFSET + 15)\nend on Controlling the amplifier volume of 16th bus.",
+      "authority": "Immutable official vendor specification; equivalent for requirements only, NOT native execution.",
+      "applicability": "Current unversioned official page archived2026-10-10. NI reference8.13.1 not executed; UVI installed-host version/native behavior UNKNOWN. Section wording takes precedence over older own-test expectations."
+    },
+    {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#load_performance_view--",
+      "section": "load_performance_view()",
+      "document_sha256": "ad269b9e26a32e9f1a8aea9b00d8e199af43551adb3b47cf71b93a7234e09d5e",
+      "retrieved_utc": "2026-10-10T02:13:00.540072+00:00",
+      "excerpt": "load_performance_view() load_performance_view(<filename>) Loads a performance view file (.nckp) that was created in the Creator Tools GUI Designer. <filename> The filename of the .nckp file without extension, entered as a string. Remarks Only one .nkcp performance view file can be loaded per script slot. This command is only available in the on init callback. This command cannot be used alongside make_perfview . The performance view file (.nkcp) should be in the performance_view subfolder of the resource container. All contained controls are accessible as if they were declared and set up in KSP; variable names can be identified in Creator Tools. More information in the Creator Tools manual . Examples on init\n    load_performance_view(\u201cperformanceView\u201d)\nend on\n\non ui_control ($testButton)\n    if ($testButton = 0)\n        set_control_par(get_ui_id($testSlider), $CONTROL_PAR_HIDE, $HIDE_PART_WHOLE_CONTROL)\n    else\n        set_control_par(get_ui_id($testSlider), $CONTROL_PAR_HIDE, $HIDE_PART_NOTHING)\n    end if\nend on Loads a performance view file and then defines some basic behavior involving two of the contained controls. See Also Resource Container",
+      "authority": "Immutable official vendor specification; equivalent for requirements only, NOT native execution.",
+      "applicability": "Current unversioned official page archived2026-10-10. NI reference8.13.1 not executed; UVI installed-host version/native behavior UNKNOWN. Section wording takes precedence over older own-test expectations."
+    },
+    {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#get_ui_id--",
+      "section": "get_ui_id()",
+      "document_sha256": "ad269b9e26a32e9f1a8aea9b00d8e199af43551adb3b47cf71b93a7234e09d5e",
+      "retrieved_utc": "2026-10-10T02:13:00.540072+00:00",
+      "excerpt": "get_ui_id() get_ui_id(<variable>) Retrieves the UI ID number of a UI widget. Remarks UI IDs are assigned sequentially from the very first variable or constant declared in the script, which starts at 32768 . Even regular variables and constants (those that are not UI widgets) get a UI ID assigned, however this ID cannot be used with various get_control_par() / set_control_par() commands! Examples on init\n    declare const $NUM_KNOBS := 4\n\n    declare ui_knob $Knob_1 (0, 100, 1)\n    declare ui_knob $Knob_2 (0, 100, 1)\n    declare ui_knob $Knob_3 (0, 100, 1)\n    declare ui_knob $Knob_4 (0, 100, 1)\n\n    declare ui_value_edit $Set (0, 100, 1)\n\n    declare $i\n    declare %ID[$NUM_KNOBS]\n\n    while ($i < $NUM_KNOBS)\n        %ID[$i] := get_ui_id($Knob_1) + $i\n\n        inc($i)\n    end while\nend on\n\non ui_control ($Set)\n    $i := 0\n    while ($i < $NUM_KNOBS)\n        set_control_par(%ID[$i], $CONTROL_PAR_VALUE, $Set)\n        inc($i)\n    end while\nend on Store IDs in an array and use those IDs to set multiple knobs to the same value. See Also set_control_par() get_control_par()",
+      "authority": "Immutable official vendor specification; equivalent for requirements only, NOT native execution.",
+      "applicability": "Current unversioned official page archived2026-10-10. NI reference8.13.1 not executed; UVI installed-host version/native behavior UNKNOWN. Section wording takes precedence over older own-test expectations."
+    },
+    {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/modulation#lfo-controls",
+      "section": "LFO controls",
+      "document_sha256": "ca330e3207a333061ebca4ee28b0545b5e93c223624ff69ca608c7a85d897c9d",
+      "retrieved_utc": "2026-10-10T02:13:00.812977+00:00",
+      "excerpt": "LFO controls LFOs contain the following controls and options: Waveform : Displays the waveform of this LFO\u2019s output signal and allows you to select a different one via a drop-down menu. The available waveforms are Sine, Triangle, Rectangle, Sawtooth (falling), Random, and Multi, which is a mixture of all other waveforms. Retrigger : If this button is activated, the LFO waveform will be restarted at the same position each time a note is received. If it\u2019s inactive, the LFO will run in a \u201cfreewheel\u201d fashion, without reacting to notes. Freq : Adjusts the frequency of this LFO\u2019s output signal in Hz (cycles per second). Values range from 0.01 Hz (one cycle in 100 seconds) to around 210 Hz. Sync (unit icon): The LFO speed can be synchronized to your host tempo, an external MIDI clock, or your Master Editor tempo. To accomplish this, click the displayed unit of the frequency readout. A drop-down menu will appear, allowing you to choose from a list of note values. After you\u2019ve selected a value, the LFO is in sync mode, and the frequency control will adjust and display how many notes of this value will make up the duration of one cycle. For instance, if you select Whole and dial in a value of 1.0, an entire LFO cycle will span exactly one bar of a 4/4 measure. To return to unsynchronized mode, just select Default from this drop-down menu. Fade in : If this value is greater than zero, the LFO will not start the waveform right away when a note is received, but rather smoothly ramp it up over a time of up to 5 seconds. This works great on human-like vibratos. Like the frequency control, this parameter can be synchronized to a song tempo in the way described above. Start Phase : Adjusts the position within a cycle at which the LFO will start its waveform when it\u2019s triggered. The value is displayed in degrees, with 0\u00b0 being the start of the waveform, 180\u00b0 the mid-point of the cycle, and 360\u00b0 the start of the next cycle. Setting this parameter only makes sense when the Retrigger button is activated. Pulsew. (Pulse width, Rectangle waveform only): The pulse width adjusts the duty cycle of the waveform, which determines the ratio between the high and low parts of the cycle. A pulse width of 50% results in a perfect square wave. Waveform Mixer (Multi waveform only): The Multi waveform is special in that it\u2019s the result of an addition of other waveforms. Which waveforms will appear in this mixture, and at which respective amounts, can be adjusted with an additional set of controls which appears below the main row of knobs when you switch to the Multi waveform. Note that these mix controls are bipolar and thus allow you to reverse the polarity of source waveforms. At a value of 0.0, the respective waveform will be absent from the mixture. Normalize Levels (Multi waveform only): If this button is activated, and the sum of all component waveforms in the current mixture would exceed the level of a simple waveform at its peaks, the LFO will reduce its level accordingly.",
+      "authority": "Archived exact official NI requirement, not native execution.",
+      "applicability": "Current unversioned NI page archived2026-10-10. Native8.13.1 clocks/PCM, MPE equivalence, UI gesture/lifecycle and undocumented serialized laws are NOT established."
+    },
+    {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameters#modulation-102089",
+      "section": "Modulation",
+      "document_sha256": "4a15e3b10a9da8993c90ddc7681fee9fd62a7eafc5f3685f47b0c5ab37d1d16d",
+      "retrieved_utc": "2026-10-10T02:14:29.845216+00:00",
+      "excerpt": "Modulation $ENGINE_PAR_MOD_TARGET_INTENSITY The intensity slider of a modulation assignment. This controls the modulation amount in the positive range only. In order to apply a negative modulation amount, Invert button needs to be toggled (see below). $ENGINE_PAR_MOD_TARGET_MP_INTENSITY The intensity slider of a modulation assignment, including both negative and positive ranges (bipolar) - no modulation is at engine parameter value of 500000 , maximum modulation amount is at value 1000000 , maximum inverted modulation amount is at value 0 . $MOD_TARGET_INVERT_SOURCE The Invert button of a modulation assignment. $ENGINE_PAR_INTMOD_BYPASS The bypass button of an internal modulator, e.g. AHDSR envelope, LFO, Step Modulator... $ENGINE_PAR_INTMOD_RETRIGGER The Retrigger button of an internal modulator. This restarts the envelope or the phase of an LFO or the Step Modulator every time a note is received. AHDSR $ENGINE_PAR_ATK_CURVE $ENGINE_PAR_ATTACK $ENGINE_PAR_ATTACK_UNIT $ENGINE_PAR_HOLD $ENGINE_PAR_HOLD_UNIT $ENGINE_PAR_DECAY $ENGINE_PAR_DECAY_UNIT $ENGINE_PAR_SUSTAIN $ENGINE_PAR_RELEASE $ENGINE_PAR_RELEASE_UNIT $ENGINE_PAR_ENV_AHD DBD $ENGINE_PAR_DECAY1 $ENGINE_PAR_DECAY1_UNIT $ENGINE_PAR_BREAK $ENGINE_PAR_DECAY2 $ENGINE_PAR_DECAY2_UNIT $ENGINE_PAR_ENV_DBD_EASY Flexible Envelope $ENGINE_PAR_FLEXENV_LOOP $ENGINE_PAR_FLEXENV_ONESHOT $ENGINE_PAR_FLEXENV_NUM_STAGES ( 3 ... 31 ) $ENGINE_PAR_FLEXENV_LOOP_START ( 1 ... 30 ) $ENGINE_PAR_FLEXENV_LOOP_END ( 2 ... 31 ) $ENGINE_PAR_FLEXENV_STAGE_TIME ( 1000000 is one second) $ENGINE_PAR_FLEXENV_STAGE_LEVEL $ENGINE_PAR_FLEXENV_STAGE_SLOPE Envelope Follower $ENGINE_PAR_ENVF_ATTACK $ENGINE_PAR_ENVF_RELEASE $ENGINE_PAR_ENVF_GAIN_BOOST $ENGINE_PAR_ENVF_ADAPTION LFO For all LFOs: $ENGINE_PAR_INTMOD_FREQUENCY $ENGINE_PAR_INTMOD_FREQUENCY_UNIT $ENGINE_PAR_LFO_DELAY $ENGINE_PAR_LFO_DELAY_UNIT $ENGINE_PAR_LFO_PHASE For Rectangle and Multi LFOs: $ENGINE_PAR_INTMOD_PULSEWIDTH For Multi LFOs: $ENGINE_PAR_LFO_SINE $ENGINE_PAR_LFO_RECT $ENGINE_PAR_LFO_TRI $ENGINE_PAR_LFO_SAW $ENGINE_PAR_LFO_RAND $ENGINE_PAR_LFO_NORMALIZE Step Modulator $ENGINE_PAR_INTMOD_FREQUENCY $ENGINE_PAR_INTMOD_FREQUENCY_UNIT $ENGINE_PAR_STEPSEQ_NUM_STEPS $ENGINE_PAR_STEPSEQ_ONESHOT $ENGINE_PAR_STEPSEQ_STEP_VALUE Glide $ENGINE_PAR_GLIDE_COEF $ENGINE_PAR_GLIDE_COEF_UNIT",
+      "authority": "Archived exact official NI requirement, not native execution.",
+      "applicability": "Current unversioned NI page archived2026-10-10. Native8.13.1 clocks/PCM, MPE equivalence, UI gesture/lifecycle and undocumented serialized laws are NOT established."
+    },
+    {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-controls#ui_slider",
+      "section": "ui_slider",
+      "document_sha256": "c736e2f0a27e8131a8cf8fa2669a8f1b2ad26a27dadcbc916c20ea00f4ed518d",
+      "retrieved_utc": "2026-10-10T02:13:00.175529+00:00",
+      "excerpt": "ui_slider declare ui_slider $<variable-name> (<min>, <max>) Creates a slider in the performance view. <min> The minimum value of the slider. <max> The maximum value of the slider. Examples on init\n    declare ui_slider $test (0, 100)\n    set_control_par(get_ui_id($test), $CONTROL_PAR_DEFAULT_VALUE, 50)\nend on Slider with default value. on init\n    declare ui_slider $test (-100, 100)\n    declare $id\n\n    $id := get_ui_id($test)\n\n    $test := 0\n\n    set_control_par($id, $CONTROL_PAR_MOUSE_BEHAVIOUR, 2000)\n    set_control_par($id, $CONTROL_PAR_DEFAULT_VALUE, 0)\n    set_control_par_str($id, $CONTROL_PAR_PICTURE, \"slider\")\nend on Creating a bipolar slider by loading a different picture background. See the chapter on the Resource Container in order to learn more about how to use graphical assets with KSP. See Also ui_knob set_control_par_arr() Specific : $CONTROL_PAR_MOUSE_BEHAVIOUR",
+      "authority": "Exact archived official NI requirement, not native execution.",
+      "applicability": "Current unversioned official page archived2026-10-10; native8.13.1 parameter/clock/PCM/gesture equality UNKNOWN. Public file-format docs do not specify internal serialized byte layouts. App diagnostic/platform policies are not vendor parity requirements."
+    },
+    {
+      "section": "get_mod_idx()",
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameter-commands#get_mod_idx--",
+      "document_sha256": "df2fe7192f32df7c4a738c713663bafdfec3630c2821fd9afe1887c7d5ed006d",
+      "excerpt": "get_mod_idx() get_mod_idx(<group-index>, <mod-name>) Returns the slot index of an internal modulator or external modulation slot. <group-index> The index of the group (see Index column in Monitor -> Groups pane in Kontakt). <mod-name> The name of the internal (LFO, envelope, step modulator...) or external (velocity, key position, mono aftertouch...) modulator. Remarks Each modulator has a predefined name, based on its type and the parameter it targets. This name can be changed by enabling developer options in Kontakt's Options \u2192 Developer pane, then right-clicking on the modulator or modulator target strip. Examples on init\n    declare $grp_idx := 0\n    declare $env_idx\n\n    $env_idx := get_mod_idx($grp_idx, \"VOL_ENV\")\n\n    declare ui_knob $Attack (0, 1000000, 1)\n\n    $Attack := get_engine_par($ENGINE_PAR_ATTACK, $grp_idx, $env_idx, -1)\n\n    set_knob_unit($Attack, $KNOB_UNIT_MS)\n    set_knob_label($Attack, get_engine_par_disp($ENGINE_PAR_ATTACK, $grp_idx, $env_idx, -1))\nend on\n\non ui_control ($Attack)\n    set_engine_par($ENGINE_PAR_ATTACK, $Attack, $grp_idx, $env_idx, -1)\n    set_knob_label($Attack, get_engine_par_disp($ENGINE_PAR_ATTACK, $grp_idx, $env_idx, -1))\nend on Controlling the attack time of the volume envelope of the first group. Note: the envelope has been manually renamed to \"VOL_ENV\". on init\n    declare $count\n    declare $mod_idx\n\n    $mod_idx := get_mod_idx(0, \"VEL_VOLUME\")\n\n    declare ui_slider $VelAmt (0, 1000000)\n\n    if ($mod_idx # $NI_NOT_FOUND)\n        $VelAmt := get_engine_par($ENGINE_PAR_MOD_TARGET_INTENSITY, 0, $mod_idx, -1)\n    end if\n\n    make_persistent($VelAmt)\nend on\n\non ui_control ($VelAmt)\n    $count := 0\n    while($count < $NUM_GROUPS)\n        $mod_idx := get_mod_idx($count, \"VEL_VOLUME\")\n\n        if ($mod_idx # $NI_NOT_FOUND)\n            set_engine_par($ENGINE_PAR_MOD_TARGET_INTENSITY, $VelAmt, $count, $mod_idx, -1)\n        end if\n\n        inc($count)\n    end while\nend on Creating a slider which controls the velocity to volume modulation intensity of all groups, if they exist. See Also get_target_idx() set_engine_par()",
+      "authority": "Exact rehashed cached official HTML; requirements only"
+    },
+    {
+      "section": "get_target_idx()",
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameter-commands#get_target_idx--",
+      "document_sha256": "df2fe7192f32df7c4a738c713663bafdfec3630c2821fd9afe1887c7d5ed006d",
+      "excerpt": "get_target_idx() get_target_idx(<group-index>, <mod-index>, <target-name>) Returns the modulation target slot index of an internal modulator <group-index> The index of the group (see Index column in Monitor -> Groups pane in Kontakt). <mod-index> The slot index of an internal modulator (LFO, envelope, step modulator...). Can be retrieved with get_mod_idx() . <target-name> The name of the modulation target slot. Remarks Each modulator has a predefined name, based on its type and the parameter it targets. This name can be changed by enabling developer options in Kontakt's Options \u2192 Developer pane, then right-clicking on the modulator or modulator target strip. Examples on init\n    declare $mod_idx\n    declare $target_idx\n\n    $mod_idx := get_mod_idx(0, \"FILTER_ENV\")\n    $target_idx := get_target_idx(0, $mod_idx, \"FILTER_ENV > CUTOFF\")\n\n    declare ui_knob $FilterEnv (-1000, 1000, 10)\n\n    set_knob_unit($FilterEnv, $KNOB_UNIT_PERCENT)\n\n    make_persistent($FilterEnv)\nend on\n\non ui_control ($FilterEnv)\n    if ($mod_idx # $NI_NOT_FOUND and $target_idx # $NI_NOT_FOUND)\n        set_engine_par($ENGINE_PAR_MOD_TARGET_MP_INTENSITY, 500000 + ($FilterEnv * 500), 0, $mod_idx, $target_idx)\n    end if\nend on Controlling the envelope to filter cutoff modulation amount in the first group. Note: the filter envelope has been manually renamed to \"FILTER_ENV\", and the target to \"FILTER_ENV > CUTOFF\". See Also get_mod_idx() set_engine_par()",
+      "authority": "Exact rehashed cached official HTML; requirements only"
+    }
+  ],
+  "rea_receipt_sha256": "35c9f060b7f6a592f61b084c009c2bee4c4f1be4ef0e55e8df98362a1fd03749",
+  "limits": [
+    "No Cargo/rustc/clippy/build/typecheck, Rust test, host, native process or comparative benchmark.",
+    "Rustfmt parses syntax only. Scalar expectations are predictions, not observed PCM.",
+    "Native parity UNKNOWN. Original blocked66eaf review is not successor approval.",
+    "Performance acceptance UNACHIEVED until comparable CPU AND RAM measurements against BOTH v1 and Kontakt."
+  ]
+}
