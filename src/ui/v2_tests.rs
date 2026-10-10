@@ -3541,7 +3541,7 @@ fn widget_conflux_footer_text_reaches_typed_publication_without_truncation() {
         controls,
     )
     .unwrap_or_else(|_| panic!("native session init failed; private details omitted"));
-    session.update_view(&face, &h.values, &h.state.values, &h.state.meters);
+    session.update_view(&face, &h.values, &h.state.values, &h.state.meters, super::native_runtime::UpdatePass::Publication);
     let graph = session
         .render()
         .unwrap_or_else(|_| panic!("native graph render failed; private details omitted"));
