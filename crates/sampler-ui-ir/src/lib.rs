@@ -48,6 +48,8 @@ pub struct Interface {
     pub pages: Vec<Page>,
     /// Declaration order; ties in [`Widget::z`] draw in this order.
     pub widgets: Vec<Widget>,
+    /// Authored back-to-front traversal; `None` uses the source's default order.
+    pub paint_order: Option<Vec<WidgetRef>>,
     pub assets: Vec<Asset>,
     pub styles: Vec<TextStyle>,
     /// The instrument's icon in the host's rack header (KSP `$INST_ICON_ID`).
@@ -495,7 +497,7 @@ pub enum AssetKind {
 }
 
 /// Layout of an image, from source metadata (KSP picture `.txt`, Lua args).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ImageMeta {
     /// Animation frames stacked in the image; 1 for a still.
     pub frames: u32,
@@ -573,23 +575,28 @@ impl Rgba {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Size {
-    pub width: u32,
-    pub height: u32,
+    pub width: f64,
+    pub height: f64,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Rect {
-    pub x: i32,
-    pub y: i32,
-    pub width: u32,
-    pub height: u32,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
 }
 
 impl Rect {
     pub const fn new(x: i32, y: i32, width: u32, height: u32) -> Self {
-        Self { x, y, width, height }
+        Self {
+            x: x as f64,
+            y: y as f64,
+            width: width as f64,
+            height: height as f64,
+        }
     }
 }
 
@@ -670,14 +677,8 @@ impl Interface {
             let Some(p) = self.widgets.get(p.0) else {
                 break;
             };
-            rect.x = rect
-                .x
-                .saturating_add(p.rect.x)
-                .saturating_sub(p.viewport.map_or(0, |v| v[0]));
-            rect.y = rect
-                .y
-                .saturating_add(p.rect.y)
-                .saturating_sub(p.viewport.map_or(0, |v| v[1]));
+            rect.x += p.rect.x - f64::from(p.viewport.map_or(0, |v| v[0]));
+            rect.y += p.rect.y - f64::from(p.viewport.map_or(0, |v| v[1]));
             parent = p.parent;
         }
         rect
