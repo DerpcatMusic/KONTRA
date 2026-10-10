@@ -53,7 +53,7 @@ Event = {
 }
 Event.ControlChange = Event.Controller
 bit = bit32
-Unit = setmetatable({}, { __index = function(t, k) local v = k; rawset(t, k, v); return v end })
+Unit={Generic=0,Percent=1,PercentNormalized=2,Seconds=3,MilliSeconds=5,Hertz=7,Decibels=9,UviFilter=10,LinearGain=11,Pan=12,Megabyte=13,SemiTones=14,Cents=15,MidiKey=16}
 Engine = setmetatable({}, { __index = function(t, k)
   report("Engine " .. tostring(k), "")
   return stub("Engine")
@@ -67,7 +67,8 @@ local kinds = {
   "ParamKnob", "ParamSlider", "ParamOnOffButton", "ParamMenu", "ParamNumBox",
   "ParameterValue",
 }
-Mapper = setmetatable({}, { __index = function(t, k) rawset(t, k, k); return k end })
+Mapper={Linear=0,Exponential=1,QuinticRoot=2,QuarticRoot=3,CubeRoot=4,SquareRoot=5,Quadratic=6,Cubic=7,Quartic=8,Quintic=9}
+local mapper_names={[0]="Linear","Exponential","QuinticRoot","QuarticRoot","CubeRoot","SquareRoot","Quadratic","Cubic","Quartic","Quintic"}
 FileFormat = {Audio="Audio", Midi="Midi", All="All", Data="Data"}
 local widget_mt, methods = {}, {}
 local registry = {}
@@ -149,6 +150,7 @@ function methods.loadFont(w, path) w.font = path end
 function methods.toString(w) return tostring(w.value) end
 local function mapped(w, x, inverse)
   local m = w.mapper or "Linear"
+  if rawtype(m)=="number" then m=mapper_names[m] end
   if m == "Exponential" and w.min > 0 and w.max > w.min then
     if inverse then return math.log(x/w.min)/math.log(w.max/w.min) end
     return w.min * (w.max/w.min)^x
