@@ -25,9 +25,9 @@ fn v1_widgets_keep_script_coordinates_without_constructor_grid() {
     let face=h.interface();
     let first=face.page_rect(WidgetRef(1));
     let second=face.page_rect(WidgetRef(2));
-    assert_eq!((first.x,first.y),(40,60));
-    assert_eq!((second.x,second.y),(53,77));
-    assert_eq!((face.widgets[3].rect.x,face.widgets[3].rect.y),(0,0));
+    assert_eq!((first.x,first.y),(40.,60.));
+    assert_eq!((second.x,second.y),(53.,77.));
+    assert_eq!((face.widgets[3].rect.x,face.widgets[3].rect.y),(0.,0.));
 }
 
 #[test]
@@ -37,7 +37,7 @@ fn v1_set_height_keeps_width_and_loads_following_widgets() {
     assert_eq!(h.global_text("loaded"), "true");
     let face = h.interface();
     let size = face.pages[0].size;
-    assert_eq!((size.width, size.height), (600, 240));
+    assert_eq!((size.width, size.height), (600., 240.));
     assert_eq!(face.widgets[0].name, "AfterHeight");
 }
 
