@@ -429,6 +429,7 @@ pub struct Prepared {
     /// Controller values a script set in `on init`, before any input.
     pub(super) initial_controllers: Vec<(u8, u32)>,
     pub(super) region_groups: Box<[Option<u32>]>,
+    pub(super) group_source_ids: Box<[u32]>,
     pub(super) region_zone_ids: Box<[u32]>,
     pub(super) native_start: Box<[Box<[sampler_ir::GroupStart]>]>,
     pub(super) native_articulation_keys: Box<[Option<u8>]>,
@@ -658,6 +659,7 @@ impl Prepared {
             script_release_triggers: false,
             initial_controllers: Vec::new(),
             region_groups: Box::new([]),
+            group_source_ids: Box::new([]),
             region_zone_ids: Box::new([]),
             native_start: Box::new([]),
             native_articulation_keys: Box::new([]),
@@ -957,6 +959,29 @@ impl Prepared {
             return None;
         }
         self.region_zone_ids.iter().position(|&id| id == zone_id)
+    }
+
+    pub fn source_zone_parameter(
+        &self,
+        zone_id: u32,
+        parameter: super::ZoneParameter,
+    ) -> Option<i32> {
+        let region = self.source_zone_region(zone_id)?;
+        Some(match parameter {
+            super::ZoneParameter::Group => self
+                .region_groups
+                .get(region)
+                .copied()
+                .flatten()
+                .map_or(-1, |group| {
+                    self.group_source_ids
+                        .get(group as usize)
+                        .copied()
+                        .unwrap_or(group) as i32
+                }),
+            super::ZoneParameter::LowKey => i32::from(self.regions.get(region)?.bounds[0]),
+            super::ZoneParameter::HighKey => i32::from(self.regions.get(region)?.bounds[1]),
+        })
     }
 
     /// The immutable prepared sample asset behind a region, for control-side peak work.

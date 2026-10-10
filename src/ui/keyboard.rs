@@ -11,8 +11,8 @@ use std::ops::RangeInclusive;
 use std::sync::atomic::Ordering;
 
 const OCTAVES: i16 = 7;
-/// Highest first octave that keeps the last key at or below MIDI 127.
-const MAX_OCTAVE: i16 = (128 / 12) - OCTAVES;
+/// Highest first octave: the final octave ends at MIDI 127.
+const MAX_OCTAVE: i16 = (128 + 11) / 12 - OCTAVES;
 
 /// The keyboard dock: a title bar with the shown range, octave stepping and
 /// the collapse switch, then a range strip over the keys.
@@ -74,7 +74,7 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
     let shown_range = format!(
         "{} – {}",
         note_name(first as u8),
-        note_name((first + OCTAVES * 12 - 1) as u8)
+        note_name((first + OCTAVES * 12 - 1).min(127) as u8)
     );
     let plays = match playable(&looks) {
         _ if cx.state.chosen().is_none() => {
@@ -114,7 +114,7 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
     .pad(edges(TIGHT, INSET, TIGHT, INSET))
     .shrink(0);
     let first_note = (cx.state.octave * 12) as u8;
-    let shown = first_note..first_note + (OCTAVES * 12) as u8;
+    let shown = first_note..(first + OCTAVES * 12).min(128) as u8;
     // Hidden, the keys hold no pointer: a glissando still lets go.
     play(ui, cx, shown);
     if !open {
@@ -126,6 +126,9 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
     for octave in cx.state.octave..cx.state.octave + OCTAVES {
         let mut make = |n: i16, black: bool| {
             let note = (octave * 12 + n) as u8;
+            if note >= 128 {
+                return spacer();
+            }
             if ui
                 .get(format!("key-{note}"))
                 .clicked_with(Button::Secondary)
@@ -472,12 +475,8 @@ fn part_looks(cx: &mut Cx, slot: usize) -> [Look; 128] {
             Some(19 | 20) => looks[key] = Look::Mapped(color), // WHITE/BLACK retain piano faces.
             _ => {
                 let tint = authored.color.and_then(ksp_key_color).unwrap_or(color);
-                if authored.control {
+                if authored.control || authored.color.and_then(ksp_key_color).is_some() {
                     looks[key] = Look::Switch(tint, false, false);
-                } else if authored.color.and_then(ksp_key_color).is_some()
-                    && matches!(looks[key], Look::Mapped(_))
-                {
-                    looks[key] = Look::Mapped(tint);
                 }
             }
         }
@@ -693,7 +692,140 @@ mod tests {
     use super::*;
 
     #[test]
+    fn keyswitch_keyboard_preserves_authored_colours_without_mapped_samples() {
+        let p = std::sync::Arc::new(crate::plugin::SamplerParams::new());
+        p.selection
+            .write()
+            .unwrap()
+            .parts
+            .push(crate::plugin::Part {
+                path: "/synthetic/authored-key-colours.nki".into(),
+                ..Default::default()
+            });
+        let mut keys = vec![crate::sound::KeyLook::default(); 128];
+        for (key, color) in [
+            (24, 0),
+            (25, 1),
+            (26, 16),
+            (27, 17),
+            (28, 18),
+            (29, 19),
+            (30, 20),
+        ] {
+            keys[key].color = Some(color);
+        }
+        keys[31].control = true;
+        p.shared.view.lock().unwrap().parts[0].keys = keys.into();
+        for (width, height) in [(1180, 780), (900, 640)] {
+            let h = super::super::tests::Harness::new(&p, f64::from(width), f64::from(height));
+            let pixels = super::super::tests::pixels(&h.ui, width, height);
+            let path = std::path::PathBuf::from(format!(
+                "artifacts/v2-ui/keyswitch-authored-colours-{width}.png"
+            ));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            moose::core::screenshot::save_png(&path, &pixels, u32::from(width), u32::from(height));
+            let pixel = |key| {
+                let frame =
+                    h.ui.scene()
+                        .unwrap()
+                        .surface(&format!("key-{key}"))
+                        .unwrap()
+                        .frame;
+                let x = (frame.x + frame.size.width * 0.25) as usize;
+                let y = (frame.y + frame.size.height * 0.75) as usize;
+                let at = (y * usize::from(width) + x) * 4;
+                &pixels[at..at + 3]
+            };
+            for key in [24, 25] {
+                let rgb = pixel(key);
+                assert!(
+                    u16::from(rgb[0]) > u16::from(rgb[1]) + 40,
+                    "v1 paints explicit authored key colours even without mapped sample zones: key {key}, RGB {rgb:?}"
+                );
+            }
+            for key in [26, 27, 28, 29, 30] {
+                let rgb = pixel(key);
+                assert!(
+                    u16::from(rgb[0]) <= u16::from(rgb[1]) + 40,
+                    "DEFAULT, INACTIVE, NONE, WHITE and BLACK retain their existing piano faces: key {key}, RGB {rgb:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn keyswitch_keyboard_reaches_midi_127_and_never_emits_invalid_notes() {
+        let p = std::sync::Arc::new(crate::plugin::SamplerParams::new());
+        p.selection
+            .write()
+            .unwrap()
+            .parts
+            .push(crate::plugin::Part {
+                path: "/synthetic/high-midi-control.nki".into(),
+                ..Default::default()
+            });
+        let mut keys = vec![crate::sound::KeyLook::default(); 128];
+        keys[127].color = Some(0);
+        p.shared.view.lock().unwrap().parts[0].keys = keys.into();
+        for (width, height) in [(1180, 780), (900, 640)] {
+            let mut h = super::super::tests::Harness::new(&p, f64::from(width), f64::from(height));
+            let pixels = super::super::tests::pixels(&h.ui, width, height);
+            let path =
+                std::path::PathBuf::from(format!("artifacts/v2-ui/keyswitch-midi-top-{width}.png"));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            moose::core::screenshot::save_png(&path, &pixels, u32::from(width), u32::from(height));
+            for key in 120..128 {
+                assert!(
+                    h.ui.scene()
+                        .unwrap()
+                        .surface(&format!("key-{key}"))
+                        .is_some(),
+                    "valid authored MIDI key {key} must be reachable"
+                );
+            }
+            h.press("octave-up");
+            for key in 128..132 {
+                assert!(
+                    h.ui.scene()
+                        .unwrap()
+                        .surface(&format!("key-{key}"))
+                        .is_none(),
+                    "MIDI key {key} must not become an interactive face"
+                );
+            }
+            let at = super::super::tests::center(&h.ui, "key-127");
+            for buttons in [
+                Buttons::PRIMARY,
+                Buttons::PRIMARY,
+                Buttons::default(),
+                Buttons::default(),
+            ] {
+                h.tick(Input {
+                    pointer: PointerInput {
+                        pos: Some(at),
+                        buttons,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                });
+            }
+            assert!(
+                matches!(p.shared.keyboard.pop(), Some((crate::plugin::EVERY_PART, crate::plugin::Play::Note(127, velocity))) if velocity > 0)
+            );
+            assert!(matches!(
+                p.shared.keyboard.pop(),
+                Some((crate::plugin::EVERY_PART, crate::plugin::Play::Note(127, 0)))
+            ));
+            assert!(p.shared.keyboard.pop().is_none());
+            assert_eq!(p.shared.played[127].load(Ordering::Relaxed), 0);
+        }
+    }
+
+    #[test]
     fn the_keyboard_fits_midi() {
-        const { assert!(MAX_OCTAVE * 12 + OCTAVES * 12 <= 128) };
+        const {
+            let last_octave = MAX_OCTAVE + OCTAVES - 1;
+            assert!(last_octave * 12 <= 127 && (last_octave + 1) * 12 > 127);
+        };
     }
 }
