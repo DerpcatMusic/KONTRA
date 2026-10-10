@@ -525,9 +525,10 @@
       "id": "menu-control-value-index",
       "summary": "Return the documented ui_menu entry index for CONTROL_PAR_VALUE",
       "source_commits": [
-        "1f62da4c8f155c315715a71cf9d40ff4a2dd85a1"
+        "1f62da4c8f155c315715a71cf9d40ff4a2dd85a1",
+        "f2c59e2c6f7e60660d869fd5aae7fe99fab4c640"
       ],
-      "validation": "Root reports focused ui_menu CONTROL_PAR_VALUE runtime gate passed in the twelve-check runtime set. no every-menu or Lua UI parity claim. Root accepted this narrow logical unit after the complete focused gates and actual replay verdict: six Analog runtime-fault lists empty at 1bbd31c, three Morphology snapshots applied without init/runtime faults, nonfinite samples or measured underruns; unsupported source warnings remain.",
+      "validation": "Root reports focused ui_menu CONTROL_PAR_VALUE runtime gate passed in the twelve-check runtime set. no every-menu or Lua UI parity claim. Root accepted this narrow logical unit after the complete focused gates and actual replay verdict: six Analog runtime-fault lists empty at 1bbd31c, three Morphology snapshots applied without init/runtime faults, nonfinite samples or measured underruns; unsupported source warnings remain. Extension validated in after403 batch: Product a8c29411380e0c60b9b6671b8697a0c305ce6da5: workspace2224/0/269ignored; scheduler48/0, reader45/0/1ignored, keyswitch3; focused bytecode/zone/class/keyboard and compilation/offline/GPU checks PASS. Native Conflux1/Vista2/browser1, scanner15/15 audible/12Original unchanged; full quick retry72/72 loaded/68audible, finite/zero audio allocations, strict stuck guards PASS. First quick retirement variability retained and also observed in frozen403 A/B. Receipts w0-batch-after403/combined-verdict.json and native-verdict.json. Full gestures/native payload fidelity and quiet CPU/RSS/deadline/retirement stability remain unverified.",
       "accepted": true
     },
     {
@@ -3862,9 +3863,10 @@
       "source_commits": [
         "34d2e4edd17464bd7f17c33cf3c43ecb32ec0ced",
         "60d761560261ddda426a516343857309ff912e2d",
-        "a295bc7aae711ffa670cb62d4c46db28e24e592f"
+        "a295bc7aae711ffa670cb62d4c46db28e24e592f",
+        "5af9bb160ed5ab9752201c023faa94f8d582b0bd"
       ],
-      "validation": "W0 stable f1a067a1 full workspace2074PASS/0FAIL/261ignored; scheduler48PASS, reader45PASS/1ignored, workspace+standalone no-run and GPU gates PASS. Native15 loads/audible15/15; Original12 and retained Vista image-reference limit unchanged. Strict quick72 retry matches published381:72loads/68audible, no new stage/audibility/fault/stuck-note failures, audio heap0/nonfinite0. Initial parallel Pacific missing-page failures retained; both traced and uninstrumented serial pairs match381 peaks with zero underruns. No CPU/load/RSS/underrun or complete widget/audio parity acceptance.",
+      "validation": "W0 stable f1a067a1 full workspace2074PASS/0FAIL/261ignored; scheduler48PASS, reader45PASS/1ignored, workspace+standalone no-run and GPU gates PASS. Native15 loads/audible15/15; Original12 and retained Vista image-reference limit unchanged. Strict quick72 retry matches published381:72loads/68audible, no new stage/audibility/fault/stuck-note failures, audio heap0/nonfinite0. Initial parallel Pacific missing-page failures retained; both traced and uninstrumented serial pairs match381 peaks with zero underruns. No CPU/load/RSS/underrun or complete widget/audio parity acceptance. Extension validated in after403 batch: Product a8c29411380e0c60b9b6671b8697a0c305ce6da5: workspace2224/0/269ignored; scheduler48/0, reader45/0/1ignored, keyswitch3; focused bytecode/zone/class/keyboard and compilation/offline/GPU checks PASS. Native Conflux1/Vista2/browser1, scanner15/15 audible/12Original unchanged; full quick retry72/72 loaded/68audible, finite/zero audio allocations, strict stuck guards PASS. First quick retirement variability retained and also observed in frozen403 A/B. Receipts w0-batch-after403/combined-verdict.json and native-verdict.json. Full gestures/native payload fidelity and quiet CPU/RSS/deadline/retirement stability remain unverified.",
       "accepted": true,
       "category": "Fixed"
     },
@@ -4092,6 +4094,267 @@
       "release_note": "Stop presenting Analog Strings preset-browser and zero-height controls as articulation choices.",
       "accepted": true,
       "validation": "Corrected isolated product source4725f39a: workspace2135 PASS/0failed, scheduler48, reader45/1ignored, normalization3; installed Conflux1 and Vista2 PASS; scanner15/15 loads+audible and quick72/72 loads (68 audible), finite/zero audio allocations, no matched stage/audibility regression. Receipts w0-stable-383/combined-verdict.json and native-verdict.json; authored full-widget/native-DSP and quiet performance parity remain unverified."
+    },
+    {
+      "id": "catalog-stat-cache-failure-retention",
+      "summary": "Retain failed library metadata and retry changed access/stat state",
+      "source_commits": [
+        "a3689f330712d5effa5c447d998be11d0d0b251e"
+      ],
+      "accepted": true,
+      "validation": "Product a8c29411380e0c60b9b6671b8697a0c305ce6da5: workspace2224/0/269ignored; scheduler48/0, reader45/0/1ignored, keyswitch3; focused bytecode/zone/class/keyboard and compilation/offline/GPU checks PASS. Native Conflux1/Vista2/browser1, scanner15/15 audible/12Original unchanged; full quick retry72/72 loaded/68audible, finite/zero audio allocations, strict stuck guards PASS. First quick retirement variability retained and also observed in frozen403 A/B. Receipts w0-batch-after403/combined-verdict.json and native-verdict.json. Full gestures/native payload fidelity and quiet CPU/RSS/deadline/retirement stability remain unverified.",
+      "release_note": "Retain failed library metadata and retry changed access/stat state."
+    },
+    {
+      "id": "artwork-access-state-invalidation",
+      "summary": "Retry cached artwork absence when NI or UVI access changes",
+      "source_commits": [
+        "13a154fe00da21d451db713be088188640113812"
+      ],
+      "accepted": true,
+      "validation": "Product a8c29411380e0c60b9b6671b8697a0c305ce6da5: workspace2224/0/269ignored; scheduler48/0, reader45/0/1ignored, keyswitch3; focused bytecode/zone/class/keyboard and compilation/offline/GPU checks PASS. Native Conflux1/Vista2/browser1, scanner15/15 audible/12Original unchanged; full quick retry72/72 loaded/68audible, finite/zero audio allocations, strict stuck guards PASS. First quick retirement variability retained and also observed in frozen403 A/B. Receipts w0-batch-after403/combined-verdict.json and native-verdict.json. Full gestures/native payload fidelity and quiet CPU/RSS/deadline/retirement stability remain unverified.",
+      "release_note": "Retry cached artwork absence when NI or UVI access changes."
+    },
+    {
+      "id": "keyboard-authored-colour-precedence",
+      "summary": "Keep authored keyboard colours ahead of generated articulation colours",
+      "source_commits": [
+        "5af9bb160ed5ab9752201c023faa94f8d582b0bd"
+      ],
+      "accepted": true,
+      "validation": "Product a8c29411380e0c60b9b6671b8697a0c305ce6da5: workspace2224/0/269ignored; scheduler48/0, reader45/0/1ignored, keyswitch3; focused bytecode/zone/class/keyboard and compilation/offline/GPU checks PASS. Native Conflux1/Vista2/browser1, scanner15/15 audible/12Original unchanged; full quick retry72/72 loaded/68audible, finite/zero audio allocations, strict stuck guards PASS. First quick retirement variability retained and also observed in frozen403 A/B. Receipts w0-batch-after403/combined-verdict.json and native-verdict.json. Full gestures/native payload fidelity and quiet CPU/RSS/deadline/retirement stability remain unverified.",
+      "release_note": "Keep authored keyboard colours ahead of generated articulation colours."
+    },
+    {
+      "id": "keyboard-top-midi-window",
+      "summary": "Reach MIDI notes120\u2013127 and exclude out-of-range keyboard faces",
+      "source_commits": [
+        "70caa6b7e3be2009a751fe1070716717360e5230"
+      ],
+      "accepted": true,
+      "validation": "Product a8c29411380e0c60b9b6671b8697a0c305ce6da5: workspace2224/0/269ignored; scheduler48/0, reader45/0/1ignored, keyswitch3; focused bytecode/zone/class/keyboard and compilation/offline/GPU checks PASS. Native Conflux1/Vista2/browser1, scanner15/15 audible/12Original unchanged; full quick retry72/72 loaded/68audible, finite/zero audio allocations, strict stuck guards PASS. First quick retirement variability retained and also observed in frozen403 A/B. Receipts w0-batch-after403/combined-verdict.json and native-verdict.json. Full gestures/native payload fidelity and quiet CPU/RSS/deadline/retirement stability remain unverified.",
+      "release_note": "Reach MIDI notes 120\u2013127 and exclude out-of-range keyboard faces."
+    },
+    {
+      "id": "explicit-performance-view-default-selection",
+      "summary": "Select authored performance/native views by declared intent and retain explicit tabs",
+      "source_commits": [
+        "8a47821150528c60c6794e92cb81e7f48bfbf530"
+      ],
+      "accepted": true,
+      "validation": "Product a8c29411380e0c60b9b6671b8697a0c305ce6da5: workspace2224/0/269ignored; scheduler48/0, reader45/0/1ignored, keyswitch3; focused bytecode/zone/class/keyboard and compilation/offline/GPU checks PASS. Native Conflux1/Vista2/browser1, scanner15/15 audible/12Original unchanged; full quick retry72/72 loaded/68audible, finite/zero audio allocations, strict stuck guards PASS. First quick retirement variability retained and also observed in frozen403 A/B. Receipts w0-batch-after403/combined-verdict.json and native-verdict.json. Full gestures/native payload fidelity and quiet CPU/RSS/deadline/retirement stability remain unverified.",
+      "release_note": "Select authored performance/native views by declared intent and retain explicit tabs."
+    },
+    {
+      "id": "ksp-runtime-ui-metadata-readback",
+      "summary": "Read authored UI metadata through computed runtime control identities",
+      "source_commits": [
+        "f2c59e2c6f7e60660d869fd5aae7fe99fab4c640"
+      ],
+      "accepted": true,
+      "validation": "Product a8c29411380e0c60b9b6671b8697a0c305ce6da5: workspace2224/0/269ignored; scheduler48/0, reader45/0/1ignored, keyswitch3; focused bytecode/zone/class/keyboard and compilation/offline/GPU checks PASS. Native Conflux1/Vista2/browser1, scanner15/15 audible/12Original unchanged; full quick retry72/72 loaded/68audible, finite/zero audio allocations, strict stuck guards PASS. First quick retirement variability retained and also observed in frozen403 A/B. Receipts w0-batch-after403/combined-verdict.json and native-verdict.json. Full gestures/native payload fidelity and quiet CPU/RSS/deadline/retirement stability remain unverified.",
+      "release_note": "Read authored UI metadata through computed runtime control identities."
+    },
+    {
+      "id": "ksp-host-tempo-beat-waits",
+      "summary": "Use the live host tempo for KSP wait-beat scheduling",
+      "source_commits": [
+        "f2c59e2c6f7e60660d869fd5aae7fe99fab4c640"
+      ],
+      "accepted": true,
+      "validation": "Product a8c29411380e0c60b9b6671b8697a0c305ce6da5: workspace2224/0/269ignored; scheduler48/0, reader45/0/1ignored, keyswitch3; focused bytecode/zone/class/keyboard and compilation/offline/GPU checks PASS. Native Conflux1/Vista2/browser1, scanner15/15 audible/12Original unchanged; full quick retry72/72 loaded/68audible, finite/zero audio allocations, strict stuck guards PASS. First quick retirement variability retained and also observed in frozen403 A/B. Receipts w0-batch-after403/combined-verdict.json and native-verdict.json. Full gestures/native payload fidelity and quiet CPU/RSS/deadline/retirement stability remain unverified.",
+      "release_note": "Use the live host tempo for KSP wait-beat scheduling."
+    },
+    {
+      "id": "ksp-native-zone-field-readback",
+      "summary": "Read native zone group/key metadata through bounded runtime operands",
+      "source_commits": [
+        "f2c59e2c6f7e60660d869fd5aae7fe99fab4c640",
+        "d03edd0176c51def14a8c2f8b16c20d21173c8f1"
+      ],
+      "accepted": true,
+      "validation": "Product a8c29411380e0c60b9b6671b8697a0c305ce6da5: workspace2224/0/269ignored; scheduler48/0, reader45/0/1ignored, keyswitch3; focused bytecode/zone/class/keyboard and compilation/offline/GPU checks PASS. Native Conflux1/Vista2/browser1, scanner15/15 audible/12Original unchanged; full quick retry72/72 loaded/68audible, finite/zero audio allocations, strict stuck guards PASS. First quick retirement variability retained and also observed in frozen403 A/B. Receipts w0-batch-after403/combined-verdict.json and native-verdict.json. Full gestures/native payload fidelity and quiet CPU/RSS/deadline/retirement stability remain unverified.",
+      "release_note": "Read native zone group/key metadata through bounded runtime operands."
+    },
+    {
+      "id": "ksp-numeric-font-identifiers",
+      "summary": "Retain numeric authored font identifiers during KSP UI initialization",
+      "source_commits": [
+        "f2c59e2c6f7e60660d869fd5aae7fe99fab4c640"
+      ],
+      "accepted": true,
+      "validation": "Product a8c29411380e0c60b9b6671b8697a0c305ce6da5: workspace2224/0/269ignored; scheduler48/0, reader45/0/1ignored, keyswitch3; focused bytecode/zone/class/keyboard and compilation/offline/GPU checks PASS. Native Conflux1/Vista2/browser1, scanner15/15 audible/12Original unchanged; full quick retry72/72 loaded/68audible, finite/zero audio allocations, strict stuck guards PASS. First quick retirement variability retained and also observed in frozen403 A/B. Receipts w0-batch-after403/combined-verdict.json and native-verdict.json. Full gestures/native payload fidelity and quiet CPU/RSS/deadline/retirement stability remain unverified.",
+      "release_note": "Retain numeric authored font identifiers during KSP UI initialization."
+    },
+    {
+      "id": "ksp-ui-setter-evaluated-arguments",
+      "summary": "Evaluate UI setter arguments once for state, readback and transport",
+      "source_commits": [
+        "4c9b0e62808e32249f054cfc32534fac14014952"
+      ],
+      "accepted": true,
+      "validation": "Product a8c29411380e0c60b9b6671b8697a0c305ce6da5: workspace2224/0/269ignored; scheduler48/0, reader45/0/1ignored, keyswitch3; focused bytecode/zone/class/keyboard and compilation/offline/GPU checks PASS. Native Conflux1/Vista2/browser1, scanner15/15 audible/12Original unchanged; full quick retry72/72 loaded/68audible, finite/zero audio allocations, strict stuck guards PASS. First quick retirement variability retained and also observed in frozen403 A/B. Receipts w0-batch-after403/combined-verdict.json and native-verdict.json. Full gestures/native payload fidelity and quiet CPU/RSS/deadline/retirement stability remain unverified.",
+      "release_note": "Evaluate UI setter arguments once for state, readback and transport."
+    },
+    {
+      "id": "ksp-global-ui-callback-dispatch",
+      "summary": "Run global ui_controls, local ui_control and ui_update in v1 order",
+      "source_commits": [
+        "2ea4dc1c8fbb52c493c7f41c515cbb247c2e21c0"
+      ],
+      "accepted": true,
+      "validation": "Product a8c29411380e0c60b9b6671b8697a0c305ce6da5: workspace2224/0/269ignored; scheduler48/0, reader45/0/1ignored, keyswitch3; focused bytecode/zone/class/keyboard and compilation/offline/GPU checks PASS. Native Conflux1/Vista2/browser1, scanner15/15 audible/12Original unchanged; full quick retry72/72 loaded/68audible, finite/zero audio allocations, strict stuck guards PASS. First quick retirement variability retained and also observed in frozen403 A/B. Receipts w0-batch-after403/combined-verdict.json and native-verdict.json. Full gestures/native payload fidelity and quiet CPU/RSS/deadline/retirement stability remain unverified.",
+      "release_note": "Run global ui_controls, local ui_control and ui_update in v1 order."
+    },
+    {
+      "id": "kontakt-lfo-physical-source-frequency",
+      "summary": "Preserve verified native normalized LFO frequency and source lanes",
+      "source_commits": [
+        "5adabb50ae4bce7f0a393e957587ad75f06dfaef"
+      ],
+      "accepted": true,
+      "validation": "Product a8c29411380e0c60b9b6671b8697a0c305ce6da5: workspace2224/0/269ignored; scheduler48/0, reader45/0/1ignored, keyswitch3; focused bytecode/zone/class/keyboard and compilation/offline/GPU checks PASS. Native Conflux1/Vista2/browser1, scanner15/15 audible/12Original unchanged; full quick retry72/72 loaded/68audible, finite/zero audio allocations, strict stuck guards PASS. First quick retirement variability retained and also observed in frozen403 A/B. Receipts w0-batch-after403/combined-verdict.json and native-verdict.json. Full gestures/native payload fidelity and quiet CPU/RSS/deadline/retirement stability remain unverified.",
+      "release_note": "Preserve verified native normalized LFO frequency and source lanes."
+    },
+    {
+      "id": "kontakt-id25-intensity-law",
+      "summary": "Apply both checked per-target Kontakt ID25 intensity laws",
+      "source_commits": [
+        "6fa559d42083c0cf6e253ac655d7536696715236"
+      ],
+      "accepted": true,
+      "validation": "Product a8c29411380e0c60b9b6671b8697a0c305ce6da5: workspace2224/0/269ignored; scheduler48/0, reader45/0/1ignored, keyswitch3; focused bytecode/zone/class/keyboard and compilation/offline/GPU checks PASS. Native Conflux1/Vista2/browser1, scanner15/15 audible/12Original unchanged; full quick retry72/72 loaded/68audible, finite/zero audio allocations, strict stuck guards PASS. First quick retirement variability retained and also observed in frozen403 A/B. Receipts w0-batch-after403/combined-verdict.json and native-verdict.json. Full gestures/native payload fidelity and quiet CPU/RSS/deadline/retirement stability remain unverified.",
+      "release_note": "Apply both checked per-target Kontakt ID25 intensity laws."
+    },
+    {
+      "id": "authored-nkr-impulse-fallback",
+      "summary": "Resolve authored convolution impulses from the owning NKR when loose files are absent",
+      "source_commits": [
+        "4cb3d39a61c1d905d4ac7e31b2ee751453b87d84"
+      ],
+      "accepted": true,
+      "validation": "Product a8c29411380e0c60b9b6671b8697a0c305ce6da5: workspace2224/0/269ignored; scheduler48/0, reader45/0/1ignored, keyswitch3; focused bytecode/zone/class/keyboard and compilation/offline/GPU checks PASS. Native Conflux1/Vista2/browser1, scanner15/15 audible/12Original unchanged; full quick retry72/72 loaded/68audible, finite/zero audio allocations, strict stuck guards PASS. First quick retirement variability retained and also observed in frozen403 A/B. Receipts w0-batch-after403/combined-verdict.json and native-verdict.json. Full gestures/native payload fidelity and quiet CPU/RSS/deadline/retirement stability remain unverified.",
+      "release_note": "Resolve authored convolution impulses from the owning NKR when loose files are absent."
+    },
+    {
+      "id": "legacy-multi-impulse-table-retention",
+      "summary": "Retain authored impulse filename tables in legacy multis",
+      "source_commits": [
+        "c4e922bafee6a75458412350f325b1965e36d3a6"
+      ],
+      "accepted": true,
+      "validation": "Product a8c29411380e0c60b9b6671b8697a0c305ce6da5: workspace2224/0/269ignored; scheduler48/0, reader45/0/1ignored, keyswitch3; focused bytecode/zone/class/keyboard and compilation/offline/GPU checks PASS. Native Conflux1/Vista2/browser1, scanner15/15 audible/12Original unchanged; full quick retry72/72 loaded/68audible, finite/zero audio allocations, strict stuck guards PASS. First quick retirement variability retained and also observed in frozen403 A/B. Receipts w0-batch-after403/combined-verdict.json and native-verdict.json. Full gestures/native payload fidelity and quiet CPU/RSS/deadline/retirement stability remain unverified.",
+      "release_note": "Retain authored impulse filename tables in legacy multis."
+    },
+    {
+      "id": "uvi-real-script-modules-and-ui-calls",
+      "summary": "Load authored UVI modules and implement setHeight/Button.push without constructor grids",
+      "source_commits": [
+        "44eacd756364fb3c92228d6eac0e00527ec0ffbe"
+      ],
+      "accepted": true,
+      "validation": "Product a8c29411380e0c60b9b6671b8697a0c305ce6da5: workspace2224/0/269ignored; scheduler48/0, reader45/0/1ignored, keyswitch3; focused bytecode/zone/class/keyboard and compilation/offline/GPU checks PASS. Native Conflux1/Vista2/browser1, scanner15/15 audible/12Original unchanged; full quick retry72/72 loaded/68audible, finite/zero audio allocations, strict stuck guards PASS. First quick retirement variability retained and also observed in frozen403 A/B. Receipts w0-batch-after403/combined-verdict.json and native-verdict.json. Full gestures/native payload fidelity and quiet CPU/RSS/deadline/retirement stability remain unverified.",
+      "release_note": "Load authored UVI modules and implement setHeight/Button.push without constructor grids."
+    },
+    {
+      "id": "uvi-lua-class-identity-and-inheritance",
+      "summary": "Apply v1 UVI class inheritance and Lua object self-identity",
+      "source_commits": [
+        "f3b53c93db2c9a018c65bb0d08442c8999a024ec"
+      ],
+      "accepted": true,
+      "validation": "Product a8c29411380e0c60b9b6671b8697a0c305ce6da5: workspace2224/0/269ignored; scheduler48/0, reader45/0/1ignored, keyswitch3; focused bytecode/zone/class/keyboard and compilation/offline/GPU checks PASS. Native Conflux1/Vista2/browser1, scanner15/15 audible/12Original unchanged; full quick retry72/72 loaded/68audible, finite/zero audio allocations, strict stuck guards PASS. First quick retirement variability retained and also observed in frozen403 A/B. Receipts w0-batch-after403/combined-verdict.json and native-verdict.json. Full gestures/native payload fidelity and quiet CPU/RSS/deadline/retirement stability remain unverified.",
+      "release_note": "Apply v1 UVI class inheritance and Lua object self-identity."
+    },
+    {
+      "id": "uvi-authored-ui-construction",
+      "summary": "Honor authored UVI geometry precedence and named parent/container children",
+      "source_commits": [
+        "9e75ea02c87e43161d3c5ff6367d9d22795d7827"
+      ],
+      "accepted": true,
+      "validation": "Product a8c29411380e0c60b9b6671b8697a0c305ce6da5: workspace2224/0/269ignored; scheduler48/0, reader45/0/1ignored, keyswitch3; focused bytecode/zone/class/keyboard and compilation/offline/GPU checks PASS. Native Conflux1/Vista2/browser1, scanner15/15 audible/12Original unchanged; full quick retry72/72 loaded/68audible, finite/zero audio allocations, strict stuck guards PASS. First quick retirement variability retained and also observed in frozen403 A/B. Receipts w0-batch-after403/combined-verdict.json and native-verdict.json. Full gestures/native payload fidelity and quiet CPU/RSS/deadline/retirement stability remain unverified.",
+      "release_note": "Honor authored UVI geometry precedence and named parent/container children."
+    },
+    {
+      "id": "uvi-numeric-unit-mapper-metadata",
+      "summary": "Interpret native UVI Unit/Mapper IDs without rescaling values or edits",
+      "source_commits": [
+        "e1916ec51e7fd15bba5d6a49eb9fb30974180287"
+      ],
+      "accepted": true,
+      "validation": "Product a8c29411380e0c60b9b6671b8697a0c305ce6da5: workspace2224/0/269ignored; scheduler48/0, reader45/0/1ignored, keyswitch3; focused bytecode/zone/class/keyboard and compilation/offline/GPU checks PASS. Native Conflux1/Vista2/browser1, scanner15/15 audible/12Original unchanged; full quick retry72/72 loaded/68audible, finite/zero audio allocations, strict stuck guards PASS. First quick retirement variability retained and also observed in frozen403 A/B. Receipts w0-batch-after403/combined-verdict.json and native-verdict.json. Full gestures/native payload fidelity and quiet CPU/RSS/deadline/retirement stability remain unverified.",
+      "release_note": "Interpret native UVI Unit/Mapper IDs without rescaling values or edits."
+    },
+    {
+      "id": "authored-source-value-formatting",
+      "summary": "Format shared control readouts with the source unit conventions",
+      "source_commits": [
+        "3b64f0e87614fe5a901ccf9b4662192be72d084d"
+      ],
+      "accepted": true,
+      "validation": "Product a8c29411380e0c60b9b6671b8697a0c305ce6da5: workspace2224/0/269ignored; scheduler48/0, reader45/0/1ignored, keyswitch3; focused bytecode/zone/class/keyboard and compilation/offline/GPU checks PASS. Native Conflux1/Vista2/browser1, scanner15/15 audible/12Original unchanged; full quick retry72/72 loaded/68audible, finite/zero audio allocations, strict stuck guards PASS. First quick retirement variability retained and also observed in frozen403 A/B. Receipts w0-batch-after403/combined-verdict.json and native-verdict.json. Full gestures/native payload fidelity and quiet CPU/RSS/deadline/retirement stability remain unverified.",
+      "release_note": "Format shared control readouts with the source unit conventions."
+    },
+    {
+      "id": "uvi-skinned-knob-caption-overlay",
+      "summary": "Keep authored UVI captions visible over filmstrip knob skins",
+      "source_commits": [
+        "3b64f0e87614fe5a901ccf9b4662192be72d084d"
+      ],
+      "accepted": true,
+      "validation": "Product a8c29411380e0c60b9b6671b8697a0c305ce6da5: workspace2224/0/269ignored; scheduler48/0, reader45/0/1ignored, keyswitch3; focused bytecode/zone/class/keyboard and compilation/offline/GPU checks PASS. Native Conflux1/Vista2/browser1, scanner15/15 audible/12Original unchanged; full quick retry72/72 loaded/68audible, finite/zero audio allocations, strict stuck guards PASS. First quick retirement variability retained and also observed in frozen403 A/B. Receipts w0-batch-after403/combined-verdict.json and native-verdict.json. Full gestures/native payload fidelity and quiet CPU/RSS/deadline/retirement stability remain unverified.",
+      "release_note": "Keep authored UVI captions visible over filmstrip knob skins."
+    },
+    {
+      "id": "authored-page-widget-exclusion",
+      "summary": "Exclude widgets wholly outside their authored page and retain partial intersections",
+      "source_commits": [
+        "cf0d2295da222408d7dd96cb61b9acf29337d674"
+      ],
+      "accepted": true,
+      "validation": "Product a8c29411380e0c60b9b6671b8697a0c305ce6da5: workspace2224/0/269ignored; scheduler48/0, reader45/0/1ignored, keyswitch3; focused bytecode/zone/class/keyboard and compilation/offline/GPU checks PASS. Native Conflux1/Vista2/browser1, scanner15/15 audible/12Original unchanged; full quick retry72/72 loaded/68audible, finite/zero audio allocations, strict stuck guards PASS. First quick retirement variability retained and also observed in frozen403 A/B. Receipts w0-batch-after403/combined-verdict.json and native-verdict.json. Full gestures/native payload fidelity and quiet CPU/RSS/deadline/retirement stability remain unverified.",
+      "release_note": "Exclude widgets wholly outside their authored page and retain partial intersections."
+    },
+    {
+      "id": "sound-menu-route-shortcuts",
+      "summary": "Restore v1 sound and route menu shortcuts",
+      "source_commits": [
+        "6c5da47e8431a7293f03d111b9833b8e6797fd78"
+      ],
+      "accepted": true,
+      "validation": "Product a8c29411380e0c60b9b6671b8697a0c305ce6da5: workspace2224/0/269ignored; scheduler48/0, reader45/0/1ignored, keyswitch3; focused bytecode/zone/class/keyboard and compilation/offline/GPU checks PASS. Native Conflux1/Vista2/browser1, scanner15/15 audible/12Original unchanged; full quick retry72/72 loaded/68audible, finite/zero audio allocations, strict stuck guards PASS. First quick retirement variability retained and also observed in frozen403 A/B. Receipts w0-batch-after403/combined-verdict.json and native-verdict.json. Full gestures/native payload fidelity and quiet CPU/RSS/deadline/retirement stability remain unverified.",
+      "release_note": "Restore v1 sound and route menu shortcuts."
+    },
+    {
+      "id": "authored-picture-fractional-coverage",
+      "summary": "Retain fractional pixel coverage and premultiplied alpha when shrinking authored images",
+      "source_commits": [
+        "4a05318d3465e825a2a3d3b40b12db1ed2609d34"
+      ],
+      "accepted": true,
+      "validation": "Product a8c29411380e0c60b9b6671b8697a0c305ce6da5: workspace2224/0/269ignored; scheduler48/0, reader45/0/1ignored, keyswitch3; focused bytecode/zone/class/keyboard and compilation/offline/GPU checks PASS. Native Conflux1/Vista2/browser1, scanner15/15 audible/12Original unchanged; full quick retry72/72 loaded/68audible, finite/zero audio allocations, strict stuck guards PASS. First quick retirement variability retained and also observed in frozen403 A/B. Receipts w0-batch-after403/combined-verdict.json and native-verdict.json. Full gestures/native payload fidelity and quiet CPU/RSS/deadline/retirement stability remain unverified.",
+      "release_note": "Retain fractional pixel coverage and premultiplied alpha when shrinking authored images."
+    },
+    {
+      "id": "authored-square-slider-control-type",
+      "summary": "Render square sliders using their declared type and scripted axis",
+      "source_commits": [
+        "9d08a583ba457bcd64fce28197f5ec906816ad53"
+      ],
+      "accepted": true,
+      "validation": "Product a8c29411380e0c60b9b6671b8697a0c305ce6da5: workspace2224/0/269ignored; scheduler48/0, reader45/0/1ignored, keyswitch3; focused bytecode/zone/class/keyboard and compilation/offline/GPU checks PASS. Native Conflux1/Vista2/browser1, scanner15/15 audible/12Original unchanged; full quick retry72/72 loaded/68audible, finite/zero audio allocations, strict stuck guards PASS. First quick retirement variability retained and also observed in frozen403 A/B. Receipts w0-batch-after403/combined-verdict.json and native-verdict.json. Full gestures/native payload fidelity and quiet CPU/RSS/deadline/retirement stability remain unverified.",
+      "release_note": "Render square sliders using their declared type and scripted axis."
+    },
+    {
+      "id": "hidden-selected-menu-caption",
+      "summary": "Keep the first authored matching menu caption when its selected item is hidden",
+      "source_commits": [
+        "271a43ab15141de8b806c8524cdfcf2eefb2254d"
+      ],
+      "accepted": true,
+      "validation": "Product a8c29411380e0c60b9b6671b8697a0c305ce6da5: workspace2224/0/269ignored; scheduler48/0, reader45/0/1ignored, keyswitch3; focused bytecode/zone/class/keyboard and compilation/offline/GPU checks PASS. Native Conflux1/Vista2/browser1, scanner15/15 audible/12Original unchanged; full quick retry72/72 loaded/68audible, finite/zero audio allocations, strict stuck guards PASS. First quick retirement variability retained and also observed in frozen403 A/B. Receipts w0-batch-after403/combined-verdict.json and native-verdict.json. Full gestures/native payload fidelity and quiet CPU/RSS/deadline/retirement stability remain unverified.",
+      "release_note": "Keep the first authored matching menu caption when its selected item is hidden."
     }
   ]
 }
