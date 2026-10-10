@@ -110,7 +110,26 @@ pub(crate) struct ArrayFileState {
     pub jobs: Vec<ArrayFileJob>,
 }
 impl ArrayFileState {
-    pub fn dimensions(arrays: &[ArrayFileArray]) -> Result<(usize, usize), Error> {
+    fn snapshot_jobs(numbers: usize, texts: usize) -> Result<usize, Error> {
+        let bytes = numbers
+            .checked_mul(std::mem::size_of::<i64>())
+            .and_then(|numbers| {
+                texts
+                    .checked_mul(std::mem::size_of::<Text>())
+                    .and_then(|texts| numbers.checked_add(texts))
+            })
+            .ok_or(Error::Capacity)?;
+        if bytes > SNAPSHOT_BYTES {
+            return Err(Error::Capacity);
+        }
+        // Reserve fewer jobs for large arrays, never more snapshot payload bytes.
+        Ok(if bytes == 0 {
+            0
+        } else {
+            ARRAY_FILE_JOBS.min(SNAPSHOT_BYTES / bytes)
+        })
+    }
+    pub fn dimensions(arrays: &[ArrayFileArray]) -> Result<(usize, usize, usize), Error> {
         let (mut numbers, mut texts) = (0, 0);
         for array in arrays {
             array.validate()?;
@@ -120,17 +139,13 @@ impl ArrayFileState {
                 numbers = numbers.max(array.len as usize);
             }
         }
-        let bytes = numbers * std::mem::size_of::<i64>() + texts * std::mem::size_of::<Text>();
-        if bytes * ARRAY_FILE_JOBS > SNAPSHOT_BYTES {
-            return Err(Error::Capacity);
-        }
-        Ok((numbers, texts))
+        Ok((numbers, texts, Self::snapshot_jobs(numbers, texts)?))
     }
     pub fn prepared(arrays: &[ArrayFileArray]) -> Self {
-        let (numbers, texts) = Self::dimensions(arrays).unwrap_or_default();
+        let (numbers, texts, jobs) = Self::dimensions(arrays).unwrap_or_default();
         Self {
             jobs: arrays.first().map_or_else(Vec::new, |array| {
-                (0..ARRAY_FILE_JOBS)
+                (0..jobs)
                     .map(|_| ArrayFileJob {
                         id: 0,
                         array: *array,
@@ -150,6 +165,80 @@ impl ArrayFileState {
             job.payload.clear();
         }
         count
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_jobs_checks_single_payload_budget_and_arithmetic() {
+        // Arithmetic-only inputs: a legal descriptor cannot exceed this budget
+        // with the ordinary Text layout and the existing cell limit.
+        let numbers = SNAPSHOT_BYTES / std::mem::size_of::<i64>();
+        assert_eq!(ArrayFileState::snapshot_jobs(numbers, 0), Ok(1));
+        assert_eq!(
+            ArrayFileState::snapshot_jobs(numbers + 1, 0),
+            Err(Error::Capacity)
+        );
+        assert_eq!(ArrayFileState::snapshot_jobs(numbers, 1), Err(Error::Capacity));
+        assert_eq!(
+            ArrayFileState::snapshot_jobs(usize::MAX, 0),
+            Err(Error::Capacity)
+        );
+        assert_eq!(
+            ArrayFileState::snapshot_jobs(0, usize::MAX),
+            Err(Error::Capacity)
+        );
+        let texts = usize::MAX / std::mem::size_of::<Text>();
+        assert_eq!(
+            ArrayFileState::snapshot_jobs(numbers, texts),
+            Err(Error::Capacity)
+        );
+        assert_eq!(ArrayFileState::snapshot_jobs(1, 1), Ok(ARRAY_FILE_JOBS));
+        assert_eq!(ArrayFileState::dimensions(&[]), Ok((0, 0, 0)));
+        assert!(ArrayFileState::prepared(&[]).jobs.is_empty());
+    }
+
+    #[test]
+    fn snapshot_pool_prepares_only_the_derived_slots_within_payload_budget() {
+        let arrays = [
+            ArrayFileArray {
+                key: 0,
+                name: Text::new("%data"),
+                kind: ArrayFileKind::Integer,
+                offset: 0,
+                len: 16000,
+            },
+            ArrayFileArray {
+                key: 1,
+                name: Text::new("!names"),
+                kind: ArrayFileKind::Text,
+                offset: 0,
+                len: 4000,
+            },
+        ];
+        let bytes = 16000 * std::mem::size_of::<i64>() + 4000 * std::mem::size_of::<Text>();
+        let slots = ARRAY_FILE_JOBS.min(SNAPSHOT_BYTES / bytes);
+        assert_eq!(ArrayFileState::dimensions(&arrays), Ok((16000, 4000, slots)));
+        let prepared = ArrayFileState::prepared(&arrays);
+        assert_eq!(prepared.jobs.len(), slots);
+        let reserved: usize = prepared
+            .jobs
+            .iter()
+            .map(|job| {
+                assert_eq!(job.id, 0);
+                assert!(job.payload.numbers.is_empty());
+                assert!(job.payload.texts.is_empty());
+                assert_eq!(job.payload.numbers.capacity(), 16000);
+                assert_eq!(job.payload.texts.capacity(), 4000);
+                job.payload.numbers.capacity() * std::mem::size_of::<i64>()
+                    + job.payload.texts.capacity() * std::mem::size_of::<Text>()
+            })
+            .sum();
+        assert_eq!(reserved, slots * bytes);
+        assert!(reserved <= SNAPSHOT_BYTES);
     }
 }
 
