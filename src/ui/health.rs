@@ -131,13 +131,13 @@ pub fn survey(
                 _ => {}
             }
             let r = face.page_rect(ir::WidgetRef(n));
-            if r.x < 0
-                || r.y < 0
-                || i64::from(r.x) + i64::from(r.width) > i64::from(face.pages[w.page.0].size.width)
+            if r.x < 0.
+                || r.y < 0.
+                || r.x + r.width > face.pages[w.page.0].size.width
             {
-                layout.push(json!({"widget": w.name, "rect": [r.x, r.y, r.width as i32, r.height as i32], "error": "outside page"}));
+                layout.push(json!({"widget": w.name, "rect": [r.x, r.y, r.width, r.height], "error": "outside page"}));
             }
-            if (r.width == 0 || r.height == 0) && !matches!(w.kind, ir::Kind::Panel) {
+            if (r.width == 0. || r.height == 0.) && !matches!(w.kind, ir::Kind::Panel) {
                 layout.push(json!({"widget": w.name, "error": "zero size"}));
             }
         }
@@ -145,8 +145,8 @@ pub fn survey(
         for mode in [ir::Presentation::Bitmap, ir::Presentation::Vector] {
             assets.sync(&face, mode, |a| source.load(a));
             for p in 0..face.pages.len() {
-                let w = face.pages[p].size.width.clamp(1, 4096) as u16;
-                let h = ir_view::height(&face, ir::PageRef(p)).clamp(1, 4096) as u16;
+                let w = face.pages[p].size.width.ceil().clamp(1., 4096.) as u16;
+                let h = ir_view::height(&face, ir::PageRef(p)).ceil().clamp(1., 4096.) as u16;
                 let name = format!("slot-{slot}-page-{p}-{mode:?}.png");
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
                     || -> Result<(), String> {
