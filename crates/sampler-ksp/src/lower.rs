@@ -162,6 +162,7 @@ impl<'h> Unit<'h> {
             CallbackKind::UiControl(var) => self.hir.vars[var.0 as usize]
                 .ui
                 .map(|ui| b::FIRST_UI_ID + ui as i32),
+            CallbackKind::UiControls => Some(0),
             _ => None,
         };
         let cb = callback_type(kind);
@@ -461,6 +462,8 @@ fn callback_type(kind: CallbackKind) -> i32 {
         CallbackKind::Controller => b::cb::CONTROLLER,
         CallbackKind::PolyAt => b::cb::POLY_AT,
         CallbackKind::UiControl(_) => b::cb::UI_CONTROL,
+        CallbackKind::UiControls => b::cb::UI_CONTROLS,
+        CallbackKind::UiUpdate => b::cb::UI_UPDATE,
         CallbackKind::Listener => b::cb::LISTENER,
         CallbackKind::PgsChanged => b::cb::PGS_CHANGED,
         CallbackKind::PersistenceChanged => b::cb::PERSISTENCE_CHANGED,

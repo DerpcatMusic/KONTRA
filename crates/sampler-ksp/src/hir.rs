@@ -267,6 +267,8 @@ pub enum CallbackKind {
     Controller,
     PolyAt,
     UiControl(VarId),
+    UiControls,
+    UiUpdate,
     Listener,
     PgsChanged,
     PersistenceChanged,
