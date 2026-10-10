@@ -249,6 +249,51 @@ impl Samples {
         })
     }
 
+    pub(crate) fn resolve_impulse(
+        &mut self,
+        parent: &Path,
+        name: &str,
+        containers: &[String],
+    ) -> Result<Option<PathBuf>, LoadError> {
+        // Port from v1 0cb7a8a0:src/import.rs: Kontakt maps saved Resources
+        // paths into the authored NKR after ordinary lookup has failed.
+        if let Some(path) = self.resolve(parent, name)? {
+            return Ok(Some(path));
+        }
+        let normalized = name.replace('\\', "/");
+        let lower = normalized.to_ascii_lowercase();
+        let Some(at) = lower
+            .match_indices("resources/")
+            .find_map(|(at, _)| (at == 0 || lower.as_bytes()[at - 1] == b'/').then_some(at))
+        else {
+            return Ok(None);
+        };
+        let member = &normalized[at..];
+        let invalid = |reason: &str| LoadError::Invalid {
+            path: parent.join(name),
+            reason: reason.into(),
+        };
+        if member
+            .split('/')
+            .any(|part| matches!(part, "" | "." | ".."))
+        {
+            return Err(invalid("invalid impulse resource member path"));
+        }
+        let mut found = None;
+        for name in containers {
+            let Some(archive) = self.resolve(parent, name)? else {
+                continue;
+            };
+            if let Some(path) = self.resolve(parent, &archive.join(member).to_string_lossy())? {
+                if found.as_ref().is_some_and(|previous| previous != &path) {
+                    return Err(invalid("ambiguous authored NKR impulse resource"));
+                }
+                found = Some(path);
+            }
+        }
+        Ok(found)
+    }
+
     /// Decode a sample [`Samples::resolve`] returned.
     pub fn decode(&mut self, location: &Path) -> Result<Decoded, LoadError> {
         if self.embedded.contains_key(location) {
@@ -1062,6 +1107,117 @@ mod tests {
                 .is_err()
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn impulse_resources_use_the_authored_nkr_after_direct_lookup() {
+        let root = std::env::temp_dir().join(format!("v2-impulse-nkr-{}", std::process::id()));
+        let parent = root.join("Instruments");
+        std::fs::create_dir_all(&parent).unwrap();
+        std::fs::create_dir_all(root.join("Samples")).unwrap();
+        let member = "Resources/ir/authored.wav";
+        let wav = wav_bytes(1, 1, 16, &[0, 0x40]);
+        let mut bytes = Vec::new();
+        for (name, kind) in [("Resources", 1u16), ("ir", 1), ("authored.wav", 0)] {
+            let record = 8 + (name.len() + 1) * 2;
+            let next = bytes.len() + 22 + record;
+            bytes.extend(0x5e70ac54u32.to_le_bytes());
+            bytes.extend(0x110u16.to_le_bytes());
+            bytes.extend([0; 8]);
+            bytes.extend(1u32.to_le_bytes());
+            bytes.extend([0; 4]);
+            bytes.extend((record as u16).to_le_bytes());
+            bytes.extend((next as u32).to_le_bytes());
+            bytes.extend(kind.to_le_bytes());
+            for c in name.encode_utf16().chain([0]) {
+                bytes.extend(c.to_le_bytes());
+            }
+        }
+        let mut header = [0u8; 22];
+        header[..4].copy_from_slice(&0x2ae905fau32.to_le_bytes());
+        header[4..6].copy_from_slice(&0x110u16.to_le_bytes());
+        header[10..14].copy_from_slice(&0xffu32.to_le_bytes());
+        header[14..18].copy_from_slice(&(wav.len() as u32).to_le_bytes());
+        bytes.extend(header);
+        bytes.extend(&wav);
+        let archive = root.join("Samples/authored.nkr");
+        std::fs::write(&archive, bytes).unwrap();
+        let containers = ["Samples/authored.nkr".into()];
+        let expected = root
+            .canonicalize()
+            .unwrap()
+            .join("Samples/authored.nkr")
+            .join(member);
+        let mut samples = Samples::new(&root);
+        // Validate the archive and decoded payload before testing the missing fallback.
+        assert_eq!(samples.decode(&expected).unwrap().frames, [[0.5, 0.5]]);
+        let resolved =
+            samples.resolve_impulse(&parent, "C:\\old\\Resources\\ir\\authored.wav", &containers);
+        assert_eq!(resolved.unwrap(), Some(expected.clone()));
+        assert_eq!(
+            samples
+                .resolve_impulse(&parent, "C:/old/resources/IR/AUTHORED.WAV", &containers)
+                .unwrap(),
+            Some(
+                root.canonicalize()
+                    .unwrap()
+                    .join("Samples/authored.nkr/resources/IR/AUTHORED.WAV")
+            )
+        );
+        let aliases = ["Samples/authored.nkr".into(), "Samples/authored.nkr".into()];
+        assert_eq!(
+            samples
+                .resolve_impulse(&parent, "Resources/ir/authored.wav", &aliases)
+                .unwrap(),
+            Some(expected.clone())
+        );
+        let moved = ["C:\\old\\authored.nkr".into()];
+        assert_eq!(
+            samples
+                .resolve_impulse(&parent, "Resources/ir/authored.wav", &moved)
+                .unwrap(),
+            Some(expected.clone())
+        );
+        assert_eq!(
+            samples
+                .resolve_impulse(&parent, "MyResources/ir/authored.wav", &containers)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            samples
+                .resolve_impulse(&parent, "Resources/ir/absent.wav", &containers)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            samples
+                .resolve_impulse(&parent, "Resources/ir/authored.wav", &[])
+                .unwrap(),
+            None
+        );
+        assert!(
+            samples
+                .resolve_impulse(&parent, "Resources/../ir/authored.wav", &containers)
+                .is_err()
+        );
+        std::fs::copy(&archive, root.join("Samples/second.nkr")).unwrap();
+        let ambiguous = ["Samples/authored.nkr".into(), "Samples/second.nkr".into()];
+        assert!(
+            samples
+                .resolve_impulse(&parent, "Resources/ir/authored.wav", &ambiguous)
+                .is_err()
+        );
+        let loose = parent.join("authored.wav");
+        std::fs::write(&loose, wav).unwrap();
+        let mut samples = Samples::new(&root);
+        assert_eq!(
+            samples
+                .resolve_impulse(&parent, "C:/old/Resources/ir/authored.wav", &ambiguous)
+                .unwrap(),
+            Some(loose.canonicalize().unwrap())
+        );
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     fn wav_bytes(tag: u16, channels: u16, bits: u16, data: &[u8]) -> Vec<u8> {

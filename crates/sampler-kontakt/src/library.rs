@@ -97,10 +97,17 @@ fn read_overlaid(
             .ok_or_else(|| invalid("not a single-instrument preset"))?,
     )
     .map_err(|e| decode("program", e))?;
-    let (table, others) = match chunks.find_first(FILE_TABLE) {
+    let (table, others, containers) = match chunks.find_first(FILE_TABLE) {
         Some(chunk) => {
             let t = FNTableImpl::try_from(chunk).map_err(|e| decode("sample file table", e))?;
-            (t.sample_filetable, t.other_filetable)
+            (
+                t.sample_filetable,
+                t.other_filetable,
+                t.special_filetable
+                    .into_values()
+                    .filter(|name| name.to_ascii_lowercase().ends_with(".nkr"))
+                    .collect(),
+            )
         }
         None => {
             let chunk = chunks
@@ -108,7 +115,14 @@ fn read_overlaid(
                 .ok_or_else(|| invalid("missing sample file table"))?;
             let t =
                 FileNameListPreK51::try_from(chunk).map_err(|e| decode("legacy file table", e))?;
-            (t.sample_filetable, t.other_filetable)
+            (
+                t.sample_filetable,
+                t.other_filetable,
+                t.special_filetable
+                    .into_values()
+                    .filter(|name| name.to_ascii_lowercase().ends_with(".nkr"))
+                    .collect(),
+            )
         }
     };
     drop(span);
@@ -118,6 +132,7 @@ fn read_overlaid(
         program,
         table,
         others,
+        containers,
         snapshot,
         control_values,
         snapshot.is_none().then_some(0),
@@ -177,18 +192,34 @@ pub fn read_program_with_controls(
         .into_iter()
         .nth(index)
         .ok_or_else(|| invalid("the multi has no such program"))?;
-    let (table, others) = match chunks
+    let (table, others, containers) = match chunks
         .filename_tables()
         .map_err(|e| decode("multi file table", e))?
     {
-        Some(t) => (t.sample_filetable, t.other_filetable),
-        None => (
-            chunks
-                .filename_table()
-                .ok_or_else(|| invalid("missing multi sample table"))?
-                .map_err(|e| decode("multi file table", e))?,
-            Default::default(),
+        Some(t) => (
+            t.sample_filetable,
+            t.other_filetable,
+            t.special_filetable
+                .into_values()
+                .filter(|name| name.to_ascii_lowercase().ends_with(".nkr"))
+                .collect(),
         ),
+        None => {
+            // filename_table() exposes only samples; retain the legacy IR and NKR tables too.
+            let chunk = chunks
+                .find_first(LEGACY_FILE_TABLE)
+                .ok_or_else(|| invalid("missing multi sample table"))?;
+            let t = FileNameListPreK51::try_from(chunk)
+                .map_err(|e| decode("multi legacy file table", e))?;
+            (
+                t.sample_filetable,
+                t.other_filetable,
+                t.special_filetable
+                    .into_values()
+                    .filter(|name| name.to_ascii_lowercase().ends_with(".nkr"))
+                    .collect(),
+            )
+        }
     };
     drop(span);
     let _span = crate::audit::Span::new("translate_resolve_ir");
@@ -197,6 +228,7 @@ pub fn read_program_with_controls(
         program,
         table,
         others,
+        containers,
         None,
         control_values,
         u32::try_from(index).ok(),
@@ -204,11 +236,13 @@ pub fn read_program_with_controls(
     .map_err(|e| e.at(crate::Stage::Translate))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn translate(
     path: PathBuf,
     mut program: Program,
     table: HashMap<u32, String>,
     others: HashMap<u32, String>,
+    containers: Vec<String>,
     snapshot: Option<&crate::SnapshotState>,
     control_values: &[(sampler_core::ControlId, i32)],
     cache_program: Option<u32>,
@@ -500,7 +534,7 @@ fn translate(
                 .and_then(|i| others.get(&i))
                 .ok_or_else(|| format!("index {index} is not in the file table"))?;
             let at = samples
-                .resolve(parent, name)
+                .resolve_impulse(parent, name, &containers)
                 .map_err(|e| e.to_string())?
                 .ok_or_else(|| format!("{name} was not found"))?;
             impulse_sources.insert(index, at.clone());
@@ -823,7 +857,10 @@ impl Translation {
                     ExternalModArray32::try_from(chunk)?
                         .slots()?
                         .into_iter()
-                        .map(|(slot, m)| m.params().map(|p| (slot, p.name, p.targets)))
+                        .map(|(slot, m)| m.params().map(|p| {
+                            let settings = crate::modulation_objects::external(m.0.version, &p);
+                            (slot, p.name, p.targets, settings)
+                        }))
                         .collect::<Result<_, _>>()?
                 } else {
                     let mut names = Vec::new();
@@ -849,11 +886,12 @@ impl Translation {
                                     Self::native_primary_ahdsr(&modulator, &params, envelope);
                             }
                         }
-                        names.push((slot, params.name, params.targets));
+                        let settings = crate::modulation_objects::internal(modulator.0.version, &params);
+                        names.push((slot, params.name, params.targets, settings));
                     }
                     names
                 };
-                for (slot, name, targets) in names {
+                for (slot, name, targets, settings) in names {
                     for target in &targets {
                         if eq_knob(&target.param).is_some()
                             && let Some(slot) = target.slot
@@ -864,7 +902,7 @@ impl Translation {
                             }
                         }
                     }
-                    self.source_modulator(index, slot, external, name, &targets);
+                    self.source_modulator(index, slot, external, name, &targets, Some(settings));
                 }
             }
         }
@@ -1035,6 +1073,7 @@ impl Translation {
         external: bool,
         name: String,
         targets: &[ni_file::kontakt::objects::ModTarget],
+        settings: Option<ir::kontakt::Modulation>,
     ) {
         self.ir
             .source_indices
@@ -1064,6 +1103,7 @@ impl Translation {
             external,
             name,
             runtime: None,
+            settings,
         });
     }
 
@@ -2598,6 +2638,7 @@ mod saved_tests {
             0,
             vec![String::new(); 8],
             &indices,
+            &[],
             Default::default(),
         );
         let writes =
@@ -2654,6 +2695,7 @@ mod saved_tests {
                     .map(|group| group.name.clone())
                     .collect(),
                 &instrument.source_indices,
+                &instrument.zones,
                 Default::default(),
             );
             environment.engine_values.clear();
@@ -2745,6 +2787,7 @@ mod saved_tests {
                 program,
                 Default::default(),
                 Default::default(),
+                Default::default(),
                 None,
                 &[],
                 None,
@@ -2815,6 +2858,7 @@ mod saved_tests {
                 menu_program(),
                 Default::default(),
                 Default::default(),
+                Default::default(),
                 None,
                 &controls,
                 None,
@@ -2861,6 +2905,7 @@ mod saved_tests {
         let translated = super::translate(
             path.clone(),
             menu_program(),
+            Default::default(),
             Default::default(),
             Default::default(),
             None,
@@ -2932,6 +2977,7 @@ mod saved_tests {
 
 #[cfg(test)]
 mod modulation {
+    include!("modulation_descriptor_tests.rs");
     use super::*;
     use ni_file::kontakt::objects::{Lfo, LfoRecord, ModTarget};
 
@@ -3017,8 +3063,8 @@ mod modulation {
         unnamed.name.clear();
         let mut named = target("not-modeled", 1.);
         named.name = "Cutoff".into();
-        out.source_modulator(7, 31, true, "Controller".into(), &[unnamed, named]);
-        out.source_modulator(7, 12, false, "Envelope".into(), &[]);
+        out.source_modulator(7, 31, true, "Controller".into(), &[unnamed, named], None);
+        out.source_modulator(7, 12, false, "Envelope".into(), &[], None);
         let lookups = &out.ir.source_indices.engine_lookups;
         assert_eq!(lookups.len(), 4);
         assert_eq!(
@@ -3049,7 +3095,7 @@ mod modulation {
     #[test]
     fn authored_init_intensity_uses_the_same_physical_modulator_slot() {
         let mut out = translation();
-        out.source_modulator(7, 31, true, "Controller".into(), &[]);
+        out.source_modulator(7, 31, true, "Controller".into(), &[], None);
         out.engine.push(sampler_ksp::EnginePar {
             parameter: "$ENGINE_PAR_MOD_TARGET_INTENSITY".into(),
             group: 7,

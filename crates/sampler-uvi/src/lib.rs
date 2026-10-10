@@ -47,6 +47,8 @@ use std::{
 
 /// Increment when native protected-library decoding changes, for cache invalidation.
 pub const LIBRARY_ACCESS_REVISION: u32 = 1;
+/// Whether this build can read protected banks, including unified dependency features.
+pub const LIBRARY_ACCESS_ENABLED: bool = cfg!(feature = "library-access");
 
 const XML_LIMIT: u64 = 32 << 20;
 

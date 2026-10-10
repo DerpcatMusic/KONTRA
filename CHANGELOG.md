@@ -6,6 +6,65 @@ with a short user-facing known-issues list and collapsed source/checksum details
 Each published release manifest also retains its versioned changelog. Frozen entries
 below record reviewed source checkpoints; they are not claims about pending work.
 
+## 0.3.429
+
+This experimental update restores more authored instrument controls, script callbacks, source modulation and convolution resources.
+
+### Loading & files
+
+- Preserve catalog failure details and retry metadata or artwork when file/access state changes.
+- Resolve saved convolution impulses from the owning NKR when loose files are missing, and retain impulse tables in legacy multis.
+
+### Sound/engine (v1 ports)
+
+- Preserve supported Kontakt LFO source frequency and signed target intensity using the checked v1 laws.
+- Retain raw modulation descriptors for diagnosis; unsupported source modes remain explicit.
+
+### KSP scripts
+
+- Read runtime UI metadata and native zone group/key fields through computed operands; keep numeric font identifiers.
+- Evaluate UI setter arguments once and dispatch global UI callbacks around the local callback in v1 order.
+- Schedule beat waits against the live host tempo.
+
+### UVI
+
+- Load authored modules, retain class inheritance/object identity, and support authored UI construction without generated grids.
+- Honor native Unit/Mapper metadata and shared source display conventions while preserving raw values and edit payloads.
+
+### Saved projects
+
+- Retain the existing coherent snapshot and host-recall guards while integrating the script/control changes.
+
+### Editor/UI
+
+- Select the declared performance view by default and preserve explicit tab choices.
+- Keep authored keyboard colours, reach MIDI note 127, and preserve exclusive MIDI-learn routing.
+- Render declared sliders and authored knob captions; retain the selected menu caption when its matching item is hidden.
+- Keep fractional image coverage and exclude widgets wholly outside their authored page.
+- Restore sound and route menu shortcuts.
+
+### Memory & CPU
+
+- Keep native zone-readback bytecode within the existing 32-byte Instruction budget.
+- In the earlier owner's two-preset CPU-editor measurements, installed-to-first-sound fell from 517.556 to 11.648 ms for Areia and from 357.407 to 6.574 ms for Dolce. These remain scoped historical results; this batch adds no timing acceptance.
+
+### Fixes
+
+- These are source-specific corrections backed by the accepted logical-fix ledger, rather than a claim of complete instrument parity.
+
+### Known limits
+
+- Full authored-widget gesture, callback and sound parity remain incomplete. Protected installed UVI playback, real Windows/Linux DAW operation, and quiet CPU/RSS/deadline acceptance remain unverified.
+- Unsupported Kontakt modulation cases remain diagnosed; no new whole-voice or Digital Multi fade claim is made.
+- Fractional geometry/paint-order projection and the Conflux capture/storage investigation remain separate pending work.
+
+### Evidence
+
+- Product `a8c29411`: 2,224 workspace tests passed, zero failed; 48 scheduler tests, 45 reader tests (one ignored), and three articulation normalization tests passed. Focused bytecode/selector/class/keyboard checks, compilation, offline release checks and GPU regressions passed.
+- Native Conflux and Vista checks passed. All ten browser captures match 403 byte for byte; library and preset states were reviewed at both sizes. The native scanner loaded and sounded all 15 cases, retaining 12 Original views. The full native quick retry loaded 72/72, sounded 68, produced finite audio and zero audio-thread allocations, and passed the original matched stage/audibility/stuck-note/voice guards.
+- Retirement counts varied in the initial quick and focused frozen 403 runs; the accepted full retry passed the unchanged guards. These results do not certify timing, release-tail stability or complete authored-widget operation. The loose UVI quick fixture still has no Lua frontend in the corpus tool; separate ScriptHost tests cover the authored Lua changes.
+- No third-party opener or Wine is used by these regressions. Source, binary and log hashes, including the retained RED and A/B runs, are recorded in the W0 after403 audit and frozen receipts. No plugin install was performed.
+
 ## 0.3.403
 
 This experimental update improves saved script state, UVI MIDI handling, supported Kontakt sound sources, library browsing and articulation labels.
