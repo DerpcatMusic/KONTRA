@@ -235,8 +235,8 @@ fn ir_view_vector_mode_releases_control_bitmaps() {
         pages: vec![ir::Page {
             name: "Main".into(),
             size: ir::Size {
-                width: 633,
-                height: 300,
+                width: 633.0,
+                height: 300.0,
             },
             background: ir::Background {
                 image: Some(ir::AssetRef(0)),
@@ -1636,8 +1636,8 @@ fn uvi_scene_culls_offscreen_controls_without_dropping_the_model() {
     };
     face.pages.push(Page {
         size: ir::Size {
-            width: 200,
-            height: 100,
+            width: 200.0,
+            height: 100.0,
         },
         ..Default::default()
     });
@@ -5784,8 +5784,8 @@ fn menus_show_a_fallback_without_editing_the_script_value() {
     let face = ir::Interface {
         pages: vec![ir::Page {
             size: ir::Size {
-                width: 160,
-                height: 60,
+                width: 160.0,
+                height: 60.0,
             },
             ..Default::default()
         }],
@@ -5854,8 +5854,8 @@ fn rack_interfaces_have_independent_input_identities() {
     let face = ir::Interface {
         pages: vec![ir::Page {
             size: ir::Size {
-                width: 100,
-                height: 30,
+                width: 100.0,
+                height: 30.0,
             },
             ..Default::default()
         }],

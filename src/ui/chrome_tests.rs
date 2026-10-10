@@ -337,8 +337,8 @@ fn generated_specimen(p: &Arc<SamplerParams>) {
         pages: vec![ir::Page {
             name: "Extended performance editor page".into(),
             size: ir::Size {
-                width: 700,
-                height: 240,
+                width: 700.0,
+                height: 240.0,
             },
             ..Default::default()
         }],
