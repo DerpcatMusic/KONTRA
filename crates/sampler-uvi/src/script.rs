@@ -450,6 +450,8 @@ struct Shared {
     scopes: RefCell<Vec<Option<Scope>>>,
     nodes: RefCell<Vec<(usize, bool)>>,
     kinds: RefCell<Vec<String>>,
+    /// Per element: the catalog fields with a DSP lane.
+    live: RefCell<Vec<Vec<&'static str>>>,
     /// Globals the scripts assign somewhere: reading one that is still unset
     /// answers nil, as in Lua; only unknown API names answer a stub.
     assigned: RefCell<std::collections::HashSet<String>>,
@@ -719,6 +721,7 @@ struct Tree {
     /// Per element: its XML node and whether it is an insert.
     nodes: Vec<(usize, bool)>,
     kinds: Vec<String>,
+    live: Vec<Vec<&'static str>>,
     layers: u32,
 }
 
@@ -749,6 +752,7 @@ fn element(
     );
     tree.nodes.push((node.id().get_usize(), insert));
     tree.kinds.push(node.tag_name().name().to_owned());
+    tree.live.push(crate::engine_parameters::live_names(node));
     tree.scopes.push(match node.tag_name().name() {
         "Program" => Some(Scope::Program),
         "Layer" => {
@@ -986,6 +990,7 @@ impl ScriptHost {
             scopes: RefCell::new(Vec::new()),
             nodes: RefCell::new(Vec::new()),
             kinds: RefCell::new(Vec::new()),
+            live: RefCell::new(Vec::new()),
             assigned: RefCell::new(Default::default()),
             called: RefCell::new(Default::default()),
             saved: RefCell::new(BTreeMap::new()),
@@ -1060,6 +1065,7 @@ impl ScriptHost {
             scopes: Vec::new(),
             nodes: Vec::new(),
             kinds: Vec::new(),
+            live: Vec::new(),
             layers: 0,
         };
         // Port v1 host.rs's shared metatable handles outside the object loop.
@@ -1083,6 +1089,7 @@ impl ScriptHost {
         tree.scopes.push(None);
         tree.nodes.push((usize::MAX, false));
         tree.kinds.push("Part".into());
+        tree.live.push(Vec::new());
         part.raw_set("type", "Part")?;
         part.raw_set("name", "")?;
         part.set_metatable(Some(class))?;
@@ -1092,6 +1099,7 @@ impl ScriptHost {
         *self.shared.scopes.borrow_mut() = tree.scopes;
         *self.shared.nodes.borrow_mut() = tree.nodes;
         *self.shared.kinds.borrow_mut() = tree.kinds;
+        *self.shared.live.borrow_mut() = tree.live;
         self.lua.globals().raw_set("Program", root)
     }
 
@@ -1415,39 +1423,21 @@ impl ScriptHost {
                     Value::Boolean(b) => f64::from(b),
                     _ => return Ok(None),
                 };
-                let processor = s
-                    .nodes
-                    .borrow()
-                    .get(id)
-                    .copied()
-                    .filter(|(_, insert)| *insert)
-                    .and_then(|(node, _)| {
-                        crate::engine_parameters::binding(
-                            node,
-                            s.kinds.borrow().get(id)?.as_str(),
-                            &name,
-                        )
-                    });
-                if let Some(binding) = processor {
-                    let Ok(value) = binding.law.normalized_value(value) else {
-                        return Ok(None);
-                    };
-                    return Ok(s
-                        .command(Command::EngineParameter {
-                            address: binding.address,
-                            value,
-                        })
-                        .then_some(true));
-                }
-                if name == "Bypass" {
-                    let node = s.nodes.borrow().get(id).copied().filter(|(_, i)| *i);
-                    let Some(((node, _), parameter)) = node.zip(sampler_core::engine_parameter_id(
-                        "ENGINE_PAR_EFFECT_BYPASS",
-                    )) else {
-                        return Ok(None);
-                    };
-                    return Ok(s
-                        .command(Command::EngineParameter {
+                // What the translator gave a DSP lane (`engine_parameters::live_names`).
+                let live = s.live.borrow().get(id).cloned().unwrap_or_default();
+                let node = s.nodes.borrow().get(id).map(|(node, _)| *node);
+                let kind = s.kinds.borrow().get(id).cloned().unwrap_or_default();
+                let engine = |name: &str, value: f64| {
+                    let binding = crate::engine_parameters::binding(node?, &kind, name)?;
+                    Some(Command::EngineParameter {
+                        address: binding.address,
+                        value: binding.law.normalized_value(value).ok()?,
+                    })
+                };
+                let command = if name == "Bypass" && live.contains(&"Bypass") {
+                    // The insert's Mix: a core slot control.
+                    sampler_core::engine_parameter_id("ENGINE_PAR_EFFECT_BYPASS").zip(node).map(
+                        |(parameter, node)| Command::EngineParameter {
                             address: sampler_core::EngineParameterAddress {
                                 parameter,
                                 group: -1,
@@ -1455,8 +1445,41 @@ impl ScriptHost {
                                 generic: i32::try_from(node).unwrap_or(-1),
                             },
                             value: i32::from(value != 0.0),
-                        })
-                        .then_some(true));
+                        },
+                    )
+                } else if kind == "AuxEffect"
+                    && live.contains(&"Gain")
+                    && (name == "Gain" || name == "Bypass" && live.contains(&"BypassGain"))
+                {
+                    // A rack chain's bypass is its gain at zero: send the
+                    // effective gain whichever of the two was written.
+                    let mut params = s.params.borrow_mut();
+                    let retained = params.get_mut(id).map(|p| {
+                        match p.iter_mut().find(|(k, _)| *k == name) {
+                            Some((_, v)) => *v = value.to_string(),
+                            None => p.push((name.clone(), value.to_string())),
+                        }
+                        let read = |n: &str, d: f64| {
+                            p.iter()
+                                .find(|(k, _)| k == n)
+                                .and_then(|(_, v)| v.parse().ok())
+                                .unwrap_or(d)
+                        };
+                        let bypassed = live.contains(&"BypassGain") && read("Bypass", 0.) != 0.;
+                        if bypassed { 0. } else { read("Gain", 1.) }
+                    });
+                    drop(params);
+                    live.contains(&"Gain")
+                        .then_some(retained)
+                        .flatten()
+                        .and_then(|effective| engine("Gain", effective))
+                } else if live.contains(&name.as_str()) {
+                    engine(&name, value)
+                } else {
+                    None
+                };
+                if live.contains(&name.as_str()) || command.is_some() {
+                    return Ok(command.and_then(|c| s.command(c).then_some(true)));
                 }
                 let Some(scope) = s.scopes.borrow().get(id).copied().flatten() else {
                     return Ok(None);
@@ -2381,9 +2404,12 @@ impl ScriptHost {
             let Ok(id) = element.raw_get::<usize>("__id") else {
                 continue;
             };
-            let Some(&(node, true)) = nodes.get(id) else {
+            let Some(&(node, insert)) = nodes.get(id) else {
                 continue;
             };
+            if !insert && !self.shared.live.borrow().get(id).is_some_and(|l| !l.is_empty()) {
+                continue;
+            }
             let Ok(set) = element.raw_get::<Table>("__set") else {
                 continue;
             };
