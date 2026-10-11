@@ -228,6 +228,7 @@ impl Face {
     }
 
     fn sync(&mut self) {
+        self.assets.epoch += 1;
         let entry = self.face.native_ui.as_ref().map(|n| n.entry.as_str());
         if self.native.as_ref().map(|n| n.entry()) != entry {
             self.native = entry.map(|entry| {
