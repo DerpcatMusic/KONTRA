@@ -255,7 +255,7 @@ pub fn view(
     namespace: &str,
     face: &ir::Interface,
     page: ir::PageRef,
-    _assets: &ir_view::Assets,
+    assets: &ir_view::Assets,
     scale: f64,
     values: &mut ir_view::Values,
     input: &mut ir_view::InputState,
@@ -280,7 +280,10 @@ pub fn view(
                     let n = cell.widget;
                     let (width, height) = (cell.width * scale, cell.height * scale);
                     let label = &cell.label;
-                    let built = col![
+                    let place = (width.to_bits(), height.to_bits(), scale.to_bits());
+                    // The cell's pictures are not drawn here, but the face's loads still key it.
+                    let built = ir_view::retained(ui, namespace, face, n, assets, ir_view::value_key(face, n, values), place, |ui| {
+                        col![
                             caption(label.clone())
                                 .lines(1)
                                 .min_w(0)
@@ -304,7 +307,8 @@ pub fn view(
                         .gap(TIGHT)
                         .align(Align::Stretch)
                         .w(width)
-                        .shrink(0);
+                        .shrink(0)
+                    });
                     nodes += ir_view::node_count(&built);
                     if nodes > ir_view::FACE_NODES {
                         ir_view::warn_dropped(1);
