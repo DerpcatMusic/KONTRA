@@ -1043,7 +1043,8 @@ pub(crate) fn chain_with(
             {
                 // Adaptive-resonance family: saved 100..=108 are modes 0..=8 of the
                 // native FilterDJ (docs/audit-2026-10-10/w15-ar-native.md). The kernel
-                // matches Kontakt 8 recordings (nine modes, three levels) within 0.1 dB.
+                // is checked against original-instruction vectors for all nine modes;
+                // host recording acceptance still requires calibrated paired captures.
                 out.filter_slots
                     .push((fx.slot, out.processors.len() + filters.len()));
                 filters.push(sampler_ir::Processor::Ar(sampler_ir::Ar {
