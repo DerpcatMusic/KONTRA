@@ -717,6 +717,26 @@ fn eq_knob(name: &str) -> Option<(usize, ir::ProcessorParameter)> {
     None
 }
 
+/// Stored (serialized) group source mode of DFD. The menu lists Sampler, DFD,
+/// Wavetable, Tone Machine, Time Machine 1/2/Pro, Beat Machine, S1200 and MP60;
+/// the stored order is Sampler 0, Tone/Time Machine 1-2, DFD 3, Beat Machine 4
+/// (slice fields), Time Machine 2 5, S1200/MP60 6-7, Time Machine Pro 8 (pro
+/// fields), Wavetable 9. Mode 3 has no fields beyond the common record, is the
+/// only non-sampler mode in the 3,906 source groups of the survey's streaming
+/// libraries, and mode 5 (which DFD's streaming fields would occupy) never occurs.
+const SOURCE_MODE_DFD: u32 = 3;
+
+fn source_mode_name(mode: u32) -> &'static str {
+    match mode {
+        1 | 2 => "Tone/Time Machine",
+        4 => "Beat Machine",
+        5 => "Time Machine 2",
+        6 | 7 => "S1200/MP60 Machine",
+        8 => "Time Machine Pro",
+        _ => "unknown",
+    }
+}
+
 const VOICE_GROUPS: u16 = 0x32;
 
 /// Translate only established voice-limit semantics; retain signed saved values.
@@ -1250,14 +1270,16 @@ impl Translation {
                     self.unsupported(&at, "wavetable source", source.mode, not_modeled);
                 }
             }
-            // v1 plays every other mode as a sampler, with an explicit limitation.
-            Ok(source) if source.mode != 0 => self.unsupported(
+            // DFD streams the same sampled signal as Sampler; streaming is the
+            // loader's concern, so nothing is lost and nothing is reported.
+            Ok(source) if matches!(source.mode, 0 | SOURCE_MODE_DFD) => {}
+            // The remaining engines are played as a sampler, named in the report.
+            Ok(source) => self.unsupported(
                 &at,
-                "source mode (played as a sampler)",
+                &format!("{} source (played as a sampler)", source_mode_name(source.mode)),
                 source.mode,
                 not_modeled,
             ),
-            Ok(_) => {}
             Err(error) => self.unsupported(&at, "source module", error, ir::Reason::Unknown),
         }
         let mut chain = None;
