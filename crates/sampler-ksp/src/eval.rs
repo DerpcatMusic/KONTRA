@@ -33,6 +33,9 @@ pub struct Environment {
     pub performance_view: model::PerformanceView,
     /// The instrument's MIDI object, including earlier slots' init selection.
     pub midi_object: sampler_core::MidiObject,
+    /// `get_folder` results by `$GET_FOLDER_*_DIR` (library, install, patch, factory); an
+    /// empty entry is a folder the host does not have.
+    pub folders: [String; 4],
 }
 
 /// Steps one `on init` may take before evaluation is abandoned.
@@ -719,6 +722,7 @@ impl Eval<'_> {
             DurationBar => 2_000_000,
             SignatureNum | SignatureDenom => 4,
             Tempo => 120,
+            NumOutputChannels => b::NUM_OUTPUT_CHANNELS,
             CurrentScriptSlot => i32::from(self.env.slot),
             _ => 0,
         }
@@ -1737,7 +1741,26 @@ impl Eval<'_> {
                         .map_or(-1, |l| l.index),
                 )
             }
-            OutputChannelName | GetFolder | FsGetFilename => V::S(String::new()),
+            GetFolder => {
+                let which = self.int(args, 0)?;
+                match usize::try_from(which).ok().and_then(|i| self.env.folders.get(i)) {
+                    Some(folder) => V::S(folder.clone()),
+                    None => {
+                        self.warn(span, format!("get_folder: unknown folder {which}"));
+                        V::S(String::new())
+                    }
+                }
+            }
+            OutputChannelName => {
+                let channel = self.int(args, 0)?;
+                if (0..b::NUM_OUTPUT_CHANNELS).contains(&channel) {
+                    V::S(format!("Output {}", channel + 1))
+                } else {
+                    self.warn(span, "output_channel_name: output channel index out of range");
+                    V::S(String::new())
+                }
+            }
+            FsGetFilename => V::S(String::new()),
             FindZone => V::I(b::NOT_FOUND),
             GetZonePar => {
                 let zone = self.int(args, 0)?;
