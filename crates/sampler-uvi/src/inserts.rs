@@ -386,6 +386,7 @@ impl Translation {
             }
         }
         let scale = number(node, "GainScale", 1.0)?;
+        let mut unproven = false;
         for band in 1..=16 {
             let get = |name: &str, default| number(node, &format!("{name}{band}"), default);
             // A scripted bus keeps all 16 bands and the overall level so
@@ -394,7 +395,11 @@ impl Translation {
                 continue;
             }
             let gain = db(get("Gain", 0.0)? * scale);
-            let kind = match get("Type", 6.0)? as i64 {
+            let shape = get("Type", 6.0)? as i64;
+            // Installed libraries only show types 5 (gain, high-shelf-like
+            // frequencies) and 6 (peak); 0 to 4 follow the manual's order.
+            unproven |= (0..=4).contains(&shape);
+            let kind = match shape {
                 0 => ir::FilterKind::LowPass { poles: 2 },
                 1 => ir::FilterKind::HighPass { poles: 2 },
                 2 => ir::FilterKind::BandPass { poles: 2 },
@@ -426,13 +431,15 @@ impl Translation {
         if overall != 0.0 || live {
             out.push(ir::Processor::Gain(db(overall)));
         }
-        // The manual lists the seven shapes but not their numbering; this is
-        // the listed order with peak last.
-        self.unsupported(
-            at,
-            "DigitalEq band type numbering (manual order assumed)",
-            "",
-        );
+        // The manual lists the seven shapes but not their numbering; types 5
+        // and 6 are evidenced by the installed banks, 0 to 4 are its order.
+        if unproven {
+            self.unsupported(
+                at,
+                "DigitalEq band type numbering (manual order assumed)",
+                "",
+            );
+        }
         Ok(())
     }
 }
