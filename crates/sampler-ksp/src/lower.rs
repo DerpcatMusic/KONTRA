@@ -144,6 +144,7 @@ pub struct Unit<'h> {
     pub array_files: std::collections::BTreeSet<VarId>,
     pub coverage: BTreeMap<(&'static str, Coverage), usize>,
     pub warnings: Vec<(Fault, crate::diag::Kind)>,
+    pub inspection: Option<crate::parity::Inspection>,
     /// Scratch text cells used above `hir.texts`.
     pub scratch: u32,
     pub modules: Vec<(Context, i32, Option<i32>, Module)>,
@@ -530,6 +531,11 @@ impl Gen<'_, '_> {
             );
         }
         self.u.budget -= 1;
+        if let Some(inspect) = &mut self.u.inspection {
+            inspect
+                .ops
+                .push((self.span, crate::parity::operation_name(&op)));
+        }
         self.code.push(op);
         Ok(())
     }
@@ -571,6 +577,9 @@ impl Gen<'_, '_> {
         }
     }
     fn cover(&mut self, builtin: Builtin, coverage: Coverage) {
+        if let Some(inspect) = &mut self.u.inspection {
+            inspect.calls.push((self.span, builtin, coverage));
+        }
         let count = self
             .u
             .coverage
@@ -579,7 +588,10 @@ impl Gen<'_, '_> {
         *count += 1;
         // The first approximated call site per builtin is enough for the report;
         // `Script::coverage` keeps the totals.
-        if *count == 1 && coverage == Coverage::Approximate {
+        if *count == 1
+            && crate::parity::lowering_status(coverage)
+                .is_some_and(|e| e.status == sampler_parity::Status::Approximate)
+        {
             let message = format!("{} runs with simplified semantics", builtin.name());
             self.report(Some(builtin), crate::diag::Kind::Approximate, message);
         }
@@ -1442,11 +1454,23 @@ impl Gen<'_, '_> {
         };
         // Arg::Var is the original HIR UI identity; every other operand once.
         let (_, text) = self.effect_args(builtin, args, dst)?;
-        if text.is_some() { return fault(self.span, "waveform operands must be integers"); }
-        let services = [self.u.service(Builtin::AttachZone), self.u.service(Builtin::SetUiWfProperty)];
+        if text.is_some() {
+            return fault(self.span, "waveform operands must be integers");
+        }
+        let services = [
+            self.u.service(Builtin::AttachZone),
+            self.u.service(Builtin::SetUiWfProperty),
+        ];
         let local = reg(dst, 4)?;
-        self.emit(I::Op(Op::Waveform { action, args: dst, local, services }))?;
-        if action == Action::Get { self.copy_i32(local, dst)?; }
+        self.emit(I::Op(Op::Waveform {
+            action,
+            args: dst,
+            local,
+            services,
+        }))?;
+        if action == Action::Get {
+            self.copy_i32(local, dst)?;
+        }
         self.cover(builtin, Coverage::Approximate);
         Ok(())
     }
@@ -1894,7 +1918,10 @@ impl Gen<'_, '_> {
                 true
             }
             SubscribeAsync => {
-                self.ignore(SubscribeAsync, "has no global key/scale to deliver at runtime");
+                self.ignore(
+                    SubscribeAsync,
+                    "has no global key/scale to deliver at runtime",
+                );
                 true
             }
             ArrayEqual => return self.array_equal(args, dst, span),
@@ -2839,10 +2866,11 @@ impl Gen<'_, '_> {
             ChangeVol | ChangeTune | ChangePan | FadeIn | FadeOut | SetEventPar
             | SetEventParArr | SetNoteController | WillNeverTerminate | RedirectOutput
             | SetZonePar | SetVoiceLimit | LoadIrSample | AttachLevelMeter | AddTextLine
-            | MoveControl | MoveControlPx | SetSkinOffset | SetUiColor | FsNavigate | SetNksNavName | SetNksNavPar | ResetNksNav
-            | SetKeyColor | SetKeyName | SetKeyType | SetKeyPressed | SetKeyPressedSupport
-            | SetKeyrange | RemoveKeyrange | Message | LoadArray | SaveArray | PgsSetStrKeyVal
-            | PgsCreateKey | PgsCreateStrKey => {
+            | MoveControl | MoveControlPx | SetSkinOffset | SetUiColor | FsNavigate
+            | SetNksNavName | SetNksNavPar | ResetNksNav | SetKeyColor | SetKeyName
+            | SetKeyType | SetKeyPressed | SetKeyPressedSupport | SetKeyrange | RemoveKeyrange
+            | Message | LoadArray | SaveArray | PgsSetStrKeyVal | PgsCreateKey
+            | PgsCreateStrKey => {
                 self.effect(builtin, args, dst)?;
                 if builtin.sig().ret != b::Ret::Void {
                     self.set(dst, 0)?;
@@ -3579,7 +3607,13 @@ impl Gen<'_, '_> {
         self.cover(Builtin::GetScale, Coverage::Native);
         Ok(())
     }
-    fn fill_scale(&mut self, array: ScriptArray, index: u16, value: u16, notes: &[u8]) -> Result<()> {
+    fn fill_scale(
+        &mut self,
+        array: ScriptArray,
+        index: u16,
+        value: u16,
+        notes: &[u8],
+    ) -> Result<()> {
         for i in 0..array.len {
             self.set(index, i64::from(i))?;
             self.set(value, notes.get(i as usize).map_or(-1, |&n| i64::from(n)))?;
