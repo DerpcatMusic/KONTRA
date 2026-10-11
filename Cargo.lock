@@ -2160,6 +2160,7 @@ dependencies = [
  "sampler-kontakt",
  "sampler-ksp",
  "sampler-midi",
+ "sampler-parity",
  "sampler-ui-ir",
  "sampler-uvi",
  "serde",
