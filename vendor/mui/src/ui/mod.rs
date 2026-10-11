@@ -141,6 +141,8 @@ pub struct Ui {
     glyph_recovery: bool,
     /// Scene-copy admission owes a fresh walk after a font-chain/grid change.
     scene_environment_changed: bool,
+    /// Most nodes one frame's tree may hold; see [`Ui::set_node_limit`].
+    node_limit: usize,
     /// Everything kept under a node key between frames: see [`NodeState`].
     nodes: Nodes,
     /// Nodes that left the tree, still fading out where they stood.
@@ -295,6 +297,7 @@ impl Ui {
             scene: None,
             glyph_recovery: false,
             scene_environment_changed: false,
+            node_limit: DEFAULT_NODE_LIMIT,
             nodes: Nodes::default(),
             ghosts: Vec::new(),
             identities: HashMap::new(),
@@ -850,6 +853,21 @@ impl Ui {
         (self.time * 1.6) as i64 % 2 == 0
     }
 
+    /// Most nodes a frame's tree may hold before it is refused with
+    /// `BudgetExceeded`. The default (65536) suits a dense instrument face;
+    /// the layout work and its buffers grow linearly with the nodes present, and
+    /// the depth limit still bounds recursion. Clamped to at least 1.
+    pub fn set_node_limit(&mut self, nodes: usize) {
+        self.node_limit = nodes.max(1);
+    }
+
+    pub(super) fn limits(&self) -> mui_layout::Limits {
+        mui_layout::Limits {
+            nodes: self.node_limit,
+            ..mui_layout::Limits::default()
+        }
+    }
+
     /// Advance gestures and springs, style the tree by state, resolve it.
     ///
     /// The phases run in this order, each reading what the one before left:
@@ -868,7 +886,7 @@ impl Ui {
             Self::discard_tree(root);
             return Err(SceneError::InvalidFrameDelta);
         }
-        if let Err(error) = Self::validate_tree_budget(&root, mui_layout::Limits::default())
+        if let Err(error) = Self::validate_tree_budget(&root, self.limits())
             .and_then(|()| self.validate_expanded_tree_budget(&root))
         {
             Self::discard_tree(root);
@@ -924,7 +942,7 @@ impl Ui {
         // the whole tree.
         let mut root = root;
         let mut memos = self.splice(&mut root);
-        if let Err(error) = Self::validate_tree_budget(&root, mui_layout::Limits::default()) {
+        if let Err(error) = Self::validate_tree_budget(&root, self.limits()) {
             Self::discard_tree(root);
             return Err(error);
         }
@@ -960,7 +978,7 @@ impl Ui {
             memos.iter_mut().for_each(|(p, _)| p.insert(0, 0));
         }
         let mut root = Self::wrap_tip(root, tip.as_ref());
-        if let Err(error) = Self::validate_tree_budget(&root, mui_layout::Limits::default()) {
+        if let Err(error) = Self::validate_tree_budget(&root, self.limits()) {
             Self::discard_tree(root);
             return Err(error);
         }
@@ -1184,6 +1202,7 @@ impl Ui {
         memos: &[(Vec<usize>, u64)],
     ) -> Result<(ResolvedScene, bool, El), SceneError> {
         let mut spec = SceneSpec::new(root).theme(self.theme.clone());
+        spec.limits = self.limits();
         spec.limits.extent = Self::virtual_scroll_extent(&mut spec.root, spec.limits, self.scale)?;
         spec.offered = offered;
         spec.font = self.font.clone();
@@ -1532,6 +1551,9 @@ impl NodeState {
 
 /// `nodes[k]`, inserted empty when absent: the key is copied once, on
 /// insertion, and not on every frame's lookup.
+/// Upstream's 4096 refused real instrument faces (thousands of controls).
+const DEFAULT_NODE_LIMIT: usize = 65536;
+
 fn node<'m>(nodes: &'m mut Nodes, k: &str) -> &'m mut NodeState {
     if !nodes.contains_key(k) {
         nodes.insert(mui_scene::Id::runtime(k), NodeState::default());
