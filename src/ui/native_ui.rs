@@ -2715,7 +2715,9 @@ mod tests {
         let first = Font::new(NOTO_SANS).unwrap();
         let second = Font::new(NOTO_SANS).unwrap();
         assert_ne!(first.id(), second.id(), "identical bytes must still have different cache identities");
-        let (mut retained, mut eager) = primitive_uis();
+        // This fixture must have no fallback face when its default font is removed.
+        let theme = super::super::theme::ui().theme().clone();
+        let (mut retained, mut eager) = (Ui::new(theme.clone()), Ui::new(theme));
         let mut cache = PrimitiveRetention::default();
         let mut outer_builds = 0;
         let mut first_origin = None;
