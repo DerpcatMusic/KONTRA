@@ -98,7 +98,7 @@ pub use engine_parameter_names::ENGINE_PARAMETER_NAMES;
 pub use engine_parameters::{
     EngineLookup, EngineMeterAddress, EngineParameterAddress, EngineParameterBinding,
     EngineParameterLaw, EngineParameterOffset, EngineParameterOutcome, engine_parameter_control,
-    engine_parameter_id, engine_parameter_name,
+    engine_parameter_display, engine_parameter_id, engine_parameter_name,
 };
 mod parameter_registry;
 mod steal;
