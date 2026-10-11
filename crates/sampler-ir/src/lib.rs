@@ -1460,6 +1460,10 @@ pub enum Processor {
     Compressor(Compressor),
     /// Memoryless rectification of both channels.
     Rectify(Rectifier),
+    /// Kontakt Classic Saturation, signed saved Shape (-1..1).
+    Saturation(f32),
+    /// Kontakt Tube/Transistor Distortion, saved normalized Drive and Damping.
+    Distortion { transistor: bool, drive: f32, damping: f32 },
     /// Pinned v1 Lo-Fi approximation; saved normalized controls.
     LoFi {
         bits: f32,
@@ -1471,6 +1475,8 @@ pub enum Processor {
     Daft(Daft),
     /// Native Ladder LP4. Values are normalized; the engine owns the laws.
     LadderLP4(LadderLP4),
+    /// Kontakt's adaptive-resonance filter family (saved types 100..=108).
+    Ar(Ar),
     /// Mute a send return when its paired Mix slot is bypassed. Uses that
     /// slot's existing bypass control; insert bypass still passes dry audio.
     SendReturnGate {
@@ -1517,6 +1523,17 @@ pub struct Daft {
     pub highpass: bool,
 }
 
+/// Kontakt's AR filter: `mode` is the saved type minus 100 (0..=8: 2-pole,
+/// 4-pole, combined 2/4; each low, band, high). Cutoff and resonance are the
+/// stored 0..=1 controls; the engine owns the laws.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ar {
+    pub mode: u8,
+    pub cutoff: f64,
+    pub resonance: f64,
+}
+
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LadderLP4 {
@@ -1526,6 +1543,8 @@ pub struct LadderLP4 {
     pub cutoff: f64,
     pub resonance: f64,
     pub record_version: u16,
+    /// Output stage: 1..=4 for Ladder LP1..LP4. The loop closes around stage 4.
+    pub taps: u8,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -1683,7 +1702,7 @@ pub enum SendPosition {
 /// Format-neutral binding of one authored control to an actual processor field.
 /// The control's Continuous range is in the field's native units (Hz, linear
 /// gain, dB, Q or normalized knobs). A bound Peak uses dB Gain and 0..1
-/// Cutoff/Resonance knobs (20 Hz * 10^(3*x), 0.3 + 2.7*x octaves).
+/// Cutoff/Resonance knobs (20 Hz * 10^(3*x), 1/3 + x/0.375 octaves).
 /// Ramping uses the engine sample clock.
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]

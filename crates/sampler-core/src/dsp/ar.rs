@@ -1,5 +1,4 @@
-//! Native FilterDJ controls and worker-reserved stereo state.
-//! Test-only candidate: no processor, lowerer or importer admission.
+//! Native FilterDJ controls and worker-reserved stereo state (saved types 100..=108).
 use super::ar_kernel::{self, ArKernel};
 use super::control::{ControlRamp, ControlRange, Parameter, PreparedParameter};
 use super::{Planar, ProcessorState};
@@ -364,6 +363,59 @@ mod tests {
                     assert!(whole.0.iter().flatten().all(|v| v.is_finite()));
                 }
             }
+        }
+    }
+
+    /// Kontakt 8 recording (calibration noise at velocity 100, x = .5132, resonance .5984, AR LP2/4):
+    /// response vs bypass in dB. The filter is level-adaptive, so the input is noise of the same level.
+    #[test]
+    fn ar_low_pass_2_4_matches_the_kontakt_recording() {
+        let ar = ArSettings {
+            mode: 6,
+            cutoff: Parameter::Constant(0.513193),
+            resonance: Parameter::Constant(0.598424),
+        }
+        .compile(48000, &mut Vec::new());
+        let (mut state, mut cells) = (ProcessorState::default(), [[0.; 2]; CELLS]);
+        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+        let mut noise = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            ((seed >> 11) as f64 / (1u64 << 53) as f64 * 2. - 1.) * 0.65
+        };
+        let (mut input, mut output) = (Vec::new(), Vec::new());
+        for block_index in 0..(96_000 / super::super::BLOCK) {
+            let mut block = [[0.; super::super::BLOCK]; 2];
+            for i in 0..super::super::BLOCK {
+                let v = noise();
+                block[0][i] = v;
+                block[1][i] = v;
+            }
+            input.extend_from_slice(&block[0]);
+            ar.process(&mut state, &mut cells, &[], &mut block, super::super::BLOCK,
+                (block_index * super::super::BLOCK) as u64, [0.; 4]);
+            output.extend_from_slice(&block[0]);
+        }
+        let power = |v: &[f64], hz: f64| {
+            let (mut re, mut im) = (0., 0.);
+            for (n, x) in v.iter().enumerate().skip(48_000) {
+                let a = std::f64::consts::TAU * hz * n as f64 / 48000.;
+                re += x * a.cos();
+                im += x * a.sin();
+            }
+            re * re + im * im
+        };
+        for (hz, expected) in [(100., -1.6), (300., -3.1), (2000., -15.3), (5000., -32.0)] {
+            // Neighbouring bins average the single-bin estimate's noise.
+            let db = (0..9)
+                .map(|k| {
+                    let f = hz + (k as f64 - 4.) * 6.;
+                    10. * (power(&output, f) / power(&input, f)).log10()
+                })
+                .sum::<f64>()
+                / 9.;
+            assert!((db - expected).abs() < 0.8, "{hz} Hz: {db} dB vs Kontakt {expected}");
         }
     }
 }
