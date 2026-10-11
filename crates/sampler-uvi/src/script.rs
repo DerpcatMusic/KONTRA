@@ -31,36 +31,149 @@ const INIT_BUDGET: &str = "uvi_lua_init unsupported: initialization work budget 
 /// Where `require` finds a module: a bank's script members.
 pub trait Files {
     fn script(&self, module: &str) -> Option<String>;
+    fn image_size(&self, _path: &str) -> Option<sampler_ui_ir::Size> {
+        None
+    }
     fn script_path(&self, _module: &str) -> Option<String> {
+        None
+    }
+    /// The impulse response at `path` (bank-rooted when it starts with `/`,
+    /// else relative to the program), if the bank can supply one.
+    fn impulse(&self, _path: &str) -> Option<sampler_ir::Impulse> {
+        None
+    }
+    /// The convolution slot of the bus insert element `node`, if it has one.
+    fn convolver_slot(&self, _node: usize) -> Option<usize> {
         None
     }
 }
 
 impl<T: Files> Files for std::rc::Rc<T> {
+    fn image_size(&self, path: &str) -> Option<sampler_ui_ir::Size> {
+        (**self).image_size(path)
+    }
     fn script(&self, module: &str) -> Option<String> {
         (**self).script(module)
     }
     fn script_path(&self, module: &str) -> Option<String> {
         (**self).script_path(module)
     }
+    fn impulse(&self, path: &str) -> Option<sampler_ir::Impulse> {
+        (**self).impulse(path)
+    }
+    fn convolver_slot(&self, node: usize) -> Option<usize> {
+        (**self).convolver_slot(node)
+    }
+}
+
+/// Decodes a bank resource as an impulse response.
+pub type ImpulseSource = std::sync::Arc<dyn Fn(&str) -> Option<sampler_ir::Impulse> + Send + Sync>;
+
+/// A convolution built for the audio thread to swap in. The swap leaves the
+/// replaced processor inside, so the control side drops it, not the audio thread.
+#[derive(Clone)]
+pub struct ImpulseUpload(std::sync::Arc<std::sync::Mutex<Option<sampler_core::ConvolutionUpload>>>);
+
+impl ImpulseUpload {
+    /// Exchange convolution `slot` of `rt` with this one. Never blocks: a
+    /// contended upload is skipped.
+    pub fn swap(&self, rt: &mut sampler_core::Runtime, slot: usize) -> Result<(), sampler_core::Error> {
+        match self.0.try_lock().as_deref_mut() {
+            Ok(Some(upload)) => rt.swap_convolution(slot, upload),
+            _ => Err(sampler_core::Error::InvalidInput),
+        }
+    }
+}
+
+impl std::fmt::Debug for ImpulseUpload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ImpulseUpload")
+    }
+}
+
+impl PartialEq for ImpulseUpload {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 /// A bank's Lua members, by path.
 #[derive(Clone, Default)]
 pub struct Scripts {
-    files: Vec<(String, String)>,
+    files: std::sync::Arc<Vec<(String, String)>>,
+    impulses: Option<ImpulseSource>,
+    images: Option<std::sync::Arc<dyn Fn(&str) -> Option<sampler_ui_ir::Size> + Send + Sync>>,
+    /// Bus insert element (node id) to its convolution slot.
+    convolvers: std::collections::HashMap<usize, usize>,
 }
 
 impl Scripts {
+    pub(crate) fn with_images(
+        mut self,
+        source: impl Fn(&str) -> Option<Vec<u8>> + Send + Sync + 'static,
+    ) -> Self {
+        let cache = std::sync::Mutex::new(std::collections::HashMap::new());
+        self.images = Some(std::sync::Arc::new(move |path| {
+            let mut cache = cache.lock().ok()?;
+            *cache.entry(path.to_owned()).or_insert_with(|| {
+                source(path).as_deref().and_then(crate::resources::png_size)
+            })
+        }));
+        self
+    }
+    pub fn sources(&self) -> std::sync::Arc<Vec<(String, String)>> {
+        self.files.clone()
+    }
+
+    pub fn from_sources(files: std::sync::Arc<Vec<(String, String)>>) -> Self {
+        Self {
+            files,
+            ..Default::default()
+        }
+    }
+
     /// The paths of the scripts held, for surveys.
     #[doc(hidden)]
     pub fn names(&self) -> Vec<&str> {
         self.files.iter().map(|(p, _)| p.as_str()).collect()
     }
 
+    /// Let scripts load impulse responses from `source` into the convolvers `slots` names.
+    pub fn with_convolution(
+        mut self,
+        source: ImpulseSource,
+        slots: std::collections::HashMap<usize, usize>,
+    ) -> Self {
+        self.impulses = Some(source);
+        self.convolvers = slots;
+        self
+    }
+
     pub fn insert(&mut self, path: &str, source: String) {
-        self.files
+        std::sync::Arc::make_mut(&mut self.files)
             .push((path.to_lowercase().replace('\\', "/"), source));
+    }
+    /// `roots` and every member whose name `roots` (transitively) mentions: the
+    /// text a program's scripts can run, without executing it.
+    pub fn reachable(&self, roots: &str) -> String {
+        let mut text = roots.to_lowercase();
+        let mut taken = vec![false; self.files.len()];
+        loop {
+            let mut grew = false;
+            for (n, (path, source)) in self.files.iter().enumerate() {
+                let stem = path.rsplit('/').next().unwrap_or(path);
+                let stem = stem.strip_suffix(".lua").unwrap_or(stem);
+                if !taken[n] && !stem.is_empty() && text.contains(stem) {
+                    taken[n] = true;
+                    text.push('\n');
+                    text.push_str(&source.to_lowercase());
+                    grew = true;
+                }
+            }
+            if !grew {
+                return text;
+            }
+        }
     }
     fn member(&self, module: &str) -> Option<&(String, String)> {
         let module = module.to_lowercase().replace('\\', "/");
@@ -81,12 +194,21 @@ impl Scripts {
 }
 
 impl Files for Scripts {
+    fn image_size(&self, path: &str) -> Option<sampler_ui_ir::Size> {
+        self.images.as_ref()?(path)
+    }
     /// Exact bank members win; relative slash/dot aliases require identical source.
     fn script(&self, module: &str) -> Option<String> {
         self.member(module).map(|(_, source)| source.clone())
     }
     fn script_path(&self, module: &str) -> Option<String> {
         self.member(module).map(|(path, _)| path.clone())
+    }
+    fn impulse(&self, path: &str) -> Option<sampler_ir::Impulse> {
+        self.impulses.as_ref()?(path)
+    }
+    fn convolver_slot(&self, node: usize) -> Option<usize> {
+        self.convolvers.get(&node).copied()
     }
 }
 
@@ -223,6 +345,11 @@ pub enum Command {
     EngineParameter {
         address: sampler_core::EngineParameterAddress,
         value: i32,
+    },
+    /// A rebuilt bus convolver (`Time`, `loadImpulse`, ...) for convolution `slot`.
+    Impulse {
+        slot: usize,
+        upload: ImpulseUpload,
     },
     Play(Play),
     Release {
@@ -376,6 +503,11 @@ pub enum FaultCategory {
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FaultCounts {
     pub first: Option<FaultCategory>,
+    /// First error text per phase (bounded), so a report can say why, not only which category.
+    #[serde(default)]
+    pub init_message: Option<String>,
+    #[serde(default)]
+    pub runtime_message: Option<String>,
     #[serde(default)]
     pub setter_type_mismatches: Vec<SetterTypeFinding>,
     pub init: BTreeMap<FaultCategory, u64>,
@@ -426,6 +558,7 @@ struct Shared {
     scan: RefCell<ScanFaults>,
     initializing: Cell<bool>,
     faults: RefCell<FaultCounts>,
+    inspection: RefCell<Option<crate::parity::Inspection>>,
     finding_revision: Cell<u64>,
     #[cfg(feature = "scan")]
     key_declarations: RefCell<BTreeMap<u8, u8>>,
@@ -450,6 +583,8 @@ struct Shared {
     scopes: RefCell<Vec<Option<Scope>>>,
     nodes: RefCell<Vec<(usize, bool)>>,
     kinds: RefCell<Vec<String>>,
+    /// Per element: the catalog fields with a DSP lane.
+    live: RefCell<Vec<Vec<&'static str>>>,
     /// Globals the scripts assign somewhere: reading one that is still unset
     /// answers nil, as in Lua; only unknown API names answer a stub.
     assigned: RefCell<std::collections::HashSet<String>>,
@@ -458,6 +593,10 @@ struct Shared {
     /// The preset's saved widget values and table data (ScriptProcessor
     /// attributes and ScriptData), by widget name.
     saved: RefCell<BTreeMap<String, String>>,
+    /// Each scripted bus convolver's source impulse, by element node.
+    impulses: RefCell<std::collections::HashMap<usize, sampler_ir::Impulse>>,
+    /// Uploads sent to the audio thread; dropped here once it has let go.
+    retired: RefCell<Vec<ImpulseUpload>>,
     files: Box<dyn Files>,
     config: Config,
     tempo: Cell<f64>,
@@ -547,6 +686,9 @@ impl Shared {
         self.finding_revision
             .set(self.finding_revision.get().saturating_add(1));
         if matches!(feature, "lua error" | "lua UI callback") {
+            if let Some(inspection) = self.inspection.borrow_mut().as_mut() {
+                inspection.fault(value);
+            }
             let category = if value.contains("budget exceeded") {
                 FaultCategory::Budget
             } else if feature == "lua UI callback" {
@@ -563,6 +705,14 @@ impl Shared {
             };
             let count = counts.entry(category).or_default();
             *count = count.saturating_add(1);
+            let message = if self.initializing.get() {
+                &mut faults.init_message
+            } else {
+                &mut faults.runtime_message
+            };
+            if message.is_none() {
+                *message = Some(value.chars().take(200).collect());
+            }
         }
         #[cfg(feature = "scan")]
         if matches!(feature, "lua error" | "lua UI callback") {
@@ -653,6 +803,92 @@ impl Shared {
         self.ids.get()
     }
 
+    /// Rebuild element `id`'s bus convolver from its parameters and source
+    /// impulse (`path` replaces the source) and queue the swap. False when the
+    /// element has no convolution slot or the impulse cannot be had.
+    fn rebuild_impulse(&self, id: usize, path: Option<&str>) -> bool {
+        let Some(node) = self.nodes.borrow().get(id).map(|n| n.0) else {
+            return false;
+        };
+        let Some(slot) = self.files.convolver_slot(node) else {
+            self.find("lua loadImpulse on an insert without a bus convolution", "");
+            return false;
+        };
+        let kind = self.kinds.borrow().get(id).cloned().unwrap_or_default();
+        let read = |name: &str| -> f64 {
+            let params = self.params.borrow();
+            let retained = params.get(id).and_then(|p| p.iter().find(|(k, _)| k == name));
+            retained
+                .and_then(|(_, v)| match v.as_str() {
+                    "true" => Some(1.0),
+                    "false" => Some(0.0),
+                    v => v.parse().ok(),
+                })
+                .or_else(|| {
+                    parameters::definitions(&kind)
+                        .iter()
+                        .find(|p| p.name == name)
+                        .map(|p| p.default)
+                })
+                .unwrap_or(0.0)
+        };
+        let source = match path {
+            Some(path) => self.files.impulse(path),
+            None if self.impulses.borrow().contains_key(&node) => None,
+            None => {
+                let named = self.params.borrow().get(id).and_then(|p| {
+                    p.iter().find(|(k, _)| k == "SamplePath").map(|(_, v)| v.clone())
+                });
+                match named.filter(|p| !p.is_empty()) {
+                    Some(path) => self.files.impulse(&path),
+                    None => Some(sampler_ir::Impulse {
+                        rate: 48000,
+                        left: vec![1.0],
+                        right: vec![1.0],
+                        asset: None,
+                    }),
+                }
+            }
+        };
+        let mut impulses = self.impulses.borrow_mut();
+        match source {
+            Some(source) => {
+                impulses.insert(node, source);
+            }
+            None if path.is_some() || !impulses.contains_key(&node) => return false,
+            None => {}
+        }
+        let base = &impulses[&node];
+        let mut shape = crate::reverb::neutral();
+        shape.normalize = read("NormalizePower") != 0.0;
+        if kind == "SampledReverb" {
+            shape.sampled_reverb = true;
+            shape.time = read("Time");
+            shape.damping_low = read("DampingLow");
+            shape.damping_high = read("DampingHigh");
+            shape.pre_delay_ms = read("PreDelay");
+            shape.width = read("Width");
+        }
+        let (left, right) = crate::reverb::shape(base.rate, &base.left, &base.right, &shape);
+        let shaped = sampler_ir::Impulse { rate: base.rate, left, right, asset: None };
+        drop(impulses);
+        let Ok(upload) = sampler_core::ConvolutionUpload::from_ir(
+            &shaped,
+            self.config.rate as u32,
+            read("Dry"),
+            read("Wet"),
+        ) else {
+            return false;
+        };
+        let upload = ImpulseUpload(std::sync::Arc::new(std::sync::Mutex::new(Some(upload))));
+        let mut retired = self.retired.borrow_mut();
+        // Uploads the audio thread has let go of hold the replaced processors.
+        retired.retain(|u| std::sync::Arc::strong_count(&u.0) > 1);
+        retired.push(upload.clone());
+        drop(retired);
+        self.command(Command::Impulse { slot, upload })
+    }
+
     fn command(&self, command: Command) -> bool {
         let mut commands = self.commands.borrow_mut();
         if commands.len() < 1 << 16 {
@@ -665,6 +901,45 @@ impl Shared {
         }
     }
 }
+
+/// A resource path as the calling script means it: relative to that script's
+/// directory in its bank, written bank-rooted. Volume-rooted and empty paths
+/// stay as they are.
+fn script_relative(lua: &Lua, path: String) -> String {
+    // v1 4bffbb18:src/uvi/host.rs retains empty artwork/font assignments.
+    // They clear a resource; resolving them to a module directory creates a phantom asset.
+    if path.is_empty() || path.starts_with(['/', '$']) {
+        return path;
+    }
+    for level in 0..32 {
+        let Some(source) = lua.inspect_stack(level, |d| d.source().source.map(|s| s.into_owned()))
+        else {
+            break;
+        };
+        if let Some(source) = source {
+            let source = source.trim_start_matches('@');
+            if source.ends_with(".lua")
+                && let Some((base, _)) = source.rsplit_once('/')
+            {
+                return format!("/{base}/{path}");
+            }
+        }
+    }
+    path
+}
+
+/// The catalog fields that shape a bus convolver's impulse response.
+pub(crate) const IMPULSE_FIELDS: [&str; 9] = [
+    "Dry",
+    "Wet",
+    "Time",
+    "DampingLow",
+    "DampingHigh",
+    "PreDelay",
+    "Width",
+    "NormalizePower",
+    "UseWindowAtOriginalSize",
+];
 
 pub struct ScriptHost {
     lua: Lua,
@@ -719,7 +994,18 @@ struct Tree {
     /// Per element: its XML node and whether it is an insert.
     nodes: Vec<(usize, bool)>,
     kinds: Vec<String>,
+    live: Vec<Vec<&'static str>>,
     layers: u32,
+}
+
+/// The Script Event Modulation command a promoted ConstantModulation's fields
+/// (Value, Style, and the `ScriptLive` id) stand for.
+fn constant_command(params: &[(String, String)], glide_ms: f64) -> Option<Command> {
+    let read = |n: &str| params.iter().find(|(k, _)| k == n).and_then(|(_, v)| v.parse::<f64>().ok());
+    let id = read("ScriptLive")? as u16;
+    let value = read("Value").unwrap_or(0.0).clamp(0.0, 1.0);
+    let value = if read("Style") == Some(1.0) { f64::from(u8::from(value > 0.5)) } else { value };
+    Some(Command::Modulation { id, value, glide_ms, voice: None, at_ms: 0.0 })
 }
 
 fn element(
@@ -749,6 +1035,12 @@ fn element(
     );
     tree.nodes.push((node.id().get_usize(), insert));
     tree.kinds.push(node.tag_name().name().to_owned());
+    tree.live.push(crate::engine_parameters::live_names(node));
+    if node.has_tag_name("ConstantModulation")
+        && let Some(initial) = constant_command(&tree.params[id], 0.0)
+    {
+        shared.command(initial);
+    }
     tree.scopes.push(match node.tag_name().name() {
         "Program" => Some(Scope::Program),
         "Layer" => {
@@ -925,6 +1217,27 @@ impl ScriptHost {
         config: Config,
         state: Option<&UiState>,
     ) -> Result<Self, String> {
+        Self::create(xml, files, config, state, false)
+    }
+
+    /// Inspector-only host: real Luau statement-line coverage, including init.
+    /// Ordinary constructors compile without coverage instructions. Inspection
+    /// lasts for this host's lifetime; recreate normally to turn it off.
+    pub fn new_inspected(
+        xml: &str,
+        files: impl Files + 'static,
+        config: Config,
+    ) -> Result<Self, String> {
+        Self::create(xml, files, config, None, true)
+    }
+
+    fn create(
+        xml: &str,
+        files: impl Files + 'static,
+        config: Config,
+        state: Option<&UiState>,
+        inspect: bool,
+    ) -> Result<Self, String> {
         let options = roxmltree::ParsingOptions {
             nodes_limit: 4_000_000,
             ..Default::default()
@@ -963,6 +1276,7 @@ impl ScriptHost {
             scan: RefCell::new(ScanFaults::default()),
             initializing: Cell::new(true),
             faults: RefCell::new(FaultCounts::default()),
+            inspection: RefCell::new(inspect.then(crate::parity::Inspection::default)),
             finding_revision: Cell::new(0),
             #[cfg(feature = "scan")]
             key_declarations: RefCell::new(BTreeMap::new()),
@@ -986,9 +1300,12 @@ impl ScriptHost {
             scopes: RefCell::new(Vec::new()),
             nodes: RefCell::new(Vec::new()),
             kinds: RefCell::new(Vec::new()),
+            live: RefCell::new(Vec::new()),
             assigned: RefCell::new(Default::default()),
             called: RefCell::new(Default::default()),
             saved: RefCell::new(BTreeMap::new()),
+            impulses: RefCell::new(Default::default()),
+            retired: RefCell::new(Vec::new()),
             files: Box::new(files),
             config,
             tempo: Cell::new(120.0),
@@ -1060,6 +1377,7 @@ impl ScriptHost {
             scopes: Vec::new(),
             nodes: Vec::new(),
             kinds: Vec::new(),
+            live: Vec::new(),
             layers: 0,
         };
         // Port v1 host.rs's shared metatable handles outside the object loop.
@@ -1076,22 +1394,34 @@ impl ScriptHost {
             &class,
             &list_class,
         )?;
-        // The part the program sits in (MidiChannel, MidiInput...): inert.
-        let part = self.lua.create_table()?;
-        part.raw_set("__id", tree.params.len())?;
-        tree.params.push(Vec::new());
-        tree.scopes.push(None);
-        tree.nodes.push((usize::MAX, false));
-        tree.kinds.push("Part".into());
-        part.raw_set("type", "Part")?;
-        part.raw_set("name", "")?;
-        part.set_metatable(Some(class))?;
+        // The part the program sits in (MidiChannel, MidiInput...). Its level and
+        // expression controllers are real connections on Gain, which scripts such as
+        // hornScript3 query (and bypass) unguarded; the part itself stays inert.
+        let part_xml = roxmltree::Document::parse(
+            r#"<Part Name="" Gain="1" Pan="0" Bypass="0"><Connections>
+              <SignalConnection Name="SignalConnection 0" Ratio="1" Source="@MIDI CC 7" Destination="Gain" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+              <SignalConnection Name="SignalConnection 1" Ratio="1" Source="@MIDI CC 11" Destination="Gain" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+            </Connections></Part>"#,
+        )
+        .map_err(mlua::Error::external)?;
+        let part = element(
+            &self.lua,
+            &mut tree,
+            part_xml.root_element(),
+            None,
+            false,
+            &self.shared,
+            1,
+            &class,
+            &list_class,
+        )?;
         root.raw_set("parent", part.clone())?;
         root.raw_set("part", part)?;
         *self.shared.params.borrow_mut() = tree.params;
         *self.shared.scopes.borrow_mut() = tree.scopes;
         *self.shared.nodes.borrow_mut() = tree.nodes;
         *self.shared.kinds.borrow_mut() = tree.kinds;
+        *self.shared.live.borrow_mut() = tree.live;
         self.lua.globals().raw_set("Program", root)
     }
 
@@ -1117,7 +1447,36 @@ impl ScriptHost {
         // Natives the prelude wraps (`__native`) and the engine API (globals).
         let native = lua.create_table()?;
         async_data::install(lua, shared)?;
-        for name in ["loadSample", "loadImpulse"] {
+        let s = shared.clone();
+        globals.raw_set(
+            "loadImpulse",
+            lua.create_function(move |lua, args: Variadic<Value>| {
+                let id = match args.first() {
+                    Some(Value::Table(element)) => element.raw_get::<Option<usize>>("__id")?,
+                    _ => None,
+                };
+                let path = match args.get(1) {
+                    Some(Value::String(path)) => Some(script_relative(lua, path.to_str()?.to_owned())),
+                    _ => None,
+                };
+                let loaded = id
+                    .zip(path)
+                    .is_some_and(|(id, path)| s.rebuild_impulse(id, Some(&path)));
+                // A response the bank cannot supply fails the task, as in UVI.
+                if let Some(Value::Function(callback)) =
+                    args.iter().find(|v| matches!(v, Value::Function(_)))
+                {
+                    let task = lua.create_table()?;
+                    task.set("success", loaded)?;
+                    let thread = lua.create_thread(callback.clone())?;
+                    s.deferred
+                        .borrow_mut()
+                        .push((thread, MultiValue::from_vec(vec![Value::Table(task)]), None));
+                }
+                Ok(())
+            })?,
+        )?;
+        for name in ["loadSample"] {
             let s = shared.clone();
             globals.raw_set(
                 name,
@@ -1151,29 +1510,7 @@ impl ScriptHost {
         )?;
         native.set(
             "resourcePath",
-            lua.create_function(|lua, path: String| {
-                // v1 4bffbb18:src/uvi/host.rs retains empty artwork/font assignments.
-                // They clear a resource; resolving them to a module directory creates a phantom asset.
-                if path.is_empty() || path.starts_with(['/', '$']) {
-                    return Ok(path);
-                }
-                for level in 0..32 {
-                    let Some(source) =
-                        lua.inspect_stack(level, |d| d.source().source.map(|s| s.into_owned()))
-                    else {
-                        break;
-                    };
-                    if let Some(source) = source {
-                        let source = source.trim_start_matches('@');
-                        if source.ends_with(".lua")
-                            && let Some((base, _)) = source.rsplit_once('/')
-                        {
-                            return Ok(format!("/{base}/{path}"));
-                        }
-                    }
-                }
-                Ok(path)
-            })?,
+            lua.create_function(|lua, path: String| Ok(script_relative(lua, path)))?,
         )?;
         let s = shared.clone();
         native.set(
@@ -1412,31 +1749,100 @@ impl ScriptHost {
                 let value = match value {
                     Value::Integer(n) => n as f64,
                     Value::Number(n) => n,
+                    Value::Boolean(b) => f64::from(b),
                     _ => return Ok(None),
                 };
-                let processor = s
-                    .nodes
-                    .borrow()
-                    .get(id)
-                    .copied()
-                    .filter(|(_, insert)| *insert)
-                    .and_then(|(node, _)| {
-                        crate::engine_parameters::binding(
-                            node,
-                            s.kinds.borrow().get(id)?.as_str(),
-                            &name,
-                        )
-                    });
-                if let Some(binding) = processor {
-                    let Ok(value) = binding.law.normalized_value(value) else {
-                        return Ok(None);
-                    };
-                    return Ok(s
-                        .command(Command::EngineParameter {
-                            address: binding.address,
-                            value,
+                // What the translator gave a DSP lane (`engine_parameters::live_names`).
+                let live = s.live.borrow().get(id).cloned().unwrap_or_default();
+                let node = s.nodes.borrow().get(id).map(|(node, _)| *node);
+                let kind = s.kinds.borrow().get(id).cloned().unwrap_or_default();
+                if matches!(kind.as_str(), "Convolver" | "SampledReverb")
+                    && IMPULSE_FIELDS.contains(&name.as_str())
+                    && node.is_some_and(|n| s.files.convolver_slot(n).is_some())
+                {
+                    // The impulse is built from the retained fields.
+                    if let Some(params) = s.params.borrow_mut().get_mut(id) {
+                        match params.iter_mut().find(|(k, _)| *k == name) {
+                            Some((_, v)) => *v = value.to_string(),
+                            None => params.push((name.clone(), value.to_string())),
+                        }
+                    }
+                    return Ok(s.rebuild_impulse(id, None).then_some(true));
+                }
+                let engine = |name: &str, value: f64| {
+                    let (name, value) = {
+                        let params = s.params.borrow();
+                        crate::engine_parameters::effective(&kind, name, value, |n| {
+                            params
+                                .get(id)?
+                                .iter()
+                                .find(|(k, _)| k == n)
+                                .and_then(|(_, v)| v.parse().ok())
                         })
-                        .then_some(true));
+                    };
+                    let name = name.as_str();
+                    let binding = crate::engine_parameters::binding(node?, &kind, name)?;
+                    Some(Command::EngineParameter {
+                        address: binding.address,
+                        value: binding.law.normalized_value(value).ok()?,
+                    })
+                };
+                let command = if name == "Bypass" && live.contains(&"Bypass") {
+                    // The insert's Mix: a core slot control.
+                    sampler_core::engine_parameter_id("ENGINE_PAR_EFFECT_BYPASS").zip(node).map(
+                        |(parameter, node)| Command::EngineParameter {
+                            address: sampler_core::EngineParameterAddress {
+                                parameter,
+                                group: -1,
+                                slot: -1,
+                                generic: i32::try_from(node).unwrap_or(-1),
+                            },
+                            value: i32::from(value != 0.0),
+                        },
+                    )
+                } else if kind == "AuxEffect"
+                    && live.contains(&"Gain")
+                    && (name == "Gain" || name == "Bypass" && live.contains(&"BypassGain"))
+                {
+                    // A rack chain's bypass is its gain at zero: send the
+                    // effective gain whichever of the two was written.
+                    let mut params = s.params.borrow_mut();
+                    let retained = params.get_mut(id).map(|p| {
+                        match p.iter_mut().find(|(k, _)| *k == name) {
+                            Some((_, v)) => *v = value.to_string(),
+                            None => p.push((name.clone(), value.to_string())),
+                        }
+                        let read = |n: &str, d: f64| {
+                            p.iter()
+                                .find(|(k, _)| k == n)
+                                .and_then(|(_, v)| v.parse().ok())
+                                .unwrap_or(d)
+                        };
+                        let bypassed = live.contains(&"BypassGain") && read("Bypass", 0.) != 0.;
+                        if bypassed { 0. } else { read("Gain", 1.) }
+                    });
+                    drop(params);
+                    live.contains(&"Gain")
+                        .then_some(retained)
+                        .flatten()
+                        .and_then(|effective| engine("Gain", effective))
+                } else if kind == "ConstantModulation" && live.contains(&name.as_str()) {
+                    // A promoted constant: retain the field, send the source.
+                    let mut params = s.params.borrow_mut();
+                    params.get_mut(id).and_then(|p| {
+                        match p.iter_mut().find(|(k, _)| *k == name) {
+                            Some((_, v)) => *v = value.to_string(),
+                            None => p.push((name.clone(), value.to_string())),
+                        }
+                        constant_command(p, 20.0)
+                    })
+                } else if live.contains(&name.as_str()) {
+                    engine(&name, value)
+                } else {
+                    None
+                };
+                if live.contains(&name.as_str()) || command.is_some() {
+                    return Ok(command.and_then(|c| s.command(c).then_some(true)));
                 }
                 let Some(scope) = s.scopes.borrow().get(id).copied().flatten() else {
                     return Ok(None);
@@ -1484,6 +1890,22 @@ impl ScriptHost {
                 #[cfg(feature = "scan")]
                 let _timer = s.api_timer("uvi_lua_api_get_param");
                 let kinds = s.kinds.borrow();
+                if kinds.get(id).is_some_and(|kind| kind == "StepEnvelope")
+                    && let Some(index) = name.strip_prefix("Level").and_then(|s| s.parse::<usize>().ok())
+                    && index < 128
+                    && name == format!("Level{index}")
+                {
+                    // UVI Element.getParameter / Step Envelope; native 0x141150e40
+                    // registers 128 float levels (getter 0x141153110), independently of NumSteps.
+                    let params = s.params.borrow();
+                    let saved = params.get(id).and_then(|p| p.iter().find(|(k, _)| k == "Levels"));
+                    let value = saved
+                        .and_then(|(_, levels)| levels.split_whitespace().nth(index))
+                        .and_then(|v| v.replace(',', ".").parse::<f32>().ok())
+                        .filter(|v| v.is_finite())
+                        .unwrap_or(if matches!(index, 0 | 4 | 8 | 10 | 12) { 1. } else { 0. });
+                    return Ok(Value::Number(f64::from(value)));
+                }
                 let definition = parameters::definitions(kinds.get(id).map_or("", String::as_str))
                     .iter()
                     .find(|p| p.name == name);
@@ -1554,13 +1976,26 @@ impl ScriptHost {
                     let _span = Span::new("uvi_lua_module_names");
                     s.note_assigned(&source.to_string_lossy());
                 }
-                let name = s.files.script_path(&name).unwrap_or(name);
-                match lua
-                    .load(source.as_bytes().as_ref())
-                    .set_name(name)
-                    .into_function()
-                {
-                    Ok(f) => Ok((Some(f), None)),
+                let id = format!("uvi:module:{name}");
+                let chunk_name = s.files.script_path(&name).unwrap_or(name);
+                let bytes = source.as_bytes();
+                let mut chunk = lua.load(bytes.as_ref()).set_name(&chunk_name);
+                if s.inspection.borrow().is_some() {
+                    chunk =
+                        chunk.set_compiler(mlua::chunk::Compiler::default().set_coverage_level(1));
+                }
+                match chunk.into_function() {
+                    Ok(f) => {
+                        if let Some(inspection) = s.inspection.borrow_mut().as_mut() {
+                            inspection.register(
+                                id,
+                                chunk_name,
+                                &source.to_string_lossy(),
+                                f.clone(),
+                            );
+                        }
+                        Ok((Some(f), None))
+                    }
                     Err(e) => Ok((None, Some(lua_error(e)))),
                 }
             })?,
@@ -2005,11 +2440,24 @@ impl ScriptHost {
                 .arm(self.shared.config.load, self.shared.config.load_work);
             let function = {
                 let _span = Span::new("uvi_lua_root_compile");
-                self.lua
-                    .load(&text)
-                    .set_name("script")
-                    .into_function()
-                    .map_err(lua_error)?
+                let id = crate::parity::script_id(script);
+                // Keep source names path-free: relative resources are resolved
+                // from embedded module paths, not report ids.
+                let chunk_name = if self.shared.inspection.borrow().is_some() {
+                    format!("uvi-script-{}", script.id().get_usize())
+                } else {
+                    "script".into()
+                };
+                let mut chunk = self.lua.load(&text).set_name(&chunk_name);
+                if self.shared.inspection.borrow().is_some() {
+                    chunk =
+                        chunk.set_compiler(mlua::chunk::Compiler::default().set_coverage_level(1));
+                }
+                let function = chunk.into_function().map_err(lua_error)?;
+                if let Some(inspection) = self.shared.inspection.borrow_mut().as_mut() {
+                    inspection.register(id, chunk_name, &text, function.clone());
+                }
+                function
             };
             let thread = self.lua.create_thread(function).map_err(lua_error)?;
             {
@@ -2361,9 +2809,12 @@ impl ScriptHost {
             let Ok(id) = element.raw_get::<usize>("__id") else {
                 continue;
             };
-            let Some(&(node, true)) = nodes.get(id) else {
+            let Some(&(node, insert)) = nodes.get(id) else {
                 continue;
             };
+            if !insert && !self.shared.live.borrow().get(id).is_some_and(|l| !l.is_empty()) {
+                continue;
+            }
             let Ok(set) = element.raw_get::<Table>("__set") else {
                 continue;
             };
@@ -2397,6 +2848,16 @@ impl ScriptHost {
 
     pub fn fault_counts(&self) -> FaultCounts {
         self.shared.faults.borrow().clone()
+    }
+
+    /// Cumulative real per-line counts and bounded runtime/init faults. Empty
+    /// for ordinary hosts. Offsets point to the first byte of each source line.
+    pub fn coverage(&self) -> Vec<sampler_parity::Coverage> {
+        self.shared
+            .inspection
+            .borrow()
+            .as_ref()
+            .map_or_else(Vec::new, |i| i.snapshots())
     }
     pub fn finding_revision(&self) -> u64 {
         self.shared.finding_revision.get()
@@ -2517,6 +2978,27 @@ fn parse_play(shared: &Shared, args: &[Value]) -> Play {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn image_resource_headers_are_cached_across_snapshots() {
+        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+        let reads = Arc::new(AtomicUsize::new(0));
+        let count = reads.clone();
+        let files = Scripts::default().with_images(move |path| {
+            count.fetch_add(1, Ordering::Relaxed);
+            if path != "overlay.png" { return None; }
+            let mut bytes = vec![0; 33];
+            bytes[..16].copy_from_slice(b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR");
+            bytes[16..20].copy_from_slice(&720u32.to_be_bytes());
+            bytes[20..24].copy_from_slice(&18u32.to_be_bytes());
+            Some(bytes)
+        });
+        let host = ScriptHost::new("<UVI4><Program><EventProcessors><ScriptProcessor><script>Image('overlay.png'); Image('overlay.png'); Image('missing.png')</script></ScriptProcessor></EventProcessors></Program></UVI4>", files, Config::default()).unwrap();
+        for _ in 0..2 {
+            assert_eq!(host.interface().widgets[0].rect.width, 720);
+        }
+        assert_eq!(reads.load(Ordering::Relaxed), 2, "cache successes and absence by resource path");
+    }
+
+    #[test]
     fn finite_initialization_survives_expired_elapsed_budget() {
         let xml = "<UVI4><Program><EventProcessors><ScriptProcessor><script>function onInit() for n=1,100 do assert(n&gt;0) end; initialized=true end</script></ScriptProcessor></EventProcessors></Program></UVI4>";
         let host = super::ScriptHost::new(
@@ -2554,6 +3036,18 @@ mod tests {
 
     #[test]
     fn graph_node_and_depth_work_are_bounded() {
+        // roxmltree parses nested elements recursively, and its debug frames
+        // overflow the test thread's 2 MiB at this depth (gdb: the overflow is
+        // inside `roxmltree::tokenizer::parse_element`, before any host code).
+        std::thread::Builder::new()
+            .stack_size(32 << 20)
+            .spawn(graph_node_and_depth_bounds)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    fn graph_node_and_depth_bounds() {
         let h = super::ScriptHost::new("<UVI4><Program/></UVI4>", (), super::Config::default())
             .unwrap();
         h.shared.graph_nodes.set(1 << 18);

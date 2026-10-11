@@ -67,6 +67,8 @@ local kinds = {
   "ParamKnob", "ParamSlider", "ParamOnOffButton", "ParamMenu", "ParamNumBox",
   "ParameterValue",
 }
+local kind_names = {}
+for _, kind in ipairs(kinds) do kind_names[kind] = true end
 Mapper={Linear=0,Exponential=1,QuinticRoot=2,QuarticRoot=3,CubeRoot=4,SquareRoot=5,Quadratic=6,Cubic=7,Quartic=8,Quintic=9}
 local mapper_names={[0]="Linear","Exponential","QuinticRoot","QuarticRoot","CubeRoot","SquareRoot","Quadratic","Cubic","Quartic","Quintic"}
 FileFormat = {Audio="Audio", Midi="Midi", All="All", Data="Data"}
@@ -96,9 +98,12 @@ function methods.setValue(w, v, arg, callChanged)
   if d.kind == "Table" then
     if rawtype(v) ~= 'number' or v ~= v or math.abs(v) == math.huge then error('invalid table index') end
     v = v < 0 and math.ceil(v) or math.floor(v)
-    -- v1/Workstation-observed, Falcon unverified: boundary writes are
-    -- ignored; programmatic values are independent of the display range.
-    if v < 1 or v > d.length then report('widget_index_out_of_range',''); return end
+    -- v1/Workstation-observed, Falcon unverified: boundary writes are ignored;
+    -- the off-by-one ends (0, length+1) of an authored loop are silent.
+    if v < 1 or v > d.length then
+      if v ~= 0 and v ~= d.length + 1 then report('widget_index_out_of_range', string.format('%s: index %s, valid 1..%d', tostring(d.name), tostring(v), d.length)) end
+      return
+    end
     if rawtype(arg) ~= 'number' or arg ~= arg or math.abs(arg) == math.huge then error('invalid table value') end
     if d.integer then arg = arg < 0 and math.ceil(arg) or math.floor(arg) end
     local old = d.values[v]
@@ -177,18 +182,18 @@ widget_mt.__index = function(w, k)
   if k == "length" and d.items then return #d.items end
   if k == "value" and d.element then return d.element:getParameter(d.parameter) end
   if d[k] ~= nil then return d[k] end
-  for _, kind in ipairs(kinds) do
-    if kind == k then return function(self, ...)
-      local parent = data(self)
-      if parent.kind ~= "Panel" and parent.kind ~= "Viewport" then error("Only UVI containers can create child widgets") end
-      local child = widget(k, ...)
-      if not child.parent then
-        child.parent = self
-        table.insert(parent.children, child)
-      end
-      return child
-    end end
-  end
+  -- Every absent optional property (a UI snapshot reads ~70 per widget) lands
+  -- here: a set lookup, not a scan of the kinds.
+  if kind_names[k] then return function(self, ...)
+    local parent = data(self)
+    if parent.kind ~= "Panel" and parent.kind ~= "Viewport" then error("Only UVI containers can create child widgets") end
+    local child = widget(k, ...)
+    if not child.parent then
+      child.parent = self
+      table.insert(parent.children, child)
+    end
+    return child
+  end end
   -- Optional properties are nil; unknown method calls fail visibly instead of
   -- inventing truthy values that change a script's control flow.
   return nil
@@ -201,8 +206,14 @@ widget_mt.__newindex = function(w, k, v)
   if k == "value" or k == "selected" then
     if v ~= w.value then methods.setValue(w, v) end
     return
-  elseif k == "bounds" then d.x,d.y,d.width,d.height = v[1],v[2],v[3],v[4]
-  elseif k == "size" then d.width,d.height = v[1],v[2]
+  elseif k == "bounds" then
+    d.x,d.y,d.width,d.height = v[1],v[2],v[3],v[4]
+    d.width_set,d.height_set = true,true
+  elseif k == "size" then
+    d.width,d.height = v[1],v[2]
+    d.width_set,d.height_set = true,true
+  elseif k == "width" then d.width,d.width_set = v,true
+  elseif k == "height" then d.height,d.height_set = v,true
   elseif k == "position" or k == "pos" then d.x,d.y = v[1],v[2]
   elseif k == "parent" then d.parent,d.parent_id = v,v and rawget(v,"id")
   else d[k] = v end
@@ -219,7 +230,7 @@ widget = function(kind, ...)
   local size = sizes[basekind] or {100,100}
   local d = {kind=kind,name=name or named.name or kind,value=value or 0,min=lo or 0,max=hi or 1,
     default=value or 0,integer=integer==true,x=0,y=0,width=size[1],height=size[2],alpha=1,visible=true,enabled=true,
-    persistent=true,exported=false,children={},text="",tooltip=name or "",displayName=name or "",showLabel=true,
+    persistent=true,exported=false,children={},text="",tooltip=name or "",displayName=name or "",
     interceptsMouseClicks=true, mapper="Linear",unit="Generic"}
   local w = setmetatable({__data=d}, widget_mt)
   if kind == "Table" then

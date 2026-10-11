@@ -229,6 +229,11 @@ impl Check<'_> {
                     }
                 }
                 Processor::Rectify(_) => {}
+                Processor::Saturation(shape) | Processor::LiveSaturation { shape, .. } => self.within(f64::from(shape), -1.0..=1.0, "saturation shape")?,
+                Processor::Distortion { drive, damping, .. } | Processor::LiveDistortion { drive, damping, .. } => {
+                    self.within(f64::from(drive), 0.0..=1.0, "distortion drive")?;
+                    self.within(f64::from(damping), 0.0..=1.0, "distortion damping")?;
+                }
                 Processor::SendReturnGate { .. } => {}
                 Processor::Branch { gain, .. } => self.gain(gain, "branch gain")?,
                 Processor::Daft(d) => {
@@ -236,10 +241,26 @@ impl Check<'_> {
                     self.within(d.cutoff, 0.0..=1.0, "daft cutoff")?;
                     self.within(d.resonance, 0.0..=1.0, "daft resonance")?;
                 }
+                Processor::Formant(knobs) => {
+                    for knob in knobs { self.within(f64::from(knob), 0.0..=1.0, "formant control")?; }
+                }                Processor::LegacyPhaser { depth, feedback, phase, speed, period_unit } => {
+                    for knob in [depth, feedback, phase] { self.within(f64::from(knob), 0.0..=1.0, "phaser control")?; }
+                    self.within(f64::from(speed), 0.0..=f64::MAX, "phaser speed")?;
+                    if let Some(unit) = period_unit { self.within(f64::from(unit), f64::MIN_POSITIVE..=f64::MAX, "phaser period")?; }
+                }
+                Processor::Phaser(knobs) => {
+                    for knob in knobs { self.within(f64::from(knob), 0.0..=1.0, "phaser control")?; }
+                }
+                Processor::Ar(d) => {
+                    self.within(f64::from(d.mode), 0.0..=8.0, "ar mode")?;
+                    self.within(d.cutoff, 0.0..=1.0, "ar cutoff")?;
+                    self.within(d.resonance, 0.0..=1.0, "ar resonance")?;
+                }
                 Processor::LadderLP4(d) => {
                     self.within(d.gain, -1.0..=1.0, "ladder gain")?;
                     self.within(d.cutoff, 0.0..=1.0, "ladder cutoff")?;
                     self.within(d.resonance, 0.0..=1.0, "ladder resonance")?;
+                    self.within(f64::from(d.taps), 1.0..=12.0, "ladder taps")?;
                 }
                 Processor::Reverb(r) => {
                     for (v, field) in [
@@ -255,6 +276,12 @@ impl Check<'_> {
                     ] {
                         self.finite(v, field)?;
                     }
+                }
+                Processor::KontaktEnhancedCompressor { knobs: [threshold, ratio, attack, release], .. } => {
+                    self.finite(f64::from(threshold), "compressor threshold")?;
+                    self.within(f64::from(ratio), 0.0..=1.0, "compressor ratio")?;
+                    self.within(f64::from(attack), f64::MIN_POSITIVE..=f64::MAX, "compressor attack")?;
+                    self.within(f64::from(release), 0.0..=f64::MAX, "compressor release")?;
                 }
                 Processor::Compressor(c) => {
                     self.finite(c.threshold_db, "compressor threshold")?;
@@ -411,6 +438,9 @@ impl Instrument {
                 }
                 _ => Vec::new(),
             };
+            if let Some(crate::Span::Time(time)) = zone.playback.loop_control_crossfade {
+                check.time(time, "loop control crossfade")?;
+            }
             for range in ranges {
                 check.range(range.start, range.end, "loop")?;
                 if let crate::Span::Time(time) = range.crossfade {
@@ -479,7 +509,18 @@ impl Instrument {
                     })?;
                 }
                 Target::Control(control) => check.exists(Reference::Control(control.0))?,
-                Target::Amplitude | Target::Pitch | Target::Pan | Target::SampleStart => {}
+                Target::SourcePhase(source) => {
+                    check.exists(Reference::Modulator(source.0))?;
+                    if !matches!(self.modulators[source.0].source, ModulationSource::Lfo(_)) {
+                        check.within(f64::NAN, 0.0..=0.0, "phase destination must be an LFO")?;
+                    }
+                }
+                Target::Amplitude
+                | Target::Pitch
+                | Target::Pan
+                | Target::SampleStart
+                | Target::LoopStart
+                | Target::LoopLength => {}
             }
             if let Some(shape) = route.shape {
                 check.exists(Reference::Shape(shape.0))?;

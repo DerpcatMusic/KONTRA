@@ -199,3 +199,20 @@ fn default_dimensions_and_wallpaper_origin_are_independent() {
     ui.widgets[0].rect.height = 41;
     assert_eq!(resolved(&ui).widgets[0].rect.height, 41);
 }
+
+#[test]
+fn slider_with_a_knob_picture_draws_as_the_vector_knob() {
+    // Audio Imperia's "knob" is a ui_slider with a pyramid_knob strip (v1 knob_like).
+    let paint = |declaration: &str| {
+        let source = format!(
+            "on init\nmake_perfview\nset_ui_width_px(160)\nset_ui_height_px(120)\n{declaration}\n$x := 50\nmove_control_px($x,10,10)\nset_control_par(get_ui_id($x),$CONTROL_PAR_WIDTH,64)\nset_control_par(get_ui_id($x),$CONTROL_PAR_HEIGHT,64)\nset_control_par(get_ui_id($x),$CONTROL_PAR_HIDE,6)\nset_control_par_str(get_ui_id($x),$CONTROL_PAR_PICTURE,\"pyramid_knob_small\")\nend on"
+        );
+        let script =
+            sampler_ksp::compile(&source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+        pixels(&resolved(&script.ui(&|_| None).unwrap()))
+    };
+    assert_eq!(
+        blake3::hash(&paint("declare ui_knob $x(0,100,1)")),
+        blake3::hash(&paint("declare ui_slider $x(0,100)")),
+    );
+}

@@ -50,9 +50,12 @@ impl ResourceContainer {
                 })?;
             file.seek(SeekFrom::Start(start as u64))
                 .map_err(|e| LoadError::io(path, e))?;
+            // Product stubs keep only the member table; their absent members are not
+            // indexed failures, and a present member that reaches past the file errors on read.
             Index::Files(
-                ni_file::file_container::NIFileContainer::read(&mut file)
-                    .map_err(|e| LoadError::decode(path, "NICNT resources", e))?,
+                ni_file::file_container::NIFileContainer::read_table(&mut file)
+                    .map_err(|e| LoadError::decode(path, "NICNT resources", e))?
+                    .0,
             )
         } else {
             Index::Archive(

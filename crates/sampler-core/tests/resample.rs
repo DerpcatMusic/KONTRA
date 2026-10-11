@@ -1099,6 +1099,7 @@ fn muted_sources_match_audible_phase_envelopes_and_loop_exits_when_restored() {
                                     playback: Playback {
                                         wavetable: None,
                                         loop_slots: [None; 8],
+                                        loop_control_crossfade: None,
                                         start: 4,
                                         end: Some(256),
                                         direction,
@@ -1237,6 +1238,7 @@ fn ping_pong_matches_independently_unrolled_pcm_at_fractional_and_multi_turn_rat
                             Playback {
                                 wavetable: None,
                                 loop_slots: [None; 8],
+                                loop_control_crossfade: None,
                                 start: view_start,
                                 end: Some(view_end),
                                 direction,
@@ -1441,6 +1443,7 @@ fn counted_loop_interpolation_matches_finite_unrolled_assets_through_final_eof()
                                     Playback {
                                         wavetable: None,
                                         loop_slots: [None; 8],
+                                        loop_control_crossfade: None,
                                         start: 1,
                                         end: Some(9),
                                         direction,

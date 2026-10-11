@@ -424,7 +424,7 @@ fn loop_audit_conflux() {
             .and_then(|(_, b)| *b)
             .and_then(|b| rt.behavior_outcome(b).ok().flatten())
             .map(|o| format!("{o:?}"));
-        callbacks.push(serde_json::json!({"control":format!("{:032x}",id.0),"admitted":admitted.is_ok(),"admit_us":admit_us,"callback":admitted.as_ref().ok().is_some_and(|(_,b)|b.is_some()),"outcome_after_512_frames":outcome,"fault":rt.take_fault().map(|(_,e)|format!("{e:?}")),"effects":effects,"applied":applied,"ignored":ignored,"dropped_effects":rt.dropped_effects()}));
+        callbacks.push(serde_json::json!({"control":format!("{:032x}",id.0),"admitted":admitted.is_ok(),"admit_us":admit_us,"callback":admitted.as_ref().ok().is_some_and(|(_,b)|b.is_some()),"outcome_after_512_frames":outcome,"fault":rt.take_fault().map(|(_,e)|format!("{e:?}")),"effects":effects,"applied":applied,"ignored":ignored,"stalled_effects":rt.stalled_effects()}));
     }
     record["stage"] = serde_json::json!("callbacks_complete_assertions_pending");
     record["callbacks"] = serde_json::json!(callbacks);

@@ -902,3 +902,36 @@ fn w13_report_settings_feedback_shots() {
         save("settings-lower", &mut h);
     }
 }
+
+#[test]
+fn a_five_thousand_widget_face_never_blanks_the_editor() {
+    use sampler_ui_ir as ir;
+    // MUI refuses a frame past 4096 nodes; the face must stay inside its share
+    // in every view, with the whole player chrome around it.
+    let mut face = ir::Interface {
+        pages: vec![ir::Page {
+            size: ir::Size { width: 2000, height: 1600 },
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    for n in 0..5000i32 {
+        let rect = ir::Rect::new(n % 100 * 20, n / 100 * 30, 18, 28);
+        let kind = if n % 2 == 0 {
+            ir::Kind::Knob { range: ir::Range::default(), display: ir::Display::default() }
+        } else {
+            ir::Kind::Slider { range: ir::Range::default(), orientation: ir::Orientation::Vertical }
+        };
+        let mut w = ir::Widget::new(format!("$w{n}"), ir::PageRef(0), rect, kind);
+        w.text = format!("Caption {n}");
+        face.widgets.push(w);
+    }
+    for view in [1, 2, 3] {
+        let p = specimen();
+        p.shared.view.lock().unwrap().parts[0].interfaces = Arc::from([face.clone()]);
+        p.selection.write().unwrap().parts[0].view = view;
+        // Harness ticks unwrap the frame: a BudgetExceeded would panic here.
+        let mut h = Harness::new(&p, 1180., 900.);
+        h.idle(1);
+    }
+}

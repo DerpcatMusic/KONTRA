@@ -811,6 +811,23 @@ impl TraceGraph {
                     .collect(),
                 0,
             ),
+            PreparedProcessor::LiveFilter(live) => (
+                "live_filter",
+                live.trace_parameters()
+                    .into_iter()
+                    .map(|(n, p)| parameter(n, p))
+                    .collect(),
+                0,
+            ),
+            PreparedProcessor::ControlMatrix(cells) => (
+                "control_matrix",
+                ["ll", "lr", "rl", "rr"]
+                    .into_iter()
+                    .zip(cells)
+                    .map(|(name, cell)| parameter(name, *cell))
+                    .collect(),
+                0,
+            ),
             PreparedProcessor::Biquad(b) => (
                 "biquad",
                 ["b0", "b1", "b2", "a1", "a2"]
@@ -849,6 +866,14 @@ impl TraceGraph {
                     .collect(),
                 0,
             ),
+            PreparedProcessor::Ar { ar, .. } => (
+                "ar",
+                ar.trace_parameters()
+                    .into_iter()
+                    .map(|(n, p)| parameter(n, p))
+                    .collect(),
+                0,
+            ),
             PreparedProcessor::StereoModeller { stereo, .. } => (
                 "stereo_modeller",
                 stereo
@@ -872,6 +897,14 @@ impl TraceGraph {
                 0,
             ),
             PreparedProcessor::Rectify(_) => ("rectifier", vec![], 0),
+            PreparedProcessor::LiveSaturation(shape) => ("kontakt_classic_saturation", vec![parameter("shape", *shape)], 0),
+            PreparedProcessor::LiveDistortion(d) => ("kontakt_distortion", vec![parameter("drive", d.drive), parameter("damping", d.damping)], 0),
+            PreparedProcessor::Saturation(shape) => ("kontakt_classic_saturation", vec![constant("shape", f64::from(*shape))], 0),
+            PreparedProcessor::LegacyPhaser(p) => ("kontakt_legacy_phaser", vec![constant("depth", f64::from(p.depth)), constant("feedback", f64::from(p.feedback))], 0),
+            PreparedProcessor::KontaktEnhancedCompressor(c) => ("kontakt_enhanced_compressor", ["threshold", "ratio", "attack_ms", "release_ms"].into_iter().zip(c.knobs).map(|(n,v)| constant(n, f64::from(v))).collect(), 0),
+            PreparedProcessor::Phaser(p) => ("kontakt_phaser_filter", vec![constant("coefficient", f64::from(p.coefficient)), constant("feedback", f64::from(p.feedback))], 0),
+            PreparedProcessor::Formant(f) => ("kontakt_formant_i", ["talk", "sharp", "size"].into_iter().zip(f.knobs).map(|(n, v)| constant(n, f64::from(v))).collect(), 0),
+            PreparedProcessor::Distortion(d) => ("kontakt_distortion", vec![constant("damping_pole", d.damping_pole())], 0),
             PreparedProcessor::Reverb(i) => (
                 "reverb",
                 plan.buses

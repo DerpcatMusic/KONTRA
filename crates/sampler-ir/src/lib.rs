@@ -49,6 +49,19 @@ reference! {
     ShapeRef,
 }
 
+/// Shared with the loaded script owner; opening Scripts is the first report build.
+#[derive(Clone, PartialEq)]
+pub struct UviScriptSources {
+    pub xml: std::sync::Arc<str>,
+    pub files: std::sync::Arc<Vec<(String, String)>>,
+}
+
+impl std::fmt::Debug for UviScriptSources {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("UviScriptSources (source omitted)")
+    }
+}
+
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Instrument {
@@ -80,12 +93,18 @@ pub struct Instrument {
     pub bus_addresses: Vec<(i32, BusRef)>,
     /// Impulse responses bus convolutions refer to.
     pub impulses: Vec<Impulse>,
+    /// How the importing profile's loader shapes each of [`Instrument::impulses`]
+    /// once its audio is decoded (parallel; missing or `None` entries stay as decoded).
+    pub impulse_shapes: Vec<Option<ImpulseShape>>,
     pub controls: Vec<Control>,
     /// Actual processor lanes driven by authored controls; indices span pre then post.
     pub processor_controls: Vec<ProcessorControl>,
     /// Ordered per-voice sends at authored processor boundaries.
     pub voice_send_taps: Vec<VoiceSendTap>,
     pub behaviors: Vec<Behavior>,
+    /// In-memory UVI inputs for lazy script inspection; never serialized.
+    #[cfg_attr(feature = "cache", serde(skip))]
+    pub uvi_script_sources: Option<UviScriptSources>,
     /// Saved source automation, addressed by slider declaration ordinal per slot.
     pub script_automation: Vec<ScriptAutomation>,
     /// Polyphony of the whole instrument.
@@ -1087,6 +1106,9 @@ pub struct Playback {
     /// Furthest frame past `start` a [`Target::SampleStart`] route can move
     /// the start to (Kontakt's zone sample-start modulation range).
     pub start_range: SourceFrames,
+    /// Saved crossfade before file-boundary clamping, used by constrained loop modulation.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub loop_control_crossfade: Option<Span>,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -1178,12 +1200,14 @@ pub enum ModulationSource {
     /// index: `set_event_par_arr(event, $EVENT_PAR_MOD_VALUE_ID, v, id)`,
     /// read as `clamp(v / 1_000_000, -1, 1)`; 0 until set.
     Script(u16),
+    /// The same script value for a bipolar source, kept in -1..=1.
+    ScriptBipolar(u16),
 }
 
 impl ModulationSource {
     /// Whether values span -1..=1 rather than 0..=1.
     pub fn bipolar(&self) -> bool {
-        matches!(self, Self::Lfo(_) | Self::PitchBend)
+        matches!(self, Self::Lfo(_) | Self::PitchBend | Self::ScriptBipolar(_))
     }
 }
 
@@ -1372,6 +1396,11 @@ pub enum Target {
         parameter: ProcessorParameter,
     },
     Control(ControlRef),
+    /// Absolute source cycle position, sampled at note onset, replacing its saved phase.
+    SourcePhase(ModulatorRef),
+    /// Truncated fractions of total sample frames, on a constrained forward loop.
+    LoopStart,
+    LoopLength,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -1387,6 +1416,20 @@ pub enum ProcessorParameter {
     Ratio,
     Attack,
     Release,
+    /// Hertz, on a Filter (live: scripted insert effects).
+    Frequency,
+    Quality,
+    /// Decibels: a Filter's boost or a Gain's level.
+    GainDecibels,
+    /// Decibels subtracted from `GainDecibels` (a relative shelf).
+    ReferenceDecibels,
+    /// Nonzero lets the stage act; below 0.5 it passes the signal.
+    Enabled,
+    /// The cells of a StereoMatrix: output (row) by input (column), L or R.
+    CellLL,
+    CellLR,
+    CellRL,
+    CellRR,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -1439,8 +1482,17 @@ pub enum Processor {
     Reverb(Reverb),
     /// Feed-forward compressor on the stereo pair.
     Compressor(Compressor),
+    /// Native Enhanced detector: threshold dB, saved ratio, attack/release ms.
+    KontaktEnhancedCompressor { knobs: [f32; 4], link: bool },
     /// Memoryless rectification of both channels.
     Rectify(Rectifier),
+    /// Kontakt Classic Saturation, signed saved Shape (-1..1).
+    Saturation(f32),
+    /// Script-addressed Classic Saturation; the saved static form remains above.
+    LiveSaturation { shape: f32, address: SlotAddress },
+    LiveDistortion { transistor: bool, drive: f32, damping: f32, address: SlotAddress },
+    /// Kontakt Tube/Transistor Distortion, saved normalized Drive and Damping.
+    Distortion { transistor: bool, drive: f32, damping: f32 },
     /// Pinned v1 Lo-Fi approximation; saved normalized controls.
     LoFi {
         bits: f32,
@@ -1452,6 +1504,14 @@ pub enum Processor {
     Daft(Daft),
     /// Native Ladder LP4. Values are normalized; the engine owns the laws.
     LadderLP4(LadderLP4),
+    /// Kontakt's adaptive-resonance filter family (saved types 100..=108).
+    Ar(Ar),
+    /// Native Formant I: saved Talk, Sharp, Size normalized controls.
+    Formant([f32; 3]),
+    /// Kontakt Phaser filter, normalized Cutoff/Resonance.
+    Phaser([f32; 2]),
+    /// Legacy Phaser: normalized Depth, Feedback, Phase; native free/synced Speed.
+    LegacyPhaser { depth: f32, feedback: f32, phase: f32, speed: f32, period_unit: Option<f32> },
     /// Mute a send return when its paired Mix slot is bypassed. Uses that
     /// slot's existing bypass control; insert bypass still passes dry audio.
     SendReturnGate {
@@ -1498,6 +1558,17 @@ pub struct Daft {
     pub highpass: bool,
 }
 
+/// Kontakt's AR filter: `mode` is the saved type minus 100 (0..=8: 2-pole,
+/// 4-pole, combined 2/4; each low, band, high). Cutoff and resonance are the
+/// stored 0..=1 controls; the engine owns the laws.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ar {
+    pub mode: u8,
+    pub cutoff: f64,
+    pub resonance: f64,
+}
+
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LadderLP4 {
@@ -1507,6 +1578,8 @@ pub struct LadderLP4 {
     pub cutoff: f64,
     pub resonance: f64,
     pub record_version: u16,
+    /// Output selector: saved Morphology type minus 29 (1..=12); feedback closes around stage 4.
+    pub taps: u8,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -1563,6 +1636,24 @@ pub struct Impulse {
     pub asset: Option<AssetRef>,
 }
 
+/// The source controls of a sampled reverb that act on its impulse response.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ImpulseShape {
+    /// Kept fraction of the response's duration, `(0, 1]`.
+    pub time: f64,
+    /// Low and high frequency damping, `[-1, 1]` (negative boosts).
+    pub damping_low: f64,
+    pub damping_high: f64,
+    pub pre_delay_ms: f64,
+    /// Stereo width, `[-1, 1]`; negative swaps the channels.
+    pub width: f64,
+    /// Scale the response to unit mean channel energy.
+    pub normalize: bool,
+    /// A SampledReverb (its own gain references) rather than a Convolver.
+    pub sampled_reverb: bool,
+}
+
 /// Physical reverb settings; an importing profile maps its own controls
 /// here. Wet signal only: the dry path is the bus's other send.
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -1603,6 +1694,9 @@ pub enum FilterKind {
     Peak { gain: Gain },
     LowShelf { gain: Gain },
     HighShelf { gain: Gain },
+    /// A 6 dB/octave shelf: `Filter::resonance` has no effect on it.
+    FirstOrderLowShelf { gain: Gain },
+    FirstOrderHighShelf { gain: Gain },
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -1643,7 +1737,7 @@ pub enum SendPosition {
 /// Format-neutral binding of one authored control to an actual processor field.
 /// The control's Continuous range is in the field's native units (Hz, linear
 /// gain, dB, Q or normalized knobs). A bound Peak uses dB Gain and 0..1
-/// Cutoff/Resonance knobs (20 Hz * 10^(3*x), 0.3 + 2.7*x octaves).
+/// Cutoff/Resonance knobs (20 Hz * 10^(3*x), 1/3 + x/0.375 octaves).
 /// Ramping uses the engine sample clock.
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1733,12 +1827,16 @@ pub enum Automation {
     Controller(u8),
 }
 
-/// Saved Kontakt script-slider assignment. Ordinals count only sliders, not all UI controls.
+/// Saved Kontakt script-slider or -switch assignment. Ordinals count only widgets of that
+/// kind (`ui_slider` or `ui_switch`), not all UI controls.
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct ScriptAutomation {
     pub source: ScriptAutomationSource,
     pub source_slot: u8,
+    /// A `pts_script_switch_*` target; otherwise a slider.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub switch: bool,
     pub slider: u32,
     pub low: f64,
     pub high: f64,

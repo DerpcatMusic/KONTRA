@@ -12,6 +12,7 @@ scan = []
 cache = ["dep:serde", "sampler-core/cache"]
 
 [dependencies]
+sampler-parity = { path = "../sampler-parity" }
 sampler-core = { path = "../sampler-core" }
 sampler-ui-ir = { path = "../sampler-ui-ir" }
 serde_json = { version = "1", features = ["raw_value"] }

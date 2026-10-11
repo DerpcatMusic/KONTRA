@@ -260,6 +260,7 @@ impl Runtime {
                     start,
                     at,
                     tone_cutoff,
+                    self.tempo,
                     if TRACE {
                         g.dsp
                             .trace
@@ -552,6 +553,13 @@ impl Runtime {
                 tempo: self.tempo,
                 now: at,
             };
+            // v1 freezes loop edits throughout release, including continuous loops.
+            if !v.envelope.releasing()
+                && let Some(offsets) = plan.modulation
+                    .loop_offsets(&plan.prepared.voice_modulation, i, inputs.controls)
+            {
+                v.cursor = v.cursor.with_loop_offsets(offsets);
+            }
             let ramp = plan
                 .modulation
                 .advance(&plan.prepared.voice_modulation, i, &inputs, clock);
@@ -801,6 +809,7 @@ impl Runtime {
             expression: gains,
             parameters,
             filters: super::dsp::svf::FilterContext {
+                tempo: self.tempo,
                 bank: &mut plan.dsp.filters.as_mut_slice()[0],
                 expression: Some((n.expression, expression.value)),
                 reverbs: &mut [],

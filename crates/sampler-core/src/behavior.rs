@@ -461,7 +461,27 @@ pub struct Program {
     pub(super) engine_symbols: Arc<[(i32, u16)]>,
     pub(super) text_constants: usize,
     pub(super) script_texts: usize,
+    /// Scanned once in `new`: modules shared by hundreds of entries must not
+    /// be rescanned per entry (a 3.1M-instruction module took seconds).
+    pub(super) starts_program: bool,
+    pub(super) writes_slots: bool,
 }
+/// One program per distinct code body (and script instance when `by_instance`):
+/// entries into a shared module all carry the same `Arc`, and whole-code
+/// validation must visit it once, not once per entry.
+pub(super) fn distinct_code(
+    programs: &[Program],
+    by_instance: bool,
+) -> impl Iterator<Item = &Program> {
+    let mut seen = std::collections::HashSet::new();
+    programs.iter().filter(move |p| {
+        seen.insert((
+            Arc::as_ptr(&p.code).cast::<()>() as usize,
+            by_instance.then_some(p.script_instance.map(|id| id.0)),
+        ))
+    })
+}
+
 impl Program {
     pub fn with_engine_symbols(mut self, symbols: Vec<(i32, u16)>) -> Self {
         self.engine_symbols = symbols.into();
@@ -472,14 +492,7 @@ impl Program {
     /// addresses are computed in registers, so writes conservatively retain
     /// live FX lanes even when their eventual address is not an effect.
     pub fn writes_slots(&self) -> bool {
-        self.code.iter().any(|op| {
-            matches!(
-                op,
-                Instruction::WriteSlot { .. }
-                    | Instruction::WriteGroupBus { .. }
-                    | Instruction::Op(super::ops::Op::EngineParameter { write: true, .. })
-            )
-        })
+        self.writes_slots
     }
 
     /// Text constants addressed by `TextPart::Constant`.
@@ -496,11 +509,7 @@ impl Program {
     /// Offset `StartProgram` targets by `base`, for a program table that
     /// concatenates several modules.
     pub fn with_program_base(mut self, base: usize) -> Self {
-        if self
-            .code
-            .iter()
-            .any(|op| matches!(op, Instruction::StartProgram { .. }))
-        {
+        if self.starts_program {
             for op in Arc::make_mut(&mut self.code) {
                 if let Instruction::StartProgram { program } = op {
                     *program = program.saturating_add(base as u32);
@@ -879,6 +888,17 @@ impl Program {
         }
         let (requires_note, requires_controller, requires_performance) =
             Self::requirements(code.iter())?;
+        let starts_program = code
+            .iter()
+            .any(|op| matches!(op, Instruction::StartProgram { .. }));
+        let writes_slots = code.iter().any(|op| {
+            matches!(
+                op,
+                Instruction::WriteSlot { .. }
+                    | Instruction::WriteGroupBus { .. }
+                    | Instruction::Op(super::ops::Op::EngineParameter { write: true, .. })
+            )
+        });
         Ok(Self {
             requires_performance,
             requires_controller,
@@ -897,6 +917,8 @@ impl Program {
             engine_symbols: Arc::from([]),
             text_constants,
             script_texts,
+            starts_program,
+            writes_slots,
         })
     }
 }
@@ -1448,7 +1470,12 @@ impl Runtime {
                     }
                     self.behavior_ready.remove(index);
                 }
-                Ok(false) => {}
+                Ok(false) => {
+                    // Outbox full: the emit rewound its pc; resume next block.
+                    if std::mem::take(&mut self.ops.outbox_full) {
+                        self.behavior_ready[index] = Ready::Resume { id, fuel: 0 };
+                    }
+                }
                 // Kontakt ignores a script's call on a note that already ended
                 // (play_note on a released parent, forwarding a dropped note).
                 Err(Error::ClosedNote) => {}

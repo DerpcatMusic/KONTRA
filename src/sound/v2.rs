@@ -1616,6 +1616,34 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
 }
 
 impl V2Core {
+    /// Complete the part's MIDI / array-file jobs the way the plugin's effect drain does,
+    /// for hosts (the offline scanner) that have no worker thread of their own.
+    pub(crate) fn service_script_io(&mut self, part: usize, effect: &sampler_core::Effect) -> bool {
+        self.parts
+            .get_mut(part)
+            .and_then(Option::as_mut)
+            .and_then(|p| p.ui_controls.as_mut())
+            .is_some_and(|ingress| ingress.service_midi(effect))
+    }
+
+    /// Whether a plan-owned script callback (`persistence_changed`, a UI callback) is still
+    /// suspended in a `wait`; its next step can change the interface or what a note plays.
+    pub(crate) fn scripts_running(&self, part: usize) -> bool {
+        let mut running = false;
+        if let Some(Some(p)) = self.parts.get(part) {
+            p.runtime.visit_behavior_progress(|c| {
+                running |= c.outcome.is_none() && matches!(c.owner, sampler_core::BehaviorOwner::Plan(_));
+            });
+        }
+        running
+    }
+
+    pub(crate) fn settle_script_io(&mut self, part: usize) {
+        if let Some(ingress) = self.parts.get_mut(part).and_then(Option::as_mut).and_then(|p| p.ui_controls.as_mut()) {
+            ingress.refresh();
+        }
+    }
+
     pub fn with_parts(parts: usize, sample_rate: f64) -> Self {
         let mut mix = Mix::default();
         mix.parts
@@ -2481,7 +2509,9 @@ impl Core for V2Core {
         };
         let nodes = &p.buses;
         p.runtime.take_bus_peaks(|bus, peak| {
-            if let Some(node) = nodes.iter().position(|&b| b == Some(bus)) {
+            // Part::new places runtime bus b at tree node b + 1.
+            let node = bus + 1;
+            if nodes.get(node) == Some(&Some(bus)) {
                 each(node, peak);
             }
         });
@@ -2742,6 +2772,10 @@ const MAX_VOICES: usize = 1024;
 const GROWTH: usize = 8;
 // port from v1 0cb7a8a0:src/ksp/runtime.rs EVENT_CAPACITY.
 const INITIAL_NOTE_PARAMS: usize = 4096;
+/// Note-parameter pages resident at load (4 KiB per note); the grower doubles
+/// them under pressure up to `INITIAL_NOTE_PARAMS`. Fully resident they were
+/// 17 MB of the 20 MB the runtime added, which v1's small event slots never cost.
+const RESIDENT_NOTE_PARAMS: usize = 512;
 /// Per-voice bytes beyond the plan's state: voice slot, activity bit, parallel scratch.
 const VOICE_OVERHEAD: usize = 4096;
 
@@ -2815,12 +2849,20 @@ fn insert_names(instrument: &ir::Instrument, chain: Option<ir::ChainRef>) -> Vec
             ir::Processor::StereoModeller { .. } => "Stereo Modeller",
             ir::Processor::Pan(_) => "Pan",
             ir::Processor::LoFi { .. } => "LoFi",
+            ir::Processor::Saturation(_) | ir::Processor::LiveSaturation { .. } => "Saturation",
+            ir::Processor::Distortion { .. } | ir::Processor::LiveDistortion { .. } => "Distortion",
             ir::Processor::StereoMatrix(_) => "Stereo",
             ir::Processor::Reverb(_) => "Reverb",
+            ir::Processor::KontaktEnhancedCompressor { .. } => "Compressor (Enhanced)",
             ir::Processor::Compressor(_) => "Compressor",
             ir::Processor::Rectify(_) => "Rectify",
             ir::Processor::Daft(_) => "Daft",
-            ir::Processor::LadderLP4(_) => "Ladder LP4",
+            ir::Processor::LadderLP4(d) => ["Ladder LP1", "Ladder LP2", "Ladder LP3", "Ladder LP4", "Ladder HP1", "Ladder HP2", "Ladder HP3", "Ladder HP4", "Ladder BP2", "Ladder BP4", "Ladder Peak", "Ladder Notch"]
+                [usize::from(d.taps.clamp(1, 12)) - 1],
+            ir::Processor::Ar(_) => "AR filter",
+            ir::Processor::LegacyPhaser { .. } => "Legacy Phaser",
+            ir::Processor::Phaser(_) => "Phaser filter",
+            ir::Processor::Formant(_) => "Formant I",
             ir::Processor::SendReturnGate { .. } => "Send return gate",
             ir::Processor::Branch { .. } => "Branch",
             ir::Processor::Convolution { .. } => "Convolution",
@@ -3363,7 +3405,7 @@ impl V2Loader {
             limits,
             2,
             1,
-            limits.notes.min(INITIAL_NOTE_PARAMS),
+            limits.notes.min(RESIDENT_NOTE_PARAMS),
         )
         .map_err(core)?;
         let mut runtime = runtime.with_threads(render_threads(request));
@@ -5207,6 +5249,9 @@ mod tests {
         let mut nodes = Vec::new();
         core.take_node_peaks(0, &mut |node, peak| nodes.push((node, peak[0] > 0.0)));
         assert_eq!(nodes, [(1, true)], "the group node meters its signal");
+        nodes.clear();
+        core.take_node_peaks(0, &mut |node, peak| nodes.push((node, peak[0] > 0.0)));
+        assert_eq!(nodes, [(1, false)], "taking a node peak resets it");
         mix.nodes[0][0].mute = true;
         core.set_mix(&mix);
         assert!(!loud(&core.render(128), 3, 128), "muted node");
@@ -5266,6 +5311,42 @@ mod tests {
             !core.set_control(0, sampler_ui_ir::ControlId(7), 1.0),
             "no such control"
         );
+    }
+
+    #[test]
+    fn scripts_running_is_true_only_while_a_plan_callback_is_suspended_in_a_wait() {
+        let script = sampler_ksp::compile(
+            "on init end on on pgs_changed wait(50000) end on",
+            48000,
+            sampler_ksp::Limits::LIBRARY,
+            &[],
+        )
+        .unwrap();
+        let entry = script
+            .entries()
+            .iter()
+            .find(|e| e.kind == sampler_ksp::EntryKind::PgsChanged)
+            .unwrap()
+            .program;
+        let plan = script
+            .bind(Prepared::new(48000, vec![], vec![], 1).unwrap())
+            .unwrap();
+        let runtime_limits = limits(&plan).0;
+        let mut part = Part::new(
+            Runtime::new(plan, runtime_limits).unwrap(),
+            MixTree::instrument("nka"),
+        )
+        .unwrap();
+        let active = part.runtime.active_plan();
+        part.runtime.start_plan_behavior(active, entry).unwrap();
+        let mut core = V2Core::with_parts(1, 48000.);
+        core.install(0, Some(Box::new(part)));
+        core.render(480);
+        assert!(core.scripts_running(0), "suspended in wait(50 ms)");
+        for _ in 0..40 {
+            core.render(480);
+        }
+        assert!(!core.scripts_running(0), "wait elapsed, callback finished");
     }
 
     #[test]
@@ -5737,12 +5818,12 @@ mod tests {
     }
 
     #[test]
-    fn loader_starts_note_parameters_at_v1_event_capacity() {
+    fn loader_starts_note_parameters_small_and_grows_to_v1_event_capacity() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("note-capacity.wav");
         sine(&path);
         let part = load(&path).unwrap();
-        assert_eq!(part.runtime.note_params_capacity(), 4096);
+        assert_eq!(part.runtime.note_params_capacity(), 512);
         assert_eq!(part.runtime.voice_capacity(), 1024);
     }
 
@@ -6216,6 +6297,38 @@ mod tests {
             core.problems(0),
             core.voices()
         );
+    }
+
+    /// Targeted sound-core attribution; this does not time the full CLAP callback.
+    #[test]
+    #[ignore = "one targeted installed AO callback attribution measurement"]
+    fn survey_ao_callback_attribution() {
+        let path = std::path::PathBuf::from("/mnt/MAIN_STORAGE/Libraries/UVI/UVI - Augmented Orchestra v1.1.2-R2R/Augmented Orchestra.ufs/Presets/00 Orchestra/01 Strings/V Strings Bartok.uvip");
+        let loaded = V2Loader.prepare(&LoadRequest {
+            path, sample_rate: 48000., ..Default::default()
+        }, &mut |_| {}, &|| false).unwrap();
+        let mut core = V2Core::with_parts(1, 48000.);
+        core.install(0, loaded.part);
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        core.play(0, Event::midi1(0xb0, 1, 100));
+        core.play(0, Event::midi1(0xb0, 11, 127));
+        let mut times = Vec::with_capacity(2250);
+        let mut peak = 0f32;
+        core.onset_audit();
+        for block in 0..2250 {
+            let frame = block * 128;
+            if frame < 240000 && frame % 48000 < 128 { core.play(0, Event::midi1(0x90, 60, 64)); }
+            if frame < 240000 && frame % 48000 >= 24000 && frame % 48000 < 24128 { core.play(0, Event::midi1(0x80, 60, 0)); }
+            let start = std::time::Instant::now();
+            let rendered = core.render(128);
+            for bus in rendered.buses { for channel in bus { for value in &channel[..128] { peak = peak.max(value.abs()); } } }
+            times.push(start.elapsed().as_micros());
+            core.end_block(128, &mut |_| true);
+            std::thread::sleep(std::time::Duration::from_micros(2667));
+        }
+        times.sort_unstable();
+        println!("AO attribution debug blocks=2250 p50_us={} p99_us={} peak={} load={} stages={}", times[1125], times[2227], peak,
+            std::fs::read_to_string("/proc/loadavg").unwrap_or_default().trim(), core.onset_audit());
     }
 
     /// Idle cost of a loaded part: blocks with no note playing. Prints the
