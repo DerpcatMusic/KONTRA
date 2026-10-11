@@ -11,6 +11,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 pub struct Environment {
     /// Optional control-thread evaluation budget; default is the library profile.
     pub evaluation_budget: Option<u64>,
+    /// Set only while the Script inspector asks for evaluator coverage.
+    pub coverage: Option<crate::parity::RuntimeCoverage>,
     /// Group names in instrument order (`$NUM_GROUPS`, `group_name`, `find_group`).
     pub groups: Vec<String>,
     /// Saved values by variable name, applied by `read_persistent_var`.
@@ -230,7 +232,7 @@ enum Flow {
 
 const MAX_TEXT_LINES: i32 = 1 << 16;
 
-struct Eval<'h> {
+struct Eval<'h, const TRACK: bool> {
     hir: &'h Hir,
     env: &'h Environment,
     st: Initial,
@@ -241,13 +243,22 @@ struct Eval<'h> {
     callback_type: i32,
     async_result: Option<(i32, i32)>,
     async_depth: u8,
+    current_statement: Option<u32>,
     profile: Option<HashMap<&'static str, (u64, u128)>>,
 }
 
 pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
+    if env.coverage.is_some() {
+        run_observed::<true>(hir, env)
+    } else {
+        run_observed::<false>(hir, env)
+    }
+}
+
+fn run_observed<const TRACK: bool>(hir: &Hir, env: &Environment) -> Result<Initial> {
     let mut model = model::Model::default();
     model.interface.keys = vec![Key::default(); 128];
-    let mut e = Eval {
+    let mut e = Eval::<TRACK> {
         hir,
         env,
         st: Initial {
@@ -270,6 +281,7 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
         callback_type: b::cb::INIT,
         async_result: None,
         async_depth: 0,
+        current_statement: None,
         profile: std::env::var_os("KONTRA_AUDIT_KSP_PROFILE").map(|_| HashMap::new()),
     };
     #[cfg(feature = "scan")]
@@ -371,7 +383,7 @@ pub fn declared_range(ui: &Ui) -> Option<(i32, i32)> {
     }
 }
 
-impl Eval<'_> {
+impl<const TRACK: bool> Eval<'_, TRACK> {
     fn warn(&mut self, span: Span, message: impl Into<String>) {
         if self.st.warnings.len() < 1000 {
             self.st.warnings.push(Fault {
@@ -384,13 +396,32 @@ impl Eval<'_> {
 
     fn block(&mut self, body: &[Stmt]) -> Result<Flow> {
         for s in body {
+            if TRACK {
+                self.env.coverage.as_ref().unwrap().hit(s.span);
+            }
             if self.fuel == 0 {
+                if TRACK {
+                    self.env.coverage.as_ref().unwrap().fault(s.span);
+                }
                 #[cfg(feature = "scan")]
                 crate::scan::category("fuel-budget");
                 return fault(s.span, "on init exceeded its evaluation budget");
             }
             self.fuel -= 1;
-            match self.stmt(s)? {
+            let previous = if TRACK { self.current_statement } else { None };
+            if TRACK {
+                self.current_statement = Some(s.span.start);
+            }
+            let result = self.stmt(s);
+            if TRACK {
+                self.current_statement = previous;
+            }
+            if TRACK {
+                if let Err(f) = &result {
+                    self.env.coverage.as_ref().unwrap().fault(f.span);
+                }
+            }
+            match result? {
                 Flow::Next => {}
                 other => return Ok(other),
             }
@@ -972,8 +1003,16 @@ impl Eval<'_> {
     }
 
     fn builtin(&mut self, builtin: Builtin, args: &[Arg], span: Span) -> Result<V> {
+        if TRACK && self.current_statement != Some(span.start) {
+            self.env.coverage.as_ref().unwrap().hit(span);
+        }
         let begin = self.profile.as_ref().map(|_| std::time::Instant::now());
         let result = self.builtin_inner(builtin, args, span);
+        if TRACK {
+            if let Err(f) = &result {
+                self.env.coverage.as_ref().unwrap().fault(f.span);
+            }
+        }
         #[cfg(feature = "scan")]
         crate::scan::builtin(result.as_ref().err().map(|_| builtin.name()));
         if let Some(begin) = begin {
