@@ -767,11 +767,24 @@ pub fn view_state(
         })
 }
 
-/// Nodes MUI lays out per frame are capped at 4096 for the whole editor tree
-/// (`mui_layout::Limits::default()`, not configurable from here); one failing
-/// frame blanks the entire window. A face keeps its share, and a library with
-/// more widgets than fit loses decoration first, then its last-drawn controls.
-pub(super) const FACE_NODES: usize = 2400;
+/// MUI's vendored node limit is 65536 per frame (vendor/mui/PATCHES.md). A face
+/// keeps far more than any real library needs (5000 widgets use about half);
+/// past this guard widgets are dropped, decoration first, with a warning, never
+/// silently and never by failing the whole frame.
+pub(super) const FACE_NODES: usize = 48_000;
+
+/// Warn once per process that a face exceeded [`FACE_NODES`].
+pub(super) fn warn_dropped(dropped: usize) {
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if dropped > 0 && !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        crate::diagnostics::event(
+            crate::diagnostics::LogLevel::Warning,
+            "ui",
+            "face_nodes_exceeded",
+            serde_json::json!({"dropped_widgets": dropped, "node_budget": FACE_NODES}),
+        );
+    }
+}
 
 pub(super) fn node_count(el: &El) -> usize {
     1 + el.children().iter().map(node_count).sum::<usize>()
@@ -792,6 +805,7 @@ fn within_budget(mut built: Vec<(El, usize, bool)>) -> Vec<El> {
             }
         }
     }
+    warn_dropped(keep.iter().filter(|k| !**k).count());
     built
         .drain(..)
         .zip(keep)
