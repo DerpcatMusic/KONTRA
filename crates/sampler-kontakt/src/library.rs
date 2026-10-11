@@ -3729,6 +3729,7 @@ mod modulation {
                 cutoff: 0.5,
                 resonance: 0.,
                 record_version: 0x92,
+                taps: 4,
             }),
             ir::Processor::Daft(ir::Daft {
                 gain: 0.,
@@ -3781,6 +3782,7 @@ mod modulation {
                 cutoff: 0.5,
                 resonance: 0.,
                 record_version: 0x92,
+                taps: 4,
             }),
             ir::Processor::Daft(ir::Daft {
                 gain: 0.,

@@ -8,6 +8,8 @@ pub struct LadderSettings {
     pub cutoff: Parameter,
     pub resonance: Parameter,
     pub record_version: u16,
+    /// Output stage 1..=4 (Ladder LP1..LP4).
+    pub taps: u8,
 }
 
 impl LadderSettings {
@@ -24,7 +26,7 @@ impl LadderSettings {
     }
 
     pub(super) fn valid(self) -> bool {
-        [self.cutoff, self.resonance].iter().all(|p| {
+        (1..=4).contains(&self.taps) && [self.cutoff, self.resonance].iter().all(|p| {
             p.valid()
                 && !matches!(p, Parameter::Expression { .. })
                 && p.bounds().iter().all(|v| (0.0..=1.0).contains(v))
@@ -39,6 +41,7 @@ impl LadderSettings {
             rate: rate as f32,
             parameters: [self.cutoff, self.resonance, self.gain].map(|p| p.compile(bindings)),
             record_version: self.record_version,
+            taps: self.taps,
             modulation_index: usize::MAX,
         }
     }
@@ -50,6 +53,7 @@ pub(crate) struct Ladder {
     rate: f32,
     parameters: [PreparedParameter; 3],
     record_version: u16,
+    taps: u8,
     pub(crate) modulation_index: usize,
 }
 
@@ -77,6 +81,7 @@ impl Ladder {
         }
         let mut kernel = ladder_kernel::Ladder::restore(cells);
         kernel.record_version(self.record_version);
+        kernel.set_taps(self.taps);
         kernel.enabled_modulation(modulation[3] != 0.);
         let values = |frame| {
             let mut values = self
@@ -138,6 +143,7 @@ mod tests {
                 resonance: Parameter::Constant(0.7),
                 gain: Parameter::Constant(0.2),
                 record_version: 0x92,
+                taps: 4,
             };
             let prepared = settings.compile(rate, &mut Vec::new());
             let source: [[f64; BLOCK]; 2] = std::array::from_fn(|c| {
