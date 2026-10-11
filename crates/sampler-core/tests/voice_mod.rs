@@ -1057,3 +1057,312 @@ fn native_lanes_with_script_and_gain_pitch_ramps_match_forced_scalar_without_hea
         }
     }
 }
+
+#[test]
+fn source_phase_is_sampled_at_onset_and_reused_without_heap() {
+    for retrigger in [false, true] {
+        for block in [1, 7, 64, 137] {
+            let lfo = Lfo {
+                shape: LfoShape::Sine,
+                rate: LfoRate::Hertz(1.),
+                phase: 0.125,
+                delay: 0,
+                fade: 0,
+                retrigger,
+                shared: false,
+            };
+            let make = |meta| {
+                modulated(
+                    plan(1024, Envelope::default()),
+                    program(
+                        vec![
+                            ModSource::Lfo(if meta {
+                                lfo
+                            } else {
+                                Lfo {
+                                    phase: 0.25,
+                                    retrigger: true,
+                                    ..lfo
+                                }
+                            }),
+                            ModSource::Controller(1),
+                        ],
+                        if meta {
+                            vec![
+                                ModRoute::new(0, ModTarget::Attenuate, 1.),
+                                ModRoute::new(1, ModTarget::SourcePhase(0), 0.25),
+                            ]
+                        } else {
+                            vec![ModRoute::new(0, ModTarget::Attenuate, 1.)]
+                        },
+                    ),
+                    0,
+                )
+            };
+            let mut meta = Runtime::new(make(true), limits()).unwrap();
+            let mut expected = Runtime::new(make(false), limits()).unwrap();
+            for id in [1, 2] {
+                for rt in [&mut meta, &mut expected] {
+                    support::without_heap(|| {
+                        rt.set_controller(rt.performance(0).unwrap(), 1, u32::MAX)
+                            .unwrap();
+                        rt.trigger(input(id), 60, 1.).unwrap();
+                    });
+                }
+                assert!(
+                    render(&mut meta, 128, block) == render(&mut expected, 128, block),
+                    "phase must replace the saved phase at onset"
+                );
+                support::without_heap(|| {
+                    meta.set_controller(meta.performance(0).unwrap(), 1, 0)
+                        .unwrap();
+                });
+                assert!(
+                    render(&mut meta, 384, block) == render(&mut expected, 384, block),
+                    "a changed phase lane must not reset an active oscillator"
+                );
+                for rt in [&mut meta, &mut expected] {
+                    support::without_heap(|| {
+                        rt.note_off(input(id), None).unwrap();
+                        rt.render(&mut [[0.; 2]; 128]).unwrap();
+                    });
+                    assert_eq!(rt.voice_count(), 0);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn source_phase_rejects_cycles_wrong_owners_and_unmeasured_lag() {
+    let lfo = ModSource::Lfo(Lfo {
+        shape: LfoShape::Sine,
+        rate: LfoRate::Hertz(1.),
+        phase: 0.,
+        delay: 0,
+        fade: 0,
+        retrigger: true,
+        shared: false,
+    });
+    for (sources, routes) in [
+        (
+            vec![lfo],
+            vec![ModRoute::new(0, ModTarget::SourcePhase(0), 1.)],
+        ),
+        (
+            vec![lfo, lfo],
+            vec![
+                ModRoute::new(0, ModTarget::SourcePhase(1), 1.),
+                ModRoute::new(1, ModTarget::SourcePhase(0), 1.),
+            ],
+        ),
+        (
+            vec![ModSource::Constant],
+            vec![ModRoute::new(0, ModTarget::SourcePhase(0), 1.)],
+        ),
+        (
+            vec![lfo, ModSource::Constant],
+            vec![ModRoute {
+                lag: 32,
+                ..ModRoute::new(1, ModTarget::SourcePhase(0), 1.)
+            }],
+        ),
+    ] {
+        assert!(
+            plan(128, Envelope::default())
+                .with_voice_modulation(vec![program(sources, routes)], vec![Some(0)], vec![0])
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn constant_loop_destinations_reach_audio_without_heap_and_reject_unmeasured_sources() {
+    let make = |modulate, crossfade| {
+        let playback = Playback {
+            loop_range: Some(Loop {
+                start: if modulate { 0 } else { 200 },
+                end: if modulate { 700 } else { 500 },
+                mode: LoopMode::UntilRelease,
+                shape: if !modulate && crossfade > 0 {
+                    LoopShape::Crossfade { frames: crossfade }
+                } else {
+                    LoopShape::Wrap
+                },
+                passes: None,
+            }),
+            loop_control_crossfade: modulate.then_some(crossfade),
+            ..Playback::default()
+        };
+        let prepared = Prepared::new(
+            48000,
+            vec![Pcm::new(48000, (0..1000).map(|i| [i as f32 / 1000.; 2]).collect()).unwrap()],
+            vec![Region {
+                playback,
+                sample: 0,
+                key_low: 60,
+                key_high: 60,
+                root_key: None,
+                velocity_low: 0.,
+                velocity_high: 1.,
+                gain: 1.,
+                envelope: Envelope::default(),
+            }],
+            1,
+        )
+        .unwrap()
+        .with_velocity_curves(vec![VelocityCurve::Constant])
+        .unwrap();
+        if modulate {
+            modulated(
+                prepared,
+                program(
+                    vec![ModSource::Constant],
+                    vec![
+                        ModRoute::new(0, ModTarget::LoopStart, 0.2),
+                        ModRoute::new(0, ModTarget::LoopLength, -0.4),
+                    ],
+                ),
+                0,
+            )
+        } else {
+            prepared
+        }
+    };
+    for crossfade in [0, 32] {
+        for block in [1, 7, 64, 137] {
+            let mut actual = Runtime::new(make(true, crossfade), limits()).unwrap();
+            let mut expected = Runtime::new(make(false, crossfade), limits()).unwrap();
+            for id in [1, 2] {
+                support::without_heap(|| {
+                    actual.trigger(input(id), 60, 1.).unwrap();
+                    expected.trigger(input(id), 60, 1.).unwrap();
+                });
+                assert!(
+                    render(&mut actual, 1200, block) == render(&mut expected, 1200, block),
+                    "loop lanes and saved crossfade must reach the cursor"
+                );
+                support::without_heap(|| {
+                    actual.note_off(input(id), None).unwrap();
+                    expected.note_off(input(id), None).unwrap();
+                });
+                assert!(render(&mut actual, 128, block) == render(&mut expected, 128, block));
+            }
+        }
+    }
+    assert!(
+        make(false, 0)
+            .with_voice_modulation(
+                vec![program(
+                    vec![ModSource::Controller(1)],
+                    vec![ModRoute::new(0, ModTarget::LoopStart, 0.1)]
+                )],
+                vec![Some(0)],
+                vec![0]
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn live_loop_depth_uses_native_alias_at_an_event_fragment_without_heap() {
+    let address = EngineParameterAddress {
+        parameter: engine_parameter_id("ENGINE_PAR_INTMOD_INTENSITY").unwrap(),
+        group: 0,
+        slot: 16,
+        generic: 0,
+    };
+    let depth = engine_parameter_control(address);
+    let bypass = ControlId(999);
+    let make = |start, end| {
+        Prepared::new(
+            48000,
+            vec![Pcm::new(48000, (0..1000).map(|i| [i as f32 / 1000.; 2]).collect()).unwrap()],
+            vec![Region {
+                sample: 0,
+                key_low: 60,
+                key_high: 60,
+                root_key: None,
+                velocity_low: 0.,
+                velocity_high: 1.,
+                gain: 1.,
+                envelope: Envelope::new(0, 0, 0, 1., 4096).unwrap(),
+                playback: Playback {
+                    loop_range: Some(Loop {
+                        start,
+                        end,
+                        mode: LoopMode::Continuous,
+                        shape: LoopShape::Wrap,
+                        passes: None,
+                    }),
+                    ..Playback::default()
+                },
+            }],
+            1,
+        )
+        .unwrap()
+        .with_velocity_curves(vec![VelocityCurve::Constant])
+        .unwrap()
+    };
+    let mut program = program(
+        vec![ModSource::Constant],
+        vec![
+            ModRoute::new(0, ModTarget::LoopStart, 0.),
+            ModRoute::new(0, ModTarget::LoopLength, -0.5),
+        ],
+    );
+    program.controls.push((0, [depth, bypass]));
+    let prepared = || {
+        make(100, 700)
+            .with_controls(vec![
+                ControlDefinition {
+                    id: depth,
+                    domain: ControlDomain::Real { min: -1., max: 1. },
+                    default: ControlValue::Real(0.),
+                },
+                ControlDefinition {
+                    id: bypass,
+                    domain: ControlDomain::Real { min: 0., max: 1. },
+                    default: ControlValue::Real(0.),
+                },
+            ])
+            .unwrap()
+            .with_engine_parameters(
+                vec![EngineParameterBinding {
+                    address,
+                    control: depth,
+                    law: EngineParameterLaw::SignedCubic,
+                }],
+                vec![],
+            )
+            .unwrap()
+    };
+    for block in [1, 7, 64, 137] {
+        let mut actual = Runtime::new(modulated(prepared(), program.clone(), 0), limits()).unwrap();
+        let mut expected = Runtime::new(make(225, 325), limits()).unwrap();
+        support::without_heap(|| {
+            actual.trigger(input(1), 60, 1.).unwrap();
+            expected.trigger(input(1), 60, 1.).unwrap();
+        });
+        render(&mut actual, 513, block);
+        render(&mut expected, 113, block);
+        support::without_heap(|| {
+            actual.set_engine_parameter(address, 750000).unwrap();
+        });
+        assert_eq!(actual.engine_parameter(address).unwrap(), 750000);
+        assert!(
+            render(&mut actual, 400, block) == render(&mut expected, 400, block),
+            "an event fragment must preserve physical phase and update the loop immediately"
+        );
+        support::without_heap(|| {
+            actual.note_off(input(1), None).unwrap();
+            expected.note_off(input(1), None).unwrap();
+            actual.set_engine_parameter(address, 1000000).unwrap();
+        });
+        assert_eq!(actual.voice_count(), 1, "the release tail must still be active");
+        assert!(
+            render(&mut actual, 400, block) == render(&mut expected, 400, block),
+            "released continuous loops must freeze geometry too"
+        );
+    }
+}
