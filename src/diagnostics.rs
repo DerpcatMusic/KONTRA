@@ -1891,6 +1891,11 @@ impl LoadTrace {
             impact = "compiled with this warning; inspect the reported script slot and line";
         }
         let mut message = format!("Not translated: {} ({reason})", clip(&missing.feature, 160));
+        let uvi = instrument.is_some_and(|i| i.source == sampler_ir::SourceFormat::Uvi);
+        if uvi && missing.feature == "module" {
+            // This value is the translator's module tag, not an authored parameter value.
+            message = format!("Not translated: module {} ({reason})", clip(&missing.value, 160));
+        }
         if missing.feature == "setter_type_mismatch" {
             message = "setParameter supplied a value with the wrong parameter type; UVI ignores the write and keeps the old value".into();
             impact = "pass the parameter's expected value type; runtime LuaSetter diagnostics identify the supplied and expected types";
@@ -1900,6 +1905,10 @@ impl LoadTrace {
         if missing.feature.starts_with("lua ") && !missing.value.is_empty() {
             message.push_str(": ");
             message.push_str(&clip(&missing.value, 200));
+        }
+        if uvi && !missing.location.is_empty() {
+            message.push_str(" at ");
+            message.push_str(&clip(&missing.location, 200));
         }
         let key = grouped::missing(
             &missing.feature,
@@ -2684,6 +2693,35 @@ mod tests {
         assert!(reasons.iter().any(|r| r.starts_with("Not translated: lua setParameter GainMatrix.Gain_1_1")), "{reasons:?}");
         assert!(reasons.iter().any(|r| r.ends_with("index 9, valid 1..8")), "{reasons:?}");
         assert!(!text.contains("\"0.5\""), "authored values stay out");
+    }
+
+    #[test]
+    fn uvi_missing_module_and_approximation_name_the_source_path() {
+        use crate::sound::report::{Missing, MissingReason};
+        let directory = tempfile::tempdir().unwrap();
+        let mut trace = LoadTrace::new(Path::new("module.uvip"), 0, None);
+        trace.test_session = Some(Session::start(directory.path().join("logs")));
+        let instrument = sampler_ir::Instrument {
+            source: sampler_ir::SourceFormat::Uvi,
+            ..Default::default()
+        };
+        let location = "Program \"P\"/Layer \"Wind\"/Keygroup \"C4\"/Inserts/MysteryFX \"Body\"";
+        for (feature, value, reason) in [
+            ("module", "MysteryFX", MissingReason::NotModeled),
+            ("MysteryFX curve", "private authored value", MissingReason::UnknownLaw),
+        ] {
+            trace.missing(&Missing {
+                location: location.into(), feature: feature.into(), value: value.into(), reason,
+            }, Some(&instrument));
+        }
+        let report = trace.finish("loaded");
+        let messages: Vec<_> = report["issues"].as_array().unwrap().iter()
+            .map(|i| i["message"].as_str().unwrap()).collect();
+        assert!(messages[0].contains("module MysteryFX"), "{messages:?}");
+        assert!(messages[0].contains("not modelled yet"));
+        assert!(messages[1].contains("scaling or curve unverified"));
+        assert!(messages.iter().all(|m| m.contains(location)), "{messages:?}");
+        assert!(!report.to_string().contains("private authored value"));
     }
 
     #[test]
