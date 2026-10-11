@@ -56,10 +56,13 @@ impl Picture {
         self.count
     }
     fn at(&self, n: usize) -> Option<&Arc<Image>> {
+        // The nearest decoded frame while the wanted one is still decoding.
+        let n = n.min(self.count.saturating_sub(1));
         self.indices
             .iter()
-            .position(|&i| i == n.min(self.count.saturating_sub(1)))
-            .and_then(|i| self.frames.get(i))
+            .enumerate()
+            .min_by_key(|(_, i)| i.abs_diff(n))
+            .and_then(|(i, _)| self.frames.get(i))
             .or_else(|| self.frames.first())
     }
 }
@@ -168,8 +171,23 @@ impl Assets {
         self.loaded.clear();
         self.fonts.clear();
         for (n, picture, font) in prepared {
-            if picture.is_some() {
-                self.loaded.insert(n, picture);
+            if let Some(picture) = picture {
+                // Knobs sharing one strip each need their own frame of it.
+                let merged = match self.loaded.remove(&n).flatten() {
+                    Some(have) if have.window == picture.window && have.count == picture.count => {
+                        let mut frames = have.frames.clone();
+                        let mut indices = have.indices.clone();
+                        for (i, f) in picture.indices.iter().zip(&picture.frames) {
+                            if !indices.contains(i) {
+                                indices.push(*i);
+                                frames.push(f.clone());
+                            }
+                        }
+                        Arc::new(Picture { frames, indices, count: have.count, window: have.window })
+                    }
+                    _ => picture,
+                };
+                self.loaded.insert(n, Some(merged));
             }
             if font.is_some() {
                 self.fonts.insert(n, font);
@@ -747,9 +765,23 @@ pub fn height(face: &Interface, page: PageRef) -> u32 {
 }
 
 /// Axis and full-range travel in drawn pixels, independent of bitmap fallback.
-fn gesture(w: &ir::Widget, scale: f64) -> (bool, f64) {
+/// A ui_slider drawn with a knob's picture is a knob (port from v1
+/// 0cb7a8a0:src/ui/perf_view.rs `knob_like`): the picture is named for one, or
+/// the control is near square and big enough to turn.
+pub(super) fn knob_like(face: &Interface, w: &ir::Widget) -> bool {
+    let (width, height) = (f64::from(w.rect.width), f64::from(w.rect.height));
+    matches!(w.kind, Kind::Slider { .. })
+        && w.image(Use::Strip).is_some_and(|a| {
+            let path = face.assets[a.0].path.to_lowercase();
+            ["knob", "dial", "rotary"].iter().any(|k| path.contains(k))
+                || (0.6..=1.6).contains(&(width / height)) && width.min(height) >= 24.
+        })
+}
+
+fn gesture(w: &ir::Widget, scale: f64, knob: bool) -> (bool, f64) {
     let vertical = match w.kind {
         Kind::Knob { .. } | Kind::ValueEdit { .. } => true,
+        Kind::Slider { .. } if knob => w.drag.is_none_or(|d| d.axis == ir::Orientation::Vertical),
         Kind::Slider { orientation, .. } => w.drag.map_or(
             orientation == ir::Orientation::Vertical || w.rect.height > w.rect.width,
             |d| d.axis == ir::Orientation::Vertical,
@@ -767,7 +799,7 @@ fn gesture(w: &ir::Widget, scale: f64) -> (bool, f64) {
                 * 1000.
                 / f64::from(d.sensitivity)
         }
-        None if matches!(w.kind, Kind::Slider { .. }) => f64::from(if vertical {
+        None if matches!(w.kind, Kind::Slider { .. }) && !knob => f64::from(if vertical {
             w.rect.height
         } else {
             w.rect.width
@@ -897,7 +929,8 @@ pub(super) fn widget_state(
     };
     let face_el: El = match &wd.kind {
         Kind::Knob { range, .. } | Kind::Slider { range, .. } => {
-            let (vertical, travel) = gesture(wd, scale);
+            let knob = knob_like(face, wd);
+            let (vertical, travel) = gesture(wd, scale, knob);
             let held = if can_edit {
                 if wd.mapper.is_some() {
                     drive_mapped(ui, &id, &mut v, range, wd.mapper.as_deref(), vertical)
@@ -959,7 +992,7 @@ pub(super) fn widget_state(
                     }
                 }
                 // Kontakt's stock knob: its name over the dial, the value under it.
-                None if matches!(wd.kind, Kind::Knob { .. }) => {
+                None if matches!(wd.kind, Kind::Knob { .. }) || knob => {
                     let value = match (&wd.kind, &wd.value_text) {
                         // The script's own label, even an empty one, replaces the number.
                         (_, Some(t)) => t.clone(),
@@ -968,8 +1001,11 @@ pub(super) fn widget_state(
                         }
                         _ => String::new(),
                     };
+                    // A slider drawn as a knob is only the dial: a picture control has
+                    // no caption of its own, and every caption costs layout nodes.
+                    let captioned = matches!(wd.kind, Kind::Knob { .. });
                     let mut parts = Vec::new();
-                    if !wd.hide.title && !wd.text.is_empty() {
+                    if captioned && !wd.hide.title && !wd.text.is_empty() {
                         parts.push(words(wd.text.clone()));
                     }
                     parts.push(
@@ -983,10 +1019,14 @@ pub(super) fn widget_state(
                         .min_h(0)
                         .w(Len::Pct(100.)),
                     );
-                    if !wd.hide.value && !value.is_empty() {
+                    if captioned && !wd.hide.value && !value.is_empty() {
                         parts.push(words(value));
                     }
-                    col(parts).gap(0).align(Align::Center)
+                    if parts.len() == 1 {
+                        parts.remove(0)
+                    } else {
+                        col(parts).gap(0).align(Align::Center)
+                    }
                 }
                 None => fader_face(unit(v), 0., None, vertical, lift, ui.focus_visible(&id)),
             }
@@ -1165,7 +1205,7 @@ pub(super) fn widget_state(
                 }
                 row![field.el].align(Align::Center)
             } else {
-                let (vertical, travel) = gesture(wd, scale);
+                let (vertical, travel) = gesture(wd, scale, false);
                 if can_edit {
                     drive_widget(
                         ui,

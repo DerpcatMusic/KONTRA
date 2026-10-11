@@ -226,7 +226,8 @@ impl Layout {
                 let strips = clusters(face, group, false, COLUMN_GAP).into_iter().map(|mut strip| {
                     strip.sort_by_key(|&n| face.page_rect(n).y);
                     strip.into_iter().map(|n| {
-                        let (width, height) = match class(&face.widgets[n.0].kind) {
+                        let knob = ir_view::knob_like(face, &face.widgets[n.0]);
+                        let (width, height) = match if knob { 2 } else { class(&face.widgets[n.0].kind) } {
                             2 => (88., 80.),
                             3 => (64., 140.),
                             4 => (152., 32.),
