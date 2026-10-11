@@ -201,6 +201,9 @@ pub enum Processor {
     Rectify(Rectifier),
     /// Kontakt Classic Saturation, signed saved Shape (-1..1).
     Saturation(f32),
+    /// NI Saturator Shape / KSP ENGINE_PAR_SHAPE; direct template copy 0x1408378f0.
+    LiveSaturation(Parameter),
+    LiveDistortion { transistor: bool, drive: Parameter, damping: Parameter },
     /// Kontakt Tube/Transistor Distortion, saved normalized Drive and Damping.
     Distortion { transistor: bool, drive: f32, damping: f32 },
     /// Formant Crusher decimation; per-voice scalar path.
@@ -262,6 +265,8 @@ impl Processor {
             Processor::StereoModeller(settings) => settings.valid(),
             Processor::Branch { gain, .. } => gain.is_finite(),
             Processor::Rectify(_) => true,
+            Processor::LiveSaturation(shape) => shape.valid() && !matches!(shape, Parameter::Expression { .. }) && shape.bounds().iter().all(|v| (-1.0..=1.0).contains(v)),
+            Processor::LiveDistortion { drive, damping, .. } => [drive, damping].iter().all(|p| p.valid() && matches!(p, Parameter::Constant(_) | Parameter::Control(ControlRange { ramp_frames: 0, .. })) && p.bounds().iter().all(|v| (0.0..=1.0).contains(v))),
             Processor::Saturation(shape) => shape.is_finite() && (-1.0..=1.0).contains(shape),
             Processor::Distortion { drive, damping, .. } => [drive, damping].into_iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
             Processor::Gainer { dry, gain } => {
@@ -333,6 +338,8 @@ pub(super) enum PreparedProcessor {
     KontaktEnhancedCompressor(enhanced_compressor::Enhanced),
     Rectify(Rectifier),
     Saturation(f32),
+    LiveSaturation(control::PreparedParameter),
+    LiveDistortion(distortion::LiveDistortion),
     Formant(formant::Formant),
     Phaser(phaser::Phaser),
     LegacyPhaser(phaser::LegacyPhaser),
@@ -542,6 +549,8 @@ pub(super) fn compile_processors(
                 }
                 Processor::Rectify(mode) => PreparedProcessor::Rectify(mode),
                 Processor::Saturation(shape) => PreparedProcessor::Saturation(shape),
+                Processor::LiveSaturation(shape) => PreparedProcessor::LiveSaturation(shape.compile(bindings)),
+                Processor::LiveDistortion { transistor, drive, damping } => PreparedProcessor::LiveDistortion(distortion::LiveDistortion::compile(transistor, drive.compile(bindings), damping.compile(bindings), rate)),
                 Processor::LegacyPhaser { depth, feedback, phase, speed, period_unit } => PreparedProcessor::LegacyPhaser(phaser::LegacyPhaser::compile(depth, feedback, phase, speed, period_unit, rate)),
                 Processor::Phaser(knobs) => PreparedProcessor::Phaser(phaser::Phaser::compile(knobs)),
             Processor::Formant(knobs) => PreparedProcessor::Formant(formant::Formant::compile(knobs, rate)),
@@ -910,6 +919,7 @@ impl PreparedVoiceChain {
                         | PreparedProcessor::KontaktEnhancedCompressor(_)
                         | PreparedProcessor::Phaser(_)
                         | PreparedProcessor::Formant(_)
+                        | PreparedProcessor::LiveDistortion(_)
                         | PreparedProcessor::Distortion(_)
                         | PreparedProcessor::Daft(_)
                         | PreparedProcessor::LadderLP4 { .. }
@@ -1192,6 +1202,15 @@ pub(super) fn process<const TRACE: bool>(
             PreparedProcessor::Phaser(phaser) => phaser.process(state, block, len),
             PreparedProcessor::Formant(formant) => formant.process(state, block, len),
             PreparedProcessor::Distortion(distortion) => distortion.process(state, block, len),
+            PreparedProcessor::LiveDistortion(distortion) => distortion.process(state, block, len, parameters, at),
+            PreparedProcessor::LiveSaturation(shape) => {
+                for i in 0..len {
+                    let value = shape.value(parameters, at + i as u64, None) as f32;
+                    for channel in block.iter_mut() {
+                        channel[i] = shaping::saturation(channel[i], value);
+                    }
+                }
+            }
             PreparedProcessor::Daft(daft) => daft.process(
                 state,
                 parameters,
