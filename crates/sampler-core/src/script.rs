@@ -88,6 +88,8 @@ fn validate(programs: &[Program], instances: &[ScriptInitial]) -> Result<(), Err
         if program.texts.len() < program.text_constants {
             return Err(Error::InvalidInput);
         }
+    }
+    for program in crate::behavior::distinct_code(programs, true) {
         for instruction in &*program.code {
             if let crate::Instruction::Op(crate::Op::ArrayFile { array, .. }) = instruction {
                 let bank = program
@@ -99,6 +101,8 @@ fn validate(programs: &[Program], instances: &[ScriptInitial]) -> Result<(), Err
                 }
             }
         }
+    }
+    for program in programs {
         match program.script_instance {
             Some(id)
                 if instances.get(usize::from(id.0)).is_some_and(|v| {
