@@ -640,6 +640,7 @@ pub(crate) fn script_environment(
 ) -> sampler_ksp::Environment {
     sampler_ksp::Environment {
         evaluation_budget: None,
+        coverage: None,
         groups,
         engine_values: source
             .engine_values
@@ -1403,7 +1404,10 @@ fn warning_class(message: &str) -> String {
     let mut chars = message.chars().peekable();
     while let Some(c) = chars.next() {
         if c == '$' {
-            while chars.next_if(|c| c.is_alphanumeric() || *c == '_').is_some() {}
+            while chars
+                .next_if(|c| c.is_alphanumeric() || *c == '_')
+                .is_some()
+            {}
             out.push_str("$name");
         } else if c.is_ascii_digit() {
             while chars.next_if(|c| c.is_ascii_digit()).is_some() {}
@@ -1425,7 +1429,10 @@ fn script_folders(file: Option<&std::path::Path>) -> [String; 4] {
     };
     let library = patch
         .ancestors()
-        .find(|dir| dir.file_name().is_some_and(|name| name.eq_ignore_ascii_case("Instruments")))
+        .find(|dir| {
+            dir.file_name()
+                .is_some_and(|name| name.eq_ignore_ascii_case("Instruments"))
+        })
         .and_then(std::path::Path::parent)
         .map_or_else(String::new, dir);
     [library.clone(), library, dir(patch), String::new()]

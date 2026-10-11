@@ -2160,6 +2160,7 @@ dependencies = [
  "sampler-kontakt",
  "sampler-ksp",
  "sampler-midi",
+ "sampler-parity",
  "sampler-ui-ir",
  "sampler-uvi",
  "serde",
@@ -4191,6 +4192,7 @@ dependencies = [
  "sampler-core",
  "sampler-ir",
  "sampler-ksp",
+ "sampler-parity",
  "sampler-ui-ir",
  "serde",
  "serde_json",
@@ -4203,6 +4205,7 @@ name = "sampler-ksp"
 version = "0.1.0"
 dependencies = [
  "sampler-core",
+ "sampler-parity",
  "sampler-ui-ir",
  "serde",
  "serde_json",
