@@ -71,6 +71,10 @@ fn observed_font_styles(
         .count()
 }
 
+fn authored_view(face: &ir::Interface) -> bool {
+    !matches!(face.source, ir::Source::Ksp { .. }) || face.performance || face.native_ui.is_some()
+}
+
 /// Drain the script effects the way the plugin's `apply_effects` does: interface effects go to
 /// the script views, MIDI / array-file jobs to the part's ingress. A script that emits into a
 /// full queue stalls (back-pressure), so every rendering loop must call this.
@@ -796,6 +800,7 @@ pub fn one(id: &str, out: &Path) -> Value {
         let faces = loaded.interfaces.clone();
         any_ui |= faces
             .iter()
+            .filter(|face| authored_view(face))
             .any(|face| !face.widgets.is_empty() || face.native_ui.is_some());
         let paint_path = path.clone();
         let paint_out = out.to_path_buf();
@@ -804,7 +809,7 @@ pub fn one(id: &str, out: &Path) -> Value {
             .spawn(move || {
                 let mut views = Vec::new();
                 for (slot, face) in faces.iter().enumerate() {
-                    if face.widgets.is_empty() && face.native_ui.is_none() {
+                    if !authored_view(face) || (face.widgets.is_empty() && face.native_ui.is_none()) {
                         continue;
                     }
                     let view = render(
@@ -1146,6 +1151,94 @@ fn ksp_observations() -> Value {
 #[cfg(test)]
 mod font_observation_tests {
     use super::*;
+    #[test]
+    fn scanner_does_not_paint_helper_scripts_as_blank_performance_views() {
+        for (declaration, expected) in [("", false), ("make_perfview", true)] {
+            let source = format!("on init {declaration} declare ui_label $l(1,1) end on");
+            let script = sampler_ksp::compile(&source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+            let mut face = script.ui(&|_| None).unwrap();
+            assert_eq!(authored_view(&face), expected);
+            face.native_ui = Some(ir::NativeUi { entry: "main.nui".into() });
+            assert!(authored_view(&face));
+        }
+    }
+
+    #[test]
+    fn scanner_services_array_io_and_waits_before_capturing_the_face() {
+        let dir = tempfile::tempdir().unwrap();
+        let array = dir.path().join("data.nka");
+        std::fs::write(&array, "%data\n37\n").unwrap();
+        let source = format!(r#"on init
+            declare %data[1] declare $job declare $done
+            declare ui_label $l(1,1) set_text($l,"waiting")
+            end on
+            on pgs_changed
+                $job := load_array_str(%data,"{}")
+                while ($done = 0) wait(10000) end while
+                wait(200000)
+                set_text($l,%data[0] & " settled")
+            end on
+            on async_complete $done := 1 end on"#, array.display());
+        let script = sampler_ksp::compile(&source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+        let entry = script.entries().iter().find(|e| e.kind == sampler_ksp::EntryKind::PgsChanged).unwrap().program;
+        let mut scripts = crate::sound::ScriptUi { views: vec![script.view()], ..Default::default() };
+        let mut faces = scripts.interfaces();
+        let plan = script.bind(sampler_core::Prepared::new(48000, vec![], vec![], 1).unwrap()).unwrap();
+        let limits = sampler_core::Limits::for_plan(&plan, 16, 16);
+        let mut runtime = sampler_core::Runtime::new(plan, limits).unwrap();
+        runtime.start_plan_behavior(runtime.active_plan(), entry).unwrap();
+        let part = crate::sound::v2::Part::new(runtime, crate::sound::tree::MixTree::instrument("scan")).unwrap();
+        let mut core = V2Core::with_parts(1, 48000.);
+        core.install(0, Some(Box::new(part)));
+        assert!(settle_snapshot(&mut core, &mut scripts, &mut faces).is_empty());
+        assert!(!core.scripts_running(0));
+        assert_eq!(faces[0].widgets[0].text, "37 settled");
+    }
+
+    #[test]
+    #[ignore = "requires the three installed UI diagnostic fixtures"]
+    fn installed_ui_diag_wallpapers_and_readout_match_the_authored_scripts() {
+        let root = Path::new("/mnt/MAIN_STORAGE/Libraries/Kontakt");
+        for file in [
+            "Pacific Ensemble Strings/Instruments/10 Cellos/Pacific - Ens Strings - 10 Cellos - Legato Sustains.nki",
+            "Performance Samples Vista/Instruments/Vista - 3 Basses.nki",
+            "Morphology Evolved [Zero-G] rutracker.org/Morphology Evolved.nki",
+        ] {
+            let path = root.join(file);
+            let loaded = sampler_kontakt::read(&path).expect("installed fixture must read");
+            let resources = std::cell::RefCell::new(sampler_kontakt::Resources::of(&path));
+            let mut faces = Vec::new();
+            for behavior in &loaded.instrument.behaviors {
+                let script = sampler_ksp::compile(&behavior.source, 48000, sampler_ksp::Limits::LIBRARY, &[])
+                    .expect("installed fixture script must compile");
+                if script.has_performance_view() {
+                    faces.push(script.ui(&|p| resources.borrow_mut().picture(p)).unwrap());
+                }
+            }
+            assert_eq!(faces.len(), 1);
+            let face = &faces[0];
+            let background = face.pages[0].background.image.expect("authored wallpaper");
+            let asset = &face.assets[background.0];
+            let bytes = resources.borrow_mut().read_result(&asset.path).unwrap().unwrap();
+            assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+            let mut missing = Vec::new();
+            for asset in &face.assets {
+                if resources.borrow_mut().read_result(&asset.path).unwrap().is_none() {
+                    missing.push(asset.path.clone());
+                }
+            }
+            println!("fixture={file} size={:?} wallpaper={} missing={missing:?}", face.pages[0].size, asset.path);
+            if file.contains("Morphology") {
+                let readout = face.widgets.iter().find(|w| w.name == "$readout").unwrap();
+                println!("Morphology authored readout={:?} hidden={}", readout.text, readout.hidden);
+                assert_eq!(readout.text, "VALUE READOUT");
+                let resolved = ir_view::resolved(face);
+                let shown = resolved.widgets.iter().find(|w| w.name == "$readout").unwrap();
+                assert_eq!(shown.rect, readout.rect);
+            }
+        }
+    }
+
     #[test]
     fn font_success_spans_pages_and_keeps_unrequested_fonts_unsuccessful() {
         let styles: Vec<_> = (0..3)
