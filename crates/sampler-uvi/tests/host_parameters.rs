@@ -328,13 +328,8 @@ fn table_boundary_writes_are_ignored_and_reads_return_the_constructor_default() 
     </script></ScriptProcessor></EventProcessors></Program></UVI4>"#;
     let h = ScriptHost::new(xml, (), Config::default()).unwrap();
     assert!(h.fault_counts().init.is_empty());
-    let f = h
-        .findings()
-        .into_iter()
-        .find(|f| f.feature == "lua widget_index_out_of_range")
-        .unwrap();
-    assert_eq!(f.count, 2);
-    assert!(f.value.contains("index") && f.value.contains("valid 1.."), "{}", f.value);
+    // An authored 0..length loop is a harmless no-op, not a finding.
+    assert!(h.findings().is_empty(), "{:?}", h.findings());
 }
 
 #[test]
