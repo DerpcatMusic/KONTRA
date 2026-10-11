@@ -951,13 +951,14 @@ fn level_change(xml: &str) -> (f64, f64) {
     let mut rt = Runtime::new(streamed.loaded.plan, limits)
         .unwrap()
         .with_stream_cache(streamed.cache);
-    attached.driver.wake(&mut rt).unwrap();
-    rt.trigger(
-        Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: None },
-        60,
-        1.,
-    )
-    .unwrap();
+    // Let the script thread's load-time commands arrive before the note.
+    for _ in 0..20 {
+        attached.driver.wake(&mut rt).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    let input = Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: None };
+    let note = rt.note_on(input, 60, 1.).unwrap();
+    attached.driver.note_on(&mut rt, note, 60, 1.).unwrap();
     let mut block = vec![[0.; 2]; 128];
     for _ in 0..4 {
         rt.render(&mut block).unwrap();
@@ -1090,4 +1091,24 @@ fn input_tone_marker_names_program_entry_after_aux_buses() {
     );
     assert_eq!(i.buses[0].output, ir::Output::Bus(i.input_bus.unwrap()));
     i.validate().unwrap();
+}
+
+#[test]
+fn a_constant_modulation_a_script_writes_is_live() {
+    // Folded to 0.25 until the script writes it, then 1: the gain it drives follows.
+    let program = |script: &str| {
+        insert_program(None)
+            .replace(
+                "<Layers>",
+                &format!("<ControlSignalSources><ConstantModulation Name=\"Macro 1\" Value=\"0.25\"/></ControlSignalSources><EventProcessors><ScriptProcessor><script>{script}</script></ScriptProcessor></EventProcessors><Layers>"),
+            )
+            .replace(
+                "<Keygroup Name=\"K\">",
+                "<Keygroup Name=\"K\"><Connections><SignalConnection Source=\"$Program/Macro 1\" Destination=\"Gain\" Ratio=\"1\"/></Connections>",
+            )
+    };
+    let (before, after) = level_change(&program(
+        "function onController(e) Program.modulations['Macro 1']:setParameter('Value', 1) end",
+    ));
+    assert!((after / before - 4.).abs() < 0.1, "{before} {after}");
 }

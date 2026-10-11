@@ -1175,6 +1175,7 @@ pub fn translate_program(
 ) -> Result<ir::Instrument, Box<dyn std::error::Error>> {
     let translate = || -> Result<ir::Instrument, Box<dyn std::error::Error>> {
         let (text, _) = bank.program(program)?;
+        let text = promote(text, &bank.scripts());
         let (instrument, ..) =
             translate_full(&text, Source::Bank).map_err(|e| describe(Path::new(program), e))?;
         Ok(instrument)
@@ -1240,6 +1241,7 @@ fn translate_untagged(path: &Path) -> Result<Translated, Box<dyn std::error::Err
         };
         let span = sampler_kontakt::audit::Span::new("uvi_program_read_decrypt");
         let (text, program_path) = bank.program(&member)?;
+        let text = promote(text, &bank.scripts());
         drop(span);
         let span = sampler_kontakt::audit::Span::new("uvi_xml_translate_ir");
         let (instrument, locations, groups, inserts) =
@@ -1258,7 +1260,7 @@ fn translate_untagged(path: &Path) -> Result<Translated, Box<dyn std::error::Err
             lua,
         });
     }
-    let text = read_text(path)?;
+    let text = promote(read_text(path)?, &Default::default());
     let (instrument, locations, groups, inserts) = translate_full(
         &text,
         Source::Disk(path.parent().unwrap_or(Path::new(".")).into()),
@@ -1541,6 +1543,7 @@ pub fn load_program_scripted_with_options(
     options: &sampler_kontakt::Options,
 ) -> Result<scripted::Program, Box<dyn std::error::Error>> {
     let (text, program_path) = bank.program(program)?;
+    let text = promote(text, &bank.scripts());
     let host = script::ScriptHost::new(&text, bank.scripts(), script::Config::default())?;
     let patched = apply_overrides(&text, &host.insert_overrides());
     let (mut instrument, locations, groups, inserts) =
@@ -1573,6 +1576,18 @@ pub fn load_program_scripted_with_options(
 /// `text` with the insert values the scripts set while loading written into
 /// its attributes, so the translation starts from the state the scripts leave.
 #[cfg(feature = "library-access")]
+/// Mark (`ScriptLive`) the ConstantModulation nodes the program's scripts can
+/// write, so the translator makes them live and the host drives them.
+#[cfg(feature = "library-access")]
+fn promote(text: String, scripts: &script::Scripts) -> String {
+    let promoted = engine_parameters::promoted_constants(&text, scripts);
+    let marks: Vec<_> = promoted
+        .into_iter()
+        .map(|(node, id)| (node, "ScriptLive".to_owned(), id.to_string()))
+        .collect();
+    if marks.is_empty() { text } else { apply_overrides(&text, &marks) }
+}
+
 fn apply_overrides(text: &str, overrides: &[(usize, String, String)]) -> String {
     let Ok(doc) = roxmltree::Document::parse(text) else {
         return text.to_owned();
@@ -1636,6 +1651,7 @@ pub fn load_program_scripted_streamed(
     policy: &sampler_kontakt::StreamPolicy,
 ) -> Result<scripted::Program, Box<dyn std::error::Error>> {
     let (text, program_path) = bank.program(program)?;
+    let text = promote(text, &bank.scripts());
     let host = script::ScriptHost::new(&text, bank.scripts(), script::Config::default())?;
     let patched = apply_overrides(&text, &host.insert_overrides());
     let (instrument, locations, groups, inserts) =

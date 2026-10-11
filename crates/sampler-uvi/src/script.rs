@@ -62,6 +62,28 @@ impl Scripts {
         self.files
             .push((path.to_lowercase().replace('\\', "/"), source));
     }
+    /// `roots` and every member whose name `roots` (transitively) mentions: the
+    /// text a program's scripts can run, without executing it.
+    pub fn reachable(&self, roots: &str) -> String {
+        let mut text = roots.to_lowercase();
+        let mut taken = vec![false; self.files.len()];
+        loop {
+            let mut grew = false;
+            for (n, (path, source)) in self.files.iter().enumerate() {
+                let stem = path.rsplit('/').next().unwrap_or(path);
+                let stem = stem.strip_suffix(".lua").unwrap_or(stem);
+                if !taken[n] && !stem.is_empty() && text.contains(stem) {
+                    taken[n] = true;
+                    text.push('\n');
+                    text.push_str(&source.to_lowercase());
+                    grew = true;
+                }
+            }
+            if !grew {
+                return text;
+            }
+        }
+    }
     fn member(&self, module: &str) -> Option<&(String, String)> {
         let module = module.to_lowercase().replace('\\', "/");
         let wanted = format!("{module}.lua");
@@ -725,6 +747,16 @@ struct Tree {
     layers: u32,
 }
 
+/// The Script Event Modulation command a promoted ConstantModulation's fields
+/// (Value, Style, and the `ScriptLive` id) stand for.
+fn constant_command(params: &[(String, String)], glide_ms: f64) -> Option<Command> {
+    let read = |n: &str| params.iter().find(|(k, _)| k == n).and_then(|(_, v)| v.parse::<f64>().ok());
+    let id = read("ScriptLive")? as u16;
+    let value = read("Value").unwrap_or(0.0).clamp(0.0, 1.0);
+    let value = if read("Style") == Some(1.0) { f64::from(u8::from(value > 0.5)) } else { value };
+    Some(Command::Modulation { id, value, glide_ms, voice: None, at_ms: 0.0 })
+}
+
 fn element(
     lua: &Lua,
     tree: &mut Tree,
@@ -753,6 +785,11 @@ fn element(
     tree.nodes.push((node.id().get_usize(), insert));
     tree.kinds.push(node.tag_name().name().to_owned());
     tree.live.push(crate::engine_parameters::live_names(node));
+    if node.has_tag_name("ConstantModulation")
+        && let Some(initial) = constant_command(&tree.params[id], 0.0)
+    {
+        shared.command(initial);
+    }
     tree.scopes.push(match node.tag_name().name() {
         "Program" => Some(Scope::Program),
         "Layer" => {
@@ -1473,6 +1510,16 @@ impl ScriptHost {
                         .then_some(retained)
                         .flatten()
                         .and_then(|effective| engine("Gain", effective))
+                } else if kind == "ConstantModulation" && live.contains(&name.as_str()) {
+                    // A promoted constant: retain the field, send the source.
+                    let mut params = s.params.borrow_mut();
+                    params.get_mut(id).and_then(|p| {
+                        match p.iter_mut().find(|(k, _)| *k == name) {
+                            Some((_, v)) => *v = value.to_string(),
+                            None => p.push((name.clone(), value.to_string())),
+                        }
+                        constant_command(p, 20.0)
+                    })
                 } else if live.contains(&name.as_str()) {
                     engine(&name, value)
                 } else {
@@ -2600,6 +2647,18 @@ mod tests {
 
     #[test]
     fn graph_node_and_depth_work_are_bounded() {
+        // roxmltree parses nested elements recursively, and its debug frames
+        // overflow the test thread's 2 MiB at this depth (gdb: the overflow is
+        // inside `roxmltree::tokenizer::parse_element`, before any host code).
+        std::thread::Builder::new()
+            .stack_size(32 << 20)
+            .spawn(graph_node_and_depth_bounds)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    fn graph_node_and_depth_bounds() {
         let h = super::ScriptHost::new("<UVI4><Program/></UVI4>", (), super::Config::default())
             .unwrap();
         h.shared.graph_nodes.set(1 << 18);
