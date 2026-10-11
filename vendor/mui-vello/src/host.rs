@@ -729,6 +729,52 @@ impl Host {
         })
     }
 
+    /// A device and renderer with no window, for tests and benchmarks: draw
+    /// with [`Host::render_offscreen`].
+    pub fn headless(size: (u32, u32)) -> Result<Self, HostError> {
+        let instance =
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let gpu = OnDevice::open(&instance, None, size, Transparency::Opaque)?;
+        Ok(Self {
+            instance,
+            surface: None,
+            gpu,
+            wanted: target_size(size.0, size.1),
+            retry_at: None,
+            generation: 0,
+            transparency: Transparency::Opaque,
+            first_frame: false,
+        })
+    }
+
+    /// Draw `scene` into a texture of the renderer's size and wait for the GPU
+    /// to finish: what a frame costs without the swapchain.
+    pub fn render_offscreen(&mut self, scene: &ResolvedScene, xf: Affine) -> Result<(), HostError> {
+        let OnDevice { device, renderer, size, config, .. } = &mut self.gpu;
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("headless target"),
+            size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: config.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        renderer.invalidate();
+        let t = Instant::now();
+        renderer.render(scene, xf, &view).map_err(HostError::Render)?;
+        let encoded = t.elapsed();
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        if std::env::var_os("KONTRA_TRACE").is_some() {
+            eprintln!("GPU encode+submit={:.2}ms wait={:.2}ms", encoded.as_secs_f64() * 1e3, (t.elapsed() - encoded).as_secs_f64() * 1e3);
+        }
+        Ok(())
+    }
+
     /// The surface composites with alpha: [`Transparency::Translucent`]
     /// was asked for and the surface offered a way to.
     pub fn translucent(&self) -> bool {

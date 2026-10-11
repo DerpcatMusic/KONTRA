@@ -4,14 +4,18 @@ local methods = {}
 local node_mt = {__index=methods}
 _G.__rev=0 -- bumped by every state write: the host's render-cache key
 local state_slots, current_path, hook_index, current_context = {}, 'root', 0, {}
+-- Restore the caller's hook scope, then pass pcall's results through
+-- without packing them into a table.
+local function finish(old_path,old_index,old_context,ok,...)
+    current_path,hook_index,current_context=old_path,old_index,old_context
+    if not ok then error((...),0) end
+    return ...
+end
 local function bind(fn,path,context)
     return function(...)
         local old_path,old_index,old_context=current_path,hook_index,current_context
         current_path,hook_index,current_context=path,0,context
-        local result=table.pack(pcall(fn,...))
-        current_path,hook_index,current_context=old_path,old_index,old_context
-        if not result[1] then error(result[2],0) end
-        return table.unpack(result,2,result.n)
+        return finish(old_path,old_index,old_context,pcall(fn,...))
     end
 end
 local function node(component, properties)
@@ -68,11 +72,13 @@ local function append(children,child)
         for _,nested in ipairs(child.children) do append(children,nested) end
     else children[#children+1]=child end
 end
+local native_nodes=0
 resolve=function(element,path,context,depth)
     if element==nil or element==false then return nil end
     if depth>192 then error('NativeUI component depth exceeded') end
-    _G.__native_nodes=(_G.__native_nodes or 0)+1
-    if _G.__native_nodes>16384 then error('NativeUI component budget exceeded') end
+    native_nodes=native_nodes+1
+    _G.__native_nodes=native_nodes
+    if native_nodes>16384 then error('NativeUI component budget exceeded') end
     if type(element)~='table' or not element.component then error('Invalid NativeUI element at '..path) end
     local old_path,old_index,old_context=current_path,hook_index,current_context
     current_path,hook_index,current_context=path,0,context
@@ -88,34 +94,34 @@ resolve=function(element,path,context,depth)
     local props=element.properties()
     -- Conditional children leave holes in Lua's numeric table keys. ipairs
     -- stops at the first hole and would drop every following sibling.
-    props.children={}
+    local children={}
+    props.children=children
     local child_keys={}
-    for key,child in pairs(props) do
+    local is_function=type(element.component)=='function'
+    -- Retain resolved children, without also retaining their source factories.
+    local resolved_props={}
+    for key,value in pairs(props) do
         if type(key)=='number' and key>=1 and key%1==0 then
-            props.children[key]=child
+            children[key]=value
             child_keys[#child_keys+1]=key
+        elseif key~='children' and not is_function then
+            resolved_props[key]=value
         end
     end
     table.sort(child_keys)
     local out
-    if type(element.component)=='function' then
+    if is_function then
         out=resolve(element.component(props),path..'/component',child_context,depth+1)
         if out and #element.modifiers>0 then
             out={kind='Group',props={},children={out},modifiers={},path=path}
         end
     else
-        -- Retain resolved children, without also retaining their source factories.
-        local resolved_props={}
-        for key,value in pairs(props) do
-            if key~='children' and not (type(key)=='number' and key>=1 and key%1==0) then
-                resolved_props[key]=value
-            end
-        end
         if element.component=='TextInput' then local t=_G.__texts; t[#t+1]=path end
         out={kind=element.component,props=resolved_props,children={},modifiers={},path=path}
-        for _,key in ipairs({'paint','on_accept','on_change'}) do
-            if type(props[key])=='function' then resolved_props[key]=bind(props[key],path,child_context) end
-        end
+        local paint,accept,change=props.paint,props.on_accept,props.on_change
+        if type(paint)=='function' then resolved_props.paint=bind(paint,path,child_context) end
+        if type(accept)=='function' then resolved_props.on_accept=bind(accept,path,child_context) end
+        if type(change)=='function' then resolved_props.on_change=bind(change,path,child_context) end
         if out.kind=='ForEach' then
             out.kind='Group'
             for i,item in ipairs(props.data or {}) do
@@ -154,7 +160,7 @@ resolve=function(element,path,context,depth)
     current_path,hook_index,current_context=old_path,old_index,old_context
     return out
 end
-_G.__render=function(root) _G.__native_nodes=0; _G.__live=false; _G.__texts={}; return resolve(node(root,function() return {} end),'root',{enabled=true},0) end
+_G.__render=function(root) native_nodes=0; _G.__native_nodes=0; _G.__live=false; _G.__texts={}; return resolve(node(root,function() return {} end),'root',{enabled=true},0) end
 package.loaded.native_ui=ui
 package.loaded.native_ui_util={clamp=function(x,a,b) return math.max(a,math.min(b,x)) end,
     partial=function(fn,...) local args=table.pack(...); return function(...) local values=table.pack(...); local all={}; for i=1,args.n do all[#all+1]=args[i] end; for i=1,values.n do all[#all+1]=values[i] end; return fn(table.unpack(all)) end end}

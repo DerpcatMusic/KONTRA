@@ -580,7 +580,15 @@ pub fn paint(
     }
     canvas.begin_frame();
     let mut bez = BezPath::new();
+    let mut skip_to = 0;
     for (i, p) in scene.paint.iter().enumerate() {
+        if i < skip_to {
+            continue;
+        }
+        if let Some(end) = invisible_end(&scene.paint, i) {
+            skip_to = end + 1;
+            continue;
+        }
         if layered(canvas, p) {
             continue;
         }
@@ -595,6 +603,34 @@ pub fn paint(
         }
     }
     Ok(())
+}
+
+/// Where the layer opened at `list[i]` closes, if it is fully transparent and
+/// holds nothing that must still be walked: a hidden control paints nothing,
+/// yet as a layer it costs the GPU blend spill of everything inside it.
+pub(crate) fn invisible_end(list: &[Painted], i: usize) -> Option<usize> {
+    let Layer::Blend { opacity, .. } = list[i].layer else {
+        return None;
+    };
+    if opacity.partial_cmp(&0.0).is_none_or(|o| o.is_gt()) {
+        return None;
+    }
+    let mut depth = 0;
+    for (j, q) in list.iter().enumerate().skip(i) {
+        match q.layer {
+            Layer::Blend { .. } => depth += 1,
+            Layer::Unblend => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(j);
+                }
+            }
+            Layer::Backdrop | Layer::External => return None,
+            _ if path_shadow(q) => return None,
+            _ => {}
+        }
+    }
+    None
 }
 
 /// `base` moved to where `p` stands: its paths are local to
@@ -1045,6 +1081,35 @@ fn one(
 #[cfg(test)]
 mod seam {
     use super::*;
+    /// A hidden control is an opacity-0 layer: it paints nothing, so the
+    /// walk skips it whole instead of opening a layer for it.
+    #[test]
+    fn a_fully_transparent_layer_is_skipped() {
+        use mui_layout::Size;
+        use mui_scene::{Color, Paints, SceneSpec, Styled, block, resolve, stack};
+        let ink = |hidden: bool| {
+            let child = block(10., 10.).fill(Color::srgb(1., 0., 0.));
+            let child = if hidden { child.opacity(0.) } else { child };
+            resolve(&SceneSpec::new(stack([child, block(4., 4.).fill(Color::srgb(0., 0., 1.))]).size(16., 16.)).offered(Size::new(16., 16.))).unwrap()
+        };
+        let scene = ink(true);
+        let open = scene.paint.iter().position(|p| matches!(p.layer, Layer::Blend { .. })).expect("opacity opens a layer");
+        let end = invisible_end(&scene.paint, open).expect("a transparent layer is skippable");
+        assert!(matches!(scene.paint[end].layer, Layer::Unblend));
+        assert!(invisible_end(&ink(false).paint, 0).is_none());
+        let render = |scene: &ResolvedScene| {
+            let mut ctx = vello_cpu::RenderContext::new(16, 16);
+            let mut resources = vello_cpu::Resources::default();
+            paint(&mut Cpu { ctx: &mut ctx, resources: &mut resources, cache: &mut Cache::default() }, scene, Affine::IDENTITY).unwrap();
+            ctx.flush();
+            let mut pixels = Pixmap::new(16, 16);
+            ctx.render(&mut pixels, &mut resources);
+            pixels.data().to_vec()
+        };
+        let hidden = render(&scene);
+        assert!(hidden.iter().all(|p| p.r == 0), "nothing red may show through");
+    }
+
     use mui_geometry::Path;
     use mui_scene::{Image, Text};
 
