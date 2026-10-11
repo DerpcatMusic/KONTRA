@@ -149,20 +149,14 @@ impl Translation {
                         let gain = db(number(node, name, 0.0)? - middle);
                         out.push(ir::Processor::Filter(ir::Filter {
                             kind: if low {
-                                ir::FilterKind::LowShelf { gain }
+                                ir::FilterKind::FirstOrderLowShelf { gain }
                             } else {
-                                ir::FilterKind::HighShelf { gain }
+                                ir::FilterKind::FirstOrderHighShelf { gain }
                             },
                             cutoff: ir::Frequency::Hertz(number(node, frequency, default)?),
                             resonance: ir::Resonance::Q(std::f64::consts::FRAC_1_SQRT_2),
                         }));
                     }
-                    self.ir.unsupported.push(ir::Unsupported {
-                        location: at.clone(),
-                        feature: "ThreeBandShelves crossover kernel (shared shelves used)".into(),
-                        value: String::new(),
-                        reason: ir::Reason::UnknownLaw,
-                    });
                 }
                 "WaveShaper" => {
                     // DSP_FORMAT_SPECIFICATION "WaveShaper rectifier kernels":
@@ -264,13 +258,25 @@ impl Translation {
                         right: vec![1.0],
                         asset,
                     });
+                    let mut shape = crate::reverb::neutral();
+                    shape.normalize = number(node, "NormalizePower", 1.0)? != 0.0;
                     if node.has_tag_name("SampledReverb") {
-                        for name in ["Time", "DampingLow", "DampingHigh", "PreDelay", "Width"] {
-                            let v = number(node, name, 0.0)?;
-                            if v != 0.0 {
-                                self.unsupported(&at, &format!("SampledReverb {name}"), v);
-                            }
-                        }
+                        shape.sampled_reverb = true;
+                        shape.time = number(node, "Time", 1.0)?;
+                        shape.damping_low = number(node, "DampingLow", 0.0)?;
+                        shape.damping_high = number(node, "DampingHigh", 0.0)?;
+                        shape.pre_delay_ms = number(node, "PreDelay", 50.0)?;
+                        shape.width = number(node, "Width", 0.0)?;
+                    }
+                    self.ir.impulse_shapes.resize(self.ir.impulses.len() - 1, None);
+                    self.ir.impulse_shapes.push(Some(shape));
+                    if shape.damping_low > 0.0 || shape.damping_high > 0.0 {
+                        self.ir.unsupported.push(ir::Unsupported {
+                            location: at.clone(),
+                            feature: "positive SampledReverb damping".into(),
+                            value: String::new(),
+                            reason: ir::Reason::UnknownLaw,
+                        });
                     }
                     out.push(ir::Processor::Convolution {
                         impulse: ir::ImpulseRef(self.ir.impulses.len() - 1),
@@ -380,6 +386,7 @@ impl Translation {
             }
         }
         let scale = number(node, "GainScale", 1.0)?;
+        let mut unproven = false;
         for band in 1..=16 {
             let get = |name: &str, default| number(node, &format!("{name}{band}"), default);
             // A scripted bus keeps all 16 bands and the overall level so
@@ -388,7 +395,11 @@ impl Translation {
                 continue;
             }
             let gain = db(get("Gain", 0.0)? * scale);
-            let kind = match get("Type", 6.0)? as i64 {
+            let shape = get("Type", 6.0)? as i64;
+            // Installed libraries only show types 5 (gain, high-shelf-like
+            // frequencies) and 6 (peak); 0 to 4 follow the manual's order.
+            unproven |= (0..=4).contains(&shape);
+            let kind = match shape {
                 0 => ir::FilterKind::LowPass { poles: 2 },
                 1 => ir::FilterKind::HighPass { poles: 2 },
                 2 => ir::FilterKind::BandPass { poles: 2 },
@@ -420,13 +431,15 @@ impl Translation {
         if overall != 0.0 || live {
             out.push(ir::Processor::Gain(db(overall)));
         }
-        // The manual lists the seven shapes but not their numbering; this is
-        // the listed order with peak last.
-        self.unsupported(
-            at,
-            "DigitalEq band type numbering (manual order assumed)",
-            "",
-        );
+        // The manual lists the seven shapes but not their numbering; types 5
+        // and 6 are evidenced by the installed banks, 0 to 4 are its order.
+        if unproven {
+            self.unsupported(
+                at,
+                "DigitalEq band type numbering (manual order assumed)",
+                "",
+            );
+        }
         Ok(())
     }
 }
@@ -450,6 +463,10 @@ pub(super) fn fill_impulses(
                 impulse.rate = rate;
                 impulse.left = frames.iter().map(|f| f[0]).collect();
                 impulse.right = frames.iter().map(|f| f[1]).collect();
+                if let Some(Some(shape)) = instrument.impulse_shapes.get(index) {
+                    let (left, right) = crate::reverb::shape(rate, &impulse.left, &impulse.right, shape);
+                    (impulse.left, impulse.right) = (left, right);
+                }
             }
             other => instrument.unsupported.push(ir::Unsupported {
                 location: locations.get(asset.0).cloned().unwrap_or_default(),

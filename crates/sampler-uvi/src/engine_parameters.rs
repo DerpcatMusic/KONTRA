@@ -453,3 +453,29 @@ mod tests {
         assert_eq!((ir.controls.len(), ir.processor_controls.len()), (1, 2));
     }
 }
+
+/// The convolution slot (bus, then processor order, as lowering numbers them)
+/// of each bus insert element that holds a convolver.
+pub(crate) fn convolver_slots(
+    instrument: &ir::Instrument,
+    inserts: &[InsertNode],
+) -> std::collections::HashMap<usize, usize> {
+    let mut slots = std::collections::HashMap::new();
+    let mut next = 0;
+    for chain in instrument.buses.iter().filter_map(|bus| bus.chain) {
+        let processors = &instrument.chains[chain.0];
+        let all = processors.pre_amplitude.iter().chain(&processors.post_amplitude);
+        for (index, processor) in all.enumerate() {
+            if matches!(processor, ir::Processor::Convolution { .. }) {
+                if let Some(insert) = inserts
+                    .iter()
+                    .find(|n| n.chain == chain && (n.first..n.first + n.count).contains(&index))
+                {
+                    slots.insert(insert.node, next);
+                }
+                next += 1;
+            }
+        }
+    }
+    slots
+}

@@ -214,6 +214,17 @@ impl Translation {
         Ok(())
     }
 
+    /// A program or layer connection applied to one keygroup of its scope: a
+    /// gap is reported once for the connection, not once per keygroup.
+    pub(crate) fn connect_scoped(&mut self, connection: Node, out: &mut Modulation) -> Result<(), String> {
+        if let Err(gap) = self.try_connect(connection, out, None)? {
+            if self.shared_sources.insert(connection.id()) {
+                self.gap(connection, gap);
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn connect_frequency(
         &mut self,
         connection: Node,
@@ -757,7 +768,11 @@ impl Translation {
                 if let Some(id) = node.attribute("ScriptLive").and_then(|t| t.parse::<u16>().ok()) {
                     // A script writes it: a live source the host drives, not a fold.
                     let polar = number(node, "Bipolar", 0.0)? != 0.0;
-                    let source = ir::ModulationSource::Script(id);
+                    let source = if polar {
+                        ir::ModulationSource::ScriptBipolar(id)
+                    } else {
+                        ir::ModulationSource::Script(id)
+                    };
                     return Ok(Ok(Signal::Live {
                         modulator: self.modulator(format!("{source:?}"), source),
                         curve: if polar { bipolar } else { identity },
@@ -801,20 +816,16 @@ impl Translation {
                         NotModeled,
                     )));
                 };
-                if number(node, "Bipolar", 1.0)? != 0.0 && self.shared_sources.insert(node.id()) {
-                    self.ir.unsupported.push(ir::Unsupported {
-                        location: path(node),
-                        feature: "bipolar ScriptEventModulation (negative script values read as 0)"
-                            .into(),
-                        value: id.to_string(),
-                        reason: NotModeled,
-                    });
-                }
-                let source = ir::ModulationSource::Script(id);
+                let polar = number(node, "Bipolar", 1.0)? != 0.0;
+                let source = if polar {
+                    ir::ModulationSource::ScriptBipolar(id)
+                } else {
+                    ir::ModulationSource::Script(id)
+                };
                 Ok(Ok(Signal::Live {
                     modulator: self.modulator(format!("{source:?}"), source),
-                    curve: identity,
-                    bipolar: false,
+                    curve: if polar { bipolar } else { identity },
+                    bipolar: polar,
                     scale: None,
                     smoothing: 0.0,
                     extra: None,
@@ -938,8 +949,14 @@ impl Translation {
             2.0 => ir::LfoShape::Triangle,
             // v1 measured the square only per voice.
             1.0 if retrigger => ir::LfoShape::Square,
-            wave @ (6.0 | 9.0) => {
-                let what = format!("WaveFormType {wave} (random/user table)");
+            // The manual's waveform menu runs Sine, Square, Triangle, Ramp Up,
+            // Ramp Down, Analog Square, Random S&H, Chaos Lorenz, Chaos Rossler,
+            // User; indices 0, 1, 2 and 6 are measured to sit at those places.
+            3.0 => ir::LfoShape::SawUp,
+            4.0 => ir::LfoShape::SawDown,
+            6.0 => ir::LfoShape::SampleAndHold,
+            wave @ 9.0 => {
+                let what = format!("WaveFormType {wave} (user table)");
                 return Ok(Err(gap("LFO waveform", what, NotModeled)));
             }
             wave => {
@@ -1360,6 +1377,75 @@ mod tests {
     }
 
     #[test]
+    fn program_and_layer_connections_reach_every_keygroup() {
+        let cc = |n| format!(r#"<SignalConnection Source="@MIDI CC {n}" Destination="Gain" Ratio="1"/>"#);
+        let xml = format!(
+            r#"<Program Name="t"><Connections>{}</Connections><Layers><Layer Name="L"><Connections>{}</Connections><Keygroups>
+            <Keygroup Name="A" HighKey="59"><Oscillators><SamplePlayer Name="P" SamplePath="a.wav"/></Oscillators></Keygroup>
+            <Keygroup Name="B" LowKey="60"><Oscillators><SamplePlayer Name="Q" SamplePath="a.wav"/></Oscillators></Keygroup>
+            </Keygroups></Layer></Layers></Program>"#,
+            cc(7),
+            cc(11)
+        );
+        let ir = crate::translate_bank(&xml).unwrap().0;
+        assert_eq!(ir.zones.len(), 2);
+        for zone in &ir.zones {
+            assert_eq!(zone.routes.len(), 2, "{:?}", ir.unsupported);
+        }
+        assert!(ir.unsupported.iter().all(|u| u.feature != "program or layer modulation"));
+    }
+
+    /// Aux buses, their inserts and a layer's sends are translated, so none of
+    /// those containers is reported as an untranslated module.
+    #[test]
+    fn routing_containers_are_not_reported_as_modules() {
+        let xml = r#"<Program Name="t"><Auxs><AuxEffect Name="Verb"><Inserts><Gain Gain="0.5"/></Inserts></AuxEffect></Auxs>
+            <Layers><Layer Name="L"><BusRouters><BusRouter Destination="Verb" Gain="0.5"/></BusRouters>
+            <Inserts><Gain Gain="0.5"/></Inserts>
+            <Keygroups><Keygroup Name="K"><Oscillators><SamplePlayer Name="P" SamplePath="a.wav"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#;
+        let ir = crate::translate_bank(xml).unwrap().0;
+        let modules: Vec<_> = ir
+            .unsupported
+            .iter()
+            .filter(|u| u.feature == "module")
+            .map(|u| (&u.location, &u.value))
+            .collect();
+        assert!(modules.is_empty(), "{modules:?}");
+    }
+
+    #[test]
+    fn bipolar_script_modulation_keeps_negative_values() {
+        for (bip, expected) in [(1, ir::ModulationSource::ScriptBipolar(3)), (0, ir::ModulationSource::Script(3))] {
+            let ir = translate(
+                &format!(r#"<ScriptEventModulation Name="ScriptEventModulation 3" Bipolar="{bip}"/>"#),
+                "",
+                r#"<SignalConnection Source="$Program/ScriptEventModulation 3" Destination="Pitch" Ratio="1"/>"#,
+            );
+            let (_, source) = only_route(&ir);
+            assert_eq!(source, &expected);
+            assert!(ir.unsupported.is_empty(), "{:?}", ir.unsupported);
+        }
+    }
+
+    #[test]
+    fn lfo_ramps_and_sample_and_hold_follow_the_waveform_menu() {
+        for (wave, expected) in [
+            (3, ir::LfoShape::SawUp),
+            (4, ir::LfoShape::SawDown),
+            (6, ir::LfoShape::SampleAndHold),
+        ] {
+            let ir = translate(
+                &format!(r#"<LFO Name="V" WaveFormType="{wave}"/>"#),
+                "",
+                r#"<SignalConnection Source="$Program/V" Destination="Pitch" Ratio="1"/>"#,
+            );
+            let (_, source) = only_route(&ir);
+            assert!(matches!(source, ir::ModulationSource::Lfo(l) if l.shape == expected), "{wave}");
+            assert!(ir.unsupported.iter().all(|u| u.feature != "LFO waveform"), "{:?}", ir.unsupported);
+        }
+    }
+
+    #[test]
     fn pitch_bend_and_lfo_pitch_use_semitone_ratios() {
         let ir = translate(
             "",
@@ -1496,7 +1582,7 @@ mod tests {
     #[test]
     fn untranslatable_connections_are_reported() {
         let ir = translate(
-            r#"<Drunk Name="S"/><LFO Name="W" WaveFormType="7"/><LFO Name="V"/>"#,
+            r#"<Drunk Name="S"/><LFO Name="W" WaveFormType="8"/><LFO Name="V"/>"#,
             r#"<SignalConnection Source="$Program/S" Destination="Gain" Ratio="1"/>
                <SignalConnection Source="$Program/W" Destination="Pan" Ratio="1"/>
                <SignalConnection Source="@PitchBend" Destination="Gain" Ratio="1"/>"#,

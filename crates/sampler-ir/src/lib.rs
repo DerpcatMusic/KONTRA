@@ -80,6 +80,9 @@ pub struct Instrument {
     pub bus_addresses: Vec<(i32, BusRef)>,
     /// Impulse responses bus convolutions refer to.
     pub impulses: Vec<Impulse>,
+    /// How the importing profile's loader shapes each of [`Instrument::impulses`]
+    /// once its audio is decoded (parallel; missing or `None` entries stay as decoded).
+    pub impulse_shapes: Vec<Option<ImpulseShape>>,
     pub controls: Vec<Control>,
     /// Actual processor lanes driven by authored controls; indices span pre then post.
     pub processor_controls: Vec<ProcessorControl>,
@@ -1178,12 +1181,14 @@ pub enum ModulationSource {
     /// index: `set_event_par_arr(event, $EVENT_PAR_MOD_VALUE_ID, v, id)`,
     /// read as `clamp(v / 1_000_000, -1, 1)`; 0 until set.
     Script(u16),
+    /// The same script value for a bipolar source, kept in -1..=1.
+    ScriptBipolar(u16),
 }
 
 impl ModulationSource {
     /// Whether values span -1..=1 rather than 0..=1.
     pub fn bipolar(&self) -> bool {
-        matches!(self, Self::Lfo(_) | Self::PitchBend)
+        matches!(self, Self::Lfo(_) | Self::PitchBend | Self::ScriptBipolar(_))
     }
 }
 
@@ -1577,6 +1582,24 @@ pub struct Impulse {
     pub asset: Option<AssetRef>,
 }
 
+/// The source controls of a sampled reverb that act on its impulse response.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ImpulseShape {
+    /// Kept fraction of the response's duration, `(0, 1]`.
+    pub time: f64,
+    /// Low and high frequency damping, `[-1, 1]` (negative boosts).
+    pub damping_low: f64,
+    pub damping_high: f64,
+    pub pre_delay_ms: f64,
+    /// Stereo width, `[-1, 1]`; negative swaps the channels.
+    pub width: f64,
+    /// Scale the response to unit mean channel energy.
+    pub normalize: bool,
+    /// A SampledReverb (its own gain references) rather than a Convolver.
+    pub sampled_reverb: bool,
+}
+
 /// Physical reverb settings; an importing profile maps its own controls
 /// here. Wet signal only: the dry path is the bus's other send.
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -1617,6 +1640,9 @@ pub enum FilterKind {
     Peak { gain: Gain },
     LowShelf { gain: Gain },
     HighShelf { gain: Gain },
+    /// A 6 dB/octave shelf: `Filter::resonance` has no effect on it.
+    FirstOrderLowShelf { gain: Gain },
+    FirstOrderHighShelf { gain: Gain },
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
