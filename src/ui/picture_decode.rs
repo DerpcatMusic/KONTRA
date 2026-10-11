@@ -479,6 +479,59 @@ mod tests {
     }
 }
 
+/// Every frame of a PNG strip in one pass over its rows, each shrunk to
+/// `target` (v1 0cb7a8a0:src/artwork.rs cut whole strips once; this adds the
+/// byte bound in the caller). `None` for anything but a plain 8-bit PNG,
+/// whose frames then decode one at a time.
+pub(super) fn png_strip(
+    bytes: &[u8],
+    meta: ir::ImageMeta,
+    target: [u32; 2],
+    canceled: impl Fn() -> bool,
+) -> Option<Vec<Image>> {
+    let _permit = DECODE.lock_unpoisoned();
+    let mut decoder =
+        png::Decoder::new_with_limits(Cursor::new(bytes), png::Limits { bytes: 32 << 20 });
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = decoder.read_info().ok()?;
+    let (width, height) = (reader.info().width, reader.info().height);
+    if width == 0 || height == 0 || width > 65536 || height > 1048576 || reader.info().interlaced {
+        return None;
+    }
+    let (kind, depth) = reader.output_color_type();
+    let channels = match (kind, depth) {
+        (png::ColorType::Rgba, png::BitDepth::Eight) => 4,
+        (png::ColorType::Rgb, png::BitDepth::Eight) => 3,
+        (png::ColorType::GrayscaleAlpha, png::BitDepth::Eight) => 2,
+        (png::ColorType::Grayscale, png::BitDepth::Eight) => 1,
+        _ => return None,
+    };
+    let mut frames = Vec::new();
+    for frame in 0..meta.frames as usize {
+        let [x, y, w, h] = source_rect(meta, frame, width, height, None)?;
+        let (tw, th) = (target[0].max(1).min(w), target[1].max(1).min(h));
+        frames.push(Reduction::new([x, y, w, h], tw, th)?);
+    }
+    for sy in 0..height {
+        if canceled() {
+            return None;
+        }
+        let row = reader.next_row().ok()??;
+        // Frames are disjoint bands: only the one holding this row reads it.
+        let band = if meta.axis == ir::Orientation::Vertical {
+            Some((sy / (height / meta.frames)) as usize)
+        } else {
+            None
+        };
+        for (n, f) in frames.iter_mut().enumerate() {
+            if band.is_none_or(|b| b == n) {
+                f.row(sy, row.data(), channels);
+            }
+        }
+    }
+    frames.into_iter().map(Reduction::finish).collect()
+}
+
 pub(super) fn decode(
     bytes: &[u8],
     meta: ir::ImageMeta,

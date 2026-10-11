@@ -11,8 +11,47 @@ use std::{path::Path, sync::Arc};
 pub struct Source {
     kontakt: sampler_kontakt::Resources,
     uvi: Option<sampler_uvi::Resources>,
+    strips: Strips,
     #[cfg(feature = "shots")]
     pub scan: Scan,
+}
+
+/// Whole decoded strips, least recently used out first, bounded by bytes: a
+/// turning knob reads and decodes its PNG once, not once per frame.
+#[derive(Default)]
+struct Strips {
+    entries: Vec<(String, Vec<Arc<Image>>, u64)>,
+    bytes: usize,
+    tick: u64,
+}
+
+const STRIP_BUDGET: usize = 48 << 20;
+
+impl Strips {
+    fn get(&mut self, key: &str) -> Option<&Vec<Arc<Image>>> {
+        self.tick += 1;
+        let tick = self.tick;
+        let e = self.entries.iter_mut().find(|e| e.0 == key)?;
+        e.2 = tick;
+        Some(&e.1)
+    }
+    fn put(&mut self, key: String, frames: Vec<Arc<Image>>) -> bool {
+        let len: usize = frames.iter().map(|f| f.rgba.len()).sum();
+        if len > STRIP_BUDGET {
+            return false;
+        }
+        self.bytes += len;
+        while self.bytes > STRIP_BUDGET {
+            let Some(oldest) = (0..self.entries.len()).min_by_key(|&i| self.entries[i].2) else {
+                break;
+            };
+            let (_, frames, _) = self.entries.swap_remove(oldest);
+            self.bytes -= frames.iter().map(|f| f.rgba.len()).sum::<usize>();
+        }
+        self.tick += 1;
+        self.entries.push((key, frames, self.tick));
+        true
+    }
 }
 
 #[cfg(feature = "shots")]
@@ -54,6 +93,7 @@ impl Source {
         Self {
             kontakt: sampler_kontakt::Resources::of(instrument),
             uvi,
+            strips: Strips::default(),
             #[cfg(feature = "shots")]
             scan: Scan::default(),
         }
@@ -120,15 +160,29 @@ impl Source {
         if canceled() {
             return None;
         }
-        let bytes = self.read_result(&asset.path).ok().flatten()?;
-        if canceled() {
-            return None;
-        }
         let meta = match asset.kind {
             ir::AssetKind::Image(m) => m,
             ir::AssetKind::BitmapFont => ir::ImageMeta::default(),
             _ => return None,
         };
+        let strip = window.is_none() && meta.frames > 1 && matches!(asset.kind, ir::AssetKind::Image(_));
+        let key = format!("{}:{:?}:{target:?}", asset.path, meta);
+        if strip && let Some(frames) = self.strips.get(&key) {
+            let image = frames.get(frame.min(frames.len() - 1))?.clone();
+            return Some(Arc::new(Picture::prepared(image, frame, meta.frames as usize, window)));
+        }
+        let bytes = self.read_result(&asset.path).ok().flatten()?;
+        if canceled() {
+            return None;
+        }
+        if strip
+            && let Some(frames) = super::picture_decode::png_strip(&bytes, meta, target, &canceled)
+        {
+            let frames: Vec<_> = frames.into_iter().map(Arc::new).collect();
+            let image = frames.get(frame.min(frames.len() - 1))?.clone();
+            self.strips.put(key, frames);
+            return Some(Arc::new(Picture::prepared(image, frame, meta.frames as usize, window)));
+        }
         let image = super::picture_decode::decode(&bytes, meta, frame, target, window, canceled);
 
         #[cfg(feature = "shots")]
@@ -618,6 +672,62 @@ mod tests {
             (source.scan.lookup_missing, source.scan.lookup_unavailable),
             (0, 1)
         );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_dragged_strip_decodes_once_not_once_per_frame() {
+        let dir = std::env::temp_dir().join(format!("strip-cache-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("Samples")).unwrap();
+        std::fs::create_dir_all(dir.join("Resources/pictures")).unwrap();
+        let path = dir.join("test.nki");
+        std::fs::write(&path, b"synthetic").unwrap();
+        let mut bytes = Vec::new();
+        {
+            let mut e = png::Encoder::new(&mut bytes, 100, 100 * 128);
+            e.set_color(png::ColorType::Rgba);
+            e.set_depth(png::BitDepth::Eight);
+            let mut w = e.write_header().unwrap();
+            let pixels = (0..128u32)
+                .flat_map(|n| [n as u8, (n * 7) as u8, 90, 255].repeat(100 * 100))
+                .collect::<Vec<_>>();
+            w.write_image_data(&pixels).unwrap();
+        }
+        std::fs::write(dir.join("Resources/pictures/strip.png"), &bytes).unwrap();
+        let meta = ir::ImageMeta {
+            frames: 128,
+            size: Some(ir::Size { width: 100, height: 100 }),
+            ..Default::default()
+        };
+        let asset = ir::Asset {
+            path: "Resources/pictures/strip.png".into(),
+            kind: ir::AssetKind::Image(meta),
+        };
+        let mut source = Source::of(&path);
+        let time = |f: &mut dyn FnMut(usize)| {
+            let start = std::time::Instant::now();
+            for frame in 0..128 {
+                f(frame);
+            }
+            start.elapsed() / 128
+        };
+        // Before: every frame read and decoded the strip up to its own rows.
+        let per_frame = time(&mut |frame| {
+            let image = super::super::picture_decode::decode(&bytes, meta, frame, [100, 100], None, || false);
+            assert_eq!(image.unwrap().rgba[0], frame as u8);
+        });
+        // After: one pass, then cache hits.
+        let first = time(&mut |frame| {
+            if frame == 0 {
+                source.load_frame(&asset, 0, [100, 100], None, || false).unwrap();
+            }
+        }) * 128;
+        let cached = time(&mut |frame| {
+            let p = source.load_frame(&asset, frame, [100, 100], None, || false).unwrap();
+            assert_eq!(p.frames[0].rgba[0], frame as u8);
+        });
+        println!("STRIP per_frame={per_frame:?} first_whole_strip={first:?} cached={cached:?}");
+        assert!(cached * 10 < per_frame, "cached {cached:?} vs per-frame {per_frame:?}");
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

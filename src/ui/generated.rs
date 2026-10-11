@@ -267,6 +267,8 @@ pub fn view(
     let layout = input.generated.as_ref().unwrap().clone();
     let empty = ir_view::Assets::default();
     let mut bands = Vec::new();
+    // One frame past MUI's node cap blanks the editor: stop adding cells at the face's share.
+    let mut nodes = 0;
     for band in &layout.bands {
         let mut sections = Vec::new();
         for section in band {
@@ -278,8 +280,7 @@ pub fn view(
                     let n = cell.widget;
                     let (width, height) = (cell.width * scale, cell.height * scale);
                     let label = &cell.label;
-                    cells.push(
-                        col![
+                    let built = col![
                             caption(label.clone())
                                 .lines(1)
                                 .min_w(0)
@@ -303,8 +304,12 @@ pub fn view(
                         .gap(TIGHT)
                         .align(Align::Stretch)
                         .w(width)
-                        .shrink(0),
-                    );
+                        .shrink(0);
+                    nodes += ir_view::node_count(&built);
+                    if nodes > ir_view::FACE_NODES {
+                        break;
+                    }
+                    cells.push(built);
                 }
                 strips.push(col(cells).gap(SPACE).align(Align::Center).shrink(0));
             }
