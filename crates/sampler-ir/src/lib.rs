@@ -1090,6 +1090,9 @@ pub struct Playback {
     /// Furthest frame past `start` a [`Target::SampleStart`] route can move
     /// the start to (Kontakt's zone sample-start modulation range).
     pub start_range: SourceFrames,
+    /// Saved crossfade before file-boundary clamping, used by constrained loop modulation.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub loop_control_crossfade: Option<Span>,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -1188,10 +1191,7 @@ pub enum ModulationSource {
 impl ModulationSource {
     /// Whether values span -1..=1 rather than 0..=1.
     pub fn bipolar(&self) -> bool {
-        matches!(
-            self,
-            Self::Lfo(_) | Self::PitchBend | Self::ScriptBipolar(_)
-        )
+        matches!(self, Self::Lfo(_) | Self::PitchBend | Self::ScriptBipolar(_))
     }
 }
 
@@ -1382,6 +1382,9 @@ pub enum Target {
     Control(ControlRef),
     /// Absolute source cycle position, sampled at note onset, replacing its saved phase.
     SourcePhase(ModulatorRef),
+    /// Truncated fractions of total sample frames, on a constrained forward loop.
+    LoopStart,
+    LoopLength,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -1637,35 +1640,17 @@ pub struct Filter {
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum FilterKind {
-    LowPass {
-        poles: u8,
-    },
-    HighPass {
-        poles: u8,
-    },
-    BandPass {
-        poles: u8,
-    },
-    Notch {
-        poles: u8,
-    },
+    LowPass { poles: u8 },
+    HighPass { poles: u8 },
+    BandPass { poles: u8 },
+    Notch { poles: u8 },
     AllPass,
-    Peak {
-        gain: Gain,
-    },
-    LowShelf {
-        gain: Gain,
-    },
-    HighShelf {
-        gain: Gain,
-    },
+    Peak { gain: Gain },
+    LowShelf { gain: Gain },
+    HighShelf { gain: Gain },
     /// A 6 dB/octave shelf: `Filter::resonance` has no effect on it.
-    FirstOrderLowShelf {
-        gain: Gain,
-    },
-    FirstOrderHighShelf {
-        gain: Gain,
-    },
+    FirstOrderLowShelf { gain: Gain },
+    FirstOrderHighShelf { gain: Gain },
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]

@@ -144,10 +144,7 @@ pub enum ModSource {
 
 impl ModSource {
     fn bipolar(&self) -> bool {
-        matches!(
-            self,
-            Self::Lfo(_) | Self::PitchBend | Self::ScriptBipolar(_)
-        )
+        matches!(self, Self::Lfo(_) | Self::PitchBend | Self::ScriptBipolar(_))
     }
 }
 
@@ -181,6 +178,8 @@ pub(crate) enum CompiledTarget {
     SampleStart,
     Control(usize),
     SourcePhase(u32),
+    LoopStart,
+    LoopLength,
 }
 
 /// Open, plan-local destination identity. Legacy constructors preserve native laws.
@@ -207,6 +206,8 @@ impl crate::ParameterAddress {
             (0, 11) => T::Tone,
             (0, 12) => T::SampleStart,
             (i, 14) => T::SourcePhase(i),
+            (0, 15) => T::LoopStart,
+            (0, 16) => T::LoopLength,
             _ => return None,
         })
     }
@@ -263,10 +264,10 @@ impl ModScaleLaw {
         let source = unipolar(source, source_bipolar);
         match self {
             Self::Multiply => base * source,
-            Self::KontaktIntensity { depth, flags, .. } if flags & 4 == 0 => {
-                base * (1. - (1. - source) * depth)
-            }
-            Self::KontaktIntensity { depth, .. } => 1. - (1. - base) * (1. - source * depth),
+            Self::KontaktIntensity { depth, flags, .. } if flags & 4 == 0 =>
+                base * (1. - (1. - source) * depth),
+            Self::KontaktIntensity { depth, .. } =>
+                1. - (1. - base) * (1. - source * depth),
         }
     }
 }
@@ -345,6 +346,7 @@ struct Program {
     /// Prepared source order and incoming phase-route spans; no callback graph scans.
     source_order: Box<[usize]>,
     phase_routes: Box<[Box<[usize]>]>,
+    loop_routes: Box<[(usize, Option<[usize; 2]>)]>,
     shapes: Box<[Shape]>,
     /// Whether any route reaches each kind of output, so unused work is skipped.
     filter: bool,
@@ -504,9 +506,7 @@ impl VoiceModulation {
                             return Err(Error::InvalidInput);
                         }
                         ModSource::ReleaseCounter { frames } => Prepared::ReleaseCounter(frames),
-                        ModSource::Script(id) | ModSource::ScriptBipolar(id) => {
-                            Prepared::Script(id)
-                        }
+                        ModSource::Script(id) | ModSource::ScriptBipolar(id) => Prepared::Script(id),
                         ModSource::PitchBend => Prepared::PitchBend,
                     })
                 })
@@ -531,6 +531,14 @@ impl VoiceModulation {
             for route in &program.routes {
                 if route.source >= sources.len()
                     || !route.depth.is_finite()
+                    || (matches!(
+                        route.target.compiled(),
+                        Some(CompiledTarget::LoopStart | CompiledTarget::LoopLength)
+                    ) && (!matches!(sources.get(route.source), Some(Prepared::Constant))
+                        || route.invert
+                        || route.shape.is_some()
+                        || route.scale.is_some()
+                        || route.lag != 0))
                     || route.shape.is_some_and(|s| s >= shapes.len())
                     || route.scale.is_some_and(|s| {
                         s.source >= sources.len() || s.shape.is_some_and(|s| s >= shapes.len())
@@ -608,6 +616,18 @@ impl VoiceModulation {
                 })
                 .collect::<Result<Vec<_>, Error>>()?;
             controls.sort_unstable_by_key(|b| b.0);
+            let loop_routes = program
+                .routes
+                .iter()
+                .enumerate()
+                .filter_map(|(i, r)| {
+                    matches!(
+                        r.target.compiled(),
+                        Some(CompiledTarget::LoopStart | CompiledTarget::LoopLength)
+                    )
+                    .then(|| (i, controls.iter().find(|b| b.0 == i).map(|b| b.1)))
+                })
+                .collect();
             if controls.windows(2).any(|b| b[0].0 == b[1].0) {
                 return Err(Error::InvalidInput);
             }
@@ -632,6 +652,7 @@ impl VoiceModulation {
                 sources,
                 filter_indices: filter_indices.into_boxed_slice(),
                 source_order: source_order.into_boxed_slice(),
+                loop_routes,
                 phase_routes: phase_routes
                     .into_iter()
                     .map(Vec::into_boxed_slice)
@@ -708,9 +729,8 @@ impl VoiceModulation {
             };
             let bipolar = program.bipolar[route.source];
             let v = program.transform(route, at_start(route.source), bipolar);
-            let depth = route.scale.map_or(route.depth, |s| {
-                program.depth(route.depth, s, at_start(s.source))
-            });
+            let depth = route.scale.map_or(route.depth,
+                |s| program.depth(route.depth, s, at_start(s.source)));
             fraction += depth * unipolar(v, bipolar);
         }
         (fraction.clamp(0.0, 1.0) * f64::from(self.start_ranges[region])) as u32
@@ -752,9 +772,8 @@ impl Program {
         };
         match scale.law {
             ModScaleLaw::Multiply => base * unipolar(source, bipolar),
-            ModScaleLaw::KontaktIntensity { unit, .. } => {
-                scale.law.apply(base / unit, source, bipolar) * unit
-            }
+            ModScaleLaw::KontaktIntensity { unit, .. } =>
+                scale.law.apply(base / unit, source, bipolar) * unit,
         }
     }
 
@@ -1237,6 +1256,33 @@ impl VoiceModState {
         self.times[voice] = [clock.now; 2];
     }
 
+    /// Constant native loop lanes respond at event fragments, independently of the source clock.
+    pub fn loop_offsets(
+        &self,
+        modulation: &VoiceModulation,
+        voice: usize,
+        controls: &[crate::ControlValue],
+    ) -> Option<[f32; 2]> {
+        let p = &modulation.programs[self.program(voice)? as usize];
+        if p.loop_routes.is_empty() {
+            return None;
+        }
+        let mut offsets = [0.; 2];
+        for &(i, ids) in &p.loop_routes {
+            let route = &p.routes[i];
+            let depth = match ids {
+                Some([depth, bypass]) => match (controls[depth], controls[bypass]) {
+                    (crate::ControlValue::Real(v), crate::ControlValue::Real(0.)) => v,
+                    _ => 0.,
+                },
+                None => route.depth,
+            };
+            let lane = usize::from(route.target == ModTarget::LoopLength);
+            offsets[lane] += depth as f32;
+        }
+        Some(offsets)
+    }
+
     pub fn release(&mut self, modulation: &VoiceModulation, voice: usize) {
         if let Some(program) = self.program(voice) {
             let p = &modulation.programs[program as usize];
@@ -1420,6 +1466,7 @@ impl VoiceModState {
                 CompiledTarget::Resonance => resonance += d * v,
                 CompiledTarget::Tone => out.tone += d * v,
                 CompiledTarget::SampleStart | CompiledTarget::SourcePhase(_) => {}
+                CompiledTarget::LoopStart | CompiledTarget::LoopLength => {}
                 CompiledTarget::ProcessorCutoff(_)
                 | CompiledTarget::ProcessorResonance(_)
                 | CompiledTarget::ProcessorNativeCutoff(_)

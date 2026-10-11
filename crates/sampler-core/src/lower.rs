@@ -678,7 +678,15 @@ pub fn lower_with(
                 generic: alias.address.generic,
             },
             control: ir_control_id(&control.key),
-            law: if alias.parameter == "ENGINE_PAR_INTMOD_BYPASS" {
+            law: if routes.iter().any(|b| {
+                b.1 == alias.control
+                    && matches!(
+                        instrument.routes[b.0.0].target,
+                        ir::Target::LoopStart | ir::Target::LoopLength
+                    )
+            }) {
+                crate::EngineParameterLaw::SignedCubic
+            } else if alias.parameter == "ENGINE_PAR_INTMOD_BYPASS" {
                 crate::EngineParameterLaw::Switch
             } else {
                 crate::EngineParameterLaw::Linear {
@@ -973,6 +981,10 @@ impl Lowering<'_> {
                 }),
                 _ => [None; 8],
             },
+            loop_control_crossfade: zone
+                .playback
+                .loop_control_crossfade
+                .map(|span| span.frames(asset_rate) as usize),
             transpose_semitones: tune,
         };
         let region = Region {
@@ -1237,6 +1249,8 @@ impl Lowering<'_> {
                 (ir::Target::Pitch, ir::Depth::Pitch(p)) => (ModTarget::Pitch, p.semitones()),
                 (ir::Target::Pan, ir::Depth::Normalized(d)) => (ModTarget::Pan, d),
                 (ir::Target::SampleStart, ir::Depth::Normalized(d)) => (ModTarget::SampleStart, d),
+                (ir::Target::LoopStart, ir::Depth::Normalized(d)) => (ModTarget::LoopStart, d),
+                (ir::Target::LoopLength, ir::Depth::Normalized(d)) => (ModTarget::LoopLength, d),
                 (ir::Target::SourcePhase(target), ir::Depth::Normalized(d)) => (
                     ModTarget::SourcePhase(source_of(target, &mut program)? as u32),
                     d,
@@ -1670,12 +1684,7 @@ impl Lowering<'_> {
     /// The control-driven stage for an IR filter, gain or matrix that a
     /// live parameter binds (frequency, quality, decibels, enable or a matrix
     /// cell), seeded with the authored constants.
-    fn live_stage(
-        &self,
-        chain: ir::ChainRef,
-        index: usize,
-        p: &ir::Processor,
-    ) -> Option<Processor> {
+    fn live_stage(&self, chain: ir::ChainRef, index: usize, p: &ir::Processor) -> Option<Processor> {
         let live = self.live_bound(chain, index);
         if !live {
             return None;
@@ -1709,12 +1718,8 @@ impl Lowering<'_> {
                 let (shape, gain) = match kind {
                     ir::FilterKind::LowShelf { gain } => (S::LowShelf, db(gain)),
                     ir::FilterKind::HighShelf { gain } => (S::HighShelf, db(gain)),
-                    ir::FilterKind::FirstOrderLowShelf { gain } => {
-                        (S::FirstOrderLowShelf, db(gain))
-                    }
-                    ir::FilterKind::FirstOrderHighShelf { gain } => {
-                        (S::FirstOrderHighShelf, db(gain))
-                    }
+                    ir::FilterKind::FirstOrderLowShelf { gain } => (S::FirstOrderLowShelf, db(gain)),
+                    ir::FilterKind::FirstOrderHighShelf { gain } => (S::FirstOrderHighShelf, db(gain)),
                     ir::FilterKind::Peak { gain } => (S::Peak, db(gain)),
                     ir::FilterKind::LowPass { .. } => (S::LowPass, 0.),
                     ir::FilterKind::HighPass { .. } => (S::HighPass, 0.),
@@ -2064,11 +2069,9 @@ impl Lowering<'_> {
             ir::FilterKind::FirstOrderLowShelf { gain } => biquad(FilterKind::FirstOrderLowShelf {
                 gain_db: 20.0 * gain.linear().log10(),
             }),
-            ir::FilterKind::FirstOrderHighShelf { gain } => {
-                biquad(FilterKind::FirstOrderHighShelf {
-                    gain_db: 20.0 * gain.linear().log10(),
-                })
-            }
+            ir::FilterKind::FirstOrderHighShelf { gain } => biquad(FilterKind::FirstOrderHighShelf {
+                gain_db: 20.0 * gain.linear().log10(),
+            }),
         }
     }
 
