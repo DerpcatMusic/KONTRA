@@ -1181,12 +1181,14 @@ pub enum ModulationSource {
     /// index: `set_event_par_arr(event, $EVENT_PAR_MOD_VALUE_ID, v, id)`,
     /// read as `clamp(v / 1_000_000, -1, 1)`; 0 until set.
     Script(u16),
+    /// The same script value for a bipolar source, kept in -1..=1.
+    ScriptBipolar(u16),
 }
 
 impl ModulationSource {
     /// Whether values span -1..=1 rather than 0..=1.
     pub fn bipolar(&self) -> bool {
-        matches!(self, Self::Lfo(_) | Self::PitchBend)
+        matches!(self, Self::Lfo(_) | Self::PitchBend | Self::ScriptBipolar(_))
     }
 }
 
