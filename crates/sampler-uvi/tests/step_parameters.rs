@@ -17,7 +17,11 @@ fn step_envelope_reads_saved_indexed_levels_and_native_defaults() {
       completed=true
       </script></ScriptProcessor></EventProcessors></Program></UVI4>"#;
     let host = ScriptHost::new(xml, (), Config::default()).unwrap();
-    assert!(host.fault_counts().init.is_empty(), "{:?}", host.fault_counts());
+    assert!(
+        host.fault_counts().init.is_empty(),
+        "{:?}",
+        host.fault_counts()
+    );
     assert_eq!(host.global_text("completed"), "true");
     assert!(host.findings().is_empty(), "{:?}", host.findings());
 }
