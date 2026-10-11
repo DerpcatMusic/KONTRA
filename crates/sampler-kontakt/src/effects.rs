@@ -30,7 +30,7 @@ const MODULES: &[(u16, &str)] = &[
     (0x1a, "Inverter"),
     (0x1b, "DYX"),
     (0x1c, "Limiter"),
-    (0x1d, "Surround Panner"),
+    (0x1d, "Saturation"),
     (0x1e, "Distortion"),
     (0x1f, "Stereo Modeller"),
     (0x20, "Lo-Fi"),
@@ -2693,6 +2693,7 @@ mod tests {
 
     #[test]
     fn classic_saturation_saved_slot_is_admitted_in_both_scopes() {
+        assert_eq!(module_name(0x1d), "Saturation");
         let payload: Vec<_> = [0.30065f32, 0.0]
             .into_iter()
             .flat_map(f32::to_le_bytes)

@@ -1220,6 +1220,7 @@ fn compile_initialized_inner(
         hir: &hir,
         controls: &ids,
         groups: &environment.groups,
+        folders: &environment.folders,
         slot: environment.slot,
         budget: limits.instructions,
         limit: limits.instructions,

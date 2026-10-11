@@ -95,6 +95,29 @@ fn cell(rt: &Runtime, n: u32) -> i64 {
 }
 
 #[test]
+fn callback_folder_lookup_uses_host_paths_and_empty_missing_paths() {
+    let rt = run_in(
+        "on init declare $a declare $b declare $c declare $i declare @path end on
+         on note
+           $i := $GET_FOLDER_PATCH_DIR
+           @path := get_folder($i)
+           $a := find_group(@path)
+           $b := find_group(get_folder($GET_FOLDER_LIBRARY_DIR))
+           $i := 99
+           $c := find_group(get_folder($i))
+         end on",
+        sampler_ksp::Environment {
+            folders: ["/library/", "", "/patch/", ""].map(str::to_owned),
+            groups: ["/patch/", "/library/", ""].map(str::to_owned).into(),
+            ..Default::default()
+        },
+    );
+    assert_eq!(cell(&rt, 0), 0);
+    assert_eq!(cell(&rt, 1), 1);
+    assert_eq!(cell(&rt, 2), 2);
+}
+
+#[test]
 fn group_names_and_lookups_take_computed_indices_and_names() {
     let rt = run_in(
         "on init declare $a declare $b declare $c declare $d declare $e declare $i declare @n end on

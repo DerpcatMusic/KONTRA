@@ -135,6 +135,7 @@ pub struct Unit<'h> {
     /// Host control per UI index.
     pub controls: &'h [Option<ControlId>],
     pub groups: &'h [String],
+    pub folders: &'h [String; 4],
     pub slot: u8,
     /// Remaining instruction budget for the whole script.
     pub budget: usize,
@@ -1283,6 +1284,29 @@ impl Gen<'_, '_> {
                     _ => {
                         self.warn("group_name of an unknown group is empty");
                         return Ok(());
+                    }
+                }
+            }
+            ExprKind::Builtin(Builtin::GetFolder, args) => {
+                // NI load/save get_folder; FUN_14078d910 case 9 reads host paths, unknown selectors are empty.
+                self.cover(Builtin::GetFolder, Coverage::Native);
+                if let Some(index) = self.const_int(args, 0) {
+                    let folder = usize::try_from(index).ok().and_then(|i| self.u.folders.get(i));
+                    TextPart::Constant(self.constant(folder.map_or("", String::as_str)))
+                } else {
+                    self.arg(args, 0, free)?;
+                    let base = self.texts.len() as u16;
+                    for folder in self.u.folders {
+                        let mut end = folder.len().min(sampler_core::TEXT_CAPACITY);
+                        while !folder.is_char_boundary(end) {
+                            end -= 1;
+                        }
+                        self.texts.push(folder[..end].to_owned());
+                    }
+                    TextPart::Table {
+                        base,
+                        count: 4,
+                        index: free,
                     }
                 }
             }
