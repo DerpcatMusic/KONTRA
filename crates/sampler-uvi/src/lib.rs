@@ -1060,7 +1060,9 @@ pub struct Translated {
     pub instrument: ir::Instrument,
     pub locations: Vec<String>,
     /// The bank and program path the samples come from; loose files have none.
-    bank: Option<(Bank, String)>,
+    bank: Option<(std::sync::Arc<Bank>, String)>,
+    /// The folder of a loose program, which its relative resources are read from.
+    dir: Option<PathBuf>,
     /// Where each (layer, oscillator) of the program plays, for its scripts.
     pub groups: Vec<OscGroup>,
     /// Where each insert element sits in the IR chains, for parameter bindings.
@@ -1102,9 +1104,39 @@ impl Translated {
             return Ok(None);
         }
         config.rate = f64::from(rate);
+        let mut lua = self.lua.clone();
+        let decode: Option<Box<dyn Fn(&str) -> Option<sampler_kontakt::Decoded> + Send + Sync>> =
+            match (&self.bank, &self.dir) {
+                (Some((bank, program)), _) => {
+                    let (bank, program) = (std::sync::Arc::clone(bank), program.clone());
+                    Some(Box::new(move |path| bank.decode_resource(&program, path).ok()))
+                }
+                (None, Some(dir)) => {
+                    let dir = dir.clone();
+                    Some(Box::new(move |path| {
+                        decode_sample(&dir.join(path.trim_start_matches('/'))).ok()
+                    }))
+                }
+                (None, None) => None,
+            };
+        if let Some(decode) = decode {
+            let source: script::ImpulseSource = std::sync::Arc::new(move |path: &str| {
+                let d = decode(path)?;
+                (!d.frames.is_empty() && d.frames.len() <= 1 << 24).then(|| ir::Impulse {
+                    rate: d.rate,
+                    left: d.frames.iter().map(|f| f[0]).collect(),
+                    right: d.frames.iter().map(|f| f[1]).collect(),
+                    asset: None,
+                })
+            });
+            lua = lua.with_convolution(
+                source,
+                engine_parameters::convolver_slots(&self.instrument, &self.inserts),
+            );
+        }
         let (thread, loaded) = scripted::ScriptThread::spawn_with_ui_state(
             self.text.clone(),
-            self.lua.clone(),
+            lua,
             config,
             state,
         )
@@ -1230,7 +1262,8 @@ fn translate_untagged(path: &Path) -> Result<Translated, Box<dyn std::error::Err
         return Ok(Translated {
             instrument,
             locations,
-            bank: Some((bank, program_path)),
+            bank: Some((std::sync::Arc::new(bank), program_path)),
+            dir: None,
             groups,
             inserts,
             text,
@@ -1247,6 +1280,7 @@ fn translate_untagged(path: &Path) -> Result<Translated, Box<dyn std::error::Err
         instrument,
         locations,
         bank: None,
+        dir: path.parent().map(Path::to_path_buf),
         groups,
         inserts,
         text,

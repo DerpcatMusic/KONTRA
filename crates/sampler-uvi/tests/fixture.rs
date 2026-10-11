@@ -281,6 +281,82 @@ fn aux_inserts_gain_matrix_and_convolver_shape_the_bus() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// The peak a held note reaches through an aux Convolver, authored statically
+/// or reached live by the aux's script (`script` runs in the program).
+#[test]
+fn scripted_convolver_parameters_and_loadimpulse_reach_the_audio() {
+    use sampler_uvi::script::Config;
+    let dir = std::env::temp_dir().join(format!("sampler-uvi-convolver-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("samples")).unwrap();
+    let sine: Vec<i16> = (0..480_000)
+        .map(|i| ((i as f64 * 440.0 * std::f64::consts::TAU / 48000.0).sin() * 16000.0) as i16)
+        .collect();
+    std::fs::write(dir.join("samples/sine.wav"), wav(48000, &sine)).unwrap();
+    std::fs::write(dir.join("samples/half.wav"), wav(48000, &[16384, 0, 0, 0])).unwrap();
+    std::fs::write(dir.join("samples/quarter.wav"), wav(48000, &[8192, 0, 0, 0])).unwrap();
+    let convolver = |path: &str, normalize: u8| {
+        format!(r#"<Convolver Dry="0" Wet="1" NormalizePower="{normalize}" SamplePath="{path}"/>"#)
+    };
+    let input = Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: None };
+    let block_peak = |rt: &mut Runtime| {
+        let mut block = vec![[0f32; 2]; 480];
+        rt.render(&mut block).unwrap();
+        block.iter().flatten().fold(0f32, |p, x| p.max(x.abs()))
+    };
+    let run = |inserts: &str, script: Option<&str>, target: Option<f32>| -> f32 {
+        let mut xml = insert_program(Some(inserts));
+        if let Some(script) = script {
+            xml = xml.replace(
+                "<Layers>",
+                &format!("<EventProcessors><ScriptProcessor><script>{script}</script></ScriptProcessor></EventProcessors><Layers>"),
+            );
+        }
+        let path = dir.join("Convolver.uvip");
+        std::fs::write(&path, xml).unwrap();
+        let mut translated = sampler_uvi::translate_path(&path).unwrap();
+        let attached = translated.attach_script(48000, Config::default()).unwrap();
+        let loaded = sampler_uvi::assemble_translated(translated, 48000).unwrap();
+        let limits = Limits::for_plan(&loaded.plan, 4, 4);
+        let mut rt = Runtime::new(loaded.plan, limits).unwrap();
+        rt.trigger(input, 60, 1.0).unwrap();
+        let Some(mut attached) = attached else {
+            block_peak(&mut rt);
+            return block_peak(&mut rt);
+        };
+        let target = target.unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            attached.driver.wake(&mut rt).unwrap();
+            // The convolution rings in over a block or two after a swap.
+            block_peak(&mut rt);
+            let peak = block_peak(&mut rt);
+            if (peak / target - 1.0).abs() < 0.03 {
+                return peak;
+            }
+            assert!(std::time::Instant::now() < deadline, "peak {peak}, wanted {target}");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    };
+    let half = run(&convolver("samples/half.wav", 0), None, None);
+    let quarter = run(&convolver("samples/quarter.wav", 0), None, None);
+    let doubled = run(&convolver("samples/half.wav", 1), None, None);
+    assert!((quarter / half - 0.5).abs() < 0.03 && (doubled / half - 2.0).abs() < 0.06, "{half} {quarter} {doubled}");
+    let path = "local c=Program.auxs[1].inserts[1]";
+    // NormalizePower written by the script rebuilds the impulse.
+    run(
+        &convolver("samples/half.wav", 0),
+        Some(&format!("{path} function onInit() c:setParameter('NormalizePower',true) end")),
+        Some(doubled),
+    );
+    // loadImpulse swaps in another response, relative to the program.
+    run(
+        &convolver("samples/half.wav", 0),
+        Some(&format!("{path} function onInit() loadImpulse(c,'samples/quarter.wav',function(t) assert(t.success) end) end")),
+        Some(quarter),
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 struct NoFiles;
 impl sampler_uvi::script::Files for NoFiles {
     fn script(&self, _: &str) -> Option<String> {
