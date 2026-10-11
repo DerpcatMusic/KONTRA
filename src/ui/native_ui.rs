@@ -417,7 +417,6 @@ impl State {
                 let _sync = self.activity.as_ref().map(|a| a.span(Phase::UiProjectionSync));
                 session.update_view(face, values, &input.values, &input.meters);
             }
-            let t0 = std::time::Instant::now();
             if let Some(graph) = &local.graph {
                 let generation = session.generation();
                 if local.targets.as_ref().is_none_or(|(g, _)| *g != generation) {
@@ -434,7 +433,6 @@ impl State {
                     _ => events(ui, graph, session, slot, scale, &mut local.hovered)?,
                 }
             }
-            let t1 = std::time::Instant::now();
             let graph = session.render();
             #[cfg(feature = "shots")]
             {
@@ -445,7 +443,6 @@ impl State {
             {
                 self.graph_depth = Some(self.graph_depth.unwrap_or(0).max(graph_depth(&graph)?));
             }
-            let t2 = std::time::Instant::now();
             let _submission = self.activity.as_ref().map(|a| a.span(Phase::UiAuthoredLayoutSubmission));
             let authored = authored_size(&graph);
             self.size = authored;
@@ -463,8 +460,6 @@ impl State {
                 None => { let mut build = build; build(ui) }
             };
             if let Some(error) = error { return Err(error); }
-            let t3 = std::time::Instant::now();
-            if std::env::var_os("KONTRA_TRACE").is_some() { eprintln!("TRACE events={:.2} render+depth={:.2} authored+lower={:.2} memo={}", (t1-t0).as_secs_f64()*1e3, (t2-t1).as_secs_f64()*1e3, (t3-t2).as_secs_f64()*1e3, key.is_some()); }
             local.graph = Some(graph);
             #[cfg(all(test, feature = "shots"))]
             GATE_PAINTED.with(|painted| {

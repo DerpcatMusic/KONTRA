@@ -737,10 +737,12 @@ impl Session {
         let fuel = Arc::new(AtomicUsize::new(500_000));
         let hook_fuel = fuel.clone();
         lua.set_interrupt(move |lua| {
-            if hook_fuel
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
-                .is_err()
-            {
+            // One thread owns the VM, so a plain load and store replace the
+            // read-modify-write loop run at every call and loop back-edge.
+            let left = hook_fuel.load(Ordering::Relaxed);
+            if left > 0 {
+                hook_fuel.store(left - 1, Ordering::Relaxed);
+            } else {
                 let site = lua
                     .inspect_stack(0, |debug| {
                         let source = debug.source();
