@@ -403,6 +403,9 @@ pub struct Handler<V> {
     gpu: Option<Host>,
     software: Option<mui::vello::software::Window<WindowContext>>,
     software_only: bool,
+    /// KONTAKTO patch: one GPU retry per editor open, taken on the first resize
+    /// after a fallback. Never armed when the CPU renderer was asked for.
+    gpu_retry_left: bool,
     cpu_presented: bool,
     gpu_log_generation: Option<u64>,
     gpu_log_cursor: u64,
@@ -471,13 +474,15 @@ impl<V: View> Handler<V> {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
             .map(|hook| timing::Capture::new(hook, size, scale));
+        let forced_cpu =
+            std::env::var("MUI_RENDERER").is_ok_and(|v| v.eq_ignore_ascii_case("cpu"));
         Self {
             shared,
             requests,
             gpu: None,
             software: None,
-            software_only: std::env::var("MUI_RENDERER")
-                .is_ok_and(|v| v.eq_ignore_ascii_case("cpu")),
+            software_only: forced_cpu,
+            gpu_retry_left: !forced_cpu,
             cpu_presented: false,
             gpu_log_generation: None,
             gpu_log_cursor: 0,
@@ -867,6 +872,12 @@ impl<V: View> Handler<V> {
         let physical = (size.physical.width, size.physical.height);
         self.driver.resized(physical, size.scale_factor);
         self.unpainted = true;
+        if self.software_only && self.gpu_retry_left {
+            self.gpu_retry_left = false;
+            self.software_only = false;
+            self.software = None;
+            self.gpu_retry_at = Instant::now();
+        }
         if let Some(gpu) = &mut self.gpu {
             gpu.invalidate();
         }
