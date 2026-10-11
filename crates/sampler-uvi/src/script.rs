@@ -94,13 +94,24 @@ impl PartialEq for ImpulseUpload {
 /// A bank's Lua members, by path.
 #[derive(Clone, Default)]
 pub struct Scripts {
-    files: Vec<(String, String)>,
+    files: std::sync::Arc<Vec<(String, String)>>,
     impulses: Option<ImpulseSource>,
     /// Bus insert element (node id) to its convolution slot.
     convolvers: std::collections::HashMap<usize, usize>,
 }
 
 impl Scripts {
+    pub fn sources(&self) -> std::sync::Arc<Vec<(String, String)>> {
+        self.files.clone()
+    }
+
+    pub fn from_sources(files: std::sync::Arc<Vec<(String, String)>>) -> Self {
+        Self {
+            files,
+            ..Default::default()
+        }
+    }
+
     /// The paths of the scripts held, for surveys.
     #[doc(hidden)]
     pub fn names(&self) -> Vec<&str> {
@@ -119,7 +130,7 @@ impl Scripts {
     }
 
     pub fn insert(&mut self, path: &str, source: String) {
-        self.files
+        std::sync::Arc::make_mut(&mut self.files)
             .push((path.to_lowercase().replace('\\', "/"), source));
     }
     /// `roots` and every member whose name `roots` (transitively) mentions: the

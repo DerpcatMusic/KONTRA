@@ -167,6 +167,15 @@ impl ScriptThread {
         config: Config,
         state: Option<UiState>,
     ) -> Result<(Self, Loaded), String> {
+        Self::spawn_shared_with_ui_state(xml.into(), files, config, state)
+    }
+
+    pub fn spawn_shared_with_ui_state(
+        xml: Arc<str>,
+        files: impl Files + Send + 'static,
+        config: Config,
+        state: Option<UiState>,
+    ) -> Result<(Self, Loaded), String> {
         #[cfg(feature = "scan")]
         let audit = config.audit_seed.is_some();
         let (ui_send, ui_receive) = mpsc::sync_channel(256);

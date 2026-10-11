@@ -49,6 +49,19 @@ reference! {
     ShapeRef,
 }
 
+/// Shared with the loaded script owner; opening Scripts is the first report build.
+#[derive(Clone, PartialEq)]
+pub struct UviScriptSources {
+    pub xml: std::sync::Arc<str>,
+    pub files: std::sync::Arc<Vec<(String, String)>>,
+}
+
+impl std::fmt::Debug for UviScriptSources {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("UviScriptSources (source omitted)")
+    }
+}
+
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Instrument {
@@ -89,6 +102,9 @@ pub struct Instrument {
     /// Ordered per-voice sends at authored processor boundaries.
     pub voice_send_taps: Vec<VoiceSendTap>,
     pub behaviors: Vec<Behavior>,
+    /// In-memory UVI inputs for lazy script inspection; never serialized.
+    #[cfg_attr(feature = "cache", serde(skip))]
+    pub uvi_script_sources: Option<UviScriptSources>,
     /// Saved source automation, addressed by slider declaration ordinal per slot.
     pub script_automation: Vec<ScriptAutomation>,
     /// Polyphony of the whole instrument.
