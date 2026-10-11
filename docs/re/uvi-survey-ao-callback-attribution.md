@@ -70,3 +70,36 @@ still taken/reset, unmapped buses remain omitted, and the group-meter fixture
 also verifies resetting after publication. V1 `0cb7a8a0:src/engine/mod.rs` has
 no corresponding nested node lookup to port; this uses v2's existing layout.
 Uninstrumented paired timings and focused-test results follow below.
+
+One fresh uninstrumented host run per build, same private state exporter, note
+plan, CC1=100/CC11=127, five C4/velocity-64 notes with 500-ms gates, 48 kHz / 128
+frames / six seconds. Both release builds have line tables and unstripped symbols.
+Loading is outside the timed 2250-block window. The baseline is 7f6bbfe9; the
+changed source is 2bc1dbee. No sound-core/DSP change is part of this comparison.
+
+| Full CLAP callback | Before | After |
+|---|---:|---:|
+| p50 wall time, us | 9894.943 | 135.893 |
+| p99 wall time, us | 18086.924 | 470.409 |
+| p50 thread CPU, us | 9770.827 | 135.001 |
+| p99 thread CPU, us | 14799.008 | 461.142 |
+| Callback deadline misses | 2250 / 2250 | 0 / 2250 |
+| Wake deadline misses | 2249 / 2250 | 1 / 2250 |
+| Peak | 0.126729354 | 0.127915785 |
+| Nonfinite | 0 | 0 |
+| Load avg 1 / 5 / 15 min | 20.88 / 20.54 / 18.93 | 21.75 / 20.74 / 19.02 |
+
+These are **contended observations**, not a quiet-machine acceptance result.
+Both runs dispatched all 12 events. The measured all-callback deadline failure
+is the before/after performance witness; the functional routing/reset fixture
+does not fail on the old implementation, and failing-first unit verification
+was not claimed.
+
+Focused check:
+`sound::v2::tests::groups_become_nodes_that_mix_and_route_to_their_own_pairs`
+passed (one test, 647 filtered), checking the node's nonzero meter and subsequent
+reset. `cargo check -p kontakto --lib` and final `cargo test --workspace --no-run`
+also passed with existing warnings. No full test suite or broad survey ran.
+Numeric results and artifact SHA256s are retained in
+`docs/re/uvi-survey-round2-receipt.json`; the large temporary stacks/traces and
+the agent's target are removed at handoff.
