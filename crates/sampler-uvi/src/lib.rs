@@ -432,24 +432,10 @@ impl Translation {
     }
 
     /// Program and layer connections act on the mixed signal of their scope.
-    fn scope_connections(&mut self, scope: Node) -> Result<(), String> {
-        for connection in connections(scope) {
-            if number(connection, "Bypass", 0.0)? == 0.0 && number(connection, "Ratio", 1.0)? != 0.0
-            {
-                #[cfg(feature = "scan")]
-                self.dropped_connections.insert(connection.id());
-                self.unsupported(
-                    &path(connection),
-                    "program or layer modulation",
-                    format!(
-                        "{} -> {}",
-                        connection.attribute("Source").unwrap_or_default(),
-                        connection.attribute("Destination").unwrap_or_default()
-                    ),
-                );
-            }
-        }
-        Ok(())
+    /// Gain, pitch and pan modulation are linear in the mix, so each keygroup
+    /// below the scope takes the connection itself (`Self::keygroup`).
+    fn scope_connections<'a>(&mut self, scope: Node<'a, 'a>) -> Vec<Node<'a, 'a>> {
+        connections(scope).collect()
     }
 
     fn program(&mut self, program: Node) -> Result<(), String> {
@@ -473,7 +459,7 @@ impl Translation {
                 requires: Vec::new(),
             });
         }
-        self.scope_connections(program)?;
+        let program_scope = self.scope_connections(program);
         let scripted = !self.ir.behaviors.is_empty();
         // Program-level aux effects become buses (their own effects are
         // reported as modules); layers reach them through BusRouters.
@@ -556,7 +542,8 @@ impl Translation {
             if number(layer, "Mute", 0.0)? != 0.0 {
                 continue;
             }
-            self.scope_connections(layer)?;
+            let mut scoped = program_scope.clone();
+            scoped.extend(self.scope_connections(layer));
             let output = self.insert_bus(layer, program_output)?;
             let pan = number(layer, "Pan", 0.0)?;
             let mut base = ir::Group {
@@ -628,7 +615,7 @@ impl Translation {
             }
             let keys = (midi(layer, "LowKey", 0)?, midi(layer, "HighKey", 127)?);
             for keygroup in layer.descendants().filter(|n| n.has_tag_name("Keygroup")) {
-                self.keygroup(keygroup, group, keys)?;
+                self.keygroup(keygroup, group, keys, &scoped)?;
             }
         }
         Ok(())
@@ -639,6 +626,7 @@ impl Translation {
         keygroup: Node,
         group: ir::GroupRef,
         layer_keys: (u8, u8),
+        scoped: &[Node],
     ) -> Result<(), String> {
         let at = path(keygroup);
         let keys = (
@@ -667,6 +655,9 @@ impl Translation {
         // AnalogADSR. Every other connection is a route or a static factor.
         let mut amplitude = None;
         let mut shared = modulation::Modulation::default();
+        for connection in scoped {
+            self.connect_scoped(*connection, &mut shared)?;
+        }
         for connection in connections(keygroup) {
             let plain = number(connection, "Ratio", 1.0)? == 1.0
                 && number(connection, "Bypass", 0.0)? == 0.0
