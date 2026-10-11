@@ -1,6 +1,6 @@
 //! FilterDJ equations derived from the approved native AR trace.
-//! Admission and entry points: docs/audit-2026-10-10/w15-ar-native.md.
-//! This module stays disconnected until original-byte checks pass.
+//! Admission notes: docs/audit-2026-10-10/w15-ar-native.md. Original-instruction
+//! vectors cover all nine modes; calibrated host recording acceptance is pending.
 use std::sync::OnceLock;
 
 const TABLE_LEN: usize = 2401;
@@ -181,6 +181,7 @@ mod tests {
         );
         let scenarios = native["scenarios"].as_array().unwrap();
         assert_eq!(scenarios.len(), 81);
+        let (mut error, mut signal) = (0.0f64, 0.0f64);
         for case in scenarios {
             let mode = case["mode"].as_u64().unwrap() as u8;
             let rate = case["rate"].as_f64().unwrap() as f32;
@@ -230,6 +231,8 @@ mod tests {
                         for ch in 0..2 {
                             let expected =
                                 case["checkpoints"][phase][point][ch].as_f64().unwrap() as f32;
+                            error += (f64::from(output[ch]) - f64::from(expected)).powi(2);
+                            signal += f64::from(expected).powi(2);
                             assert!(
                                 (output[ch] - expected).abs() <= 2e-6,
                                 "mode={mode} rate={rate} phase={phase} frame={i} ch={ch} actual={} native={expected}",
@@ -241,5 +244,6 @@ mod tests {
                 }
             }
         }
+        println!("FilterDJ original-instruction checkpoint null: {:.2} dB", 10. * (error / signal).log10());
     }
 }

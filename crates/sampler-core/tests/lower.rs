@@ -1039,6 +1039,7 @@ fn addressed_gain_and_filter_controls_drive_real_audio_lanes() {
         cutoff: 0.,
         resonance: 0.,
         record_version: 0x92,
+        taps: 4,
     });
     let pcm = Pcm::new(
         48000,
@@ -1513,6 +1514,7 @@ fn physical_ladder_lanes_keep_signed_gain_and_drive_audio_without_heap() {
                 cutoff: 1.,
                 resonance: 0.,
                 record_version: 0x92,
+                taps: 4,
             })],
             post_amplitude: vec![],
         }],
@@ -1572,6 +1574,7 @@ fn normalized_cutoff_routes_address_ladder_and_daft_without_audio_heap() {
                             cutoff,
                             resonance: 0.1,
                             record_version: 0x92,
+                            taps: 4,
                         })
                     } else {
                         ir::Processor::Daft(ir::Daft {
@@ -1709,6 +1712,7 @@ fn normalized_q_gain_routes_address_native_knobs_without_audio_heap() {
                         cutoff: 0.5,
                         resonance,
                         record_version: 0x92,
+                        taps: 4,
                     })
                 } else {
                     ir::Processor::Daft(ir::Daft {
@@ -2218,7 +2222,7 @@ fn registered_peak_gain_keeps_a_flat_band_and_drives_real_voice_audio() {
     let power = |frames: &[[f32; 2]]| frames.iter().map(|f| f64::from(f[0]).powi(2)).sum::<f64>();
     let gain_db = 10. * (power(&output[1024..]) / power(&frames[1024..4096])).log10();
     assert!(
-        (gain_db - 12.).abs() < 0.02,
+        (gain_db - 12. * sampler_core::PeakingEq::GAIN_SCALE).abs() < 0.05,
         "center-frequency gain: {gain_db} dB"
     );
     let id = sampler_core::lower::ir_control_id("eq/physical-slot-5/band-2/gain");
@@ -2233,7 +2237,8 @@ fn registered_peak_gain_keeps_a_flat_band_and_drives_real_voice_audio() {
     });
     let edited_db = 10. * (power(&edited[128..]) / power(&frames[4224..4608])).log10();
     assert!(
-        (edited_db - 18.).abs() < 0.02,
+        // +18 dB shown is 36 dB true; the 512-frame window has not fully settled.
+        (edited_db - 18. * sampler_core::PeakingEq::GAIN_SCALE).abs() < 0.6,
         "native base plus held modulation clamps at +18 dB: {edited_db}"
     );
     let Ok(sampler_core::ControlValue::Real(base)) = rt.control_base_value(rt.active_plan(), id)

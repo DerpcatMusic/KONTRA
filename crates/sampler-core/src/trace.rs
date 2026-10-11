@@ -866,6 +866,14 @@ impl TraceGraph {
                     .collect(),
                 0,
             ),
+            PreparedProcessor::Ar { ar, .. } => (
+                "ar",
+                ar.trace_parameters()
+                    .into_iter()
+                    .map(|(n, p)| parameter(n, p))
+                    .collect(),
+                0,
+            ),
             PreparedProcessor::StereoModeller { stereo, .. } => (
                 "stereo_modeller",
                 stereo
@@ -889,6 +897,8 @@ impl TraceGraph {
                 0,
             ),
             PreparedProcessor::Rectify(_) => ("rectifier", vec![], 0),
+            PreparedProcessor::Saturation(shape) => ("kontakt_classic_saturation", vec![constant("shape", f64::from(*shape))], 0),
+            PreparedProcessor::Distortion(d) => ("kontakt_distortion", vec![constant("damping_pole", d.damping_pole())], 0),
             PreparedProcessor::Reverb(i) => (
                 "reverb",
                 plan.buses

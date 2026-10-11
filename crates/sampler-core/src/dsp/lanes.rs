@@ -188,6 +188,12 @@ pub(crate) fn process(
                     x.iter_mut().for_each(|v| *v = mode.apply(*v));
                 }
             }
+            PreparedProcessor::Saturation(shape) => {
+                for x in &mut block[..len] {
+                    x.iter_mut()
+                        .for_each(|v| *v = super::shaping::saturation(*v, *shape));
+                }
+            }
             PreparedProcessor::ControlGain(lane) => {
                 let ramp = parameters[*lane];
                 for (i, x) in block[..len].iter_mut().enumerate() {
@@ -261,8 +267,10 @@ pub(crate) fn process(
             | PreparedProcessor::Compressor(_)
             | PreparedProcessor::Decimate(_)
             | PreparedProcessor::LoFi(_)
+            | PreparedProcessor::Distortion(_)
             | PreparedProcessor::Daft(_)
             | PreparedProcessor::LadderLP4 { .. }
+            | PreparedProcessor::Ar { .. }
             | PreparedProcessor::LiveFilter(_)
             | PreparedProcessor::ControlMatrix(_)
             | PreparedProcessor::Branch { .. } => {

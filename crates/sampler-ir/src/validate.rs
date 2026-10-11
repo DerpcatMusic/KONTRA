@@ -229,6 +229,11 @@ impl Check<'_> {
                     }
                 }
                 Processor::Rectify(_) => {}
+                Processor::Saturation(shape) => self.within(f64::from(shape), -1.0..=1.0, "saturation shape")?,
+                Processor::Distortion { drive, damping, .. } => {
+                    self.within(f64::from(drive), 0.0..=1.0, "distortion drive")?;
+                    self.within(f64::from(damping), 0.0..=1.0, "distortion damping")?;
+                }
                 Processor::SendReturnGate { .. } => {}
                 Processor::Branch { gain, .. } => self.gain(gain, "branch gain")?,
                 Processor::Daft(d) => {
@@ -236,10 +241,16 @@ impl Check<'_> {
                     self.within(d.cutoff, 0.0..=1.0, "daft cutoff")?;
                     self.within(d.resonance, 0.0..=1.0, "daft resonance")?;
                 }
+                Processor::Ar(d) => {
+                    self.within(f64::from(d.mode), 0.0..=8.0, "ar mode")?;
+                    self.within(d.cutoff, 0.0..=1.0, "ar cutoff")?;
+                    self.within(d.resonance, 0.0..=1.0, "ar resonance")?;
+                }
                 Processor::LadderLP4(d) => {
                     self.within(d.gain, -1.0..=1.0, "ladder gain")?;
                     self.within(d.cutoff, 0.0..=1.0, "ladder cutoff")?;
                     self.within(d.resonance, 0.0..=1.0, "ladder resonance")?;
+                    self.within(f64::from(d.taps), 1.0..=4.0, "ladder taps")?;
                 }
                 Processor::Reverb(r) => {
                     for (v, field) in [
