@@ -967,7 +967,7 @@ impl Translation {
                     for (name, value, low, high) in [
                         ("GAIN", f64::from(*db), -18., 18.),
                         ("FREQ", (f64::from(*hz) / 20.).log10() / 3., 0., 1.),
-                        ("BW", (f64::from(*width) - 0.3) / 2.7, 0., 1.),
+                        ("BW", sampler_core::PeakingEq::bandwidth_knob(f64::from(*width)), 0., 1.),
                     ] {
                         if !value.is_finite() {
                             continue;
@@ -1697,9 +1697,9 @@ impl Translation {
             };
             let band = bands.entry(slot).or_default();
             let saved = [
-                20. * gain.linear().log10(),
+                20. * gain.linear().log10() / sampler_core::PeakingEq::GAIN_SCALE,
                 (hz / 20.).log10() / 3.,
-                (2. * (0.5 / q).asinh() / std::f64::consts::LN_2 - 0.3) / 2.7,
+                sampler_core::PeakingEq::bandwidth_knob(sampler_core::PeakingEq::octaves_of_q(*q)),
             ];
             for (n, (native, name, label, parameter, min, max, unit)) in [
                 (
@@ -3594,7 +3594,7 @@ mod modulation {
             scope: ir::Scope::Voice,
             pre_amplitude: vec![ir::Processor::Filter(ir::Filter {
                 kind: ir::FilterKind::Peak {
-                    gain: ir::Gain::Decibels(24.),
+                    gain: ir::Gain::Decibels(40.),
                 },
                 cutoff: ir::Frequency::Hertz(1000.),
                 resonance: ir::Resonance::Q(1.),

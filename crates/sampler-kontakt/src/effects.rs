@@ -1693,17 +1693,12 @@ fn eq_band(
         ));
         return None;
     }
-    // A peaking biquad whose bandwidth spans `octaves` (RBJ). Kontakt's own
-    // band shape is not verified against a rendering.
-    notes.push((
-        "EQ band shape".into(),
-        format!("{hz} Hz {octaves} oct {db} dB"),
-        sampler_ir::Reason::UnknownLaw,
-    ));
-    let q = 1.0 / (2.0 * (std::f64::consts::LN_2 / 2.0 * f64::from(octaves)).sinh());
+    // Measured against Kontakt 8: centre gain is GAIN_SCALE x the displayed dB and
+    // alpha = sin(w0) * sinh(ln2 * octaves).
+    let q = sampler_core::PeakingEq::q_of_octaves(f64::from(octaves));
     Some(sampler_ir::Processor::Filter(sampler_ir::Filter {
         kind: sampler_ir::FilterKind::Peak {
-            gain: sampler_ir::Gain::Decibels(f64::from(db)),
+            gain: sampler_ir::Gain::Decibels(f64::from(db) * sampler_core::PeakingEq::GAIN_SCALE),
         },
         cutoff: sampler_ir::Frequency::Hertz(f64::from(hz)),
         resonance: sampler_ir::Resonance::Q(q),
@@ -1768,7 +1763,9 @@ mod tests {
                 assert_eq!(
                     filter.kind,
                     sampler_ir::FilterKind::Peak {
-                        gain: sampler_ir::Gain::Decibels(f64::from(values[2])),
+                        gain: sampler_ir::Gain::Decibels(
+                            f64::from(values[2]) * sampler_core::PeakingEq::GAIN_SCALE
+                        ),
                     }
                 );
             }
@@ -2954,7 +2951,7 @@ mod tests {
                     sampler_ir::Processor::Filter(f),
                     sampler_ir::Processor::StereoMatrix([[2.0, 0.0], [0.0, 2.0]])
                 ] if f.cutoff == sampler_ir::Frequency::Hertz(1000.0)
-                    && matches!(f.resonance, sampler_ir::Resonance::Q(q) if (q - std::f64::consts::SQRT_2).abs() < 1e-9)
+                    && matches!(f.resonance, sampler_ir::Resonance::Q(q) if (q - 2. / 3.).abs() < 1e-9)
             ),
             "{processors:?}"
         );
