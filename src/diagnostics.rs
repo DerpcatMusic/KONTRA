@@ -1887,6 +1887,13 @@ impl LoadTrace {
                 "approximated, may sound different",
             ),
         };
+        let mut message = format!("Not translated: {} ({reason})", clip(&missing.feature, 160));
+        // Engine-raised lua findings carry the fault text (error, widget, index, range); other
+        // values are authored and stay out.
+        if missing.feature.starts_with("lua ") && !missing.value.is_empty() {
+            message.push_str(": ");
+            message.push_str(&clip(&missing.value, 200));
+        }
         let key = grouped::missing(
             &missing.feature,
             &format!("{:?}", missing.reason),
@@ -1914,7 +1921,7 @@ impl LoadTrace {
             // The typed key flattens the feature; keep its text (never the authored value) so the
             // event says what was not translated, where, and what that means for the sound.
             json!({"stage":"translate","code":"unsupported",
-                "message":format!("Not translated: {} ({reason})", clip(&missing.feature, 160)),
+                "message":message,
                 "where":clip(&missing.location, 160),
                 "impact":impact}),
         );
@@ -2637,6 +2644,39 @@ mod tests {
         assert!(!old.exists());
         assert!(!sidecar.exists());
         assert!(current.exists());
+    }
+
+    #[test]
+    fn missing_features_reach_the_journal_with_their_real_message() {
+        use crate::sound::report::{Missing, MissingReason};
+        let directory = tempfile::tempdir().unwrap();
+        let session = Session::start(directory.path().join("logs"));
+        let mut trace = LoadTrace::new(Path::new("Antarctica.nksn"), 0, None);
+        trace.test_session = Some(session.clone());
+        let missing = |feature: &str, value: &str| Missing {
+            location: "script 1".into(),
+            feature: feature.into(),
+            value: value.into(),
+            reason: MissingReason::NotModeled,
+        };
+        trace.missing(&missing("lua setParameter GainMatrix.Gain_1_1", "0.5"), None);
+        trace.missing(
+            &missing("lua widget_index_out_of_range", "Table 1: index 9, valid 1..8"),
+            None,
+        );
+        let (reply, done) = mpsc::channel();
+        lock(&session.sender).as_ref().unwrap().send(Command::Flush(reply)).unwrap();
+        done.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+        let text = std::fs::read_to_string(&session.path).unwrap();
+        let reasons: Vec<String> = text
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap())
+            .filter(|r| r["event"] == "issue")
+            .map(|r| r["reason"].as_str().unwrap_or("issue").to_owned())
+            .collect();
+        assert!(reasons.iter().any(|r| r.starts_with("Not translated: lua setParameter GainMatrix.Gain_1_1")), "{reasons:?}");
+        assert!(reasons.iter().any(|r| r.ends_with("index 9, valid 1..8")), "{reasons:?}");
+        assert!(!text.contains("\"0.5\""), "authored values stay out");
     }
 
     #[test]
