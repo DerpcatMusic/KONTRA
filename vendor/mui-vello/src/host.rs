@@ -765,13 +765,8 @@ impl Host {
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         renderer.invalidate();
-        let t = Instant::now();
         renderer.render(scene, xf, &view).map_err(HostError::Render)?;
-        let encoded = t.elapsed();
         let _ = device.poll(wgpu::PollType::wait_indefinitely());
-        if std::env::var_os("KONTRA_TRACE").is_some() {
-            eprintln!("GPU encode+submit={:.2}ms wait={:.2}ms", encoded.as_secs_f64() * 1e3, (t.elapsed() - encoded).as_secs_f64() * 1e3);
-        }
         Ok(())
     }
 
