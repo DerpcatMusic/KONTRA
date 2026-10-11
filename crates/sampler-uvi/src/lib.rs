@@ -273,7 +273,6 @@ fn translate_full(text: &str, source: Source) -> Result<FullTranslation, Transla
             .collect(),
         osc_groups: Vec::new(),
         insert_nodes: Vec::new(),
-        in_rack: false,
         split: None,
     };
     out.program(program).map_err(Translate::Invalid)?;
@@ -406,8 +405,6 @@ struct Translation {
     osc_groups: Vec<OscGroup>,
     /// Where each insert element's processors sit, for script writes.
     insert_nodes: Vec<InsertNode>,
-    /// Translating the chains of an EffectRack: their inserts get no Mix.
-    in_rack: bool,
     /// The layer being translated, when a script may pick its oscillators.
     split: Option<(usize, ir::Group)>,
 }
@@ -488,11 +485,40 @@ impl Translation {
             let name = aux.attribute("Name").unwrap_or_default().to_owned();
             let bus = ir::BusRef(self.ir.buses.len());
             let live = number(aux, "Bypass", 0.0)? == 0.0;
-            let (processors, placed) = if live {
+            let (mut processors, mut placed) = if live || scripted {
                 self.inserts(aux, false, None)?
             } else {
                 (Vec::new(), Vec::new())
             };
+            let mut gain = ir::Gain::Linear(number(aux, "Gain", 1.0)?);
+            if scripted {
+                // The aux's inserts sit in one Mix (its Bypass); its Gain is
+                // the last stage, a control a script can move.
+                if !processors.is_empty() {
+                    processors.insert(
+                        0,
+                        ir::Processor::Mix {
+                            count: processors.len() as u16,
+                            address: ir::SlotAddress {
+                                group: -1,
+                                slot: -1,
+                                generic: i32::try_from(aux.id().get_usize()).unwrap_or(-1),
+                            },
+                            dry: 0.0,
+                            wet: 1.0,
+                            bypass: !live,
+                        },
+                    );
+                    for entry in &mut placed {
+                        entry.1 += 1;
+                    }
+                }
+                placed.push((aux.id().get_usize(), processors.len(), 1));
+                processors.push(ir::Processor::Gain(std::mem::replace(
+                    &mut gain,
+                    ir::Gain::UNITY,
+                )));
+            }
             let chain = (!placed.is_empty()).then(|| {
                 self.ir.chains.push(ir::Chain {
                     scope: ir::Scope::Bus(bus),
@@ -508,7 +534,7 @@ impl Translation {
                 chain,
                 sends: Vec::new(),
                 output: ir::Output::Master,
-                gain: ir::Gain::Linear(number(aux, "Gain", 1.0)?),
+                gain,
             });
             auxes.push((name, bus));
         }

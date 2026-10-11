@@ -811,6 +811,23 @@ impl TraceGraph {
                     .collect(),
                 0,
             ),
+            PreparedProcessor::LiveFilter(live) => (
+                "live_filter",
+                live.trace_parameters()
+                    .into_iter()
+                    .map(|(n, p)| parameter(n, p))
+                    .collect(),
+                0,
+            ),
+            PreparedProcessor::ControlMatrix(cells) => (
+                "control_matrix",
+                ["ll", "lr", "rl", "rr"]
+                    .into_iter()
+                    .zip(cells)
+                    .map(|(name, cell)| parameter(name, *cell))
+                    .collect(),
+                0,
+            ),
             PreparedProcessor::Biquad(b) => (
                 "biquad",
                 ["b0", "b1", "b2", "a1", "a2"]
