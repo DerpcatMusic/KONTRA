@@ -866,6 +866,14 @@ impl TraceGraph {
                     .collect(),
                 0,
             ),
+            PreparedProcessor::Ar { ar, .. } => (
+                "ar",
+                ar.trace_parameters()
+                    .into_iter()
+                    .map(|(n, p)| parameter(n, p))
+                    .collect(),
+                0,
+            ),
             PreparedProcessor::StereoModeller { stereo, .. } => (
                 "stereo_modeller",
                 stereo

@@ -1471,6 +1471,8 @@ pub enum Processor {
     Daft(Daft),
     /// Native Ladder LP4. Values are normalized; the engine owns the laws.
     LadderLP4(LadderLP4),
+    /// Kontakt's adaptive-resonance filter family (saved types 100..=108).
+    Ar(Ar),
     /// Mute a send return when its paired Mix slot is bypassed. Uses that
     /// slot's existing bypass control; insert bypass still passes dry audio.
     SendReturnGate {
@@ -1515,6 +1517,17 @@ pub struct Daft {
     pub cutoff: f64,
     pub resonance: f64,
     pub highpass: bool,
+}
+
+/// Kontakt's AR filter: `mode` is the saved type minus 100 (0..=8: 2-pole,
+/// 4-pole, combined 2/4; each low, band, high). Cutoff and resonance are the
+/// stored 0..=1 controls; the engine owns the laws.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ar {
+    pub mode: u8,
+    pub cutoff: f64,
+    pub resonance: f64,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]

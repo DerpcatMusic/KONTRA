@@ -1,6 +1,6 @@
 //! FilterDJ equations derived from the approved native AR trace.
-//! Admission and entry points: docs/audit-2026-10-10/w15-ar-native.md.
-//! This module stays disconnected until original-byte checks pass.
+//! Admission notes: docs/audit-2026-10-10/w15-ar-native.md. Checked against Kontakt 8
+//! plugin recordings (all nine-mode families, resonance 0 and .6, three levels).
 use std::sync::OnceLock;
 
 const TABLE_LEN: usize = 2401;
