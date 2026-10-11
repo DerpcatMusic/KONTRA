@@ -254,6 +254,11 @@ pub(crate) enum Params {
         shape: f32,
         mode: f32,
     },
+    Distortion {
+        mode: f32,
+        drive: f32,
+        damping: f32,
+    },
     /// `BParFXCompressor`: the first stored value (mode, Classic/Enhanced/Pro),
     /// threshold dB, ratio, attack and release ms, stereo link.
     Compressor {
@@ -394,6 +399,7 @@ impl Slot {
                 shape: r.f32()?,
                 mode: r.f32()?,
             },
+            0x1e => Params::Distortion { mode: r.f32()?, drive: r.f32()?, damping: r.f32()? },
             0x17 => Params::SendLevels {
                 sends: r.list()?,
                 outputs: r.list()?,
@@ -842,6 +848,22 @@ pub(crate) fn chain_with(
         let eq_gain = if eq_unset { IDENTITY } else { gain };
         let mut modelled = true;
         match &params {
+            Some(Params::Distortion { mode, drive, damping }) => {
+                if matches!(*mode, 0.0 | 1.0)
+                    && [*drive, *damping].iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v))
+                {
+                    flush(&mut combined, &mut filters, &mut out);
+                    out.processors.push(sampler_ir::Processor::Distortion {
+                        transistor: *mode == 1.0,
+                        drive: *drive,
+                        damping: *damping,
+                    });
+                    combined = gain;
+                } else {
+                    notes.push(("distortion parameters".into(), format!("{mode}/{drive}/{damping}"), sampler_ir::Reason::InvalidValue));
+                    modelled = false;
+                }
+            }
             Some(Params::Saturation { shape, mode }) => {
                 if *mode == 0.0 && shape.is_finite() && (-1.0..=1.0).contains(shape) {
                     flush(&mut combined, &mut filters, &mut out);
@@ -2545,6 +2567,17 @@ mod tests {
             let out = chain(&[slot(0x1d, payload.clone(), 0.5)], scope);
             assert!(out.notes.is_empty(), "{:?}", out.notes);
             assert_eq!(out.processors.len(), 2, "saturation and slot output");
+        }
+    }
+
+    #[test]
+    fn analog_distortion_saved_slot_is_admitted_in_both_scopes() {
+        let payload: Vec<_> = [0.0f32, 0.523648, 0.0]
+            .into_iter().flat_map(f32::to_le_bytes).collect();
+        for scope in [Scope::Voice, Scope::Bus] {
+            let out = chain(&[slot(0x1e, payload.clone(), 0.5)], scope);
+            assert!(out.notes.is_empty(), "{:?}", out.notes);
+            assert_eq!(out.processors.len(), 2, "distortion and slot output");
         }
     }
 
