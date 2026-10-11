@@ -1,4 +1,4 @@
-//! Source-free KSP parity CLI and atomic per-patch cache.
+//! Source-free KSP and UVI parity CLI and atomic per-patch cache.
 use anyhow::{Context, Result, bail, ensure};
 use sampler_parity::{Construct, ScriptReport, Status};
 use serde::{Deserialize, Serialize};
@@ -299,9 +299,23 @@ fn print_construct(c: &Construct) {
         c.detail
     );
 }
+fn resolve_patch(path: &Path) -> Result<(PathBuf, std::fs::Metadata)> {
+    let virtual_path = uvi_path(path);
+    let file = virtual_path
+        .ancestors()
+        .find(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("ufs")))
+        .unwrap_or(&virtual_path);
+    let canonical = file.canonicalize().context("resolve patch")?;
+    let path = if virtual_path == file {
+        canonical.clone()
+    } else {
+        canonical.join(virtual_path.strip_prefix(file)?)
+    };
+    let metadata = std::fs::metadata(&canonical)?;
+    Ok((path, metadata))
+}
 fn cache_location(path: &Path, mode: &str) -> Result<(PathBuf, String, PathBuf)> {
-    let path = path.canonicalize().context("resolve patch")?;
-    let metadata = std::fs::metadata(&path)?;
+    let (path, metadata) = resolve_patch(path)?;
     let mut hasher = blake3::Hasher::new();
     // Include producer sources, so a parity fix cannot keep an old count alive.
     for source in [
@@ -316,6 +330,9 @@ fn cache_location(path: &Path, mode: &str) -> Result<(PathBuf, String, PathBuf)>
         include_str!("../crates/sampler-ksp/src/lower.rs"),
         include_str!("../crates/sampler-kontakt/src/parity.rs"),
         include_str!("../crates/sampler-parity/src/lib.rs"),
+        include_str!("../crates/sampler-uvi/src/parity.rs"),
+        include_str!("../crates/sampler-uvi/src/parity/lexer.rs"),
+        include_str!("../crates/sampler-uvi/src/parity/ledger.rs"),
     ] {
         hasher.update(source.as_bytes());
     }
@@ -346,9 +363,21 @@ fn persist_cache(path: &Path, value: &impl Serialize) -> Result<()> {
     Ok(())
 }
 fn inspect_patch(path: &Path) -> Result<Vec<ScriptReport>> {
-    sampler_kontakt::read_parity_reports(path).map_err(|_| {
-        anyhow::anyhow!("patch could not be inspected (source and diagnostic values omitted)")
-    })
+    let path = uvi_path(path);
+    let failed =
+        || anyhow::anyhow!("patch could not be inspected (source and diagnostic values omitted)");
+    if path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("uvip"))
+        || path
+            .ancestors()
+            .any(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("ufs")))
+    {
+        return sampler_uvi::translate_path(&path)
+            .map(|t| t.parity_reports())
+            .map_err(|_| failed());
+    }
+    sampler_kontakt::read_parity_reports(&path).map_err(|_| failed())
 }
 fn cached_patch(path: &Path) -> Result<PatchReport> {
     let (path, key, cache) = cache_location(path, "patch")?;
@@ -395,10 +424,10 @@ fn corpus_paths(root: &Path) -> Result<Vec<PathBuf>> {
             let columns: Vec<_> = line.split('\t').collect();
             let path = if columns.len() == 1 {
                 columns[0]
-            } else if matches!(columns[0], "kontakt" | "kontakt-multi") {
+            } else if matches!(columns[0], "kontakt" | "kontakt-multi" | "uvi-program") {
                 columns[1]
             } else {
-                // Also admit library<TAB>/absolute/patch.nki lists; skip UVI rows.
+                // Also admit library<TAB>/absolute/patch lists.
                 match columns.iter().find(|p| is_patch(Path::new(p))) {
                     Some(p) => p,
                     None => continue,
@@ -413,7 +442,18 @@ fn corpus_paths(root: &Path) -> Result<Vec<PathBuf>> {
         for item in walkdir::WalkDir::new(root) {
             let item = item?;
             if item.file_type().is_file() && is_patch(item.path()) {
-                paths.insert(item.into_path());
+                if item
+                    .path()
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("ufs"))
+                {
+                    match sampler_uvi::Bank::catalog(item.path()) {
+                        Ok(programs) => paths.extend(programs.into_iter().map(|p| item.path().join(p))),
+                        Err(_) => { paths.insert(item.into_path()); }
+                    }
+                } else {
+                    paths.insert(item.into_path());
+                }
             }
         }
     }
@@ -421,7 +461,10 @@ fn corpus_paths(root: &Path) -> Result<Vec<PathBuf>> {
 }
 fn library_name(path: &Path, root: &Path) -> String {
     let parts: Vec<_> = path.components().collect();
-    if let Some(i) = parts.iter().position(|c| c.as_os_str() == "Kontakt") {
+    if let Some(i) = parts
+        .iter()
+        .position(|c| matches!(c.as_os_str().to_str(), Some("Kontakt" | "UVI")))
+    {
         if let Some(library) = parts.get(i + 1) {
             return library.as_os_str().to_string_lossy().into();
         }
@@ -436,9 +479,23 @@ fn library_name(path: &Path, root: &Path) -> String {
     path.parent().unwrap_or(path).to_string_lossy().into()
 }
 
+/// The corpus uses bank.ufs::member; the reader uses bank.ufs/member.
+fn uvi_path(path: &Path) -> PathBuf {
+    if let Some((bank, member)) = path.to_str().and_then(|p| p.split_once("::"))
+        && Path::new(bank)
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("ufs"))
+    {
+        return Path::new(bank).join(member.trim_start_matches(['/', '\\']).replace('\\', "/"));
+    }
+    path.into()
+}
+
 fn is_patch(path: &Path) -> bool {
-    path.extension().is_some_and(|e| {
-        ["nki", "nkm", "nkb"]
+    let path = uvi_path(path);
+    path.ancestors().any(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("ufs")))
+        || path.extension().is_some_and(|e| {
+        ["nki", "nkm", "nkb", "uvip", "ufs"]
             .iter()
             .any(|ext| e.eq_ignore_ascii_case(ext))
     })
@@ -471,12 +528,37 @@ mod tests {
         assert!(!json.contains("lowered"));
     }
     #[test]
-    fn sharded_lists_deduplicate_patches_and_admit_multis() {
+    fn uvi_bank_member_cache_resolves_the_bank_and_keeps_member_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let bank = dir.path().join("Bank.ufs");
+        std::fs::write(&bank, b"synthetic bank").unwrap();
+        let a = PathBuf::from(format!("{}::Presets/English Horn 2.uvip", bank.display()));
+        let b = PathBuf::from(format!("{}::Presets/Other.uvip", bank.display()));
+        let (resolved, metadata) = resolve_patch(&a).unwrap();
+        let (other, _) = resolve_patch(&b).unwrap();
+        assert!(
+            resolved
+                .to_string_lossy()
+                .ends_with("Bank.ufs/Presets/English Horn 2.uvip")
+        );
+        assert_ne!(resolved, other);
+        assert_eq!(metadata.len(), 14);
+        assert_eq!(uvi_path(&a), resolved);
+        assert!(is_patch(&a));
+        assert!(is_patch(&bank));
+        assert!(is_patch(Path::new("Bank.ufs::Program")));
+        let loose = dir.path().join("Patch.nki");
+        std::fs::write(&loose, b"synthetic patch").unwrap();
+        assert_eq!(resolve_patch(&loose).unwrap().0, loose);
+    }
+
+    #[test]
+    fn sharded_lists_deduplicate_patches_and_admit_multis_and_uvi() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("items.tsv");
         std::fs::write(&path,"kontakt\t/Kontakt/Library/Patch.nki\nkontakt\t/Kontakt/Library/Patch.nki\nkontakt-multi\t/Kontakt/Library/Multi.nkm\nuvi-program\t/Bank.ufs::Program\n").unwrap();
         let paths = corpus_paths(&path).unwrap();
-        assert_eq!(paths.len(), 2);
-        assert_eq!(library_name(&paths[0], &path), "Library");
+        assert_eq!(paths.len(), 3);
+        assert_eq!(library_name(&paths[1], &path), "Library");
     }
 }
