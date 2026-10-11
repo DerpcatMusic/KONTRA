@@ -458,6 +458,16 @@ fn slot_parameter(name: &str) -> Option<SlotKind> {
 mod law_tests {
     use super::*;
     #[test]
+    fn display_is_the_bare_number_because_scripts_append_the_unit() {
+        let show = |name: &str, value| engine_parameter_display(engine_parameter_id(name).unwrap(), value);
+        assert_eq!(show("ENGINE_PAR_ATTACK", 0), "0.0");
+        assert_eq!(show("ENGINE_PAR_SUSTAIN", 0), "-inf");
+        assert_eq!(show("ENGINE_PAR_SUSTAIN", 1_000_000), "0.0");
+        assert_eq!(show("ENGINE_PAR_VOLUME", 0), "-inf");
+        assert!(!show("ENGINE_PAR_VOLUME", 630_859).contains("dB"));
+        assert!(!show("ENGINE_PAR_RELEASE", 500_000).is_empty());
+    }
+    #[test]
     fn exponential_parameter_endpoints_are_exact_and_reject_exterior_neighbors() {
         for (law, low, high) in [
             (
@@ -828,11 +838,11 @@ pub(crate) fn display(parameter: u16, value: i32, text: &mut Text) {
         }
         "$ENGINE_PAR_VOLUME" => {
             if value == 0 {
-                let _ = text.write_str("-inf dB");
+                let _ = text.write_str("-inf");
             } else {
                 let _ = write!(
                     text,
-                    "{:.1} dB",
+                    "{:.1}",
                     layer_decode(ModTarget::Decibels, value) as f64 / 1000.
                 );
             }
@@ -840,12 +850,39 @@ pub(crate) fn display(parameter: u16, value: i32, text: &mut Text) {
         "$ENGINE_PAR_TUNE" => {
             let _ = write!(
                 text,
-                "{:.2} st",
+                "{:.2}",
                 layer_decode(ModTarget::Pitch, value) as f64 / 100000.
             );
+        }
+        // The bare number: scripts append the unit themselves (`& " ms"`, `& " dB"`).
+        name @ ("$ENGINE_PAR_ATTACK" | "$ENGINE_PAR_HOLD" | "$ENGINE_PAR_DECAY"
+        | "$ENGINE_PAR_RELEASE") => {
+            let stage = match name {
+                "$ENGINE_PAR_ATTACK" => crate::EnvelopeStage::Attack,
+                "$ENGINE_PAR_HOLD" => crate::EnvelopeStage::Hold,
+                "$ENGINE_PAR_DECAY" => crate::EnvelopeStage::Decay,
+                _ => crate::EnvelopeStage::Release,
+            };
+            let _ = write!(text, "{:.1}", EngineParameterLaw::envelope(stage, 1000).decode(value));
+        }
+        "$ENGINE_PAR_SUSTAIN" => {
+            let gain = f64::from(value.clamp(0, 1_000_000)) / 1e6;
+            if gain <= 1e-6 {
+                let _ = text.write_str("-inf");
+            } else {
+                // + 0.0 turns -0.0 into 0.0, as Kontakt shows.
+                let _ = write!(text, "{:.1}", (200. * gain.log10()).round() / 10. + 0.0);
+            }
         }
         _ => {
             let _ = write!(text, "{value}");
         }
     }
+}
+/// The text `get_engine_par_disp` shows for a native `value`, for hosts that
+/// evaluate scripts without a running engine.
+pub fn engine_parameter_display(parameter: u16, value: i32) -> String {
+    let mut text = Text::default();
+    display(parameter, value, &mut text);
+    text.as_str().to_owned()
 }

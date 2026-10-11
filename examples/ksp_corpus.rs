@@ -13,7 +13,7 @@ fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
             walk(&path, out);
         } else if path
             .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("nki"))
+            .is_some_and(|e| e.eq_ignore_ascii_case("nki") || e.eq_ignore_ascii_case("nkm"))
         {
             out.push(path);
         }
@@ -28,7 +28,14 @@ fn main() -> anyhow::Result<()> {
     presets.sort();
     let (mut read, mut failed, mut seen) = (0, 0, BTreeSet::new());
     for preset in &presets {
-        match sampler_kontakt::read(preset) {
+        // A multi's programs are numbered like the scanner's `program`.
+        let count = if preset.extension().is_some_and(|e| e.eq_ignore_ascii_case("nkm")) {
+            sampler_kontakt::read_multi(preset).map_or(0, |m| m.programs.len())
+        } else {
+            1
+        };
+        for program in 0..count {
+        match if count == 1 && !preset.extension().is_some_and(|e| e.eq_ignore_ascii_case("nkm")) { sampler_kontakt::read(preset) } else { sampler_kontakt::read_program(preset, program) } {
             Ok(loaded) => {
                 read += 1;
                 for (slot, text) in loaded
@@ -43,7 +50,7 @@ fn main() -> anyhow::Result<()> {
                     {
                         continue;
                     }
-                    let name = format!("{}-{slot}.ksp", seen.len());
+                    let name = format!("{}-{program}-{slot}.ksp", seen.len());
                     fs::write(out.join(&name), text)?;
                     let relative = preset.strip_prefix(root).unwrap_or(preset);
                     println!("{name}\t{}", relative.display());
@@ -53,6 +60,7 @@ fn main() -> anyhow::Result<()> {
                 failed += 1;
                 eprintln!("unreadable\t{}\t{error}", preset.display());
             }
+        }
         }
     }
     eprintln!(
