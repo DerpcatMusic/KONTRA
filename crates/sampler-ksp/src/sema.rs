@@ -1094,12 +1094,12 @@ impl<'a> Sema<'a, '_> {
                 None if name.starts_with('$')
                     && name.as_bytes().get(1).is_some_and(u8::is_ascii_uppercase) =>
                 {
-                    if !self.symbols.contains_key(&sym) {
+                    if !self.symbols.contains_key(&sym) && !builtins::is_vendor_constant(name) {
                         self.hir.warnings.push(crate::diag::Fault {
                             span,
                             builtin: None,
                             message: format!(
-                                "undeclared {name} treated as an opaque vendor constant"
+                                "{name} is not a known Kontakt constant; treated as an opaque identity"
                             ),
                         });
                     }

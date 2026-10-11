@@ -30,46 +30,41 @@ pub fn source_engine_lookups(source: &ir::SourceIndices) -> Vec<crate::EngineLoo
         .collect()
 }
 
-/// Defaults, lawful service conversions and DSP identities for native LP4 lanes.
-fn ladder_lanes(d: ir::LadderLP4) -> Vec<(ControlDefinition, crate::EngineParameterBinding)> {
-    let Some(slot) = d.address else {
-        return Vec::new();
+/// Defaults, lawful service conversions and DSP identities for native physical effect lanes.
+fn native_lanes(p: ir::Processor) -> Vec<(ControlDefinition, crate::EngineParameterBinding)> {
+    use crate::EngineParameterLaw::{Linear, SignedNormalized};
+    let unit = Linear { low: 0., high: 1. };
+    let (slot, lanes) = match p {
+        ir::Processor::LadderLP4(d) => {
+            let Some(slot) = d.address else { return Vec::new() };
+            (slot, vec![("ENGINE_PAR_CUTOFF", d.cutoff, unit),
+                ("ENGINE_PAR_RESONANCE", d.resonance, unit),
+                ("ENGINE_PAR_GAIN", d.gain, SignedNormalized)])
+        }
+        ir::Processor::LiveSaturation { shape, address } => (address,
+            vec![("ENGINE_PAR_SHAPE", f64::from(shape), Linear { low: -1., high: 1. })]),
+        ir::Processor::LiveDistortion { drive, damping, address, .. } => (address,
+            vec![("ENGINE_PAR_DRIVE", f64::from(drive), unit),
+                ("ENGINE_PAR_DAMPING", f64::from(damping), unit)]),
+        _ => return Vec::new(),
     };
-    [
-        ("ENGINE_PAR_CUTOFF", d.cutoff, false),
-        ("ENGINE_PAR_RESONANCE", d.resonance, false),
-        ("ENGINE_PAR_GAIN", d.gain, true),
-    ]
-    .into_iter()
-    .map(|(name, value, signed)| {
+    lanes.into_iter().map(|(name, value, law)| {
         let address = crate::EngineParameterAddress {
             parameter: crate::engine_parameter_id(name).unwrap(),
-            group: slot.group,
-            slot: slot.slot,
-            generic: slot.generic,
+            group: slot.group, slot: slot.slot, generic: slot.generic,
         };
         let id = crate::engine_parameter_control(address);
-        (
-            ControlDefinition {
-                id,
-                domain: ControlDomain::Real {
-                    min: if signed { -1. } else { 0. },
-                    max: 1.,
-                },
-                default: ControlValue::Real(value),
-            },
-            crate::EngineParameterBinding {
-                address,
-                control: id,
-                law: if signed {
-                    crate::EngineParameterLaw::SignedNormalized
-                } else {
-                    crate::EngineParameterLaw::Linear { low: 0., high: 1. }
-                },
-            },
-        )
-    })
-    .collect()
+        let low = if matches!(law, SignedNormalized | Linear { low: -1., .. }) { -1. } else { 0. };
+        (ControlDefinition { id, domain: ControlDomain::Real { min: low, max: 1. },
+            default: ControlValue::Real(value) },
+            crate::EngineParameterBinding { address, control: id, law })
+    }).collect()
+}
+
+fn native_parameter(lanes: &[(ControlDefinition, crate::EngineParameterBinding)], index: usize) -> Parameter {
+    let c = lanes[index].0;
+    let ControlDomain::Real { min, max } = c.domain else { unreachable!() };
+    Parameter::Control(ControlRange { control: c.id, low: min, high: max, ramp_frames: 0 })
 }
 
 /// Seed for random sequences; fixed so renders are reproducible.
@@ -644,10 +639,8 @@ pub fn lower_with(
     let mut native = std::collections::BTreeMap::new();
     for chain in &instrument.chains {
         for p in chain.pre_amplitude.iter().chain(&chain.post_amplitude) {
-            if let ir::Processor::LadderLP4(d) = p {
-                for (_, binding) in ladder_lanes(*d) {
-                    native.insert(binding.address, binding);
-                }
+            for (_, binding) in native_lanes(*p) {
+                native.insert(binding.address, binding);
             }
         }
     }
@@ -678,7 +671,15 @@ pub fn lower_with(
                 generic: alias.address.generic,
             },
             control: ir_control_id(&control.key),
-            law: if alias.parameter == "ENGINE_PAR_INTMOD_BYPASS" {
+            law: if routes.iter().any(|b| {
+                b.1 == alias.control
+                    && matches!(
+                        instrument.routes[b.0.0].target,
+                        ir::Target::LoopStart | ir::Target::LoopLength
+                    )
+            }) {
+                crate::EngineParameterLaw::SignedCubic
+            } else if alias.parameter == "ENGINE_PAR_INTMOD_BYPASS" {
                 crate::EngineParameterLaw::Switch
             } else {
                 crate::EngineParameterLaw::Linear {
@@ -973,6 +974,10 @@ impl Lowering<'_> {
                 }),
                 _ => [None; 8],
             },
+            loop_control_crossfade: zone
+                .playback
+                .loop_control_crossfade
+                .map(|span| span.frames(asset_rate) as usize),
             transpose_semitones: tune,
         };
         let region = Region {
@@ -1057,7 +1062,7 @@ impl Lowering<'_> {
             .nth(index)?;
         if matches!(
             processor,
-            ir::Processor::LadderLP4(_) | ir::Processor::Daft(_)
+            ir::Processor::LadderLP4(_) | ir::Processor::Daft(_) | ir::Processor::Ar(_)
         ) {
             return None;
         }
@@ -1202,6 +1207,29 @@ impl Lowering<'_> {
             let owner = format!("{owner} route {}", route_ref.0);
             let modulator = &self.ir.modulators[route.source.0];
             let mut processor_targets = Vec::new();
+            let mut source_of = |modulator: ir::ModulatorRef,
+                                 program: &mut ModProgram|
+             -> Result<usize, LowerError> {
+                if let Some(&index) = sources.get(&modulator) {
+                    return Ok(index);
+                }
+                let m = &self.ir.modulators[modulator.0];
+                // One instrument-wide LFO: free-running, or restarted by every voice start.
+                let shared = matches!(
+                    (m.scope, &m.source),
+                    (ir::Scope::Master, ir::ModulationSource::Lfo(_))
+                );
+                if m.scope != ir::Scope::Voice && !shared {
+                    return Err(unsupported(owner.clone(), Feature::ModulatorScope(m.scope)));
+                }
+                let mut source = self.mod_source(&owner, &m.source, program)?;
+                if let ModSource::Lfo(lfo) = &mut source {
+                    lfo.shared = shared;
+                }
+                program.sources.push(source);
+                sources.insert(modulator, program.sources.len() - 1);
+                Ok(program.sources.len() - 1)
+            };
             let target = match (route.target, route.depth) {
                 // Pitch bend to pitch is the note's native expression bend.
                 (ir::Target::Pitch, _) if modulator.source == ir::ModulationSource::PitchBend => {
@@ -1214,6 +1242,12 @@ impl Lowering<'_> {
                 (ir::Target::Pitch, ir::Depth::Pitch(p)) => (ModTarget::Pitch, p.semitones()),
                 (ir::Target::Pan, ir::Depth::Normalized(d)) => (ModTarget::Pan, d),
                 (ir::Target::SampleStart, ir::Depth::Normalized(d)) => (ModTarget::SampleStart, d),
+                (ir::Target::LoopStart, ir::Depth::Normalized(d)) => (ModTarget::LoopStart, d),
+                (ir::Target::LoopLength, ir::Depth::Normalized(d)) => (ModTarget::LoopLength, d),
+                (ir::Target::SourcePhase(target), ir::Depth::Normalized(d)) => (
+                    ModTarget::SourcePhase(source_of(target, &mut program)? as u32),
+                    d,
+                ),
                 (ir::Target::Control(control), ir::Depth::Normalized(depth)) => {
                     let address = crate::ParameterAddress {
                         scope: crate::ParameterScope::Voice,
@@ -1302,7 +1336,9 @@ impl Lowering<'_> {
                         (parameter, ir::Depth::Normalized(d))
                             if matches!(
                                 **processor,
-                                ir::Processor::LadderLP4(_) | ir::Processor::Daft(_)
+                                ir::Processor::LadderLP4(_)
+                                    | ir::Processor::Daft(_)
+                                    | ir::Processor::Ar(_)
                             ) =>
                         {
                             (
@@ -1339,29 +1375,6 @@ impl Lowering<'_> {
                     }
                 }
                 _ => return Err(unsupported(owner, Feature::ModulationRoute(route.target))),
-            };
-            let mut source_of = |modulator: ir::ModulatorRef,
-                                 program: &mut ModProgram|
-             -> Result<usize, LowerError> {
-                if let Some(&index) = sources.get(&modulator) {
-                    return Ok(index);
-                }
-                let m = &self.ir.modulators[modulator.0];
-                // One instrument-wide LFO: free-running, or restarted by every voice start.
-                let shared = matches!(
-                    (m.scope, &m.source),
-                    (ir::Scope::Master, ir::ModulationSource::Lfo(_))
-                );
-                if m.scope != ir::Scope::Voice && !shared {
-                    return Err(unsupported(owner.clone(), Feature::ModulatorScope(m.scope)));
-                }
-                let mut source = self.mod_source(&owner, &m.source, program)?;
-                if let ModSource::Lfo(lfo) = &mut source {
-                    lfo.shared = shared;
-                }
-                program.sources.push(source);
-                sources.insert(modulator, program.sources.len() - 1);
-                Ok(program.sources.len() - 1)
             };
             let source = source_of(route.source, &mut program)?;
             let scale = match route.scale {
@@ -1531,6 +1544,7 @@ impl Lowering<'_> {
             ir::ModulationSource::Random => ModSource::Random,
             ir::ModulationSource::Constant => ModSource::Constant,
             ir::ModulationSource::Script(id) => ModSource::Script(*id),
+            ir::ModulationSource::ScriptBipolar(id) => ModSource::ScriptBipolar(*id),
             ir::ModulationSource::ReleaseCounter(t) => ModSource::ReleaseCounter {
                 frames: self.frames(*t).max(1),
             },
@@ -1611,6 +1625,8 @@ impl Lowering<'_> {
             (Processor::Daft(filter), Cutoff) => filter.cutoff = parameter,
             (Processor::Daft(filter), Resonance) => filter.resonance = parameter,
             (Processor::Daft(filter), Response) => filter.response = parameter,
+            (Processor::Ar(filter), Cutoff) => filter.cutoff = parameter,
+            (Processor::Ar(filter), Resonance) => filter.resonance = parameter,
             (Processor::LadderLP4(filter), Gain) => filter.gain = parameter,
             (Processor::LadderLP4(filter), Cutoff) => filter.cutoff = parameter,
             (Processor::LadderLP4(filter), Resonance) => filter.resonance = parameter,
@@ -1624,9 +1640,94 @@ impl Lowering<'_> {
             (Processor::Compressor(c), Release) => c.release_seconds = parameter,
             (Processor::StereoModeller(settings), Width) => settings.width = parameter,
             (Processor::StereoModeller(settings), Pan) => settings.pan = parameter,
+            (Processor::LiveFilter(f), Frequency) => f.frequency_hz = parameter,
+            (Processor::LiveFilter(f), Quality) => f.q = parameter,
+            (Processor::LiveFilter(f), GainDecibels) => f.gain_db = parameter,
+            (Processor::LiveFilter(f), ReferenceDecibels) => f.reference_db = parameter,
+            (Processor::LiveFilter(f), Enabled) => f.enabled = parameter,
+            (Processor::ControlMatrix(cells), CellLL) => cells[0] = parameter,
+            (Processor::ControlMatrix(cells), CellLR) => cells[1] = parameter,
+            (Processor::ControlMatrix(cells), CellRL) => cells[2] = parameter,
+            (Processor::ControlMatrix(cells), CellRR) => cells[3] = parameter,
             _ => return Ok(false),
         }
         Ok(true)
+    }
+
+    /// Whether a live parameter (frequency, quality, decibels, enable or a
+    /// matrix cell) binds the processor at `index` of `chain`.
+    fn live_bound(&self, chain: ir::ChainRef, index: usize) -> bool {
+        use ir::ProcessorParameter as P;
+        self.ir
+            .processor_controls
+            .iter()
+            .filter(|b| b.chain == chain && b.index == index)
+            .any(|b| {
+                matches!(
+                    b.parameter,
+                    P::Frequency
+                        | P::Quality
+                        | P::GainDecibels
+                        | P::ReferenceDecibels
+                        | P::Enabled
+                        | P::CellLL
+                        | P::CellLR
+                        | P::CellRL
+                        | P::CellRR
+                )
+            })
+    }
+
+    /// The control-driven stage for an IR filter, gain or matrix that a
+    /// live parameter binds (frequency, quality, decibels, enable or a matrix
+    /// cell), seeded with the authored constants.
+    fn live_stage(&self, chain: ir::ChainRef, index: usize, p: &ir::Processor) -> Option<Processor> {
+        let live = self.live_bound(chain, index);
+        if !live {
+            return None;
+        }
+        let constant = |v| Parameter::Constant(v);
+        let db = |g: ir::Gain| 20. * g.linear().log10();
+        let seed = |shape, frequency, q, gain| {
+            Processor::LiveFilter(crate::LiveFilter {
+                shape,
+                frequency_hz: constant(frequency),
+                q: constant(q),
+                gain_db: constant(gain),
+                reference_db: constant(0.),
+                enabled: constant(1.),
+            })
+        };
+        use crate::LiveShape as S;
+        match *p {
+            ir::Processor::Gain(g) => Some(seed(S::Level, 1000., 0.707, db(g))),
+            ir::Processor::StereoMatrix(m) => Some(Processor::ControlMatrix([
+                constant(m[0][0]),
+                constant(m[0][1]),
+                constant(m[1][0]),
+                constant(m[1][1]),
+            ])),
+            ir::Processor::Filter(ir::Filter {
+                kind,
+                cutoff: ir::Frequency::Hertz(hz),
+                resonance: ir::Resonance::Q(q),
+            }) => {
+                let (shape, gain) = match kind {
+                    ir::FilterKind::LowShelf { gain } => (S::LowShelf, db(gain)),
+                    ir::FilterKind::HighShelf { gain } => (S::HighShelf, db(gain)),
+                    ir::FilterKind::FirstOrderLowShelf { gain } => (S::FirstOrderLowShelf, db(gain)),
+                    ir::FilterKind::FirstOrderHighShelf { gain } => (S::FirstOrderHighShelf, db(gain)),
+                    ir::FilterKind::Peak { gain } => (S::Peak, db(gain)),
+                    ir::FilterKind::LowPass { .. } => (S::LowPass, 0.),
+                    ir::FilterKind::HighPass { .. } => (S::HighPass, 0.),
+                    ir::FilterKind::BandPass { .. } => (S::BandPass, 0.),
+                    ir::FilterKind::Notch { .. } => (S::Notch, 0.),
+                    ir::FilterKind::AllPass => return None,
+                };
+                Some(seed(shape, hz, q, gain))
+            }
+            _ => None,
+        }
     }
 
     /// A slot control's binding: ramped over 10 ms like a script's gain edit.
@@ -1645,10 +1746,8 @@ impl Lowering<'_> {
         let mut all = std::collections::BTreeMap::new();
         for chain in &self.ir.chains {
             for p in chain.pre_amplitude.iter().chain(&chain.post_amplitude) {
-                if let ir::Processor::LadderLP4(d) = *p {
-                    for (control, _) in ladder_lanes(d) {
-                        all.entry(control.id).or_insert(control);
-                    }
+                for (control, _) in native_lanes(*p) {
+                    all.entry(control.id).or_insert(control);
                 }
                 let ir::Processor::Mix {
                     address,
@@ -1699,6 +1798,7 @@ impl Lowering<'_> {
                 cutoff: ir::Frequency::Hertz(hz),
                 resonance: ir::Resonance::Q(q),
             }) = **p
+                && !self.live_bound(chain, start + index)
                 && self
                     .ir
                     .processor_controls
@@ -1707,12 +1807,15 @@ impl Lowering<'_> {
             {
                 vec![Processor::PeakingEq(crate::PeakingEq {
                     frequency: Parameter::Constant(((hz / 20.).log10() / 3.).clamp(0., 1.)),
-                    bandwidth: Parameter::Constant(
-                        ((2. * (0.5 / q).asinh() / std::f64::consts::LN_2 - 0.3) / 2.7)
-                            .clamp(0., 1.),
+                    bandwidth: Parameter::Constant(crate::PeakingEq::bandwidth_knob(
+                        crate::PeakingEq::octaves_of_q(q),
+                    )),
+                    gain_db: Parameter::Constant(
+                        20. * gain.linear().log10() / crate::PeakingEq::GAIN_SCALE,
                     ),
-                    gain_db: Parameter::Constant(20. * gain.linear().log10()),
                 })]
+            } else if let Some(live) = self.live_stage(chain, start + index, p) {
+                vec![live]
             } else {
                 self.processors(owner, **p)?
             };
@@ -1836,8 +1939,13 @@ impl Lowering<'_> {
                 resonance: Parameter::Constant(d.resonance),
                 response: Parameter::Constant(if d.highpass { 1.0 } else { 0.0 }),
             }),
+            ir::Processor::Ar(d) => Processor::Ar(crate::ArSettings {
+                mode: d.mode,
+                cutoff: Parameter::Constant(d.cutoff),
+                resonance: Parameter::Constant(d.resonance),
+            }),
             ir::Processor::LadderLP4(d) => {
-                let lanes = ladder_lanes(d);
+                let lanes = native_lanes(ir::Processor::LadderLP4(d));
                 let parameter = |index: usize, value: f64| {
                     lanes
                         .get(index)
@@ -1858,6 +1966,7 @@ impl Lowering<'_> {
                     resonance: parameter(1, d.resonance),
                     gain: parameter(2, d.gain),
                     record_version: d.record_version,
+                    taps: d.taps,
                 })
             }
             ir::Processor::LoFi {
@@ -1875,6 +1984,20 @@ impl Lowering<'_> {
                 ir::Rectifier::Full => Rectifier::Full,
                 ir::Rectifier::Half => Rectifier::Half,
             }),
+            ir::Processor::Saturation(shape) => Processor::Saturation(shape),
+            ir::Processor::LiveSaturation { .. } => {
+                Processor::LiveSaturation(native_parameter(&native_lanes(processor), 0))
+            }
+            ir::Processor::LiveDistortion { transistor, .. } => {
+                let lanes = native_lanes(processor);
+                Processor::LiveDistortion { transistor, drive: native_parameter(&lanes, 0),
+                    damping: native_parameter(&lanes, 1) }
+            }
+            ir::Processor::LegacyPhaser { depth, feedback, phase, speed, period_unit } => Processor::LegacyPhaser { depth, feedback, phase, speed, period_unit },
+            ir::Processor::KontaktEnhancedCompressor { knobs, link } => Processor::KontaktEnhancedCompressor { knobs, link },
+            ir::Processor::Phaser(knobs) => Processor::Phaser(knobs),
+            ir::Processor::Formant(knobs) => Processor::Formant(knobs),
+            ir::Processor::Distortion { transistor, drive, damping } => Processor::Distortion { transistor, drive, damping },
             ir::Processor::Mix { address, .. } => Processor::Mix {
                 // Filled in by `lower_list`, which knows the lowered span.
                 count: 0,
@@ -1959,6 +2082,12 @@ impl Lowering<'_> {
             ir::FilterKind::HighShelf { gain } => biquad(FilterKind::HighShelf {
                 gain_db: 20.0 * gain.linear().log10(),
             }),
+            ir::FilterKind::FirstOrderLowShelf { gain } => biquad(FilterKind::FirstOrderLowShelf {
+                gain_db: 20.0 * gain.linear().log10(),
+            }),
+            ir::FilterKind::FirstOrderHighShelf { gain } => biquad(FilterKind::FirstOrderHighShelf {
+                gain_db: 20.0 * gain.linear().log10(),
+            }),
         }
     }
 
@@ -2028,8 +2157,11 @@ impl Lowering<'_> {
                 .map(|p| match p {
                     Processor::Gain(_)
                     | Processor::StereoMatrix(_)
+                    | Processor::ControlMatrix(_)
                     | Processor::Compressor(_)
                     | Processor::Rectify(_)
+                    | Processor::Saturation(_)
+                    | Processor::LiveSaturation(_)
                     | Processor::Branch { .. }
                     | Processor::Mix { .. } => 0,
                     Processor::Reverb(r) => r.tail_frames(self.rate),

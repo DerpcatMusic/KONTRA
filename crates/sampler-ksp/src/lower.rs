@@ -135,6 +135,7 @@ pub struct Unit<'h> {
     /// Host control per UI index.
     pub controls: &'h [Option<ControlId>],
     pub groups: &'h [String],
+    pub folders: &'h [String; 4],
     pub slot: u8,
     /// Remaining instruction budget for the whole script.
     pub budget: usize,
@@ -144,6 +145,7 @@ pub struct Unit<'h> {
     pub array_files: std::collections::BTreeSet<VarId>,
     pub coverage: BTreeMap<(&'static str, Coverage), usize>,
     pub warnings: Vec<(Fault, crate::diag::Kind)>,
+    pub inspection: Option<crate::parity::Inspection>,
     /// Scratch text cells used above `hir.texts`.
     pub scratch: u32,
     pub modules: Vec<(Context, i32, Option<i32>, Module)>,
@@ -199,6 +201,8 @@ impl<'h> Unit<'h> {
             ends: module.ends,
             loops: Vec::new(),
             span,
+            statement_span: None,
+            call_span: None,
             tdepth: 0,
             signal,
         };
@@ -393,6 +397,8 @@ impl<'h> Unit<'h> {
             ends: Vec::new(),
             loops: Vec::new(),
             span,
+            statement_span: None,
+            call_span: None,
             tdepth: 0,
             signal: Some(signal),
         };
@@ -495,6 +501,8 @@ struct Gen<'u, 'h> {
     /// Condition position of each enclosing `while`, for `continue`.
     loops: Vec<usize>,
     span: Span,
+    statement_span: Option<Span>,
+    call_span: Option<Span>,
     tdepth: u32,
     /// The timer signal a listener body program serves.
     signal: Option<i32>,
@@ -530,6 +538,11 @@ impl Gen<'_, '_> {
             );
         }
         self.u.budget -= 1;
+        if let Some(inspect) = &mut self.u.inspection {
+            inspect
+                .ops
+                .push((self.statement_span.unwrap_or(self.span), crate::parity::operation_name(&op)));
+        }
         self.code.push(op);
         Ok(())
     }
@@ -571,6 +584,9 @@ impl Gen<'_, '_> {
         }
     }
     fn cover(&mut self, builtin: Builtin, coverage: Coverage) {
+        if let Some(inspect) = &mut self.u.inspection {
+            inspect.calls.push((self.call_span.unwrap_or(self.span), builtin, coverage));
+        }
         let count = self
             .u
             .coverage
@@ -579,7 +595,10 @@ impl Gen<'_, '_> {
         *count += 1;
         // The first approximated call site per builtin is enough for the report;
         // `Script::coverage` keeps the totals.
-        if *count == 1 && coverage == Coverage::Approximate {
+        if *count == 1
+            && crate::parity::lowering_status(coverage)
+                .is_some_and(|e| e.status == sampler_parity::Status::Approximate)
+        {
             let message = format!("{} runs with simplified semantics", builtin.name());
             self.report(Some(builtin), crate::diag::Kind::Approximate, message);
         }
@@ -663,7 +682,10 @@ impl Gen<'_, '_> {
     fn block(&mut self, body: &[Stmt]) -> Result<()> {
         for s in body {
             self.span = s.span;
-            self.stmt(s)?;
+            let previous = self.statement_span.replace(s.span);
+            let result = self.stmt(s);
+            self.statement_span = previous;
+            result?;
         }
         Ok(())
     }
@@ -1059,6 +1081,10 @@ impl Gen<'_, '_> {
                 local: dst,
                 value: true,
             },
+            SysVar::NumOutputChannels => I::SetLocal {
+                local: dst,
+                value: i64::from(b::NUM_OUTPUT_CHANNELS),
+            },
             SysVar::CurrentScriptSlot => I::SetLocal {
                 local: dst,
                 value: i64::from(self.u.slot),
@@ -1078,6 +1104,11 @@ impl Gen<'_, '_> {
     }
 
     fn sys_elem(&mut self, array: SysArray, index: &Expr, dst: u16) -> Result<()> {
+        // The Group Editor selection: this host has no editor, so no group is
+        // selected and every element reads 0, as in a Kontakt that is not editing.
+        if array == SysArray::GroupsSelected {
+            return self.set(dst, 0);
+        }
         if !self.sys_readable(array) {
             self.warn(format!("{array:?} is not maintained at runtime; reads 0"));
             return self.set(dst, 0);
@@ -1253,6 +1284,29 @@ impl Gen<'_, '_> {
                     _ => {
                         self.warn("group_name of an unknown group is empty");
                         return Ok(());
+                    }
+                }
+            }
+            ExprKind::Builtin(Builtin::GetFolder, args) => {
+                // NI load/save get_folder; FUN_14078d910 case 9 reads host paths, unknown selectors are empty.
+                self.cover(Builtin::GetFolder, Coverage::Native);
+                if let Some(index) = self.const_int(args, 0) {
+                    let folder = usize::try_from(index).ok().and_then(|i| self.u.folders.get(i));
+                    TextPart::Constant(self.constant(folder.map_or("", String::as_str)))
+                } else {
+                    self.arg(args, 0, free)?;
+                    let base = self.texts.len() as u16;
+                    for folder in self.u.folders {
+                        let mut end = folder.len().min(sampler_core::TEXT_CAPACITY);
+                        while !folder.is_char_boundary(end) {
+                            end -= 1;
+                        }
+                        self.texts.push(folder[..end].to_owned());
+                    }
+                    TextPart::Table {
+                        base,
+                        count: 4,
+                        index: free,
                     }
                 }
             }
@@ -1571,6 +1625,13 @@ impl Gen<'_, '_> {
     }
 
     fn builtin(&mut self, builtin: Builtin, args: &[Arg], dst: u16, span: Span) -> Result<()> {
+        let previous = self.call_span.replace(span);
+        let result = self.builtin_inner(builtin, args, dst, span);
+        self.call_span = previous;
+        result
+    }
+
+    fn builtin_inner(&mut self, builtin: Builtin, args: &[Arg], dst: u16, span: Span) -> Result<()> {
         use Builtin::*;
         self.span = span;
         let t = reg(dst, 1)?;
@@ -1879,6 +1940,15 @@ impl Gen<'_, '_> {
             }
             Search => return self.search(args, dst, span),
             Sort => return self.sort(args, dst),
+            GetScale => return self.get_scale(args, dst),
+            SetGlobalKey | SetGlobalScale => {
+                self.ignore(builtin, "has no global key/scale to set");
+                true
+            }
+            SubscribeAsync => {
+                self.ignore(SubscribeAsync, "has no global key/scale to deliver at runtime");
+                true
+            }
             ArrayEqual => return self.array_equal(args, dst, span),
             ByMarks => {
                 self.arg(args, 0, dst)?;
@@ -2105,7 +2175,7 @@ impl Gen<'_, '_> {
                 self.tdepth -= 1;
                 true
             }
-            ChangeVol | ChangeTune | ChangePan if !self.selects_many(builtin, args, 0) => {
+            ChangeVol | ChangeTune | ChangePan => {
                 let target = match builtin {
                     ChangeVol => ModTarget::Decibels,
                     ChangeTune => ModTarget::Pitch,
@@ -2258,7 +2328,7 @@ impl Gen<'_, '_> {
             // modulator range (sampler_core::USER_EVENT_PAR).
             SetEventPar | GetEventPar
                 if matches!(self.const_int(args, 1), Some(0..=3))
-                    && !self.selects_many(builtin, args, 0) =>
+                    && (builtin == SetEventPar || !self.selects_many(builtin, args, 0)) =>
             {
                 let id = reg(dst, 2)?;
                 self.arg(args, 0, dst)?;
@@ -2286,7 +2356,8 @@ impl Gen<'_, '_> {
                 true
             }
             SetEventPar | GetEventPar
-                if self.event_param(args).is_some() && !self.selects_many(builtin, args, 0) =>
+                if self.event_param(args).is_some()
+                    && (builtin == SetEventPar || !self.selects_many(builtin, args, 0)) =>
             {
                 let target = self.event_param(args).unwrap();
                 self.arg(args, 0, dst)?;
@@ -2315,7 +2386,7 @@ impl Gen<'_, '_> {
                 })?;
                 true
             }
-            FadeIn | FadeOut if !self.selects_many(builtin, args, 0) => {
+            FadeIn | FadeOut => {
                 self.arg(args, 0, dst)?;
                 self.arg(args, 1, t)?;
                 self.emit(I::MicrosToFrames { local: t })?;
@@ -3528,6 +3599,48 @@ impl Gen<'_, '_> {
             self.tdepth -= 1;
         }
         self.cover(Builtin::Sort, Coverage::Native);
+        Ok(())
+    }
+
+    /// `get_scale(scale, array)`: the scale's semitones, then -1, as an if-chain over the table.
+    fn get_scale(&mut self, args: &[Arg], dst: u16) -> Result<()> {
+        let Some(array) = self.cells(args, 1) else {
+            self.ignore(Builtin::GetScale, "of a runtime array is not available");
+            return Ok(());
+        };
+        let [matched, index, value] = [1, 2, 3].map(|n| dst + n);
+        reg(dst, 4)?;
+        self.arg(args, 0, dst)?;
+        let mut done = Vec::new();
+        for (scale, notes) in b::scales() {
+            self.set(matched, i64::from(scale))?;
+            self.emit(I::CompareLocal {
+                lhs: matched,
+                rhs: dst,
+                comparison: Cmp::Equal,
+            })?;
+            let next = self.jump_if_zero(matched)?;
+            self.fill_scale(array, index, value, notes)?;
+            done.push(self.jump()?);
+            self.land(next);
+        }
+        self.fill_scale(array, index, value, &[])?;
+        for at in done {
+            self.land(at);
+        }
+        self.cover(Builtin::GetScale, Coverage::Native);
+        Ok(())
+    }
+    fn fill_scale(&mut self, array: ScriptArray, index: u16, value: u16, notes: &[u8]) -> Result<()> {
+        for i in 0..array.len {
+            self.set(index, i64::from(i))?;
+            self.set(value, notes.get(i as usize).map_or(-1, |&n| i64::from(n)))?;
+            self.emit(I::WriteScriptArray {
+                array,
+                index,
+                local: value,
+            })?;
+        }
         Ok(())
     }
 

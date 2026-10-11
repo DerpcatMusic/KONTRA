@@ -343,7 +343,7 @@ fn load_data_rejects_implicit_paths_and_reports_oversized_completion() {
         .unwrap();
     let mut h = host(&format!(
         r#"
-        relative = pcall(function() loadData('relative.json') end)
+        relative = pcall(function() loadData('Rooms.ufs/rooms.json', function() called = true end) end)
         empty = pcall(function() loadData('') end)
         nul = pcall(function() loadData('/bad\0path') end)
         tooLong = pcall(function() loadData('/'..string.rep('a', 4096)) end)
@@ -352,7 +352,8 @@ fn load_data_rejects_implicit_paths_and_reports_oversized_completion() {
     "#,
         path(&file)
     ));
-    for global in ["relative", "empty", "nul", "tooLong"] {
+    assert_eq!(h.global_text("relative"), "true");
+    for global in ["empty", "nul", "tooLong"] {
         assert_eq!(h.global_text(global), "false");
     }
     assert_eq!(h.global_text("submitted"), "true");

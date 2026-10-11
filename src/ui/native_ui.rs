@@ -24,7 +24,10 @@ struct Local {
     lifetime: std::sync::Weak<AtomicBool>,
     session: Session,
     graph: Option<Table>,
-    hovered: HashSet<String>,
+    /// The handler-bearing nodes of `graph`, found once per Lua render.
+    targets: Option<(u64, Option<Vec<Target>>)>,
+    /// Hovered nodes and the pointer position last reported to each.
+    hovered: HashMap<String, Point>,
     drafts: HashMap<String, String>,
 }
 thread_local! {static LOCAL:std::cell::RefCell<HashMap<u64,Local>>=std::cell::RefCell::new(HashMap::new());}
@@ -400,7 +403,8 @@ impl State {
                         lifetime: Arc::downgrade(&self.canceled),
                         session,
                         graph: None,
-                        hovered: HashSet::new(),
+                        targets: None,
+                        hovered: HashMap::new(),
                         drafts: HashMap::new(),
                     },
                 );
@@ -411,12 +415,34 @@ impl State {
             let session = &local.session;
             {
                 let _sync = self.activity.as_ref().map(|a| a.span(Phase::UiProjectionSync));
+                let _p = super::prof::span("view.sync");
                 session.update_view(face, values, &input.values, &input.meters);
             }
+            let _p = super::prof::span("view.events");
             if let Some(graph) = &local.graph {
-                events(ui, graph, session, slot, scale, &mut local.hovered)?;
+                let generation = session.generation();
+                if local.targets.as_ref().is_none_or(|(g, _)| *g != generation) {
+                    let indexed = session
+                        .event_nodes()
+                        .map(|nodes| {
+                            nodes.iter().map(|node| Ok(Target { path: string(node, "path"), gestures: gestures(node)? })).collect::<anyhow::Result<Vec<_>>>()
+                        })
+                        .transpose()?;
+                    local.targets = Some((generation, indexed));
+                }
+                match &local.targets {
+                    Some((_, Some(targets))) => {
+                        for target in targets {
+                            node_events(ui, session, slot, scale, &mut local.hovered, &target.path, &target.gestures)?;
+                        }
+                    }
+                    _ => events(ui, graph, session, slot, scale, &mut local.hovered)?,
+                }
             }
+            drop(_p);
+            let _p = super::prof::span("view.render");
             let graph = session.render();
+            drop(_p);
             #[cfg(feature = "shots")]
             {
                 self.graph_work = Some(session.graph_work());
@@ -424,21 +450,39 @@ impl State {
             let graph = graph?;
             #[cfg(feature = "shots")]
             {
-                self.graph_depth = Some(self.graph_depth.unwrap_or(0).max(graph_depth(&graph)?));
+                // An audit figure: walking 1700 nodes each frame would dwarf the frame.
+                if self.graph_depth.is_none() || session.generation() % 64 == 0 {
+                    let _p = super::prof::span("view.depth");
+                    self.graph_depth = Some(self.graph_depth.unwrap_or(0).max(graph_depth(&graph)?));
+                }
             }
             let _submission = self.activity.as_ref().map(|a| a.span(Phase::UiAuthoredLayoutSubmission));
+            // KONTRA_VERIFY: compare the memoized graph with a fresh resolve.
+            #[cfg(feature = "shots")]
+            if std::env::var_os("KONTRA_VERIFY").is_some() {
+                if let Some(difference) = session.verify(&graph) {
+                    println!("NATIVE_VERIFY_DIFF {difference}");
+                }
+                let _ = session.take_edits();
+            }
             let authored = authored_size(&graph);
             self.size = authored;
-            let el = draw_live(
-                ui,
-                &graph,
-                package,
-                session,
-                slot,
-                scale,
-                authored,
-                &mut local.drafts,
-            )?;
+            // While the Lua graph is the one lowered last frame, MUI keeps the
+            // lowered, laid-out subtree; a hover or press inside it rebuilds.
+            let editing = session.text_fields().iter().any(|path| ui.focused(format!("nui-{slot}-{path}-text").as_str()));
+            let key = session.lowering_key().filter(|_| !editing).map(|key| (key, scale.to_bits(), super::pictures::revision(), authored.width.to_bits(), authored.height.to_bits()));
+            let mut error = None;
+            let build = |ui: &mut Ui| match draw_live(ui, &graph, package, session, slot, scale, authored, &mut local.drafts) {
+                Ok(el) => el,
+                Err(e) => { error = Some(e); stack([]) }
+            };
+            let _p = super::prof::span("view.lower");
+            let el = match key {
+                Some(key) => ui.memo(format!("nui-{slot}-graph"), key, build),
+                None => { let mut build = build; build(ui) }
+            };
+            drop(_p);
+            if let Some(error) = error { return Err(error); }
             local.graph = Some(graph);
             #[cfg(all(test, feature = "shots"))]
             GATE_PAINTED.with(|painted| {
@@ -1061,6 +1105,7 @@ struct DrawNode {
     modifiers: Vec<Table>,
     style: Style,
     child_nodes: Vec<Table>,
+    meta: DrawMeta,
 }
 struct DrawFrame {
     node: Table,
@@ -1070,10 +1115,32 @@ struct DrawFrame {
     el: El,
     flex: (bool, bool),
     fixed: (bool, bool),
+    meta: DrawMeta,
 }
 enum DrawProgress {
-    Complete(El),
+    Complete(El, DrawMeta),
     Child(Box<DrawFrame>, Table),
+}
+/// What lowering a node depended on, so a finished El can be kept on the node.
+struct DrawMeta {
+    /// The style the parent passed in: part of the cache key.
+    incoming: Style,
+    /// Lowering touched nothing but the node and what the key holds: no text
+    /// field, popover or canvas in the node or below.
+    pure: bool,
+    /// Worth keeping: leaves cost no more to lower than to copy.
+    inner: bool,
+}
+/// A lowered node, kept on the Lua node itself so it lives and dies with it.
+struct Lowered {
+    key: PrimitiveKey,
+    el: El,
+    placed: bool,
+}
+fn lowered(node: &Table, key: &PrimitiveKey) -> Option<(El, bool)> {
+    let held = node.raw_get::<Option<mlua::AnyUserData>>("__lowered").ok()??;
+    let held = held.borrow::<Lowered>().ok()?;
+    (held.key == *key).then(|| (held.el.clone(), held.placed))
 }
 fn draw(
     ui: &mut Ui,
@@ -1106,8 +1173,11 @@ fn draw_impl(
         Build(DrawNode, usize, PrimitivePlacement),
         Resume(Box<DrawFrame>, usize, PrimitivePlacement),
     }
+    // Only the live path keeps lowered nodes: the retained and eager paths
+    // are the oracles the tests compare it with.
+    let keep = plan.is_none() && retention.is_none() && matches!(placement, PrimitivePlacement::Root(_));
     let mut work = vec![Work::Enter(node.clone(), style, 0, placement, allow_memo)];
-    let mut results = Vec::new();
+    let mut results: Vec<(El, bool, bool)> = Vec::new();
     let mut nodes = 0;
     while let Some(job) = work.pop() {
         let (progress, depth, placement, placed_node) = match job {
@@ -1117,6 +1187,16 @@ fn draw_impl(
                     nodes <= 16384 && depth <= 192,
                     "NativeUI graph budget exceeded"
                 );
+                let key = keep.then(|| PrimitiveKey {
+                    atoms: Vec::new(), style: style.clone(), scale: s.to_bits(),
+                    assets: super::pictures::revision(), placement: placement.clone(),
+                });
+                if let Some(key) = &key
+                    && let Some((el, placed)) = lowered(&node, key)
+                {
+                    results.push((el, placed, true));
+                    continue;
+                }
                 if allow_memo
                     && retention.as_ref().is_some_and(|r| r.live.len() < NATIVE_MEMO_SCOPE_LIMIT)
                     && let Some((path, atoms, images)) = plan.and_then(|p| p.candidate(&node))
@@ -1137,7 +1217,7 @@ fn draw_impl(
                         }
                     });
                     if let Some(error) = error { return Err(error); }
-                    results.push((el, placement != PrimitivePlacement::None));
+                    results.push((el, placement != PrimitivePlacement::None, false));
                     continue;
                 }
                 let props: Table = node.get("props")?;
@@ -1145,6 +1225,13 @@ fn draw_impl(
                 let style = draw_style(package, &modifiers, style)?;
                 let child_nodes = tables(&node, "children")?;
                 let children = child_nodes.clone();
+                let meta = DrawMeta {
+                    incoming: if keep { key.map(|k| k.style).unwrap_or_default() } else { Style::default() },
+                    pure: keep
+                        && !matches!(string(&node, "kind").as_str(), "Canvas" | "TextInput")
+                        && !modifiers.iter().any(|m| string(m, "name") == "popover"),
+                    inner: !child_nodes.is_empty() || modifiers.iter().any(|m| matches!(string(m, "name").as_str(), "background" | "overlay")),
+                };
                 // A completed plan proves lowering has no Lua side effects.
                 // An opaque callback ancestor remains eager, but its resolved
                 // child placement is still safe to move inside child memos.
@@ -1163,6 +1250,7 @@ fn draw_impl(
                         modifiers,
                         style: style.clone(),
                         child_nodes,
+                        meta,
                     },
                     depth,
                     placement,
@@ -1176,18 +1264,42 @@ fn draw_impl(
                 continue;
             }
             Work::Build(input, depth, placement) => {
-                let children = results.split_off(results.len() - input.child_nodes.len());
+                let mut children = results.split_off(results.len() - input.child_nodes.len());
                 let placed_node = input.node.clone();
+                let mut input = input;
+                input.meta.pure &= children.iter().all(|c| c.2);
+                let children = children.drain(..).map(|(el, placed, _)| (el, placed)).collect();
+                let _p = super::prof::span("lower.base");
                 let frame = draw_base(ui, package, session, slot, s, drafts, input, children)?;
+                drop(_p);
+                let _p = super::prof::span("lower.modifiers");
                 (draw_modifiers(ui, slot, s, frame, None)?, depth, placement, placed_node)
             }
             Work::Resume(frame, depth, placement) => {
                 let placed_node = frame.node.clone();
-                (draw_modifiers(ui, slot, s, *frame, results.pop().map(|(el, _)| el))?, depth, placement, placed_node)
+                let mut frame = *frame;
+                let subtree = results.pop().map(|(el, _, pure)| {
+                    frame.meta.pure &= pure;
+                    el
+                });
+                (draw_modifiers(ui, slot, s, frame, subtree)?, depth, placement, placed_node)
             }
         };
         match progress {
-            DrawProgress::Complete(el) => results.push((placement.apply(&placed_node, el, s)?, placement != PrimitivePlacement::None)),
+            DrawProgress::Complete(el, meta) => {
+                let placed = placement != PrimitivePlacement::None;
+                let el = placement.apply(&placed_node, el, s)?;
+                if keep && meta.pure && meta.inner {
+                    let key = PrimitiveKey {
+                        atoms: Vec::new(), style: meta.incoming, scale: s.to_bits(),
+                        assets: super::pictures::revision(), placement: placement.clone(),
+                    };
+                    if let Ok(held) = session.lua().create_any_userdata(Lowered { key, el: el.clone(), placed }) {
+                        let _ = placed_node.raw_set("__lowered", held);
+                    }
+                }
+                results.push((el, placed, meta.pure));
+            }
             DrawProgress::Child(frame, child) => {
                 let style = frame.style.clone();
                 work.push(Work::Resume(frame, depth, placement));
@@ -1248,6 +1360,7 @@ fn draw_base(
         modifiers,
         style,
         child_nodes,
+        meta,
     } = input;
     let kind = string(&node, "kind");
     let node = &node;
@@ -1484,6 +1597,7 @@ fn draw_base(
         el,
         flex,
         fixed: (false, false),
+        meta,
     })
 }
 fn draw_modifiers(
@@ -1501,6 +1615,7 @@ fn draw_modifiers(
         mut el,
         mut flex,
         mut fixed,
+        meta,
     } = frame;
     let kind = string(&node, "kind");
     let container = matches!(kind.as_str(), "HStack" | "VStack" | "ZStack");
@@ -1643,6 +1758,7 @@ fn draw_modifiers(
                                 el,
                                 flex,
                                 fixed,
+                                meta,
                             }),
                             t,
                         ));
@@ -1717,6 +1833,7 @@ fn draw_modifiers(
                                 el,
                                 flex,
                                 fixed,
+                                meta,
                             }),
                             content,
                         ));
@@ -1752,7 +1869,25 @@ fn draw_modifiers(
     if style.hidden {
         el = el.opacity(0.).disabled();
     }
-    Ok(DrawProgress::Complete(el))
+    Ok(DrawProgress::Complete(el, meta))
+}
+/// A node with pointer handlers: what a frame needs to find out whether any
+/// of them fires, without walking the whole Lua graph.
+struct Target {
+    path: String,
+    gestures: Vec<(String, Table)>,
+}
+fn gestures(node: &Table) -> anyhow::Result<Vec<(String, Table)>> {
+    let mut out = Vec::new();
+    for m in tables(node, "modifiers")? {
+        let name = string(&m, "name");
+        if matches!(name.as_str(), "on_tap_gesture" | "on_drag_gesture" | "on_hover_gesture")
+            && let Value::Table(t) = val(&m, "value")
+        {
+            out.push((name, t));
+        }
+    }
+    Ok(out)
 }
 fn events(
     ui: &mut Ui,
@@ -1760,23 +1895,60 @@ fn events(
     session: &Session,
     slot: usize,
     s: f64,
-    hovered: &mut HashSet<String>,
+    hovered: &mut HashMap<String, Point>,
 ) -> anyhow::Result<()> {
     let path = string(node, "path");
-    let id = format!("nui-{slot}-{path}");
-    let r = ui.get(id.as_str());
-    let was = hovered.contains(&path);
-    if r.hovered {
-        hovered.insert(path.clone());
-    } else {
-        hovered.remove(&path);
-    }
-    let mut event = None;
+    node_events(ui, session, slot, s, hovered, &path, &gestures(node)?)?;
     for m in tables(node, "modifiers")? {
         let name = string(&m, "name");
         let Value::Table(t) = val(&m, "value") else {
             continue;
         };
+        if name == "background" || name == "overlay" {
+            events(ui, &t, session, slot, s, hovered)?;
+        }
+        if name == "popover" {
+            let id = format!("nui-{slot}-{path}");
+            let popup_id = format!("{id}-popup");
+            if string(&t, "auto_close_when") != "never"
+                && ui.dismissed(&[id.as_str(), popup_id.as_str()])
+            {
+                if let Ok(close) = t.get::<Function>("on_auto_close") {
+                    session.call(close, ())?;
+                }
+            } else if let Ok(content) = t.get::<Table>("content") {
+                events(ui, &content, session, slot, s, hovered)?;
+            }
+        }
+    }
+    for child in tables(node, "children")? {
+        events(ui, &child, session, slot, s, hovered)?;
+    }
+    Ok(())
+}
+fn node_events(
+    ui: &mut Ui,
+    session: &Session,
+    slot: usize,
+    s: f64,
+    hovered: &mut HashMap<String, Point>,
+    path: &str,
+    gestures: &[(String, Table)],
+) -> anyhow::Result<()> {
+    let id = format!("nui-{slot}-{path}");
+    let r = ui.get(id.as_str());
+    let was = hovered.contains_key(path);
+    // A hover handler hears "update" when the pointer moved over the node,
+    // not on every frame it rests there.
+    let mut moved = false;
+    if r.hovered {
+        let at = ui.local(id.as_str()).unwrap_or(Point::ZERO);
+        moved = hovered.insert(path.to_owned(), at) != Some(at);
+    } else {
+        hovered.remove(path);
+    }
+    let mut event = None;
+    for (name, t) in gestures {
         let triggers: Vec<&str> = match name.as_str() {
             "on_tap_gesture" => [
                 (r.pressed || r.key_activated).then_some("start"),
@@ -1794,15 +1966,14 @@ fn events(
             .into_iter()
             .flatten()
             .collect(),
-            "on_hover_gesture" => [
+            _ => [
                 (!was && r.hovered).then_some("enter"),
                 (was && !r.hovered).then_some("exit"),
-                r.hovered.then_some("update"),
+                (r.hovered && moved).then_some("update"),
             ]
             .into_iter()
             .flatten()
             .collect(),
-            _ => Vec::new(),
         };
         for trigger in triggers {
             if let Ok(f) = t.get::<Function>(trigger) {
@@ -1829,24 +2000,6 @@ fn events(
                 session.call(f, e.clone())?;
             }
         }
-        if name == "background" || name == "overlay" {
-            events(ui, &t, session, slot, s, hovered)?;
-        }
-        if name == "popover" {
-            let popup_id = format!("{id}-popup");
-            if string(&t, "auto_close_when") != "never"
-                && ui.dismissed(&[id.as_str(), popup_id.as_str()])
-            {
-                if let Ok(close) = t.get::<Function>("on_auto_close") {
-                    session.call(close, ())?;
-                }
-            } else if let Ok(content) = t.get::<Table>("content") {
-                events(ui, &content, session, slot, s, hovered)?;
-            }
-        }
-    }
-    for child in tables(node, "children")? {
-        events(ui, &child, session, slot, s, hovered)?;
     }
     Ok(())
 }
@@ -1969,7 +2122,7 @@ mod tests {
         let (package, mut session) = primitive_fixture("local ui=require('native_ui'); return function() return @ui.Text{text='phase'} end");
         let activity = Arc::new(Activity::new(true));
         session.set_activity(Some(activity.clone()));
-        let graph = session.render().unwrap();
+        let graph = session.fresh();
         let (mut ui, _) = primitive_uis();
         let mut retention = PrimitiveRetention::default();
         primitive_tick(&mut ui, &graph, &package, &session, 1., Some(&mut retention), 0);
@@ -1983,7 +2136,7 @@ mod tests {
         let (package, mut session) = primitive_fixture("local ui=require('native_ui'); return function() return @ui.Text{text='live'} end");
         let activity = Arc::new(Activity::new(true));
         session.set_activity(Some(activity.clone()));
-        let graph = session.render().unwrap();
+        let graph = session.fresh();
         let (mut live, mut eager) = primitive_uis();
         for shell in 0..2 {
             let authored = authored_size(&graph);
@@ -2082,10 +2235,23 @@ mod tests {
             graph_work: None,
         }
     }
+    /// These oracles run impure scripts and compare render counts with an
+    /// eager session: make the state's own session render each frame.
+    fn stale(state: &State) {
+        LOCAL.with(|locals| {
+            if let Some(local) = locals.borrow().get(&state.id) {
+                local.session.invalidate();
+            }
+        });
+    }
     fn primitive_uis() -> (Ui, Ui) {
         // Same production theme and same font identity on both oracle sides.
         let font = Font::new(NOTO_SANS).unwrap();
-        (super::super::theme::ui().font(font.clone()), super::super::theme::ui().font(font))
+        let mut pair = (super::super::theme::ui().font(font.clone()), super::super::theme::ui().font(font));
+        // The budget stress below is written against upstream's 4096-node frame.
+        pair.0.set_node_limit(4096);
+        pair.1.set_node_limit(4096);
+        pair
     }
     #[test]
     fn native_state_view_preserves_eager_authored_size_lookup_order() {
@@ -2113,7 +2279,7 @@ mod tests {
         let mut state = primitive_state(package.clone());
         let (mut retained, mut eager) = primitive_uis();
         for scale in [1., 1., 1.5] {
-            let graph = eager_session.render().unwrap();
+            let graph = eager_session.fresh();
             let authored = authored_size(&graph);
             assert_eq!(authored, Size::new(25., 32.));
             // Original order: one authored read before any primitive lowering.
@@ -2122,6 +2288,7 @@ mod tests {
             let el = PrimitivePlacement::Root(authored).apply(&graph, el, scale).unwrap();
             eager.frame(stack([el, text("0").at(48., 48.)]).size(64., 64.),
                 Some(Size::new(64., 64.)), Input::default(), 1. / 60.).unwrap();
+            stale(&state);
             let el = state.view(&mut retained, 0, scale, &ir::Interface::default(),
                 &HashMap::new(), &super::super::ir_view::InputState::default());
             assert!(!state.failed, "{:?}", state.failure);
@@ -2176,7 +2343,7 @@ mod tests {
                 Some(Size::new(64., 64.)), input, 1. / 60.).unwrap();
         };
         for step in 1..=6 {
-            let graph = eager_session.render().unwrap();
+            let graph = eager_session.fresh();
             let field = tables(&graph, "children").unwrap()[0].clone();
             let field_id = format!("nui-{}-{}-text", state.id, string(&field, "path"));
             if step == 3 {
@@ -2194,6 +2361,7 @@ mod tests {
                 Style::default(), &mut drafts).unwrap();
             let el = PrimitivePlacement::Root(authored).apply(&graph, el, 1.).unwrap();
             frame(&mut eager, el, input.clone());
+            stale(&state);
             let el = state.view(&mut retained, 0, 1., &ir::Interface::default(),
                 &HashMap::new(), &super::super::ir_view::InputState::default());
             assert!(!state.failed, "{:?}", state.failure);
@@ -2246,6 +2414,7 @@ mod tests {
                 let globals = locals[&state.id].session.lua().globals();
                 globals.set("caption", caption).unwrap();
                 globals.set("absent", absent).unwrap();
+                locals[&state.id].session.invalidate();
             });
             tick(&mut state, &mut ui);
             LOCAL.with(|locals| {
@@ -2288,7 +2457,7 @@ mod tests {
         // 2048 exceed it even eagerly; keep that as explicit selection/rejection
         // stress, not a claim of cold/warm scene parity for an inadmissible tree.
         use moose::mui::mui::{layout, scene::SceneError};
-        let limits = layout::Limits::default();
+        let limits = layout::Limits { nodes: 4096, ..layout::Limits::default() };
         let node_count = |tree: &El| {
             let mut count = 0;
             let mut todo = vec![tree];
@@ -2306,7 +2475,7 @@ mod tests {
                 let mut cache = PrimitiveRetention::default();
                 let scopes = if live { count.min(NATIVE_MEMO_SCOPE_LIMIT) } else { 1 };
                 for shell in 0..2 {
-                    let graph = session.render().unwrap();
+                    let graph = session.fresh();
                     let calls = || globals.get::<usize>("canvas_calls").unwrap_or(0);
                     let context = format!("count={count}, live={live}, shell/attempt={shell}, limit={}", limits.nodes);
                     let before = calls();
@@ -2356,7 +2525,7 @@ mod tests {
                 session.lua().load(update).exec().unwrap();
                 for shell in 0..3 {
                     let context = format!("isolated {change}, update={update}, index={index}, warm={shell}");
-                    let graph = session.render().unwrap();
+                    let graph = session.fresh();
                     primitive_tick(&mut eager, &graph, &package, &session, 1., None, 0);
                     primitive_tick(&mut retained, &graph, &package, &session, 1., Some(&mut cache), 0);
                     primitive_oracle_at(&retained, &eager, &context);
@@ -2396,7 +2565,7 @@ mod tests {
             let before = cache.lowered;
             for warm in 0..3 {
                 let context = format!("axis settling: step={step}, update={update}, warm={warm}");
-                let graph = session.render().unwrap();
+                let graph = session.fresh();
                 let rectangle = string(&tables(&graph, "children").unwrap()[1], "path");
                 let tree = primitive_tree(&mut eager, &graph, &package, &session, 1., None, 0);
                 primitive_frame(&mut eager, tree).unwrap();
@@ -2428,7 +2597,7 @@ mod tests {
         let (mut retained, mut eager) = primitive_uis();
         let mut cache = PrimitiveRetention::default();
         for warm in 0..4 {
-            let graph = session.render().unwrap();
+            let graph = session.fresh();
             let tree = primitive_tree(&mut eager, &graph, &package, &session, 1., None, 0);
             primitive_frame(&mut eager, tree).unwrap();
             let tree = primitive_tree(&mut retained, &graph, &package, &session, 1., Some(&mut cache), 0);
@@ -2463,12 +2632,12 @@ mod tests {
         let (mut retained, mut eager) = primitive_uis();
         let mut cache = PrimitiveRetention::default();
         for warm in 0..2 {
-            let graph = session.render().unwrap();
+            let graph = session.fresh();
             primitive_tick(&mut eager, &graph, &package, &session, 1., None, 0);
             primitive_tick(&mut retained, &graph, &package, &session, 1., Some(&mut cache), 0);
             primitive_oracle_at(&retained, &eager, &format!("before partial scene error, warm={warm}"));
         }
-        let graph = session.render().unwrap();
+        let graph = session.fresh();
         let rectangle = string(&tables(&graph, "children").unwrap()[1], "path");
         let rectangle_revision = cache.keys[&rectangle].1;
         let previous = retained.scene_snapshot().unwrap();
@@ -2477,7 +2646,7 @@ mod tests {
         let old_pixels = super::super::tests::pixels(&retained, 64, 64);
         let calls = || session.lua().globals().get::<usize>("canvas_calls").unwrap();
         session.lua().load("font_bold=true;bad_path=true").exec().unwrap();
-        let graph = session.render().unwrap();
+        let graph = session.fresh();
         let before = calls();
         for (ui, retention) in [(&mut eager, None), (&mut retained, Some(&mut cache))] {
             let tree = primitive_tree(ui, &graph, &package, &session, 1., retention, 0);
@@ -2492,7 +2661,7 @@ mod tests {
         assert_eq!(cache.lowered, 3, "only the changed Text lowers on failed B");
         session.lua().load("font_bold=false;bad_path=false").exec().unwrap();
         for warm in 0..3 {
-            let graph = session.render().unwrap();
+            let graph = session.fresh();
             let before = calls();
             let tree = primitive_tree(&mut eager, &graph, &package, &session, 1., None, 0);
             primitive_frame(&mut eager, tree).unwrap();
@@ -2516,7 +2685,7 @@ mod tests {
         // Recovery may keep the failed B revision too. Its retained tree did
         // not have committed B paint: it must not copy successful A's span.
         session.lua().load("font_bold=true;bad_path=true").exec().unwrap();
-        let graph = session.render().unwrap();
+        let graph = session.fresh();
         for (ui, retention) in [(&mut eager, None), (&mut retained, Some(&mut cache))] {
             let tree = primitive_tree(ui, &graph, &package, &session, 1., retention, 0);
             assert!(matches!(primitive_frame(ui, tree), Err(moose::mui::mui::scene::SceneError::Geometry(
@@ -2525,7 +2694,7 @@ mod tests {
         assert_eq!(cache.lowered, 6);
         session.lua().load("bad_path=false").exec().unwrap();
         for warm in 0..3 {
-            let graph = session.render().unwrap();
+            let graph = session.fresh();
             primitive_tick(&mut eager, &graph, &package, &session, 1., None, 0);
             let tree = primitive_tree(&mut retained, &graph, &package, &session, 1., Some(&mut cache), 0);
             assert!(!primitive_frame(&mut retained, tree).unwrap(), "unchanged failed B is already settled in the coordinate cache");
@@ -2546,7 +2715,9 @@ mod tests {
         let first = Font::new(NOTO_SANS).unwrap();
         let second = Font::new(NOTO_SANS).unwrap();
         assert_ne!(first.id(), second.id(), "identical bytes must still have different cache identities");
-        let (mut retained, mut eager) = primitive_uis();
+        // This fixture must have no fallback face when its default font is removed.
+        let theme = super::super::theme::ui().theme().clone();
+        let (mut retained, mut eager) = (Ui::new(theme.clone()), Ui::new(theme));
         let mut cache = PrimitiveRetention::default();
         let mut outer_builds = 0;
         let mut first_origin = None;
@@ -2562,7 +2733,7 @@ mod tests {
             }
             for warm in 0..2 {
                 let context = format!("implicit font/device grid: step={step}, scale={scale:?}, warm={warm}");
-                let graph = session.render().unwrap();
+                let graph = session.fresh();
                 let tree = primitive_tree(&mut eager, &graph, &package, &session, 1., None, 0);
                 primitive_frame(&mut eager, stack([tree]).w(64.).h(64.)).unwrap();
                 let tree = retained.memo("native-environment-outer", 0, |ui| {
@@ -2615,7 +2786,7 @@ mod tests {
             session.lua().globals().set("font_name", name).unwrap();
             let font = package.font(name, false).unwrap();
             for shell in 0..2 {
-                let graph = session.render().unwrap();
+                let graph = session.fresh();
                 primitive_tick(&mut eager, &graph, package, session, 1., None, shell);
                 primitive_tick(&mut retained, &graph, package, session, 1., Some(&mut cache), shell);
                 primitive_oracle(&retained, &eager);
@@ -2649,7 +2820,7 @@ mod tests {
         let (mut retained, mut eager) = primitive_uis();
         let mut cache = PrimitiveRetention::default();
         for shell in 0..4 {
-            let graph = session.render().unwrap();
+            let graph = session.fresh();
             // Resolve the unmodified eager graph before the retained prepass
             // annotates its derived flex flags: this is an independent oracle.
             primitive_tick(&mut eager, &graph, &package, &session, 1., None, shell);
@@ -2692,7 +2863,7 @@ mod tests {
             ("canvas_offset=200", 1.5, false), ("canvas_offset=0", 1.5, true),
         ] {
             session.lua().load(change).exec().unwrap();
-            let graph = session.render().unwrap();
+            let graph = session.fresh();
             let calls = || globals.get::<usize>("canvas_calls").unwrap_or(0);
             let before = calls();
             primitive_tick(&mut eager, &graph, &package, &session, scale, None, 0);
@@ -2729,7 +2900,7 @@ mod tests {
         let mut ui = super::super::theme::ui();
         let mut cache = PrimitiveRetention::default();
         for token in 1..=3 {
-            let graph = session.render().unwrap();
+            let graph = session.fresh();
             primitive_tick(&mut ui, &graph, &package, &session, 1., Some(&mut cache), token);
             let gesture = tables(&graph, "modifiers").unwrap().into_iter()
                 .find(|modifier| string(modifier, "name") == "on_tap_gesture").unwrap();
@@ -2755,7 +2926,7 @@ mod tests {
             if let Some(rgba) = rgba {
                 package.images.presentation_complete("photo.png", Arc::new(Image::rgba(1, 1, rgba.to_vec()).unwrap()));
             }
-            let graph = session.render().unwrap();
+            let graph = session.fresh();
             primitive_tick(&mut eager, &graph, &package, &session, 1., None, 0);
             primitive_tick(&mut retained, &graph, &package, &session, 1., Some(&mut cache), 0);
             primitive_oracle(&retained, &eager);
@@ -2771,7 +2942,7 @@ mod tests {
             local ui=require('native_ui')
             return function() return @ui.Text {text='A'} end
         "#);
-        let graph = session.render().unwrap();
+        let graph = session.fresh();
         let props: Table = graph.get("props").unwrap();
         props.set("opaque", session.lua().create_function(|_, ()| Ok(())).unwrap()).unwrap();
         let plan = PrimitivePlan::analyze(&graph).unwrap().unwrap();
@@ -2810,7 +2981,7 @@ mod tests {
             end
         "#);
         for token in 1..=3 {
-            let graph = editing.render().unwrap();
+            let graph = editing.fresh();
             assert!(PrimitivePlan::analyze(&graph).unwrap().is_none(),
                 "editing callbacks may mutate shared graph data during lowering");
             let field = tables(&graph, "children").unwrap()[1].clone();
@@ -2839,7 +3010,7 @@ mod tests {
         let (mut retained, mut eager) = primitive_uis();
         let mut cache = PrimitiveRetention::default();
         for token in 1..=3 {
-            let graph = session.render().unwrap();
+            let graph = session.fresh();
             primitive_tick(&mut eager, &graph, &package, &session, 1., None, token);
             primitive_tick(&mut retained, &graph, &package, &session, 1., Some(&mut cache), token);
             primitive_oracle(&retained, &eager);
@@ -3035,7 +3206,7 @@ mod tests {
             return root
         "#).eval().unwrap();
         let mut ui = super::super::theme::ui();
-        let mut hovered = HashSet::new();
+        let mut hovered = HashMap::new();
         events(&mut ui, &graph, &session, 0, 1., &mut hovered).unwrap();
         let before = session.event_payload_count();
         for _ in 0..32 {
@@ -3095,7 +3266,7 @@ mod tests {
         )
         .unwrap();
         assert!(ui.get("nui-0-root").hovered);
-        events(&mut ui, &graph, &session, 0, 1., &mut HashSet::new()).unwrap();
+        events(&mut ui, &graph, &session, 0, 1., &mut HashMap::new()).unwrap();
         assert_eq!(session.event_payload_count(), 1);
         assert_eq!(session.lua().globals().get::<i32>("calls").unwrap(), 3);
     }
@@ -3214,6 +3385,7 @@ mod tests {
                     lifetime: Arc::downgrade(&lifetime),
                     session,
                     graph: Some(graph),
+                    targets: None,
                     hovered: Default::default(),
                     drafts: Default::default(),
                 },
@@ -3268,11 +3440,11 @@ mod tests {
                     .unwrap(),
             )
             .unwrap();
-        let graph = session.render().unwrap();
+        let graph = session.fresh();
         let work = session.graph_work();
         pause.store(true, Ordering::Relaxed);
         let delayed = session
-            .render()
+            .fresh_result()
             .expect("scheduler delay must not invalidate bounded graph work");
         assert_eq!(
             session.graph_work(),
@@ -3307,7 +3479,7 @@ mod tests {
         .unwrap();
         let package = Arc::new(Package::load(&dir.join("fixture.nki")).unwrap());
         let session = Session::new(package.clone(), "main", vec![]).unwrap();
-        let graph = session.render().unwrap();
+        let graph = session.fresh();
         let mut ui = super::super::theme::ui();
         let el = draw(
             &mut ui,
@@ -3601,13 +3773,117 @@ mod tests {
             500_000 - session.work_remaining()
         );
         for frame in 0..8 {
-            let _ = session.render().unwrap();
+            let _ = session.fresh();
             let (nodes, checkpoints) = session.graph_work();
             assert!(nodes > 0 && nodes <= 16384 && checkpoints < 1_000_000);
             println!(
                 "NATIVE_WORK program={program} frame={frame} nodes={nodes} checkpoints={checkpoints} node_budget=16384 checkpoint_budget=1000000"
             );
         }
+    }
+
+    /// Per-frame cost of the authored interface through the real `State::view`
+    /// (events, Lua graph, lowering) then MUI layout and software paint.
+    /// `KONTRA_AUDIT_WIDGET_PATCH` names the library; `KONTRA_BENCH` picks
+    /// steady (default), drag, meter or hover. Medians over warm frames, in ms.
+    #[cfg(feature = "shots")]
+    #[test]
+    #[ignore = "requires locally owned NativeUI program; timings only"]
+    fn native_frame_cost() {
+        use std::time::{Duration, Instant};
+        let path = std::path::PathBuf::from(std::env::var_os("KONTRA_AUDIT_WIDGET_PATCH").unwrap());
+        let scenario = std::env::var("KONTRA_BENCH").unwrap_or_else(|_| "steady".into());
+        let mut source = if path.extension().is_some_and(|e| e == "nkm") {
+            sampler_kontakt::read_program(&path, 0).unwrap().instrument
+        } else {
+            sampler_kontakt::read(&path).unwrap().instrument
+        };
+        source.retain_zones(|_| false);
+        source.assets.clear();
+        let loaded = sampler_kontakt::prepare(
+            source,
+            vec![],
+            &sampler_kontakt::Options { library: Some(path.clone()), ..Default::default() },
+        )
+        .unwrap();
+        let face = loaded.interfaces.iter().find(|f| f.native_ui.is_some()).unwrap().clone();
+        let entry = face.native_ui.as_ref().unwrap().entry.clone();
+        let controls = loaded
+            .interfaces
+            .iter()
+            .flat_map(|f| f.widgets.iter().enumerate().map(move |(n, w)| (f.source, n, w.clone())))
+            .collect();
+        let mut state = State::new(&path, &entry, controls);
+        let mut ui = super::super::theme::ui();
+        let mut values: super::super::ir_view::Values = HashMap::new();
+        let mut input = super::super::ir_view::InputState::default();
+        let knob = face.widgets.iter().find_map(|w| match (&w.kind, w.binding.clone()) {
+            (ir::Kind::Knob { range, .. }, ir::Binding::Control(c)) => Some((c, *range)),
+            _ => None,
+        });
+        let meters: Vec<usize> = face.widgets.iter().enumerate().filter(|(_, w)| w.meter.is_some() || matches!(w.kind, ir::Kind::LevelMeter { .. })).map(|(n, _)| n).collect();
+        println!("NATIVE_SCENARIO {scenario} knob={} meters={}", knob.is_some(), meters.len());
+        let (mut view, mut layout, mut paint, mut gpu_paint) = (vec![], vec![], vec![], vec![]);
+        let mut spans: std::collections::BTreeMap<&str, (Vec<f64>, u64)> = Default::default();
+        let mut lua_peak = 0;
+        let mut gpu = moose::mui::mui::vello::host::Host::headless((970, 600)).map_err(|e| println!("NATIVE_GPU unavailable: {e}")).ok();
+        let start = Instant::now();
+        for n in 0..400 {
+            if let Some((c, range)) = knob && scenario == "drag" {
+                values.insert(c, range.min + (range.max - range.min) * ((n % 17) as f64 / 17.));
+            }
+            if scenario == "meter" {
+                for (k, w) in meters.iter().enumerate() {
+                    input.meters.insert(ir::WidgetRef(*w), ((n + k) % 10) as f64 / 10.);
+                }
+            }
+            let pointer = if scenario == "hover" {
+                PointerInput { pos: Some(Point::new(100. + (n % 40) as f64 * 17., 150. + (n % 7) as f64 * 3.)), ..Default::default() }
+            } else {
+                PointerInput::default()
+            };
+            let t = Instant::now();
+            let el = state.view(&mut ui, 0, 1., &face, &values, &input);
+            let v = t.elapsed();
+            lua_peak = lua_peak.max(LOCAL.with(|l| l.borrow().get(&state.id).map_or(0, |l| l.session.lua().used_memory())));
+            let size = state.authored();
+            let t = Instant::now();
+            ui.frame(el, Some(size), Input { pointer, ..Default::default() }, 1. / 60.).unwrap();
+            let l = t.elapsed();
+            let t = Instant::now();
+            let _ = super::super::tests::pixels(&ui, size.width as u16, size.height as u16);
+            let p = t.elapsed();
+            let g = gpu.as_mut().map(|gpu| {
+                let t = Instant::now();
+                gpu.render_offscreen(ui.scene().unwrap(), moose::mui::mui::vello::kurbo::Affine::IDENTITY).map_err(|e| println!("NATIVE_GPU render failed: {e}")).ok();
+                t.elapsed()
+            });
+            assert!(!state.failed, "{:?}", state.failure);
+            if state.pending() > 0 || n < 20 {
+                assert!(start.elapsed() < Duration::from_secs(90));
+                std::thread::sleep(Duration::from_millis(20));
+                continue;
+            }
+            for (vec, x) in [(&mut view, v), (&mut layout, l), (&mut paint, p)] {
+                vec.push(x.as_secs_f64() * 1000.);
+            }
+            gpu_paint.extend(g.map(|g| g.as_secs_f64() * 1000.));
+            for (name, ms, calls) in super::super::prof::take() {
+                let e = spans.entry(name).or_insert((vec![], 0));
+                e.0.push(ms);
+                e.1 = calls;
+            }
+        }
+        println!("NATIVE_LUA_PEAK_MB {:.1}", lua_peak as f64 / 1048576.);
+        for (name, (mut ms, calls)) in spans {
+            println!("NATIVE_SPAN {name} ms={:.2} calls={calls}", { ms.sort_by(f64::total_cmp); ms[ms.len() / 2] });
+        }
+        let med = |v: &mut Vec<f64>| { v.sort_by(f64::total_cmp); v[v.len() / 2] };
+        println!(
+            "NATIVE_FRAME_MS scenario={scenario} frames={} view={:.2} layout={:.2} sw_paint={:.2} gpu_paint={:.2}",
+            view.len(), med(&mut view), med(&mut layout), med(&mut paint),
+            if gpu_paint.is_empty() { f64::NAN } else { med(&mut gpu_paint) }
+        );
     }
 
     #[cfg(all(target_os = "linux", feature = "shots"))]
@@ -3656,7 +3932,7 @@ mod tests {
         let package = Arc::new(Package::load(&path).unwrap());
         let watermark = stack_watermark();
         let session = Session::new(package.clone(), &entry, controls).unwrap();
-        let graph = session.render().unwrap();
+        let graph = session.fresh();
         let mut ui = super::super::theme::ui();
         let mut drafts = HashMap::new();
         for _ in 0..4 {
@@ -3730,7 +4006,7 @@ mod tests {
         assert_eq!(saved.len(), 6);
         let package = Arc::new(Package::load(&path).unwrap());
         let session = Session::new(package.clone(), &entry, controls).unwrap();
-        let graph = session.render().unwrap();
+        let graph = session.fresh();
         fn font_usage(node: &Table, package: &Package, counts: &mut [usize; 3]) {
             for modifier in tables(node, "modifiers").unwrap() {
                 let kind = string(&modifier, "name");

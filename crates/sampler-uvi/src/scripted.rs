@@ -282,7 +282,11 @@ impl<S: Script> Driver<S> {
         self.host.set_time(self.now_ms(rt));
         self.host.note_on(id, key, (velocity * 127.0).round() as u8);
         if !self.host.handles_notes() {
-            // No onNote: the program sounds as authored.
+            // No onNote: the program sounds as authored, with the script's
+            // standing modulation values.
+            for (id, value) in &self.global {
+                rt.set_note_script_value(note, *id, *value)?;
+            }
             rt.forward_attack(note)?;
         }
         self.apply(rt, false)
@@ -371,6 +375,16 @@ impl<S: Script> Driver<S> {
                 Command::EngineParameter { address, value } => {
                     if rt.set_engine_parameter(address, value).is_err() {
                         let category = "insert parameter without a DSP lane";
+                        if !self.unmodeled.contains(&category)
+                            && self.unmodeled.len() < self.unmodeled.capacity()
+                        {
+                            self.unmodeled.push(category);
+                        }
+                    }
+                }
+                Command::Impulse { slot, upload } => {
+                    if upload.swap(rt, slot).is_err() {
+                        let category = "convolver impulse without a DSP slot";
                         if !self.unmodeled.contains(&category)
                             && self.unmodeled.len() < self.unmodeled.capacity()
                         {

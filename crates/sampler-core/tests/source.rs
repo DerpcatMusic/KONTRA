@@ -259,17 +259,7 @@ fn invalid_views_are_rejected_before_any_admission() {
             }),
             ..Playback::default()
         },
-        Playback {
-            start: 3,
-            loop_range: Some(Loop {
-                passes: None,
-                start: 2,
-                end: 5,
-                shape: sampler_core::LoopShape::Wrap,
-                mode: LoopMode::Continuous,
-            }),
-            ..Playback::default()
-        },
+        // (A loop starting before the sample start is valid: the zone enters it mid-cycle.)
         Playback {
             end: Some(5),
             loop_range: Some(Loop {

@@ -213,6 +213,10 @@ impl Ufs {
         let physical_size = snapshot.len();
         ensure!(physical_size >= HEADER_SIZE, "UFS header is truncated");
         let bytes = read_at(&mut file, 0, HEADER_SIZE as usize)?;
+        ensure!(
+            bytes.iter().any(|&b| b != 0),
+            "UFS header is zero-filled; the bank file is incomplete or damaged"
+        );
         ensure!(&bytes[..4] == b"UFS2", "Expected UFS2 container");
         ensure!(
             same_file(&snapshot, &file.metadata()?),
@@ -452,6 +456,13 @@ impl Ufs {
                 let mut bytes = read_at(&mut file, pointer, used as usize)?;
                 for i in 0..count as usize {
                     let at = 8 + i * 264;
+                    // A live entry always holds a name and a link: an all-zero slot is a
+                    // zero-filled page, not a namespace mismatch.
+                    ensure!(
+                        bytes[at..at + 264].iter().any(|&b| b != 0),
+                        "UFS child table at {pointer} entry {i} is zero-filled; \
+                         the bank file is incomplete or damaged"
+                    );
                     if self.header.encoded_names {
                         crypto::transform(&mut bytes[at..at + 256], key, pointer + at as u64);
                     }
@@ -878,6 +889,17 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["A/same.wav", "A/other.wav", "B/same.wav"]
         );
+        // Zero-filled pages (an incomplete copy) are named as such, not as a namespace error.
+        let mut holed = bytes.clone();
+        holed[first as usize + 8..first as usize + 272].fill(0);
+        File::create(&path).unwrap().write_all(&holed).unwrap();
+        let error = Ufs::open(&path)
+            .unwrap()
+            .decode_directory(namespace)
+            .unwrap_err();
+        assert!(error.to_string().contains("zero-filled"), "{error}");
+        File::create(&path).unwrap().write_all(&[0; 400]).unwrap();
+        assert!(Ufs::open(&path).unwrap_err().to_string().contains("zero-filled"));
         bytes[first as usize + 280..first as usize + 288].copy_from_slice(&first.to_le_bytes());
         File::create(&path).unwrap().write_all(&bytes).unwrap();
         assert!(

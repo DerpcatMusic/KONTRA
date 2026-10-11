@@ -357,6 +357,7 @@ impl BusState {
         offset: usize,
         at: u64,
         tone_cutoff: Option<f64>,
+        tempo: f64,
         mut trace: Option<(&crate::trace::TraceGraph, &mut crate::trace::Recorder)>,
     ) -> u64 {
         let mut faults = 0;
@@ -464,6 +465,7 @@ impl BusState {
                     at,
                     &mut self.delay_samples,
                     &mut crate::dsp::svf::FilterContext {
+                        tempo: tempo,
                         bank: &mut self.filters,
                         expression: None,
                         reverbs: &mut self.reverbs,

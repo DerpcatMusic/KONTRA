@@ -19,6 +19,7 @@ fn emitted(source: &str) -> Vec<I> {
         hir,
         controls: &[],
         groups: &[],
+        folders: &Default::default(),
         slot: 0,
         budget: limits().instructions,
         limit: limits().instructions,
@@ -28,6 +29,7 @@ fn emitted(source: &str) -> Vec<I> {
         warnings: Vec::new(),
         scratch: 0,
         modules: Vec::new(),
+        inspection: None,
     };
     let callback = hir
         .callbacks

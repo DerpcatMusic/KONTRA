@@ -263,6 +263,30 @@ fn scheduled_persistence_keeps_ui_effects_before_and_after_the_wait() {
     );
 }
 
+/// A callback that rewrites its interface (Analog Strings' `ui__refresh`: thousands of
+/// `set_control_par`) emits far more effects than the outbox holds between drains. The
+/// tail carries the final hide/show state, so it must wait for the host, never be dropped.
+#[test]
+fn a_ui_refresh_larger_than_the_outbox_is_delivered_whole() {
+    let script = compile(
+        "on init declare ui_label $label(1,1) declare $i end on
+        on persistence_changed wait(1000)
+        while ($i < 1000) inc($i) set_text($label,\"x\") end while
+        set_control_par(get_ui_id($label),$CONTROL_PAR_HIDE,$HIDE_WHOLE_CONTROL) end on",
+    );
+    let mut view = script.view();
+    let mut rt = runtime(script);
+    for _ in 0..64 {
+        rt.render(&mut [[0.; 2]; 1024]).unwrap();
+        rt.drain_effects(|effect| {
+            view.apply_ui_effect(effect);
+            true
+        });
+    }
+    assert!(rt.stalled_effects() > 0, "the refresh must exceed the outbox");
+    assert!(view.model().interface.widgets[0].hidden());
+}
+
 #[cfg(feature = "scan")]
 #[test]
 fn scan_reports_scheduled_persistence_separately_from_static_completion() {

@@ -953,7 +953,15 @@ impl GpuRenderer {
             canvas.begin_frame();
         }
         let mut blurred = blurred.into_iter();
-        for p in &resolved.paint {
+        let mut skip_to = 0;
+        for (i, p) in resolved.paint.iter().enumerate() {
+            if i < skip_to {
+                continue;
+            }
+            if let Some(end) = crate::invisible_end(&resolved.paint, i) {
+                skip_to = end + 1;
+                continue;
+            }
             canvas.set_transform(crate::placed(draw, p));
             match p.layer {
                 Layer::External => {

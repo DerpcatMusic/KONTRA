@@ -98,6 +98,15 @@ fn authored_resource_containers_are_bounded_and_case_insensitive() {
         "a sibling library must not supply another instrument's missing picture"
     );
 
+    // A NICNT that is only a product stub (table present, file section absent) still indexes:
+    // an unlisted name is plainly absent, and a listed member that is not there is an error.
+    let stub_root = root.join("stub");
+    std::fs::create_dir_all(stub_root.join("Instruments")).unwrap();
+    std::fs::write(stub_root.join("stub.nicnt"), &nicnt[..nicnt.len() - picture.len()]).unwrap();
+    let mut stub = sampler_kontakt::Resources::of(&stub_root.join("Instruments/Piano.nki"));
+    assert!(stub.read_result("resources/pictures/missing.png").unwrap().is_none());
+    assert!(stub.read_result("resources/pictures/wallpaper.png").is_err());
+
     // Invalid markers, exaggerated counts/ranges and truncated bodies are errors.
     for at in [0, 272, 632 + 904, 1544] {
         let mut corrupt = container.clone();

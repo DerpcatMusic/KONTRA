@@ -13,6 +13,8 @@ pub mod audit;
 mod cache;
 mod cache_zones;
 mod container;
+mod diagnostics;
+pub use diagnostics::diagnostic_detail;
 #[cfg(feature = "scan")]
 mod coverage;
 mod effects;
@@ -27,7 +29,9 @@ mod modulation_objects;
 pub mod nis;
 mod nks;
 mod objects;
+mod parity;
 mod pcm;
+pub use parity::{parity_reports, read_parity_reports};
 mod persistence;
 mod resource_container;
 mod resources;

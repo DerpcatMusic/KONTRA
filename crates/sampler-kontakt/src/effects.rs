@@ -11,7 +11,6 @@ use ni_file::kontakt::{
     objects::{BParFX, BParamArrayBParFX8, InsertBus, Program},
 };
 
-mod formant;
 
 pub(crate) const RACK: u16 = 0x3a;
 pub(crate) const BUS: u16 = 0x45;
@@ -31,7 +30,7 @@ const MODULES: &[(u16, &str)] = &[
     (0x1a, "Inverter"),
     (0x1b, "DYX"),
     (0x1c, "Limiter"),
-    (0x1d, "Surround Panner"),
+    (0x1d, "Saturation"),
     (0x1e, "Distortion"),
     (0x1f, "Stereo Modeller"),
     (0x20, "Lo-Fi"),
@@ -217,6 +216,9 @@ pub(crate) fn apply_writes(
                 fx.output_set = true;
             }
             "ENGINE_PAR_SEND_EFFECT_DRY_LEVEL" => fx.dry_level = engine_gain(w.value),
+            parameter @ ("ENGINE_PAR_SHAPE" | "ENGINE_PAR_DRIVE" | "ENGINE_PAR_DAMPING") => {
+                fx.apply_drive_parameter(parameter, w.value)
+            }
             "ENGINE_PAR_GAIN1" if group >= 0 && generic == -1 => fx.apply_eq_gain(0, w.value),
             "ENGINE_PAR_GAIN2" if group >= 0 && generic == -1 => fx.apply_eq_gain(1, w.value),
             "ENGINE_PAR_GAIN3" if group >= 0 && generic == -1 => fx.apply_eq_gain(2, w.value),
@@ -229,6 +231,7 @@ pub(crate) fn apply_writes(
 /// every local instance in v1's survey).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Params {
+    LegacyPhaser { depth: f32, feedback: f32, speed: f32, phase: f32, unit: f32 },
     /// Linear gain.
     Gainer {
         gain: f32,
@@ -249,7 +252,17 @@ pub(crate) enum Params {
         invert: bool,
         swap: bool,
     },
-    /// `BParFXCompressor`: the first stored value (mode, Classic/Enhanced/Pro),
+    /// 0x1d is the Saturation record: signed Shape, then algorithm selector.
+    Saturation {
+        shape: f32,
+        mode: f32,
+    },
+    Distortion {
+        mode: f32,
+        drive: f32,
+        damping: f32,
+    },
+    /// `BParFXCompressor`: integer mode (Classic/Enhanced/Pro),
     /// threshold dB, ratio, attack and release ms, stereo link.
     Compressor {
         mode: f32,
@@ -306,6 +319,17 @@ pub(crate) struct Convolution {
 }
 
 impl Slot {
+    fn apply_drive_parameter(&mut self, parameter: &str, value: i32) {
+        let (at, low, high) = match (parameter, self.params()) {
+            ("ENGINE_PAR_SHAPE", Some(Params::Saturation { .. })) => (0, -1., 1.),
+            ("ENGINE_PAR_DRIVE", Some(Params::Distortion { .. })) => (4, 0., 1.),
+            ("ENGINE_PAR_DAMPING", Some(Params::Distortion { .. })) => (8, 0., 1.),
+            _ => return,
+        };
+        let stored = sampler_core::EngineParameterLaw::Linear { low, high }.decode(value) as f32;
+        self.public[at..at + 4].copy_from_slice(&stored.to_le_bytes());
+    }
+
     fn apply_eq_gain(&mut self, band: usize, value: i32) {
         let Some(Params::Eq { bands }) = self.params() else {
             return;
@@ -327,6 +351,11 @@ impl Slot {
     pub(crate) fn params(&self) -> Option<Params> {
         let mut r = Reader(&self.public);
         let params = match self.module {
+            0x14 => {
+                let [depth, feedback, speed, phase, unit] = [r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?];
+                match self.version { 0x50 => {}, 0x51 => { r.f32()?; r.f32()?; r.flag()?; }, _ => return None };
+                Params::LegacyPhaser { depth, feedback, speed, phase, unit }
+            }
             0x13 => Params::Gainer { gain: r.f32()? },
             0x20 => {
                 let first = [r.f32()?, r.f32()?, r.f32()?];
@@ -374,7 +403,7 @@ impl Slot {
                 }))
             }
             0x19 => Params::Compressor {
-                mode: r.f32()?,
+                mode: r.i32()? as f32,
                 threshold_db: r.f32()?,
                 ratio: r.f32()?,
                 attack_ms: r.f32()?,
@@ -385,6 +414,11 @@ impl Slot {
                 invert: r.flag()?,
                 swap: r.flag()?,
             },
+            0x1d => Params::Saturation {
+                shape: r.f32()?,
+                mode: r.f32()?,
+            },
+            0x1e => Params::Distortion { mode: r.f32()?, drive: r.f32()?, damping: r.f32()? },
             0x17 => Params::SendLevels {
                 sends: r.list()?,
                 outputs: r.list()?,
@@ -504,19 +538,13 @@ fn product(a: Matrix, b: Matrix) -> Matrix {
 
 /// The stereo matrix of a linear module, and what it leaves out.
 fn matrix(params: &Params, notes: &mut Notes) -> Option<Matrix> {
-    use sampler_ir::Reason::{NotModeled, UnknownLaw};
+    use sampler_ir::Reason::NotModeled;
     Some(match *params {
         Params::Gainer { gain } => [[f64::from(gain), 0.0], [0.0, f64::from(gain)]],
         Params::Inverter { invert, swap } => {
-            if invert || swap {
-                // Field order follows the KSP parameter list; not verified
-                // against a rendering.
-                notes.push((
-                    "inverter flag order".into(),
-                    format!("invert {invert} swap {swap}"),
-                    UnknownLaw,
-                ));
-            }
+            // Kontakt 8 Effect Reference: Inverter. Reader FUN_140d01db0,
+            // assignment FUN_1409619b0 at 0x140961f91, audio FUN_140908e60:
+            // saved +8 is phase invert (+0x1c0), saved +9 is swap (+0x1c1).
             let sign = if invert { -1.0 } else { 1.0 };
             if swap {
                 [[0.0, sign], [sign, 0.0]]
@@ -833,6 +861,69 @@ pub(crate) fn chain_with(
         let eq_gain = if eq_unset { IDENTITY } else { gain };
         let mut modelled = true;
         match &params {
+            Some(Params::Distortion { mode, drive, damping }) => {
+                if matches!(*mode, 0.0 | 1.0)
+                    && [*drive, *damping].iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v))
+                {
+                    flush(&mut combined, &mut filters, &mut out);
+                    out.processors.push(if let Some((group, generic)) = dynamic {
+                        sampler_ir::Processor::LiveDistortion {
+                            transistor: *mode == 1., drive: *drive, damping: *damping,
+                            address: sampler_ir::SlotAddress { group, slot: fx.slot as i32, generic },
+                        }
+                    } else {
+                        sampler_ir::Processor::Distortion {
+                            transistor: *mode == 1., drive: *drive, damping: *damping,
+                        }
+                    });
+                    combined = gain;
+                } else {
+                    notes.push(("distortion parameters".into(), format!("{mode}/{drive}/{damping}"), sampler_ir::Reason::InvalidValue));
+                    modelled = false;
+                }
+            }
+            Some(Params::Saturation { shape, mode }) => {
+                if *mode == 0.0 && shape.is_finite() && (-1.0..=1.0).contains(shape) {
+                    flush(&mut combined, &mut filters, &mut out);
+                    out.processors.push(if let Some((group, generic)) = dynamic {
+                        sampler_ir::Processor::LiveSaturation { shape: *shape,
+                            address: sampler_ir::SlotAddress { group, slot: fx.slot as i32, generic } }
+                    } else {
+                        sampler_ir::Processor::Saturation(*shape)
+                    });
+                    combined = gain;
+                } else {
+                    notes.push((
+                        "saturation algorithm/shape".into(),
+                        format!("{mode}/{shape}"),
+                        sampler_ir::Reason::UnknownLaw,
+                    ));
+                    modelled = false;
+                }
+            }
+            Some(Params::LegacyPhaser { depth, feedback, speed, phase, unit }) => {
+                flush(&mut combined, &mut filters, &mut out);
+                if [*depth, *feedback, *phase].iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)) && speed.is_finite() && *speed >= 0. && unit.is_finite() {
+                    // NI Legacy Phaser; BParFXPhaser reader FUN_140d01fa0, speed getter FUN_140a736a0.
+                    let period_unit = (*unit > f32::from_bits(0x3089705f)).then_some(*unit);
+                    let speed = if period_unit.is_some() { speed.max(1.) } else { *speed };
+                    out.processors.push(sampler_ir::Processor::LegacyPhaser { depth: *depth, feedback: *feedback, phase: *phase, speed, period_unit });
+                    combined = gain;
+                } else {
+                    notes.push(("Legacy Phaser parameters".into(), format!("{depth}/{feedback}/{speed}/{phase}/{unit}"), sampler_ir::Reason::InvalidValue)); modelled = false;
+                }
+            }
+            Some(Params::Filter { kind: 13, cutoff, resonance, .. }) => {
+                flush(&mut combined, &mut filters, &mut out);
+                let knobs = [*cutoff, *resonance];
+                if knobs.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)) {
+                    out.processors.push(sampler_ir::Processor::Phaser(knobs));
+                    combined = gain;
+                } else {
+                    notes.push(("Phaser filter parameters".into(), format!("{knobs:?}"), sampler_ir::Reason::InvalidValue));
+                    modelled = false;
+                }
+            }
             Some(Params::Filter {
                 kind: 90,
                 cutoff,
@@ -840,27 +931,15 @@ pub(crate) fn chain_with(
                 extra,
             }) => {
                 flush(&mut combined, &mut filters, &mut out);
-                match extra
-                    .first()
-                    .and_then(|&size| formant::sections([*cutoff, *resonance, size]))
-                {
-                    Some(sections) => {
-                        out.processors.extend(sections);
-                        combined = product([[0.25, 0.], [0., 0.25]], product(gain, combined));
-                        notes.push((
-                            "Formant I vowel model".into(),
-                            "v1 three-band proxy; native coefficients unverified".into(),
-                            sampler_ir::Reason::UnknownLaw,
-                        ));
-                    }
-                    None => {
-                        notes.push((
-                            "Formant I parameters".into(),
-                            "missing Size or outside normalized range".into(),
-                            sampler_ir::Reason::InvalidValue,
-                        ));
-                        modelled = false;
-                    }
+                // Kontakt 8 Filter Reference: Formant I. FUN_1409a80a0 maps
+                // Talk/Sharp to core 0/2; FUN_140aeffe0 maps saved Size to core 1.
+                let knobs = extra.first().map(|&size| [*cutoff, *resonance, size]);
+                if let Some(knobs) = knobs.filter(|v| v.iter().all(|x| x.is_finite() && (0.0..=1.0).contains(x))) {
+                    out.processors.push(sampler_ir::Processor::Formant(knobs));
+                    combined = gain;
+                } else {
+                    notes.push(("Formant I parameters".into(), "missing Size or outside normalized range".into(), sampler_ir::Reason::InvalidValue));
+                    modelled = false;
                 }
             }
             Some(Params::LoFi { values, flag }) => {
@@ -947,12 +1026,13 @@ pub(crate) fn chain_with(
                 combined = product(gain, combined);
             }
             Some(Params::Filter {
-                kind: 33,
+                kind: kind @ 30..=41,
                 cutoff,
                 resonance,
                 extra,
-            }) if !extra.is_empty() && matches!(fx.version, 0x90..=0x92) => {
-                // Port from v1 0cb7a8a0:src/engine/filter.rs::proto.
+            }) if !extra.is_empty() && matches!(fx.version, 0x90..=0x92 | 0x95) => {
+                // Kontakt 8 Filter Reference: Ladder filters. FUN_140cf4c80
+                // maps saved 30..=41 to the 12 rows in FUN_140b00b80.
                 // Gain is signed normalized (12 dB per unit); the native kernel
                 // retains the record-version cutoff clock.
                 let values = [extra[0], *cutoff, *resonance];
@@ -972,6 +1052,7 @@ pub(crate) fn chain_with(
                         cutoff: f64::from(values[1]),
                         resonance: f64::from(values[2]),
                         record_version: fx.version,
+                        taps: (kind - 29) as u8,
                     }));
                     combined = product(gain, combined);
                 } else {
@@ -982,6 +1063,29 @@ pub(crate) fn chain_with(
                     ));
                     modelled = false;
                 }
+            }
+            Some(Params::Filter {
+                kind: kind @ 100..=108,
+                cutoff,
+                resonance,
+                ..
+            }) if matches!(fx.version, 0x90..=0x92)
+                && [*cutoff, *resonance]
+                    .iter()
+                    .all(|v| (0.0..=1.0).contains(v)) =>
+            {
+                // Adaptive-resonance family: saved 100..=108 are modes 0..=8 of the
+                // native FilterDJ (docs/audit-2026-10-10/w15-ar-native.md). The kernel
+                // is checked against original-instruction vectors for all nine modes;
+                // host recording acceptance still requires calibrated paired captures.
+                out.filter_slots
+                    .push((fx.slot, out.processors.len() + filters.len()));
+                filters.push(sampler_ir::Processor::Ar(sampler_ir::Ar {
+                    mode: (kind - 100) as u8,
+                    cutoff: f64::from(*cutoff),
+                    resonance: f64::from(*resonance),
+                }));
+                combined = product(gain, combined);
             }
             Some(Params::Filter {
                 kind,
@@ -1024,6 +1128,14 @@ pub(crate) fn chain_with(
                     modelled = false;
                 }
             },
+            Some(Params::Compressor { mode: 1.0, threshold_db, ratio, attack_ms, release_ms, link }) => {
+                flush(&mut combined, &mut filters, &mut out);
+                let knobs = [*threshold_db, *ratio, *attack_ms, *release_ms];
+                if knobs.iter().all(|v| v.is_finite()) && (0.0..=1.0).contains(ratio) && *attack_ms > 0. && *release_ms >= 0. {
+                    out.processors.push(sampler_ir::Processor::KontaktEnhancedCompressor { knobs, link: *link });
+                    combined = gain;
+                } else { notes.push(("Enhanced compressor parameters".into(), format!("{knobs:?}"), sampler_ir::Reason::InvalidValue)); modelled = false; }
+            }
             Some(Params::Compressor {
                 mode,
                 threshold_db,
@@ -1281,13 +1393,14 @@ fn convolution(
         ch.splice(0..0, std::iter::repeat_n(0.0, pre));
     }
     if c.flags[1] {
-        // Auto Gain: the loudest channel's energy to 0.5, at most +6 dB.
+        // NI Effect Reference / Convolution Auto Gain: CConvolver 0x1419b31f0..3267
+        // accumulates f32 squares in f64, then divides/square-roots in f32.
         let energy = channels
             .iter()
-            .map(|ch| ch.iter().map(|x| x * x).sum::<f32>())
-            .fold(0.0, f32::max);
-        let gain = if energy >= 0.001 {
-            (0.5 / energy).sqrt().min(2.0)
+            .map(|ch| ch.iter().map(|x| f64::from(x * x)).sum::<f64>())
+            .fold(0.0, f64::max);
+        let gain = if energy > f64::from(0.001f32) {
+            (0.5 / energy as f32).sqrt().min(2.0)
         } else {
             1.0
         };
@@ -1473,7 +1586,7 @@ pub(crate) fn instrument_buses_with_recipes(
     // Instrument buses: only the ones a group feeds and that do something.
     // `$NI_BUS_OFFSET` + the bus number.
     let mut instrument = Vec::new();
-    let mut panned = Vec::new();
+    let mut invalid_pan = Vec::new();
     for bus in buses.iter().filter(|b| dynamic || !b.groups.is_empty()) {
         let name = format!("bus {}", bus.index);
         let c = chain_with(
@@ -1485,9 +1598,6 @@ pub(crate) fn instrument_buses_with_recipes(
             &[],
         );
         take(&name, &c);
-        if bus.pan.abs() > 0.01 {
-            panned.push((name, bus.pan));
-        }
         let mut processors = c.processors;
         if dynamic {
             // A script sets the bus volume and routes groups to any bus at run
@@ -1504,22 +1614,26 @@ pub(crate) fn instrument_buses_with_recipes(
                 bypass: false,
             });
             processors.push(sampler_ir::Processor::StereoMatrix(IDENTITY));
-            instrument.push((bus, processors));
-        } else if !processors.is_empty() || (bus.volume - 1.0).abs() > 1e-4 {
+        }
+        if bus.pan.is_finite() {
+            if bus.pan != 0. {
+                // NI Bus Insert Effects amplifier: BInsertBus audio 0x140824910
+                // calls 0x140823d70 with channel flags 0/1: independent linear balance.
+                let left = 1. - bus.pan.clamp(0., 1.);
+                let right = (bus.pan + 1.).clamp(0., 1.);
+                processors.push(sampler_ir::Processor::StereoMatrix([
+                    [f64::from(left), 0.], [0., f64::from(right)],
+                ]));
+            }
+        } else {
+            invalid_pan.push((name, (0, "instrument bus pan".into(), bus.pan.to_string(),
+                sampler_ir::Reason::InvalidValue)));
+        }
+        if dynamic || !processors.is_empty() || (bus.volume - 1.0).abs() > 1e-4 {
             instrument.push((bus, processors));
         }
     }
-    for (name, pan) in panned {
-        report.push((
-            name,
-            (
-                0,
-                "instrument bus pan".into(),
-                format!("{pan}"),
-                sampler_ir::Reason::NotModeled,
-            ),
-        ));
-    }
+    report.extend(invalid_pan);
     ir.impulses = store;
     let chained = !(insert.processors.is_empty() && sends.is_empty() && main.processors.is_empty());
     if !chained && instrument.is_empty() {
@@ -1693,17 +1807,12 @@ fn eq_band(
         ));
         return None;
     }
-    // A peaking biquad whose bandwidth spans `octaves` (RBJ). Kontakt's own
-    // band shape is not verified against a rendering.
-    notes.push((
-        "EQ band shape".into(),
-        format!("{hz} Hz {octaves} oct {db} dB"),
-        sampler_ir::Reason::UnknownLaw,
-    ));
-    let q = 1.0 / (2.0 * (std::f64::consts::LN_2 / 2.0 * f64::from(octaves)).sinh());
+    // Measured against Kontakt 8: centre gain is GAIN_SCALE x the displayed dB and
+    // alpha = sin(w0) * sinh(ln2 * octaves).
+    let q = sampler_core::PeakingEq::q_of_octaves(f64::from(octaves));
     Some(sampler_ir::Processor::Filter(sampler_ir::Filter {
         kind: sampler_ir::FilterKind::Peak {
-            gain: sampler_ir::Gain::Decibels(f64::from(db)),
+            gain: sampler_ir::Gain::Decibels(f64::from(db) * sampler_core::PeakingEq::GAIN_SCALE),
         },
         cutoff: sampler_ir::Frequency::Hertz(f64::from(hz)),
         resonance: sampler_ir::Resonance::Q(q),
@@ -1712,6 +1821,69 @@ fn eq_band(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn live_shape_drive_and_damping_reach_only_the_physical_slot() {
+        for (module, payload, parameter, value, expected) in [
+            (0x1d, vec![0.0f32, 0.], "ENGINE_PAR_SHAPE", 750_000, 0.75f32),
+            (0x1e, vec![0.0f32, 0., 0.], "ENGINE_PAR_DRIVE", 1_000_000, 0.74903756),
+            (0x1e, vec![0.0f32, 0., 0.], "ENGINE_PAR_DAMPING", 1_000_000, 0.031603266),
+        ] {
+            let bytes = payload.iter().flat_map(|v| v.to_le_bytes()).collect();
+            let fx = slot(module, bytes, 1.);
+            let built = super::chain_with(&[fx], super::Scope::Voice, None,
+                Some((0, -1)), (0, -1), &[]);
+            assert!(built.notes.is_empty(), "{:?}", built.notes);
+            let mut rt = fx_runtime(built.processors, 120., &[[0., 0.], [0.25, -0.25]]);
+            let address = sampler_core::EngineParameterAddress {
+                parameter: sampler_core::engine_parameter_id(parameter).unwrap(),
+                group: 0, slot: 0, generic: -1,
+            };
+            let mut before = [[0.; 2]; 1]; rt.render(&mut before).unwrap();
+            assert!(rt.set_engine_parameter(sampler_core::EngineParameterAddress {
+                slot: 1, ..address }, value).is_err());
+            rt.set_engine_parameter(address, value).unwrap();
+            let mut after = [[0.; 2]; 1]; rt.render(&mut after).unwrap();
+            assert!((after[0][0] - expected).abs() < 2e-6,
+                "{parameter}: {:?} expected {expected}", after[0]);
+        }
+    }
+
+    #[test]
+    fn instrument_bus_pan_only_uses_native_stereo_balance() {
+        use sampler_ir as ir;
+        for (pan, expected) in [(-1., [1., 0.]), (-0.5, [1., 0.5]),
+            (0., [1., 1.]), (0.5, [0.5, 1.]), (1., [0., 1.])] {
+            let mut instrument = ir::Instrument::default();
+            instrument.groups.push(ir::Group::default());
+            let (notes, _) = super::instrument_buses(&mut instrument, &[],
+                &[super::BusPlan { index: 0, volume: 1., pan,
+                    groups: vec![ir::GroupRef(0)] }], false, &mut |_| Err("unused".into()));
+            assert!(notes.is_empty());
+            if pan == 0. { continue; }
+            assert_eq!(instrument.buses.len(), 1, "pan-only bus must exist");
+            let chain = instrument.buses[0].chain.unwrap();
+            let output = fx_probe(instrument.chains[chain.0].pre_amplitude.clone(),
+                120., &[[1., 1.]]);
+            assert_eq!(output[0], expected);
+        }
+    }
+
+    #[test]
+    fn convolution_auto_gain_keeps_native_double_energy_sum() {
+        let recipe = super::Convolution {
+            decimation: 1., predelay_ms: 0., early: [1., 20., 20_000.],
+            late: [1., 20., 20_000.], xpoint: 0.5,
+            flags: [false, true, false, false, false],
+            curve_x: Vec::new(), curve_db: Vec::new(), ir_index: 0,
+        };
+        let mut frames = vec![[0.0001, 0.00005]; 10_001];
+        frames[0] = [1., 0.5];
+        let impulse = super::restore_impulse(&recipe, (48_000, frames)).unwrap();
+        // f32 products, f64 sum, f32 division/sqrt: CConvolver 0x1419b3200..3267.
+        assert_eq!(impulse.left[0].to_bits(), 0x3f3502a2);
+        assert_eq!(impulse.right[0], impulse.left[0] * 0.5);
+    }
+
     use ni_file::kontakt::Chunk;
 
     fn legacy_eq_slot(kind: i32) -> super::Slot {
@@ -1768,7 +1940,9 @@ mod tests {
                 assert_eq!(
                     filter.kind,
                     sampler_ir::FilterKind::Peak {
-                        gain: sampler_ir::Gain::Decibels(f64::from(values[2])),
+                        gain: sampler_ir::Gain::Decibels(
+                            f64::from(values[2]) * sampler_core::PeakingEq::GAIN_SCALE
+                        ),
                     }
                 );
             }
@@ -2012,6 +2186,58 @@ mod tests {
             sampler_ir::Processor::LadderLP4(d) if d.gain == -0.25
                 && d.cutoff == 0.5 && (d.resonance - 0.3).abs() < 1e-7
                 && d.record_version == 0x92)));
+    }
+
+    #[test]
+    fn morphology_ladder_lp1_record_selects_the_first_stage() {
+        // A saved v0x95 type-30 record: kind repeats, then gain 0, cutoff 1.0, resonance 0.
+        let hex = "1e000000001e0000001e0000001e000000001e00000000000000" .to_owned()
+            + "0000803f00000000";
+        let public: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect();
+        let slot = super::Slot {
+            slot: 2,
+            module: 0x18,
+            version: 0x95,
+            bypass: false,
+            output_gain: 1.,
+            dry_level: 0.,
+            output_set: false,
+            public,
+        };
+        let chain = super::chain_with(&[slot], super::Scope::Voice, None, Some((7, -1)), (7, -1), &[]);
+        assert!(chain.notes.is_empty(), "{:?}", chain.notes);
+        assert!(chain.processors.iter().any(|p| matches!(p,
+            sampler_ir::Processor::LadderLP4(d) if d.taps == 1 && d.cutoff == 1.0
+                && d.resonance == 0.0 && d.record_version == 0x95)));
+    }
+
+    #[test]
+    fn adaptive_resonance_records_become_native_ar_modes() {
+        for (kind, mode) in [(100i32, 0u8), (106, 6), (108, 8)] {
+            let mut public = [kind.to_le_bytes(), kind.to_le_bytes()].concat();
+            for value in [0.5135f32, 0.25] {
+                public.extend(value.to_le_bytes());
+            }
+            let slot = super::Slot {
+                slot: 4,
+                module: 0x18,
+                version: 0x92,
+                bypass: false,
+                output_gain: 1.,
+                dry_level: 0.,
+                output_set: false,
+                public,
+            };
+            let chain = super::chain_with(&[slot], super::Scope::Voice, None, None, (7, -1), &[]);
+            assert!(chain.notes.is_empty(), "{:?}", chain.notes);
+            assert_eq!(chain.filter_slots, vec![(4, 0)]);
+            assert!(matches!(chain.processors[0],
+                sampler_ir::Processor::Ar(d) if d.mode == mode && d.cutoff == f64::from(0.5135f32)
+                    && d.resonance == 0.25));
+        }
     }
 
     #[test]
@@ -2435,6 +2661,164 @@ mod tests {
             let out = chain(&[slot(0x20, payload.clone(), 1.)], scope);
             assert!(out.notes.is_empty(), "{:?}", out.notes);
             assert!(!out.processors.is_empty(), "Lo-Fi cannot disappear");
+        }
+    }
+
+    #[test]
+    fn init_shape_drive_and_damping_writes_update_only_addressed_valid_slots() {
+        let initialized = sampler_ksp::initialize(
+            "on init\nset_engine_par($ENGINE_PAR_SHAPE, 750000, -1, 3, $NI_INSERT_BUS)\nset_engine_par($ENGINE_PAR_DRIVE, 250000, -1, 5, $NI_INSERT_BUS)\nset_engine_par($ENGINE_PAR_DAMPING, 1000000, -1, 5, $NI_INSERT_BUS)\nend on",
+            sampler_ksp::Limits::LIBRARY, &Default::default(),
+        ).unwrap();
+        let writes = initialized.engine_pars();
+        let mut saturation = slot(0x1d, [0f32, 0.].into_iter().flat_map(f32::to_le_bytes).collect(), 1.);
+        saturation.slot = 3;
+        let mut distortion = slot(0x1e, [1f32, 0.8, 0.2].into_iter().flat_map(f32::to_le_bytes).collect(), 1.);
+        distortion.slot = 5;
+        let mut slots = [saturation, distortion];
+        let saved: Vec<_> = slots.iter().map(|fx| fx.public.clone()).collect();
+        apply_writes(&mut slots, &writes, 0, -1);
+        assert_eq!(slots.iter().map(|fx| fx.public.clone()).collect::<Vec<_>>(), saved);
+        apply_writes(&mut slots, &writes, -1, 1);
+        assert_eq!(slots[0].params(), Some(Params::Saturation { shape: 0.5, mode: 0. }));
+        assert_eq!(slots[1].params(), Some(Params::Distortion { mode: 1., drive: 0.25, damping: 1. }));
+        slots[1].public.truncate(4);
+        apply_writes(&mut slots, &writes, -1, 1);
+        assert_eq!(slots[1].public, 1f32.to_le_bytes());
+        slots[1].module = 0x1d;
+        slots[1].public = saved[0].clone();
+        apply_writes(&mut slots, &writes, -1, 1);
+        assert_eq!(slots[1].public, saved[0], "Drive/Damping cannot overwrite another module");
+    }
+
+    #[test]
+    fn classic_saturation_saved_slot_is_admitted_in_both_scopes() {
+        assert_eq!(module_name(0x1d), "Saturation");
+        let payload: Vec<_> = [0.30065f32, 0.0]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        for scope in [Scope::Voice, Scope::Bus] {
+            let out = chain(&[slot(0x1d, payload.clone(), 0.5)], scope);
+            assert!(out.notes.is_empty(), "{:?}", out.notes);
+            assert_eq!(out.processors.len(), 2, "saturation and slot output");
+        }
+    }
+
+    #[test]
+    fn analog_distortion_saved_slot_is_admitted_in_both_scopes() {
+        let payload: Vec<_> = [0.0f32, 0.523648, 0.0]
+            .into_iter().flat_map(f32::to_le_bytes).collect();
+        for scope in [Scope::Voice, Scope::Bus] {
+            let out = chain(&[slot(0x1e, payload.clone(), 0.5)], scope);
+            assert!(out.notes.is_empty(), "{:?}", out.notes);
+            assert_eq!(out.processors.len(), 2, "distortion and slot output");
+        }
+    }
+
+    #[test]
+    fn formant_native_parallel_impulse_and_saved_sharp_size_mapping() {
+        use sampler_ir as ir;
+        for (talk, sharp, size, expected) in [
+            (0.0f32, 0.5, 0.5, 0.01663771558f32),
+            (0.0, 0.0, 1.0, 0.0361916923f32),
+        ] {
+            let mut payload = 90i32.to_le_bytes().repeat(2);
+            for value in [talk, sharp, size] { payload.extend(value.to_le_bytes()); }
+            let built = chain(&[slot(0x18, payload, 1.0)], Scope::Voice);
+            assert!(built.notes.is_empty(), "{:?}", built.notes);
+            let mut instrument = ir::Instrument::default();
+            instrument.assets.push(ir::Asset { location: ir::AssetLocation::Path("probe".into()), encoding: ir::Encoding::Wav, root_key: None, loops: Vec::new() });
+            instrument.chains.push(ir::Chain { scope: ir::Scope::Voice, pre_amplitude: built.processors, post_amplitude: vec![] });
+            let mut zone = ir::Zone::new(ir::AssetRef(0));
+            zone.keys = ir::KeyRange { low: 60, high: 60 };
+            zone.chain = Some(ir::ChainRef(0));
+            zone.velocity = ir::VelocityResponse::None;
+            instrument.zones.push(zone);
+            let mut samples = vec![[0.0; 2]; 64]; samples[0] = [1.0, -0.5];
+            let pcm = sampler_core::Pcm::new(48000, samples.into_boxed_slice()).unwrap();
+            let plan = sampler_core::lower::lower(&instrument, 48000, vec![pcm], |_, plan| Ok(plan)).unwrap();
+            let limits = sampler_core::Limits::for_plan(&plan, 4, 4);
+            let mut rt = sampler_core::Runtime::new(plan, limits).unwrap();
+            rt.trigger(sampler_core::Input { protocol: sampler_core::Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: None }, 60, 1.0).unwrap();
+            let mut output = [[0.0; 2]; 8]; rt.render(&mut output).unwrap();
+            assert!((output[0][0] - expected).abs() < 1e-7, "{:?} expected {expected}", output[0]);
+            assert!((output[0][1] + expected * 0.5).abs() < 1e-7);
+        }
+    }
+
+    fn fx_runtime(processors: Vec<sampler_ir::Processor>, tempo: f64, input: &[[f32; 2]]) -> sampler_core::Runtime {
+        let mut instrument = sampler_ir::Instrument::default();
+        instrument.assets.push(sampler_ir::Asset { location: sampler_ir::AssetLocation::Path("probe".into()), encoding: sampler_ir::Encoding::Wav, root_key: None, loops: vec![] });
+        instrument.chains.push(sampler_ir::Chain { scope: sampler_ir::Scope::Voice, pre_amplitude: processors, post_amplitude: vec![] });
+        let mut zone = sampler_ir::Zone::new(sampler_ir::AssetRef(0));
+        zone.keys = sampler_ir::KeyRange { low: 60, high: 60 };
+        zone.chain = Some(sampler_ir::ChainRef(0)); zone.velocity = sampler_ir::VelocityResponse::None;
+        instrument.zones.push(zone);
+        let mut samples = vec![[0.0; 2]; 64]; samples[..input.len()].copy_from_slice(input);
+        let pcm = sampler_core::Pcm::new(48000, samples.into_boxed_slice()).unwrap();
+        let plan = sampler_core::lower::lower(&instrument, 48000, vec![pcm], |_, p| Ok(p)).unwrap();
+        let limits = sampler_core::Limits::for_plan(&plan, 4, 4);
+        let mut rt = sampler_core::Runtime::new(plan, limits).unwrap();
+        rt.trigger(sampler_core::Input { protocol: sampler_core::Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: None }, 60, 1.0).unwrap();
+        rt.set_tempo(tempo).unwrap();
+        rt
+    }
+
+    fn fx_probe(processors: Vec<sampler_ir::Processor>, tempo: f64, input: &[[f32; 2]]) -> [[f32; 2]; 4] {
+        let mut rt = fx_runtime(processors, tempo, input);
+        let mut output = [[0.0; 2]; 4]; rt.render(&mut output).unwrap();
+        output
+    }
+
+    #[test]
+    fn enhanced_compressor_uses_native_detector_and_integer_selector() {
+        let mut payload = 1i32.to_le_bytes().to_vec();
+        for value in [-6.0f32, 0.5, 1.0, 100.0] { payload.extend(value.to_le_bytes()); }
+        payload.push(0);
+        let mut fx = slot(0x19, payload.clone(), 1.0); fx.version = 0x70;
+        let built = chain(&[fx], Scope::Voice);
+        assert!(built.notes.is_empty(), "{:?}", built.notes);
+        let output = fx_probe(built.processors, 120., &[[1., -0.5]; 4]);
+        for (actual, expected) in output.iter().zip([0.999157310f32, 0.997557640, 0.995283782, 0.992414534]) { assert!((actual[0] - expected).abs() < 2e-7, "{actual:?} vs {expected}"); }
+        assert_eq!(output[0][1], -0.5);
+        *payload.last_mut().unwrap() = 1;
+        let mut fx = slot(0x19, payload, 1.0); fx.version = 0x70;
+        let linked = chain(&[fx], Scope::Voice);
+        assert!(linked.notes.is_empty(), "{:?}", linked.notes);
+        assert_eq!(fx_probe(linked.processors, 120., &[[1., -1.]])[0], [1., -1.]);
+    }
+
+    #[test]
+    fn legacy_phaser_free_speed_phase_and_four_stage_vector() {
+        let payload: Vec<_> = [0.5f32, 0.25, 1.0, 1.0, -1.0].into_iter().flat_map(f32::to_le_bytes).collect();
+        let built = chain(&[slot(0x14, payload, 1.0)], Scope::Voice);
+        assert!(built.notes.is_empty(), "{:?}", built.notes);
+        let output = fx_probe(built.processors.clone(), 120., &[[1., -0.5]]);
+        let expected = [[0.857850552f32, -0.476720124], [-0.106721222, -0.0511267483], [-0.290372699, 0.0421471819], [-0.274628252, 0.0595008172]];
+        for (actual, expected) in output.into_iter().zip(expected) {
+            for (a, e) in actual.into_iter().zip(expected) { assert!((a-e).abs() < 2e-7, "{a} vs {e}"); }
+        }
+        // 120 BPM, two beats per cycle gives the same native 1 Hz oscillator.
+        let synced_payload: Vec<_> = [0.5f32, 0.25, 1.0, 1.0, 2.0].into_iter().flat_map(f32::to_le_bytes).collect();
+        let synced = chain(&[slot(0x14, synced_payload, 1.0)], Scope::Voice);
+        assert!(synced.notes.is_empty(), "{:?}", synced.notes);
+        assert_eq!(fx_probe(synced.processors.clone(), 120., &[[1., -0.5]]), output);
+        // The native synced getter substitutes 120 BPM below .1 BPM.
+        assert_eq!(fx_probe(synced.processors, 0.05, &[[1., -0.5]]), output);
+    }
+
+    #[test]
+    fn phaser_filter_native_four_stage_impulse() {
+        let mut payload = 13i32.to_le_bytes().repeat(2);
+        for value in [0.0f32, 0.0] { payload.extend(value.to_le_bytes()); }
+        let built = chain(&[slot(0x18, payload, 1.0)], Scope::Voice);
+        assert!(built.notes.is_empty(), "{:?}", built.notes);
+        let output = fx_probe(built.processors, 120., &[[1., -0.5]]);
+        // Cutoff zero: a=(1-.02)/(1+.02); four allpasses, half dry/half wet.
+        for (actual, expected) in output.iter().zip([0.926062942f32, -0.136394471, -0.114671811, -0.095316768]) {
+            assert!((actual[0] - expected).abs() < 2e-7, "{actual:?} vs {expected}");
+            assert!((actual[1] + expected * 0.5).abs() < 2e-7);
         }
     }
 
@@ -2907,6 +3291,18 @@ mod tests {
     }
 
     #[test]
+    fn inverter_saved_flags_match_native_assignment_and_audio() {
+        // BPar+8/+9 -> wrapper+0x1c0/+0x1c1, FUN_1409619b0 case 4.
+        for (flags, expected) in [(vec![1, 0], [-0.25, 0.5]), (vec![0, 1], [-0.5, 0.25]), (vec![1, 1], [0.5, -0.25])] {
+            let built = chain(&[slot(0x1a, flags, 1.0)], Scope::Voice);
+            assert!(built.notes.is_empty(), "{:?}", built.notes);
+            let [sampler_ir::Processor::StereoMatrix(matrix)] = built.processors.as_slice() else { panic!("{:?}", built.processors) };
+            let actual = matrix.map(|row| row[0] * 0.25 + row[1] * -0.5);
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
     fn stateful_inserts_keep_their_boundaries_and_slot_gains() {
         let mut gainer = slot(0x13, 2.0f32.to_le_bytes().to_vec(), 1.0);
         gainer.dry_level = 0.0;
@@ -2937,7 +3333,7 @@ mod tests {
                 sampler_ir::Processor::StereoMatrix([[2.0, 0.0], [0.0, 2.0]]),
             ]
         );
-        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes.is_empty(), "{notes:?}");
         // An EQ: its boosted band, then its slot gain.
         let mut eq = Vec::new();
         for x in [24i32, 24] {
@@ -2954,7 +3350,7 @@ mod tests {
                     sampler_ir::Processor::Filter(f),
                     sampler_ir::Processor::StereoMatrix([[2.0, 0.0], [0.0, 2.0]])
                 ] if f.cutoff == sampler_ir::Frequency::Hertz(1000.0)
-                    && matches!(f.resonance, sampler_ir::Resonance::Q(q) if (q - std::f64::consts::SQRT_2).abs() < 1e-9)
+                    && matches!(f.resonance, sampler_ir::Resonance::Q(q) if (q - 2. / 3.).abs() < 1e-9)
             ),
             "{processors:?}"
         );

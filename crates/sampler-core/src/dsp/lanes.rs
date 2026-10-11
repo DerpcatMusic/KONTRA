@@ -188,6 +188,18 @@ pub(crate) fn process(
                     x.iter_mut().for_each(|v| *v = mode.apply(*v));
                 }
             }
+            PreparedProcessor::LiveSaturation(shape) => {
+                for (i, x) in block[..len].iter_mut().enumerate() {
+                    let value = shape.value(parameters, at + i as u64, None) as f32;
+                    x.iter_mut().for_each(|v| *v = super::shaping::saturation(*v, value));
+                }
+            }
+            PreparedProcessor::Saturation(shape) => {
+                for x in &mut block[..len] {
+                    x.iter_mut()
+                        .for_each(|v| *v = super::shaping::saturation(*v, *shape));
+                }
+            }
             PreparedProcessor::ControlGain(lane) => {
                 let ramp = parameters[*lane];
                 for (i, x) in block[..len].iter_mut().enumerate() {
@@ -261,8 +273,17 @@ pub(crate) fn process(
             | PreparedProcessor::Compressor(_)
             | PreparedProcessor::Decimate(_)
             | PreparedProcessor::LoFi(_)
+            | PreparedProcessor::LegacyPhaser(_)
+            | PreparedProcessor::KontaktEnhancedCompressor(_)
+            | PreparedProcessor::Phaser(_)
+            | PreparedProcessor::Formant(_)
+            | PreparedProcessor::LiveDistortion(_)
+            | PreparedProcessor::Distortion(_)
             | PreparedProcessor::Daft(_)
             | PreparedProcessor::LadderLP4 { .. }
+            | PreparedProcessor::Ar { .. }
+            | PreparedProcessor::LiveFilter(_)
+            | PreparedProcessor::ControlMatrix(_)
             | PreparedProcessor::Branch { .. } => {
                 unreachable!("delay, compressor and decimator chains render per voice")
             }
@@ -607,6 +628,7 @@ mod tests {
                                             0,
                                             &mut [],
                                             &mut super::super::svf::FilterContext {
+                                                tempo: 120.0,
                                                 bank: &mut bank,
                                                 expression: None,
                                                 reverbs: &mut [],

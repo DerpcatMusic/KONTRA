@@ -230,6 +230,11 @@ pub fn missing(feature: &str, reason: &str, value: &str) -> Key {
         .strip_prefix("script ")
         .and_then(|s| s.split_once(": "))
     {
+        if status == "Warning" {
+            // The translator already masks per-site names/numbers in this warning class.
+            let class = blake3::hash(builtin.as_bytes()).to_hex();
+            return Key::new("KspWarning", reason, &format!("Class_{}", &class[..16]));
+        }
         return Key::new(
             "KspBuiltin",
             if status == "Unsupported" {
@@ -240,12 +245,16 @@ pub fn missing(feature: &str, reason: &str, value: &str) -> Key {
             builtin,
         );
     }
-    if feature == "modulation target" {
+    if matches!(feature, "modulation target" | "modulation of a module parameter") {
         return Key::new(
-            "ModTarget",
+            if feature == "modulation target" { "ModTarget" } else { "ModParameter" },
             reason,
             value.split_whitespace().next().unwrap_or("UnknownSubject"),
         );
+    }
+    if feature == "effect" {
+        let name = value.split_once(" v").map_or(value, |(name, _)| name);
+        return Key::new("FxSlot", reason, &name.replace(' ', "_"));
     }
     Key::new("Unsupported", reason, &feature.replace(' ', "_"))
 }
@@ -299,7 +308,8 @@ impl RuntimeLog {
             sampler_core::Outcome::FuelExhausted => "FuelExhausted".into(),
             _ => return,
         };
-        self.add("KspFault", &reason, "Callback", Some(callback), 1);
+        let detail = format!("KSP callback #{callback} faulted: {reason}");
+        self.add("KspFault", &reason, "Callback", Some(callback), 1, Some(detail));
     }
     pub(crate) fn lost(&mut self, count: u64) {
         self.add(
@@ -308,6 +318,7 @@ impl RuntimeLog {
             "FaultInbox",
             None,
             count,
+            None,
         );
     }
     pub(crate) fn lua(&mut self, faults: &sampler_uvi::script::FaultCounts) -> bool {
@@ -325,13 +336,18 @@ impl RuntimeLog {
                 let delta = count.saturating_sub(*old);
                 *old = *count;
                 if delta > 0 {
-                    self.add(kind, &reason, "Callback", None, delta);
+                    let detail = match kind {
+                        "LuaInitFault" => faults.init_message.clone(),
+                        _ => faults.runtime_message.clone(),
+                    };
+                    self.add(kind, &reason, "Callback", None, delta, detail);
                     changed = true;
                 }
             }
         }
         for finding in &faults.setter_type_mismatches {
-            let subject = format!("{:?}To{:?}", finding.types.expected, finding.types.actual);
+            // The parameter's type is `expected`, the script's value `actual`.
+            let (subject, sentence) = setter_subject(finding.types);
             let old = self
                 .observed_counts
                 .entry(("LuaSetter".into(), subject.clone()))
@@ -339,7 +355,7 @@ impl RuntimeLog {
             let delta = finding.count.saturating_sub(*old);
             *old = finding.count;
             if delta > 0 {
-                self.add("LuaSetter", "SetterTypeMismatch", &subject, None, delta);
+                self.add("LuaSetter", "SetterTypeMismatch", &subject, None, delta, Some(sentence));
                 changed = true;
             }
         }
@@ -367,7 +383,7 @@ impl RuntimeLog {
             let delta = count.saturating_sub(*old);
             *old = count;
             if delta > 0 {
-                self.add("RuntimeCounter", reason, subject, None, delta);
+                self.add("RuntimeCounter", reason, subject, None, delta, None);
                 changed = true;
             }
         }
@@ -380,6 +396,7 @@ impl RuntimeLog {
         subject: &str,
         callback: Option<usize>,
         count: u64,
+        detail: Option<String>,
     ) {
         if count == 0 {
             return;
@@ -395,7 +412,8 @@ impl RuntimeLog {
                 super::LogLevel::Error,
                 "runtime",
                 "runtime_issue",
-                serde_json::json!({"load_id":self.load_id,"path":self.path,"program":self.program,"diagnostic_key":key,"location":location,"group":self.collector.groups().into_iter().find(|g|g.key==key)}),
+                serde_json::json!({"load_id":self.load_id,"path":self.path,"program":self.program,"diagnostic_key":key,"location":location,"group":self.collector.groups().into_iter().find(|g|g.key==key),
+                    "message":detail.map(|d| d.chars().take(200).collect::<String>())}),
             );
         }
     }
@@ -422,9 +440,30 @@ impl RuntimeLog {
     }
 }
 
+/// What the script tried: a value of one type written to a parameter of another.
+/// Keys are plain identifiers, so the sentence goes in the journal detail.
+fn setter_subject(types: sampler_uvi::script::SetterTypes) -> (String, String) {
+    let (actual, expected) = (format!("{:?}", types.actual), format!("{:?}", types.expected));
+    let sentence = format!(
+        "setParameter wrote a {} value to a {} parameter; UVI ignores the write and keeps the old value",
+        actual.to_lowercase(),
+        expected.to_lowercase()
+    );
+    (format!("{actual}ValueTo{expected}Parameter"), sentence)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_effects_and_module_parameters_keep_distinct_semantic_names() {
+        let a = missing("effect", "NotModeled", "Raum v0x50 len 64");
+        let b = missing("effect", "NotModeled", "Classic Saturation v0x50 len 64");
+        assert_ne!(a, b);
+        assert_eq!(b.subject, "Classic_Saturation");
+        assert_ne!(missing("modulation of a module parameter", "NotModeled", "frequency (RATE)"), missing("modulation of a module parameter", "NotModeled", "intensity (AMT)"));
+    }
     #[test]
     fn shared_scanner_runtime_contract() {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
@@ -445,6 +484,23 @@ mod tests {
             );
         }
         assert_eq!(serde_json::to_value(c.groups()).unwrap(), fixture["groups"]);
+    }
+
+    #[test]
+    #[cfg(feature = "plugin")]
+    fn setter_type_mismatch_says_what_was_set_and_that_uvi_ignores_it() {
+        use sampler_uvi::script::{ParameterType, SetterTypeFinding, SetterTypes};
+        let mut log = RuntimeLog::new("test-runtime", "/Libraries/UVI/a.uvip", 0);
+        let mut lua = sampler_uvi::script::FaultCounts::default();
+        lua.setter_type_mismatches.push(SetterTypeFinding {
+            types: SetterTypes { expected: ParameterType::Bool, actual: ParameterType::Float },
+            count: 2,
+        });
+        assert!(log.lua(&lua));
+        let key = &log.collector.groups()[0].key;
+        assert_eq!(key.subject, "FloatValueToBoolParameter");
+        assert_eq!(setter_subject(SetterTypes { expected: ParameterType::Bool, actual: ParameterType::Float }).1,
+            "setParameter wrote a float value to a bool parameter; UVI ignores the write and keeps the old value");
     }
 
     #[test]

@@ -1,4 +1,6 @@
-//! Port from v1 0cb7a8a0:src/engine/filter.rs: a live TPT bell, not native EQ.
+//! A live TPT bell (v1 0cb7a8a0:src/engine/filter.rs) with the Kontakt 8 laws measured
+//! against the standalone plugin: centre gain is `GAIN_SCALE` x the displayed dB,
+//! `alpha = sin(w0) * sinh(ln2 * octaves)`, frequency 20 Hz * 10^(3x).
 use super::{
     Parameter, Planar, ProcessorState,
     control::{ControlRamp, ControlRange, PreparedParameter},
@@ -11,24 +13,42 @@ use crate::Error;
 pub struct PeakingEq {
     /// Normalized v1 knob: 20 Hz * 10^(3*x).
     pub frequency: Parameter,
-    /// Normalized v1 knob: 0.3 + 2.7*x octaves.
+    /// Normalized Kontakt knob: 1/3 + x/0.375 octaves.
     pub bandwidth: Parameter,
     pub gain_db: Parameter,
 }
 impl PeakingEq {
+    /// Centre gain in true dB per displayed dB: 20*log10(2)/3 (native A = 2^(3g), gain A^2).
+    pub const GAIN_SCALE: f64 = 2.006_866_648_250_223;
+
     /// The same normalized frequency conversion and Nyquist guard as playback.
     pub fn frequency_hz(normalized: f32, rate: u32) -> f32 {
         (20. * 10f32.powf(3. * normalized.clamp(0., 1.))).min(0.49 * rate as f32)
     }
 
-    /// The v1 normalized EQ bandwidth law, in octaves.
+    /// The normalized EQ bandwidth law, in displayed octaves.
     pub fn bandwidth_octaves(normalized: f32) -> f32 {
-        0.3 + 2.7 * normalized.clamp(0., 1.)
+        1. / 3. + normalized.clamp(0., 1.) / 0.375
+    }
+
+    /// The knob for displayed octaves (inverse of `bandwidth_octaves`).
+    pub fn bandwidth_knob(octaves: f64) -> f64 {
+        ((octaves - 1. / 3.) * 0.375).clamp(0., 1.)
+    }
+
+    /// The bell's Q for displayed octaves: alpha = sin(w0) * sinh(ln2 * octaves).
+    pub fn q_of_octaves(octaves: f64) -> f64 {
+        1. / (2. * (std::f64::consts::LN_2 * octaves).sinh())
+    }
+
+    /// Displayed octaves for a bell Q (inverse of `q_of_octaves`).
+    pub fn octaves_of_q(q: f64) -> f64 {
+        (0.5 / q).asinh() / std::f64::consts::LN_2
     }
 
     /// The TPT bell's Q, derived from its bandwidth knob, not a filter resonance knob.
     pub fn bandwidth_q(normalized: f32) -> f32 {
-        1. / (2. * (std::f32::consts::LN_2 * 0.5 * Self::bandwidth_octaves(normalized)).sinh())
+        Self::q_of_octaves(f64::from(Self::bandwidth_octaves(normalized))) as f32
     }
 
     pub(super) fn valid(self) -> bool {
@@ -72,11 +92,12 @@ pub(crate) struct Eq {
     gain: PreparedParameter,
 }
 fn coefficients(rate: u32, frequency: f32, bandwidth: f32, gain_db: f32) -> [f32; 6] {
-    // v1 band_settings and Proto::bell; clamp only after summing knob modulation.
+    // v1 band_settings and Proto::bell with the measured Kontakt laws; clamp only
+    // after summing knob modulation.
     let hz = PeakingEq::frequency_hz(frequency, rate);
     let g = (std::f32::consts::PI * hz / rate as f32).tan();
     let q = PeakingEq::bandwidth_q(bandwidth);
-    let a = 10f32.powf(gain_db / 40.);
+    let a = 10f32.powf(gain_db * PeakingEq::GAIN_SCALE as f32 / 40.);
     let k = 1. / (q * a);
     let a1 = 1. / (1. + g * (g + k));
     let a2 = g * a1;
@@ -306,10 +327,54 @@ mod tests {
         assert_eq!(PeakingEq::frequency_hz(0., 48000), 20.);
         assert_eq!(PeakingEq::frequency_hz(1., 48000), 20000.);
         assert_eq!(PeakingEq::frequency_hz(1., 8000), 3920.);
-        assert_eq!(PeakingEq::bandwidth_octaves(0.), 0.3);
-        assert_eq!(PeakingEq::bandwidth_octaves(1.), 3.);
+        assert!((PeakingEq::bandwidth_octaves(0.) - 1. / 3.).abs() < 1e-6);
+        assert!((PeakingEq::bandwidth_octaves(1.) - 3.).abs() < 1e-6);
         let q = PeakingEq::bandwidth_q(0.5);
-        assert!((2. * (0.5 / f64::from(q)).asinh() / std::f64::consts::LN_2 - 1.65).abs() < 5e-7);
+        let octaves = PeakingEq::octaves_of_q(f64::from(q));
+        assert!((octaves - 1. / 3. - 0.5 / 0.375).abs() < 5e-6);
+        assert!((PeakingEq::bandwidth_knob(octaves) - 0.5).abs() < 5e-6);
+    }
+
+    /// Kontakt 8 plugin recording (calibration noise, 1-band EQ, f=.4997 b=.5039, Gain1 +9 dB
+    /// shown): response vs bypass in dB. The centre gain is 2x the displayed dB.
+    #[test]
+    fn bell_matches_the_measured_kontakt_response() {
+        let eq = Eq {
+            rate: 48000,
+            frequency: super::super::control::PreparedParameter::Constant(0.499712),
+            bandwidth: super::super::control::PreparedParameter::Constant(0.503936),
+            gain: super::super::control::PreparedParameter::Constant(9.),
+        };
+        for (hz, measured) in [
+            (100., 4.3),
+            (500., 17.1),
+            (700., 17.8),
+            (1000., 15.3),
+            (3000., 5.9),
+        ] {
+            let mut state = ProcessorState::default();
+            let (mut num, mut den) = (0., 0.);
+            for block in 0..64 {
+                let mut b: Planar = std::array::from_fn(|_| {
+                    std::array::from_fn(|i| {
+                        ((block * super::super::BLOCK + i) as f64 * std::f64::consts::TAU * hz
+                            / 48000.)
+                            .sin()
+                    })
+                });
+                let input = b[0];
+                eq.process(&mut state, &[], &mut b, super::super::BLOCK, 0);
+                if block >= 32 {
+                    num += b[0].iter().map(|v| v * v).sum::<f64>();
+                    den += input.iter().map(|v| v * v).sum::<f64>();
+                }
+            }
+            let db = 10. * (num / den).log10();
+            assert!(
+                (db - measured).abs() < 0.5,
+                "{hz} Hz: {db} dB vs measured {measured}"
+            );
+        }
     }
 
     #[test]
