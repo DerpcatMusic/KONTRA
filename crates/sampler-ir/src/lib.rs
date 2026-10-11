@@ -1640,6 +1640,9 @@ pub enum FilterKind {
     Peak { gain: Gain },
     LowShelf { gain: Gain },
     HighShelf { gain: Gain },
+    /// A 6 dB/octave shelf: `Filter::resonance` has no effect on it.
+    FirstOrderLowShelf { gain: Gain },
+    FirstOrderHighShelf { gain: Gain },
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]

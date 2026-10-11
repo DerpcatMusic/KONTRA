@@ -14,6 +14,9 @@ pub enum LiveShape {
     Level,
     LowShelf,
     HighShelf,
+    /// 6 dB/octave shelves; the Q has no effect.
+    FirstOrderLowShelf,
+    FirstOrderHighShelf,
     Peak,
     LowPass,
     HighPass,
@@ -109,6 +112,8 @@ impl Live {
             }
             LiveShape::LowShelf => FilterKind::LowShelf { gain_db: boost },
             LiveShape::HighShelf => FilterKind::HighShelf { gain_db: boost },
+            LiveShape::FirstOrderLowShelf => FilterKind::FirstOrderLowShelf { gain_db: boost },
+            LiveShape::FirstOrderHighShelf => FilterKind::FirstOrderHighShelf { gain_db: boost },
             LiveShape::Peak => FilterKind::Peak { gain_db: boost },
             LiveShape::LowPass => FilterKind::LowPass,
             LiveShape::HighPass => FilterKind::HighPass,
@@ -117,7 +122,11 @@ impl Live {
         };
         if matches!(
             self.shape,
-            LiveShape::LowShelf | LiveShape::HighShelf | LiveShape::Peak
+            LiveShape::LowShelf
+                | LiveShape::HighShelf
+                | LiveShape::FirstOrderLowShelf
+                | LiveShape::FirstOrderHighShelf
+                | LiveShape::Peak
         ) && boost.abs() < 0.01
         {
             return;
