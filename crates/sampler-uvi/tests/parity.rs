@@ -190,3 +190,36 @@ fn a_lane_without_a_translated_slot_is_a_stub() {
         Status::Stub
     );
 }
+
+#[test]
+fn synthetic_parent_references_and_writes_remain_explicit() {
+    let report = parity_reports(&xml(
+        "local part=Program.parent\npart:getParameter('Gain')\npart:setParameter('Gain',0.5)",
+        "",
+    ))
+    .remove(0);
+    assert!(
+        report
+            .constructs
+            .iter()
+            .any(|c| c.kind == sampler_parity::ConstructKind::LuaModule && c.name == "Part")
+    );
+    assert_eq!(
+        report
+            .constructs
+            .iter()
+            .find(|c| c.name == "getParameter Part.Gain")
+            .unwrap()
+            .status,
+        Status::Approximate
+    );
+    assert_eq!(
+        report
+            .constructs
+            .iter()
+            .find(|c| c.name == "setParameter Part.Gain")
+            .unwrap()
+            .status,
+        Status::Stub
+    );
+}
