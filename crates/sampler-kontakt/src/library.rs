@@ -2020,10 +2020,11 @@ impl Translation {
     ) -> Option<ir::RouteRef> {
         let i = f64::from(target.signed_intensity());
         let report = |this: &mut Self, feature: &str, reason| {
+            let destination = target.slot.map_or_else(String::new, |slot| format!(" destination slot {slot}"));
             this.unsupported(
                 at,
                 feature,
-                format!("{} ({}) intensity {i}", target.param, target.name),
+                format!("{} ({}){destination} intensity {i}", target.param, target.name),
                 reason,
             );
             None
@@ -4274,6 +4275,7 @@ mod modulation {
         assert_eq!(t.ir.routes.len(), 4);
         let reasons: Vec<_> = t.ir.unsupported.iter().map(|u| u.reason).collect();
         assert_eq!(reasons, [ir::Reason::NotModeled, ir::Reason::NotModeled]);
+        assert!(t.ir.unsupported[1].value.contains("cutoff () destination slot 0"));
     }
 
     #[test]
