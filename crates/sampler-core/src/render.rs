@@ -552,8 +552,9 @@ impl Runtime {
                 tempo: self.tempo,
                 now: at,
             };
-            if let Some(offsets) =
-                plan.modulation
+            // v1 freezes loop edits throughout release, including continuous loops.
+            if !v.envelope.releasing()
+                && let Some(offsets) = plan.modulation
                     .loop_offsets(&plan.prepared.voice_modulation, i, inputs.controls)
             {
                 v.cursor = v.cursor.with_loop_offsets(offsets);
