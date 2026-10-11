@@ -94,6 +94,7 @@ struct Script {
     lines: Vec<Line>,
     shares: [usize; 5],
     coverage: Option<Coverage>,
+    fault_starts: Vec<u32>,
     revision: u64,
     columns: usize,
 }
@@ -120,6 +121,7 @@ impl Script {
             lines,
             shares: [0; 5],
             coverage: None,
+            fault_starts: Vec::new(),
             revision: 0,
             columns: 0,
         };
@@ -192,11 +194,31 @@ impl Script {
             self.lines[line].status
         }
     }
+    fn construct_status(&self, n: usize) -> Status {
+        let c = &self.report.constructs[n];
+        if self.fault_starts.binary_search(&c.span.start).is_ok() {
+            Status::Fault
+        } else {
+            c.status
+        }
+    }
     fn observe(&mut self, coverage: Option<Coverage>) {
         let coverage = coverage.filter(|c| c.script_id == self.report.id);
         if self.coverage == coverage {
             return;
         }
+        self.fault_starts = coverage.as_ref().map_or_else(Vec::new, |c| {
+            c.faults
+                .iter()
+                .filter_map(|(byte, _)| {
+                    ((*byte as usize) < self.source.len()
+                        && self.source.is_char_boundary(*byte as usize))
+                    .then_some(*byte)
+                })
+                .collect()
+        });
+        self.fault_starts.sort_unstable();
+        self.fault_starts.dedup();
         for l in &mut self.lines {
             l.hits = 0;
             l.fault = false;
@@ -220,6 +242,10 @@ impl Script {
             }
         }
         self.coverage = coverage;
+        self.shares = [0; 5];
+        for n in 0..self.report.constructs.len() {
+            self.shares[self.construct_status(n) as usize] += 1;
+        }
         self.revision = self.revision.wrapping_add(1);
     }
 }
@@ -675,6 +701,7 @@ fn code(ui: &mut Ui, state: &mut State, key: &str) -> El {
         )];
         for &c in &line.constructs {
             let construct = &script.report.constructs[c];
+            let c_status = script.construct_status(c);
             let start = (construct.span.start as usize).max(line.bytes.start);
             let end = (construct.span.end as usize).min(line.bytes.end);
             if start >= end {
@@ -700,15 +727,11 @@ fn code(ui: &mut Ui, state: &mut State, key: &str) -> El {
                     .at(x, 0.)
                     .focusable()
                     .a11y(A11y::Button)
-                    .named(format!(
-                        "{}: {}",
-                        construct.name,
-                        status(construct.status).1
-                    ))
+                    .named(format!("{}: {}", construct.name, status(c_status).1))
                     .tip(format!(
                         "{} · {}\n{}",
                         construct.name,
-                        status(construct.status).1,
+                        status(c_status).1,
                         construct.detail
                     ))
                     .id(c_id),
@@ -849,8 +872,9 @@ fn paint_line(
         }
     }
     for &c in &line.constructs {
+        let c_status = script.construct_status(c);
         let c = &script.report.constructs[c];
-        if c.status == Status::Implemented {
+        if c_status == Status::Implemented {
             continue;
         }
         let start = (c.span.start as usize).max(line.bytes.start);
@@ -863,7 +887,7 @@ fn paint_line(
             if right > left {
                 draws.push(Draw::fill(
                     rect(left, ROW - 3., right - left, 1.),
-                    status(c.status).2,
+                    status(c_status).2,
                 ));
             }
         }
@@ -873,16 +897,26 @@ fn paint_line(
 
 fn construct_detail(script: &Script, n: usize) -> String {
     let c = &script.report.constructs[n];
+    let c_status = script.construct_status(n);
     let mut out = format!(
         "{} · {:?} · {} {}\n{}\nOwner: {}\nSpec: {}",
         c.name,
         c.kind,
-        status(c.status).0,
-        status(c.status).1,
+        status(c_status).0,
+        status(c_status).1,
         c.detail,
         c.owner.as_deref().unwrap_or("Not provided"),
         c.spec.as_deref().unwrap_or("Not provided")
     );
+    if let Some(coverage) = &script.coverage {
+        for (_, fault) in coverage
+            .faults
+            .iter()
+            .filter(|(byte, _)| *byte == c.span.start)
+        {
+            let _ = write!(out, "\nRuntime fault: {fault}");
+        }
+    }
     for lowered in &script.report.lowered {
         if overlaps(c.span, lowered.span) {
             for op in &lowered.ops {
@@ -1070,8 +1104,10 @@ fn copy_gaps(scripts: &[Script]) -> String {
                 let n = script.line_at(*byte as usize);
                 let construct = script.lines[n]
                     .constructs
-                    .first()
-                    .map(|&n| &script.report.constructs[n]);
+                    .iter()
+                    .map(|&n| &script.report.constructs[n])
+                    .filter(|c| c.span.start <= *byte && *byte < c.span.end)
+                    .min_by_key(|c| c.span.end - c.span.start);
                 let _ = writeln!(
                     out,
                     "- L{} **{}** [Fault]: {} · owner: {} · spec: {}\n  > {}",
@@ -1441,6 +1477,21 @@ mod tests {
             },
         );
         assert_eq!(state.scripts[0].source, before);
+        let (mut report, source) = fixtures::reports().remove(0);
+        report.constructs[2].status = Status::Implemented;
+        let byte = report.constructs[2].span.start;
+        let mut faulted = Script::new(report, source);
+        let before = faulted.shares[Status::Fault as usize];
+        faulted.observe(Some(Coverage {
+            script_id: faulted.report.id.clone(),
+            hits: vec![(byte, 1)],
+            faults: vec![(byte, "Fresh host binding fault".into())],
+        }));
+        assert_eq!(faulted.construct_status(2), Status::Fault);
+        assert_eq!(faulted.line_status(2), Some(Status::Fault));
+        assert_eq!(faulted.shares[Status::Fault as usize], before + 1);
+        assert!(construct_detail(&faulted, 2).contains("Runtime fault: Fresh host binding fault"));
+        assert!(copy_gaps(&[faulted]).contains("**set_engine_par** [Fault]"));
         state.scripts[0].observe(Some(Coverage {
             script_id: "wrong-script".into(),
             ..Default::default()
