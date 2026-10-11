@@ -229,8 +229,8 @@ impl Check<'_> {
                     }
                 }
                 Processor::Rectify(_) => {}
-                Processor::Saturation(shape) => self.within(f64::from(shape), -1.0..=1.0, "saturation shape")?,
-                Processor::Distortion { drive, damping, .. } => {
+                Processor::Saturation(shape) | Processor::LiveSaturation { shape, .. } => self.within(f64::from(shape), -1.0..=1.0, "saturation shape")?,
+                Processor::Distortion { drive, damping, .. } | Processor::LiveDistortion { drive, damping, .. } => {
                     self.within(f64::from(drive), 0.0..=1.0, "distortion drive")?;
                     self.within(f64::from(damping), 0.0..=1.0, "distortion damping")?;
                 }
