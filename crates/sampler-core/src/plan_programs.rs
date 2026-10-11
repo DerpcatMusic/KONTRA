@@ -57,7 +57,7 @@ fn startable(program: Option<&Program>) -> bool {
 }
 
 pub(super) fn validate_starts(programs: &[Program]) -> Result<(), Error> {
-    for op in programs.iter().flat_map(|p| p.code.iter()) {
+    for op in crate::behavior::distinct_code(programs, false).flat_map(|p| p.code.iter()) {
         if let Instruction::StartProgram { program } = *op
             && !startable(programs.get(program as usize))
         {

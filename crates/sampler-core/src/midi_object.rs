@@ -509,9 +509,7 @@ fn matches_event(e: &MidiObjectEvent, selector: i32, selected: Option<i32>) -> b
 
 impl Prepared {
     pub fn with_midi_object(mut self, mut object: MidiObject) -> Self {
-        if self
-            .programs
-            .iter()
+        if crate::behavior::distinct_code(&self.programs, false)
             .flat_map(|p| p.code.iter())
             .any(|i| matches!(i, crate::Instruction::Op(crate::Op::Midi { .. })))
         {
