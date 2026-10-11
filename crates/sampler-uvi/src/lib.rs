@@ -54,7 +54,11 @@ pub const LIBRARY_ACCESS_ENABLED: bool = cfg!(feature = "library-access");
 const XML_LIMIT: u64 = 32 << 20;
 
 /// Container nodes whose meaning is their children.
-const STRUCTURAL: [&str; 18] = [
+const STRUCTURAL: [&str; 22] = [
+    "Auxs",
+    "AuxEffect",
+    "Inserts",
+    "BusRouters",
     "Mappers",
     "UVI4",
     "Program",
@@ -571,6 +575,7 @@ impl Translation {
                 else {
                     continue;
                 };
+                self.used.push(router.id());
                 base.sends.push(ir::GroupSend {
                     to: bus,
                     gain: ir::Gain::Linear(number(router, "Gain", 1.0)?),
