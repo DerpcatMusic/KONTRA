@@ -11,7 +11,6 @@ use ni_file::kontakt::{
     objects::{BParFX, BParamArrayBParFX8, InsertBus, Program},
 };
 
-mod formant;
 
 pub(crate) const RACK: u16 = 0x3a;
 pub(crate) const BUS: u16 = 0x45;
@@ -894,27 +893,15 @@ pub(crate) fn chain_with(
                 extra,
             }) => {
                 flush(&mut combined, &mut filters, &mut out);
-                match extra
-                    .first()
-                    .and_then(|&size| formant::sections([*cutoff, *resonance, size]))
-                {
-                    Some(sections) => {
-                        out.processors.extend(sections);
-                        combined = product([[0.25, 0.], [0., 0.25]], product(gain, combined));
-                        notes.push((
-                            "Formant I vowel model".into(),
-                            "v1 three-band proxy; native coefficients unverified".into(),
-                            sampler_ir::Reason::UnknownLaw,
-                        ));
-                    }
-                    None => {
-                        notes.push((
-                            "Formant I parameters".into(),
-                            "missing Size or outside normalized range".into(),
-                            sampler_ir::Reason::InvalidValue,
-                        ));
-                        modelled = false;
-                    }
+                // Kontakt 8 Filter Reference: Formant I. FUN_1409a80a0 maps
+                // Talk/Sharp to core 0/2; FUN_140aeffe0 maps saved Size to core 1.
+                let knobs = extra.first().map(|&size| [*cutoff, *resonance, size]);
+                if let Some(knobs) = knobs.filter(|v| v.iter().all(|x| x.is_finite() && (0.0..=1.0).contains(x))) {
+                    out.processors.push(sampler_ir::Processor::Formant(knobs));
+                    combined = gain;
+                } else {
+                    notes.push(("Formant I parameters".into(), "missing Size or outside normalized range".into(), sampler_ir::Reason::InvalidValue));
+                    modelled = false;
                 }
             }
             Some(Params::LoFi { values, flag }) => {
@@ -2614,6 +2601,37 @@ mod tests {
             let out = chain(&[slot(0x1e, payload.clone(), 0.5)], scope);
             assert!(out.notes.is_empty(), "{:?}", out.notes);
             assert_eq!(out.processors.len(), 2, "distortion and slot output");
+        }
+    }
+
+    #[test]
+    fn formant_native_parallel_impulse_and_saved_sharp_size_mapping() {
+        use sampler_ir as ir;
+        for (talk, sharp, size, expected) in [
+            (0.0f32, 0.5, 0.5, 0.01663771558f32),
+            (0.0, 0.0, 1.0, 0.0361916923f32),
+        ] {
+            let mut payload = 90i32.to_le_bytes().repeat(2);
+            for value in [talk, sharp, size] { payload.extend(value.to_le_bytes()); }
+            let built = chain(&[slot(0x18, payload, 1.0)], Scope::Voice);
+            assert!(built.notes.is_empty(), "{:?}", built.notes);
+            let mut instrument = ir::Instrument::default();
+            instrument.assets.push(ir::Asset { location: ir::AssetLocation::Path("probe".into()), encoding: ir::Encoding::Wav, root_key: None, loops: Vec::new() });
+            instrument.chains.push(ir::Chain { scope: ir::Scope::Voice, pre_amplitude: built.processors, post_amplitude: vec![] });
+            let mut zone = ir::Zone::new(ir::AssetRef(0));
+            zone.keys = ir::KeyRange { low: 60, high: 60 };
+            zone.chain = Some(ir::ChainRef(0));
+            zone.velocity = ir::VelocityResponse::None;
+            instrument.zones.push(zone);
+            let mut samples = vec![[0.0; 2]; 64]; samples[0] = [1.0, -0.5];
+            let pcm = sampler_core::Pcm::new(48000, samples.into_boxed_slice()).unwrap();
+            let plan = sampler_core::lower::lower(&instrument, 48000, vec![pcm], |_, plan| Ok(plan)).unwrap();
+            let limits = sampler_core::Limits::for_plan(&plan, 4, 4);
+            let mut rt = sampler_core::Runtime::new(plan, limits).unwrap();
+            rt.trigger(sampler_core::Input { protocol: sampler_core::Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: None }, 60, 1.0).unwrap();
+            let mut output = [[0.0; 2]; 8]; rt.render(&mut output).unwrap();
+            assert!((output[0][0] - expected).abs() < 1e-7, "{:?} expected {expected}", output[0]);
+            assert!((output[0][1] + expected * 0.5).abs() < 1e-7);
         }
     }
 
