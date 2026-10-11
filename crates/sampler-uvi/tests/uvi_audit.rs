@@ -183,6 +183,21 @@ fn synthesis_tree_aliases_exist() {
 }
 
 #[test]
+fn part_gain_connections_are_iterable_by_scripts() {
+    // hornScript3 loops `pairs(Program.parent:getParameterConnections("Gain"))` unguarded.
+    let h = host(
+        "n = 0; for _, c in pairs(Program.parent:getParameterConnections('Gain')) do c:setParameter('Bypass', true); n = n + 1 end; result = n",
+        "",
+    );
+    assert_eq!(h.global_text("result"), "2");
+    assert!(
+        !h.findings().iter().any(|f| f.feature.contains("error")),
+        "{:?}",
+        h.findings()
+    );
+}
+
+#[test]
 fn missing_load_data_does_not_call_callback() {
     // Vendor loadData explicitly excludes unreadable files from callback delivery.
     // This owned-file characterization is not an executed native parity receipt.
