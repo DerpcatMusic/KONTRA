@@ -6504,7 +6504,7 @@ fn v1_effects_list_includes_native_zone_chains_once_per_group() {
     );
     assert_eq!(count("LoFi"), 1, "bus effects remain visible");
     assert_eq!(
-        count("Ladder low-pass"),
+        count("Ladder LP4"),
         1,
         "native group inserts live on shared zone voice chains"
     );
@@ -6527,7 +6527,7 @@ fn v1_effects_list_includes_native_zone_chains_once_per_group() {
     let text = labels(&i);
     assert_eq!(
         text.iter()
-            .filter(|s| s.starts_with("Ladder low-pass"))
+            .filter(|s| s.starts_with("Ladder LP4"))
             .count(),
         1,
         "a chain referenced by both zones and group is shown once"
