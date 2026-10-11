@@ -45,6 +45,7 @@ mod native_ui;
 mod picture_decode;
 mod picture_worker;
 mod pictures;
+mod prof;
 mod render_art;
 #[cfg(feature = "shots")]
 pub(crate) mod scan;

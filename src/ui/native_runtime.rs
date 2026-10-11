@@ -387,10 +387,32 @@ struct Bridge {
     meters: HashMap<usize, f64>,
     /// Bumped whenever a value Lua can read changes: the render cache key.
     rev: u64,
-    /// Bumped when a meter level changes; only matters if a render read one.
+    /// Bumped when a meter level changes.
     meter_rev: u64,
     rendering: bool,
-    render_read_meters: bool,
+    /// Dependency ids (`binding * 4 + kind`) read since the Lua side last took
+    /// them: value/properties 0, meter level 1, touch 2.
+    reads: Vec<u32>,
+    /// Dependency ids whose value moved since the last render.
+    changed: BTreeSet<u32>,
+}
+const DEP_VALUE: u32 = 0;
+const DEP_METER: u32 = 1;
+const DEP_TOUCH: u32 = 2;
+impl Bridge {
+    fn read(&mut self, binding: usize, kind: u32) {
+        if self.rendering && binding < self.controls.len() {
+            let id = binding as u32 * 4 + kind;
+            if self.reads.last() != Some(&id) {
+                self.reads.push(id);
+            }
+        }
+    }
+    fn moved(&mut self, binding: usize, kind: u32) {
+        if binding < self.controls.len() {
+            self.changed.insert(binding as u32 * 4 + kind);
+        }
+    }
 }
 #[derive(Clone)]
 struct Parameter {
@@ -458,6 +480,7 @@ impl UserData for Parameter {
             #[cfg(test)]
             trace_parameter(lua, this, "value")?;
             let mut bridge = this.bridge.lock_unpoisoned();
+            bridge.read(this.binding, DEP_VALUE);
             let Some(widget) = bridge.controls.get(this.binding) else {
                 if bridge.unavailable.len() < 128 {
                     bridge.unavailable.insert(this.identifier.clone());
@@ -567,7 +590,8 @@ impl UserData for Parameter {
             |lua, this, (property, index): (i32, Option<usize>)| {
                 #[cfg(test)]
                 trace_parameter(lua, this, "property")?;
-                let bridge = this.bridge.lock_unpoisoned();
+                let mut bridge = this.bridge.lock_unpoisoned();
+                bridge.read(this.binding, DEP_VALUE);
                 let Some(w) = bridge.controls.get(this.binding) else {
                     return Ok(match property {
                         0 | 1 | 14 | 18 => LuaValue::String(lua.create_string("")?),
@@ -612,6 +636,7 @@ impl UserData for Parameter {
             if bridge.controls.get(this.binding).is_some() {
                 bridge.touches.insert((this.binding, index.unwrap_or(0)));
                 bridge.rev += 1;
+                bridge.moved(this.binding, DEP_TOUCH);
             }
             Ok(())
         });
@@ -619,14 +644,13 @@ impl UserData for Parameter {
             let mut bridge = this.bridge.lock_unpoisoned();
             bridge.touches.remove(&(this.binding, index.unwrap_or(0)));
             bridge.rev += 1;
+            bridge.moved(this.binding, DEP_TOUCH);
             Ok(())
         });
         methods.add_method("is_touch_active", |_, this, index: Option<usize>| {
-            Ok(this
-                .bridge
-                .lock_unpoisoned()
-                .touches
-                .contains(&(this.binding, index.unwrap_or(0))))
+            let mut bridge = this.bridge.lock_unpoisoned();
+            bridge.read(this.binding, DEP_TOUCH);
+            Ok(bridge.touches.contains(&(this.binding, index.unwrap_or(0))))
         });
         methods.add_method("is_midi_learn_active", |_, _, _: Option<usize>| Ok(false));
         for name in ["begin_midi_learn", "end_midi_learn"] {
@@ -680,7 +704,6 @@ struct CachedGraph {
     graph: Table,
     rev: u64,
     meter_rev: u64,
-    meters_read: bool,
     calls: u64,
     state_rev: u64,
     generation: u64,
@@ -706,6 +729,8 @@ pub struct Session {
     /// Paths of the last graph's text fields: only a focused one edits, so
     /// only then must lowering run each frame.
     texts: std::cell::RefCell<Vec<String>>,
+    /// The root table of the last fresh generation.
+    last: std::cell::RefCell<Option<Table>>,
     #[cfg(test)]
     event_payloads: std::cell::Cell<usize>,
 }
@@ -765,8 +790,7 @@ impl Session {
         #[cfg(test)]
         let runtime = include_str!("native_runtime/runtime.lua")
             .replace("local props=element.properties()", "_G.__audit_path=path; local props=element.properties()")
-            .replace("current_path,hook_index,current_context=old_path,old_index,old_context\n    return out",
-                "current_path,hook_index,current_context=old_path,old_index,old_context\n    _G.__audit_path=old_path; return out");
+            .replace("    reading=old_reading\n", "    reading=old_reading; _G.__audit_path=old_path\n");
         #[cfg(not(test))]
         let runtime = include_str!("native_runtime/runtime.lua");
         lua.load(runtime).set_name("NativeUI host").exec()?;
@@ -838,7 +862,7 @@ impl Session {
                         Ok(binding
                             .and_then(|binding| {
                                 let mut bridge = bridge.lock_unpoisoned();
-                                bridge.render_read_meters |= bridge.rendering;
+                                bridge.read(binding, DEP_METER);
                                 bridge.meters.get(&binding).copied()
                             })
                             .unwrap_or(0.))
@@ -853,6 +877,19 @@ impl Session {
                 Err::<String, _>(mlua::Error::external(
                     "NativeUI MIDI drag export is unavailable",
                 ))
+            })?,
+        )?;
+        let reads = bridge.clone();
+        lua.globals().set(
+            "__take_reads",
+            lua.create_function(move |lua, ()| {
+                let mut bridge = reads.lock_unpoisoned();
+                if bridge.reads.is_empty() {
+                    return Ok(None);
+                }
+                let ids = lua.create_sequence_from(bridge.reads.iter().copied())?;
+                bridge.reads.clear();
+                Ok(Some(ids))
             })?,
         )?;
         let loaded: Table = lua.globals().get::<Table>("package")?.get("loaded")?;
@@ -884,6 +921,7 @@ impl Session {
             generation: Default::default(),
             live: Default::default(),
             texts: Default::default(),
+            last: Default::default(),
             #[cfg(test)]
             event_payloads: std::cell::Cell::new(0),
         })
@@ -910,6 +948,7 @@ impl Session {
                 && bridge.meters.insert(at, *level) != Some(*level)
             {
                 bridge.meter_rev += 1;
+                bridge.moved(at, DEP_METER);
             }
             let w = &mut bridge.controls[at];
             if typed.is_none()
@@ -931,6 +970,9 @@ impl Session {
                 }
             }
             bridge.rev += u64::from(changed);
+            if changed {
+                bridge.moved(at, DEP_VALUE);
+            }
         }
     }
     pub fn update_meters(&self, mut meter: impl FnMut(&ir::Widget) -> f64) {
@@ -945,6 +987,7 @@ impl Session {
         for (at, level) in values {
             if bridge.meters.insert(at, level) != Some(level) {
                 bridge.meter_rev += 1;
+                bridge.moved(at, DEP_METER);
             }
         }
     }
@@ -952,6 +995,9 @@ impl Session {
     #[cfg(test)]
     pub(super) fn invalidate(&self) {
         *self.cached.borrow_mut() = None;
+        if let Ok(reset) = self.lua.globals().get::<Function>("__reset") {
+            let _ = reset.call::<()>(());
+        }
     }
     /// Render, ignoring the cache: for tests that change globals directly.
     #[cfg(test)]
@@ -979,28 +1025,40 @@ impl Session {
             && c.rev == rev
             && c.calls == calls
             && c.state_rev == state_rev
-            && (!c.meters_read || c.meter_rev == meter_rev)
+            && c.meter_rev == meter_rev
         {
             self.generation.set(c.generation);
             self.live.set(c.live);
             *self.texts.borrow_mut() = c.texts.clone();
             return Ok(c.graph.clone());
         }
-        {
+        let changed = {
             let mut bridge = self.bridge.lock_unpoisoned();
             bridge.rendering = true;
-            bridge.render_read_meters = false;
-        }
+            bridge.reads.clear();
+            let changed: Vec<u32> = std::mem::take(&mut bridge.changed).into_iter().collect();
+            self.lua.create_sequence_from(changed)?
+        };
         let graph: Table = self
             .lua
             .globals()
             .get::<Function>("__render")?
-            .call(self.root.clone())
-            .inspect_err(|_| self.bridge.lock_unpoisoned().rendering = false)?;
+            .call((self.root.clone(), changed))
+            .inspect_err(|_| {
+                self.bridge.lock_unpoisoned().rendering = false;
+                // Half a render leaves the memo inconsistent: start over.
+                if let Ok(reset) = self.lua.globals().get::<Function>("__reset") {
+                    let _ = reset.call::<()>(());
+                }
+            })?;
         let mut bridge = self.bridge.lock_unpoisoned();
         bridge.rendering = false;
-        // A render that itself changed script state (an effect) is not stable.
-        self.generation.set(self.generation.get() + 1);
+        // The same root table means nothing below it changed: the lowered tree
+        // and the event index stay good.
+        if self.last.borrow().as_ref().is_none_or(|last| last.to_pointer() != graph.to_pointer()) {
+            self.generation.set(self.generation.get() + 1);
+            *self.last.borrow_mut() = Some(graph.clone());
+        }
         let live = self.lua.globals().get::<bool>("__live").unwrap_or(true);
         self.live.set(live);
         let texts: Vec<String> = self
@@ -1017,7 +1075,6 @@ impl Session {
             graph: graph.clone(),
             rev,
             meter_rev,
-            meters_read: bridge.render_read_meters,
             calls,
             state_rev,
             generation: self.generation.get(),
@@ -1030,15 +1087,40 @@ impl Session {
     /// lowering must run every frame (text fields and popups have side
     /// effects). Canvas callbacks read meters even when the graph did not, so
     /// the meter revision is part of it.
+    /// Audit: the first difference between the memoized graph and one resolved
+    /// from scratch, or `None` when they agree.
+    #[cfg(any(test, feature = "shots"))]
+    pub(super) fn verify(&self, graph: &Table) -> Option<String> {
+        self.fuel.store(100_000_000, Ordering::Relaxed);
+        self.lua
+            .globals()
+            .get::<Function>("__verify")
+            .ok()?
+            .call::<Option<String>>((self.root.clone(), graph.clone()))
+            .unwrap_or_else(|error| Some(error.to_string()))
+    }
     pub(super) fn generation(&self) -> u64 {
         self.generation.get()
     }
     pub(super) fn text_fields(&self) -> Vec<String> {
         self.texts.borrow().clone()
     }
-    pub(super) fn lowering_key(&self) -> Option<(u64, u64)> {
-        (!self.live.get())
-            .then(|| (self.generation.get(), self.bridge.lock_unpoisoned().meter_rev))
+    pub(super) fn lowering_key(&self) -> Option<(u64, u64, u64, u64)> {
+        // A canvas paints from the live controls, which the graph need not
+        // read: any change to them also ends the lowered tree.
+        (!self.live.get()).then(|| {
+            let bridge = self.bridge.lock_unpoisoned();
+            let state_rev = self.lua.globals().get::<u64>("__rev").unwrap_or(0);
+            (self.generation.get(), bridge.rev, bridge.meter_rev, state_rev)
+        })
+    }
+    /// The handler-bearing nodes of the last graph in event order, or `None`
+    /// when a popover below needs the full walk.
+    pub(super) fn event_nodes(&self) -> Option<Vec<Table>> {
+        match self.lua.globals().get::<LuaValue>("__targets") {
+            Ok(LuaValue::Table(list)) => list.sequence_values::<Table>().collect::<Result<_, _>>().ok(),
+            _ => None,
+        }
     }
     #[cfg(test)]
     pub fn work_remaining(&self) -> usize {
@@ -1142,6 +1224,10 @@ mod tests {
             end
             return __render(root),watched
         "#).eval().unwrap();
+        // The component memo keeps the elements it can reuse; the resolved
+        // graph itself must not, so dropping the memo frees them.
+        lua.globals().get::<Function>("__reset").unwrap().call::<()>(()).unwrap();
+        lua.gc_collect().unwrap();
         lua.gc_collect().unwrap();
         assert!(
             watched.get::<LuaValue>(1).unwrap().is_nil(),
@@ -1178,6 +1264,78 @@ mod tests {
         )
         .exec()
         .unwrap();
+    }
+    #[test]
+    fn component_memo_re_resolves_only_what_read_the_change() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("Resources/native_ui")).unwrap();
+        std::fs::write(
+            dir.path().join("Resources/native_ui/main.nui"),
+            br#"local ui=require("native_ui")
+                local kontakt=require("kontakt")
+                local gain=kontakt.connect_parameter("gain")
+                local meter=kontakt.connect_level_meter("gain")
+                local function count(name) _G[name]=(_G[name] or 0)+1 end
+                local function Param(props)
+                    count("param")
+                    local value=gain:value()
+                    return @ui.Text {text=tostring(value)}
+                end
+                local function Level(props)
+                    count("level")
+                    return @ui.Rectangle {}.frame(width=4+meter:level_value()*10,height=4)
+                end
+                local function Plain(props)
+                    count("plain")
+                    return @ui.Rectangle {}.frame(width=5,height=5)
+                end
+                return function()
+                    count("root")
+                    local get,set=ui.create_state(0)
+                    _G.bump=function() set(get()+1) end
+                    local n=get()
+                    return @ui.VStack {
+                        @Param {}, @Level {}, @Plain {},
+                        @ui.ForEach {data={1,2,3}, content=function(i) return @ui.Text {text=tostring(i+n)} end},
+                    }
+                end"#,
+        ).unwrap();
+        let package = Arc::new(Package::load(&dir.path().join("fixture.nki")).unwrap());
+        let mut widget = ir::Widget::new(
+            "$gain",
+            ir::PageRef(0),
+            Default::default(),
+            ir::Kind::Knob { range: ir::Range { min: 0., max: 100., default: 0., step: Some(1.) }, display: Default::default() },
+        );
+        widget.value = Some(ir::Value::Integer(20));
+        let source = ir::Source::Ksp { slot: 0 };
+        let session = Session::new(package, "main", vec![(source, 0, widget.clone())]).unwrap();
+        let runs = || ["root", "param", "level", "plain"].map(|name| session.lua().globals().get::<u32>(name).unwrap_or(0));
+        let view = |value: i32, level: f64| {
+            let mut widget = widget.clone();
+            widget.value = Some(ir::Value::Integer(value));
+            let face = ir::Interface { source, widgets: vec![widget], ..Default::default() };
+            session.update_view(&face, &Default::default(), &Default::default(), &HashMap::from([(ir::WidgetRef(0), level)]));
+        };
+        // How many times each body ran for this render.
+        let render = |expected: [u32; 4], why: &str| {
+            let before = runs();
+            let graph = session.render().unwrap();
+            let after = runs();
+            assert_eq!(std::array::from_fn(|n| after[n] - before[n]), expected, "{why}");
+            // A resolve from scratch must produce the same graph.
+            assert_eq!(session.verify(&graph), None, "{why}");
+        };
+        view(20, 0.);
+        render([1, 1, 1, 1], "first render");
+        view(20, 0.5);
+        render([0, 0, 1, 0], "a meter level moves: only the component that read it");
+        view(60, 0.5);
+        render([0, 1, 0, 0], "a control value moves: only the component that read it");
+        view(60, 0.5);
+        render([0, 0, 0, 0], "nothing moved");
+        session.lua().globals().get::<Function>("bump").unwrap().call::<()>(()).unwrap();
+        render([1, 1, 1, 1], "a state write re-runs the component that read it and what it built");
     }
     #[test]
     fn native_readback_reuses_unchanged_widget_storage_and_keeps_source_semantics() {
@@ -1296,31 +1454,57 @@ mod tests {
         std::fs::write(
             dir.path().join("Resources/native_ui/main.nui"),
             br#"local ui=require("native_ui")
+                local kontakt=require("kontakt")
+                local gain=kontakt.connect_parameter("gain")
+                local meter=kontakt.connect_level_meter("gain")
                 return function()
                     local get,set=ui.create_state(0)
                     _G.bump=function() set(get()+1) end
                     _G.renders=(_G.renders or 0)+1
-                    return @ui.Rectangle {}.frame(width=8,height=8)
+                    local text=get()..":"..gain:value()..":"..meter:level_value()
+                    return @ui.Text {text=text}
                 end"#,
         ).unwrap();
         let package = Arc::new(Package::load(&dir.path().join("fixture.nki")).unwrap());
-        let session = Session::new(package, "main", vec![]).unwrap();
+        let mut widget = ir::Widget::new(
+            "$gain",
+            ir::PageRef(0),
+            Default::default(),
+            ir::Kind::Knob { range: ir::Range { min: 0., max: 100., default: 0., step: Some(1.) }, display: Default::default() },
+        );
+        widget.value = Some(ir::Value::Integer(20));
+        let source = ir::Source::Ksp { slot: 0 };
+        let session = Session::new(package, "main", vec![(source, 0, widget.clone())]).unwrap();
         let renders = || session.lua().globals().get::<u32>("renders").unwrap();
-        session.render().unwrap();
+        let view = |value: i32, meter: f64| {
+            let mut widget = widget.clone();
+            widget.value = Some(ir::Value::Integer(value));
+            let face = ir::Interface { source, widgets: vec![widget], ..Default::default() };
+            session.update_view(&face, &Default::default(), &Default::default(), &HashMap::from([(ir::WidgetRef(0), meter)]));
+        };
+        view(20, 0.);
+        let first = session.render().unwrap();
         session.render().unwrap();
         assert_eq!(renders(), 1, "nothing changed: the Lua tree is reused");
         session.lua().globals().get::<Function>("bump").unwrap().call::<()>(()).unwrap();
         session.render().unwrap();
-        assert_eq!(renders(), 2, "a state write re-resolves");
+        assert_eq!(renders(), 2, "a state write re-resolves what read it");
         let noop: Function = session.lua().load("return function() end").eval().unwrap();
         session.call(noop, ()).unwrap();
+        let same = session.render().unwrap();
+        assert_eq!(renders(), 2, "a callback that moved nothing tracked leaves the tree alone");
+        assert!(same.equals(&session.render().unwrap()).unwrap());
+        view(33, 0.);
+        let moved = session.render().unwrap();
+        assert_eq!(renders(), 3, "a changed control value re-resolves what read it");
+        assert!(!first.equals(&moved).unwrap());
+        view(33, 0.5);
         session.render().unwrap();
-        assert_eq!(renders(), 3, "a callback may have changed anything");
-        session.bridge.lock_unpoisoned().rev += 1;
+        assert_eq!(renders(), 4, "a meter level re-resolves what read it");
+        view(33, 0.5);
         session.render().unwrap();
-        assert_eq!(renders(), 4, "a changed control value re-resolves");
+        assert_eq!(renders(), 4, "the same meter level changes nothing");
     }
-
     #[test]
     fn native_profiler_counts_connected_script_and_deferred_paint_calls() {
         let dir = tempfile::tempdir().unwrap();
