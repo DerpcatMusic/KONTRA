@@ -773,6 +773,7 @@ impl Shared {
             return false;
         };
         let Some(slot) = self.files.convolver_slot(node) else {
+            self.find("lua loadImpulse on an insert without a bus convolution", "");
             return false;
         };
         let kind = self.kinds.borrow().get(id).cloned().unwrap_or_default();
@@ -1401,9 +1402,7 @@ impl ScriptHost {
                 let loaded = id
                     .zip(path)
                     .is_some_and(|(id, path)| s.rebuild_impulse(id, Some(&path)));
-                if !loaded {
-                    s.find("lua loadImpulse could not load the impulse", "");
-                }
+                // A response the bank cannot supply fails the task, as in UVI.
                 if let Some(Value::Function(callback)) =
                     args.iter().find(|v| matches!(v, Value::Function(_)))
                 {
