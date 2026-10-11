@@ -111,6 +111,7 @@ resolve=function(element,path,context,depth)
                 resolved_props[key]=value
             end
         end
+        if element.component=='TextInput' then _G.__live=true end
         out={kind=element.component,props=resolved_props,children={},modifiers={},path=path}
         for _,key in ipairs({'paint','on_accept','on_change'}) do
             if type(props[key])=='function' then resolved_props[key]=bind(props[key],path,child_context) end
@@ -138,6 +139,7 @@ resolve=function(element,path,context,depth)
                 end
             elseif m.name=='popover' then
                 if m.value.visible then
+                    _G.__live=true
                     local value=table.shallow_copy(m.value)
                     value.content=resolve(value.content,path..'/popover/'..index,child_context,depth+1)
                     out.modifiers[#out.modifiers+1]={name=m.name,value=value}
@@ -152,7 +154,7 @@ resolve=function(element,path,context,depth)
     current_path,hook_index,current_context=old_path,old_index,old_context
     return out
 end
-_G.__render=function(root) _G.__native_nodes=0; return resolve(node(root,function() return {} end),'root',{enabled=true},0) end
+_G.__render=function(root) _G.__native_nodes=0; _G.__live=false; return resolve(node(root,function() return {} end),'root',{enabled=true},0) end
 package.loaded.native_ui=ui
 package.loaded.native_ui_util={clamp=function(x,a,b) return math.max(a,math.min(b,x)) end,
     partial=function(fn,...) local args=table.pack(...); return function(...) local values=table.pack(...); local all={}; for i=1,args.n do all[#all+1]=args[i] end; for i=1,values.n do all[#all+1]=values[i] end; return fn(table.unpack(all)) end end}

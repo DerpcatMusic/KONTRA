@@ -24,7 +24,8 @@ struct Local {
     lifetime: std::sync::Weak<AtomicBool>,
     session: Session,
     graph: Option<Table>,
-    hovered: HashSet<String>,
+    /// Hovered nodes and the pointer position last reported to each.
+    hovered: HashMap<String, Point>,
     drafts: HashMap<String, String>,
 }
 thread_local! {static LOCAL:std::cell::RefCell<HashMap<u64,Local>>=std::cell::RefCell::new(HashMap::new());}
@@ -400,7 +401,7 @@ impl State {
                         lifetime: Arc::downgrade(&self.canceled),
                         session,
                         graph: None,
-                        hovered: HashSet::new(),
+                        hovered: HashMap::new(),
                         drafts: HashMap::new(),
                     },
                 );
@@ -429,16 +430,19 @@ impl State {
             let _submission = self.activity.as_ref().map(|a| a.span(Phase::UiAuthoredLayoutSubmission));
             let authored = authored_size(&graph);
             self.size = authored;
-            let el = draw_live(
-                ui,
-                &graph,
-                package,
-                session,
-                slot,
-                scale,
-                authored,
-                &mut local.drafts,
-            )?;
+            // While the Lua graph is the one lowered last frame, MUI keeps the
+            // lowered, laid-out subtree; a hover or press inside it rebuilds.
+            let key = session.lowering_key().map(|key| (key, scale.to_bits(), super::pictures::revision(), authored.width.to_bits(), authored.height.to_bits()));
+            let mut error = None;
+            let build = |ui: &mut Ui| match draw_live(ui, &graph, package, session, slot, scale, authored, &mut local.drafts) {
+                Ok(el) => el,
+                Err(e) => { error = Some(e); stack([]) }
+            };
+            let el = match key {
+                Some(key) => ui.memo(format!("nui-{slot}-graph"), key, build),
+                None => { let mut build = build; build(ui) }
+            };
+            if let Some(error) = error { return Err(error); }
             local.graph = Some(graph);
             #[cfg(all(test, feature = "shots"))]
             GATE_PAINTED.with(|painted| {
@@ -1760,14 +1764,18 @@ fn events(
     session: &Session,
     slot: usize,
     s: f64,
-    hovered: &mut HashSet<String>,
+    hovered: &mut HashMap<String, Point>,
 ) -> anyhow::Result<()> {
     let path = string(node, "path");
     let id = format!("nui-{slot}-{path}");
     let r = ui.get(id.as_str());
-    let was = hovered.contains(&path);
+    let was = hovered.contains_key(&path);
+    // A hover handler hears "update" when the pointer moved over the node,
+    // not on every frame it rests there.
+    let mut moved = false;
     if r.hovered {
-        hovered.insert(path.clone());
+        let at = ui.local(id.as_str()).unwrap_or(Point::ZERO);
+        moved = hovered.insert(path.clone(), at) != Some(at);
     } else {
         hovered.remove(&path);
     }
@@ -1797,7 +1805,7 @@ fn events(
             "on_hover_gesture" => [
                 (!was && r.hovered).then_some("enter"),
                 (was && !r.hovered).then_some("exit"),
-                r.hovered.then_some("update"),
+                (r.hovered && moved).then_some("update"),
             ]
             .into_iter()
             .flatten()
@@ -1969,7 +1977,7 @@ mod tests {
         let (package, mut session) = primitive_fixture("local ui=require('native_ui'); return function() return @ui.Text{text='phase'} end");
         let activity = Arc::new(Activity::new(true));
         session.set_activity(Some(activity.clone()));
-        let graph = session.render().unwrap();
+        let graph = session.fresh();
         let (mut ui, _) = primitive_uis();
         let mut retention = PrimitiveRetention::default();
         primitive_tick(&mut ui, &graph, &package, &session, 1., Some(&mut retention), 0);
@@ -1983,7 +1991,7 @@ mod tests {
         let (package, mut session) = primitive_fixture("local ui=require('native_ui'); return function() return @ui.Text{text='live'} end");
         let activity = Arc::new(Activity::new(true));
         session.set_activity(Some(activity.clone()));
-        let graph = session.render().unwrap();
+        let graph = session.fresh();
         let (mut live, mut eager) = primitive_uis();
         for shell in 0..2 {
             let authored = authored_size(&graph);
@@ -2082,6 +2090,15 @@ mod tests {
             graph_work: None,
         }
     }
+    /// These oracles run impure scripts and compare render counts with an
+    /// eager session: make the state's own session render each frame.
+    fn stale(state: &State) {
+        LOCAL.with(|locals| {
+            if let Some(local) = locals.borrow().get(&state.id) {
+                local.session.invalidate();
+            }
+        });
+    }
     fn primitive_uis() -> (Ui, Ui) {
         // Same production theme and same font identity on both oracle sides.
         let font = Font::new(NOTO_SANS).unwrap();
@@ -2113,7 +2130,7 @@ mod tests {
         let mut state = primitive_state(package.clone());
         let (mut retained, mut eager) = primitive_uis();
         for scale in [1., 1., 1.5] {
-            let graph = eager_session.render().unwrap();
+            let graph = eager_session.fresh();
             let authored = authored_size(&graph);
             assert_eq!(authored, Size::new(25., 32.));
             // Original order: one authored read before any primitive lowering.
@@ -2122,6 +2139,7 @@ mod tests {
             let el = PrimitivePlacement::Root(authored).apply(&graph, el, scale).unwrap();
             eager.frame(stack([el, text("0").at(48., 48.)]).size(64., 64.),
                 Some(Size::new(64., 64.)), Input::default(), 1. / 60.).unwrap();
+            stale(&state);
             let el = state.view(&mut retained, 0, scale, &ir::Interface::default(),
                 &HashMap::new(), &super::super::ir_view::InputState::default());
             assert!(!state.failed, "{:?}", state.failure);
@@ -2176,7 +2194,7 @@ mod tests {
                 Some(Size::new(64., 64.)), input, 1. / 60.).unwrap();
         };
         for step in 1..=6 {
-            let graph = eager_session.render().unwrap();
+            let graph = eager_session.fresh();
             let field = tables(&graph, "children").unwrap()[0].clone();
             let field_id = format!("nui-{}-{}-text", state.id, string(&field, "path"));
             if step == 3 {
@@ -2194,6 +2212,7 @@ mod tests {
                 Style::default(), &mut drafts).unwrap();
             let el = PrimitivePlacement::Root(authored).apply(&graph, el, 1.).unwrap();
             frame(&mut eager, el, input.clone());
+            stale(&state);
             let el = state.view(&mut retained, 0, 1., &ir::Interface::default(),
                 &HashMap::new(), &super::super::ir_view::InputState::default());
             assert!(!state.failed, "{:?}", state.failure);
@@ -2246,6 +2265,7 @@ mod tests {
                 let globals = locals[&state.id].session.lua().globals();
                 globals.set("caption", caption).unwrap();
                 globals.set("absent", absent).unwrap();
+                locals[&state.id].session.invalidate();
             });
             tick(&mut state, &mut ui);
             LOCAL.with(|locals| {
@@ -2306,7 +2326,7 @@ mod tests {
                 let mut cache = PrimitiveRetention::default();
                 let scopes = if live { count.min(NATIVE_MEMO_SCOPE_LIMIT) } else { 1 };
                 for shell in 0..2 {
-                    let graph = session.render().unwrap();
+                    let graph = session.fresh();
                     let calls = || globals.get::<usize>("canvas_calls").unwrap_or(0);
                     let context = format!("count={count}, live={live}, shell/attempt={shell}, limit={}", limits.nodes);
                     let before = calls();
@@ -2356,7 +2376,7 @@ mod tests {
                 session.lua().load(update).exec().unwrap();
                 for shell in 0..3 {
                     let context = format!("isolated {change}, update={update}, index={index}, warm={shell}");
-                    let graph = session.render().unwrap();
+                    let graph = session.fresh();
                     primitive_tick(&mut eager, &graph, &package, &session, 1., None, 0);
                     primitive_tick(&mut retained, &graph, &package, &session, 1., Some(&mut cache), 0);
                     primitive_oracle_at(&retained, &eager, &context);
@@ -2396,7 +2416,7 @@ mod tests {
             let before = cache.lowered;
             for warm in 0..3 {
                 let context = format!("axis settling: step={step}, update={update}, warm={warm}");
-                let graph = session.render().unwrap();
+                let graph = session.fresh();
                 let rectangle = string(&tables(&graph, "children").unwrap()[1], "path");
                 let tree = primitive_tree(&mut eager, &graph, &package, &session, 1., None, 0);
                 primitive_frame(&mut eager, tree).unwrap();
@@ -2428,7 +2448,7 @@ mod tests {
         let (mut retained, mut eager) = primitive_uis();
         let mut cache = PrimitiveRetention::default();
         for warm in 0..4 {
-            let graph = session.render().unwrap();
+            let graph = session.fresh();
             let tree = primitive_tree(&mut eager, &graph, &package, &session, 1., None, 0);
             primitive_frame(&mut eager, tree).unwrap();
             let tree = primitive_tree(&mut retained, &graph, &package, &session, 1., Some(&mut cache), 0);
@@ -2463,12 +2483,12 @@ mod tests {
         let (mut retained, mut eager) = primitive_uis();
         let mut cache = PrimitiveRetention::default();
         for warm in 0..2 {
-            let graph = session.render().unwrap();
+            let graph = session.fresh();
             primitive_tick(&mut eager, &graph, &package, &session, 1., None, 0);
             primitive_tick(&mut retained, &graph, &package, &session, 1., Some(&mut cache), 0);
             primitive_oracle_at(&retained, &eager, &format!("before partial scene error, warm={warm}"));
         }
-        let graph = session.render().unwrap();
+        let graph = session.fresh();
         let rectangle = string(&tables(&graph, "children").unwrap()[1], "path");
         let rectangle_revision = cache.keys[&rectangle].1;
         let previous = retained.scene_snapshot().unwrap();
@@ -2477,7 +2497,7 @@ mod tests {
         let old_pixels = super::super::tests::pixels(&retained, 64, 64);
         let calls = || session.lua().globals().get::<usize>("canvas_calls").unwrap();
         session.lua().load("font_bold=true;bad_path=true").exec().unwrap();
-        let graph = session.render().unwrap();
+        let graph = session.fresh();
         let before = calls();
         for (ui, retention) in [(&mut eager, None), (&mut retained, Some(&mut cache))] {
             let tree = primitive_tree(ui, &graph, &package, &session, 1., retention, 0);
@@ -2492,7 +2512,7 @@ mod tests {
         assert_eq!(cache.lowered, 3, "only the changed Text lowers on failed B");
         session.lua().load("font_bold=false;bad_path=false").exec().unwrap();
         for warm in 0..3 {
-            let graph = session.render().unwrap();
+            let graph = session.fresh();
             let before = calls();
             let tree = primitive_tree(&mut eager, &graph, &package, &session, 1., None, 0);
             primitive_frame(&mut eager, tree).unwrap();
@@ -2516,7 +2536,7 @@ mod tests {
         // Recovery may keep the failed B revision too. Its retained tree did
         // not have committed B paint: it must not copy successful A's span.
         session.lua().load("font_bold=true;bad_path=true").exec().unwrap();
-        let graph = session.render().unwrap();
+        let graph = session.fresh();
         for (ui, retention) in [(&mut eager, None), (&mut retained, Some(&mut cache))] {
             let tree = primitive_tree(ui, &graph, &package, &session, 1., retention, 0);
             assert!(matches!(primitive_frame(ui, tree), Err(moose::mui::mui::scene::SceneError::Geometry(
@@ -2525,7 +2545,7 @@ mod tests {
         assert_eq!(cache.lowered, 6);
         session.lua().load("bad_path=false").exec().unwrap();
         for warm in 0..3 {
-            let graph = session.render().unwrap();
+            let graph = session.fresh();
             primitive_tick(&mut eager, &graph, &package, &session, 1., None, 0);
             let tree = primitive_tree(&mut retained, &graph, &package, &session, 1., Some(&mut cache), 0);
             assert!(!primitive_frame(&mut retained, tree).unwrap(), "unchanged failed B is already settled in the coordinate cache");
@@ -2562,7 +2582,7 @@ mod tests {
             }
             for warm in 0..2 {
                 let context = format!("implicit font/device grid: step={step}, scale={scale:?}, warm={warm}");
-                let graph = session.render().unwrap();
+                let graph = session.fresh();
                 let tree = primitive_tree(&mut eager, &graph, &package, &session, 1., None, 0);
                 primitive_frame(&mut eager, stack([tree]).w(64.).h(64.)).unwrap();
                 let tree = retained.memo("native-environment-outer", 0, |ui| {
@@ -2615,7 +2635,7 @@ mod tests {
             session.lua().globals().set("font_name", name).unwrap();
             let font = package.font(name, false).unwrap();
             for shell in 0..2 {
-                let graph = session.render().unwrap();
+                let graph = session.fresh();
                 primitive_tick(&mut eager, &graph, package, session, 1., None, shell);
                 primitive_tick(&mut retained, &graph, package, session, 1., Some(&mut cache), shell);
                 primitive_oracle(&retained, &eager);
@@ -2649,7 +2669,7 @@ mod tests {
         let (mut retained, mut eager) = primitive_uis();
         let mut cache = PrimitiveRetention::default();
         for shell in 0..4 {
-            let graph = session.render().unwrap();
+            let graph = session.fresh();
             // Resolve the unmodified eager graph before the retained prepass
             // annotates its derived flex flags: this is an independent oracle.
             primitive_tick(&mut eager, &graph, &package, &session, 1., None, shell);
@@ -2692,7 +2712,7 @@ mod tests {
             ("canvas_offset=200", 1.5, false), ("canvas_offset=0", 1.5, true),
         ] {
             session.lua().load(change).exec().unwrap();
-            let graph = session.render().unwrap();
+            let graph = session.fresh();
             let calls = || globals.get::<usize>("canvas_calls").unwrap_or(0);
             let before = calls();
             primitive_tick(&mut eager, &graph, &package, &session, scale, None, 0);
@@ -2729,7 +2749,7 @@ mod tests {
         let mut ui = super::super::theme::ui();
         let mut cache = PrimitiveRetention::default();
         for token in 1..=3 {
-            let graph = session.render().unwrap();
+            let graph = session.fresh();
             primitive_tick(&mut ui, &graph, &package, &session, 1., Some(&mut cache), token);
             let gesture = tables(&graph, "modifiers").unwrap().into_iter()
                 .find(|modifier| string(modifier, "name") == "on_tap_gesture").unwrap();
@@ -2755,7 +2775,7 @@ mod tests {
             if let Some(rgba) = rgba {
                 package.images.presentation_complete("photo.png", Arc::new(Image::rgba(1, 1, rgba.to_vec()).unwrap()));
             }
-            let graph = session.render().unwrap();
+            let graph = session.fresh();
             primitive_tick(&mut eager, &graph, &package, &session, 1., None, 0);
             primitive_tick(&mut retained, &graph, &package, &session, 1., Some(&mut cache), 0);
             primitive_oracle(&retained, &eager);
@@ -2771,7 +2791,7 @@ mod tests {
             local ui=require('native_ui')
             return function() return @ui.Text {text='A'} end
         "#);
-        let graph = session.render().unwrap();
+        let graph = session.fresh();
         let props: Table = graph.get("props").unwrap();
         props.set("opaque", session.lua().create_function(|_, ()| Ok(())).unwrap()).unwrap();
         let plan = PrimitivePlan::analyze(&graph).unwrap().unwrap();
@@ -2810,7 +2830,7 @@ mod tests {
             end
         "#);
         for token in 1..=3 {
-            let graph = editing.render().unwrap();
+            let graph = editing.fresh();
             assert!(PrimitivePlan::analyze(&graph).unwrap().is_none(),
                 "editing callbacks may mutate shared graph data during lowering");
             let field = tables(&graph, "children").unwrap()[1].clone();
@@ -2839,7 +2859,7 @@ mod tests {
         let (mut retained, mut eager) = primitive_uis();
         let mut cache = PrimitiveRetention::default();
         for token in 1..=3 {
-            let graph = session.render().unwrap();
+            let graph = session.fresh();
             primitive_tick(&mut eager, &graph, &package, &session, 1., None, token);
             primitive_tick(&mut retained, &graph, &package, &session, 1., Some(&mut cache), token);
             primitive_oracle(&retained, &eager);
@@ -3035,7 +3055,7 @@ mod tests {
             return root
         "#).eval().unwrap();
         let mut ui = super::super::theme::ui();
-        let mut hovered = HashSet::new();
+        let mut hovered = HashMap::new();
         events(&mut ui, &graph, &session, 0, 1., &mut hovered).unwrap();
         let before = session.event_payload_count();
         for _ in 0..32 {
@@ -3095,7 +3115,7 @@ mod tests {
         )
         .unwrap();
         assert!(ui.get("nui-0-root").hovered);
-        events(&mut ui, &graph, &session, 0, 1., &mut HashSet::new()).unwrap();
+        events(&mut ui, &graph, &session, 0, 1., &mut HashMap::new()).unwrap();
         assert_eq!(session.event_payload_count(), 1);
         assert_eq!(session.lua().globals().get::<i32>("calls").unwrap(), 3);
     }
@@ -3268,11 +3288,11 @@ mod tests {
                     .unwrap(),
             )
             .unwrap();
-        let graph = session.render().unwrap();
+        let graph = session.fresh();
         let work = session.graph_work();
         pause.store(true, Ordering::Relaxed);
         let delayed = session
-            .render()
+            .fresh_result()
             .expect("scheduler delay must not invalidate bounded graph work");
         assert_eq!(
             session.graph_work(),
@@ -3307,7 +3327,7 @@ mod tests {
         .unwrap();
         let package = Arc::new(Package::load(&dir.join("fixture.nki")).unwrap());
         let session = Session::new(package.clone(), "main", vec![]).unwrap();
-        let graph = session.render().unwrap();
+        let graph = session.fresh();
         let mut ui = super::super::theme::ui();
         let el = draw(
             &mut ui,
@@ -3601,7 +3621,7 @@ mod tests {
             500_000 - session.work_remaining()
         );
         for frame in 0..8 {
-            let _ = session.render().unwrap();
+            let _ = session.fresh();
             let (nodes, checkpoints) = session.graph_work();
             assert!(nodes > 0 && nodes <= 16384 && checkpoints < 1_000_000);
             println!(
@@ -3610,16 +3630,22 @@ mod tests {
         }
     }
 
-    /// Per-frame cost of the authored interface: Lua graph render, lowering
-    /// to El, MUI layout and software paint. `KONTRA_AUDIT_WIDGET_PATCH`
-    /// names the library; times are medians over 40 steady frames.
+    /// Per-frame cost of the authored interface through the real `State::view`
+    /// (events, Lua graph, lowering) then MUI layout and software paint.
+    /// `KONTRA_AUDIT_WIDGET_PATCH` names the library; `KONTRA_BENCH` picks
+    /// steady (default), drag, meter or hover. Medians over warm frames, in ms.
     #[cfg(feature = "shots")]
     #[test]
     #[ignore = "requires locally owned NativeUI program; timings only"]
     fn native_frame_cost() {
-        use std::time::Instant;
+        use std::time::{Duration, Instant};
         let path = std::path::PathBuf::from(std::env::var_os("KONTRA_AUDIT_WIDGET_PATCH").unwrap());
-        let mut source = sampler_kontakt::read(&path).unwrap().instrument;
+        let scenario = std::env::var("KONTRA_BENCH").unwrap_or_else(|_| "steady".into());
+        let mut source = if path.extension().is_some_and(|e| e == "nkm") {
+            sampler_kontakt::read_program(&path, 0).unwrap().instrument
+        } else {
+            sampler_kontakt::read(&path).unwrap().instrument
+        };
         source.retain_zones(|_| false);
         source.assets.clear();
         let loaded = sampler_kontakt::prepare(
@@ -3628,50 +3654,63 @@ mod tests {
             &sampler_kontakt::Options { library: Some(path.clone()), ..Default::default() },
         )
         .unwrap();
-        let entry = loaded.interfaces.iter().find_map(|f| f.native_ui.as_ref()).unwrap().entry.clone();
+        let face = loaded.interfaces.iter().find(|f| f.native_ui.is_some()).unwrap().clone();
+        let entry = face.native_ui.as_ref().unwrap().entry.clone();
         let controls = loaded
             .interfaces
             .iter()
             .flat_map(|f| f.widgets.iter().enumerate().map(move |(n, w)| (f.source, n, w.clone())))
             .collect();
-        let package = Arc::new(Package::load(&path).unwrap());
-        let session = Session::new(package.clone(), &entry, controls).unwrap();
+        let mut state = State::new(&path, &entry, controls);
         let mut ui = super::super::theme::ui();
-        let mut drafts = HashMap::new();
-        session.reuse.set(std::env::var_os("KONTRA_NO_RENDER_REUSE").is_none());
-        let mut hovered = HashSet::new();
-        let mut previous: Option<Table> = None;
-        let (mut render, mut lower, mut layout, mut paint, mut walk) = (vec![], vec![], vec![], vec![], vec![]);
-        for n in 0..48 {
-            let t = Instant::now();
-            if let Some(graph) = &previous {
-                events(&mut ui, graph, &session, 0, 1., &mut hovered).unwrap();
+        let mut values: super::super::ir_view::Values = HashMap::new();
+        let mut input = super::super::ir_view::InputState::default();
+        let knob = face.widgets.iter().find_map(|w| match (&w.kind, w.binding.clone()) {
+            (ir::Kind::Knob { range, .. }, ir::Binding::Control(c)) => Some((c, *range)),
+            _ => None,
+        });
+        let meters: Vec<usize> = face.widgets.iter().enumerate().filter(|(_, w)| w.meter.is_some() || matches!(w.kind, ir::Kind::LevelMeter { .. })).map(|(n, _)| n).collect();
+        println!("NATIVE_SCENARIO {scenario} knob={} meters={}", knob.is_some(), meters.len());
+        let (mut view, mut layout, mut paint) = (vec![], vec![], vec![]);
+        let start = Instant::now();
+        for n in 0..400 {
+            if let Some((c, range)) = knob && scenario == "drag" {
+                values.insert(c, range.min + (range.max - range.min) * ((n % 17) as f64 / 17.));
             }
-            let w = t.elapsed();
+            if scenario == "meter" {
+                for (k, w) in meters.iter().enumerate() {
+                    input.meters.insert(ir::WidgetRef(*w), ((n + k) % 10) as f64 / 10.);
+                }
+            }
+            let pointer = if scenario == "hover" {
+                PointerInput { pos: Some(Point::new(100. + (n % 40) as f64 * 17., 150. + (n % 7) as f64 * 3.)), ..Default::default() }
+            } else {
+                PointerInput::default()
+            };
             let t = Instant::now();
-            let graph = session.render().unwrap();
-            let r = t.elapsed();
+            let el = state.view(&mut ui, 0, 1., &face, &values, &input);
+            let v = t.elapsed();
+            let size = state.authored();
             let t = Instant::now();
-            let authored = authored_size(&graph);
-            let el = draw_live(&mut ui, &graph, &package, &session, 0, 1., authored, &mut drafts).unwrap();
-            let d = t.elapsed();
-            let t = Instant::now();
-            ui.frame(el, Some(authored), Input::default(), 1. / 60.).unwrap();
+            ui.frame(el, Some(size), Input { pointer, ..Default::default() }, 1. / 60.).unwrap();
             let l = t.elapsed();
             let t = Instant::now();
-            let _ = super::super::tests::pixels(&ui, authored.width as u16, authored.height as u16);
+            let _ = super::super::tests::pixels(&ui, size.width as u16, size.height as u16);
             let p = t.elapsed();
-            previous = Some(graph);
-            if n >= 8 {
-                for (v, x) in [(&mut render, r), (&mut lower, d), (&mut layout, l), (&mut paint, p), (&mut walk, w)] {
-                    v.push(x.as_secs_f64() * 1000.);
-                }
+            assert!(!state.failed, "{:?}", state.failure);
+            if state.pending() > 0 || n < 20 {
+                assert!(start.elapsed() < Duration::from_secs(90));
+                std::thread::sleep(Duration::from_millis(20));
+                continue;
+            }
+            for (vec, x) in [(&mut view, v), (&mut layout, l), (&mut paint, p)] {
+                vec.push(x.as_secs_f64() * 1000.);
             }
         }
         let med = |v: &mut Vec<f64>| { v.sort_by(f64::total_cmp); v[v.len() / 2] };
         println!(
-            "NATIVE_FRAME_MS events_walk={:.2} lua_render={:.2} lower={:.2} layout={:.2} sw_paint={:.2}",
-            med(&mut walk), med(&mut render), med(&mut lower), med(&mut layout), med(&mut paint)
+            "NATIVE_FRAME_MS scenario={scenario} frames={} view={:.2} layout={:.2} sw_paint={:.2}",
+            view.len(), med(&mut view), med(&mut layout), med(&mut paint)
         );
     }
 
@@ -3721,7 +3760,7 @@ mod tests {
         let package = Arc::new(Package::load(&path).unwrap());
         let watermark = stack_watermark();
         let session = Session::new(package.clone(), &entry, controls).unwrap();
-        let graph = session.render().unwrap();
+        let graph = session.fresh();
         let mut ui = super::super::theme::ui();
         let mut drafts = HashMap::new();
         for _ in 0..4 {
@@ -3795,7 +3834,7 @@ mod tests {
         assert_eq!(saved.len(), 6);
         let package = Arc::new(Package::load(&path).unwrap());
         let session = Session::new(package.clone(), &entry, controls).unwrap();
-        let graph = session.render().unwrap();
+        let graph = session.fresh();
         fn font_usage(node: &Table, package: &Package, counts: &mut [usize; 3]) {
             for modifier in tables(node, "modifiers").unwrap() {
                 let kind = string(&modifier, "name");
