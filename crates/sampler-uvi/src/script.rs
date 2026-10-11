@@ -524,6 +524,7 @@ struct Shared {
     scan: RefCell<ScanFaults>,
     initializing: Cell<bool>,
     faults: RefCell<FaultCounts>,
+    inspection: RefCell<Option<crate::parity::Inspection>>,
     finding_revision: Cell<u64>,
     #[cfg(feature = "scan")]
     key_declarations: RefCell<BTreeMap<u8, u8>>,
@@ -651,6 +652,9 @@ impl Shared {
         self.finding_revision
             .set(self.finding_revision.get().saturating_add(1));
         if matches!(feature, "lua error" | "lua UI callback") {
+            if let Some(inspection) = self.inspection.borrow_mut().as_mut() {
+                inspection.fault(value);
+            }
             let category = if value.contains("budget exceeded") {
                 FaultCategory::Budget
             } else if feature == "lua UI callback" {
@@ -891,7 +895,7 @@ fn script_relative(lua: &Lua, path: String) -> String {
 }
 
 /// The catalog fields that shape a bus convolver's impulse response.
-const IMPULSE_FIELDS: [&str; 9] = [
+pub(crate) const IMPULSE_FIELDS: [&str; 9] = [
     "Dry",
     "Wet",
     "Time",
@@ -1179,6 +1183,27 @@ impl ScriptHost {
         config: Config,
         state: Option<&UiState>,
     ) -> Result<Self, String> {
+        Self::create(xml, files, config, state, false)
+    }
+
+    /// Inspector-only host: real Luau statement-line coverage, including init.
+    /// Ordinary constructors compile without coverage instructions. Inspection
+    /// lasts for this host's lifetime; recreate normally to turn it off.
+    pub fn new_inspected(
+        xml: &str,
+        files: impl Files + 'static,
+        config: Config,
+    ) -> Result<Self, String> {
+        Self::create(xml, files, config, None, true)
+    }
+
+    fn create(
+        xml: &str,
+        files: impl Files + 'static,
+        config: Config,
+        state: Option<&UiState>,
+        inspect: bool,
+    ) -> Result<Self, String> {
         let options = roxmltree::ParsingOptions {
             nodes_limit: 4_000_000,
             ..Default::default()
@@ -1217,6 +1242,7 @@ impl ScriptHost {
             scan: RefCell::new(ScanFaults::default()),
             initializing: Cell::new(true),
             faults: RefCell::new(FaultCounts::default()),
+            inspection: RefCell::new(inspect.then(crate::parity::Inspection::default)),
             finding_revision: Cell::new(0),
             #[cfg(feature = "scan")]
             key_declarations: RefCell::new(BTreeMap::new()),
@@ -1900,13 +1926,26 @@ impl ScriptHost {
                     let _span = Span::new("uvi_lua_module_names");
                     s.note_assigned(&source.to_string_lossy());
                 }
-                let name = s.files.script_path(&name).unwrap_or(name);
-                match lua
-                    .load(source.as_bytes().as_ref())
-                    .set_name(name)
-                    .into_function()
-                {
-                    Ok(f) => Ok((Some(f), None)),
+                let id = format!("uvi:module:{name}");
+                let chunk_name = s.files.script_path(&name).unwrap_or(name);
+                let bytes = source.as_bytes();
+                let mut chunk = lua.load(bytes.as_ref()).set_name(&chunk_name);
+                if s.inspection.borrow().is_some() {
+                    chunk =
+                        chunk.set_compiler(mlua::chunk::Compiler::default().set_coverage_level(1));
+                }
+                match chunk.into_function() {
+                    Ok(f) => {
+                        if let Some(inspection) = s.inspection.borrow_mut().as_mut() {
+                            inspection.register(
+                                id,
+                                chunk_name,
+                                &source.to_string_lossy(),
+                                f.clone(),
+                            );
+                        }
+                        Ok((Some(f), None))
+                    }
                     Err(e) => Ok((None, Some(lua_error(e)))),
                 }
             })?,
@@ -2351,11 +2390,24 @@ impl ScriptHost {
                 .arm(self.shared.config.load, self.shared.config.load_work);
             let function = {
                 let _span = Span::new("uvi_lua_root_compile");
-                self.lua
-                    .load(&text)
-                    .set_name("script")
-                    .into_function()
-                    .map_err(lua_error)?
+                let id = crate::parity::script_id(script);
+                // Keep source names path-free: relative resources are resolved
+                // from embedded module paths, not report ids.
+                let chunk_name = if self.shared.inspection.borrow().is_some() {
+                    format!("uvi-script-{}", script.id().get_usize())
+                } else {
+                    "script".into()
+                };
+                let mut chunk = self.lua.load(&text).set_name(&chunk_name);
+                if self.shared.inspection.borrow().is_some() {
+                    chunk =
+                        chunk.set_compiler(mlua::chunk::Compiler::default().set_coverage_level(1));
+                }
+                let function = chunk.into_function().map_err(lua_error)?;
+                if let Some(inspection) = self.shared.inspection.borrow_mut().as_mut() {
+                    inspection.register(id, chunk_name, &text, function.clone());
+                }
+                function
             };
             let thread = self.lua.create_thread(function).map_err(lua_error)?;
             {
@@ -2746,6 +2798,16 @@ impl ScriptHost {
 
     pub fn fault_counts(&self) -> FaultCounts {
         self.shared.faults.borrow().clone()
+    }
+
+    /// Cumulative real per-line counts and bounded runtime/init faults. Empty
+    /// for ordinary hosts. Offsets point to the first byte of each source line.
+    pub fn coverage(&self) -> Vec<sampler_parity::Coverage> {
+        self.shared
+            .inspection
+            .borrow()
+            .as_ref()
+            .map_or_else(Vec::new, |i| i.snapshots())
     }
     pub fn finding_revision(&self) -> u64 {
         self.shared.finding_revision.get()
