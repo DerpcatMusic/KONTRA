@@ -103,3 +103,24 @@ also passed with existing warnings. No full test suite or broad survey ran.
 Numeric results and artifact SHA256s are retained in
 `docs/re/uvi-survey-round2-receipt.json`; the large temporary stacks/traces and
 the agent's target are removed at handoff.
+
+## Round 2: one AO scanner render
+
+A private copy of the survey shard/driver scanned only pick 12 on this branch's
+`kontra_scan` example with the `shots` feature. The survey binaries and output
+were not overwritten. Result: loads=yes, ui=original-ok, 68/68 interactive
+controls bound, 90/90 asset lookups, 80/80 asset decodes, paint=yes, zero Lua
+init/runtime faults, zero underruns. This is a visual check, not CPU acceptance.
+
+The old survey screenshot at `shots/12-V_Strings_Bartok-program-0-slot-0.png`
+contains tall gray image rectangles obscuring the authored instrument graphics.
+The fresh 720x480 image, visually inspected and retained as
+[`uvi-survey-round2-ao-original.png`](uvi-survey-round2-ao-original.png), shows
+the instrument illustrations, filmstrip controls and authored panel without
+those blocks. It confirms the Round 1 intrinsic-image-size fix in the integrated
+scanner, with no further UI code change.
+
+The scanner still reports audio **silent in the 0.5-s probe**; its 6984 zones
+load and the six-second CLAP host does play. This audio admission issue remains
+open and is not hidden by the successful image/asset verdict. The scanner
+receipt retains that silent result.
