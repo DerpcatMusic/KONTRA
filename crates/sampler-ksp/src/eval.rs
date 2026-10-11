@@ -807,8 +807,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
         }
         // The library tab's fields (`$INST_LIB_*_ID`) are instrument metadata
         // addressed by vendor id; their values are kept above for the interface.
-        let library_info =
-            symbol_in(&self.hir.symbols, id).is_some_and(|n| n.starts_with("$INST_LIB_"));
+        let library_info = symbol_in(&self.hir.symbols, id).is_some_and(|n| n.starts_with("$INST_LIB_"));
         if self.ui_index(id).is_none()
             && !library_info
             && !(b::INST_ICON_ID..=b::INST_ICON_ID + 5).contains(&id)
@@ -968,70 +967,38 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
         // Every non-variable operand is evaluated exactly once, even on rejection.
         let selector = self.int(args, 1)?;
         let index = self.int(args, 2)?;
-        let value = if builtin == Builtin::SetUiWfProperty {
-            self.int(args, 3)?
-        } else {
-            0
-        };
-        let valid_ui = ui.is_some_and(|i| {
-            self.hir.uis[i].kind == WidgetKind::Waveform && !self.hir.uis[i].unresolved
-        });
+        let value = if builtin == Builtin::SetUiWfProperty { self.int(args, 3)? } else { 0 };
+        let valid_ui = ui.is_some_and(|i| self.hir.uis[i].kind == WidgetKind::Waveform && !self.hir.uis[i].unresolved);
         let Some(id) = id.filter(|_| valid_ui) else {
-            self.warn(
-                span,
-                "waveform operation requires a declared waveform UI identity",
-            );
+            self.warn(span, "waveform operation requires a declared waveform UI identity");
             return Ok(V::I(0));
         };
         if builtin == Builtin::AttachZone {
             if selector <= 0 || !self.env.zones.contains_key(&(selector as u32)) {
-                self.warn(
-                    span,
-                    "waveform source zone is absent from the physical-source environment",
-                );
+                self.warn(span, "waveform source zone is absent from the physical-source environment");
                 return Ok(V::I(0));
             }
-            crate::waveform::project(
-                &mut self.st.model,
-                &name,
-                id,
-                Request {
-                    command: "attach_zone",
-                    args: vec![Value::Int(id), Value::Int(selector), Value::Int(index)],
-                },
-            );
+            crate::waveform::project(&mut self.st.model, &name, id, Request {
+                command: "attach_zone",
+                args: vec![Value::Int(id), Value::Int(selector), Value::Int(index)],
+            });
             return Ok(V::I(0));
         }
         let property_name = symbol_name(self.hir, selector);
         let property = property_name.as_deref().and_then(Property::from_name);
         let wave = crate::ui::waveform_requests(&self.st.model, id, &name);
-        let Some((p, wave)) = property
-            .zip(wave)
-            .filter(|(p, _)| p.validate_index(index).is_ok())
-        else {
-            self.warn(
-                span,
-                "waveform property requires an attachment, known symbol and admitted index",
-            );
+        let Some((p, wave)) = property.zip(wave).filter(|(p, _)| p.validate_index(index).is_ok()) else {
+            self.warn(span, "waveform property requires an attachment, known symbol and admitted index");
             return Ok(V::I(0));
         };
         if builtin == Builtin::GetUiWfProperty {
             return Ok(V::I(crate::waveform::read(&wave, p, index)));
         }
-        crate::waveform::project(
-            &mut self.st.model,
-            &name,
-            id,
-            Request {
-                command: "set_ui_wf_property",
-                args: vec![
-                    Value::Int(id),
-                    Value::Text(property_name.unwrap_or_default()),
-                    Value::Int(index),
-                    Value::Int(p.value(index, value)),
-                ],
-            },
-        );
+        crate::waveform::project(&mut self.st.model, &name, id, Request {
+            command: "set_ui_wf_property",
+            args: vec![Value::Int(id), Value::Text(property_name.unwrap_or_default()),
+                Value::Int(index), Value::Int(p.value(index, value))],
+        });
         Ok(V::I(0))
     }
 
@@ -1815,10 +1782,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
             }
             GetFolder => {
                 let which = self.int(args, 0)?;
-                match usize::try_from(which)
-                    .ok()
-                    .and_then(|i| self.env.folders.get(i))
-                {
+                match usize::try_from(which).ok().and_then(|i| self.env.folders.get(i)) {
                     Some(folder) => V::S(folder.clone()),
                     None => {
                         self.warn(span, format!("get_folder: unknown folder {which}"));
@@ -1831,10 +1795,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 if (0..b::NUM_OUTPUT_CHANNELS).contains(&channel) {
                     V::S(format!("Output {}", channel + 1))
                 } else {
-                    self.warn(
-                        span,
-                        "output_channel_name: output channel index out of range",
-                    );
+                    self.warn(span, "output_channel_name: output channel index out of range");
                     V::S(String::new())
                 }
             }
@@ -1845,15 +1806,10 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 let len = self.hir.vars[var.0 as usize].len.unwrap_or(0) as i32;
                 let notes = b::scale(scale).map(|s| s.1);
                 if notes.is_none() {
-                    self.warn(
-                        span,
-                        format!("get_scale: scale {scale} is not modelled; array cleared"),
-                    );
+                    self.warn(span, format!("get_scale: scale {scale} is not modelled; array cleared"));
                 }
                 for i in 0..len {
-                    let note = notes
-                        .and_then(|n| n.get(i as usize))
-                        .map_or(-1, |&n| i32::from(n));
+                    let note = notes.and_then(|n| n.get(i as usize)).map_or(-1, |&n| i32::from(n));
                     self.write_elem(var, i, V::I(note), span);
                 }
                 V::I(0)
@@ -1863,26 +1819,17 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 match b::scale(scale) {
                     Some((name, _)) => V::S(name.into()),
                     None => {
-                        self.warn(
-                            span,
-                            format!("get_scale_name: scale {scale} is not modelled"),
-                        );
+                        self.warn(span, format!("get_scale_name: scale {scale} is not modelled"));
                         V::S(String::new())
                     }
                 }
             }
             SetGlobalKey | SetGlobalScale => {
-                self.warn(
-                    span,
-                    "set_global_key/scale: the plugin has no global key/scale to set",
-                );
+                self.warn(span, "set_global_key/scale: the plugin has no global key/scale to set");
                 V::I(0)
             }
             SubscribeAsync => {
-                self.warn(
-                    span,
-                    "subscribe_async: the plugin has no global key/scale to deliver",
-                );
+                self.warn(span, "subscribe_async: the plugin has no global key/scale to deliver");
                 V::I(0)
             }
             FindZone => V::I(b::NOT_FOUND),
@@ -1907,8 +1854,8 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 )
             }
             AttachZone | SetUiWfProperty | GetUiWfProperty => self.waveform(builtin, args, span)?,
-            GetNumZones | GetZoneId | GetPurgeState | GetVoiceLimit | EventStatus | GetEventPar
-            | GetEventParArr | GetEventMark => V::I(0),
+            GetNumZones | GetZoneId | GetPurgeState | GetVoiceLimit
+            | EventStatus | GetEventPar | GetEventParArr | GetEventMark => V::I(0),
             // No host consumes zone writes (FindZone finds nothing at init), and
             // Conflux issues three million of them: logging each cost ~1 GB.
             SetZonePar => V::I(0),
@@ -1985,7 +1932,8 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 }
             }
             PurgeGroup | SetVoiceLimit | LoadIrSample | SaveArray | AttachLevelMeter
-            | FsNavigate | LoadNativeUi | SetNksNavName | SetNksNavPar | ResetNksNav => {
+            | FsNavigate | LoadNativeUi | SetNksNavName
+            | SetNksNavPar | ResetNksNav => {
                 self.request(builtin, args)?;
                 V::I(0)
             }

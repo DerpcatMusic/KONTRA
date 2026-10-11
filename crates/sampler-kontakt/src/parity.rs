@@ -19,7 +19,7 @@ pub fn parity_reports(instrument: &sampler_ir::Instrument) -> Vec<ScriptReport> 
             );
             sampler_ksp::parity_report_with(
                 &b.source,
-                &format!("ksp:slot{slot}"),
+                &format!("ksp:{prefix}slot{slot}"),
                 &b.name,
                 sampler_ksp::Limits::LIBRARY,
                 &environment,
@@ -41,17 +41,52 @@ impl crate::Loaded {
 /// Inspect every physical script slot, including empty/bypassed slots, without
 /// resolving samples or executing on init. Linked script bytes stay in memory.
 pub fn read_parity_reports(path: &std::path::Path) -> Result<Vec<ScriptReport>, crate::LoadError> {
-    use ni_file::kontakt::{
-        StructuredObject,
-        objects::{BParScript, Program},
-    };
+    use ni_file::kontakt::objects::Program;
     let chunks = crate::read_chunks(path)?;
-    let invalid = || crate::LoadError::Invalid {
-        path: path.into(),
-        reason: "parity requires a single-instrument preset".into(),
-    };
-    let program = Program::try_from(chunks.find_first(0x28).ok_or_else(invalid)?)
-        .map_err(|e| crate::LoadError::decode(path, "program", e))?;
+    if let Some(chunk) = chunks.find_first(0x28) {
+        let program =
+            Program::try_from(chunk).map_err(|e| crate::LoadError::decode(path, "program", e))?;
+        return program_reports(path, &program, "");
+    }
+    let chunk = chunks
+        .find_first(3)
+        .ok_or_else(|| crate::LoadError::Invalid {
+            path: path.into(),
+            reason: "parity requires an instrument or multi bank".into(),
+        })?;
+    let bank = ni_file::kontakt::objects::Bank::try_from(chunk)
+        .map_err(|e| crate::LoadError::decode(path, "multi", e))?;
+    let mut slots: Vec<_> = bank
+        .slot_list()
+        .map_err(|e| crate::LoadError::decode(path, "multi slots", e))?
+        .slots
+        .into_iter()
+        .collect();
+    slots.sort_by_key(|(slot, _)| *slot);
+    let mut reports = Vec::new();
+    for (slot, container) in slots {
+        for (index, program) in container
+            .program_list()
+            .map_err(|e| crate::LoadError::decode(path, "multi programs", e))?
+            .programs
+            .iter()
+            .enumerate()
+        {
+            reports.extend(program_reports(
+                path,
+                program,
+                &format!("program{slot}:{index}:"),
+            )?);
+        }
+    }
+    Ok(reports)
+}
+fn program_reports(
+    path: &std::path::Path,
+    program: &ni_file::kontakt::objects::Program,
+    prefix: &str,
+) -> Result<Vec<ScriptReport>, crate::LoadError> {
+    use ni_file::kontakt::objects::BParScript;
     let mut resources = None;
     program
         .0
@@ -78,15 +113,25 @@ pub fn read_parity_reports(path: &std::path::Path) -> Result<Vec<ScriptReport>, 
                     None => missing_link = true,
                 }
             }
+            let performance_view = sampler_ksp::nckp::view_name(&source)
+                .and_then(|name| {
+                    resources
+                        .get_or_insert_with(|| crate::Resources::of(path))
+                        .read(&format!("Resources/performance_view/{name}.nckp"))
+                })
+                .and_then(|bytes| sampler_ksp::nckp::parse(&bytes).ok())
+                .map(|v| v.0)
+                .unwrap_or_default();
             let mut report = sampler_ksp::parity_report_with(
                 &source,
-                &format!("ksp:slot{slot}"),
+                &format!("ksp:{prefix}slot{slot}"),
                 &format!(
                     "Script slot {slot}{}",
                     if script.bypass { " (bypassed)" } else { "" }
                 ),
                 sampler_ksp::Limits::LIBRARY,
                 &sampler_ksp::Environment {
+                    performance_view,
                     slot: slot.min(u8::MAX as usize) as u8,
                     ..Default::default()
                 },
@@ -99,7 +144,7 @@ pub fn read_parity_reports(path: &std::path::Path) -> Result<Vec<ScriptReport>, 
                     status: sampler_parity::Status::Unsupported,
                     detail: "Linked script resource could not be resolved; no source text emitted"
                         .into(),
-                    owner: Some("crates/sampler-kontakt/src/resources.rs:1".into()),
+                    owner: Some("crates/sampler-kontakt/src/resources.rs:179".into()),
                     spec: Some("docs/architecture-v2/KSP_PARITY.md".into()),
                 });
             }
