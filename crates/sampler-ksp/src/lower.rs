@@ -200,6 +200,8 @@ impl<'h> Unit<'h> {
             ends: module.ends,
             loops: Vec::new(),
             span,
+            statement_span: None,
+            call_span: None,
             tdepth: 0,
             signal,
         };
@@ -394,6 +396,8 @@ impl<'h> Unit<'h> {
             ends: Vec::new(),
             loops: Vec::new(),
             span,
+            statement_span: None,
+            call_span: None,
             tdepth: 0,
             signal: Some(signal),
         };
@@ -496,6 +500,8 @@ struct Gen<'u, 'h> {
     /// Condition position of each enclosing `while`, for `continue`.
     loops: Vec<usize>,
     span: Span,
+    statement_span: Option<Span>,
+    call_span: Option<Span>,
     tdepth: u32,
     /// The timer signal a listener body program serves.
     signal: Option<i32>,
@@ -534,7 +540,7 @@ impl Gen<'_, '_> {
         if let Some(inspect) = &mut self.u.inspection {
             inspect
                 .ops
-                .push((self.span, crate::parity::operation_name(&op)));
+                .push((self.statement_span.unwrap_or(self.span), crate::parity::operation_name(&op)));
         }
         self.code.push(op);
         Ok(())
@@ -578,7 +584,7 @@ impl Gen<'_, '_> {
     }
     fn cover(&mut self, builtin: Builtin, coverage: Coverage) {
         if let Some(inspect) = &mut self.u.inspection {
-            inspect.calls.push((self.span, builtin, coverage));
+            inspect.calls.push((self.call_span.unwrap_or(self.span), builtin, coverage));
         }
         let count = self
             .u
@@ -675,7 +681,10 @@ impl Gen<'_, '_> {
     fn block(&mut self, body: &[Stmt]) -> Result<()> {
         for s in body {
             self.span = s.span;
-            self.stmt(s)?;
+            let previous = self.statement_span.replace(s.span);
+            let result = self.stmt(s);
+            self.statement_span = previous;
+            result?;
         }
         Ok(())
     }
@@ -1454,23 +1463,11 @@ impl Gen<'_, '_> {
         };
         // Arg::Var is the original HIR UI identity; every other operand once.
         let (_, text) = self.effect_args(builtin, args, dst)?;
-        if text.is_some() {
-            return fault(self.span, "waveform operands must be integers");
-        }
-        let services = [
-            self.u.service(Builtin::AttachZone),
-            self.u.service(Builtin::SetUiWfProperty),
-        ];
+        if text.is_some() { return fault(self.span, "waveform operands must be integers"); }
+        let services = [self.u.service(Builtin::AttachZone), self.u.service(Builtin::SetUiWfProperty)];
         let local = reg(dst, 4)?;
-        self.emit(I::Op(Op::Waveform {
-            action,
-            args: dst,
-            local,
-            services,
-        }))?;
-        if action == Action::Get {
-            self.copy_i32(local, dst)?;
-        }
+        self.emit(I::Op(Op::Waveform { action, args: dst, local, services }))?;
+        if action == Action::Get { self.copy_i32(local, dst)?; }
         self.cover(builtin, Coverage::Approximate);
         Ok(())
     }
@@ -1604,6 +1601,13 @@ impl Gen<'_, '_> {
     }
 
     fn builtin(&mut self, builtin: Builtin, args: &[Arg], dst: u16, span: Span) -> Result<()> {
+        let previous = self.call_span.replace(span);
+        let result = self.builtin_inner(builtin, args, dst, span);
+        self.call_span = previous;
+        result
+    }
+
+    fn builtin_inner(&mut self, builtin: Builtin, args: &[Arg], dst: u16, span: Span) -> Result<()> {
         use Builtin::*;
         self.span = span;
         let t = reg(dst, 1)?;
@@ -1918,10 +1922,7 @@ impl Gen<'_, '_> {
                 true
             }
             SubscribeAsync => {
-                self.ignore(
-                    SubscribeAsync,
-                    "has no global key/scale to deliver at runtime",
-                );
+                self.ignore(SubscribeAsync, "has no global key/scale to deliver at runtime");
                 true
             }
             ArrayEqual => return self.array_equal(args, dst, span),
@@ -2866,11 +2867,10 @@ impl Gen<'_, '_> {
             ChangeVol | ChangeTune | ChangePan | FadeIn | FadeOut | SetEventPar
             | SetEventParArr | SetNoteController | WillNeverTerminate | RedirectOutput
             | SetZonePar | SetVoiceLimit | LoadIrSample | AttachLevelMeter | AddTextLine
-            | MoveControl | MoveControlPx | SetSkinOffset | SetUiColor | FsNavigate
-            | SetNksNavName | SetNksNavPar | ResetNksNav | SetKeyColor | SetKeyName
-            | SetKeyType | SetKeyPressed | SetKeyPressedSupport | SetKeyrange | RemoveKeyrange
-            | Message | LoadArray | SaveArray | PgsSetStrKeyVal | PgsCreateKey
-            | PgsCreateStrKey => {
+            | MoveControl | MoveControlPx | SetSkinOffset | SetUiColor | FsNavigate | SetNksNavName | SetNksNavPar | ResetNksNav
+            | SetKeyColor | SetKeyName | SetKeyType | SetKeyPressed | SetKeyPressedSupport
+            | SetKeyrange | RemoveKeyrange | Message | LoadArray | SaveArray | PgsSetStrKeyVal
+            | PgsCreateKey | PgsCreateStrKey => {
                 self.effect(builtin, args, dst)?;
                 if builtin.sig().ret != b::Ret::Void {
                     self.set(dst, 0)?;
@@ -3607,13 +3607,7 @@ impl Gen<'_, '_> {
         self.cover(Builtin::GetScale, Coverage::Native);
         Ok(())
     }
-    fn fill_scale(
-        &mut self,
-        array: ScriptArray,
-        index: u16,
-        value: u16,
-        notes: &[u8],
-    ) -> Result<()> {
+    fn fill_scale(&mut self, array: ScriptArray, index: u16, value: u16, notes: &[u8]) -> Result<()> {
         for i in 0..array.len {
             self.set(index, i64::from(i))?;
             self.set(value, notes.get(i as usize).map_or(-1, |&n| i64::from(n)))?;

@@ -132,15 +132,16 @@ pub fn parity_report_with(
         constructs: Vec::new(),
         lowered: Vec::new(),
     };
+    if source.is_empty() {
+        return report;
+    }
     let fail = |report: &mut ScriptReport, fault: diag::Fault| {
         // Diagnostic prose can contain authored literals: retain only its category and position.
-        let e = entry("@syntax").unwrap();
-        report.constructs.push(construct(
-            span(fault.span),
-            Kind::Syntax,
-            "@syntax",
-            Some(e),
-        ));
+        let key = format!("@syntax:{}", fault.message);
+        let e = entry(&key).unwrap_or_else(|| entry("@syntax").unwrap());
+        report
+            .constructs
+            .push(construct(span(fault.span), Kind::Syntax, e.name, Some(e)));
     };
     if source.len() > limits.source_bytes {
         fail(
@@ -245,6 +246,11 @@ pub fn parity_report_with(
     let frontend = (|| {
         lexer::preprocess(&mut toks, &syms, &Default::default())?;
         let ast = crate::parser::parse(&toks, &syms)?;
+        report
+            .constructs
+            .retain(|c| !matches!(c.kind, Kind::Builtin | Kind::Command));
+        ast_calls(&ast, &syms, &span, &mut report.constructs);
+        report.constructs.sort_by_key(|c| c.span.start);
         crate::sema::analyze(
             ast,
             &syms,
@@ -262,6 +268,24 @@ pub fn parity_report_with(
             return report;
         }
     };
+    let constants: std::collections::BTreeSet<_> = hir
+        .vars
+        .iter()
+        .filter(|v| matches!(v.home, hir::Home::Const(_)))
+        .filter_map(|v| syms.get(&v.name))
+        .collect();
+    let constant_tokens: std::collections::BTreeSet<_> = toks
+        .iter()
+        .filter_map(|t| match t.tok {
+            Tok::Var(s) if constants.contains(&s) => Some(t.span.start),
+            _ => None,
+        })
+        .collect();
+    for t in &mut report.tokens {
+        if constant_tokens.contains(&t.span.start) {
+            t.class = Class::Constant;
+        }
+    }
     let ids: Vec<_> = hir
         .uis
         .iter()
@@ -290,6 +314,23 @@ pub fn parity_report_with(
     for (i, cb) in hir.callbacks.iter().enumerate() {
         if cb.kind == hir::CallbackKind::Init {
             init_statements(&cb.body, &span, &mut report.lowered);
+            init_functions(
+                &hir,
+                &cb.body,
+                &span,
+                &mut report.lowered,
+                &mut Default::default(),
+            );
+            for c in report
+                .constructs
+                .iter_mut()
+                .filter(|c| cb.span.start <= c.span.start && c.span.start < cb.span.end)
+            {
+                if let Some(e) = entry(&format!("@init:{}", c.name)) {
+                    c.status = c.status.max(e.status);
+                    c.detail = e.detail.into();
+                }
+            }
             continue;
         }
         let ctx = match cb.kind {
@@ -303,22 +344,9 @@ pub fn parity_report_with(
         }
     }
     let inspection = unit.inspection.take().unwrap();
-    let mut statements = Vec::new();
-    for cb in &hir.callbacks {
-        collect_statements(&cb.body, &mut statements);
-    }
-    for f in &hir.functions {
-        collect_statements(&f.body, &mut statements);
-    }
     let mut ops: BTreeMap<(u32, u32), Vec<String>> = BTreeMap::new();
     for (s, op) in inspection.ops {
-        let owner = statements
-            .iter()
-            .filter(|stmt| stmt.start <= s.start && s.end <= stmt.end)
-            .min_by_key(|stmt| stmt.end - stmt.start)
-            .copied()
-            .unwrap_or(s);
-        ops.entry((owner.start, owner.end)).or_default().push(op);
+        ops.entry((s.start, s.end)).or_default().push(op);
     }
     report
         .lowered
@@ -326,16 +354,23 @@ pub fn parity_report_with(
             span: span(diag::Span { start, end }),
             ops,
         }));
+    let mut uses: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for (i, c) in report.constructs.iter().enumerate() {
+        uses.entry(c.name.clone()).or_default().push(i);
+    }
     for (s, b, c) in inspection.calls {
         if let Some(e) = lowering_status(c) {
-            for construct in report
-                .constructs
-                .iter_mut()
-                .filter(|x| x.name == b.name() && s.start <= x.span.start && x.span.start < s.end)
-            {
-                if construct.status < e.status {
-                    construct.status = e.status;
-                    construct.detail = e.detail.into();
+            if let Some(indices) = uses.get(b.name()) {
+                let begin = indices.partition_point(|&i| report.constructs[i].span.start < s.start);
+                for &i in &indices[begin..] {
+                    let construct = &mut report.constructs[i];
+                    if construct.span.start >= s.end {
+                        break;
+                    }
+                    if construct.status < e.status {
+                        construct.status = e.status;
+                        construct.detail = e.detail.into();
+                    }
                 }
             }
         }
@@ -344,7 +379,12 @@ pub fn parity_report_with(
     report
 }
 fn construct(span: Span, kind: Kind, name: &str, e: Option<&LedgerEntry>) -> Construct {
-    let fallback = entry("@syntax").unwrap();
+    let fallback = entry(if kind == Kind::Syntax {
+        "@syntax"
+    } else {
+        "@unknown"
+    })
+    .unwrap();
     let e = e.unwrap_or(fallback);
     Construct {
         span,
@@ -356,18 +396,149 @@ fn construct(span: Span, kind: Kind, name: &str, e: Option<&LedgerEntry>) -> Con
         spec: Some(e.spec.into()),
     }
 }
-fn collect_statements(body: &[hir::Stmt], out: &mut Vec<diag::Span>) {
-    for s in body {
-        out.push(s.span);
-        match &s.kind {
-            hir::StmtKind::If(_, a, b) => {
-                collect_statements(a, out);
-                collect_statements(b, out);
+fn ast_calls(
+    ast: &crate::ast::Ast,
+    syms: &Interner<'_>,
+    span: &impl Fn(diag::Span) -> Span,
+    out: &mut Vec<Construct>,
+) {
+    use crate::ast::{ExprKind as E, Item, StmtKind as S};
+    let functions: std::collections::BTreeSet<_> = ast
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Function(f) => Some(syms.name(f.name).to_ascii_lowercase()),
+            _ => None,
+        })
+        .collect();
+    struct Calls<'a, 's, 'o, F> {
+        syms: &'s Interner<'a>,
+        functions: std::collections::BTreeSet<String>,
+        span: F,
+        out: &'o mut Vec<Construct>,
+    }
+    impl<F: Fn(diag::Span) -> Span> Calls<'_, '_, '_, F> {
+        fn call(&mut self, name: lexer::Sym, at: diag::Span, explicit: bool) {
+            let name = self.syms.name(name);
+            let b = Builtin::from_name(name);
+            let user = self.functions.contains(&name.to_ascii_lowercase());
+            let kind = if b.is_some() && !explicit && !user {
+                Kind::Builtin
+            } else {
+                Kind::Command
+            };
+            let canonical = if kind == Kind::Builtin {
+                b.unwrap().name()
+            } else {
+                name
+            };
+            self.out.push(construct(
+                (self.span)(at),
+                kind,
+                canonical,
+                if user {
+                    entry("@command")
+                } else {
+                    entry(canonical)
+                },
+            ));
+        }
+        fn expr(&mut self, e: &crate::ast::Expr) {
+            match &e.kind {
+                E::Call(n, args) => {
+                    self.call(*n, e.span, false);
+                    for a in args {
+                        self.expr(a);
+                    }
+                }
+                E::Var(_, Some(index)) | E::Unary(_, index) => self.expr(index),
+                E::Binary(_, a, b) => {
+                    self.expr(a);
+                    self.expr(b);
+                }
+                _ => {}
             }
-            hir::StmtKind::While(_, b) => collect_statements(b, out),
+        }
+        fn body(&mut self, body: &[crate::ast::Stmt]) {
+            for s in body {
+                match &s.kind {
+                    S::Command(n, args) => {
+                        self.call(*n, s.span, false);
+                        for a in args {
+                            self.expr(a);
+                        }
+                    }
+                    S::Call(n) => self.call(*n, s.span, true),
+                    S::Declare(d) => {
+                        if let Some(e) = &d.size {
+                            self.expr(e);
+                        }
+                        for e in d.params.iter().chain(&d.init) {
+                            self.expr(e);
+                        }
+                    }
+                    S::Assign(a, b) => {
+                        self.expr(a);
+                        self.expr(b);
+                    }
+                    S::If(e, a, b) => {
+                        self.expr(e);
+                        self.body(a);
+                        self.body(b);
+                    }
+                    S::While(e, b) => {
+                        self.expr(e);
+                        self.body(b);
+                    }
+                    S::Select(e, cases) => {
+                        self.expr(e);
+                        for c in cases {
+                            self.expr(&c.low);
+                            if let Some(e) = &c.high {
+                                self.expr(e);
+                            }
+                            self.body(&c.body);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut calls = Calls {
+        syms,
+        functions,
+        span,
+        out,
+    };
+    for item in &ast.items {
+        match item {
+            Item::Callback(c) => calls.body(&c.body),
+            Item::Function(f) => calls.body(&f.body),
+        }
+    }
+}
+fn init_functions(
+    hir: &hir::Hir,
+    body: &[hir::Stmt],
+    span: &impl Fn(diag::Span) -> Span,
+    out: &mut Vec<Lowered>,
+    seen: &mut std::collections::BTreeSet<hir::FnId>,
+) {
+    for s in body {
+        match &s.kind {
+            hir::StmtKind::Call(f) if seen.insert(*f) => {
+                let body = &hir.functions[f.0 as usize].body;
+                init_statements(body, span, out);
+                init_functions(hir, body, span, out, seen);
+            }
+            hir::StmtKind::If(_, a, b) => {
+                init_functions(hir, a, span, out, seen);
+                init_functions(hir, b, span, out, seen);
+            }
+            hir::StmtKind::While(_, b) => init_functions(hir, b, span, out, seen),
             hir::StmtKind::Select(_, cases) => {
                 for c in cases {
-                    collect_statements(&c.body, out);
+                    init_functions(hir, &c.body, span, out, seen);
                 }
             }
             _ => {}
