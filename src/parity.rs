@@ -11,6 +11,52 @@ use std::{
 struct PatchReport {
     patch: PathBuf,
     scripts: Vec<ScriptReport>,
+    summary: Vec<Summary>,
+}
+#[derive(Serialize, Deserialize)]
+struct Summary {
+    script_id: String,
+    uses: usize,
+    statuses: Vec<StatusCount>,
+}
+#[derive(Serialize, Deserialize)]
+struct StatusCount {
+    status: Status,
+    uses: usize,
+    percent: f64,
+}
+fn summary(script: &ScriptReport) -> Summary {
+    let uses = script.constructs.len();
+    let statuses = [
+        Status::Implemented,
+        Status::Approximate,
+        Status::Stub,
+        Status::Unsupported,
+        Status::Fault,
+    ]
+    .into_iter()
+    .map(|status| {
+        let count = script
+            .constructs
+            .iter()
+            .filter(|c| c.status == status)
+            .count();
+        StatusCount {
+            status,
+            uses: count,
+            percent: if uses == 0 {
+                0.0
+            } else {
+                100.0 * count as f64 / uses as f64
+            },
+        }
+    })
+    .collect();
+    Summary {
+        script_id: script.id.clone(),
+        uses,
+        statuses,
+    }
 }
 #[derive(Serialize)]
 struct Example {
@@ -184,20 +230,11 @@ fn print_patch(r: &PatchReport, lowered: bool) {
             s.constructs.len(),
             s.tokens.len()
         );
-        for status in [
-            Status::Implemented,
-            Status::Approximate,
-            Status::Stub,
-            Status::Unsupported,
-            Status::Fault,
-        ] {
-            let n = s.constructs.iter().filter(|c| c.status == status).count();
-            let percent = if s.constructs.is_empty() {
-                0.0
-            } else {
-                100.0 * n as f64 / s.constructs.len() as f64
-            };
-            println!("  {status:?}: {n} ({percent:.2}%)");
+        for count in summary(s).statuses {
+            println!(
+                "  {:?}: {} ({:.2}%)",
+                count.status, count.uses, count.percent
+            );
         }
         for c in s
             .constructs
@@ -230,6 +267,7 @@ fn cached_patch(path: &Path) -> Result<PatchReport> {
     let mut hasher = blake3::Hasher::new();
     // Include producer sources, so a parity fix cannot keep an old count alive.
     for source in [
+        include_str!("parity.rs"),
         include_str!("../crates/sampler-ksp/src/parity.rs"),
         include_str!("../crates/sampler-ksp/src/parity_ledger.rs"),
         include_str!("../crates/sampler-ksp/src/lexer.rs"),
@@ -265,9 +303,11 @@ fn cached_patch(path: &Path) -> Result<PatchReport> {
     let scripts = sampler_kontakt::read_parity_reports(&path).map_err(|_| {
         anyhow::anyhow!("patch could not be inspected (source and diagnostic values omitted)")
     })?;
+    let summary = scripts.iter().map(summary).collect();
     let report = PatchReport {
         patch: path,
         scripts,
+        summary,
     };
     let mut temp = tempfile::NamedTempFile::new_in(&dir)?;
     serde_json::to_writer(&mut temp, &report)?;
@@ -284,22 +324,16 @@ fn corpus_paths(root: &Path) -> Result<Vec<PathBuf>> {
             let columns: Vec<_> = line.split('\t').collect();
             let path = if columns.len() == 1 {
                 columns[0]
-            } else if columns[0] == "kontakt" {
+            } else if matches!(columns[0], "kontakt" | "kontakt-multi") {
                 columns[1]
             } else {
                 // Also admit library<TAB>/absolute/patch.nki lists; skip UVI rows.
-                match columns
-                    .iter()
-                    .find(|p| p.to_ascii_lowercase().ends_with(".nki"))
-                {
+                match columns.iter().find(|p| is_patch(Path::new(p))) {
                     Some(p) => p,
                     None => continue,
                 }
             };
-            if Path::new(path)
-                .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("nki"))
-            {
+            if is_patch(Path::new(path)) {
                 paths.insert(PathBuf::from(path));
             }
         }
@@ -307,12 +341,7 @@ fn corpus_paths(root: &Path) -> Result<Vec<PathBuf>> {
         ensure!(root.is_dir(), "corpus directory does not exist");
         for item in walkdir::WalkDir::new(root) {
             let item = item?;
-            if item.file_type().is_file()
-                && item
-                    .path()
-                    .extension()
-                    .is_some_and(|e| e.eq_ignore_ascii_case("nki"))
-            {
+            if item.file_type().is_file() && is_patch(item.path()) {
                 paths.insert(item.into_path());
             }
         }
@@ -334,4 +363,12 @@ fn library_name(path: &Path, root: &Path) -> String {
         }
     }
     path.parent().unwrap_or(path).to_string_lossy().into()
+}
+
+fn is_patch(path: &Path) -> bool {
+    path.extension().is_some_and(|e| {
+        ["nki", "nkm", "nkb"]
+            .iter()
+            .any(|ext| e.eq_ignore_ascii_case(ext))
+    })
 }
