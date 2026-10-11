@@ -2085,7 +2085,11 @@ mod tests {
     fn primitive_uis() -> (Ui, Ui) {
         // Same production theme and same font identity on both oracle sides.
         let font = Font::new(NOTO_SANS).unwrap();
-        (super::super::theme::ui().font(font.clone()), super::super::theme::ui().font(font))
+        let mut pair = (super::super::theme::ui().font(font.clone()), super::super::theme::ui().font(font));
+        // The budget stress below is written against upstream's 4096-node frame.
+        pair.0.set_node_limit(4096);
+        pair.1.set_node_limit(4096);
+        pair
     }
     #[test]
     fn native_state_view_preserves_eager_authored_size_lookup_order() {
@@ -2288,7 +2292,7 @@ mod tests {
         // 2048 exceed it even eagerly; keep that as explicit selection/rejection
         // stress, not a claim of cold/warm scene parity for an inadmissible tree.
         use moose::mui::mui::{layout, scene::SceneError};
-        let limits = layout::Limits::default();
+        let limits = layout::Limits { nodes: 4096, ..layout::Limits::default() };
         let node_count = |tree: &El| {
             let mut count = 0;
             let mut todo = vec![tree];

@@ -226,7 +226,8 @@ impl Layout {
                 let strips = clusters(face, group, false, COLUMN_GAP).into_iter().map(|mut strip| {
                     strip.sort_by_key(|&n| face.page_rect(n).y);
                     strip.into_iter().map(|n| {
-                        let (width, height) = match class(&face.widgets[n.0].kind) {
+                        let knob = ir_view::knob_like(face, &face.widgets[n.0]);
+                        let (width, height) = match if knob { 2 } else { class(&face.widgets[n.0].kind) } {
                             2 => (88., 80.),
                             3 => (64., 140.),
                             4 => (152., 32.),
@@ -254,7 +255,7 @@ pub fn view(
     namespace: &str,
     face: &ir::Interface,
     page: ir::PageRef,
-    _assets: &ir_view::Assets,
+    assets: &ir_view::Assets,
     scale: f64,
     values: &mut ir_view::Values,
     input: &mut ir_view::InputState,
@@ -266,6 +267,8 @@ pub fn view(
     let layout = input.generated.as_ref().unwrap().clone();
     let empty = ir_view::Assets::default();
     let mut bands = Vec::new();
+    // One frame past MUI's node cap blanks the editor: stop adding cells at the face's share.
+    let mut nodes = 0;
     for band in &layout.bands {
         let mut sections = Vec::new();
         for section in band {
@@ -277,7 +280,9 @@ pub fn view(
                     let n = cell.widget;
                     let (width, height) = (cell.width * scale, cell.height * scale);
                     let label = &cell.label;
-                    cells.push(
+                    let place = (width.to_bits(), height.to_bits(), scale.to_bits());
+                    // The cell's pictures are not drawn here, but the face's loads still key it.
+                    let built = ir_view::retained(ui, namespace, face, n, assets, ir_view::value_key(face, n, values), place, |ui| {
                         col![
                             caption(label.clone())
                                 .lines(1)
@@ -302,8 +307,14 @@ pub fn view(
                         .gap(TIGHT)
                         .align(Align::Stretch)
                         .w(width)
-                        .shrink(0),
-                    );
+                        .shrink(0)
+                    });
+                    nodes += ir_view::node_count(&built);
+                    if nodes > ir_view::FACE_NODES {
+                        ir_view::warn_dropped(1);
+                        break;
+                    }
+                    cells.push(built);
                 }
                 strips.push(col(cells).gap(SPACE).align(Align::Center).shrink(0));
             }

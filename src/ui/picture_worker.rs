@@ -29,7 +29,7 @@ pub(super) fn revision() -> u64 {
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct Key {
     asset: usize,
-    identity: String,
+    identity: Arc<str>,
     frame: usize,
     target: [u32; 2],
     window: Option<[u32; 4]>,
@@ -65,7 +65,11 @@ pub(super) struct Preparation {
     pending: HashSet<Key>,
     wanted: Vec<Key>,
     assets: Vec<ir::Asset>,
+    /// `path:kind` per asset, built once per asset list, not per frame.
+    identities: Vec<Arc<str>>,
     presentation: ir::Presentation,
+    /// The last `prepare` found nothing new: same wanted set, no new result.
+    unchanged: bool,
     tick: u64,
     bytes: usize,
     #[cfg(feature = "shots")]
@@ -146,7 +150,9 @@ impl Preparation {
             pending: HashSet::new(),
             wanted: Vec::new(),
             assets: Vec::new(),
+            identities: Vec::new(),
             presentation: Default::default(),
+            unchanged: false,
             tick: 0,
             bytes: 0,
             #[cfg(feature = "shots")]
@@ -163,6 +169,11 @@ impl Preparation {
     }
     pub fn pending(&self) -> usize {
         self.pending.len()
+    }
+    /// Whether the last `prepare` found nothing new (it then returned nothing,
+    /// and what the caller took from the one before still stands).
+    pub fn unchanged(&self) -> bool {
+        self.unchanged
     }
     #[cfg(feature = "shots")]
     pub fn failures(&self) -> Vec<String> {
@@ -209,7 +220,7 @@ impl Preparation {
                     && face
                         .assets
                         .get(key.asset)
-                        .is_some_and(|a| key.identity == format!("{}:{:?}", a.path, a.kind))
+                        .is_some_and(|a| *key.identity == *format!("{}:{:?}", a.path, a.kind))
             });
             #[cfg(feature = "shots")]
             self.decoded_bytes
@@ -217,17 +228,25 @@ impl Preparation {
             self.bytes = self.cache.values().map(|e| e.bytes).sum();
             // Identity keys keep unchanged assets reusable across a sparse publication.
             self.assets = face.assets.clone();
+            self.identities = face
+                .assets
+                .iter()
+                .map(|a| Arc::from(format!("{}:{:?}", a.path, a.kind)))
+                .collect();
             self.presentation = presentation;
+            self.unchanged = false;
         }
+        let mut changed = !self.unchanged;
         let epoch = self.epoch.load(Ordering::Acquire);
         self.tick = self.tick.wrapping_add(1);
         let mut wanted = Vec::new();
+        let identities = &self.identities;
         let mut add =
             |asset: ir::AssetRef, frame: usize, target: [u32; 2], window: Option<[u32; 4]>| {
                 if let Some(a) = face.assets.get(asset.0) {
                     wanted.push(Key {
                         asset: asset.0,
-                        identity: format!("{}:{:?}", a.path, a.kind),
+                        identity: identities[asset.0].clone(),
                         frame,
                         target,
                         window,
@@ -341,12 +360,14 @@ impl Preparation {
         wanted.dedup();
         if self.wanted != wanted {
             self.cache.retain(|_, entry| !entry.limited);
+            changed = true;
         }
         self.wanted = wanted;
         while let Ok(mut result) = self.results.try_recv() {
             if result.epoch != epoch {
                 continue;
             }
+            changed = true;
             self.pending.remove(&result.key);
             #[cfg(feature = "shots")]
             {
@@ -436,6 +457,11 @@ impl Preparation {
                 epoch,
             })
             .collect::<Vec<_>>();
+        changed |= !batch.is_empty();
+        self.unchanged = !changed;
+        if !changed {
+            return Vec::new();
+        }
         if !batch.is_empty() && self.jobs.try_send(batch.clone()).is_ok() {
             #[cfg(feature = "shots")]
             {
@@ -446,15 +472,29 @@ impl Preparation {
             }
             self.pending.extend(batch.into_iter().map(|r| r.key));
         }
-        self.wanted
-            .iter()
-            .filter_map(|key| {
-                self.cache.get_mut(key).map(|entry| {
-                    entry.tick = self.tick;
-                    (key.asset, entry.picture.clone(), entry.font.clone())
-                })
-            })
-            .collect()
+        // A frame still decoding shows the nearest decoded one of its strip, so
+        // a turning knob never drops its picture (or lags a whole drag behind).
+        let mut shown = Vec::with_capacity(self.wanted.len());
+        for key in &self.wanted {
+            let hit = if self.cache.contains_key(key) {
+                Some(key.clone())
+            } else {
+                self.cache
+                    .iter()
+                    .filter(|(k, v)| {
+                        v.picture.is_some()
+                            && (k.asset, &k.identity, k.target, k.window)
+                                == (key.asset, &key.identity, key.target, key.window)
+                    })
+                    .min_by_key(|(k, _)| k.frame.abs_diff(key.frame))
+                    .map(|(k, _)| k.clone())
+            };
+            if let Some(entry) = hit.and_then(|k| self.cache.get_mut(&k)) {
+                entry.tick = self.tick;
+                shown.push((key.asset, entry.picture.clone(), entry.font.clone()));
+            }
+        }
+        shown
     }
 }
 
@@ -474,7 +514,9 @@ mod tests {
             pending: HashSet::new(),
             wanted: Vec::new(),
             assets: Vec::new(),
+            identities: Vec::new(),
             presentation: Default::default(),
+            unchanged: false,
             tick: 0,
             bytes: 0,
             #[cfg(feature = "shots")]
@@ -583,7 +625,9 @@ mod tests {
             pending: HashSet::new(),
             wanted: Vec::new(),
             assets: Vec::new(),
+            identities: Vec::new(),
             presentation: Default::default(),
+            unchanged: false,
             tick: 0,
             bytes: 0,
             #[cfg(feature = "shots")]
@@ -806,5 +850,78 @@ mod tests {
         assert_eq!(worker.bytes(), 0);
         drop(worker);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_turning_strip_keeps_its_nearest_decoded_frame_while_the_next_decodes() {
+        let (jobs, requests) = mpsc::sync_channel(1);
+        let (done, results) = mpsc::sync_channel(1);
+        let mut worker = Preparation {
+            path: "synthetic.nki".into(),
+            jobs,
+            results,
+            epoch: Arc::new(AtomicU64::new(0)),
+            cache: HashMap::new(),
+            pending: HashSet::new(),
+            wanted: Vec::new(),
+            assets: Vec::new(),
+            identities: Vec::new(),
+            presentation: Default::default(),
+            unchanged: false,
+            tick: 0,
+            bytes: 0,
+            #[cfg(feature = "shots")]
+            scan: Default::default(),
+            #[cfg(feature = "shots")]
+            decoded_bytes: HashMap::new(),
+        };
+        let mut widget = ir::Widget::new(
+            "$knob",
+            ir::PageRef(0),
+            ir::Rect::new(0, 0, 50, 50),
+            ir::Kind::Slider {
+                range: ir::Range { min: 0., max: 127., step: Some(1.), ..Default::default() },
+                orientation: ir::Orientation::Vertical,
+            },
+        );
+        widget.binding = ir::Binding::Control(ir::ControlId(1));
+        widget.images.push(ir::ImageUse::new(ir::AssetRef(0), ir::Role::Strip));
+        let face = ir::Interface {
+            pages: vec![ir::Page { size: ir::Size { width: 50, height: 50 }, ..Default::default() }],
+            assets: vec![ir::Asset {
+                path: "strip.png".into(),
+                kind: ir::AssetKind::Image(ir::ImageMeta { frames: 128, ..Default::default() }),
+            }],
+            widgets: vec![widget],
+            ..Default::default()
+        };
+        let mut values = Values::default();
+        let mut show = |worker: &mut Preparation, value: f64| {
+            values.insert(ir::ControlId(1), value);
+            worker.prepare(&face, ir::PageRef(0), ir::Presentation::Bitmap, 1., &values)
+        };
+        assert!(show(&mut worker, 0.).is_empty());
+        let first = requests.try_recv().unwrap().pop().unwrap();
+        let picture = Arc::new(Picture::prepared(
+            Arc::new(moose::mui::mui::scene::Image::rgba(1, 1, vec![1, 2, 3, 255]).unwrap()),
+            first.key.frame,
+            128,
+            None,
+        ));
+        done.send(Result {
+            key: first.key,
+            epoch: first.epoch,
+            picture: Some(picture),
+            font: None,
+            bytes: 4,
+            #[cfg(feature = "shots")]
+            scan: Default::default(),
+        })
+        .unwrap();
+        assert_eq!(show(&mut worker, 0.).len(), 1);
+        // The knob turns: its next frame is requested but not decoded yet.
+        let turned = show(&mut worker, 60.);
+        assert_eq!(requests.try_recv().unwrap()[0].key.frame, 60);
+        assert_eq!(turned.len(), 1, "the picture vanished while its next frame decoded");
     }
 }
