@@ -4497,6 +4497,24 @@
       ],
       "accepted": true,
       "validation": "PR57 merged at 78e8948bb461e6f5d0d3f5c8143d9c569735a043 with the exact tested source tree. All eight hosted checks passed on 72d4f2244773747a4455038eb79bfa576afbbf45, including Linux/Windows/macOS and Vulkan/OpenGL/CPU editor checks; all eight authored regressions passed in run38098604797. Raw log SHA256 61804360d3db4a3324b596a69f64bd3c13d1724459eaac389cd468f0391dbf79. Final local stamped packaging/install and native library audition remain pending."
+    },
+    {
+      "id": "compact-diagnostic-clipboard",
+      "summary": "Copy deduplicated errors and origins without JSON, source excerpts or configuration dumps",
+      "source_commits": [
+        "d5b2f2c00a3492d65b1304612aa1d51a57754d58"
+      ],
+      "accepted": true,
+      "validation": "Hosted Linux run38102742837 compiled the exact product source and passed compact_diagnostics_group_errors_and_keep_only_the_origin, snapshot_jobs_scale_concurrency_without_rejecting_large_arrays and nka_arrays_above_legacy_caps_bind_and_stream_without_partial_updates, including zero-audio-allocation capture/completion and failed-read rollback. Windows/macOS checks passed. The retained Linux failure was an old malformed-file expectation of Capacity instead of InvalidInput, corrected in cbb1b4fb408cc4bb534e6d21968b68b639da0182 without product changes. Full final exact-head CI and local build/install remain pending; merge requires all checks green."
+    },
+    {
+      "id": "nka-content-sized-streamed-array-files",
+      "summary": "Admit NKA arrays by authored storage size and stream file I/O without fixed cell or byte ceilings",
+      "source_commits": [
+        "d5b2f2c00a3492d65b1304612aa1d51a57754d58"
+      ],
+      "accepted": true,
+      "validation": "Hosted Linux run38102742837 compiled the exact product source and passed compact_diagnostics_group_errors_and_keep_only_the_origin, snapshot_jobs_scale_concurrency_without_rejecting_large_arrays and nka_arrays_above_legacy_caps_bind_and_stream_without_partial_updates, including zero-audio-allocation capture/completion and failed-read rollback. Windows/macOS checks passed. The retained Linux failure was an old malformed-file expectation of Capacity instead of InvalidInput, corrected in cbb1b4fb408cc4bb534e6d21968b68b639da0182 without product changes. Full final exact-head CI and local build/install remain pending; merge requires all checks green."
     }
   ]
 }
