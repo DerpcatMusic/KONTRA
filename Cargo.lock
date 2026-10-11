@@ -4277,6 +4277,7 @@ dependencies = [
  "sampler-ir",
  "sampler-kontakt",
  "sampler-midi",
+ "sampler-parity",
  "sampler-ui-ir",
  "serde",
  "serde_json",
