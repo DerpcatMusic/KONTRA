@@ -1487,6 +1487,8 @@ pub enum Processor {
     Ar(Ar),
     /// Native Formant I: saved Talk, Sharp, Size normalized controls.
     Formant([f32; 3]),
+    /// Kontakt Phaser filter, normalized Cutoff/Resonance.
+    Phaser([f32; 2]),
     /// Mute a send return when its paired Mix slot is bypassed. Uses that
     /// slot's existing bypass control; insert bypass still passes dry audio.
     SendReturnGate {
