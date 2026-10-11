@@ -533,7 +533,9 @@ fn prepare_event(session_id: &str, started: Instant, value: Value) -> (LogEvent,
             .or_else(|| number("slot"))
             .and_then(|n| n.try_into().ok()),
         line: number("line").and_then(|n| n.try_into().ok()),
-        reason: named("reason").or_else(|| named("message")),
+        reason: named("reason")
+            .or_else(|| named("message"))
+            .or_else(|| key_summary(&data)),
         details: data,
     };
     if row.module == "ksp"
@@ -1529,6 +1531,39 @@ fn export_bundle_with_cancel(
     result
 }
 
+fn clip(text: &str, maximum: usize) -> String {
+    let mut text = text.lines().next().unwrap_or("").to_owned();
+    truncate(&mut text, maximum);
+    text
+}
+/// Typed grouped events carry no message; describe them by their key instead of by their event name.
+fn key_summary(data: &Value) -> Option<String> {
+    let key = data.get("diagnostic_key")?;
+    let part = |name: &str| key[name].as_str().filter(|s| !s.is_empty() && *s != "UnknownSubject");
+    let mut text = format!("{}: {}", part("kind")?, part("reason")?);
+    if let Some(subject) = part("subject") {
+        text.push_str(&format!(" ({subject})"));
+    }
+    Some(text)
+}
+/// "2026-10-11 05:08 UTC" for a Unix time (Hinnant's civil_from_days).
+pub(crate) fn utc_stamp(secs: u64) -> String {
+    let (days, rem) = ((secs / 86_400) as i64, secs % 86_400);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year}-{month:02}-{day:02} {:02}:{:02} UTC",
+        rem / 3600,
+        rem / 60 % 60
+    )
+}
 fn truncate(value: &mut String, maximum: usize) {
     if value.len() <= maximum {
         return;
@@ -1842,6 +1877,23 @@ impl LoadTrace {
         missing: &crate::sound::report::Missing,
         instrument: Option<&sampler_ir::Instrument>,
     ) {
+        use crate::sound::report::MissingReason as R;
+        let (reason, impact) = match missing.reason {
+            R::Unknown => ("not recognised", "plays without it"),
+            R::NotModeled => ("not modelled yet", "plays without it"),
+            R::InvalidValue => ("value cannot be represented", "authored value ignored"),
+            R::UnknownLaw => (
+                "scaling or curve unverified",
+                "approximated, may sound different",
+            ),
+        };
+        let mut message = format!("Not translated: {} ({reason})", clip(&missing.feature, 160));
+        // Engine-raised lua findings carry the fault text (error, widget, index, range); other
+        // values are authored and stay out.
+        if missing.feature.starts_with("lua ") && !missing.value.is_empty() {
+            message.push_str(": ");
+            message.push_str(&clip(&missing.value, 200));
+        }
         let key = grouped::missing(
             &missing.feature,
             &format!("{:?}", missing.reason),
@@ -1866,7 +1918,12 @@ impl LoadTrace {
             key,
             location,
             enabled,
-            json!({"stage":"translate","code":"unsupported"}),
+            // The typed key flattens the feature; keep its text (never the authored value) so the
+            // event says what was not translated, where, and what that means for the sound.
+            json!({"stage":"translate","code":"unsupported",
+                "message":message,
+                "where":clip(&missing.location, 160),
+                "impact":impact}),
         );
     }
     fn grouped_issue(
@@ -2035,6 +2092,18 @@ pub fn code(message: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn typed_events_without_a_message_are_described_by_their_key() {
+        let key = grouped::Key::new("LuaRuntimeFault", "WidgetIndexOutOfRange", "Callback");
+        let row = json!({"level":"error","module":"runtime","event":"runtime_issue","data":{"diagnostic_key":key}});
+        let (event, ..) = prepare_event("s", Instant::now(), row);
+        assert_eq!(
+            event.reason.as_deref(),
+            Some("LuaRuntimeFault: WidgetIndexOutOfRange (Callback)")
+        );
+        assert_eq!(utc_stamp(1_760_159_315), "2025-10-11 05:08 UTC");
+    }
+
     #[test]
     fn panic_diagnostics_never_wait_for_an_already_held_diagnostics_lock() {
         let _lease = acquire();
@@ -2575,6 +2644,39 @@ mod tests {
         assert!(!old.exists());
         assert!(!sidecar.exists());
         assert!(current.exists());
+    }
+
+    #[test]
+    fn missing_features_reach_the_journal_with_their_real_message() {
+        use crate::sound::report::{Missing, MissingReason};
+        let directory = tempfile::tempdir().unwrap();
+        let session = Session::start(directory.path().join("logs"));
+        let mut trace = LoadTrace::new(Path::new("Antarctica.nksn"), 0, None);
+        trace.test_session = Some(session.clone());
+        let missing = |feature: &str, value: &str| Missing {
+            location: "script 1".into(),
+            feature: feature.into(),
+            value: value.into(),
+            reason: MissingReason::NotModeled,
+        };
+        trace.missing(&missing("lua setParameter GainMatrix.Gain_1_1", "0.5"), None);
+        trace.missing(
+            &missing("lua widget_index_out_of_range", "Table 1: index 9, valid 1..8"),
+            None,
+        );
+        let (reply, done) = mpsc::channel();
+        lock(&session.sender).as_ref().unwrap().send(Command::Flush(reply)).unwrap();
+        done.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+        let text = std::fs::read_to_string(&session.path).unwrap();
+        let reasons: Vec<String> = text
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap())
+            .filter(|r| r["event"] == "issue")
+            .map(|r| r["reason"].as_str().unwrap_or("issue").to_owned())
+            .collect();
+        assert!(reasons.iter().any(|r| r.starts_with("Not translated: lua setParameter GainMatrix.Gain_1_1")), "{reasons:?}");
+        assert!(reasons.iter().any(|r| r.ends_with("index 9, valid 1..8")), "{reasons:?}");
+        assert!(!text.contains("\"0.5\""), "authored values stay out");
     }
 
     #[test]

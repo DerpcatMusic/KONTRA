@@ -334,7 +334,7 @@ fn table_boundary_writes_are_ignored_and_reads_return_the_constructor_default() 
         .find(|f| f.feature == "lua widget_index_out_of_range")
         .unwrap();
     assert_eq!(f.count, 2);
-    assert!(f.value.is_empty());
+    assert!(f.value.contains("index") && f.value.contains("valid 1.."), "{}", f.value);
 }
 
 #[test]

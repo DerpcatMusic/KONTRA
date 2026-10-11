@@ -299,7 +299,8 @@ impl RuntimeLog {
             sampler_core::Outcome::FuelExhausted => "FuelExhausted".into(),
             _ => return,
         };
-        self.add("KspFault", &reason, "Callback", Some(callback), 1);
+        let detail = format!("KSP callback #{callback} faulted: {reason}");
+        self.add("KspFault", &reason, "Callback", Some(callback), 1, Some(detail));
     }
     pub(crate) fn lost(&mut self, count: u64) {
         self.add(
@@ -308,6 +309,7 @@ impl RuntimeLog {
             "FaultInbox",
             None,
             count,
+            None,
         );
     }
     pub(crate) fn lua(&mut self, faults: &sampler_uvi::script::FaultCounts) -> bool {
@@ -325,7 +327,11 @@ impl RuntimeLog {
                 let delta = count.saturating_sub(*old);
                 *old = *count;
                 if delta > 0 {
-                    self.add(kind, &reason, "Callback", None, delta);
+                    let detail = match kind {
+                        "LuaInitFault" => faults.init_message.clone(),
+                        _ => faults.runtime_message.clone(),
+                    };
+                    self.add(kind, &reason, "Callback", None, delta, detail);
                     changed = true;
                 }
             }
@@ -339,7 +345,7 @@ impl RuntimeLog {
             let delta = finding.count.saturating_sub(*old);
             *old = finding.count;
             if delta > 0 {
-                self.add("LuaSetter", "SetterTypeMismatch", &subject, None, delta);
+                self.add("LuaSetter", "SetterTypeMismatch", &subject, None, delta, None);
                 changed = true;
             }
         }
@@ -367,7 +373,7 @@ impl RuntimeLog {
             let delta = count.saturating_sub(*old);
             *old = count;
             if delta > 0 {
-                self.add("RuntimeCounter", reason, subject, None, delta);
+                self.add("RuntimeCounter", reason, subject, None, delta, None);
                 changed = true;
             }
         }
@@ -380,6 +386,7 @@ impl RuntimeLog {
         subject: &str,
         callback: Option<usize>,
         count: u64,
+        detail: Option<String>,
     ) {
         if count == 0 {
             return;
@@ -395,7 +402,8 @@ impl RuntimeLog {
                 super::LogLevel::Error,
                 "runtime",
                 "runtime_issue",
-                serde_json::json!({"load_id":self.load_id,"path":self.path,"program":self.program,"diagnostic_key":key,"location":location,"group":self.collector.groups().into_iter().find(|g|g.key==key)}),
+                serde_json::json!({"load_id":self.load_id,"path":self.path,"program":self.program,"diagnostic_key":key,"location":location,"group":self.collector.groups().into_iter().find(|g|g.key==key),
+                    "message":detail.map(|d| d.chars().take(200).collect::<String>())}),
             );
         }
     }
