@@ -282,7 +282,11 @@ impl<S: Script> Driver<S> {
         self.host.set_time(self.now_ms(rt));
         self.host.note_on(id, key, (velocity * 127.0).round() as u8);
         if !self.host.handles_notes() {
-            // No onNote: the program sounds as authored.
+            // No onNote: the program sounds as authored, with the script's
+            // standing modulation values.
+            for (id, value) in &self.global {
+                rt.set_note_script_value(note, *id, *value)?;
+            }
             rt.forward_attack(note)?;
         }
         self.apply(rt, false)

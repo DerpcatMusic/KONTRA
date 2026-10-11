@@ -485,11 +485,40 @@ impl Translation {
             let name = aux.attribute("Name").unwrap_or_default().to_owned();
             let bus = ir::BusRef(self.ir.buses.len());
             let live = number(aux, "Bypass", 0.0)? == 0.0;
-            let (processors, placed) = if live {
+            let (mut processors, mut placed) = if live || scripted {
                 self.inserts(aux, false, None)?
             } else {
                 (Vec::new(), Vec::new())
             };
+            let mut gain = ir::Gain::Linear(number(aux, "Gain", 1.0)?);
+            if scripted {
+                // The aux's inserts sit in one Mix (its Bypass); its Gain is
+                // the last stage, a control a script can move.
+                if !processors.is_empty() {
+                    processors.insert(
+                        0,
+                        ir::Processor::Mix {
+                            count: processors.len() as u16,
+                            address: ir::SlotAddress {
+                                group: -1,
+                                slot: -1,
+                                generic: i32::try_from(aux.id().get_usize()).unwrap_or(-1),
+                            },
+                            dry: 0.0,
+                            wet: 1.0,
+                            bypass: !live,
+                        },
+                    );
+                    for entry in &mut placed {
+                        entry.1 += 1;
+                    }
+                }
+                placed.push((aux.id().get_usize(), processors.len(), 1));
+                processors.push(ir::Processor::Gain(std::mem::replace(
+                    &mut gain,
+                    ir::Gain::UNITY,
+                )));
+            }
             let chain = (!placed.is_empty()).then(|| {
                 self.ir.chains.push(ir::Chain {
                     scope: ir::Scope::Bus(bus),
@@ -505,7 +534,7 @@ impl Translation {
                 chain,
                 sends: Vec::new(),
                 output: ir::Output::Master,
-                gain: ir::Gain::Linear(number(aux, "Gain", 1.0)?),
+                gain,
             });
             auxes.push((name, bus));
         }
@@ -1146,6 +1175,7 @@ pub fn translate_program(
 ) -> Result<ir::Instrument, Box<dyn std::error::Error>> {
     let translate = || -> Result<ir::Instrument, Box<dyn std::error::Error>> {
         let (text, _) = bank.program(program)?;
+        let text = promote(text, &bank.scripts());
         let (instrument, ..) =
             translate_full(&text, Source::Bank).map_err(|e| describe(Path::new(program), e))?;
         Ok(instrument)
@@ -1211,6 +1241,7 @@ fn translate_untagged(path: &Path) -> Result<Translated, Box<dyn std::error::Err
         };
         let span = sampler_kontakt::audit::Span::new("uvi_program_read_decrypt");
         let (text, program_path) = bank.program(&member)?;
+        let text = promote(text, &bank.scripts());
         drop(span);
         let span = sampler_kontakt::audit::Span::new("uvi_xml_translate_ir");
         let (instrument, locations, groups, inserts) =
@@ -1229,7 +1260,7 @@ fn translate_untagged(path: &Path) -> Result<Translated, Box<dyn std::error::Err
             lua,
         });
     }
-    let text = read_text(path)?;
+    let text = promote(read_text(path)?, &Default::default());
     let (instrument, locations, groups, inserts) = translate_full(
         &text,
         Source::Disk(path.parent().unwrap_or(Path::new(".")).into()),
@@ -1512,6 +1543,7 @@ pub fn load_program_scripted_with_options(
     options: &sampler_kontakt::Options,
 ) -> Result<scripted::Program, Box<dyn std::error::Error>> {
     let (text, program_path) = bank.program(program)?;
+    let text = promote(text, &bank.scripts());
     let host = script::ScriptHost::new(&text, bank.scripts(), script::Config::default())?;
     let patched = apply_overrides(&text, &host.insert_overrides());
     let (mut instrument, locations, groups, inserts) =
@@ -1544,6 +1576,18 @@ pub fn load_program_scripted_with_options(
 /// `text` with the insert values the scripts set while loading written into
 /// its attributes, so the translation starts from the state the scripts leave.
 #[cfg(feature = "library-access")]
+/// Mark (`ScriptLive`) the ConstantModulation nodes the program's scripts can
+/// write, so the translator makes them live and the host drives them.
+#[cfg(feature = "library-access")]
+fn promote(text: String, scripts: &script::Scripts) -> String {
+    let promoted = engine_parameters::promoted_constants(&text, scripts);
+    let marks: Vec<_> = promoted
+        .into_iter()
+        .map(|(node, id)| (node, "ScriptLive".to_owned(), id.to_string()))
+        .collect();
+    if marks.is_empty() { text } else { apply_overrides(&text, &marks) }
+}
+
 fn apply_overrides(text: &str, overrides: &[(usize, String, String)]) -> String {
     let Ok(doc) = roxmltree::Document::parse(text) else {
         return text.to_owned();
@@ -1607,6 +1651,7 @@ pub fn load_program_scripted_streamed(
     policy: &sampler_kontakt::StreamPolicy,
 ) -> Result<scripted::Program, Box<dyn std::error::Error>> {
     let (text, program_path) = bank.program(program)?;
+    let text = promote(text, &bank.scripts());
     let host = script::ScriptHost::new(&text, bank.scripts(), script::Config::default())?;
     let patched = apply_overrides(&text, &host.insert_overrides());
     let (instrument, locations, groups, inserts) =

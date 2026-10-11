@@ -175,6 +175,10 @@ pub enum Processor {
     StateVariable(StateVariableFilter),
     /// Live gain owner for the v1 TPT peaking-band fallback.
     PeakingEq(PeakingEq),
+    /// A biquad or flat level driven by controls (scripted UVI inserts).
+    LiveFilter(live::LiveFilter),
+    /// Rows are output L/R, columns input L/R; each cell follows a control.
+    ControlMatrix([Parameter; 4]),
     /// Stereo reverb; bus scope only (it owns megabytes of state).
     Reverb(ReverbSettings),
     /// `dry * x + wet * (x * impulse)`; bus scope only. `impulse` indexes
@@ -203,6 +207,10 @@ impl Processor {
             Processor::ControlGain(binding) => binding.valid(),
             Processor::StateVariable(filter) => filter.valid(),
             Processor::PeakingEq(settings) => settings.valid(),
+            Processor::LiveFilter(settings) => settings.valid(),
+            Processor::ControlMatrix(cells) => cells
+                .iter()
+                .all(|c| c.valid() && !matches!(c, Parameter::Expression { .. })),
             Processor::Reverb(settings) => settings.valid(),
             Processor::Convolution { dry, wet, .. } => dry.is_finite() && wet.is_finite(),
             Processor::Mix {
@@ -238,6 +246,8 @@ mod eq;
 mod kernel_tests;
 mod kernels;
 pub use eq::PeakingEq;
+mod live;
+pub use live::{LiveFilter, LiveShape};
 mod ladder_kernel;
 mod lofi;
 pub use lofi::LoFiSettings;
@@ -270,6 +280,8 @@ pub(super) enum PreparedProcessor {
     StereoMatrix([[f64; 2]; 2]),
     Biquad(Biquad),
     PeakingEq(eq::Eq),
+    LiveFilter(live::Live),
+    ControlMatrix([control::PreparedParameter; 4]),
     ControlGain(usize),
     Delay {
         delay: Delay,
@@ -516,6 +528,12 @@ pub(super) fn compile_processors(
                 }
                 Processor::PeakingEq(settings) => {
                     PreparedProcessor::PeakingEq(settings.compile(rate, bindings)?)
+                }
+                Processor::LiveFilter(settings) => {
+                    PreparedProcessor::LiveFilter(settings.compile(rate, bindings)?)
+                }
+                Processor::ControlMatrix(cells) => {
+                    PreparedProcessor::ControlMatrix(cells.map(|c| c.compile(bindings)))
                 }
                 Processor::ControlGain(binding) => {
                     let lane = bindings.len();
@@ -822,6 +840,8 @@ impl PreparedVoiceChain {
                         | PreparedProcessor::Daft(_)
                         | PreparedProcessor::LadderLP4 { .. }
                         | PreparedProcessor::Branch { .. }
+                        | PreparedProcessor::LiveFilter(_)
+                        | PreparedProcessor::ControlMatrix(_)
                 ) || matches!(stage, PreparedProcessor::StereoModeller { stereo, .. } if !stereo.batches())
             })
     }
@@ -1175,6 +1195,10 @@ pub(super) fn process<const TRACE: bool>(
                 }
             }
             PreparedProcessor::PeakingEq(eq) => eq.process(state, parameters, block, len, at),
+            PreparedProcessor::LiveFilter(live) => live.process(state, parameters, block, len, at),
+            PreparedProcessor::ControlMatrix(cells) => {
+                live::matrix(cells, parameters, block, len, at)
+            }
             PreparedProcessor::Biquad(filter) => {
                 let [mut zl, mut zr] = state.z;
                 let [left, right] = block;

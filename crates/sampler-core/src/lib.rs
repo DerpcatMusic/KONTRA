@@ -80,7 +80,8 @@ mod dsp;
 pub use dsp::{
     Biquad, CompressorSettings, ControlRange, ConvolutionUpload, DaftSettings, Decimator, Delay,
     FilterKind, Impulse, LadderSettings, LoFiSettings, MAX_IMPULSE_FRAMES, OutputLowPass,
-    Parameter, PeakingEq, Processor, Rectifier, ReverbSettings, StateVariableFilter,
+    LiveFilter, LiveShape, Parameter, PeakingEq, Processor, Rectifier, ReverbSettings,
+    StateVariableFilter,
     StereoSettings, SvfMode, VoiceChain, VoiceSendPosition, VoiceSendTap,
 };
 mod envelope;
