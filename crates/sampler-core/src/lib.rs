@@ -79,7 +79,7 @@ pub use resample::{ResampleQuality, read_radius};
 mod dsp;
 pub use dsp::{
     Biquad, CompressorSettings, ControlRange, ConvolutionUpload, DaftSettings, Decimator, Delay,
-    FilterKind, Impulse, LadderSettings, LoFiSettings, MAX_IMPULSE_FRAMES, OutputLowPass,
+    ArSettings, FilterKind, Impulse, LadderSettings, LoFiSettings, MAX_IMPULSE_FRAMES, OutputLowPass,
     LiveFilter, LiveShape, Parameter, PeakingEq, Processor, Rectifier, ReverbSettings,
     StateVariableFilter,
     StereoSettings, SvfMode, VoiceChain, VoiceSendPosition, VoiceSendTap,

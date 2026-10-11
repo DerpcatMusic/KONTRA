@@ -986,6 +986,28 @@ pub(crate) fn chain_with(
                 }
             }
             Some(Params::Filter {
+                kind: kind @ 100..=108,
+                cutoff,
+                resonance,
+                ..
+            }) if matches!(fx.version, 0x90..=0x92)
+                && [*cutoff, *resonance]
+                    .iter()
+                    .all(|v| (0.0..=1.0).contains(v)) =>
+            {
+                // Adaptive-resonance family: saved 100..=108 are modes 0..=8 of the
+                // native FilterDJ (docs/audit-2026-10-10/w15-ar-native.md). The kernel
+                // matches Kontakt 8 recordings (nine modes, three levels) within 0.1 dB.
+                out.filter_slots
+                    .push((fx.slot, out.processors.len() + filters.len()));
+                filters.push(sampler_ir::Processor::Ar(sampler_ir::Ar {
+                    mode: (kind - 100) as u8,
+                    cutoff: f64::from(*cutoff),
+                    resonance: f64::from(*resonance),
+                }));
+                combined = product(gain, combined);
+            }
+            Some(Params::Filter {
                 kind,
                 cutoff,
                 resonance,
@@ -2037,6 +2059,32 @@ mod tests {
         assert!(chain.processors.iter().any(|p| matches!(p,
             sampler_ir::Processor::LadderLP4(d) if d.taps == 1 && d.cutoff == 1.0
                 && d.resonance == 0.0 && d.record_version == 0x95)));
+    }
+
+    #[test]
+    fn adaptive_resonance_records_become_native_ar_modes() {
+        for (kind, mode) in [(100i32, 0u8), (106, 6), (108, 8)] {
+            let mut public = [kind.to_le_bytes(), kind.to_le_bytes()].concat();
+            for value in [0.5135f32, 0.25] {
+                public.extend(value.to_le_bytes());
+            }
+            let slot = super::Slot {
+                slot: 4,
+                module: 0x18,
+                version: 0x92,
+                bypass: false,
+                output_gain: 1.,
+                dry_level: 0.,
+                output_set: false,
+                public,
+            };
+            let chain = super::chain_with(&[slot], super::Scope::Voice, None, None, (7, -1), &[]);
+            assert!(chain.notes.is_empty(), "{:?}", chain.notes);
+            assert_eq!(chain.filter_slots, vec![(4, 0)]);
+            assert!(matches!(chain.processors[0],
+                sampler_ir::Processor::Ar(d) if d.mode == mode && d.cutoff == f64::from(0.5135f32)
+                    && d.resonance == 0.25));
+        }
     }
 
     #[test]

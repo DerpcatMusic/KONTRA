@@ -301,7 +301,14 @@ fn detail(p: ir::Processor) -> String {
             d.cutoff * 100.,
             d.resonance * 100.
         ),
-        ir::Processor::LadderLP4(_) => "Ladder low-pass · 4 poles".into(),
+        ir::Processor::LadderLP4(d) => format!("Ladder low-pass · {} poles", d.taps),
+        ir::Processor::Ar(d) => format!(
+            "Adaptive-resonance {}-pole {} · cutoff {:.0}% · resonance {:.0}%",
+            ["2", "4", "2/4"][usize::from(d.mode / 3)],
+            ["low-pass", "band-pass", "high-pass"][usize::from(d.mode % 3)],
+            d.cutoff * 100.,
+            d.resonance * 100.
+        ),
         ir::Processor::SendReturnGate { .. } => "Send return · follows effect bypass".into(),
         ir::Processor::StereoMatrix(_) => "Stereo routing".into(),
         ir::Processor::Branch { gain, .. } => format!("Parallel branch · {}", db(gain)),
