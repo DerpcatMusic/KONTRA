@@ -10,7 +10,7 @@ pub const CALL_DEPTH: usize = 32;
 /// Bytes per text cell; longer text is truncated at a character boundary.
 pub const TEXT_CAPACITY: usize = 320;
 pub const EFFECT_ARGS: usize = 6;
-/// Pending effects retained between drains; later effects are counted and dropped.
+/// Pending effects retained between drains; later emits wait for a drain.
 pub const EFFECT_CAPACITY: usize = 256;
 pub const HOST_VALUES: usize = 32;
 /// A store key occupies this many consecutive registers.
@@ -801,7 +801,10 @@ impl Frames {
 
 pub(crate) struct OpState {
     pub effects: std::collections::VecDeque<Effect>,
-    pub dropped_effects: u64,
+    /// Emits that found the outbox full and waited for the host to drain it.
+    pub stalled_effects: u64,
+    /// Set by an emit that found the outbox full; the dispatcher then yields the callback.
+    pub outbox_full: bool,
     /// Text appends cut short at [`TEXT_CAPACITY`].
     pub truncated_texts: u64,
     pub host: [i64; HOST_VALUES],
@@ -819,7 +822,8 @@ impl Default for OpState {
             ),
             dropped_engine_outcomes: 0,
             effects: std::collections::VecDeque::with_capacity(EFFECT_CAPACITY),
-            dropped_effects: 0,
+            stalled_effects: 0,
+            outbox_full: false,
             truncated_texts: 0,
             host: {
                 let mut values = [0; HOST_VALUES];
@@ -894,9 +898,9 @@ impl Runtime {
         }
     }
 
-    /// Effects dropped because the outbox was full.
-    pub fn dropped_effects(&self) -> u64 {
-        self.ops.dropped_effects
+    /// Emits that waited a block for the host to drain a full outbox.
+    pub fn stalled_effects(&self) -> u64 {
+        self.ops.stalled_effects
     }
 
     /// Runtime text appends that did not fit a text cell and were cut short.
@@ -1798,7 +1802,15 @@ impl Runtime {
                 text,
             } => {
                 if self.ops.effects.len() == EFFECT_CAPACITY {
-                    self.ops.dropped_effects += 1;
+                    // Back-pressure, never loss: a script that rewrites its whole
+                    // interface in one callback (thousands of set_control_par) must
+                    // not lose the tail. Retry this emit once the host drained.
+                    let c = self.behaviors.get_mut(id.0).ok_or(Error::StaleHandle)?;
+                    c.pc -= 1;
+                    // Waiting on the host is not the callback burning fuel.
+                    c.yielded_at = None;
+                    self.ops.stalled_effects += 1;
+                    self.ops.outbox_full = true;
                     return Ok(false);
                 }
                 let mut values = [0; EFFECT_ARGS];

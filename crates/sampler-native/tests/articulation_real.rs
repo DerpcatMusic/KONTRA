@@ -1015,7 +1015,7 @@ fn full_note_runtime_trace_probe() {
                 true
             });
         }
-        println!("effect totals {counts:?} dropped {}", rt.dropped_effects());
+        println!("effect totals {counts:?} stalled {}", rt.stalled_effects());
     }
 }
 

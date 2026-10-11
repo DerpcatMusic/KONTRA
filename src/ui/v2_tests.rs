@@ -187,6 +187,105 @@ fn picture(frames: Vec<Arc<Image>>) -> Arc<Picture> {
     Arc::new(Picture::new(frames))
 }
 
+/// A label with a fully transparent picture (Morphology's value readout) still shows its text,
+/// through the same prepare-then-paint loop the scanner and the editor use.
+#[test]
+fn label_text_shows_over_a_transparent_background_picture() {
+    use ir::{AssetKind, ImageMeta, ImageUse, Kind, PageRef, Rect, Widget};
+    let png = |w: u32, h: u32, rgba: [u8; 4]| {
+        let mut bytes = Vec::new();
+        let mut e = png::Encoder::new(&mut bytes, w, h);
+        e.set_color(png::ColorType::Rgba);
+        e.set_depth(png::BitDepth::Eight);
+        e.write_header()
+            .unwrap()
+            .write_image_data(&rgba.repeat((w * h) as usize))
+            .unwrap();
+        bytes
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let pictures = dir.path().join("Resources/pictures");
+    std::fs::create_dir_all(&pictures).unwrap();
+    std::fs::create_dir_all(dir.path().join("Instruments")).unwrap();
+    std::fs::write(pictures.join("transparent.png"), png(1, 1, [0, 0, 0, 0])).unwrap();
+    std::fs::write(pictures.join("wall.png"), png(160, 40, [29, 29, 30, 255])).unwrap();
+    let path = dir.path().join("Instruments/x.nki");
+    let mut label = Widget::new("$readout", PageRef(0), Rect::new(10, 10, 112, 20), Kind::Label);
+    label.text = "VALUE READOUT".into();
+    label.style = Some(ir::StyleRef(0));
+    label.images.push(ImageUse::new(ir::AssetRef(0), ir::Role::Background));
+    let image = |path: &str| ir::Asset {
+        path: path.into(),
+        kind: AssetKind::Image(ImageMeta {
+            size: Some(if path.ends_with("transparent.png") {
+                ir::Size { width: 1, height: 1 }
+            } else {
+                ir::Size { width: 160, height: 40 }
+            }),
+            ..Default::default()
+        }),
+    };
+    let face = ir::Interface {
+        pages: vec![ir::Page {
+            size: ir::Size { width: 160, height: 40 },
+            background: ir::Background {
+                image: Some(ir::AssetRef(1)),
+                ..Default::default()
+            },
+            ..Default::default()
+        }],
+        widgets: vec![label],
+        styles: vec![ir::TextStyle {
+            font: ir::Font::Stock(17),
+            size: Some(13.),
+            color: ir::Rgba::rgb(0xfefefe),
+            align: ir::Align::Center,
+        }],
+        assets: vec![image("Resources/pictures/transparent.png"), image("Resources/pictures/wall.png")],
+        ..Default::default()
+    };
+    let mut natural = face.clone();
+    natural.widgets[0].auto_size = true;
+    natural.widgets[0].default_axes = [true; 2];
+    assert_eq!(ir_view::resolved(&natural).widgets[0].rect, Rect::new(10, 10, 1, 1));
+    natural.widgets[0].rect.width = 112;
+    natural.widgets[0].default_axes = [false, true];
+    assert_eq!(ir_view::resolved(&natural).widgets[0].rect, Rect::new(10, 10, 112, 1));
+    natural.widgets[0].kind = Kind::Switch;
+    assert_eq!(ir_view::resolved(&natural).widgets[0].rect, Rect::new(10, 10, 1, 1));
+    let face = ir_view::resolved(&face);
+    assert_eq!(face.widgets[0].rect, Rect::new(10, 10, 112, 20));
+    let mut assets = ir_view::Assets::default();
+    let mut values = ir_view::Values::default();
+    let mut ui = theme::ui();
+    let mut settled = 0;
+    for _ in 0..2000 {
+        assets.prepare(&path, &face, PageRef(0), ir::Presentation::Bitmap, 1., &values);
+        let root = col![ir_view::view(
+            &mut ui,
+            &face,
+            PageRef(0),
+            &assets,
+            ir::Presentation::Bitmap,
+            1.,
+            &mut values
+        )]
+        .w(160.)
+        .h(40.)
+        .fill(Role::Background);
+        ui.frame(root, Some(Size::new(160., 40.)), Input::default(), 1. / 60.)
+            .unwrap();
+        settled = if assets.pending() == 0 { settled + 1 } else { 0 };
+        if settled >= 2 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    let shot = pixels(&ui, 160, 40);
+    let bright = shot.chunks(4).filter(|p| p[0] > 200 && p[1] > 200 && p[2] > 200).count();
+    assert!(bright > 50, "label text vanished: {bright} bright pixels");
+}
+
 /// A wallpaper, a background panel picture, a 64-frame knob strip and a
 /// two-frame switch: vector mode keeps the first two only.
 #[test]
@@ -2176,6 +2275,202 @@ fn widget_menu_passive_value_is_unchanged() {
 }
 
 #[test]
+fn widget_picture_slider_drags_like_the_authored_knob() {
+    // Audio Imperia's vibrato "knob": a ui_slider(0,127) with a knob picture,
+    // 50x50, MOUSE_BEHAVIOUR -300.
+    let script = sampler_ksp::compile(
+        "on init\n make_perfview\n declare ui_slider $k(0,127)\n move_control_px($k,10,10)\n set_control_par(get_ui_id($k),$CONTROL_PAR_WIDTH,50)\n set_control_par(get_ui_id($k),$CONTROL_PAR_HEIGHT,50)\n set_control_par(get_ui_id($k),$CONTROL_PAR_MOUSE_BEHAVIOUR,-300)\n set_control_par_str(get_ui_id($k),$CONTROL_PAR_PICTURE,\"pyramid_knob_small\")\nend on",
+        48000,
+        sampler_ksp::Limits::LIBRARY,
+        &[],
+    )
+    .unwrap();
+    let face = ir_view::resolved(&script.ui(&|_| None).unwrap());
+    let (delta, captured) = audit_motion(&face, 0, 0., -30.);
+    assert!(captured && delta > 0.);
+}
+
+#[test]
+fn five_thousand_widgets_are_all_present_and_laid_out() {
+    let mut face = ir::Interface {
+        pages: vec![ir::Page { size: ir::Size { width: 2000, height: 1600 }, ..Default::default() }],
+        ..Default::default()
+    };
+    for n in 0..5000i32 {
+        let kind = if n % 2 == 0 {
+            ir::Kind::Knob { range: ir::Range::default(), display: ir::Display::default() }
+        } else {
+            ir::Kind::Slider { range: ir::Range::default(), orientation: ir::Orientation::Vertical }
+        };
+        let mut w = ir::Widget::new(format!("$w{n}"), ir::PageRef(0), ir::Rect::new(n % 100 * 20, n / 100 * 30, 18, 28), kind);
+        w.text = format!("Caption {n}");
+        w.binding = ir::Binding::Control(ir::ControlId(n as u128));
+        face.widgets.push(w);
+    }
+    let assets = ir_view::Assets::default();
+    let mut values = ir_view::Values::default();
+    let start = std::time::Instant::now();
+    let ui = settle(2000., 1600., |ui| {
+        ir_view::view(ui, &face, ir::PageRef(0), &assets, ir::Presentation::Vector, 1., &mut values)
+    });
+    println!("FIVE_THOUSAND_WIDGETS 4 frames in {:?}", start.elapsed());
+    let scene = ui.scene().unwrap();
+    for n in [0, 2499, 4999] {
+        assert!(scene.surface(&format!("ir-{n}")).is_some(), "widget {n} missing");
+    }
+}
+
+/// Per-frame cost of the KSP ir_view path: asset prepare, tree build, and
+/// layout/resolve, steady and while dragging. `KONTRA_UI_IR_PATCH` names an
+/// instrument; without it a synthetic 5000-widget face is measured.
+#[test]
+#[ignore = "profiling: run with --nocapture, optionally KONTRA_UI_IR_PATCH"]
+fn ir_view_frame_profile() {
+    let patch = std::env::var_os("KONTRA_UI_IR_PATCH").map(std::path::PathBuf::from);
+    let authored = match &patch {
+        Some(patch) => {
+            let options = sampler_kontakt::Options {
+                keys: 0..=0,
+                library: Some(patch.clone()),
+                ..Default::default()
+            };
+            let loaded = sampler_kontakt::load(patch, &options, |_| {}).unwrap();
+            loaded.interfaces.into_iter().max_by_key(|u| u.widgets.len()).unwrap()
+        }
+        None => {
+            let mut face = ir::Interface {
+                pages: vec![ir::Page { size: ir::Size { width: 2000, height: 1600 }, ..Default::default() }],
+                ..Default::default()
+            };
+            for n in 0..5000i32 {
+                let kind = if n % 2 == 0 {
+                    ir::Kind::Knob { range: ir::Range::default(), display: ir::Display::default() }
+                } else {
+                    ir::Kind::Slider { range: ir::Range::default(), orientation: ir::Orientation::Vertical }
+                };
+                let mut w = ir::Widget::new(format!("$w{n}"), ir::PageRef(0), ir::Rect::new(n % 100 * 20, n / 100 * 30, 18, 28), kind);
+                w.text = format!("Caption {n}");
+                w.binding = ir::Binding::Control(ir::ControlId(n as u128));
+                face.widgets.push(w);
+            }
+            face
+        }
+    };
+    let face = ir_view::resolved(&authored);
+    let visible = (0..face.widgets.len()).filter(|&n| face.visible(ir::WidgetRef(n))).count();
+    println!("PROFILE widgets={} visible={}", face.widgets.len(), visible);
+    let (w, h) = (
+        f64::from(face.pages[0].size.width),
+        f64::from(ir_view::height(&face, ir::PageRef(0))),
+    );
+    // The first knob or slider that is on the page, to drag.
+    let target = (0..face.widgets.len())
+        .find(|&n| {
+            face.visible(ir::WidgetRef(n))
+                && matches!(face.widgets[n].kind, ir::Kind::Knob { .. } | ir::Kind::Slider { .. })
+        })
+        .unwrap();
+    let path = patch.clone().unwrap_or_else(|| "/nonexistent/synthetic.nki".into());
+    for (presentation, name) in [
+        (ir::Presentation::Bitmap, "original"),
+        (ir::Presentation::Vector, "vector"),
+        (ir::Presentation::Vector, "kontra"),
+    ] {
+        let mut assets = ir_view::Assets::default();
+        let mut values = ir_view::Values::default();
+        let mut input = ir_view::InputState::default();
+        let mut ui = theme::ui();
+        let median = |mut v: Vec<std::time::Duration>| {
+            v.sort();
+            v[v.len() / 2]
+        };
+        let mut frame = |ui: &mut Ui,
+                         assets: &mut ir_view::Assets,
+                         values: &mut ir_view::Values,
+                         input: &mut ir_view::InputState,
+                         events: Input| {
+            let t0 = std::time::Instant::now();
+            assets.prepare(&path, &face, ir::PageRef(0), presentation, 1., values);
+            let t1 = std::time::Instant::now();
+            let el = if name == "kontra" {
+                super::generated::view(ui, "", &face, ir::PageRef(0), assets, 1., values, input)
+            } else {
+                ir_view::view_state(ui, "", &face, ir::PageRef(0), assets, presentation, 1., values, input)
+            };
+            let t2 = std::time::Instant::now();
+            ui.frame(col![el].w(w).h(h).fill(Role::Background), Some(Size::new(w, h)), events, 1. / 60.).unwrap();
+            let t3 = std::time::Instant::now();
+            [t1 - t0, t2 - t1, t3 - t2]
+        };
+        // Warm up until the pictures have all decoded: steady means loaded.
+        let started = std::time::Instant::now();
+        for n in 0.. {
+            frame(&mut ui, &mut assets, &mut values, &mut input, Input::default());
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            if n >= 40 && assets.pending() == 0 || started.elapsed().as_secs() > 60 {
+                break;
+            }
+        }
+        println!("PROFILE {name} loaded in {:?}", started.elapsed());
+        let steady: Vec<_> = (0..40)
+            .map(|_| frame(&mut ui, &mut assets, &mut values, &mut input, Input::default()))
+            .collect();
+        let surface = ui.scene().unwrap().surface(&format!("ir-{target}")).map(|s| s.frame);
+        let at = surface.map_or(Point::new(10., 10.), |f| {
+            Point::new(f.x + f.size.width / 2., f.y + f.size.height / 2.)
+        });
+        let mut drag = Vec::new();
+        let events: Vec<(Point, bool)> = [(at, false), (at, true)]
+            .into_iter()
+            .chain((1..=40).map(|n| (Point::new(at.x, at.y - f64::from(n) * 2.), true)))
+            .collect();
+        for (point, down) in events {
+            let t = frame(
+                &mut ui,
+                &mut assets,
+                &mut values,
+                &mut input,
+                Input {
+                    pointer: PointerInput { pos: Some(point), buttons: if down { Buttons::PRIMARY } else { Buttons::default() }, ..Default::default() },
+                    ..Default::default()
+                },
+            );
+            drag.push(t);
+        }
+        let report = |label: &str, rows: &[[std::time::Duration; 3]]| {
+            let col = |i: usize| median(rows.iter().map(|r| r[i]).collect());
+            let total = median(rows.iter().map(|r| r.iter().sum()).collect());
+            println!(
+                "PROFILE {name} {label}: prepare={:?} build={:?} frame={:?} total={:?}",
+                col(0), col(1), col(2), total
+            );
+        };
+        // Where the build time goes, per widget kind (steady state).
+        {
+            let mut by_kind: std::collections::BTreeMap<String, (usize, std::time::Duration)> = Default::default();
+            for _ in 0..10 {
+                for n in 0..face.widgets.len() {
+                    if !face.visible(ir::WidgetRef(n)) { continue; }
+                    let r = face.page_rect(ir::WidgetRef(n));
+                    let t = std::time::Instant::now();
+                    let el = ir_view::widget_state(&mut ui, "", &face, ir::WidgetRef(n), &assets, presentation, 1., &mut values, &mut input, f64::from(r.width), f64::from(r.height));
+                    let d = t.elapsed();
+                    drop(el);
+                    let e = by_kind.entry(kind_name(&face.widgets[n].kind).split(|c: char| !c.is_alphanumeric()).next().unwrap().to_string()).or_default();
+                    e.0 += 1;
+                    e.1 += d;
+                }
+            }
+            for (k, (c, d)) in by_kind {
+                println!("KIND {name} {k}: n={} per_widget={:?} per_frame={:?}", c / 10, d / c as u32, d / 10);
+            }
+        }
+        report("steady", &steady);
+        report("drag", &drag[2..]);
+    }
+}
+
+#[test]
 fn widget_disabled_knob_does_not_edit() {
     let script = sampler_ksp::compile(
         "on init\n declare ui_knob $k(0,100,1)\nend on",
@@ -3351,11 +3646,12 @@ fn widget_file_drop_uses_hit_order_namespace_and_atomic_path_limits() {
     .unwrap();
     let mut face = ir_view::resolved(&script.ui(&|_| None).unwrap());
     face.widgets[0].rect = ir::Rect::new(0, 0, 100, 100);
-    let assets = ir_view::Assets::default();
+    let mut assets = ir_view::Assets::default();
     let mut values = ir_view::Values::default();
     let mut state = ir_view::InputState::default();
     let mut ui = theme::ui();
     let mut frame = |ui: &mut Ui, face: &ir::Interface| {
+        assets.epoch += 1; // this test edits the face in place; Face::sync notes that
         let el = ir_view::view_state(
             ui,
             "part-a",
@@ -4569,6 +4865,7 @@ fn native_ladder_editor_uses_hertz_for_readout_typing_and_graph() {
             cutoff: 0.5,
             resonance: 0.2,
             record_version: 0x92,
+            taps: 4,
         })],
         post_amplitude: vec![],
     });
@@ -6138,6 +6435,7 @@ fn v1_effects_list_includes_native_zone_chains_once_per_group() {
                 cutoff: 0.5,
                 resonance: 0.2,
                 record_version: 0x92,
+                taps: 4,
             }),
         ),
         (
@@ -6206,7 +6504,7 @@ fn v1_effects_list_includes_native_zone_chains_once_per_group() {
     );
     assert_eq!(count("LoFi"), 1, "bus effects remain visible");
     assert_eq!(
-        count("Ladder low-pass"),
+        count("Ladder LP4"),
         1,
         "native group inserts live on shared zone voice chains"
     );
@@ -6229,7 +6527,7 @@ fn v1_effects_list_includes_native_zone_chains_once_per_group() {
     let text = labels(&i);
     assert_eq!(
         text.iter()
-            .filter(|s| s.starts_with("Ladder low-pass"))
+            .filter(|s| s.starts_with("Ladder LP4"))
             .count(),
         1,
         "a chain referenced by both zones and group is shown once"

@@ -937,6 +937,8 @@ pub struct Shared {
     pub(crate) articulation_edits: ArrayQueue<(usize, usize)>,
     /// Script effects from the audio thread: rack slot, source epoch, script instance, effect.
     effects: ArrayQueue<(usize, u64, usize, sampler_core::Effect)>,
+    /// One drainer at a time (loader tick or UI frame) keeps effect order.
+    effects_drain: std::sync::Mutex<()>,
     /// Peak meters the audio thread keeps current; read them at paint time.
     pub meters: Meters,
     /// One strip's signal for a spectrum on screen.
@@ -1103,6 +1105,7 @@ impl Default for Shared {
             learn_target: AtomicU32::new(0),
             learned_note: AtomicU64::new(0),
             effects: ArrayQueue::new(1024),
+            effects_drain: std::sync::Mutex::new(()),
             meters: Meters::default(),
             scope: Scope::default(),
             blocks: AtomicU64::new(0),
@@ -1723,7 +1726,10 @@ impl Shared {
 
     /// Apply the script effects the audio thread queued to their parts'
     /// interface models, and publish the interfaces that changed.
-    fn apply_effects(&self) {
+    pub(crate) fn apply_effects(&self) {
+        let Ok(_drain) = self.effects_drain.try_lock() else {
+            return;
+        };
         let mut changed =
             std::collections::BTreeMap::<(usize, u64), std::collections::BTreeSet<usize>>::new();
         while let Some((slot, epoch, instance, effect)) = self.effects.pop() {

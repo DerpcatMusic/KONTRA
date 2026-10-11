@@ -45,6 +45,7 @@ mod native_ui;
 mod picture_decode;
 mod picture_worker;
 mod pictures;
+mod prof;
 mod render_art;
 #[cfg(feature = "shots")]
 pub(crate) mod scan;
@@ -56,6 +57,7 @@ mod effects;
 mod part;
 pub(crate) mod picker;
 mod rack;
+mod script_view;
 mod spectrum;
 #[cfg(test)]
 pub(crate) mod tests;
@@ -228,6 +230,7 @@ struct Meters {
     animating: AtomicBool,
     /// Journal changes affect this editor only while its Report pane is shown.
     logs_visible: AtomicBool,
+    scripts_live: AtomicBool,
 }
 
 /// Decides, every display tick, whether anything the editor shows moved
@@ -249,6 +252,7 @@ struct Watch {
     cpu_at: Option<Instant>,
     poll_at: Option<Instant>,
     frame_at: Option<Instant>,
+    coverage_at: Option<Instant>,
 }
 
 /// Readouts and the loading line refresh this often at most.
@@ -393,7 +397,10 @@ impl Watch {
             self.poll_at = Some(now);
         }
         // The loading line sweeps until the first samples arrive.
-        let wake = moved || poll || animate;
+        let coverage = meters.scripts_live.load(Ordering::Relaxed)
+            && due(self.coverage_at, READOUT_MS);
+        if coverage { self.coverage_at = Some(now); }
+        let wake = moved || poll || animate || coverage;
         activity.add(Count::WatchWakes, u64::from(wake));
         activity.add(Count::AnimationWakes, u64::from(animate));
         activity.add(Count::PendingWakes, u64::from(poll));
@@ -1215,6 +1222,8 @@ fn build(
         }
         let p = bridge.params().clone();
         p.shared.editor_watch.store(usize::MAX, Ordering::Relaxed);
+        // Every frame, not the loader's 10 Hz poll: a script's UI refresh settles in frames.
+        p.shared.apply_effects();
         let snapshot = activity.span(Phase::UiSnapshotReadback);
         let mut selection = read(&p.selection).clone();
         p.shared.ensure_parts(selection.parts.len());
@@ -1289,6 +1298,10 @@ fn build(
             Ordering::Relaxed,
         );
 
+        cx.state.meters.scripts_live.store(
+            cx.state.inside.values().any(|s| s.scripts.collecting()),
+            Ordering::Relaxed,
+        );
         let ui_zoom = cx.settings.editor_scale();
         let Cx {
             mut selection,
@@ -1750,3 +1763,5 @@ pub(crate) fn audit_frames(p: &Arc<SamplerParams>) -> serde_json::Value {
 }
 #[cfg(all(test, feature = "library-access"))]
 mod uvi_audit;
+#[cfg(all(test, feature = "library-access"))]
+mod uvi_bench;

@@ -23,6 +23,8 @@ pub use init_cache::{CachedInit, restore_initialized};
 mod lexer;
 mod lower;
 pub mod model;
+pub mod parity;
+pub use parity::{RuntimeCoverage, parity_report, parity_report_with};
 pub mod nckp;
 mod parser;
 #[cfg(feature = "scan")]
@@ -1218,6 +1220,7 @@ fn compile_initialized_inner(
         hir: &hir,
         controls: &ids,
         groups: &environment.groups,
+        folders: &environment.folders,
         slot: environment.slot,
         budget: limits.instructions,
         limit: limits.instructions,
@@ -1227,6 +1230,7 @@ fn compile_initialized_inner(
         warnings: Vec::new(),
         scratch: 0,
         modules: Vec::new(),
+        inspection: None,
     };
     let mut programs = Vec::new();
     let mut entries = Vec::new();

@@ -136,13 +136,15 @@ pub enum ModSource {
     /// The note's script value for "from script" modulator `id`
     /// ([`crate::Instruction::WriteModValue`]), `clamp(v / 1e6, -1, 1)`.
     Script(u16),
+    /// [`Self::Script`] read as a bipolar source (-1..=1).
+    ScriptBipolar(u16),
     /// The note's raw pitch bend ([`crate::Expression::bend`]), -1..=1.
     PitchBend,
 }
 
 impl ModSource {
     fn bipolar(&self) -> bool {
-        matches!(self, Self::Lfo(_) | Self::PitchBend)
+        matches!(self, Self::Lfo(_) | Self::PitchBend | Self::ScriptBipolar(_))
     }
 }
 
@@ -175,6 +177,9 @@ pub(crate) enum CompiledTarget {
     /// Start offset of depth·u × the region's start range, at voice start only.
     SampleStart,
     Control(usize),
+    SourcePhase(u32),
+    LoopStart,
+    LoopLength,
 }
 
 /// Open, plan-local destination identity. Legacy constructors preserve native laws.
@@ -200,6 +205,9 @@ impl crate::ParameterAddress {
             (i, 10) => T::ProcessorNativeGain(i),
             (0, 11) => T::Tone,
             (0, 12) => T::SampleStart,
+            (i, 14) => T::SourcePhase(i),
+            (0, 15) => T::LoopStart,
+            (0, 16) => T::LoopLength,
             _ => return None,
         })
     }
@@ -335,6 +343,10 @@ struct Program {
     targets: Box<[CompiledTarget]>,
     controls: Box<[(usize, [usize; 2])]>,
     filter_indices: Box<[usize]>,
+    /// Prepared source order and incoming phase-route spans; no callback graph scans.
+    source_order: Box<[usize]>,
+    phase_routes: Box<[Box<[usize]>]>,
+    loop_routes: Box<[(usize, Option<[usize; 2]>)]>,
     shapes: Box<[Shape]>,
     /// Whether any route reaches each kind of output, so unused work is skipped.
     filter: bool,
@@ -494,7 +506,7 @@ impl VoiceModulation {
                             return Err(Error::InvalidInput);
                         }
                         ModSource::ReleaseCounter { frames } => Prepared::ReleaseCounter(frames),
-                        ModSource::Script(id) => Prepared::Script(id),
+                        ModSource::Script(id) | ModSource::ScriptBipolar(id) => Prepared::Script(id),
                         ModSource::PitchBend => Prepared::PitchBend,
                     })
                 })
@@ -519,6 +531,14 @@ impl VoiceModulation {
             for route in &program.routes {
                 if route.source >= sources.len()
                     || !route.depth.is_finite()
+                    || (matches!(
+                        route.target.compiled(),
+                        Some(CompiledTarget::LoopStart | CompiledTarget::LoopLength)
+                    ) && (!matches!(sources.get(route.source), Some(Prepared::Constant))
+                        || route.invert
+                        || route.shape.is_some()
+                        || route.scale.is_some()
+                        || route.lag != 0))
                     || route.shape.is_some_and(|s| s >= shapes.len())
                     || route.scale.is_some_and(|s| {
                         s.source >= sources.len() || s.shape.is_some_and(|s| s >= shapes.len())
@@ -537,6 +557,35 @@ impl VoiceModulation {
                 {
                     return Err(Error::InvalidInput);
                 }
+            }
+            let mut phase_routes = vec![Vec::new(); sources.len()];
+            for (index, route) in program.routes.iter().enumerate() {
+                if let Some(CompiledTarget::SourcePhase(target)) = route.target.compiled() {
+                    let target = target as usize;
+                    if !matches!(sources.get(target), Some(Prepared::Lfo(l)) if !l.shared)
+                        || route.lag != 0
+                        || route.scale.is_some()
+                        || program.controls.iter().any(|b| b.0 == index)
+                    {
+                        return Err(Error::InvalidInput);
+                    }
+                    phase_routes[target].push(index);
+                }
+            }
+            let mut source_order = Vec::with_capacity(sources.len());
+            let mut emitted = vec![false; sources.len()];
+            while source_order.len() < sources.len() {
+                let next = (0..sources.len()).find(|&i| {
+                    !emitted[i]
+                        && phase_routes[i]
+                            .iter()
+                            .all(|&r| emitted[program.routes[r].source])
+                });
+                let Some(next) = next else {
+                    return Err(Error::InvalidInput);
+                };
+                emitted[next] = true;
+                source_order.push(next);
             }
             let reaches =
                 |targets: &[ModTarget]| program.routes.iter().any(|r| targets.contains(&r.target));
@@ -567,6 +616,18 @@ impl VoiceModulation {
                 })
                 .collect::<Result<Vec<_>, Error>>()?;
             controls.sort_unstable_by_key(|b| b.0);
+            let loop_routes = program
+                .routes
+                .iter()
+                .enumerate()
+                .filter_map(|(i, r)| {
+                    matches!(
+                        r.target.compiled(),
+                        Some(CompiledTarget::LoopStart | CompiledTarget::LoopLength)
+                    )
+                    .then(|| (i, controls.iter().find(|b| b.0 == i).map(|b| b.1)))
+                })
+                .collect();
             if controls.windows(2).any(|b| b[0].0 == b[1].0) {
                 return Err(Error::InvalidInput);
             }
@@ -590,6 +651,12 @@ impl VoiceModulation {
                     && program.controls.is_empty(),
                 sources,
                 filter_indices: filter_indices.into_boxed_slice(),
+                source_order: source_order.into_boxed_slice(),
+                loop_routes,
+                phase_routes: phase_routes
+                    .into_iter()
+                    .map(Vec::into_boxed_slice)
+                    .collect(),
                 envelopes: envelopes.into_boxed_slice(),
                 breakpoints: program.breakpoints.into_boxed_slice(),
                 filter: reaches(&[ModTarget::Cutoff, ModTarget::Resonance]),
@@ -1189,6 +1256,33 @@ impl VoiceModState {
         self.times[voice] = [clock.now; 2];
     }
 
+    /// Constant native loop lanes respond at event fragments, independently of the source clock.
+    pub fn loop_offsets(
+        &self,
+        modulation: &VoiceModulation,
+        voice: usize,
+        controls: &[crate::ControlValue],
+    ) -> Option<[f32; 2]> {
+        let p = &modulation.programs[self.program(voice)? as usize];
+        if p.loop_routes.is_empty() {
+            return None;
+        }
+        let mut offsets = [0.; 2];
+        for &(i, ids) in &p.loop_routes {
+            let route = &p.routes[i];
+            let depth = match ids {
+                Some([depth, bypass]) => match (controls[depth], controls[bypass]) {
+                    (crate::ControlValue::Real(v), crate::ControlValue::Real(0.)) => v,
+                    _ => 0.,
+                },
+                None => route.depth,
+            };
+            let lane = usize::from(route.target == ModTarget::LoopLength);
+            offsets[lane] += depth as f32;
+        }
+        Some(offsets)
+    }
+
     pub fn release(&mut self, modulation: &VoiceModulation, voice: usize) {
         if let Some(program) = self.program(voice) {
             let p = &modulation.programs[program as usize];
@@ -1262,8 +1356,19 @@ impl VoiceModState {
         let values = &mut self.values[voice * self.sources..][..p.sources.len()];
         let phases = &mut self.phase[voice * self.sources..][..p.sources.len()];
         let mut changed = onset;
-        for (i, source) in p.sources.iter().enumerate() {
-            let value = match *source {
+        for &i in &p.source_order {
+            let source = p.sources[i];
+            if onset && !p.phase_routes[i].is_empty() {
+                // The native phase lane is read once after reset, never each control cell.
+                let mut phase = 0.0;
+                for &r in &p.phase_routes[i] {
+                    let route = &p.routes[r];
+                    phase += route.depth
+                        * p.transform(route, values[route.source], p.bipolar[route.source]);
+                }
+                phases[i] = phase;
+            }
+            let value = match source {
                 Prepared::Lfo(lfo) if lfo.shape == LfoShape::Zero => 0.,
                 Prepared::Lfo(lfo) => {
                     let hz = match lfo.rate {
@@ -1279,12 +1384,13 @@ impl VoiceModState {
                     let (phase, seed) = if lfo.shared && lfo.retrigger {
                         let t = since as f64 / clock.rate;
                         (lfo.phase + hz * t, self.restart.1 ^ i as u64)
-                    } else if lfo.retrigger {
+                    } else if lfo.retrigger || !p.phase_routes[i].is_empty() {
+                        // An absolute onset lane also replaces a private free-cycle phase.
                         phases[i] += hz * f64::from(frames) / clock.rate;
                         (phases[i], seed ^ i as u64)
                     } else {
                         // ponytail: free cycles read absolute time, so a tempo change jumps phase.
-                        (lfo.phase + hz * clock.now as f64 / clock.rate, i as u64)
+                        (phases[i] + hz * clock.now as f64 / clock.rate, i as u64)
                     };
                     let depth = if age < lfo.delay {
                         0.0
@@ -1360,7 +1466,8 @@ impl VoiceModState {
                 CompiledTarget::Cutoff => cutoff += d * v,
                 CompiledTarget::Resonance => resonance += d * v,
                 CompiledTarget::Tone => out.tone += d * v,
-                CompiledTarget::SampleStart => {}
+                CompiledTarget::SampleStart | CompiledTarget::SourcePhase(_) => {}
+                CompiledTarget::LoopStart | CompiledTarget::LoopLength => {}
                 CompiledTarget::ProcessorCutoff(_)
                 | CompiledTarget::ProcessorResonance(_)
                 | CompiledTarget::ProcessorNativeCutoff(_)
