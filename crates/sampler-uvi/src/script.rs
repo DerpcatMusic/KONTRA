@@ -1465,6 +1465,17 @@ impl ScriptHost {
                 let node = s.nodes.borrow().get(id).map(|(node, _)| *node);
                 let kind = s.kinds.borrow().get(id).cloned().unwrap_or_default();
                 let engine = |name: &str, value: f64| {
+                    let (name, value) = {
+                        let params = s.params.borrow();
+                        crate::engine_parameters::effective(&kind, name, value, |n| {
+                            params
+                                .get(id)?
+                                .iter()
+                                .find(|(k, _)| k == n)
+                                .and_then(|(_, v)| v.parse().ok())
+                        })
+                    };
+                    let name = name.as_str();
                     let binding = crate::engine_parameters::binding(node?, &kind, name)?;
                     Some(Command::EngineParameter {
                         address: binding.address,

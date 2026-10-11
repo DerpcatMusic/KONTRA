@@ -410,7 +410,10 @@ impl Translation {
             out.push(ir::Processor::Filter(ir::Filter {
                 kind,
                 cutoff: ir::Frequency::Hertz(get("Freq", 1000.0)?),
-                resonance: ir::Resonance::Q(get("Q", std::f64::consts::FRAC_1_SQRT_2)?),
+                resonance: ir::Resonance::Q(engine_parameters::band_q(
+                    |n| node.attribute(n).and_then(|v| v.parse().ok()),
+                    band,
+                )),
             }));
         }
         let overall = number(node, "OverallGain", 0.0)?;
