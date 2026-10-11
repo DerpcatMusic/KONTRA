@@ -1675,7 +1675,7 @@ impl Eval<'_> {
                 self.request(builtin, args)?;
                 V::I(0)
             }
-            GetEnginePar => {
+            GetEnginePar | GetEngineParDisp => {
                 let key = [
                     self.int(args, 0)?,
                     self.int(args, 1)?,
@@ -1699,16 +1699,24 @@ impl Eval<'_> {
                             .get(&[parameter.into(), key[1], key[2], key[3]])
                             .copied()
                     });
-                V::I(
-                    self.st
-                        .engine
-                        .get(&key)
-                        .copied()
-                        .or(authored)
-                        .unwrap_or(neutral),
-                )
+                let stored = self.st.engine.get(&key).copied().or(authored).unwrap_or(neutral);
+                if builtin == GetEnginePar {
+                    V::I(stored)
+                } else {
+                    V::S(
+                        symbol_name(self.hir, key[0])
+                            .and_then(|name| sampler_core::engine_parameter_id(&name))
+                            .map(|parameter| sampler_core::engine_parameter_display(parameter, stored))
+                            .unwrap_or_default(),
+                    )
+                }
             }
-            GetEngineParDisp | GetEngineParDispExt => V::S(String::new()),
+            GetEngineParDispExt => {
+                let parameter = symbol_name(self.hir, self.int(args, 0)?)
+                    .and_then(|name| sampler_core::engine_parameter_id(&name));
+                let value = self.int(args, 1)?;
+                V::S(parameter.map(|p| sampler_core::engine_parameter_display(p, value)).unwrap_or_default())
+            }
             GroupName => {
                 let i = self.int(args, 0)?;
                 V::S(self.env.groups.get(i as usize).cloned().unwrap_or_default())

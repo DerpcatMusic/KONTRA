@@ -422,6 +422,9 @@ impl Instrument {
                 }
                 _ => Vec::new(),
             };
+            if let Some(crate::Span::Time(time)) = zone.playback.loop_control_crossfade {
+                check.time(time, "loop control crossfade")?;
+            }
             for range in ranges {
                 check.range(range.start, range.end, "loop")?;
                 if let crate::Span::Time(time) = range.crossfade {
@@ -490,7 +493,18 @@ impl Instrument {
                     })?;
                 }
                 Target::Control(control) => check.exists(Reference::Control(control.0))?,
-                Target::Amplitude | Target::Pitch | Target::Pan | Target::SampleStart => {}
+                Target::SourcePhase(source) => {
+                    check.exists(Reference::Modulator(source.0))?;
+                    if !matches!(self.modulators[source.0].source, ModulationSource::Lfo(_)) {
+                        check.within(f64::NAN, 0.0..=0.0, "phase destination must be an LFO")?;
+                    }
+                }
+                Target::Amplitude
+                | Target::Pitch
+                | Target::Pan
+                | Target::SampleStart
+                | Target::LoopStart
+                | Target::LoopLength => {}
             }
             if let Some(shape) = route.shape {
                 check.exists(Reference::Shape(shape.0))?;

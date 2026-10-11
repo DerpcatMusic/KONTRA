@@ -1090,6 +1090,9 @@ pub struct Playback {
     /// Furthest frame past `start` a [`Target::SampleStart`] route can move
     /// the start to (Kontakt's zone sample-start modulation range).
     pub start_range: SourceFrames,
+    /// Saved crossfade before file-boundary clamping, used by constrained loop modulation.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub loop_control_crossfade: Option<Span>,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -1377,6 +1380,11 @@ pub enum Target {
         parameter: ProcessorParameter,
     },
     Control(ControlRef),
+    /// Absolute source cycle position, sampled at note onset, replacing its saved phase.
+    SourcePhase(ModulatorRef),
+    /// Truncated fractions of total sample frames, on a constrained forward loop.
+    LoopStart,
+    LoopLength,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]

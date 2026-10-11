@@ -1878,7 +1878,7 @@ impl LoadTrace {
         instrument: Option<&sampler_ir::Instrument>,
     ) {
         use crate::sound::report::MissingReason as R;
-        let (reason, impact) = match missing.reason {
+        let (reason, mut impact) = match missing.reason {
             R::Unknown => ("not recognised", "plays without it"),
             R::NotModeled => ("not modelled yet", "plays without it"),
             R::InvalidValue => ("value cannot be represented", "authored value ignored"),
@@ -1887,7 +1887,14 @@ impl LoadTrace {
                 "approximated, may sound different",
             ),
         };
+        if missing.feature.starts_with("script Warning: ") {
+            impact = "compiled with this warning; inspect the reported script slot and line";
+        }
         let mut message = format!("Not translated: {} ({reason})", clip(&missing.feature, 160));
+        if missing.feature == "setter_type_mismatch" {
+            message = "setParameter supplied a value with the wrong parameter type; UVI ignores the write and keeps the old value".into();
+            impact = "pass the parameter's expected value type; runtime LuaSetter diagnostics identify the supplied and expected types";
+        }
         // Engine-raised lua findings carry the fault text (error, widget, index, range); other
         // values are authored and stay out.
         if missing.feature.starts_with("lua ") && !missing.value.is_empty() {
@@ -2677,6 +2684,47 @@ mod tests {
         assert!(reasons.iter().any(|r| r.starts_with("Not translated: lua setParameter GainMatrix.Gain_1_1")), "{reasons:?}");
         assert!(reasons.iter().any(|r| r.ends_with("index 9, valid 1..8")), "{reasons:?}");
         assert!(!text.contains("\"0.5\""), "authored values stay out");
+    }
+
+    #[test]
+    fn setter_type_mismatch_at_load_explains_the_ignored_write() {
+        use crate::sound::report::{Missing, MissingReason};
+        let directory = tempfile::tempdir().unwrap();
+        let mut trace = LoadTrace::new(Path::new("setter.uvip"), 0, None);
+        trace.test_session = Some(Session::start(directory.path().join("logs")));
+        trace.missing(&Missing {
+            location: "script".into(), feature: "setter_type_mismatch".into(),
+            value: String::new(), reason: MissingReason::NotModeled,
+        }, None);
+        let report = trace.finish("loaded");
+        assert!(report["issues"][0]["message"].as_str().unwrap().contains("setParameter"));
+        assert!(report["issues"][0]["message"].as_str().unwrap().contains("UVI ignores the write"));
+        assert!(report["issues"][0]["impact"].as_str().unwrap().contains("supplied and expected types"));
+    }
+
+    #[test]
+    fn script_warning_classes_fold_repeats_without_merging_different_warnings() {
+        use crate::sound::report::{Missing, MissingReason};
+        let directory = tempfile::tempdir().unwrap();
+        let mut trace = LoadTrace::new(Path::new("warning-classes.nki"), 0, None);
+        trace.test_session = Some(Session::start(directory.path().join("logs")));
+        for (line, class) in [(10, "first warning"), (20, "first warning"), (30, "second warning")] {
+            trace.missing(&Missing {
+                location: format!("script slot 0 line {line}"),
+                feature: format!("script Warning: {class}"),
+                value: "private authored value".into(),
+                reason: MissingReason::NotModeled,
+            }, None);
+        }
+        let report = trace.finish("loaded");
+        assert_eq!(report["issues"].as_array().unwrap().len(), 2);
+        let groups = report["diagnostic_groups"].as_array().unwrap();
+        assert_eq!(groups.len(), 2);
+        assert!(groups.iter().all(|g| g["key"]["kind"] == "KspWarning"));
+        assert!(groups.iter().any(|g| g["unknown"] == 2 && g["locations_total"] == 2));
+        assert!(!report.to_string().contains("private authored value"));
+        assert!(report["issues"].as_array().unwrap().iter()
+            .all(|i| i["impact"].as_str().unwrap().contains("script slot and line")));
     }
 
     #[test]
