@@ -1526,6 +1526,8 @@ pub struct LadderLP4 {
     pub cutoff: f64,
     pub resonance: f64,
     pub record_version: u16,
+    /// Output stage: 1..=4 for Ladder LP1..LP4. The loop closes around stage 4.
+    pub taps: u8,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]

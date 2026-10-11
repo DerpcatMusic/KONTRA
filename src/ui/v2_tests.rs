@@ -4766,6 +4766,7 @@ fn native_ladder_editor_uses_hertz_for_readout_typing_and_graph() {
             cutoff: 0.5,
             resonance: 0.2,
             record_version: 0x92,
+            taps: 4,
         })],
         post_amplitude: vec![],
     });
@@ -6335,6 +6336,7 @@ fn v1_effects_list_includes_native_zone_chains_once_per_group() {
                 cutoff: 0.5,
                 resonance: 0.2,
                 record_version: 0x92,
+                taps: 4,
             }),
         ),
         (
