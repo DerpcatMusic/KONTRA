@@ -140,6 +140,18 @@ impl GroupSettings {
                         },
                         2,
                     ),
+                    I::FirstOrderLowShelf { gain } => (
+                        C::FirstOrderLowShelf {
+                            gain_db: 20. * gain.linear().log10(),
+                        },
+                        2,
+                    ),
+                    I::FirstOrderHighShelf { gain } => (
+                        C::FirstOrderHighShelf {
+                            gain_db: 20. * gain.linear().log10(),
+                        },
+                        2,
+                    ),
                 };
                 let m = sampler_core::Biquad::new(self.rate, kind, cutoff, q)
                     .map_or(1., |b| b.magnitude(hz as f64));
