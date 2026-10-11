@@ -25,6 +25,7 @@ mod modulation;
 #[cfg(not(feature = "library-access"))]
 mod no_access;
 mod resources;
+mod reverb;
 pub mod script;
 pub use resources::{ResourceError, Resources};
 pub mod scripted;
