@@ -1286,12 +1286,12 @@ fn live_loop_depth_uses_native_alias_at_an_event_fragment_without_heap() {
                 velocity_low: 0.,
                 velocity_high: 1.,
                 gain: 1.,
-                envelope: Envelope::default(),
+                envelope: Envelope::new(0, 0, 0, 1., 4096).unwrap(),
                 playback: Playback {
                     loop_range: Some(Loop {
                         start,
                         end,
-                        mode: LoopMode::UntilRelease,
+                        mode: LoopMode::Continuous,
                         shape: LoopShape::Wrap,
                         passes: None,
                     }),
@@ -1353,6 +1353,16 @@ fn live_loop_depth_uses_native_alias_at_an_event_fragment_without_heap() {
         assert!(
             render(&mut actual, 400, block) == render(&mut expected, 400, block),
             "an event fragment must preserve physical phase and update the loop immediately"
+        );
+        support::without_heap(|| {
+            actual.note_off(input(1), None).unwrap();
+            expected.note_off(input(1), None).unwrap();
+            actual.set_engine_parameter(address, 1000000).unwrap();
+        });
+        assert_eq!(actual.voice_count(), 1, "the release tail must still be active");
+        assert!(
+            render(&mut actual, 400, block) == render(&mut expected, 400, block),
+            "released continuous loops must freeze geometry too"
         );
     }
 }
