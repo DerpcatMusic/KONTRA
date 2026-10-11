@@ -2815,6 +2815,8 @@ fn insert_names(instrument: &ir::Instrument, chain: Option<ir::ChainRef>) -> Vec
             ir::Processor::StereoModeller { .. } => "Stereo Modeller",
             ir::Processor::Pan(_) => "Pan",
             ir::Processor::LoFi { .. } => "LoFi",
+            ir::Processor::Saturation(_) => "Saturation",
+            ir::Processor::Distortion { .. } => "Distortion",
             ir::Processor::StereoMatrix(_) => "Stereo",
             ir::Processor::Reverb(_) => "Reverb",
             ir::Processor::Compressor(_) => "Compressor",
