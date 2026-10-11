@@ -214,6 +214,17 @@ impl Translation {
         Ok(())
     }
 
+    /// A program or layer connection applied to one keygroup of its scope: a
+    /// gap is reported once for the connection, not once per keygroup.
+    pub(crate) fn connect_scoped(&mut self, connection: Node, out: &mut Modulation) -> Result<(), String> {
+        if let Err(gap) = self.try_connect(connection, out, None)? {
+            if self.shared_sources.insert(connection.id()) {
+                self.gap(connection, gap);
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn connect_frequency(
         &mut self,
         connection: Node,
@@ -1363,6 +1374,25 @@ mod tests {
             (ir::Depth::Normalized(1.0), true)
         );
         assert!(ir.unsupported.is_empty(), "{:?}", ir.unsupported);
+    }
+
+    #[test]
+    fn program_and_layer_connections_reach_every_keygroup() {
+        let cc = |n| format!(r#"<SignalConnection Source="@MIDI CC {n}" Destination="Gain" Ratio="1"/>"#);
+        let xml = format!(
+            r#"<Program Name="t"><Connections>{}</Connections><Layers><Layer Name="L"><Connections>{}</Connections><Keygroups>
+            <Keygroup Name="A" HighKey="59"><Oscillators><SamplePlayer Name="P" SamplePath="a.wav"/></Oscillators></Keygroup>
+            <Keygroup Name="B" LowKey="60"><Oscillators><SamplePlayer Name="Q" SamplePath="a.wav"/></Oscillators></Keygroup>
+            </Keygroups></Layer></Layers></Program>"#,
+            cc(7),
+            cc(11)
+        );
+        let ir = crate::translate_bank(&xml).unwrap().0;
+        assert_eq!(ir.zones.len(), 2);
+        for zone in &ir.zones {
+            assert_eq!(zone.routes.len(), 2, "{:?}", ir.unsupported);
+        }
+        assert!(ir.unsupported.iter().all(|u| u.feature != "program or layer modulation"));
     }
 
     #[test]
