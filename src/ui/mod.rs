@@ -1215,6 +1215,8 @@ fn build(
         }
         let p = bridge.params().clone();
         p.shared.editor_watch.store(usize::MAX, Ordering::Relaxed);
+        // Every frame, not the loader's 10 Hz poll: a script's UI refresh settles in frames.
+        p.shared.apply_effects();
         let snapshot = activity.span(Phase::UiSnapshotReadback);
         let mut selection = read(&p.selection).clone();
         p.shared.ensure_parts(selection.parts.len());
